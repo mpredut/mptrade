@@ -432,9 +432,7 @@ class T212Client:
         if not by_symbol:
             return
         target_path = str(explicit_path) if explicit_path else str(cache_path(CACHE_T212_TRADE_FILENAME))
-        from cacheaccount import CacheTradeManager
-
-        CacheTradeManager.merge_venue_fills_snapshot(target_path, by_symbol)
+        T212Provider.merge_ssot_fills_cache(target_path, by_symbol)
 
     def get_historical_order(self, order_id) -> dict | bool | None:
         """Find a terminal order in the first history page.

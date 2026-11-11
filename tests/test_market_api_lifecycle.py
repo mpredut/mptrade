@@ -518,9 +518,19 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "bapi_ws_normalize.py",
         "market_data.py",
     )
-    for bmod_file in binance_transport_modules:
-        bmod_src = (root / "binance_api" / bmod_file).read_text(encoding="utf-8")
-        bmod_tree = ast.parse(bmod_src, filename=f"binance_api/{bmod_file}")
+    venue_transport_modules = (
+        *(f"binance_api/{m}" for m in binance_transport_modules),
+        "212trading/t212_client.py",
+        "212trading/market_data.py",
+        "kraken/kraken_client.py",
+        "kraken/market_data.py",
+        "hyperliquid/hl_client.py",
+        "hyperliquid/market_data.py",
+    )
+    forbidden_transport_layers = forbidden_upward_layers | {"offline"}
+    for vmod_rel in venue_transport_modules:
+        bmod_src = (root / vmod_rel).read_text(encoding="utf-8")
+        bmod_tree = ast.parse(bmod_src, filename=vmod_rel)
         bmod_roots = set()
         for node in ast.walk(bmod_tree):
             if isinstance(node, ast.Import):
@@ -528,8 +538,8 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
                     bmod_roots.add(alias.name.split(".")[0])
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 bmod_roots.add(node.module.split(".")[0])
-        assert not (bmod_roots & forbidden_upward_layers), (
-            f"Upward DAG violation in binance_api/{bmod_file}: {bmod_roots & forbidden_upward_layers}"
+        assert not (bmod_roots & forbidden_transport_layers), (
+            f"Upward DAG violation in {vmod_rel}: {bmod_roots & forbidden_transport_layers}"
         )
 
     facade_src = (root / "providers" / "market_api.py").read_text(encoding="utf-8")

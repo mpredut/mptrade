@@ -1494,12 +1494,13 @@ class MarketDataProvider(ABC):
             )
         )
 
-    def merge_ssot_fills_cache(self, cache_file: str, fills_by_symbol: dict) -> bool:
+    @classmethod
+    def merge_ssot_fills_cache(cls, cache_file: str, fills_by_symbol: dict) -> bool:
         """Atomically merge normalized multi-symbol fills into a shared SSOT trade cache snapshot."""
         if not cache_file or not isinstance(fills_by_symbol, dict):
             return False
-        self._ensure_ssot_cache_bindings()
-        tm_cls = self._ssot_trade_cache_cls
+        cls._ensure_ssot_cache_bindings()
+        tm_cls = cls._ssot_trade_cache_cls
         return bool(tm_cls.merge_venue_fills_snapshot(cache_file, fills_by_symbol)) if tm_cls is not None else False
 
     def invalidate_ssot_fills_cache(

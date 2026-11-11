@@ -14,40 +14,14 @@ import io
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
-from botcore import exact_int, require_finite_float, safe_float, safe_pos_float
+from botcore import safe_float, safe_pos_float
+from providers.order_ohlc_utils import (
+    REQUIRED_FIELDS,
+    drop_incomplete_last_bar,
+    normalize_record,
+    validate_dataset,
+)
 from state_io import atomic_write_bytes, read_csv_dicts, read_text_file
-
-
-REQUIRED_FIELDS = ("timestamp", "open", "high", "low", "close")
-
-
-def normalize_record(record: Mapping) -> dict:
-    """Normalise a row into the common OHLC contract."""
-    if not isinstance(record, Mapping):
-        raise ValueError("record must be a mapping")
-    for field in REQUIRED_FIELDS:
-        if field not in record:
-            raise ValueError(f"missing required field: {field}")
-        if record[field] is None or isinstance(record[field], bool):
-            raise ValueError(f"{field} cannot be None or boolean")
-    raw_ts = record["timestamp"]
-    timestamp = exact_int(raw_ts, default=None)
-    if timestamp is None:
-        raise ValueError(f"invalid timestamp: {raw_ts!r}")
-    try:
-        open_f = require_finite_float(record["open"], name="open")
-        high_f = require_finite_float(record["high"], name="high")
-        low_f = require_finite_float(record["low"], name="low")
-        close_f = require_finite_float(record["close"], name="close")
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"invalid OHLC numeric value in record: {record!r}") from exc
-    return {
-        "timestamp": timestamp,
-        "open": open_f,
-        "high": high_f,
-        "low": low_f,
-        "close": close_f,
-    }
 
 
 def canonical_bytes(records: Iterable[Mapping]) -> bytes:
@@ -120,74 +94,6 @@ def merge_datasets(*datasets: Iterable[Mapping]) -> list[dict]:
             normalized = normalize_record(record)
             by_timestamp[normalized["timestamp"]] = normalized
     return validate_dataset(by_timestamp[timestamp] for timestamp in sorted(by_timestamp))
-
-
-def validate_dataset(records: Iterable[Mapping], *, interval_minutes: int | None = None) -> list[dict]:
-    """Validate ordering, cadence and OHLC invariants; return the normalised form."""
-    rows = [normalize_record(record) for record in records]
-    if not rows:
-        raise ValueError("OHLC dataset cannot be empty")
-    if interval_minutes is not None and (isinstance(interval_minutes, bool) or interval_minutes <= 0):
-        raise ValueError("interval_minutes must be positive")
-
-    expected_delta = interval_minutes * 60 if interval_minutes is not None else None
-    previous_timestamp = None
-    for index, row in enumerate(rows, start=2):
-        timestamp = row["timestamp"]
-        if previous_timestamp is not None:
-            delta = timestamp - previous_timestamp
-            if delta <= 0:
-                raise ValueError(f"unordered or duplicate timestamp at line {index}: {timestamp}")
-            if expected_delta is not None and delta != expected_delta:
-                raise ValueError(
-                    f"invalid cadence at line {index}: {delta}s, expected {expected_delta}s"
-                )
-        previous_timestamp = timestamp
-
-        open_, high, low, close = row["open"], row["high"], row["low"], row["close"]
-        if not all(safe_pos_float(v, default=None) is not None for v in (open_, high, low, close)):
-            raise ValueError(f"non-positive price at line {index}")
-        if high < max(open_, close, low) or low > min(open_, close, high):
-            raise ValueError(f"invalid OHLC invariant at line {index}")
-    return rows
-
-
-def drop_incomplete_last_bar(
-    records: Iterable[Mapping],
-    *,
-    interval_minutes: int,
-    now_timestamp: int,
-    regular_session_start: int | None = None,
-    regular_session_end: int | None = None,
-) -> list[dict]:
-    """Drop only the tail of Yahoo candles that are still forming.
-
-    For intraday the timestamp is the start of the bar. For daily bars Yahoo
-    uses the session start, so during the session we compare against the
-    ``regular`` end provided in the response metadata.
-    """
-    if isinstance(interval_minutes, bool) or interval_minutes <= 0:
-        raise ValueError("interval_minutes must be positive")
-    if isinstance(now_timestamp, bool) or now_timestamp is None:
-        raise ValueError("now_timestamp must be an integer")
-    if isinstance(regular_session_start, bool) or isinstance(regular_session_end, bool):
-        raise ValueError("regular session bounds cannot be boolean")
-    rows = [normalize_record(record) for record in records]
-    if not rows:
-        return rows
-    if interval_minutes >= 1440:
-        last_timestamp = int(rows[-1]["timestamp"])
-        in_open_session = (
-            regular_session_start is not None
-            and regular_session_end is not None
-            and int(regular_session_start) <= last_timestamp < int(regular_session_end)
-            and int(now_timestamp) < int(regular_session_end)
-        )
-        return rows[:-1] if in_open_session else rows
-    interval_seconds = interval_minutes * 60
-    while rows and int(rows[-1]["timestamp"]) + interval_seconds > int(now_timestamp):
-        rows.pop()
-    return rows
 
 
 def dataset_metadata(records: Iterable[Mapping], *, interval_minutes: int | None = None) -> dict:
