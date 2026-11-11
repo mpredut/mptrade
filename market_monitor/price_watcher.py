@@ -193,9 +193,7 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
     else:
         print("No new coins with price were found on CoinMarketCap")
 
-    print("\n" + "=" * 70)
-    print("STATUS REPORT")
-    print("=" * 70)
+    print(f"\n{'=' * 70}\nSTATUS REPORT\n{'=' * 70}")
     if hasattr(cachePriceAll, 'original_symbols'):
         print(f"\nTracked price symbols: {len(cachePriceAll.original_symbols)}")
         print(f"   First 10: {cachePriceAll.original_symbols[:10]}")
@@ -221,11 +219,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 def main():
     ap = argparse.ArgumentParser(description="Alert monitor: new coins plus price thresholds (config-driven).")
     ap.add_argument("--config", default=os.path.join(_HERE, "price_watcher.conf"))
-    add_store_true_cli_args(
+    args = add_store_true_cli_args(
         ap,
         ("--check", "validate the config plus the imports and exit (it does not start the monitor)"),
-    )
-    args = ap.parse_args()
+    ).parse_args()
 
     cfg = load_config(args.config)
     ac = cfg["alert_config"]

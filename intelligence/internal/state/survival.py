@@ -1039,8 +1039,7 @@ def main() -> int:
     ap.add_argument("--window", type=int, default=24, help="hours per window")
     ap.add_argument("--step", type=int, default=8)
     ap.add_argument("--T", type=float, default=14.0, help="prior Gaussian horizon (days)")
-    add_store_true_cli_args(ap, ("--estimate", "only estimate T and exit"))
-    args = ap.parse_args()
+    args = add_store_true_cli_args(ap, ("--estimate", "only estimate T and exit")).parse_args()
 
     if args.estimate:
         _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)

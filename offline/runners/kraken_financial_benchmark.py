@@ -389,8 +389,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-file", type=Path, default=KRAKEN_DIR / "config.env")
     add_financial_benchmark_common_args(parser)
     parser.add_argument("--name", default="base_v2_live")
-    add_path_cli_args(parser, "--params-report", "--compare-to", "--verify")
-    args = parser.parse_args(argv)
+    args = add_path_cli_args(parser, "--params-report", "--compare-to", "--verify").parse_args(argv)
 
     validate_financial_benchmark_args(
         parser,

@@ -284,9 +284,9 @@ def main():
             print(f"{pname:<46} | {r['buy_wait_pct']:>8.1f}% | {r['sell_wait_pct']:>9.1f}% | {r['avg_wait_s']:>6.1f}s | "
                   f"{r['buy_bps']:>+8.2f} | {r['sell_bps']:>+8.2f} | {r['roundtrip_bps']:>+11.2f}")
 
-    print("\n\n" + "=" * 110)
-    print("  BACKTEST 3: 900s DYNAMIC WINDOW REGIME FILTER (rtrade.py / MarketRegimeEvaluator)")
-    print("=" * 110)
+    print(
+        f"\n\n{'=' * 110}\n  BACKTEST 3: 900s DYNAMIC WINDOW REGIME FILTER (rtrade.py / MarketRegimeEvaluator)\n{'=' * 110}"
+    )
 
     for sym in ["TAOUSDC", "BTCUSDC", "ARBUSDC", "HYPEUSD"]:
         ts, px, src_label = _load_ts_px(sym)

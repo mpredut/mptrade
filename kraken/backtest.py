@@ -150,10 +150,9 @@ def main() -> int:
             "tp": 1.9, "maxdca": 10, "budget": 1000, "fee": 0.25, "sl": 10.0,
         },
     )
-    add_store_true_cli_args(
+    args = add_store_true_cli_args(
         ap, ("--fast", "deprecated; faithful live engine rp.run_replay is always used")
-    )
-    args = ap.parse_args()
+    ).parse_args()
 
     if args.interval <= 0:
         print("! interval must be > 0"); return 1

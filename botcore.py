@@ -949,11 +949,11 @@ def create_env_cli_parser(description: str, env_file: str) -> argparse.ArgumentP
 
 def add_store_true_cli_args(
     parser: object, *specs: str | tuple[str, str]
-) -> None:
-    """Register one or more ``action='store_true'`` CLI flags (``flag`` or ``(flag, help_text)``) on ``parser``."""
+) -> object:
+    """Register one or more ``action='store_true'`` CLI flags (``flag`` or ``(flag, help_text)``) on ``parser`` and return it."""
     add_arg = getattr(parser, "add_argument", None)
     if not callable(add_arg):
-        return
+        return parser
     for spec in specs:
         if isinstance(spec, str):
             add_arg(spec, action="store_true")
@@ -963,6 +963,7 @@ def add_store_true_cli_args(
                 add_arg(flag_name, action="store_true", help=flag_help)
             else:
                 add_arg(flag_name, action="store_true")
+    return parser
 
 
 def add_paper_skip_wait_cli_args(

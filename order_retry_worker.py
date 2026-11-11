@@ -1059,9 +1059,9 @@ def _touch_worker_hb(status, *, poll: float = WORKER_POLL_SEC, force: bool = Fal
 def main():
     import log  # noqa: F401 — ensure stdout timestamps and daily logger file from startup
 
-    ap = argparse.ArgumentParser(description=__doc__)
-    add_store_true_cli_args(ap, ("--once", "a single step, then exit"))
-    args = ap.parse_args()
+    args = add_store_true_cli_args(
+        argparse.ArgumentParser(description=__doc__), ("--once", "a single step, then exit")
+    ).parse_args()
 
     if args.once:
         if not oq.RETRY_ENABLED:

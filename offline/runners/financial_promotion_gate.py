@@ -28,8 +28,9 @@ def _fmt_pp(val) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_path_cli_args(parser, "baseline", "candidate", "--output")
+    parser = add_path_cli_args(
+        argparse.ArgumentParser(description=__doc__), "baseline", "candidate", "--output"
+    )
     args = parser.parse_args(argv)
     try:
         baseline_path = resolve_existing_report_path(args.baseline, "baseline")

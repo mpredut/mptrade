@@ -223,10 +223,11 @@ def format_comparison_markdown(
     return "\n".join(lines)
 
 
-def add_path_cli_args(parser: Any, *flags: str) -> None:
-    """Register one or more ``Path``-typed CLI arguments on ``parser``."""
+def add_path_cli_args(parser: Any, *flags: str) -> Any:
+    """Register one or more ``Path``-typed CLI arguments on ``parser`` and return it."""
     for flag in flags:
         parser.add_argument(flag, type=Path)
+    return parser
 
 
 def add_report_output_cli_args(parser: Any) -> None:

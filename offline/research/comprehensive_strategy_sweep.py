@@ -572,9 +572,11 @@ def main():
             f"{wf_pos}/{wf_tf} | {r.get('vs_live_WTL') or '-'} |\n"
         )
 
-    lines.append(f"\n## 2. Continuous 628-Day Replay ({len(records):,} bars)\n\n")
-    lines.append("| Rank | Candidate | Net % | Total % | MaxDD % | Calmar Ratio | Cycles | Win Rate |\n")
-    lines.append("|---:|---|---:|---:|---:|---:|---:|\n")
+    lines.extend((
+        f"\n## 2. Continuous 628-Day Replay ({len(records):,} bars)\n\n",
+        "| Rank | Candidate | Net % | Total % | MaxDD % | Calmar Ratio | Cycles | Win Rate |\n",
+        "|---:|---|---:|---:|---:|---:|---:|\n",
+    ))
     sorted_cont = sorted(
         master,
         key=lambda x: (

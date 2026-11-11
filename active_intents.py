@@ -265,8 +265,7 @@ def format_summary(result: dict) -> str:
     else:
         lines.append("  (none)")
 
-    lines.append("")
-    lines.append("Pending Notional by Symbol:")
+    lines.extend(("", "Pending Notional by Symbol:"))
     by_sym = notional.get("by_symbol") if isinstance(notional.get("by_symbol"), dict) else {}
     if by_sym:
         for sym, amounts in by_sym.items():

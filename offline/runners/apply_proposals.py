@@ -89,11 +89,10 @@ def _read_proposals(branch: str | None = None):
 
 
 def main(argv: list[str] | None = None):
-    ap = argparse.ArgumentParser(description=__doc__)
-    add_store_true_cli_args(
-        ap, ("--dry-run", "show what it would apply, without writing config or committing")
-    )
-    args = ap.parse_args(argv)
+    args = add_store_true_cli_args(
+        argparse.ArgumentParser(description=__doc__),
+        ("--dry-run", "show what it would apply, without writing config or committing"),
+    ).parse_args(argv)
 
     try:
         load_env_stack()
