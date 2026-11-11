@@ -19,6 +19,7 @@ from botcore import (
     safe_float,
     safe_int,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
 )
 from strategies.replay_execution import (
@@ -529,6 +530,19 @@ def make_spot_replay_adapter(
     return _adapter
 
 
+def _clone_params_with_updates(params, updates: dict[str, object]):
+    if not updates:
+        return params
+    if dataclasses.is_dataclass(params):
+        field_names = {f.name for f in dataclasses.fields(params) if f.init}
+        valid_updates = {k: v for k, v in updates.items() if k in field_names}
+        return dataclasses.replace(params, **valid_updates) if valid_updates else params
+    cloned = copy.copy(params)
+    for k, v in updates.items():
+        setattr(cloned, k, v)
+    return cloned
+
+
 def align_spot_interval_params(params, bar_minutes: float | int | None):
     """Return a copy of params with trend/volatility intervals and regime sample cap aligned to bar_minutes."""
     bm_f = safe_pos_float(bar_minutes, default=None)
@@ -549,20 +563,15 @@ def align_spot_interval_params(params, bar_minutes: float | int | None):
     ):
         return params
 
-    target_fields = (
-        ("trend_interval", itv),
-        ("tp_trail_vol_interval", itv),
-        ("dca_vol_interval", itv),
-        ("regime_min_samples", clamped_min_samples),
+    return _clone_params_with_updates(
+        params,
+        {
+            "trend_interval": itv,
+            "tp_trail_vol_interval": itv,
+            "dca_vol_interval": itv,
+            "regime_min_samples": clamped_min_samples,
+        },
     )
-    if dataclasses.is_dataclass(params):
-        field_names = {f.name for f in dataclasses.fields(params) if f.init}
-        updates = {k: v for k, v in target_fields if k in field_names}
-        return dataclasses.replace(params, **updates) if updates else params
-    cloned = copy.copy(params)
-    for k, v in target_fields:
-        setattr(cloned, k, v)
-    return cloned
 
 
 def scale_subbar_timeout_params(params, bar_minutes: float | int | None):
@@ -577,16 +586,7 @@ def scale_subbar_timeout_params(params, bar_minutes: float | int | None):
         cur_val = safe_pos_float(getattr(params, attr, None), default=None)
         if cur_val is not None:
             updates[attr] = round(cur_val * bar_scale, 1)
-    if not updates:
-        return params
-    if dataclasses.is_dataclass(params):
-        field_names = {f.name for f in dataclasses.fields(params) if f.init}
-        valid_updates = {k: v for k, v in updates.items() if k in field_names}
-        return dataclasses.replace(params, **valid_updates) if valid_updates else params
-    cloned = copy.copy(params)
-    for k, v in updates.items():
-        setattr(cloned, k, v)
-    return cloned
+    return _clone_params_with_updates(params, updates)
 
 
 def prewarm_trend_series(
@@ -643,3 +643,36 @@ def ratchet_post_exit_peak_sell_price(
     lsp_f = safe_pos_float(state.get("last_sell_price"), 0.0)
     if p_f > 0.0 and lsp_f > 0.0:
         state["last_sell_price"] = max(lsp_f, p_f)
+
+
+def summarize_grid_replay_metrics(
+    metrics: dict,
+    *,
+    budget: float,
+    p0: float,
+    p1: float,
+    fee_pct: float = 0.0,
+    bh_digits: int = 3,
+    include_fills: bool = False,
+) -> dict:
+    """Summarize continuous-grid replay metrics and round-trip buy-and-hold return."""
+    tot = safe_float(metrics.get("total"), 0.0)
+    budget_f = safe_pos_float(budget, 0.0)
+    p0_f = safe_pos_float(p0, 0.0)
+    p1_f = safe_float(p1, 0.0)
+    fee_r = min(0.9999, max(0.0, safe_float(fee_pct, 0.0) / 100.0))
+    bh_pct = (
+        (((p1_f * (1.0 - fee_r)) / (p0_f * (1.0 + fee_r))) - 1.0) * 100.0
+        if p0_f > 0.0 and (1.0 + fee_r) > 0.0
+        else 0.0
+    )
+    out = {
+        "ret": round(tot / budget_f * 100.0, 3) if budget_f > 0.0 else 0.0,
+        "dd": round(safe_float(metrics.get("max_drawdown_pct"), 0.0), 3),
+        "cyc": safe_nonneg_int(metrics.get("cycles"), default=0),
+        "expo": round(safe_float(metrics.get("exposure_pct"), 0.0), 1),
+        "bh": round(bh_pct, bh_digits),
+    }
+    if include_fills:
+        out["fills"] = safe_nonneg_int(metrics.get("fills"), default=0)
+    return out

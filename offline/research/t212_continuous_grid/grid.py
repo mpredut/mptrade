@@ -18,7 +18,7 @@ from multiprocessing import Pool
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-from botcore import int_env, lru_dict_put, optional_env, parse_dotenv, safe_float, safe_nonneg_int, safe_pos_float  # noqa: E402
+from botcore import int_env, lru_dict_put, optional_env, parse_dotenv, safe_float, safe_pos_float  # noqa: E402
 EXP = optional_env("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid")
 DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
@@ -29,6 +29,7 @@ from strategies.spot_replay import (  # noqa: E402
     align_spot_interval_params,
     ratchet_post_exit_peak_sell_price,
     scale_subbar_timeout_params,
+    summarize_grid_replay_metrics,
 )
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
@@ -155,21 +156,15 @@ def run(bars, params, peak, minutes, ohlc=None, ts=None):
                           timestamps=ts[WARM:],
                           warmup_timestamps=ts[:WARM],
                           initial_cash=(budget if budget > 0.0 else None))
-        tot = safe_float(m.get("total"), 0.0)
-        p0 = safe_pos_float(ohlc[WARM][3], 0.0)
-        p1 = safe_float(ohlc[-1][3], 0.0)
-        fx_fee = max(0.0, safe_float(getattr(params, "fx_fee_pct", 0.0), 0.0) / 100.0)
-        bh_pct = (
-            ((p1 / p0) * (1.0 - fx_fee) / (1.0 + fx_fee) - 1.0) * 100.0
-            if p0 > 0 and (1.0 + fx_fee) > 0
-            else 0.0
+        return summarize_grid_replay_metrics(
+            m,
+            budget=budget,
+            p0=ohlc[WARM][3],
+            p1=ohlc[-1][3],
+            fee_pct=getattr(params, "fx_fee_pct", 0.0),
+            bh_digits=2,
+            include_fills=True,
         )
-        return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,
-                "dd": round(safe_float(m.get("max_drawdown_pct"), 0.0), 3),
-                "cyc": safe_nonneg_int(m.get("cycles"), default=0),
-                "expo": round(safe_float(m.get("exposure_pct"), 0.0), 1),
-                "fills": safe_nonneg_int(m.get("fills"), default=0),
-                "bh": round(bh_pct, 2)}
     finally:
         FLAGS["peak"] = False
         strat.Strategy.step = _orig_step

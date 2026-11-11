@@ -186,16 +186,14 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
                     "cyc": safe_nonneg_int(m.get("cycles"), default=0),
                     "refused": safe_nonneg_int(funding.get("refused_buys"), default=0),
                     "min_cash": min_cash}
-        budget = safe_pos_float(params.allocated_budget(), 0.0)
-        p0 = safe_pos_float(ohlc[0][3], 0.0)
-        p1 = safe_float(ohlc[-1][3], 0.0)
-        fee_r = min(0.9999, fee_val / 100.0)
-        bh_pct = (((p1 * (1.0 - fee_r)) / (p0 * (1.0 + fee_r))) - 1.0) * 100.0 if p0 > 0 else 0.0
-        return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,
-                "dd": round(safe_float(m.get("max_drawdown_pct"), 0.0), 3),
-                "cyc": safe_nonneg_int(m.get("cycles"), default=0),
-                "expo": round(safe_float(m.get("exposure_pct"), 0.0), 1),
-                "bh": round(bh_pct, 3)}
+        return rp.summarize_grid_replay_metrics(
+            m,
+            budget=params.allocated_budget(),
+            p0=ohlc[0][3],
+            p1=ohlc[-1][3],
+            fee_pct=fee_val,
+            bh_digits=3,
+        )
     finally:
         FLAGS["peak"] = prev_peak
         strat.Strategy.step = prev_step

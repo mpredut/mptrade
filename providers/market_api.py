@@ -712,8 +712,6 @@ class MarketApi:
         now=None,
     ) -> MarketRegimeResolution:
         """Return the selected decision and every source examined for its horizon."""
-        allow_fallback = _parse_bool_flag(allow_fallback, True)
-        include_alternates = _parse_bool_flag(include_alternates, False)
         service = self._regime_service_for(strength_threshold)
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         return service.resolve_with_evidence(

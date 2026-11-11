@@ -340,7 +340,12 @@ def add_financial_benchmark_common_args(parser: argparse.ArgumentParser) -> None
     parser.add_argument("--markdown", type=Path)
 
 
-def validate_financial_benchmark_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+def validate_financial_benchmark_args(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    *,
+    path_attrs: tuple[str, ...] = (),
+) -> None:
     for name in ("train", "validation", "test", "step"):
         if exact_pos_int(getattr(args, name), default=None) is None:
             parser.error(f"--{name} must be positive")
@@ -349,6 +354,10 @@ def validate_financial_benchmark_args(parser: argparse.ArgumentParser, args: arg
         or safe_nonneg_float(args.regime_threshold, default=None) is None
     ):
         parser.error("warmup and regime-threshold cannot be negative")
+    for attr in ("dataset", "manifest", *path_attrs):
+        val = getattr(args, attr, None)
+        if isinstance(val, Path):
+            setattr(args, attr, val.expanduser().resolve())
 
 
 def write_financial_report_artifacts(
@@ -386,15 +395,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verify", type=Path)
     args = parser.parse_args(argv)
 
-    validate_financial_benchmark_args(parser, args)
+    validate_financial_benchmark_args(
+        parser, args, path_attrs=("params_report", "compare_to")
+    )
     if not isinstance(args.name, str) or not args.name.strip() or "/" in args.name or "\\" in args.name or ".." in args.name:
         parser.error(f"invalid --name: {args.name!r}")
-    args.dataset = args.dataset.expanduser().resolve()
-    args.manifest = args.manifest.expanduser().resolve()
-    if args.params_report:
-        args.params_report = args.params_report.expanduser().resolve()
-    if args.compare_to:
-        args.compare_to = args.compare_to.expanduser().resolve()
 
     try:
         report = build_report(args)

@@ -29,6 +29,9 @@ from offline.research.chop_weight_backtest import (
     _clean_sorted_price_samples,
     _downsample_price_series,
     _req_pos_num,
+    _req_pos_step_seconds,
+    _summarize_trade_outcomes,
+    _update_equity_drawdown,
     _validate_fee_pct,
 )
 from providers.replay_provider import load_price_series
@@ -93,10 +96,8 @@ def _precompute_intelligence_tape(
     parabolic_surge_pct: float,
 ) -> List[dict]:
     """Precompute mode-independent indicators, triggers, and rolling window metrics once per bar."""
-    step_f = _req_pos_num(step_seconds, "step_seconds")
+    step_seconds, step_sec_f = _req_pos_step_seconds(step_seconds)
     parabolic_surge_pct = _req_pos_num(parabolic_surge_pct, "parabolic_surge_pct")
-    step_seconds = max(1, safe_int(round(step_f), 1))
-    step_sec_f = safe_pos_float(step_seconds, 1.0)
     kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_sec_f * 3.0))
     mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bb_period=20)
     parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
@@ -225,11 +226,10 @@ def run_intelligence_backtest(
     fee_pct: float = 0.001,  # 0.1% taker fee
 ) -> Dict[str, BacktestStats]:
     """Run comparative backtest across Baseline, Pillar 1, Pillar 1 + Pillar 2, and Full Composite."""
-    step_f = _req_pos_num(step_seconds, "step_seconds")
+    step_seconds, _ = _req_pos_step_seconds(step_seconds)
     initial_balance = _req_pos_num(initial_balance, "initial_balance")
     parabolic_surge_pct = _req_pos_num(parabolic_surge_pct, "parabolic_surge_pct")
     fee_f = _validate_fee_pct(fee_pct)
-    step_seconds = max(1, safe_int(round(step_f), 1))
     fee_pct = fee_f
     if cache_path is None:
         cache_path = resolve_cache_path(f"cache_sparse_price_{symbol}.jsonl")
@@ -305,12 +305,9 @@ def run_intelligence_backtest(
             trend_duration_sec = bar["trend_duration_sec"]
 
             # Current equity (net of exit fee to match liquidation equity)
-            equity = usd + (asset_qty * p * (1.0 - fee_pct))
-            if equity > peak_equity:
-                peak_equity = equity
-            dd = ((peak_equity - equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
-            if dd > max_dd_pct:
-                max_dd_pct = dd
+            _, peak_equity, max_dd_pct = _update_equity_drawdown(
+                usd, asset_qty, p, fee_pct, peak_equity, max_dd_pct
+            )
 
             # Signal resolution:
             want_buy = False
@@ -524,34 +521,22 @@ def run_intelligence_backtest(
                     entry_price = p
                     entry_cost += alloc_usd
 
-            post_equity = usd + (asset_qty * p * (1.0 - fee_pct))
-            if post_equity > peak_equity:
-                peak_equity = post_equity
-            post_dd = ((peak_equity - post_equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
-            if post_dd > max_dd_pct:
-                max_dd_pct = post_dd
+            _, peak_equity, max_dd_pct = _update_equity_drawdown(
+                usd, asset_qty, p, fee_pct, peak_equity, max_dd_pct
+            )
 
         # Final liquidation at end
         final_price = safe_pos_float(tape[-1]["p"], default=0.0) if tape else (safe_pos_float(sampled[-1][1], default=0.0) if sampled else 0.0)
         if asset_qty > 0:
             final_pnl = (asset_qty * final_price * (1.0 - fee_pct)) - entry_cost
             trades.append({"entry_price": entry_price, "exit_price": final_price, "pnl": final_pnl, "is_win": final_pnl > 0})
-        final_equity = usd + (asset_qty * final_price * (1.0 - fee_pct))
-        if final_equity > peak_equity:
-            peak_equity = final_equity
-        final_dd = ((peak_equity - final_equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
-        if final_dd > max_dd_pct:
-            max_dd_pct = final_dd
+        final_equity, peak_equity, max_dd_pct = _update_equity_drawdown(
+            usd, asset_qty, final_price, fee_pct, peak_equity, max_dd_pct
+        )
         net_profit = final_equity - initial_balance
         net_return_pct = (net_profit / initial_balance) * 100.0
 
-        wins = sum(1 for tr in trades if tr["is_win"])
-        losses = sum(1 for tr in trades if not tr["is_win"])
-        win_rate = (wins / len(trades) * 100.0) if trades else 0.0
-
-        total_gain = sum(tr["pnl"] for tr in trades if tr["pnl"] > 0)
-        total_loss = abs(sum(tr["pnl"] for tr in trades if tr["pnl"] < 0))
-        pf = (total_gain / total_loss) if total_loss > 0 else (99.0 if total_gain > 0 else 0.0)
+        wins, losses, win_rate, pf = _summarize_trade_outcomes(trades)
 
         results[mode] = BacktestStats(
             symbol=symbol,

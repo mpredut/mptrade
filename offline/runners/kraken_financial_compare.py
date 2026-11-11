@@ -158,10 +158,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate", action="append")
     parser.add_argument("--strict-baseline", action="store_true")
     args = parser.parse_args(argv)
-    benchmark.validate_financial_benchmark_args(parser, args)
-    args.baseline = args.baseline.expanduser().resolve()
-    args.dataset = args.dataset.expanduser().resolve()
-    args.manifest = args.manifest.expanduser().resolve()
+    benchmark.validate_financial_benchmark_args(
+        parser, args, path_attrs=("baseline",)
+    )
 
     try:
         report = build_comparison(args)

@@ -61,6 +61,40 @@ def _req_pos_num(val: Any, name: str) -> float:
     return fval
 
 
+def _req_pos_step_seconds(step_seconds: Any) -> Tuple[int, float]:
+    step_f = _req_pos_num(step_seconds, "step_seconds")
+    step_i = max(1, safe_int(round(step_f), 1))
+    return step_i, safe_pos_float(step_i, 1.0)
+
+
+def _update_equity_drawdown(
+    usd: float,
+    asset_qty: float,
+    price: float,
+    fee_pct: float,
+    peak_equity: float,
+    max_dd_pct: float,
+) -> Tuple[float, float, float]:
+    equity = usd + (asset_qty * price * (1.0 - fee_pct))
+    if equity > peak_equity:
+        peak_equity = equity
+    dd = ((peak_equity - equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
+    if dd > max_dd_pct:
+        max_dd_pct = dd
+    return equity, peak_equity, max_dd_pct
+
+
+def _summarize_trade_outcomes(trades: List[Dict[str, Any]]) -> Tuple[int, int, float, float]:
+    total_trades = len(trades)
+    wins = sum(1 for tr in trades if tr["is_win"])
+    losses = total_trades - wins
+    win_rate = (wins / total_trades * 100.0) if total_trades > 0 else 0.0
+    gross_profit = sum(tr["pnl"] for tr in trades if tr["pnl"] > 0)
+    gross_loss = abs(sum(tr["pnl"] for tr in trades if tr["pnl"] < 0))
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (99.0 if gross_profit > 0 else 0.0)
+    return wins, losses, win_rate, profit_factor
+
+
 def _validate_fee_pct(fee_pct: Any) -> float:
     fee_f = (
         safe_nonneg_float(fee_pct, default=None)
@@ -163,9 +197,7 @@ def _precompute_chop_bar_tape(
     step_seconds: int,
 ) -> List[Dict[str, Any]]:
     """Precompute policy-independent regime, volatility, and trigger signals once per symbol."""
-    step_f = _req_pos_num(step_seconds, "step_seconds")
-    step_seconds = max(1, safe_int(round(step_f), 1))
-    step_sec_f = safe_pos_float(step_seconds, 1.0)
+    step_seconds, step_sec_f = _req_pos_step_seconds(step_seconds)
     if not sampled:
         return []
 
@@ -290,14 +322,13 @@ def run_single_simulation(
     """Run a single backtest simulation under a specific chop allocation policy."""
     if not isinstance(policy, str) or (policy != "PROXY_BTC" and policy not in _CHOP_POLICY_WEIGHTS):
         raise ValueError(f"Unknown chop policy: {policy!r}")
-    step_f = _req_pos_num(step_seconds, "step_seconds")
+    step_seconds, _ = _req_pos_step_seconds(step_seconds)
     initial_balance = _req_pos_num(initial_balance, "initial_balance")
     base_notional = _req_pos_num(base_notional, "base_notional")
     fee_f = _validate_fee_pct(fee_pct)
     tp_pct = _req_pos_num(tp_pct, "tp_pct")
     stop_pct = _req_pos_num(stop_pct, "stop_pct")
     _req_pos_num(T_days, "T_days")
-    step_seconds = max(1, safe_int(round(step_f), 1))
     fee_pct = fee_f
     usd = initial_balance
     asset_qty = 0.0
@@ -343,12 +374,9 @@ def run_single_simulation(
         btc_trend_start_ts = bar["btc_trend_start_ts"]
 
         # Track equity & drawdown (net of exit fee)
-        equity = usd + (asset_qty * p * (1.0 - fee_pct))
-        if equity > peak_equity:
-            peak_equity = equity
-        dd = ((peak_equity - equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
-        if dd > max_dd_pct:
-            max_dd_pct = dd
+        _, peak_equity, max_dd_pct = _update_equity_drawdown(
+            usd, asset_qty, p, fee_pct, peak_equity, max_dd_pct
+        )
 
         want_buy = bar["entry_signal"] or (asset_qty == 0 and bar["pullback_signal"])
         want_sell = bar["exit_signal"]
@@ -415,12 +443,9 @@ def run_single_simulation(
                     entry_regime = trade_regime
                     usd -= cost
 
-        post_equity = usd + (asset_qty * p * (1.0 - fee_pct))
-        if post_equity > peak_equity:
-            peak_equity = post_equity
-        post_dd = ((peak_equity - post_equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
-        if post_dd > max_dd_pct:
-            max_dd_pct = post_dd
+        _, peak_equity, max_dd_pct = _update_equity_drawdown(
+            usd, asset_qty, p, fee_pct, peak_equity, max_dd_pct
+        )
 
     # Close remaining open position at end
     if asset_qty > 0 and (tape or sampled):
@@ -436,21 +461,13 @@ def run_single_simulation(
             "is_win": pnl > 0,
         })
         asset_qty = 0.0
-    if usd > peak_equity:
-        peak_equity = usd
-    final_dd = ((peak_equity - usd) / peak_equity * 100.0) if peak_equity > 0 else 0.0
-    if final_dd > max_dd_pct:
-        max_dd_pct = final_dd
+    _, peak_equity, max_dd_pct = _update_equity_drawdown(
+        usd, 0.0, 0.0, fee_pct, peak_equity, max_dd_pct
+    )
 
     # Stats Calculation
     total_trades = len(trades)
-    winning = [tr for tr in trades if tr["is_win"]]
-    losing = [tr for tr in trades if not tr["is_win"]]
-    win_rate = (len(winning) / total_trades * 100.0) if total_trades > 0 else 0.0
-
-    gross_profit = sum(tr["pnl"] for tr in winning)
-    gross_loss = abs(sum(tr["pnl"] for tr in losing))
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (99.0 if gross_profit > 0 else 0.0)
+    _, _, win_rate, profit_factor = _summarize_trade_outcomes(trades)
 
     chop_tr = [tr for tr in trades if tr["regime"] == "CHOP"]
     trend_tr = [tr for tr in trades if tr["regime"] == "TREND"]
@@ -487,8 +504,7 @@ def run_chop_benchmark(
     step_seconds: int = 900,
 ) -> Dict[str, List[ChopBacktestStats]]:
     """Run full comparative benchmark across all chop weight policies for given symbols."""
-    step_f = _req_pos_num(step_seconds, "step_seconds")
-    step_seconds = max(1, safe_int(round(step_f), 1))
+    step_seconds, _ = _req_pos_step_seconds(step_seconds)
     # Policies to test
     policies = [*_CHOP_POLICY_WEIGHTS.keys(), "PROXY_BTC"]
 
