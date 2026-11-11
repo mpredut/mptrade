@@ -14,16 +14,12 @@ Returns True when placement is allowed and False when blocked.
 
 The profit threshold is configured per venue in versioned, non-sensitive
 `order_guard.conf`. A missing file or required key aborts startup immediately."""
-import os
 import statistics
-import time
 from botcore import (
     _parse_bool_flag,
     clean_scale,
     exact_nonneg_int,
-    normalize_epoch_sec,
     normalize_side,
-    normalize_trend_direction,
     obj_attr,
     require_int,
     require_nonneg_float,
@@ -37,7 +33,7 @@ from botcore import (
 )
 from typing import Optional, Callable, Any, Tuple
 from cachepaths import (
-    get_cachedb_dir,
+    get_cachedb_dir,  # noqa: F401
     normalize_venue_name,
 )
 import guard_hierarchy as _gh

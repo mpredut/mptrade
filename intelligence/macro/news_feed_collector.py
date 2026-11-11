@@ -9,7 +9,7 @@ import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
-import urllib.request
+import urllib.request  # noqa: F401
 import xml.etree.ElementTree as ET
 
 from botcore import (

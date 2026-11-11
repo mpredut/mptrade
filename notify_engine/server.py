@@ -33,16 +33,9 @@ from state_io import (
 from notify_engine.alertnotifiers import (
     AlertNotifier,
     _AUTO_TOPIC_TAG_RE,
-    _BILINGUAL_ERROR_MARKERS,
-    _EXPLICIT_ERROR_MARKERS,
     _GATE_ACCEPTED_REASONS,
     _GATE_SUPPRESSED_REASONS,
-    _GUARD_MARKERS,
-    _OPS_MARKERS,
     _PRICE_ALERT_SOURCES,
-    _PRIMARY_ERROR_MARKERS,
-    _SERVER_MARKERS,
-    _TRADE_MARKERS,
     _alerts_are_urgent,
     _canonical_topic_key,
     _category_for_title_and_source,
@@ -60,7 +53,6 @@ from notify_engine.alertnotifiers import (
     register_notification_server_cls,
     resolve_topic,
     sanitize_single_line,
-    strip_owner_tags,
 )
 from notify_engine.mailer import (
     _config as _email_config,

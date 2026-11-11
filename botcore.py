@@ -16,7 +16,6 @@ import importlib.machinery
 import importlib.util
 import json
 import math
-import numbers
 import os
 import re
 import shutil
@@ -2762,6 +2761,7 @@ class ClosedPriceSeries:
         )
 
 
+<<<<<<< Updated upstream
 _REEXPORT_MODULE_NAMES = (
     "utils",
     "intelligence.macro_sentiment_ssot",
@@ -2773,6 +2773,15 @@ _REEXPORT_MODULE_NAMES = (
 def _sync_reexport_modules() -> None:
     """Keep loaded re-export modules bound to the active ``botcore`` function objects."""
     for mod_name in _REEXPORT_MODULE_NAMES:
+=======
+def _sync_reexport_modules() -> None:
+    for mod_name in (
+        "utils",
+        "intelligence.macro_sentiment_ssot",
+        "macro_sentiment_ssot",
+        "offline.backtests.evaluation",
+    ):
+>>>>>>> Stashed changes
         reexport_mod = sys.modules.get(mod_name)
         if reexport_mod is None:
             continue

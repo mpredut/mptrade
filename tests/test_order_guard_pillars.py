@@ -1629,7 +1629,7 @@ def test_batch54_apply_proposals_and_scheduled_pilot_hardening(monkeypatch):
     monkeypatch.setattr(
         ap_mod,
         "_read_proposals",
-        lambda: [
+        lambda *_a, **_kw: [
             {
                 "full_key": "BINANCE_BAD.mt.gain",
                 "section": "BINANCE_BAD",
@@ -1649,6 +1649,7 @@ def test_batch54_apply_proposals_and_scheduled_pilot_hardening(monkeypatch):
         ],
     )
     audit_records = []
+    monkeypatch.setattr(sp_mod, "PILOT_KEYS", ["BINANCE_BAD.mt.gain", "BINANCE_OK.mt.gain"])
     monkeypatch.setattr(sp_mod, "_append_audit", lambda rec: audit_records.append(dict(rec)))
     monkeypatch.setattr(sp_mod, "is_rate_limited", lambda fk: (False, None))
 

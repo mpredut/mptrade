@@ -20,7 +20,6 @@ from intelligence.macro_sentiment_ssot import (
     DEFAULT_MACRO_CONFIG_PATH,
     _cfg_float,
     _cfg_int,
-    _cfg_ratio,
     _cfg_str,
     load_macro_intelligence_config,
 )

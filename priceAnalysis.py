@@ -13,12 +13,9 @@ from botcore import (
     load_dotenv,
     lru_dict_put,
     normalize_epoch_sec,
-    normalize_trend_direction,
-    require_int,
+    require_int,  # noqa: F401
     required_bool_env,
     required_int_env,
-    safe_float,
-    safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
     touch_module_heartbeat,
@@ -27,11 +24,7 @@ from cachepaths import cache_path, cache_symbol_variants
 import cacheManager as cm
 from intelligence.internal.state.persistence import (
     MIN_POINTS_PER_WINDOW,
-    _TREND_MEMO_MAX_ENTRIES,
-    _TREND_MEMO_NONE,
-    _clone_trend_result,
     _fast_linear_regression_1d,
-    _store_trend_memo,
     _trend_memo_cache,
     calculate_hurst_exponent,
     calculate_mann_kendall,
@@ -52,7 +45,6 @@ from intelligence.internal.state.survival import (
     last_w,
 )
 from instrument_registry import casefold_get, is_equity_symbol, tracked_price_instruments
-from providers.base import normalize_side
 from state_io import atomic_write_json, save_json_state
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
