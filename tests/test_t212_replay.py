@@ -5,6 +5,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 import pytest
@@ -15,15 +17,51 @@ sys.path.insert(0, T212_DIR)
 sys.path.insert(0, ROOT)
 
 from botcore import load_local_module  # noqa: E402
+from offline.backtests.evaluation import evaluate_segment  # noqa: E402
+from offline.runners import walk_forward_compare as wfc  # noqa: E402
 from providers.execution_audit import ExecutionAudit  # noqa: E402
+from providers.quantity import balance_cap_quantity, decide_quantity  # noqa: E402
+from providers.strategy_executor import OrderStatus, PairPrecision  # noqa: E402
+from providers.t212_provider import T212Provider  # noqa: E402
 from tests.conftest import make_t212_test_env  # noqa: E402
 
 replay = load_local_module(T212_DIR, "replay", module_key="t212_replay_under_test", reload=True)
 strategy = replay._strat
+_UNSET = object()
 
 
 def _params(**overrides):
     return strategy.StratParams.from_env(make_t212_test_env(**overrides))
+
+
+def _make_engine(
+    client=None,
+    *,
+    dry_run: bool = True,
+    initial_state=_UNSET,
+    save_noop: bool = False,
+    clock=None,
+    execution_audit=None,
+    **param_overrides,
+):
+    kwargs = {"dry_run": dry_run, "fx_to_usd": 1.0}
+    if initial_state is _UNSET:
+        kwargs["initial_state"] = strategy._new_state()
+    elif initial_state is not None:
+        kwargs["initial_state"] = initial_state
+    if clock is not None:
+        kwargs["clock"] = clock
+    if execution_audit is not None:
+        kwargs["execution_audit"] = execution_audit
+    engine = strategy.Strategy(
+        client if client is not None else MagicMock(),
+        "TEST_US_EQ",
+        _params(**param_overrides),
+        **kwargs,
+    )
+    if save_noop:
+        engine._save = lambda: None
+    return engine
 
 
 class T212ReplayTest(unittest.TestCase):
@@ -112,7 +150,7 @@ class T212ReplayTest(unittest.TestCase):
             bars = [
                 (100, 101, 99, 100),  # decide ENTRY
                 (100, 101, 99, 100),  # fill ENTRY
-                (70, 71, 69, 70),     # decide STOP MARKET la close
+                (70, 71, 69, 70),     # decide STOP MARKET at close
                 (65, 66, 64, 65),     # A STOP fill at the open, right after the gap.
             ]
             base = replay.run_replay(bars, params, bar_minutes=1440)
@@ -148,11 +186,7 @@ class T212ReplayTest(unittest.TestCase):
 
     def test_strategy_engine_direct_actions(self):
         with self.subTest(msg="partial_sell_reduces_remaining_cost_basis"):
-            params = _params()
-            engine = strategy.Strategy(
-                MagicMock(), "TEST_US_EQ", params, dry_run=True,
-                initial_state=strategy._new_state(), fx_to_usd=1.0,
-            )
+            engine = _make_engine()
             engine.s.update({"qty": 2.0, "cost_usd": 200.0, "spent_cash": 200.0})
             strategy.notify = lambda **_kwargs: None
             engine._apply_fill(
@@ -164,21 +198,13 @@ class T212ReplayTest(unittest.TestCase):
             self.assertAlmostEqual(engine._avg(), 100.0)
 
         with self.subTest(msg="dust_sell_does_not_create_zero_quantity_order"):
-            params = _params()
-            engine = strategy.Strategy(
-                MagicMock(), "TEST_US_EQ", params, dry_run=True,
-                initial_state=strategy._new_state(), fx_to_usd=1.0,
-            )
+            engine = _make_engine()
 
             self.assertFalse(engine._place_sell(0.004, 110.0))
             self.assertEqual(engine.s["orders"], [])
 
         with self.subTest(msg="paper_stop_arms_same_rebuy_as_real_path"):
-            params = _params(STRAT_SL_REBUY_ENABLED="true", STRAT_SL_REBUY_BOUNCE_PCT="1.2")
-            engine = strategy.Strategy(
-                MagicMock(), "TEST_US_EQ", params, dry_run=True,
-                initial_state=strategy._new_state(), fx_to_usd=1.0,
-            )
+            engine = _make_engine(STRAT_SL_REBUY_ENABLED="true", STRAT_SL_REBUY_BOUNCE_PCT="1.2")
             engine.s.update({
                 "qty": 1.0, "cost_usd": 100.0, "spent_cash": 100.0,
                 "sl_pending": True,
@@ -197,11 +223,7 @@ class T212StaleBuyTest(unittest.TestCase):
 
     def _engine(self, **overrides):
         now = [1_000_000.0]
-        engine = strategy.Strategy(
-            MagicMock(), "TEST_US_EQ", _params(**overrides), dry_run=True,
-            initial_state=strategy._new_state(), fx_to_usd=1.0, clock=lambda: now[0],
-        )
-        return engine, now
+        return _make_engine(clock=lambda: now[0], **overrides), now
 
     def test_buy_is_stale_compares_the_order_a_fresh_placement_would_make(self):
         engine, now = self._engine(STRAT_ENTRY_DISCOUNT_PCT="5", STRAT_ORDER_TTL_MIN="3")
@@ -229,7 +251,6 @@ class T212StaleBuyTest(unittest.TestCase):
         self.assertGreater(result["open_qty"], 0.0)
 
     def test_log_lines_carry_the_asset_thread_name(self):
-        import threading
         lines = []
         with patch.object(strategy, "_log", lines.append):
             strategy.log("main")
@@ -240,10 +261,6 @@ class T212StaleBuyTest(unittest.TestCase):
 
 
 class T212StatePersistenceTest(unittest.TestCase):
-    @staticmethod
-    def _client():
-        return MagicMock()
-
     def test_state_persistence_behaviors(self):
         with self.subTest(msg="corrupt_state_fails_closed_live_but_may_reset_in_paper"):
             with tempfile.TemporaryDirectory() as directory:
@@ -252,23 +269,14 @@ class T212StatePersistenceTest(unittest.TestCase):
                     handle.write("not-json")
                 with patch.object(strategy, "state_path_for", return_value=path):
                     with self.assertRaisesRegex(RuntimeError, "invalid T212 state"):
-                        strategy.Strategy(
-                            self._client(), "TEST_US_EQ", _params(), dry_run=False,
-                            fx_to_usd=1.0,
-                        )
-                    paper = strategy.Strategy(
-                        self._client(), "TEST_US_EQ", _params(), dry_run=True,
-                        fx_to_usd=1.0,
-                    )
+                        _make_engine(dry_run=False, initial_state=None)
+                    paper = _make_engine(dry_run=True, initial_state=None)
                 self.assertEqual(paper.s, strategy._new_state())
 
         with self.subTest(msg="live_save_is_atomic"):
             with tempfile.TemporaryDirectory() as directory:
                 path = os.path.join(directory, "state.json")
-                engine = strategy.Strategy(
-                    self._client(), "TEST_US_EQ", _params(), dry_run=False,
-                    initial_state=strategy._new_state(), fx_to_usd=1.0,
-                )
+                engine = _make_engine(dry_run=False)
                 engine.state_file = path
                 engine.s["qty"] = 1.25
 
@@ -283,10 +291,7 @@ class T212StatePersistenceTest(unittest.TestCase):
                 path = os.path.join(directory, "state.json")
                 for dry_run in (True, False):
                     with self.subTest(dry_run=dry_run):
-                        engine = strategy.Strategy(
-                            self._client(), "TEST_US_EQ", _params(), dry_run=dry_run,
-                            initial_state=strategy._new_state(), fx_to_usd=1.0,
-                        )
+                        engine = _make_engine(dry_run=dry_run)
                         engine.state_file = path
                         with patch(
                             "state_io.os.replace", side_effect=OSError("disk")
@@ -362,13 +367,10 @@ class T212ExactFillReconciliationTest(unittest.TestCase):
                 "intent_id": "t212-test-sell", "ts": 0.0,
             }],
         })
-        engine = strategy.Strategy(
-            client, "TEST_US_EQ", _params(STRAT_FX_FEE_PCT="0"), dry_run=False,
-            initial_state=state, fx_to_usd=1.0,
-            execution_audit=ExecutionAudit(audit_dir),
+        return _make_engine(
+            client, dry_run=False, initial_state=state, save_noop=True,
+            execution_audit=ExecutionAudit(audit_dir), STRAT_FX_FEE_PCT="0",
         )
-        engine._save = lambda: None
-        return engine
 
     def test_reconciliation_behaviors(self):
         with self.subTest(msg="partial_and_terminal_sell_use_cumulative_fill_prices_not_poll_price"):
@@ -376,7 +378,7 @@ class T212ExactFillReconciliationTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as audit_dir:
                 engine = self._engine(client, audit_dir)
                 with patch.object(strategy, "notify"):
-                    engine._reconcile_real(150.0)  # poll-ul e deliberat departe de fill-ul 110
+                    engine._reconcile_real(150.0)  # poll price is deliberately far from the 110 fill
 
                 self.assertAlmostEqual(engine.s["qty"], 0.5)
                 self.assertAlmostEqual(engine.s["realized_pnl_usd"], 5.0)
@@ -483,12 +485,7 @@ class T212ExactFillReconciliationTest(unittest.TestCase):
 class T212CancellationLifecycleTest(unittest.TestCase):
     @staticmethod
     def _engine(client, **param_overrides):
-        engine = strategy.Strategy(
-            client, "TEST_US_EQ", _params(**param_overrides), dry_run=False,
-            initial_state=strategy._new_state(), fx_to_usd=1.0,
-        )
-        engine._save = lambda: None
-        return engine
+        return _make_engine(client, dry_run=False, save_noop=True, **param_overrides)
 
     @staticmethod
     def _order(**overrides):
@@ -748,7 +745,6 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         self.assertIn("cycles", res)
 
     def test_make_t212_replay_adapter_walk_forward_compatibility(self):
-        from offline.backtests.evaluation import evaluate_segment
         params = _params()
         records = [
             {"timestamp": 1000 + i * 3600, "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0}
@@ -763,7 +759,6 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         self.assertIn("ambiguous_bars", res["metrics"])
 
     def test_fetch_yahoo_candles_parsing_and_drop_forming_bar(self):
-        import time
         _md = load_local_module(T212_DIR, "market_data", module_key="t212_md_test", reload=True)
 
         self.assertEqual(_md.parse_interval_minutes("5m"), 5)
@@ -833,10 +828,6 @@ class T212CancellationLifecycleTest(unittest.TestCase):
             self.assertEqual(records_trunc[0]["close"], 101.0)
 
     def test_provider_quantity_and_t212_hardening(self):
-        from providers.strategy_executor import OrderStatus, PairPrecision
-        from providers.quantity import balance_cap_quantity, decide_quantity
-        from providers.t212_provider import T212Provider
-
         with self.assertRaises(ValueError):
             OrderStatus("open", True, 0.0, 0.0)
         with self.assertRaises(ValueError):
@@ -871,12 +862,8 @@ class T212CancellationLifecycleTest(unittest.TestCase):
             {"price": 98.0, "qty": 0.5, "executedQty": 0.5, "side": "BUY"} if side == "BUY"
             else {"price": 104.0, "qty": 0.5, "executedQty": 0.5, "side": "SELL"}
         )
-        obs_engine = strategy.Strategy(
-            obs_client, "TEST_US_EQ", _params(), dry_run=False,
-            initial_state=strategy._new_state(), fx_to_usd=1.0, clock=lambda: 5000.0,
-        )
+        obs_engine = _make_engine(obs_client, dry_run=False, save_noop=True, clock=lambda: 5000.0)
         obs_engine.observe_only = True
-        obs_engine._save = lambda: None
         obs_engine.s.update({"qty": 1.0, "cost_usd": 100.0, "spent_cash": 100.0, "entry_price": 100.0})
         with patch.object(strategy, "notify"):
             obs_engine._reconcile_real(99.0)
@@ -932,7 +919,6 @@ def test_212trading_replay__fx_rates_accepts_scalar_numeric_strings_without_iter
 
 def test_walk_forward_compare_load_venue_module_registers_sys_modules_before_iter72_s6():
     """[ITER72 #6] walk_forward_compare.load_venue_module registers sys.modules before exec_module."""
-    from offline.runners import walk_forward_compare as wfc
     # 6. walk_forward_compare.load_venue_module registers sys.modules before exec_module
     hl_mod = wfc.load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
     t212_mod = wfc.load_venue_module("212trading", "replay.py", "t212_wf_replay")
@@ -974,10 +960,7 @@ def test_t212_wave3_fx_principal_translation_shadow_vol_and_ladder_cancel():
     assert adapt_res["sharpe"] is not None or adapt_res["return_pct"] == 0.0
 
     # 3. Multi-rung ladder cancels ALL open non-market SELL rungs when a DCA BUY fills
-    engine = strategy.Strategy(
-        MagicMock(), "TEST_US_EQ", _params(STRAT_TP_LADDER="2:50,4:50"),
-        dry_run=True, initial_state=strategy._new_state(), fx_to_usd=1.0,
-    )
+    engine = _make_engine(STRAT_TP_LADDER="2:50,4:50")
     strategy.notify = lambda **_kwargs: None
     engine.s["qty"] = 2.0
     engine.s["cost_usd"] = 200.0

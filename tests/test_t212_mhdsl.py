@@ -1,10 +1,12 @@
 """Unified tests for Trading 212 environment loading, MHDSL, MDHTP, and Hybrid Re-entry."""
 
+import atexit
 import importlib
 import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -627,20 +629,13 @@ class T212MHDSLTest(_T212BaseTest):
 
 # ─── Per-Asset Config Isolation & Discovery (from test_t212_bot.py) ─────────
 
-_NVDA_ENV = """
-T212_TICKER=NVDA_US_EQ
-YAHOO_SYMBOL=NVDA
+_COMMON_ASSET_ENV = """
 STRATEGY_MODE=avg_tp
-STRAT_ENTRY_PCT=20
 STRAT_DCA_PCT=10
-STRAT_TAKEPROFIT_PCT=1.5
 STRAT_CURRENCY=EUR
-STRAT_REENTRY_DROP_PCT=1.5
-STRAT_CHECK_MINUTES=0.4  # comentariu inline
 STRAT_ENTRY_DISCOUNT_PCT=0.2
 STRAT_DCA_DROP_PCT=2
 STRAT_MAX_DCA_BUYS=3
-STRAT_MAX_BUDGET=500
 STRAT_FX_FEE_PCT=0.15
 STRAT_STOP_LOSS_PCT=20
 STRAT_ORDER_TTL_MIN=10
@@ -671,53 +666,30 @@ STRAT_TP_MDHTP_ENABLED=false
 STRAT_TP_STAGNATION_MAX_SEC=1080.0
 """
 
-_SPCX_ENV = """
-T212_TICKER=SPCX_US_EQ
-YAHOO_SYMBOL=SPCX
-STRATEGY_MODE=avg_tp
-STRAT_ENTRY_PCT=30
-STRAT_DCA_PCT=10
-STRAT_TAKEPROFIT_PCT=5.0
-STRAT_CURRENCY=EUR
-STRAT_REENTRY_DROP_PCT=2
-STRAT_CHECK_MINUTES=1
-STRAT_ENTRY_DISCOUNT_PCT=0.2
-STRAT_DCA_DROP_PCT=2
-STRAT_MAX_DCA_BUYS=3
-STRAT_MAX_BUDGET=400
-STRAT_FX_FEE_PCT=0.15
-STRAT_STOP_LOSS_PCT=20
-STRAT_ORDER_TTL_MIN=10
-STRAT_REENTRY_TOLERANCE_PCT=0
-STRAT_LOSS_ALERT_STEP=1
-STRAT_LADDER_MIN_FREE=6
-STRAT_SL_REBUY_ENABLED=false
-STRAT_SL_REBUY_BOUNCE_PCT=1.2
-STRAT_DCA_TREND_GATE_PCT=0
-STRAT_TRAIL_PCT=0
-STRAT_TRAIL_MIN_PROFIT_PCT=5
-STRAT_REENTRY_HYBRID_ENABLED=false
-STRAT_REENTRY_PEAK_RELATIVE=false
-STRAT_REENTRY_PULLBACK_PCT=1.5
-STRAT_REENTRY_PULLBACK_ADAPTIVE=false
-STRAT_REENTRY_PULLBACK_K=1.0
-STRAT_REENTRY_PULLBACK_MIN=0.8
-STRAT_REENTRY_PULLBACK_MAX=4.0
-STRAT_REENTRY_TTL_HOURS=0.0
-STRAT_SL_MHDSL_ENABLED=false
-STRAT_SL_DISASTER_BUFFER_RATIO=0.30
-STRAT_SL_DISASTER_BUFFER_MAX_PCT=15.0
-STRAT_SL_TREND_DEFER_MAX_SEC=220.0
-STRAT_SL_BOUNCE_MIN_RECOVERY_PCT=0.40
-STRAT_SL_BOUNCE_PULLBACK_PCT=0.30
-STRAT_SL_STRUCTURAL_BREAK_ENABLED=true
-STRAT_TP_MDHTP_ENABLED=false
-STRAT_TP_STAGNATION_MAX_SEC=1080.0
-"""
+_NVDA_ENV = (
+    "T212_TICKER=NVDA_US_EQ\n"
+    "YAHOO_SYMBOL=NVDA\n"
+    "STRAT_ENTRY_PCT=20\n"
+    "STRAT_TAKEPROFIT_PCT=1.5\n"
+    "STRAT_REENTRY_DROP_PCT=1.5\n"
+    "STRAT_CHECK_MINUTES=0.4  # inline comment\n"
+    "STRAT_MAX_BUDGET=500\n"
+    + _COMMON_ASSET_ENV
+)
+
+_SPCX_ENV = (
+    "T212_TICKER=SPCX_US_EQ\n"
+    "YAHOO_SYMBOL=SPCX\n"
+    "STRAT_ENTRY_PCT=30\n"
+    "STRAT_TAKEPROFIT_PCT=5.0\n"
+    "STRAT_REENTRY_DROP_PCT=2\n"
+    "STRAT_CHECK_MINUTES=1\n"
+    "STRAT_MAX_BUDGET=400\n"
+    + _COMMON_ASSET_ENV
+)
 
 
 def _tmp_env_file(content: str) -> str:
-    import atexit
     f = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
     f.write(content)
     f.close()
@@ -762,7 +734,7 @@ class TestFloatEnvDict(unittest.TestCase):
             del os.environ["TST_FLT_9"]
 
 
-class TestIzolareParams(unittest.TestCase):
+class TestParamsIsolation(unittest.TestCase):
     def test_two_assets_with_different_parameters(self):
         nv = parse_dotenv(_tmp_env_file(_NVDA_ENV))
         sp = parse_dotenv(_tmp_env_file(_SPCX_ENV))
@@ -827,7 +799,7 @@ class _MarketDataBase(unittest.TestCase):
         market_data.http_get = lambda url, headers=None: (status, body)
 
 
-class TestLansare(_MarketDataBase):
+class TestLaunchDetection(_MarketDataBase):
     def test_a_pre_ipo_placeholder_is_NOT_launched(self):
         self.feed(_chart_payload(price=135.0, meta_vol=0, meta_age_s=55 * 3600, series=[]))
         m = market_data.check_market("SPCX")
@@ -1043,15 +1015,9 @@ class _T212StateFileTestBase(unittest.TestCase):
         if os.path.exists(self.sf):
             os.remove(self.sf)
 
-
-class TestCycleCompletionAndDust(_T212StateFileTestBase):
-    TICKER = _CYCLE_TICK
-
-    def setUp(self):
-        super().setUp()
-        self.now_val = 10000.0
-        self.params = _params(
-            YAHOO_SYMBOL="CYCLETEST",
+    @staticmethod
+    def _live_cycle_params(**overrides):
+        defaults = dict(
             STRAT_MAX_BUDGET="1000",
             STRAT_ENTRY_PCT="20",
             STRAT_DCA_PCT="10",
@@ -1059,8 +1025,6 @@ class TestCycleCompletionAndDust(_T212StateFileTestBase):
             STRAT_ENTRY_DISCOUNT_PCT="0.2",
             STRAT_DCA_DROP_PCT="2",
             STRAT_CHECK_MINUTES="0.4",
-            STRAT_TAKEPROFIT_PCT="11.0",
-            STRAT_TP_LADDER="11:33,20:33,30:34",
             STRAT_STOP_LOSS_PCT="30",
             STRAT_REENTRY_DROP_PCT="1.0",
             STRAT_LADDER_MIN_FREE="6.0",
@@ -1071,6 +1035,21 @@ class TestCycleCompletionAndDust(_T212StateFileTestBase):
             STRAT_REENTRY_TTL_HOURS="0.0",
             STRAT_SL_MHDSL_ENABLED="false",
             STRAT_TP_MDHTP_ENABLED="false",
+        )
+        defaults.update(overrides)
+        return _params(**defaults)
+
+
+class TestCycleCompletionAndDust(_T212StateFileTestBase):
+    TICKER = _CYCLE_TICK
+
+    def setUp(self):
+        super().setUp()
+        self.now_val = 10000.0
+        self.params = self._live_cycle_params(
+            YAHOO_SYMBOL="CYCLETEST",
+            STRAT_TAKEPROFIT_PCT="11.0",
+            STRAT_TP_LADDER="11:33,20:33,30:34",
         )
         self.client = _MockT212Client(ticker=_CYCLE_TICK, initial_qty=2.9229, initial_avg=150.0)
         self.strat = strategy.Strategy(self.client, _CYCLE_TICK, self.params, dry_run=False,
@@ -1188,7 +1167,6 @@ class TestCycleCompletionAndDust(_T212StateFileTestBase):
         self.assertEqual(len(self.strat.s["orders"]), 0)
 
     def test_strategy_run_graceful_stop(self):
-        import threading
         stop_event = threading.Event()
         stop_event.set()
         self.strat.run(stop=stop_event)
@@ -1286,26 +1264,10 @@ class TestTrailingStopAndSellableQty(_T212StateFileTestBase):
     def setUp(self):
         super().setUp()
         self.now_val = 10000.0
-        self.params = _params(
+        self.params = self._live_cycle_params(
             YAHOO_SYMBOL="TRAILTEST",
-            STRAT_MAX_BUDGET="1000",
-            STRAT_ENTRY_PCT="20",
-            STRAT_DCA_PCT="10",
-            STRAT_MAX_DCA_BUYS="auto",
-            STRAT_ENTRY_DISCOUNT_PCT="0.2",
-            STRAT_DCA_DROP_PCT="2",
-            STRAT_CHECK_MINUTES="0.4",
             STRAT_TAKEPROFIT_PCT="5.0",
-            STRAT_STOP_LOSS_PCT="30",
-            STRAT_REENTRY_DROP_PCT="1.0",
-            STRAT_LADDER_MIN_FREE="6.0",
-            STRAT_SL_REBUY_ENABLED="true",
             STRAT_TRAIL_PCT="8",
-            STRAT_TRAIL_MIN_PROFIT_PCT="0",
-            STRAT_REENTRY_HYBRID_ENABLED="false",
-            STRAT_REENTRY_TTL_HOURS="0.0",
-            STRAT_SL_MHDSL_ENABLED="false",
-            STRAT_TP_MDHTP_ENABLED="false",
         )
         self.client = _MockT212Client(ticker=_TRAIL_TICK, initial_qty=2.92, initial_avg=146.0)
         self.strat = strategy.Strategy(self.client, _TRAIL_TICK, self.params, dry_run=False,
@@ -1477,23 +1439,12 @@ class TestSlRebuyEndToEnd(_T212StateFileTestBase):
     TICKER = _SLREBUY_TICK
 
     def test_sl_rebuy_workflow(self):
-        params = _params(
+        params = self._live_cycle_params(
             YAHOO_SYMBOL="SLREBUY",
             STRAT_ENTRY_PCT="10",
-            STRAT_DCA_PCT="10",
-            STRAT_DCA_DROP_PCT="2",
             STRAT_TAKEPROFIT_PCT="3",
             STRAT_MAX_DCA_BUYS="3",
-            STRAT_MAX_BUDGET="1000",
-            STRAT_ENTRY_DISCOUNT_PCT="0.2",
-            STRAT_STOP_LOSS_PCT="30",
-            STRAT_SL_REBUY_ENABLED="true",
             STRAT_SL_REBUY_BOUNCE_PCT="1.2",
-            STRAT_REENTRY_DROP_PCT="1.0",
-            STRAT_REENTRY_HYBRID_ENABLED="false",
-            STRAT_REENTRY_TTL_HOURS="0.0",
-            STRAT_SL_MHDSL_ENABLED="false",
-            STRAT_TP_MDHTP_ENABLED="false",
         )
         client = _MockT212Client(ticker=_SLREBUY_TICK, initial_qty=1.0, initial_avg=100.0)
         s = strategy.Strategy(client, _SLREBUY_TICK, params, dry_run=False)
