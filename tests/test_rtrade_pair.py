@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, Mock, patch as _patch
+from unittest.mock import MagicMock, Mock, patch
 
 from providers.strategy_executor import PairPrecision, SubmissionRefused
 from strategies.rtrade_pair import (
@@ -17,9 +17,9 @@ import pytest
 import rtrade
 import time
 from types import SimpleNamespace
-import os as _os
-import tempfile as _tempfile
-from pathlib import Path as _Path
+import os
+import tempfile
+from pathlib import Path
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 from tests.conftest import TempDirTestCase
 
@@ -999,7 +999,7 @@ class PairCoordinatorTest(unittest.TestCase):
 
 
 
-_RTRADE_ROOT = _Path(__file__).resolve().parents[1]
+_RTRADE_ROOT = Path(__file__).resolve().parents[1]
 
 
 class RTradeHeartbeatTest(unittest.TestCase):
@@ -1010,16 +1010,16 @@ class RTradeHeartbeatTest(unittest.TestCase):
         rtrade._rtrade_heartbeat_last = self._last
 
     def test_heartbeat_is_written_and_throttled_by_loop_progress(self):
-        with _tempfile.TemporaryDirectory() as tmp:
-            path = _os.path.join(tmp, "rtrade.heartbeat")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rtrade.heartbeat")
             with (
-                _patch.object(rtrade, "_RTRADE_HEARTBEAT_PATH", path),
-                _patch.object(rtrade, "_RTRADE_HEARTBEAT_INTERVAL_SEC", 30.0),
-                _patch.object(rtrade, "_rtrade_monotonic_time", side_effect=(100.0, 110.0, 131.0)),
+                patch.object(rtrade, "_RTRADE_HEARTBEAT_PATH", path),
+                patch.object(rtrade, "_RTRADE_HEARTBEAT_INTERVAL_SEC", 30.0),
+                patch.object(rtrade, "_rtrade_monotonic_time", side_effect=(100.0, 110.0, 131.0)),
             ):
                 rtrade._rtrade_heartbeat_last = float("-inf")
                 rtrade._touch_rtrade_heartbeat()
-                self.assertTrue(_os.path.exists(path))
+                self.assertTrue(os.path.exists(path))
                 self.assertEqual(rtrade._rtrade_heartbeat_last, 100.0)
 
                 rtrade._touch_rtrade_heartbeat()
@@ -1076,11 +1076,11 @@ class RTradeHeartbeatTest(unittest.TestCase):
         timeout = rtrade._RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC
         monotonic_times = [start_time, start_time + 1.0, start_time + timeout + 5.0]
         with (
-            _patch.object(rtrade, "_rtrade_monotonic_time", side_effect=monotonic_times),
-            _patch.object(rtrade.time, "sleep", return_value=None),
-            _patch.object(rtrade.sys, "exit") as mock_exit,
-            _patch.object(rtrade, "_LivePairVenue", return_value=mock_venue),
-            _patch.object(rtrade, "RTradePairStore", return_value=mock_pair_store),
+            patch.object(rtrade, "_rtrade_monotonic_time", side_effect=monotonic_times),
+            patch.object(rtrade.time, "sleep", return_value=None),
+            patch.object(rtrade.sys, "exit") as mock_exit,
+            patch.object(rtrade, "_LivePairVenue", return_value=mock_venue),
+            patch.object(rtrade, "RTradePairStore", return_value=mock_pair_store),
         ):
             mock_exit.side_effect = SystemExit(1)
             with self.assertRaises(SystemExit):
@@ -1106,9 +1106,9 @@ class RTradeHeartbeatTest(unittest.TestCase):
         mock_venue.executor.open_orders.return_value = []
 
         with (
-            _patch.object(rtrade, "_LivePairVenue", return_value=mock_venue),
-            _patch.object(rtrade, "RTradePairStore", return_value=mock_pair_store),
-            _patch.object(rtrade.time, "sleep", side_effect=StopIteration),
+            patch.object(rtrade, "_LivePairVenue", return_value=mock_venue),
+            patch.object(rtrade, "RTradePairStore", return_value=mock_pair_store),
+            patch.object(rtrade.time, "sleep", side_effect=StopIteration),
         ):
             try:
                 bot._run_coordinator_forever()
@@ -1140,15 +1140,15 @@ class RTradeHeartbeatTest(unittest.TestCase):
         import botcore
         from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files
 
-        with _tempfile.TemporaryDirectory() as tmp:
-            (_Path(tmp) / "system" / "heartbeat").mkdir(parents=True, exist_ok=True)
-            with _patch.dict(_os.environ, {"MPTRADE_CACHEDB_DIR": tmp}, clear=False):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "system" / "heartbeat").mkdir(parents=True, exist_ok=True)
+            with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp}, clear=False):
                 ts1 = botcore.touch_module_heartbeat(
                     "cacheManager", interval_sec=30.0, force=True, now=500.0,
                     status={"ts": 1700000500.0}, symbols=["BTCUSDC", "TAOUSDC"],
                 )
                 self.assertEqual(ts1, 500.0)
-                hb_file = _Path(tmp) / "system" / "heartbeat" / "cacheManager.heartbeat"
+                hb_file = Path(tmp) / "system" / "heartbeat" / "cacheManager.heartbeat"
                 self.assertTrue(hb_file.exists())
                 data = json.loads(hb_file.read_text(encoding="utf-8"))
                 self.assertEqual(data["status"], "alive")
@@ -1165,14 +1165,14 @@ class RTradeHeartbeatTest(unittest.TestCase):
                 self.assertEqual(data_after["symbols"], ["BTCUSDC", "TAOUSDC"])
                 self.assertEqual(data_after["status"], "alive")
 
-                mtime = _os.path.getmtime(str(hb_file))
+                mtime = os.path.getmtime(str(hb_file))
                 active_hb, _ = harvest_heartbeats_and_state_files(tmp, tmp, mtime + 1500.0)
                 self.assertIn("cacheManager.heartbeat", active_hb)
                 self.assertEqual(active_hb["cacheManager.heartbeat"]["status"], "alive")
 
-                log_file = _Path(tmp) / "Kraken-trailing.log"
+                log_file = Path(tmp) / "Kraken-trailing.log"
                 log_file.write_text("quiet stdout\n", encoding="utf-8")
-                _os.utime(str(log_file), (mtime - 3600.0, mtime - 3600.0))
+                os.utime(str(log_file), (mtime - 3600.0, mtime - 3600.0))
                 fresh, age_s, _, stale_path = botcore.evaluate_heartbeat_files_freshness(
                     [str(hb_file), str(log_file)], 900.0, mtime + 30.0,
                 )
@@ -1197,7 +1197,7 @@ class RTradePairStoreTest(TempDirTestCase):
 
     def setUp(self):
         super().setUp()
-        self.store = RTradePairStore(_os.path.join(self.tmp.name, "pairs.json"))
+        self.store = RTradePairStore(os.path.join(self.tmp.name, "pairs.json"))
 
     def _assert_existing_invalid_store_is_preserved(self, payload):
         original = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -1334,7 +1334,7 @@ class RTradePairStoreTest(TempDirTestCase):
         self.assertEqual([rec["pair_id"] for rec in active], ["p1"])
 
     def test_terminal_history_is_bounded(self):
-        store = RTradePairStore(_os.path.join(self.tmp.name, "bounded.json"), terminal_retention=2)
+        store = RTradePairStore(os.path.join(self.tmp.name, "bounded.json"), terminal_retention=2)
         for i in range(4):
             pair_id = f"t{i}"
             store.intent(pair_id, "BUY", 100.0, 1.0, f"CID_{pair_id}", symbol="TAOUSDC", start_side="BUY")

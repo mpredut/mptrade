@@ -3,7 +3,6 @@
 import contextlib
 import os
 import sys
-import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -19,6 +18,7 @@ import order_retry
 import order_retry_worker
 from providers import market_api
 from providers.market_api import BinanceProvider, MarketApi
+from tests.conftest import TempDirTestCase
 
 
 class _FakeClient:
@@ -87,9 +87,9 @@ class _FakeBapi:
         return self.cancel_order(symbol, order_id)
 
 
-class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
+class InstrumentBinancePermitIntegrationTest(TempDirTestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        super().setUp()
         self.old_retry_queue = order_retry.QUEUE_FILE
         self.old_retry_lock = order_retry.LOCK_FILE
         self.old_retry_enabled = order_retry.RETRY_ENABLED
@@ -106,7 +106,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
         order_retry.LOCK_FILE = self.old_retry_lock
         order_retry.RETRY_ENABLED = self.old_retry_enabled
         order_retry.RETRY_DEDUP = self.old_retry_dedup
-        self.temp.cleanup()
+        super().tearDown()
 
     def _make_binance_fixture(self):
         events = []

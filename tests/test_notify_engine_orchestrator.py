@@ -8,7 +8,6 @@ import json
 import os
 import sys
 import tempfile
-import unittest
 from unittest import mock
 
 from notify_engine.alertnotifiers import (
@@ -27,16 +26,28 @@ from notify_engine.server import (
     _topic_for_category,
 )
 from market_monitor.pricechecker import PriceAlert, PriceChecker
+from market_monitor import alerts_config
+from notify_engine import mailer
 import asyncio
 import numpy as np
 import pytest
 from orchestratorOS.lib import watchdog_common
 from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
+from tests.conftest import TempDirTestCase
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _sub in (("orchestratorOS", "lib"), ("orchestratorOS", "livecheck")):
+    _p = os.path.join(ROOT_DIR, *_sub)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import os_resources_watchdog as wd  # noqa: E402
+import watchdog_common as wc  # noqa: E402
 
 
-class TestNotifyEngineOrchestrator(unittest.TestCase):
+class TestNotifyEngineOrchestrator(TempDirTestCase):
     def setUp(self):
-        self._temp_dir = tempfile.TemporaryDirectory()
+        super().setUp()
         self.state_file = os.path.join(self._temp_dir.name, "delivery_state.json")
         self.patcher = mock.patch.dict(os.environ, {
             "NOTIFICATION_STATE_FILE": self.state_file,
@@ -65,7 +76,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
 
     def tearDown(self):
         self.patcher.stop()
-        self._temp_dir.cleanup()
+        super().tearDown()
 
     def _record_send(self, title: str, message: str, priority: str, topic: str, is_retry: bool = False) -> bool:
         self.dispatched.append({
@@ -1187,20 +1198,6 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
                 self.assertEqual([e[0] for e in mirrored_emails], ["Error One", "Error Two", "Error Three"])
 
 
-from unittest.mock import patch as _wd_patch
-from notify_engine import mailer
-
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _sub in (("orchestratorOS", "lib"), ("orchestratorOS", "livecheck")):
-    _p = os.path.join(ROOT_DIR, *_sub)
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-import os_resources_watchdog as wd  # noqa: E402
-import watchdog_common as wc  # noqa: E402
-from market_monitor import alerts_config
-
-
 class _WatchdogResp:
     def __init__(self, status=200, headers=None, text=""):
         self.status_code = status
@@ -1211,23 +1208,23 @@ class _WatchdogResp:
         pass
 
 
-class SendNtfyRetryTest(unittest.TestCase):
+class SendNtfyRetryTest(TempDirTestCase):
     def setUp(self):
+        super().setUp()
         self._env = mock.patch.dict(os.environ, {
             "NTFY_TOPIC_ERROR": "testtopic",
             "NTFY_DAILY_BUDGET": "100",
             "NTFY_URGENT_RESERVE": "20",
             "DISABLE_EXTERNAL_NOTIFICATIONS": "0",
+            "NOTIFICATION_STATE_FILE": os.path.join(
+                self.tmp.name, "notifications.json",
+            ),
         }, clear=False)
         self._env.start()
-        self._temporary = tempfile.TemporaryDirectory()
-        os.environ["NOTIFICATION_STATE_FILE"] = os.path.join(
-            self._temporary.name, "notifications.json",
-        )
 
     def tearDown(self):
         self._env.stop()
-        self._temporary.cleanup()
+        super().tearDown()
 
     def test_retry_on_429_then_success(self):
         with mock.patch("requests.post") as mpost, mock.patch("time.sleep") as msleep:
@@ -1260,8 +1257,8 @@ def _wd_proc(pid=10, ticks=100, rss=100, command="worker.py"):
 
 
 def test_alerts_only_after_sustained_cpu_use():
-    with tempfile.TemporaryDirectory() as tmp, _wd_patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
-            _wd_patch.object(wd, "CONSECUTIVE", 3), _wd_patch.object(wd.wc, "send_ntfy") as alert:
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+            mock.patch.object(wd, "CONSECUTIVE", 3), mock.patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(ticks=100), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_wd_proc(ticks=160), cpu_count=1)
         wd.check_once(now=240, total_ticks=1200, processes=_wd_proc(ticks=220), cpu_count=1)
@@ -1271,19 +1268,19 @@ def test_alerts_only_after_sustained_cpu_use():
 
 
 def test_short_memory_spike_does_not_alert():
-    with tempfile.TemporaryDirectory() as tmp, _wd_patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
-            _wd_patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
-            _wd_patch.object(wd, "CONSECUTIVE", 3), _wd_patch.object(wd.wc, "send_ntfy") as alert:
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+            mock.patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
+            mock.patch.object(wd, "CONSECUTIVE", 3), mock.patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(rss=800), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_wd_proc(ticks=101, rss=100), cpu_count=1)
         alert.assert_not_called()
 
 
 def test_sustained_memory_use_alerts_and_then_recovers():
-    with tempfile.TemporaryDirectory() as tmp, _wd_patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
-            _wd_patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
-            _wd_patch.object(wd, "CONSECUTIVE", 2), _wd_patch.object(wd, "RECOVERY_CHECKS", 2), \
-            _wd_patch.object(wd.wc, "send_ntfy") as alert:
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+            mock.patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
+            mock.patch.object(wd, "CONSECUTIVE", 2), mock.patch.object(wd, "RECOVERY_CHECKS", 2), \
+            mock.patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(rss=800), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_wd_proc(ticks=101, rss=800), cpu_count=1)
         wd.check_once(now=240, total_ticks=1200, processes=_wd_proc(ticks=102, rss=100), cpu_count=1)
@@ -1294,10 +1291,10 @@ def test_sustained_memory_use_alerts_and_then_recovers():
 def test_managed_process_is_restarted_after_sustained_breach():
     proc = next(iter(_wd_proc(rss=800, command="python worker.py").values()))
     state = {}
-    with _wd_patch.object(wd, "AUTO_RESTART", True), \
-            _wd_patch.object(wd, "_managed_script", return_value="worker.py"), \
-            _wd_patch.object(wd, "_restart_allowed", return_value=True), \
-            _wd_patch.object(wd.os, "kill") as kill:
+    with mock.patch.object(wd, "AUTO_RESTART", True), \
+            mock.patch.object(wd, "_managed_script", return_value="worker.py"), \
+            mock.patch.object(wd, "_restart_allowed", return_value=True), \
+            mock.patch.object(wd.os, "kill") as kill:
         assert wd._restart_managed(proc, state, 1000) is True
         kill.assert_called_once_with(10, wd.signal.SIGTERM)
         assert state["restart_history"]["worker.py"] == [1000]
@@ -1305,8 +1302,8 @@ def test_managed_process_is_restarted_after_sustained_breach():
 
 def test_unmanaged_process_is_never_restarted():
     proc = next(iter(_wd_proc(rss=800, command="foreign").values()))
-    with _wd_patch.object(wd, "_managed_script", return_value=None), \
-            _wd_patch.object(wd.os, "kill") as kill:
+    with mock.patch.object(wd, "_managed_script", return_value=None), \
+            mock.patch.object(wd.os, "kill") as kill:
         assert wd._restart_managed(proc, {}, 1000) is None
         kill.assert_not_called()
 
@@ -1326,9 +1323,9 @@ def test_parse_proc_stat_handles_spaces_and_parens_in_comm():
     assert rss_pages == 4096
 
 
-class EmailMirrorTest(unittest.TestCase):
+class EmailMirrorTest(TempDirTestCase):
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
+        super().setUp()
         self._env = mock.patch.dict(os.environ, {
             "DISABLE_EXTERNAL_NOTIFICATIONS": "0",
             "MPTRADE_ORCHESTRATED": "",
@@ -1351,7 +1348,7 @@ class EmailMirrorTest(unittest.TestCase):
     def tearDown(self):
         self._smtp.stop()
         self._env.stop()
-        self._tmp.cleanup()
+        super().tearDown()
 
     def test_error_topic_push_is_mirrored_to_email(self):
         with mock.patch("requests.post", return_value=_WatchdogResp()):

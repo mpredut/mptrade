@@ -18,6 +18,7 @@ from providers.strategy_executor import (
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 import json
 import cacheManager as cm
+from tests.conftest import TempDirTestCase
 
 
 def _bot():
@@ -1541,9 +1542,9 @@ def _make_mgr(filename, sync_ts, api_mock):
     )
 
 
-class TestFallbackThreadBehavior(unittest.TestCase):
+class TestFallbackThreadBehavior(TempDirTestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        super().setUp()
         cm.CacheFactory.remove("CurrentPrice")
         self.managers = []
 
@@ -1551,6 +1552,7 @@ class TestFallbackThreadBehavior(unittest.TestCase):
         for manager in self.managers:
             manager.shutdown()
         cm.CacheFactory.remove("CurrentPrice")
+        super().tearDown()
 
     def _manager(self, filename, sync_ts, api_mock):
         manager = _make_mgr(filename, sync_ts, api_mock)

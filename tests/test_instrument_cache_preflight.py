@@ -3,9 +3,7 @@
 import glob
 import os
 import sys
-import tempfile
 import threading
-import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -22,6 +20,7 @@ import order_retry_worker
 import priceAnalysis as pa
 from providers.base import MarketDataProvider
 from providers.strategy_executor import SubmissionRefused
+from tests.conftest import TempDirTestCase
 
 
 class _Api:
@@ -147,9 +146,9 @@ class _WeightedBinanceProvider(_BinancePermitProvider):
         return available_qty
 
 
-class InstrumentCachePreflightTest(unittest.TestCase):
+class InstrumentCachePreflightTest(TempDirTestCase):
     def setUp(self):
-        self._temp_dir = tempfile.TemporaryDirectory()
+        super().setUp()
         root = self._temp_dir.name
 
         self._old_outcome_dir = order_outcomes_log.ORDER_OUTCOMES_LOG_DIR
@@ -167,7 +166,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
         order_retry.QUEUE_FILE = self._old_queue_file
         order_retry.LOCK_FILE = self._old_queue_lock
         order_retry.RETRY_ENABLED = self._old_retry_enabled
-        self._temp_dir.cleanup()
+        super().tearDown()
 
     def test_stale_cache_refusal_precedes_mutation_submission_and_enqueue(self):
         provider = _StaleCacheProvider()

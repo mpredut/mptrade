@@ -1,6 +1,5 @@
 import json
 import os
-import tempfile
 import unittest
 from unittest import mock
 
@@ -11,13 +10,14 @@ from providers.strategy_executor import (
     ProviderError,
     SubmissionRefused,
 )
+from tests.conftest import TempDirTestCase
 
 
-class MonitorOrderPreflightTest(unittest.TestCase):
+class MonitorOrderPreflightTest(TempDirTestCase):
     def setUp(self):
+        super().setUp()
         monitororder.initial_sell_prices.clear()
         monitororder.initial_buy_prices.clear()
-        self._temp_dir = tempfile.TemporaryDirectory()
         self._old_queue_file = monitororder.order_retry.QUEUE_FILE
         self._old_queue_lock = monitororder.order_retry.LOCK_FILE
         self._old_retry_enabled = monitororder.order_retry.RETRY_ENABLED
@@ -40,7 +40,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
         monitororder.order_retry.RETRY_ENABLED = self._old_retry_enabled
         monitororder.order_retry.RETRY_DEDUP = self._old_retry_dedup
         self._filter_patcher.stop()
-        self._temp_dir.cleanup()
+        super().tearDown()
 
     def test_filter_refusal_or_metadata_failure_preserves_live_order(self):
         for label, filter_result in (

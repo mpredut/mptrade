@@ -3,13 +3,13 @@ FAKE `mkt` (no network). The queue is isolated in tmp."""
 import os
 import subprocess
 import sys
-import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import cacheManager as cm
 import order_retry as oq
 import order_retry_worker as worker
 from providers.strategy_executor import (
@@ -19,6 +19,7 @@ from providers.base import MarketDataProvider
 from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi
 import pytest
+from tests.conftest import TempDirTestCase
 
 
 class FakeMkt:
@@ -48,9 +49,9 @@ class FakeMkt:
             not_found_reliable_for_seconds=90 * 24 * 60 * 60)
 
 
-class ProcessOnceTest(unittest.TestCase):
+class ProcessOnceTest(TempDirTestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        super().setUp()
         oq.QUEUE_FILE = os.path.join(self.tmp, "q.jsonl")
         oq.LOCK_FILE = os.path.join(self.tmp, "q.lock")
         oq.RETRY_ENABLED = True
@@ -71,7 +72,6 @@ class ProcessOnceTest(unittest.TestCase):
         worker._ALERTED_PRODUCER_QUARANTINES.clear()
         worker._ALERTED_RECONCILIATION_QUARANTINES.clear()
         worker._ALERTED_TERMINALS.clear()
-        import cacheManager as cm
         fake_stm = SimpleNamespace(should_wait=lambda *a, **k: False)
         stm_patcher = patch.object(cm, "get_short_trend_manager", return_value=fake_stm)
         stm_patcher.start()

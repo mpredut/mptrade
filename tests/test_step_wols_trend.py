@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pricewindow as pw
 import cacheManager as cm
 import monitortrades as mt
-import time as _time
+import time
 
 
 def _naive_step_wols(prices, power=None, symbol=None):
@@ -367,7 +367,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
     def test_assetguardian_trend_defer_uses_fast_window_and_mem_published_window(self):
         import assetguardian as ag
 
-        now_ts = _time.time()
+        now_ts = time.time()
         mgr = cm.CacheShortTrendManager(["TAOUSDC"])
         mgr._set_mem(
             "TAOUSDC",
@@ -399,7 +399,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
         from binance_api.trailing_stop import TrailingStop
         from kraken import trailing_stop as kt_mod
 
-        now_ts = _time.time()
+        now_ts = time.time()
         snap_tao = {
             "growth_coefficient": 0.04,
             "gradient_recent": 0.04,

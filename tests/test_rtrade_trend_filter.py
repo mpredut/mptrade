@@ -2,16 +2,20 @@
 makes the spread bot stand aside when the asset is clearly trending (|gradient_recent| >
 K*epsilon) AND when the trend signal is unavailable (fail-CLOSED on no data), plus a kill
 switch. A fake cacheManager is injected into sys.modules (imported lazily in the functions)."""
+import json
 import os
 import sys
 import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+import cacheManager as cm
 import rtrade
 import time
+from tests.conftest import TempDirTestCase
 
 
 class _RTradeTrendBase(unittest.TestCase):
@@ -170,7 +174,7 @@ class MarketExitModeTest(unittest.TestCase):
                 rtrade._LivePairVenue.market_exit_allowed(fake, "LONG", thr, "emergency"))
 
 
-class ReaderProcessTrendTest(unittest.TestCase):
+class ReaderProcessTrendTest(TempDirTestCase):
     """End to end with the REAL trend manager, as in production: the cacheManager writer
     computes and publishes the dynamic window, and rtrade's process holds an unstarted
     reader. The mocks above replaced the manager, so they could not see that a reader
@@ -179,15 +183,9 @@ class ReaderProcessTrendTest(unittest.TestCase):
     WINDOW = 900.0
 
     def setUp(self):
-        import json
-        import tempfile
-        from unittest import mock
-
-        import cacheManager as cm
-
+        super().setUp()
         self.cm = cm
         self.json = json
-        self.tmp = tempfile.TemporaryDirectory()
         self.reader = cm.CacheShortTrendManager(
             ["TAOUSDC"], os.path.join(self.tmp.name, "trend_reader.json"))
         self._patches = [
@@ -203,7 +201,7 @@ class ReaderProcessTrendTest(unittest.TestCase):
     def tearDown(self):
         for patcher in reversed(self._patches):
             patcher.stop()
-        self.tmp.cleanup()
+        super().tearDown()
 
     def _publish(self, step, *, age_sec=0.0):
         """Let a writer compute the window from ticks and publish it for the reader."""

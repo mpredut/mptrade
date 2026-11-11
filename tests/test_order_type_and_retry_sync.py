@@ -1,7 +1,6 @@
 """Tests for order type normalization, retry worker quantity synchronization, and zombie recovery."""
 import os
 import sys
-import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -17,11 +16,12 @@ from providers.strategy_executor import OrderReconciliationCapabilities, OrderSt
 from binance_api import bapi_placeorder as po
 from instrument import Instrument
 from providers.market_api import MarketApi
+from tests.conftest import TempDirTestCase
 
 
-class OrderTypeAndRetrySyncTest(unittest.TestCase):
+class OrderTypeAndRetrySyncTest(TempDirTestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        super().setUp()
         self.orig_queue_file = oq.QUEUE_FILE
         self.orig_lock_file = oq.LOCK_FILE
         oq.QUEUE_FILE = os.path.join(self.tmp, "q.jsonl")
@@ -35,6 +35,7 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
     def tearDown(self):
         oq.QUEUE_FILE = self.orig_queue_file
         oq.LOCK_FILE = self.orig_lock_file
+        super().tearDown()
 
     def test_kraken_order_type_normalization(self):
         """Verify KrakenProvider respects market=True, force=True, and default limit."""

@@ -1,5 +1,5 @@
 """Kraken executor-contract tests with an injected offline fake client."""
-import base64 as _b64
+import base64
 import json
 import os
 import sys
@@ -625,7 +625,7 @@ class PublicCacheTest(unittest.TestCase):
         self.assertNotIn(("Ticker", (("pair", "OLD"),)), kc._CACHE)
 
     def test_private_read_retries_on_invalid_nonce_and_succeeds(self):
-        client = kc.KrakenClient(api_key="key", api_secret=_b64.b64encode(b"secret").decode())
+        client = kc.KrakenClient(api_key="key", api_secret=base64.b64encode(b"secret").decode())
         fail_nonce = (200, b'{"error":["EAPI:Invalid nonce"],"result":{}}')
         success_bal = (200, b'{"error":[],"result":{"HYPE":"7.54"}}')
         with mock.patch.object(kc, "http_post_form") as mpost, \
@@ -637,7 +637,7 @@ class PublicCacheTest(unittest.TestCase):
             self.assertEqual(msleep.call_count, 1)
 
     def test_private_write_does_not_retry_on_invalid_nonce(self):
-        client = kc.KrakenClient(api_key="key", api_secret=_b64.b64encode(b"secret").decode())
+        client = kc.KrakenClient(api_key="key", api_secret=base64.b64encode(b"secret").decode())
         fail_nonce = (200, b'{"error":["EAPI:Invalid nonce"],"result":{}}')
         with mock.patch.object(kc, "http_post_form") as mpost:
             mpost.return_value = fail_nonce

@@ -21,8 +21,8 @@ make_hyperliquid_replay_adapter = hl_replay.make_hyperliquid_replay_adapter
 run_replay = hl_replay.run_replay
 
 from kraken.backtest_trail import simulate_trail  # noqa: E402
-import time as _time
-import unittest as _unittest
+import time
+import unittest
 
 
 def test_hyperliquid_simulate_stop_loss_long():
@@ -954,7 +954,7 @@ def _dn_legs(spot_qty=2.0, perp_szi=-2.0, funding=0.0000125):
     }
 
 
-class _DNBase(_unittest.TestCase):
+class _DNBase(unittest.TestCase):
     def setUp(self):
         self._env = dict(os.environ)
         self.alerts: list[str] = []
@@ -982,7 +982,7 @@ class _DNBase(_unittest.TestCase):
     def opened(self, d: DeltaNeutral, target=2.0):
         d.s["status"] = "open"
         d.s["target_sz"] = target
-        d.s["opened_ts"] = _time.time()
+        d.s["opened_ts"] = time.time()
 
 
 class TestFailedReads(_DNBase):
@@ -1014,7 +1014,7 @@ class TestOrphanLeg(_DNBase):
         sells = [o for o in self.c.orders if o[0] == "spot" and o[1] == "sell"]
         self.assertEqual(len(sells), 1, "sell the remaining spot leg to de-risk")
         self.assertEqual(d.s["status"], "flat")
-        self.assertGreater(d.s["cooldown_until"], _time.time(), "cooldown anti-thrash")
+        self.assertGreater(d.s["cooldown_until"], time.time(), "cooldown anti-thrash")
         self.assertTrue(any("a leg is gone" in a for a in self.alerts))
 
     def test_a_recovered_glitch_resets_the_counter(self):
@@ -1082,14 +1082,14 @@ class TestFailedOrders(_DNBase):
 class TestCooldownAndEntry(_DNBase):
     def test_the_cooldown_blocks_reopening(self):
         d = self.make()
-        d.s["cooldown_until"] = _time.time() + 600
+        d.s["cooldown_until"] = time.time() + 600
         d.tick(_dn_legs(spot_qty=0.0, perp_szi=0.0, funding=0.001))
         self.assertEqual(d.s["status"], "flat")
         self.assertEqual(self.c.orders, [])
 
     def test_after_the_cooldown_it_opens(self):
         d = self.make()
-        d.s["cooldown_until"] = _time.time() - 1
+        d.s["cooldown_until"] = time.time() - 1
         d.tick(_dn_legs(spot_qty=0.0, perp_szi=0.0, funding=0.001))
         self.assertEqual(d.s["status"], "open")
         self.assertEqual(len(self.c.orders), 2, "both legs placed")
@@ -1097,7 +1097,7 @@ class TestCooldownAndEntry(_DNBase):
 
 class TestSmartExit(_DNBase):
     def _force_avg(self, d, val):
-        d.s["funding_hist"] = [[_time.time(), val]] * 5
+        d.s["funding_hist"] = [[time.time(), val]] * 5
 
     def test_negative_funding_held_briefly_does_not_close(self):
         d = self.make()
@@ -1109,7 +1109,7 @@ class TestSmartExit(_DNBase):
     def test_negative_funding_held_long_enough_closes(self):
         d = self.make()
         self.opened(d)
-        d.s["opened_ts"] = _time.time() - 7 * 3600
+        d.s["opened_ts"] = time.time() - 7 * 3600
         self._force_avg(d, -0.0002)
         d.tick(_dn_legs(funding=-0.0002))
         self.assertEqual(d.s["status"], "flat")
@@ -1193,7 +1193,7 @@ class TestScaleUp(_DNBase):
         self.assertTrue(buys_spot and buys_perp, "the scale-up buys spot and shorts perp (staying neutral)")
 
 
-class TestRank(_unittest.TestCase):
+class TestRank(unittest.TestCase):
     def setUp(self):
         self.uni = [{"name": "AAA"}, {"name": "BBB"}, {"name": "CCC"}, {"name": "DDD"}]
         self.ctxs = [
