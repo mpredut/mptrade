@@ -21,6 +21,7 @@ from intelligence.internal.state.persistence import (  # noqa: E402
     classify_hurst_regime,
 )
 from priceAnalysis import detect_long_term_trend, get_trade_weight
+import order_guard
 
 H = 3600.0
 
@@ -521,19 +522,16 @@ class TestWeightForCashPermission(unittest.TestCase):
 
 class TestUnifiedWeightResolution(unittest.TestCase):
     def test_get_chop_weight_cfg_venue(self):
-        import order_guard
         self.assertEqual(order_guard.get_chop_weight_cfg("binance"), 0.03)
         self.assertEqual(order_guard.get_chop_weight_cfg("kraken"), 0.03)
         self.assertEqual(order_guard.get_chop_weight_cfg(None), 0.03)
 
     def test_compute_weight_capped_qty(self):
-        import order_guard
         adj = order_guard.compute_weight_capped_qty(
             weight=0.10, price=100.0, required_qty=1.0, available_qty=10.0, traded_24h_value=50.0)
         self.assertAlmostEqual(adj, 0.55, places=4)
 
     def test_resolve_trade_weight_fallback(self):
-        import order_guard
         with patch("priceAnalysis.get_weight_for_cash_permission_at_quant_time", return_value=None):
             self.assertEqual(order_guard.resolve_trade_weight("UNKNOWNCOIN", "BUY", "binance"), 0.03)
 

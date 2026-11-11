@@ -11,6 +11,8 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import order_guard  # noqa: E402
+from instrument import Instrument
+from providers.market_api import MarketApi
 
 
 class _Provider:
@@ -127,8 +129,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             self.assertFalse(order_guard.profit_guard(provider, "TAOUSDC", "SELL", 270.0, 1.15, window_ref=276.0))
 
     def test_instrument_pipeline_respects_buy_reference_switch(self):
-        from instrument import Instrument
-        from providers.market_api import MarketApi, MarketDataProvider
+        from providers.market_api import MarketDataProvider
 
         class _MockBinanceProvider(MarketDataProvider):
             def __init__(self):
@@ -364,8 +365,6 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_instrument_preflight_refuses_zero_balance(self):
         """Instrument.place must refuse BUY orders at Stage 0 if provider free balance is zero or empty."""
-        from instrument import Instrument
-        from providers.market_api import MarketApi
 
         class _MockBalanceProvider(_Provider):
             def free_balance(self, asset):

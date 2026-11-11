@@ -16,11 +16,14 @@ from state_io import (
     load_json_state,
     meta_file_path,
     previous_generation_path,
+    read_json_dict,
+    read_jsonl_records,
     read_recovering_previous,
     save_json_state,
     stage_previous_generation,
     write_meta_json,
 )
+import state_io
 
 
 def test_atomic_write_json_replaces_complete_document(tmp_path):
@@ -358,7 +361,7 @@ def test_atomic_write_json_default(tmp_path):
 
 
 def test_read_json_dict(tmp_path):
-    from state_io import atomic_write_jsonl, read_json_dict, read_json_file, read_jsonl_dicts, read_jsonl_records
+    from state_io import atomic_write_jsonl, read_json_file, read_jsonl_dicts
     p_ok = tmp_path / "ok.json"
     atomic_write_json(p_ok, {"k": "v"})
     assert read_json_dict(str(p_ok)) == {"k": "v"}
@@ -427,7 +430,7 @@ def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
     tail_recs = read_tail_jsonl_records(str(p_tail), limit=3, max_bytes=300)
     assert [r["idx"] for r in tail_recs] == [7, 8, 9]
 
-    from state_io import discard_generation_file, read_json_dict, read_json_dict_cached, read_jsonl_records
+    from state_io import discard_generation_file, read_json_dict_cached
     assert read_recovering_previous(None, default={"ok": 1}) == {"ok": 1}
     assert read_json_dict(None, default={"ok": 2}, recover_previous=True) == {"ok": 2}
     assert read_json_dict(123, default={"ok": 3}, recover_previous=True) == {"ok": 3}
@@ -517,7 +520,6 @@ def test_jsonstatestore_save_rejects_non_dict_state_and_state_io_iter64_s2(tmp_p
 
 def test_state_io_truncate_file_bytes_rejects_fractional_non_finite_sizes_and_iter89_s4(tmp_path):
     """[ITER89 #4] state_io.truncate_file_bytes rejects fractional/non-finite sizes and _positive_chunk_size falls back safely."""
-    import state_io
     # 4. state_io.truncate_file_bytes rejects fractional/non-finite sizes and _positive_chunk_size falls back safely
     f_path = tmp_path / "data.bin"
     f_path.write_bytes(b"0123456789")
@@ -530,7 +532,6 @@ def test_state_io_truncate_file_bytes_rejects_fractional_non_finite_sizes_and_it
 
 def test_state_io_read_tail_lines__positive_chunk_size_prune_rotated_archives_iter99_s1(tmp_path):
     """[ITER99 #1] state_io.read_tail_lines / _positive_chunk_size / prune_rotated_archives."""
-    import state_io
     # 1. state_io.read_tail_lines / _positive_chunk_size / prune_rotated_archives
     # Passing bool or int as path must not treat file descriptors (e.g. stdout=1) as paths!
     assert state_io.read_tail_lines(True, 10) == []
@@ -549,7 +550,6 @@ def test_state_io_read_tail_lines__positive_chunk_size_prune_rotated_archives_it
 
 def test_state_io_load_json_state_with_fail_closed_false_truncate_file_bytes_with_atomic_gzip_file_iter161_s1(tmp_path):
     """[ITER161 #1] state_io: load_json_state with fail_closed='false', truncate_file_bytes with '4.0', atomic_gzip_file with remove_source='false'."""
-    import state_io
     # 1. state_io: load_json_state with fail_closed="false", truncate_file_bytes with "4.0", atomic_gzip_file with remove_source="false"
     corrupt_json = tmp_path / "corrupt.json"
     corrupt_json.write_text("not-json", encoding="utf-8")
@@ -566,7 +566,6 @@ def test_state_io_load_json_state_with_fail_closed_false_truncate_file_bytes_wit
 
 def test_read_json_recovering_read_json_dict_recovering_handle_missing_corrupt_previous_and_non_iter184_s2(tmp_path):
     """[ITER184 #2] read_json_recovering & read_json_dict_recovering handle missing, corrupt+.previous, and non-dict files."""
-    import state_io
     # 2. read_json_recovering & read_json_dict_recovering handle missing, corrupt+.previous, and non-dict files
     missing_path = str(tmp_path / "missing.json")
     assert state_io.read_json_recovering(missing_path) is None
@@ -579,7 +578,6 @@ def test_read_json_recovering_read_json_dict_recovering_handle_missing_corrupt_p
 
 def test_read_json_dict_cached_memoizes_by_stat_signature_and_recovers_from_iter184_s3(tmp_path):
     """[ITER184 #3] read_json_dict_cached memoizes by stat signature and recovers from .previous."""
-    import state_io
     # 3. read_json_dict_cached memoizes by stat signature and recovers from .previous
     memo = {}
     dict_path = tmp_path / "cached_dict.json"
@@ -592,7 +590,6 @@ def test_read_json_dict_cached_memoizes_by_stat_signature_and_recovers_from_iter
 
 def test_state_io_atomic_write_jsonl_writes_iterable_of_dicts_atomically_and_iter185_s1(tmp_path):
     """[ITER185 #1] state_io.atomic_write_jsonl writes iterable of dicts atomically and matches read_jsonl_dicts."""
-    import state_io
     # 1. state_io.atomic_write_jsonl writes iterable of dicts atomically and matches read_jsonl_dicts
     p_jsonl = tmp_path / "orders.jsonl"
     data = [{"order_id": 1, "sym": "BTCUSDC"}, {"order_id": 2, "sym": "ETHUSDC"}]

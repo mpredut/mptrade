@@ -10,6 +10,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import pytest
+import strategies.spot_engine as se
+from strategies import spot_engine as strat, spot_rules, spot_rules as sr
+from strategies.position_exit_manager import PositionExitConfig, PositionExitManager
+from strategies.spot_engine import StratParams, Strategy
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -18,9 +22,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from market_regime import MarketRegimeDecision
 from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError
-from strategies import spot_engine as strat, spot_rules as sr
 from test_kraken_strategy_provider_live import FakeExecutor, _strategy
-from strategies.spot_engine import Strategy
 from types import SimpleNamespace
 
 
@@ -860,9 +862,7 @@ def test_mdhtp_hold_evaluates_advanced_profit_guards():
 
 
 def test_post_stop_reentry_tracks_peak_bounce_during_cooldown_and_blocks_rollover():
-    from strategies.position_exit_manager import (
-        PositionExitConfig, PositionExitManager, ReentryAction, ReentrySnapshot,
-    )
+    from strategies.position_exit_manager import ReentryAction, ReentrySnapshot
     mgr = PositionExitManager(
         config=PositionExitConfig(
             reentry_enabled=True,
@@ -933,7 +933,6 @@ def test_spot_engine_reentry_gate_resolves_bear_regime_and_restores_state_on_blo
 
 
 def test_spot_rules_non_positive_drop_thresholds_do_not_false_trigger():
-    import strategies.spot_rules as sr
     trig, _, _ = sr.check_fast_profit_reversal(
         current_price=120.0, avg_cost=100.0, base_tp_pct=5.0, mult=2.0,
         shadow_prices=[(990.0, 120.0)], window_sec=300.0, drop_pct=0.0, current_time=1000.0,
@@ -956,9 +955,7 @@ def test_spot_rules_non_positive_drop_thresholds_do_not_false_trigger():
 
 
 def test_position_exit_manager_resets_tp_and_sl_state_when_buy_price_changes():
-    from strategies.position_exit_manager import (
-        ExitAction, PositionExitConfig, PositionExitManager, PositionSnapshot,
-    )
+    from strategies.position_exit_manager import ExitAction, PositionSnapshot
     mgr = PositionExitManager(config=PositionExitConfig(gain_threshold=0.03, lost_threshold=0.05))
     # Initiate TP trend ride at avg_buy_price=100.0, current_price=104.0
     d1 = mgr.evaluate_take_profit(PositionSnapshot(
@@ -1166,7 +1163,6 @@ def test_strategy__order_from_pending_honors_submitted_qty_and_scales_amount_pro
 
 def test_spot_rules_nan_hardening_iter26_s1():
     """[ITER26 #1] spot_rules NaN hardening."""
-    from strategies import spot_rules
     # 1. spot_rules NaN hardening
     trig_sg, reason_sg = spot_rules.check_slow_grind_exhaustion(
         current_price=120.0,
@@ -1272,7 +1268,6 @@ def test_spot_rules_handles_malformed_shadow_prices_entries_and_string_numbers_i
 
 def test_spot_rules_entry_price_tp_price_check_parabolic_surge_exhaustion_and_check_fast_profit_reversal_iter84_s1():
     """[ITER84 #1] spot_rules entry_price, tp_price, check_parabolic_surge_exhaustion, and check_fast_profit_reversal."""
-    from strategies import spot_rules
     # 1. spot_rules entry_price, tp_price, check_parabolic_surge_exhaustion, and check_fast_profit_reversal
     assert spot_rules.entry_price("100.0", "5.0") == 95.0
     assert spot_rules.entry_price(float("nan"), 5.0) == 0.0
@@ -1358,7 +1353,6 @@ def test_strategies_spot_engine__parse_tranches_rejects_booleans_iter93_s2():
 
 def test_spot_rules_string_false_boolean_flag_handling_iter112_s5():
     """[ITER112 #5] spot_rules string 'false' boolean flag handling."""
-    import strategies.spot_rules as sr
     # 5. spot_rules string 'false' boolean flag handling
     assert sr.dynamic_trend_trail_pct(5.0, base_trail_pct=8.0, min_trail_pct=3.0, surge_guard_active="false") == 8.0
 
@@ -1371,14 +1365,12 @@ def test_spot_replay_align_spot_interval_params_with_sub_minute_bar_minutes_and_
 
 def test_spot_engine_state_path_for_handles_bool_punctuation_only_and_path_iter119_s1(tmp_path):
     """[ITER119 #1] spot_engine.state_path_for handles bool, punctuation-only, and Path state_dir."""
-    import strategies.spot_engine as se
     # 1. spot_engine.state_path_for handles bool, punctuation-only, and Path state_dir
     assert se.state_path_for(True).endswith(".state_unknown.json")
     assert se.state_path_for("---", tmp_path) == os.path.join(str(tmp_path), ".state_unknown.json")
 
 def test_spot_engine__apply_fill_handles_order_with_amount_none_by_iter119_s2():
     """[ITER119 #2] spot_engine._apply_fill handles order with amount=None by falling back to vol * price."""
-    import strategies.spot_engine as se
     # 2. spot_engine._apply_fill handles order with amount=None by falling back to vol * price
     dummy_exec = SimpleNamespace(pair_precision=lambda _p: PairPrecision(2, 4, 0.01, "HYPE"))
     params = se.StratParams(
@@ -1401,7 +1393,7 @@ def test_spot_rules__parse_bool_flag_rejects_nan_and_containers_iter144_s1():
 
 def test_spot_engine__parse_bool_flag_clean_order_id_and__sanitize_state_dict_iter144_s2():
     """[ITER144 #2] spot_engine._parse_bool_flag, clean_order_id, and _sanitize_state_dict."""
-    from strategies.spot_engine import StratParams, clean_order_id, _parse_bool_flag
+    from strategies.spot_engine import clean_order_id, _parse_bool_flag
     # 2. spot_engine._parse_bool_flag, clean_order_id, and _sanitize_state_dict
     assert _parse_bool_flag("false") is False
     assert _parse_bool_flag("0") is False
@@ -1474,7 +1466,6 @@ def test_spot_engine__parse_bool_flag_clean_order_id_and__sanitize_state_dict_it
 
 def test_stratparams___post_init___normalizes_string_boolean_flags_iter173_s4():
     """[ITER173 #4] StratParams.__post_init__ normalizes string boolean flags."""
-    from strategies.spot_engine import StratParams
     # 4. StratParams.__post_init__ normalizes string boolean flags
     sp = StratParams(
         currency="USD",

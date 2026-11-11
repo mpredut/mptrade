@@ -12,6 +12,10 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import shadow_signals as ss
+import tradeall as ta
+from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+from pricewindow import PriceWindow
+from shadow_signals import KalmanStateTracker
 
 
 class TestKalmanTrendContinuous(unittest.TestCase):
@@ -178,8 +182,6 @@ class TestShadowRuntime(unittest.TestCase):
 
     def test_tradeall_logic_small_acceleration_surge(self):
         """logic_small triggers accel_surge_up when short-term velocity and acceleration are strongly positive."""
-        import tradeall as ta
-        from pricewindow import PriceWindow
 
         pw = PriceWindow("BTCUSDC", 220, sample_rate_sec=1.0)
         # Parabolic upward curve over 180s
@@ -202,8 +204,6 @@ class TestShadowRuntime(unittest.TestCase):
 
     def test_tradeall_logic_small_acceleration_plunge(self):
         """logic_small triggers accel_plunge_down when short-term velocity and acceleration are strongly negative."""
-        import tradeall as ta
-        from pricewindow import PriceWindow
 
         pw = PriceWindow("TAOUSDC", 220, sample_rate_sec=1.0)
         # Parabolic downward curve over 180s (~280 -> ~275)
@@ -246,9 +246,6 @@ class TestShadowRuntime(unittest.TestCase):
             filter_valid_severity_keywords,
             match_high_severity_keywords,
         )
-        from intelligence.sentiment.evaluators.price_series_evaluator import (
-            compute_24h_price_metrics,
-        )
 
         headline = "Mother and daughter both killed in grizzly bear attack, Canadian authorities confirm - The Guardian"
         self.assertEqual(match_high_severity_keywords(headline), ())
@@ -273,10 +270,7 @@ class TestShadowRuntime(unittest.TestCase):
         from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
             enrich_sentiment_advisor_live_flow_divergence,
         )
-        from intelligence.sentiment.evaluators.price_series_evaluator import (
-            compute_24h_price_metrics,
-            recalculate_live_price_geometry,
-        )
+        from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
 
         now_ms = 1_793_824_700_000
         rgnt_series = [
@@ -523,7 +517,6 @@ if __name__ == "__main__":
 
 def test_sanitize_pipe_field_strips_cr_lf_pipe_and_kalmanstatetracker_current_trend_iter62_s3():
     """[ITER62 #3] sanitize_pipe_field strips CR/LF/pipe and KalmanStateTracker.current_trend fails closed on corrupt future ts."""
-    from shadow_signals import KalmanStateTracker
     # 3. sanitize_pipe_field strips CR/LF/pipe and KalmanStateTracker.current_trend fails closed on corrupt future ts
     from botcore import sanitize_pipe_field
     assert sanitize_pipe_field("a|b\rc\nd") == "a/b c d"
@@ -536,7 +529,6 @@ def test_sanitize_pipe_field_strips_cr_lf_pipe_and_kalmanstatetracker_current_tr
 def test_kalmanstatetracker_current_trend_rejects_non_integer_kalman_trend_like_and_iter71_s4():
     """[ITER71 #4] KalmanStateTracker.current_trend rejects non-integer kalman_trend like 1.9 and handles OverflowError."""
     from types import SimpleNamespace
-    from shadow_signals import KalmanStateTracker
     # 4. KalmanStateTracker.current_trend rejects non-integer kalman_trend like 1.9 and handles OverflowError
     tracker = KalmanStateTracker(state_path=None, journal=SimpleNamespace(log_transition=lambda *a: None))
     tracker._state["BTCUSDC"] = {"ts": 1000.0, "kalman_trend": 1.9}

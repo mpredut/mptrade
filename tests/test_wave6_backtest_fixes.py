@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from offline.backtests.evaluation import load_venue_module
+from offline.backtests.execution import ExecutionModel
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -162,8 +164,6 @@ def test_wave6a_spot_rules_fast_profit_window_and_params_validation():
 
 
 def test_wave6a_partial_fill_tp_tranches_and_t212_ladder_no_zeno_paradox():
-    from offline.backtests.evaluation import load_venue_module
-    from offline.backtests.execution import ExecutionModel
     from strategies.spot_engine import StratParams as SpotParams
     from strategies.spot_replay import run_replay as run_spot_replay
 
@@ -230,7 +230,7 @@ def test_wave6a_partial_fill_tp_tranches_and_t212_ladder_no_zeno_paradox():
 
 def test_wave6a_t212_and_kraken_backtest_isolation_and_replay_guards(monkeypatch):
     import kraken.backtest as k_bt
-    from offline.backtests.evaluation import load_layered_env_config, load_venue_module
+    from offline.backtests.evaluation import load_layered_env_config
 
     t212_rp = load_venue_module("212trading", "replay.py", "test_w6_t212_rp2")
     t212_bt = load_venue_module("212trading", "backtest.py", "test_w6_t212_bt2")
@@ -298,7 +298,7 @@ def test_wave6a_datasets_order_ohlc_evaluation_and_worst_case_tiebreak(tmp_path)
         extract_cfg_int,
         to_ohlc,
     )
-    from offline.backtests.execution import ExecutionModel, choose_intrabar_scenario
+    from offline.backtests.execution import choose_intrabar_scenario
     from providers.order_ohlc_utils import drop_incomplete_last_bar
 
     # 1. datasets: save_dataset validates OHLC invariants & ordering; load_ohlc_tuples_csv deduplicates/sorts

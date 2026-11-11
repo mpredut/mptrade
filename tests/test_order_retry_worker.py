@@ -18,6 +18,8 @@ from providers.strategy_executor import (
 from providers.base import MarketDataProvider
 from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi
+import order_retry_worker as orw
+import pytest
 
 
 class FakeMkt:
@@ -1655,8 +1657,6 @@ def test__persistentquarantineset___contains___syncs_from_disk_across_restart_ma
 
 def test_order_retry_worker_awaiting_cancel_with_nan_filled_qty_must_not_resolve_iter45_s2(monkeypatch, tmp_path):
     """[ITER45 #2] order_retry_worker: awaiting_cancel with NaN filled_qty must NOT resolve/delete the replacement record."""
-    import pytest
-    import order_retry_worker as orw
     # 2. order_retry_worker: awaiting_cancel with NaN filled_qty must NOT resolve/delete the replacement record
     monkeypatch.setattr(oq, "QUEUE_FILE", str(tmp_path / "q45.jsonl"))
     monkeypatch.setattr(oq, "LOCK_FILE", str(tmp_path / "q45.lock"))
@@ -1690,8 +1690,6 @@ def test_order_retry_worker_awaiting_cancel_with_nan_filled_qty_must_not_resolve
 
 def test_order_retry_worker__normalize_bypass_set_and_incidentdigest_boolean_missing_key_rejection_iter89_s1(tmp_path):
     """[ITER89 #1] order_retry_worker._normalize_bypass_set and IncidentDigest boolean/missing key rejection."""
-    import pytest
-    import order_retry_worker as orw
     # 1. order_retry_worker._normalize_bypass_set and IncidentDigest boolean/missing key rejection
     assert orw._normalize_bypass_set(True) == set()
     assert orw._normalize_bypass_set([" G_PROF ", None, False, ""]) == {"G_PROF"}
@@ -1701,8 +1699,6 @@ def test_order_retry_worker__normalize_bypass_set_and_incidentdigest_boolean_mis
 
 def test_order_retry_worker__format_record_context_incidentdigest_collect_validation_iter97_s3(tmp_path):
     """[ITER97 #3] order_retry_worker._format_record_context & IncidentDigest.collect validation."""
-    import pytest
-    import order_retry_worker as orw
     # 3. order_retry_worker._format_record_context & IncidentDigest.collect validation
     ctx_str = orw._format_record_context(
         {"side": "BUY", "symbol": "BTCUSDC", "qty": True, "requested_price": True, "attempts": True}
@@ -1726,7 +1722,6 @@ def test_order_retry_worker__format_record_context_incidentdigest_collect_valida
 
 def test_order_retry_order_retry_worker_non_dict_bool_safety_iter104_s4():
     """[ITER104 #4] order_retry & order_retry_worker non-dict / bool safety."""
-    import order_retry_worker as orw
     # 4. order_retry & order_retry_worker non-dict / bool safety
     assert oq.complete_claim(None, "release") is False
     assert oq.activate_claimed_replacement(None, 1.0) is None
@@ -1736,8 +1731,6 @@ def test_order_retry_order_retry_worker_non_dict_bool_safety_iter104_s4():
 
 def test_order_retry_worker__provider_name_and_incidentdigest_iter114_s1(tmp_path):
     """[ITER114 #1] order_retry_worker._provider_name and IncidentDigest."""
-    import pytest
-    import order_retry_worker as orw
     # 1. order_retry_worker._provider_name and IncidentDigest
     assert orw._provider_name(SimpleNamespace(provider_name_for=lambda _s: None), {"symbol": "BTCUSDC", "provider_name": True}) is None
     assert orw._provider_name(SimpleNamespace(provider_name_for=lambda _s: "Binance"), {"symbol": "BTCUSDC", "provider_name": "   "}) == "Binance"

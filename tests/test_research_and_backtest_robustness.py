@@ -9,13 +9,19 @@ import pytest
 
 from offline.backtests import execution_calibration, financial_benchmark
 from offline.research.chop_weight_backtest import run_single_simulation
-from offline.research.hybrid_reentry import harness as hybrid_harness, report as hybrid_report
+from offline.research.hybrid_reentry import harness as hybrid_harness, report as hybrid_report, run_equities
 from offline.research.t212_continuous_grid import report as t212_report
-from strategies import spot_engine
-from binance_api import bapi, bapi_trades
+from strategies import spot_engine, spot_replay
+from binance_api import (
+    bapi,
+    bapi_allorders,
+    bapi_placeorder,
+    bapi_trades,
+    bapi_ws_normalize,
+)
 from binance_api.trailing_stop import TrailingStop
 from botcore import load_local_module
-from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
+from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
 from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.macro.news_feed_collector import NewsFeedCollector
@@ -24,8 +30,13 @@ from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentr
 from kraken.kraken_client import KrakenClient
 from market_monitor import new_coins_discovery as ncd
 from market_monitor.pricechecker import PriceChecker
-from notify_engine import alertnotifiers
-from offline.backtests.evaluation import assess_decision_evidence, load_venue_module
+from notify_engine import alertnotifiers, mailer
+from offline.backtests.evaluation import (
+    assess_decision_evidence,
+    build_execution_model_from_args,
+    evaluate_segment,
+    load_venue_module,
+)
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
 from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
 from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
@@ -35,10 +46,79 @@ from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
 from providers.replay_provider import ReplayMarketDataProvider
 from providers.t212_provider import T212Provider
-from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot, ReentrySnapshot
+from strategies.position_exit_manager import (
+    ExitAction,
+    PositionExitConfig,
+    PositionExitManager,
+    PositionSnapshot,
+    ReentrySnapshot,
+)
 from strategies.spot_engine import StratParams
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import active_intents
+import argparse
+import assetguardian
+import assetguardian as ag
+import asyncio
+import cacheManager as cm
+import cachepaths
+import external_order_guard as eog
+import importlib
+import io
+import math
+import monitororder as mo
+import monitortrades as mt
+import numpy as np
+import order_guard
+import priceAnalysis
+import rtrade_pair_store as rps
+import state_io
+import sys
+import threading
+import time
+import tradeall as ta
+import utils
+from binance_api.bapi_ws import BinancePriceStream
+from datetime import datetime, timezone
+from intelligence.composite import CompositeMarketIntelligence
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+from intelligence.internal.state import survival
+from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent
+from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+from intelligence.macro_analyzer import MacroAnalyzer
+from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+from kraken.trailing_stop import KrakenTrailing
+from market_monitor.new_coins_discovery import NewCoinsMonitor
+from market_monitor.pricefetcher import CacheAllPriceFetcherManager, StockYahooPricePlatform
+from offline.backtests.datasets import normalize_record
+from offline.backtests.execution_calibration import calibrate_execution_events
+from offline.backtests.financial_benchmark import aggregate_financial_windows
+from offline.backtests.metrics import calculate_performance_metrics
+from offline.backtests.walk_forward import summarize_test_windows
+from offline.legacy_tools import migrate_price_cache as mpc
+from offline.research import backtest_ranges as br
+from offline.research.hybrid_reentry.harness import evaluate_asset
+from offline.research.kraken_continuous_grid import report3 as k_rep3
+from offline.research.ml_forecast import forecast as ml_fc, vol_chronos as ml_vc
+from offline.research.ml_forecast.priceprediction import PricePrediction
+from offline.research.ml_forecast.vol_chronos import realized_vol_series
+from offline.research.monitortrades_backtest.replay_trend_source import _is_trend_up_tuple
+from offline.runners.fetch_hyperliquid_candles import _parse_intervals
+from orchestratorOS.admin import agy_store_fix, agy_store_fix as asf
+from orchestratorOS.agy import paths as agy_paths, topics, ui_mirror
+from providers.base import aggregate_fills_by_order_id
+from providers.quantity import balance_cap_quantity
+from rtrade_pair_store import RTradePairStore
+from strategies.rtrade_pair import PairCoordinator, PairPolicy
+from strategies.spot_replay import align_spot_interval_params
+from verify_tools import pnl_report, portfolio_snapshot
+from visuals import drawprices
 
 
 def test_t212_report_empty_directory(tmp_path):
@@ -197,14 +277,7 @@ def test_sim_clock_value_and_ts_alias():
 
 def test_walk_forward_cli_shared_helpers(tmp_path):
     """Shared walk-forward CLI helpers parse intervals, dataset specs, and window sizes."""
-    import argparse
-    from offline.backtests.evaluation import (
-        add_walk_forward_cli_args,
-        build_execution_model_from_args,
-        parse_dataset_specs,
-        parse_intervals,
-        resolve_window_sizes,
-    )
+    from offline.backtests.evaluation import add_walk_forward_cli_args, parse_dataset_specs, parse_intervals, resolve_window_sizes
 
     assert parse_intervals("60, 240,1440") == [60, 240, 1440]
     csv_file = tmp_path / "data.csv"
@@ -247,7 +320,6 @@ def test_strat_params_from_dict_ignores_removed_fields():
 
 def test_t212_replay_adapter_historical_fx_alignment():
     """make_t212_replay_adapter aligns fx_records via offline.backtests.datasets without ModuleNotFoundError."""
-    from offline.backtests.evaluation import evaluate_segment
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     mod = load_local_module(
@@ -326,7 +398,6 @@ def test_tradeall_iter_jsonl_ticks_does_not_abort_on_out_of_order_end_ts(tmp_pat
 
 def test_incremental_trend_buffer_flat_recent_gradient_and_rebase():
     """IncrementalTrendBuffer matches instant_trend_from_prices on flat recent prices and after trim_front rebase."""
-    from offline.research.monitortrades_backtest.replay_trend_source import _is_trend_up_tuple
     from pricewindow import IncrementalTrendBuffer, PriceWindow, instant_trend_from_prices
 
     buf = IncrementalTrendBuffer()
@@ -392,7 +463,6 @@ def test_smart_stop_loss_load_grace_state_sim_and_empty_file_caching(tmp_path, m
 
 def test_clear_position_stats_cache_respects_mt_persistence(tmp_path, monkeypatch):
     """clear_position_stats_cache does not delete _MT_STATE_FILE when persistence is disabled."""
-    import monitortrades as mt
 
     state_file = tmp_path / "mt_state.json"
     state_file.write_text('{"BTCUSDC": {}}', encoding="utf-8")
@@ -405,7 +475,6 @@ def test_clear_position_stats_cache_respects_mt_persistence(tmp_path, monkeypatc
 
 def test_tradeall_backtest_window_constants_and_run(tmp_path, monkeypatch):
     """tradeall exports WINDOW_SECONDS_SMALL/BIG and offline.backtests.tradeall.run_backtest runs end-to-end."""
-    import tradeall as ta
     from offline.backtests import tradeall as bt_ta
 
     assert hasattr(ta, "WINDOW_SECONDS_SMALL")
@@ -434,8 +503,6 @@ def test_backtest_suppresses_real_gemini_and_notifications(monkeypatch):
     """Backtest/replay modes strictly block real Gemini CLI/REST calls and external notifications."""
     import subprocess
     import urllib.request
-    import monitortrades as mt
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 
     # 1. GeminiClient must not invoke subprocess.run or urlopen when BACKTEST_MODE/REPLAY_MODE/DISABLE_GEMINI_LLM is set
     monkeypatch.setattr(
@@ -522,7 +589,6 @@ def test_kraken_continuous_grid_load_asset_prewarms_trend_series(tmp_path, monke
 
 def test_research_scripts_do_not_monkeypatch_at_import_time():
     """Importing research grid scripts must not leave Strategy.step mutated."""
-    import strategies.spot_engine as spot_engine
     import offline.research.kraken_continuous_grid.grid as kgrid
 
     assert spot_engine.Strategy.step is kgrid._orig_step
@@ -530,7 +596,6 @@ def test_research_scripts_do_not_monkeypatch_at_import_time():
 
 def test_intelligence_and_chop_backtest_fee_accounting_reconciliation(tmp_path):
     """Per-trade PnL in intelligence_backtest and chop_weight_backtest includes buy fees and reconciles with net_profit_usd."""
-    import math
     from offline.research.intelligence_backtest import run_intelligence_backtest
 
     # Create synthetic oscillating price series that triggers trades
@@ -607,7 +672,6 @@ def test_simulations_price_window_get_max_and_normalize_indices():
 def test_align_spot_interval_params_and_walk_forward_compare_multi_interval():
     """align_spot_interval_params aligns regime/volatility intervals so multi-interval walk-forward evaluation succeeds."""
     from offline.runners.walk_forward_compare import evaluate_spot_segment
-    from strategies.spot_replay import align_spot_interval_params
 
     base = StratParams(
         currency="USD",
@@ -652,7 +716,6 @@ def test_align_spot_interval_params_and_walk_forward_compare_multi_interval():
 def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
     """Verify run_equities BASE_CONFIG, BacktestBroker unbacked SELL guard, and scheduled_pilot diag cache isolation."""
     from offline.backtests.tradeall import BacktestBroker
-    from offline.research.hybrid_reentry import run_equities
     from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
     # 1. run_equities.BASE_CONFIG must satisfy 212trading StratParams.from_env
@@ -693,7 +756,6 @@ def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
     assert rb._LAST_RUN_DIAGNOSTICS[tk]["min_hard_tp_gain_ratio"] == 0.035
 
     # 5. migrate_price_cache outputs cache_sparse_price_<SYM>.jsonl
-    from offline.legacy_tools import migrate_price_cache as mpc
     legacy_json = tmp_path / "cache_price_TESTUSDC.json"
     legacy_json.write_text(json.dumps({"items": {"TESTUSDC": [[1700000000000, 123.45]]}}), encoding="utf-8")
     added = mpc.migrate_file(str(legacy_json), dry_run=False)
@@ -715,12 +777,9 @@ def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
 
 def test_offline_research_ml_and_pilot_edge_cases(tmp_path, monkeypatch):
     """Verify edge-case guards in scheduled_pilot, slice_dense_archive, forecast, priceprediction, vol_chronos, and hybrid_reentry.harness."""
-    import numpy as np
     from offline.research import slice_dense_archive as sda
     from offline.research.hybrid_reentry import harness as hh
-    from offline.research.ml_forecast import forecast as ml_fc
     from offline.research.ml_forecast import priceprediction as ml_pp
-    from offline.research.ml_forecast import vol_chronos as ml_vc
     from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
     # 1. scheduled_pilot._last_change_for ignores non-dict JSON lines
@@ -791,7 +850,6 @@ def test_offline_research_ml_and_pilot_edge_cases(tmp_path, monkeypatch):
 
 def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     """Verify ui_mirror._safe_step_count fallback and comprehensive_strategy_sweep guards."""
-    from orchestratorOS.agy import ui_mirror
     from offline.research import comprehensive_strategy_sweep as css
 
     # 1. ui_mirror.safe_nonneg_int handles bool, NaN, negative, and valid floats
@@ -834,7 +892,7 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     assert "unknown" in t212_out
 
     # 6. clean_order_cache, migrate_price_cache, and verify_account_facade edge cases
-    from offline.legacy_tools import clean_order_cache as coc, migrate_price_cache as mpc
+    from offline.legacy_tools import clean_order_cache as coc
     from verify_tools import verify_account_facade as vaf
 
     assert coc.is_garbage(None) is True
@@ -886,7 +944,6 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
 
     # 8. backtest_ranges and legacy move.backup_and_replace edge cases
     from offline.legacy_tools import move as legacy_move
-    from offline.research import backtest_ranges as br
 
     assert br.scan_backtest_ranges(str(tmp_path)) == {}
     cfg_file = tmp_path / "ranges.conf"
@@ -910,7 +967,6 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
         assert rp.entry_amount > 0
 
     # 10. assess_decision_evidence, calibrate_execution_events, walk_forward.run_compare, tradeall_observe, drawprices
-    from offline.backtests.execution_calibration import calibrate_execution_events
     from offline.runners import walk_forward as wf_disp
     from visuals import drawprices as dp, tradeall_observe as tob
 
@@ -944,7 +1000,6 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
 
     # 11. analyze_volatility.pullbacks empty input, 212trading/backtest.simulate None/shorthand keys, hyperliquid/backtest.precompute_signal
     import importlib.util
-    import sys
     root_dir = Path(tob.__file__).resolve().parent.parent
 
     mod_av = load_local_module(str(root_dir / "212trading"), "analyze_volatility", module_key="t212_analyze_vol_test", reload=True)
@@ -980,7 +1035,6 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
 
 def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp_path, monkeypatch):
     """Verify inline comment/interpolation handling in scheduled_pilot, run_replay_backtest, trade_cooldown, and hl signals fallback."""
-    import sys
 
     from offline.research.monitortrades_backtest import run_replay_backtest as rrb
     from offline.research.monitortrades_backtest import scheduled_pilot as sp
@@ -1026,7 +1080,6 @@ def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp
 def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comment(tmp_path, monkeypatch):
     """Verify HL price_analysis non-numeric mid safety, HL Strategy.run exception resilience, backtest_ranges section comments, and chop_benchmark step validation."""
 
-    from offline.research import backtest_ranges as br
     from offline.research import chop_weight_backtest as cwb
     import market_monitor.pricefetcher as pf
 
@@ -1111,9 +1164,6 @@ def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comme
 
 def test_ml_forecast_and_trigger_gate_and_grid_isolation(monkeypatch):
     """Verify ml_forecast/forecast.py and vol_chronos.py guards."""
-    import numpy as np
-    from offline.research.ml_forecast import forecast as ml_fc
-    from offline.research.ml_forecast import vol_chronos as ml_vc
 
     # 1. forecast.build_dataset handles short/non-positive arrays and returns 2D empty X
     X_empty, yd_empty, ym_empty = ml_fc.build_dataset([100.0, 0.0, -5.0])
@@ -1130,9 +1180,6 @@ def test_ml_forecast_and_trigger_gate_and_grid_isolation(monkeypatch):
 
 def test_glob_escape_bracket_paths_and_export_env_parsing(tmp_path):
     """Verify glob.escape handling on directory paths containing brackets and export env parsing."""
-    import state_io
-    import cachepaths
-    import active_intents
     from orchestratorTrade import autonomous_intent_gateway as aig
 
     bracket_dir = tmp_path / "dir[with]brackets"
@@ -1243,8 +1290,6 @@ def test_xstock_watch_new_coins_and_pnl_report_guards(monkeypatch):
 
 def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
     """Verify agy_store_fix bracketed glob handling and verify_tools isolation/guards."""
-    import sys
-    from orchestratorOS.admin import agy_store_fix as asf
     from verify_tools import check_cache_coherence as ccc
     from verify_tools import kraken_pnl_backfill as kpb
     from verify_tools import portfolio_snapshot as ps
@@ -1288,7 +1333,6 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
     k_sh._print_block("CUSTOM", {"bars": 10, "buyhold_pct": 1.5, "configs": {"alt": {"net_pct": 1.0, "total_pct": 1.2, "maxdd_pct": 0.5, "cycles": 1}}})
 
     # 7. BinancePriceStream._process_message accepts float-formatted event timestamps
-    from binance_api.bapi_ws import BinancePriceStream
     ps_ws = BinancePriceStream()
     ps_ws._process_message('{"data": {"s": "BTCUSDC", "c": "75000.5", "E": "1700000000123.0"}}')
     assert ps_ws.get_price("BTCUSDC") == 75000.5
@@ -1376,7 +1420,6 @@ def test_provider_env_value_and_order_price_validation(tmp_path):
 
 def test_venue_market_data_client_and_strategy_edge_cases(tmp_path, monkeypatch):
     """Verify null-safe Yahoo/Kraken/Hyperliquid payloads and T212/HL strategy edge cases."""
-    import sys
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     t212_dir = os.path.join(root_dir, "212trading")
@@ -1577,8 +1620,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert t212_prov.free_balance("NVDA_US_EQ") == 2.0
 
     # 7. PositionExitManager, PairCoordinator.from_state, and PriceChecker edge cases
-    import math
-    from strategies.rtrade_pair import PairCoordinator
 
     snap = PositionSnapshot(symbol="BTCUSDC", current_price="110.0", avg_buy_price="100.0")
     assert snap.is_valid_price is True
@@ -1663,7 +1704,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
         vol_pct_to_ratio,
         vol_ratio_to_pct,
     )
-    import numpy as np
     noisy_prices = [None, True] + [100.0 + (i % 3) * 0.5 for i in range(25)] + ["bad", False]
     v1h = calculate_volatility_1h(noisy_prices, 60.0)
     assert v1h is not None and v1h > 0.0
@@ -1717,7 +1757,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     with pytest.raises(ProviderError):
         kp.ohlc_series("HYPEUSD", 0)
 
-    from providers.base import aggregate_fills_by_order_id
     agg_rows = [
         {"orderId": "O10", "side": "BUY", "price": 10.0, "qty": 2.0, "timestamp": 1000},
         {"orderId": "O11", "side": "SELL", "price": 12.0, "qty": 1.0, "timestamp": 2000},
@@ -1725,7 +1764,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert len(aggregate_fills_by_order_id(agg_rows, side="b")) == 1
     assert len(aggregate_fills_by_order_id(agg_rows, side="s")) == 1
 
-    from providers.quantity import balance_cap_quantity, resolve_assets
+    from providers.quantity import resolve_assets
     assert resolve_assets("  btcusdc  ") == ("BTC", "USDC")
     cap_b, asset_b = balance_cap_quantity(lambda _a: 100.0, "BTCUSDC", " b ", 50.0)
     assert cap_b == 2.0 and asset_b == "USDC"
@@ -1743,8 +1782,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert _parse_tranches(None) == []
 
     # 11. Binance API & Hyperliquid helper guards (order_type normalization, _last_opposite_fill_price_api, HL cancel/market_data/signals)
-    import time
-    from binance_api import bapi_placeorder
 
     hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
     hl_client = load_local_module(hl_dir, "hl_client", module_key="_test_hl_client", register=False)
@@ -1813,7 +1850,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     t212_md2 = load_local_module(t212_dir, "market_data", module_key="_test_t212_md2", register=False)
     t212_st2 = load_local_module(t212_dir, "strategy", module_key="_test_t212_st2", register=False)
 
-    from offline.research.hybrid_reentry import run_equities
     base_t212_cfg = dict(run_equities.BASE_CONFIG, YAHOO_SYMBOL="NVDA")
     assert t212_md2.parse_interval_minutes(" 1h ") == 60
     with pytest.raises(ValueError):
@@ -1848,7 +1884,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
 
     # 14. shadow_runtime, instrument_registry, orchestratorOS.agy.paths, and watchdog_common guards
     from instrument_registry import InstrumentSpec, select_instruments
-    from orchestratorOS.agy import paths as agy_paths
     from orchestratorOS.lib import watchdog_common as wd_common
     from botcore import require_shadow_interval
 
@@ -1899,9 +1934,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert sent_urls == ["https://ntfy.sh/fallback_topic"]
 
     # 15. persistence, survival, mean_reversion_trigger, trend_significance_guard, exhaustion_guard, parabolic_guard, and pricefetcher guards
-    import numpy as np
     from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
     from intelligence.internal.state.persistence import (
         _extract_finite_prices,
         calculate_mann_kendall,
@@ -1909,8 +1942,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     )
     from intelligence.internal.state.survival import block_slopes, hybrid_T
     from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
-    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
-    from market_monitor.pricefetcher import StockYahooPricePlatform
+    from intelligence.internal.triggers.trigger_event import TriggerSide
 
     assert list(_extract_finite_prices([True, 100.0, False, 102.0])) == [100.0, 102.0]
     assert len(_extract_finite_prices(np.array([True, False]))) == 0
@@ -1962,16 +1994,13 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
 
     # 16. External/Sentiment/Macro collectors, triggers, and guards whitespace/bool/bounds hardening
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector, LiquidationSummary
-    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry, DerivativesTelemetryCollector
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
-    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
     from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
-    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
     from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
     from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
 
@@ -2067,11 +2096,8 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
 
 def test_composite_and_macro_advisor_robustness(tmp_path):
     """Verify composite market intelligence, geopolitical analyzer, sentiment advisor, and post-stop guard normalization."""
-    from intelligence.composite import CompositeMarketIntelligence
     from intelligence.daemon import IntelligenceTelemetryDaemon
     from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 
     cmi = CompositeMarketIntelligence()
     # Non-sequence prices_for_vol and string sample_rate_sec must not raise TypeError
@@ -2177,10 +2203,8 @@ def test_composite_and_macro_advisor_robustness(tmp_path):
 
 def test_intelligence_cli_bapi_ws_and_pricefetcher_robustness(tmp_path):
     """Verify intelligence.cli, bapi_ws_health, bapi_ws, and pricefetcher handle string booleans, whitespace symbols, and FearGreedSnapshot schema."""
-    from binance_api.bapi_ws import BinancePriceStream
     from binance_api.bapi_ws_bridge import mark_ws_available, should_poll_for_manager
     from intelligence.cli import inspect_symbol_intelligence
-    from market_monitor.pricefetcher import StockYahooPricePlatform
 
     # 1. intelligence.cli: whitespace symbol + FearGreedSnapshot timestamp/classification fields
     fg_file = tmp_path / "fear_greed_collect.json"
@@ -2229,9 +2253,7 @@ def test_intelligence_cli_bapi_ws_and_pricefetcher_robustness(tmp_path):
 
 def test_monitortrades_agy_paths_and_external_collectors_robustness(tmp_path, monkeypatch):
     """Verify monitortrades, orchestratorOS.agy.paths, and external collectors handle malformed payloads and non-numeric state values."""
-    import monitortrades as mt
-    from orchestratorOS.agy import paths as agy_paths
-    from strategies.position_exit_manager import ExitAction, ExitDecision
+    from strategies.position_exit_manager import ExitDecision
 
     # 1. WhalePositioningSnapshot.from_dict handles non-dict payload gracefully
     snap = WhalePositioningSnapshot.from_dict(None)  # type: ignore[arg-type]
@@ -2281,9 +2303,6 @@ def test_monitortrades_agy_paths_and_external_collectors_robustness(tmp_path, mo
 
 def test_monitororder_tradeall_and_assetguardian_edge_cases(monkeypatch):
     """Verify monitororder, tradeall, and assetguardian handle bool TTLs/quantities, string initial_prices, and whitespace symbols."""
-    import monitororder as mo
-    import tradeall as ta
-    import assetguardian as ag
 
     # 1. monitororder.resolve_effective_order_ttl ignores boolean custom_ttl
     ttl = mo.resolve_effective_order_ttl("o1", "cid1", owner="tradeall", custom_ttl_map={"o1": True})
@@ -2327,8 +2346,8 @@ def test_position_exit_manager_rtrade_pair_and_bapi_placeorder_hardening():
     from binance_api import bapi_placeorder as bpo
     from binance_api.trailing_stop import TRAIL_PCT
     from providers.strategy_executor import SubmissionRefused
-    from strategies.position_exit_manager import ExitAction, ReentryAction
-    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
+    from strategies.position_exit_manager import ReentryAction
+    from strategies.rtrade_pair import OrderTicket
 
     # 1. PositionSnapshot / ReentrySnapshot geometry properties handle None/NaN/bool/corrupt strings safely
     bad_pos = PositionSnapshot(symbol="BTCUSDC", current_price=None, avg_buy_price=float("nan"))  # type: ignore[arg-type]
@@ -2394,7 +2413,7 @@ def test_position_exit_manager_rtrade_pair_and_bapi_placeorder_hardening():
 def test_cache_manager_item_validation_and_kraken_trailing_hardening():
     """Verify CacheTradeManager, CacheOrderManager, CacheCurrentPriceManager, and KrakenTrailing handle malformed inputs safely."""
     from cacheManager import CacheCurrentPriceManager, CacheOrderManager, CacheTradeManager
-    from kraken.trailing_stop import TRAIL_PCT as KRAKEN_TRAIL_PCT, KrakenTrailing
+    from kraken.trailing_stop import TRAIL_PCT as KRAKEN_TRAIL_PCT
 
     trade_mgr = object.__new__(CacheTradeManager)
     valid_trade = {
@@ -2438,7 +2457,6 @@ def test_cache_manager_item_validation_and_kraken_trailing_hardening():
 
 def test_venue_market_data_and_client_hardening():
     """Verify Binance, Kraken, Hyperliquid, and T212 market_data/client helpers reject malformed inputs."""
-    import importlib
     import importlib.util
     from binance_api import market_data as b_md
     from kraken import market_data as k_md
@@ -2488,7 +2506,6 @@ def test_venue_market_data_and_client_hardening():
 
 def test_t212_strategy_order_manager_and_ipo_hardening():
     """Verify T212 strategy, order_manager, and ipo helpers handle malformed inputs safely."""
-    import importlib
     t212_strat = importlib.import_module("212trading.strategy")
     t212_om = importlib.import_module("212trading.order_manager")
     t212_ipo = importlib.import_module("212trading.ipo")
@@ -2552,7 +2569,6 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     assert hl_rp.run_replay([], [], [], [], {"currency": None})["account_currency"] == "USDC"
 
     # 3. strategies/spot_replay.py handles numeric-string OHLC and malformed warmup_ohlc
-    from strategies import spot_replay
     p_spot = spot_engine.StratParams(
         currency="USD",
         entry_amount=100.0,
@@ -2595,7 +2611,6 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     assert t212_pa.push("   ", "NVDA at 100", "body") is False
 
     # 7. cachepaths and kraken backtest_trail
-    import cachepaths
     from kraken import backtest_trail as k_bt_tr
 
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", "   ")
@@ -2612,7 +2627,6 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
 
     # 8. providers.base.extract_order_id and binance_api.bapi_allorders/bapi_trades hardening
     from providers.base import extract_order_id
-    from binance_api import bapi_allorders
 
     assert extract_order_id({"orderId": "", "id": "999"}) == "999"
     assert extract_order_id({"orderId": "   ", "txid": ["", "TX42"]}) == "TX42"
@@ -2624,8 +2638,7 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
         bapi_allorders.paginate_my_trades(bad_client, "BTCUSDC", 1000, limit=2, strict=True)
 
     # 9. bapi_ws_normalize, order_id_context, and bapi_ws stop self-join hardening
-    import threading
-    from binance_api import bapi_ws, bapi_ws_normalize
+    from binance_api import bapi_ws
     from providers import order_id_context
 
     assert bapi_ws_normalize.parse_order_execution_report(
@@ -2651,13 +2664,9 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
 
 
 def test_root_modules_batch4_hardening():
-    import assetguardian
     from intelligence.external.collectors import bybit_liquidations_collector as liquidation_signal
     import log
-    import order_guard
-    import priceAnalysis
     import pricewindow
-    import utils
 
     # order_guard.select_extreme_reference and _aggregate_reference_prices
     assert order_guard.select_extreme_reference([None, "bad", True, float("nan")], "BUY") is None
@@ -2709,10 +2718,7 @@ def test_root_modules_batch4_hardening():
 
 
 def test_batch5_hardening():
-    import numpy as np
-    from intelligence.internal.state import survival
     from notify_engine import server as notify_server
-    import priceAnalysis
 
     hl_pa = load_local_module(
         str(Path(__file__).resolve().parent.parent / "hyperliquid"),
@@ -2746,9 +2752,6 @@ def test_batch5_hardening():
 
 
 def test_cooldown_and_market_monitor_hardening(tmp_path):
-    import threading
-    from market_monitor.new_coins_discovery import NewCoinsMonitor
-    from market_monitor.pricefetcher import CacheAllPriceFetcherManager
 
     # 3. PriceChecker._is_dynamic_symbol rejects NaN/bool/non-positive timestamps and stop_monitoring avoids self-join
     dummy_cache = SimpleNamespace(
@@ -2787,9 +2790,6 @@ def test_cooldown_and_market_monitor_hardening(tmp_path):
 
 def test_batch6_hardening(tmp_path):
     from market_monitor import alerts_config
-    from market_monitor.new_coins_discovery import NewCoinsMonitor
-    from visuals import drawprices
-    import cacheManager as cm
 
     # 1. AutonomousIntentGateway._get_live_price reads latest entry ([-1]) from cache_current_price.json
     cache_dir = tmp_path / "cachedb"
@@ -2841,10 +2841,6 @@ def test_batch6_hardening(tmp_path):
 
 
 def test_batch7_hardening():
-    import sys
-    from offline.backtests.datasets import normalize_record
-    from offline.backtests.metrics import calculate_performance_metrics
-    from offline.backtests.walk_forward import summarize_test_windows
 
     # 1. datasets.normalize_record accepts integer-valued float string timestamp and rejects fractional/non-finite
     rec = normalize_record({"timestamp": "1700000000.0", "open": 100, "high": 105, "low": 99, "close": 102})
@@ -2891,9 +2887,7 @@ def test_batch7_hardening():
 
 
 def test_batch8_hardening():
-    import numpy as np
     from offline.research.ml_forecast import forecast as ml_forecast
-    from offline.research.ml_forecast.priceprediction import PricePrediction
     from offline.research.monitortrades_backtest.replay_trend_source import DynamicReplayTrendSource
 
     # 1. ml_forecast.walk_forward and live_forecast handle empty and single-class datasets
@@ -2974,7 +2968,6 @@ def test_batch10_archive_hardening(tmp_path):
 
 
 def test_batch11_verify_tools_and_watchdog_hardening(tmp_path, monkeypatch):
-    import sys
     from verify_tools import check_cache_coherence, translation_audit
     from orchestratorOS.livecheck import os_resources_watchdog as orw
 
@@ -2996,7 +2989,7 @@ def test_batch11_verify_tools_and_watchdog_hardening(tmp_path, monkeypatch):
 
 
 def test_batch12_verify_tools_pnl_and_facade_hardening(monkeypatch, capsys):
-    from verify_tools import pnl_report, portfolio_snapshot, verify_account_facade
+    from verify_tools import verify_account_facade
 
     # 1. verify_account_facade.position_from ignores buy orders with zero/negative price or zero qty
     avg, net = verify_account_facade.position_from(
@@ -3029,7 +3022,7 @@ def test_batch12_verify_tools_pnl_and_facade_hardening(monkeypatch, capsys):
 
 
 def test_batch13_agy_summary_store_topics_and_ui_mirror_safety(tmp_path):
-    from orchestratorOS.agy import summary_store, topics, ui_mirror
+    from orchestratorOS.agy import summary_store
 
     # 1. delete_threads refuses empty/dot/traversal cids and never wipes root brain/ dir
     cli_base = tmp_path / "antigravity-cli"
@@ -3062,7 +3055,7 @@ def test_batch13_agy_summary_store_topics_and_ui_mirror_safety(tmp_path):
 
 
 def test_batch14_notify_engine_server_alertnotifiers_and_mailer_hygiene(monkeypatch, tmp_path):
-    from notify_engine import mailer, server
+    from notify_engine import server
 
     # 1. server._send_ntfy rejects bool/whitespace topic without posting to root ntfy.sh
     monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(tmp_path / "queue.jsonl"))
@@ -3106,7 +3099,6 @@ def test_batch14_notify_engine_server_alertnotifiers_and_mailer_hygiene(monkeypa
 
 
 def test_batch15_pricefetcher_new_coins_and_cooldown_hardening(monkeypatch, tmp_path):
-    from datetime import datetime, timezone
     from market_monitor import pricefetcher as pf
 
     # 1. BinancePricePlatform._load_symbols ignores None/non-string symbol and baseAsset
@@ -3177,10 +3169,8 @@ def test_batch15_pricefetcher_new_coins_and_cooldown_hardening(monkeypatch, tmp_
 
 
 def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monkeypatch, tmp_path):
-    import math
     from intelligence import globaltelemetry_collector as gtc
     from intelligence import macro_analyzer as ma
-    from orchestratorOS.admin import agy_store_fix as asf
     from orchestratorOS.admin import prune_llm_threads as plt
     from orchestratorOS.lib import watchdog_common as wc
     from orchestratorOS.livecheck import os_resources_watchdog as orw
@@ -3243,10 +3233,9 @@ def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monke
 
 
 def test_batch17_intelligence_daemon_gemini_client_advisor_and_cli_hardening(capsys, tmp_path):
-    import math
     from intelligence import cli as icli
     from intelligence import daemon as idaemon
-    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, SentimentAdvisorAssessment
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisorAssessment
 
     # 1. IntelligenceTelemetryDaemon._parse_bool_flag rejects NaN and write_heartbeat sanitizes NaN/None status
     assert idaemon._parse_bool_flag(float("nan")) is False
@@ -3298,9 +3287,9 @@ def test_batch17_intelligence_daemon_gemini_client_advisor_and_cli_hardening(cap
 
 
 def test_batch18_geopolitical_news_and_sentiment_collectors_guards_hardening(tmp_path):
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
     from intelligence.macro.news_feed_collector import NewsHeadline
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
     from intelligence.sentiment.guards.high_stake_guard import evaluate_llm_guard_response, is_llm_guard_exempt
 
@@ -3369,12 +3358,7 @@ def test_batch18_geopolitical_news_and_sentiment_collectors_guards_hardening(tmp
 
 
 def test_batch19_external_and_internal_collectors_guards_triggers_hardening(tmp_path):
-    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
-    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
-    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
     from intelligence.internal.state.survival import get_trend_survival_metrics
-    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent
 
     # 1. External collectors reject allow_network="false" / NaN without network calls and ignore None in record_*
     dt_col = DerivativesTelemetryCollector(cache_dir=str(tmp_path))
@@ -3428,10 +3412,8 @@ def test_batch19_external_and_internal_collectors_guards_triggers_hardening(tmp_
 
 
 def test_batch20_visuals_summary_store_and_composite_hardening(tmp_path):
-    import numpy as np
-    from intelligence.composite import CompositeMarketIntelligence
     from orchestratorOS.agy import summary_store as ss
-    from visuals import drawprices, tradeall_observe
+    from visuals import tradeall_observe
 
     # 1. tradeall_observe.format_state_text handles string/float trend labels
     txt = tradeall_observe.format_state_text(
@@ -3473,8 +3455,6 @@ def test_batch20_visuals_summary_store_and_composite_hardening(tmp_path):
 
 
 def test_batch21_monitortrades_position_exit_manager_and_active_intents_hardening():
-    import active_intents
-    import monitortrades as mt
 
     # 1. monitortrades._FifoTradeIdTracker sanitizes maxsize and refreshes FIFO order
     tracker = mt._FifoTradeIdTracker(maxsize=True)  # type: ignore[arg-type]
@@ -3546,16 +3526,11 @@ def test_batch21_monitortrades_position_exit_manager_and_active_intents_hardenin
 
 
 def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
-    import asyncio
     import binance_api.bapi_ws as bapi_ws
     import binance_api.bapi_ws_bridge as bapi_ws_bridge
     import binance_api.market_data as b_md
-    from providers.base import (
-        MarketDataProvider,
-        aggregate_fills_by_order_id,
-    )
+    from providers.base import MarketDataProvider
     from providers.order_ohlc_utils import extract_order_side
-    from providers.quantity import balance_cap_quantity
 
     # 1. bapi_ws._parse_bool_flag, safe_nonneg_float, and _interruptible_sleep handle bool/NaN/negative/0 inputs safely
     assert bapi_ws._parse_bool_flag("false", default=True) is False
@@ -3631,9 +3606,7 @@ def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
 
 
 def test_batch23_market_monitor_lock_and_notify_engine_hardening(tmp_path, monkeypatch):
-    import threading
     import market_monitor.alerts_config as alerts_config
-    from market_monitor.pricefetcher import CacheAllPriceFetcherManager
     from lock.cooldown import FileLock
     from notify_engine.server import NotificationServer
 
@@ -3683,10 +3656,7 @@ def test_batch23_market_monitor_lock_and_notify_engine_hardening(tmp_path, monke
 
 
 def test_batch24_execution_evaluation_and_financial_benchmark_hardening():
-    import argparse
     from offline.backtests.execution import ExecutionModel, FeeModel, split_order_fill
-    from offline.backtests.evaluation import build_execution_model_from_args
-    from offline.backtests.financial_benchmark import aggregate_financial_windows
 
     # 1. FeeModel / ExecutionModel reject None/non-numeric and parse string market flag safely
     with pytest.raises(ValueError, match="limit_fee_pct"):
@@ -3755,9 +3725,8 @@ def test_batch24_execution_evaluation_and_financial_benchmark_hardening():
 
 
 def test_batch25_datasets_rtrade_pair_exit_manager_and_verify_tools_hardening():
-    from offline.backtests.datasets import align_previous_values, drop_incomplete_last_bar, normalize_record
-    from strategies.spot_replay import align_spot_interval_params
-    from strategies.rtrade_pair import PairPolicy, anchored_exit_price, quote_prices
+    from offline.backtests.datasets import align_previous_values, drop_incomplete_last_bar
+    from strategies.rtrade_pair import anchored_exit_price, quote_prices
     import verify_tools.portfolio_snapshot as ps
 
     # 1. datasets: normalize_record / drop_incomplete_last_bar / align_previous_values
@@ -3815,7 +3784,6 @@ def test_batch25_datasets_rtrade_pair_exit_manager_and_verify_tools_hardening():
 
 
 def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(tmp_path, monkeypatch):
-    import asyncio
     from collections import defaultdict, deque
     import orchestratorOS.agy.protobuf as pb
     from orchestratorTrade.orchestrator import BotManager
@@ -3892,10 +3860,7 @@ def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(
 
 
 def test_batch27_research_syspath_and_ml_forecast_hardening():
-    import numpy as np
-    import sys
     from offline.research.ml_forecast.forecast import build_dataset
-    from offline.research.ml_forecast.vol_chronos import realized_vol_series
 
     # 1. Importing research/kraken modules does not place kraken/ at sys.path[0]
     assert not sys.path[0].endswith("/kraken")
@@ -3996,7 +3961,6 @@ def test_batch28_providers_spot_engine_and_visuals_hardening(monkeypatch):
 
 def test_batch29_cross_venue_module_collision_and_syspath_isolation():
     import importlib.util
-    import sys
     import types
     from botcore import prepare_shadow_runtime
 
@@ -4041,7 +4005,6 @@ def test_batch29_cross_venue_module_collision_and_syspath_isolation():
 
 def test_batch30_trigger_gate_common_grid_reports_and_monitortrades_pilot_hardening(tmp_path, monkeypatch):
     from offline.research.kraken_continuous_grid import report as k_rep1
-    from offline.research.kraken_continuous_grid import report3 as k_rep3
     from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
     # 3. kraken_continuous_grid report.py and report3.py handle malformed/null nested full/year/0.26 payloads
@@ -4092,9 +4055,7 @@ def test_batch30_trigger_gate_common_grid_reports_and_monitortrades_pilot_harden
 
 
 def test_batch31_intelligence_macro_gemini_parabolic_and_verify_tools_hardening(tmp_path, monkeypatch):
-    import io
     import urllib.request
-    from intelligence.macro_analyzer import MacroAnalyzer
     import verify_tools.check_cache_coherence as ccc
     import verify_tools.watch_trade_decisions as wtd
 
@@ -4181,7 +4142,6 @@ def test_batch31_intelligence_macro_gemini_parabolic_and_verify_tools_hardening(
 
 
 def test_batch31_priceprediction_backtest_ranges_promotion_and_runners_hardening(tmp_path):
-    from offline.research.ml_forecast.priceprediction import PricePrediction
     from offline.research.backtest_ranges import scan_all
     from offline.backtests.promotion import (
         _one_sided_sign_pvalue,
@@ -4244,17 +4204,8 @@ def test_batch31_priceprediction_backtest_ranges_promotion_and_runners_hardening
 
 
 def test_batch32_backtests_metrics_evaluation_and_calibration_hardening():
-    import argparse
-    from offline.backtests.metrics import (
-        calculate_performance_metrics,
-        format_performance_summary,
-        validate_replay_metrics,
-    )
-    from offline.backtests.walk_forward import summarize_test_windows
-    from offline.backtests.evaluation import evaluate_segment
-    from offline.backtests.financial_benchmark import aggregate_financial_windows
-    from offline.backtests.execution_calibration import calibrate_execution_events, distribution
-    from offline.runners.fetch_hyperliquid_candles import _parse_intervals
+    from offline.backtests.metrics import format_performance_summary, validate_replay_metrics
+    from offline.backtests.execution_calibration import distribution
     from offline.runners.spot_profile_review import review
 
     # 1. metrics: calculate_performance_metrics, format_performance_summary, validate_replay_metrics
@@ -4304,8 +4255,6 @@ def test_batch32_backtests_metrics_evaluation_and_calibration_hardening():
 
 
 def test_batch33_market_monitor_kraken_reconciler_and_notifier_hardening(tmp_path, monkeypatch):
-    import io
-    import time
     import urllib.request
     from market_monitor import pricefetcher as pf
     from kraken import trailing_stop as k_ts
@@ -4411,10 +4360,9 @@ def test_batch33_market_monitor_kraken_reconciler_and_notifier_hardening(tmp_pat
 
 def test_batch33_cacheintegrity_instrument_registry_rtrade_and_providers_hardening(tmp_path, monkeypatch):
     """Verify cacheintegrity, instrument_registry, rtrade_pair_store, HyperliquidProvider, and ReplayMarketDataProvider edge cases."""
-    import sys
     import cacheintegrity
     import instrument_registry
-    from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
+    from rtrade_pair_store import rtrade_client_order_id
 
     # 1. cacheintegrity.counts_for_records & nonzero_counts
     assert cacheintegrity.counts_for_records(None) == {}  # type: ignore[arg-type]
@@ -4467,8 +4415,6 @@ def test_batch33_cacheintegrity_instrument_registry_rtrade_and_providers_hardeni
 def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_path):
     """Verify StratParams/Strategy, order_retry_worker._safe_int, state_io.load_json_state, and utils._sign_ed25519."""
     import order_retry_worker as orw
-    import state_io
-    import utils
     from strategies.spot_engine import Strategy
 
     # 1. StratParams.from_dict coerces integer strings and rejects bools/non-dicts
@@ -4526,7 +4472,6 @@ def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(
     from intelligence.internal.state import volatility as vol_mod
     from intelligence.sentiment.guards import high_stake_guard as hsg
     from offline.research import intelligence_backtest as ibt
-    from verify_tools import pnl_report, portfolio_snapshot
 
     # 1. intelligence_backtest.safe_float handles malformed strings, bools, and NaN
     assert ibt.safe_float("bad", 3.5) == 3.5
@@ -4546,7 +4491,6 @@ def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(
     assert vol_mod._extract_vol_ratio_from_file(str(vol_file), "BTC/USDC") == 0.025
 
     # 3. high_stake_guard.collect_pretrade_telemetry isolates bad field values and formats bid+ask=100%
-    import external_order_guard as eog
 
     monkeypatch.setattr(
         eog,
@@ -4716,8 +4660,6 @@ def test_batch36_t212_hyperliquid_kraken_and_ws_normalize_hardening(monkeypatch)
 def test_batch36b_watchdog_overnight_monitor_agy_store_fix_and_macro_hardening(tmp_path, monkeypatch):
     """Verify watchdog_common.save_state, agy_store_fix.mode_ui_sync_check, FleetHealthMonitor default log hb, MacroAnalyzer whale variant lookup, and NewsFeedCollector._effective_history_file."""
     from orchestratorOS.lib import watchdog_common
-    from orchestratorOS.admin import agy_store_fix
-    from intelligence.macro_analyzer import MacroAnalyzer
 
     # 1. watchdog_common.save_state uses save_json_state and load_state recovers from .previous
     st_path = tmp_path / "watchdog_state.json"
@@ -4800,9 +4742,6 @@ def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tm
     """Verify order_retry None/float-string handling, order_retry_worker._alert_giveups, order_guard decisions_map lookup, assetguardian p3b confidence formatting, monitortrades tp_ref normalization, and tradeall TrendState.is_trend_a_minim_validated."""
     import order_retry as oq
     import order_retry_worker as orw
-    import order_guard
-    import assetguardian
-    import monitortrades as mt
     import tradeall
 
     # 1. order_retry.is_expired and is_due handle None ttl_started_ts / attempts / last_attempt_ts
@@ -4900,12 +4839,7 @@ def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tm
 
 def test_batch37b_survival_t_cache_qlimit_external_guard_and_mt_state_hardening(tmp_path, monkeypatch):
     """Verify survival._effective_t_cache_file & symbol normalization, qlimit2/external guard bool/NaN resilience, and monitortrades state cleanup."""
-    import time
-    import numpy as np
-    from intelligence.internal.state import survival
     import qlimit_order_guard as qog
-    import external_order_guard as eog
-    import monitortrades as mt
 
     # 1. survival._effective_t_cache_file respects MPTRADE_CACHEDB_DIR and estimate_T strips slashes before fetch_klines
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
@@ -4928,7 +4862,6 @@ def test_batch37b_survival_t_cache_qlimit_external_guard_and_mt_state_hardening(
     assert gauss_h is not None and gauss_h > 0.0
 
     # 2. qlimit_order_guard and external_order_guard delegate bool/invalid margin values to guard defaults without crashing or skipping
-    import order_guard
     base_m = dict(order_guard._load_margins())
     bad_qlimit_m = {
         **base_m,
@@ -4989,13 +4922,10 @@ def test_batch37b_survival_t_cache_qlimit_external_guard_and_mt_state_hardening(
 
 def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening(tmp_path, monkeypatch):
     """Verify Batch 38 fixes across rtrade_pair_store, trailing_core, log, pricewindow, cachetrend, cacheManager, and bapi_trades."""
-    import time
-    import rtrade_pair_store as rps
     import trailing_core as tc
     import log as log_mod
     import pricewindow as pw
     import cachetrend as ct
-    import cacheManager as cm
 
     # 1. RTradePairStore: intent normalizes price to float and strips pair_id; persist_intent strips symbol/pair_id
     store = rps.RTradePairStore(str(tmp_path / "pairs.json"), terminal_retention=2)
@@ -5133,7 +5063,7 @@ def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
     from providers.base import extract_order_price
     from providers.order_ohlc_utils import extract_order_fee
     from providers.market_api import MarketApi, ProviderError
-    from strategies import spot_replay, spot_rules
+    from strategies import spot_rules
 
     # 1. extract_order_fee skips invalid first fee/asset key and falls back to valid alternate key
     fee_info = extract_order_fee(
@@ -5215,9 +5145,7 @@ def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
 
 
 def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
-    import importlib
     import importlib.util
-    import sys
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -5302,7 +5230,6 @@ def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
 
 
 def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening(tmp_path, monkeypatch):
-    from binance_api import bapi_allorders, bapi_ws_normalize
     import cacheintegrity as ci
     import priceAnalysis as pa
 
@@ -5361,11 +5288,7 @@ def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening
 def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_and_monitors_hardening(tmp_path, monkeypatch):
     import order_lifecycle as aop
     import active_intents as ai
-    import assetguardian as ag
-    import monitororder as mo
-    import monitortrades as mt
     import order_retry as oret
-    from rtrade_pair_store import RTradePairStore
 
     # 1. accepted_order_persistence.clean_order_id and active_intents.clean_order_id reject negative/zero and normalize '+123.0'
     for fn in (aop.clean_order_id, ai.clean_order_id):
@@ -5377,7 +5300,6 @@ def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_an
         assert fn("RT_abc") == "RT_abc"
 
     # 2. rtrade_pair_store.clean_order_id_str rejects negative numeric values and normalizes '+456.0'
-    import rtrade_pair_store as rps
     assert rps.clean_order_id_str(-5) == ""
     assert rps.clean_order_id_str("-5.0") == ""
     assert rps.clean_order_id_str("+0.0") == ""
@@ -5426,8 +5348,6 @@ def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_an
 
 
 def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
-    import asyncio
-    import cacheManager as cm
     from intelligence.external.collectors import bybit_liquidations_collector as ls_mod
     from providers import order_ohlc_utils as oou
     from providers import quantity as pqty
@@ -5554,8 +5474,6 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
 
 def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatch):
     from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss, evaluate_smart_stop_loss
-    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 
     # 1. ParabolicSurgeGuard handles generator/invalid price_history and corrupted _states
     pg = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5)
@@ -5584,7 +5502,6 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
     assert ok_dict is False and "suspected_wick_hunt" in rsn_dict
     clear_smart_stop_loss("BTCUSDC", provider="sim")
 
-    import order_guard
     monkeypatch.setattr(order_guard, "_load_margins", lambda: {"smart_sl_mode": "off"})
     ok_eval, rsn_eval, _ = evaluate_smart_stop_loss("BTCUSDC", 0.035, 0.030, provider="sim")
     assert ok_eval is True and rsn_eval == "smart_sl_disabled"
@@ -5617,9 +5534,6 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
 
 
 def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
-    from notify_engine import mailer
-    from orchestratorOS.admin import agy_store_fix
-    from orchestratorOS.agy import topics
     from orchestratorOS.supervisor.autonomous_ai_reconciler import SupervisorAuditReport
     from providers.execution_audit import normalize_trading_decisions
 
@@ -5688,10 +5602,9 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
 
 
 def test_batch47_binance_and_kraken_adapters_hardening(tmp_path, monkeypatch):
-    from binance_api import bapi_placeorder, bapi_ws, bapi_ws_bridge as bapi_ws_health
+    from binance_api import bapi_ws, bapi_ws_bridge as bapi_ws_health
     from binance_api import market_data as b_mdata
     from kraken import backtest_trail, kraken_xstock_watch
-    from kraken.trailing_stop import KrakenTrailing
 
     # 1. Binance boolean flag helpers accept "1.0" and "0.0"
     assert bapi._parse_bool_flag("1.0") is True
@@ -5832,7 +5745,6 @@ def test_batch48_hyperliquid_and_t212_hardening(monkeypatch):
 
 def test_chunked_window_signals_downsample_zero_ts_and_benchmark_alignment():
     """Verify chunked prefix-sum precision in backtest_wait_and_regime, zero-ts downsample preservation, and benchmark interval alignment."""
-    import numpy as np
     from offline.backtests.financial_benchmark import default_scenarios
     from offline.research.chop_weight_backtest import _downsample_price_series
     from offline.research.monitortrades_backtest.backtest_wait_and_regime import (
@@ -5934,14 +5846,8 @@ def test_chunked_window_signals_downsample_zero_ts_and_benchmark_alignment():
 
 def test_replay_trend_up_ssot_pilot_rate_limit_and_hybrid_reentry_alignment(monkeypatch, tmp_path):
     """Verify upward-trend epsilon k clamping, pilot rate-limit SSOT, and hybrid reentry interval alignment."""
-    from datetime import datetime, timezone
-    from offline.research.monitortrades_backtest.replay_trend_source import (
-        UPWARD_EPSILON_K,
-        _is_trend_up_tuple,
-        resolve_upward_eps_k,
-    )
+    from offline.research.monitortrades_backtest.replay_trend_source import UPWARD_EPSILON_K, resolve_upward_eps_k
     from offline.research.monitortrades_backtest import scheduled_pilot as sp
-    from offline.research.hybrid_reentry.harness import evaluate_asset
 
     # 1. Negative MPTRADE_UPWARD_EPSILON_K clamps to UPWARD_EPSILON_K (0.25) in both modules
     monkeypatch.setenv("MPTRADE_UPWARD_EPSILON_K", "-5.0")
@@ -5990,7 +5896,6 @@ def test_replay_trend_up_ssot_pilot_rate_limit_and_hybrid_reentry_alignment(monk
 def test_ohlc_tuples_csv_t212_grid_interval_alignment_and_vol_chronos_scalar_guard(tmp_path):
     """Verify load_ohlc_tuples_csv SSOT, t212 grid 1d interval alignment & report 1d-only rows, and vol_chronos scalar guard."""
     from offline.backtests.datasets import load_ohlc_tuples_csv
-    from offline.research.ml_forecast.vol_chronos import realized_vol_series
     from offline.research.t212_continuous_grid import grid as t212_grid
 
     # 1. load_ohlc_tuples_csv filters invalid OHLC invariants and non-positive values
@@ -6032,9 +5937,7 @@ def test_ohlc_tuples_csv_t212_grid_interval_alignment_and_vol_chronos_scalar_gua
 
 def test_load_venue_module_ssot_stratparams_from_dict_and_hl_candles_validation():
     """Verify load_venue_module sys.path preservation, Spot/T212 StratParams.from_dict defaults, and HL candle continuity validation."""
-    import argparse
-    import sys
-    from offline.runners.fetch_hyperliquid_candles import _parse_intervals, validate_continuity
+    from offline.runners.fetch_hyperliquid_candles import validate_continuity
     from strategies.spot_engine import StratParams as SpotStratParams
     from strategies import spot_replay as binance_replay
 
@@ -6113,7 +6016,7 @@ def test_validate_ohlc_bars_ssot_and_sweep_sharpe_and_mhdsl_replay(tmp_path, mon
 def test_surge_sweep_slices_kraken_grid_report_errors_and_walk_forward_venue(tmp_path):
     """Verify run_deep_surge_sweep slice helpers, kraken_continuous_grid report error formatting, and canonical_venue('hl')."""
     from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as dss
-    from offline.research.kraken_continuous_grid import report as k_rep, report2 as k_rep2, report3 as k_rep3
+    from offline.research.kraken_continuous_grid import report as k_rep, report2 as k_rep2
     from offline.runners.walk_forward import canonical_venue
 
     # 1. canonical_venue normalizes 'hl' -> 'hyperliquid' and 'trading212' -> 't212'
@@ -6149,7 +6052,6 @@ def test_surge_sweep_slices_kraken_grid_report_errors_and_walk_forward_venue(tmp
 
 def test_replay_provider_advance_and_harness_custom_replay_and_tradeall_sanitize():
     """Verify ReplayMarketDataProvider.advance exact_pos_int, harness.evaluate_asset custom replay_fn, and tradeall sanitization."""
-    from offline.research.hybrid_reentry.harness import evaluate_asset
     from offline.backtests.tradeall import _parse_tick_pair, sanitize_pipe_field
     from offline.runners.kraken_financial_benchmark import format_number
 

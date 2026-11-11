@@ -15,6 +15,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import order_retry as oq
 from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
 from types import SimpleNamespace
+import instrument as inst_mod
+import order_lifecycle as aop
+import order_lifecycle as ol
+import order_lifecycle as ool
+import order_lifecycle as orb
+import order_retry
+import order_retry as oret
+import pytest
+from order_lifecycle import extract_order_restore_params
+from providers.execution_audit import AuditedStrategyExecutor
 
 
 class OrderRetryStoreTest(unittest.TestCase):
@@ -1091,8 +1101,6 @@ def test_terminal_filter_refusal_classification_across_non_binance_providers_ite
 
 def test_order_retry_update_claimed_qty_persists_applied_scale_into_place_kwargs_on_disk_iter10_s2(tmp_path, monkeypatch):
     """[ITER10 #2] order_retry.update_claimed_qty persists applied_scale into place_kwargs on disk."""
-    import pytest
-    import order_retry
     # 2. order_retry.update_claimed_qty persists applied_scale into place_kwargs on disk
     q_file = tmp_path / "pending_orders.json"
     l_file = tmp_path / "pending_orders.lock"
@@ -1111,8 +1119,6 @@ def test_order_retry_update_claimed_qty_persists_applied_scale_into_place_kwargs
 
 def test_instrument_place_persists_medium_trend_action_medium_trend_scale_from_self_params_iter11_s2(monkeypatch):
     """[ITER11 #2] Instrument.place persists medium_trend_action & medium_trend_scale from self.params into retry_kwargs."""
-    import pytest
-    import instrument as inst_mod
     # 2. Instrument.place persists medium_trend_action & medium_trend_scale from self.params into retry_kwargs
     enqueued_kwargs = []
 
@@ -1175,7 +1181,6 @@ def test_instrument_place_persists_medium_trend_action_medium_trend_scale_from_s
         def should_wait_for_short_trend(_sym, _side):
             return True
 
-    import order_retry
     monkeypatch.setattr(
         order_retry,
         "enqueue",
@@ -1200,7 +1205,6 @@ def test_instrument_place_persists_medium_trend_action_medium_trend_scale_from_s
 
 def test_order_retry_enqueue_serializes_set_frozenset_in_place_kwargs_cleanly_iter23_s5(tmp_path, monkeypatch):
     """[ITER23 #5] order_retry.enqueue serializes set/frozenset in place_kwargs cleanly."""
-    import order_retry
     # 5. order_retry.enqueue serializes set/frozenset in place_kwargs cleanly
     q_file = tmp_path / "order_retry_queue.jsonl"
     l_file = tmp_path / "order_retry_queue.lock"
@@ -1222,9 +1226,7 @@ def test_order_retry_enqueue_serializes_set_frozenset_in_place_kwargs_cleanly_it
 
 def test_order_lifecycle__lifecycle_finite_and_trackedorderlifecycle_reject_boolean_values_iter36_s2():
     """[ITER36 #2] order_lifecycle._lifecycle_finite and TrackedOrderLifecycle reject boolean values."""
-    import pytest
     # 2. order_lifecycle._lifecycle_finite and TrackedOrderLifecycle reject boolean values
-    import order_lifecycle as ol
     assert ol._lifecycle_finite(True, positive=True) is None
     assert ol._lifecycle_finite(False, positive=False) is None
     assert ol._lifecycle_finite(1.5, positive=True) == 1.5
@@ -1261,7 +1263,6 @@ def test_order_retry_enqueue_update_claimed_qty_resolve_record_ttl_reject_boolea
 
 def test_order_outcomes_log_sanitizes_cr_lf_and_ignores_nan_bool_iter40_s1(monkeypatch, tmp_path):
     """[ITER40 #1] order_outcomes_log sanitizes CR/LF and ignores NaN/bool strength."""
-    import order_lifecycle as ool
     # 1. order_outcomes_log sanitizes CR/LF and ignores NaN/bool strength
     assert ool._sanitize_outcome_field("a|b\r\nc") == "a/b  c"
     monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
@@ -1276,7 +1277,6 @@ def test_order_outcomes_log_sanitizes_cr_lf_and_ignores_nan_bool_iter40_s1(monke
 
 def test_order_rollback_extract_order_restore_params_ignores_boolean_kind_and_level_iter40_s2():
     """[ITER40 #2] order_rollback.extract_order_restore_params ignores boolean kind and level."""
-    import order_lifecycle as orb
     # 2. order_rollback.extract_order_restore_params ignores boolean kind and level
     p_rest = orb.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "kind": True, "level": False})
     assert p_rest["kind"] == "TP"
@@ -1284,7 +1284,6 @@ def test_order_rollback_extract_order_restore_params_ignores_boolean_kind_and_le
 
 def test_order_retry_valid_record_rejects_boolean_id_symbol_order_id_replaces_order_id_iter44_s2():
     """[ITER44 #2] order_retry: valid_record rejects boolean id/symbol/order_id/replaces_order_id/replaces_original_qty."""
-    import order_retry
     # 2. order_retry: valid_record rejects boolean id/symbol/order_id/replaces_order_id/replaces_original_qty
     base_rec = {
         "id": "rec1",
@@ -1345,14 +1344,12 @@ def test_active_intents__intent_row_ignores_boolean_ids_and_non_positive_iter62_
 
 def test_order_rollback_extract_order_restore_params_guards_against_qty_price_overflow_iter71_s3():
     """[ITER71 #3] order_rollback.extract_order_restore_params guards against qty * price overflow."""
-    from order_lifecycle import extract_order_restore_params
     # 3. order_rollback.extract_order_restore_params guards against qty * price overflow
     restored_params = extract_order_restore_params({"side": "BUY", "price": 1e200, "origQty": 1e200})
     assert restored_params["amount"] == 0.0
 
 def test_order_retry_enqueue_rejects_whitespace_only_boolean_symbols_and_iter88_s4(monkeypatch, tmp_path):
     """[ITER88 #4] order_retry.enqueue rejects whitespace-only/boolean symbols and normalizes short-form B/S sides."""
-    import order_retry
     # 4. order_retry.enqueue rejects whitespace-only/boolean symbols and normalizes short-form B/S sides
     q_file = tmp_path / "order_retry_queue.jsonl"
     l_file = tmp_path / "order_retry_queue.lock"
@@ -1375,7 +1372,6 @@ def test_order_retry_enqueue_rejects_whitespace_only_boolean_symbols_and_iter88_
 
 def test_order_retry_valid_record__same_deferred_stream_claim_discard_and_trackedorderlifecycle_validation_iter97_s2():
     """[ITER97 #2] order_retry.valid_record, _same_deferred_stream, claim/discard, and TrackedOrderLifecycle validation."""
-    import pytest
     # 2. order_retry.valid_record, _same_deferred_stream, claim/discard, and TrackedOrderLifecycle validation
     base_rec = {
         "id": "rec1",
@@ -1398,7 +1394,6 @@ def test_order_retry_valid_record__same_deferred_stream_claim_discard_and_tracke
     assert oq.discard(None) == []
     assert oq.discard("rec1") == []
 
-    import order_lifecycle as ol
     with pytest.raises(ValueError, match="provider_name is required"):
         ol.TrackedOrderLifecycle(object(), provider_name=True)
     with pytest.raises(ValueError, match="missing_confirmations must be positive"):
@@ -1416,13 +1411,11 @@ def test_order_retry_valid_record__same_deferred_stream_claim_discard_and_tracke
 
 def test_order_rollback_restore_cancelled_orders_rejects_non_list_and_bool_reason_iter106_s3():
     """[ITER106 #3] order_rollback: restore_cancelled_orders rejects non-list and bool reason."""
-    import order_lifecycle as orb
     # 3. order_rollback: restore_cancelled_orders rejects non-list and bool reason
     assert orb.restore_cancelled_orders(True, lambda _p: True, reason=True) == 0
 
 def test_order_outcomes_log_log_order_outcome_sanitizes_boolean_fields_iter107_s3(tmp_path, monkeypatch):
     """[ITER107 #3] order_outcomes_log: log_order_outcome sanitizes boolean fields."""
-    import order_lifecycle as ool
     # 3. order_outcomes_log: log_order_outcome sanitizes boolean fields
     monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
     ool.log_order_outcome(
@@ -1453,7 +1446,6 @@ def test_order_outcomes_log_log_order_outcome_sanitizes_boolean_fields_iter107_s
 
 def test_order_retry_enqueue_rejects_bool_replaces_order_id_bool_metadata_fields_iter113_s1(tmp_path, monkeypatch):
     """[ITER113 #1] order_retry.enqueue rejects bool replaces_order_id, bool metadata fields, and fractional attempts."""
-    import order_retry as oret
     monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
     monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
     monkeypatch.setattr(oret, "RETRY_ENABLED", True)
@@ -1470,8 +1462,6 @@ def test_order_retry_enqueue_rejects_bool_replaces_order_id_bool_metadata_fields
 
 def test_order_retry_get_and_claim_input_validation_iter113_s2(tmp_path, monkeypatch):
     """[ITER113 #2] order_retry.get and claim input validation."""
-    import pytest
-    import order_retry as oret
     monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
     monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
     monkeypatch.setattr(oret, "RETRY_ENABLED", True)
@@ -1482,9 +1472,7 @@ def test_order_retry_get_and_claim_input_validation_iter113_s2(tmp_path, monkeyp
 
 def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_client_order_id_iter113_s3(tmp_path, monkeypatch):
     """[ITER113 #3] StrategyExecutorLifecycleApi rejects bool/None/blank order_id and client_order_id before str()."""
-    import pytest
     from providers.strategy_executor import ProviderError
-    import order_retry as oret
     monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
     monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
     monkeypatch.setattr(oret, "RETRY_ENABLED", True)
@@ -1497,7 +1485,6 @@ def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_clien
         order_status=lambda _s, oid: oid,
         cancel_order=lambda _s, oid: oid,
     )
-    import order_lifecycle as ol
     api_adapter = ol.StrategyExecutorLifecycleApi(exec_stub)
     with pytest.raises(ProviderError):
         api_adapter.order_by_client_id("BTCUSDC", True)
@@ -1508,10 +1495,7 @@ def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_clien
 
 def test_auditedstrategyexecutor_ohlc_series_rejects_bool_invalid_interval_min_iter113_s4(tmp_path, monkeypatch):
     """[ITER113 #4] AuditedStrategyExecutor.ohlc_series rejects bool/invalid interval_min."""
-    import pytest
     from providers.strategy_executor import ProviderError
-    from providers.execution_audit import AuditedStrategyExecutor
-    import order_retry as oret
     monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
     monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
     monkeypatch.setattr(oret, "RETRY_ENABLED", True)
@@ -1524,7 +1508,6 @@ def test_auditedstrategyexecutor_ohlc_series_rejects_bool_invalid_interval_min_i
 
 def test_state_io_discard_generation_file_safely_ignores_bool_int_iter113_s5(tmp_path, monkeypatch):
     """[ITER113 #5] state_io.discard_generation_file safely ignores bool/int."""
-    import order_retry as oret
     import state_io as sio
     monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
     monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
@@ -1535,16 +1518,14 @@ def test_state_io_discard_generation_file_safely_ignores_bool_int_iter113_s5(tmp
 
 def test_order_rollback_sanitizes_nan_level_in_extract_order_restore_params_iter121_s3():
     """[ITER121 #3] order_rollback sanitizes NaN level in extract_order_restore_params."""
-    import order_lifecycle as orb
     # 3. order_rollback sanitizes NaN level in extract_order_restore_params
     p = orb.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": float("nan")})
     assert p["level"] is None
 
 def test_auditedstrategyexecutor_normalizes_symbol_case_whitespace_and_order_id_across_iter123_s2(tmp_path):
     """[ITER123 #2] AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status & StrategyExecutorLifecycleApi rejects NaN/'nan'/'null' and normalizes integer float IDs."""
-    import pytest
     from providers.strategy_executor import ProviderError
-    from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
+    from providers.execution_audit import ExecutionAudit
     # 2. AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status
     class _DummyExec:
         name = "kraken"
@@ -1580,7 +1561,6 @@ def test_auditedstrategyexecutor_normalizes_symbol_case_whitespace_and_order_id_
 
 
     # 3. StrategyExecutorLifecycleApi rejects NaN/"nan"/"null" and normalizes integer float IDs
-    import order_lifecycle as ol
     life_api = ol.StrategyExecutorLifecycleApi(wrapped)
     for bad_id in (float("nan"), "nan", "null", 12.5):
         with pytest.raises(ProviderError):
@@ -1593,8 +1573,6 @@ def test_auditedstrategyexecutor_normalizes_symbol_case_whitespace_and_order_id_
 
 def test_extract_order_restore_params_normalizes_string_level_to_float_and_rejects_iter140_s2():
     """[ITER140 #2] extract_order_restore_params normalizes string level to float and rejects sentinel/container level & kind."""
-    import pytest
-    from order_lifecycle import extract_order_restore_params
     # 2. extract_order_restore_params normalizes string level to float and rejects sentinel/container level & kind
     p_valid = extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": "11.0", "kind": "TP"})
     assert p_valid["level"] == pytest.approx(11.0)
@@ -1606,7 +1584,6 @@ def test_extract_order_restore_params_normalizes_string_level_to_float_and_rejec
 
 def test_accepted_order_persistence__accepted_is_durable_normalizes_ids_rejects_sentinels_iter149_s2():
     """[ITER149 #2] accepted_order_persistence._accepted_is_durable normalizes IDs & rejects sentinels."""
-    import order_lifecycle as aop
     # 2. accepted_order_persistence._accepted_is_durable normalizes IDs & rejects sentinels
     class DummyRetryMod:
         def __init__(self, records):
@@ -1629,7 +1606,6 @@ def test_accepted_order_persistence__accepted_is_durable_normalizes_ids_rejects_
 def test_order_outcomes_log_sanitizes_nan_inf_containers_and_none_regime_context_iter151_s1(tmp_path):
     """[ITER151 #1] order_outcomes_log sanitizes NaN/Inf/containers and None regime_context.fresh/fallback_used."""
     import glob
-    import order_lifecycle as ool
     # 1. order_outcomes_log sanitizes NaN/Inf/containers and None regime_context.fresh/fallback_used
     orig_dir = ool.ORDER_OUTCOMES_LOG_DIR
     ool.ORDER_OUTCOMES_LOG_DIR = str(tmp_path / "outcomes")
@@ -1730,7 +1706,6 @@ def test_order_retry_valid_record_enqueue_sentinel_order_id_replaces_order_id_re
 
 def test_trackedorderresult_order_known_rejects_nan_none_iter157_s1():
     """[ITER157 #1] TrackedOrderResult.order_known rejects '0', 'nan', 'None'."""
-    import order_lifecycle as ol
     # 1. TrackedOrderResult.order_known rejects "0", "nan", "None"
     assert ol.TrackedOrderResult("active", {"order_id": "0"}).order_known is False
     assert ol.TrackedOrderResult("active", {"order_id": "nan"}).order_known is False
@@ -1738,8 +1713,6 @@ def test_trackedorderresult_order_known_rejects_nan_none_iter157_s1():
 
 def test_strategyexecutorlifecycleapi_rejects_and_normalizes_iter157_s2():
     """[ITER157 #2] StrategyExecutorLifecycleApi rejects '0' and normalizes .0."""
-    import pytest
-    import order_lifecycle as ol
     from providers.base import ProviderError
     # 2. StrategyExecutorLifecycleApi rejects "0" and normalizes .0
 
@@ -1774,8 +1747,6 @@ def test_strategyexecutorlifecycleapi_rejects_and_normalizes_iter157_s2():
 
 def test_trackedorderlifecycle_retry_on_lookup_error_and_identity_order_fields_normalization_iter157_s3():
     """[ITER157 #3] TrackedOrderLifecycle retry_on_lookup_error and identity/order_fields normalization."""
-    import pytest
-    import order_lifecycle as ol
     from providers.strategy_executor import SubmissionOutcome
     # 3. TrackedOrderLifecycle retry_on_lookup_error and identity/order_fields normalization
     lc_false = ol.TrackedOrderLifecycle(
@@ -1867,7 +1838,6 @@ def test_order_outcomes_log_sanitizes_regime_context_fields_and_non_numeric_pric
 
 def test_accepted_order_persistence_complete_claim_returning_false_is_not_treated_as_iter161_s2(monkeypatch):
     """[ITER161 #2] accepted_order_persistence: complete_claim returning 'false' is not treated as success."""
-    import order_lifecycle as aop
     # 2. accepted_order_persistence: complete_claim returning "false" is not treated as success
     class _FakeRetry:
         @staticmethod
@@ -1895,7 +1865,6 @@ def test_accepted_order_persistence_complete_claim_returning_false_is_not_treate
 
 def test_order_outcomes_log_with_dict_regime_context_and_primitive_regime_context_iter168_s5(tmp_path, monkeypatch):
     """[ITER168 #5] order_outcomes_log with dict regime_context and primitive regime_context."""
-    import order_lifecycle as ool
     # 5. order_outcomes_log with dict regime_context and primitive regime_context
     monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
     ool.log_order_outcome(
@@ -1936,9 +1905,7 @@ def test_order_outcomes_log_with_dict_regime_context_and_primitive_regime_contex
 
 def test_instrument__parse_bool_flag_side_aliases_bid_ask_decimal_free_balance_iter171_s2(monkeypatch):
     """[ITER171 #2] Instrument._parse_bool_flag, side aliases (BID/ASK), Decimal free_balance, cancelorders='false', and GT_M dict/case."""
-    import pytest
     from decimal import Decimal
-    import instrument as inst_mod
     from providers.base import MarketDataProvider
     from providers.market_api import MarketApi
     from providers.quantity import QuantityDecision
@@ -2001,7 +1968,6 @@ def test_instrument__parse_bool_flag_side_aliases_bid_ask_decimal_free_balance_i
 
 def test_order_retry_price_gate_ok_supports_bid_long_and_ask_a_iter179_s4():
     """[ITER179 #4] order_retry.price_gate_ok supports BID/LONG and ASK/A/SHORT."""
-    import order_retry
     # 4. order_retry.price_gate_ok supports BID/LONG and ASK/A/SHORT
     assert order_retry.price_gate_ok({"side": "BID", "requested_price": 100.0}, 99.0, tol=0.0) is True
     assert order_retry.price_gate_ok({"side": "ASK", "requested_price": 100.0}, 101.0, tol=0.0) is True

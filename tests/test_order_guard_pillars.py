@@ -29,6 +29,17 @@ from intelligence.external.collectors.orderbook_depth_collector import Orderbook
 from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 from types import SimpleNamespace
+import external_order_guard as eog
+import json
+import numpy as np
+import order_guard as og
+import pytest
+import qlimit_order_guard
+import qlimit_order_guard as qog
+import subprocess
+from intelligence.daemon import IntelligenceTelemetryDaemon
+from offline.backtests.evaluation import load_venue_module
+from order_guard import check_intelligence_guards
 
 _BASE_MARGINS = dict(order_guard._load_margins())
 
@@ -398,7 +409,6 @@ def test_geopolitical_shock_downscale_enforce():
 
 
 def test_geopolitical_elevated_absorbed_by_market(tmp_path):
-    import json
 
     now_s = time.time()
     mock_geo = GeopoliticalThreatAssessment(
@@ -559,7 +569,6 @@ def test_whale_divergence_liquidation_cascade_blocks():
 
 
 def test_granular_bypass_p3_p4_avoids_unbound_local_error():
-    from order_guard import check_intelligence_guards
     # Passing GI and GLLM bypass skips external and LLM guards and must NOT raise UnboundLocalError
     allowed, reason, scale = check_intelligence_guards(
         provider="binance",
@@ -574,7 +583,6 @@ def test_granular_bypass_p3_p4_avoids_unbound_local_error():
 
 
 def test_internal_guard_mode_off_does_not_disable_other_pillars(monkeypatch):
-    from order_guard import check_intelligence_guards
     # internal_guard_mode=off should not return 'intelligence_guards_off' globally
     monkeypatch.setattr(
         order_guard,
@@ -594,7 +602,6 @@ def test_internal_guard_mode_off_does_not_disable_other_pillars(monkeypatch):
 
 
 def test_pillars_fail_fast_on_missing_config_keys():
-    import pytest
     from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
 
     with pytest.raises(KeyError):
@@ -616,7 +623,6 @@ def test_pillars_fail_fast_on_missing_config_keys():
 def test_weibull_does_not_overlap_gaussian_horizon_and_computes_weibull_survival(monkeypatch):
     """Verify WeibullExhaustionGuard (G_QLIMIT2) uses true Weibull survival math and does not overlap
     with G_QLIMIT1's Gaussian Zone 1 & Zone 2 (0 .. 1.4*T)."""
-    import qlimit_order_guard
     from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 
     guard = WeibullExhaustionGuard(default_p90_days=7.0, policy="downscale", exhausted_scale=0.25)
@@ -671,7 +677,6 @@ def test_weibull_does_not_overlap_gaussian_horizon_and_computes_weibull_survival
 def test_weibull_uses_symbol_p90_days_when_qlimit1_is_bypassed(monkeypatch):
     """When G_QLIMIT1 is bypassed, G_QLIMIT2 must use the symbol's empirical p90_days (e.g. 6.7d)
     from resolve_cached_gaussian_horizon rather than falling back to default_p90_days (10.0d)."""
-    import qlimit_order_guard
 
     m = dict(order_guard._load_margins())
     m["internal_guard_mode"] = "enforce"
@@ -835,9 +840,7 @@ def test_batch38b_summary_store_visible_dir_topics_intent_gateway_and_geo_guard(
 
 def test_batch39_composite_daemon_and_cli_hardening(tmp_path, monkeypatch):
     """Verify CompositeMarketIntelligence side alias & percentage scale normalization, IntelligenceTelemetryDaemon update_macro now propagation, and intelligence.cli local cache_T_trend lookup."""
-    import json
     from intelligence.composite import CompositeMarketIntelligence
-    from intelligence.daemon import IntelligenceTelemetryDaemon
     from intelligence.cli import inspect_symbol_intelligence
     from intelligence.internal.guards.guard_decision import BrakeAction
 
@@ -902,7 +905,6 @@ def test_batch39_composite_daemon_and_cli_hardening(tmp_path, monkeypatch):
 
 def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatch):
     """Verify alerts_config case-insensitive keys, new_coins_discovery timestamp/string coercion, pricefetcher CMC .previous recovery, and alertnotifiers delivery state .previous recovery."""
-    import json
     from market_monitor.alerts_config import load_config, resolve
     from market_monitor.new_coins_discovery import (
         BinanceNewListingsSource,
@@ -1001,7 +1003,6 @@ def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatc
 
 
 def test_batch41_verify_tools_drawprices_and_tradeall_backtest_hardening(tmp_path, monkeypatch):
-    import json
     from verify_tools import portfolio_snapshot, kraken_pnl_backfill
     from visuals import drawprices
     from offline.backtests import tradeall as bt_tradeall
@@ -1086,7 +1087,6 @@ def test_batch42_mailer_server_pricechecker_and_execution_calibration_hardening(
     monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(qfile))
     srv = NotificationServer()
     srv._enqueue_payload("ntfy_webhook", {"__orchestrator_intent__": None, "title": "Test"})
-    import json
     enqueued = json.loads(qfile.read_text(encoding="utf-8").strip())
     assert enqueued["__orchestrator_intent__"] == "ntfy_webhook"
 
@@ -1111,15 +1111,12 @@ def test_batch42_mailer_server_pricechecker_and_execution_calibration_hardening(
     ])
     assert len(res["orders"]) == 1
     ord0 = res["orders"][0]
-    import pytest
     assert ord0["first_fill_latency_s"] == pytest.approx(2.5)
     assert ord0["limit_fill_deviation_bps"] == pytest.approx(100.0)
     assert ord0["market_execution_shortfall_bps"] == pytest.approx(100.0)
 
 
 def test_batch43_offline_runners_hardening(tmp_path):
-    import json
-    import pytest
     from offline.runners import (
         fetch_hyperliquid_candles as fhc,
         calibrate_execution_audit as cea,
@@ -1182,7 +1179,6 @@ def test_batch43_offline_runners_hardening(tmp_path):
 
 def test_batch44_verify_tools_and_order_outcomes_log_hardening(tmp_path, monkeypatch):
     import enum
-    import subprocess
     import order_lifecycle as ool
     import verify_tools.ownership_inventory as oi
 
@@ -1235,7 +1231,6 @@ def test_batch44_verify_tools_and_order_outcomes_log_hardening(tmp_path, monkeyp
 
 
 def test_batch45_offline_backtests_and_runners_hardening(monkeypatch):
-    import pytest
     import offline.backtests.datasets as ds
     import offline.backtests.evaluation as ev
     import offline.runners.kraken_financial_compare as kfc
@@ -1313,7 +1308,6 @@ def test_batch45_offline_backtests_and_runners_hardening(monkeypatch):
 
 
 def test_batch46_offline_research_tapes_and_ranges_hardening(tmp_path, monkeypatch):
-    import json
     import offline.research.backtest_ranges as br
     import offline.research.chop_weight_backtest as cwb
     import offline.research.comprehensive_strategy_sweep as css
@@ -1363,7 +1357,6 @@ def test_batch46_offline_research_tapes_and_ranges_hardening(tmp_path, monkeypat
 
 
 def test_batch47_surge_sweep_grids_and_ml_forecast_hardening():
-    import numpy as np
     import offline.research.comprehensive_surge_sweep.run_deep_surge_sweep as dss
     import offline.research.ml_forecast.forecast as mlf
     import offline.research.ml_forecast.vol_chronos as vc
@@ -1389,8 +1382,6 @@ def test_batch47_surge_sweep_grids_and_ml_forecast_hardening():
 
 
 def test_batch48_offline_runners_backtests_and_legacy_tools_hardening(tmp_path, monkeypatch):
-    import json
-    import pytest
     import offline.backtests.comparison as cmp_mod
     import offline.backtests.promotion as prom_mod
     import offline.legacy_tools.clean_order_cache as coc_mod
@@ -1549,7 +1540,6 @@ def test_batch51_verify_tools_hardening(tmp_path, monkeypatch):
 
 def test_batch52_macro_analyzer_and_daemon_sigterm_exit_and_agy_store_fix(tmp_path, monkeypatch):
     import signal
-    from intelligence.daemon import IntelligenceTelemetryDaemon
     from intelligence.macro_analyzer import MacroAnalyzer
 
     # 1. MacroAnalyzer.start() exits immediately without sleeping when SIGTERM handler raises SystemExit(0)
@@ -1582,7 +1572,6 @@ def test_batch52_macro_analyzer_and_daemon_sigterm_exit_and_agy_store_fix(tmp_pa
 
 
 def test_batch53_short_trend_benchmark_and_mt_backtest_hardening(tmp_path, monkeypatch):
-    import numpy as np
     import offline.research.short_trend_estimator_benchmark as st_bench
     from offline.research.monitortrades_backtest.backtest_wait_and_regime import (
         compute_exact_time_window_signals,
@@ -1626,7 +1615,6 @@ def test_batch53_short_trend_benchmark_and_mt_backtest_hardening(tmp_path, monke
 
 
 def test_batch54_apply_proposals_and_scheduled_pilot_hardening(monkeypatch):
-    import subprocess
     import offline.runners.apply_proposals as ap_mod
     from offline.research.monitortrades_backtest import scheduled_pilot as sp_mod
 
@@ -1748,7 +1736,6 @@ def test_batch55_undefined_globals_and_shadow_live_hardening(tmp_path, monkeypat
 
 
 def test_batch56_intelligence_backtest_full_composite_and_research_hardening(monkeypatch):
-    import numpy as np
     import offline.research.intelligence_backtest as ib_mod
     from offline.research.chop_weight_backtest import _downsample_price_series
     from offline.research.ml_forecast.vol_chronos import realized_vol_series
@@ -1839,7 +1826,6 @@ def test_batch56_intelligence_backtest_full_composite_and_research_hardening(mon
 
 
 def test_batch57_binance_wf_baseline_t212_report_and_tradeall_backtest_guards(tmp_path):
-    import json
     from offline.runners import binance_walk_forward_baseline as bwf
     from offline.research.t212_continuous_grid import report as t212_report
     from offline.backtests import tradeall as bt_ta
@@ -1883,7 +1869,6 @@ def test_batch57_binance_wf_baseline_t212_report_and_tradeall_backtest_guards(tm
 def test_batch58_hl_shadow_longterm_tradeall_observe_and_portfolio_snapshot_guards(monkeypatch, tmp_path):
     import sys
     import types
-    from offline.backtests.evaluation import load_venue_module
     hl_sl = load_venue_module("hyperliquid", "shadow_longterm.py", "hl_shadow_longterm_b58")
     from visuals import tradeall_observe as tao
     from verify_tools import portfolio_snapshot as ps
@@ -1933,8 +1918,6 @@ def test_batch58_hl_shadow_longterm_tradeall_observe_and_portfolio_snapshot_guar
 
 
 def test_batch59_hl_strategy_bool_validation_and_kraken_pnl_backfill_side_guard(monkeypatch, tmp_path):
-    import pytest
-    from offline.backtests.evaluation import load_venue_module
     from verify_tools import kraken_pnl_backfill as kpb
 
     hl_strat = load_venue_module("hyperliquid", "strategy.py", "hl_strat_b59")
@@ -1958,7 +1941,6 @@ def test_batch59_hl_strategy_bool_validation_and_kraken_pnl_backfill_side_guard(
         ),
     )
     kpb.main()
-    import json
     saved = json.loads(out_path.read_text(encoding="utf-8"))
     assert len(saved["items"]["HYPEUSD"]) == 1
     assert saved["items"]["HYPEUSD"][0]["side"] == "BUY"
@@ -1997,8 +1979,6 @@ def test_operational_category_isolation_case_insensitive_is_bypassed_iter8_s1():
 
 def test__read_cached_price_history_honors_now_and_rejects_future_dated_points_iter17_s1(monkeypatch, tmp_path):
     """[ITER17 #1] _read_cached_price_history honors `now` and rejects future-dated points."""
-    import json
-    import qlimit_order_guard
     # 1. _read_cached_price_history honors `now` and rejects future-dated points
     monkeypatch.setattr(order_guard, "get_cachedb_dir", lambda: str(tmp_path))
     p24 = tmp_path / "cache_24_price_TAOUSDC.json"
@@ -2039,7 +2019,6 @@ def test__read_cached_price_history_honors_now_and_rejects_future_dated_points_i
 
 def test_check_external_order_guards_with_nan_now_iter32_s1():
     """[ITER32 #1] check_external_order_guards with NaN now."""
-    import external_order_guard as eog
     # 1. check_external_order_guards with NaN now
     eog._MICRO_SHADOW_NOTIFY_COOLDOWN.clear()
     ok, reason, scale = eog.check_external_order_guards(
@@ -2053,7 +2032,6 @@ def test_check_external_order_guards_with_nan_now_iter32_s1():
 
 def test_resolve_high_stake_min_notional_usd_iter34_s1():
     """[ITER34 #1] resolve_high_stake_min_notional_usd."""
-    import order_guard as og
     # 1. resolve_high_stake_min_notional_usd
     assert og.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": float("nan")}) == 700.0
     assert og.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": True}) == 700.0
@@ -2062,7 +2040,6 @@ def test_resolve_high_stake_min_notional_usd_iter34_s1():
 
 def test_select_extreme_reference__aggregate_reference_prices_with_nan_bool_iter34_s2():
     """[ITER34 #2] select_extreme_reference & _aggregate_reference_prices with NaN/bool."""
-    import order_guard as og
     # 2. select_extreme_reference & _aggregate_reference_prices with NaN/bool
     assert og.select_extreme_reference([float("nan"), True, 100.0, 95.0], "BUY", strict=True) == 95.0
     assert og.select_extreme_reference([float("nan"), True, 100.0, 95.0], "SELL", strict=True) == 100.0
@@ -2076,7 +2053,6 @@ def test_select_extreme_reference__aggregate_reference_prices_with_nan_bool_iter
 
 def test_check_math_profit_reference_rejects_nan_bool_price_or_profit_percentage_iter34_s3():
     """[ITER34 #3] check_math_profit_reference rejects NaN/bool price or profit_percentage."""
-    import order_guard as og
     # 3. check_math_profit_reference rejects NaN/bool price or profit_percentage
     dummy_prov = SimpleNamespace(name="binance", last_opposite_fill=lambda s, o: 100.0)
     assert og.check_math_profit_reference(
@@ -2092,7 +2068,6 @@ def test_check_math_profit_reference_rejects_nan_bool_price_or_profit_percentage
 def test_compute_weight_capped_qty_with_nan_bool_iter34_s4():
     """[ITER34 #4] compute_weight_capped_qty with NaN/bool."""
     import math
-    import order_guard as og
     # 4. compute_weight_capped_qty with NaN/bool
     assert og.compute_weight_capped_qty(0.1, 100.0, float("nan"), 10.0, 0.0) == 0.0
     assert og.compute_weight_capped_qty(0.1, True, 5.0, 10.0, 0.0) == 0.0
@@ -2101,7 +2076,6 @@ def test_compute_weight_capped_qty_with_nan_bool_iter34_s4():
 
 def test_daily_limit_guard_ignores_bool_nan_max_daily_trades_and_inf_timestamps_iter36_s1():
     """[ITER36 #1] daily_limit_guard ignores bool/NaN max_daily_trades and inf timestamps."""
-    import order_guard as og
     # 1. daily_limit_guard ignores bool/NaN max_daily_trades and inf timestamps
     prov_dl = SimpleNamespace(
         name="binance",
@@ -2134,7 +2108,6 @@ def test_guard_hierarchy_is_bypassed_normalize_bypassed_guards_with_bool_str_and
 
 def test_qlimit_order_guard_check_qlimit2_order_guards_side_normalization_bool_rejection_iter100_s2():
     """[ITER100 #2] qlimit_order_guard.check_qlimit2_order_guards side normalization & bool rejection."""
-    import qlimit_order_guard
     # 2. qlimit_order_guard.check_qlimit2_order_guards side normalization & bool rejection
     assert qlimit_order_guard.check_qlimit2_order_guards("BTCUSDC", True, 100.0) == (True, "not_supported_side", 1.0)
     assert qlimit_order_guard.check_qlimit2_order_guards("BTCUSDC", None, 100.0) == (True, "not_supported_side", 1.0)
@@ -2154,7 +2127,6 @@ def test_external_order_guard_check_external_order_guards_side_normalization_boo
 
 def test_order_guard_side_normalization_daily_limit_guard_weight_limit_and__read_cached_price_history_iter100_s5():
     """[ITER100 #5] order_guard side normalization, daily_limit_guard, weight_limit, and _read_cached_price_history."""
-    import pytest
     # 5. order_guard side normalization, daily_limit_guard, weight_limit, and _read_cached_price_history
     assert order_guard.opposite_side(" b ") == "SELL"
     assert order_guard.opposite_side(" s ") == "BUY"
@@ -2174,7 +2146,6 @@ def test_order_guard_side_normalization_daily_limit_guard_weight_limit_and__read
 
 def test_order_guard_weight_limit_preserves_float_inf_for_auto_quantity_iter101_s5():
     """[ITER101 #5] order_guard.weight_limit preserves float('inf') for auto-quantity (requested_qty=None)."""
-    import pytest
     # 5. order_guard.weight_limit preserves float("inf") for auto-quantity (requested_qty=None)
     class _DummyProvider:
         name = "Dummy"
@@ -2187,7 +2158,6 @@ def test_order_guard_weight_limit_preserves_float_inf_for_auto_quantity_iter101_
         assert capped_bool == 0.0
 
 def test_iteration128_order_guard_provider_objects_and_infinite_qty_rejection():
-    import order_guard as og
 
     fake_kraken = type("KrakenProv", (), {"name": " kraken "})()
     assert og.get_margin_cfg(fake_kraken) == og.get_margin_cfg("kraken")
@@ -2216,7 +2186,6 @@ def test_guard_hierarchy_baseguard_instances_semicolon_strings_and_falsy_tokens_
 
 def test_order_guard_normalize_side_opposite_side_iter172_s1():
     """[ITER172 #1] order_guard.normalize_side & opposite_side."""
-    import order_guard as og
     # 1. order_guard.normalize_side & opposite_side
     assert og.normalize_side(" bid ") == "BUY"
     assert og.normalize_side("long") == "BUY"
@@ -2228,8 +2197,6 @@ def test_order_guard_normalize_side_opposite_side_iter172_s1():
 
 def test_select_extreme_reference_strict_boolean_string_parsing_iter172_s2():
     """[ITER172 #2] select_extreme_reference(strict=...) boolean string parsing."""
-    import pytest
-    import order_guard as og
     # 2. select_extreme_reference(strict=...) boolean string parsing
     assert og.select_extreme_reference([100.0, 110.0], "BID", strict="false") == pytest.approx(110.0)
     assert og.select_extreme_reference([100.0, 110.0], "BID", strict="true") == pytest.approx(100.0)
@@ -2238,16 +2205,12 @@ def test_select_extreme_reference_strict_boolean_string_parsing_iter172_s2():
 
 def test_compute_weight_capped_qty_clamps_weight_to_never_exceeds_available_qty_iter172_s3():
     """[ITER172 #3] compute_weight_capped_qty clamps weight > 1.0 to 1.0 (never exceeds available_qty)."""
-    import pytest
-    import order_guard as og
     # 3. compute_weight_capped_qty clamps weight > 1.0 to 1.0 (never exceeds available_qty)
     qty_cap = og.compute_weight_capped_qty(2.5, 100.0, 20.0, 10.0, 500.0)
     assert qty_cap == pytest.approx(10.0)
 
 def test_qlimit_order_guard_external_order_guard_llm_order_guard_side_aliases_iter172_s4():
     """[ITER172 #4] qlimit_order_guard, external_order_guard, llm_order_guard side aliases."""
-    import qlimit_order_guard as qog
-    import external_order_guard as eog
     import llm_order_guard as llog
     # 4. qlimit_order_guard, external_order_guard, llm_order_guard side aliases
     allowed_q, reason_q, scale_q = qog.check_qlimit2_order_guards("BTCUSDC", "BID", 100.0, margins={"intelligence_guards_mode": "off"})
@@ -2262,14 +2225,12 @@ def test_qlimit_order_guard_external_order_guard_llm_order_guard_side_aliases_it
 
 def test__resolve_trend_direction_supports_dict_regime_context_and_uptrend_bearish_aliases_iter174_s1():
     """[ITER174 #1] _resolve_trend_direction supports dict regime_context and uptrend/bearish aliases."""
-    import order_guard as og
     # 1. _resolve_trend_direction supports dict regime_context and uptrend/bearish aliases
     assert og._resolve_trend_direction("BTCUSDC", {"resolved_trend": "uptrend"}) == "bull"
     assert og._resolve_trend_direction("BTCUSDC", {"regime": "bearish"}) == "bear"
 
 def test_check_qlimit2_order_guards_respects_dict_regime_context_trend_duration_seconds_resolved_trend_iter174_s4():
     """[ITER174 #4] check_qlimit2_order_guards respects dict regime_context trend_duration_seconds & resolved_trend."""
-    import qlimit_order_guard as qog
     # 4. check_qlimit2_order_guards respects dict regime_context trend_duration_seconds & resolved_trend
     q2_ok, q2_reason, q2_scale = qog.check_qlimit2_order_guards(
         "BTCUSDC",
@@ -2297,7 +2258,6 @@ def test__is_valid_regime_context_handles_none_simplenamespace_and_objects_with_
 
 def test__record_context_suggested_scale_updates__suggested_scale_by_side_for_both_sides_and_suggested_scale_iter181_s3():
     """[ITER181 #3] _record_context_suggested_scale updates _suggested_scale_by_side for both sides and suggested_scale for BUY only."""
-    import pytest
     from order_guard import _record_context_suggested_scale
     # 3. _record_context_suggested_scale updates _suggested_scale_by_side for both sides and suggested_scale for BUY only
     ctx = SimpleNamespace(suggested_scale=1.0)
@@ -2312,7 +2272,6 @@ def test__record_context_suggested_scale_updates__suggested_scale_by_side_for_bo
 
 def test__resolve_window_ref_from_orders_resolves_active_cycle_reference_across_modes_iter181_s4():
     """[ITER181 #4] _resolve_window_ref_from_orders resolves active cycle reference across Modes."""
-    import pytest
     from order_guard import _resolve_window_ref_from_orders
     # 4. _resolve_window_ref_from_orders resolves active cycle reference across Modes
     fake_prov = SimpleNamespace(get_orders=lambda sym, side, win: [])

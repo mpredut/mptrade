@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, Mock, patch as _patch
 
-from providers.strategy_executor import SubmissionRefused
+from providers.strategy_executor import PairPrecision, SubmissionRefused
 from strategies.rtrade_pair import (
     OrderSnapshot,
     OrderTicket,
@@ -10,6 +10,15 @@ from strategies.rtrade_pair import (
     anchored_exit_price,
     quote_prices,
 )
+import json
+import math
+import order_guard
+import pytest
+import rtrade
+import time
+from instrument import Instrument
+from providers.quantity import QuantityDecision
+from types import SimpleNamespace
 
 
 class FakeVenue:
@@ -1360,7 +1369,6 @@ if __name__ == "__main__":
 
 def test__livepairvenue__submit_limit_intent_honours_rtrade_bypass_profit_guard_on_buy_sell_iter7_s2(monkeypatch):
     """[ITER7 #2] _LivePairVenue._submit_limit_intent honours RTRADE_BYPASS_PROFIT_GUARD on BUY & SELL."""
-    import rtrade
     # 2. _LivePairVenue._submit_limit_intent honours RTRADE_BYPASS_PROFIT_GUARD on BUY & SELL
     monkeypatch.setattr(rtrade, "RTRADE_BYPASS_PROFIT_GUARD", True)
     placed_calls = []
@@ -1390,9 +1398,6 @@ def test__livepairvenue__submit_limit_intent_honours_rtrade_bypass_profit_guard_
 
 def test_rtrade__whale_flow_blocks_side_and__effective_adjustment_fraction_honor_gi_whale_bypass_iter14_s2(monkeypatch):
     """[ITER14 #2] rtrade._whale_flow_blocks_side and _effective_adjustment_fraction honor GI_WHALE bypass."""
-    import pytest
-    import time
-    import rtrade
     import external_order_guard
     from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot, WhalePositioningCollector
     # 2. rtrade._whale_flow_blocks_side and _effective_adjustment_fraction honor GI_WHALE bypass
@@ -1430,9 +1435,6 @@ def test_rtrade__whale_flow_blocks_side_and__effective_adjustment_fraction_honor
 
 def test_rtrade_also_honors_whale_guard_mode_shadow_off_in_order_guard_iter14_s3(monkeypatch):
     """[ITER14 #3] rtrade also honors whale_guard_mode = shadow / off in order_guard.conf."""
-    import pytest
-    import order_guard
-    import rtrade
     # 3. rtrade also honors whale_guard_mode = shadow / off in order_guard.conf
     base_m = dict(order_guard._load_margins())
     base_m["whale_guard_mode"] = "shadow"
@@ -1444,13 +1446,7 @@ def test_rtrade_also_honors_whale_guard_mode_shadow_off_in_order_guard_iter14_s3
 
 def test_krakenprovider__fills_from_cache_rejects_nan_and_future_timestamps_accepts_iter22_s3(tmp_path, monkeypatch):
     """[ITER22 #3] KrakenProvider._fills_from_cache rejects NaN and future timestamps, accepts seconds."""
-    import json
-    import time
-    import order_guard
-    from instrument import Instrument
-    from providers.quantity import QuantityDecision
     from providers.kraken_provider import KrakenProvider
-    import rtrade
     pg_bypasses = []
     class FakeKrakenProvider:
         name = "kraken"
@@ -1551,12 +1547,7 @@ def test_krakenprovider__fills_from_cache_rejects_nan_and_future_timestamps_acce
 
 def test_collect_pretrade_telemetry_handles_non_numeric_slopes_and_empty_macro_iter22_s4(tmp_path, monkeypatch):
     """[ITER22 #4] collect_pretrade_telemetry handles non-numeric slopes and empty macro dicts."""
-    import json
-    import order_guard
-    from instrument import Instrument
-    from providers.quantity import QuantityDecision
     from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
-    import rtrade
     pg_bypasses = []
     class FakeKrakenProvider:
         name = "kraken"
@@ -1642,10 +1633,6 @@ def test_collect_pretrade_telemetry_handles_non_numeric_slopes_and_empty_macro_i
 
 def test_spot_engine_set_simulated_time__evaluate_reentry_gate_ledger_reconciliation_and_peak_tracking_iter46_s1(tmp_path):
     """[ITER46 #1] spot_engine: set_simulated_time, _evaluate_reentry_gate, ledger reconciliation, and peak tracking & rtrade_pair: PairPolicy, quote_prices, anchored_exit_price, and clock/step NaN/bool rejection & spot_replay: _validate_replay and align_spot_interval_params NaN/bool protection."""
-    from types import SimpleNamespace
-    import math
-    import pytest
-    from providers.strategy_executor import PairPrecision
     from strategies import spot_engine as se
     from strategies import rtrade_pair as rp
     from strategies import spot_replay as srep
@@ -1737,7 +1724,6 @@ def test_spot_engine_set_simulated_time__evaluate_reentry_gate_ledger_reconcilia
 
 def test_rtradepairstore_guards_terminal_retention_accepted_order_id_and_checkpoint_state_iter62_s2(tmp_path):
     """[ITER62 #2] RTradePairStore guards terminal_retention, accepted order_id, and checkpoint state."""
-    import pytest
     # 2. RTradePairStore guards terminal_retention, accepted order_id, and checkpoint state
     store = RTradePairStore(path=str(tmp_path / "rtrade_pairs.json"), terminal_retention=True)
     assert store.terminal_retention == 200
@@ -1748,7 +1734,6 @@ def test_rtradepairstore_guards_terminal_retention_accepted_order_id_and_checkpo
 
 def test_orderticket_rejects_blank_boolean_order_id_and_paircoordinator__cancel_iter64_s4():
     """[ITER64 #4] OrderTicket rejects blank/boolean order_id and PairCoordinator._cancel catches venue cancel exceptions."""
-    import pytest
     # 4. OrderTicket rejects blank/boolean order_id and PairCoordinator._cancel catches venue cancel exceptions
     with pytest.raises(ValueError, match="invalid rtrade ticket"):
         OrderTicket(order_id=True, side="BUY", price=100.0, qty=1.0)
@@ -1775,7 +1760,6 @@ def test_orderticket_rejects_blank_boolean_order_id_and_paircoordinator__cancel_
 
 def test_rtradepairstore_rejects_boolean_ids_and_non_finite_quantities_iter71_s2(tmp_path):
     """[ITER71 #2] RTradePairStore rejects boolean IDs and non-finite quantities in _validate_intent and persist_intent."""
-    import pytest
     # 2. RTradePairStore rejects boolean IDs and non-finite quantities in _validate_intent and persist_intent
     with pytest.raises(ValueError):
         RTradePairStore._validate_intent("p1", "BTCUSDC", "limit:BUY", {
@@ -1801,7 +1785,6 @@ def test__should_notify_order_launched_treats_boolean_owner_as_true_not_suppress
 
 def test_orderticket_string_active_false_and_paircoordinator_from_state_validation_iter127_s3():
     """[ITER127 #3] OrderTicket string active='false' and PairCoordinator.from_state validation."""
-    import pytest
     # 3. OrderTicket string active="false" and PairCoordinator.from_state validation
     t_inactive = OrderTicket(order_id="oid-1", side="BUY", price=100.0, qty=1.0, active="false")
     assert t_inactive.active is False
@@ -1838,8 +1821,6 @@ def test_orderticket_string_active_false_and_paircoordinator_from_state_validati
 
 def test_rtrade_pair_orderticket_and_paircoordinator_from_state_hygiene_iter144_s3():
     """[ITER144 #3] rtrade_pair OrderTicket and PairCoordinator.from_state hygiene."""
-    import pytest
-    from types import SimpleNamespace
     # 3. rtrade_pair OrderTicket and PairCoordinator.from_state hygiene
     for bad_oid in ("nan", "null", "none", "0", 0, -5, ["123"], {"id": 1}, True, None, ""):
         with pytest.raises(ValueError):
@@ -1877,7 +1858,6 @@ def test_rtrade_pair_orderticket_and_paircoordinator_from_state_hygiene_iter144_
 
 def test_active_intents_clean_order_id__parse_bool_flag__first__intent_row__walk_iter149_s1(tmp_path):
     """[ITER149 #1] active_intents: clean_order_id, _parse_bool_flag, _first, _intent_row, _walk."""
-    import json
     import active_intents as ai
     # 1. active_intents: clean_order_id, _parse_bool_flag, _first, _intent_row, _walk
     for bad in ("0", "0.0", "nan", "null", "none", "inf", True, ["1"], {"a": 1}, None, ""):
@@ -1919,7 +1899,6 @@ def test_active_intents_clean_order_id__parse_bool_flag__first__intent_row__walk
 
 def test_rtradepairstore_terminal_retention_float_string__clean_store_id_begin_qty_true_iter149_s3(tmp_path):
     """[ITER149 #3] RTradePairStore: terminal_retention float-string, _clean_store_id, begin(qty=True) rejection, checkpoint terminal='false'."""
-    import pytest
     # 3. RTradePairStore: terminal_retention float-string, _clean_store_id, begin(qty=True) rejection, checkpoint terminal="false"
     store_file = tmp_path / "rtrade_store.json"
     store = RTradePairStore(path=str(store_file), terminal_retention="50.0")
@@ -1953,8 +1932,6 @@ def test_rtradepairstore_terminal_retention_float_string__clean_store_id_begin_q
 
 def test_strategy__sanitize_state_dict_strategy_init_boolean_flags_spot_replay_run_replay_iter155_s2(tmp_path):
     """[ITER155 #2] Strategy._sanitize_state_dict & Strategy init boolean flags & spot_replay.run_replay with include_decision_trace='false' and intrabar_high='false' & rtrade_pair OrderTicket & PairCoordinator pair_id / snapshot key validation."""
-    import pytest
-    from providers.strategy_executor import PairPrecision
     from strategies.spot_engine import StratParams, Strategy
     from strategies.spot_replay import run_replay
     # 2. Strategy._sanitize_state_dict & Strategy init boolean flags
@@ -2055,8 +2032,6 @@ def test_strategy__sanitize_state_dict_strategy_init_boolean_flags_spot_replay_r
 
 def test_rtrade__touch_rtrade_heartbeat_and__livepairvenue_hygiene_iter158_s5(monkeypatch, tmp_path):
     """[ITER158 #5] rtrade._touch_rtrade_heartbeat and _LivePairVenue hygiene."""
-    import pytest
-    import math
     import rtrade as rt
     # 5. rtrade._touch_rtrade_heartbeat and _LivePairVenue hygiene
     hb_path = tmp_path / "rtrade.heartbeat"

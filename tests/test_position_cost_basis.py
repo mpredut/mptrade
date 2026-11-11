@@ -7,6 +7,11 @@ from unittest.mock import Mock
 import pytest
 
 from providers.quantity import remaining_average_cost
+import account_cache_health as health
+import cacheManager as cm
+import json
+from binance_api import bapi_ws_bridge
+from providers.order_ohlc_utils import extract_remaining_qty
 
 
 def fill(i, side="BUY", qty=1, price=100, **values):
@@ -53,8 +58,6 @@ def test_negative_fee_is_unknown():
 
 @pytest.fixture
 def binance_history(monkeypatch):
-    import account_cache_health as health
-    import cacheManager as cm
     from providers.market_api import api
 
     rows = []
@@ -88,7 +91,6 @@ def test_binance_uses_immutable_fills_and_current_durable_versions(binance_histo
 
 
 def test_binance_rejects_stale_history_before_reading(binance_history):
-    import account_cache_health as health
     api, rows, current, ensure, get_cache = binance_history
     rows.append(native(1))
     current.side_effect = health.AccountCacheNotReady("stale")
@@ -172,7 +174,6 @@ def test_extract_order_fee_canonical_across_venues():
 
 
 def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkeypatch):
-    import cacheManager as cm
 
     persisted = []
 
@@ -182,7 +183,6 @@ def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkey
         def _persist_items(self, symbol, items):
             persisted.extend(items)
 
-    from binance_api import bapi_ws_bridge
 
     monkeypatch.setattr(cm, "get_cache_manager", lambda name: DummyTradeCache())
     bapi_ws_bridge.append_trade_from_execution_report({
@@ -208,7 +208,6 @@ def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkey
 
 
 def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fills(tmp_path, monkeypatch):
-    import cacheManager as cm
     from unittest.mock import MagicMock
 
     trade_file = str(tmp_path / "cache_trade_binance.jsonl")
@@ -250,7 +249,6 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
     mgr.fetchtime_per_symbol["ARBUSDC"] = 1000
     mgr._rest_sync_cursor_per_symbol["ARBUSDC"] = 1000
 
-    from binance_api import bapi_ws_bridge
 
     # 1. WS disconnects briefly (fill 501 at t=1500 is missed on WS), then WS reconnects
     #    and delivers fill 502 at t=2000 BEFORE REST polling runs:
@@ -285,7 +283,6 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
 
 
 def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():
-    from providers.order_ohlc_utils import extract_remaining_qty
     import instrument
     import order_retry
     import monitortrades as mt
@@ -333,11 +330,7 @@ def test_cross_venue_and_ws_extract_normalization_edges():
         extract_order_price,
         extract_timestamp_ms,
     )
-    from providers.order_ohlc_utils import (
-        extract_order_qty,
-        extract_order_side,
-        extract_remaining_qty,
-    )
+    from providers.order_ohlc_utils import extract_order_qty, extract_order_side
     from providers.order_id_context import resolve_order_owner
 
     # 1. Binance WS executionReport: remainingQty from q - z, price from L/Z, timestamp from T/E, side from S
@@ -450,8 +443,6 @@ def test_trailing_core_partial_exit_Transition_to_flat_arms_rebuy(tmp_path):
 
 def test_cache_order_on_items_update_routes_through_persist_items(tmp_path):
     """Verify CacheManagerInterface.on_items_update delegates to _persist_items so Order fills merge and normalize."""
-    import json
-    import cacheManager as cm
 
     sym = "TEST_ON_ITEMS_USDC"
     order_file = str(tmp_path / "order_on_items.json")
@@ -575,8 +566,6 @@ def test_hyperliquid_strategy_keeps_order_when_cancel_fails(tmp_path):
 
 def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_path):
     """Verify update_cache_per_symbol overriding on Order/Trade, CurrentPrice _persist_items overloading, and read-only maintain_append_persist."""
-    import json
-    import cacheManager as cm
 
     # 1. CacheOrderManager.update_cache_per_symbol routes through _persist_items and accepts both dict and list
     sym = "TEST_POLY_ORDER_USDC"

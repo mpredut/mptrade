@@ -12,7 +12,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from binance_api import bapi_placeorder as po
 from instrument import Instrument
-from providers.base import MarketDataProvider, aggregate_fills_by_order_id
+from providers.base import MarketDataProvider, aggregate_fills_by_order_id, extract_order_id
 from providers.kraken_provider import KrakenProvider
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.market_api import MarketApi
@@ -22,9 +22,12 @@ from providers.quantity import (
     fee_cap_quantity,
     resolve_assets,
 )
-from providers.replay_provider import ReplayMarketDataProvider
-from providers.strategy_executor import PairPrecision, SubmissionOutcome
+from providers.replay_provider import ReplayMarketDataProvider, load_price_series
+from providers.strategy_executor import PairPrecision, ProviderError, SubmissionOutcome
 from providers.t212_provider import T212Provider
+import botcore
+import math
+import pytest
 
 
 class CustomProvider(MarketDataProvider):
@@ -562,8 +565,7 @@ def test_decide_quantity_with_nan_bool_policy_cap_and_nan_suggested_scale_iter27
 
 def test_candle_interval_rejects_bool_iter29_s1():
     """[ITER29 #1] candle_interval rejects bool."""
-    import pytest
-    from providers.strategy_executor import candle_interval, ProviderError
+    from providers.strategy_executor import candle_interval
     # 1. candle_interval rejects bool
     with pytest.raises(ProviderError):
         candle_interval(True)
@@ -573,7 +575,6 @@ def test_candle_interval_rejects_bool_iter29_s1():
 
 def test_compute_weight_capped_qty_must_accept_required_qty_float_inf_auto_quantity_iter35_s1():
     """[ITER35 #1] compute_weight_capped_qty must accept required_qty=float('inf') (auto-quantity from decide_quantity)."""
-    import math
     import order_guard as og
     # 1. compute_weight_capped_qty must accept required_qty=float('inf') (auto-quantity from decide_quantity)
     capped_inf = og.compute_weight_capped_qty(
@@ -591,7 +592,6 @@ def test_compute_weight_capped_qty_must_accept_required_qty_float_inf_auto_quant
 
 def test_fee_cap_quantity_nan_bool_safety_iter35_s2():
     """[ITER35 #2] fee_cap_quantity NaN/bool safety."""
-    import math
     # 2. fee_cap_quantity NaN/bool safety
     assert fee_cap_quantity(True, 0.001) == 0.0
     assert fee_cap_quantity(float("nan"), 0.001) == 0.0
@@ -600,7 +600,6 @@ def test_fee_cap_quantity_nan_bool_safety_iter35_s2():
 
 def test_marketdataprovider_round_quantity_round_price_order_filter_refusal_and_last_opposite_fill_iter38_s4():
     """[ITER38 #4] MarketDataProvider round_quantity, round_price, order_filter_refusal, and last_opposite_fill."""
-    import pytest
     # 4. MarketDataProvider round_quantity, round_price, order_filter_refusal, and last_opposite_fill
     class _DummyProv(MarketDataProvider):
         @property
@@ -633,14 +632,12 @@ def test_marketdataprovider_round_quantity_round_price_order_filter_refusal_and_
 
 def test_submissionoutcome_rejects_boolean_order_id_iter39_s2():
     """[ITER39 #2] SubmissionOutcome rejects boolean order_id."""
-    import pytest
     # 2. SubmissionOutcome rejects boolean order_id
     with pytest.raises(ValueError):
         SubmissionOutcome("accepted", order_id=True)
 
 def test_decide_quantity_ignores_boolean_negative_round_fn_return_values_iter39_s4():
     """[ITER39 #4] decide_quantity ignores boolean/negative round_fn return values."""
-    import pytest
     # 4. decide_quantity ignores boolean/negative round_fn return values
     prov_q = SimpleNamespace(
         name="dummy",
@@ -655,7 +652,6 @@ def test_decide_quantity_ignores_boolean_negative_round_fn_return_values_iter39_
 
 def test_replaymarketdataprovider_and_simclock_reject_bool_nan_inputs_iter43_s4():
     """[ITER43 #4] ReplayMarketDataProvider and SimClock reject bool/NaN inputs."""
-    import pytest
     from providers.replay_provider import SimClock
     # 4. ReplayMarketDataProvider and SimClock reject bool/NaN inputs
     with pytest.raises(ValueError):
@@ -673,7 +669,6 @@ def test_replaymarketdataprovider_and_simclock_reject_bool_nan_inputs_iter43_s4(
 
 def test_aggregate_fills_by_order_id_does_not_dilute_vwap_when_a_partial_iter59_s1():
     """[ITER59 #1] aggregate_fills_by_order_id does not dilute VWAP when a partial fill has price=0."""
-    import pytest
     # 1. aggregate_fills_by_order_id does not dilute VWAP when a partial fill has price=0
     fills = [
         {"orderId": "ord-1", "side": "BUY", "price": 100.0, "qty": 2.0, "timestamp": 1000},
@@ -709,7 +704,6 @@ def test_marketdataprovider_round_quantity_and_round_price_clamp_negative_inputs
 def test_replaymarketdataprovider_place_order_safely_returns_none_on_non_numeric_iter61_s3(tmp_path):
     """[ITER61 #3] ReplayMarketDataProvider.place_order safely returns None on non-numeric price/qty, and load_price_series skips ts <= 0."""
     import json
-    from providers.replay_provider import load_price_series
     # 3. ReplayMarketDataProvider.place_order safely returns None on non-numeric price/qty, and load_price_series skips ts <= 0
     jsonl_file = tmp_path / "prices.jsonl"
     jsonl_file.write_text(
@@ -761,7 +755,6 @@ def test_providers_base_bool_env_strips_inline_comments_quotes_and_iter85_s2(mon
 
 def test_pairprecision_rejects_non_finite_decimals_non_numeric_order_min_iter86_s1():
     """[ITER86 #1] PairPrecision rejects non-finite decimals, non-numeric order_min, and boolean base_asset with ValueError."""
-    import pytest
     # 1. PairPrecision rejects non-finite decimals, non-numeric order_min, and boolean base_asset with ValueError
     with pytest.raises(ValueError, match="invalid price_decimals"):
         PairPrecision(price_decimals=float("inf"), volume_decimals=2, order_min=0.01)
@@ -788,7 +781,6 @@ def test_aggregate_fills_by_order_id_none_invalid_rows_and_bool_invalid_side_ite
 
 def test_providers_strategy_executor_bool_rejection_in_submissionrefused_submissionoutcome_orderstatus_iter105_s3():
     """[ITER105 #3] providers.strategy_executor: bool rejection in SubmissionRefused, SubmissionOutcome, OrderStatus."""
-    import pytest
     from providers.strategy_executor import OrderStatus, SubmissionRefused
     # 3. providers.strategy_executor: bool rejection in SubmissionRefused, SubmissionOutcome, OrderStatus
     with pytest.raises(ValueError):
@@ -800,7 +792,6 @@ def test_providers_strategy_executor_bool_rejection_in_submissionrefused_submiss
 
 def test_providers_quantity_remaining_average_cost_balance_cap_quantity_decide_quantity_iter106_s1():
     """[ITER106 #1] providers.quantity: remaining_average_cost, balance_cap_quantity, decide_quantity."""
-    import pytest
     from providers import quantity as pq
     # 1. providers.quantity: remaining_average_cost, balance_cap_quantity, decide_quantity
     assert pq.remaining_average_cost(True, 1.0) is None
@@ -827,7 +818,6 @@ def test_providers_quantity_remaining_average_cost_balance_cap_quantity_decide_q
 
 def test_binanceorderrules_from_symbol_info_rejects_non_iterable_filters_and_non_iter108_s1():
     """[ITER108 #1] BinanceOrderRules.from_symbol_info rejects non-iterable filters and non-str base/quote."""
-    import pytest
     from providers.quantity import BinanceFilterError, BinanceOrderRules
     # 1. BinanceOrderRules.from_symbol_info rejects non-iterable filters and non-str base/quote
     with pytest.raises(BinanceFilterError):
@@ -846,7 +836,6 @@ def test_binanceorderrules_from_symbol_info_rejects_non_iterable_filters_and_non
 
 def test_botcore_providers_env_value_bool_env_extract_order_id_extract_order_fee_aggregate_fills_by_order_id_iter109_s1(tmp_path):
     """[ITER109 #1] botcore/providers: env_value, bool_env, extract_order_id, extract_order_fee, aggregate_fills_by_order_id."""
-    import botcore
     # 1. botcore/providers: env_value, bool_env, extract_order_id, extract_order_fee, aggregate_fills_by_order_id
     assert botcore.env_value(True, "KEY") is None
     assert botcore.env_value(str(tmp_path), True) is None
@@ -875,7 +864,6 @@ def test_providers_replay_provider_load_price_series_rejects_non_str_path_or_ite
 
 def test_extract_order_id_rejects_nan_inf_none_null_non_integer_iter122_s1():
     """[ITER122 #1] extract_order_id rejects 'nan', 'inf', 'none', 'null', non-integer floats, and normalizes integer floats."""
-    from providers.base import extract_order_id
     # 1. extract_order_id rejects "nan", "inf", "none", "null", non-integer floats, and normalizes integer floats
     assert extract_order_id({"orderId": "nan"}) is None
     assert extract_order_id({"orderId": "INF"}) is None
@@ -885,8 +873,6 @@ def test_extract_order_id_rejects_nan_inf_none_null_non_integer_iter122_s1():
 
 def test_require_int_order_id_preserves_bit_integer_precision_iter122_s2():
     """[ITER122 #2] require_int_order_id preserves 64-bit integer precision (> 2**53)."""
-    import pytest
-    from providers.strategy_executor import ProviderError
     # 2. require_int_order_id preserves 64-bit integer precision (> 2**53)
     from providers.order_ohlc_utils import require_int_order_id
 
@@ -900,7 +886,6 @@ def test_require_int_order_id_preserves_bit_integer_precision_iter122_s2():
 
 def test_submissionoutcome_normalizes_integer_float_order_id_and_rejects_nan_iter123_s1():
     """[ITER123 #1] SubmissionOutcome normalizes integer float order_id and rejects NaN/'nan'/'null'/non-integer floats."""
-    import pytest
     # 1. SubmissionOutcome normalizes integer float order_id and rejects NaN/"nan"/"null"/non-integer floats
     outcome = SubmissionOutcome("accepted", order_id=98765.0)
     assert outcome.order_id == "98765"
@@ -920,7 +905,6 @@ def test_replaymarketdataprovider_sanitizes_fee_pct_and_non_finite_cur_px_in_ite
 
 def test_replay_provider_load_price_series_directory_safety_and_supports_symbol_unhashable_safety_iter151_s4(tmp_path):
     """[ITER151 #4] replay_provider: load_price_series directory safety and supports_symbol unhashable safety."""
-    from providers.replay_provider import load_price_series
     # 4. replay_provider: load_price_series directory safety and supports_symbol unhashable safety
     assert load_price_series(str(tmp_path), "BTCUSDC") == []
     rp = ReplayMarketDataProvider({"BTCUSDC": [(1700000000.0, 60000.0)]})
@@ -993,7 +977,6 @@ def test_providers_quantity_py_decide_quantity_string_boolean_parsing_iter154_s3
 
 def test_providers_base_py_extract_order_id_aggregate_fills_by_order_id_normalization_sentinel_rejection_iter154_s5():
     """[ITER154 #5] providers/base.py: extract_order_id & aggregate_fills_by_order_id .0 normalization & sentinel rejection."""
-    from providers.base import extract_order_id
     # 5. providers/base.py: extract_order_id & aggregate_fills_by_order_id .0 normalization & sentinel rejection
     assert extract_order_id({"orderId": "12345.0"}) == "12345"
     agg = aggregate_fills_by_order_id([
@@ -1007,7 +990,6 @@ def test_providers_base_py_extract_order_id_aggregate_fills_by_order_id_normaliz
 
 def test_botcore_providers_env_value_quoted_value_with_trailing_comment_iter164_s1(tmp_path):
     """[ITER164 #1] botcore/providers: env_value quoted value with trailing comment, bool_env default='false', extract_order_fee(require_explicit_asset='false')."""
-    import botcore
     # 1. botcore/providers: env_value quoted value with trailing comment, bool_env default="false", extract_order_fee(require_explicit_asset="false")
     (tmp_path / ".env").write_text('QUOTED_KEY="my_secret#1" # trailing comment\nFLAG_KEY="true" # comment\n', encoding="utf-8")
     assert botcore.env_value(str(tmp_path), "QUOTED_KEY") == "my_secret#1"
@@ -1043,7 +1025,6 @@ def test_providers_base_boolean_and_side_extraction_iter169_s1():
 
 def test_submissionoutcome_and_orderstatus_normalization_iter170_s3():
     """[ITER170 #3] SubmissionOutcome and OrderStatus normalization."""
-    import pytest
     from providers import strategy_executor as sexec
     # 3. SubmissionOutcome and OrderStatus normalization
     so = sexec.SubmissionOutcome(" ACCEPTED ", order_id=42, reason=" ok ")

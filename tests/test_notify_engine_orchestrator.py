@@ -13,13 +13,25 @@ from unittest import mock
 
 from notify_engine.alertnotifiers import (
     AlertNotifier,
+    _is_guard_alert,
     _mark_provider_daily_limit,
     notify,
     pass_common_gate,
     pop_due_bulk_batch,
+    strip_owner_tags,
+    synthesize_bulk_notifications,
 )
-from notify_engine.server import NotificationServer, _topic_for_category
+from notify_engine.server import (
+    NotificationServer,
+    _category_for_title_and_source,
+    _topic_for_category,
+)
 from market_monitor.pricechecker import PriceAlert, PriceChecker
+import asyncio
+import numpy as np
+import pytest
+from orchestratorOS.lib import watchdog_common
+from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
 
 
 class TestNotifyEngineOrchestrator(unittest.TestCase):
@@ -386,7 +398,6 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
 
     def test_flush_queue_preserves_concurrent_appends_and_deduplicates_delayed_prefix(self):
         """Verify flush_queue_loop preserves concurrently appended queue lines and avoids duplicate [DELAYED] prefix."""
-        import asyncio
 
         queue_file = os.path.join(self._temp_dir.name, "queue.jsonl")
         self.server.queue_file = queue_file
@@ -673,8 +684,6 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.assertEqual(err_msg["topic"], "ntfy-error-test")
 
     def test_assetguardian_and_trailing_stop_owner_tags_preserve_distinct_trades_in_bulk(self):
-        from notify_engine.alertnotifiers import _is_guard_alert
-        from notify_engine.server import _category_for_title_and_source
 
         self.assertEqual(_category_for_title_and_source("🎉 SELL ARBUSDC @ 0.169 [assetguardian]", "monitortrades"), "TRADES")
         self.assertEqual(_category_for_title_and_source("📝 SELL ARBUSDC @ 0.169 [assetguardian]", "monitororder"), "TRADES")
@@ -731,8 +740,6 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.assertNotIn("0.1686", bulk_msg["title"])
 
     def test_queue_retry_count_persistence_and_edge_cases(self):
-        import asyncio
-        from orchestratorOS.lib import watchdog_common
         from intelligence.sentiment.gemini_client import GeminiClient
 
         # 1. format_new_coin_message rejects NaN/non-positive prices
@@ -782,7 +789,6 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         from orchestratorOS.lib.technical_repair_ssot import recent_log_lines
         from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
         from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
-        from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
 
         # 1. recent_log_lines: handles NaN file_mtime, None lines, and non-str items in lines
         self.assertEqual(recent_log_lines(None, 1000.0, 500.0), [])  # type: ignore[arg-type]
@@ -812,7 +818,6 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(sensors["geopolitical_threat"]["risk_score"], 0.65)
 
     def test_bulk_synthesis_strips_redundant_headers_and_preserves_full_summary(self):
-        from notify_engine.alertnotifiers import synthesize_bulk_notifications
         from orchestratorOS.lib.technical_repair_ssot import format_supervisor_ntfy_notification
         from orchestratorOS.supervisor.autonomous_ai_reconciler import SupervisorAuditReport
 
@@ -1466,8 +1471,6 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertIn("SERVER DOWN", self.sent[0][0]["Subject"])
 
     def test_owner_tag_stripping_and_refused_guard_classification(self):
-        from notify_engine.alertnotifiers import _is_guard_alert, strip_owner_tags
-        from notify_engine.server import _category_for_title_and_source
         import order_retry
 
         self.assertEqual(strip_owner_tags("🎉 BUY BTCUSDC [ai_executor]"), "🎉 BUY BTCUSDC ")
@@ -1526,18 +1529,7 @@ class EmailMirrorTest(unittest.TestCase):
             self.assertIsNotNone(batch)
             self.assertIn("Order 1002", batch[1])
 
-        from notify_engine.alertnotifiers import (
-            _GATE_ACCEPTED_REASONS,
-            _GATE_SUPPRESSED_REASONS,
-            _dedup_seconds,
-            format_notify_price,
-            format_notify_qty,
-            format_owner_tags,
-            format_trade_notification,
-            format_trade_venue_tag,
-            strip_owner_tags,
-            synthesize_bulk_notifications,
-        )
+        from notify_engine.alertnotifiers import _GATE_ACCEPTED_REASONS, _GATE_SUPPRESSED_REASONS, _dedup_seconds, format_notify_price, format_notify_qty, format_owner_tags, format_trade_notification, format_trade_venue_tag
 
         b_same_mod, _, _, _ = synthesize_bulk_notifications([
             {"title": "SELL ARBUSDC@0.1692 [binance:assetguardian]", "body": "FILLED ~25.84 USDC", "priority": "urgent", "topic": "ntfy-trades-1978", "count": 1},
@@ -1712,7 +1704,6 @@ def test_dexscreenersource_refresh_rejects_bool_nan_listedat_and_newcoinsmonitor
 
 def test_fleethealthmonitor_handles_bool_nan_now_list_null_json_iter56_s3(tmp_path):
     """[ITER56 #3] FleetHealthMonitor handles bool/NaN now, list/null JSON in cachedb, and null market_trading_decision."""
-    from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
     # 3. FleetHealthMonitor handles bool/NaN now, list/null JSON in cachedb, and null market_trading_decision
     cachedb = tmp_path / "cachedb"
     cachedb.mkdir(parents=True, exist_ok=True)
@@ -1730,8 +1721,6 @@ def test_fleethealthmonitor_handles_bool_nan_now_list_null_json_iter56_s3(tmp_pa
 
 def test_visuals_drawprices_py_to_series_and_min_max_scale_iter57_s2():
     """[ITER57 #2] visuals/drawprices.py to_series and min_max_scale."""
-    import pytest
-    import numpy as np
     from visuals.drawprices import to_series, min_max_scale
     # 2. visuals/drawprices.py to_series and min_max_scale
     ts, prices, dt = to_series([
@@ -1764,7 +1753,6 @@ def test_mailer__config_rejects_out_of_range_tcp_ports_iter66_s4(monkeypatch):
 def test_pricechecker__readable_time_start_monitoring_and_new_coins_discovery__safe_days_back_iter66_s5():
     """[ITER66 #5] PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back."""
     from types import SimpleNamespace
-    import pytest
     from market_monitor.new_coins_discovery import _safe_days_back, safe_float as _safe_num
     # 5. PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back
     assert isinstance(PriceChecker._readable_time((1e25, 100.0, None)), str)
@@ -1776,7 +1764,6 @@ def test_pricechecker__readable_time_start_monitoring_and_new_coins_discovery__s
 
 def test_visuals_drawprices_get_cache_for_symbol_and_min_max_inverse_iter77_s3():
     """[ITER77 #3] visuals.drawprices get_cache_for_symbol and min_max_inverse."""
-    import numpy as np
     from visuals import drawprices
     # 3. visuals.drawprices get_cache_for_symbol and min_max_inverse
     assert drawprices.get_cache_for_symbol("__NON_EXISTENT_SYMBOL__") == []
@@ -1838,7 +1825,6 @@ def test_pricechecker__get_thresholds_for_symbol_handles_partial_or_invalid_per_
 
 def test_alerts_config__pair_rejects_extra_slashes_and_load_config_rejects_iter79_s1(tmp_path):
     """[ITER79 #1] alerts_config._pair rejects extra slashes and load_config rejects fractional integer settings."""
-    import pytest
     # 1. alerts_config._pair rejects extra slashes and load_config rejects fractional integer settings
     with pytest.raises(ValueError):
         alerts_config._pair("6 / 10 / 15")
@@ -1885,7 +1871,6 @@ def test_gen_alert_thresholds__perc_and_suggest_input_validation_iter79_s3():
 
 def test_watchdog_common_send_ntfy_strips_inline_comments_and_handles_full_iter120_s3(monkeypatch):
     """[ITER120 #3] watchdog_common.send_ntfy strips inline comments and handles full URLs."""
-    from orchestratorOS.lib import watchdog_common
     # 3. watchdog_common.send_ntfy strips inline comments and handles full URLs
     sent_urls = []
     monkeypatch.setattr(
@@ -2004,7 +1989,6 @@ def test_gen_alert_thresholds_resolve_id_strips_whitespace_for_exact_match_and_i
 
 def test_verify_account_facade_position_from_and_order_key_handle_both_legacy_quantity_iter137_s2():
     """[ITER137 #2] verify_account_facade.position_from and order_key handle both legacy (quantity, type, time) and normalized (qty, side, timestamp) dicts."""
-    import pytest
     from verify_tools import verify_account_facade as vaf
     # 2. verify_account_facade.position_from and order_key handle both legacy (quantity, type, time) and normalized (qty, side, timestamp) dicts
     avg, net = vaf.position_from(
@@ -2022,7 +2006,6 @@ def test_verify_account_facade_position_from_and_order_key_handle_both_legacy_qu
 
 def test_watch_trade_decisions_position_handles_buy_orders_with_missing_none_iter137_s3(monkeypatch):
     """[ITER137 #3] watch_trade_decisions.position handles buy orders with missing/None timestamps without TypeError."""
-    import pytest
     from verify_tools import watch_trade_decisions as wtd
     # 3. watch_trade_decisions.position handles buy orders with missing/None timestamps without TypeError
     monkeypatch.setattr(

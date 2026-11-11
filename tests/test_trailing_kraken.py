@@ -9,6 +9,10 @@ import tempfile
 import time
 import unittest
 from types import SimpleNamespace
+import json
+import trailing_core
+from providers.kraken_provider import KrakenProvider
+from unittest.mock import MagicMock, patch
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _KRAKEN_DIR = os.path.join(_ROOT_DIR, "kraken")
@@ -23,7 +27,6 @@ from kraken.trailing_stop import KrakenTrailing
 from trailing_core import should_sell
 from strategies import spot_engine as _xstock_strategy
 from tests.conftest import TrailingTestBase
-from unittest.mock import patch
 
 
 class FakeK:
@@ -94,7 +97,6 @@ class TestTrailingKraken(Base):
         c.price = 65.0
         ts = self.ts(c); ts.check_once()
         self.assertEqual(c.orders, [])
-        import json
         self.assertEqual(json.load(open(self.sf))["HYPE"]["peak"], 65.0)
 
     def test_a_crash_beyond_18pct_sells_the_free_balance(self):
@@ -330,7 +332,6 @@ class TestRebuyGuardsKraken(Base):
 
     def test_cachemanager_fetch_rest_into_refreshes_empty_configured_pairs_and_matches_aliases(self):
         from cacheaccount import CacheTradeManager
-        from providers.kraken_provider import KrakenProvider
 
         class FakeLedgerClient:
             def _private(self, method, data=None, fresh=False):
@@ -374,7 +375,6 @@ class TestRebuyGuardsKraken(Base):
         self.assertEqual(ws_cache["fetchtime"]["TAOUSD"], 1700000010000)
 
     def test_empty_or_failed_balance_ex_does_not_wipe_peak_and_caches_per_tick(self):
-        import json
 
         class CountingFakeK(FakeK):
             def __init__(self):
@@ -423,7 +423,6 @@ class TestRebuyGuardsKraken(Base):
         self.assertNotEqual(first_cid, second_cid)
 
     def test_trend_value_resolves_cross_venue_symbol_variants(self):
-        import json
 
         fd, trend_path = tempfile.mkstemp(suffix=".json")
         os.close(fd)
@@ -527,11 +526,9 @@ class TestRebuyGuardsKraken(Base):
 
     def test_cross_venue_shared_cost_basis_cli_dispatch_and_strategy_dry_run_gates(self):
         import io
-        import json
         from contextlib import redirect_stdout
         from providers.base import MarketDataProvider
         from providers.hyperliquid_provider import HyperliquidProvider
-        from providers.kraken_provider import KrakenProvider
 
         # 1. KrakenTrailing.cost_basis delegates to KrakenProvider.position_cost_basis / compute_fills_cost_basis
         fd, cache_path = tempfile.mkstemp(suffix=".json")
@@ -903,7 +900,6 @@ class TestAdoptare(_XStockBase):
         self.assertTrue(s.s["adopted"])
 
     def test_it_does_not_adopt_over_a_cycle_in_progress(self):
-        import json
         with open(_xstock_strategy.state_path_for(self.PAIR), "w") as f:
             json.dump({"cycle": 3, "qty": 2.46, "cost": 150.0, "spent": 150.0,
                        "dca_buys": 1, "orders": []}, f)
@@ -937,7 +933,6 @@ if __name__ == "__main__":
 
 def test_krakentrailing__submit_lifecycle_order_normalizes_bypass_guards_all_all_iter7_s3(monkeypatch):
     """[ITER7 #3] KrakenTrailing._submit_lifecycle_order normalizes bypass_guards='ALL' / {'ALL'}."""
-    from unittest.mock import MagicMock
     import order_guard
     # 3. KrakenTrailing._submit_lifecycle_order normalizes bypass_guards="ALL" / {"ALL"}
     eng = object.__new__(KrakenTrailing)
@@ -960,9 +955,7 @@ def test_krakentrailing__submit_lifecycle_order_normalizes_bypass_guards_all_all
 
 def test_trailing_core_should_sell_krakentrailing__trend_value_previous_recovery_iter21_s3(tmp_path, monkeypatch):
     """[ITER21 #3] trailing_core.should_sell & KrakenTrailing._trend_value .previous recovery."""
-    import json
     import pytest
-    import trailing_core
     import kraken.trailing_stop as kt
     # 3. trailing_core.should_sell & KrakenTrailing._trend_value .previous recovery
     assert trailing_core.should_sell(0.0, 100.0, 15.0) is False
@@ -1021,7 +1014,6 @@ def test_kraken_trailing_stop_krakentrailing_reconcile_pending_execute_rebuy_nan
 
 def test_krakentrailing__sync_retry_count_from_state__order_intent_iter57_s3():
     """[ITER57 #3] KrakenTrailing._sync_retry_count_from_state & _order_intent."""
-    from unittest.mock import MagicMock
     # 3. KrakenTrailing._sync_retry_count_from_state & _order_intent
     adapter = object.__new__(KrakenTrailing)
     adapter._retry_counts = {}
@@ -1058,7 +1050,6 @@ def test_trailing_core_is_venue_agnostic_ast():
     import ast
     from pathlib import Path
 
-    import trailing_core
 
     src = Path(trailing_core.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)

@@ -16,6 +16,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import cacheManager as cm
+import cacheprice
+import json
+import tempfile
+from providers.hyperliquid_provider import HyperliquidProvider
 
 
 class _FakeApi:
@@ -48,13 +52,11 @@ class TestFetchDeadline(unittest.TestCase):
         self.pool.shutdown(wait=True, cancel_futures=True)
 
     def test_normal_fetch_returns_price(self):
-        import cacheprice
         api = _FakeApi(hang=False, price=55.5)
         p = cacheprice._fetch_price_with_deadline(api, "HYPEUSD", self.pool, deadline_sec=2)
         self.assertEqual(p, 55.5)
 
     def test_explicit_provider_is_forwarded_inside_deadline(self):
-        import cacheprice
         api = _FakeApi(hang=False, price=85.49)
         p = cacheprice._fetch_price_with_deadline(
             api, "HYPEUSD", self.pool, deadline_sec=2,
@@ -63,7 +65,6 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertEqual(api.provider_names, ["Kraken"])
 
     def test_hung_fetch_raises_timeout_not_blocks(self):
-        import cacheprice
         api = _FakeApi(hang=True)
         self.blocked_api = api
         t0 = time.time()
@@ -145,7 +146,6 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertEqual(set(api.provider_names), {"Kraken"})
 
     def test_poller_marks_nonbinance_symbol_healthy_on_cpm(self):
-        import tempfile
         api = _FakeApi(hang=False, price=76.5)
         tmp_dir = tempfile.mkdtemp()
         cpm = cm.CacheCurrentPriceManager(
@@ -180,8 +180,6 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertEqual(cpm.cache, {})
 
     def test_hyperliquid_and_kraken_ws_streams_feed_cpm_and_suppress_rest_polling(self):
-        import json
-        import tempfile
 
         api = _FakeApi(hang=False, price=99.9)
         tmp_dir = tempfile.mkdtemp()
@@ -269,9 +267,6 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertEqual(set(api.provider_names), {"hyperliquid"})
 
     def test_hyperliquid_ws_user_fills_updates_ssot_trade_cache(self):
-        import json
-        import tempfile
-        from providers.hyperliquid_provider import HyperliquidProvider
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_file = os.path.join(tmpdir, "cache_trade_hyperliquid.json")
@@ -404,8 +399,6 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertEqual(val, "on")
 
     def test_ws_stream_dynamic_add_remove_and_provider_ssot_cache_helpers(self):
-        import json
-        import tempfile
         from providers.base import MarketDataProvider
 
         # 1. Dynamic add_symbol / remove_symbol on KrakenPriceStream and HyperliquidPriceStream
@@ -477,7 +470,6 @@ class TestFetchDeadline(unittest.TestCase):
 
         # 5. PublicPriceStreamBase shared inheritance and cross-venue position_cost_basis symmetry
         from binance_api.bapi_ws import BinancePriceStream, PublicPriceStreamBase
-        from providers.hyperliquid_provider import HyperliquidProvider
 
         self.assertTrue(issubclass(BinancePriceStream, PublicPriceStreamBase))
         self.assertTrue(issubclass(cm.HyperliquidPriceStream, PublicPriceStreamBase))

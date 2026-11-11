@@ -25,6 +25,7 @@ from intelligence.sentiment.guards.post_stop_reentry_guard import (
     get_post_stop_reentry_guard,
 )
 from providers.quantity import QuantityDecision
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 
 
 class FakeGeminiClient(GeminiClient):
@@ -616,7 +617,6 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
 
 
 def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 
     clear_post_stop_reentry_cache()
 
@@ -788,7 +788,7 @@ def test_get_post_stop_reentry_guard_tolerates_partial_margins_dict_without_post
 
 def test_poststopreentryguard_highstakeguard_tolerate_none_bool_cache_timestamps_iter180_s2():
     """[ITER180 #2] PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps."""
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, _HIGH_STAKE_DECISION_CACHE
+    from intelligence.sentiment.guards.high_stake_guard import _HIGH_STAKE_DECISION_CACHE
     # 2. PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps
     ps_enforced = PostStopReentryGuard(
         gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "REJECTED", "reason": "trap"}'),

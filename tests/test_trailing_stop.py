@@ -13,7 +13,8 @@ import binance_api.trailing_stop as binance_ts_mod  # noqa: E402
 from providers.strategy_executor import OrderStatus  # noqa: E402
 from tests.conftest import TrailingTestBase  # noqa: E402
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
+import json
 
 
 class FakeApi:
@@ -106,7 +107,6 @@ class TestTrailing(Base):
             self.tearDown(); self.setUp()
             api = FakeApi(float("nan"))
             self.ts(api).check_once()
-            import json
             self.assertEqual(json.load(open(self.sf)), {})
 
         with self.subTest(msg="a_rise_does_not_sell_and_updates_the_peak"):
@@ -117,7 +117,6 @@ class TestTrailing(Base):
             api.price = 260.0
             ts.check_once()
             self.assertEqual(self.po.orders, [])
-            import json
             self.assertEqual(json.load(open(self.sf))["TAOUSDC"]["peak"], 260.0)
 
         with self.subTest(msg="falling_below_the_threshold_sells_with_force"):
@@ -183,7 +182,6 @@ class TestTrailing(Base):
             self.po.result = None
             api.price = 190.0
             ts.check_once()
-            import json
             state = json.load(open(self.sf))["TAOUSDC"]
             self.assertEqual(state["peak"], 250.0)
             self.assertNotIn("rebuy", state)
@@ -199,7 +197,6 @@ class TestTrailing(Base):
             api.free = 0.0
             api.price = 193.0
             ts.check_once()
-            import json
             self.assertIn("rebuy", json.load(open(self.sf))["TAOUSDC"])
 
         with self.subTest(msg="a_dry_run_does_not_sell"):
@@ -235,7 +232,6 @@ class TestTrailing(Base):
             ts.check_once()
             api.price = 190.0; ts.check_once()             # it sells, the peak resets to 190
             ts.check_once()                                # terminal status confirmed
-            import json
             self.assertEqual(json.load(open(self.sf))["TAOUSDC"]["peak"], 190.0)
 
 
@@ -246,7 +242,6 @@ class TestPerCoinRebuy(Base):
         ts.check_once()                                # arm + track (min_profit=0)
         api.price = 190.0; ts.check_once()             # trailing sells
         ts.check_once()                                # terminal fill confirmed
-        import json
         return json.load(open(self.sf))["TAOUSDC"]
 
     def test_rebuy_configurations(self):
@@ -281,7 +276,6 @@ class TestPerCoinRebuy(Base):
 
         with self.subTest(msg="declared_policy_failure_never_falls_back_to_global_true"):
             self.tearDown(); self.setUp()
-            from unittest.mock import Mock
             ts = self.ts(FakeApi(250.0))
             ts.rebuy_enabled_for = Mock(side_effect=RuntimeError("unavailable"))
             self.assertFalse(ts.core._rebuy_for("TAOUSDC"))
@@ -368,7 +362,6 @@ class TestPerCoinRebuy(Base):
             self.assertEqual(self.po.orders, [])
 
         with self.subTest(msg="trend_uses_get_fresh_snapshot_not_stale_get_snapshot"):
-            from unittest.mock import MagicMock
             ts = self.ts(FakeApi(100.0))
             fake_mgr = MagicMock()
             fake_mgr.get_fresh_snapshot.return_value = None
@@ -457,7 +450,6 @@ class TestMinProfit(Base):
 
         with self.subTest(msg="cost_basis_uses_total_balance_and_preserves_existing_warmup"):
             self.tearDown(); self.setUp()
-            from unittest.mock import Mock
             ts = self.ts(FakeApi(250), min_profit_pct=5)
             ts._balances = [{"asset": "TAO", "free": "3", "locked": "2"}]
             self.po.position_cost_basis = Mock(return_value=200)
@@ -624,7 +616,6 @@ class TestMinProfit(Base):
 
             # Confirm terminal fill of the 0.2 order
             ts.check_once()
-            import json
             st = json.load(open(self.sf))["TAOUSDC"]
             self.assertEqual(st["peak"], 250.0, "peak must NOT be reset to 190 while position remains incomplete")
             self.assertEqual(st["exit_sold_qty"], 0.2)
@@ -659,7 +650,6 @@ class TestMinProfit(Base):
             ts.check_once()
 
             self.assertEqual(self.po.orders, [], "new position must not be sold using stale peak from unheld period")
-            import json
             st = json.load(open(self.sf))["TAOUSDC"]
             self.assertEqual(st["peak"], 150.0, "peak must re-anchor to new position entry, not unheld 200 high")
 
@@ -679,7 +669,6 @@ class TestMinProfit(Base):
 
             # Confirm 0.2 fill
             ts.check_once()
-            import json
             st = json.load(open(self.sf))["TAOUSDC"]
             self.assertEqual(st["exit_sold_qty"], 0.2)
 
@@ -731,7 +720,6 @@ class TestMinProfit(Base):
             self.assertEqual(self.po.orders[1]["side"], "BUY")
 
             ts.check_once()  # Reconcile REBUY terminal -> resets peak to 142.0
-            import json
             st = json.load(open(self.sf))["TAOUSDC"]
             self.assertEqual(st["peak"], 142.0)
 
@@ -746,7 +734,6 @@ class TestMinProfit(Base):
             ts.total_qty = lambda asset: 2.0
             # Tick 1 at 200.0: sets warmup_at = 210.0 (+5%)
             ts.check_once()
-            import json
             st = json.load(open(self.sf))["TAOUSDC"]
             self.assertAlmostEqual(st["warmup_at"], 210.0)
 
@@ -765,7 +752,6 @@ class TestMinProfit(Base):
             ts.check_once()  # peak=250.0, warmup_at=262.5
             api.price = 260.0  # +4.0% (< +5.0% warmup_at): trailing not active yet
             ts.check_once()
-            import json
             st = json.load(open(self.sf))["TAOUSDC"]
             self.assertEqual(st["peak"], 250.0, "peak must not ratchet up before warmup_at is reached")
             api.price = 200.0  # -20% from 250 (< 22% TAO trail), though -23.1% from 260
@@ -793,7 +779,6 @@ class TestMinProfit(Base):
             ts.check_once()  # reconciles REBUY terminal
             self.po.order_status = orig_order_status
 
-            import json
             st = json.load(open(self.sf))["TAOUSDC"]
             self.assertNotIn("rebuy", st, "closed fee-adjusted rebuy must clear rebuy state")
             self.assertFalse(st.get("is_flat", False), "is_flat must be reset to False after rebuy fill")
@@ -905,7 +890,6 @@ class TestMinProfit(Base):
             ts.check_once()  # reconciles SELL terminal -> must complete!
             self.po.order_status = orig_order_status
 
-            import json
             st = json.load(open(self.sf))["TAOUSDC"]
             self.assertNotIn("target_exit_qty", st)
             self.assertNotIn("exit_sold_qty", st)
@@ -1061,7 +1045,6 @@ def test_trailingcore__safe_trend_ignores_boolean_true_so_sell_skip_if_trend_up_
 
 def test_trailingcore__process_ignores_invalid_trail_bool_nan_iter58_s2():
     """[ITER58 #2] TrailingCore._process ignores invalid trail (bool, NaN, <=0, >=100)."""
-    from unittest.mock import MagicMock
     # 2. TrailingCore._process ignores invalid trail (bool, NaN, <=0, >=100)
     core = object.__new__(TrailingCore)
     core.a = MagicMock()
@@ -1186,7 +1169,6 @@ def test_trailing_core_string_false_flags_and_malformed_pending_metadata_iter110
 
 def test_trailingcore_string_false_in_st_is_flat_does_not_iter131_s1(tmp_path):
     """[ITER131 #1] TrailingCore: string 'false' in st['is_flat'] does not block peak tracking or reset warmup."""
-    import json
     # 1. TrailingCore: string "false" in st["is_flat"] does not block peak tracking or reset warmup
     state_file = str(tmp_path / "trail_state.json")
     with open(state_file, "w", encoding="utf-8") as fh:

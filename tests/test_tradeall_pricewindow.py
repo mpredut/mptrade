@@ -15,6 +15,9 @@ Coverage:
 """
 import os, sys, json, time, tempfile, threading, unittest
 from unittest.mock import MagicMock, patch
+import order_retry
+import pricewindow as pw_mod
+import pytest
 
 # ── mocks for the external dependencies (before any local import) ─────────
 _mock_bapi = MagicMock()
@@ -412,7 +415,6 @@ class TestPriceWindowGetTrend(unittest.TestCase):
                     self.assertEqual(final_trend, 1 if growth > 0 else -1)
 
         with self.subTest("gc is Step-WOLS on the median-filtered window (default SSOT)"):
-            import pricewindow as pw_mod
             prices = [100 + i for i in range(20)]
             pw = _window(prices)
             _, gc, sf, gr = pw.get_short_trend()
@@ -420,7 +422,6 @@ class TestPriceWindowGetTrend(unittest.TestCase):
             self.assertAlmostEqual(gc, pw_mod.step_wols_slope(prices, pw.sample_rate_sec), places=10)
 
         with self.subTest("power parameterization in PriceWindow"):
-            import pricewindow as pw_mod
             prices = [100 + i for i in range(20)]
             pw = _window(prices)
             with patch.object(pw_mod, "STEP_WOLS_POWER", 3.0):
@@ -1206,7 +1207,6 @@ if __name__ == "__main__":
 
 def test_order_retry_enqueue_sanitizes_nan_bool_requested_price_ref_price_and_iter44_s3(monkeypatch, tmp_path):
     """[ITER44 #3] order_retry: enqueue sanitizes NaN/bool requested_price & ref_price, and is_expired/is_due reject bool now."""
-    import order_retry
     # 3. order_retry: enqueue sanitizes NaN/bool requested_price & ref_price, and is_expired/is_due reject bool now
     monkeypatch.setattr(order_retry, "QUEUE_FILE", str(tmp_path / "q.jsonl"))
     monkeypatch.setattr(order_retry, "LOCK_FILE", str(tmp_path / "q.lock"))
@@ -1308,7 +1308,6 @@ def test_visuals_tradeall_observe__log_dates_and_build_backtest_state_text_iter7
 
 def test_pricewindow_input_validation_and_synchronized_normalization_when_window_size_iter78_s3():
     """[ITER78 #3] PriceWindow input validation and synchronized normalization when window_size >= max_index."""
-    import pytest
     from offline.simulations.sim import PriceWindow
     # 3. PriceWindow input validation and synchronized normalization when window_size >= max_index
     with pytest.raises(ValueError):
@@ -1328,7 +1327,6 @@ def test_pricewindow_input_validation_and_synchronized_normalization_when_window
 
 def test_fleethealthmonitor_parses_float_hb_stale_s_and_rejects_invalid_loop_iter80_s3(tmp_path):
     """[ITER80 #3] FleetHealthMonitor parses float hb_stale_s and rejects invalid loop intervals."""
-    import pytest
     from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
     # 3. FleetHealthMonitor parses float hb_stale_s and rejects invalid loop intervals
     procs_file = tmp_path / "procs.conf"
@@ -1351,7 +1349,6 @@ def test_fleethealthmonitor_parses_float_hb_stale_s_and_rejects_invalid_loop_ite
 
 def test_os_resources_watchdog__parse_proc_stat_raises_valueerror_on_truncated_stat_lines_iter82_s3():
     """[ITER82 #3] os_resources_watchdog._parse_proc_stat raises ValueError on truncated stat lines and _managed_script handles malformed proc dicts."""
-    import pytest
     from orchestratorOS.livecheck import os_resources_watchdog
     # 3. os_resources_watchdog._parse_proc_stat raises ValueError on truncated stat lines and _managed_script handles malformed proc dicts
     with pytest.raises(ValueError, match="malformed /proc/stat line"):
@@ -1361,7 +1358,6 @@ def test_os_resources_watchdog__parse_proc_stat_raises_valueerror_on_truncated_s
 
 def test_backtestbroker_normalizes_lowercase_whitespace_order_type_and_sanitizes_nan_iter134_s2(tmp_path):
     """[ITER134 #2] BacktestBroker normalizes lowercase/whitespace order_type and sanitizes NaN trend_gate_max_wait_sec."""
-    import pytest
     from offline.backtests.tradeall import BacktestBroker
     # 2. BacktestBroker normalizes lowercase/whitespace order_type and sanitizes NaN trend_gate_max_wait_sec
     broker = BacktestBroker(str(tmp_path), clock=lambda: 1000.0, trend_gate_max_wait_sec=float("nan"))
@@ -1382,7 +1378,6 @@ def test_tradeall_track_and_place_order_deduplicates_ids_ignores_and_stores_clea
     monkeypatch.setattr(ta.mkt, "cancel_order", lambda sym, oid: cancelled_oids.append((sym, oid)))
     monkeypatch.setattr(ta.api, "cancel_expired_orders", lambda *a, **kw: None)
     monkeypatch.setattr(ta, "_fire_order", lambda sym, act, px, reason, **kw: {"orderId": 444.0})
-    import order_retry
     monkeypatch.setattr(order_retry, "get_accepted_order_ids_for_owner", lambda sym, owner: ["333", "0"])
     monkeypatch.setattr(order_retry, "resolve_accepted_order", lambda sym, oid: None)
     tracked = ["333.0", "0", "nan"]
@@ -1419,7 +1414,6 @@ def test_incrementaltrendbuffer_trim_front_true_eval_slice_eps_k_validation_and_
 
 def test_pricewindow_from_cache24_with_string_window_seconds_and_windowanalyzer_check_price_change_iter166_s3():
     """[ITER166 #3] PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.check_price_change with string threshold."""
-    import pytest
     from types import SimpleNamespace
     import pricewindow as pw
     # 3. PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.check_price_change with string threshold

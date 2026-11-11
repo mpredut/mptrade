@@ -5,6 +5,10 @@ import sys
 import time
 import unittest
 from unittest import mock
+import importlib
+import pytest
+import tempfile
+from cachepaths import canonical_base_asset
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 T212_DIR = os.path.join(ROOT, "212trading")
@@ -98,7 +102,6 @@ class T212ExecutorContractTest(unittest.TestCase):
 
         # 2. Position NOT held in portfolio: fallback to get_price_usd via t212_to_yahoo
         self.fake.portfolio_result = []
-        import importlib
         md = importlib.import_module("212trading.market_data")
         with mock.patch.object(md, "get_price_usd", return_value=125.50) as mock_feed:
             price = self.provider.get_current_price("NVDA_US_EQ")
@@ -445,7 +448,6 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertEqual(client._ord_cache[1], cached_orders)
 
     def test_runtime_env_fallback_and_post_order_endpoint_pacing(self):
-        import tempfile
         import providers.t212_provider as t212_prov_mod
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -523,7 +525,6 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertAlmostEqual(both_sleeps[0], 2.1, delta=0.2)
 
     def test_list_instruments_shared_cache_and_429_negative_cache(self):
-        import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             shared_path = os.path.join(tmpdir, "shared_t212.json")
             c1 = t212_client.T212Client(
@@ -763,7 +764,6 @@ def test_t212provider_get_orders_and_order_status_iter29_s2():
 
 def test_t212provider_rejects_boolean_qty_price_order_id_fill_fields_iter41_s1():
     """[ITER41 #1] T212Provider rejects boolean qty/price/order_id/fill fields."""
-    import pytest
     # 1. T212Provider rejects boolean qty/price/order_id/fill fields
     tp = T212Provider(
         client=SimpleNamespace(
@@ -791,7 +791,6 @@ def test_t212provider_rejects_boolean_qty_price_order_id_fill_fields_iter41_s1()
 
 def test_t212client_place_limit_order_place_market_order_reject_bool_nan_inf_before_iter50_s1():
     """[ITER50 #1] T212Client: place_limit_order & place_market_order reject bool/NaN/Inf/0 before HTTP."""
-    import pytest
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
     mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
@@ -830,7 +829,6 @@ def test_t212client_place_limit_order_place_market_order_reject_bool_nan_inf_bef
 
 def test_212trading_strategy_generate_tp_ladder_adapt_ladder_rungs__avg_cost__portfolio_position_step_iter50_s2():
     """[ITER50 #2] 212trading/strategy: generate_tp_ladder, adapt_ladder_rungs, _avg_cost, _portfolio_position, step."""
-    import pytest
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
     mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
@@ -882,7 +880,6 @@ def test_212trading_strategy_generate_tp_ladder_adapt_ladder_rungs__avg_cost__po
 
 def test_212trading_replay__fx_rates__ols_slope_pct_reject_bool_nan_inf_iter50_s3():
     """[ITER50 #3] 212trading/replay: _fx_rates & _ols_slope_pct reject bool/NaN/Inf."""
-    import pytest
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
     mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
@@ -915,7 +912,6 @@ def test_212trading_replay__fx_rates__ols_slope_pct_reject_bool_nan_inf_iter50_s
 
 def test_t212provider_order_status_rejects_nan_inf_filledquantity_filledvalue_fee_iter51_s6(monkeypatch):
     """[ITER51 #6] T212Provider: order_status rejects NaN/Inf filledQuantity, filledValue, fee, fillPrice."""
-    import pytest
     # 6. T212Provider: order_status rejects NaN/Inf filledQuantity, filledValue, fee, fillPrice
     tp = T212Provider()
     fake_t212 = SimpleNamespace(
@@ -967,7 +963,6 @@ def test_212trading_order_manager__portfolio_qty__matching_active_orders__reconc
 
 def test_212trading_strategy_py_generate_tp_ladder__active_order_identity_iter57_s4():
     """[ITER57 #4] 212trading/strategy.py generate_tp_ladder & _active_order_identity."""
-    import pytest
     # 4. 212trading/strategy.py generate_tp_ladder & _active_order_identity
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
@@ -1002,7 +997,6 @@ def test_212trading_strategy_py_generate_tp_ladder__active_order_identity_iter57
 
 def test_212trading_strategy_py_stratparams_from_env_rejects_nan_in_iter58_s6():
     """[ITER58 #6] 212trading/strategy.py StratParams.from_env rejects NaN in STRAT_TP_LADDER."""
-    import pytest
     # 6. 212trading/strategy.py StratParams.from_env rejects NaN in STRAT_TP_LADDER
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
@@ -1034,7 +1028,6 @@ def test_212trading_strategy_py_stratparams_from_env_rejects_nan_in_iter58_s6():
 
 def test_t212provider_free_balance_eur_converts_ron_using_usd_ron_eur_usd_iter61_s2(monkeypatch):
     """[ITER61 #2] T212Provider.free_balance('EUR') converts RON using usd_ron * eur_usd, and order_status rejects negative fee."""
-    import pytest
     from unittest.mock import MagicMock
     # 2. T212Provider.free_balance("EUR") converts RON using usd_ron * eur_usd, and order_status rejects negative fee
     fake_cli = MagicMock()
@@ -1059,12 +1052,10 @@ def test_t212provider_free_balance_eur_converts_ron_using_usd_ron_eur_usd_iter61
 
 def test_212trading_market_data_212trading_strategy_generate_tp_ladder_iter69_s4():
     """[ITER69 #4] 212trading.market_data & 212trading.strategy.generate_tp_ladder."""
-    import pytest
     t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
     t212_md = load_local_module(t212_dir, "market_data.py", module_key="_t212_market_data_69", reload=True)
     t212_strat = load_local_module(t212_dir, "strategy.py", module_key="_t212_strategy_69", reload=True)
     # 4. 212trading.market_data & 212trading.strategy.generate_tp_ladder
-    from cachepaths import canonical_base_asset
     with pytest.raises(ValueError):
         t212_md.parse_interval_minutes(None)
     assert canonical_base_asset(None) == ""
@@ -1103,8 +1094,6 @@ def test_t212provider__definitive_submit_failure_and_pair_precision_safety_iter8
 
 def test_t212client_validates_env_ticker_timevalidity_and_get_historical_order_rejects_iter90_s3():
     """[ITER90 #3] T212Client validates env/ticker/timeValidity and get_historical_order rejects None order_id."""
-    import importlib
-    import pytest
     # 3. T212Client validates env/ticker/timeValidity and get_historical_order rejects None order_id
     t212_mod = importlib.import_module("212trading.t212_client")
     T212Client = t212_mod.T212Client
@@ -1119,10 +1108,7 @@ def test_t212client_validates_env_ticker_timevalidity_and_get_historical_order_r
 
 def test_212trading_market_data_validation_future_timestamp_protection_iter91_s2(monkeypatch):
     """[ITER91 #2] 212trading.market_data validation & future-timestamp protection."""
-    import importlib
-    import pytest
     # 2. 212trading.market_data validation & future-timestamp protection
-    from cachepaths import canonical_base_asset
     t212_md = importlib.import_module("212trading.market_data")
     assert canonical_base_asset(True) == ""
     assert canonical_base_asset(" nvda_us_eq ") == "NVDA"
@@ -1149,7 +1135,6 @@ def test_212trading_market_data_validation_future_timestamp_protection_iter91_s2
 
 def test_212trading_order_manager_ticker_validity_validation_iter91_s3():
     """[ITER91 #3] 212trading.order_manager ticker/validity validation."""
-    import importlib
     # 3. 212trading.order_manager ticker/validity validation
     t212_om = importlib.import_module("212trading.order_manager")
     assert t212_om.place_order_with_retry(None, "", 1.0, 100.0, "DAY", True) is False
@@ -1157,7 +1142,6 @@ def test_212trading_order_manager_ticker_validity_validation_iter91_s3():
 
 def test_t212client_get_order_status_cancel_order_212trading_t212_bot_relative_import_isolation_iter94_s1(monkeypatch):
     """[ITER94 #1] T212Client get_order_status / cancel_order & 212trading.t212_bot relative import isolation & verify_instrument_isin validation."""
-    import importlib
     import importlib.util
     # 1. T212Client get_order_status / cancel_order
     t212_client_mod = importlib.import_module("212trading.t212_client")
@@ -1179,7 +1163,6 @@ def test_t212client_get_order_status_cancel_order_212trading_t212_bot_relative_i
 
 def test_t212provider_string_live_enabled_empty_symbol_in__position_and_iter95_s1():
     """[ITER95 #1] T212Provider string live_enabled, empty symbol in _position, and side validation in get_orders."""
-    import pytest
     # 1. T212Provider string live_enabled, empty symbol in _position, and side validation in get_orders
     t212_p = T212Provider(
         client=type("C", (), {"get_portfolio": lambda self: [{"ticker": "", "quantity": 10.0, "averagePrice": 50.0}]})(),
@@ -1194,14 +1177,12 @@ def test_t212provider_string_live_enabled_empty_symbol_in__position_and_iter95_s
 
 def test_212trading_ipo_import_works_even_when_212trading_is_iter103_s5():
     """[ITER103 #5] 212trading.ipo import works even when 212trading is not at sys.path[0]."""
-    import importlib
     # 5. 212trading.ipo import works even when 212trading is not at sys.path[0]
     mod_ipo = importlib.import_module("212trading.ipo")
     assert hasattr(mod_ipo, "wait_for_launch")
 
 def test_t212provider_iter111_s3():
     """[ITER111 #3] T212Provider."""
-    import pytest
     import providers.t212_provider as tp
     # 3. T212Provider
     t_prov = tp.T212Provider.__new__(tp.T212Provider)
@@ -1214,7 +1195,6 @@ def test_t212provider_iter111_s3():
 
 def test_212trading_market_data__chart_url_encodes_symbol_range_and_iter117_s5(monkeypatch):
     """[ITER117 #5] 212trading.market_data._chart URL-encodes symbol, range, and interval."""
-    import importlib
     # 5. 212trading.market_data._chart URL-encodes symbol, range, and interval
     t212_md = importlib.import_module("212trading.market_data")
     called_urls = []
@@ -1227,7 +1207,6 @@ def test_212trading_market_data__chart_url_encodes_symbol_range_and_iter117_s5(m
 
 def test_212trading_order_manager__persist_marker_and_integer_sanitization_iter117_s6(monkeypatch, tmp_path):
     """[ITER117 #6] 212trading.order_manager._persist_marker and integer sanitization."""
-    import importlib
     # 6. 212trading.order_manager._persist_marker and integer sanitization
     t212_om = importlib.import_module("212trading.order_manager")
     marker_path = tmp_path / "marker.json"
@@ -1237,7 +1216,6 @@ def test_212trading_order_manager__persist_marker_and_integer_sanitization_iter1
 
 def test_periods_per_year_rejects_nan_inf_bool_and_non_positive_iter136_s1():
     """[ITER136 #1] periods_per_year rejects NaN, inf, bool, and non-positive values."""
-    import pytest
     from offline.runners.t212_walk_forward_baseline import periods_per_year
     # 1. periods_per_year rejects NaN, inf, bool, and non-positive values
     for bad_im in (float("nan"), float("inf"), -10, 0, True, "bad"):
@@ -1247,7 +1225,6 @@ def test_periods_per_year_rejects_nan_inf_bool_and_non_positive_iter136_s1():
 
 def test_fx_quote_normalizes_whitespace_casing_and_rejects_empty_boolean_iter136_s2():
     """[ITER136 #2] fx_quote normalizes whitespace/casing and rejects empty/boolean currency."""
-    import pytest
     from offline.runners.t212_walk_forward_baseline import fx_quote
     # 2. fx_quote normalizes whitespace/casing and rejects empty/boolean currency
     assert fx_quote(" ron ") == ("USDRON=X", True)
@@ -1258,7 +1235,6 @@ def test_fx_quote_normalizes_whitespace_casing_and_rejects_empty_boolean_iter136
 
 def test_t212_client_mod_clean_order_id_normalizes_integer_floats_and_rejects_sentinel_iter138_s1():
     """[ITER138 #1] t212_client_mod.clean_order_id normalizes integer floats and rejects sentinel strings / containers."""
-    import importlib
     t212_client_mod = importlib.import_module("212trading.t212_client")
     T212Client = t212_client_mod.T212Client
     # 1. t212_client_mod.clean_order_id normalizes integer floats and rejects sentinel strings / containers
@@ -1275,7 +1251,6 @@ def test_t212_client_mod_clean_order_id_normalizes_integer_floats_and_rejects_se
 
 def test_t212provider_order_status_and_cancel_order_accept_integer_floats_while_iter138_s2():
     """[ITER138 #2] T212Provider.order_status and cancel_order accept integer floats while rejecting sentinel strings / containers."""
-    import pytest
     # 2. T212Provider.order_status and cancel_order accept integer floats while rejecting sentinel strings / containers
     seen_ids = []
     fake_cli = SimpleNamespace(
@@ -1303,8 +1278,6 @@ def test_t212provider_order_status_and_cancel_order_accept_integer_floats_while_
 
 def test__sanitize_t212_state_parses_string_boolean_flags_false_false_and_iter140_s1():
     """[ITER140 #1] _sanitize_t212_state parses string boolean flags ('false'/'0' -> False) and cleans order IDs & levels."""
-    import pytest
-    import importlib
     strat_mod = importlib.import_module("212trading.strategy")
     _sanitize_t212_state = strat_mod._sanitize_t212_state
     # 1. _sanitize_t212_state parses string boolean flags ("false"/"0" -> False) and cleans order IDs & levels
@@ -1390,7 +1363,6 @@ def test_t212provider__position_none_strict_false_returns_none_without_iter164_s
 
 def test_t212provider__signed_qty_aliases_and_positional_force_in_place_order_iter169_s4():
     """[ITER169 #4] T212Provider _signed_qty aliases and positional force in place_order."""
-    import pytest
     from providers import t212_provider as t212p
     # 4. T212Provider _signed_qty aliases and positional force in place_order
     assert t212p.T212Provider._signed_qty("BID", 1.234) == pytest.approx(1.23)

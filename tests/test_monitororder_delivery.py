@@ -11,6 +11,8 @@ import order_lifecycle as accepted_order_persistence
 import monitororder
 import order_retry_worker
 from providers.strategy_executor import OrderStatus
+import monitororder as mo
+import order_retry as oq
 
 
 @pytest.fixture(autouse=True)
@@ -640,7 +642,6 @@ class TestMonitororderTTLExpiration:
 
 class TestOrderRetryTTL:
     def test_enqueue_persists_ttl_sec(self, tmp_path):
-        import order_retry as oq
         with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
              patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")):
             rec_id = oq.enqueue(
@@ -655,7 +656,6 @@ class TestOrderRetryTTL:
             assert found[0].get("expires_at_ts") is not None
 
     def test_get_accepted_order_ttl_map(self, tmp_path):
-        import order_retry as oq
         with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
              patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")):
             oq.enqueue(
@@ -667,7 +667,6 @@ class TestOrderRetryTTL:
             assert ttl_map.get("TA_OR_test_1") == 750.0
 
     def test_subdollar_buy_replacement_uses_positive_price(self, tmp_path):
-        import order_retry as oq
         open_orders = {
             555001: {
                 "price": 0.20,
@@ -696,7 +695,6 @@ class TestOrderRetryTTL:
         assert abs(placed[0][2] - (0.1999 * (1.0 - monitororder.REPRICE_OFFSET))) < 1e-9
 
     def test_subdollar_sell_replacement_avoids_plus_one_jump(self, tmp_path):
-        import order_retry as oq
         open_orders = {
             555003: {
                 "price": 0.20,
@@ -725,7 +723,6 @@ class TestOrderRetryTTL:
         assert abs(placed[0][2] - (0.1999 * (1.0 + monitororder.REPRICE_OFFSET))) < 1e-9
 
     def test_skips_redundant_replacement_when_price_unchanged(self, tmp_path):
-        import order_retry as oq
         open_orders = {
             555005: {
                 "price": 0.1823,
@@ -747,7 +744,6 @@ class TestOrderRetryTTL:
             mock_place.assert_not_called()
 
     def test_custom_ttl_and_expires_at_ts_enforced_in_is_expired(self, tmp_path):
-        import order_retry as oq
         with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
              patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")):
             rid = oq.enqueue(
@@ -762,7 +758,6 @@ class TestOrderRetryTTL:
             assert oq.is_expired(rec, now=1301.0)
 
     def test_intentionally_canceled_claimed_accepted_order_does_not_alert_terminal(self, tmp_path):
-        import order_retry as oq
         with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
              patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")):
             rid = oq.enqueue(
@@ -786,7 +781,6 @@ class TestOrderRetryTTL:
             assert transition.status_changed is False
 
     def test_expired_order_cleans_initial_prices_and_replacement_propagates_remaining_ttl(self, tmp_path):
-        import order_retry as oq
         now = time.time()
         monitororder.initial_buy_prices["711457499"] = 277.4
         expired_orders = {
@@ -862,7 +856,6 @@ class TestOrderRetryTTL:
 
 def test_monitororder_resolve_effective_order_ttl_monitor_open_orders_by_type_iter105_s2():
     """[ITER105 #2] monitororder: resolve_effective_order_ttl & monitor_open_orders_by_type."""
-    import monitororder as mo
     # 2. monitororder: resolve_effective_order_ttl & monitor_open_orders_by_type
     ttl = mo.resolve_effective_order_ttl(True, True, owner=True, custom_ttl_map={"True": 10.0, "None": 10.0})
     assert ttl == mo.DEFAULT_ORDER_TTL_SEC
@@ -873,7 +866,6 @@ def test_monitororder_resolve_effective_order_ttl_monitor_open_orders_by_type_it
 
 def test_resolve_effective_order_ttl_falls_back_to_client_order_id_ttl_when_order_id_iter124_s1():
     """[ITER124 #1] resolve_effective_order_ttl falls back to client_order_id TTL when order_id TTL is invalid/NaN, and normalizes integer float IDs."""
-    import monitororder as mo
     # 1. resolve_effective_order_ttl falls back to client_order_id TTL when order_id TTL is invalid/NaN, and normalizes integer float IDs
     ttl = mo.resolve_effective_order_ttl(
         1001.0,
@@ -890,7 +882,6 @@ def test_resolve_effective_order_ttl_falls_back_to_client_order_id_ttl_when_orde
 
 def test_monitororder_resolve_effective_order_ttl_rejects_sentinel_ids_iter159_s2():
     """[ITER159 #2] monitororder: resolve_effective_order_ttl rejects '0' sentinel IDs."""
-    import monitororder as mo
     # 2. monitororder: resolve_effective_order_ttl rejects "0" sentinel IDs
     assert mo.resolve_effective_order_ttl("0", "0", custom_ttl_map={"0": 99.0}) == min(
         mo.DEFAULT_ORDER_TTL_SEC, mo.MAX_GLOBAL_ORDER_TTL_SEC

@@ -7,18 +7,18 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 from notify_engine import alertnotifiers as an
-from notify_engine.alertnotifiers import pop_due_bulk_batch
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "verify_tools"))
-
 from notify_engine.alertnotifiers import (
     AlertNotifier,
     _alert_identity,
     _delivery_fingerprint,
     format_ntfy_url,
+    pop_due_bulk_batch,
 )
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "verify_tools"))
+
 from gen_alert_thresholds import FLOOR, thresholds_from_prices  # noqa: E402
 from market_monitor.alerts_config import load_config, resolve  # noqa: E402
 from market_monitor.new_coins_discovery import (  # noqa: E402

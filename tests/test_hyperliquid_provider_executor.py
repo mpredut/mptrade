@@ -2,11 +2,10 @@
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import json
 import pytest
 from offline.runners import fetch_hyperliquid_candles as fhc
-from unittest.mock import MagicMock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)

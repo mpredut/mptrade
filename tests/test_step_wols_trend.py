@@ -17,6 +17,9 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pricewindow as pw
+import cacheManager as cm
+import monitortrades as mt
+import time as _time
 
 
 def _naive_step_wols(prices, power=None, symbol=None):
@@ -214,7 +217,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
 
     def test_per_symbol_fast_trend_window_tao_90s(self):
         import cachetrend
-        import monitortrades as mt
         self.assertEqual(pw.fast_trend_window_for_symbol("TAOUSDC"), 90.0)
         self.assertEqual(pw.fast_trend_window_for_symbol("TAO"), 90.0)
         self.assertIsNone(pw.fast_trend_window_for_symbol("BTCUSDC"))
@@ -234,7 +236,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
                 queried.append(("fallback", sym, window_seconds))
                 return False
 
-        import cacheManager as cm
         with patch.object(cm, "get_short_trend_manager", return_value=_FakeMgr()):
             self.assertTrue(mt.is_trend_up("TAOUSDC"))
             self.assertEqual(queried, [("TAOUSDC", 90.0)])
@@ -292,8 +293,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertAlmostEqual(acc_fast, acc_ref, places=11)
 
     def test_trend_gate_deferred_uses_fast_window_for_taousdc(self):
-        import cacheManager as cm
-        import monitortrades as mt
         mgr = cm.CacheShortTrendManager(["TAOUSDC"])
         queried = []
 
@@ -366,9 +365,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertEqual(tracker.current_trend("TAOUSDC"), (1, 10.0))
 
     def test_assetguardian_trend_defer_uses_fast_window_and_mem_published_window(self):
-        import time as _time
         import assetguardian as ag
-        import cacheManager as cm
 
         now_ts = _time.time()
         mgr = cm.CacheShortTrendManager(["TAOUSDC"])
@@ -399,8 +396,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertIn("trend_defer", new_state)
 
     def test_trailing_stop_trend_value_prefers_symbol_fast_window_when_available(self):
-        import time as _time
-        import cacheManager as cm
         from binance_api.trailing_stop import TrailingStop
         from kraken import trailing_stop as kt_mod
 
@@ -463,7 +458,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertAlmostEqual(entry["growth_2_5h"], 0.08, places=6)
 
     def test_runtime_market_regime_snapshot_uses_symbol_fast_window(self):
-        import cacheManager as cm
         from providers.market_api import _runtime_market_regime_snapshot
 
         w90 = {"growth_coefficient": -0.15, "gradient_recent": -0.15, "epsilon": 0.02, "window_seconds": 90.0, "ts": 1000.0}

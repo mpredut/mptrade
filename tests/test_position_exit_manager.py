@@ -10,6 +10,9 @@ from strategies.position_exit_manager import (
     ReentryAction,
     ReentrySnapshot,
 )
+import math
+import monitortrades as mt
+import pytest
 
 
 class TestPositionExitManager(unittest.TestCase):
@@ -1127,9 +1130,7 @@ def test_get_post_stop_reentry_guard_honors_llm_guard_mode_and_intelligence_guar
     """[ITER15 #1] get_post_stop_reentry_guard honors llm_guard_mode and intelligence_guards_mode & monitortrades._apply_post_stop_ai_guard & _execute_reentry_buy preserve HighStakeGuard when PostStopReentryGuard is off/shadow & smart_stop_loss_guard._load_grace_state recovers from .previous and evaluate_smart_stop_loss honors external_guard_mode & external_order_guard caps whale_guard_mode='enforce' to 'shadow' when external_guard_mode='shadow' & AutonomousIntentGateway._get_live_price recovers from .previous and skips 0/NaN price entries."""
     import json
     import time
-    import pytest
     import external_order_guard
-    import monitortrades as mt
     import order_guard
     from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
     from intelligence.external.guards import smart_stop_loss_guard as ssl_mod
@@ -1390,7 +1391,6 @@ def test_positionexitmanager_is_valid_price_rejects_inf_nan_and_re_anchors_iter2
 
 def test_positionsnapshot_reentrysnapshot_reject_bool_none_prices_positionexitmanager_disaster_iter32_s2():
     """[ITER32 #2] PositionSnapshot & ReentrySnapshot reject bool/None prices & PositionExitManager disaster buffer fallback on NaN vol_1h & reentry with NaN trough."""
-    import math
     # 2. PositionSnapshot & ReentrySnapshot reject bool/None prices
     snap_bool = PositionSnapshot(symbol="BTCUSDC", current_price=True, avg_buy_price=85000.0)
     assert snap_bool.is_valid_price is False
@@ -1493,9 +1493,7 @@ def test_positionexitmanager_preserves_started_at_across_subsequent_ticks_withou
 
 def test_monitortrades__apply_post_stop_ai_guard_sanitizes_post_sell_trough_nan_iter33_s3(monkeypatch):
     """[ITER33 #3] monitortrades._apply_post_stop_ai_guard sanitizes post_sell_trough=NaN."""
-    import math
     from types import SimpleNamespace
-    import monitortrades as mt
     # 3. monitortrades._apply_post_stop_ai_guard sanitizes post_sell_trough=NaN
     captured_trough = []
 
@@ -1648,7 +1646,6 @@ def test__parse_bool_flag_preserves_default_true_on_empty_null_strings_iter173_s
     """[ITER173 #1] _parse_bool_flag preserves default=True on empty/null strings across modules."""
     from strategies.position_exit_manager import _parse_bool_flag as pem_bool
     from strategies.spot_engine import _parse_bool_flag as se_bool
-    import monitortrades as mt
     # 1. _parse_bool_flag preserves default=True on empty/null strings across modules
     assert pem_bool("", True) is True
     assert pem_bool("none", True) is True
@@ -1662,7 +1659,6 @@ def test__parse_bool_flag_preserves_default_true_on_empty_null_strings_iter173_s
 
 def test_positionexitconfig_preserves_default_true_on_empty_string_and_iter173_s2():
     """[ITER173 #2] PositionExitConfig preserves default=True on empty string, and PositionSnapshot/ReentrySnapshot accept Decimal."""
-    import pytest
     from decimal import Decimal
     # 2. PositionExitConfig preserves default=True on empty string, and PositionSnapshot/ReentrySnapshot accept Decimal
     cfg = PositionExitConfig(smart_sl_enabled="", sl_bounce_ratchet_enabled="")
@@ -1686,7 +1682,6 @@ def test_positionexitconfig_preserves_default_true_on_empty_string_and_iter173_s
 
 def test_positionexitmanager_symbol_whitespace_normalization_in_restore_reentry_state_record_hard_tp_iter173_s3():
     """[ITER173 #3] PositionExitManager symbol whitespace normalization in restore_reentry_state & record_hard_tp."""
-    import pytest
     # 3. PositionExitManager symbol whitespace normalization in restore_reentry_state & record_hard_tp
     mgr = PositionExitManager()
     mgr.reentry_state["BTCUSDC"] = {"trough": 90.0}

@@ -3,6 +3,8 @@ import subprocess
 import re
 
 from verify_tools.direct_order_api_inventory import inventory, scan_direct_calls
+from binance_api import bapi_client
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -409,8 +411,6 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_bapi_client_recvwindow_and_minus_1021_resync_retry(self):
-        from unittest.mock import MagicMock, patch
-        from binance_api import bapi_client
 
         class _RecvWindowError(Exception):
             code = -1021
@@ -469,8 +469,6 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         self.assertNotIn("\r", str(ctx.exception))
 
     def test_get_client_disables_init_ping_and_installs_retries_before_sync(self):
-        from unittest.mock import MagicMock, patch
-        from binance_api import bapi_client
         import credentials
 
         init_kwargs = {}

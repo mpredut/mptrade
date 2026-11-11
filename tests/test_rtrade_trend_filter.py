@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import rtrade
+import time
 
 
 class _RTradeTrendBase(unittest.TestCase):
@@ -206,7 +207,6 @@ class ReaderProcessTrendTest(unittest.TestCase):
 
     def _publish(self, step, *, age_sec=0.0):
         """Let a writer compute the window from ticks and publish it for the reader."""
-        import time
 
         class FakeCache24:
             def __init__(self, entries):
@@ -250,7 +250,6 @@ class ReaderProcessTrendTest(unittest.TestCase):
         self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))
 
     def test_stale_in_memory_live_window_does_not_shadow_fresh_publication(self):
-        import time
         stale_ts = time.time() - (self.cm.CacheShortTrendManager.TREND_STALE_SEC + 10.0)
         self.reader._persist_live_window(
             "TAOUSDC", "900",

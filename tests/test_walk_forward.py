@@ -22,6 +22,12 @@ from offline.runners.walk_forward_compare import (
     default_candidates,
 )
 import offline.runners.kraken_walk_forward_compare as kraken_compare
+import json
+import math
+import numpy as np
+import pytest
+import tempfile
+from offline.backtests.financial_benchmark import default_scenarios
 
 
 class WalkForwardSplitsTest(unittest.TestCase):
@@ -252,8 +258,6 @@ class WalkForwardCompareTest(unittest.TestCase):
 
     def test_load_report_supports_both_schemas(self):
         from offline.runners.walk_forward_compare import _load_report
-        import tempfile
-        import json
 
         with tempfile.NamedTemporaryFile("w+", suffix=".json") as f:
             json.dump({"schema_version": 1, "intervals": {"240": {}}}, f)
@@ -331,7 +335,6 @@ class WalkForwardCompareTest(unittest.TestCase):
         from offline.runners.t212_walk_forward_baseline import periods_per_year
         from offline.runners.kraken_financial_benchmark import format_number as kfb_fmt
         from offline.runners.calibrate_execution_audit import format_number as cea_fmt
-        import tempfile
 
         for fn in (kfb_fmt, cea_fmt):
             self.assertEqual(fn(None), "n/a")
@@ -459,7 +462,6 @@ if __name__ == "__main__":
 
 def test_intelligence_backtest_validates_step_seconds_initial_balance_fee_pct_iter72_s1():
     """[ITER72 #1] intelligence_backtest validates step_seconds, initial_balance, fee_pct."""
-    import pytest
     from offline.research import intelligence_backtest as ibt
     # 1. intelligence_backtest validates step_seconds, initial_balance, fee_pct
     with pytest.raises(ValueError):
@@ -473,8 +475,6 @@ def test_intelligence_backtest_validates_step_seconds_initial_balance_fee_pct_it
 
 def test_chop_weight_backtest_filters_non_finite_non_positive_prices_and_iter72_s2():
     """[ITER72 #2] chop_weight_backtest filters non-finite/non-positive prices and validates params."""
-    import pytest
-    import numpy as np
     from offline.research import chop_weight_backtest as cwb
     # 2. chop_weight_backtest filters non-finite/non-positive prices and validates params
     reg, slp = cwb.detect_regime_slope(np.array([float("nan"), -5.0, 100.0, 101.0]))
@@ -495,7 +495,6 @@ def test_slice_dense_archive_ts_of_handles_overflowerror_iter72_s3():
 
 def test_comprehensive_strategy_sweep__summarize_replay_handles_nan_bool_non_positive_budget_iter72_s4():
     """[ITER72 #4] comprehensive_strategy_sweep._summarize_replay handles NaN/bool/non-positive budget."""
-    import math
     from offline.research import comprehensive_strategy_sweep as css
     # 4. comprehensive_strategy_sweep._summarize_replay handles NaN/bool/non-positive budget
     summary = css._summarize_replay({"net": 50.0, "total": 60.0}, float("nan"))
@@ -528,7 +527,6 @@ def test_kraken_continuous_grid_report_q_and_win_stats_filter_nan_and_iter74_s5(
 
 def test_spot_profile_review_revision_params_rejects_empty_or_flag_like_specs_iter75_s1():
     """[ITER75 #1] spot_profile_review.revision_params rejects empty or flag-like specs."""
-    import pytest
     from offline.runners import spot_profile_review as spr
     # 1. spot_profile_review.revision_params rejects empty or flag-like specs
     with pytest.raises(ValueError, match="Invalid git revision spec"):
@@ -558,7 +556,6 @@ def test_hybrid_reentry_run_equities__import_t212_restores_sys_path_and_sys_iter
 
 def test_kraken_backtest__bt_params_skips_none_fallback_keys_and_iter119_s3():
     """[ITER119 #3] kraken.backtest._bt_params skips None fallback keys and rejects boolean values/intervals."""
-    import pytest
     import kraken.backtest as k_bt
     # 3. kraken.backtest._bt_params skips None fallback keys and rejects boolean values/intervals
     bt_p = k_bt._bt_params({"drop_fallback": None, "drop": 3.5, "reentry_fallback": None, "reentry_drop": 1.25})
@@ -571,7 +568,6 @@ def test_kraken_backtest__bt_params_skips_none_fallback_keys_and_iter119_s3():
 
 def test_executionmodel_limit_touched_market_price_and_split_order_fill_iter129_s2():
     """[ITER129 #2] ExecutionModel.limit_touched / market_price and split_order_fill."""
-    import pytest
     from offline.backtests.execution import ExecutionModel, split_order_fill
     # 2. ExecutionModel.limit_touched / market_price and split_order_fill
     em = ExecutionModel()
@@ -599,7 +595,6 @@ def test_format_performance_summary_renders_nan_bool_non_numeric_metrics_as_iter
 
 def test_parse_intervals_and_parse_dataset_specs_reject_non_numeric_non_positive_iter129_s4():
     """[ITER129 #4] parse_intervals and parse_dataset_specs reject non-numeric / non-positive / empty path specs."""
-    import pytest
     import argparse
     from offline.backtests.evaluation import parse_dataset_specs, parse_intervals
     # 4. parse_intervals and parse_dataset_specs reject non-numeric / non-positive / empty path specs
@@ -612,9 +607,7 @@ def test_parse_intervals_and_parse_dataset_specs_reject_non_numeric_non_positive
 
 def test_default_scenarios_handles_bool_provider_objects_whitespace_strings_iter132_s1():
     """[ITER132 #1] default_scenarios handles bool / provider objects / whitespace strings."""
-    import pytest
     from types import SimpleNamespace
-    from offline.backtests.financial_benchmark import default_scenarios
     # 1. default_scenarios handles bool / provider objects / whitespace strings
     s_bool = default_scenarios(True)  # type: ignore[arg-type]
     assert s_bool[0].fees.limit_fee_pct == pytest.approx(0.16)
@@ -623,7 +616,6 @@ def test_default_scenarios_handles_bool_provider_objects_whitespace_strings_iter
 
 def test_aggregate_financial_windows_sanitizes_nan_bool_net_pnl_and_float_string_iter132_s2():
     """[ITER132 #2] aggregate_financial_windows sanitizes NaN/bool net_pnl and float-string trade_count/bars."""
-    import pytest
     from offline.backtests.financial_benchmark import aggregate_financial_windows
     # 2. aggregate_financial_windows sanitizes NaN/bool net_pnl and float-string trade_count/bars
     agg = aggregate_financial_windows(
@@ -652,7 +644,6 @@ def test_aggregate_financial_windows_sanitizes_nan_bool_net_pnl_and_float_string
 
 def test__percentile_clamps_out_of_bounds_percentiles_and_filters_iter132_s3():
     """[ITER132 #3] _percentile clamps out-of-bounds percentiles and filters non-finite/bool values."""
-    import pytest
     from offline.backtests.execution_calibration import _percentile
     # 3. _percentile clamps out-of-bounds percentiles and filters non-finite/bool values
     assert _percentile([10.0, 20.0, 30.0], -10.0) == pytest.approx(10.0)
@@ -723,7 +714,6 @@ def test_comparison_tolerance_sanitization_and_format_comparison_markdown_non_ma
 
 def test__one_sided_sign_pvalue_does_not_overflow_for_active_and_handles_iter134_s1():
     """[ITER134 #1] _one_sided_sign_pvalue does not overflow for active >= 1024 and handles negative/bool inputs."""
-    import pytest
     from offline.backtests.promotion import _identity, _one_sided_sign_pvalue, evaluate_promotion
     # 1. _one_sided_sign_pvalue does not overflow for active >= 1024 and handles negative/bool inputs
     assert 0.0 <= _one_sided_sign_pvalue(600, 600) <= 1.0
@@ -799,7 +789,6 @@ def test_kraken_financial_compare_markdown_report_renders_nan_calmar_delta_as_n_
 
 def test_run_intelligence_backtest_rejects_invalid_parabolic_surge_pct_iter139_s2():
     """[ITER139 #2] run_intelligence_backtest rejects invalid parabolic_surge_pct."""
-    import pytest
     from offline.research.intelligence_backtest import run_intelligence_backtest
     # 2. run_intelligence_backtest rejects invalid parabolic_surge_pct
     for bad_surge in (0.0, -2.0, float("nan"), float("inf"), True):
@@ -808,9 +797,6 @@ def test_run_intelligence_backtest_rejects_invalid_parabolic_surge_pct_iter139_s
 
 def test_chop_weight_backtest_filters_non_finite_bool_bars_and_sanitizes_iter139_s3():
     """[ITER139 #3] chop_weight_backtest filters non-finite/bool bars and sanitizes mk_alpha."""
-    import pytest
-    import math
-    import numpy as np
     from offline.research.chop_weight_backtest import _precompute_chop_bar_tape, detect_regime_slope
     # 3. chop_weight_backtest filters non-finite/bool bars and sanitizes mk_alpha
     reg, slope = detect_regime_slope(np.linspace(100.0, 110.0, 30), mk_alpha=float("nan"))
@@ -827,7 +813,6 @@ def test_chop_weight_backtest_filters_non_finite_bool_bars_and_sanitizes_iter139
 
 def test__summarize_replay_handles_nan_bool_metrics_and_float_string_iter139_s4():
     """[ITER139 #4] _summarize_replay handles NaN/bool metrics and float-string counts."""
-    import pytest
     from offline.research.comprehensive_strategy_sweep import _summarize_replay
     # 4. _summarize_replay handles NaN/bool metrics and float-string counts
     sum_m = _summarize_replay(
@@ -841,7 +826,6 @@ def test__summarize_replay_handles_nan_bool_metrics_and_float_string_iter139_s4(
 
 def test_slice_dense_archive_ts_of_accepts_tuple_i_field_iter139_s5():
     """[ITER139 #5] slice_dense_archive.ts_of accepts tuple 'i' field."""
-    import pytest
     from offline.research.slice_dense_archive import ts_of
     # 5. slice_dense_archive.ts_of accepts tuple 'i' field
     assert ts_of({"i": (1700000000000, 50000.0)}) == pytest.approx(1700000000000.0)
@@ -928,7 +912,6 @@ def test_iteration143_hl_place_order_int_oid_and_research_trigger_gate_safety():
 
 def test_kraken_continuous_grid_grid_load_report_q_iter145_s1(tmp_path):
     """[ITER145 #1] kraken_continuous_grid.grid.load & report.q."""
-    import math
     from offline.research.kraken_continuous_grid.grid import load as k_grid_load
     from offline.research.kraken_continuous_grid.report import q as k_report_q
     # 1. kraken_continuous_grid.grid.load & report.q
@@ -975,7 +958,6 @@ def test_ml_forecast_helpers_priceprediction___init___iter145_s3():
 
 def test_report2_generate_report_with_none_bool_nan_values_iter148_s1(tmp_path):
     """[ITER148 #1] report2.generate_report with None/bool/NaN values."""
-    import json
     from offline.research.kraken_continuous_grid.report2 import generate_report as gen_report2
     # 1. report2.generate_report with None/bool/NaN values
     exp_dir = tmp_path / "grid2_exp"
@@ -1050,7 +1032,6 @@ def test_walk_forward_compare__build_venue_evaluator_fee_ppy_sanitization_iter15
 
 def test_kraken_backtest__bt_params_float_string_maxdca_and_nan_iter150_s3():
     """[ITER150 #3] kraken.backtest._bt_params float-string maxdca and NaN rejection."""
-    import pytest
     from kraken import backtest as k_bt
     # 3. kraken.backtest._bt_params float-string maxdca and NaN rejection
     bt_p = k_bt._bt_params({"entry": "150.0", "maxdca": "8.0"})
@@ -1063,7 +1044,6 @@ def test_kraken_backtest__bt_params_float_string_maxdca_and_nan_iter150_s3():
 def test_wave2_cross_venue_candidate_resolution_and_unmasked_trailing_variants(tmp_path):
     """Verify cross-venue candidate mapping, baseline lookbacks, and unmasked trailing configs."""
     import dataclasses
-    import pytest
 
     from offline.backtests.evaluation import load_venue_module
     from offline.backtests.hype_candidates import hype_240_candidates
@@ -1163,9 +1143,8 @@ def test_wave2_cross_venue_candidate_resolution_and_unmasked_trailing_variants(t
 
 
 def test_declarative_venue_replay_and_benchmark_registries():
-    import pytest
     from offline.backtests.evaluation import VENUE_REPLAY_DIRS, load_venue_replay_module
-    from offline.backtests.financial_benchmark import VENUE_BENCHMARK_SCENARIOS, default_scenarios
+    from offline.backtests.financial_benchmark import VENUE_BENCHMARK_SCENARIOS
     from offline.runners.walk_forward_compare import VENUE_EVALUATOR_BUILDERS
 
     assert set(VENUE_REPLAY_DIRS) == {"hyperliquid", "t212"}

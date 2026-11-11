@@ -24,6 +24,11 @@ from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
 from providers.t212_provider import T212Provider
 from state_io import previous_generation_path
+import cachepaths
+import intelligence.macro_sentiment_ssot as mss
+from providers.binance_provider import BinanceProvider
+from providers.order_ohlc_utils import derive_venue_128bit_client_order_id, format_venue_intent_client_order_id, resolve_ohlc_time_window_ms
+from providers.quantity import venue_adjust_partial_sell_quantity, venue_fee_cap_quantity
 
 
 def test_freshness_parameters_fail_closed_on_nonpositive_bool_and_nan(tmp_path: Path):
@@ -493,18 +498,8 @@ def test_equity_asset_class_ssot_helpers_and_intent_scope_filtering():
 
 def test_dust_protected_sell_sizing_and_ohlc_client_id_border_cases():
     """Verify venue-agnostic dust-protected SELL sizing, client ID venue alias resolution, and OHLC window overflow."""
-    from providers.order_ohlc_utils import (
-        ProviderError,
-        derive_venue_128bit_client_order_id,
-        format_venue_intent_client_order_id,
-        resolve_ohlc_time_window_ms,
-    )
-    from providers.quantity import (
-        dust_protected_partial_sell_qty,
-        dust_protected_sell_balance_cap,
-        venue_adjust_partial_sell_quantity,
-        venue_fee_cap_quantity,
-    )
+    from providers.order_ohlc_utils import ProviderError
+    from providers.quantity import dust_protected_partial_sell_qty, dust_protected_sell_balance_cap
 
     # Parameterized dust-protected cap and partial sell adjuster work across arbitrary decimals & thresholds
     assert dust_protected_sell_balance_cap(
@@ -550,7 +545,6 @@ def test_account_cache_and_legacy_jsonl_border_cases(tmp_path: Path):
     """Verify CacheAccountManagerBase cursor/fetchtime sanitization and legacy JSONL strict ID / tail handling."""
     import account_cache_health
     import cacheintegrity
-    import cachepaths
 
     assert not hasattr(cachepaths, "_is_eq_suffix")
 
@@ -635,17 +629,8 @@ def test_account_cache_and_legacy_jsonl_border_cases(tmp_path: Path):
 def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(monkeypatch):
     """Verify declarative provider class specs, cross-venue live/dry-run symmetry, and border hardening."""
     import re
-    from providers.binance_provider import BinanceProvider
     from providers.hyperliquid_provider import _call_hl_info_read
-    from providers.order_ohlc_utils import (
-        derive_venue_128bit_client_order_id,
-        format_venue_intent_client_order_id,
-    )
-    from providers.quantity import (
-        clamp_notional_to_wallet_balance,
-        venue_adjust_partial_sell_quantity,
-        venue_fee_cap_quantity,
-    )
+    from providers.quantity import clamp_notional_to_wallet_balance
 
     # 1. Open-Closed custom MarketDataProvider subclass works without touching any central dict
     class _CustomDexProvider(MarketDataProvider):
@@ -778,10 +763,8 @@ def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(mo
 
 def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
     """Verify parse_ratio_or_pct, derive_client_order_id, cancel grace, and extreme lookback border cases."""
-    import intelligence.macro_sentiment_ssot as mss
     from botcore import clean_scale, parse_ratio_or_pct
-    from providers.binance_provider import BinanceProvider
-    from providers.order_ohlc_utils import build_price_history_points, resolve_ohlc_time_window_ms
+    from providers.order_ohlc_utils import build_price_history_points
     from providers.strategy_executor import ProviderError
 
     # 1. parse_ratio_or_pct & clean_scale strict border validation
@@ -955,10 +938,8 @@ def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkey
 
 def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, tmp_path):
     """Verify cache_path SSOT, http_request body, guard config validation, geo ts normalization, MarketRegimeService, OrderLifecycle, and order_retry border cases."""
-    import cachepaths
     import intelligence.macro.geopolitical_analyzer as geo_an_mod
     import intelligence.macro.geopolitical_guard as geo_gd_mod
-    import intelligence.macro_sentiment_ssot as mss
     import llm_order_guard
     import order_guard
     import order_retry
@@ -1329,7 +1310,6 @@ def test_mt_conf_fail_fast_ohlc_and_cycle_history_border_cases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify fail-fast config/OHLC bounds, commonpath cycle-history gating, and microstructure delta hardening."""
-    import intelligence.macro_sentiment_ssot as mss
     from intelligence.macro.lexicon_ssot import _tracked_equity_base_tickers
     from intelligence.sentiment.evaluators.microstructure_evaluator import (
         evaluate_microstructure_cycle_deltas,

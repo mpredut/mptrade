@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from offline.backtests.evaluation import load_venue_module
 
 
 def test_datasets_str_path_validation_and_finite_normalize(tmp_path):
@@ -74,7 +75,6 @@ def test_execution_validate_ohlc_bars_error_distinction():
 
 
 def test_t212_replay_initial_cash_and_backtest_param_unmasking(monkeypatch):
-    from offline.backtests.evaluation import load_venue_module
 
     t212_replay = load_venue_module("212trading", "replay.py", "test_w4_t212_replay")
     t212_bt = load_venue_module("212trading", "backtest.py", "test_w4_t212_bt")
@@ -133,7 +133,6 @@ def test_t212_replay_initial_cash_and_backtest_param_unmasking(monkeypatch):
 
 
 def test_kraken_backtest_surge_dynamic_and_shadow_live_warmup_and_hl_restore(monkeypatch):
-    from offline.backtests.evaluation import load_venue_module
     from kraken import backtest as kr_bt
     from kraken import shadow_live as kr_sl
 
