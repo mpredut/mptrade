@@ -17,14 +17,6 @@ socket.setdefaulttimeout(30)
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # repository root
-from botcore import load_local_module  # noqa: E402
 from notify_engine.alertnotifiers import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "HL_COIN"), "HL")
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-def load_hl_local(name: str):
-    """Load a sibling module from ``hyperliquid/`` without colliding with other venue modules."""
-    return load_local_module(_HERE, name)

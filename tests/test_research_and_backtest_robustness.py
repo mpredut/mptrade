@@ -879,7 +879,6 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     assert drts.max_timeout_sec == rts.SMALL_TIMEOUT_RANGE_SEC[1]
     drts.advance("BTCUSDC", float("nan"), 100.0)
     assert len(drts._buf["BTCUSDC"]) == 0
-    assert drts.is_trend_up_confirmed("BTCUSDC", []) is False
 
     assert rdss._win_move_at_ts([100.0, 110.0], 0, float("nan"), 4.0) is None
     assert rdss._win_move_at_ts([100.0, 110.0], 0, 240.0 * 60.0, 0.0) is None
@@ -3039,10 +3038,10 @@ def test_batch6_hardening(tmp_path):
 def test_batch7_hardening():
     import sys
     from offline.backtests.datasets import normalize_record
+    from offline.backtests.evaluation import load_venue_module
     from offline.backtests.metrics import calculate_performance_metrics
     from offline.backtests.walk_forward import summarize_test_windows
     from offline.research.chop_weight_backtest import run_single_simulation
-    from offline.runners.walk_forward_compare import _load_hl_replay, _load_t212_replay
 
     # 1. datasets.normalize_record accepts integer-valued float string timestamp and rejects fractional/non-finite
     rec = normalize_record({"timestamp": "1700000000.0", "open": 100, "high": 105, "low": 99, "close": 102})
@@ -3080,11 +3079,11 @@ def test_batch7_hardening():
     with pytest.raises(ValueError):
         run_single_simulation("BTCUSDC", [(1.0, 100.0)], None, "CHOP_0.03", tp_pct=-0.01)
 
-    # 5. walk_forward_compare._load_hl_replay and _load_t212_replay preserve sys.path
+    # 5. load_venue_module preserves sys.path
     orig_path = list(sys.path)
-    _load_hl_replay()
+    load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
     assert list(sys.path) == orig_path
-    _load_t212_replay()
+    load_venue_module("212trading", "replay.py", "t212_wf_replay")
     assert list(sys.path) == orig_path
 
 
@@ -3118,11 +3117,10 @@ def test_batch8_hardening():
     assert pp.window_size == 10
     assert pp.epochs == 30
 
-    # 3. DynamicReplayTrendSource handles bool/NaN min_agree and epsilon_k
+    # 3. DynamicReplayTrendSource handles bool/NaN epsilon_k
     dr = DynamicReplayTrendSource(["BTCUSDC"])
     for idx, px in enumerate([100.0, 101.0, 102.0, 103.0]):
         dr.advance("BTCUSDC", 1000.0 + idx * 10.0, px)
-    assert isinstance(dr.is_trend_up_confirmed("BTCUSDC", [30.0, 60.0], min_agree=float("nan")), bool)  # type: ignore[arg-type]
     assert isinstance(dr.should_wait("BTCUSDC", "BUY", 60.0, use_noise_gate=True, epsilon_k=float("nan")), bool)
 
 

@@ -67,13 +67,9 @@ class PricePrediction:
         self.trained = False
         self.epochs = max(1, safe_int(epochs, default=30))
 
-    @staticmethod
-    def _valid_price(price: object) -> float | None:
-        return safe_pos_float(price, default=None)
-
     def process_price(self, price: float) -> None:
         """Append price and trigger periodic model retraining."""
-        val = self._valid_price(price)
+        val = safe_pos_float(price, default=None)
         if val is None:
             return
         self.prices.append(val)
@@ -86,7 +82,7 @@ class PricePrediction:
             self.prices = []
         else:
             try:
-                self.prices = [v for p in prices if (v := self._valid_price(p)) is not None]
+                self.prices = [v for p in prices if (v := safe_pos_float(p, default=None)) is not None]
             except TypeError:
                 self.prices = []
         self.trained = False

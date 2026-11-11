@@ -185,14 +185,6 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
     return datasets
 
 
-def _load_hl_replay():
-    return load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
-
-
-def _load_t212_replay():
-    return load_venue_module("212trading", "replay.py", "t212_wf_replay")
-
-
 def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path | None = None):
     """Return (base_params, base_fee, evaluate_segment_fn)."""
     raw_v = str(venue or "").strip().lower()
@@ -207,7 +199,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         return base_params, base_fee, evaluate_spot_segment
 
     if norm_venue == "hyperliquid":
-        hl_replay = _load_hl_replay()
+        hl_replay = load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
         raw_rt = source_report.get("runtime") if isinstance(source_report, dict) else None
         runtime_cfg = raw_rt if isinstance(raw_rt, dict) else {}
         engine = str(runtime_cfg.get("engine") or raw_params.get("engine") or "perp").lower()
@@ -250,7 +242,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
             return base_params, base_fee, segment_fn
 
     if norm_venue in ("trading212", "t212"):
-        t212_replay = _load_t212_replay()
+        t212_replay = load_venue_module("212trading", "replay.py", "t212_wf_replay")
         base_params = t212_replay._strat.StratParams.from_dict(raw_params)
         raw_fee = source_report.get("fee_pct_per_leg")
         if raw_fee is None:

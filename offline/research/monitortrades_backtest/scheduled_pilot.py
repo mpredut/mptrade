@@ -112,10 +112,6 @@ def _build_pilot_keys(conf_path=INSTRUMENTS_CONF):
 PILOT_KEYS = _build_pilot_keys()
 
 
-def _now_iso():
-    return datetime.now().isoformat(timespec="seconds")
-
-
 def _git_head_short():
     """The (short) commit of the code that produced the proposal — so that prod knows
     exactly which engine/config version produced it. '?' if git does not answer."""
@@ -127,7 +123,7 @@ def _git_head_short():
 
 
 def _append_audit(entry):
-    append_jsonl_record(AUDIT_LOG, dict(entry, ts=_now_iso()))
+    append_jsonl_record(AUDIT_LOG, dict(entry, ts=datetime.now().isoformat(timespec="seconds")))
 
 
 def _last_change_for(full_key):
@@ -670,7 +666,7 @@ def main():
                                       indent=2, default=str) + "\n")
         if args.propose and entry.get("action") == "proposed":
             proposals.append({
-                "ts": _now_iso(), "full_key": full_key,
+                "ts": datetime.now().isoformat(timespec="seconds"), "full_key": full_key,
                 "section": full_key.split(".", 1)[0], "key": key, "symbol": symbol,
                 "current_on_dev": entry["current_value"],
                 "winner_value": entry["winner_value"],

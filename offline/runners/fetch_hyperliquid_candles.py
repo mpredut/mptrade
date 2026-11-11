@@ -75,22 +75,6 @@ def validate_continuity(records: list[dict], interval_minutes: int) -> None:
             )
 
 
-def fetch_closed_candles(
-    coin: str,
-    interval_minutes: int,
-    *,
-    start_ms: int,
-    end_ms: int,
-) -> list[dict]:
-    return fetch_ohlc_candles(
-        coin,
-        interval_minutes,
-        start_ms=start_ms,
-        end_ms=end_ms,
-        drop_incomplete=True,
-    )
-
-
 def _parse_intervals(value: str) -> list[int]:
     try:
         intervals = parse_intervals(value)
@@ -99,7 +83,7 @@ def _parse_intervals(value: str) -> list[int]:
     unsupported = [item for item in intervals if item not in INTERVALS]
     if unsupported:
         raise argparse.ArgumentTypeError(
-            f"intervale nesuportate: {unsupported or value}; suportate: {sorted(INTERVALS)}"
+            f"unsupported intervals: {unsupported or value}; supported: {sorted(INTERVALS)}"
         )
     return intervals
 
@@ -158,8 +142,8 @@ def main() -> int:
     }
     stem = f"{args.token.upper()}{args.quote.upper()}"
     for interval in args.intervals:
-        records = fetch_closed_candles(
-            coin, interval, start_ms=start_ms, end_ms=end_ms,
+        records = fetch_ohlc_candles(
+            coin, interval, start_ms=start_ms, end_ms=end_ms, drop_incomplete=True,
         )
         if not records:
             raise RuntimeError(f"an empty dataset for {coin} {interval}m")

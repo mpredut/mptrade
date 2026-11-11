@@ -252,18 +252,6 @@ class DynamicReplayTrendSource:
             n_samples=len(prices),
         )
 
-    def is_trend_up_confirmed(self, symbol: str, timeouts_sec: Sequence[float],
-                               min_agree: Optional[int] = None) -> bool:
-        """"Confirmable": True only if at least `min_agree` of the given timeouts
-        agree that the trend is up (default min_agree=all — the most
-        strict). An answer to the user's idea: do not rely on ONE noisy sample."""
-        if not timeouts_sec:
-            return False
-        votes = [self.is_trend_up_at(symbol, t) for t in timeouts_sec]
-        ma_i = safe_int(min_agree, default=None)
-        threshold = max(1, ma_i) if ma_i is not None else len(timeouts_sec)
-        return sum(votes) >= threshold
-
     def should_wait(self, symbol: str, side: str, timeout_sec: float,
                     use_noise_gate: bool = False, epsilon_k: float = 1.0) -> bool:
         """True = WAIT (this is not yet a good moment to execute a queued BUY/SELL
@@ -276,8 +264,8 @@ class DynamicReplayTrendSource:
         (use_noise_gate=False) no longer requires exceeding a noise threshold (eps) —
         the initial variant (copied faithfully from cacheManager.is_favorable_to_wait) required
         it, and that was EXACTLY the problem found: at the 2 real events
-        testate, growth_coefficient era in interiorul lui eps (flat/zgomot la scara
-        short) although the wider trend (on which tradeall's decision to fire was already
+        tested, growth_coefficient was within eps (flat/noise on the short
+        scale) although the wider trend (on which tradeall's decision to fire was already
         based) was already confirmed — the noise rule kept it waiting LONGER
         precisely when the signal was weak or marginal, the opposite of what was wanted. use_noise_gate=
         True keeps the old variant (faithful to is_favorable_to_wait) for comparison."""

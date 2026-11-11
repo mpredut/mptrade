@@ -598,8 +598,8 @@ def test_monitororder_ttl_and_ordered_id_set():
     ttl_invalid = monitororder.resolve_effective_order_ttl("123", "client_456", custom_ttl_map={"123": -10})
     assert ttl_invalid == monitororder.DEFAULT_ORDER_TTL_SEC
 
-    # _OrderedIdSet trim
-    s = monitororder._OrderedIdSet()
+    # OrderedIdSet trim
+    s = monitororder.OrderedIdSet()
     for i in range(10):
         s.add(str(i))
     assert len(s) == 10

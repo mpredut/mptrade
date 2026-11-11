@@ -45,11 +45,6 @@ from offline.backtests.evaluation import (  # noqa: E402
 from offline.backtests.execution import ExecutionModel  # noqa: E402
 
 
-def fetch_closed_candles(pair: str, interval: int) -> list[dict]:
-    """Read at most 720 Kraken bars and drop the last, still-forming bar."""
-    return kraken_market_data.fetch_ohlc_candles(pair, interval, drop_incomplete=True)
-
-
 def evaluate_walk_forward(records: list[dict], params: StratParams, *, fee_pct: float,
                           interval: int, train_size: int, validation_size: int,
                           test_size: int, step_size: int, warmup_bars: int = 0,
@@ -132,7 +127,11 @@ def main(argv: list[str] | None = None) -> int:
 
     for interval in args.intervals:
         source = supplied.get(interval)
-        records = load_dataset(source) if source else fetch_closed_candles(pair, interval)
+        records = (
+            load_dataset(source)
+            if source
+            else kraken_market_data.fetch_ohlc_candles(pair, interval, drop_incomplete=True)
+        )
         if not records:
             raise RuntimeError(f"an empty dataset for {pair} {interval}m")
         records = validate_dataset(records, interval_minutes=interval)

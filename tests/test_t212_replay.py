@@ -1019,12 +1019,12 @@ def test_212trading_replay__fx_rates_accepts_scalar_numeric_strings_without_iter
     with pytest.raises(ValueError):
         t212_rep._fx_rates(1.0, -1)
 
-def test_walk_forward_compare__load_hl_replay_and__load_t212_replay_register_sys_modules_before_iter72_s6():
-    """[ITER72 #6] walk_forward_compare._load_hl_replay and _load_t212_replay register sys.modules before exec_module."""
+def test_walk_forward_compare_load_venue_module_registers_sys_modules_before_iter72_s6():
+    """[ITER72 #6] walk_forward_compare.load_venue_module registers sys.modules before exec_module."""
     from offline.runners import walk_forward_compare as wfc
-    # 6. walk_forward_compare._load_hl_replay and _load_t212_replay register sys.modules before exec_module
-    hl_mod = wfc._load_hl_replay()
-    t212_mod = wfc._load_t212_replay()
+    # 6. walk_forward_compare.load_venue_module registers sys.modules before exec_module
+    hl_mod = wfc.load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
+    t212_mod = wfc.load_venue_module("212trading", "replay.py", "t212_wf_replay")
     assert hasattr(hl_mod, "run_replay")
     assert hasattr(t212_mod, "run_replay")
 

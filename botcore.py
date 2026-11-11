@@ -269,9 +269,6 @@ class OrderedIdSet:
         return iter(self._d)
 
 
-_OrderedIdSet = OrderedIdSet
-
-
 def format_price_log(price: object) -> str:
     """Format a price with 2 decimals when >= 1.0 and up to 6 decimals for sub-dollar values."""
     px = safe_float(price, default=0.0) or 0.0

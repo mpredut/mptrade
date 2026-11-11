@@ -140,13 +140,12 @@ def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=N
         print(f"[MONITORORDER] Expiry notification failed for order {order_id}: {exc}")
 
 
-_OrderedIdSet = OrderedIdSet
 initial_sell_prices = OrderedDict()
 initial_buy_prices = OrderedDict()
 
-_notified_placed_order_ids = _OrderedIdSet()
-_notified_expired_order_ids = _OrderedIdSet()
-_derived_replacement_order_ids = _OrderedIdSet()
+_notified_placed_order_ids = OrderedIdSet()
+_notified_expired_order_ids = OrderedIdSet()
+_derived_replacement_order_ids = OrderedIdSet()
 _SYMBOL_TICK_SIZE_CACHE: dict[str, float] = {}
 _monitororder_initialized = False
 

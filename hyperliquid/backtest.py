@@ -48,13 +48,12 @@ from offline.backtests.metrics import (
 )
 
 
-_common_mod = load_local_module(_HERE, "common")
-_load_hl_local = _common_mod.load_hl_local
-_md_local = _load_hl_local("market_data")
+load_local_module(_HERE, "common")
+_md_local = load_local_module(_HERE, "market_data")
 fetch_ohlc_candles = _md_local.fetch_ohlc_candles
 fetch_funding_history = _md_local.fetch_funding_history
 
-_hl_mod = _load_hl_local("replay")
+_hl_mod = load_local_module(_HERE, "replay")
 run_replay = _hl_mod.run_replay
 
 
@@ -70,7 +69,7 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
         return ["__any__"] * len(closes)         # gate disabled
     detect_fn = None
     if src == "analysis":
-        detect_fn = _load_hl_local("signals").detect_long_term_trend
+        detect_fn = load_local_module(_HERE, "signals").detect_long_term_trend
     for i in range(len(closes)):
         if src == "analysis":
             res = detect_fn(ts[:i+1], closes[:i+1], win_h, step_h)

@@ -31,9 +31,8 @@ from providers.order_ohlc_utils import (  # noqa: E402
     validate_ohlc_candle_bar,
 )
 
-_common = load_local_module(_HERE, "common")
-_load_hl_local = _common.load_hl_local
-HLClient = _load_hl_local("hl_client").HLClient
+load_local_module(_HERE, "common")
+HLClient = load_local_module(_HERE, "hl_client").HLClient
 
 API_URL = "https://api.hyperliquid.xyz/info"
 INTERVALS = {
