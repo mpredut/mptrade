@@ -572,6 +572,105 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
             f"Venue SDK leak in Order Gateway module {gw_file}: {gw_roots & forbidden_venue_sdks}"
         )
 
+    # Enforce 0 module-level SCCs and 0 top-level package SCCs across the entire repository
+    from collections import defaultdict
+
+    all_mods = {}
+    for p in sorted(root.rglob("*.py")):
+        rel = p.relative_to(root)
+        if any(part.startswith(".") or part in ("tests", "offline", "verify_tools", "venv", ".venv") for part in rel.parts):
+            continue
+        mod_name = ".".join(rel.parts).removesuffix(".py").removesuffix(".__init__")
+        all_mods[mod_name] = rel
+
+    pkg_edges = defaultdict(set)
+    mod_edges = defaultdict(set)
+    for mod_name, rel in sorted(all_mods.items()):
+        p = root / rel
+        src_top = rel.parts[0].removesuffix(".py")
+        pkg_parts = rel.parts[:-1]
+        try:
+            tree = ast.parse(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            targets = []
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    targets.append(a.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    targets.append(node.module)
+                    for a in node.names:
+                        sub = f"{node.module}.{a.name}"
+                        if sub in all_mods:
+                            targets.append(sub)
+                elif node.level > 0:
+                    base_parts = list(pkg_parts[: len(pkg_parts) - (node.level - 1)])
+                    if node.module:
+                        base_parts.extend(node.module.split("."))
+                        rel_mod = ".".join(base_parts)
+                        targets.append(rel_mod)
+                    else:
+                        rel_mod = ".".join(base_parts)
+                    for a in node.names:
+                        sub = f"{rel_mod}.{a.name}" if rel_mod else a.name
+                        if sub in all_mods:
+                            targets.append(sub)
+            for tgt in targets:
+                if tgt.startswith(("hyperliquid.info", "hyperliquid.exchange", "hyperliquid.utils")):
+                    continue
+                t_top = tgt.split(".")[0]
+                if t_top != src_top and ((root / f"{t_top}.py").exists() or (root / t_top).is_dir()):
+                    pkg_edges[src_top].add(t_top)
+                parts = tgt.split(".")
+                for i in range(len(parts), 0, -1):
+                    cand = ".".join(parts[:i])
+                    if cand in all_mods:
+                        if cand != mod_name:
+                            mod_edges[mod_name].add(cand)
+                        break
+
+    def _find_sccs(graph):
+        index = 0
+        indices = {}
+        lowlink = {}
+        stack = []
+        on_stack = set()
+        sccs = []
+
+        def _strongconnect(v):
+            nonlocal index
+            indices[v] = index
+            lowlink[v] = index
+            index += 1
+            stack.append(v)
+            on_stack.add(v)
+            for w in sorted(graph.get(v, ())):
+                if w not in indices:
+                    _strongconnect(w)
+                    lowlink[v] = min(lowlink[v], lowlink[w])
+                elif w in on_stack:
+                    lowlink[v] = min(lowlink[v], indices[w])
+            if lowlink[v] == indices[v]:
+                scc = []
+                while True:
+                    w = stack.pop()
+                    on_stack.remove(w)
+                    scc.append(w)
+                    if w == v:
+                        break
+                if len(scc) > 1:
+                    sccs.append(sorted(scc))
+
+        for v in sorted(graph):
+            if v not in indices:
+                _strongconnect(v)
+        return sccs
+
+    assert _find_sccs(pkg_edges) == [], f"Top-level package SCC cycle detected: {_find_sccs(pkg_edges)}"
+    assert _find_sccs(mod_edges) == [], f"Module-level SCC cycle detected: {_find_sccs(mod_edges)}"
+
     from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
     from providers.t212_provider import T212Provider

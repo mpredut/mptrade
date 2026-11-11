@@ -1,6 +1,7 @@
 """LLM quota probing, credit accounting, and dynamic model routing for GeminiClient."""
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import threading
@@ -17,8 +18,11 @@ from botcore import (
     safe_float,
 )
 from cachepaths import cache_path
-from orchestratorOS.agy.paths import resolve_bot_cli_base, resolve_ui_cli_base
 from state_io import read_json_dict, save_json_state
+
+_agy_paths = importlib.import_module("orchestratorOS.agy.paths")
+resolve_bot_cli_base = _agy_paths.resolve_bot_cli_base
+resolve_ui_cli_base = _agy_paths.resolve_ui_cli_base
 
 logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
@@ -431,7 +435,7 @@ class GeminiQuotaRouterMixin:
             return
 
         try:
-            from orchestratorOS.lib import watchdog_common
+            watchdog_common = importlib.import_module("orchestratorOS.lib.watchdog_common")
         except Exception:
             return
 

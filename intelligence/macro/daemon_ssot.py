@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import importlib
 import logging
 import os
 import threading
@@ -404,8 +405,8 @@ def prune_automated_cli_threads(logger_inst: Optional[logging.Logger] = None) ->
     """Prune automated CLI threads older than configured retention limit."""
     log = logger_inst or logger
     try:
-        from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
-        from orchestratorOS.agy.paths import resolve_bot_cli_base
+        prune_old_cli_threads = importlib.import_module("orchestratorOS.admin.prune_llm_threads").prune_old_cli_threads
+        resolve_bot_cli_base = importlib.import_module("orchestratorOS.agy.paths").resolve_bot_cli_base
 
         retention_d = required_float_env("CLI_THREAD_RETENTION_DAYS")
         bot_cli_base = resolve_bot_cli_base()

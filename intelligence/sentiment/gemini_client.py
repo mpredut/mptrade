@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fcntl
+import importlib
 import logging
 import os
 import re
@@ -24,28 +25,37 @@ from botcore import (
     split_csv,
     topic_spec,
 )
-from cachepaths import cache_path
-from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base, resolve_ui_cli_base
-from orchestratorOS.agy.summary_store import (
-    delete_threads,
-    restore_conversation_state,
-    snapshot_conversation_state,
-)
-from orchestratorOS.agy.topics import (
-    TopicSession,
-    condense_decision,
-    format_topic_history_prefix,
-    format_topic_turn_header,
-    prepare_topic_session,
-    record_topic_turn,
-)
+from cachepaths import cache_path  # noqa: F401
 from intelligence.sentiment.llm_quota_router import (
-    LOAD_ASSIST_API_URL,
-    QUOTA_API_URL,
+    LOAD_ASSIST_API_URL,  # noqa: F401
+    QUOTA_API_URL,  # noqa: F401
     GeminiQuotaRouterMixin,
     canonical_rest_model,
 )
-from state_io import extract_json_object, parse_json_payload, read_json_dict, save_json_state
+from state_io import (
+    extract_json_object,
+    parse_json_payload,
+    read_json_dict,  # noqa: F401
+    save_json_state,  # noqa: F401
+)
+
+_agy_paths = importlib.import_module("orchestratorOS.agy.paths")
+resolve_agy_bot_bin = _agy_paths.resolve_agy_bot_bin
+resolve_bot_cli_base = _agy_paths.resolve_bot_cli_base
+resolve_ui_cli_base = _agy_paths.resolve_ui_cli_base
+
+_agy_summary_store = importlib.import_module("orchestratorOS.agy.summary_store")
+delete_threads = _agy_summary_store.delete_threads
+restore_conversation_state = _agy_summary_store.restore_conversation_state
+snapshot_conversation_state = _agy_summary_store.snapshot_conversation_state
+
+_agy_topics = importlib.import_module("orchestratorOS.agy.topics")
+TopicSession = _agy_topics.TopicSession
+condense_decision = _agy_topics.condense_decision
+format_topic_history_prefix = _agy_topics.format_topic_history_prefix
+format_topic_turn_header = _agy_topics.format_topic_turn_header
+prepare_topic_session = _agy_topics.prepare_topic_session
+record_topic_turn = _agy_topics.record_topic_turn
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv()
