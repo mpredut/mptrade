@@ -1,6 +1,5 @@
 """A historical offline experiment; it is not an automated test."""
 
-import datetime
 import os
 import sys
 import matplotlib.pyplot as plt
@@ -11,12 +10,11 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from offline.legacy_tools.test import _compute_interval_drops, _klines_to_df
+from offline.legacy_tools.test import _compute_interval_drops, _klines_to_df, _thirty_day_window_ms
 
 def fetch_data():
     # The API for the historical data (for example: the Binance API).
-    end_time = int(datetime.datetime.now().timestamp() * 1000)
-    start_time = end_time - 30 * 24 * 60 * 60 * 1000  # Last 30 days
+    start_time, end_time = _thirty_day_window_ms()
 
     # We adjust so the data is fetched in several requests, because Binance limits how much it returns.
     df_list = []

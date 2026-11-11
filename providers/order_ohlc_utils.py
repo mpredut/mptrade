@@ -1122,3 +1122,21 @@ def extract_yahoo_chart_latest_price(payload: Any, *, decimals: Optional[int] = 
     return round(val, decimals) if decimals is not None else val
 
 
+def iter_expired_open_order_ids(
+    open_orders: Any,
+    expire_sec: float,
+    *,
+    current_time_sec: float,
+) -> list[Any]:
+    """Return order IDs from ``open_orders`` mapping whose timestamp is older than ``expire_sec`` seconds."""
+    if not isinstance(open_orders, Mapping):
+        return []
+    expired_ids: list[Any] = []
+    for order_id, order_details in open_orders.items():
+        order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
+        if order_time > 0 and (current_time_sec - order_time) > expire_sec:
+            expired_ids.append(order_id)
+    return expired_ids
+
+
+

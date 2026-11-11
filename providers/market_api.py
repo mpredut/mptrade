@@ -42,6 +42,7 @@ from .order_ohlc_utils import (
     extract_order_side,
     extract_orig_qty,
     extract_remaining_qty,
+    iter_expired_open_order_ids,
     require_clean_order_id,
     require_int_order_id,
 )
@@ -575,10 +576,8 @@ class MarketApi:
         if not open_map:
             return
         current_time = float(time.time())
-        for order_id, order_details in open_map.items():
-            order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
-            if order_time > 0 and current_time - order_time > expire_val:
-                self._cancel_open_order_and_resolve(symbol, order_id, provider_name=provider_name)
+        for order_id in iter_expired_open_order_ids(open_map, expire_val, current_time_sec=current_time):
+            self._cancel_open_order_and_resolve(symbol, order_id, provider_name=provider_name)
 
     def tracked_order_lifecycle(self, *, provider_name: str, venue=None,
                                 missing_confirmations=2,

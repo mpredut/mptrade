@@ -818,12 +818,18 @@ class TrailingAdapterBase:
 
     def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
         price_f = safe_float(price, 0.0)
-        peak_f = safe_float(peak, price_f)
-        self.log(
-            f"  [DRY] {self._LOG_TAG}[DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
-            f"(peak {peak_f:.4f}, drop >= {trail}%)  "
-            f"[set {self._ENABLED_ENV_VAR}=true for it to execute]"
-        )
+        peak_f = safe_float(peak, 0.0 if self._PREFER_ASSET_LABEL else price_f)
+        if self._PREFER_ASSET_LABEL:
+            self.log(
+                f"  [DRY] {self._LOG_TAG}[DRY] WOULD SELL {qty} {asset} @ ~{price_f:.4f} "
+                f"(peak {peak_f:.4f}, -{trail}%)  [{self._ENABLED_ENV_VAR}=true for it to execute]"
+            )
+        else:
+            self.log(
+                f"  [DRY] {self._LOG_TAG}[DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
+                f"(peak {peak_f:.4f}, drop >= {trail}%)  "
+                f"[set {self._ENABLED_ENV_VAR}=true for it to execute]"
+            )
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
         price_f = safe_nonneg_float(price, 0.0)
@@ -837,10 +843,12 @@ class TrailingAdapterBase:
     def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
         price_f = safe_float(price, 0.0)
         stop_f = safe_float(stop_at, 0.0)
-        peak_f = safe_float(peak, price_f)
+        peak_f = safe_float(peak, 0.0 if self._PREFER_ASSET_LABEL else price_f)
+        target = asset if self._PREFER_ASSET_LABEL else pair
+        free_sfx = f"  (free {safe_float(free, 0.0):.4f})" if self._PREFER_ASSET_LABEL else ""
         self.log(
-            f"  {self._LOG_TAG} {pair}: {price_f:.4f}  peak {peak_f:.4f}  "
-            f"sells below {stop_f:.4f} (-{trail}%)"
+            f"  {self._LOG_TAG} {target}: {price_f:.4f}  peak {peak_f:.4f}  "
+            f"sells below {stop_f:.4f} (-{trail}%){free_sfx}"
         )
 
     def log_skip_rebuy_trend(self, asset) -> None:
@@ -860,6 +868,12 @@ class TrailingAdapterBase:
     def log_tick_error(self, e) -> None:
         self.log(f"  ! {self._LOG_TAG} cycle error ({e}) -- continuing")
 
+    @staticmethod
+    def _extract_order_result_status(result) -> tuple[str, str]:
+        if result.outcome == "refused":
+            return "REFUSED", str(result.intent.get("refusal_reason"))
+        return "PENDING", f"orderId={result.intent.get('order_id')}"
+
     def _log_sell_result(
         self,
         result,
@@ -875,15 +889,16 @@ class TrailingAdapterBase:
     ) -> None:
         price_f = safe_float(price, 0.0)
         peak_f = safe_float(peak, price_f)
-        if result.outcome == "refused":
+        status_lbl, detail = self._extract_order_result_status(result)
+        if status_lbl == "REFUSED":
             self.log(
                 f"  [STOP] {self._LOG_TAG} SELL REFUSED {pair} {qty} @ ~{price_f:.4f} "
-                f"({result.intent.get('refusal_reason')})"
+                f"({detail})"
             )
         else:
             self.log(
                 f"  [STOP] {self._LOG_TAG} SELL PENDING {pair} {qty} @ ~{price_f:.4f} "
-                f"(peak {peak_f:.4f}, -{trail}%, orderId={result.intent.get('order_id')})"
+                f"(peak {peak_f:.4f}, -{trail}%, {detail})"
             )
 
     def execute_sell(self, key, asset, pair, qty, price, peak, trail, persist):
@@ -925,12 +940,7 @@ class TrailingAdapterBase:
         price_ref: float,
         order_price,
     ) -> None:
-        status_lbl = "REFUSED" if result.outcome == "refused" else "PENDING"
-        detail = (
-            result.intent.get("refusal_reason")
-            if result.outcome == "refused"
-            else f"orderId={result.intent.get('order_id')}"
-        )
+        status_lbl, detail = self._extract_order_result_status(result)
         self.log(f"  [REBUY] {self._LOG_TAG} RE-BUY {status_lbl} {pair} {qty} @ ~{price_ref:.4f} ({detail})")
 
     def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):

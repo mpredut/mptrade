@@ -449,24 +449,6 @@ class KrakenTrailing(TrailingAdapterBase):
                 client_order_id=intent["client_order_id"]),
         )
 
-    def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
-        price_f = safe_float(price, 0.0)
-        peak_f = safe_float(peak, 0.0)
-        self.log(
-            f"  [DRY] {self._LOG_TAG}[DRY] WOULD SELL {qty} {asset} @ ~{price_f:.4f} "
-            f"(peak {peak_f:.4f}, -{trail}%)  [{self._ENABLED_ENV_VAR}=true for it to execute]"
-        )
-
-    def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
-        price_f = safe_float(price, 0.0)
-        stop_f = safe_float(stop_at, 0.0)
-        peak_f = safe_float(peak, 0.0)
-        free_f = safe_float(free, 0.0)
-        self.log(
-            f"  {self._LOG_TAG} {asset}: {price_f:.4f}  peak {peak_f:.4f}  "
-            f"sells below {stop_f:.4f} (-{trail}%)  (free {free_f:.4f})"
-        )
-
     def log_tick_error(self, e) -> None:
         self.log(f"  ! {self._LOG_TAG} cycle failed ({e.__class__.__name__}: {e}) -- retrying")
 
@@ -484,12 +466,7 @@ class KrakenTrailing(TrailingAdapterBase):
         use_market: bool,
     ) -> None:
         order_desc = "MARKET" if use_market else f"@ ~{order_price:.4f}"
-        status_lbl = "REFUSED" if result.outcome == "refused" else "PENDING"
-        detail = (
-            result.intent.get("refusal_reason")
-            if result.outcome == "refused"
-            else f"orderId={result.intent.get('order_id')}"
-        )
+        status_lbl, detail = self._extract_order_result_status(result)
         self.log(f"  [SELL] {self._LOG_TAG} SELL {status_lbl} {qty} {asset} {order_desc} ({detail})")
 
     def _log_rebuy_result(
@@ -502,16 +479,10 @@ class KrakenTrailing(TrailingAdapterBase):
         price_ref: float,
         order_price,
     ) -> None:
-        if result.outcome == "refused":
-            self.log(
-                f"  [REBUY] {self._LOG_TAG} RE-BUY REFUSED {qty} {asset} @ ~{order_price:.4f} "
-                f"({result.intent.get('refusal_reason')}) (not catching the knife)"
-            )
-        else:
-            self.log(
-                f"  [REBUY] {self._LOG_TAG} REBUY PENDING {qty} {asset} @ ~{order_price:.4f} "
-                f"(orderId={result.intent.get('order_id')})"
-            )
+        status_lbl, detail = self._extract_order_result_status(result)
+        rebuy_lbl = "RE-BUY REFUSED" if status_lbl == "REFUSED" else "REBUY PENDING"
+        suffix = " (not catching the knife)" if status_lbl == "REFUSED" else ""
+        self.log(f"  [REBUY] {self._LOG_TAG} {rebuy_lbl} {qty} {asset} @ ~{order_price:.4f} ({detail}){suffix}")
 
     def print_status(self) -> None:
         state = self.core.load()

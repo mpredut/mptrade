@@ -27,10 +27,15 @@ def _klines_to_df(data):
     return df
 
 
-def fetch_data():
-    # The API for the historical data (for example: the Binance API).
+def _thirty_day_window_ms() -> tuple[int, int]:
     end_time = int(datetime.datetime.now().timestamp() * 1000)
     start_time = end_time - 30 * 24 * 60 * 60 * 1000  # Last 30 days
+    return start_time, end_time
+
+
+def fetch_data():
+    # The API for the historical data (for example: the Binance API).
+    start_time, end_time = _thirty_day_window_ms()
 
     url = f'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime={start_time}&endTime={end_time}'
     response = requests.get(url)
