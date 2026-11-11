@@ -7,7 +7,6 @@ Decoupled, zero-credential public endpoint accessible without API keys.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import time
@@ -25,14 +24,15 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import cache_symbol_variants
+from cachepaths import cache_symbol_variants, clean_symbol_key
 from instrument_registry import casefold_get
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
 )
-from intelligence.macro_sentiment_ssot import clean_symbol_key, parse_symbol_list
+from intelligence.macro_sentiment_ssot import parse_symbol_list
 from providers.base import normalize_side
+from state_io import encode_json_payload, parse_json_payload
 
 logger = logging.getLogger("intelligence.external.bybit_liquidations")
 
@@ -153,14 +153,14 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
             close_timeout=WS_CLOSE_TIMEOUT,
         ) as ws:
             args = [f"allLiquidation.{s}" for s in self._symbols]
-            await ws.send(json.dumps({"op": "subscribe", "args": args}))
+            await ws.send(encode_json_payload({"op": "subscribe", "args": args}))
             last_ping = time.time()
             while not self._stop.is_set():
                 now = time.time()
                 if now < last_ping:
                     last_ping = now
                 if now - last_ping >= WS_APP_PING_SEC:
-                    await ws.send(json.dumps({"op": "ping"}))
+                    await ws.send(encode_json_payload({"op": "ping"}))
                     last_ping = now
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
@@ -174,10 +174,7 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
         await async_interruptible_sleep(self._stop, delay, step, sleep_fn=asyncio.sleep)
 
     def _ingest(self, raw: str) -> None:
-        try:
-            msg = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return
+        msg = parse_json_payload(raw, default=None) if isinstance(raw, (str, bytes, bytearray)) else None
         if not isinstance(msg, dict):
             return
         topic = str(msg.get("topic") or "")

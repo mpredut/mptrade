@@ -994,23 +994,20 @@ def is_rth_equity_symbol(symbol: object, price_factory: Optional[object] = None)
             return True
     try:
         reg = sym.load_registry()
-        has_eq = any(
-            (s.provider == "t212" or s.market_hours == "rth")
-            and (
+
+        def _matches_sym(s) -> bool:
+            return (
                 s.symbol.upper() == sym_u
                 or s.base.upper() == sym_u
                 or canonical_base_asset(s.symbol).upper() == sym_u
             )
+
+        has_eq = any(
+            (sym.is_equity_venue(s.provider) or s.market_hours == "rth") and _matches_sym(s)
             for s in reg.values()
         )
         has_crypto = any(
-            s.provider != "t212"
-            and s.market_hours != "rth"
-            and (
-                s.symbol.upper() == sym_u
-                or s.base.upper() == sym_u
-                or canonical_base_asset(s.symbol).upper() == sym_u
-            )
+            not sym.is_equity_venue(s.provider) and s.market_hours != "rth" and _matches_sym(s)
             for s in reg.values()
         )
         return has_eq and not has_crypto

@@ -34,8 +34,10 @@ from botcore import (  # noqa: E402
 )
 
 _common_mod = load_local_module(_HERE, "common")
+from cachepaths import split_symbol_assets
 from instrument_registry import casefold_get
 from providers.base import mount_connect_retry
+from providers.order_ohlc_utils import resolve_ohlc_time_window_ms
 
 try:
     import eth_account
@@ -217,15 +219,14 @@ class HLClient:
         return self._meta_cache
 
     @classmethod
-    def _coin_candidates(cls, coin: str) -> tuple[str, ...]:
+    def _coin_candidates(cls, coin: object) -> tuple[str, ...]:
+        if isinstance(coin, bool) or not isinstance(coin, str):
+            return ()
         c = coin.strip()
-        u = c.upper()
-        if u.endswith("/USDC") and len(c) > 5:
-            base = c[:-5].strip()
-        elif u.endswith("USDC") and len(c) > 4:
-            base = c[:-4].strip()
-        else:
-            base = c
+        if not c:
+            return ()
+        split = split_symbol_assets(c)
+        base = split[0] if (split is not None and split[1] == "USDC") else c
         return (c,) if base.casefold() == c.casefold() else (c, base)
 
     @classmethod
@@ -431,13 +432,12 @@ class HLClient:
             or not interval or isinstance(interval, bool) or not isinstance(interval, str) or not interval.strip()
         ):
             return []
-        lh_f = safe_pos_float(lookback_hours, default=None)
-        if lh_f is None:
+        try:
+            _, start, end, _ = resolve_ohlc_time_window_ms(lookback_hours=lookback_hours)
+        except ValueError:
             return []
         coin = coin.strip()
         interval = interval.strip()
-        end = int(time.time() * 1000)
-        start = max(0, int(end - lh_f * 3600 * 1000))
         try:
             res = self.info.candles_snapshot(coin, interval, start, end)
             return [x for x in res if isinstance(x, dict)] if isinstance(res, list) else []
@@ -501,7 +501,7 @@ class HLClient:
                     reduce_only: bool = False) -> tuple[bool, int | None, str]:
         """Place a GTC LIMIT order and return (ok, oid, message)."""
         if not self.exchange:
-            raise HLError("No agent wallet (HL_SECRET_KEY) — orders cannot be placed")
+            raise HLError("No agent wallet (HL_SECRET_KEY) -- orders cannot be placed")
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return False, None, "invalid coin"
         coin = coin.strip()

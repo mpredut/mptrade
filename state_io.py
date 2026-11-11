@@ -13,6 +13,7 @@ import glob
 import gzip
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -477,6 +478,75 @@ def parse_json_payload(raw: str | bytes, *, default: Any = _MISSING) -> Any:
     except Exception:
         if default is not _MISSING:
             return default
+        raise
+
+
+def extract_json_object(text: Any) -> dict[str, Any] | None:
+    """Extract a JSON dict from pure JSON, markdown code fences, or hybrid prose + trailing JSON."""
+    if not isinstance(text, str):
+        return None
+    cleaned = text.strip()
+    if not cleaned:
+        return None
+    if "```" in cleaned:
+        fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
+        for block in reversed(fences):
+            cand = block.strip()
+            if not cand:
+                continue
+            try:
+                obj = json.loads(cand, parse_constant=_reject_json_constant)
+                if isinstance(obj, dict):
+                    return obj
+            except ValueError:
+                pass
+    try:
+        obj = json.loads(cleaned, parse_constant=_reject_json_constant)
+        if isinstance(obj, dict):
+            return obj
+    except ValueError:
+        pass
+    decoder = json.JSONDecoder(parse_constant=_reject_json_constant)
+    scan_pos = 0
+    last_obj: dict[str, Any] | None = None
+    while True:
+        idx = cleaned.find("{", scan_pos)
+        if idx < 0:
+            return last_obj
+        try:
+            obj, end_idx = decoder.raw_decode(cleaned, idx)
+            if isinstance(obj, dict):
+                last_obj = obj
+                scan_pos = max(idx + 1, end_idx)
+                continue
+        except ValueError:
+            pass
+        scan_pos = idx + 1
+
+
+def decode_embedded_json_dict(line: str, *, anchor: str = "") -> dict[str, Any] | None:
+    """Decode a JSON dict embedded in ``line`` (optionally anchored before ``anchor``), raising ``ValueError`` if malformed."""
+    if not isinstance(line, str):
+        raise ValueError("line must be a string")
+    decoder = json.JSONDecoder(parse_constant=_reject_json_constant)
+    brace_idx = line.rfind("{", 0, line.find(anchor)) if anchor and anchor in line else -1
+    if brace_idx != -1:
+        try:
+            payload, _ = decoder.raw_decode(line, brace_idx)
+            if isinstance(payload, dict):
+                return payload
+        except ValueError:
+            pass
+    start_idx = line.find("{")
+    end_idx = line.rfind("}")
+    raw_slice = line[start_idx : end_idx + 1] if (start_idx != -1 and end_idx >= start_idx) else line
+    try:
+        payload = json.loads(raw_slice, parse_constant=_reject_json_constant)
+        return payload if isinstance(payload, dict) else None
+    except ValueError:
+        extracted = extract_json_object(line)
+        if extracted is not None:
+            return extracted
         raise
 
 

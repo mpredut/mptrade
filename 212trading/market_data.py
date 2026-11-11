@@ -28,7 +28,6 @@ from botcore import (
     safe_pos_float,
 )
 
-from cachepaths import canonical_base_asset
 from offline.backtests.datasets import drop_incomplete_last_bar, validate_dataset
 from providers.order_ohlc_utils import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
 from state_io import parse_json_payload
@@ -136,11 +135,6 @@ def fetch_yahoo_candles(
 
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
 _UA = {"User-Agent": "Mozilla/5.0 (ipo-watch)"}
-
-
-def t212_to_yahoo(t212_ticker: str) -> str:
-    """Convert NVDA_US_EQ / SPCXx.T to NVDA / SPCX for Yahoo price lookup."""
-    return canonical_base_asset(t212_ticker)
 
 
 def _chart(sym: str, rng: str = "1d", interval: str = "5m"):

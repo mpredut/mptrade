@@ -190,7 +190,7 @@ class T212Provider(MarketDataProvider):
     @classmethod
     def fetch_public_market_price_usd(cls, symbol: str) -> Optional[float]:
         market_data = importlib.import_module("212trading.market_data")
-        yahoo_sym = market_data.t212_to_yahoo(symbol)
+        yahoo_sym = canonical_base_asset(symbol)
         return safe_pos_float(market_data.get_price_usd(yahoo_sym), default=None)
 
     def fetch_historical_ohlc_points(
@@ -202,7 +202,7 @@ class T212Provider(MarketDataProvider):
         sym_u = str(symbol or "").strip().upper()
         try:
             market_data = importlib.import_module("212trading.market_data")
-            yahoo_sym = market_data.t212_to_yahoo(sym_u)
+            yahoo_sym = canonical_base_asset(sym_u)
             iv_norm = str(interval or "1h").strip()
             if iv_norm not in ("5m", "15m", "30m", "1h", "1d"):
                 iv_norm = "1h"

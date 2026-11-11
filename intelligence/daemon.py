@@ -11,7 +11,6 @@ while guaranteeing constantly fresh market microstructure and threat telemetry.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
@@ -25,8 +24,11 @@ from botcore import (
     _parse_bool_flag,
     is_interval_due,
     load_dotenv,
+    obj_attr,
     obj_float,
     required_float_env,
+    resolve_now_ts,
+    safe_pos_float,
     single_instance,
 )
 from intelligence.macro.daemon_ssot import (
@@ -40,12 +42,8 @@ from intelligence.macro.daemon_ssot import (
 )
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
 from intelligence.macro.news_feed_collector import NewsFeedCollector
-from intelligence.macro_sentiment_ssot import (
-    obj_attr,
-    parse_symbol_list,
-    resolve_now_ts,
-    safe_pos_float,
-)
+from intelligence.macro_sentiment_ssot import parse_symbol_list
+from state_io import encode_json_payload
 
 load_dotenv()
 
@@ -234,7 +232,7 @@ def main():
 
     if args.once:
         logger.info("Executing single update cycle...")
-        print(json.dumps(daemon.run_cycle(force=True), indent=2))
+        print(encode_json_payload(daemon.run_cycle(force=True), indent=2))
         sys.exit(0)
 
     single_instance("intelligence_telemetry")

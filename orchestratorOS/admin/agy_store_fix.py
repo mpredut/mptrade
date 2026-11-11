@@ -44,7 +44,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:   # executed directly by the systemd drop-in with /usr/bin/python3
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import _parse_bool_flag, safe_nonneg_int, safe_pos_float
+from botcore import TOPIC_SPECS, _parse_bool_flag, safe_nonneg_int, safe_pos_float
 from state_io import (  # noqa: E402
     atomic_write_bytes,
     discard_generation_file,
@@ -76,7 +76,6 @@ from orchestratorOS.agy.summary_store import (  # noqa: E402
     upsert_ui_visible_summary,
 )
 from orchestratorOS.agy.topics import (  # noqa: E402
-    TOPIC_SPECS,
     get_active_topic_cids,
     get_topic_canonical_titles,
     get_topic_registry_path,

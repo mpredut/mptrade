@@ -19,6 +19,7 @@ if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
 from botcore import (  # noqa: E402
+    TOPIC_SPECS,
     _parse_bool_flag,
     load_dotenv,
     required_env,
@@ -38,7 +39,7 @@ from orchestratorOS.agy.summary_store import (  # noqa: E402
     resolve_project_ids,
     summaries_db,
 )
-from orchestratorOS.agy.topics import TOPIC_SPECS, get_active_topic_cids, sync_all_topic_titles  # noqa: E402
+from orchestratorOS.agy.topics import get_active_topic_cids, sync_all_topic_titles  # noqa: E402
 
 logger = logging.getLogger("prune_llm_threads")
 

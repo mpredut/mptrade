@@ -140,10 +140,6 @@ def _normalize_kraken_fill(raw: dict) -> dict:
     return norm
 
 
-def _clean_kraken_order_id(order_id: object, caller: str) -> str:
-    return require_clean_order_id(order_id, f"{caller} {order_id}", str_only=True)
-
-
 class KrakenProvider(MarketDataProvider):
     _CLIENT_CLASS_NAME = "KrakenClient"
     _DEFERS_PREFLIGHT_QUANTITY = True
@@ -524,7 +520,7 @@ class KrakenProvider(MarketDataProvider):
 
         normalized = []
         for order_id, raw in raw_orders.items():
-            clean_oid = _clean_kraken_order_id(order_id, f"open_orders({symbol})")
+            clean_oid = require_clean_order_id(order_id, f"open_orders({symbol}) {order_id}", str_only=True)
             if not isinstance(raw, dict):
                 raise ProviderError(f"open_orders({symbol}): order {order_id} is invalid")
             description = raw.get("descr") or {}
@@ -1116,7 +1112,7 @@ class KrakenProvider(MarketDataProvider):
             )
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
-        clean_id = _clean_kraken_order_id(order_id, "order_status")
+        clean_id = require_clean_order_id(order_id, f"order_status {order_id}", str_only=True)
         res = self._query_with_bot_fallback(
             lambda cli: cli.query_orders(clean_id) or {}, f"order_status {order_id}"
         )
@@ -1184,13 +1180,13 @@ class KrakenProvider(MarketDataProvider):
                 pair = str(descr.get("pair") or raw.get("pair") or "")
                 if pair and not kraken_pair_matches(symbol, pair):
                     continue
-                clean_oid = _clean_kraken_order_id(order_id, f"order_by_client_id({symbol})")
+                clean_oid = require_clean_order_id(order_id, f"order_by_client_id({symbol}) {order_id}", str_only=True)
                 return {"orderId": clean_oid, "status": raw.get("status")}
         return None
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
         """Cancel by id, treating an already closed or missing order as success."""
-        clean_id = _clean_kraken_order_id(order_id, "cancel_order")
+        clean_id = require_clean_order_id(order_id, f"cancel_order {order_id}", str_only=True)
         try:
             result = self._query_with_bot_fallback(lambda cli: cli.cancel_order(clean_id)) or {}
         except Exception as e:  # noqa: BLE001

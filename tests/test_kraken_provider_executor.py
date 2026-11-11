@@ -1505,18 +1505,19 @@ def test_kraken_shadow_live__get_anchor_handles_integral_float_strings_and_iter1
         ksl.LOG_DIR = orig_log_dir
 
 def test_krakenprovider__clean_kraken_order_id_strategy_dry_run_iter152_s2():
-    """[ITER152 #2] KrakenProvider _clean_kraken_order_id & KrakenProvider.strategy_dry_run."""
+    """[ITER152 #2] require_clean_order_id(str_only=True) & KrakenProvider.strategy_dry_run."""
     import pytest
-    from providers.kraken_provider import KrakenProvider, _clean_kraken_order_id, _parse_bool_flag as krk_bool
+    from providers.kraken_provider import KrakenProvider, _parse_bool_flag as krk_bool
+    from providers.order_ohlc_utils import require_clean_order_id
     from providers.strategy_executor import ProviderError
-    # 2. KrakenProvider _clean_kraken_order_id & KrakenProvider.strategy_dry_run
+    # 2. require_clean_order_id(str_only=True) & KrakenProvider.strategy_dry_run
     assert krk_bool("false", True) is False
     assert KrakenProvider.strategy_dry_run(False, "false") is True  # type: ignore[arg-type]
     assert KrakenProvider.strategy_dry_run(False, float("nan")) is True  # type: ignore[arg-type]
     for bad_oid in ("", "0", "0.0", "nan", "null", "none", "inf", True, 123, ["O-1"], None):
         with pytest.raises(ProviderError):
-            _clean_kraken_order_id(bad_oid, "order_status")
-    assert _clean_kraken_order_id(" O-KRK-123 ", "order_status") == "O-KRK-123"
+            require_clean_order_id(bad_oid, f"order_status {bad_oid}", str_only=True)
+    assert require_clean_order_id(" O-KRK-123 ", "order_status O-KRK-123", str_only=True) == "O-KRK-123"
 
     krk = KrakenProvider()
     with pytest.raises(ProviderError):

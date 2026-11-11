@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import fcntl
-import json
 import logging
 import os
 import re
@@ -23,6 +22,7 @@ from botcore import (
     safe_float,
     safe_pos_float,
     split_csv,
+    topic_spec,
 )
 from cachepaths import cache_path
 from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base, resolve_ui_cli_base
@@ -34,12 +34,10 @@ from orchestratorOS.agy.summary_store import (
 from orchestratorOS.agy.topics import (
     TopicSession,
     condense_decision,
-    extract_json_object,
     format_topic_history_prefix,
     format_topic_turn_header,
     prepare_topic_session,
     record_topic_turn,
-    topic_spec,
 )
 from intelligence.sentiment.llm_quota_router import (
     LOAD_ASSIST_API_URL,
@@ -47,7 +45,7 @@ from intelligence.sentiment.llm_quota_router import (
     GeminiQuotaRouterMixin,
     canonical_rest_model,
 )
-from state_io import read_json_dict, save_json_state
+from state_io import extract_json_object, parse_json_payload, read_json_dict, save_json_state
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv()
@@ -252,10 +250,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         raw = (proc.stdout or "").strip()
         if proc.returncode != 0 or not raw:
             return None, None
-        try:
-            payload = json.loads(raw)
-        except ValueError:
-            return raw, None
+        payload = parse_json_payload(raw, default=None)
         if not isinstance(payload, dict):
             return raw, None
         raw_resp = payload.get("response")

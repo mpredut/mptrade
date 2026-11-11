@@ -39,9 +39,10 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
 from typing import Any
+from cachepaths import canonical_base_asset
 from intelligence.internal.state.volatility import vol_pct_to_ratio
 from ipo_common import notify
-from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
+from market_data import get_eur_usd, get_usd_ron, get_price_usd, trend_slope_pct
 from t212_client import T212Client
 from providers.base import (
     extract_order_id,
@@ -297,7 +298,7 @@ class Strategy(BaseSpotMixin):
                  observe_only: bool = False):
         self.client = client
         self.ticker = ticker
-        self.yahoo_sym = params.yahoo_sym or t212_to_yahoo(ticker)
+        self.yahoo_sym = params.yahoo_sym or canonical_base_asset(ticker)
         self.p = params
         self.dry_run = _parse_bool_flag(dry_run, True)
         self.observe_only = _parse_bool_flag(observe_only, False)

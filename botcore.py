@@ -935,24 +935,49 @@ def http_post_form(url: str, data: dict, headers: dict | None = None) -> tuple[i
     return http_request("POST", url, headers=headers, form=data)
 
 
+def _validate_http_url(url: object) -> str:
+    if isinstance(url, bool) or not isinstance(url, str) or not url.strip():
+        raise ValueError(f"invalid HTTP URL: {url!r}")
+    u = url.strip()
+    if not u.lower().startswith(("http://", "https://")):
+        raise ValueError(f"unsupported non-HTTP URL scheme: {url!r}")
+    return u
+
+
+def _urlopen_bytes(req: urllib.request.Request, timeout: float) -> bytes:
+    timeout_f = require_pos_float(timeout, name="timeout")
+    with urllib.request.urlopen(req, timeout=timeout_f) as resp:
+        return resp.read()
+
+
 def _urlopen_json(req: urllib.request.Request, timeout: float) -> object:
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
-        return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
+    raw = _urlopen_bytes(req, timeout)
+    return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
+
+
+def fetch_public_bytes(
+    url: str, *, timeout: float = 5.0, user_agent: str = "mptrade-intelligence/1.0", headers: dict | None = None
+) -> bytes:
+    """Fetch raw bytes from a public HTTP GET endpoint."""
+    clean_url = _validate_http_url(url)
+    req_headers = {"User-Agent": user_agent, **(headers if isinstance(headers, dict) else {})}
+    return _urlopen_bytes(urllib.request.Request(clean_url, headers=req_headers), timeout)
 
 
 def fetch_public_json(
     url: str, *, timeout: float = 5.0, user_agent: str = "mptrade-intelligence/1.0", headers: dict | None = None
 ) -> object:
     """Fetch and decode a JSON payload from a public HTTP GET endpoint."""
+    clean_url = _validate_http_url(url)
     req_headers = {"User-Agent": user_agent, **(headers if isinstance(headers, dict) else {})}
-    return _urlopen_json(urllib.request.Request(url, headers=req_headers), timeout)
+    return _urlopen_json(urllib.request.Request(clean_url, headers=req_headers), timeout)
 
 
 def fetch_json_post(
     url: str, payload: dict | bytes | None = None, *, timeout: float = 5.0, headers: dict | None = None
 ) -> object:
     """Send an HTTP POST request with a JSON body and decode the JSON response."""
+    clean_url = _validate_http_url(url)
     req_headers = {"Content-Type": "application/json", **(headers if isinstance(headers, dict) else {})}
     if payload is None:
         data = b"{}"
@@ -960,7 +985,7 @@ def fetch_json_post(
         data = bytes(payload)
     else:
         data = json.dumps(payload).encode("utf-8")
-    return _urlopen_json(urllib.request.Request(url, data=data, headers=req_headers), timeout)
+    return _urlopen_json(urllib.request.Request(clean_url, data=data, headers=req_headers), timeout)
 
 
 # ── DETERMINISTIC percentage-based approximate comparisons ───────────────────
@@ -1108,10 +1133,13 @@ def load_local_module(
             while _REPO_ROOT in sys.path:
                 sys.path.remove(_REPO_ROOT)
             sys.path.insert(0, _REPO_ROOT)
-            if "hyperliquid" in abs_dir:
-                hl_dir = os.path.join(_REPO_ROOT, "hyperliquid")
-                if os.path.isdir(hl_dir) and hl_dir not in sys.path:
-                    sys.path.insert(0, hl_dir)
+            repo_base = os.path.basename(_REPO_ROOT)
+            for seg in abs_dir.split(os.sep):
+                if not seg or seg == repo_base:
+                    continue
+                cand_dir = os.path.join(_REPO_ROOT, seg)
+                if cand_dir != abs_dir and os.path.isdir(cand_dir) and cand_dir not in sys.path:
+                    sys.path.insert(0, cand_dir)
             sys.path.insert(0, abs_dir)
             spec = importlib.util.spec_from_file_location(key, os.path.join(abs_dir, f"{stem}.py"))
             mod = importlib.util.module_from_spec(spec)

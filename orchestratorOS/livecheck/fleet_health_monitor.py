@@ -14,7 +14,6 @@ Persists periodic health status to cachedb/fleet_health_status.json.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import subprocess
@@ -35,12 +34,11 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import resolve_cachedb_filepath
-from state_io import save_json_state
+from state_io import encode_json_payload, read_json_recovering, save_json_state
 from orchestratorOS.lib.technical_repair_ssot import (
     clean_json_value,
     gather_basic_os_resources,
     parse_procs_manifest,
-    read_json_recovering,
     resolve_heartbeat_paths,
     summarize_fleet_sensor_status,
 )
@@ -271,7 +269,7 @@ def main() -> None:
     monitor = FleetHealthMonitor()
     if args.once:
         rep = monitor.run_cycle(persist=True)
-        print(json.dumps(asdict(rep), indent=2))
+        print(encode_json_payload(asdict(rep), indent=2))
     else:
         monitor.loop(interval_seconds=args.interval)
 

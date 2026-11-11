@@ -26,18 +26,20 @@ if _ROOT_DIR not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import (
+    TOPIC_ALIASES,
+    TOPIC_SPECS,
     _parse_bool_flag,
     is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
     safe_nonneg_float,
     safe_pos_float,
+    topic_spec,
 )
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
 )
-from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 from orchestratorOS.lib.technical_repair_ssot import (
     LogEventSummary,
     _resolve_repair_json_reader,

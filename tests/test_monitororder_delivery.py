@@ -439,8 +439,14 @@ class TestMonitororderNotifications(unittest.TestCase):
 
         # Fine-tick asset (BTC: px=73780, tick=0.01 -> tick_pct ~ 0.000014%)
         b_tick_pct = 0.01 / 73780.0 * 100.0
-        b_min, b_mid, b_max, b_init = monitororder.resolve_dynamic_reprice_bounds(
-            "BTCUSDC", 73780.0, tick_size=0.01
+        b_min, b_mid, b_max, b_init = monitororder.order_lifecycle.resolve_dynamic_reprice_bounds(
+            "BTCUSDC",
+            73780.0,
+            tick_size=0.01,
+            min_proc=monitororder.MIN_PROC,
+            tick_cushion=monitororder.TICK_CUSHION,
+            max_proc=monitororder.MAX_PROC,
+            initial_max_proc=monitororder.INITIAL_MAX_PROC,
         )
         self.assertAlmostEqual(b_min, monitororder.MIN_PROC + monitororder.TICK_CUSHION * b_tick_pct, places=6)
         self.assertAlmostEqual(
@@ -457,8 +463,14 @@ class TestMonitororderNotifications(unittest.TestCase):
 
         # Coarse-tick asset (TAO: px=200.0, tick=0.10 -> tick_pct = 0.05%)
         t_tick_pct = 0.05
-        t_min, t_mid, t_max, t_init = monitororder.resolve_dynamic_reprice_bounds(
-            "TAOUSDC", 200.0, tick_size=0.10
+        t_min, t_mid, t_max, t_init = monitororder.order_lifecycle.resolve_dynamic_reprice_bounds(
+            "TAOUSDC",
+            200.0,
+            tick_size=0.10,
+            min_proc=monitororder.MIN_PROC,
+            tick_cushion=monitororder.TICK_CUSHION,
+            max_proc=monitororder.MAX_PROC,
+            initial_max_proc=monitororder.INITIAL_MAX_PROC,
         )
         self.assertAlmostEqual(t_min, monitororder.MIN_PROC + monitororder.TICK_CUSHION * t_tick_pct, places=6)
         self.assertAlmostEqual(

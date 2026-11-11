@@ -876,3 +876,87 @@ def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
     assert captured_ledgers[-1]["start"] == 0
 
 
+def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkeypatch, tmp_path):
+    """Verify state_io embedded JSON helpers, botcore.fetch_public_bytes, HLClient._coin_candidates/candles, and iter_venue_cycle_state_files."""
+    import os
+    from types import SimpleNamespace
+    from cachepaths import iter_venue_cycle_state_files
+    from state_io import decode_embedded_json_dict, extract_json_object
+
+    # 1. extract_json_object & decode_embedded_json_dict
+    assert extract_json_object("```json\n{\"ok\": true, \"n\": 3}\n```") == {"ok": True, "n": 3}
+    assert extract_json_object("prefix text {\"a\": {\"b\": 1}} trailing") == {"a": {"b": 1}}
+    assert extract_json_object("[1, 2, 3]") is None
+    assert extract_json_object("{\"bad\": NaN}") is None
+    assert extract_json_object(True) is None  # type: ignore[arg-type]
+
+    assert decode_embedded_json_dict("{\"title\": \"Alert\"}") == {"title": "Alert"}
+    assert decode_embedded_json_dict("{\"title\": \"Alert\"} extra words") == {"title": "Alert"}
+    assert decode_embedded_json_dict("```json\n{\"title\": \"Fenced\"}\n```") == {"title": "Fenced"}
+    assert decode_embedded_json_dict("[1, 2]") is None
+    with pytest.raises(ValueError):
+        decode_embedded_json_dict("{\"x\": Infinity}")
+    with pytest.raises(ValueError):
+        decode_embedded_json_dict(None)  # type: ignore[arg-type]
+
+    # 2. botcore.fetch_public_bytes
+    for bad_timeout in (0, -1.0, True, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="timeout"):
+            botcore.fetch_public_bytes("https://example.com/feed.xml", timeout=bad_timeout)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="HTTP"):
+        botcore.fetch_public_bytes("file:///etc/passwd", timeout=5.0)
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, _max_bytes=None):
+            return b"<rss><channel/></rss>"
+
+    monkeypatch.setattr(botcore.urllib.request, "urlopen", lambda req, timeout=10.0: _FakeResp())
+    assert botcore.fetch_public_bytes("https://example.com/feed.xml", timeout=5.0) == b"<rss><channel/></rss>"
+
+    # 3. HLClient._coin_candidates & candles overflow safety
+    hl_mod = botcore.load_local_module(
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid"),
+        "hl_client",
+    )
+    HLClient = hl_mod.HLClient
+    assert HLClient._coin_candidates("HYPE/USDC") == ("HYPE/USDC", "HYPE")
+    assert HLClient._coin_candidates("HYPE-USDC") == ("HYPE-USDC", "HYPE")
+    assert HLClient._coin_candidates("HYPEUSDC") == ("HYPEUSDC", "HYPE")
+    assert HLClient._coin_candidates("HYPE") == ("HYPE",)
+    for bad_coin in (None, True, "", "   "):
+        assert HLClient._coin_candidates(bad_coin) == ()
+
+    dummy_cli = object.__new__(HLClient)
+    seen_windows: list[tuple[str, str, int, int]] = []
+    dummy_cli.info = SimpleNamespace(
+        candles_snapshot=lambda coin, iv, start, end: (
+            seen_windows.append((coin, iv, start, end)) or [{"t": 1700000000000, "c": "25.0"}]
+        )
+    )
+    for bad_lh in (0, -5, True, float("nan"), float("inf"), 1e308):
+        assert dummy_cli.candles("HYPE", "1h", lookback_hours=bad_lh) == []  # type: ignore[arg-type]
+    assert seen_windows == []
+    assert dummy_cli.candles("HYPE", "1h", lookback_hours=1e15) == [{"t": 1700000000000, "c": "25.0"}]
+    assert seen_windows[-1][2] == 0 and seen_windows[-1][3] > 0
+
+    # 4. iter_venue_cycle_state_files prioritizes _LONG/_SHORT state files across all venues
+    kr_dir = tmp_path / "kraken"
+    kr_dir.mkdir()
+    (kr_dir / ".state_HYPEUSD.json").write_text("{}", encoding="utf-8")
+    (kr_dir / ".state_HYPEUSD_LONG.json").write_text("{}", encoding="utf-8")
+    (kr_dir / ".state_ADAUSD_SHORT.json").write_text("{}", encoding="utf-8")
+    ordered = [os.path.basename(p) for p in iter_venue_cycle_state_files("kraken", workspace_dir=str(tmp_path))]
+    assert ordered == [
+        ".state_ADAUSD_SHORT.json",
+        ".state_HYPEUSD_LONG.json",
+        ".state_HYPEUSD.json",
+    ]
+
+
+

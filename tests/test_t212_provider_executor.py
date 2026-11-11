@@ -1101,9 +1101,10 @@ def test_212trading_market_data_212trading_strategy_generate_tp_ladder_iter69_s4
     t212_md = _load_mod("_t212_market_data_69", os.path.join(t212_dir, "market_data.py"), t212_dir)
     t212_strat = _load_mod("_t212_strategy_69", os.path.join(t212_dir, "strategy.py"), t212_dir)
     # 4. 212trading.market_data & 212trading.strategy.generate_tp_ladder
+    from cachepaths import canonical_base_asset
     with pytest.raises(ValueError):
         t212_md.parse_interval_minutes(None)
-    assert t212_md.t212_to_yahoo(None) == ""
+    assert canonical_base_asset(None) == ""
     with pytest.raises(ValueError):
         t212_strat.generate_tp_ladder(1.0, 10.0, steps=2.5)
     ladder = t212_strat.generate_tp_ladder(1.0, 5.0, steps=2.0)
@@ -1172,9 +1173,10 @@ def test_212trading_market_data_validation_future_timestamp_protection_iter91_s2
     import importlib
     import pytest
     # 2. 212trading.market_data validation & future-timestamp protection
+    from cachepaths import canonical_base_asset
     t212_md = importlib.import_module("212trading.market_data")
-    assert t212_md.t212_to_yahoo(True) == ""
-    assert t212_md.t212_to_yahoo(" nvda_us_eq ") == "NVDA"
+    assert canonical_base_asset(True) == ""
+    assert canonical_base_asset(" nvda_us_eq ") == "NVDA"
     with pytest.raises(ValueError, match="invalid symbol"):
         t212_md.fetch_yahoo_candles("  ", "5d", "5m")
     with pytest.raises(ValueError, match="invalid range"):

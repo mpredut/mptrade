@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import json
 import logging
 import os
 import re
@@ -54,7 +53,7 @@ from orchestratorOS.agy.ui_mirror import (
     mirror_topic_thread_to_ui,
     sync_topic_thread_from_ui,
 )
-from state_io import read_json_dict, save_json_state
+from state_io import extract_json_object, read_json_dict, save_json_state
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 
@@ -323,46 +322,6 @@ _SHORT_SUMMARY_KEYS = (
     "confidence",
 )
 _PROSE_SUMMARY_KEYS = ("summary", "reason")
-
-
-def extract_json_object(text: Any) -> Optional[Dict[str, Any]]:
-    """Extract a JSON object from pure JSON or a hybrid Markdown + trailing JSON response."""
-    if not isinstance(text, str):
-        return None
-    cleaned = text.strip()
-    if not cleaned:
-        return None
-    if "```" in cleaned:
-        fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
-        for block in reversed(fences):
-            cand = block.strip()
-            if not cand:
-                continue
-            try:
-                obj = json.loads(cand)
-                if isinstance(obj, dict):
-                    return obj
-            except ValueError:
-                pass
-    try:
-        obj = json.loads(cleaned)
-        if isinstance(obj, dict):
-            return obj
-    except ValueError:
-        pass
-    decoder = json.JSONDecoder()
-    pos = len(cleaned)
-    while True:
-        idx = cleaned.rfind("{", 0, pos)
-        if idx < 0:
-            return None
-        try:
-            obj, _ = decoder.raw_decode(cleaned[idx:])
-            if isinstance(obj, dict):
-                return obj
-        except ValueError:
-            pass
-        pos = idx
 
 
 def _fmt_trade_decision_item(d: Dict[str, Any]) -> str:

@@ -2,7 +2,6 @@
 import asyncio
 import contextlib
 import os
-import json
 import logging
 import re
 import threading
@@ -23,7 +22,14 @@ from botcore import (
     safe_nonneg_int,
 )
 from cachepaths import cache_path, normalize_venue_name
-from state_io import atomic_write_text, read_json_dict, read_text_lines
+from state_io import (
+    atomic_write_text,
+    decode_embedded_json_dict,
+    encode_json_payload,
+    parse_json_payload,
+    read_json_dict,
+    read_text_lines,
+)
 from notify_engine.alertnotifiers import (
     AlertNotifier,
     _AUTO_TOPIC_TAG_RE,
@@ -228,7 +234,7 @@ class NotificationServer:
             if len(existing) >= max_q:
                 logging.warning(f"Retry queue full ({len(existing)} >= {max_q}); dropping oldest notification.")
                 existing = existing[-(max_q - 1):] if max_q > 1 else []
-            existing.append(json.dumps(payload))
+            existing.append(encode_json_payload(payload))
             atomic_write_text(self.queue_file, "".join(ln + "\n" for ln in existing))
         except Exception as e:
             logging.error(f"Failed to enqueue notification: {e}")
@@ -570,23 +576,7 @@ class NotificationServer:
         # 1. Check for Explicit AlertNotifier Intent (JSON)
         if "__orchestrator_intent__" in line:
             try:
-                intent_pos = line.find("__orchestrator_intent__")
-                brace_idx = line.rfind("{", 0, intent_pos)
-                payload = None
-                if brace_idx != -1:
-                    try:
-                        payload, _ = json.JSONDecoder().raw_decode(line, brace_idx)
-                    except json.JSONDecodeError:
-                        payload = None
-                if payload is None:
-                    start_idx = line.find("{")
-                    end_idx = line.rfind("}")
-                    if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
-                        payload = json.loads(line[start_idx:end_idx + 1])
-                    else:
-                        payload = json.loads(line)
-                if not isinstance(payload, dict):
-                    payload = None
+                payload = decode_embedded_json_dict(line, anchor="__orchestrator_intent__")
                 intent = payload.get("__orchestrator_intent__") if payload else None
                 if intent == "ntfy_webhook":
                     # Direct retry or pre-formatted [auto_...] topic payload
@@ -618,7 +608,7 @@ class NotificationServer:
                         em_val = AlertNotifier.format_batch_message(payload["alerts"])
                     self._send_email(s_val, em_val)
                 return
-            except json.JSONDecodeError as e:
+            except ValueError as e:
                 logging.warning(f"Failed to decode orchestrator intent JSON from {bot_name}: {e} (raw line: {line.strip()})")
                 return
             except Exception as e:
@@ -706,11 +696,7 @@ class NotificationServer:
                         queue_dirty = True
                         continue
                     
-                    try:
-                        payload = json.loads(line)
-                    except Exception:
-                        queue_dirty = True
-                        continue
+                    payload = parse_json_payload(line, default=None)
                     if not isinstance(payload, dict):
                         queue_dirty = True
                         continue
@@ -763,7 +749,7 @@ class NotificationServer:
                             )
                         else:
                             payload["retry_count"] = retries
-                            remaining.append(json.dumps(payload))
+                            remaining.append(encode_json_payload(payload))
                     elif intent == "email" and last_error_is_auth_failure():
                         queue_dirty = True
                         logging.warning(

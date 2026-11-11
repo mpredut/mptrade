@@ -1,5 +1,6 @@
 """Unit tests for the orchestratorOS.agy modules (paths, protobuf, topics, UI mirror)."""
 from datetime import datetime, timezone
+import json
 import os
 import sqlite3
 
@@ -207,7 +208,7 @@ class TestTopics:
             return subprocess.CompletedProcess(
                 cmd,
                 0,
-                stdout=f'{{"response": {gc.json.dumps(resp)}, "conversation_id": "cid-perm-1"}}',
+                stdout=f'{{"response": {json.dumps(resp)}, "conversation_id": "cid-perm-1"}}',
                 stderr="",
             )
 

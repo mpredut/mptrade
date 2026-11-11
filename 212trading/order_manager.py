@@ -32,6 +32,7 @@ from botcore import (  # noqa: E402
 )
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
+from cachepaths import canonical_base_asset
 from state_io import encode_json_payload, load_json_state, save_json_state
 from providers.base import extract_order_id
 from providers.order_ohlc_utils import extract_order_side
@@ -39,17 +40,16 @@ from providers.t212_provider import _order_ticker, _t212_tickers_match
 
 try:
     from .ipo_common import load_t212_market_data, notify, now_str
-    from .market_data import get_usd_ron, get_price_usd, t212_to_yahoo
+    from .market_data import get_usd_ron, get_price_usd
     from .t212_client import T212Client
 except ImportError:
     from ipo_common import load_t212_market_data, notify, now_str
     try:
-        from market_data import get_usd_ron, get_price_usd, t212_to_yahoo
+        from market_data import get_usd_ron, get_price_usd
     except ImportError:
         _md_mod = load_t212_market_data()
         get_usd_ron = _md_mod.get_usd_ron
         get_price_usd = _md_mod.get_price_usd
-        t212_to_yahoo = _md_mod.t212_to_yahoo
     from t212_client import T212Client
 
 T212_ORDER_TERMINAL = {"FILLED", "CANCELLED", "CANCELED", "EXPIRED", "REJECTED"}
@@ -373,9 +373,10 @@ def place_order_with_retry(
         return False
 
     # Current price is informational only; do not change the user-selected limit.
-    current = get_price_usd(t212_to_yahoo(ticker))
+    yahoo_sym = canonical_base_asset(ticker)
+    current = get_price_usd(yahoo_sym)
     if current:
-        log(f"  [ORDER] the current price of {t212_to_yahoo(ticker)}: {current:.2f} USD  |  the limit: {price_r:.2f} USD")
+        log(f"  [ORDER] the current price of {yahoo_sym}: {current:.2f} USD  |  the limit: {price_r:.2f} USD")
         if price_r < current:
             log(f"  ! [ORDER] the limit {price_r} < the price {current:.2f} -> the order will sit waiting "
                 f"(it only executes if the price falls to {price_r}).")

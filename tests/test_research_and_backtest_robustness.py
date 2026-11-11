@@ -5754,10 +5754,11 @@ def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
             pmarket.MarketApi._clean_order_id_arg(bad_oid, "Binance")
     assert pmarket.MarketApi._clean_order_id_arg("+888.0", "Binance") == "888"
 
-    # 4. _clean_kraken_order_id rejects negative / '+0.0' / frozenset
+    # 4. require_clean_order_id(..., str_only=True) rejects negative / '+0.0' / frozenset
+    from providers.order_ohlc_utils import require_clean_order_id
     for bad_koid in ("-5", "+0.0", "-0.0", frozenset({"a"})):
         with pytest.raises(ProviderError):
-            pkraken._clean_kraken_order_id(bad_koid, "order_status")
+            require_clean_order_id(bad_koid, f"order_status {bad_koid}", str_only=True)
 
     # 5. CacheCurrentPriceManager robustness on symbols=True, _ws_last_event_ts=None/NaN, get_sample_rate fallback=None
     cpm = cm.CacheCurrentPriceManager(

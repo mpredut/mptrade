@@ -8,7 +8,6 @@ intentionally ignored because it does not prove that Binance confirmed account s
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import os
 import sys
 import threading
@@ -259,7 +258,7 @@ def inspect_health(
         )
     except FileNotFoundError:
         return CacheHealthStatus(False, "account_cache_health_missing")
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    except (OSError, TypeError, ValueError):
         return CacheHealthStatus(False, "account_cache_health_invalid")
 
     if not pid_is_alive(writer_pid):

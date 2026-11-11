@@ -57,22 +57,17 @@ ensure_local_module_priority(
 try:
     from .ipo_common import load_t212_environment, notify, now_str
     from .listing_watcher import verify_instrument_isin, wait_for_launch
-    from .market_data import t212_to_yahoo
     from .t212_client import T212Client
     from .order_manager import resolve_quantity, place_order_with_retry
     from .strategy import Strategy, StratParams
 except ImportError:
-    from ipo_common import load_t212_environment, load_t212_market_data, notify, now_str
+    from ipo_common import load_t212_environment, notify, now_str
     from listing_watcher import verify_instrument_isin, wait_for_launch
-    try:
-        from market_data import t212_to_yahoo
-    except ImportError:
-        _md_mod = load_t212_market_data()
-        t212_to_yahoo = _md_mod.t212_to_yahoo
     from t212_client import T212Client
     from order_manager import resolve_quantity, place_order_with_retry
     from strategy import Strategy, StratParams
 
+from cachepaths import canonical_base_asset
 from credentials import t212_credentials
 
 
@@ -135,7 +130,7 @@ def main() -> int:
 
     # Generic instrument.
     t212_ticker  = (args.symbol or optional_env("T212_TICKER")).strip()
-    yahoo_symbol = optional_env("YAHOO_SYMBOL") or (t212_to_yahoo(t212_ticker) if t212_ticker else "")
+    yahoo_symbol = optional_env("YAHOO_SYMBOL") or (canonical_base_asset(t212_ticker) if t212_ticker else "")
     label        = optional_env("SYMBOL_LABEL") or yahoo_symbol or t212_ticker
     expected_isin = optional_env("EXPECTED_ISIN")
 

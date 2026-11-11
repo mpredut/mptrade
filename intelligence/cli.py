@@ -7,30 +7,28 @@ trigger manual telemetry updates, and check background daemon health.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import time
 from typing import Any, Dict, Optional
 
 from botcore import (
     _parse_bool_flag,
+    clean_scale,
+    normalize_epoch_sec,
+    safe_float,
+    safe_int,
     safe_nonneg_int,
     safe_nonneg_ts,
     safe_pos_float,
 )
-from cachepaths import cache_symbol_variants
+from cachepaths import cache_symbol_variants, clean_symbol_key
 from intelligence.macro.daemon_ssot import inspect_daemon_heartbeat
 from intelligence.macro_sentiment_ssot import (
-    clean_scale,
-    clean_symbol_key,
     get_cache_filenames,
     load_cached_geopolitical_eval,
     load_cached_sentiment_advisor_eval,
-    normalize_epoch_sec,
-    safe_float,
-    safe_int,
 )
-from state_io import read_json_dict
+from state_io import encode_json_payload, read_json_dict
 
 
 def _format_age(seconds: Any) -> str:
@@ -339,7 +337,7 @@ def main():
     if args.daemon_status:
         status = get_daemon_status()
         if args.json:
-            print(json.dumps(status, indent=2))
+            print(encode_json_payload(status, indent=2))
         else:
             print("\n" + "=" * 60)
             print("  📡 MARKET INTELLIGENCE TELEMETRY DAEMON STATUS")
@@ -381,7 +379,7 @@ def main():
             "suggested_scale": scale,
         }
         if args.json:
-            print(json.dumps(guard_res, indent=2))
+            print(encode_json_payload(guard_res, indent=2))
         else:
             print("\n" + "=" * 60)
             print(f"  🛡️ TEST GUARD SIMULATION — {args.side} {symbol}")
@@ -395,7 +393,7 @@ def main():
     # 4. Standard Inspection Report
     report = inspect_symbol_intelligence(symbol)
     if args.json:
-        print(json.dumps(report, indent=2))
+        print(encode_json_payload(report, indent=2))
     else:
         print_intelligence_report(report)
 

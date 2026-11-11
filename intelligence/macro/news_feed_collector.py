@@ -14,18 +14,19 @@ import xml.etree.ElementTree as ET
 
 from botcore import (
     _parse_bool_flag,
+    fetch_public_bytes,
     is_cache_fresh,
     normalize_epoch_sec,
+    obj_attr,
+    resolve_now_ts,
     safe_nonneg_ts,
+    safe_pos_float,
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
 from state_io import read_json_file, save_json_state
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_NEWS_ROLLING_WINDOW_SEC,
     get_cache_filenames,
-    obj_attr,
-    resolve_now_ts,
-    safe_pos_float,
 )
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
@@ -726,12 +727,12 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                 break
             req_timeout = max(1.0, min(4.0, remaining)) if remaining > 0 else 2.0
             try:
-                req = urllib.request.Request(
+                raw_xml = fetch_public_bytes(
                     feed_url,
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) mptrade-macro/1.0"},
+                    timeout=req_timeout,
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) mptrade-macro/1.0",
                 )
-                with urllib.request.urlopen(req, timeout=req_timeout) as resp:
-                    latest = self.parse_rss_xml(resp.read(), now_ts=now, cache_dir=cache_dir)
+                latest = self.parse_rss_xml(raw_xml, now_ts=now, cache_dir=cache_dir)
                 if latest:
                     any_parsed = True
                     collected_headlines.extend(latest.headlines)

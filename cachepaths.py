@@ -902,15 +902,13 @@ def iter_venue_cycle_state_files(
     if not os.path.isdir(rt_dir):
         return []
     paths = glob.glob(os.path.join(rt_dir, ".state_*.json"))
-    if v_norm == "hyperliquid":
-        return sorted(
-            paths,
-            key=lambda p: (
-                0 if os.path.basename(p).upper().endswith(("_LONG.JSON", "_SHORT.JSON")) else 1,
-                os.path.basename(p),
-            ),
-        )
-    return sorted(paths)
+    return sorted(
+        paths,
+        key=lambda p: (
+            0 if os.path.basename(p).upper().endswith(("_LONG.JSON", "_SHORT.JSON")) else 1,
+            os.path.basename(p),
+        ),
+    )
 
 
 def compatible_quote_suffixes(

@@ -270,7 +270,7 @@ class TestCachePersistenceDurability(unittest.TestCase):
                 "BBB": [[2000, 2.0]],
             }
             manager.fetchtime_per_symbol = {"AAA": 1000, "BBB": 2000}
-            real_dumps = cm.json.dumps
+            real_dumps = json.dumps
             calls = 0
 
             def fail_second_dump(*args, **kwargs):
@@ -280,7 +280,7 @@ class TestCachePersistenceDurability(unittest.TestCase):
                     raise OSError("simulated partial write failure")
                 return real_dumps(*args, **kwargs)
 
-            with patch.object(cm.json, "dumps", side_effect=fail_second_dump):
+            with patch.object(json, "dumps", side_effect=fail_second_dump):
                 self.assertFalse(manager.save_state_to_file())
 
             self.assertEqual(manager._persisted_counts, {})

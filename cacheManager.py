@@ -18,7 +18,6 @@ The 3-tier polymorphic cache hierarchy is split across 5 focused modules:
 from __future__ import annotations
 
 import builtins
-import json
 import os
 import threading
 import time

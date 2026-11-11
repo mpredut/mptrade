@@ -20,6 +20,8 @@ from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 import urllib.request
 
 from botcore import (
+    TOPIC_ALIASES,
+    TOPIC_SPECS,
     _parse_bool_flag,
     build_heartbeat_payload,
     clean_json_value,
@@ -32,6 +34,7 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    topic_spec,
 )
 from cachepaths import has_equity_suffix, normalize_venue_name, resolve_cachedb_filepath
 from providers.base import extract_order_id
@@ -1335,8 +1338,6 @@ def format_supervisor_ntfy_notification(
     is_sys_error: Optional[bool] = None,
 ) -> Tuple[str, str, str, str, bool]:
     """Build (title, body, priority, target_topic, is_any_error) for a SupervisorAuditReport ntfy push."""
-    from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
-
     non_healthy_issues = [
         i
         for i in (obj_attr(report, "diagnosed_issues") or [])

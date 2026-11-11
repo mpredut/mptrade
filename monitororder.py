@@ -190,25 +190,6 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
         print(f"[MONITORORDER] Notification failed for order {order_id}: {exc}")
 
 
-def resolve_dynamic_reprice_bounds(
-    symbol: str,
-    current_price: float,
-    tick_size: float | None = None,
-) -> tuple[float, float, float, float]:
-    """Compute ``(eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc)`` scaled by venue tick size."""
-    return order_lifecycle.resolve_dynamic_reprice_bounds(
-        symbol,
-        current_price,
-        tick_size=tick_size,
-        min_proc=MIN_PROC,
-        tick_cushion=TICK_CUSHION,
-        max_proc=MAX_PROC,
-        initial_max_proc=INITIAL_MAX_PROC,
-        market_api=mkt,
-        tick_cache=_SYMBOL_TICK_SIZE_CACHE,
-    )
-
-
 def _evaluate_reprice_trend_state(symbol: str, order_type: str) -> tuple[bool, bool]:
     """Return ``(short_favorable, super_short_favorable)`` for ``order_type``.
 
@@ -273,8 +254,15 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         return
     
     print(f"The current price : {format_price_log(current_price)}")
-    eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc = resolve_dynamic_reprice_bounds(
-        symbol, current_price
+    eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc = order_lifecycle.resolve_dynamic_reprice_bounds(
+        symbol,
+        current_price,
+        min_proc=MIN_PROC,
+        tick_cushion=TICK_CUSHION,
+        max_proc=MAX_PROC,
+        initial_max_proc=INITIAL_MAX_PROC,
+        market_api=mkt,
+        tick_cache=_SYMBOL_TICK_SIZE_CACHE,
     )
     eff_reprice_offset = eff_min_proc / 100.0
     eff_pushback_offset = eff_mid_proc / 100.0
