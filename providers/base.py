@@ -67,6 +67,8 @@ from .order_ohlc_utils import (  # noqa: E402, F401
     extract_order_price,
     extract_timestamp_ms,
     extract_timestamp_s,
+    extract_yahoo_chart_latest_price,
+    extract_yahoo_chart_result_and_quote,
     normalize_side,
     normalize_timestamp_ms,
     resolve_venue_provider_class as _resolve_venue_provider_class,

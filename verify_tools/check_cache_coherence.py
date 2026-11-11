@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# check_cache_coherence.py — checks the FRESHNESS and consistency of trend/price caches
-# for ALL symbols (Binance and non-Binance entries from instruments.conf). Exits 1 if anything is stale.
+# check_cache_coherence.py -- checks the FRESHNESS and consistency of trend/price caches
+# for ALL symbols (primary stream and non-primary entries from instruments.conf). Exits 1 if anything is stale.
 # Run periodically (cron/loop) to detect a frozen cache.
 import os
 import sys
@@ -10,7 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import extract_current_price_item, normalize_epoch_sec, safe_pos_float  # noqa: E402
-from cachepaths import cache_symbol_variants  # noqa: E402
+from cachepaths import cache_symbol_variants, is_primary_stream_venue  # noqa: E402
 from instrument_registry import casefold_get, select_instruments, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
@@ -20,9 +20,9 @@ STALE_S = 600.0  # More than 10 minutes without an update is STALE (instant tren
 
 def expected_symbols():
     """Use the registry without credentials; invalid configuration must fail the check."""
-    syms = symbols_for("binance")
+    syms = symbols_for()
     for inst in select_instruments(role="mt").values():
-        if inst.provider != "binance" and inst.symbol not in syms:
+        if not is_primary_stream_venue(inst.provider) and inst.symbol not in syms:
             syms.append(inst.symbol)
     if not syms:
         raise ValueError("No configured symbols to verify")

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-kraken_xstock_watch.py — watcher for xStocks allocations (for example, SPCX) on Kraken.
+kraken_xstock_watch.py -- watcher for xStocks allocations (for example, SPCX) on Kraken.
 
 What it does on every check:
   1. BALANCE (private): detects ANY NEW asset that appears in the account (the
-     allocation may arrive under any symbol — SPCXx, xSPCX...). It sends a
+     allocation may arrive under any symbol -- SPCXx, xSPCX...). It sends a
      dedicated alert when XSTOCK_REGEX matches and an informational alert otherwise.
   2. PAIRS (public): detects when an SPCX-like pair becomes tradable through the
      API -> "LISTED" alert plus instructions for starting the bot with adoption.
@@ -49,6 +49,7 @@ from botcore import (
     single_instance,
     touch_module_heartbeat,
 )
+from providers.order_ohlc_utils import extract_yahoo_chart_latest_price
 try:
     from kraken.kraken_common import notify
     from kraken.kraken_client import KrakenClient, KrakenError
@@ -146,18 +147,7 @@ def yahoo_last(sym: str) -> float | None:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym_clean, safe='')}?range=1d&interval=5m"
     try:
         data = fetch_public_json(url, timeout=20, user_agent="Mozilla/5.0 (watch)")
-        chart = data.get("chart") if isinstance(data, dict) and isinstance(data.get("chart"), dict) else {}
-        res = (chart.get("result") or [None])[0]
-        if not isinstance(res, dict):
-            return None
-        indicators = res.get("indicators") if isinstance(res.get("indicators"), dict) else {}
-        quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
-        q = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
-        for c in reversed(q.get("close") or []):
-            if (cf := safe_pos_float(c, None)) is not None:
-                return cf
-        meta = res.get("meta") if isinstance(res.get("meta"), dict) else {}
-        return safe_pos_float(meta.get("regularMarketPrice"), None)
+        return extract_yahoo_chart_latest_price(data)
     except Exception as e:  # noqa: BLE001
         log(f"  ! yahoo {sym}: {e}")
         return None
@@ -169,7 +159,7 @@ def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> Non
     try:
         bal = client.balance()
     except KrakenError as e:
-        log(f"  ! the balance is unavailable ({e}) — continuing with the public watch only")
+        log(f"  ! the balance is unavailable ({e}) -- continuing with the public watch only")
         return
     if not isinstance(bal, dict):
         return

@@ -44,7 +44,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
 )
 from cacheprice import resolve_ssot_price_from_cache
-from providers.base import MarketDataProvider
+from providers.base import MarketDataProvider, extract_yahoo_chart_result_and_quote
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
 logger = logging.getLogger("intelligence.external.base_collector")
@@ -895,12 +895,10 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 timeout=timeout,
                 user_agent="Mozilla/5.0",
             )
-            res0 = (((yh.get("chart") or {}).get("result") or [None])[0] if isinstance(yh, dict) else None) or {}
+            res0, _, ts_seq, q0 = extract_yahoo_chart_result_and_quote(yh)
             meta = res0.get("meta") if isinstance(res0, dict) else {}
             if last_px <= 0.0 and isinstance(meta, dict):
                 last_px = safe_pos_float(meta.get("regularMarketPrice"), default=0.0) or 0.0
-            ts_seq = res0.get("timestamp") or []
-            q0 = (((res0.get("indicators") or {}).get("quote") or [None])[0] if isinstance(res0, dict) else None) or {}
             opens = q0.get("open") or []
             highs = q0.get("high") or []
             lows = q0.get("low") or []

@@ -800,10 +800,15 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
         is_primary_stream_venue,
         is_readonly_xstock_symbol,
         matches_asset_scope,
+        strip_equity_suffix,
         uses_cycle_state_files,
     )
     from providers.binance_provider import BinanceProvider
-    from providers.order_ohlc_utils import candles_to_historical_points
+    from providers.order_ohlc_utils import (
+        candles_to_historical_points,
+        extract_yahoo_chart_latest_price,
+        extract_yahoo_chart_result_and_quote,
+    )
 
     root = Path(__file__).resolve().parents[1]
     venue_tokens = {"binance", "kraken", "hyperliquid", "t212", "trading212"}
@@ -828,7 +833,7 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
         "providers/t212_provider.py",
         "providers/replay_provider.py",
     }
-    guarded_files = []
+    guarded_files = ["verify_tools/check_cache_coherence.py"]
     for p in sorted(root.rglob("*.py")):
         rel = p.relative_to(root)
         rel_s = rel.as_posix()
@@ -905,6 +910,24 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     assert candles_to_historical_points([{"timestamp": 1_700_000_000_000, "close": "42.5"}, {"timestamp": 0, "close": -1}]) == [
         (1_700_000_000.0, 42.5)
     ]
+    assert strip_equity_suffix("NVDA_US_EQ") == "NVDA"
+    assert strip_equity_suffix("BRK/B_US_EQ") == "BRK/B"
+    assert strip_equity_suffix("AAPL_EQ") == "AAPL"
+    yh_payload = {
+        "chart": {
+            "result": [
+                {
+                    "meta": {"regularMarketPrice": 119.0},
+                    "timestamp": [1700000000, 1700000300],
+                    "indicators": {"quote": [{"close": [120.123456, None]}]},
+                }
+            ]
+        }
+    }
+    res_y, _, ts_y, q_y = extract_yahoo_chart_result_and_quote(yh_payload)
+    assert res_y is not None and ts_y == [1700000000, 1700000300] and q_y["close"][0] == 120.123456
+    assert extract_yahoo_chart_latest_price(yh_payload, decimals=4) == 120.1235
+    assert extract_yahoo_chart_latest_price({"chart": {"result": [{"meta": {"regularMarketPrice": 88.5}}]}}) == 88.5
     for cls in (BinanceProvider, KrakenProvider, HyperliquidProvider, T212Provider):
         assert "reconciliation_capabilities" not in cls.__dict__
         assert "fetch_ohlc_candles" not in cls.__dict__

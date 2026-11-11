@@ -272,7 +272,7 @@ class BinanceNewListingsSource(NewCoinsSource):
             if self._historical_symbols:
                 new_symbols = current_symbols - self._historical_symbols
                 if new_symbols:
-                    print(f"[Binance Source] 🆕 Newly listed coins: {new_symbols}")
+                    print(f"[Binance Source] Newly listed coins: {new_symbols}")
                     for sym in new_symbols:
                         if sym in symbol_details:
                             self._new_listings.append({
@@ -391,7 +391,7 @@ class NewCoinsFactory:
         self.sources = {
             name: src for name, src in self._all_sources.items() if src.is_available()
         }
-        print(f"[NewCoinsFactory] 🔧 Enabled sources: {list(self.sources.keys())}")
+        print(f"[NewCoinsFactory] Enabled sources: {list(self.sources.keys())}")
 
     def get_all_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> Dict[str, List[Dict]]:
         results = {}
@@ -469,7 +469,7 @@ class NewCoinsMonitor:
 
                 if not source_has_price:
                     print(
-                        f"[NewCoinsMonitor] ℹ️ {sym} discovered from "
+                        f"[NewCoinsMonitor] {sym} discovered from "
                         f"{source_name} - informational only (no price in the system)"
                     )
 
@@ -503,16 +503,16 @@ class NewCoinsMonitor:
             return
         self._running = True
         def run():
-            print(f"[NewCoinsMonitor] 🔄 Monitoring started (refresh every {interval_seconds}s)")
-            print(f"[NewCoinsMonitor] 📡 Active sources: {self.factory.get_available_sources()}")
-            print("[NewCoinsMonitor] ⚠️ Only CoinMarketCap coins will be auto-added (they include price data)")
+            print(f"[NewCoinsMonitor] Monitoring started (refresh every {interval_seconds}s)")
+            print(f"[NewCoinsMonitor] Active sources: {self.factory.get_available_sources()}")
+            print("[NewCoinsMonitor] Only CoinMarketCap coins will be auto-added (they include price data)")
             while self._running:
                 try:
                     old_symbols = self.all_symbols.copy()
                     self.refresh(refresh_sources=True)
                     new_symbols = self.all_symbols - old_symbols
                     if new_symbols:
-                        print(f"[NewCoinsMonitor] 🆕 New symbols detected: {new_symbols}")
+                        print(f"[NewCoinsMonitor] New symbols detected: {new_symbols}")
                         for source_name, coins in self.all_new_coins.items():
                             if not isinstance(coins, (list, tuple)):
                                 continue
@@ -528,7 +528,7 @@ class NewCoinsMonitor:
                 except Exception as e:
                     print(f"[NewCoinsMonitor] Error: {e}")
                 itv_f = safe_pos_float(interval_seconds, default=60.0)
-                print(f"[NewCoinsMonitor] ⏳ Waiting {itv_f} seconds until the next check...")
+                print(f"[NewCoinsMonitor] Waiting {itv_f} seconds until the next check...")
                 steps = max(1, int(itv_f) + (1 if itv_f > int(itv_f) else 0))
                 for _ in range(steps):
                     if not self._running:
@@ -545,11 +545,11 @@ class NewCoinsMonitor:
 
     def get_report(self) -> str:
         report = "\n" + "=" * 80 + "\n"
-        report += f"🆕 NEW COINS REPORT ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})\n"
+        report += f"NEW COINS REPORT ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})\n"
         report += "=" * 80 + "\n"
         for source_name, coins in self.all_new_coins.items():
             if coins:
-                report += f"\n📡 SOURCE: {source_name.upper()} ({len(coins)} coins)\n"
+                report += f"\nSOURCE: {source_name.upper()} ({len(coins)} coins)\n"
                 report += "-" * 40 + "\n"
                 for coin in coins[:15]:
                     if not isinstance(coin, dict):
@@ -559,10 +559,10 @@ class NewCoinsMonitor:
                     added_str = raw_added.strftime('%Y-%m-%d') if (raw_added is not None and not pd.isna(raw_added) and hasattr(raw_added, 'strftime')) else 'N/A'
                     px_val = safe_float(coin.get('price'), 0.0)
                     price_str = f"${px_val:.6f}" if px_val > 0 else 'N/A'
-                    report += f"   🆕 {sym_str} - {coin.get('name', sym_str)}\n"
-                    report += f"      📅 Added: {added_str} | 💰 Price: {price_str}\n"
+                    report += f"   * {sym_str} - {coin.get('name', sym_str)}\n"
+                    report += f"      Added: {added_str} | Price: {price_str}\n"
                     if coin.get('url'):
-                        report += f"      🔗 {coin['url']}\n"
+                        report += f"      URL: {coin['url']}\n"
         report += "\n" + "=" * 80 + "\n"
         return report
 
@@ -597,7 +597,7 @@ class NewCoinsMonitor:
         source = coin_info.get('source', 'unknown')
 
         if not is_trackable_symbol(symbol, name=coin_info.get('name', ''), slug=coin_info.get('slug', '')):
-            print(f"[NewCoinsMonitor] ❌ Invalid symbol: {symbol}")
+            print(f"[NewCoinsMonitor] Invalid symbol: {symbol}")
             return False
 
         if hasattr(self.price_monitor, 'original_symbols') and symbol in self.price_monitor.original_symbols:
@@ -634,25 +634,25 @@ class NewCoinsMonitor:
         issues = []
 
         if volume and volume < auto_add_thresholds["min_volume_24h"]:
-            issues.append(f"⚠️ volume below threshold (${volume:,.0f} < ${auto_add_thresholds['min_volume_24h']:,.0f})")
+            issues.append(f"volume below threshold (${volume:,.0f} < ${auto_add_thresholds['min_volume_24h']:,.0f})")
 
         if price and price < auto_add_thresholds["min_price_usd"]:
-            issues.append(f"⚠️ price below threshold (${price:.8f} < ${auto_add_thresholds['min_price_usd']})")
+            issues.append(f"price below threshold (${price:.8f} < ${auto_add_thresholds['min_price_usd']})")
 
         if price and price > auto_add_thresholds["max_price_usd"]:
-            issues.append(f"⚠️ price above threshold (${price:.2f} > ${auto_add_thresholds['max_price_usd']})")
+            issues.append(f"price above threshold (${price:.2f} > ${auto_add_thresholds['max_price_usd']})")
 
         if change and change < auto_add_thresholds["min_change_24h"]:
-            issues.append(f"⚠️ decline below threshold ({change:.1f}% < {auto_add_thresholds['min_change_24h']}%)")
+            issues.append(f"decline below threshold ({change:.1f}% < {auto_add_thresholds['min_change_24h']}%)")
 
         if change and change > auto_add_thresholds["max_change_24h"]:
-            issues.append(f"⚠️ increase above threshold ({change:.1f}% > {auto_add_thresholds['max_change_24h']}%)")
+            issues.append(f"increase above threshold ({change:.1f}% > {auto_add_thresholds['max_change_24h']}%)")
 
         # Display warnings, but do not block
         if issues:
-            print(f"[NewCoinsMonitor] 📊 {symbol}: {', '.join(issues)}")
+            print(f"[NewCoinsMonitor] {symbol}: {', '.join(issues)}")
         else:
-            print(f"[NewCoinsMonitor] 📊 {symbol} - ALL THRESHOLDS MET ✅")
+            print(f"[NewCoinsMonitor] {symbol} - ALL THRESHOLDS MET")
 
         # Add the symbol to the watchlist regardless of filters
         try:
@@ -660,10 +660,10 @@ class NewCoinsMonitor:
                 added = self.price_monitor.add_symbol(symbol, preferred_source=source)
                 if added is False:
                     return False
-                print(f"[NewCoinsMonitor] ✅ {symbol} added to the watchlist (price from {source})")
+                print(f"[NewCoinsMonitor] {symbol} added to the watchlist (price from {source})")
                 return True
             else:
-                print("[NewCoinsMonitor] ⚠️ price_monitor does not have add_symbol()")
+                print("[NewCoinsMonitor] price_monitor does not have add_symbol()")
                 return False
         except Exception as e:
             print(f"[NewCoinsMonitor] Error while adding {symbol}: {e}")
@@ -699,15 +699,15 @@ class NewCoinsMonitor:
 
 if __name__ == "__main__":
     print("=" * 80)
-    print("🆕 NEW COIN DISCOVERY MODULE TEST")
+    print("NEW COIN DISCOVERY MODULE TEST")
     print("=" * 80)
     factory = NewCoinsFactory()
     monitor = NewCoinsMonitor(None, factory)
-    print("[NewCoins] ✅ New coin monitor initialized")
-    print(f"\n📡 Active sources: {factory.get_available_sources()}")
+    print("[NewCoins] New coin monitor initialized")
+    print(f"\nActive sources: {factory.get_available_sources()}")
     print(monitor.get_report())
     summary = monitor.get_summary()
-    print(f"\n📊 SUMMARY: Total new symbols: {summary['total_new_coins']}")
+    print(f"\nSUMMARY: Total new symbols: {summary['total_new_coins']}")
     for source, data in summary['sources'].items():
         print(f"   {source}: {data['count']} coins")
-    print("\n✅ Test complete")
+    print("\nTest complete")

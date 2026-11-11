@@ -24,16 +24,17 @@ from botcore import (
     fetch_public_json,
     float_env,
     load_layered_env_config,
-    load_local_module,
     safe_float,
     safe_int,
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import canonical_base_asset
-from providers.order_ohlc_utils import drop_incomplete_last_bar, parse_ohlc_interval_minutes
-
-_extract_yahoo_result_and_quote = load_local_module(_HERE, "market_data")._extract_yahoo_result_and_quote
+from cachepaths import has_equity_suffix, strip_equity_suffix
+from providers.order_ohlc_utils import (
+    drop_incomplete_last_bar,
+    extract_yahoo_chart_result_and_quote as _extract_yahoo_result_and_quote,
+    parse_ohlc_interval_minutes,
+)
 
 
 def _quantile_sorted(sorted_vals: list[float], q: float) -> float:
@@ -50,7 +51,7 @@ def _quantile_sorted(sorted_vals: list[float], q: float) -> float:
 
 def fetch_ohlc(sym: str, rng: str, interval: str, *, drop_incomplete: bool = True):
     raw_sym = str(sym or "").strip()
-    norm_sym = canonical_base_asset(raw_sym, venue="t212") if "_" in raw_sym else raw_sym
+    norm_sym = strip_equity_suffix(raw_sym) if has_equity_suffix(raw_sym) else raw_sym
     q_sym = urllib.parse.quote(norm_sym, safe="")
     q_rng = urllib.parse.quote(str(rng or "").strip(), safe="")
     q_int = urllib.parse.quote(str(interval or "").strip(), safe="")

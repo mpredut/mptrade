@@ -1,4 +1,4 @@
-"""alerts_config.py — load the plain-text price_watcher.conf file for the alert monitor.
+"""alerts_config.py -- load the plain-text price_watcher.conf file for the alert monitor.
 
 Line-oriented format (# starts a full-line or inline comment):
     watch    = BTC, TAO, HYPE          # watchlist (coins that are always monitored)

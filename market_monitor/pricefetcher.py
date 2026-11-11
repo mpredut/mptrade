@@ -15,7 +15,13 @@ from abc import ABC, abstractmethod
 
 import instrument_registry as sym
 from botcore import exact_pos_int, is_rth_gate_enabled, is_us_rth_open, normalize_epoch_sec, required_env, safe_pos_float, safe_pos_int
-from cachepaths import CACHE_WATCHER_ALL_PRICE_FILENAME, cache_path, canonical_base_asset, normalize_venue_name
+from cachepaths import (
+    CACHE_WATCHER_ALL_PRICE_FILENAME,
+    cache_path,
+    canonical_base_asset,
+    normalize_venue_name,
+    strip_equity_suffix,
+)
 from instrument_registry import casefold_get
 
 # Import the base classes and factory
@@ -23,6 +29,7 @@ from cacheManager import CacheFactory
 from cacheprice import CachePriceManagerBase
 import providers.market_api as _market_api
 from providers.market_api import api
+from providers.order_ohlc_utils import extract_yahoo_chart_latest_price
 from providers.quantity import resolve_assets
 
 
@@ -451,34 +458,11 @@ class StockYahooPricePlatform(PricePlatformInterface):
         try:
             if not isinstance(symbol, str) or not symbol.strip():
                 return None
-            sym_y = symbol.strip().upper().split("_")[0]
+            sym_y = strip_equity_suffix(symbol).split("_", 1)[0]
             url = self._YAHOO.format(sym=quote(sym_y, safe="")) + "?range=1d&interval=5m"
             resp = requests.get(url, headers=self._UA, timeout=10)
             resp.raise_for_status()
-            payload = resp.json()
-            if not isinstance(payload, dict):
-                return None
-            chart = payload.get("chart")
-            if not isinstance(chart, dict):
-                return None
-            result = (chart.get("result") or [None])[0]
-            if not isinstance(result, dict):
-                return None
-            indicators = result.get("indicators")
-            quote_list = indicators.get("quote") if isinstance(indicators, dict) else None
-            q = (quote_list or [{}])[0] if isinstance(quote_list, list) else {}
-            if not isinstance(q, dict):
-                q = {}
-            closes = [
-                round(cf, 4) for c in (q.get("close") or [])
-                if (cf := safe_pos_float(c, default=None)) is not None
-            ]
-            if closes:
-                return closes[-1]                      # freshest intraday bar
-            meta = result.get("meta")
-            price = meta.get("regularMarketPrice") if isinstance(meta, dict) else None  # metadata fallback
-            val = safe_pos_float(price, default=None)
-            return round(val, 4) if val is not None else None
+            return extract_yahoo_chart_latest_price(resp.json(), decimals=4)
         except Exception as e:
             print(f"[YahooPlatform] Warning for {symbol}: {e}")
             return None
@@ -501,7 +485,7 @@ class PricePlatformFactory:
         self._discover_all_symbols()
     
     def _discover_all_symbols(self):
-        print("[PriceFactory] 🔍 Discovering available symbols...")
+        print("[PriceFactory] Discovering available symbols...")
         all_symbols = {}
         for platform in self._platforms:
             try:
@@ -609,9 +593,9 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             support = self.price_factory.check_symbol_support(symbol)
             supported_platforms = [p for p, s in support.items() if s]
             if supported_platforms:
-                print(f"  ✅ {symbol} -> {', '.join(supported_platforms)}")
+                print(f"  [OK] {symbol} -> {', '.join(supported_platforms)}")
             else:
-                print(f"  ❌ {symbol} -> NO PLATFORM SUPPORT!")
+                print(f"  [MISSING] {symbol} -> NO PLATFORM SUPPORT!")
     
     def _load_symbol_metadata(self):
         data = read_json_dict(self.filename, default=None, recover_previous=True)
@@ -756,7 +740,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 self.cache[symbol] = []
             if symbol not in self.fetchtime_per_symbol:
                 self.fetchtime_per_symbol[symbol] = self.fallback_time_default
-            print(f"[Pricefetcher] ✅ Symbol added: {symbol}")
+            print(f"[Pricefetcher] Symbol added: {symbol}")
         # Fetch and store the new symbol's initial price outside this lock;
         # ``update_cache_per_symbol`` acquires its own lock.
         items = self.get_remote_items(
@@ -797,7 +781,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 self.symbol_added_time.pop(k, None)
                 if isinstance(pref_map, dict):
                     pref_map.pop(k, None)
-            print(f"[Pricefetcher] ❌ Symbol removed: {symbol} {reason}")
+            print(f"[Pricefetcher] Symbol removed: {symbol} {reason}")
             return True
 
     def _cached_entries_locked(self, symbol: str):
@@ -1068,15 +1052,15 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
 if __name__ == "__main__":
     CMC_API_KEY = os.environ.get('CMC_API_KEY', None)
     print("=" * 60)
-    print("🚀 Starting crypto price monitor (multi-platform)")
-    print(f"💰 Base quote currency: {QUOTE_CURRENCY}")
+    print("Starting crypto price monitor (multi-platform)")
+    print(f"Base quote currency: {QUOTE_CURRENCY}")
     print("=" * 60)
 
     monitor = create_cachePriceAll(cmc_api_key=CMC_API_KEY)
-    print("\n⏳ Waiting for the first price collection...")
+    print("\nWaiting for the first price collection...")
     time.sleep(35)
 
-    print("\n📊 Current prices:")
+    print("\nCurrent prices:")
     for symbol in monitor.original_symbols:
         price = monitor.get_latest_price(symbol)
         if price:
@@ -1084,9 +1068,9 @@ if __name__ == "__main__":
         else:
             print(f"  {symbol}: waiting...")
 
-    print("\n✅ Monitor active. Running in background (Ctrl+C to stop)")
+    print("\nMonitor active. Running in background (Ctrl+C to stop)")
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\n🛑 Stopping...")
+        print("\nStopping...")

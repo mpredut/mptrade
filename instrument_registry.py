@@ -39,6 +39,7 @@ from cachepaths import (
     is_readonly_xstock_symbol,
     normalize_venue_name,
     split_symbol_assets,
+    strip_equity_suffix,
 )
 
 DEFAULT_PATH = Path(__file__).resolve().with_name("instruments.conf")
@@ -435,7 +436,7 @@ def discover_t212_equities(workspace_dir: str) -> list[tuple[str, str, str, str]
         ticker = str(kv.get("T212_TICKER") or kv.get("STRAT_PAIR") or "").upper()
         if ticker and ticker not in seen:
             seen.add(ticker)
-            out.append((f"T212_{ticker.split('_', 1)[0]}", ticker, ticker, "USD"))
+            out.append((f"T212_{strip_equity_suffix(ticker)}", ticker, ticker, "USD"))
     return out
 
 

@@ -588,6 +588,18 @@ def ensure_equity_suffix(symbol: object, *, is_equity: bool = True, suffix: str 
     return f"{s}{suffix}" if s else symbol
 
 
+def strip_equity_suffix(symbol: object) -> str:
+    """Return uppercase ``symbol`` stripped of trailing ``_US_EQ`` or ``_EQ`` equity suffixes."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return ""
+    s = symbol.strip().upper()
+    if s.endswith("_US_EQ"):
+        return s[:-6]
+    if s.endswith("_EQ"):
+        return s[:-3]
+    return s
+
+
 def filter_asset_class_variants(
     symbol: object,
     variants: object,

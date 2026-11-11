@@ -1085,3 +1085,40 @@ def candles_to_historical_points(candles: Any) -> list[tuple[float, float]]:
     return out
 
 
+def extract_yahoo_chart_result_and_quote(payload: Any) -> tuple[Optional[dict], dict, list, dict]:
+    """Unpack a Yahoo v8 chart JSON payload into ``(result, chart_dict, timestamps, quote_dict)``."""
+    chart = payload.get("chart") if isinstance(payload, Mapping) else None
+    chart_d = dict(chart) if isinstance(chart, Mapping) else {}
+    raw_results = chart_d.get("result")
+    result = (
+        raw_results[0]
+        if isinstance(raw_results, Sequence) and not isinstance(raw_results, (str, bytes)) and raw_results
+        else None
+    )
+    if not isinstance(result, dict) or not result:
+        return None, chart_d, [], {}
+    raw_ts = result.get("timestamp")
+    timestamps = raw_ts if isinstance(raw_ts, list) else []
+    indicators = result.get("indicators") if isinstance(result.get("indicators"), Mapping) else {}
+    quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
+    quote = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
+    return result, chart_d, timestamps, quote
+
+
+def extract_yahoo_chart_latest_price(payload: Any, *, decimals: Optional[int] = None) -> Optional[float]:
+    """Extract the latest positive intraday close (or ``meta.regularMarketPrice`` fallback) from a Yahoo chart payload."""
+    result, _, _, quote = extract_yahoo_chart_result_and_quote(payload)
+    if result is None:
+        return None
+    raw_closes = quote.get("close")
+    if isinstance(raw_closes, Sequence) and not isinstance(raw_closes, (str, bytes)):
+        for c in reversed(raw_closes):
+            if (cf := safe_pos_float(c, default=None)) is not None:
+                return round(cf, decimals) if decimals is not None else cf
+    meta = result.get("meta")
+    val = safe_pos_float(meta.get("regularMarketPrice") if isinstance(meta, Mapping) else None, default=None)
+    if val is None:
+        return None
+    return round(val, decimals) if decimals is not None else val
+
+

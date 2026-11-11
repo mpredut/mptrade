@@ -87,7 +87,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 )
 from instrument_registry import casefold_get
 from cacheprice import resolve_ssot_price_from_cache
-from providers.base import extract_timestamp_s
+from providers.base import extract_timestamp_s, extract_yahoo_chart_result_and_quote
 from providers.execution_audit import (
     build_last_cycle_execution_status,
     summarize_recent_ai_intents,
@@ -211,14 +211,10 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
             try:
                 url = get_yahoo_chart_url(yahoo_sym)
                 raw = _fetch(url, timeout=timeout_sec, headers={"User-Agent": "Mozilla/5.0"})
-                res_list = (raw.get("chart") or {}).get("result") if isinstance(raw, dict) else None
-                if not isinstance(res_list, list) or not res_list or not isinstance(res_list[0], dict):
+                res, _, ts_list, q_obj = extract_yahoo_chart_result_and_quote(raw)
+                if res is None:
                     continue
-                res = res_list[0]
                 meta = res.get("meta") if isinstance(res.get("meta"), dict) else {}
-                ts_list = res.get("timestamp") if isinstance(res.get("timestamp"), list) else []
-                q_list = (res.get("indicators") or {}).get("quote") or [{}]
-                q_obj = q_list[0] if isinstance(q_list, list) and q_list and isinstance(q_obj := q_list[0], dict) else {}
                 closes = q_obj.get("close") if isinstance(q_obj.get("close"), list) else []
                 pts = sorted(
                     (

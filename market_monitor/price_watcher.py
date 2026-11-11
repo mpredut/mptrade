@@ -54,23 +54,23 @@ ENABLED_SOURCES = ["coinmarketcap", "coingecko", "binance", "dexscreener"]
 
 print("ENV CONFIGURATION:")
 if PRICE_WEBHOOK_URL:
-    print(f"   ✅ Phone webhook: ENABLED -> {PRICE_WEBHOOK_URL[:40]}...")
+    print(f"   [OK] Phone webhook: ENABLED -> {PRICE_WEBHOOK_URL[:40]}...")
 else:
-    print("   ❌ Phone webhook: DISABLED (NTFY_TOPIC_PRICE is missing)")
+    print("   [DISABLED] Phone webhook: DISABLED (NTFY_TOPIC_PRICE is missing)")
 
 _tg_token = secret_env("TELEGRAM_BOT_TOKEN")
 _tg_chat = optional_env("TELEGRAM_CHAT_ID")
 if _tg_token and _tg_chat:
-    print(f"   ✅ Telegram: ENABLED -> Chat ID: {_tg_chat}")
+    print(f"   [OK] Telegram: ENABLED -> Chat ID: {_tg_chat}")
 else:
     _missing_tg = [k for k, v in (("TELEGRAM_BOT_TOKEN", _tg_token), ("TELEGRAM_CHAT_ID", _tg_chat)) if not v]
-    print(f"   ❌ Telegram: DISABLED (missing: {', '.join(_missing_tg)})")
+    print(f"   [DISABLED] Telegram: DISABLED (missing: {', '.join(_missing_tg)})")
 
 _email_user = optional_env("SMTP_USERNAME")
 _email_pass = secret_env("SMTP_PASSWORD")
 _alert_to_email = optional_env("ALERT_TO_EMAIL")
 if _email_user and _email_pass and _alert_to_email:
-    print(f"   ✅ Email: ENABLED -> Sender: {_email_user}")
+    print(f"   [OK] Email: ENABLED -> Sender: {_email_user}")
 else:
     _missing_em = [
         k for k, v in (
@@ -79,7 +79,7 @@ else:
             ("ALERT_TO_EMAIL", _alert_to_email),
         ) if not v
     ]
-    print(f"   ❌ Email: DISABLED (missing: {', '.join(_missing_em)})")
+    print(f"   [DISABLED] Email: DISABLED (missing: {', '.join(_missing_em)})")
 
 
 def periodic_cleanup(cachePriceAll, new_coins_checker):
@@ -115,14 +115,14 @@ def periodic_cleanup(cachePriceAll, new_coins_checker):
 
 def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
                            max_new_coins=MAX_NEW_COINS_TO_TRACK, sources=None):
-    print("\n⏳ Initializing new coin checker...")
+    print("\nInitializing new coin checker...")
 
     def _on_new_coin_alerts(alerts):
         if not alerts:
             return
 
         print("\n" + "=" * 70)
-        print(f"🆕 {len(alerts)} NEW COINS DISCOVERED")
+        print(f"{len(alerts)} NEW COINS DISCOVERED")
         print("=" * 70)
 
         for coin_info in alerts:
@@ -136,21 +136,21 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
             )
 
             print(
-                f"🆕 {coin_info.get('symbol', 'N/A')} - "
+                f"* {coin_info.get('symbol', 'N/A')} - "
                 f"{coin_info.get('name', 'N/A')}"
             )
-            print(f"   📡 Source: {source}")
-            print(f"   📅 Added: {added_at}")
+            print(f"   Source: {source}")
+            print(f"   Added: {added_at}")
 
             if has_price:
                 px_val = safe_nonneg_float(coin_info.get('price'), default=0.0)
-                print(f"   💰 Price: ${px_val:.8f}")
-                print(f"   ✅ Auto-added: {auto_added}")
+                print(f"   Price: ${px_val:.8f}")
+                print(f"   Auto-added: {auto_added}")
             else:
-                print("   ⚠️ Informational only")
+                print("   Informational only")
 
             if coin_info.get('url'):
-                print(f"   🔗 {coin_info['url']}")
+                print(f"   URL: {coin_info['url']}")
 
             print()
 
@@ -169,7 +169,7 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
     new_coins_checker.start_monitoring(interval_seconds=interval_seconds)
     print(f"New coin checker started! Active sources: {factory.get_available_sources()}")
 
-    print("\n⏳ Performing initial new coin discovery...")
+    print("\nPerforming initial new coin discovery...")
     new_coins_checker.refresh()
 
     auto_added_count = 0
@@ -185,23 +185,23 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
                 symbols_list = ', '.join([str(c.get('symbol', 'N/A')) for c in coins[:10] if isinstance(c, dict)])
                 if len(coins) > 10:
                     symbols_list += f" and {len(coins) - 10} more"
-                print(f"[Startup] ℹ️ Source {source_name}: {len(coins)} new coins: {symbols_list}")
+                print(f"[Startup] Source {source_name}: {len(coins)} new coins: {symbols_list}")
 
     if auto_added_count > 0:
-        print(f"✅ {auto_added_count} new coins auto-added to watchlist from CoinMarketCap")
+        print(f"{auto_added_count} new coins auto-added to watchlist from CoinMarketCap")
     else:
-        print("ℹ️ No new coins with price were found on CoinMarketCap")
+        print("No new coins with price were found on CoinMarketCap")
 
     print("\n" + "=" * 70)
-    print("📊 STATUS REPORT")
+    print("STATUS REPORT")
     print("=" * 70)
     if hasattr(cachePriceAll, 'original_symbols'):
-        print(f"\n💰 Tracked price symbols: {len(cachePriceAll.original_symbols)}")
+        print(f"\nTracked price symbols: {len(cachePriceAll.original_symbols)}")
         print(f"   First 10: {cachePriceAll.original_symbols[:10]}")
     if new_coins_checker:
         summary = new_coins_checker.get_summary()
         if isinstance(summary, dict):
-            print(f"\n🆕 New coins discovered total: {summary.get('total_new_coins', 0)}")
+            print(f"\nNew coins discovered total: {summary.get('total_new_coins', 0)}")
             sources_map = summary.get('sources')
             if isinstance(sources_map, dict):
                 for source, data in sources_map.items():
@@ -226,7 +226,7 @@ def main():
     cfg = load_config(args.config)
     ac = cfg["alert_config"]
     print("=" * 70)
-    print(f"⚙️ market_alerts — config: {args.config}")
+    print(f"market_alerts -- config: {args.config}")
     print(f"   watchlist : {cfg['watch']}  (max {cfg['max_monitored']})")
     print(f"   default   : up +{ac['default']['up_percent']}% / down -{ac['default']['down_percent']}%")
     print(f"   new_coin  : up +{ac['dynamic']['up_percent']}% / down -{ac['dynamic']['down_percent']}%")
@@ -238,17 +238,17 @@ def main():
     print("=" * 70)
 
     if args.check:
-        print("✅ --check: the config is valid and the imports are OK. Exiting without starting the monitor.")
+        print("[OK] --check: the config is valid and the imports are OK. Exiting without starting the monitor.")
         return
 
-    print("\n⏳ Initialising the price cache...")
+    print("\nInitialising the price cache...")
     cmc_key_for_cache = CMC_API_KEY if (cfg.get("discover_new_coins") and ALERT_NEW_COIN) else None
     cachePriceAll = create_cachePriceAll(cmc_api_key=cmc_key_for_cache,
                                          symbols=cfg["watch"], max_symbols=cfg["max_monitored"])
-    print("⏳ Waiting for the first price sync (5s)...")
+    print("Waiting for the first price sync (5s)...")
     time.sleep(5)
 
-    print("⏳ Starting the price-threshold checker...")
+    print("Starting the price-threshold checker...")
     price_checker = PriceChecker(
         cachePriceAll=cachePriceAll,
         alert_callback=lambda alert: AlertNotifier.send(alert, enable_phone_webhook=True, webhook_url=PRICE_WEBHOOK_URL),
@@ -259,9 +259,9 @@ def main():
 
     new_coins_checker = None
     if not cfg["discover_new_coins"]:
-        print("NEW COIN ALERT DISABLED in config (discover_new_coins = no) — watchlist only")
+        print("NEW COIN ALERT DISABLED in config (discover_new_coins = no) -- watchlist only")
     elif ALERT_NEW_COIN:
-        print("⏳ Starting new coin discovery checker...")
+        print("Starting new coin discovery checker...")
         new_coins_checker = start_new_coin_checker(
             cachePriceAll, interval_seconds=cfg["new_coins_scan_seconds"],
             max_new_coins=cfg["max_new_coins"], sources=cfg["sources"])
@@ -279,13 +279,13 @@ def main():
         while True:
             time.sleep(30)
             touch_module_heartbeat("price_watcher", interval_sec=30.0, symbols=hb_syms, intervals=hb_itv)
-            print("\n👉 Waiting for alerts... (Ctrl+C to stop)\n", flush=True)
+            print("\nWaiting for alerts... (Ctrl+C to stop)\n", flush=True)
     except KeyboardInterrupt:
-        print("\n🛑 Stopping system...")
+        print("\nStopping system...")
         if new_coins_checker is not None:
             new_coins_checker.stop_monitoring()
         price_checker.stop_monitoring()
-        print("👋 Done.")
+        print("Done.")
 
 
 if __name__ == "__main__":

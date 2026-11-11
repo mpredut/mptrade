@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-market_data.py — Yahoo Finance market data: prices, FX rates, and real-trading detection.
+market_data.py -- Yahoo Finance market data: prices, FX rates, and real-trading detection.
 """
 
 from __future__ import annotations
@@ -30,25 +30,12 @@ from botcore import (
 
 from providers.order_ohlc_utils import (
     drop_incomplete_last_bar,
+    extract_yahoo_chart_result_and_quote as _extract_yahoo_result_and_quote,
     parse_ohlc_interval_minutes,
     validate_dataset,
     validate_ohlc_candle_bar,
 )
 from state_io import parse_json_payload
-
-
-def _extract_yahoo_result_and_quote(payload: object) -> tuple[dict | None, dict, list, dict]:
-    chart = payload.get("chart") if isinstance(payload, dict) else None
-    chart_d = chart if isinstance(chart, dict) else {}
-    result = (chart_d.get("result") or [None])[0]
-    if not isinstance(result, dict) or not result:
-        return None, chart_d, [], {}
-    raw_ts = result.get("timestamp")
-    timestamps = raw_ts if isinstance(raw_ts, list) else []
-    indicators = result.get("indicators") if isinstance(result.get("indicators"), dict) else {}
-    quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
-    quote = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
-    return result, chart_d, timestamps, quote
 
 
 def parse_interval_minutes(value: str) -> int:
