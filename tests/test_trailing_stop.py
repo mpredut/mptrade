@@ -4,20 +4,19 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import binance_api.trailing_stop as binance_ts_mod  # noqa: E402
-from binance_api.trailing_stop import TrailingStop  # noqa: E402
-from botcore import load_local_module  # noqa: E402
-import instrument_registry as ic  # noqa: E402
-from kraken.market_data import pair_precision  # noqa: E402
-from providers.strategy_executor import OrderStatus  # noqa: E402
-from tests.conftest import DummyTrailingAdapter, TrailingTestBase  # noqa: E402
-from trailing_core import TrailingCore, should_sell  # noqa: E402
+import binance_api.trailing_stop as binance_ts_mod
+from binance_api.trailing_stop import TrailingStop
+import instrument_registry as ic
+from kraken.market_data import pair_precision
+from providers.strategy_executor import OrderStatus
+from tests.conftest import DummyTrailingAdapter, TrailingTestBase, load_venue_modules
+from trailing_core import TrailingCore, should_sell
+
+_hl_md = load_venue_modules("hyperliquid", "market_data")
 
 
 class FakeApi:
@@ -211,7 +210,7 @@ class TestTrailing(_BinanceTrailingBase):
             api = FakeApi(260.0)
             self.ts(api).check_once()                      # peak 260, instance 1
             api.price = 200.0                              # -23% from 260 (threshold 22%)
-            self.ts(api).check_once()                      # instance 2 (a restart) — it reads the peak
+            self.ts(api).check_once()                      # instance 2 (a restart) -- it reads the peak
             self.assertEqual(len(self.po.orders), 1, "peak 260 survives restart")
 
         with self.subTest(msg="a_partial_sale"):
@@ -922,8 +921,7 @@ class TestMinProfit(_BinanceTrailingBase):
 
         with self.subTest(msg="corrupted_peak_or_warmup_and_market_data_hardening"):
             self.tearDown(); self.setUp()
-            hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
-            hl_md = load_local_module(hl_dir, "market_data", module_key="hl_md_test", reload=True)
+            hl_md = _hl_md
 
             self.assertFalse(should_sell(True, 100.0, 10.0))
             self.assertFalse(should_sell(80.0, True, 10.0))

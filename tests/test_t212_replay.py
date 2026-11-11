@@ -3,29 +3,25 @@
 import copy
 import json
 import os
-import sys
 import tempfile
 import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+
 import pytest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-T212_DIR = os.path.join(ROOT, "212trading")
-sys.path.insert(0, T212_DIR)
-sys.path.insert(0, ROOT)
+from offline.backtests.evaluation import evaluate_segment
+from offline.runners import walk_forward_compare as wfc
+from providers.execution_audit import ExecutionAudit
+from providers.quantity import balance_cap_quantity, decide_quantity
+from providers.strategy_executor import OrderStatus, PairPrecision
+from providers.t212_provider import T212Provider
+from tests.conftest import load_venue_modules, make_t212_test_env
 
-from botcore import load_local_module  # noqa: E402
-from offline.backtests.evaluation import evaluate_segment  # noqa: E402
-from offline.runners import walk_forward_compare as wfc  # noqa: E402
-from providers.execution_audit import ExecutionAudit  # noqa: E402
-from providers.quantity import balance_cap_quantity, decide_quantity  # noqa: E402
-from providers.strategy_executor import OrderStatus, PairPrecision  # noqa: E402
-from providers.t212_provider import T212Provider  # noqa: E402
-from tests.conftest import make_t212_test_env  # noqa: E402
-
-replay = load_local_module(T212_DIR, "replay", module_key="t212_replay_under_test", reload=True)
+replay, _t212_bt_mod, _t212_md_mod = load_venue_modules(
+    "212trading", "replay", "backtest", "market_data"
+)
 strategy = replay._strat
 _UNSET = object()
 
@@ -718,8 +714,7 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         self.assertEqual(client.place_calls[-1][-1], "GOOD_TILL_CANCEL")
 
     def test_backtest_simulate_with_mhdsl_and_mdhtp(self):
-        bt_mod = load_local_module(T212_DIR, "backtest", module_key="t212_backtest_module", reload=True)
-        simulate = bt_mod.simulate
+        simulate = _t212_bt_mod.simulate
         bars = [
             (100.0, 100.5, 99.5, 100.0),
             (100.0, 100.5, 99.5, 100.0),
@@ -759,7 +754,7 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         self.assertIn("ambiguous_bars", res["metrics"])
 
     def test_fetch_yahoo_candles_parsing_and_drop_forming_bar(self):
-        _md = load_local_module(T212_DIR, "market_data", module_key="t212_md_test", reload=True)
+        _md = _t212_md_mod
 
         self.assertEqual(_md.parse_interval_minutes("5m"), 5)
         self.assertEqual(_md.parse_interval_minutes("1h"), 60)
@@ -908,8 +903,7 @@ if __name__ == "__main__":
 
 def test_212trading_replay__fx_rates_accepts_scalar_numeric_strings_without_iter70_s1():
     """[ITER70 #1] 212trading.replay._fx_rates accepts scalar numeric strings without iterating character-by-character."""
-    t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
-    t212_rep = load_local_module(t212_dir, "replay.py", module_key="_t212_replay_70", reload=True)
+    t212_rep = replay
     # 1. 212trading.replay._fx_rates accepts scalar numeric strings without iterating character-by-character
     assert t212_rep._fx_rates("1.08", 3) == [1.08, 1.08, 1.08]
     with pytest.raises(ValueError):
