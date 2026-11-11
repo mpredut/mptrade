@@ -33,6 +33,7 @@ if _ROOT not in sys.path:
 
 
 from botcore import (
+    exact_pos_int,
     load_local_module,
     log,
     normalize_epoch_sec,
@@ -42,6 +43,7 @@ from botcore import (
     required_int_env,
     safe_float,
     safe_int,
+    safe_nonneg_float,
     safe_pos_float,
 )
 from strategies.replay_metrics import (
@@ -113,16 +115,19 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Complete DCA+TP backtester on Hyperliquid.")
     ap.add_argument("--mode", choices=["single", "sweep"], default="single")
     ap.add_argument("--coin", default=None)
-    ap.add_argument("--days", type=int, default=45)
+    ap.add_argument("--days", default=45)
     ap.add_argument("--direction", choices=["long", "short"], default=None)
     ap.add_argument("--signal", choices=["off", "builtin", "analysis"], default="off")
     add_common_backtest_cli_args(ap)
-    ap.add_argument("--fast", type=int, default=None); ap.add_argument("--slow", type=int, default=None)
-    ap.add_argument("--band", type=float, default=None); ap.add_argument("--win", type=int, default=None)
-    ap.add_argument("--step", type=int, default=None)
+    ap.add_argument("--fast", default=None)
+    ap.add_argument("--slow", default=None)
+    ap.add_argument("--band", default=None)
+    ap.add_argument("--win", default=None)
+    ap.add_argument("--step", default=None)
     args = ap.parse_args()
-    if args.days <= 0:
-        ap.error("--days must be > 0")
+    days_i = exact_pos_int(args.days, default=None)
+    if days_i is None:
+        ap.error("--days must be a positive integer")
 
     cfg = load_isolated_hl_cfg(_HERE)
 
@@ -137,11 +142,37 @@ def main() -> int:
     budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET", env=cfg)
     fee = args.fee if args.fee is not None else required_float_env("HL_FEE_PCT", env=cfg)
     sl = args.sl if args.sl is not None else required_float_env("STRAT_STOP_LOSS_PCT", env=cfg)
-    fast_h = args.fast if args.fast is not None else (safe_int(optional_env("SIGNAL_FAST_H", env=cfg), 12) or 12)
-    slow_h = args.slow if args.slow is not None else (safe_int(optional_env("SIGNAL_SLOW_H", env=cfg), 48) or 48)
-    band_pct = args.band if args.band is not None else (safe_float(optional_env("SIGNAL_BAND_PCT", env=cfg), 0.3) or 0.3)
-    win_h = args.win if args.win is not None else (safe_int(optional_env("ANALYSIS_WINDOW_H", env=cfg), 24) or 24)
-    step_h = args.step if args.step is not None else (safe_int(optional_env("ANALYSIS_STEP_H", env=cfg), 8) or 8)
+    fast_h = (
+        exact_pos_int(args.fast, default=None)
+        if args.fast is not None
+        else exact_pos_int(optional_env("SIGNAL_FAST_H", env=cfg), default=12)
+    )
+    slow_h = (
+        exact_pos_int(args.slow, default=None)
+        if args.slow is not None
+        else exact_pos_int(optional_env("SIGNAL_SLOW_H", env=cfg), default=48)
+    )
+    if fast_h is None or slow_h is None or fast_h >= slow_h:
+        ap.error("--fast and --slow must be positive integers with fast < slow")
+    if args.band is not None:
+        band_pct = safe_nonneg_float(args.band, default=None)
+        if band_pct is None:
+            ap.error("--band must be >= 0")
+    else:
+        raw_band = optional_env("SIGNAL_BAND_PCT", env=cfg)
+        band_pct = safe_nonneg_float(raw_band, default=0.3) if raw_band is not None else 0.3
+    win_h = (
+        exact_pos_int(args.win, default=None)
+        if args.win is not None
+        else exact_pos_int(optional_env("ANALYSIS_WINDOW_H", env=cfg), default=24)
+    )
+    step_h = (
+        exact_pos_int(args.step, default=None)
+        if args.step is not None
+        else exact_pos_int(optional_env("ANALYSIS_STEP_H", env=cfg), default=8)
+    )
+    if win_h is None or step_h is None:
+        ap.error("--win and --step must be positive integers")
     ttl_min = safe_float(optional_env("STRAT_ORDER_TTL_MIN", env=cfg), 60.0)
     reentry_tol = safe_float(optional_env("STRAT_REENTRY_TOLERANCE_PCT", env=cfg), 0.0)
     currency = optional_env("STRAT_CURRENCY", "USDC", env=cfg).strip().upper() or "USDC"
@@ -149,7 +180,7 @@ def main() -> int:
     enable_tp = strat_mode != "dca_only"
 
     warmup_h = max(slow_h + 6, math.ceil(win_h + step_h * 14), 48) if args.signal != "off" else 5
-    records = fetch_ohlc_candles(coin, "1h", lookback_hours=args.days * 24 + warmup_h, drop_incomplete=True)
+    records = fetch_ohlc_candles(coin, "1h", lookback_hours=days_i * 24 + warmup_h, drop_incomplete=True)
     if len(records) < 50:
         log("! too few candles"); return 1
     if budget <= 0:
@@ -157,13 +188,16 @@ def main() -> int:
     all_closes = [r["close"] for r in records]
     all_ts_sec = [r["timestamp"] for r in records]
     all_sig = precompute_signal(all_closes, all_ts_sec, args.signal, fast_h, slow_h, band_pct / 100.0, win_h, step_h)
-    eval_start = max(0, len(records) - args.days * 24) if len(records) > args.days * 24 else 0
+    cutoff_ts = all_ts_sec[-1] - (days_i * 24 - 1) * 3600
+    eval_start = bisect.bisect_left(all_ts_sec, cutoff_ts)
+    if eval_start >= len(records):
+        eval_start = 0
     eval_records = records[eval_start:]
     ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in eval_records]
     ts = [r["timestamp"] * 1000 for r in eval_records]
     sig = all_sig[eval_start:]
     closes = [x[3] for x in ohlc]
-    fund = fetch_funding_history(coin, ts[0])
+    fund = fetch_funding_history(coin, max(0, ts[0] - 3_600_000), end_ms=ts[-1])
     bh = buy_hold_pct(closes)
 
     base = dict(

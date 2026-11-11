@@ -265,9 +265,17 @@ def _build_t212_venue_evaluator(norm_venue: str, source_report: dict, raw_params
     fx_fixed = raw_fx_unit if raw_fx_unit > 0.0 else 1.0
     fx_invert = _parse_bool_flag(fx_model.get("invert", False), False)
     fx_records = None
-    if fx_model.get("mode") == "historical_asof" and fx_model.get("frozen_file"):
-        fx_path = _resolve_frozen_file(str(fx_model["frozen_file"]), baseline_dir)
+    if fx_model.get("mode") == "historical_asof":
+        raw_fx_frozen = str(fx_model.get("frozen_file") or "").strip()
+        if not raw_fx_frozen:
+            raise ValueError("historical_asof fx_model requires frozen_file")
+        fx_path = _resolve_frozen_file(raw_fx_frozen, baseline_dir)
         fx_records = load_dataset(fx_path)
+        expected_fx_sha = str(fx_model.get("sha256") or "").strip()
+        if expected_fx_sha:
+            actual_fx_sha = dataset_sha256(fx_records)
+            if actual_fx_sha != expected_fx_sha:
+                raise ValueError(f"FX dataset sha256 mismatch: {actual_fx_sha} != {expected_fx_sha}")
     periods_yr = safe_pos_float(exec_meta.get("calendar_periods_per_year"), default=None)
 
     def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
@@ -322,10 +330,11 @@ def _candidate_windows(
         val_sz = safe_nonneg_int(sizes.get("validation", sizes.get("validation_bars")), default=0)
         test_sz = safe_nonneg_int(sizes.get("test", sizes.get("test_bars")), default=0)
         step_sz = safe_nonneg_int(sizes.get("step", sizes.get("step_bars", test_sz)), default=test_sz) or test_sz
+        anchored = _parse_bool_flag(sizes.get("anchored_train", False), False)
         folds = walk_forward_splits(
             len(records), train_size=train_sz,
             validation_size=val_sz, test_size=test_sz,
-            step_size=step_sz,
+            step_size=step_sz, anchored_train=anchored,
         )
         for fold_index, fold in enumerate(folds, start=1):
             warmup = records[max(0, fold.test.start - warmup_bars):fold.test.start]

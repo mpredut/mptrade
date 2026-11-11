@@ -29,7 +29,7 @@ from botcore import (
 from state_io import atomic_write_json, atomic_write_text, read_json_file, read_text_file
 from strategies.spot_engine import StratParams
 from strategies import spot_replay as kraken_replay
-from strategies.spot_replay import align_spot_interval_params
+from strategies.spot_replay import align_spot_interval_params, scale_subbar_timeout_params
 from offline.backtests.datasets import load_dataset
 from offline.backtests.walk_forward import walk_forward_splits
 from offline.backtests.evaluation import evaluate_segment
@@ -249,8 +249,9 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
     live_candidate_windows = []
 
     for name, overrides in candidates.items():
-        params = align_spot_interval_params(
-            dataclasses.replace(LIVE_PARAMS, **overrides), interval
+        params = scale_subbar_timeout_params(
+            align_spot_interval_params(dataclasses.replace(LIVE_PARAMS, **overrides), interval),
+            interval,
         )
         adapter = kraken_replay.make_spot_replay_adapter(
             params,
@@ -316,6 +317,7 @@ def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict])
     """Run full unbroken continuous replay over the entire 628-day dataset."""
     print(">>> Running Continuous 628-Day Replay (~3,772 bars)...")
     ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+    timestamps = [r["timestamp"] for r in records]
     if len(ohlc) < 2:
         return {}
     results = {}
@@ -325,12 +327,14 @@ def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict])
         kraken_replay.prewarm_trend_series(ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
 
     for name, overrides in candidates.items():
-        params = align_spot_interval_params(
-            dataclasses.replace(LIVE_PARAMS, **overrides), interval
+        params = scale_subbar_timeout_params(
+            align_spot_interval_params(dataclasses.replace(LIVE_PARAMS, **overrides), interval),
+            interval,
         )
         budget = params.allocated_budget()
         m = kraken_replay.run_replay(
             ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
+            timestamps=timestamps,
             execution=ExecutionModel(),
             initial_cash=budget,
         )
@@ -422,16 +426,26 @@ def run_live_forward_shadow(
                 pre_bars.append((r_ts, r_o, r_h, r_l, r_c))
         pre_bars.sort(key=lambda item: item[0])
 
-    by_ts = {b[0]: b for b in pre_bars}
-    by_ts.update({b[0]: b for b in fwd_bars})
+    pre_by_ts = {b[0]: b for b in pre_bars}
+    fwd_by_ts = {b[0]: b for b in fwd_bars}
+    pre_bars = [pre_by_ts[k] for k in sorted(pre_by_ts) if k not in fwd_by_ts]
+    fwd_bars = [fwd_by_ts[k] for k in sorted(fwd_by_ts)]
+
+    by_ts = dict(pre_by_ts)
+    by_ts.update(fwd_by_ts)
     combined = [by_ts[k] for k in sorted(by_ts)]
     win_bars = combined[-720:] if len(combined) > 720 else combined
     win_warmup_bars = combined[max(0, len(combined) - 760):max(0, len(combined) - len(win_bars))]
+    fwd_warmup_bars = pre_bars[-40:]
 
     full_ohlc = [(b[1], b[2], b[3], b[4]) for b in win_bars]
+    full_ts = [b[0] for b in win_bars]
     full_warmup = [(b[1], b[2], b[3], b[4]) for b in win_warmup_bars]
+    full_warmup_ts = [b[0] for b in win_warmup_bars]
     fwd_ohlc = [(b[1], b[2], b[3], b[4]) for b in fwd_bars]
-    fwd_warmup = [(b[1], b[2], b[3], b[4]) for b in pre_bars[-40:]]
+    fwd_ts = [b[0] for b in fwd_bars]
+    fwd_warmup = [(b[1], b[2], b[3], b[4]) for b in fwd_warmup_bars]
+    fwd_warmup_ts = [b[0] for b in fwd_warmup_bars]
 
     if len(fwd_ohlc) < 2 or len(full_ohlc) < 2:
         print(f"Insufficient forward or full bars for shadow replay (fwd: {len(fwd_ohlc)}, full: {len(full_ohlc)})")
@@ -450,8 +464,9 @@ def run_live_forward_shadow(
         )
 
     for name, overrides in candidates.items():
-        params = align_spot_interval_params(
-            dataclasses.replace(LIVE_PARAMS, **overrides), interval
+        params = scale_subbar_timeout_params(
+            align_spot_interval_params(dataclasses.replace(LIVE_PARAMS, **overrides), interval),
+            interval,
         )
         budget = params.allocated_budget()
 
@@ -459,6 +474,8 @@ def run_live_forward_shadow(
         m_fwd = kraken_replay.run_replay(
             fwd_ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             warmup_ohlc=fwd_warmup,
+            timestamps=fwd_ts,
+            warmup_timestamps=fwd_warmup_ts,
             execution=ExecutionModel(),
             initial_cash=budget,
         )
@@ -468,6 +485,8 @@ def run_live_forward_shadow(
         m_full = kraken_replay.run_replay(
             full_ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             warmup_ohlc=full_warmup,
+            timestamps=full_ts,
+            warmup_timestamps=full_warmup_ts,
             execution=ExecutionModel(),
             initial_cash=budget,
         )

@@ -618,7 +618,7 @@ def scale_subbar_timeout_params(params, bar_minutes: float | int | None):
     if bm_f is None or check_min is None or bm_f <= check_min:
         return params
     bar_scale = bm_f / check_min
-    updates: dict[str, float] = {}
+    updates: dict[str, float] = {"check_minutes": bm_f}
     for attr in ("tp_stagnation_max_sec", "sl_trend_defer_max_sec"):
         cur_val = safe_pos_float(getattr(params, attr, None), default=None)
         if cur_val is not None:

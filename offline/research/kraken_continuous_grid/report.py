@@ -9,7 +9,7 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import optional_env, safe_float, safe_nonneg_int
+from botcore import load_local_module, optional_env, safe_float, safe_nonneg_int
 from state_io import atomic_write_json, atomic_write_text, read_jsonl_dicts
 
 
@@ -148,7 +148,14 @@ def _rank_key(s: dict, calmar_key: str = "calmar_med") -> tuple[bool, float, flo
 def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = _resolve_exp_dir(exp_dir)
     results_path = os.path.join(exp, "results.jsonl")
-    rows, errors, by, assets = _load_grid_results_by_cfg(results_path)
+    grid_mod = sys.modules.get("offline.research.kraken_continuous_grid.grid") or load_local_module(
+        os.path.dirname(os.path.abspath(__file__)),
+        "grid",
+        module_key="offline.research.kraken_continuous_grid.grid",
+    )
+    rows, errors, by, assets = _load_grid_results_by_cfg(
+        results_path, spec_map=getattr(grid_mod, "CONFIGS", None)
+    )
     cfgs = list(by)
 
     summary = []

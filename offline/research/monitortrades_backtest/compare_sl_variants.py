@@ -11,7 +11,7 @@ if ROOT not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import monitortrades as mt
-from botcore import bool_env, safe_float
+from botcore import bool_env, int_env, safe_float
 from offline.research.monitortrades_backtest.run_replay_backtest import (
     SYMBOLS,
     _TREND_TAPE_CACHE,
@@ -86,7 +86,9 @@ def main():
             prewarm_trend_series(sym, series)
             _WORKER_SERIES.clear()
             _WORKER_SERIES[sym] = series
-            n_workers = min(len(sym_tasks), os.cpu_count() or 1)
+            raw_w = int_env("WORKERS")
+            max_w = raw_w if (raw_w is not None and raw_w > 0) else min(4, os.cpu_count() or 1)
+            n_workers = min(len(sym_tasks), max_w)
             try:
                 if n_workers > 1 and can_fork:
                     ctx = mp.get_context("fork")

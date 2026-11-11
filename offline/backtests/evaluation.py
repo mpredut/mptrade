@@ -24,7 +24,11 @@ from offline.backtests.walk_forward import summarize_test_windows, walk_forward_
 from state_io import atomic_write_json
 from strategies.replay_execution import ExecutionModel
 from strategies.replay_metrics import validate_replay_metrics
-from strategies.spot_replay import align_spot_interval_params, make_spot_replay_adapter
+from strategies.spot_replay import (
+    align_spot_interval_params,
+    make_spot_replay_adapter,
+    scale_subbar_timeout_params,
+)
 from botcore import (
     exact_int,
     exact_pos_int,
@@ -388,6 +392,22 @@ def parse_dataset_specs(specs: list[str]) -> dict[int, Path]:
     return result
 
 
+def parse_cli_float(value: Any) -> float:
+    """Parse a finite CLI floating-point argument without raw ``float()`` coercion."""
+    parsed = safe_float(value, default=None)
+    if parsed is None:
+        raise argparse.ArgumentTypeError(f"invalid finite float value: {value!r}")
+    return parsed
+
+
+def parse_cli_int(value: Any) -> int:
+    """Parse an exact CLI integer argument without raw ``int()`` coercion."""
+    parsed = exact_int(value, default=None)
+    if parsed is None:
+        raise argparse.ArgumentTypeError(f"invalid integer value: {value!r}")
+    return parsed
+
+
 def add_walk_forward_cli_args(
     parser: argparse.ArgumentParser,
     *,
@@ -397,22 +417,22 @@ def add_walk_forward_cli_args(
     default_output_dir: Path | str | None = None,
 ) -> None:
     """Register standard execution model and walk-forward window arguments on a CLI parser."""
-    parser.add_argument("--spread-bps", type=float, default=0.0)
-    parser.add_argument("--market-slippage-bps", type=float, default=0.0)
-    parser.add_argument("--partial-fill-ratio", type=float, default=1.0)
+    parser.add_argument("--spread-bps", type=parse_cli_float, default=0.0)
+    parser.add_argument("--market-slippage-bps", type=parse_cli_float, default=0.0)
+    parser.add_argument("--partial-fill-ratio", type=parse_cli_float, default=1.0)
     parser.add_argument(
         "--intrabar-policy",
         choices=("buy_first", "sell_first", "worst_case"),
         default="buy_first",
     )
-    parser.add_argument("--train", type=int, help="training bars; automatic by default")
-    parser.add_argument("--validation", type=int, help="validation bars; automatic by default")
-    parser.add_argument("--test", type=int, help="test bars; automatic by default")
-    parser.add_argument("--step", type=int, help="step size in bars; defaults to test size")
+    parser.add_argument("--train", type=parse_cli_int, help="training bars; automatic by default")
+    parser.add_argument("--validation", type=parse_cli_int, help="validation bars; automatic by default")
+    parser.add_argument("--test", type=parse_cli_int, help="test bars; automatic by default")
+    parser.add_argument("--step", type=parse_cli_int, help="step size in bars; defaults to test size")
     if include_warmup:
         parser.add_argument(
             "--warmup",
-            type=int,
+            type=parse_cli_int,
             default=default_warmup,
             help="preceding signal bars; they carry no position or P&L into the segment",
         )
@@ -497,7 +517,7 @@ def evaluate_spot_segment(
 ) -> dict:
     """Evaluate an OHLC segment using aligned spot parameters and the canonical spot replay adapter."""
     adapter = make_spot_replay_adapter(
-        align_spot_interval_params(params, interval),
+        scale_subbar_timeout_params(align_spot_interval_params(params, interval), interval),
         fee_pct=fee_pct,
         bar_minutes=interval,
         execution=execution,

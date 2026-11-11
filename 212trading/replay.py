@@ -42,7 +42,7 @@ from strategies.replay_execution import (
     validate_ohlc_bars,
 )
 from strategies.replay_metrics import round_metric
-from strategies.spot_replay import build_replay_summary
+from strategies.spot_replay import build_replay_summary, scale_subbar_timeout_params
 
 
 def equity_periods_per_year(interval_minutes: float) -> float:
@@ -480,6 +480,9 @@ def make_t212_replay_adapter(
     initial_cash: float | None = None,
 ):
     """Return a generic ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
+    bm = safe_pos_float(bar_minutes, default=None)
+    eff_params = scale_subbar_timeout_params(params, bm) if bm is not None else params
+
     def _adapter(ohlc, warmup_ohlc, context=None):
         ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else ()
         w_ts = list(context.warmup_timestamps) if context and getattr(context, "warmup_timestamps", None) else ()
@@ -490,7 +493,7 @@ def make_t212_replay_adapter(
             )
         return run_replay(
             ohlc,
-            params,
+            eff_params,
             bar_minutes=bar_minutes,
             fx_to_usd=rate,
             periods_per_year=periods_per_year,

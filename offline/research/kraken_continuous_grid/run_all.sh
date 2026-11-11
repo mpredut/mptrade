@@ -4,6 +4,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../../orchestratorOS/lib/env_common.sh
 source "$HERE/../../../orchestratorOS/lib/env_common.sh"
+RUNNER_DIR="$HERE/../../runners"
+# shellcheck source=../../runners/load_dev_backtest_env.sh
+source "$RUNNER_DIR/load_dev_backtest_env.sh"
 
 OUT="${GRID_OUT:-$ROOT/offline/results/kraken_continuous_grid}"
 mkdir -p "$OUT"
@@ -11,7 +14,7 @@ OUT="$(cd "$OUT" && pwd)"
 export GRID_OUT="$OUT"
 cd "$ROOT"
 rm -f "$OUT/results.jsonl" "$OUT/results2.jsonl" "$OUT/results3.jsonl"
-export WORKERS="${WORKERS:-$(nproc 2>/dev/null || echo 4)}"
+export WORKERS="${WORKERS:-2}"
 
 "$PYTHON_BIN" "$HERE/fetch_data.py" > "$OUT/fetch.log" 2>&1
 for sfx in "" 2 3; do

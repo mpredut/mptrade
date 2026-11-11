@@ -24,7 +24,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series, run_replay
+from strategies.spot_replay import (
+    align_spot_interval_params,
+    prewarm_trend_series,
+    run_replay,
+    scale_subbar_timeout_params,
+)
 from strategies import spot_engine as strat
 from botcore import normalize_epoch_sec, safe_float, safe_nonneg_int, safe_pos_float
 from state_io import atomic_write_json, read_text_lines
@@ -205,7 +210,9 @@ def evaluate_asset(
     """Run all ablation tests on an asset and return structured metrics."""
     if not ohlc:
         return []
-    aligned_base = align_spot_interval_params(base_params, bar_minutes)
+    aligned_base = scale_subbar_timeout_params(
+        align_spot_interval_params(base_params, bar_minutes), bar_minutes
+    )
     variants = build_ablation_variants(aligned_base)
     results = []
     # Warmup first 30 bars if available to seed regime

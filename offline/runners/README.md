@@ -31,14 +31,14 @@ adapter.
 
 ```text
 canonical OHLC + hash
-        │
-        ▼
+        |
+        v
 shared walk-forward evaluator
-        │
-        ├── Kraken adapter ──────► kraken/Strategy.step
-        ├── Binance adapter ─────► binance_api/Strategy.step
-        ├── Hyperliquid adapter ─► hyperliquid/Strategy.step
-        └── Trading212 adapter ──► 212trading/Strategy.step
+        |
+        +-- Kraken adapter ------> kraken/Strategy.step
+        +-- Binance adapter -----> binance_api/Strategy.step
+        +-- Hyperliquid adapter -> hyperliquid/Strategy.step
+        +-- Trading212 adapter --> 212trading/Strategy.step
 ```
 
 Kraken:

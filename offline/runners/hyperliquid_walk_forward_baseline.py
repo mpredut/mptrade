@@ -38,16 +38,38 @@ from offline.backtests.evaluation import (
     build_and_save_interval_baseline_report,
     build_execution_model_from_args,
     load_venue_replay_module,
+    parse_cli_float,
+    parse_cli_int,
     parse_dataset_specs,
     parse_intervals,
     parse_optional_lookback_days,
 )
-
+from offline.runners.fetch_hyperliquid_candles import _hl_md, resolve_spot_pair
+from providers.hyperliquid_provider import HyperliquidProvider
 from providers.market_api import api as mkt
 
 
-def fetch_ohlc_candles(symbol: str, interval: int | str = 60, **kwargs) -> list[dict]:
-    return mkt.fetch_ohlc_candles(symbol, interval, provider_name="hyperliquid", **kwargs)
+def fetch_ohlc_candles(
+    symbol: str,
+    interval: int | str = 60,
+    *,
+    engine: str = "perp",
+    spot_pair: str | None = None,
+    quote: str = "USDC",
+    **kwargs,
+) -> list[dict]:
+    target = str(symbol or "").strip()
+    if engine == "spot" and target and not target.startswith("@"):
+        norm_tok = target.upper()
+        explicit_pair = str(spot_pair or "").strip()
+        if explicit_pair:
+            target = explicit_pair
+        elif norm_tok in HyperliquidProvider.KNOWN_SPOT_PAIRS and str(quote or "USDC").strip().upper() == "USDC":
+            target = HyperliquidProvider.KNOWN_SPOT_PAIRS[norm_tok]
+        else:
+            spot_meta = _hl_md._post_info({"type": "spotMeta"})
+            target = resolve_spot_pair(norm_tok, quote or "USDC", spot_meta)
+    return mkt.fetch_ohlc_candles(target, interval, provider_name="hyperliquid", **kwargs)
 
 
 _hl_common = load_local_module(str(HL_DIR), "common")
@@ -68,9 +90,9 @@ def main(argv: list[str] | None = None) -> int:
         help="replay engine: 'spot' (default, matches live hl_bot.py spot engine) or 'perp' (legacy perpetuals engine)",
     )
     parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
-    parser.add_argument("--fee", type=float, default=None, help="fee per leg (pct), defaults to HL_FEE_PCT")
+    parser.add_argument("--fee", type=parse_cli_float, default=None, help="fee per leg (pct), defaults to HL_FEE_PCT")
     parser.add_argument(
-        "--lookback-days", type=int, default=None,
+        "--lookback-days", type=parse_cli_int, default=None,
         help="API fetch lookback in days when --dataset is omitted (defaults to full 5000-candle window)",
     )
     add_walk_forward_cli_args(
@@ -126,7 +148,15 @@ def main(argv: list[str] | None = None) -> int:
                     if lookback_days is not None
                     else {"start_ms": 0}
                 )
-                raw_candles = fetch_ohlc_candles(coin, interval, drop_incomplete=True, **fetch_kwargs)
+                raw_candles = fetch_ohlc_candles(
+                    coin,
+                    interval,
+                    drop_incomplete=True,
+                    engine=args.engine,
+                    spot_pair=cfg.get("HL_SPOT_PAIR"),
+                    quote=strat_params.currency if args.engine == "spot" else "USDC",
+                    **fetch_kwargs,
+                )
                 if not raw_candles:
                     print(f"[!] No candles returned for {coin} {interval}m; skipping.")
                     continue

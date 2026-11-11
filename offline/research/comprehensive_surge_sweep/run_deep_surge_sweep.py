@@ -32,6 +32,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import (
+    int_env,
     parse_dotenv,
     safe_float,
     safe_int,
@@ -40,9 +41,14 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
+from offline.backtests.evaluation import parse_cli_float, parse_cli_int
 from state_io import atomic_write_json, atomic_write_text
 from strategies import spot_engine as strat, spot_replay as _spot_replay
-from strategies.spot_replay import align_spot_interval_params, run_replay
+from strategies.spot_replay import (
+    align_spot_interval_params,
+    run_replay,
+    scale_subbar_timeout_params,
+)
 from offline.research.hybrid_reentry.harness import load_ohlc_csv
 
 DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "data")
@@ -55,7 +61,10 @@ DEFAULT_CONFIG = Path(ROOT) / "kraken" / "config.env"
 def load_base_params(config_path: str | Path) -> strat.StratParams:
     """Read one explicit profile without inheriting shell variables or secrets."""
     path = Path(config_path).resolve(strict=True)
-    return align_spot_interval_params(strat.StratParams.from_env(parse_dotenv(str(path))), 240)
+    return scale_subbar_timeout_params(
+        align_spot_interval_params(strat.StratParams.from_env(parse_dotenv(str(path))), 240),
+        240,
+    )
 
 R = dataclasses.replace
 
@@ -414,14 +423,19 @@ def _evaluate_worker_group(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--workers", type=int, default=3, help="Max parallel worker processes (default: 3)")
+    parser.add_argument(
+        "--workers",
+        type=parse_cli_int,
+        default=int_env("WORKERS") or 3,
+        help="Max parallel worker processes (default: WORKERS env or 3)",
+    )
     parser.add_argument("--out-dir", type=str, default=DEFAULT_OUT_DIR, help="Output directory for reports")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                         help="Versioned venue profile; shell variables and .env are ignored")
     parser.add_argument("--data-dir", type=Path, default=Path(DATA_DIR))
-    parser.add_argument("--initial-cash", type=float,
+    parser.add_argument("--initial-cash", type=parse_cli_float,
                         help="Cash per independent asset replay; default: configured allocation")
-    parser.add_argument("--fee-pct", type=float, required=True,
+    parser.add_argument("--fee-pct", type=parse_cli_float, required=True,
                         help="Explicit per-leg replay fee percentage (not fetched from the venue)")
     args = parser.parse_args()
     base_params = load_base_params(args.config)

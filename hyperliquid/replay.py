@@ -505,7 +505,7 @@ def _run_once(
                 order_placed_bar.pop(oid, None)
 
         # 5. Strategy decisions at bar close
-        signal_val = sig[i] if sig and i < len(sig) else "__any__"
+        signal_val = sig[i] if sig and i < len(sig) else (None if strategy.p.signal_gate else "__any__")
         cycle_before_step = strategy.s.get("cycles_completed", 0)
         strategy.step(c, signal=signal_val)
         if strategy.s.get("cycles_completed", 0) > cycle_before_step:

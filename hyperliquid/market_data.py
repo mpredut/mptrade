@@ -82,7 +82,9 @@ def normalize_closed_candles(
             continue
         t_f = safe_pos_float(row.get("t"), default=None)
         if t_f is not None:
-            by_open_time[int(t_f)] = bar
+            t_i = safe_int(round(t_f), default=None)
+            if t_i is not None and t_i > 0:
+                by_open_time[t_i] = bar
     return [by_open_time[key] for key in sorted(by_open_time)]
 
 
@@ -135,29 +137,70 @@ def fetch_ohlc_candles(
     return normalize_closed_candles(payload, now_ms=now_ms, drop_incomplete=drop_incomplete)
 
 
-def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[tuple[int, float]]:
+def fetch_funding_history(
+    coin: str,
+    start_ms: int,
+    timeout: int = 25,
+    *,
+    end_ms: int | None = None,
+) -> list[tuple[int, float]]:
     """Return hourly coin funding history sorted as (time_ms, funding_rate) tuples."""
     if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
         return []
-    if not isinstance(start_ms, (int, float)) or not isinstance(timeout, (int, float)):
+    if (
+        isinstance(start_ms, bool)
+        or isinstance(timeout, bool)
+        or not isinstance(start_ms, (int, float))
+        or not isinstance(timeout, (int, float))
+    ):
         return []
     start_f = safe_nonneg_float(start_ms, default=None)
     timeout_f = safe_pos_float(timeout, default=None)
-    if start_f is None or int(start_f) < 0 or timeout_f is None:
+    start_i = safe_int(round(start_f), default=None) if start_f is not None else None
+    if start_i is None or start_i < 0 or timeout_f is None:
         return []
-    try:
-        data = _post_info({"type": "fundingHistory", "coin": coin.strip(), "startTime": int(start_f)}, timeout=timeout_f)
-        if not isinstance(data, list):
+    end_i: int | None = None
+    if end_ms is not None:
+        if isinstance(end_ms, bool) or not isinstance(end_ms, (int, float)):
             return []
-        entries: list[tuple[int, float]] = []
-        for d in data:
-            if not isinstance(d, dict):
-                continue
-            t_f = safe_pos_float(d.get("time"), default=None)
-            rate = safe_float(d.get("fundingRate"), default=None)
-            if t_f is not None and int(t_f) > 0 and rate is not None:
-                entries.append((int(t_f), rate))
-        return sorted(entries, key=lambda x: x[0])
+        end_f = safe_nonneg_float(end_ms, default=None)
+        end_i = safe_int(round(end_f), default=None) if end_f is not None else None
+        if end_i is None or end_i < start_i:
+            return []
+    coin_clean = coin.strip()
+    by_ts: dict[int, float] = {}
+    cur_start = start_i
+    try:
+        for _ in range(60):
+            req_body: dict[str, object] = {
+                "type": "fundingHistory",
+                "coin": coin_clean,
+                "startTime": cur_start,
+            }
+            if end_i is not None:
+                req_body["endTime"] = end_i
+            data = _post_info(req_body, timeout=timeout_f)
+            if not isinstance(data, list) or not data:
+                break
+            max_t = -1
+            for d in data:
+                if not isinstance(d, dict):
+                    continue
+                t_f = safe_pos_float(d.get("time"), default=None)
+                rate = safe_float(d.get("fundingRate"), default=None)
+                t_i = safe_int(round(t_f), default=None) if t_f is not None else None
+                if t_i is not None and t_i > 0 and rate is not None:
+                    if end_i is None or t_i <= end_i:
+                        by_ts[t_i] = rate
+                    if t_i > max_t:
+                        max_t = t_i
+            if len(data) < 500 or max_t < cur_start:
+                break
+            next_start = max_t + 1
+            if end_i is not None and next_start > end_i:
+                break
+            cur_start = next_start
+        return [(t_k, by_ts[t_k]) for t_k in sorted(by_ts)]
     except Exception as e:  # noqa: BLE001
         log(f"  ! funding history unavailable for {coin}: {e}")
         return []

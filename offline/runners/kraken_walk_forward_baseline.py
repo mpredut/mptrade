@@ -26,7 +26,7 @@ from providers.market_api import api as mkt  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
-from strategies.spot_replay import align_spot_interval_params  # noqa: E402
+from strategies.spot_replay import align_spot_interval_params, scale_subbar_timeout_params  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_metadata,
     load_dataset,
@@ -38,6 +38,7 @@ from offline.backtests.evaluation import (  # noqa: E402
     assess_decision_evidence,
     build_execution_model_from_args,
     evaluate_walk_forward as _evaluate_walk_forward,
+    parse_cli_float,
     parse_dataset_specs,
     parse_intervals,
     resolve_window_sizes,
@@ -54,7 +55,7 @@ def evaluate_walk_forward(records: list[dict], params: StratParams, *, fee_pct: 
                           test_size: int, step_size: int, warmup_bars: int = 0,
                           execution: ExecutionModel | None = None) -> dict:
     adapter = kraken_replay.make_spot_replay_adapter(
-        align_spot_interval_params(params, interval),
+        scale_subbar_timeout_params(align_spot_interval_params(params, interval), interval),
         fee_pct=fee_pct,
         bar_minutes=interval,
         execution=execution,
@@ -77,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-file", default=str(KRAKEN_DIR / "config.env"))
     parser.add_argument("--pair", help="defaults to KRAKEN_PAIR from the live configuration")
     parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
-    parser.add_argument("--fee", type=float, default=0.26, help="fee per leg, percent")
+    parser.add_argument("--fee", type=parse_cli_float, default=0.26, help="fee per leg, percent")
     add_walk_forward_cli_args(
         parser,
         include_warmup=True,

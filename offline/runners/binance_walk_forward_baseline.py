@@ -29,12 +29,19 @@ from offline.backtests.evaluation import (
     build_execution_model_from_args,
     extract_cfg_float,
     extract_cfg_int,
+    parse_cli_float,
+    parse_cli_int,
     parse_dataset_specs,
     parse_intervals,
     parse_optional_lookback_days,
 )
 from providers.market_api import api as mkt
-from strategies.spot_replay import StratParams, align_spot_interval_params, make_spot_replay_adapter
+from strategies.spot_replay import (
+    StratParams,
+    align_spot_interval_params,
+    make_spot_replay_adapter,
+    scale_subbar_timeout_params,
+)
 
 
 def fetch_ohlc_candles(symbol: str, *, interval: int = 60, **kwargs) -> list[dict]:
@@ -47,9 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-file", default=str(ROOT / "config.env"))
     parser.add_argument("--symbol", help="defaults to SYMBOL or BINANCE_PAIR (e.g. BTCUSDT)")
     parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
-    parser.add_argument("--fee", type=float, default=0.10, help="fee per leg (pct), defaults to 0.10%%")
+    parser.add_argument("--fee", type=parse_cli_float, default=0.10, help="fee per leg (pct), defaults to 0.10%%")
     parser.add_argument(
-        "--lookback-days", type=int, default=630,
+        "--lookback-days", type=parse_cli_int, default=630,
         help="API fetch lookback in days when --dataset is omitted (defaults to 630)",
     )
     add_walk_forward_cli_args(
@@ -86,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             try:
                 strat_params = StratParams.from_env(cfg)
-            except ValueError:
+            except (ValueError, KeyError):
                 quote_ccy = split_symbol_assets(symbol)[1] or "USDT"
                 strat_params = StratParams.from_dict({
                     "currency": quote_ccy,
@@ -137,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
                 save_dataset(records, frozen_path)
             aligned_params = align_spot_interval_params(strat_params, interval)
             adapter = make_spot_replay_adapter(
-                params=aligned_params,
+                params=scale_subbar_timeout_params(aligned_params, interval),
                 fee_pct=args.fee,
                 bar_minutes=safe_pos_float(interval, default=60.0),
                 execution=execution,
@@ -159,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     except FileNotFoundError:
         raise
-    except (ValueError, OSError) as exc:
+    except (ValueError, KeyError, OSError) as exc:
         parser.error(str(exc))
 
     return 0
