@@ -5,16 +5,24 @@ No external dependencies; standard library only.
 """
 from __future__ import annotations
 
+import asyncio
+import atexit
 import base64
 import configparser
 import fcntl
 from functools import lru_cache
+import importlib
+import importlib.machinery
+import importlib.util
 import json
 import math
 import numbers
 import os
 import re
+import shutil
 import sys
+import tarfile
+import tempfile
 import threading
 import time as _time
 import urllib.error
@@ -1111,11 +1119,6 @@ def _resolve_archived_module_dir(abs_dir: str, stem: str) -> str:
     if not (rel == "archive" or rel.startswith("archive" + os.sep)):
         return abs_dir
     if _LEGACY_ARCHIVE_DIR is None or not os.path.isdir(_LEGACY_ARCHIVE_DIR):
-        import atexit
-        import shutil
-        import tarfile
-        import tempfile
-
         _LEGACY_ARCHIVE_DIR = tempfile.mkdtemp(prefix="mptrade_legacy_archive_")
         atexit.register(shutil.rmtree, _LEGACY_ARCHIVE_DIR, True)
         with tarfile.open(archive_tar, "r:gz") as tf:
@@ -1141,7 +1144,6 @@ def load_local_module(
                 and (not isinstance(mod_file, str) or not mod_file or os.path.dirname(os.path.abspath(mod_file)) == abs_dir)
             ):
                 return mod
-        import importlib.util
 
         orig_sys_path = list(sys.path)
         saved_ambiguous: dict[str, object] = {}
@@ -1333,10 +1335,6 @@ def evaluate_heartbeat_files_freshness(
     """Evaluate heartbeat freshness across ``hb_paths``."""
     if not hb_paths:
         return True, 0.0, 0.0, ""
-    try:
-        from cachepaths import resolve_cachedb_filepath as _resolve_path
-    except Exception:
-        _resolve_path = str  # type: ignore[assignment]
     hb_only = [p for p in hb_paths if str(p).strip().endswith(".heartbeat")]
     effective_paths = hb_only if hb_only else hb_paths
     mtimes: list[float] = []
@@ -1344,7 +1342,7 @@ def evaluate_heartbeat_files_freshness(
     start_ts = fallback_start_ts if fallback_start_ts is not None else now_ts
 
     for raw_hbp in effective_paths:
-        hbp = str(_resolve_path(raw_hbp))
+        hbp = str(resolve_cachedb_filepath(raw_hbp))
         if os.path.exists(hbp):
             try:
                 mt = os.path.getmtime(hbp)
@@ -1376,10 +1374,6 @@ def resolve_heartbeat_paths(
     include_stdout_with_heartbeat_file: bool = False,
 ) -> tuple[list[str], str]:
     """Resolve canonical heartbeat file paths and stdout log file path for a procs.conf entry."""
-    try:
-        from cachepaths import resolve_cachedb_filepath as _resolve_path
-    except Exception:
-        _resolve_path = str  # type: ignore[assignment]
     raw_stem = os.path.basename((name or pattern).rstrip("$"))
     raw_stem = raw_stem[:-3] if raw_stem.endswith(".py") else raw_stem
     clean_stem = "".join(c if (c.isalnum() or c in "-_") else "_" for c in raw_stem)
@@ -1393,7 +1387,7 @@ def resolve_heartbeat_paths(
             if os.path.isabs(part):
                 hb_paths.append(part)
             elif part.startswith("cachedb/"):
-                hb_paths.append(str(_resolve_path(os.path.join(workspace_dir, part))))
+                hb_paths.append(str(resolve_cachedb_filepath(os.path.join(workspace_dir, part))))
             elif part.startswith("logs/"):
                 hb_paths.append(os.path.join(workspace_dir, part))
             else:
@@ -2028,8 +2022,6 @@ def bind_lazy_module_exports(
     submodules: tuple[str, ...] | list[str] | set[str] | frozenset[str] = (),
 ):
     """Bind PEP 562 ``__getattr__``, ``__dir__``, and ``__all__`` into ``module_globals``."""
-    import importlib
-
     pkg_name = str(module_globals.get("__name__", ""))
     sub_set = frozenset(submodules)
     all_names = list(module_globals.get("__all__") or list(lazy_imports))
@@ -2168,8 +2160,6 @@ async def async_interruptible_sleep(
         return
     eff_step = safe_pos_float(step, default=0.2) or 0.2
     if sleep_fn is None:
-        import asyncio
-
         sleep_fn = asyncio.sleep
     is_stopped = getattr(stop_event, "is_set", None)
     elapsed = 0.0
@@ -2353,8 +2343,6 @@ class _MergedModuleAliasLoader:
         return None
 
     def exec_module(self, module) -> None:
-        import importlib
-
         if self.target_name == "hyperliquid.signals":
             hl_dir = os.path.join(_REPO_ROOT, "hyperliquid")
             is_reload = module is sys.modules.get("signals") and getattr(module, "__mptrade_exec_done__", False)
@@ -2394,14 +2382,9 @@ class _MergedModuleAliasFinder:
             resolved_dir = _resolve_archived_module_dir(sub_dir, stem)
             py_file = os.path.join(resolved_dir, f"{stem}.py")
             if os.path.isfile(py_file):
-                import importlib.util
-
                 return importlib.util.spec_from_file_location(fullname, py_file)
             pkg_dir = os.path.join(resolved_dir, stem)
             if os.path.isdir(pkg_dir):
-                import importlib.machinery
-                import importlib.util
-
                 init_py = os.path.join(pkg_dir, "__init__.py")
                 if os.path.isfile(init_py):
                     return importlib.util.spec_from_file_location(
@@ -2412,7 +2395,6 @@ class _MergedModuleAliasFinder:
                 return spec
         if target_name is None:
             return None
-        import importlib.util
 
         return importlib.util.spec_from_loader(
             fullname,

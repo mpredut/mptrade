@@ -16,6 +16,8 @@ import sys
 from typing import Optional, List, Callable, Any
 
 from cachepaths import normalize_venue_name
+from cacheprice import resolve_cached_symbol_price
+import cachetrend as ct
 from guard_hierarchy import (
     GUARD_REGISTRY,
     revoke_guard_bypass,
@@ -27,7 +29,9 @@ from instrument_registry import (
     resolve_instrument_spec,
     select_instruments,
 )
+import pricewindow as pw
 from providers.base import MarketDataProvider, extract_order_id
+from providers.order_id_context import KNOWN_BOT_PROCESS_CODES, get_process_name
 from providers.order_ohlc_utils import resolve_market_flag
 from botcore import (
     _parse_bool_flag,
@@ -230,7 +234,6 @@ class Instrument:
             target_kwargs["client_order_id"] = call_kwargs["client_order_id"]
         elif "prefix" not in target_kwargs:
             try:
-                from providers.order_id_context import KNOWN_BOT_PROCESS_CODES, get_process_name
                 pname = get_process_name()
                 if pname and pname in KNOWN_BOT_PROCESS_CODES:
                     target_kwargs["prefix"] = f"{pname}_OR"
@@ -952,8 +955,6 @@ class Instrument:
             # 2 & 2b: Short Trend Gate (GT_S) & Medium-Term Trend Gate (GT_M).
             if ctx.wait_for_trend:
                 try:
-                    import cachetrend as ct
-                    import pricewindow as pw
                     if pw.should_wait_short_trend(
                         ct.get_short_trend_manager(),
                         ctx.side_u,
@@ -1462,8 +1463,6 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
                 return px_f
     except Exception:
         pass
-
-    from cacheprice import resolve_cached_symbol_price
 
     venue = getattr(inst, "provider_name", None)
     if not isinstance(venue, str):

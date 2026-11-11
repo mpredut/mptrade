@@ -26,6 +26,7 @@ from typing import Any, Optional, Sequence
 import uuid
 
 import account_cache_health
+from credentials import CredentialConfigurationError
 from botcore import (
     _is_fresh_obs_ts,
     _parse_bool_flag,
@@ -2616,8 +2617,6 @@ class _KrakenAccountTradeBridge:
         )
 
     def start(self) -> bool:
-        from credentials import CredentialConfigurationError
-
         kr_prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
         if kr_prov_cls is None:
             log("[kraken_cache] skipped (Kraken provider not registered)")

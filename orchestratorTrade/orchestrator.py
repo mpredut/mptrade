@@ -1,6 +1,7 @@
 import asyncio
 from collections import defaultdict, deque
 import hashlib
+import importlib
 import logging
 import os
 import re
@@ -17,6 +18,9 @@ import botcore
 from botcore import evaluate_heartbeat_files_freshness, parse_procs_manifest
 botcore.load_root_config()
 from cachepaths import organize_cachedb_subdomains, resolve_cachedb_filepath
+import notify_engine.alertnotifiers as _an
+import notify_engine.mailer as _mailer
+import notify_engine.server as _ns
 from notify_engine.server import NotificationServer
 from state_io import read_bytes_file
 
@@ -320,7 +324,6 @@ class BotManager:
     async def _reload_runtime_modules_and_manifest(self) -> None:
         global evaluate_heartbeat_files_freshness, parse_procs_manifest, NotificationServer
         try:
-            import importlib
             importlib.reload(botcore)
             cfg_path = os.path.join(ROOT_DIR, "config.env")
             if os.path.exists(cfg_path):
@@ -328,9 +331,6 @@ class BotManager:
             evaluate_heartbeat_files_freshness = botcore.evaluate_heartbeat_files_freshness
             parse_procs_manifest = botcore.parse_procs_manifest
             if type(getattr(self, "server", None)).__name__ == "NotificationServer":
-                import notify_engine.alertnotifiers as _an
-                import notify_engine.mailer as _mailer
-                import notify_engine.server as _ns
                 importlib.reload(_an)
                 importlib.reload(_mailer)
                 importlib.reload(_ns)

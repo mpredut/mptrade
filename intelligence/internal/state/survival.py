@@ -57,9 +57,11 @@ from cachepaths import (
     normalize_cache_base_asset,
     resolve_cachedb_filepath,
 )
+import cachetrend as ct
 from instrument_registry import is_equity_symbol
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
 from providers.base import normalize_side
+import providers.market_api as _market_api_mod
 from state_io import read_json_dict_cached, save_json_state
 
 _DEFAULT_T_CACHE_FILE = cache_path(CACHE_T_TREND_FILENAME)
@@ -89,9 +91,7 @@ def _effective_t_cache_file() -> str:
 
 def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarray, np.ndarray]:
     """Return historical ``(timestamps_sec, closes)`` OHLC arrays via the canonical ``MarketApi`` provider facade."""
-    from providers.market_api import api as _market_api
-
-    pts = _market_api.fetch_historical_ohlc_points(symbol, days, interval=interval)
+    pts = _market_api_mod.api.fetch_historical_ohlc_points(symbol, days, interval=interval)
     if not pts:
         return np.asarray([], dtype=float), np.asarray([], dtype=float)
     return (
@@ -717,8 +717,6 @@ def get_weight_for_cash_permission_at_quant_time(
     `cache_long_trend.json` and `cache_T_trend.json` without triggering live OHLC network fetches
     or importing heavy plotting daemons.
     """
-    import cachetrend as ct
-
     if not isinstance(symbol, str) or not symbol.strip():
         return None
     if not isinstance(order_type, str):

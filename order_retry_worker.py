@@ -38,6 +38,7 @@ from cachepaths import split_symbol_assets
 import order_retry as oq
 from providers.base import normalize_side
 from providers.execution_audit import ExecutionAudit
+from providers.market_api import api as mkt
 from providers.quantity import resolve_assets
 from state_io import (
     encode_json_payload,
@@ -1061,7 +1062,6 @@ def main():
         if not oq.RETRY_ENABLED:
             print("[order_retry] RETRY_ENABLED=false — nothing to do (--once).")
             return 0
-        from providers.market_api import api as mkt
         try:
             print(f"[order_retry] single pass: {process_once(mkt)}")
             return 0
@@ -1078,8 +1078,6 @@ def main():
         while True:
             _touch_worker_hb({"retry_enabled": False}, poll=60.0)
             time.sleep(60)
-
-    from providers.market_api import api as mkt
 
     try:
         consolidated = oq.consolidate_deferred_streams()

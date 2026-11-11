@@ -28,6 +28,7 @@ from botcore import (
 )
 from cachepaths import normalize_venue_name
 from instrument_registry import is_equity_symbol
+import pricewindow as pw
 from . import order_id_context as rc
 from .base import (
     MarketDataProvider,
@@ -72,8 +73,6 @@ from .binance_provider import (  # noqa: F401
 def _runtime_market_regime_snapshot(symbol: str, now=None):
     """Read the optional short-trend snapshot at the application boundary."""
     try:
-        import pricewindow as pw
-
         mgr = MarketDataProvider.get_ssot_short_trend_manager()
         snap_fn = getattr(mgr, "get_fresh_snapshot", None)
         snap = snap_fn(symbol, now=now) if callable(snap_fn) else None

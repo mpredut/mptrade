@@ -14,6 +14,7 @@ from providers.base import extract_order_id, normalize_side
 from cachepaths import clean_symbol_key, split_symbol_assets
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
 api = mkt
+import shadow_signals
 from state_io import append_text_line
 
 from pricewindow import (  # noqa: F401 (re-export: test compat)
@@ -760,7 +761,6 @@ class TrendCoordinator:
         # KALMAN_MODES gates every order and primary Kalman starts orders for
         # KALMAN_PRIMARY_SYMBOLS. Guard setup and calls so a failure cannot stop trading.
         try:
-            import shadow_signals
             self._kalman_state = shadow_signals.KalmanStateTracker(
                 state_path=get_kalman_state_path())
             global _kalman_ref

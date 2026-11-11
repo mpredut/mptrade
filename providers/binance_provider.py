@@ -3,6 +3,8 @@
 import importlib
 from typing import Any, List, Optional
 
+import account_cache_health as health
+import botcore as cfg
 from botcore import (
     _parse_bool_flag,
     exact_pos_int,
@@ -18,6 +20,7 @@ from cachepaths import (
     resolve_binance_lookup_symbol,
     split_symbol_assets,
 )
+import instrument_registry as sym_reg
 from instrument_registry import casefold_get, venue_for_symbol
 
 from .base import (
@@ -146,8 +149,6 @@ class BinanceProvider(MarketDataProvider):
     @classmethod
     def _venue_live_orders_enabled(cls) -> bool:
         """Return the authoritative Binance live-order feature gate."""
-        import botcore as cfg
-
         return bool(cfg.is_trade_enabled())
 
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
@@ -164,8 +165,6 @@ class BinanceProvider(MarketDataProvider):
 
     def validate_open_order_symbol(self, symbol: str) -> None:
         if not self.supports_symbol(symbol):
-            import instrument_registry as sym_reg
-
             sym_reg.validate_symbols(symbol)
 
     # -- Account data, repackaged through the facade without semantic changes. --
@@ -223,8 +222,6 @@ class BinanceProvider(MarketDataProvider):
 
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Use current immutable fills, not order aggregates or a BUY-only average."""
-        import account_cache_health as health
-
         since_s = require_pos_float(since_s, "since_s")
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return None

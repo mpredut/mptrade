@@ -50,6 +50,7 @@ from botcore import (
     touch_module_heartbeat,
 )
 from providers.order_ohlc_utils import extract_yahoo_chart_latest_price
+from strategies.spot_engine import state_path_for
 try:
     from kraken.kraken_common import notify
     from kraken.kraken_client import KrakenClient, KrakenError
@@ -460,7 +461,6 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
             except (OSError, TypeError, ValueError):
                 pass
         if trial_pair:                                           # remove the bot's paper state
-            from strategies.spot_engine import state_path_for
             sp = state_path_for(trial_pair)
             if os.path.exists(sp):
                 os.remove(sp)

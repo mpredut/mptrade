@@ -50,6 +50,7 @@ from botcore import (
     touch_module_heartbeat,
 )
 from cachepaths import cache_symbol_variants, canonical_base_asset, canonical_symbol_key
+import cachetrend as ct
 from instrument_registry import casefold_get
 from providers.execution_audit import intent_client_order_id
 from state_io import load_json_state, save_json_state
@@ -698,8 +699,6 @@ class TrailingAdapterBase:
         """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown) from SSOT cache.
         Errors return 0, making trend filters a safe no-op."""
         try:
-            import cachetrend as ct
-
             cache_trend_path = self._module_attr("CACHE_TREND")
             if cache_trend_path:
                 snap = ct.CacheShortTrendManager.read_ssot_short_trend_file(

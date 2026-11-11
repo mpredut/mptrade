@@ -11,6 +11,8 @@ import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
 from botcore import (
     _parse_bool_flag,
@@ -35,6 +37,7 @@ from cachepaths import (
     normalize_venue_name,
     split_symbol_assets,
 )
+import instrument_registry as _default_ir
 
 
 _LIVE_FETCH_LOCAL = threading.local()
@@ -924,8 +927,6 @@ class MarketDataProvider(ABC):
         sym_clean = clean_symbol_key(sym_u)
         sym_canon = canonical_symbol_key(sym_u)
         try:
-            import instrument_registry as _default_ir
-
             ir = resolve_patched_attr("instrument_registry", _default_ir, modules=("providers.market_api",)) or _default_ir
             specs = list(ir.select_instruments(normalize_venue_name(getattr(venue, "name", venue) or "")).values())
             for item in specs:
@@ -1676,8 +1677,6 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
                 if c_i is None:
                     return False
                 forcelist.append(c_i)
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
         retry = Retry(
             total=att_i,
             connect=att_i,

@@ -22,7 +22,14 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import cache_symbol_variants, clean_symbol_key
+import intelligence.daemon as _intel_daemon
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
+from intelligence.internal.state.survival import (
+    _ORIG_ESTIMATE_T,
+    _lookup_t_cache_entry,
+    _resolve_facade_attr,
+    estimate_T,
+)
 from intelligence.macro.daemon_ssot import inspect_daemon_heartbeat
 from intelligence.macro_sentiment_ssot import (
     get_cache_filenames,
@@ -90,7 +97,6 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 1. Pillar 1: Internal Quantitative & Trend Survival
     try:
-        from intelligence.internal.state.survival import _ORIG_ESTIMATE_T, _lookup_t_cache_entry, _resolve_facade_attr, estimate_T
         eff_est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
         t_est = None
         if eff_est_fn is _ORIG_ESTIMATE_T and not hasattr(eff_est_fn, "_mock_name"):
@@ -352,9 +358,8 @@ def main():
 
     # 2. Optional Manual Refresh
     if args.refresh:
-        from intelligence.daemon import IntelligenceTelemetryDaemon
         print(f"Refreshing telemetry for {symbol}...")
-        daemon = IntelligenceTelemetryDaemon(symbols=[symbol])
+        daemon = _intel_daemon.IntelligenceTelemetryDaemon(symbols=[symbol])
         res = daemon.run_cycle(force=True)
         if not args.json:
             print(f"Refresh completed: {res}")
