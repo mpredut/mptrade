@@ -320,19 +320,25 @@ class InstrumentBinancePermitIntegrationTest(TempDirTestCase):
         self.assertEqual(later["attempted"], 0)
         later_submit.assert_not_called()
 
-    def test_market_buy_reissues_permit_when_final_profit_check_late_scales_qty(self):
-        ctx = {"regime": "bull"}
-        pg_calls = []
+    @staticmethod
+    def _make_scaling_profit_guard(*, scale: float, reason: str, on_call: int | None = None):
+        calls = []
 
-        def fake_profit_guard(_prov, _sym, _side, _px, _margin, **kwargs):
-            pg_calls.append(_px)
-            if len(pg_calls) == 2:
-                # Final market dispatch check lowers suggested_scale on dict regime_context
+        def _guard(_prov, _sym, _side, _px, _margin, **kwargs):
+            calls.append(_px)
+            if on_call is None or len(calls) == on_call:
                 order_guard._record_context_suggested_scale(
-                    kwargs.get("regime_context"), "BUY", 0.5, "late_crowding")
+                    kwargs.get("regime_context"), "BUY", scale, reason
+                )
             return True
 
-        with self._patched_binance_env(profit_guard_fn=fake_profit_guard) as (client, _provider, instrument):
+        return _guard
+
+    def test_market_buy_reissues_permit_when_final_profit_check_late_scales_qty(self):
+        ctx = {"regime": "bull"}
+        guard_fn = self._make_scaling_profit_guard(scale=0.5, reason="late_crowding", on_call=2)
+
+        with self._patched_binance_env(profit_guard_fn=guard_fn) as (client, _provider, instrument):
             result = instrument.place(
                 "BUY", 100.0, 1.0, market=True, smart=False,
                 wait_for_trend=False, caller_owns_retry=True,
@@ -344,14 +350,10 @@ class InstrumentBinancePermitIntegrationTest(TempDirTestCase):
 
     def test_monitor_order_replace_buy_with_subtick_price_and_permit_succeeds_without_double_scaling(self):
         ctx = {"regime": "bear"}
-
-        def fake_profit_guard(_prov, _sym, _side, _px, _margin, **kwargs):
-            order_guard._record_context_suggested_scale(
-                kwargs.get("regime_context"), "BUY", 0.5, "whale_divergence")
-            return True
+        guard_fn = self._make_scaling_profit_guard(scale=0.5, reason="whale_divergence")
 
         subtick_buy_price = 98.899  # round(98.899, 2) -> 98.90 (> 98.899), floor -> 98.89
-        with self._patched_binance_env(profit_guard_fn=fake_profit_guard) as (client, provider, instrument):
+        with self._patched_binance_env(profit_guard_fn=guard_fn) as (client, provider, instrument):
             permit = provider.preflight_order(
                 "BTCUSDC", "BUY", 1.5, subtick_buy_price,
                 market=False, kind="monitor_order_replace")

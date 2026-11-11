@@ -1,5 +1,7 @@
 """Delivery ownership, notification, and TTL regressions for monitororder."""
 
+import contextlib
+import math
 import time
 from types import SimpleNamespace
 import unittest
@@ -7,12 +9,56 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import order_guard as og
 import order_lifecycle as accepted_order_persistence
 import monitororder
 import order_retry_worker
 from providers.strategy_executor import OrderStatus
 import order_retry as oq
 from tests.conftest import make_transient_complete_claim
+
+_CANCELED_STATUS = OrderStatus(
+    status="canceled",
+    filled_qty=0.0,
+    cost=0.0,
+    fee=0.0,
+    venue_status="CANCELED",
+)
+
+
+@contextlib.contextmanager
+def _replacement_env(
+    open_orders,
+    current_price: float,
+    *,
+    order_id=_CANCELED_STATUS,
+    place_side_effect=None,
+    complete_claim: bool = False,
+    silence_notify: bool = False,
+):
+    placed = []
+    if place_side_effect is None and order_id is not _CANCELED_STATUS:
+        def _record_place(symbol, side, price, qty, **kw):
+            placed.append((symbol, side, price, qty, kw))
+            return {"orderId": order_id} if order_id is not None else None
+        place_kwargs = {"side_effect": _record_place}
+    elif place_side_effect is not None:
+        place_kwargs = {"side_effect": place_side_effect}
+    else:
+        place_kwargs = {"return_value": None}
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(monitororder.api, "get_open_orders", return_value=open_orders))
+        stack.enter_context(patch.object(monitororder.api, "get_current_price", return_value=current_price))
+        stack.enter_context(patch.object(monitororder.mkt, "preflight_order", return_value=object()))
+        stack.enter_context(patch.object(monitororder.api, "cancel_order", return_value=True))
+        stack.enter_context(patch.object(monitororder.mkt, "order_status", return_value=_CANCELED_STATUS))
+        place_mock = stack.enter_context(patch.object(monitororder.mkt, "place", **place_kwargs))
+        if complete_claim:
+            stack.enter_context(patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True))
+        if silence_notify:
+            stack.enter_context(patch("notify_engine.alertnotifiers.notify"))
+        yield place_mock, placed
 
 
 @pytest.fixture(autouse=True)
@@ -41,20 +87,8 @@ def test_failed_replacement_is_submitted_once_and_left_to_shared_outbox():
     monitororder.initial_sell_prices.clear()
     open_orders = {"old-1": {"price": 100.0, "quantity": 2.0}}
 
-    with (
-        patch.object(monitororder.api, "get_open_orders", return_value=open_orders),
-        patch.object(monitororder.api, "get_current_price", return_value=100.1),
-        patch.object(
-            monitororder.mkt, "preflight_order", return_value=object()),
-        patch.object(monitororder.api, "cancel_order", return_value=True),
-        patch.object(
-            monitororder.mkt, "order_status",
-            return_value=OrderStatus(
-                status="canceled", filled_qty=0.0, cost=0.0, fee=0.0,
-                venue_status="CANCELED")),
-        patch.object(monitororder.mkt, "place", return_value=None) as place,
-        patch.object(monitororder.time, "sleep") as sleep,
-    ):
+    with _replacement_env(open_orders, 100.1) as (place, _), \
+         patch.object(monitororder.time, "sleep") as sleep:
         monitororder.monitor_open_orders_by_type(
             "TAOUSDC", "SELL", failed_legacy,
         )
@@ -73,22 +107,7 @@ def test_accepted_replacement_transfers_original_anchor_to_new_order_id():
     monitororder.initial_buy_prices.clear()
     open_orders = {"old-2": {"price": 100.0, "quantity": 1.5}}
 
-    with (
-        patch.object(monitororder.api, "get_open_orders", return_value=open_orders),
-        patch.object(monitororder.api, "get_current_price", return_value=100.5),
-        patch.object(
-            monitororder.mkt, "preflight_order", return_value=object()),
-        patch.object(monitororder.api, "cancel_order", return_value=True),
-        patch.object(
-            monitororder.mkt, "order_status",
-            return_value=OrderStatus(
-                status="canceled", filled_qty=0.0, cost=0.0, fee=0.0,
-                venue_status="CANCELED")),
-        patch.object(
-            monitororder.mkt, "place",
-            return_value={"orderId": "new-2"},
-        ),
-    ):
+    with _replacement_env(open_orders, 100.5, order_id="new-2"):
         monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
 
     assert "old-2" not in monitororder.initial_buy_prices
@@ -100,21 +119,7 @@ def test_transient_accepted_replacement_tracking_failure_is_retried():
     attempts, transient_complete = make_transient_complete_claim(monitororder.order_retry)
 
     with (
-        patch.object(
-            monitororder.api, "get_open_orders", return_value=open_orders),
-        patch.object(
-            monitororder.api, "get_current_price", return_value=100.5),
-        patch.object(
-            monitororder.mkt, "preflight_order", return_value=object()),
-        patch.object(monitororder.api, "cancel_order", return_value=True),
-        patch.object(
-            monitororder.mkt, "order_status",
-            return_value=OrderStatus(
-                status="canceled", filled_qty=0.0, cost=0.0, fee=0.0,
-                venue_status="CANCELED")),
-        patch.object(
-            monitororder.mkt, "place",
-            return_value={"orderId": "new-transient"}),
+        _replacement_env(open_orders, 100.5, order_id="new-transient"),
         patch.object(
             monitororder.order_retry, "complete_claim",
             side_effect=transient_complete),
@@ -138,23 +143,9 @@ def test_transient_accepted_replacement_tracking_failure_is_retried():
 
 def test_crash_after_accepted_replacement_is_reconciled_without_resubmit():
     open_orders = {"old-crash": {"price": 100.0, "quantity": 1.5}}
-    submitted = []
-
-    def accept_then_crash_window(*args, **kwargs):
-        submitted.append((args, kwargs))
-        return {"orderId": "new-crash"}
 
     with (
-        patch.object(monitororder.api, "get_open_orders", return_value=open_orders),
-        patch.object(monitororder.api, "get_current_price", return_value=100.5),
-        patch.object(monitororder.mkt, "preflight_order", return_value=object()),
-        patch.object(monitororder.api, "cancel_order", return_value=True),
-        patch.object(
-            monitororder.mkt, "order_status",
-            return_value=OrderStatus(
-                status="canceled", filled_qty=0.0, cost=0.0, fee=0.0,
-                venue_status="CANCELED")),
-        patch.object(monitororder.mkt, "place", side_effect=accept_then_crash_window),
+        _replacement_env(open_orders, 100.5, order_id="new-crash") as (_, submitted),
         patch.object(
             monitororder.order_retry, "complete_claim",
             side_effect=SystemExit("simulated crash before acceptance persistence")),
@@ -260,15 +251,8 @@ class TestMonitororderNotifications(unittest.TestCase):
         initial_order = {
             3001: {"price": 100.0, "quantity": 1.0, "remainingQty": 1.0}
         }
-        replacement_order = {"orderId": 9999}
 
-        with patch.object(monitororder.api, "get_open_orders", return_value=initial_order), \
-             patch.object(monitororder.api, "get_current_price", return_value=100.1), \
-             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
-             patch.object(monitororder.api, "cancel_order", return_value=True), \
-             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
-             patch.object(monitororder.mkt, "place", return_value=replacement_order), \
-             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
+        with _replacement_env(initial_order, 100.1, order_id=9999, complete_claim=True), \
              patch("notify_engine.alertnotifiers.notify") as mock_notify:
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
             self.assertEqual(mock_notify.call_count, 1)
@@ -315,20 +299,9 @@ class TestMonitororderNotifications(unittest.TestCase):
                 "clientOrderId": "TA_OR_22325fc5bb814a21b54cdca8b6_0",
             }
         }
-        placed = []
-
-        def fake_place(symbol, side, price, qty, **kw):
-            placed.append((symbol, side, price, qty, kw))
-            return {"orderId": 722760715}
-
-        with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=217.90), \
-             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
-             patch.object(monitororder.api, "cancel_order", return_value=True), \
-             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
-             patch.object(monitororder.mkt, "place", side_effect=fake_place), \
-             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
-             patch("notify_engine.alertnotifiers.notify"):
+        with _replacement_env(
+            sell_orders, 217.90, order_id=722760715, complete_claim=True, silence_notify=True
+        ) as (_, placed):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
 
         self.assertEqual(len(placed), 1)
@@ -347,21 +320,9 @@ class TestMonitororderNotifications(unittest.TestCase):
                 "clientOrderId": "TA_OR_push_sell_0",
             }
         }
-        placed_sell = []
-
-        def fake_place_sell(symbol, side, price, qty, **kw):
-            placed_sell.append((symbol, side, price, qty, kw))
-            return {"orderId": 9002}
-
-        with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=217.90), \
-             patch.object(monitororder, "_evaluate_reprice_trend_state", return_value=(True, True)), \
-             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
-             patch.object(monitororder.api, "cancel_order", return_value=True), \
-             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
-             patch.object(monitororder.mkt, "place", side_effect=fake_place_sell), \
-             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
-             patch("notify_engine.alertnotifiers.notify"):
+        with _replacement_env(
+            sell_orders, 217.90, order_id=9002, complete_claim=True, silence_notify=True
+        ) as (_, placed_sell), patch.object(monitororder, "_evaluate_reprice_trend_state", return_value=(True, True)):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
 
         self.assertEqual(len(placed_sell), 1)
@@ -380,21 +341,9 @@ class TestMonitororderNotifications(unittest.TestCase):
                 "clientOrderId": "TA_OR_push_buy_0",
             }
         }
-        placed_buy = []
-
-        def fake_place_buy(symbol, side, price, qty, **kw):
-            placed_buy.append((symbol, side, price, qty, kw))
-            return {"orderId": 9004}
-
-        with patch.object(monitororder.api, "get_open_orders", return_value=buy_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=200.00), \
-             patch.object(monitororder, "_evaluate_reprice_trend_state", return_value=(True, True)), \
-             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
-             patch.object(monitororder.api, "cancel_order", return_value=True), \
-             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
-             patch.object(monitororder.mkt, "place", side_effect=fake_place_buy), \
-             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
-             patch("notify_engine.alertnotifiers.notify"):
+        with _replacement_env(
+            buy_orders, 200.00, order_id=9004, complete_claim=True, silence_notify=True
+        ) as (_, placed_buy), patch.object(monitororder, "_evaluate_reprice_trend_state", return_value=(True, True)):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
 
         self.assertEqual(len(placed_buy), 1)
@@ -425,7 +374,6 @@ class TestMonitororderNotifications(unittest.TestCase):
             mock_place.assert_not_called()
 
     def test_dynamic_reprice_bounds_scale_with_venue_tick_size(self):
-        import math
         # Derived anchor relationships from MIN_PROC
         self.assertAlmostEqual(monitororder.MAX_PROC, round(monitororder.MIN_PROC * 9.6, 4), places=6)
         self.assertAlmostEqual(monitororder.INITIAL_MAX_PROC, round(monitororder.MIN_PROC * 21.25, 4), places=6)
@@ -487,25 +435,13 @@ class TestMonitororderNotifications(unittest.TestCase):
                 "clientOrderId": "TA_OR_tick_0",
             }
         }
-        placed = []
-
-        def fake_place(symbol, side, price, qty, **kw):
-            placed.append(price)
-            return {"orderId": 9011}
-
-        with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=200.00), \
-             patch.object(monitororder.mkt, "price_tick_size", return_value=0.10), \
-             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
-             patch.object(monitororder.api, "cancel_order", return_value=True), \
-             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
-             patch.object(monitororder.mkt, "place", side_effect=fake_place), \
-             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
-             patch("notify_engine.alertnotifiers.notify"):
+        with _replacement_env(
+            sell_orders, 200.00, order_id=9011, complete_claim=True, silence_notify=True
+        ) as (_, placed), patch.object(monitororder.mkt, "price_tick_size", return_value=0.10):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
 
         self.assertEqual(len(placed), 1)
-        self.assertAlmostEqual(placed[0], 200.00 * (1.0 + t_min / 100.0), places=6)
+        self.assertAlmostEqual(placed[0][2], 200.00 * (1.0 + t_min / 100.0), places=6)
 
     def test_cumulative_initial_max_proc_allows_sequential_step_up_to_one_percent(self):
         # Initial anchor was 100.0; order was already stepped to 99.20.
@@ -520,14 +456,9 @@ class TestMonitororderNotifications(unittest.TestCase):
                 "clientOrderId": "TA_OR_seq_0",
             }
         }
-        with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=98.60), \
-             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
-             patch.object(monitororder.api, "cancel_order", return_value=True), \
-             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
-             patch.object(monitororder.mkt, "place", return_value={"orderId": 8002}) as mock_place, \
-             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
-             patch("notify_engine.alertnotifiers.notify"):
+        with _replacement_env(
+            sell_orders, 98.60, order_id=8002, complete_claim=True, silence_notify=True
+        ) as (mock_place, _):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
             mock_place.assert_called_once()
 
@@ -632,32 +563,28 @@ class TestMonitororderTTLExpiration:
 
 
 class TestOrderRetryTTL:
-    def test_enqueue_persists_ttl_sec(self, tmp_path):
-        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
-             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")):
-            rec_id = oq.enqueue(
-                "BTCUSDC", "BUY", 0.01,
-                requested_price=80000.0, ref_price=80000.0,
-                ttl_sec=1200.0
-            )
-            records = oq.load_all()
-            found = [r for r in records if r.get("id") == rec_id]
-            assert len(found) == 1
-            assert found[0].get("ttl_sec") == 1200.0
-            assert found[0].get("expires_at_ts") is not None
+    def test_enqueue_persists_ttl_sec(self):
+        rec_id = oq.enqueue(
+            "BTCUSDC", "BUY", 0.01,
+            requested_price=80000.0, ref_price=80000.0,
+            ttl_sec=1200.0,
+        )
+        records = oq.load_all()
+        found = [r for r in records if r.get("id") == rec_id]
+        assert len(found) == 1
+        assert found[0].get("ttl_sec") == 1200.0
+        assert found[0].get("expires_at_ts") is not None
 
-    def test_get_accepted_order_ttl_map(self, tmp_path):
-        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
-             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")):
-            oq.enqueue(
-                "BTCUSDC", "BUY", 0.01,
-                place_kwargs={"client_order_id": "TA_OR_test_1", "ttl_sec": 750.0},
-                requested_price=80000.0, ref_price=80000.0,
-            )
-            ttl_map = oq.get_accepted_order_ttl_map()
-            assert ttl_map.get("TA_OR_test_1") == 750.0
+    def test_get_accepted_order_ttl_map(self):
+        oq.enqueue(
+            "BTCUSDC", "BUY", 0.01,
+            place_kwargs={"client_order_id": "TA_OR_test_1", "ttl_sec": 750.0},
+            requested_price=80000.0, ref_price=80000.0,
+        )
+        ttl_map = oq.get_accepted_order_ttl_map()
+        assert ttl_map.get("TA_OR_test_1") == 750.0
 
-    def test_subdollar_buy_replacement_uses_positive_price(self, tmp_path):
+    def test_subdollar_buy_replacement_uses_positive_price(self):
         open_orders = {
             555001: {
                 "price": 0.20,
@@ -665,27 +592,14 @@ class TestOrderRetryTTL:
                 "remainingQty": 300.0,
             }
         }
-        placed = []
-        def fake_place(symbol, side, price, qty, **kw):
-            placed.append((symbol, side, price, qty))
-            return {"orderId": 555002}
-
-        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
-             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")), \
-             patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=0.1999), \
-             patch.object(monitororder.mkt, "order_filter_refusal", return_value=None), \
-             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
-             patch.object(monitororder.api, "cancel_order", return_value=True), \
-             patch.object(monitororder.mkt, "order_status", return_value=oq.OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
-             patch.object(monitororder.mkt, "place", side_effect=fake_place), \
-             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
-             patch("notify_engine.alertnotifiers.notify"):
+        with _replacement_env(
+            open_orders, 0.1999, order_id=555002, complete_claim=True, silence_notify=True
+        ) as (_, placed):
             monitororder.monitor_open_orders_by_type("ARBUSDC", "BUY")
         assert len(placed) == 1
         assert abs(placed[0][2] - (0.1999 * (1.0 - monitororder.REPRICE_OFFSET))) < 1e-9
 
-    def test_subdollar_sell_replacement_avoids_plus_one_jump(self, tmp_path):
+    def test_subdollar_sell_replacement_avoids_plus_one_jump(self):
         open_orders = {
             555003: {
                 "price": 0.20,
@@ -693,27 +607,14 @@ class TestOrderRetryTTL:
                 "remainingQty": 300.0,
             }
         }
-        placed = []
-        def fake_place(symbol, side, price, qty, **kw):
-            placed.append((symbol, side, price, qty))
-            return {"orderId": 555004}
-
-        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
-             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")), \
-             patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=0.1999), \
-             patch.object(monitororder.mkt, "order_filter_refusal", return_value=None), \
-             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
-             patch.object(monitororder.api, "cancel_order", return_value=True), \
-             patch.object(monitororder.mkt, "order_status", return_value=oq.OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
-             patch.object(monitororder.mkt, "place", side_effect=fake_place), \
-             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
-             patch("notify_engine.alertnotifiers.notify"):
+        with _replacement_env(
+            open_orders, 0.1999, order_id=555004, complete_claim=True, silence_notify=True
+        ) as (_, placed):
             monitororder.monitor_open_orders_by_type("ARBUSDC", "SELL")
         assert len(placed) == 1
         assert abs(placed[0][2] - (0.1999 * (1.0 + monitororder.REPRICE_OFFSET))) < 1e-9
 
-    def test_skips_redundant_replacement_when_price_unchanged(self, tmp_path):
+    def test_skips_redundant_replacement_when_price_unchanged(self):
         open_orders = {
             555005: {
                 "price": 0.1823,
@@ -721,57 +622,49 @@ class TestOrderRetryTTL:
                 "remainingQty": 300.0,
             }
         }
-        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
-             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")), \
-             patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
+        with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
              patch.object(monitororder.api, "get_current_price", return_value=0.1825), \
-             patch.object(monitororder.mkt, "round_price", return_value=0.1823), \
+             patch.object(monitororder.mkt, "round_price", lambda _sym, _px: 0.1823), \
              patch.object(monitororder.api, "cancel_order") as mock_cancel, \
              patch.object(monitororder.mkt, "place") as mock_place:
-            # Patch out _mock_name check on round_price by using a real function
-            monitororder.mkt.round_price = lambda _sym, _px: 0.1823
             monitororder.monitor_open_orders_by_type("ARBUSDC", "BUY")
             mock_cancel.assert_not_called()
             mock_place.assert_not_called()
 
-    def test_custom_ttl_and_expires_at_ts_enforced_in_is_expired(self, tmp_path):
-        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
-             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")):
-            rid = oq.enqueue(
-                "TAOUSDC", "BUY", 1.0,
-                requested_price=250.0, ref_price=250.0,
-                failure_reason="trend_deferred",
-                now=1000.0, ttl_sec=300.0,
-            )
-            rec = oq.get(rid)
-            assert oq.resolve_record_ttl(rec) == 300.0
-            assert not oq.is_expired(rec, now=1250.0)
-            assert oq.is_expired(rec, now=1301.0)
+    def test_custom_ttl_and_expires_at_ts_enforced_in_is_expired(self):
+        rid = oq.enqueue(
+            "TAOUSDC", "BUY", 1.0,
+            requested_price=250.0, ref_price=250.0,
+            failure_reason="trend_deferred",
+            now=1000.0, ttl_sec=300.0,
+        )
+        rec = oq.get(rid)
+        assert oq.resolve_record_ttl(rec) == 300.0
+        assert not oq.is_expired(rec, now=1250.0)
+        assert oq.is_expired(rec, now=1301.0)
 
-    def test_intentionally_canceled_claimed_accepted_order_does_not_alert_terminal(self, tmp_path):
-        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
-             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")):
-            rid = oq.enqueue(
-                "TAOUSDC", "BUY", 1.0,
-                requested_price=250.0, ref_price=250.0, now=1000.0,
-            )
-            assert oq.complete_claim(
-                oq.claim([rid], now=1001.0)[0],
-                "accepted",
-                order={"orderId": 888, "status": "NEW"},
-                now=1001.0,
-            )
-            claimed = oq.claim([rid], now=1400.0)[0]
-            assert oq.resolve_accepted_order("TAOUSDC", 888) is True
-            transition = oq.advance_claimed_status(
-                claimed,
-                OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED"),
-                now=1401.0,
-            )
-            assert transition.action == "terminal"
-            assert transition.status_changed is False
+    def test_intentionally_canceled_claimed_accepted_order_does_not_alert_terminal(self):
+        rid = oq.enqueue(
+            "TAOUSDC", "BUY", 1.0,
+            requested_price=250.0, ref_price=250.0, now=1000.0,
+        )
+        assert oq.complete_claim(
+            oq.claim([rid], now=1001.0)[0],
+            "accepted",
+            order={"orderId": 888, "status": "NEW"},
+            now=1001.0,
+        )
+        claimed = oq.claim([rid], now=1400.0)[0]
+        assert oq.resolve_accepted_order("TAOUSDC", 888) is True
+        transition = oq.advance_claimed_status(
+            claimed,
+            _CANCELED_STATUS,
+            now=1401.0,
+        )
+        assert transition.action == "terminal"
+        assert transition.status_changed is False
 
-    def test_expired_order_cleans_initial_prices_and_replacement_propagates_remaining_ttl(self, tmp_path):
+    def test_expired_order_cleans_initial_prices_and_replacement_propagates_remaining_ttl(self):
         now = time.time()
         monitororder.initial_buy_prices["711457499"] = 277.4
         expired_orders = {
@@ -798,22 +691,13 @@ class TestOrderRetryTTL:
                 "clientOrderId": "TA_OR_abc_0",
             }
         }
-        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
-             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")), \
-             patch.object(monitororder.api, "get_open_orders", return_value=active_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=100.5), \
-             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
-             patch.object(monitororder.api, "cancel_order", return_value=True), \
-             patch.object(monitororder.mkt, "order_status", return_value=OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
-             patch.object(monitororder.mkt, "place", return_value={"orderId": "711457501"}), \
-             patch("notify_engine.alertnotifiers.notify"):
+        with _replacement_env(active_orders, 100.5, order_id="711457501", silence_notify=True):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
             tracked = oq.load_all()
             assert len(tracked) == 1
             assert 5900.0 <= tracked[0]["ttl_sec"] <= 6005.0
 
     def test_order_guard_timestamp_and_qty_normalization(self):
-        import order_guard as og
         now_s = time.time()
         provider = MagicMock()
         provider.name = "Kraken"

@@ -78,6 +78,37 @@ def _setup_gemini_notional_check(
     return calls
 
 
+def _setup_late_scale_place_and_profit_guard(monkeypatch, provider, *, scale: float = 0.25):
+    placed_calls = []
+
+    def _record_place(symbol, side, price, qty, **kwargs):
+        placed_calls.append({"symbol": symbol, "side": side, "price": price, "qty": qty, "kwargs": kwargs})
+        return {
+            "id": "ord-1",
+            "orderId": "ORD_12345",
+            "symbol": symbol,
+            "side": side,
+            "price": price,
+            "qty": qty,
+            "status": "NEW",
+            "executedQty": "0.0",
+            "origQty": str(qty),
+        }
+
+    if isinstance(getattr(provider, "place_order", None), MagicMock):
+        provider.place_order.side_effect = _record_place
+    else:
+        provider.place_order = _record_place
+
+    def _late_scale_profit_guard(prov, sym, side, px, margin, window_ref=None, regime_context=None, qty=None):
+        if regime_context is not None:
+            object.__setattr__(regime_context, "suggested_scale", scale)
+        return True
+
+    monkeypatch.setattr(order_guard, "profit_guard", _late_scale_profit_guard)
+    return placed_calls
+
+
 class TestIntelligenceGuardDynamicEvaluation:
     def test_price_surge_blocked_on_same_regime_context(self, monkeypatch):
         """Verify that BUY at 100 is approved, but subsequent BUY at 125 is blocked by parabolic surge guard on the same context."""
@@ -580,24 +611,11 @@ class TestArchitectureFixes4Cases:
             'refuse_reason': None, 'balance_asset': 'USDC'
         })()
 
-        placed_calls = []
-        def fake_place_order(symbol, side, price, qty, **kw):
-            placed_calls.append({"symbol": symbol, "side": side, "qty": qty, "price": price})
-            return {"id": "ord-1", "symbol": symbol, "side": side, "price": price, "qty": qty}
-
-        provider.place_order = fake_place_order
+        placed_calls = _setup_late_scale_place_and_profit_guard(monkeypatch, provider, scale=0.25)
+        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "off")
 
         mock_api = MagicMock()
         mock_api.provider_by_name.return_value = provider
-
-        # Late intelligence downscale inside profit_guard
-        def mock_profit_guard(prov, sym, side, px, pm, window_ref=None, regime_context=None, qty=None):
-            if regime_context is not None:
-                object.__setattr__(regime_context, "suggested_scale", 0.25)
-            return True
-
-        monkeypatch.setattr(order_guard, "profit_guard", mock_profit_guard)
-        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "off")
 
         inst = Instrument("binance_btcusdc", "BTCUSDC", "binance", api=mock_api)
         res = inst.place("BUY", 4.0, 100.0, regime_context=ctx, force=True, wait_for_trend=False, caller_owns_retry=True)
@@ -842,20 +860,7 @@ class TestSisterArchitecturalDefects:
         provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
         provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
 
-        placed_calls = []
-        def fake_place_order(symbol, side, price, qty, **kwargs):
-            placed_calls.append({"symbol": symbol, "side": side, "price": price, "qty": qty, "kwargs": kwargs})
-            return {"orderId": "ORD_12345", "status": "NEW", "executedQty": "0.0", "origQty": str(qty)}
-
-        provider.place_order.side_effect = fake_place_order
-
-        # Dispatch-time profit guard recommends late scale reduction 0.25
-        def fake_profit_guard(prov, sym, side, px, margin, window_ref=None, regime_context=None, qty=None):
-            if regime_context is not None:
-                object.__setattr__(regime_context, "suggested_scale", 0.25)
-            return True
-
-        monkeypatch.setattr(order_guard, "profit_guard", fake_profit_guard)
+        placed_calls = _setup_late_scale_place_and_profit_guard(monkeypatch, provider, scale=0.25)
 
         mock_api = MagicMock()
         mock_api.provider_by_name.return_value = provider

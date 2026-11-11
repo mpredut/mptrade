@@ -631,10 +631,10 @@ def test_apply_code_patch_safely_guards_workspace_boundary_and_restores_in_memor
     assert reconciler._apply_code_patch_safely(inside, "val = 10", "val = 10", "noop") is False
 
     # Failed pytest restores exact pre-patch content even in a non-git workspace
-    def _fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="failed")
-
-    with patch("subprocess.run", side_effect=_fake_run):
+    with patch(
+        "subprocess.run",
+        side_effect=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="failed"),
+    ):
         assert reconciler._apply_code_patch_safely(inside, "val = 10", "val = 20", "bad fix") is False
     with open(inside, "r", encoding="utf-8") as f:
         assert f.read() == "val = 10\n"

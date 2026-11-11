@@ -495,22 +495,18 @@ class TestGeminiClient:
     """Tests for GeminiClient wrapper with mocked runner and JSON decoding."""
 
     def test_query_json_clean(self):
-
-        def mock_runner(prompt, model, timeout):
-            return '{"decision": "APPROVED", "suggested_scale": 1.0, "reason": "All metrics green"}'
-
-        client = GeminiClient(custom_runner=mock_runner)
+        client = GeminiClient(
+            custom_runner=lambda *_: '{"decision": "APPROVED", "suggested_scale": 1.0, "reason": "All metrics green"}'
+        )
         res = client.query_json("Test prompt")
         assert res is not None
         assert res["decision"] == "APPROVED"
         assert res["suggested_scale"] == 1.0
 
     def test_query_json_markdown_wrapped(self):
-
-        def mock_runner(prompt, model, timeout):
-            return "```json\n{\n  \"decision\": \"DOWNSCALE\",\n  \"suggested_scale\": 0.5,\n  \"reason\": \"Overleveraged\"\n}\n```"
-
-        client = GeminiClient(custom_runner=mock_runner)
+        client = GeminiClient(
+            custom_runner=lambda *_: '```json\n{\n  "decision": "DOWNSCALE",\n  "suggested_scale": 0.5,\n  "reason": "Overleveraged"\n}\n```'
+        )
         res = client.query_json("Test prompt")
         assert res is not None
         assert res["decision"] == "DOWNSCALE"
