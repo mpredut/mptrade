@@ -44,7 +44,7 @@ RO_DIACRITICS = set("ăâîșțĂÂÎȘȚşţŞŢ")
 # The list below was widened deliberately after the narrow version reported the
 # migration finished three times while Romanian lines were still in the tree. It
 # missed everything written without diacritics and with only one Romanian word per
-# line: "esuat", "lipsa", "astept", "pretul", "coada plina". Over-reporting costs a
+# line (e.g. single-word status or price labels). Over-reporting costs a
 # glance; under-reporting is what let those through.
 RO_WORDS = frozenset("""
 si sa se doar dar daca cand care este sunt nu pentru cu din sau mai foarte trebuie
@@ -78,7 +78,7 @@ def romanian_score(text: str) -> int:
     """Heuristic score: 99 when diacritics are present, else the Romanian word count."""
     if any(ch in RO_DIACRITICS for ch in text):
         return 99
-    words = re.findall(r"[a-zA-Z]+", text.lower())
+    words = re.findall(r"\([a-zA-Z_]+\)|[a-zA-Z]+(?:-[a-zA-Z0-9$]+)*", text.lower())
     return sum(1 for word in words if word in RO_WORDS)
 
 
