@@ -2,31 +2,45 @@
 """Tests for the Kraken trailing_stop (no real API, no money)."""
 from __future__ import annotations
 
+import ast
+from contextlib import redirect_stdout
+import io
+import json
 import os
+from pathlib import Path
 import signal
-import sys
 import tempfile
 import time
-import unittest
 from types import SimpleNamespace
-import json
-import trailing_core
-from providers.kraken_provider import KrakenProvider
+import unittest
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+from botcore import parse_dotenv
+from cacheaccount import CacheTradeManager
+from cachepaths import cache_path
+import kraken.trailing_stop as ts_mod
+from kraken.trailing_stop import KrakenTrailing
+import order_guard
+from providers.base import MarketDataProvider
+from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import KrakenProvider
+from providers.order_ohlc_utils import (
+    build_open_order_entry,
+    format_strategy_execution_mode,
+    parse_ohlc_interval,
+    parse_ohlc_interval_minutes,
+    resolve_ohlc_time_window_ms,
+)
+from strategies import spot_engine as _xstock_strategy
+from tests.conftest import TrailingTestBase, load_venue_modules
+import trailing_core
+from trailing_core import should_sell
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _KRAKEN_DIR = os.path.join(_ROOT_DIR, "kraken")
-if _ROOT_DIR not in sys.path:
-    sys.path.insert(0, _ROOT_DIR)
-if _KRAKEN_DIR not in sys.path:
-    sys.path.append(_KRAKEN_DIR)
-from botcore import parse_dotenv  # noqa: E402
-import kraken_xstock_watch as xw  # noqa: E402
-import kraken.trailing_stop as ts_mod
-from kraken.trailing_stop import KrakenTrailing
-from trailing_core import should_sell
-from strategies import spot_engine as _xstock_strategy
-from tests.conftest import TrailingTestBase
+xw = load_venue_modules("kraken", "kraken_xstock_watch")
 
 
 class FakeK:
@@ -348,8 +362,6 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
         self.assertNotIn("metadata", res.intent)
 
     def test_cachemanager_fetch_rest_into_refreshes_empty_configured_pairs_and_matches_aliases(self):
-        from cacheaccount import CacheTradeManager
-
         fake_ledger_cli = SimpleNamespace(
             _private=lambda method, data=None, fresh=False: {
                 "ledger": {
@@ -534,17 +546,12 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
         self.assertEqual([o for o in c2.orders if o["side"] == "buy"], [])
 
     def test_cross_venue_shared_cost_basis_cli_dispatch_and_strategy_dry_run_gates(self):
-        import io
-        from contextlib import redirect_stdout
-        from providers.base import MarketDataProvider
-        from providers.hyperliquid_provider import HyperliquidProvider
-
         # 1. KrakenTrailing.cost_basis delegates to KrakenProvider.position_cost_basis / compute_fills_cost_basis
-        fd, cache_path = tempfile.mkstemp(suffix=".json")
+        fd, tmp_cache_path = tempfile.mkstemp(suffix=".json")
         os.close(fd)
         now_ms = int(time.time() * 1000)
         try:
-            with open(cache_path, "w", encoding="utf-8") as f:
+            with open(tmp_cache_path, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "items": {
@@ -577,15 +584,15 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
                     },
                     f,
                 )
-            with patch("providers.kraken_provider._KRAKEN_CACHE_FILE", cache_path):
+            with patch("providers.kraken_provider._KRAKEN_CACHE_FILE", tmp_cache_path):
                 c = FakeK(60.0, total=25.0, held=5.0)  # total balance = 25.0 (20 free + 5 held)
                 ts = self.ts(c)
                 basis = ts.cost_basis("HYPEUSD")
                 # 10 @ 40 + 15 @ 50 = 400 + 750 = 1150 / 25 = 46.0
                 self.assertAlmostEqual(basis, 46.0)
         finally:
-            if os.path.exists(cache_path):
-                os.remove(cache_path)
+            if os.path.exists(tmp_cache_path):
+                os.remove(tmp_cache_path)
 
         # 2. Shared TrailingAdapterBase print_status and dispatch_cli
         c = FakeK(60.0, total=25.0, held=0.0)
@@ -616,22 +623,12 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
         self.assertAlmostEqual(ts.executor.min_order_qty("HYPEUSD"), 0.01)
         self.assertAlmostEqual(ts.executor.round_quantity("HYPEUSD", 1.23459), 1.2345)
         self.assertAlmostEqual(ts.executor.round_price("HYPEUSD", 48.129), 48.13)
-        from cachepaths import cache_path
-        from providers.order_ohlc_utils import (
-            parse_ohlc_interval,
-            parse_ohlc_interval_minutes,
-            resolve_ohlc_time_window_ms,
-        )
         hl_Live_ssot = HyperliquidProvider(token="HYPE", live_enabled=True)
         hl_Live_ssot._force_ssot_cache = True
         hl_cache_file = hl_Live_ssot._fills_cache_file()
         self.assertEqual(hl_cache_file, cache_path("cache_trade_hyperliquid.json"))
 
         # 5. Shared OHLC interval/window helpers, clamp_orderbook_limit & resolve_venue_instrument_spec
-        from providers.order_ohlc_utils import (
-            build_open_order_entry,
-            format_strategy_execution_mode,
-        )
         self.assertEqual(parse_ohlc_interval(" 1H "), (60, "1h"))
         self.assertEqual(parse_ohlc_interval(" 1M "), (43200, "1M"))
         self.assertEqual(parse_ohlc_interval_minutes("240"), 240)
@@ -653,10 +650,10 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
         self.assertEqual(oo_rec["time"], 1700000000000)
         self.assertEqual(format_strategy_execution_mode(True, True), "OBSERVE ONLY (AI managed)")
         self.assertEqual(format_strategy_execution_mode(False, True), "PAPER (no money)")
-        self.assertEqual(format_strategy_execution_mode(False, False), "⚠ REAL — REAL MONEY")
+        self.assertEqual(format_strategy_execution_mode(False, False), "\u26a0 REAL \u2014 REAL MONEY")
 
 
-# ─── xStock Watcher & Strategy Adoption (from test_xstock.py) ───────────────
+# --- xStock Watcher & Strategy Adoption (from test_xstock.py) ---------------
 
 class FakeKrakenXStock:
     def __init__(self, bal=None, pairs=None, price=200.0):
@@ -713,7 +710,7 @@ class _XStockBase(unittest.TestCase):
         os.environ.update(self._env)
 
 
-class TestWatcherPersistenta(_XStockBase):
+class TestWatcherPersistence(_XStockBase):
     def test_allocation_alerts_once_across_a_restart(self):
         c = FakeKrakenXStock(bal={"ZUSD": "100"})
         st = xw._load_state()
@@ -760,7 +757,7 @@ class TestWatcherPersistenta(_XStockBase):
         st["pair"] = "SPCXXUSD"
         xw.check_levels(c, st, 200.0, 20.0, 15.0, "", False)
         xw.check_levels(c, st, 200.0, 20.0, 15.0, "", False)
-        self.assertEqual(len(self.alerts), 1, "alerta TP o singura data")
+        self.assertEqual(len(self.alerts), 1, "the TP alert fires only once")
         c.price = 160.0
         xw.check_levels(c, st, 200.0, 20.0, 15.0, "", False)
         self.assertEqual(len(self.alerts), 2, "and the SL alert fires only once")
@@ -866,7 +863,7 @@ class TestAutoStart(_XStockBase):
         self.assertIn("--pair SPCXXUSD", argv)
 
 
-class TestAdoptare(_XStockBase):
+class TestAdoption(_XStockBase):
     PAIR = "TSTXUSD"
 
     def setUp(self):
@@ -942,7 +939,6 @@ if __name__ == "__main__":
 
 def test_krakentrailing__submit_lifecycle_order_normalizes_bypass_guards_all_all_iter7_s3(monkeypatch):
     """[ITER7 #3] KrakenTrailing._submit_lifecycle_order normalizes bypass_guards='ALL' / {'ALL'}."""
-    import order_guard
     # 3. KrakenTrailing._submit_lifecycle_order normalizes bypass_guards="ALL" / {"ALL"}
     eng = object.__new__(KrakenTrailing)
     eng.executor = MagicMock()
@@ -964,7 +960,6 @@ def test_krakentrailing__submit_lifecycle_order_normalizes_bypass_guards_all_all
 
 def test_trailing_core_should_sell_krakentrailing__trend_value_previous_recovery_iter21_s3(tmp_path, monkeypatch):
     """[ITER21 #3] trailing_core.should_sell & KrakenTrailing._trend_value .previous recovery."""
-    import pytest
     # 3. trailing_core.should_sell & KrakenTrailing._trend_value .previous recovery
     assert trailing_core.should_sell(0.0, 100.0, 15.0) is False
     assert trailing_core.should_sell(-5.0, 100.0, 15.0) is False
@@ -1054,10 +1049,6 @@ def test_krakentrailing_string_enabled_trailing_market_and_reconcile_pending_saf
 
 def test_trailing_core_is_venue_agnostic_ast():
     """trailing_core.py must contain zero venue SDK imports or hardcoded venue string branches."""
-    import ast
-    from pathlib import Path
-
-
     src = Path(trailing_core.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
 

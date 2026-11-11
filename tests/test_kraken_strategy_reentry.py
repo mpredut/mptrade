@@ -1,10 +1,10 @@
 """
 Tests for the ADAPTIVE re-entry threshold in the spot DCA engine (23 Jul).
 
-Context: investigated in offline/research/kraken_adaptive_thresholds/ — the adaptive
+Context: investigated in offline/research/kraken_adaptive_thresholds/ -- the adaptive
 threshold (K_REENTRY * vol_1h) beat the fixed threshold on real data (HYPEUSD, ~30 days:
 TOTAL +3.26% versus +2.20%). Promoted to a real decision through StratParams.reentry_adaptive
-(False by default — enabled explicitly through STRAT_REENTRY_ADAPTIVE=true), with
+(False by default -- enabled explicitly through STRAT_REENTRY_ADAPTIVE=true), with
 fail-safe onto the fixed threshold when volatility cannot be computed (warm-up).
 
 Coverage:
@@ -14,20 +14,17 @@ Coverage:
   - The re-entry block in step(): uses the EFFECTIVE threshold (not always the fixed one).
 """
 import os
-import sys
+import random
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
-import random
 
-KRAKEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
-ROOT = os.path.dirname(KRAKEN_DIR)
-sys.path.insert(0, ROOT)
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-from strategies import spot_engine as strat, spot_rules as sr
-from providers.strategy_executor import PairPrecision  # noqa: E402
+import botcore
 from market_regime import MarketRegimeDecision
+from providers.strategy_executor import PairPrecision
+from strategies import spot_engine as strat, spot_rules as sr
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 # Keep the synthetic state file out of kraken/, next to the live pair states.
@@ -133,7 +130,7 @@ class TestReentryGateUsesEffectivePct(unittest.TestCase):
 
 class TestStopAwareReentry(unittest.TestCase):
     """4 Aug: after a STOP-LOSS, re-entry is on RECOVERY (a bounce off the low), not on a
-    further drop — otherwise the bot stays locked out when the price recovers."""
+    further drop -- otherwise the bot stays locked out when the price recovers."""
 
     def test_stop_and_tp_aware_reentry_behaviors(self):
         with self.subTest(msg="stop_reentry_not_stranded_on_recovery"):
@@ -515,7 +512,6 @@ class StratRulesTest(unittest.TestCase):
             self.assertEqual(sr.progressive_dca_drop_pct(1.25, -1.0, 4), 1.25)
 
         with self.subTest("are_close_identical_to_botcore"):
-            import botcore
             for a, b, tol in [(50.0, 50.75, 0.05), (65.93, 65.91, 0.05), (100.0, 98.0, 0.0),
                               (99.0, 100.0, 2.0), (0.0, 0.0, 0.05), (58.42, 58.47, 0.05)]:
                 self.assertEqual(sr.are_close(a, b, tol), botcore.are_close(a, b, tol),

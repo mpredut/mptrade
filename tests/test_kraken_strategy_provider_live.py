@@ -4,25 +4,22 @@ Golden tests cover replay and dry-run decisions. This module covers the adapter
 calls from place, reconcile, and cancel without accessing the network.
 """
 import os
-import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-from strategies import spot_engine as strat  # noqa: E402
-from providers.strategy_executor import (  # noqa: E402
+from providers.kraken_provider import KrakenProvider
+from providers.strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
     PairPrecision,
     ProviderError,
     SubmissionRefused,
 )
-from providers.kraken_provider import KrakenProvider  # noqa: E402
-from tests.conftest import make_spot_test_params  # noqa: E402
+from strategies import spot_engine as strat
+from tests.conftest import make_spot_test_params
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class FakeExecutor:

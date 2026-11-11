@@ -6,21 +6,18 @@ reports it terminal (closed/canceled/expired).
 """
 import json
 import os
-import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
+from botcore import parse_dotenv
+from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError
+from strategies import spot_engine as strat
+from tests.conftest import make_spot_live_test_params
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-from strategies import spot_engine as strat  # noqa: E402
-from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError  # noqa: E402
-from botcore import parse_dotenv  # noqa: E402
-from tests.conftest import make_spot_live_test_params  # noqa: E402
-
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CONFIG_ENV = parse_dotenv(os.path.join(ROOT, "kraken", "config.env"))
 
 _params = make_spot_live_test_params
@@ -279,7 +276,6 @@ class KrakenStatePersistenceTest(unittest.TestCase):
             self.assertEqual(os.listdir(tmp), ["state.json"])
 
     def test_reconcile_rejects_boolean_status_fields_and_ledger_reconcile_resets_exit_anchors(self):
-        from types import SimpleNamespace
         state = strat._new_state()
         state["orders"].append(_buy_order())
         engine = _strategy(state=state)

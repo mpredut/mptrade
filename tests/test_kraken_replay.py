@@ -1,24 +1,26 @@
-"""kraken/replay.py — the backtest engine that runs the LIVE STRATEGY over OHLC.
+"""kraken/replay.py -- the backtest engine that runs the LIVE STRATEGY over OHLC.
 Characterisation: on a deterministic series the engine runs without network,
 notifications or state files, and returns sane metrics (accounting from the live _apply_fill)."""
-import os
-import json
-import sys
-import tempfile
-import unittest
-from unittest.mock import MagicMock, patch
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "kraken"))
-sys.path.insert(0, ROOT)
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-from strategies import spot_replay as rp
-from tests.conftest import make_spot_test_params
 import contextlib
 import csv
 import hashlib
 import io
+import json
+import os
+import tempfile
+import unittest
+from unittest.mock import MagicMock, patch
+
+from kraken.backtest import fetch_candles
+from kraken.backtest_trail import bh
+from kraken.market_data import fetch_ohlc_candles
+from offline.backtests.evaluation import evaluate_segment
+from offline.backtests.execution import FeeModel
+from strategies import spot_replay as rp
+from tests.conftest import load_venue_modules, make_spot_test_params
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 strat = rp._strat
 
 
@@ -203,7 +205,6 @@ class ReplayEngineTest(unittest.TestCase):
             (80.0, 82.0, 78.0, 80.0),
             (70.0, 71.0, 69.0, 70.0),
         ]
-        from offline.backtests.execution import FeeModel
 
         uniform = rp.run_replay(
             bars, _params(stop_loss_pct=10), fee_pct=0.16, bar_minutes=60,
@@ -372,7 +373,6 @@ class PercentageSizingReplayTest(unittest.TestCase):
         self.assertEqual(percent_result, fixed_result)
 
     def test_make_kraken_replay_adapter_walk_forward_compatibility(self):
-        from offline.backtests.evaluation import evaluate_segment
         params = _params()
         records = [
             {"timestamp": 1000 + i * 3600, "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0}
@@ -387,9 +387,6 @@ class PercentageSizingReplayTest(unittest.TestCase):
         self.assertIn("ambiguous_bars", res["metrics"])
 
     def test_fetch_ohlc_candles_parsing_and_drop_forming_bar(self):
-        from kraken.market_data import fetch_ohlc_candles
-        from kraken.backtest import fetch_candles
-
         fake_payload = {
             "error": [],
             "result": {
@@ -421,12 +418,7 @@ class PercentageSizingReplayTest(unittest.TestCase):
             self.assertEqual(candles[0], (20.0, 22.0, 19.5, 21.0))
 
     def test_backtest_helpers_guard_zero_budget_and_invalid_windows(self):
-        from botcore import load_local_module
-        from kraken.backtest_trail import bh
-
-        hl_bt = load_local_module(
-            os.path.join(ROOT, "hyperliquid"), "backtest", module_key="hl_backtest_under_test", reload=True
-        )
+        hl_bt = load_venue_modules("hyperliquid", "backtest")
 
         self.assertEqual(bh([]), 0.0)
         self.assertEqual(bh([(0.0, 0.0, 0.0, 0.0)]), 0.0)
