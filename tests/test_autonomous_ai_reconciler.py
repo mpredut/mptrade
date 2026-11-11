@@ -111,13 +111,15 @@ def temp_env(tmp_path):
     return str(workspace), str(cache_dir), str(logs_dir)
 
 
+def _reconciler(workspace, **kwargs):
+    kwargs.setdefault("cache_dir", "cachedb")
+    kwargs.setdefault("logs_dirs", ["logs"])
+    return AutonomousAIReconciler(workspace_dir=str(workspace), **kwargs)
+
+
 def test_reconciler_initialization_defaults(temp_env):
     workspace, cache_dir, _ = temp_env
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-    )
+    reconciler = _reconciler(workspace)
     assert reconciler.mode == "enforce"
     assert reconciler.lookback_hours == 24.0
     assert reconciler.cache_dir == cache_dir
@@ -126,12 +128,7 @@ def test_reconciler_initialization_defaults(temp_env):
 def test_reconciler_invalid_supervisor_mode_fails_fast(temp_env):
     workspace, _, _ = temp_env
     with pytest.raises(ValueError, match="Invalid supervisor_mode"):
-        AutonomousAIReconciler(
-            workspace_dir=workspace,
-            cache_dir="cachedb",
-            logs_dirs=["logs"],
-            mode="invalid_mode",
-        )
+        _reconciler(workspace, mode="invalid_mode")
 
 
 def test_harvest_sensors_telemetry(temp_env):
@@ -148,7 +145,7 @@ def test_harvest_sensors_telemetry(temp_env):
     with open(hb_file, "w", encoding="utf-8") as f:
         json.dump({"status": "alive"}, f)
 
-    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+    reconciler = _reconciler(workspace)
     snapshot = reconciler.harvest_sensors_telemetry()
 
     assert snapshot.fear_greed is not None
@@ -174,7 +171,7 @@ def test_harvest_log_anomalies(temp_env):
         f.write(f"{stamp(200)} [WARNING] mailer: Email delivery skipped for '[cacheManager] Critical Errors' (SMTP auth rejected)\n")
         f.write(f"{stamp(190)} [INFO] Orchestrator: Dispatched ntfy alert to [ntfy-error-1978]: [cacheManager] Critical Errors\n")
 
-    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+    reconciler = _reconciler(workspace)
     summary = reconciler.harvest_log_anomalies(lookback_hours=1.0)
 
     assert summary.total_scanned_files == 1
@@ -232,9 +229,9 @@ def test_only_trade_executor_topic_reaches_gateway_bounded_by_supervisor_mode(te
     gateway = MagicMock()
     gateway.min_confidence, gateway.max_notional_usd = 0.85, 2000.0
     gateway.submit.return_value = {"status": "OBSERVED_SHADOW"}
-    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"],
-                                        gemini_auditor=auditor, mode="shadow", notify_enabled=False,
-                                        intent_gateway=gateway)
+    reconciler = _reconciler(
+        workspace, gemini_auditor=auditor, mode="shadow", notify_enabled=False, intent_gateway=gateway
+    )
     with patch.object(reconciler, "_apply_code_patch_safely") as patcher:
         repair = reconciler.run_cycle(topic_key="auto_technical_repair")
         gateway.submit.assert_not_called()
@@ -249,14 +246,14 @@ def test_only_trade_executor_topic_reaches_gateway_bounded_by_supervisor_mode(te
 
 def test_unknown_topic_fails_fast(temp_env):
     workspace, _, _ = temp_env
-    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+    reconciler = _reconciler(workspace)
     with pytest.raises(KeyError):
         reconciler.run_cycle(topic_key="supervisor_nightly")
 
 
 def test_code_remediation_can_be_disabled_in_enforce(temp_env):
     workspace, _, _ = temp_env
-    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"], mode="enforce")
+    reconciler = _reconciler(workspace, mode="enforce")
     plan = {"venue_actions": [], "code_remediation": {
         "has_fix": True, "target_file": "x.py", "search_block": "a", "replace_block": "b"}}
     with patch.object(reconciler, "_apply_code_patch_safely") as patcher:
@@ -293,13 +290,7 @@ def test_synthesize_and_diagnose_mocked(temp_env):
     }
 
     auditor = DummyGeminiClient(mock_resp)
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="shadow",
-    )
+    reconciler = _reconciler(workspace, gemini_auditor=auditor, mode="shadow")
 
     sensors = TelemetrySensorSnapshot()
     logs = LogEventSummary(
@@ -318,12 +309,7 @@ def test_synthesize_and_diagnose_mocked(temp_env):
 
 def test_shadow_mode_does_not_execute_destructive_actions(temp_env):
     workspace, _, _ = temp_env
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        mode="shadow",
-    )
+    reconciler = _reconciler(workspace, mode="shadow")
 
     plan = {
         "summary": "Shadow audit",
@@ -345,13 +331,7 @@ def test_shadow_mode_does_not_execute_destructive_actions(temp_env):
 
 def test_dispatch_notification_via_urllib(temp_env):
     workspace, _, _ = temp_env
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        mode="shadow",
-        notify_enabled=True,
-    )
+    reconciler = _reconciler(workspace, mode="shadow", notify_enabled=True)
 
     report = SupervisorAuditReport(
         ts=time.time(),
@@ -387,14 +367,7 @@ def test_full_run_cycle_and_artifacts(temp_env):
     }
 
     auditor = DummyGeminiClient(mock_resp)
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="shadow",
-        notify_enabled=False,
-    )
+    reconciler = _reconciler(workspace, gemini_auditor=auditor, mode="shadow", notify_enabled=False)
 
     report = reconciler.run_cycle(topic_key="auto_technical_repair")
 
@@ -440,7 +413,7 @@ def test_harvest_prices_and_trends(temp_env):
             }
         }, f)
 
-    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+    reconciler = _reconciler(workspace)
     snapshot = reconciler.harvest_sensors_telemetry()
 
     assert "BTCUSDC" in snapshot.prices_and_trends
@@ -544,14 +517,8 @@ def test_none_venue_actions_and_routine_hold_do_not_trigger_executed_or_notify_s
     auditor = DummyGeminiClient(plan)
     gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0)
     gateway.submit.return_value = None
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="enforce",
-        notify_enabled=True,
-        intent_gateway=gateway,
+    reconciler = _reconciler(
+        workspace, gemini_auditor=auditor, mode="enforce", notify_enabled=True, intent_gateway=gateway
     )
     snap = reconciler.harvest_sensors_telemetry()
     assert snap.prices_and_trends["TAOUSDC"]["chg_15m_pct"] == 2.0
@@ -575,14 +542,7 @@ def test_intent_gateway_inherits_workspace_dir_and_null_plan_fields_are_safe(tem
         "market_trading_decision": None,
     }
     auditor = DummyGeminiClient(null_plan)
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="shadow",
-        notify_enabled=False,
-    )
+    reconciler = _reconciler(workspace, gemini_auditor=auditor, mode="shadow", notify_enabled=False)
     assert os.path.abspath(reconciler.intent_gateway.workspace_dir) == os.path.abspath(workspace)
     report = reconciler.run_cycle(topic_key="auto_trade_executor")
     assert report.summary == "Audit complete."
@@ -605,7 +565,7 @@ def test_extract_symbol_recent_fills_sorts_by_timestamp(temp_env):
             },
             f,
         )
-    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+    reconciler = _reconciler(workspace)
     snap = reconciler.harvest_sensors_telemetry()
     recent = snap.portfolio_summary["recent_orders"]["TAOUSDC"]
     assert recent["last_action_side"] == "SELL"
@@ -616,7 +576,7 @@ def test_extract_symbol_recent_fills_sorts_by_timestamp(temp_env):
 
 def test_apply_code_patch_safely_guards_workspace_boundary_and_restores_in_memory_on_failure(temp_env, tmp_path):
     workspace, _, _ = temp_env
-    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"], mode="enforce")
+    reconciler = _reconciler(workspace, mode="enforce")
 
     outside = tmp_path / "outside.py"
     outside.write_text("x = 1\n", encoding="utf-8")
@@ -712,14 +672,7 @@ def test_enforce_executes_cancel_order_sync_position_and_restart_bot(mock_worksp
     mock_inst.provider_name = "binance"
     gateway.resolve_instrument.return_value = mock_inst
 
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=str(mock_workspace),
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        mode="enforce",
-        notify_enabled=False,
-        intent_gateway=gateway,
-    )
+    reconciler = _reconciler(mock_workspace, mode="enforce", notify_enabled=False, intent_gateway=gateway)
 
     plan = {
         "venue_actions": [
@@ -741,13 +694,7 @@ def test_enforce_executes_cancel_order_sync_position_and_restart_bot(mock_worksp
 
 def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_env):
     workspace, _, _ = temp_env
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        mode="enforce",
-        notify_enabled=True,
-    )
+    reconciler = _reconciler(workspace, mode="enforce", notify_enabled=True)
     reconciler.ntfy_url = "https://ntfy.sh/legacy-phone-alert-url"
     reconciler.ntfy_topic_server = "ntfy-server-1978"
     reconciler.ntfy_topic_error = "ntfy-error-1978"
@@ -981,14 +928,8 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
         {"intent_id": "i_btc", "symbol": "BTCUSDC", "status": "EXECUTED"},
         {"intent_id": "i_hype", "symbol": "HYPEUSD", "status": "EXECUTED"},
     ]
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="enforce",
-        notify_enabled=False,
-        intent_gateway=gateway,
+    reconciler = _reconciler(
+        workspace, gemini_auditor=auditor, mode="enforce", notify_enabled=False, intent_gateway=gateway
     )
     report = reconciler.run_cycle(topic_key="auto_trade_executor")
 
@@ -1063,13 +1004,7 @@ def test_auto_technical_repair_persistent_errors_config_patching_and_system_rebo
         f.write(f"{stamp(300)} [ERROR] Unhandled KeyError in rtrade execution loop\n")
         f.write(f"{stamp(60)} [ERROR] Unhandled KeyError in rtrade execution loop\n")
 
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        mode="enforce",
-        notify_enabled=False,
-    )
+    reconciler = _reconciler(workspace, mode="enforce", notify_enabled=False)
     logs = reconciler.harvest_log_anomalies(lookback_hours=1.0)
     assert len(logs.persistent_errors) == 1
     assert logs.persistent_errors[0]["file"] == "rtrade.log"
@@ -1133,14 +1068,8 @@ def test_auto_trade_executor_never_dispatches_sre_notifications_or_executes_venu
     auditor = DummyGeminiClient(plan)
     gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0, notify_enabled=True)
     gateway.submit.return_value = {"intent_id": "i_tao", "symbol": "TAOUSDC", "status": "EXECUTED"}
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="enforce",
-        notify_enabled=True,
-        intent_gateway=gateway,
+    reconciler = _reconciler(
+        workspace, gemini_auditor=auditor, mode="enforce", notify_enabled=True, intent_gateway=gateway
     )
     with patch.object(reconciler, "dispatch_notification") as mock_sre_notify, \
          patch.object(reconciler, "apply_reconciliation") as mock_reconcile:
@@ -1238,14 +1167,8 @@ def test_harvest_and_synthesize_surfaces_active_avg_buy_tranches_and_open_orders
 
     auditor = DummyGeminiClient({"summary": "ok"})
     captured_prompts = auditor.prompts
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="shadow",
-        notify_enabled=False,
-        intent_gateway=gateway,
+    reconciler = _reconciler(
+        workspace, gemini_auditor=auditor, mode="shadow", notify_enabled=False, intent_gateway=gateway
     )
     sensors = reconciler.harvest_sensors_telemetry()
     ps = sensors.portfolio_summary
@@ -1403,14 +1326,8 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
 
     auditor = DummyGeminiClient({"summary": "ok"})
     captured_prompts = auditor.prompts
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="shadow",
-        notify_enabled=False,
-        intent_gateway=gateway,
+    reconciler = _reconciler(
+        workspace, gemini_auditor=auditor, mode="shadow", notify_enabled=False, intent_gateway=gateway
     )
     sensors = reconciler.harvest_sensors_telemetry()
     ps = sensors.portfolio_summary
@@ -1495,7 +1412,7 @@ def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_e
 
     with open(os.path.join(workspace, "order_guard.conf"), "w", encoding="utf-8") as f:
         f.write("supervisor_mode = \"shadow\"\nsupervisor_notify = true\n")
-    rec_str_notify = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+    rec_str_notify = _reconciler(workspace)
     assert rec_str_notify.mode == "shadow"
     assert rec_str_notify.notify_enabled is True
 
@@ -2270,13 +2187,7 @@ def test_extract_current_price_item_instrument_resolution_and_trailing_state_nor
     mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
     mock_gw.load_tradable_instruments.return_value = {"KRAKEN_HYPE": inst_hype, "TAOUSDC": inst_tao}
 
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=str(tmp_path),
-        cache_dir="cachedb",
-        mode="shadow",
-        notify_enabled=False,
-        intent_gateway=mock_gw,
-    )
+    reconciler = _reconciler(tmp_path, mode="shadow", notify_enabled=False, intent_gateway=mock_gw)
     snap = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
     pos_by_sym = {p["symbol"]: p for p in snap.portfolio_summary["tradable_positions"]}
     assert pos_by_sym["HYPEUSD"]["trailing_peak"] == 64.0
@@ -2404,13 +2315,7 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
 
     mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
     mock_gw.load_tradable_instruments.return_value = {"HYPERLIQUID_HYPE": hl_inst, "KRAKEN_HYPE": krk_inst}
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=str(tmp_path),
-        cache_dir="cachedb",
-        mode="shadow",
-        notify_enabled=False,
-        intent_gateway=mock_gw,
-    )
+    reconciler = _reconciler(tmp_path, mode="shadow", notify_enabled=False, intent_gateway=mock_gw)
     snap = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
     pos_by_venue_sym = {(p["venue"], p["symbol"]): p for p in snap.portfolio_summary["tradable_positions"]}
     assert pos_by_venue_sym[("hyperliquid", "HYPEUSDC")]["active_avg_buy_px"] == 38.0
@@ -2608,13 +2513,8 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
 
     auditor = DummyGeminiClient({"summary": "ok", "market_trading_decisions": []})
     captured = auditor.prompts
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=str(tmp_path),
-        cache_dir="cachedb",
-        mode="shadow",
-        notify_enabled=False,
-        gemini_auditor=auditor,
-        intent_gateway=mock_gw,
+    reconciler = _reconciler(
+        tmp_path, mode="shadow", notify_enabled=False, gemini_auditor=auditor, intent_gateway=mock_gw
     )
     reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
     assert len(captured) == 1
@@ -2773,13 +2673,8 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
 
     auditor = DummyGeminiClient({"summary": "ok", "market_trading_decisions": []})
     captured_prompts = auditor.prompts
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=str(tmp_path),
-        cache_dir="cachedb",
-        mode="shadow",
-        notify_enabled=False,
-        gemini_auditor=auditor,
-        intent_gateway=mock_gw,
+    reconciler = _reconciler(
+        tmp_path, mode="shadow", notify_enabled=False, gemini_auditor=auditor, intent_gateway=mock_gw
     )
     reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
     crypto_prompt = captured_prompts[-1]
@@ -2967,13 +2862,8 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
     mock_gw.load_tradable_instruments.return_value = {"BIN_BTC": btc_inst}
 
     auditor = DummyGeminiClient({"summary": "ok", "market_trading_decisions": []})
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=str(tmp_path),
-        cache_dir="cachedb",
-        mode="shadow",
-        notify_enabled=False,
-        gemini_auditor=auditor,
-        intent_gateway=mock_gw,
+    reconciler = _reconciler(
+        tmp_path, mode="shadow", notify_enabled=False, gemini_auditor=auditor, intent_gateway=mock_gw
     )
     reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
     full_prompt = auditor.last_prompt
@@ -3331,14 +3221,8 @@ def _make_btc_shadow_reconciler(workspace, *, price, btc_balance, usdc_balance, 
     gateway.reconcile_intents.return_value = False
 
     auditor = DummyGeminiClient({"summary": "ok"})
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="shadow",
-        notify_enabled=False,
-        intent_gateway=gateway,
+    reconciler = _reconciler(
+        workspace, gemini_auditor=auditor, mode="shadow", notify_enabled=False, intent_gateway=gateway
     )
     return mock_btc_inst, reconciler, auditor.prompts
 

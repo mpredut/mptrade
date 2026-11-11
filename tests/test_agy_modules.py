@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 import json
 import os
 import sqlite3
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,32 +111,15 @@ class TestTopics:
         cli_base = str(tmp_path / "cli")
         os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
         db_path = os.path.join(cli_base, "conversation_summaries.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE conversation_summaries (
-                conversation_id text PRIMARY KEY,
-                title text,
-                preview text,
-                last_modified_time datetime,
-                project_id text,
-                step_count integer,
-                status text
-            )
-        """)
-        conn.commit()
-        conn.close()
+        _make_summary_db(db_path, schema="topic")
         monkeypatch.setenv("LLM_TOPIC_COMPACT_STEPS", "6")
         monkeypatch.setenv("LLM_TOPIC_HISTORY_MAX_ENTRIES", "3")
 
         def set_steps(cid, steps):
-            conn = sqlite3.connect(db_path)
-            conn.execute(
-                "INSERT OR REPLACE INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (cid, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", steps,
-                 "CASCADE_RUN_STATUS_IDLE"),
+            _insert_summary_rows(
+                db_path,
+                [(cid, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", steps, "CASCADE_RUN_STATUS_IDLE")],
             )
-            conn.commit()
-            conn.close()
 
         # 1. No thread yet -> the first turn creates it
         assert tuple(prepare_topic_session("macro_sentiment", cli_base=cli_base)) == (None, "", False)
@@ -236,16 +221,40 @@ class TestTopics:
 
 
 
-def _make_summary_db(path, rows):
+_SUMMARY_SCHEMAS = {
+    "raw": (
+        "conversation_id text primary key, title text, source text, "
+        "project_id text, step_count integer, raw_summary blob"
+    ),
+    "topic": (
+        "conversation_id text primary key, title text, preview text, "
+        "last_modified_time datetime, project_id text, step_count integer, status text"
+    ),
+    "prune": (
+        "conversation_id text primary key, project_id text, step_count integer, "
+        "title text, preview text, last_modified_time text"
+    ),
+    "minimal": "conversation_id text primary key, project_id text, step_count integer",
+}
+
+
+def _insert_summary_rows(path, rows):
+    if not rows:
+        return
+    placeholders = ", ".join(["?"] * len(rows[0]))
     conn = sqlite3.connect(path)
-    conn.execute(
-        "CREATE TABLE conversation_summaries (conversation_id text primary key, title text, source text, "
-        "project_id text, step_count integer, raw_summary blob)"
-    )
     for row in rows:
-        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)", row)
+        conn.execute(f"INSERT OR REPLACE INTO conversation_summaries VALUES ({placeholders})", row)
     conn.commit()
     conn.close()
+
+
+def _make_summary_db(path, rows=(), *, schema="raw"):
+    conn = sqlite3.connect(path)
+    conn.execute(f"CREATE TABLE conversation_summaries ({_SUMMARY_SCHEMAS[schema]})")
+    conn.commit()
+    conn.close()
+    _insert_summary_rows(path, rows)
 
 
 def _make_conv_db(path, source=17):
@@ -372,25 +381,12 @@ class TestMirrorTopicThreadToUi:
         cli_base = str(tmp_path / "cli")
         os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
         db_path = os.path.join(cli_base, "conversation_summaries.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE conversation_summaries (
-                conversation_id text PRIMARY KEY,
-                title text,
-                preview text,
-                last_modified_time datetime,
-                project_id text,
-                step_count integer,
-                status text
-            )
-        """)
         cid1 = "cid-auto-trade-111"
-        conn.execute(
-            "INSERT OR REPLACE INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (cid1, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 4, "CASCADE_RUN_STATUS_IDLE"),
+        _make_summary_db(
+            db_path,
+            [(cid1, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 4, "CASCADE_RUN_STATUS_IDLE")],
+            schema="topic",
         )
-        conn.commit()
-        conn.close()
         with open(os.path.join(cli_base, "conversations", f"{cid1}.db"), "w", encoding="utf-8") as f:
             f.write("db1")
 
@@ -434,8 +430,6 @@ class TestMirrorTopicThreadToUi:
         assert not os.path.exists(os.path.join(cli_base, "conversations", f"{cid1}.db"))
 
     def test_prune_old_cli_threads_handles_minimal_schema_and_orphan_db_files(self, tmp_path, monkeypatch):
-        import time
-
         cli_base = str(tmp_path / "bot_cli")
         conv_dir = os.path.join(cli_base, "conversations")
         os.makedirs(conv_dir, exist_ok=True)
@@ -443,13 +437,7 @@ class TestMirrorTopicThreadToUi:
         monkeypatch.setenv("AGY_BOT_HOME", str(tmp_path))
 
         db_path = os.path.join(cli_base, "conversation_summaries.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "CREATE TABLE conversation_summaries (conversation_id text primary key, project_id text, step_count integer)"
-        )
-        conn.execute("INSERT INTO conversation_summaries VALUES ('cid-summary-old', 'autonommptrade', 2)")
-        conn.commit()
-        conn.close()
+        _make_summary_db(db_path, [("cid-summary-old", "autonommptrade", 2)], schema="minimal")
 
         summary_db_file = os.path.join(conv_dir, "cid-summary-old.db")
         orphan_db_file = os.path.join(conv_dir, "cid-orphan-no-row.db")
@@ -472,7 +460,6 @@ class TestMirrorTopicThreadToUi:
         assert os.path.exists(protected_db_file)
 
     def test_bapi_submit_permit_normalizes_symbol_and_side_and_hl_none_price_uses_ioc(self, monkeypatch):
-        from types import SimpleNamespace
         from binance_api import bapi_placeorder as bp
         from providers.hyperliquid_provider import HyperliquidProvider
         from providers.strategy_executor import SubmissionRefused
@@ -610,36 +597,24 @@ class TestMirrorTopicThreadToUi:
 
         # Bot store has one old automated thread
         bot_db = os.path.join(bot_base, "conversation_summaries.db")
-        con = sqlite3.connect(bot_db)
-        con.execute(
-            "CREATE TABLE conversation_summaries ("
-            "conversation_id text primary key, project_id text, step_count integer, "
-            "title text, preview text, last_modified_time text)"
+        _make_summary_db(
+            bot_db,
+            [("bot-auto-old", "autonommptrade", 2, "🤖 Crypto Trading", "json", "2020-01-01T00:00:00Z")],
+            schema="prune",
         )
-        con.execute(
-            "INSERT INTO conversation_summaries VALUES "
-            "('bot-auto-old', 'autonommptrade', 2, '🤖 Crypto Trading', 'json', '2020-01-01T00:00:00Z')"
-        )
-        con.commit()
-        con.close()
         _make_conv_db(os.path.join(bot_base, "conversations", "bot-auto-old.db"))
 
         # UI store has an old multi-turn human interactive conversation (>6 steps) and 2 recent automated threads
         ui_db = os.path.join(ui_base, "conversation_summaries.db")
-        ucon = sqlite3.connect(ui_db)
-        ucon.execute(
-            "CREATE TABLE conversation_summaries ("
-            "conversation_id text primary key, project_id text, step_count integer, "
-            "title text, preview text, last_modified_time text)"
+        _make_summary_db(
+            ui_db,
+            [
+                ("ui-human-interactive", "autonommptrade", 25, "Debugging strategy", "Let us inspect logs", "2020-01-01T00:00:00Z"),
+                ("ui-auto-1", "autonommptrade", 2, "🤖 Crypto Trading", "json", "2099-01-01T00:00:00Z"),
+                ("ui-auto-2", "autonommptrade", 2, "🤖 Crypto Trading", "json", "2099-01-02T00:00:00Z"),
+            ],
+            schema="prune",
         )
-        ucon.execute(
-            "INSERT INTO conversation_summaries VALUES "
-            "('ui-human-interactive', 'autonommptrade', 25, 'Debugging strategy', 'Let us inspect logs', '2020-01-01T00:00:00Z'),"
-            "('ui-auto-1', 'autonommptrade', 2, '🤖 Crypto Trading', 'json', '2099-01-01T00:00:00Z'),"
-            "('ui-auto-2', 'autonommptrade', 2, '🤖 Crypto Trading', 'json', '2099-01-02T00:00:00Z')"
-        )
-        ucon.commit()
-        ucon.close()
         for ucid in ("ui-human-interactive", "ui-auto-1", "ui-auto-2"):
             _make_conv_db(os.path.join(ui_base, "conversations", f"{ucid}.db"))
 
@@ -669,13 +644,10 @@ class TestMirrorTopicThreadToUi:
         assert "dead-missing-cid" in asf.get_topic_canonical_titles(asf._effective_topic_registry())
 
         _make_conv_db(os.path.join(bot_base, "conversations", "fresh-adopted-cid.db"))
-        con2 = sqlite3.connect(bot_db)
-        con2.execute(
-            "INSERT INTO conversation_summaries VALUES "
-            "('fresh-adopted-cid', 'autonommptrade', 5, '🤖 Crypto Trading', 'json', '2026-01-01T00:00:00Z')"
+        _insert_summary_rows(
+            bot_db,
+            [("fresh-adopted-cid", "autonommptrade", 5, "🤖 Crypto Trading", "json", "2026-01-01T00:00:00Z")],
         )
-        con2.commit()
-        con2.close()
         record_topic_turn(
             "auto_cryptotrade_executor",
             "fresh-adopted-cid",

@@ -1013,9 +1013,7 @@ def test_batch41_verify_tools_drawprices_and_tradeall_backtest_hardening(tmp_pat
     def _fake_urlopen(req, timeout=10):
         captured_req["url"] = req.full_url
         captured_req["title"] = req.headers.get("Title")
-        resp = MagicMock()
-        resp.__enter__.return_value = resp
-        return resp
+        return MockHttpResponse(b"")
 
     with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
         portfolio_snapshot._ntfy("Title\r\nLine2", "Body")

@@ -37,7 +37,7 @@ from providers.strategy_executor import PairPrecision
 import strategies
 from strategies import spot_engine
 from strategies.spot_engine import StratParams
-from tests.conftest import make_spot_live_test_params, make_spot_test_params
+from tests.conftest import make_spot_live_test_params
 from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
 
 # Computed values (identical to what the original files did).
