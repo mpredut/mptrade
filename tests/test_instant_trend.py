@@ -16,7 +16,7 @@ sys.modules.setdefault("bapi_trades", MagicMock())
 sys.modules.setdefault("bapi_allorders", MagicMock())
 
 import cacheManager as cm
-from tests.conftest import make_cache24_test_manager, make_synthetic_price_entries
+from tests.conftest import TempDirTestCase, make_cache24_test_manager, make_synthetic_price_entries
 
 
 def _make_cache24(symbol, entries, tmp):
@@ -31,13 +31,16 @@ def _mgr(tmp, name="trend.json"):
     return cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(tmp, name))
 
 
+class _ShortTrendMgrTestCase(TempDirTestCase):
+    def setUp(self):
+        super().setUp()
+        self.m = _mgr(self.tmp)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Store + merge
 # ═══════════════════════════════════════════════════════════════════════════
-class TestStore(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.m = _mgr(self.tmp)
+class TestStore(_ShortTrendMgrTestCase):
 
     def test_basic_snapshot_operations(self):
         with self.subTest(msg="update_and_get"):
@@ -154,10 +157,7 @@ class TestStore(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════
 # Gate + epsilon
 # ═══════════════════════════════════════════════════════════════════════════
-class TestGate(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.m = _mgr(self.tmp)
+class TestGate(_ShortTrendMgrTestCase):
 
     def _pub(self, **f):
         f.setdefault("ts", time.time())
@@ -396,9 +396,7 @@ def _entries_trending(n, interval_sec, start, delta, end_offset_sec=0.0):
     return [[start_ts + i * step_ms, start + i * delta] for i in range(n)]
 
 
-class TestDynamicWindow(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+class TestDynamicWindow(TempDirTestCase):
 
     def _cache24_up(self, n=120, interval_sec=1.0, delta=5.0, end_offset_sec=0.0):
         entries = _entries_trending(n, interval_sec, 60000.0, delta, end_offset_sec)
@@ -473,13 +471,11 @@ class TestDynamicWindow(unittest.TestCase):
             self.assertFalse(m.should_wait("BUY", "BTCUSDT", window_seconds=60, use_noise_gate=False))
 
 
-class TestCache24RecentEntriesBisect(unittest.TestCase):
+class TestCache24RecentEntriesBisect(TempDirTestCase):
     """Verify bisect produces the former O(n) filter's exact output.
 
     The optimized complexity is O(log n + k) for every cutoff.
     """
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
 
     def test_bisect_recent_entries(self):
         with self.subTest(msg="matches naive filter"):
@@ -489,7 +485,7 @@ class TestCache24RecentEntriesBisect(unittest.TestCase):
                 cutoff_ms = int((time.time() - last_seconds) * 1000)
                 expected = [e for e in entries if e[0] >= cutoff_ms]
                 got = c24.get_recent_entries("BTCUSDT", last_seconds=last_seconds)
-                self.assertEqual(got, expected, f"mismatch la last_seconds={last_seconds}")
+                self.assertEqual(got, expected, f"mismatch at last_seconds={last_seconds}")
 
         with self.subTest(msg="empty symbol"):
             c24 = _make_cache24("BTCUSDT", [], self.tmp)
@@ -500,11 +496,8 @@ class TestCache24RecentEntriesBisect(unittest.TestCase):
             self.assertEqual(c24.get_recent_entries("NOPE", last_seconds=60), [])
 
 
-class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
+class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
     """Verify O(1) prefix-sum trend buffer, 24trend/ persistence, provider timestamps, and renamings."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
 
     def test_incremental_buffer_matches_exact_formula_with_trims_and_appends(self):
         import numpy as np

@@ -166,7 +166,7 @@ class TestTradeallOrderBoundary(unittest.TestCase):
                 self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
 
 
-from tests.conftest import make_cache24_test_manager, make_synthetic_price_entries
+from tests.conftest import TempDirTestCase, make_cache24_test_manager, make_synthetic_price_entries
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -317,10 +317,7 @@ class TestSampleRateFromEntries(unittest.TestCase):
 # PriceWindow.from_cache24 — the factory with Cache24PriceManager
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestPriceWindowFromCache24(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+class TestPriceWindowFromCache24(TempDirTestCase):
 
     def _make(self, entries, symbol="BTCUSDT", window_seconds=None):
         mgr = _make_cache24_manager(symbol, entries, self.tmp)
@@ -644,10 +641,7 @@ class _RecordingSubscriber:
         self.events.append((symbol, price))
 
 
-class TestSubscriberPatternInheritance(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+class TestSubscriberPatternInheritance(TempDirTestCase):
 
     def _cache24(self, symbol="BTCUSDT"):
         return _make_cache24_manager(symbol, _synthetic_entries(5), self.tmp)
@@ -710,10 +704,7 @@ class TestSubscriberPatternInheritance(unittest.TestCase):
 # PriceWindow — complete Cache24PriceManager → PriceWindow wiring
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestPriceWindowCache24Wiring(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+class TestPriceWindowCache24Wiring(TempDirTestCase):
 
     def _make_wired(self, entries, symbol="BTCUSDT", window_seconds=None):
         """Create a Cache24PriceManager plus a PriceWindow subscribed to it."""

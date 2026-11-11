@@ -255,6 +255,13 @@ def make_synthetic_price_entries(
     return [[start_ts_ms + i * interval_ms, start_price + i * delta] for i in range(n)]
 
 
+class TempDirTestCase(unittest.TestCase):
+    """Shared ``unittest.TestCase`` base class that provisions ``self.tmp = tempfile.mkdtemp()`` in ``setUp``."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+
 class TrailingTestBase(unittest.TestCase):
     """Shared base class for trailing-stop unit tests with isolated temp state file and TRAIL_PCT restore."""
 

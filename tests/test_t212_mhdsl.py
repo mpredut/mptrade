@@ -1028,13 +1028,27 @@ class _MockT212Client:
         return 201, {"id": oid}
 
 
-class TestCycleCompletionAndDust(unittest.TestCase):
+class _T212StateFileTestBase(unittest.TestCase):
+    TICKER = ""
+
     def setUp(self):
         self._orig_notify = strategy.notify
         strategy.notify = lambda **kw: None
-        self.sf = strategy.state_path_for(_CYCLE_TICK)
+        self.sf = strategy.state_path_for(self.TICKER)
         if os.path.exists(self.sf):
             os.remove(self.sf)
+
+    def tearDown(self):
+        strategy.notify = self._orig_notify
+        if os.path.exists(self.sf):
+            os.remove(self.sf)
+
+
+class TestCycleCompletionAndDust(_T212StateFileTestBase):
+    TICKER = _CYCLE_TICK
+
+    def setUp(self):
+        super().setUp()
         self.now_val = 10000.0
         self.params = _params(
             YAHOO_SYMBOL="CYCLETEST",
@@ -1061,11 +1075,6 @@ class TestCycleCompletionAndDust(unittest.TestCase):
         self.client = _MockT212Client(ticker=_CYCLE_TICK, initial_qty=2.9229, initial_avg=150.0)
         self.strat = strategy.Strategy(self.client, _CYCLE_TICK, self.params, dry_run=False,
                                        clock=lambda: self.now_val)
-
-    def tearDown(self):
-        strategy.notify = self._orig_notify
-        if os.path.exists(self.sf):
-            os.remove(self.sf)
 
     def test_is_dust(self):
         self.assertTrue(self.strat._is_dust(0.0))
@@ -1271,13 +1280,11 @@ class TestCycleCompletionAndDust(unittest.TestCase):
 
 # ─── Trailing Stop & Sellable Qty (from test_t212_trailing_stop.py) ──────────
 
-class TestTrailingStopAndSellableQty(unittest.TestCase):
+class TestTrailingStopAndSellableQty(_T212StateFileTestBase):
+    TICKER = _TRAIL_TICK
+
     def setUp(self):
-        self._orig_notify = strategy.notify
-        strategy.notify = lambda **kw: None
-        self.sf = strategy.state_path_for(_TRAIL_TICK)
-        if os.path.exists(self.sf):
-            os.remove(self.sf)
+        super().setUp()
         self.now_val = 10000.0
         self.params = _params(
             YAHOO_SYMBOL="TRAILTEST",
@@ -1307,11 +1314,6 @@ class TestTrailingStopAndSellableQty(unittest.TestCase):
         self.strat.s["cost_usd"] = 426.74
         self.strat.s["pos_peak"] = 175.0
         self.strat.s["tr_armed"] = True
-
-    def tearDown(self):
-        strategy.notify = self._orig_notify
-        if os.path.exists(self.sf):
-            os.remove(self.sf)
 
     def test_sellable_qty_with_buffer(self):
         qty = self.strat._sellable_qty(2.9229, ref_price=146.0)
@@ -1471,18 +1473,8 @@ class TestTrailingStopAndSellableQty(unittest.TestCase):
 
 # ─── Stop-Loss Rebuy End-to-End Execution Path (from test_sl_rebuy.py) ───────
 
-class TestSlRebuyEndToEnd(unittest.TestCase):
-    def setUp(self):
-        self._orig_notify = strategy.notify
-        strategy.notify = lambda **kw: None
-        self.sf = strategy.state_path_for(_SLREBUY_TICK)
-        if os.path.exists(self.sf):
-            os.remove(self.sf)
-
-    def tearDown(self):
-        strategy.notify = self._orig_notify
-        if os.path.exists(self.sf):
-            os.remove(self.sf)
+class TestSlRebuyEndToEnd(_T212StateFileTestBase):
+    TICKER = _SLREBUY_TICK
 
     def test_sl_rebuy_workflow(self):
         params = _params(

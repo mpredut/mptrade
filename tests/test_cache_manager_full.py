@@ -28,6 +28,16 @@ sys.modules.setdefault("bapi_trades", MagicMock())
 sys.modules.setdefault("bapi_allorders", MagicMock())
 
 import cacheManager as cm
+from tests.conftest import TempDirTestCase
+
+
+class _CurrentPriceResetTestCase(TempDirTestCase):
+    def setUp(self):
+        super().setUp()
+        cm.CacheFactory.remove("CurrentPrice")
+
+    def tearDown(self):
+        cm.CacheFactory.remove("CurrentPrice")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -60,10 +70,7 @@ def _write_cache_file(fname, items_dict, fetchtime_dict=None):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. CacheManagerInterface
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestCacheManagerInterface(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+class TestCacheManagerInterface(TempDirTestCase):
 
     # ── load_state ────────────────────────────────────────────────────────────
 
@@ -374,10 +381,7 @@ class TestCachePersistenceDurability(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. CacheTradeManager
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestCacheTradeManager(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+class TestCacheTradeManager(TempDirTestCase):
 
     def _make(self):
         api_mock = MagicMock()
@@ -435,10 +439,7 @@ class TestCacheTradeManager(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. CacheOrderManager
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestCacheOrderManager(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+class TestCacheOrderManager(TempDirTestCase):
 
     def _make(self):
         api_mock = MagicMock()
@@ -621,14 +622,7 @@ class TestAccountCacheHealthPublication(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. CacheSparsePriceManager (renamed from CachePriceManager, 21 Jul)
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestCacheSparsePriceManager(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        cm.CacheFactory.remove("CurrentPrice")
-
-    def tearDown(self):
-        cm.CacheFactory.remove("CurrentPrice")
+class TestCacheSparsePriceManager(_CurrentPriceResetTestCase):
 
     def _make(self, price=50000.0):
         api_mock = MagicMock()
@@ -714,14 +708,7 @@ class TestCacheSparsePriceManager(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 5. Cache24PriceManager
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestCache24PriceManager(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        cm.CacheFactory.remove("CurrentPrice")
-
-    def tearDown(self):
-        cm.CacheFactory.remove("CurrentPrice")
+class TestCache24PriceManager(_CurrentPriceResetTestCase):
 
     def _make(self):
         api_mock = MagicMock()
@@ -814,10 +801,7 @@ class TestCache24PriceManager(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 6. CacheLongTrendManager
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestCacheLongTrendManager(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+class TestCacheLongTrendManager(TempDirTestCase):
 
     def _make(self):
         api_mock = MagicMock()
@@ -897,10 +881,7 @@ class TestCacheLongTrendManager(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 7. CacheAssetValueManager
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestCacheAssetValueManager(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+class TestCacheAssetValueManager(TempDirTestCase):
 
     def _make(self, total_value=1000.0):
         api_mock = MagicMock()
@@ -1023,14 +1004,7 @@ class TestCacheAssetValueManager(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 8. CacheCurrentPriceManager
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestCacheCurrentPriceManager(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        cm.CacheFactory.remove("CurrentPrice")
-
-    def tearDown(self):
-        cm.CacheFactory.remove("CurrentPrice")
+class TestCacheCurrentPriceManager(_CurrentPriceResetTestCase):
 
     def _make(self, price=50000.0, provider_names=None):
         api_mock = MagicMock()
@@ -1562,13 +1536,7 @@ class TestCacheFactory(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 11. get_current_price_manager — singleton
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
-
-    def setUp(self):
-        cm.CacheFactory.remove("CurrentPrice")
-
-    def tearDown(self):
-        cm.CacheFactory.remove("CurrentPrice")
+class TestGetCurrentPriceManagerSingleton(_CurrentPriceResetTestCase):
 
     def test_get_current_price_manager_singleton_and_ws_wiring(self):
         with self.subTest("returns single cache current price manager"):
@@ -1646,11 +1614,8 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
                 )
 
 
-class TestRefreshSymbolInCache(unittest.TestCase):
+class TestRefreshSymbolInCache(TempDirTestCase):
     """Test the WebSocket handler helper that refreshes one symbol."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
 
     def test_refresh_symbol_in_cache(self):
         from binance_api import bapi_ws_bridge
@@ -1699,11 +1664,8 @@ class TestFactorySingletonWarning(unittest.TestCase):
             self.assertNotIn("IGNORED", buf.getvalue())
 
 
-class TestAppendJsonlPersist(unittest.TestCase):
+class TestAppendJsonlPersist(TempDirTestCase):
     """Test JSONL append persistence for append-only Trade/AssetValue caches."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
 
     def _count_lines(self, path):
         opener = gzip.open if path.endswith(".gz") else open
@@ -1966,11 +1928,8 @@ class TestAppendJsonlPersist(unittest.TestCase):
             self.assertEqual(r.cache.get("SYM"), [{"id": 1}, {"id": 2}])   # Skip corrupt line.
 
 
-class TestMemFileResync(unittest.TestCase):
+class TestMemFileResync(TempDirTestCase):
     """Test stale-overwrite protection and memory-to-file reconciliation."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
 
     def _mgr(self, fname, append_persist=False):
         m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=append_persist)
@@ -2031,9 +1990,7 @@ class TestMemFileResync(unittest.TestCase):
                 self.assertEqual(b.cache["SYM"], [[5, 5.0]])   # Reloaded from the file.
 
 
-class TestAtomicWrite(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+class TestAtomicWrite(TempDirTestCase):
 
     def test_atomic_write_behaviors(self):
         with self.subTest("atomic write json roundtrip"):
@@ -2286,8 +2243,6 @@ if __name__ == "__main__":
 
 def test_cachelongtrendmanager_get_remote_items_resolves_taousd_taousdc_from_priceanalysis_json_iter6_s2(tmp_path, monkeypatch):
     """[ITER6 #2] CacheLongTrendManager.get_remote_items resolves TAOUSD -> TAOUSDC from priceanalysis.json."""
-    import json
-    import cacheManager as cm
     # 2. CacheLongTrendManager.get_remote_items resolves TAOUSD -> TAOUSDC from priceanalysis.json
     pa_dir = tmp_path / "pa"
     pa_dir.mkdir()
@@ -2370,9 +2325,7 @@ def test_cacheshorttrendmanager_should_wait_gt_s_with_none_growth_coefficient_gr
 
 def test_priceanalysis_get_weight_for_cash_permission_at_quant_time_iter27_s2(monkeypatch):
     """[ITER27 #2] priceAnalysis.get_weight_for_cash_permission_at_quant_time."""
-    import time
     from types import SimpleNamespace
-    import cacheManager as cm
     import priceAnalysis as pa
     # 2. priceAnalysis.get_weight_for_cash_permission_at_quant_time
     fake_lt_cache = {
@@ -2504,7 +2457,6 @@ def test_priceanalysis_detect_long_term_trend_with_int_strings_mk_alpha_string_b
 def test_cachetrademanager_string_symbols_normalization_read_only_true_flag_and_iter165_s2(tmp_path, monkeypatch):
     """[ITER165 #2] CacheTradeManager: string symbols normalization, read_only='true' flag, and 'B'/'S' side aliases in get_last_opposite_fill_price."""
     import pytest
-    import cacheManager as cm
     # 2. CacheTradeManager: string symbols normalization, read_only="true" flag, and "B"/"S" side aliases in get_last_opposite_fill_price
     monkeypatch.setattr("cachepaths.cache_path", lambda fn: str(tmp_path / fn))
     tm = cm.CacheTradeManager(60, "BTCUSDC", "test_trades.jsonl", read_only="true")
