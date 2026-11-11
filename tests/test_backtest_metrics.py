@@ -1,6 +1,21 @@
 import unittest
 
 from offline.backtests.metrics import calculate_performance_metrics
+import configparser
+import math
+import os
+import shutil
+import sys
+import tempfile
+import pytest
+from offline.research.backtest_ranges import scan_backtest_ranges
+from offline.research.kraken_continuous_grid import grid3, report, report2, report3
+import json
+from pathlib import Path
+from offline.backtests.comparison import dominates, format_comparison_markdown, format_number, pareto_frontier, relative_to_baseline
+from offline.backtests.datasets import align_previous_values, dataset_metadata, drop_incomplete_last_bar, load_dataset, merge_datasets, save_dataset, validate_dataset
+from offline.backtests.execution import ExecutionModel, FeeModel, choose_intrabar_scenario, split_order_fill
+from offline.backtests.hype_candidates import financial_priority_candidates, hype_240_candidates
 
 
 class PerformanceMetricsTest(unittest.TestCase):
@@ -95,20 +110,11 @@ class PerformanceMetricsTest(unittest.TestCase):
             validate_replay_metrics(invalid_currency)
 
 
-import configparser
-import math
-import os
-import shutil
-import sys
-import tempfile
-import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from offline.research.backtest_ranges import scan_backtest_ranges  # noqa: E402
-from offline.research.kraken_continuous_grid import grid3, report, report2, report3  # noqa: E402
 
 _INI_CONFIGS = [os.path.join(ROOT, "instruments.conf")]
 
@@ -293,36 +299,7 @@ def test_t212_grid_peak_reentry_fallback_for_zero_drop_profile():
 # Consolidated from tests/test_comparison.py & tests/test_backtest_datasets.py
 # ---------------------------------------------------------------------------
 
-import json
-from pathlib import Path
-import tempfile
 
-from offline.backtests.comparison import (
-    dominates,
-    format_comparison_markdown,
-    format_number,
-    pareto_frontier,
-    relative_to_baseline,
-)
-from offline.backtests.datasets import (
-    align_previous_values,
-    dataset_metadata,
-    drop_incomplete_last_bar,
-    load_dataset,
-    merge_datasets,
-    save_dataset,
-    validate_dataset,
-)
-from offline.backtests.execution import (
-    ExecutionModel,
-    FeeModel,
-    choose_intrabar_scenario,
-    split_order_fill,
-)
-from offline.backtests.hype_candidates import (
-    financial_priority_candidates,
-    hype_240_candidates,
-)
 
 
 def test_relative_to_baseline_scoring():

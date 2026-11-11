@@ -21,6 +21,9 @@ make_hyperliquid_replay_adapter = hl_replay.make_hyperliquid_replay_adapter
 run_replay = hl_replay.run_replay
 
 from kraken.backtest_trail import simulate_trail  # noqa: E402
+import json as _json
+import time as _time
+import unittest as _unittest
 
 
 def test_hyperliquid_simulate_stop_loss_long():
@@ -856,9 +859,6 @@ def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
 
 # ─── Delta-Neutral & Funding Scanner Tests (from test_dn.py & test_funding_scan.py) ───
 
-import json as _json
-import time as _time
-import unittest as _unittest
 
 _DN_DIR = os.path.join(_ROOT, "archive", "hyperliquid", "delta_neutral")
 if _DN_DIR not in sys.path:

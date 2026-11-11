@@ -16,6 +16,8 @@ from providers.strategy_executor import (
     SubmissionRefused,
 )
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
+import json
+import cacheManager as cm
 
 
 def _bot():
@@ -1513,8 +1515,6 @@ class RTradeThreadingTest(unittest.TestCase):
 # Consolidated from tests/test_thread_behavior.py
 # ---------------------------------------------------------------------------
 
-import json
-import cacheManager as cm
 
 _TB_SYMBOLS = ["BTCUSDC"]
 

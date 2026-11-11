@@ -5,12 +5,19 @@ stopped) no longer propagates the old velocity (capped at DT_MAX) but resets
 the filter (as at warm-up) — the trend comes out FLAT after a gap, not "confident" in a
 stale direction.
 """
+import contextlib
+import dataclasses
+import io
 import os
+from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from botcore import load_local_module
 import shadow_signals as ss
 import tradeall as ta
 from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
@@ -319,20 +326,8 @@ class TestShadowRuntime(unittest.TestCase):
         self.assertIn("LIVE_SELL_REVERSAL", sa_bull.get("live_flow_divergence", ""))
 
 
-import contextlib
-import dataclasses
-import importlib.util
-import io
-from pathlib import Path
-import tempfile
-from unittest.mock import patch
-
 _KRAKEN_DIR = Path(__file__).resolve().parents[1] / "kraken"
-if str(_KRAKEN_DIR) not in sys.path:
-    sys.path.insert(0, str(_KRAKEN_DIR))
-_SHADOW_SPEC = importlib.util.spec_from_file_location("kraken_shadow_live_under_test", _KRAKEN_DIR / "shadow_live.py")
-shadow = importlib.util.module_from_spec(_SHADOW_SPEC)
-_SHADOW_SPEC.loader.exec_module(shadow)
+shadow = load_local_module(_KRAKEN_DIR, "shadow_live", module_key="kraken_shadow_live_under_test")
 
 
 class ShadowLiveTest(unittest.TestCase):

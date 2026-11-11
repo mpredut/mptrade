@@ -12,6 +12,10 @@ from strategies.state_store import (
     safe_state_token,
     state_path_for,
 )
+import pytest
+from assetguardian import AssetGuardianState
+from state_io import StateReadError
+from trailing_core import TrailingCore
 
 
 def _defaults():
@@ -119,10 +123,6 @@ class JsonStateStoreTest(unittest.TestCase):
                 self.assertTrue(callable(getattr(cls, method_name, None)), f"Missing {method_name} on {cls}")
 
 
-import pytest
-from assetguardian import AssetGuardianState
-from state_io import StateReadError
-from trailing_core import TrailingCore
 
 
 def test_assetguardian_initializes_its_state_directory(tmp_path, monkeypatch):

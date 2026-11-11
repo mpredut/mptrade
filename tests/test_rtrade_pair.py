@@ -17,6 +17,12 @@ import pytest
 import rtrade
 import time
 from types import SimpleNamespace
+import json as _json
+import os as _os
+import tempfile as _tempfile
+from pathlib import Path as _Path
+import rtrade as _rtrade
+from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 
 
 class FakeVenue:
@@ -993,12 +999,6 @@ class PairCoordinatorTest(unittest.TestCase):
             self.assertEqual(outcome.reason, "hard_stop_recovery_pending")
 
 
-import json as _json
-import os as _os
-import tempfile as _tempfile
-from pathlib import Path as _Path
-import rtrade as _rtrade
-from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 
 _RTRADE_ROOT = _Path(__file__).resolve().parents[1]
 

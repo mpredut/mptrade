@@ -15,6 +15,7 @@ sys.path.insert(0, T212_DIR)
 sys.path.insert(0, ROOT)
 
 from botcore import load_local_module  # noqa: E402
+import unittest
 
 order_manager = load_local_module(T212_DIR, "order_manager", module_key="t212_order_manager_under_test", reload=True)
 
@@ -79,7 +80,6 @@ def _place(client, **overrides):
     return order_manager.place_order_with_retry(**args)
 
 
-import unittest
 
 class TestT212OrderManager(unittest.TestCase):
     @pytest.fixture(autouse=True)

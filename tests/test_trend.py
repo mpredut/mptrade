@@ -22,6 +22,11 @@ from intelligence.internal.state.persistence import (  # noqa: E402
 )
 from priceAnalysis import detect_long_term_trend, get_trade_weight
 import order_guard
+import json
+import tempfile
+import time
+from unittest.mock import patch
+import priceAnalysis as pa
 
 H = 3600.0
 
@@ -262,13 +267,8 @@ class TestTrendLagOnDecline(unittest.TestCase):
                          "the bug demonstrated: it is falling but still reports 'up'")
 
 
-import json
-import tempfile
-import time
-from unittest.mock import patch
 
 os.environ.setdefault("MPLBACKEND", "Agg")
-import priceAnalysis as pa
 
 
 def _uniform_series(days=20, step_sec=300.0, slope_per_day=1.0, base=100.0, end=None):

@@ -25,6 +25,20 @@ import tradeall as ta
 import monitortrades as mt
 import rtrade as rt
 import assetguardian as ag
+from dataclasses import replace
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
+import pytest
+from botcore import parse_dotenv
+from providers.strategy_executor import PairPrecision
+import strategies
+from strategies import spot_engine
+from strategies.spot_engine import StratParams
+from tests.conftest import make_spot_test_params
+from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
 
 # Computed values (identical to what the original files did).
 _PC_SMALL = botcore.diff_percent(60000, 60000 - 310)
@@ -263,19 +277,7 @@ class TestModuleSpecifics(unittest.TestCase):
         self.assertNotEqual(rt.RTRADE_BUY_NORMAL_HOURS, rt.RTRADE_SELL_NORMAL_HOURS)
 
 
-from dataclasses import replace
-import json
-from pathlib import Path
-import tempfile
-from types import SimpleNamespace
-from unittest.mock import patch
-import pytest
 
-from botcore import parse_dotenv
-from providers.strategy_executor import PairPrecision
-import strategies
-from strategies import spot_engine
-from strategies.spot_engine import StratParams
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = {venue: parse_dotenv(str(ROOT / venue / "config.env")) for venue in ("kraken", "hyperliquid")}
@@ -284,8 +286,6 @@ REQUIRED_KEYS = sorted(
 ) + ["STRATEGY_MODE", "SHADOW_K_REENTRY"]
 
 
-from tests.conftest import make_spot_test_params
-from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
 
 
 class _Executor:

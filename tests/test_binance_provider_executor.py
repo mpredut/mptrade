@@ -18,6 +18,12 @@ from providers.strategy_executor import (
     SubmissionRefused,
     candle_interval,
 )
+from decimal import Decimal
+import pytest
+from providers.quantity import BinanceFilterError, BinanceOrderRules, binance_filter_refusal_reason, decimal_places
+from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import KrakenProvider
+from providers.t212_provider import T212Provider
 
 
 class FakeClient:
@@ -210,18 +216,7 @@ class BinanceExecutorContractTest(unittest.TestCase):
         self.assertIsNone(self.p.position_cost_basis("UNLISTEDCOIN", 1.0, 86400.0))
 
 
-from decimal import Decimal
-import pytest
 
-from providers.quantity import (
-    BinanceFilterError,
-    BinanceOrderRules,
-    binance_filter_refusal_reason,
-    decimal_places,
-)
-from providers.hyperliquid_provider import HyperliquidProvider
-from providers.kraken_provider import KrakenProvider
-from providers.t212_provider import T212Provider
 
 CONTRACT_METHODS = (
     "get_current_price", "submit_order", "order_status", "cancel_order",

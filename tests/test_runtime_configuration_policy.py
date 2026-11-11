@@ -5,6 +5,12 @@ import re
 from verify_tools.direct_order_api_inventory import inventory, scan_direct_calls
 from binance_api import bapi_client
 from unittest.mock import MagicMock, patch
+import os
+import sys
+import tempfile
+import textwrap
+import unittest
+from verify_tools.ownership_inventory import build_inventory, find_overlaps
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,12 +186,6 @@ def test_tracked_text_files_use_unix_line_endings():
     assert offenders == [], f"tracked text files contain CR/CRLF: {offenders}"
 
 
-import os
-import sys
-import tempfile
-import textwrap
-import unittest
-from verify_tools.ownership_inventory import build_inventory, find_overlaps
 
 
 def _write_inv(root: Path, relative: str, text: str) -> None:

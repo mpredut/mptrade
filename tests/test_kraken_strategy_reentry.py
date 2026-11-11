@@ -27,6 +27,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from strategies import spot_engine as strat, spot_rules as sr
 from providers.strategy_executor import PairPrecision  # noqa: E402
+from market_regime import MarketRegimeDecision
 
 
 # Keep the synthetic state file out of kraken/, next to the live pair states.
@@ -487,7 +488,6 @@ class TestHybridReentry(unittest.TestCase):
                 self.assertEqual(order["kind"], "ENTRY")
 
 
-from market_regime import MarketRegimeDecision
 
 
 class StratRulesTest(unittest.TestCase):

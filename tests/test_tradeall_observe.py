@@ -7,6 +7,10 @@ import pytest
 from matplotlib import pyplot as plt
 
 from visuals import tradeall_observe as observe
+import tempfile
+import unittest
+from unittest import mock
+import cacheManager as cm
 
 
 @pytest.fixture(autouse=True)
@@ -303,10 +307,6 @@ def test_kalman_gate_blocks_handles_unmapped_symbols():
 # Cache365PriceManager long-archive persistence & maintenance tests
 # ---------------------------------------------------------------------------
 
-import tempfile
-import unittest
-from unittest import mock
-import cacheManager as cm
 
 
 class TestArchiverLifecycle(unittest.TestCase):

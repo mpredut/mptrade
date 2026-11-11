@@ -15,6 +15,10 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from strategies import spot_replay as rp
 from tests.conftest import make_spot_test_params
+import contextlib
+import csv
+import hashlib
+import io
 strat = rp._strat
 
 
@@ -433,10 +437,6 @@ class PercentageSizingReplayTest(unittest.TestCase):
         )
 
 
-import contextlib
-import csv
-import hashlib
-import io
 
 DATASET = os.path.join(ROOT, "offline", "research", "hype_dataset",
                        "HYPEUSDC_240m_hlspot.csv")

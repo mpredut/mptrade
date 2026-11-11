@@ -21,6 +21,7 @@ sys.modules.setdefault("bapi_allorders", MagicMock())
 
 import cacheManager as cm
 from tests.conftest import TempDirTestCase, make_cache24_test_manager, make_synthetic_price_entries
+from binance_api.bapi_ws import BinancePriceStream
 
 
 def _make_cache24(symbol, entries, tmp):
@@ -1871,7 +1872,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertFalse(stm.is_trend_up("BTCUSDT", now=now_sec))
 
 
-from binance_api.bapi_ws import BinancePriceStream
 
 _WS_BRIDGE_SYMBOLS = ["BTCUSDC"]
 

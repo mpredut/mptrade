@@ -21,6 +21,7 @@ from providers.strategy_executor import (
     StrategyExecutor,
 )
 import pytest
+from offline.backtests.execution_calibration import calibrate_execution_events
 
 
 class _Executor:
@@ -206,7 +207,6 @@ class ExecutionAuditTest(unittest.TestCase):
             OrderStatus("open", 0.0, 0.0, 0.0, orig_qty="not_a_number")
 
 
-from offline.backtests.execution_calibration import calibrate_execution_events
 
 
 class ExecutionCalibrationTest(unittest.TestCase):

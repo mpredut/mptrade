@@ -28,6 +28,9 @@ from providers.t212_provider import T212Provider
 import botcore
 import math
 import pytest
+from types import SimpleNamespace, SimpleNamespace as _SimpleNamespace
+import order_guard as _order_guard
+from providers import base as pbase, order_ohlc_utils as oou
 
 
 class CustomProvider(MarketDataProvider):
@@ -367,9 +370,6 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
 
 
-from types import SimpleNamespace, SimpleNamespace as _SimpleNamespace
-import order_guard as _order_guard
-from providers import base as pbase, order_ohlc_utils as oou
 
 
 class _QtyDecisionFakeProvider(MarketDataProvider):

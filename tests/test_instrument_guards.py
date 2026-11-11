@@ -34,6 +34,10 @@ import order_retry as oq
 import order_retry_worker as worker
 import pytest
 from providers.quantity import decide_quantity
+from order_lifecycle import extract_order_restore_params, restore_cancelled_orders
+from active_intents import build_active_intent_index, format_summary
+from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+from types import SimpleNamespace
 
 SYMBOL = "ZZZFAKEUSD"
 
@@ -1774,10 +1778,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
 
 
-from order_lifecycle import (
-    extract_order_restore_params,
-    restore_cancelled_orders,
-)
 
 
 class TestOrderRollback(unittest.TestCase):
@@ -1855,9 +1855,6 @@ class TestOrderRollback(unittest.TestCase):
 # Consolidated from tests/test_trade_cooldown.py & tests/test_active_intents.py
 # ---------------------------------------------------------------------------
 
-from active_intents import build_active_intent_index, format_summary
-from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
-from types import SimpleNamespace
 
 
 def _write_intent_file(path, payload, *, lines=False):
