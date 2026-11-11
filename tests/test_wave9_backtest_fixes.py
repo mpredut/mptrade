@@ -12,8 +12,12 @@ import pytest
 
 from botcore import load_local_module
 from offline.backtests import tradeall as bt_tradeall
-from offline.backtests.evaluation import load_venue_replay_module
-from offline.research import chop_weight_backtest as cwb, intelligence_backtest as ib
+from offline.backtests.evaluation import ReplayContext, load_venue_replay_module
+from offline.research import (
+    chop_weight_backtest as cwb,
+    compare_mhdsl_reentry_replay as cmrr,
+    intelligence_backtest as ib,
+)
 from offline.research.kraken_continuous_grid import (
     grid as kcg_grid,
     grid2 as kcg_grid2,
@@ -25,7 +29,8 @@ from offline.research.monitortrades_backtest import backtest_wait_and_regime as 
 from offline.runners import apply_proposals
 from offline.simulations.sim import PriceWindow
 from providers.replay_provider import backtest_isolation_context, load_price_series
-from state_io import atomic_write_jsonl, read_text_file
+from state_io import atomic_write_jsonl, atomic_write_text, read_text_file
+from strategies import spot_replay
 from strategies.replay_execution import ExecutionModel, split_order_fill
 from strategies.replay_metrics import calculate_performance_metrics
 
@@ -56,6 +61,7 @@ WAVE9_PY_FILES = (
     "providers/replay_provider.py",
     "strategies/replay_execution.py",
     "strategies/replay_metrics.py",
+    "strategies/spot_replay.py",
     "tests/test_wave9_backtest_fixes.py",
 )
 
@@ -315,3 +321,31 @@ def test_wave9_apply_proposals_rolls_back_on_failed_git_commit(monkeypatch: pyte
         ("crypto:BTCUSDC", "mt.lost", 1.5, 1.0),
     ]
     assert audits and audits[0]["action"] == "commit_failed"
+
+
+def test_wave9_spot_replay_timestamps_and_mhdsl_comparison(tmp_path: Path) -> None:
+    """spot_replay.run_replay validates/forwards timestamps and compare_mhdsl_reentry_replay runs cleanly."""
+    live_params, _ = kcg_grid.CONFIGS["live"]
+    aligned = spot_replay.align_spot_interval_params(live_params, 240)
+    bars = [(20.0, 20.5, 19.5, 20.1), (20.1, 20.6, 19.8, 20.3)]
+    with pytest.raises(ValueError, match="timestamps length"):
+        spot_replay.run_replay(bars, aligned, bar_minutes=240, timestamps=[1700000000])
+
+    adapter = spot_replay.make_spot_replay_adapter(aligned, bar_minutes=240)
+    res = adapter(
+        bars,
+        [(19.9, 20.2, 19.7, 20.0)],
+        ReplayContext(timestamps=(1700014400, 1700028800), warmup_timestamps=(1700000000,)),
+    )
+    assert res["initial_capital"] == pytest.approx(aligned.allocated_budget())
+
+    csv_p = tmp_path / "hype_240m.csv"
+    lines = ["timestamp,open,high,low,close"]
+    for idx in range(45):
+        ts = 1700000000 + idx * 14400
+        px = 20.0 + (idx % 5) * 0.2
+        lines.append(f"{ts},{px:.2f},{px + 0.5:.2f},{px - 0.5:.2f},{px + 0.1:.2f}")
+    atomic_write_text(str(csv_p), "\n".join(lines) + "\n")
+    comp = cmrr.run_comparison(str(csv_p))
+    assert len(comp) == 4
+

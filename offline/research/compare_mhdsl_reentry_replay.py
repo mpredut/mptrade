@@ -44,8 +44,8 @@ def run_comparison(csv_path=None):
     warmup_bars = 40 if len(bars) > 60 else 0
     eval_bars = bars[warmup_bars:]
     warmup_ohlc = bars[:warmup_bars]
-    eval_ts = [r.timestamp for r in records[warmup_bars:]]
-    warmup_ts = [r.timestamp for r in records[:warmup_bars]]
+    eval_ts = [r["timestamp"] for r in records[warmup_bars:]]
+    warmup_ts = [r["timestamp"] for r in records[:warmup_bars]]
     sl_levels = [6.0, 8.0, 10.0, 12.0]
     results = []
 

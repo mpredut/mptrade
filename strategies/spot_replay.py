@@ -14,6 +14,7 @@ import dataclasses
 from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
+    normalize_epoch_sec,
     normalize_side,
     require_pos_float,
     safe_float,
@@ -184,6 +185,8 @@ def run_replay(
     dca_drop_series=None,
     reentry_series=None,
     intrabar_high: bool = False,
+    timestamps=None,
+    warmup_timestamps=None,
 ) -> dict:
     """Replay decisions, optionally enforcing a finite cash account and fee reserves."""
     _validate_replay(ohlc, params, bar_minutes)
@@ -195,6 +198,23 @@ def run_replay(
         initial_cash = safe_pos_float(initial_cash, default=None)
         if initial_cash is None:
             raise ValueError("initial_cash must be finite and positive")
+    ts_tuple: tuple[float, ...] | None = None
+    if timestamps is not None:
+        ts_raw = list(timestamps)
+        if len(ts_raw) != len(ohlc):
+            raise ValueError(f"timestamps length ({len(ts_raw)}) must match ohlc length ({len(ohlc)})")
+        parsed_ts: list[float] = []
+        for t_item in ts_raw:
+            tf = normalize_epoch_sec(t_item, default=None, allow_zero=True)
+            if tf is None:
+                raise ValueError(f"invalid replay timestamp: {t_item!r}")
+            parsed_ts.append(tf)
+        ts_tuple = tuple(parsed_ts)
+    warmup_ts_tuple: tuple[float | None, ...] | None = None
+    if warmup_timestamps is not None:
+        warmup_ts_tuple = tuple(
+            normalize_epoch_sec(wt, default=None, allow_zero=True) for wt in warmup_timestamps
+        )
     model = execution or ExecutionModel()
     fees = fee_model or FeeModel(fee_pct, fee_pct)
     warmup_rows = tuple(warmup_ohlc) if warmup_ohlc else ()
@@ -213,6 +233,8 @@ def run_replay(
             dca_drop_series=dca_drop_series,
             reentry_series=reentry_series,
             intrabar_high=intrabar_high,
+            timestamps=ts_tuple,
+            warmup_timestamps=warmup_ts_tuple,
         )
         scenario_diags[scenario.intrabar_policy] = dict(_LAST_REPLAY_DIAG)
         return out
@@ -238,6 +260,8 @@ def _run_once(
     dca_drop_series=None,
     reentry_series=None,
     intrabar_high: bool = False,
+    timestamps: tuple[float, ...] | None = None,
+    warmup_timestamps: tuple[float | None, ...] | None = None,
 ) -> dict:
     if dca_drop_series is not None or reentry_series is not None:
         params = dataclasses.replace(params) if dataclasses.is_dataclass(params) else copy.copy(params)
@@ -250,19 +274,24 @@ def _run_once(
             client, "REPLAY", params, dry_run=True, initial_state=_strat._new_state(), replay_mode=True,
         )
         warmup_step = bar_minutes * 60.0 if bar_minutes else 1.0
-        valid_warmup_closes: list[float] = []
-        for w_row in warmup_ohlc:
+        base_ts = timestamps[0] if timestamps else 0.0
+        use_warm_ts = bool(warmup_timestamps is not None and len(warmup_timestamps) == len(warmup_ohlc))
+        valid_warmup: list[tuple[float | None, float]] = []
+        for raw_idx, w_row in enumerate(warmup_ohlc):
             if not isinstance(w_row, (list, tuple)) or len(w_row) < 4:
                 continue
             close_f = safe_pos_float(w_row[3], default=None)
             if close_f is not None:
-                valid_warmup_closes.append(close_f)
-        n_warm = len(valid_warmup_closes)
-        for idx_w, close_f in enumerate(valid_warmup_closes):
-            strategy._shadow_prices.append(((idx_w - n_warm) * warmup_step, close_f))
+                wt_val = warmup_timestamps[raw_idx] if use_warm_ts else None
+                valid_warmup.append((wt_val, close_f))
+        n_warm = len(valid_warmup)
+        for idx_w, (wt_val, close_f) in enumerate(valid_warmup):
+            fallback_wt = base_ts + (idx_w - n_warm) * warmup_step
+            eff_wt = wt_val if wt_val is not None else fallback_wt
+            strategy._shadow_prices.append((eff_wt, close_f))
             if strategy._surge_replay_closes is not None:
                 strategy._surge_replay_closes.append(close_f)
-        strategy.set_simulated_time(0.0)
+        strategy.set_simulated_time(base_ts)
         strategy._save = _silent
         decision_trace = []
         current_bar = -1
@@ -350,7 +379,7 @@ def _run_once(
             low = require_pos_float(row[2], "low")
             close = require_pos_float(row[3], "close")
             current_bar = bar_index
-            replay_time = bar_index * bar_step_sec
+            replay_time = timestamps[bar_index] if timestamps else bar_index * bar_step_sec
             strategy.set_simulated_time(replay_time)
             if dca_drop_series is not None:
                 strategy.p.dca_drop_pct = (
@@ -511,13 +540,21 @@ def make_spot_replay_adapter(
     intrabar_high: bool = False,
 ):
     """Return a generic spot ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
-    def _adapter(ohlc, warmup_ohlc=(), _context=None):
+    def _adapter(ohlc, warmup_ohlc=(), context=None):
+        ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else None
+        w_ts = (
+            list(context.warmup_timestamps)
+            if context and getattr(context, "warmup_timestamps", None)
+            else None
+        )
         return run_replay(
             ohlc,
             params,
             fee_pct=fee_pct,
             bar_minutes=bar_minutes,
             warmup_ohlc=warmup_ohlc or (),
+            timestamps=ts,
+            warmup_timestamps=w_ts,
             execution=execution,
             fee_model=fee_model,
             include_decision_trace=include_decision_trace,

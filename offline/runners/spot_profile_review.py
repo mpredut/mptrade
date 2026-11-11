@@ -18,7 +18,7 @@ from state_io import atomic_write_json, encode_json_payload, read_bytes_file, re
 from strategies.spot_replay import align_spot_interval_params, make_spot_replay_adapter
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import dataset_sha256, load_dataset, validate_dataset
-from offline.backtests.evaluation import evaluate_segment, to_ohlc
+from offline.backtests.evaluation import ReplayContext, evaluate_segment, to_ohlc
 from offline.backtests.financial_benchmark import (
     BenchmarkScenario, aggregate_financial_windows, default_scenarios,
 )
@@ -136,14 +136,18 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
                                 "buy_hold_return_pct": segment["buy_hold_return_pct"],
                                 **{k: metrics[k] for k in ("return_pct", "max_drawdown_pct", "cycles", "fills")},
                                 "metrics": metrics})
+            cont_records = records[folds[0].test.start:folds[-1].test.stop]
+            cont_warmup = records[max(0, folds[0].test.start - 40):folds[0].test.start]
             report["scenarios"][scenario.name] = {
                 "assumptions": scenario.as_dict(), "windows": windows,
                 "aggregate": aggregate_financial_windows(windows, initial_capital=cash),
                 "continuous": adapter(
-                    to_ohlc(records[folds[0].test.start:folds[-1].test.stop]),
-                    to_ohlc(records[max(0, folds[0].test.start - 40):folds[0].test.start]),
-                    [r.timestamp for r in records[folds[0].test.start:folds[-1].test.stop]],
-                    warmup_timestamps=[r.timestamp for r in records[max(0, folds[0].test.start - 40):folds[0].test.start]],
+                    to_ohlc(cont_records),
+                    to_ohlc(cont_warmup),
+                    ReplayContext(
+                        timestamps=tuple(r["timestamp"] for r in cont_records),
+                        warmup_timestamps=tuple(r["timestamp"] for r in cont_warmup),
+                    ),
                 ),
             }
         reports[name] = report
