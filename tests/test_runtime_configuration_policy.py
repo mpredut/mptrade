@@ -3,6 +3,7 @@ import subprocess
 import re
 
 from verify_tools.direct_order_api_inventory import inventory, scan_direct_calls
+from botcore import resolve_cli_env_path
 from binance_api import bapi_client
 from unittest.mock import MagicMock, patch
 import os
@@ -117,14 +118,20 @@ def test_tracked_order_compatibility_shim_is_removed_after_consumer_migration():
     assert active_imports == []
 
 
-def test_live_launcher_env_defaults_are_location_based():
+def test_live_launcher_env_defaults_are_location_based(monkeypatch):
+    monkeypatch.delenv("ENV_FILE", raising=False)
+    assert resolve_cli_env_path("/tmp/venue_dir/launcher.py", []) == "/tmp/venue_dir/.env"
     for relative in (
         "kraken/kraken_bot.py",
         "hyperliquid/hl_bot.py",
     ):
         text = (ROOT / relative).read_text(encoding="utf-8")
         assert 'os.environ.get("ENV_FILE", ".env")' not in text
-        assert 'os.path.dirname(__file__), ".env"' in text
+        assert (
+            'os.path.dirname(__file__), ".env"' in text
+            or "resolve_cli_env_path(__file__" in text
+            or "load_cli_env_stack(__file__" in text
+        )
 
 
 def test_live_venue_credentials_use_complete_profile_resolver():
