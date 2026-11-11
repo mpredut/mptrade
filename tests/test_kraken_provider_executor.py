@@ -781,7 +781,6 @@ def test_krakenprovider_get_price_history_open_orders_order_status_iter51_s5(mon
     """[ITER51 #5] KrakenProvider: get_price_history, open_orders, order_status."""
     from types import SimpleNamespace
     import pytest
-    from providers.base import ProviderError
     # 5. KrakenProvider: get_price_history, open_orders, order_status
     kp = KrakenProvider()
     fake_kcli = SimpleNamespace(
@@ -972,7 +971,7 @@ def test_kraken_t212_continuous_grid_load_handles_float_timestamps_and_iter74_s4
 def test_krakenprovider_rejects_boolean_client_order_id_and_invalid_order_sides_iter87_s1():
     """[ITER87 #1] KrakenProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order & HyperliquidProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order."""
     import pytest
-    from providers.strategy_executor import ProviderError, SubmissionRefused
+    from providers.strategy_executor import SubmissionRefused
     from providers.hyperliquid_provider import HyperliquidProvider
     # 1. KrakenProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order
     with pytest.raises(ProviderError, match="client_order_id"):
@@ -1075,7 +1074,7 @@ def test_krakenclient_validation_on_pair_txid_and_price_decimals_non_iter94_s3(m
 def test_krakenprovider_kraken_pair_matches_free_balance_normalization_negative_fee_rejection_non_iter95_s2():
     """[ITER95 #2] KrakenProvider kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series."""
     import pytest
-    from providers.kraken_provider import KrakenProvider, kraken_pair_matches
+    from providers.kraken_provider import kraken_pair_matches
     # 2. KrakenProvider kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series
     assert kraken_pair_matches("", "---") is False
     assert kraken_pair_matches(True, "BTCUSD") is False
@@ -1104,7 +1103,6 @@ def test_krakenprovider_iter111_s1():
     """[ITER111 #1] KrakenProvider."""
     from types import SimpleNamespace
     import pytest
-    from providers.base import ProviderError
     import providers.kraken_provider as kp
     # 1. KrakenProvider
     assert kp.kraken_pair_key(True) == ""
@@ -1291,7 +1289,7 @@ def test_derive_client_order_id_normalize_kraken_fill_and_krakenprovider_order_s
     import pytest
     from types import SimpleNamespace
     from providers.hyperliquid_provider import HyperliquidProvider
-    from providers.kraken_provider import KrakenProvider, _normalize_kraken_fill
+    from providers.kraken_provider import _normalize_kraken_fill
     # 2. derive_client_order_id, _normalize_kraken_fill, and KrakenProvider.order_status whitespace handling
     for bad_cid in ("nan", "null", "none", "inf", ["abc"], {"a": 1}, True, None, ""):
         with pytest.raises(ProviderError):
@@ -1435,7 +1433,7 @@ def test_kraken_shadow_live__get_anchor_handles_integral_float_strings_and_iter1
 def test_krakenprovider__clean_kraken_order_id_strategy_dry_run_iter152_s2():
     """[ITER152 #2] require_clean_order_id(str_only=True) & KrakenProvider.strategy_dry_run."""
     import pytest
-    from providers.kraken_provider import KrakenProvider, _parse_bool_flag as krk_bool
+    from providers.kraken_provider import _parse_bool_flag as krk_bool
     from providers.order_ohlc_utils import require_clean_order_id
     # 2. require_clean_order_id(str_only=True) & KrakenProvider.strategy_dry_run
     assert krk_bool("false", True) is False

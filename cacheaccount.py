@@ -212,6 +212,13 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         if self._is_account_cache():
             self._account_cache_dirty = True
 
+    def update_cache_per_symbol(self, symbol, new_items):
+        if not self._is_account_cache():
+            return super().update_cache_per_symbol(symbol, new_items)
+        if new_items is None:
+            return
+        self._persist_items(symbol, self._coerce_item_list(new_items))
+
     def _resolve_remote_query_start_time(self, symbol: str, fallback_ft):
         if self._is_account_cache():
             return min(
@@ -1455,12 +1462,6 @@ class CacheTradeManager(CacheAccountManagerBase):
         print(f"[{self.cls_name}][info] New trades: {len(new_trades)}")
         return new_trades
 
-    def update_cache_per_symbol(self, symbol, new_items):
-        """Route direct update_cache_per_symbol calls through full-history ID deduplication."""
-        if new_items is None:
-            return
-        self._persist_items(symbol, self._coerce_item_list(new_items))
-
     def _persist_items(self, symbol, new_items):
         """Append immutable fills once and reject conflicting duplicate IDs (or merge JSON snapshot fills when `append_persist=False`)."""
         if not self.append_persist:
@@ -1891,12 +1892,6 @@ class CacheOrderManager(CacheAccountManagerBase):
         ]
         print(f"[{self.cls_name}][info] New order fills: {len(order_fills)}")
         return order_fills
-
-    def update_cache_per_symbol(self, symbol, new_items):
-        """Route direct update_cache_per_symbol calls through fill-level order aggregation."""
-        if new_items is None:
-            return
-        self._persist_items(symbol, self._coerce_item_list(new_items))
 
     def _persist_items(self, symbol, new_items):
         """Merge each immutable fill exactly once into its order aggregate."""

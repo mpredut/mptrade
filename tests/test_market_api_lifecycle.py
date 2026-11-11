@@ -305,7 +305,6 @@ def test_marketapi_provider_by_name_handles_non_string_safely_iter86_s4():
 def test_marketapi_rejects_bool_none_blank_order_id_and_client_order_id_iter112_s3():
     """[ITER112 #3] MarketApi rejects bool/None/blank order_id and client_order_id before str() coercion."""
     import pytest
-    from providers.base import ProviderError
     import providers.market_api as ma
     # 3. MarketApi rejects bool/None/blank order_id and client_order_id before str() coercion
     with pytest.raises(ProviderError):
@@ -422,7 +421,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     import pytest
     import market_regime
     import order_guard
-    from providers.base import ClosedPriceSeries as BaseClosedPriceSeries, MarketDataProvider
+    from providers.base import ClosedPriceSeries as BaseClosedPriceSeries
     from providers.intent_execution import resolve_intent_topic_tag
     from providers.order_ohlc_utils import ClosedPriceSeries as OhlcClosedPriceSeries
     from providers.replay_provider import ReplayMarketDataProvider

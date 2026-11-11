@@ -1547,7 +1547,7 @@ def test_order_rollback_sanitizes_nan_level_in_extract_order_restore_params_iter
 def test_auditedstrategyexecutor_normalizes_symbol_case_whitespace_and_order_id_across_iter123_s2(tmp_path):
     """[ITER123 #2] AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status & StrategyExecutorLifecycleApi rejects NaN/'nan'/'null' and normalizes integer float IDs."""
     import pytest
-    from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus, ProviderError
+    from providers.strategy_executor import OrderReconciliationCapabilities, ProviderError
     from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
     # 2. AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status
     class _DummyExec:

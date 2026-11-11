@@ -15,14 +15,24 @@ from intelligence.cli import get_daemon_status, inspect_symbol_intelligence
 from intelligence.composite import CompositeMarketIntelligence
 from intelligence.daemon import IntelligenceTelemetryDaemon
 from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
-from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
-from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
+from intelligence.external.collectors.orderbook_depth_collector import (
+    OrderbookDepthCollector,
+    OrderbookSnapshot,
+)
+from intelligence.external.collectors.whale_positioning_collector import (
+    WhalePositioningCollector,
+    WhalePositioningSnapshot,
+)
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-from intelligence.internal.guards.guard_decision import BrakeAction
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    resolve_hierarchical_guard_mode,
+)
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
 from intelligence.internal.state.persistence import (
+    calculate_hurst_exponent,
     calculate_mann_kendall,
     classify_hurst_regime,
 )
@@ -40,7 +50,10 @@ from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigge
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
-from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
+from intelligence.macro.geopolitical_analyzer import (
+    GeopoliticalThreatAnalyzer,
+    GeopoliticalThreatAssessment,
+)
 from offline.research.intelligence_backtest import BacktestStats, run_intelligence_backtest
 
 
@@ -720,7 +733,6 @@ def test_survival_estimate_t_writes_cache_without_name_error(temp_cache_dir):
 
 
 def test_whale_collector_short_building_and_ignore_ttl_prev_regime(temp_cache_dir):
-    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
     reg = WhalePositioningCollector.classify_regime(
         price_1h_change_pct=-0.5,
@@ -882,7 +894,6 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
 def test_iter44_intents_dict_unwrap_read_json_cached_and_orderbook_wall_and_bucket_dedup(tmp_path, monkeypatch):
     """Verify dict-wrapped intents unwrapping, read_json_cached list-root fallback, whale wall preservation, and nSigFigs bucket dedup."""
     from types import SimpleNamespace
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.sentiment.collectors.macro_telemetry_collector import (
         MarketAndPortfolioSnapshotOrchestrator,
         harvest_macro_and_news_sensors,
@@ -2195,7 +2206,6 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
     from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
-    from intelligence.internal.guards.guard_decision import BrakeAction, resolve_hierarchical_guard_mode
     from intelligence.internal.state import survival as surv_mod
     from intelligence.internal.state import volatility as vol_mod
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
@@ -2454,7 +2464,6 @@ def test_iter59_parabolic_ms_timestamps_persistence_pairs_and_percent_scales(tmp
     from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
-    from intelligence.internal.state.persistence import calculate_hurst_exponent, calculate_mann_kendall
     from intelligence.macro.calendar_ssot import (
         compute_dynamic_geopolitical_interval,
         compute_dynamic_sentiment_interval,
@@ -2558,10 +2567,6 @@ def test_iter60_kalman_ms_timestamps_bybit_lookup_and_whale_percent_scales(tmp_p
     from types import SimpleNamespace
     import shadow_signals as ss
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
-    from intelligence.external.collectors.whale_positioning_collector import (
-        WhalePositioningCollector,
-        WhalePositioningSnapshot,
-    )
     from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
 
@@ -2613,7 +2618,6 @@ def test_iter60_kalman_ms_timestamps_bybit_lookup_and_whale_percent_scales(tmp_p
 def test_iter61_whale_spread_flow_sentiment_advisor_and_price_series_ordering(monkeypatch, tmp_path):
     from types import SimpleNamespace
     import external_order_guard as eog
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     from intelligence.sentiment.collectors.microstructure_collector import _filter_ohlc_closes_since
     from intelligence.sentiment.evaluators.price_series_evaluator import (
@@ -2914,7 +2918,6 @@ def test_iter63_microstructure_archive_sorting_post_stop_ms_and_news_iso_dates(m
 
 
 def test_iter64_breadth_rotation_fields_taxonomy_spaces_and_ms_timestamps(tmp_path):
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     from intelligence.macro_sentiment_ssot import (
         load_cached_fear_greed_snapshot,
@@ -5845,10 +5848,6 @@ def test_iter13_equity_post_rth_24h_cutoff_and_archive_7d_fallback(tmp_path, mon
 def test_iter89_geopolitical_subset_deescalation_news_first_seen_post_rth_slopes_and_sibling_geometry(
     tmp_path, monkeypatch
 ):
-    from intelligence.macro.geopolitical_analyzer import (
-        GeopoliticalThreatAnalyzer,
-        GeopoliticalThreatAssessment,
-    )
     from intelligence.macro.news_feed_collector import (
         NewsFeedCollector,
         NewsFeedSnapshot,
@@ -6867,7 +6866,6 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     """
     from types import SimpleNamespace
     import cacheManager as cm
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
     from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
         enrich_sentiment_advisor_live_flow_divergence,
     )
@@ -8518,9 +8516,7 @@ def test_equity_telemetry_and_rth_market_gating(tmp_path, monkeypatch):
     from datetime import datetime, timezone
     from instrument_registry import is_symbol_market_open, venue_for_symbol
     from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
-    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
     assert venue_for_symbol("NVDA_US_EQ") == "t212"
     assert venue_for_symbol("SPCX_US_EQ") == "t212"
@@ -9288,7 +9284,6 @@ def test_volatility_py_usdcusdt_preserved_ron_gbp_stripped_items_iter16_s1(tmp_p
 def test_calculate_mann_kendall_and_calculate_hurst_exponent_filter_nan_inf_without_crashing_iter17_s4():
     """[ITER17 #4] calculate_mann_kendall and calculate_hurst_exponent filter NaN/Inf without crashing."""
     import math
-    from intelligence.internal.state.persistence import calculate_hurst_exponent, calculate_mann_kendall
     # 4. calculate_mann_kendall and calculate_hurst_exponent filter NaN/Inf without crashing
     mk_s, mk_z, mk_p = calculate_mann_kendall([100.0, float("nan"), 101.0, 102.0, float("inf"), 103.0, 104.0, 105.0, 106.0, 107.0])
     assert mk_s > 0
@@ -9603,7 +9598,6 @@ def test_trendsignificanceguard_evaluate_accepts_dict_trigger_and_bid_short_iter
 
 def test_resolve_hierarchical_guard_mode_cascades_intelligence_guards_mode_pillar_master_guard_key_iter183_s1():
     """[ITER183 #1] resolve_hierarchical_guard_mode cascades intelligence_guards_mode -> pillar_master -> guard_key."""
-    from intelligence.internal.guards.guard_decision import resolve_hierarchical_guard_mode
     # 1. resolve_hierarchical_guard_mode cascades intelligence_guards_mode -> pillar_master -> guard_key
     assert resolve_hierarchical_guard_mode({}, "smart_sl_mode", "external_guard_mode") == "enforce"
     assert (

@@ -1811,7 +1811,7 @@ def test_notify_engine_server_process_line_handles_none_bool_negative_cooldown_m
 
 def test_pricechecker__get_thresholds_for_symbol_handles_partial_or_invalid_per_coin_dicts_iter78_s1():
     """[ITER78 #1] PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts."""
-    from market_monitor.pricechecker import PriceChecker, PriceAlert, PRICE_ALERT_CONFIG
+    from market_monitor.pricechecker import PriceChecker, PRICE_ALERT_CONFIG
     # 1. PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts
     class _DummyCache:
         symbol_added_time = {}

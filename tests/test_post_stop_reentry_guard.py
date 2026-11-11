@@ -18,7 +18,12 @@ from unittest.mock import MagicMock, patch
 import monitortrades as mt
 from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
 from intelligence.sentiment.gemini_client import GeminiClient
-from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+from intelligence.sentiment.guards.post_stop_reentry_guard import (
+    _POST_STOP_DECISION_CACHE,
+    PostStopReentryGuard,
+    clear_post_stop_reentry_cache,
+    get_post_stop_reentry_guard,
+)
 
 
 class FakeGeminiClient(GeminiClient):
@@ -276,7 +281,6 @@ def test_monitortrades_integration_downscale():
 def test_decision_caching_and_notify_cooldown():
     """Verify repeated checks for the same post-stop exit episode reuse the cached LLM decision
     and suppress duplicate ntfy alerts within cache_ttl_sec."""
-    from intelligence.sentiment.guards.post_stop_reentry_guard import clear_post_stop_reentry_cache
 
     clear_post_stop_reentry_cache()
     call_count = 0
@@ -615,7 +619,6 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
 
 def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
-    from intelligence.sentiment.guards.post_stop_reentry_guard import clear_post_stop_reentry_cache
 
     clear_post_stop_reentry_cache()
 
@@ -737,7 +740,6 @@ def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
 def test_poststopreentryguard_string_none_nan_input_formatting_safety_iter31_s4():
     """[ITER31 #4] PostStopReentryGuard string/None/NaN input formatting safety."""
     from types import SimpleNamespace
-    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, clear_post_stop_reentry_cache
     # 4. PostStopReentryGuard string/None/NaN input formatting safety
     clear_post_stop_reentry_cache()
     ps_guard = PostStopReentryGuard(
@@ -761,7 +763,6 @@ def test_poststopreentryguard_string_none_nan_input_formatting_safety_iter31_s4(
 
 def test_poststopreentryguard_mode_false_sets_mode_off_instead_of_iter125_s6():
     """[ITER125 #6] PostStopReentryGuard(mode=False) sets mode='off' instead of 'enforce'."""
-    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, get_post_stop_reentry_guard
     # 6. PostStopReentryGuard(mode=False) sets mode="off" instead of "enforce"
     psr_off = PostStopReentryGuard(mode=False)
     assert psr_off.mode == "off"
@@ -780,7 +781,6 @@ def test_poststopreentryguard_mode_false_sets_mode_off_instead_of_iter125_s6():
 
 def test_get_post_stop_reentry_guard_tolerates_partial_margins_dict_without_post_stop_reentry_mode_iter180_s1():
     """[ITER180 #1] get_post_stop_reentry_guard tolerates partial margins dict without 'post_stop_reentry_mode'."""
-    from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
     # 1. get_post_stop_reentry_guard tolerates partial margins dict without 'post_stop_reentry_mode'
     ps_guard = get_post_stop_reentry_guard(
         margins={"llm_guard_mode": "shadow"},
@@ -790,7 +790,6 @@ def test_get_post_stop_reentry_guard_tolerates_partial_margins_dict_without_post
 
 def test_poststopreentryguard_highstakeguard_tolerate_none_bool_cache_timestamps_iter180_s2():
     """[ITER180 #2] PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps."""
-    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, _POST_STOP_DECISION_CACHE
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, _HIGH_STAKE_DECISION_CACHE
     # 2. PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps
     ps_enforced = PostStopReentryGuard(

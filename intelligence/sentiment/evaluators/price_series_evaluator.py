@@ -14,6 +14,7 @@ from botcore import (
 )
 from cachepaths import cache_path, canonical_base_asset
 from instrument_registry import is_equity_symbol
+from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
 from intelligence.macro_sentiment_ssot import (
     normalize_epoch_sec,
@@ -2079,56 +2080,19 @@ class ShortTrendAndKalmanEvaluator(PriceSeriesEvaluatorBase):
         return target
 
 
-class TelemetryEvaluatorFactory:
+class TelemetryEvaluatorFactory(OrderGuardEvaluatorFactory):
     """Singleton registry and factory for stateless telemetry evaluators (modeled on ``CacheFactory``)."""
 
     _instances: Dict[str, TelemetryEvaluatorInterface] = {}
     _registry: Dict[str, type[TelemetryEvaluatorInterface]] = {}
     _defaults_loaded: bool = False
-
-    @classmethod
-    def register(
-        cls,
-        evaluator_id: str,
-        evaluator_cls: type[TelemetryEvaluatorInterface],
-    ) -> None:
-        cls._registry[str(evaluator_id)] = evaluator_cls
-
-    @classmethod
-    def _ensure_default_evaluators_registered(cls) -> None:
-        if cls._defaults_loaded:
-            return
-        cls._defaults_loaded = True
-        for mod_name in (
-            "intelligence.sentiment.evaluators.microstructure_evaluator",
-            "intelligence.sentiment.evaluators.portfolio_evaluator",
-            "intelligence.sentiment.evaluators.tca_risk_evaluator",
-            "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
-        ):
-            try:
-                __import__(mod_name)
-            except Exception:
-                pass
-
-    @classmethod
-    def create(cls, evaluator_id: str) -> Any:
-        key = str(evaluator_id)
-        evaluator_cls = cls._registry.get(key)
-        if evaluator_cls is None:
-            cls._ensure_default_evaluators_registered()
-            evaluator_cls = cls._registry.get(key)
-        if evaluator_cls is None:
-            raise KeyError(f"Unknown telemetry evaluator id: {key}")
-        return cls.get_evaluator(evaluator_cls)
-
-    @classmethod
-    def get_evaluator(cls, evaluator_cls: type[TelemetryEvaluatorInterface]) -> Any:
-        key = evaluator_cls.__name__
-        inst = cls._instances.get(key)
-        if inst is None:
-            inst = evaluator_cls()
-            cls._instances[key] = inst
-        return inst
+    _unknown_id_label: str = "telemetry evaluator"
+    _default_evaluator_modules: tuple[str, ...] = (
+        "intelligence.sentiment.evaluators.microstructure_evaluator",
+        "intelligence.sentiment.evaluators.portfolio_evaluator",
+        "intelligence.sentiment.evaluators.tca_risk_evaluator",
+        "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
+    )
 
 
 for _ps_eval_id, _ps_eval_cls in (

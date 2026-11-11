@@ -19,10 +19,14 @@ from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 from intelligence.macro.news_feed_collector import (
     NewsFeedCollector,
     NewsFeedSnapshot,
+    NewsHeadline,
 )
 from intelligence.macro_analyzer import MacroAnalyzer
 from intelligence.sentiment.gemini_client import GeminiClient
-from intelligence.sentiment.sentiment_advisor import SentimentAdvisorAssessment
+from intelligence.sentiment.sentiment_advisor import (
+    SentimentAdvisor,
+    SentimentAdvisorAssessment,
+)
 
 
 SAMPLE_RSS_XML_WAR = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -1552,7 +1556,6 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         format_equity_macro_regime_line,
         format_macro_benchmarks_summary_line,
     )
-    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section
 
     # 1. Declarative SSOT config includes VIX (^VIX) and cross_asset_regimes
@@ -2247,7 +2250,6 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
         load_dynamic_lexicon,
         update_dynamic_lexicon,
     )
-    from intelligence.macro.news_feed_collector import NewsFeedSnapshot, NewsHeadline
     from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
     from orchestratorOS.supervisor.prompt_sections import _age_sfx
 
@@ -2406,7 +2408,6 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
 
 def test_sentimentadvisor_geopoliticalthreatanalyzer_recover_previous_file_when_primary_is_iter9_s3(tmp_path):
     """[ITER9 #3] SentimentAdvisor & GeopoliticalThreatAnalyzer recover .previous file when primary is corrupt."""
-    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     # 3. SentimentAdvisor & GeopoliticalThreatAnalyzer recover .previous file when primary is corrupt
     sa_file = tmp_path / "sentiment_eval.json"
     sa_prev = tmp_path / "sentiment_eval.json.previous"
@@ -2432,7 +2433,6 @@ def test_sentimentadvisor_geopoliticalthreatanalyzer_recover_previous_file_when_
 
 def test_sentimentadvisor_and_geopoliticalthreatanalyzer_invalidate_cache_when__last_eval_ts_is_iter13_s4(tmp_path, monkeypatch):
     """[ITER13 #4] SentimentAdvisor and GeopoliticalThreatAnalyzer invalidate cache when _last_eval_ts is in the future (clock skew)."""
-    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, SentimentAdvisorAssessment
     now_ts = time.time()
     # 4. SentimentAdvisor and GeopoliticalThreatAnalyzer invalidate cache when _last_eval_ts is in the future (clock skew)
     sa = SentimentAdvisor(cache_ttl_sec=3600.0, cache_file=str(tmp_path / "sa_eval.json"))
@@ -2476,7 +2476,6 @@ def test_sentimentadvisor_and_geopoliticalthreatanalyzer_invalidate_cache_when__
         ts=now_ts + 5000.0,
     )
     ga._last_eval_ts = now_ts + 5000.0
-    from intelligence.macro.news_feed_collector import NewsFeedSnapshot, NewsHeadline
     snap = NewsFeedSnapshot(
         headlines=(
             NewsHeadline(
@@ -2498,7 +2497,6 @@ def test_sentimentadvisor_and_geopoliticalthreatanalyzer_invalidate_cache_when__
 
 def test_geopoliticalthreatanalyzer_sentimentadvisor_and_newsfeedcollector_sanitize_non_finite_bool_iter17_s5(tmp_path):
     """[ITER17 #5] GeopoliticalThreatAnalyzer, SentimentAdvisor, and NewsFeedCollector sanitize non-finite/bool and recover .previous."""
-    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     # 5. GeopoliticalThreatAnalyzer, SentimentAdvisor, and NewsFeedCollector sanitize non-finite/bool and recover .previous
     geo_path = tmp_path / "geopolitical_eval.json"
     geo_prev = tmp_path / "geopolitical_eval.json.previous"
@@ -2624,7 +2622,6 @@ def test_macroanalyzer_assess_market_advisor_null_json_fields_iter26_s3(tmp_path
 
 def test_newsfeedcollector__aggregate_prunes_corrupted_nan_entries_safely_iter54_s2(tmp_path):
     """[ITER54 #2] NewsFeedCollector._aggregate prunes corrupted/NaN entries safely."""
-    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
     # 2. NewsFeedCollector._aggregate prunes corrupted/NaN entries safely
     nfc = NewsFeedCollector(history_file=str(tmp_path / "news_feed_collect.json"))
     h = NewsHeadline(
@@ -2691,7 +2688,6 @@ def test_geopoliticalthreatanalyzer__load_from_disk_with_bool_summary_threat_lev
 
 def test_newsfeedcollector__normalize_title__load_history_get_pool_snapshot_and_parse_rss_xml_iter104_s2(tmp_path):
     """[ITER104 #2] NewsFeedCollector _normalize_title, _load_history, get_pool_snapshot, and parse_rss_xml."""
-    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsHeadline
     # 2. NewsFeedCollector _normalize_title, _load_history, get_pool_snapshot, and parse_rss_xml
     hist_file = tmp_path / "news_hist.json"
     now_ts = time.time()
@@ -2760,7 +2756,6 @@ def test_geopoliticalshockguard_accepts_dict_assessment_iter175_s2():
 def test_geopoliticalthreatanalyzer_assess_accepts_dict_news_snapshot_and_dict_headlines_iter175_s3(tmp_path):
     """[ITER175 #3] GeopoliticalThreatAnalyzer.assess accepts dict news_snapshot and dict headlines & SentimentAdvisor.review accepts dict fear_greed and dict breadth."""
     from types import SimpleNamespace
-    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     # 3. GeopoliticalThreatAnalyzer.assess accepts dict news_snapshot and dict headlines
     captured_prompts = []
     fake_gemini = SimpleNamespace(

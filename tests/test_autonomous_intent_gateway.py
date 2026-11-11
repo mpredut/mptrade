@@ -2068,9 +2068,6 @@ def test_autonomousintentgateway__get_live_price_rejects_boolean_true_prices_fro
     import json
     import math
     from types import SimpleNamespace
-    from orchestratorTrade.autonomous_intent_gateway import (
-        AutonomousIntentGateway,
-    )
     # 3. AutonomousIntentGateway._get_live_price rejects boolean True prices from provider and cache
     ws = tmp_path / "gw_ws"
     ws.mkdir()

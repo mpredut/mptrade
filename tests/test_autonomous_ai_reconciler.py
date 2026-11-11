@@ -1543,10 +1543,6 @@ def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_e
 
 def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     workspace, cache_dir, _ = temp_env
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import (
-        AutonomousAIReconciler,
-        TelemetrySensorSnapshot,
-    )
     from orchestratorOS.agy.topics import topic_spec
     from intelligence.sentiment.collectors.microstructure_collector import (
         load_symbol_price_series,
@@ -2508,10 +2504,6 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
 
 def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tmp_path):
     from intelligence.sentiment.evaluators.price_series_evaluator import compute_swing_wave_metrics
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import (
-        AutonomousAIReconciler,
-        GeminiClient,
-    )
 
     # 1. Pure objective ZigZag swing wave extraction on rally (+8.68%) and subsequent drop (-7.82%)
     series_rally = [
@@ -2667,10 +2659,6 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     """Verify prompt data accuracy across T212 Yahoo fallback, orderbook wall distances,
     venue-isolated trailing peaks/cycles/orders, realized_net PnL, and clean None formatting."""
     from intelligence.sentiment.collectors.portfolio_collector import parse_venue_cycle_state
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import (
-        AutonomousAIReconciler,
-        GeminiClient,
-    )
     from orchestratorOS.supervisor.prompt_sections import _format_venue_cycle_line
     from providers.t212_provider import T212Provider
 
@@ -2850,10 +2838,6 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
         compute_volume_profile_metrics,
     )
     from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import (
-        AutonomousAIReconciler,
-        GeminiClient,
-    )
 
     # 1. Volume Profile (POC, VAL, VAH, symmetric % distances, and regime)
     now_ms = int(time.time() * 1000)

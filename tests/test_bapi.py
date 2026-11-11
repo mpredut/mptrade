@@ -636,7 +636,7 @@ def test_bapi_allorders_get_trade_orders_bapi_trades_get_trade_orders_and_aggreg
     import threading
     from types import SimpleNamespace
     import cacheManager as cm
-    from binance_api import bapi_allorders, bapi_trades
+    from binance_api import bapi_allorders
     tm = cm.CacheTradeManager.__new__(cm.CacheTradeManager)
     tm.lock = threading.RLock()
     tm.sync_account_reader_if_needed = lambda: None
@@ -1354,7 +1354,7 @@ def test_bapi_placeorder__normalize_side_and__last_opposite_fill_price_api_iter1
 
 def test_binancewsbase_stop_timeout_and_binanceaccountstream_keepalive_sec_loss_timeout_sec_iter117_s3():
     """[ITER117 #3] BinanceWSBase.stop timeout and BinanceAccountStream keepalive_sec / loss_timeout_sec."""
-    from binance_api.bapi_ws import BinanceAccountStream, BinancePriceStream, WS_USERDATA_KEEPALIVE_SEC, WS_USERDATA_LOSS_TIMEOUT_SEC
+    from binance_api.bapi_ws import WS_USERDATA_KEEPALIVE_SEC, WS_USERDATA_LOSS_TIMEOUT_SEC
     # 3. BinanceWSBase.stop timeout and BinanceAccountStream keepalive_sec / loss_timeout_sec
     ps = BinancePriceStream(["BTCUSDC"])
     ps.stop(timeout=float("nan"))

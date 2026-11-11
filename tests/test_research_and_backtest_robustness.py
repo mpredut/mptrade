@@ -2595,7 +2595,7 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     assert hl_rp.run_replay([], [], [], [], {"currency": None})["account_currency"] == "USDC"
 
     # 3. strategies/spot_replay.py handles numeric-string OHLC and malformed warmup_ohlc
-    from strategies import spot_engine, spot_replay
+    from strategies import spot_replay
     p_spot = spot_engine.StratParams(
         currency="USD",
         entry_amount=100.0,
@@ -5237,7 +5237,7 @@ def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
     from providers.base import extract_order_price
     from providers.order_ohlc_utils import extract_order_fee
     from providers.market_api import MarketApi, ProviderError
-    from strategies import spot_engine, spot_replay, spot_rules
+    from strategies import spot_replay, spot_rules
     from strategies.position_exit_manager import (
         PositionExitConfig,
         PositionSnapshot,

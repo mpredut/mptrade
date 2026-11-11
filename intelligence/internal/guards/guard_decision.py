@@ -196,15 +196,37 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
 class OrderGuardEvaluatorFactory:
     """Singleton registry and factory for ``OrderGuardEvaluatorInterface`` implementations across all 4 pillars."""
 
-    _instances: Dict[str, OrderGuardEvaluatorInterface] = {}
-    _registry: Dict[str, type[OrderGuardEvaluatorInterface]] = {}
+    _instances: Dict[str, Any] = {}
+    _registry: Dict[str, type[Any]] = {}
     _defaults_loaded: bool = False
+    _unknown_id_label: str = "order guard evaluator"
+    _default_evaluator_modules: tuple[str, ...] = (
+        "intelligence.internal.guards.noise_guard",
+        "intelligence.internal.guards.exhaustion_guard",
+        "intelligence.internal.guards.parabolic_guard",
+        "intelligence.internal.guards.trend_significance_guard",
+        "intelligence.external.guards.cascade_guard",
+        "intelligence.external.guards.funding_crowding_guard",
+        "intelligence.external.guards.orderbook_wall_guard",
+        "intelligence.external.guards.whale_divergence_guard",
+        "intelligence.external.guards.smart_stop_loss_guard",
+        "intelligence.sentiment.guards.extreme_greed_guard",
+        "intelligence.sentiment.guards.panic_washout_guard",
+        "intelligence.sentiment.guards.high_stake_guard",
+        "intelligence.sentiment.guards.post_stop_reentry_guard",
+        "intelligence.macro.geopolitical_guard",
+        "intelligence.composite",
+        "qlimit_order_guard",
+        "external_order_guard",
+        "llm_order_guard",
+        "order_guard",
+    )
 
     @classmethod
     def register(
         cls,
         guard_id: str,
-        evaluator_cls: type[OrderGuardEvaluatorInterface],
+        evaluator_cls: type[Any],
     ) -> None:
         cls._registry[str(guard_id)] = evaluator_cls
 
@@ -213,27 +235,7 @@ class OrderGuardEvaluatorFactory:
         if cls._defaults_loaded:
             return
         cls._defaults_loaded = True
-        for mod_name in (
-            "intelligence.internal.guards.noise_guard",
-            "intelligence.internal.guards.exhaustion_guard",
-            "intelligence.internal.guards.parabolic_guard",
-            "intelligence.internal.guards.trend_significance_guard",
-            "intelligence.external.guards.cascade_guard",
-            "intelligence.external.guards.funding_crowding_guard",
-            "intelligence.external.guards.orderbook_wall_guard",
-            "intelligence.external.guards.whale_divergence_guard",
-            "intelligence.external.guards.smart_stop_loss_guard",
-            "intelligence.sentiment.guards.extreme_greed_guard",
-            "intelligence.sentiment.guards.panic_washout_guard",
-            "intelligence.sentiment.guards.high_stake_guard",
-            "intelligence.sentiment.guards.post_stop_reentry_guard",
-            "intelligence.macro.geopolitical_guard",
-            "intelligence.composite",
-            "qlimit_order_guard",
-            "external_order_guard",
-            "llm_order_guard",
-            "order_guard",
-        ):
+        for mod_name in cls._default_evaluator_modules:
             try:
                 __import__(mod_name)
             except Exception:
@@ -247,13 +249,13 @@ class OrderGuardEvaluatorFactory:
             cls._ensure_default_evaluators_registered()
             evaluator_cls = cls._registry.get(key)
         if evaluator_cls is None:
-            raise KeyError(f"Unknown order guard evaluator id: {key}")
+            raise KeyError(f"Unknown {cls._unknown_id_label} id: {key}")
         if kwargs:
             return evaluator_cls(**kwargs)
         return cls.get_evaluator(evaluator_cls)
 
     @classmethod
-    def get_evaluator(cls, evaluator_cls: type[OrderGuardEvaluatorInterface]) -> Any:
+    def get_evaluator(cls, evaluator_cls: type[Any]) -> Any:
         key = evaluator_cls.__name__
         inst = cls._instances.get(key)
         if inst is None:

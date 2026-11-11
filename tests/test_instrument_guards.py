@@ -2439,7 +2439,6 @@ def test_instrument__apply_late_intelligence_scale_nan_bool_safety_instrument_pl
 def test_instrument_place_side_normalization_invalid_side_handling_and_iter98_s2():
     """[ITER98 #2] Instrument.place side normalization & invalid side handling, and Instrument.param safety."""
     import pytest
-    from providers.base import MarketDataProvider
     # 2. Instrument.place side normalization & invalid side handling, and Instrument.param safety
     class _GuardInternalProvider(MarketDataProvider):
         name = "guard_internal"
@@ -2501,7 +2500,7 @@ def test_instrument_place_side_normalization_invalid_side_handling_and_iter98_s2
 def test_instrument_param_with_cast_bool_and_instrument_enabled_iter156_s1():
     """[ITER156 #1] Instrument.param with cast=bool and Instrument.enabled boolean parsing."""
     from types import SimpleNamespace
-    from instrument import Instrument, _parse_bool_flag
+    from instrument import _parse_bool_flag
     # 1. Instrument.param with cast=bool and Instrument.enabled boolean parsing
     dummy_prov = SimpleNamespace(name="dummy", validate_symbol=lambda s: None)
     dummy_api = SimpleNamespace(provider_by_name=lambda p: dummy_prov)

@@ -974,7 +974,6 @@ def test_hyperliquidprovider_free_balance_get_price_history_ohlc_series_order_st
     """[ITER51 #4] HyperliquidProvider: free_balance, get_price_history, ohlc_series, order_status."""
     from types import SimpleNamespace
     import pytest
-    from providers.base import ProviderError
     # 4. HyperliquidProvider: free_balance, get_price_history, ohlc_series, order_status
     hlp = HyperliquidProvider()
     monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0x1234567890abcdef1234567890abcdef12345678")
@@ -1397,7 +1396,7 @@ def test_priceanalysis_hyperliquid_price_analysis_flat_window_and_invalid_step_h
 def test_hyperliquidprovider_token_live_enabled_order_id_ohlc_series_validation_iter95_s3():
     """[ITER95 #3] HyperliquidProvider token/live_enabled/order_id/ohlc_series validation."""
     import pytest
-    from providers.hyperliquid_provider import HyperliquidProvider, _spot_symbol_alias
+    from providers.hyperliquid_provider import _spot_symbol_alias
     # 3. HyperliquidProvider token/live_enabled/order_id/ohlc_series validation
     assert _spot_symbol_alias(True, "HYPE") is False
     with pytest.raises(ValueError, match="invalid Hyperliquid token"):
@@ -1418,7 +1417,6 @@ def test_hyperliquidprovider_iter111_s2():
     """[ITER111 #2] HyperliquidProvider."""
     from types import SimpleNamespace
     import pytest
-    from providers.base import ProviderError
     import providers.hyperliquid_provider as hlp
     # 2. HyperliquidProvider
     hl_prov = hlp.HyperliquidProvider.__new__(hlp.HyperliquidProvider)
@@ -1892,7 +1890,7 @@ def test_hyperliquid_signals__file_signal_guards_directory_bool_empty_paths_iter
 
 def test_hyperliquidprovider_execution_enabled_rejects_nan_false_containers_iter152_s1():
     """[ITER152 #1] HyperliquidProvider execution_enabled rejects NaN / 'false' / containers."""
-    from providers.hyperliquid_provider import HyperliquidProvider, _parse_bool_flag as hl_bool
+    from providers.hyperliquid_provider import _parse_bool_flag as hl_bool
     # 1. HyperliquidProvider execution_enabled rejects NaN / "false" / containers
     assert hl_bool("false", True) is False
     assert hl_bool(float("nan"), False) is False

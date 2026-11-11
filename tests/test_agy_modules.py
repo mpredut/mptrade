@@ -831,7 +831,7 @@ class TestMirrorTopicThreadToUi:
 def test_summary_store_safe_nonneg_int_and_topics_safe_int_iter57_s1(monkeypatch):
     """[ITER57 #1] summary_store.safe_nonneg_int and topics.safe_int."""
     from orchestratorOS.agy.summary_store import get_thread_step_count, safe_nonneg_int
-    from orchestratorOS.agy.topics import prepare_topic_session, safe_int
+    from orchestratorOS.agy.topics import safe_int
     # 1. summary_store.safe_nonneg_int and topics.safe_int
     assert safe_nonneg_int(True) == 0
     assert safe_nonneg_int(float("nan")) == 0

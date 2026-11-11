@@ -2,8 +2,11 @@ import unittest
 
 from market_regime import (
     ClosedPriceSeries,
+    MarketRegimeContext,
+    MarketRegimeDecision,
     MarketRegimeEvidence,
     MarketRegimeEvaluator,
+    MarketRegimeHorizon,
     MarketRegimeService,
 )
 
@@ -413,7 +416,6 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
 
     def test_cross_venue_symbol_and_power_normalization(self):
         import pricewindow as pw
-        from market_regime import MarketRegimeContext
         bull = self.evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
         ctx = MarketRegimeContext.from_decision(
             bull, evaluated_at=1000.0, symbol="BTC-USDC", provider="BinanceSpot"
@@ -505,7 +507,6 @@ def test_market_regime_marketregimedecision_marketregimecontext_marketregimeevid
 def test_marketregimecontext_from_decision_accepts_provider_objects_with_name_and_iter88_s1():
     """[ITER88 #1] MarketRegimeContext.from_decision accepts provider objects with .name and rejects booleans & MarketRegimeEvidence.temporal_state handles non-numeric max_age_seconds without ValueError & MarketRegimeService rejects boolean now / interval_min and does not silently replace interval_min=0 with default."""
     import pytest
-    from market_regime import MarketRegimeContext, MarketRegimeDecision, MarketRegimeEvidence, MarketRegimeService
     # 1. MarketRegimeContext.from_decision accepts provider objects with .name and rejects booleans
     dec = MarketRegimeDecision(
         regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="directional_signal"
@@ -555,7 +556,6 @@ def test_marketregimecontext_from_decision_accepts_provider_objects_with_name_an
 def test_marketregimehorizon_parse_adverse_to_and_marketregimeservice_interval_closes_validation_iter98_s1():
     """[ITER98 #1] MarketRegimeHorizon.parse, adverse_to, and MarketRegimeService interval/closes validation."""
     import pytest
-    from market_regime import MarketRegimeEvaluator, MarketRegimeHorizon, MarketRegimeService
     # 1. MarketRegimeHorizon.parse, adverse_to, and MarketRegimeService interval/closes validation
     assert MarketRegimeHorizon.parse(" short ") == MarketRegimeHorizon.SHORT
     with pytest.raises(ValueError, match="unsupported market-regime horizon"):
@@ -617,7 +617,6 @@ def test_market_regime_marketregimecontext_is_valid_for_compose__closed_series_i
 def test_marketregimeservice__age_limit_ignores_boolean_interval_min_and_resolve_with_evidence_validates_iter121_s2():
     """[ITER121 #2] MarketRegimeService._age_limit ignores boolean interval_min and resolve_with_evidence validates window_seconds."""
     import pytest
-    from market_regime import MarketRegimeHorizon, MarketRegimeService
     # 2. MarketRegimeService._age_limit ignores boolean interval_min and resolve_with_evidence validates window_seconds
     assert MarketRegimeService._age_limit({1: 180.0, "default": 300.0}, MarketRegimeHorizon.SHORT, interval_min=True) == 300.0
     svc = MarketRegimeService()
@@ -644,7 +643,6 @@ def test_market_regime_evaluate_closes_with_interval_min_evaluate_with_n_samples
 def test_marketregimedecision_adverse_to_supports_bid_ask_a_and_marketregimecontext_iter179_s3():
     """[ITER179 #3] MarketRegimeDecision.adverse_to supports BID/ASK/A and MarketRegimeContext.from_decision supports dict."""
     import pytest
-    from market_regime import MarketRegimeDecision, MarketRegimeContext
     # 3. MarketRegimeDecision.adverse_to supports BID/ASK/A and MarketRegimeContext.from_decision supports dict
     bear_dec = MarketRegimeDecision(regime="bear", gradient="-0.01", epsilon=0.001, strength=10.0, fresh=True, reason="ok", n_samples="11")
     bull_dec = MarketRegimeDecision(regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="ok", n_samples=11)

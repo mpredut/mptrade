@@ -918,7 +918,6 @@ def test_t212provider_order_status_rejects_nan_inf_filledquantity_filledvalue_fe
     """[ITER51 #6] T212Provider: order_status rejects NaN/Inf filledQuantity, filledValue, fee, fillPrice."""
     from types import SimpleNamespace
     import pytest
-    from providers.base import ProviderError
     # 6. T212Provider: order_status rejects NaN/Inf filledQuantity, filledValue, fee, fillPrice
     tp = T212Provider()
     fake_t212 = SimpleNamespace(
@@ -1040,7 +1039,6 @@ def test_t212provider_free_balance_eur_converts_ron_using_usd_ron_eur_usd_iter61
     """[ITER61 #2] T212Provider.free_balance('EUR') converts RON using usd_ron * eur_usd, and order_status rejects negative fee."""
     import pytest
     from unittest.mock import MagicMock
-    from providers.t212_provider import T212Provider, ProviderError
     # 2. T212Provider.free_balance("EUR") converts RON using usd_ron * eur_usd, and order_status rejects negative fee
     fake_cli = MagicMock()
     fake_cli.get_cash.return_value = {"free": 496.8}
@@ -1100,7 +1098,7 @@ def test_t212_continuous_grid_report_g_safely_rejects_non_dict_sub_iter75_s3():
 
 def test_t212provider__definitive_submit_failure_and_pair_precision_safety_iter87_s3():
     """[ITER87 #3] T212Provider._definitive_submit_failure and pair_precision safety."""
-    from providers.t212_provider import T212Provider, _definitive_submit_failure
+    from providers.t212_provider import _definitive_submit_failure
     # 3. T212Provider._definitive_submit_failure and pair_precision safety
     assert _definitive_submit_failure(None, "order rejected by venue") is True
     assert _definitive_submit_failure(True, "timeout") is False
@@ -1210,7 +1208,6 @@ def test_212trading_ipo_import_works_even_when_212trading_is_iter103_s5():
 def test_t212provider_iter111_s3():
     """[ITER111 #3] T212Provider."""
     import pytest
-    from providers.base import ProviderError
     import providers.t212_provider as tp
     # 3. T212Provider
     t_prov = tp.T212Provider.__new__(tp.T212Provider)
@@ -1385,7 +1382,7 @@ def test_212trading_analyze_volatility_py_pct_pullbacks_iter150_s2():
 
 def test_t212provider__orders_live_rejects_nan_false_containers_iter152_s3():
     """[ITER152 #3] T212Provider _orders_live rejects NaN / 'false' / containers."""
-    from providers.t212_provider import T212Provider, _parse_bool_flag as t212_bool
+    from providers.t212_provider import _parse_bool_flag as t212_bool
     # 3. T212Provider _orders_live rejects NaN / "false" / containers
     assert t212_bool("false", True) is False
     assert t212_bool(float("nan"), False) is False

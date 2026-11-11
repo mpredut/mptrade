@@ -625,7 +625,6 @@ def test_production_runtime_zero_direct_venue_sdk_imports_ast():
 def test_polymorphic_venue_fee_precision_and_intraday_chart_ssot():
     """Verify MarketDataProvider declarative fee/precision specs, MarketApi.fetch_intraday_chart, and botcore reload-safe fetch_public_json."""
     import importlib
-    from unittest.mock import patch
 
     import botcore
     import intelligence.macro_sentiment_ssot as mss

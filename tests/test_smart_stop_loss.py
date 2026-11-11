@@ -501,7 +501,7 @@ def test_smart_sl_save_grace_state_filters_simulated_entries_and_uses_exact_memo
 def test_smartstoplossguard_now_propagation_clock_skewed_grace_reset_iter19_s2(tmp_path, monkeypatch):
     """[ITER19 #2] SmartStopLossGuard `now` propagation & clock-skewed grace reset."""
     import external_order_guard
-    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
     # 2. SmartStopLossGuard `now` propagation & clock-skewed grace reset
     w_col = WhalePositioningCollector(cache_ttl_sec=120.0, cache_dir=str(tmp_path), disk_ttl_sec=300.0)
     w_col.record_snapshot(
@@ -769,7 +769,7 @@ def test_smartstoplossguard_mode_false_handling_iter101_s3():
 
 def test_smartstoplossguard__is_simulated_provider_handles_uppercase_replay_mode_backtest_mode_and_mode_iter125_s2(monkeypatch):
     """[ITER125 #2] SmartStopLossGuard._is_simulated_provider handles uppercase REPLAY_MODE/BACKTEST_MODE and mode='true'."""
-    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard, _is_simulated_provider
+    from intelligence.external.guards.smart_stop_loss_guard import _is_simulated_provider
     # 2. SmartStopLossGuard._is_simulated_provider handles uppercase REPLAY_MODE/BACKTEST_MODE and mode="true"
     monkeypatch.setenv("REPLAY_MODE", "TRUE")
     assert _is_simulated_provider("binance") is True

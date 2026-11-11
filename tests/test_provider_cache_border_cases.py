@@ -636,7 +636,7 @@ def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(mo
     """Verify declarative provider class specs, cross-venue live/dry-run symmetry, and border hardening."""
     import re
     from providers.binance_provider import BinanceProvider
-    from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
+    from providers.hyperliquid_provider import _call_hl_info_read
     from providers.order_ohlc_utils import (
         derive_venue_128bit_client_order_id,
         format_venue_intent_client_order_id,

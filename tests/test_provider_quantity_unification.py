@@ -602,7 +602,6 @@ def test_fee_cap_quantity_nan_bool_safety_iter35_s2():
 def test_marketdataprovider_round_quantity_round_price_order_filter_refusal_and_last_opposite_fill_iter38_s4():
     """[ITER38 #4] MarketDataProvider round_quantity, round_price, order_filter_refusal, and last_opposite_fill."""
     import pytest
-    from providers.base import MarketDataProvider, PairPrecision
     # 4. MarketDataProvider round_quantity, round_price, order_filter_refusal, and last_opposite_fill
     class _DummyProv(MarketDataProvider):
         @property
@@ -660,7 +659,7 @@ def test_decide_quantity_ignores_boolean_negative_round_fn_return_values_iter39_
 def test_replaymarketdataprovider_and_simclock_reject_bool_nan_inputs_iter43_s4():
     """[ITER43 #4] ReplayMarketDataProvider and SimClock reject bool/NaN inputs."""
     import pytest
-    from providers.replay_provider import ReplayMarketDataProvider, SimClock
+    from providers.replay_provider import SimClock
     # 4. ReplayMarketDataProvider and SimClock reject bool/NaN inputs
     with pytest.raises(ValueError):
         SimClock(True)
@@ -691,7 +690,6 @@ def test_aggregate_fills_by_order_id_does_not_dilute_vwap_when_a_partial_iter59_
 
 def test_marketdataprovider_round_quantity_and_round_price_clamp_negative_inputs_to_iter59_s2():
     """[ITER59 #2] MarketDataProvider.round_quantity and round_price clamp negative inputs to 0.0 and clamp large decimals."""
-    from providers.base import MarketDataProvider, PairPrecision
     # 2. MarketDataProvider.round_quantity and round_price clamp negative inputs to 0.0 and clamp large decimals
     class _DummyProvider(MarketDataProvider):
         @property
@@ -715,7 +713,7 @@ def test_marketdataprovider_round_quantity_and_round_price_clamp_negative_inputs
 def test_replaymarketdataprovider_place_order_safely_returns_none_on_non_numeric_iter61_s3(tmp_path):
     """[ITER61 #3] ReplayMarketDataProvider.place_order safely returns None on non-numeric price/qty, and load_price_series skips ts <= 0."""
     import json
-    from providers.replay_provider import ReplayMarketDataProvider, load_price_series
+    from providers.replay_provider import load_price_series
     # 3. ReplayMarketDataProvider.place_order safely returns None on non-numeric price/qty, and load_price_series skips ts <= 0
     jsonl_file = tmp_path / "prices.jsonl"
     jsonl_file.write_text(
@@ -931,7 +929,7 @@ def test_replaymarketdataprovider_sanitizes_fee_pct_and_non_finite_cur_px_in_ite
 
 def test_replay_provider_load_price_series_directory_safety_and_supports_symbol_unhashable_safety_iter151_s4(tmp_path):
     """[ITER151 #4] replay_provider: load_price_series directory safety and supports_symbol unhashable safety."""
-    from providers.replay_provider import ReplayMarketDataProvider, load_price_series
+    from providers.replay_provider import load_price_series
     # 4. replay_provider: load_price_series directory safety and supports_symbol unhashable safety
     assert load_price_series(str(tmp_path), "BTCUSDC") == []
     rp = ReplayMarketDataProvider({"BTCUSDC": [(1700000000.0, 60000.0)]})

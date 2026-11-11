@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import order_guard
 from qlimit_order_guard import check_qlimit2_order_guards
@@ -905,7 +905,6 @@ def test_batch39_composite_daemon_and_cli_hardening(tmp_path, monkeypatch):
 def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatch):
     """Verify alerts_config case-insensitive keys, new_coins_discovery timestamp/string coercion, pricefetcher CMC .previous recovery, and alertnotifiers delivery state .previous recovery."""
     import json
-    from unittest.mock import MagicMock
     from market_monitor.alerts_config import load_config, resolve
     from market_monitor.new_coins_discovery import (
         BinanceNewListingsSource,
@@ -1005,7 +1004,6 @@ def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatc
 
 def test_batch41_verify_tools_drawprices_and_tradeall_backtest_hardening(tmp_path, monkeypatch):
     import json
-    from unittest.mock import patch, MagicMock
     from verify_tools import portfolio_snapshot, kraken_pnl_backfill
     from visuals import drawprices
     from offline.backtests import tradeall as bt_tradeall
@@ -1064,7 +1062,6 @@ def test_batch41_verify_tools_drawprices_and_tradeall_backtest_hardening(tmp_pat
 
 
 def test_batch42_mailer_server_pricechecker_and_execution_calibration_hardening(tmp_path, monkeypatch):
-    from unittest.mock import patch, MagicMock
     from notify_engine import mailer
     from notify_engine.server import NotificationServer
     from market_monitor.pricechecker import PriceAlert, PriceChecker

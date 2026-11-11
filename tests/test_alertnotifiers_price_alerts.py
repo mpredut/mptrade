@@ -482,7 +482,7 @@ if __name__ == "__main__":
 
 def test_alertnotifier_format_human_readable_time_and_pop_due_bulk_batch_handle_bool_nan_safely_iter55_s4():
     """[ITER55 #4] AlertNotifier.format_human_readable_time and pop_due_bulk_batch handle bool/NaN safely."""
-    from notify_engine.alertnotifiers import AlertNotifier, pop_due_bulk_batch
+    from notify_engine.alertnotifiers import pop_due_bulk_batch
     # 4. AlertNotifier.format_human_readable_time and pop_due_bulk_batch handle bool/NaN safely
     assert AlertNotifier.format_human_readable_time(True) == "N/A"
     assert AlertNotifier.format_human_readable_time(False) == "N/A"
@@ -543,7 +543,7 @@ def test_alertnotifier_format_batch_message_save_to_file_handle_non_numeric_pric
 
 def test_alertnotifier_helpers_iter78_s2(monkeypatch):
     """[ITER78 #2] AlertNotifier helpers."""
-    from notify_engine.alertnotifiers import AlertNotifier, _positive_int_env
+    from notify_engine.alertnotifiers import _positive_int_env
     # 2. AlertNotifier helpers
     assert AlertNotifier.email_subject([]) == "Alert"
     assert AlertNotifier.utf8_header(None) == ""

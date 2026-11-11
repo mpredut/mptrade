@@ -1067,7 +1067,7 @@ def test_wave2_cross_venue_candidate_resolution_and_unmasked_trailing_variants(t
     import pytest
 
     from offline.backtests.evaluation import load_venue_module
-    from offline.backtests.hype_candidates import default_candidates, hype_240_candidates
+    from offline.backtests.hype_candidates import hype_240_candidates
     from offline.runners.walk_forward_compare import _resolve_candidate_overrides
     from offline.runners import binance_walk_forward_baseline as bwf
     from offline.runners import hyperliquid_walk_forward_baseline as hwf
