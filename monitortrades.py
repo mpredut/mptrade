@@ -5,10 +5,14 @@ from typing import Any, Dict, Optional, Tuple
 
 from notify_engine import alertnotifiers as alert
 from botcore import (
+    SIMULATED_PROVIDER_NAMES,
     _parse_bool_flag,
+    bool_env,
     clean_scale,
     extract_timestamp_ms,
     format_price_log,
+    is_gemini_llm_disabled,
+    is_simulated_provider_name,
     load_dotenv,
     normalize_epoch_sec,
     parse_dotenv,
@@ -365,7 +369,7 @@ _PENDING_STOP_EXIT: Dict[str, Dict[str, Any]] = {}
 
 _DEFAULT_MT_STATE_FILE = cachepaths.cache_path("mt_state.json")
 _MT_STATE_FILE = _DEFAULT_MT_STATE_FILE
-_MT_PERSISTENCE_ENABLED = not _parse_bool_flag(os.environ.get("MT_DISABLE_STATE_PERSISTENCE"), False)
+_MT_PERSISTENCE_ENABLED = not bool_env("MT_DISABLE_STATE_PERSISTENCE", default=False)
 _LAST_SAVED_MT_STATE_KEY: Optional[Tuple[str, str]] = None
 
 
@@ -474,19 +478,16 @@ def _load_mt_state(now_curr: float | None = None):
         pass
 
 
-_SIMULATED_PROVIDERS = {"replay", "backtest", "sim", "mock", "paper_sim", "test"}
+_SIMULATED_PROVIDERS = set(SIMULATED_PROVIDER_NAMES)
 
 
 def _is_simulated_env_or_inst(inst: Any = None) -> bool:
     """Return True when running in replay/backtest/simulation or with persistence disabled."""
     if not _MT_PERSISTENCE_ENABLED:
         return True
-    if (_inst_provider(inst) or "").strip().lower() in _SIMULATED_PROVIDERS:
+    if is_simulated_provider_name(_inst_provider(inst)):
         return True
-    return any(
-        _parse_bool_flag(os.environ.get(k), False)
-        for k in ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_GEMINI_LLM")
-    )
+    return is_gemini_llm_disabled()
 
 
 def _clear_smart_sl_exit(symbol: str, provider: Any = None):

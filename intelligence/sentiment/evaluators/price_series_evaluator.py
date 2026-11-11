@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
     is_live_network_backfill_enabled,
+    is_offline_disk_cache_enabled,
     safe_nonneg_float,
 )
 from cachepaths import cache_path, canonical_base_asset
@@ -1023,7 +1024,7 @@ def _load_stitched_24h_ohlc_points(
     cache_dir: Optional[str] = None,
 ) -> List[List[Any]]:
     """Load 5m OHLC points since `cutoff_24h` and prepend older 15m OHLC points when span < 18h."""
-    allow_offline_disk = os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") == "1"
+    allow_offline_disk = is_offline_disk_cache_enabled()
     sym_u = str(sym or "").strip().upper()
     cutoff_ms = (normalize_epoch_sec(cutoff_24h, default=0.0, allow_zero=True) or 0.0) * 1000.0
     cpath = ""

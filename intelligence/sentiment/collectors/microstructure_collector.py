@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from botcore import (
     extract_current_price_item,
     is_live_network_backfill_enabled,
+    is_offline_disk_cache_enabled,
     load_dotenv,
     safe_nonneg_float,
 )
@@ -828,7 +829,7 @@ def upgrade_tpo_vp_from_ohlc(
     if not (
         callable(ohlc_fn)
         or (allow_network and is_live_network_backfill_enabled())
-        or os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") == "1"
+        or is_offline_disk_cache_enabled()
         or has_local_ohlc_cache
     ):
         return

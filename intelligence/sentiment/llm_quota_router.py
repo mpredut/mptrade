@@ -10,7 +10,9 @@ from typing import Any, Dict, Optional
 
 from botcore import (
     _parse_bool_flag,
+    bool_env,
     fetch_json_post,
+    float_env,
     is_cache_fresh,
     is_unmocked_llm_query_allowed,
     optional_env,
@@ -172,7 +174,7 @@ class GeminiQuotaRouterMixin:
         and dynamically restores primary paid models immediately after a top-up or window reset.
         """
         now = time.time()
-        ttl_sec = max(5.0, safe_float(os.environ.get("LLM_QUOTA_CACHE_TTL_SEC"), 30.0))
+        ttl_sec = max(5.0, float_env("LLM_QUOTA_CACHE_TTL_SEC", default=30.0) or 30.0)
         state_path = cls._get_quota_state_path()
         _read_json_dict = _gc_attr("read_json_dict", read_json_dict)
         _save_json_state = _gc_attr("save_json_state", save_json_state)
@@ -389,8 +391,12 @@ class GeminiQuotaRouterMixin:
             return
         _save_json_state = _gc_attr("save_json_state", save_json_state)
         available_credits = safe_float(snapshot.get("available_credits"), 0.0)
-        warn_threshold = max(0.0, min(0.5, safe_float(os.environ.get("LLM_QUOTA_LOW_WARN_FRACTION"), 0.10)))
-        cooldown_sec = max(300.0, safe_float(os.environ.get("LLM_QUOTA_ALERT_COOLDOWN_SEC"), 14400.0))
+        warn_threshold = max(
+            0.0, min(0.5, safe_float(float_env("LLM_QUOTA_LOW_WARN_FRACTION", default=0.10), 0.10))
+        )
+        cooldown_sec = max(
+            300.0, safe_float(float_env("LLM_QUOTA_ALERT_COOLDOWN_SEC", default=14400.0), 14400.0)
+        )
 
         argon_rem = max(
             safe_float(buckets.get("gemini-4-argon-medium"), 0.0),
@@ -446,7 +452,7 @@ class GeminiQuotaRouterMixin:
         if (
             not is_unmocked_llm_query_allowed()
             and not ntfy_mocked
-            and not _parse_bool_flag(os.environ.get("LLM_FORCE_QUOTA_ALERT_TEST"))
+            and not bool_env("LLM_FORCE_QUOTA_ALERT_TEST", default=False)
         ):
             return
 

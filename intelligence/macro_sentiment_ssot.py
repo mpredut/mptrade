@@ -82,7 +82,9 @@ from botcore import (
     load_ini_config,
     normalize_epoch_sec,
     obj_attr,
+    optional_env,
     parse_symbol_list,
+    pos_float_env,
     resolve_now_ts,
     resolve_patched_attr,
     safe_float,
@@ -257,15 +259,16 @@ def resolve_crypto_executor_interval_sec(
     crontab_path: Optional[str] = None,
 ) -> float:
     """Resolve primary ``auto_cryptotrade_executor`` cycle interval in seconds (default 360s = 6m)."""
-    env_sec = safe_pos_float(os.environ.get("AUTO_CRYPTOTRADE_INTERVAL_SEC"), 0.0)
+    env_sec = pos_float_env("AUTO_CRYPTOTRADE_INTERVAL_SEC", 0.0)
     if env_sec > 0.0:
         return max(30.0, env_sec)
-    env_min = safe_pos_float(os.environ.get("AUTO_CRYPTOTRADE_INTERVAL_MIN"), 0.0)
+    env_min = pos_float_env("AUTO_CRYPTOTRADE_INTERVAL_MIN", 0.0)
     if env_min > 0.0:
         return max(30.0, env_min * 60.0)
 
     cfg_sec = safe_pos_float(_cfg_float("intervals", "crypto_executor_interval_sec", 360.0, config_path=config_path), 360.0)
-    target = crontab_path or os.environ.get("MPTRADE_CRONTAB_PATH") or DEFAULT_CRONTAB_PATH
+    env_crontab = optional_env("MPTRADE_CRONTAB_PATH")
+    target = crontab_path or env_crontab or DEFAULT_CRONTAB_PATH
     try:
         mtime = os.path.getmtime(target) if os.path.exists(target) else -1.0
     except OSError:
@@ -287,7 +290,7 @@ def resolve_crypto_executor_interval_sec(
                         break
         _CRONTAB_CACHE.update(path=target, mtime=mtime, interval_sec=cron_sec)
     if cron_sec is not None and cron_sec > 0.0:
-        if crontab_path is not None or os.environ.get("MPTRADE_CRONTAB_PATH") or (cfg_sec == 360.0 and cron_sec != 360.0):
+        if crontab_path is not None or env_crontab or (cfg_sec == 360.0 and cron_sec != 360.0):
             return max(30.0, cron_sec)
     return max(30.0, cfg_sec)
 

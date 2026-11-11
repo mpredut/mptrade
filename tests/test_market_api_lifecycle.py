@@ -735,7 +735,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     assert replay_oid.startswith("replay-")
 
 
-def test_replay_execution_metrics_and_config_ssot_identity():
+def test_replay_execution_metrics_and_config_ssot_identity(monkeypatch, tmp_path):
     """Verify canonical SSOT identity across botcore, order_ohlc_utils, strategies.replay_*, and offline.backtests.*."""
     import importlib
     import botcore
@@ -766,9 +766,36 @@ def test_replay_execution_metrics_and_config_ssot_identity():
     assert _resolve_provider_label("", "trading212") == "T212"
     assert _resolve_provider_label("rtrade", "") == "Binance"
 
+    assert botcore.is_simulated_provider_name("Replay") is True
+    assert botcore.is_simulated_provider_name("paper_sim") is True
+    assert botcore.is_simulated_provider_name("binance") is False
+    assert botcore.is_simulated_provider_name(True) is False
+    assert botcore.secret_env("SECRET_HASH_KEY", env={"SECRET_HASH_KEY": " abc#123 "}) == "abc#123"
+    assert botcore.is_env_defined("K", env={"K": ""}) is True
+    assert botcore.is_env_defined("K", env={}) is False
+
+    (tmp_path / "runtime.env").write_text("T212_ORDER_VALIDITY=DAY\n", encoding="utf-8")
+    assert botcore.folder_or_env_value(tmp_path, "T212_ORDER_VALIDITY", env={}) == "DAY"
+    assert (
+        botcore.folder_or_env_value(
+            tmp_path, "T212_ORDER_VALIDITY", respect_empty_env=True, env={"T212_ORDER_VALIDITY": ""}
+        )
+        is None
+    )
+    assert botcore.any_bool_env("A", "B", env={"A": "0", "B": "yes"}) is True
+    assert botcore.is_replay_or_backtest_env(env={"REPLAY_MODE": "1"}) is True
+    assert botcore.is_gemini_llm_disabled(env={"DISABLE_GEMINI_LLM": "true"}) is True
+    assert botcore.is_gemini_llm_disabled(env={}) is False
+    assert botcore.is_offline_disk_cache_enabled(env={"MPTRADE_OFFLINE_DISK_CACHE": "1"}) is True
+    assert botcore.is_offline_disk_cache_enabled(env={}) is False
+    assert botcore.is_auto_start_websockets_enabled(env={}) is True
+    assert botcore.is_auto_start_websockets_enabled(env={"BINANCE_AUTO_START_WEBSOCKETS": "0"}) is False
+    monkeypatch.setenv("CUSTOM_NONROOT_ENV_TEST", "42")
+    assert botcore.has_explicit_nonroot_env("CUSTOM_NONROOT_ENV_TEST") is True
+
 
 def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
-    """Lock Open-Closed Principle: core providers, MarketApi facade, gateway, cache domain hierarchy, instrument registry, orchestrator repair SSOT, external collectors, and sentiment collectors/evaluators contain zero venue name comparisons."""
+    """Lock Open-Closed Principle: all non-venue-adapter production modules across the repository contain zero venue name comparisons."""
     from cachepaths import (
         is_primary_stream_venue,
         is_readonly_xstock_symbol,
@@ -780,49 +807,52 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
 
     root = Path(__file__).resolve().parents[1]
     venue_tokens = {"binance", "kraken", "hyperliquid", "t212", "trading212"}
-    guarded_files = [
-        "cachepaths.py",
-        "cacheInterface.py",
-        "cacheprice.py",
-        "cacheaccount.py",
-        "cachetrend.py",
-        "cacheManager.py",
-        "instrument_registry.py",
-        "orchestratorOS/lib/technical_repair_ssot.py",
-        "providers/base.py",
-        "providers/market_api.py",
-        "providers/execution_audit.py",
-        "providers/intent_execution.py",
-        "providers/intent_state.py",
-        "providers/order_ohlc_utils.py",
-        "providers/quantity.py",
-        "providers/strategy_executor.py",
-        "instrument.py",
-        "order_guard.py",
-        "order_lifecycle.py",
-        "order_retry.py",
-        "monitortrades.py",
-        *[
-            p.relative_to(root).as_posix()
-            for p in sorted((root / "intelligence" / "external" / "collectors").glob("*.py"))
-        ],
-        *[
-            p.relative_to(root).as_posix()
-            for p in sorted((root / "intelligence" / "sentiment").rglob("*.py"))
-        ],
-    ]
+    venv_roots = {
+        d.name
+        for d in root.iterdir()
+        if d.is_dir() and (d.name in ("venv", ".venv", "myenv") or (d / "pyvenv.cfg").exists())
+    }
+    excluded_top_dirs = {
+        "binance_api",
+        "kraken",
+        "hyperliquid",
+        "212trading",
+        "tests",
+        "offline",
+        "verify_tools",
+    } | venv_roots
+    venue_leaf_adapters = {
+        "providers/binance_provider.py",
+        "providers/kraken_provider.py",
+        "providers/hyperliquid_provider.py",
+        "providers/t212_provider.py",
+        "providers/replay_provider.py",
+    }
+    guarded_files = []
+    for p in sorted(root.rglob("*.py")):
+        rel = p.relative_to(root)
+        rel_s = rel.as_posix()
+        if (
+            any(part.startswith(".") or part in ("__pycache__", "site-packages") for part in rel.parts)
+            or rel.parts[0] in excluded_top_dirs
+            or rel_s in venue_leaf_adapters
+        ):
+            continue
+        guarded_files.append(rel_s)
     violations = []
     for rel in guarded_files:
         src = (root / rel).read_text(encoding="utf-8")
         tree = ast.parse(src, filename=rel)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Compare):
+            if isinstance(node, ast.Compare) and any(
+                isinstance(op, (ast.Eq, ast.NotEq, ast.In, ast.NotIn)) for op in node.ops
+            ):
                 for sub in [node.left, *node.comparators]:
-                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and sub.value.lower() in venue_tokens:
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and sub.value.strip().lower() in venue_tokens:
                         violations.append(f"{rel}:{node.lineno}: {sub.value!r}")
                     elif isinstance(sub, (ast.Tuple, ast.List, ast.Set)):
                         for elt in sub.elts:
-                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str) and elt.value.lower() in venue_tokens:
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str) and elt.value.strip().lower() in venue_tokens:
                                 violations.append(f"{rel}:{node.lineno}: {elt.value!r}")
     assert violations == [], f"Forbidden venue string branch in venue-agnostic core module: {violations}"
 

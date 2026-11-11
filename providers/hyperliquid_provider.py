@@ -27,18 +27,21 @@ from typing import Any, List, Optional, Sequence
 from botcore import (
     _LOCAL_MODULE_LOCK,
     _parse_bool_flag,
-    env_value,
     exact_nonneg_int,
     exact_pos_int,
+    folder_or_env_value,
+    is_env_defined,
     is_live_network_backfill_enabled,
     load_env_stack,
     normalize_side,
+    optional_env,
     required_bool_env,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
+    secret_env,
 )
 from cachepaths import (
     CACHE_HYPERLIQUID_TRADE_FILENAME,
@@ -213,7 +216,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def _before_execution_enabled_check(self) -> None:
         if (
-            _LIVE_ENV not in os.environ
+            not is_env_defined(_LIVE_ENV)
             and not getattr(self, "_client_tried", False)
             and not getattr(self, "_env_loaded", False)
         ):
@@ -242,6 +245,14 @@ class HyperliquidProvider(MarketDataProvider):
         except Exception as e:  # noqa: BLE001 — Without env files, use public data only.
             print(f"[HL] _load_env failed: {e}")
 
+    @staticmethod
+    def _env_account_address(client=None) -> Optional[str]:
+        """Resolve ``HL_ACCOUNT_ADDRESS`` from the environment (or an injected client fallback)."""
+        addr = optional_env("HL_ACCOUNT_ADDRESS") or (
+            getattr(client, "account_address", None) if client is not None else None
+        )
+        return str(addr).strip() if addr else None
+
     def _new_client(self, secret_key=None):
         """Build one consistently configured SDK client for reads or signing."""
         HLClient = _hl_client_module().HLClient
@@ -253,7 +264,7 @@ class HyperliquidProvider(MarketDataProvider):
             ) from exc
         return HLClient(
             secret_key=secret_key,
-            account_address=os.environ.get("HL_ACCOUNT_ADDRESS"),
+            account_address=self._env_account_address(),
             mainnet=mainnet,
         )
 
@@ -334,7 +345,7 @@ class HyperliquidProvider(MarketDataProvider):
             with contextlib.redirect_stdout(io.StringIO()):
                 load_env_stack(os.path.join(_HL_DIR, ".env"))
                 HLClient = _hl_client_module().HLClient
-                addr = os.environ.get("HL_ACCOUNT_ADDRESS")
+                addr = self._env_account_address()
                 c = HLClient.public(account_address=addr, mainnet=True)
                 ss = c.info.spot_user_state(addr)
                 mid = safe_float(c.spot_mid(c.resolve_spot_pair(coin)), 0.0)
@@ -392,7 +403,7 @@ class HyperliquidProvider(MarketDataProvider):
         if c is None:
             return None
         try:
-            addr = os.environ.get("HL_ACCOUNT_ADDRESS")
+            addr = self._env_account_address()
             if not addr:
                 return None
             user_state = _call_hl_info_read(c.info.spot_user_state, addr)
@@ -427,7 +438,7 @@ class HyperliquidProvider(MarketDataProvider):
         pair = self._pair()
         if c is None or pair is None:
             raise ProviderError(f"get_orders({symbol}): Hyperliquid client or pair unavailable")
-        addr = os.environ.get("HL_ACCOUNT_ADDRESS") or getattr(c, "account_address", None)
+        addr = self._env_account_address(c)
         if not addr:
             raise ProviderError(f"get_orders({symbol}): HL_ACCOUNT_ADDRESS missing")
         fills = _call_hl_info_read(c.info.user_fills, addr)
@@ -540,8 +551,8 @@ class HyperliquidProvider(MarketDataProvider):
         """Resolve the Hyperliquid account address for ``userFills`` WebSocket subscriptions."""
         addr = user_address
         if addr is None and is_live_network_backfill_enabled(resolve_env):
-            addr = os.environ.get("HL_ACCOUNT_ADDRESS") or env_value(
-                _HL_DIR, "HL_ACCOUNT_ADDRESS"
+            addr = folder_or_env_value(
+                _HL_DIR, "HL_ACCOUNT_ADDRESS", strip_comments=True
             )
         return str(addr or "").strip() or None
 
@@ -859,9 +870,9 @@ class HyperliquidProvider(MarketDataProvider):
     # get_current_price and free_balance already satisfy the contract.
     def _signer(self):
         """Return a signing client or raise ProviderError when its key is absent."""
-        secret = os.environ.get("HL_SECRET_KEY")
+        secret = secret_env("HL_SECRET_KEY")
         if not secret:
-            raise ProviderError("HL_SECRET_KEY missing — HL orders cannot be signed")
+            raise ProviderError("HL_SECRET_KEY missing - HL orders cannot be signed")
         return self._new_client(secret)
 
     def pair_precision(self, symbol: str):
@@ -1053,7 +1064,7 @@ class HyperliquidProvider(MarketDataProvider):
         self.validate_symbol(symbol)
         c = self._hl()
         pair = self._pair()
-        addr = os.environ.get("HL_ACCOUNT_ADDRESS")
+        addr = self._env_account_address()
         if c is None or pair is None or not addr:
             raise ProviderError(
                 "order_by_client_id: client/pair/address unavailable")
@@ -1102,7 +1113,7 @@ class HyperliquidProvider(MarketDataProvider):
         if c is None or pair is None:
             raise ProviderError(
                 f"order_status({order_id}): client/pair unavailable")
-        addr = os.environ.get("HL_ACCOUNT_ADDRESS")
+        addr = self._env_account_address()
         if not addr:
             raise ProviderError("order_status: HL_ACCOUNT_ADDRESS missing")
         try:

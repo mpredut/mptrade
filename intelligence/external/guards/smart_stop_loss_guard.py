@@ -21,13 +21,14 @@ Key Mechanics:
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
     clean_scale,
+    is_replay_or_backtest_env,
+    is_simulated_provider_name,
     load_dotenv,
     normalize_epoch_sec,
     obj_attr,
@@ -154,17 +155,13 @@ def _clear_grace_entry(sym_key: str, *, is_sim: bool, now_ts: Optional[float] = 
 
 
 def _is_simulated_provider(provider: Optional[str]) -> bool:
-    if provider and not isinstance(provider, bool) and str(provider).strip().lower() in (
-        "replay", "backtest", "sim", "mock", "paper_sim", "test",
-    ):
-        return True
-    return bool(_parse_bool_flag(os.environ.get("REPLAY_MODE")) or _parse_bool_flag(os.environ.get("BACKTEST_MODE")))
+    return is_simulated_provider_name(provider) or is_replay_or_backtest_env()
 
 
 def _send_ntfy_alert(title: str, body: str, symbol: str) -> None:
     if any(m in f"{title}\n{body}".upper() for m in ("(REPLAY)", "(BACKTEST)", "(SIM)")):
         return
-    if _parse_bool_flag(os.environ.get("REPLAY_MODE")) or _parse_bool_flag(os.environ.get("BACKTEST_MODE")):
+    if is_replay_or_backtest_env():
         return
     try:
         from notify_engine.alertnotifiers import notify

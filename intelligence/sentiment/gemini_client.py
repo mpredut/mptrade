@@ -16,6 +16,7 @@ from botcore import (
     _parse_bool_flag,
     fetch_json_post,
     is_cache_fresh,
+    is_gemini_llm_disabled,
     is_unmocked_llm_query_allowed,
     load_dotenv,
     optional_env,
@@ -378,10 +379,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 logger.error("Custom runner failed: %s", e)
                 return None
 
-        if any(
-            _parse_bool_flag(os.environ.get(k))
-            for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
-        ):
+        if is_gemini_llm_disabled():
             logger.debug("Gemini LLM query suppressed in backtest/replay mode.")
             return None
 

@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from abc import ABC
 import logging
-import os
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from botcore import (
     _parse_bool_flag,
     is_cache_fresh,
+    is_gemini_llm_disabled,
     normalize_side,
     resolve_order_notional,
     resolve_patched_attr,
@@ -61,9 +61,7 @@ LLM_GUARD_JSON_SCHEMA_FOOTER = (
 
 def is_llm_guard_exempt(explicit_client: bool = False) -> bool:
     """True when LLM pre-trade guards are suppressed via environment flags (backtest/replay/disabled)."""
-    return not _parse_bool_flag(explicit_client, False) and any(
-        _parse_bool_flag(os.environ.get(k)) for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
-    )
+    return not _parse_bool_flag(explicit_client, False) and is_gemini_llm_disabled()
 
 
 def evaluate_llm_guard_response(

@@ -16,15 +16,17 @@ from typing import Any, Optional
 from botcore import (
     FileLock,
     INVALID_SCALAR_STRINGS,
-    _is_unmodified_root_key,
     _parse_bool_flag,
+    bool_env,
     exact_pos_int,
     float_env,
     format_notify_price,
     format_notify_qty,
+    has_explicit_nonroot_env,
     int_env,
     is_cache_fresh,
     is_live_network_backfill_enabled,
+    is_replay_or_backtest_env,
     load_env_stack,
     load_local_module,
     normalize_epoch_sec,
@@ -229,7 +231,7 @@ def _resolve_gate_now(now: Optional[float]) -> float:
 
 
 def _delivery_state_path() -> Path:
-    configured = os.environ.get("NOTIFICATION_STATE_FILE")
+    configured = optional_env("NOTIFICATION_STATE_FILE")
     return Path(configured).expanduser() if configured else BASE_DIR / "logs/notification_delivery_state.json"
 
 
@@ -330,14 +332,12 @@ def _canonical_topic_key(topic: Any) -> str:
 
 def _config_notification_int(key: str, default: int) -> int:
     """Resolve a notification interval from env/config.env, defaulting to 0 when unconfigured in non-live mode."""
-    raw = os.environ.get(key)
-    has_explicit_env = raw is not None and str(raw).strip() != "" and not _is_unmodified_root_key(key)
-    if has_explicit_env:
+    if has_explicit_nonroot_env(key):
         return _positive_int_env(key, default)
     dedup_s = float_env("NOTIFICATION_DEDUP_SECONDS")
     if dedup_s == 0.0 or not is_live_network_backfill_enabled():
         return 0
-    if raw is not None and str(raw).strip() != "":
+    if optional_env(key):
         return _positive_int_env(key, default)
     cfg = parse_dotenv(str(BASE_DIR / "config.env"))
     cfg_val = safe_int(cfg.get(key), default=None)
@@ -346,19 +346,9 @@ def _config_notification_int(key: str, default: int) -> int:
 
 def _topic_bulk_seconds() -> int:
     """Return the per-topic batching/bulk interval in seconds (default 300s = 5 min)."""
-    raw_topic = os.environ.get("NOTIFICATION_TOPIC_BULK_SECONDS")
-    if (
-        raw_topic is not None
-        and str(raw_topic).strip() != ""
-        and not _is_unmodified_root_key("NOTIFICATION_TOPIC_BULK_SECONDS")
-    ):
+    if has_explicit_nonroot_env("NOTIFICATION_TOPIC_BULK_SECONDS"):
         return _positive_int_env("NOTIFICATION_TOPIC_BULK_SECONDS", 300)
-    raw_gate = os.environ.get("NOTIFICATION_GATE_SECONDS")
-    if (
-        raw_gate is not None
-        and str(raw_gate).strip() != ""
-        and not _is_unmodified_root_key("NOTIFICATION_GATE_SECONDS")
-    ):
+    if has_explicit_nonroot_env("NOTIFICATION_GATE_SECONDS"):
         return min(300, _positive_int_env("NOTIFICATION_GATE_SECONDS", 300))
     return _config_notification_int("NOTIFICATION_TOPIC_BULK_SECONDS", 300)
 
@@ -1180,7 +1170,7 @@ class AlertNotifier:
         alerts = list(alerts)
         subject = subject or AlertNotifier.email_subject(alerts)
         message = AlertNotifier.format_batch_message(alerts)
-        if _parse_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
+        if _is_orchestrated():
             # The orchestrator parses child stdout; same schema as its retry queue.
             return _emit_orchestrator_intent(
                 {"__orchestrator_intent__": "email", "subject": subject, "message": message},
@@ -1194,7 +1184,7 @@ class AlertNotifier:
             return False
         if _external_notifications_disabled():
             return True
-        if _parse_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
+        if _is_orchestrated():
             return _emit_orchestrator_intent(
                 {
                     "__orchestrator_intent__": "ntfy_webhook",
@@ -1231,12 +1221,14 @@ class AlertNotifier:
             AlertNotifier.send_phone_webhook_batch(alerts, webhook_url=webhook_url)
 
 
+def _is_orchestrated() -> bool:
+    """Return True when running as a managed child process emitting JSON intents to stdout."""
+    return bool_env("MPTRADE_ORCHESTRATED", default=False)
+
+
 def _external_notifications_disabled() -> bool:
     """Return True when external notifications (ntfy, email, orchestrator intents) are suppressed."""
-    return any(
-        _parse_bool_flag(os.environ.get(k, ""), False)
-        for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
-    )
+    return is_replay_or_backtest_env("DISABLE_EXTERNAL_NOTIFICATIONS")
 
 
 _GUARD_MARKERS = (
@@ -1289,7 +1281,7 @@ def resolve_topic(category: str) -> str:
     if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
         cat = "SERVER"
     key = f"NTFY_TOPIC_{cat}"
-    if not os.environ.get(key, "").strip():
+    if not optional_env(key):
         load_env_stack()
     return required_env(key)
 
@@ -1340,7 +1332,7 @@ EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN", "SERVER")
 def is_email_mirrored(topic: str | None) -> bool:
     if not topic or not isinstance(topic, str) or not topic.strip():
         return False
-    if not os.environ.get("NTFY_TOPIC_ERROR"):
+    if not optional_env("NTFY_TOPIC_ERROR"):
         load_env_stack()
     topics = {
         optional_env(f"NTFY_TOPIC_{cat}")
@@ -1365,7 +1357,7 @@ def notify(title: str, body: str, source: str, symbol: str,
     if is_fake_alert_text(title, body, symbol, source):
         return
     alert = make_bot_event_alert(title, body, source, symbol)
-    if _parse_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
+    if _is_orchestrated():
         intent: dict[str, Any] = {"__orchestrator_intent__": "ntfy_webhook", "alerts": [alert]}
         if _AUTO_TOPIC_TAG_RE.search(str(title or "")):
             urgent = _alerts_are_urgent([alert])
@@ -1387,7 +1379,7 @@ def bind_notify(symbol_env_keys: tuple, default_symbol: str):
     def bound_notify(title: str, body: str, source: str, price: float = None, desktop: bool = False, symbol: str = None, email: bool = None):
         sym_clean = symbol.strip() if isinstance(symbol, str) and symbol.strip() else None
         resolved = sym_clean or next(
-            (os.environ[key].strip() for key in symbol_env_keys if os.environ.get(key, "").strip()),
+            (val for key in symbol_env_keys if (val := optional_env(key))),
             default_symbol,
         )
         notify(title, body, source, resolved, price=price, desktop=desktop, email=email)

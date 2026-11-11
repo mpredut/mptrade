@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tupl
 from botcore import (
     extract_current_price_item,
     is_live_network_backfill_enabled,
+    is_offline_disk_cache_enabled,
 )
 from cachepaths import (
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,
@@ -427,7 +428,7 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
         or is_equity_symbol(sym_u_pt)
         or (
             not (allow_network and is_live_network_backfill_enabled())
-            and os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") != "1"
+            and not is_offline_disk_cache_enabled()
             and not has_local_ohlc
         )
     ):

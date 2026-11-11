@@ -38,6 +38,7 @@ from botcore import (
     extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
+    is_auto_start_websockets_enabled,
     is_live_network_backfill_enabled,
     log,
     normalize_epoch_sec,
@@ -2254,9 +2255,7 @@ def start_account_cache_daemon(
                 account_cache_name, ver, now_ms=sync_ms
             )
     _bapi_ws_bridge.initialize_ws_bridge_once()
-    if is_live_network_backfill_enabled() and _parse_bool_flag(
-        os.environ.get("BINANCE_AUTO_START_WEBSOCKETS"), default=True
-    ):
+    if is_live_network_backfill_enabled() and is_auto_start_websockets_enabled():
         start_kraken_account_ws_bridge()
 
 

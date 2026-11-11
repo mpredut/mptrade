@@ -19,8 +19,8 @@ from typing import Any, List, Optional
 
 from botcore import (
     _parse_bool_flag,
-    env_value,
     env_values_map,
+    folder_or_env_value,
     normalize_side,
     safe_float,
     safe_nonneg_float,
@@ -156,13 +156,13 @@ class T212Provider(MarketDataProvider):
             # Use gitignored 212trading credentials, with fleet environment precedence.
             values = env_values_map(_T212_DIR, ("T212_API_KEY", "T212_API_SECRET"))
             credentials = t212_credentials(values=values)
-            env = os.environ.get("T212_ENV") or env_value(_T212_DIR, "T212_ENV")
+            env = folder_or_env_value(_T212_DIR, "T212_ENV")
             if not env:
                 raise RuntimeError("T212_ENV is missing (212trading/.env or environment)")
 
             def _opt_float(key: str) -> Optional[float]:
-                raw = os.environ.get(key) or env_value(_T212_DIR, key)
-                return safe_nonneg_float(str(raw).strip(), default=None) if (raw is not None and str(raw).strip()) else None
+                raw = folder_or_env_value(_T212_DIR, key, strip_comments=True)
+                return safe_nonneg_float(raw, default=None) if raw else None
 
             self._cli = T212Client(
                 credentials.key,
@@ -601,10 +601,11 @@ class T212Provider(MarketDataProvider):
             else (
                 self._order_validity
                 if self._order_validity is not None
-                else (
-                    os.environ.get("T212_ORDER_VALIDITY")
-                    if "T212_ORDER_VALIDITY" in os.environ
-                    else env_value(_T212_DIR, "T212_ORDER_VALIDITY")
+                else folder_or_env_value(
+                    _T212_DIR,
+                    "T212_ORDER_VALIDITY",
+                    respect_empty_env=True,
+                    strip_comments=True,
                 )
             )
         )

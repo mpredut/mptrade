@@ -24,6 +24,7 @@ from botcore import (
     exact_pos_int,
     float_env,
     lru_dict_put,
+    optional_env,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -153,7 +154,7 @@ _DEFAULT_AUDIT_DIR = os.path.join(
 
 
 def _resolve_audit_dir(directory: Optional[str] = None) -> str:
-    return directory or os.environ.get("EXECUTION_AUDIT_DIR") or _DEFAULT_AUDIT_DIR
+    return directory or optional_env("EXECUTION_AUDIT_DIR") or _DEFAULT_AUDIT_DIR
 
 
 class ExecutionAudit:

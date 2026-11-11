@@ -726,14 +726,49 @@ def env_value(folder: str | os.PathLike, key: str) -> str | None:
     return None
 
 
+def is_env_defined(key: str, env: dict | None = None) -> bool:
+    """Return True if ``key`` exists in ``env`` (or ``os.environ`` when ``env`` is None)."""
+    return key in (os.environ if env is None else env)
+
+
+def has_explicit_nonroot_env(key: str) -> bool:
+    """Return True when ``key`` has a non-empty ``os.environ`` value not solely loaded from root ``config.env``."""
+    raw = os.environ.get(key)
+    return bool(raw is not None and str(raw).strip() != "" and not _is_unmodified_root_key(key))
+
+
+def secret_env(key: str, default: str | None = None, env: dict | None = None) -> str | None:
+    """Read a secret/credential string from ``env``/``os.environ`` without stripping ``#`` characters."""
+    src = os.environ if env is None else env
+    raw = src.get(key)
+    if isinstance(raw, str):
+        clean = raw.strip()
+        if clean:
+            return clean
+    return default
+
+
+def folder_or_env_value(
+    folder: str | os.PathLike | None,
+    key: str,
+    *,
+    respect_empty_env: bool = False,
+    strip_comments: bool = False,
+    env: dict | None = None,
+) -> str | None:
+    """Resolve ``key`` from ``env``/``os.environ`` first, falling back to ``env_value(folder, key)``."""
+    src = os.environ if env is None else env
+    clean = optional_env(key, env=src) if strip_comments else (secret_env(key, env=src) or "")
+    if respect_empty_env and key in src:
+        return clean or None
+    if clean:
+        return clean
+    return env_value(folder, key) if folder is not None else None
+
+
 def env_values_map(folder: str | os.PathLike, names: tuple[str, ...] | list[str]) -> dict[str, str | None]:
     """Resolve each key from ``os.environ`` first, falling back to ``env_value(folder, name)``."""
-    out: dict[str, str | None] = {}
-    for name in names:
-        raw_env = os.environ.get(name)
-        clean_env = raw_env.strip() if isinstance(raw_env, str) else None
-        out[name] = clean_env if clean_env else env_value(folder, name)
-    return out
+    return {name: folder_or_env_value(folder, name) for name in names}
 
 
 _UNSET = globals().get("_UNSET") or object()
@@ -773,6 +808,11 @@ def bool_env(
     if (val is None or (isinstance(val, str) and not val.strip())) and folder is not None:
         val = env_value(folder, key)
     return bool(_parse_bool_flag(val, def_flag))
+
+
+def any_bool_env(*keys: str, env: dict | None = None) -> bool:
+    """Return True when at least one key in ``keys`` resolves to a truthy boolean flag."""
+    return any(bool_env(k, env=env, default=False) for k in keys)
 
 
 def resolve_cli_arg(
@@ -2192,13 +2232,47 @@ def configure_runtime_services(**kwargs: object) -> RuntimeServices:
     return _RUNTIME_SERVICES
 
 
+SIMULATED_PROVIDER_NAMES: frozenset[str] = frozenset(
+    {"replay", "backtest", "sim", "mock", "paper_sim", "test"}
+)
+
+
+def is_simulated_provider_name(provider: object) -> bool:
+    """Return True when ``provider`` identifies a simulated/replay/backtest/mock execution adapter."""
+    return bool(
+        provider
+        and not isinstance(provider, bool)
+        and str(provider).strip().lower() in SIMULATED_PROVIDER_NAMES
+    )
+
+
+def is_replay_or_backtest_env(*extra_keys: str, env: dict | None = None) -> bool:
+    """Return True when ``BACKTEST_MODE``, ``REPLAY_MODE``, or any ``extra_keys`` flag is enabled."""
+    return any_bool_env("BACKTEST_MODE", "REPLAY_MODE", *extra_keys, env=env)
+
+
+def is_gemini_llm_disabled(env: dict | None = None) -> bool:
+    """Return True when Gemini LLM queries are suppressed via ``DISABLE_GEMINI_LLM``, ``BACKTEST_MODE``, or ``REPLAY_MODE``."""
+    return is_replay_or_backtest_env("DISABLE_GEMINI_LLM", env=env)
+
+
+def is_offline_disk_cache_enabled(env: dict | None = None) -> bool:
+    """Return True when ``MPTRADE_OFFLINE_DISK_CACHE`` is enabled for offline OHLC disk reads."""
+    return bool_env("MPTRADE_OFFLINE_DISK_CACHE", env=env, default=False)
+
+
+def is_auto_start_websockets_enabled(env: dict | None = None) -> bool:
+    """Return True when ``BINANCE_AUTO_START_WEBSOCKETS`` permits background WS startup (default True)."""
+    return bool_env("BINANCE_AUTO_START_WEBSOCKETS", env=env, default=True)
+
+
 def is_rth_gate_enabled(override: bool | None = None, *, rth_fn: object = None) -> bool:
     """Return whether US equities RTH session gating is active under the current runtime policy."""
     if override is not None:
         return bool(override)
     if rth_fn is not None and rth_fn is not is_us_rth_open:
         return True
-    if _parse_bool_flag(os.environ.get("MPTRADE_FORCE_RTH_GATE"), False):
+    if bool_env("MPTRADE_FORCE_RTH_GATE", default=False):
         return True
     return bool(_RUNTIME_SERVICES.enforce_rth_gate)
 

@@ -26,7 +26,16 @@ from market_monitor.pricefetcher import create_cachePriceAll
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
 from market_monitor.new_coins_discovery import NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
 from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url
-from botcore import load_env_stack, required_bool_env, required_env, safe_int, safe_nonneg_float, touch_module_heartbeat
+from botcore import (
+    load_env_stack,
+    optional_env,
+    required_bool_env,
+    required_env,
+    safe_int,
+    safe_nonneg_float,
+    secret_env,
+    touch_module_heartbeat,
+)
 from cachepaths import cache_path
 from market_monitor.alerts_config import load_config
 
@@ -49,17 +58,17 @@ if PRICE_WEBHOOK_URL:
 else:
     print("   ❌ Phone webhook: DISABLED (NTFY_TOPIC_PRICE is missing)")
 
-_tg_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-_tg_chat = os.environ.get("TELEGRAM_CHAT_ID")
+_tg_token = secret_env("TELEGRAM_BOT_TOKEN")
+_tg_chat = optional_env("TELEGRAM_CHAT_ID")
 if _tg_token and _tg_chat:
     print(f"   ✅ Telegram: ENABLED -> Chat ID: {_tg_chat}")
 else:
     _missing_tg = [k for k, v in (("TELEGRAM_BOT_TOKEN", _tg_token), ("TELEGRAM_CHAT_ID", _tg_chat)) if not v]
     print(f"   ❌ Telegram: DISABLED (missing: {', '.join(_missing_tg)})")
 
-_email_user = os.environ.get("SMTP_USERNAME")
-_email_pass = os.environ.get("SMTP_PASSWORD")
-_alert_to_email = os.environ.get("ALERT_TO_EMAIL")
+_email_user = optional_env("SMTP_USERNAME")
+_email_pass = secret_env("SMTP_PASSWORD")
+_alert_to_email = optional_env("ALERT_TO_EMAIL")
 if _email_user and _email_pass and _alert_to_email:
     print(f"   ✅ Email: ENABLED -> Sender: {_email_user}")
 else:

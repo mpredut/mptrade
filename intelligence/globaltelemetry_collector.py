@@ -26,6 +26,7 @@ from botcore import (
     _parse_bool_flag,
     is_interval_due,
     load_dotenv,
+    pos_float_env,
     safe_nonneg_ts,
 )
 from intelligence.macro.daemon_ssot import (
@@ -76,7 +77,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         default_news_itv = (
             derived["news_interval_sec"]
             if derived["crypto_executor_interval_sec"] != 360.0
-            else safe_pos_float(os.environ.get("MACRO_NEWS_INTERVAL_SEC"), derived["news_interval_sec"])
+            else pos_float_env("MACRO_NEWS_INTERVAL_SEC", derived["news_interval_sec"])
         )
         self.orderbook_interval_sec = safe_pos_float(orderbook_interval_sec, derived["orderbook_interval_sec"])
         self.derivatives_interval_sec = safe_pos_float(derivatives_interval_sec, derived["derivatives_interval_sec"])

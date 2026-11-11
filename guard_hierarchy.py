@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from botcore import (
     _parse_bool_flag,
+    bool_env,
     parse_dotenv,
     safe_float,
     safe_nonneg_float,
@@ -770,7 +771,7 @@ def _load_margins() -> Dict[str, Any]:
     m: Dict[str, Any] = parse_dotenv(path, lower_keys=True, coerce_floats=True)
     missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
     if missing:
-        if cur_margins is not None and _parse_bool_flag(os.environ.get("BACKTEST_MODE")):
+        if cur_margins is not None and bool_env("BACKTEST_MODE", default=False):
             _sync_margins_state(og_mod, cur_margins, mtime, now_ts)
             return cur_margins
         raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")

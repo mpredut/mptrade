@@ -26,6 +26,7 @@ if _ROOT not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
+    bool_env,
     gaussian_weights_from_idx,
     is_live_network_backfill_enabled,
     lru_dict_put,
@@ -572,7 +573,7 @@ def _dbg_weight(*args: Any, **kwargs: Any) -> None:
     pa_mod = sys.modules.get("priceAnalysis")
     dbg_flag = getattr(pa_mod, "_DEBUG", None) if pa_mod is not None else None
     if dbg_flag is None:
-        dbg_flag = _parse_bool_flag(os.environ.get("PRICEANALYSIS_DEBUG"), False)
+        dbg_flag = bool_env("PRICEANALYSIS_DEBUG", default=False)
     if dbg_flag:
         print(*args, **kwargs)
 

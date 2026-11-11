@@ -37,6 +37,7 @@ from botcore import (
     extract_current_price_item,
     extract_timestamp_ms,
     extract_timestamp_s,
+    is_auto_start_websockets_enabled,
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
     is_us_rth_open,
@@ -2151,11 +2152,8 @@ def _start_nonbinance_trend_poller(
     cpm.bind_providers(bindings)
 
     if start_ws is None:
-        auto_ws_env = (
-            os.environ.get("BINANCE_AUTO_START_WEBSOCKETS", "1").strip().lower()
-        )
         enable_ws = (
-            auto_ws_env not in ("0", "false", "no", "off")
+            is_auto_start_websockets_enabled()
             and is_live_network_backfill_enabled()
         )
     else:
