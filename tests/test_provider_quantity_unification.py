@@ -2,35 +2,58 @@
 filter refusal, and available-balance order placement across all providers.
 """
 
+import json
+import math
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from binance_api import bapi_placeorder as po
+import botcore
 from instrument import Instrument
-from providers.base import MarketDataProvider, aggregate_fills_by_order_id, extract_order_id
-from providers.kraken_provider import KrakenProvider
+import order_guard as _order_guard
+from providers import (
+    base as pbase,
+    order_ohlc_utils as oou,
+    quantity as pq,
+    replay_provider as rprov,
+    strategy_executor as sexec,
+)
+from providers.base import (
+    MarketDataProvider,
+    aggregate_fills_by_order_id,
+    bool_env,
+    extract_order_id,
+)
 from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi
+from providers.order_ohlc_utils import clean_order_id, extract_order_side, require_int_order_id
 from providers.quantity import (
+    BinanceFilterError,
+    BinanceOrderRules,
     balance_cap_quantity,
     decide_quantity,
     fee_cap_quantity,
+    remaining_average_cost,
     resolve_assets,
 )
-from providers.replay_provider import ReplayMarketDataProvider, load_price_series
-from providers.strategy_executor import PairPrecision, ProviderError, SubmissionOutcome
+from providers.replay_provider import ReplayMarketDataProvider, SimClock, load_price_series
+from providers.strategy_executor import (
+    OrderStatus,
+    PairPrecision,
+    ProviderError,
+    SubmissionOutcome,
+    SubmissionRefused,
+)
 from providers.t212_provider import T212Provider
-import botcore
-import math
-import pytest
-from types import SimpleNamespace
-import order_guard as _order_guard
-from providers import base as pbase, order_ohlc_utils as oou
 
 
 class CustomProvider(MarketDataProvider):
@@ -637,7 +660,6 @@ def test_decide_quantity_ignores_boolean_negative_round_fn_return_values_iter39_
 
 def test_replaymarketdataprovider_and_simclock_reject_bool_nan_inputs_iter43_s4():
     """[ITER43 #4] ReplayMarketDataProvider and SimClock reject bool/NaN inputs."""
-    from providers.replay_provider import SimClock
     # 4. ReplayMarketDataProvider and SimClock reject bool/NaN inputs
     with pytest.raises(ValueError):
         SimClock(True)
@@ -674,7 +696,6 @@ def test_marketdataprovider_round_quantity_and_round_price_clamp_negative_inputs
 
 def test_replaymarketdataprovider_place_order_safely_returns_none_on_non_numeric_iter61_s3(tmp_path):
     """[ITER61 #3] ReplayMarketDataProvider.place_order safely returns None on non-numeric price/qty, and load_price_series skips ts <= 0."""
-    import json
     # 3. ReplayMarketDataProvider.place_order safely returns None on non-numeric price/qty, and load_price_series skips ts <= 0
     jsonl_file = tmp_path / "prices.jsonl"
     jsonl_file.write_text(
@@ -709,7 +730,6 @@ def test_decide_quantity_must_never_downscale_sell_orders_even_when_iter85_s1():
 
 def test_providers_base_bool_env_strips_inline_comments_quotes_and_iter85_s2(monkeypatch):
     """[ITER85 #2] providers.base.bool_env strips inline comments/quotes and supports 1/yes/on and default fallback."""
-    from providers.base import bool_env
     # 2. providers.base.bool_env strips inline comments/quotes and supports 1/yes/on and default fallback
     monkeypatch.setenv("TEST_BOOL_ENV_FLAG", "1 # inline comment")
     assert bool_env("TEST_BOOL_ENV_FLAG", default=False) is True
@@ -730,7 +750,6 @@ def test_pairprecision_rejects_non_finite_decimals_non_numeric_order_min_iter86_
 
 def test_extract_order_side_string_isbuyer_false_vs_true_iter96_s1():
     """[ITER96 #1] extract_order_side string isBuyer ('false'/'0' vs 'true'/'1')."""
-    from providers.order_ohlc_utils import extract_order_side
     # 1. extract_order_side string isBuyer ("false"/"0" vs "true"/"1")
     assert extract_order_side({"isBuyer": "false"}) == "SELL"
     assert extract_order_side({"isBuyer": "0"}) == "SELL"
@@ -746,7 +765,6 @@ def test_aggregate_fills_by_order_id_none_invalid_rows_and_bool_invalid_side_ite
 
 def test_providers_strategy_executor_bool_rejection_in_submissionrefused_submissionoutcome_orderstatus_iter105_s3():
     """[ITER105 #3] providers.strategy_executor: bool rejection in SubmissionRefused, SubmissionOutcome, OrderStatus."""
-    from providers.strategy_executor import OrderStatus, SubmissionRefused
     # 3. providers.strategy_executor: bool rejection in SubmissionRefused, SubmissionOutcome, OrderStatus
     with pytest.raises(ValueError):
         SubmissionRefused(True)
@@ -757,7 +775,6 @@ def test_providers_strategy_executor_bool_rejection_in_submissionrefused_submiss
 
 def test_providers_quantity_remaining_average_cost_balance_cap_quantity_decide_quantity_iter106_s1():
     """[ITER106 #1] providers.quantity: remaining_average_cost, balance_cap_quantity, decide_quantity."""
-    from providers import quantity as pq
     # 1. providers.quantity: remaining_average_cost, balance_cap_quantity, decide_quantity
     assert pq.remaining_average_cost(True, 1.0) is None
     assert pq.remaining_average_cost([{"id": True, "timestamp": 100.0, "side": "BUY", "qty": 1.0, "price": 100.0, "base_fee": 0.0, "quote_fee": 0.0}], 1.0) is None
@@ -783,7 +800,6 @@ def test_providers_quantity_remaining_average_cost_balance_cap_quantity_decide_q
 
 def test_binanceorderrules_from_symbol_info_rejects_non_iterable_filters_and_non_iter108_s1():
     """[ITER108 #1] BinanceOrderRules.from_symbol_info rejects non-iterable filters and non-str base/quote."""
-    from providers.quantity import BinanceFilterError, BinanceOrderRules
     # 1. BinanceOrderRules.from_symbol_info rejects non-iterable filters and non-str base/quote
     with pytest.raises(BinanceFilterError):
         BinanceOrderRules.from_symbol_info({"filters": True})
@@ -822,7 +838,6 @@ def test_botcore_providers_env_value_bool_env_extract_order_id_extract_order_fee
 
 def test_providers_replay_provider_load_price_series_rejects_non_str_path_or_iter109_s3(tmp_path):
     """[ITER109 #3] providers.replay_provider: load_price_series rejects non-str path or symbol."""
-    from providers import replay_provider as rprov
     # 3. providers.replay_provider: load_price_series rejects non-str path or symbol
     assert rprov.load_price_series(True, "BTCUSDC") == []
     assert rprov.load_price_series(str(tmp_path), True) == []
@@ -839,8 +854,6 @@ def test_extract_order_id_rejects_nan_inf_none_null_non_integer_iter122_s1():
 def test_require_int_order_id_preserves_bit_integer_precision_iter122_s2():
     """[ITER122 #2] require_int_order_id preserves 64-bit integer precision (> 2**53)."""
     # 2. require_int_order_id preserves 64-bit integer precision (> 2**53)
-    from providers.order_ohlc_utils import require_int_order_id
-
     big_oid = 9007199254740993  # 2**53 + 1
     assert require_int_order_id(big_oid, "order_status") == big_oid
     assert require_int_order_id(str(big_oid), "order_status") == big_oid
@@ -879,7 +892,6 @@ def test_replay_provider_load_price_series_directory_safety_and_supports_symbol_
 
 def test_providers_quantity_py_remaining_average_cost_fill_id_normalization_sentinel_iter154_s2():
     """[ITER154 #2] providers/quantity.py: remaining_average_cost fill ID normalization & sentinel rejection."""
-    from providers.quantity import remaining_average_cost
     # 2. providers/quantity.py: remaining_average_cost fill ID normalization & sentinel rejection
     # Duplicate id=1001.0 vs "1001" is detected and rejected (returns None)
     assert remaining_average_cost(
@@ -959,16 +971,15 @@ def test_botcore_providers_env_value_quoted_value_with_trailing_comment_iter164_
 
 def test_providers_quantity_resolve_assets_with_usdt_fdusd_gbp_and_iter168_s2():
     """[ITER168 #2] providers.quantity.resolve_assets with USDT/FDUSD/GBP and _parse_bool_flag."""
-    from providers import quantity as qty_mod
     # 2. providers.quantity.resolve_assets with USDT/FDUSD/GBP and _parse_bool_flag
-    assert qty_mod.resolve_assets("BTCUSDT") == ("BTC", "USDT")
-    assert qty_mod.resolve_assets("ETHFDUSD") == ("ETH", "FDUSD")
-    assert qty_mod.resolve_assets("SOLGBP") == ("SOL", "GBP")
-    assert qty_mod.resolve_assets("BTCXYZ") == ("BTCXYZ", None)
-    assert qty_mod._parse_bool_flag(2, default=False) is True
-    assert qty_mod._parse_bool_flag("y", default=False) is True
-    assert qty_mod._parse_bool_flag("n", default=True) is False
-    assert qty_mod.clean_order_id_str(frozenset({"1"})) == ""
+    assert pq.resolve_assets("BTCUSDT") == ("BTC", "USDT")
+    assert pq.resolve_assets("ETHFDUSD") == ("ETH", "FDUSD")
+    assert pq.resolve_assets("SOLGBP") == ("SOL", "GBP")
+    assert pq.resolve_assets("BTCXYZ") == ("BTCXYZ", None)
+    assert pq._parse_bool_flag(2, default=False) is True
+    assert pq._parse_bool_flag("y", default=False) is True
+    assert pq._parse_bool_flag("n", default=True) is False
+    assert pq.clean_order_id_str(frozenset({"1"})) == ""
 
 def test_providers_base_boolean_and_side_extraction_iter169_s1():
     """[ITER169 #1] providers.base boolean and side extraction."""
@@ -982,7 +993,6 @@ def test_providers_base_boolean_and_side_extraction_iter169_s1():
 
 def test_submissionoutcome_and_orderstatus_normalization_iter170_s3():
     """[ITER170 #3] SubmissionOutcome and OrderStatus normalization."""
-    from providers import strategy_executor as sexec
     # 3. SubmissionOutcome and OrderStatus normalization
     so = sexec.SubmissionOutcome(" ACCEPTED ", order_id=42, reason=" ok ")
     assert so.state == "accepted" and so.order_id == "42" and so.reason == "ok"
@@ -996,7 +1006,6 @@ def test_submissionoutcome_and_orderstatus_normalization_iter170_s3():
 
 def test_clean_order_id_strictly_validates_positive_integers_integer_floats_and_iter185_s3():
     """[ITER185 #3] clean_order_id strictly validates positive integers, integer floats, and valid numeric strings."""
-    from providers.order_ohlc_utils import clean_order_id
     # 3. clean_order_id strictly validates positive integers, integer floats, and valid numeric strings
     assert clean_order_id(12345) == "12345"
     assert clean_order_id(12345.0) == "12345"

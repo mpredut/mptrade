@@ -3,20 +3,45 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import functools
 import importlib
 import json
 import math
 import os
-import time
 from pathlib import Path
-from types import SimpleNamespace
+import re
+import sys
+import time
+from types import MethodType, SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
 
+import account_cache_health as health
+import active_intents
+import assetguardian as ag
+from binance_api import bapi_trades, bapi_ws_normalize as ws_norm
 import botcore
-import pricewindow as pw
+from botcore import (
+    clean_scale,
+    coerce_dict_maps,
+    load_cli_env_stack,
+    parse_ratio_or_pct,
+    resolve_cli_env_path,
+    temporary_environ,
+)
 from cacheaccount import CacheTradeManager
+import cacheintegrity
+import cachepaths
+from cachepaths import (
+    filter_candidates_by_asset_class,
+    has_equity_suffix,
+    is_equity_venue,
+    is_equity_venue_or_suffix,
+    iter_venue_cycle_state_files,
+)
 from cacheprice import (
     Cache24PriceManager,
     Cache365PriceManager,
@@ -25,31 +50,132 @@ from cacheprice import (
     resolve_ssot_price_from_cache,
 )
 from cachetrend import CacheShortTrendManager
-from intelligence.macro.daemon_ssot import add_external_telemetry_cli_args, add_macro_analyzer_cli_args
-from kraken.trailing_stop import KrakenTrailing
-from offline.backtests.comparison import add_path_cli_args, add_report_output_cli_args
-from providers.base import MarketDataProvider
-from providers.hyperliquid_provider import HyperliquidProvider
-from providers.kraken_provider import KrakenProvider
-from providers.strategy_executor import ProviderError
-from providers.t212_provider import T212Provider
-from state_io import previous_generation_path, read_text_file
-from strategies.base_spot_mixin import BaseSpotMixin
-from strategies.replay_metrics import print_ascii_table_header, write_markdown_report
-import cachepaths
+import external_order_guard as eog
+import guard_hierarchy as gh
+from guard_hierarchy import preflight_intelligence_guard_entry
+from instrument import Instrument
+from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
+from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+from intelligence.internal.state import survival as surv_mod
+from intelligence.macro import calendar_ssot
+from intelligence.macro.calendar_ssot import headline_effective_ts, parse_headline_age_minutes
+import intelligence.macro.daemon_ssot as dssot
+from intelligence.macro.daemon_ssot import (
+    ExternalTelemetryMixin,
+    add_external_telemetry_cli_args,
+    add_macro_analyzer_cli_args,
+    run_daemon_cli_once_or_start,
+)
+import intelligence.macro.geopolitical_analyzer as geo_an_mod
+from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+import intelligence.macro.geopolitical_guard as geo_gd_mod
+from intelligence.macro.lexicon_ssot import _tracked_equity_base_tickers
+from intelligence.macro.news_feed_collector import NewsFeedCollector
 import intelligence.macro_sentiment_ssot as mss
+from intelligence.macro_sentiment_ssot import FearGreedSnapshot
+from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+from intelligence.sentiment.collectors.portfolio_collector import _resolve_ai_intents_and_known_order_ids
+from intelligence.sentiment.evaluators import microstructure_evaluator as me_mod
+from intelligence.sentiment.evaluators.microstructure_evaluator import evaluate_microstructure_cycle_deltas
+from intelligence.sentiment.evaluators.portfolio_evaluator import (
+    reconcile_fresh_lots_vwap,
+    select_fresh_open_lots,
+)
+from intelligence.sentiment.evaluators.tca_risk_evaluator import VenueFeeAndLimitsEvaluator
+from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
+from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+from kraken import shadow_live as kraken_shadow
+from kraken.trailing_stop import KrakenTrailing
+import llm_order_guard
+from market_monitor.new_coins_discovery import NewCoinsFactory
+from market_monitor.pricechecker import PriceAlert
+from market_monitor.pricefetcher import StockYahooPricePlatform
+from market_regime import MarketRegimeHorizon, MarketRegimeService
+import monitortrades as mt
+from offline.backtests import evaluation as bt_eval
+from offline.backtests.comparison import add_path_cli_args, add_report_output_cli_args
+from offline.backtests.evaluation import parse_intervals
+from offline.research import backtest_ranges, short_trend_estimator_benchmark as st_bench
+from offline.research.monitortrades_backtest import sweep_mt_models as smt
+from offline.research.monitortrades_backtest.run_replay_backtest import step_adaptive_trend_window
+from offline.research.monitortrades_backtest.sweep_mt_models import (
+    _accepts_two_positional_args,
+    compute_window_bounds,
+)
+from offline.runners import apply_proposals
+from orchestratorOS.livecheck import os_resources_watchdog as wd
+import order_guard
+from order_lifecycle import TrackedOrderLifecycle
+import order_retry
+import pricewindow as pw
+from providers import binance_provider as bp_mod, order_id_context as oic
+from providers.base import MarketDataProvider
 from providers.binance_provider import BinanceProvider
+from providers.execution_audit import _filter_intents_by_scope
+from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
+from providers.kraken_provider import KrakenProvider
 from providers.order_ohlc_utils import (
+    build_price_history_points,
     derive_venue_128bit_client_order_id,
+    drop_incomplete_last_bar,
     format_venue_intent_client_order_id,
     iter_expired_open_order_ids,
     resolve_ohlc_time_window_ms,
+    validate_dataset,
 )
-from providers.quantity import venue_adjust_partial_sell_quantity, venue_fee_cap_quantity
-from providers import order_id_context as oic
-import re
-import order_guard
-from tests.conftest import DummyCachedHttpJsonCollector, DummyGeminiClient, MockHttpResponse
+from providers.quantity import (
+    clamp_notional_to_wallet_balance,
+    dust_protected_partial_sell_qty,
+    dust_protected_sell_balance_cap,
+    venue_adjust_partial_sell_quantity,
+    venue_fee_cap_quantity,
+)
+from providers.replay_provider import ReplayMarketDataProvider
+from providers.strategy_executor import OrderReconciliationCapabilities, ProviderError
+from providers.t212_provider import T212Provider
+import rtrade
+from rtrade_pair_store import RTradePairStore
+import state_io
+from state_io import (
+    atomic_write_text,
+    decode_embedded_json_dict,
+    extract_json_object,
+    previous_generation_path,
+    read_jsonl_dicts,
+    read_tail_complete_lines_text,
+    read_text_file,
+)
+from strategies.base_spot_mixin import BaseSpotMixin, parse_tp_ladder_env
+from strategies.replay_metrics import (
+    print_ascii_table_header,
+    print_single_backtest_report,
+    run_cli_single_or_sweep_backtest,
+    write_markdown_report,
+)
+from strategies.spot_replay import (
+    post_exit_peak_step_scope,
+    split_warmup_ohlc,
+    summarize_grid_replay_metrics,
+)
+from tests.conftest import (
+    DummyCachedHttpJsonCollector,
+    DummyGeminiClient,
+    MockHttpResponse,
+    load_venue_modules,
+    make_test_margins,
+)
+from trailing_core import TrailingAdapterBase
+import utils
+from verify_tools import monitor_night, portfolio_snapshot
+import visuals.tradeall_observe as tobs
 
 
 class _StubKrakenPairClient:
@@ -490,13 +616,6 @@ def test_kraken_fetch_remote_trades_case_insensitivity_and_60s_floor_filtering()
 
 def test_equity_asset_class_ssot_helpers_and_intent_scope_filtering():
     """Verify has_equity_suffix, is_equity_venue, filter_candidates_by_asset_class, and _filter_intents_by_scope."""
-    from cachepaths import (
-        filter_candidates_by_asset_class,
-        has_equity_suffix,
-        is_equity_venue,
-        is_equity_venue_or_suffix,
-    )
-    from providers.execution_audit import _filter_intents_by_scope
 
     for bad_sym in (None, True, False, 123, "", "   ", "BTCUSDC"):
         assert has_equity_suffix(bad_sym) is False
@@ -543,7 +662,6 @@ def test_equity_asset_class_ssot_helpers_and_intent_scope_filtering():
 
 def test_dust_protected_sell_sizing_and_ohlc_client_id_border_cases():
     """Verify venue-agnostic dust-protected SELL sizing, client ID venue alias resolution, and OHLC window overflow."""
-    from providers.quantity import dust_protected_partial_sell_qty, dust_protected_sell_balance_cap
 
     # Parameterized dust-protected cap and partial sell adjuster work across arbitrary decimals & thresholds
     assert dust_protected_sell_balance_cap(
@@ -587,8 +705,6 @@ def test_dust_protected_sell_sizing_and_ohlc_client_id_border_cases():
 
 def test_account_cache_and_legacy_jsonl_border_cases(tmp_path: Path):
     """Verify CacheAccountManagerBase cursor/fetchtime sanitization and legacy JSONL strict ID / tail handling."""
-    import account_cache_health
-    import cacheintegrity
 
     assert not hasattr(cachepaths, "_is_eq_suffix")
 
@@ -661,7 +777,7 @@ def test_account_cache_and_legacy_jsonl_border_cases(tmp_path: Path):
         json.dumps({"s": "BTCUSDC", "i": bad_id_row}) + "\n",
         encoding="utf-8",
     )
-    with pytest.raises(account_cache_health.AccountCacheNotReady):
+    with pytest.raises(health.AccountCacheNotReady):
         cacheintegrity.read_legacy_trade_jsonl_strict(
             str(legacy_jsonl),
             {"counts": {"BTCUSDC": 1}},
@@ -672,8 +788,6 @@ def test_account_cache_and_legacy_jsonl_border_cases(tmp_path: Path):
 
 def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(monkeypatch):
     """Verify declarative provider class specs, cross-venue live/dry-run symmetry, and border hardening."""
-    from providers.hyperliquid_provider import _call_hl_info_read
-    from providers.quantity import clamp_notional_to_wallet_balance
 
     # 1. Open-Closed custom MarketDataProvider subclass works without touching any central dict
     monkeypatch.setenv("CUSTOM_DEX_LIVE_ORDERS", "false")
@@ -765,8 +879,6 @@ def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(mo
     assert len(single_calls) == 1
 
     # 5. BinanceProvider.supports_symbol enforces instrument_registry venue ownership and non-empty base
-    from providers import binance_provider as bp_mod
-
     bp = BinanceProvider()
     assert bp.supports_symbol("BTCUSDC") is True
     assert bp.supports_symbol("HYPEUSDC") is False
@@ -781,8 +893,6 @@ def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(mo
 
 def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
     """Verify parse_ratio_or_pct, derive_client_order_id, cancel grace, and extreme lookback border cases."""
-    from botcore import clean_scale, parse_ratio_or_pct
-    from providers.order_ohlc_utils import build_price_history_points
 
     # 1. parse_ratio_or_pct & clean_scale strict border validation
     assert parse_ratio_or_pct("2.5%") == pytest.approx(0.025)
@@ -872,8 +982,6 @@ def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
 
 def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkeypatch, tmp_path):
     """Verify state_io embedded JSON helpers, botcore.fetch_public_bytes, HLClient._coin_candidates/candles, and iter_venue_cycle_state_files."""
-    from cachepaths import iter_venue_cycle_state_files
-    from state_io import decode_embedded_json_dict, extract_json_object
 
     # 1. extract_json_object & decode_embedded_json_dict
     assert extract_json_object("```json\n{\"ok\": true, \"n\": 3}\n```") == {"ok": True, "n": 3}
@@ -902,10 +1010,7 @@ def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkey
     assert botcore.fetch_public_bytes("https://example.com/feed.xml", timeout=5.0) == b"<rss><channel/></rss>"
 
     # 3. HLClient._coin_candidates & candles overflow safety
-    hl_mod = botcore.load_local_module(
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid"),
-        "hl_client",
-    )
+    hl_mod = load_venue_modules("hyperliquid", "hl_client")
     HLClient = hl_mod.HLClient
     assert HLClient._coin_candidates("HYPE/USDC") == ("HYPE/USDC", "HYPE")
     assert HLClient._coin_candidates("HYPE-USDC") == ("HYPE-USDC", "HYPE")
@@ -943,13 +1048,6 @@ def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkey
 
 def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, tmp_path):
     """Verify cache_path SSOT, http_request body, guard config validation, geo ts normalization, MarketRegimeService, OrderLifecycle, and order_retry border cases."""
-    import intelligence.macro.geopolitical_analyzer as geo_an_mod
-    import intelligence.macro.geopolitical_guard as geo_gd_mod
-    import llm_order_guard
-    import order_retry
-    import utils
-    from market_regime import MarketRegimeHorizon, MarketRegimeService
-    from order_lifecycle import TrackedOrderLifecycle
 
     # 1. cache_path SSOT: single canonical definition in cachepaths, re-exported identically in botcore and utils
     assert botcore.cache_path is cachepaths.cache_path
@@ -990,8 +1088,6 @@ def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, t
             order_guard.daily_limit_guard(dummy_prov, "BTCUSDC", "BUY")
 
     # 4. llm_order_guard.check_geopolitical_order_guards handles ISO/ms/bool/corrupt timestamps cleanly
-    from datetime import datetime, timezone
-
     seen_absorbed: list[bool] = []
     now_ts = 1700003600.0
     iso_sa_ts = datetime.fromtimestamp(now_ts - 600.0, timezone.utc).isoformat().replace("+00:00", "Z")
@@ -1095,11 +1191,6 @@ def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, t
 
 def test_venue_fee_precision_ssot_and_runtime_border_cases(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify polymorphic venue fee/precision SSOT and runtime border-case hardening."""
-    import account_cache_health as health
-    import rtrade
-    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import VenueFeeAndLimitsEvaluator
-    from rtrade_pair_store import RTradePairStore
 
     # 1. Polymorphic venue fee & step/tick precision SSOT on MarketDataProvider
     assert MarketDataProvider.resolve_venue_default_fee_spec("binance") == ("VIP0", 10.0, 10.0, 5.0)
@@ -1242,12 +1333,6 @@ def test_portfolio_lot_reconciliation_ssot_and_cache_coercion_border_cases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify shared open-lot pruning/VWAP SSOT and timestamp/margin coercion border cases."""
-    import assetguardian as ag
-    import guard_hierarchy as gh
-    from intelligence.sentiment.evaluators.portfolio_evaluator import (
-        reconcile_fresh_lots_vwap,
-        select_fresh_open_lots,
-    )
 
     # 1. Shared select_fresh_open_lots + reconcile_fresh_lots_vwap SSOT & corrupt ts_ms handling
     now_ms = 1_750_000_000_000
@@ -1300,12 +1385,6 @@ def test_mt_conf_fail_fast_ohlc_and_cycle_history_border_cases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify fail-fast config/OHLC bounds, commonpath cycle-history gating, and microstructure delta hardening."""
-    from intelligence.macro.lexicon_ssot import _tracked_equity_base_tickers
-    from intelligence.sentiment.evaluators.microstructure_evaluator import (
-        evaluate_microstructure_cycle_deltas,
-    )
-    import monitortrades as mt
-    from providers.order_ohlc_utils import drop_incomplete_last_bar, validate_dataset
 
     # 1. monitortrades._load_mt_conf rejects NaN, Inf, and negative config values fail-fast
     repo_conf_text = Path(mt.__file__).with_name("monitortrades.conf").read_text(encoding="utf-8")
@@ -1385,9 +1464,6 @@ def test_auto_ws_ssot_tp_ladder_checkpoint_and_estimator_border_cases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify SSOT auto-WS flag, empty-comma TP ladder rejection, EET checkpoint bounds, and estimator validation."""
-    from intelligence.macro import calendar_ssot
-    from orchestratorOS.livecheck import os_resources_watchdog as wd
-    from strategies.base_spot_mixin import parse_tp_ladder_env
 
     # 1. botcore.is_auto_start_websockets_enabled handles all falsy tokens ("n", "f", "0", "off") & env overrides
     monkeypatch.setenv("BINANCE_AUTO_START_WEBSOCKETS", "n")
@@ -1434,12 +1510,6 @@ def test_hoisted_patch_seams_symbol_csv_and_observe_cli_border_cases(
     tmp_path: Any,
 ) -> None:
     """Verify hoisted module-level patch seams, SSOT CSV/symbol parsing, and tradeall_observe CLI bounds."""
-    import sys
-    from intelligence.internal.state import survival as surv_mod
-    from intelligence.sentiment.evaluators import microstructure_evaluator as me_mod
-    from market_monitor.new_coins_discovery import NewCoinsFactory
-    from market_monitor.pricefetcher import StockYahooPricePlatform
-    import visuals.tradeall_observe as tobs
 
     # 1. microstructure_evaluator.enrich_cross_venue_trends honors survival.estimate_T monkeypatches
     called_est: list[str] = []
@@ -1494,12 +1564,6 @@ def test_botcore_reexport_sync_t212_check_market_and_shadow_env_border_cases(
     tmp_path: Any,
 ) -> None:
     """Verify botcore reexport sync, state_io patch seams, T212 check_market NaN/ms guards, and shadow env paths."""
-    import importlib
-    from instrument import Instrument
-    from kraken import shadow_live as kraken_shadow
-    import offline.backtests.evaluation as ev
-    import state_io
-    from verify_tools import monitor_night
 
     # 1. Instrument._apply_outbox_lineage_prefix honors providers.order_id_context.get_process_name monkeypatches
     monkeypatch.setattr(oic, "get_process_name", lambda: "TA")
@@ -1529,11 +1593,11 @@ def test_botcore_reexport_sync_t212_check_market_and_shadow_env_border_cases(
     saved_dict = dict(botcore.__dict__)
     try:
         importlib.reload(botcore)
-        assert ev.load_layered_env_config is botcore.load_layered_env_config
+        assert bt_eval.load_layered_env_config is botcore.load_layered_env_config
     finally:
         botcore.__dict__.update(saved_dict)
         botcore._sync_reexport_modules()
-    assert ev.load_layered_env_config is botcore.load_layered_env_config
+    assert bt_eval.load_layered_env_config is botcore.load_layered_env_config
 
     # 4. 212trading/market_data.py::check_market guards NaN/None bar volumes, closes, and ms timestamps
     t212_md = botcore.load_local_module(
@@ -1587,11 +1651,6 @@ def test_ws_normalize_headline_age_apply_proposals_and_csv_border_cases(
     tmp_path: Any,
 ) -> None:
     """Verify WS trade ID float-string guards, headline age SSOT, branch validation, and CSV trimming."""
-    from binance_api import bapi_ws_normalize as ws_norm
-    from intelligence.macro.calendar_ssot import headline_effective_ts, parse_headline_age_minutes
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-    from offline.research import backtest_ranges, short_trend_estimator_benchmark as st_bench
-    from offline.runners import apply_proposals
 
     # 1. bapi_ws_normalize rejects positive non-integer float string trade IDs ("12.5") while preserving 64-bit & alphanumeric IDs
     base_trade = {"s": "BTCUSDC", "x": "TRADE", "S": "BUY", "i": "42", "L": "0", "Y": "5000.0", "l": "0.1"}
@@ -1634,12 +1693,6 @@ def test_expired_orders_sync_mode_trailing_status_and_runtime_flag_border_cases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Verify Wave 8 border cases across iter_expired_open_order_ids, SyncModeMixin, equity context bars, trailing logs, and RuntimeServices."""
-    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
-    from intelligence.macro.news_feed_collector import NewsFeedCollector
-    from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
-    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
-    from trailing_core import TrailingAdapterBase
 
     # 1. iter_expired_open_order_ids rejects non-positive/bool/NaN expire_sec and normalizes ms current_time_sec
     orders = {
@@ -1751,16 +1804,6 @@ def test_stop_loss_avg_archive_seed_replay_summary_fg_and_guard_preflight_border
     tmp_path, monkeypatch
 ):
     """Regression suite for stop-loss zero-price guard, 365d seed bounds, replay summary, F&G clamping, and guard/collector SSOT."""
-    import functools
-    import external_order_guard
-    from guard_hierarchy import preflight_intelligence_guard_entry
-    from intelligence.macro_sentiment_ssot import FearGreedSnapshot
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
-    from intelligence.sentiment.collectors.portfolio_collector import _resolve_ai_intents_and_known_order_ids
-    from offline.backtests.evaluation import parse_intervals
-    from offline.research.monitortrades_backtest.sweep_mt_models import _accepts_two_positional_args
-    from state_io import read_jsonl_dicts
-    from strategies.spot_replay import summarize_grid_replay_metrics
 
     # 1. BaseSpotMixin._resolve_stop_loss_avg_and_loss_pct never triggers +100% SL on 0/None/bool/NaN price
     dummy = object.__new__(BaseSpotMixin)
@@ -1830,8 +1873,6 @@ def test_stop_loss_avg_archive_seed_replay_summary_fg_and_guard_preflight_border
     assert MarketDataProvider._resolve_live_order_flag(dummy_prov, {"live_enabled": "false"}) is False  # type: ignore[arg-type]
     assert parse_intervals(" 5 , 15 , 60 ") == [5, 15, 60]
 
-    from types import MethodType
-
     bm = SimpleNamespace()
     one_arg = MethodType(lambda self, sig: sig, bm)
     two_args = MethodType(lambda self, sig, sym: (sig, sym), bm)
@@ -1847,8 +1888,8 @@ def test_stop_loss_avg_archive_seed_replay_summary_fg_and_guard_preflight_border
         unsupported_side_reason="not_buy_side",
     )
     assert early_res == (True, "not_buy_side", 1.0) and norm_side == "SELL"
-    monkeypatch.setattr(external_order_guard, "_load_margins", lambda: {"intelligence_guards_mode": "off"})
-    assert external_order_guard.check_external_order_guards("BTCUSDC", "BUY", 85000.0) == (
+    monkeypatch.setattr(eog, "_load_margins", lambda: {"intelligence_guards_mode": "off"})
+    assert eog.check_external_order_guards("BTCUSDC", "BUY", 85000.0) == (
         True,
         "intelligence_guards_off",
         1.0,
@@ -1874,13 +1915,6 @@ def test_temporary_environ_daemon_fetch_equity_oi_remote_trades_and_guard_prefli
     tmp_path, monkeypatch
 ):
     """Regression suite for temporary_environ, daemon_ssot single-call fetch, equity OI bounds, remote trade LSP, and strategy/guard preflight."""
-    from botcore import temporary_environ
-    from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
-    from intelligence.macro.daemon_ssot import ExternalTelemetryMixin, run_daemon_cli_once_or_start
-    from offline.research.monitortrades_backtest.run_replay_backtest import step_adaptive_trend_window
-    from offline.research.monitortrades_backtest.sweep_mt_models import compute_window_bounds
-    from providers.replay_provider import ReplayMarketDataProvider
-    from verify_tools import portfolio_snapshot
 
     # 1. temporary_environ sets/unsets and restores exact environment even on exceptions
     monkeypatch.setenv("_TEST_TEMP_ENV_KEEP", "orig")
@@ -2000,13 +2034,9 @@ def test_coerce_dict_maps_cli_env_path_replay_metrics_peak_scope_and_hl_status_b
     tmp_path, monkeypatch
 ):
     """Regression suite for coerce_dict_maps SSOT, resolve_cli_env_path, replay_metrics, post_exit_peak_step_scope, and HL status extraction."""
-    import active_intents
-    from botcore import coerce_dict_maps, load_cli_env_stack, load_local_module, resolve_cli_env_path
-    hl_client_mod = load_local_module(os.path.join(botcore.ROOT_DIR, "hyperliquid"), "hl_client")
+    hl_client_mod = load_venue_modules("hyperliquid", "hl_client")
     _first_exchange_status = hl_client_mod._first_exchange_status
     _parse_order_response = hl_client_mod._parse_order_response
-    from strategies.replay_metrics import print_single_backtest_report, run_cli_single_or_sweep_backtest
-    from strategies.spot_replay import post_exit_peak_step_scope
 
     # 1. coerce_dict_maps & active_intents.format_summary handle None/non-dict payloads safely
     assert coerce_dict_maps({"a": 1}, None, [1, 2], True) == ({"a": 1}, {}, {}, {})
@@ -2089,13 +2119,6 @@ def test_coerce_dict_maps_cli_env_path_replay_metrics_peak_scope_and_hl_status_b
 
 def test_clean_nonempty_str_t212_fills_guard_inf_scale_rounding_and_daemon_cli_border_cases(monkeypatch, capsys):
     """Verify Wave 12 border cases: clean_nonempty_str, T212 fills/history guards, +inf parsing, IEEE-754 scale_pct rounding, daemon CLI helpers, and sweep footer sanitization."""
-    import external_order_guard as eog
-    import intelligence.macro.daemon_ssot as dssot
-    from binance_api import bapi_trades
-    from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
-    from offline.backtests import evaluation as bt_eval
-    from offline.research.monitortrades_backtest import sweep_mt_models as smt
-    from tests.conftest import make_test_margins
 
     # 1. clean_nonempty_str preserves case while rejecting bool/non-str/blank; re-exported on macro_sentiment_ssot
     assert botcore.clean_nonempty_str("  abc_1 ") == "abc_1"
@@ -2204,16 +2227,6 @@ def test_clean_nonempty_str_t212_fills_guard_inf_scale_rounding_and_daemon_cli_b
 
 def test_wave13_sleep_interval_max_age_ladders_warmup_and_guard_border_cases(tmp_path):
     """Verify Wave 13 border cases: sleep_monitoring_interval exact chunk math, resolve_positive_max_age, provider ladders, reconciliation horizon validation, BaseSpotMixin string flags, split_warmup_ohlc divisor<=0, PriceAlert bool timestamp, and guard templates."""
-    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
-    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
-    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
-    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
-    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-    from market_monitor.pricechecker import PriceAlert
-    from providers.strategy_executor import OrderReconciliationCapabilities
-    from state_io import atomic_write_text, read_tail_complete_lines_text
-    from strategies.spot_replay import split_warmup_ohlc
 
     # 1. sleep_monitoring_interval sleeps exact total duration (never 60*60=3600s) and honors string/bool _running
     slept_60: list[float] = []
