@@ -12,6 +12,7 @@ import monitororder
 import order_retry_worker
 from providers.strategy_executor import OrderStatus
 import order_retry as oq
+from tests.conftest import make_transient_complete_claim
 
 
 @pytest.fixture(autouse=True)
@@ -96,14 +97,7 @@ def test_accepted_replacement_transfers_original_anchor_to_new_order_id():
 
 def test_transient_accepted_replacement_tracking_failure_is_retried():
     open_orders = {"old-transient": {"price": 100.0, "quantity": 1.5}}
-    real_complete = monitororder.order_retry.complete_claim
-    attempts = []
-
-    def transient_complete(*args, **kwargs):
-        attempts.append((args, kwargs))
-        if len(attempts) == 1:
-            raise OSError("transient fsync failure")
-        return real_complete(*args, **kwargs)
+    attempts, transient_complete = make_transient_complete_claim(monitororder.order_retry)
 
     with (
         patch.object(

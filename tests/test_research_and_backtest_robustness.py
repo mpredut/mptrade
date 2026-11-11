@@ -17,6 +17,8 @@ from binance_api import (
     bapi_allorders,
     bapi_placeorder,
     bapi_trades,
+    bapi_ws,
+    bapi_ws_bridge,
     bapi_ws_normalize,
 )
 from binance_api.trailing_stop import TrailingStop
@@ -2592,7 +2594,6 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
         bapi_allorders.paginate_my_trades(bad_client, "BTCUSDC", 1000, limit=2, strict=True)
 
     # 9. bapi_ws_normalize, order_id_context, and bapi_ws stop self-join hardening
-    from binance_api import bapi_ws
     from providers import order_id_context
 
     assert bapi_ws_normalize.parse_order_execution_report(
@@ -3478,8 +3479,6 @@ def test_batch21_monitortrades_position_exit_manager_and_active_intents_hardenin
 
 
 def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
-    import binance_api.bapi_ws as bapi_ws
-    import binance_api.bapi_ws_bridge as bapi_ws_bridge
     import binance_api.market_data as b_md
     from providers.base import MarketDataProvider
     from providers.order_ohlc_utils import extract_order_side
@@ -5538,7 +5537,7 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
 
 
 def test_batch47_binance_and_kraken_adapters_hardening(tmp_path, monkeypatch):
-    from binance_api import bapi_ws, bapi_ws_bridge as bapi_ws_health
+    bapi_ws_health = bapi_ws_bridge
     from binance_api import market_data as b_mdata
     from kraken import backtest_trail, kraken_xstock_watch
 

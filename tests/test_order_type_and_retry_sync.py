@@ -19,6 +19,22 @@ from providers.market_api import MarketApi
 from tests.conftest import TempDirTestCase
 
 
+class _BaseReconcilingMkt:
+    def __init__(self):
+        self.lookup_calls = []
+
+    def get_current_price(self, symbol, provider_name=None):
+        return 100.0
+
+    def order_by_client_id(self, symbol, client_order_id, provider_name=None):
+        self.lookup_calls.append(client_order_id)
+        return None
+
+    def reconciliation_capabilities(self, symbol, provider_name=None):
+        return OrderReconciliationCapabilities(
+            True, True, True, True, not_found_reliable_for_seconds=3600.0)
+
+
 class OrderTypeAndRetrySyncTest(TempDirTestCase):
     def setUp(self):
         super().setUp()
@@ -125,19 +141,10 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
             "BTCUSDC", "BUY", 4.0, {}, requested_price=100.0,
             failure_reason="profit_guard", now=1000.0)
 
-        class ScalingMkt:
+        class ScalingMkt(_BaseReconcilingMkt):
             def __init__(self):
+                super().__init__()
                 self.calls = []
-
-            def get_current_price(self, symbol, provider_name=None):
-                return 100.0
-
-            def order_by_client_id(self, symbol, client_order_id, provider_name=None):
-                return None
-
-            def reconciliation_capabilities(self, symbol, provider_name=None):
-                return OrderReconciliationCapabilities(
-                    True, True, True, True, not_found_reliable_for_seconds=3600.0)
 
             def place(self, symbol, side, price, qty, **kwargs):
                 self.calls.append({"qty": qty, "kwargs": kwargs})
@@ -180,21 +187,10 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
             "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
             provider_name="Binance", now=1000.0, lease_sec=301.0)
 
-        class ReconcilingMkt:
+        class ReconcilingMkt(_BaseReconcilingMkt):
             def __init__(self):
-                self.lookup_calls = []
+                super().__init__()
                 self.place_calls = []
-
-            def get_current_price(self, symbol, provider_name=None):
-                return 100.0
-
-            def order_by_client_id(self, symbol, client_order_id, provider_name=None):
-                self.lookup_calls.append(client_order_id)
-                return None  # Confirmed absent from venue
-
-            def reconciliation_capabilities(self, symbol, provider_name=None):
-                return OrderReconciliationCapabilities(
-                    True, True, True, True, not_found_reliable_for_seconds=3600.0)
 
             def place(self, symbol, side, price, qty, **kwargs):
                 self.place_calls.append({"symbol": symbol, "side": side, "price": price, "qty": qty})
@@ -238,13 +234,7 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
         self.assertEqual(oq.get(record_id)["qty"], 4.0)
 
         # 2. Worker reconciles the order: venue returns origQty=1.00000000
-        class LostResponseMkt:
-            def __init__(self):
-                self.lookup_calls = []
-
-            def get_current_price(self, symbol, provider_name=None):
-                return 100.0
-
+        class LostResponseMkt(_BaseReconcilingMkt):
             def order_by_client_id(self, symbol, client_order_id, provider_name=None):
                 self.lookup_calls.append(client_order_id)
                 return {
@@ -253,10 +243,6 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
                     "executedQty": "0.00000000",
                     "status": "NEW",
                 }
-
-            def reconciliation_capabilities(self, symbol, provider_name=None):
-                return OrderReconciliationCapabilities(
-                    True, True, True, True, not_found_reliable_for_seconds=3600.0)
 
         mkt = LostResponseMkt()
         stats = worker.process_once(mkt, now=1400.0)

@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 from market_regime import ClosedPriceSeries, MarketRegimeService
 from providers.base import MarketDataProvider
-from providers.market_api import MarketApi
+from providers.market_api import MarketApi, _runtime_market_regime_snapshot, api
 from providers.strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -251,8 +251,6 @@ class MarketApiLifecycleTest(unittest.TestCase):
         hidden.assert_not_called()
 
     def test_runtime_snapshot_adapter_is_only_wired_at_application_boundary(self):
-        from providers.market_api import api, _runtime_market_regime_snapshot
-
         self.assertIs(api._regime_snapshot_resolver, _runtime_market_regime_snapshot)
         manager = Mock()
         snapshot = {"gradient_recent": 0.6, "epsilon": 0.1, "ts": 1000.0}
@@ -304,7 +302,6 @@ if __name__ == "__main__":
 
 def test_marketapi_provider_by_name_handles_non_string_safely_iter86_s4():
     """[ITER86 #4] MarketApi.provider_by_name handles non-string safely."""
-    from providers.market_api import api
     # 4. MarketApi.provider_by_name handles non-string safely
     assert api.provider_by_name(True) is None
     assert api.provider_by_name(123) is None

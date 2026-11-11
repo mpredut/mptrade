@@ -20,7 +20,7 @@ import order_retry_worker
 import priceAnalysis as pa
 from providers.base import MarketDataProvider
 from providers.strategy_executor import SubmissionRefused
-from tests.conftest import SingleProviderApi as _Api, TempDirTestCase
+from tests.conftest import SingleProviderApi as _Api, TempDirTestCase, make_transient_complete_claim
 
 
 class _StaleCacheProvider(MarketDataProvider):
@@ -532,14 +532,7 @@ class InstrumentCachePreflightTest(TempDirTestCase):
     def test_transient_accepted_tracking_failure_is_retried_exactly(self):
         provider = _BinancePermitProvider()
         instrument = self._binance_instrument(provider)
-        real_complete = order_retry.complete_claim
-        attempts = []
-
-        def transient_complete(*args, **kwargs):
-            attempts.append((args, kwargs))
-            if len(attempts) == 1:
-                raise OSError("transient fsync failure")
-            return real_complete(*args, **kwargs)
+        attempts, transient_complete = make_transient_complete_claim(order_retry)
 
         with (
             patch.object(

@@ -374,6 +374,20 @@ class DummySpotExecutionProvider:
         return {"orderId": self._order_id, "qty": qty}
 
 
+def make_transient_complete_claim(order_retry_mod):
+    """Return ``(attempts, transient_complete_fn)`` that raises ``OSError`` on the first call and delegates thereafter."""
+    real_complete = order_retry_mod.complete_claim
+    attempts = []
+
+    def transient_complete(*args, **kwargs):
+        attempts.append((args, kwargs))
+        if len(attempts) == 1:
+            raise OSError("transient fsync failure")
+        return real_complete(*args, **kwargs)
+
+    return attempts, transient_complete
+
+
 class _TempDirPath(str):
     """Temporary directory path string that also exposes ``.name`` and ``.cleanup()`` like ``TemporaryDirectory``."""
 

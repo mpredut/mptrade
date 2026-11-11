@@ -63,26 +63,32 @@ def _hard_stop_venue(root, store, *, preflight_error=None, submit_error=None):
     return venue, executor
 
 
-def _restart_merge_venue(root, store, statuses, lookups=None):
-    class Executor:
-        name = "Binance"
+class _ReconcilingBinanceExecutor:
+    name = "Binance"
 
+    @staticmethod
+    def free_balance(_asset):
+        return 1000.0
+
+    @staticmethod
+    def reconciliation_capabilities():
+        return OrderReconciliationCapabilities(
+            lookup_by_client_order_id=True,
+            status_by_order_id=True,
+            cancel_by_order_id=True,
+            list_open_orders=True,
+        )
+
+    @staticmethod
+    def order_status(_symbol, _order_id):
+        return OrderStatus("open", 0.0, 0.0, 0.0)
+
+
+def _restart_merge_venue(root, store, statuses, lookups=None):
+    class Executor(_ReconcilingBinanceExecutor):
         def __init__(self):
             self.status_calls = []
             self.lookup_calls = []
-
-        @staticmethod
-        def free_balance(_asset):
-            return 1000.0
-
-        @staticmethod
-        def reconciliation_capabilities():
-            return OrderReconciliationCapabilities(
-                lookup_by_client_order_id=True,
-                status_by_order_id=True,
-                cancel_by_order_id=True,
-                list_open_orders=True,
-            )
 
         def order_by_client_id(self, symbol, client_order_id):
             self.lookup_calls.append((symbol, client_order_id))
@@ -492,13 +498,7 @@ class RTradeThreadingTest(unittest.TestCase):
             [ticket["order_id"] for ticket in merged["tickets"]])
 
     def test_live_pair_guard_refusal_does_not_run_response_loss_recovery(self):
-        class Executor:
-            name = "Binance"
-
-            @staticmethod
-            def free_balance(_asset):
-                return 1000.0
-
+        class Executor(_ReconcilingBinanceExecutor):
             @staticmethod
             def order_by_client_id(*_args, **_kwargs):
                 raise AssertionError("pre-submit refusal must not query venue")
@@ -528,32 +528,13 @@ class RTradeThreadingTest(unittest.TestCase):
 
     @staticmethod
     def _recovered_open_executor():
-        class Executor:
-            name = "Binance"
-
-            @staticmethod
-            def free_balance(_asset):
-                return 1000.0
-
-            @staticmethod
-            def reconciliation_capabilities():
-                return OrderReconciliationCapabilities(
-                    lookup_by_client_order_id=True,
-                    status_by_order_id=True,
-                    cancel_by_order_id=True,
-                    list_open_orders=True,
-                )
-
+        class Executor(_ReconcilingBinanceExecutor):
             @staticmethod
             def order_by_client_id(_symbol, _client_id):
                 return {
                     "orderId": "88", "status": "NEW",
                     "price": "99.25", "origQty": "0.8",
                 }
-
-            @staticmethod
-            def order_status(_symbol, _order_id):
-                return OrderStatus("open", 0.0, 0.0, 0.0)
 
         return Executor()
 
@@ -598,32 +579,13 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertFalse(venue.recovery_blocked)
 
     def test_place_limit_never_reuses_ambiguous_client_id_after_absence(self):
-        class Executor:
-            name = "Binance"
-
+        class Executor(_ReconcilingBinanceExecutor):
             def __init__(self):
                 self.lookup_calls = 0
-
-            @staticmethod
-            def free_balance(_asset):
-                return 1000.0
-
-            @staticmethod
-            def reconciliation_capabilities():
-                return OrderReconciliationCapabilities(
-                    lookup_by_client_order_id=True,
-                    status_by_order_id=True,
-                    cancel_by_order_id=True,
-                    list_open_orders=True,
-                )
 
             def order_by_client_id(self, _symbol, _client_id):
                 self.lookup_calls += 1
                 return None
-
-            @staticmethod
-            def order_status(_symbol, _order_id):
-                return OrderStatus("open", 0.0, 0.0, 0.0)
 
         executor = Executor()
         recovery_now = [100.0]
@@ -659,9 +621,7 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertEqual(canonical["lookup_misses"], 2)
 
     def test_live_pair_finds_late_fill_after_first_absence_without_resubmit(self):
-        class Executor:
-            name = "Binance"
-
+        class Executor(_ReconcilingBinanceExecutor):
             def __init__(self):
                 self.lookup_results = [
                     None,
@@ -670,19 +630,6 @@ class RTradeThreadingTest(unittest.TestCase):
                         "price": "99.3", "origQty": "0.9",
                     },
                 ]
-
-            @staticmethod
-            def free_balance(_asset):
-                return 1000.0
-
-            @staticmethod
-            def reconciliation_capabilities():
-                return OrderReconciliationCapabilities(
-                    lookup_by_client_order_id=True,
-                    status_by_order_id=True,
-                    cancel_by_order_id=True,
-                    list_open_orders=True,
-                )
 
             def order_by_client_id(self, _symbol, _client_id):
                 return self.lookup_results.pop(0)
@@ -727,22 +674,7 @@ class RTradeThreadingTest(unittest.TestCase):
         cases = ["recovery", "new_round"]
         for case in cases:
             with self.subTest(case=case):
-                class Executor:
-                    name = "Binance"
-
-                    @staticmethod
-                    def free_balance(_asset):
-                        return 1000.0
-
-                    @staticmethod
-                    def reconciliation_capabilities():
-                        return OrderReconciliationCapabilities(
-                            lookup_by_client_order_id=True,
-                            status_by_order_id=True,
-                            cancel_by_order_id=True,
-                            list_open_orders=True,
-                        )
-
+                class Executor(_ReconcilingBinanceExecutor):
                     @staticmethod
                     def order_by_client_id(_symbol, _client_id):
                         raise TimeoutError("lookup unavailable")
@@ -876,9 +808,7 @@ class RTradeThreadingTest(unittest.TestCase):
             permit)
 
     def test_hard_stop_response_loss_reconciles_later_without_resubmit(self):
-        class Executor:
-            name = "Binance"
-
+        class Executor(_ReconcilingBinanceExecutor):
             def __init__(self):
                 self.preflight_order = Mock(return_value=None)
                 self.submit_order = Mock(
@@ -902,15 +832,6 @@ class RTradeThreadingTest(unittest.TestCase):
             @staticmethod
             def pair_precision(_symbol):
                 return None
-
-            @staticmethod
-            def reconciliation_capabilities():
-                return OrderReconciliationCapabilities(
-                    lookup_by_client_order_id=True,
-                    status_by_order_id=True,
-                    cancel_by_order_id=True,
-                    list_open_orders=True,
-                )
 
             def order_by_client_id(self, _symbol, _client_id):
                 return self.lookup_results.pop(0)
