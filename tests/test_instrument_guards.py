@@ -16,7 +16,6 @@ import glob
 import tempfile
 import threading
 import unittest
-from unittest import mock
 from unittest.mock import patch, ANY
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1892,21 +1891,7 @@ class TestOrderRollback(unittest.TestCase):
 # Consolidated from tests/test_trade_cooldown.py & tests/test_active_intents.py
 # ---------------------------------------------------------------------------
 
-import multiprocessing as mp
 from active_intents import build_active_intent_index, format_summary
-
-
-class _PipePutAdapter:
-    """Semaphore-free multiprocessing pipe adapter immune to systemd-logind RemoveIPC /dev/shm wipes."""
-
-    def __init__(self, conn):
-        self._conn = conn
-
-    def put(self, item):
-        try:
-            self._conn.send(item)
-        finally:
-            self._conn.close()
 
 
 def _write_intent_file(path, payload, *, lines=False):

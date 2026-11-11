@@ -108,7 +108,6 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from offline.research.backtest_ranges import scan_backtest_ranges  # noqa: E402
-from strategies import spot_engine  # noqa: E402
 from offline.research.kraken_continuous_grid import grid3, report, report2, report3  # noqa: E402
 
 _INI_CONFIGS = [os.path.join(ROOT, "instruments.conf")]

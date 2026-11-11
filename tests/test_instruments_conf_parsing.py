@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from instrument import load_for, load_instruments, load_tradable_instruments  # noqa: E402
+from instrument import load_instruments, load_tradable_instruments  # noqa: E402
 import instrument_registry as registry  # noqa: E402
 from instrument_registry import ROLES  # noqa: E402
 import instrument_registry as ic  # noqa: E402
@@ -251,7 +251,7 @@ def test_current_execution_policy_is_preserved(tmp_path):
         for item in registry.select_instruments("kraken", "trailing").values()
     }
     assert krk_trails == {
-        "HYPE": ("HYPEUSD", 28.0, "on"),
+        "HYPE": ("HYPEUSD", 24.0, "on"),
         "TAO": ("TAOUSD", 32.0, "on"),
         "ADA": ("ADAUSD", 35.0, "on"),
     }

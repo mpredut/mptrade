@@ -13,7 +13,6 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from binance_api import bapi, bapi_allorders as ao, bapi_placeorder as po, bapi_trades, bapi_ws
 from binance_api.bapi_ws import BinanceAccountStream, BinancePriceStream
-from market_regime import MarketRegimeContext, MarketRegimeDecision
 
 SYMBOL = "BTCUSDC"
 TAO_SYMBOL = "TAOUSDC"

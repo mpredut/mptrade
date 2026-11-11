@@ -2,7 +2,6 @@
 Characterisation: on a deterministic series the engine runs without network,
 notifications or state files, and returns sane metrics (accounting from the live _apply_fill)."""
 import os
-import importlib.util
 import json
 import sys
 import tempfile

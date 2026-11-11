@@ -65,11 +65,6 @@ _DEBUG = required_bool_env("PRICEANALYSIS_DEBUG")
 PRICEANALYSIS_DRAW_MAX_POINTS = required_int_env("PRICEANALYSIS_DRAW_MAX_POINTS")
 
 
-def _dbg(*args, **kwargs):
-    if _DEBUG:
-        print(*args, **kwargs)
-
-
 price_cache_manager = None
 
 def build_price_cache_manager(symbols=None, provider_names=None):
