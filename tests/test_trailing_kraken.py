@@ -22,6 +22,7 @@ import kraken.trailing_stop as ts_mod
 from kraken.trailing_stop import KrakenTrailing
 from trailing_core import should_sell
 from strategies import spot_engine as _xstock_strategy
+from tests.conftest import TrailingTestBase
 
 
 class FakeK:
@@ -56,27 +57,23 @@ class FakeK:
         return {"count": 1}
 
 
-class Base(unittest.TestCase):
+class Base(TrailingTestBase):
+    TRAIL_MODULE = ts_mod
+    TRAIL_DEFAULTS = {"HYPE": 18.0, "TAO": 22.0, "ADA": 25.0}
+
     def setUp(self):
+        super().setUp()
         self.previous_live = os.environ.get("KRAKEN_LIVE_ORDERS")
         os.environ["KRAKEN_LIVE_ORDERS"] = "true"
-        fd, self.sf = tempfile.mkstemp(suffix=".json"); os.close(fd); os.remove(self.sf)
         ts_mod.notify = lambda **kw: None
-        self._orig_trail_pct = dict(ts_mod.TRAIL_PCT)
-        ts_mod.TRAIL_PCT["HYPE"] = 18.0
-        ts_mod.TRAIL_PCT["TAO"] = 22.0
-        ts_mod.TRAIL_PCT["ADA"] = 25.0
 
     def tearDown(self):
-        ts_mod.TRAIL_PCT.clear()
-        ts_mod.TRAIL_PCT.update(self._orig_trail_pct)
         if self.previous_live is None:
             os.environ.pop("KRAKEN_LIVE_ORDERS", None)
         else:
             os.environ["KRAKEN_LIVE_ORDERS"] = self.previous_live
-        for p in (self.sf, self.sf + ".tmp"):
-            if os.path.exists(p):
-                os.remove(p)
+        super().tearDown()
+
     def ts(self, client, enabled=True, min_profit_pct=0.0):
         return KrakenTrailing(client, log=lambda *a: None, enabled=enabled, state_file=self.sf,
                               min_profit_pct=min_profit_pct)

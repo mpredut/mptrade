@@ -16,19 +16,15 @@ sys.modules.setdefault("bapi_trades", MagicMock())
 sys.modules.setdefault("bapi_allorders", MagicMock())
 
 import cacheManager as cm
+from tests.conftest import make_cache24_test_manager, make_synthetic_price_entries
 
 
 def _make_cache24(symbol, entries, tmp):
-    fname = os.path.join(tmp, f"c24_{symbol}.json")
-    with open(fname, "w") as f:
-        json.dump({"items": {symbol: entries}, "fetchtime": {}}, f)
-    return cm.Cache24PriceManager(sync_ts=9999, symbols=[symbol], filename=fname, api_client=mock_api)
+    return make_cache24_test_manager(symbol, entries, tmp, api_client=mock_api)
 
 
 def _entries_now(n=60, interval_ms=800, start=60000.0, delta=10.0):
-    now = int(time.time() * 1000)
-    start_ts = now - n * interval_ms
-    return [[start_ts + i * interval_ms, start + i * delta] for i in range(n)]
+    return make_synthetic_price_entries(n=n, start_price=start, delta=delta, interval_ms=interval_ms)
 
 
 def _mgr(tmp, name="trend.json"):

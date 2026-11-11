@@ -76,7 +76,7 @@ totusi asadar potrivit datorita secunde saptamani urmatoarea anterioara adevarat
 inactiva pornita deschis deschisa blocata permisa interzis interzisa ignorat ignorata
 stearsa adaugata modificat modificata actualizat actualizata salvata incarcata trimisa
 primita asteptat asteptata calculata verificata testat testata executata anulata
-respins respinsa acceptat acceptata aprobat aprobata refuzata
+respins respinsa acceptat acceptata aprobat aprobata refuzata sintetic sintetica sintetice
 """.split())
 
 DOC_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)

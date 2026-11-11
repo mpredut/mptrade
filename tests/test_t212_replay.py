@@ -298,15 +298,34 @@ class T212StatePersistenceTest(unittest.TestCase):
                         self.assertTrue(engine._state_write_failed)
 
 
-class _FillClient:
-    def __init__(self):
-        self.portfolio = [{"ticker": "TEST_US_EQ", "quantity": 0.5, "averagePrice": 100.0}]
-        self.active = [{"id": "SELL-1", "ticker": "TEST_US_EQ"}]
-        self.status = {
-            "id": "SELL-1", "ticker": "TEST_US_EQ", "status": "PARTIALLY_FILLED",
-            "filledQuantity": 0.5, "filledValue": 55.0,
-        }
+class _CancelClient:
+    def __init__(self, cancel_result=False, *, portfolio=None, active=None, status=None):
+        self.cancel_result = cancel_result
+        self.limit_result = None
+        self.market_result = None
         self.cancel_calls = []
+        self.place_calls = []
+        self.portfolio = list(portfolio or [])
+        self.active = list(active or [])
+        self.status = status
+
+    def cancel_order(self, order_id):
+        self.cancel_calls.append(order_id)
+        if isinstance(self.cancel_result, Exception):
+            raise self.cancel_result
+        return self.cancel_result
+
+    def place_limit_order(self, ticker, quantity, limit, validity):
+        self.place_calls.append(("limit", ticker, quantity, limit, validity))
+        if self.limit_result is not None:
+            return self.limit_result
+        return 200, {"id": f"NEW-{len(self.place_calls)}"}
+
+    def place_market_order(self, ticker, quantity, extended_hours=False):
+        self.place_calls.append(("market", ticker, quantity, extended_hours))
+        if self.market_result is not None:
+            return self.market_result
+        return 200, {"id": f"NEW-{len(self.place_calls)}"}
 
     def get_portfolio(self):
         return self.portfolio
@@ -317,9 +336,17 @@ class _FillClient:
     def get_order_status(self, order_id):
         return self.status
 
-    def cancel_order(self, order_id):
-        self.cancel_calls.append(order_id)
-        return True
+
+def _FillClient():
+    return _CancelClient(
+        cancel_result=True,
+        portfolio=[{"ticker": "TEST_US_EQ", "quantity": 0.5, "averagePrice": 100.0}],
+        active=[{"id": "SELL-1", "ticker": "TEST_US_EQ"}],
+        status={
+            "id": "SELL-1", "ticker": "TEST_US_EQ", "status": "PARTIALLY_FILLED",
+            "filledQuantity": 0.5, "filledValue": 55.0,
+        },
+    )
 
 
 class T212ExactFillReconciliationTest(unittest.TestCase):
@@ -450,45 +477,6 @@ class T212ExactFillReconciliationTest(unittest.TestCase):
             self.assertAlmostEqual(engine.s["qty"], 0.5)
             self.assertAlmostEqual(engine.s["realized_pnl_usd"], 5.0)
             self.assertAlmostEqual(engine.s["last_sell_price"], 110.0)
-
-
-class _CancelClient:
-    def __init__(self, cancel_result=False):
-        self.cancel_result = cancel_result
-        self.limit_result = None
-        self.market_result = None
-        self.cancel_calls = []
-        self.place_calls = []
-        self.portfolio = []
-        self.active = []
-        self.status = None
-
-    def cancel_order(self, order_id):
-        self.cancel_calls.append(order_id)
-        if isinstance(self.cancel_result, Exception):
-            raise self.cancel_result
-        return self.cancel_result
-
-    def place_limit_order(self, ticker, quantity, limit, validity):
-        self.place_calls.append(("limit", ticker, quantity, limit, validity))
-        if self.limit_result is not None:
-            return self.limit_result
-        return 200, {"id": f"NEW-{len(self.place_calls)}"}
-
-    def place_market_order(self, ticker, quantity, extended_hours=False):
-        self.place_calls.append(("market", ticker, quantity, extended_hours))
-        if self.market_result is not None:
-            return self.market_result
-        return 200, {"id": f"NEW-{len(self.place_calls)}"}
-
-    def get_portfolio(self):
-        return self.portfolio
-
-    def list_active_orders(self):
-        return self.active
-
-    def get_order_status(self, order_id):
-        return self.status
 
 
 class T212CancellationLifecycleTest(unittest.TestCase):

@@ -166,6 +166,9 @@ class TestTradeallOrderBoundary(unittest.TestCase):
                 self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
 
 
+from tests.conftest import make_cache24_test_manager, make_synthetic_price_entries
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════
@@ -178,28 +181,10 @@ def _window(prices, sample_rate=0.8, symbol="BTCUSDT"):
 
 
 def _make_cache24_manager(symbol, entries, tmp_dir):
-    """Create a Cache24PriceManager pre-populated with entries = [[ts_ms, price], ...]."""
-    fname = os.path.join(tmp_dir, f"cache_24_{symbol}.json")
-    with open(fname, "w") as f:
-        json.dump({"items": {symbol: entries}, "fetchtime": {}}, f)
-    mgr = cm.Cache24PriceManager(
-        sync_ts   = 9999,
-        symbols   = [symbol],
-        filename  = fname,
-        api_client= mock_bapi,
-    )
-    return mgr
+    return make_cache24_test_manager(symbol, entries, tmp_dir, api_client=mock_bapi)
 
 
-def _synthetic_entries(n=100, start_price=60000.0, delta=10.0,
-                       interval_ms=800, start_ts_ms=None):
-    """Generate n [ts_ms, price] entries with a constant interval and delta."""
-    if start_ts_ms is None:
-        start_ts_ms = int(time.time() * 1000) - n * interval_ms
-    return [
-        [start_ts_ms + i * interval_ms, start_price + i * delta]
-        for i in range(n)
-    ]
+_synthetic_entries = make_synthetic_price_entries
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -343,7 +328,7 @@ class TestPriceWindowFromCache24(unittest.TestCase):
             window_seconds = len(entries) * 0.8
         return ta.PriceWindow.from_cache24(symbol, window_seconds, mgr)
 
-    # ── date sintetice ──────────────────────────────────────────────────────
+    # ── synthetic data ──────────────────────────────────────────────────────
 
     def test_window_properties_initialization(self):
         with self.subTest(msg="prices_loaded"):

@@ -1,9 +1,13 @@
 """Global safety and cleanup for the test suite."""
 
+import json
 import os
 import shutil
 import tempfile
 import threading
+import time
+import unittest
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -210,6 +214,57 @@ def make_spot_test_params(**overrides):
     )
     values.update(overrides)
     return strat.StratParams(**values)
+
+
+def make_cache24_test_manager(symbol: str, entries: list, tmp_dir: str, *, api_client=None):
+    """Create a ``Cache24PriceManager`` pre-populated with ``entries = [[ts_ms, price], ...]``."""
+    import cacheManager as cm
+
+    fname = os.path.join(tmp_dir, f"cache_24_{symbol}.json")
+    with open(fname, "w", encoding="utf-8") as fh:
+        json.dump({"items": {symbol: entries}, "fetchtime": {}}, fh)
+    return cm.Cache24PriceManager(
+        sync_ts=9999,
+        symbols=[symbol],
+        filename=fname,
+        api_client=api_client if api_client is not None else MagicMock(),
+    )
+
+
+def make_synthetic_price_entries(
+    n: int = 100,
+    start_price: float = 60000.0,
+    delta: float = 10.0,
+    interval_ms: int = 800,
+    start_ts_ms: int | None = None,
+) -> list[list]:
+    """Generate ``n`` ``[ts_ms, price]`` entries with a constant interval and price delta."""
+    if start_ts_ms is None:
+        start_ts_ms = int(time.time() * 1000) - n * interval_ms
+    return [[start_ts_ms + i * interval_ms, start_price + i * delta] for i in range(n)]
+
+
+class TrailingTestBase(unittest.TestCase):
+    """Shared base class for trailing-stop unit tests with isolated temp state file and TRAIL_PCT restore."""
+
+    TRAIL_MODULE = None
+    TRAIL_DEFAULTS: dict[str, float] = {}
+
+    def setUp(self):
+        fd, self.sf = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(self.sf)
+        if self.TRAIL_MODULE is not None:
+            self._orig_trail_pct = dict(self.TRAIL_MODULE.TRAIL_PCT)
+            self.TRAIL_MODULE.TRAIL_PCT.update(self.TRAIL_DEFAULTS)
+
+    def tearDown(self):
+        if self.TRAIL_MODULE is not None:
+            self.TRAIL_MODULE.TRAIL_PCT.clear()
+            self.TRAIL_MODULE.TRAIL_PCT.update(self._orig_trail_pct)
+        for p in (self.sf, self.sf + ".tmp"):
+            if os.path.exists(p):
+                os.remove(p)
 
 
 @pytest.fixture(autouse=True)
