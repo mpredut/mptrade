@@ -2197,11 +2197,129 @@ def test_clean_nonempty_str_t212_fills_guard_inf_scale_rounding_and_daemon_cli_b
     assert callable(bt_eval.load_layered_env_config)
 
 
+def test_wave13_sleep_interval_max_age_ladders_warmup_and_guard_border_cases(tmp_path):
+    """Verify Wave 13 border cases: sleep_monitoring_interval exact chunk math, resolve_positive_max_age, provider ladders, reconciliation horizon validation, BaseSpotMixin string flags, split_warmup_ohlc divisor<=0, PriceAlert bool timestamp, and guard templates."""
+    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from market_monitor.pricechecker import PriceAlert
+    from providers.strategy_executor import OrderReconciliationCapabilities
+    from state_io import atomic_write_text, read_tail_complete_lines_text
+    from strategies.spot_replay import split_warmup_ohlc
 
+    # 1. sleep_monitoring_interval sleeps exact total duration (never 60*60=3600s) and honors string/bool _running
+    slept_60: list[float] = []
+    runner_on = SimpleNamespace(_running=True)
+    botcore.sleep_monitoring_interval(runner_on, 60.0, max_sleep_step=61.0, sleep_fn=slept_60.append)
+    assert slept_60 == [pytest.approx(60.0)]
 
+    slept_frac: list[float] = []
+    botcore.sleep_monitoring_interval(runner_on, 1.5, max_sleep_step=1.0, sleep_fn=slept_frac.append)
+    assert slept_frac == [pytest.approx(1.0), pytest.approx(0.5)]
 
+    slept_sub: list[float] = []
+    botcore.sleep_monitoring_interval(runner_on, 2.0, max_sleep_step=0.5, sleep_fn=slept_sub.append)
+    assert len(slept_sub) == 4 and sum(slept_sub) == pytest.approx(2.0)
 
+    slept_str_off: list[float] = []
+    botcore.sleep_monitoring_interval(
+        SimpleNamespace(_running="false"), 10.0, max_sleep_step=1.0, sleep_fn=slept_str_off.append
+    )
+    assert slept_str_off == []
 
+    slept_interrupt: list[float] = []
+    runner_flip = SimpleNamespace(_running=True)
 
+    def _flip_after_two(dt: float) -> None:
+        slept_interrupt.append(dt)
+        if len(slept_interrupt) >= 2:
+            runner_flip._running = False
 
+    botcore.sleep_monitoring_interval(runner_flip, 10.0, max_sleep_step=1.0, sleep_fn=_flip_after_two)
+    assert slept_interrupt == [pytest.approx(1.0), pytest.approx(1.0)]
+
+    # 2. resolve_positive_max_age sanitizes both explicit max_age_sec and default
+    assert botcore.resolve_positive_max_age(None, 90.0) == pytest.approx(90.0)
+    assert botcore.resolve_positive_max_age(None, 0.0) is None
+    assert botcore.resolve_positive_max_age(None, math.nan) is None
+    assert botcore.resolve_positive_max_age("15.5", 90.0) == pytest.approx(15.5)
+    assert botcore.resolve_positive_max_age(0, 90.0) is None
+    assert botcore.resolve_positive_max_age(True, 90.0) is None
+
+    # 3. MarketDataProvider ladder helpers & OrderReconciliationCapabilities horizon validation
+    step_sz, tick_sz = MarketDataProvider.default_step_and_tick(math.nan)
+    assert step_sz > 0.0 and tick_sz > 0.0
+    assert isinstance(MarketDataProvider.tca_price_decimals(-5.0), int)
+
+    caps = OrderReconciliationCapabilities(True, True, True, True, "120.5")  # type: ignore[arg-type]
+    assert caps.not_found_reliable_for_seconds == pytest.approx(120.5)
+    with pytest.raises(TypeError, match="positive number"):
+        OrderReconciliationCapabilities(True, True, True, True, "not-a-number")  # type: ignore[arg-type]
+    for bad_h in (0, -5.0, math.nan, math.inf, "inf", "nan"):
+        with pytest.raises(ValueError, match="finite and > 0"):
+            OrderReconciliationCapabilities(True, True, True, True, bad_h)  # type: ignore[arg-type]
+
+    # 4. BaseSpotMixin string-boolean flags in _persist_pending_state_slot & _resolve_run_mode_and_banner
+    saved_cnt: list[int] = []
+    spot_stub = SimpleNamespace(
+        s={},
+        p=SimpleNamespace(enable_takeprofit="false"),
+        observe_only="false",
+        dry_run="false",
+        _state_write_failed="true",
+        _save=lambda: saved_cnt.append(1),
+    )
+    BaseSpotMixin._persist_pending_state_slot(
+        spot_stub, "pending_buy", {"oid": "1"}, require_write="false"  # type: ignore[arg-type]
+    )
+    assert spot_stub.s["pending_buy"] == {"oid": "1"} and len(saved_cnt) == 1
+    with pytest.raises( ValueError, match="could not be persisted"):
+        BaseSpotMixin._persist_pending_state_slot(
+            spot_stub, "pending_buy", None, require_write="true", error_cls=ValueError  # type: ignore[arg-type]
+        )
+    assert BaseSpotMixin._resolve_run_mode_and_banner(spot_stub, real_banner="[REAL]") == ("dca_only", "[REAL]")
+
+    # 5. split_warmup_ohlc falls back to divisor=5 when divisor <= 0 and handles tuple/None inputs
+    bars_10 = tuple(range(10))
+    wn_zero, warm_z, run_z = split_warmup_ohlc(bars_10, max_warmup=30, divisor=0)  # type: ignore[arg-type]
+    wn_neg, warm_n, run_n = split_warmup_ohlc(bars_10, max_warmup=30, divisor=-3)  # type: ignore[arg-type]
+    assert (wn_zero, len(warm_z), len(run_z)) == (2, 2, 8)
+    assert (wn_neg, len(warm_n), len(run_n)) == (2, 2, 8)
+    assert split_warmup_ohlc(None) == (0, [], [])  # type: ignore[arg-type]
+
+    # 6. PriceAlert rejects boolean timestamps, read_tail_complete_lines_text tolerates invalid keep_bytes, and reload(botcore) preserves RTH gate
+    alert_bool = PriceAlert("BTC", "up", 105.0, 100.0, 5.0, 4.0)
+    alert_bool.timestamp = True  # type: ignore[assignment]
+    assert alert_bool.to_dict()["timestamp_readable"] == "True"
+    assert "at True)" in str(alert_bool)
+
+    log_f = tmp_path / "sample_tail.jsonl"
+    atomic_write_text(str(log_f), '{"a":1}\n{"a":2}\n')
+    assert read_tail_complete_lines_text(str(log_f), "bad") == '{"a":2}\n'  # type: ignore[arg-type]
+
+    import importlib as _il
+    pre_rth_fn = botcore.is_us_rth_open
+    botcore.configure_runtime_services(enforce_rth_gate=False)
+    _il.reload(botcore)
+    assert botcore._RUNTIME_SERVICES.enforce_rth_gate is False
+    assert botcore.is_rth_gate_enabled(None, rth_fn=pre_rth_fn) is False
+    assert botcore.is_rth_gate_enabled(None, rth_fn=lambda: False) is True
+    assert botcore.is_rth_gate_enabled("false") is False  # type: ignore[arg-type]
+
+    # 7. Internal & External guard template methods accept unsupported sides and resolved snapshots cleanly
+    assert ParabolicSurgeGuard().check("BTCUSDC", "HOLD", 60000.0).reason == "unsupported_side_skipped"
+    assert WeibullExhaustionGuard().check("BTCUSDC", "HOLD", 3600.0).reason == "unsupported_side"
+    for ext_g in (
+        LiquidationCascadeGuard(),
+        FundingCrowdingGuard(),
+        OrderbookWallGuard(),
+        WhaleDivergenceGuard(),
+    ):
+        dec_hold = ext_g.check("BTCUSDC", "HOLD", SimpleNamespace())  # type: ignore[arg-type]
+        assert dec_hold.allowed is True and dec_hold.reason == "unsupported_side_allowed"
+        dec_none = ext_g.check("BTCUSDC", "BUY", None)
+        assert dec_none.allowed is True
 

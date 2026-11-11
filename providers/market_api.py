@@ -22,6 +22,7 @@ from botcore import (
     normalize_scalar_order_id,
     require_finite_float,
     require_pos_float,
+    safe_int,
     safe_nonneg_float,
     safe_nonneg_ts,
     safe_pos_float,
@@ -220,7 +221,7 @@ class MarketApi:
                 if getattr(prov, "_ASSET_SCOPE", "crypto") == target_scope
                 and getattr(prov, "_HISTORICAL_OHLC_PRIORITY", None) is not None
             ),
-            key=lambda prov: int(prov._HISTORICAL_OHLC_PRIORITY),
+            key=lambda prov: safe_int(getattr(prov, "_HISTORICAL_OHLC_PRIORITY", 999), default=999),
         )
         if not candidates:
             return []
@@ -571,7 +572,7 @@ class MarketApi:
             return
         if not (open_map := self.get_open_orders(side, symbol, allowed_owners=allowed_owners, provider_name=provider_name)):
             return
-        current_time = float(time.time())
+        current_time = safe_pos_float(time.time(), default=0.0) or 0.0
         for order_id in iter_expired_open_order_ids(open_map, expire_val, current_time_sec=current_time):
             self._cancel_open_order_and_resolve(symbol, order_id, provider_name=provider_name)
 

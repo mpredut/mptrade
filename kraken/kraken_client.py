@@ -70,10 +70,11 @@ _INVALIDATE_ON_WRITE = ("Balance", "BalanceEx", "TradesHistory", "ClosedOrders",
 def _read_ttl(method: str, params: dict) -> float | None:
     """Return an interval-aware TTL for cacheable reads."""
     ttl = _READ_TTL.get(method)
-    if not ttl or method != "OHLC":
+    ttl_f = safe_pos_float(ttl, default=None)
+    if ttl_f is None or method != "OHLC":
         return ttl
     interval = max(1.0, safe_pos_float(params.get("interval", 1), default=1.0))
-    return min(float(ttl), max(3.0, interval * 30.0))
+    return min(ttl_f, max(3.0, interval * 30.0))
 
 
 def _cache_get(method: str, params: dict):

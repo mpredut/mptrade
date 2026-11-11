@@ -1,3 +1,4 @@
+import math
 import time
 
 # Repository imports.
@@ -41,7 +42,7 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
     days_ago = safe_nonneg_int(days_ago, default=0)
     limit = min(1000, safe_nonneg_int(limit, default=1000) or 1000)
     try:
-        end_time = int(time.time() * 1000) - days_ago * 24 * 60 * 60 * 1000
+        end_time = math.trunc(time.time() * 1000) - days_ago * 24 * 60 * 60 * 1000
         start_time = end_time - 24 * 60 * 60 * 1000
         latest_trades = {}
         for idx, trade in enumerate(apiorders.paginate_my_trades(api.client, symbol, start_time, limit) or ()):

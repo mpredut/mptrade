@@ -49,7 +49,8 @@ EXCLUDED_ASSET_NAME_KEYWORDS = {
 
 def _safe_days_back(days_back, default: float = NEW_COINS_AGE_DAYS) -> float:
     d = safe_pos_float(days_back, default=None)
-    return min(d, 3650.0) if d is not None else float(default)
+    fb = safe_pos_float(default, default=NEW_COINS_AGE_DAYS) or 3.0
+    return min(d, 3650.0) if d is not None else fb
 
 
 def _parse_coin_added_at(raw_added, *, utc: bool = False) -> Optional[datetime]:

@@ -5,6 +5,7 @@ from dataclasses import asdict
 import importlib
 import inspect
 import logging
+import math
 import os
 import signal as _signal
 import sys
@@ -216,7 +217,7 @@ def inspect_daemon_heartbeat(
     try:
         pid = exact_pos_int(data.get("pid", 0), 0)
         ts = safe_nonneg_ts(data.get("ts", 0.0), 0.0)
-        age = max(0.0, time.time() - ts) if ts > 0.0 else float("inf")
+        age = max(0.0, time.time() - ts) if ts > 0.0 else math.inf
         is_alive = False
         if pid > 0:
             try:

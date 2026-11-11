@@ -663,7 +663,7 @@ if __name__ == "__main__":
         if isinstance(cache, dict):
             for idx, manager in enumerate(cache.values()):
                 if name == "365Price":
-                    manager._maint_stagger_sec = float(idx * 300)
+                    manager._maint_stagger_sec = idx * 300.0
                 threads.append(manager.periodic_sync(interval, save_state=True))
         else:
             threads.append(cache.periodic_sync(interval, save_state=True))

@@ -9,6 +9,7 @@ state survives restarts. T212 FX conversion fees apply on both BUY and SELL legs
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -1358,7 +1359,7 @@ class Strategy(BaseSpotMixin):
         avg = self._avg()
         if step > 0 and avg:
             loss_pct = (avg - price) / avg * 100
-            band = int(loss_pct // step) if loss_pct > 0 else 0
+            band = math.floor(loss_pct / step) if loss_pct > 0 else 0
             if band > self.s.get("loss_band", 0):
                 log(f"  📉 [STRAT] {self.yahoo_sym} loss -{loss_pct:.1f}% (threshold {band*step:.0f}%)")
                 notify(

@@ -27,6 +27,7 @@ from botcore import (
     require_nonneg_float,
     require_pos_float,
     resolve_patched_attr,
+    resolve_positive_max_age,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -503,13 +504,19 @@ class MarketDataProvider(ABC):
         px_f = safe_pos_float(price, default=0.0) or 0.0
         step = cls._lookup_price_ladder(px_f, cls._DEFAULT_STEP_LADDER, cls._DEFAULT_STEP_FALLBACK)
         tick = cls._lookup_price_ladder(px_f, cls._DEFAULT_TICK_LADDER, cls._DEFAULT_TICK_FALLBACK)
-        return float(step), float(tick)
+        fb_step = safe_pos_float(cls._DEFAULT_STEP_FALLBACK, default=0.01) or 0.01
+        fb_tick = safe_pos_float(cls._DEFAULT_TICK_FALLBACK, default=0.01) or 0.01
+        return safe_pos_float(step, default=fb_step) or fb_step, safe_pos_float(tick, default=fb_tick) or fb_tick
 
     @classmethod
     def tca_price_decimals(cls, limit_price: float = 0.0) -> int:
         """Return rounding precision decimals for limit-order queue TCA analysis."""
         px_f = safe_pos_float(limit_price, default=0.0) or 0.0
-        return int(cls._lookup_price_ladder(px_f, cls._TCA_DECIMALS_LADDER, cls._TCA_DECIMALS_FALLBACK))
+        fb_dec = safe_nonneg_int(cls._TCA_DECIMALS_FALLBACK, default=2)
+        return safe_nonneg_int(
+            cls._lookup_price_ladder(px_f, cls._TCA_DECIMALS_LADDER, cls._TCA_DECIMALS_FALLBACK),
+            default=fb_dec,
+        )
 
     @classmethod
     def resolve_venue_default_fee_spec(
@@ -1453,7 +1460,7 @@ class MarketDataProvider(ABC):
         """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
         if not self._USES_SSOT_MARKET_CACHE or not self._allow_ssot_price_cache():
             return None
-        eff_age = 12.0 if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
+        eff_age = resolve_positive_max_age(max_age_sec, 12.0)
         if eff_age is None:
             return None
         candidates = self._ssot_symbol_candidates(symbol)

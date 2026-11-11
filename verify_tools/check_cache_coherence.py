@@ -9,7 +9,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import coerce_dict_maps, extract_current_price_item, normalize_epoch_sec, safe_pos_float  # noqa: E402
+from botcore import coerce_dict_maps, extract_current_price_item, normalize_epoch_sec, safe_nonneg_int, safe_pos_float  # noqa: E402
 from cachepaths import cache_symbol_variants, is_primary_stream_venue  # noqa: E402
 from instrument_registry import casefold_get, select_instruments, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
@@ -32,7 +32,7 @@ def expected_symbols():
 def main() -> int:
     now = time.time()
     problems = []
-    print(f"=== cache coherence @ {time.strftime('%Y-%m-%d %H:%M:%S')} (stale>{int(STALE_S)}s) ===")
+    print(f"=== cache coherence @ {time.strftime('%Y-%m-%d %H:%M:%S')} (stale>{safe_nonneg_int(STALE_S, default=600)}s) ===")
     exp = expected_symbols()
     print(f"expected symbols: {exp}")
 

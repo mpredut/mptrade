@@ -47,6 +47,7 @@ from botcore import (
     parse_symbol_list,
     resolve_now_ms,
     resolve_now_ts,
+    resolve_positive_max_age,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -677,7 +678,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         if not keys:
             return None
         now_s = _now_time()
-        max_stale_s = 90.0 if max_stale_sec is None else safe_pos_float(max_stale_sec, default=None)
+        max_stale_s = resolve_positive_max_age(max_stale_sec, 90.0)
         if max_stale_s is None:
             return None
         sym_clean = clean_symbol_key(symbol) or str(symbol).strip().upper()

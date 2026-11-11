@@ -13,6 +13,7 @@ import fcntl
 import glob
 import gzip
 import json
+import math
 import os
 import re
 import shutil
@@ -716,7 +717,10 @@ def read_tail_complete_lines_text(path: str, keep_bytes: int) -> str:
     """Read up to the last ``keep_bytes`` of ``path`` aligned to a complete line boundary."""
     target_path = _resolve_target_path(path)
     archive_size = os.path.getsize(target_path)
-    eff_keep = max(1, int(keep_bytes))
+    keep_i = exact_pos_int(keep_bytes, default=None)
+    if keep_i is None and isinstance(keep_bytes, float) and math.isfinite(keep_bytes) and keep_bytes >= 1.0:
+        keep_i = math.trunc(keep_bytes)
+    eff_keep = keep_i if keep_i is not None else 1
     with open(target_path, "rb") as source:
         source.seek(max(0, archive_size - eff_keep))
         if source.tell() > 0:

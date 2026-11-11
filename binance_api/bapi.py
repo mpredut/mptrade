@@ -329,7 +329,10 @@ def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CA
     use_cache = _parse_bool_flag(use_cache, True)
     raise_errors = _parse_bool_flag(raise_errors, False)
     now = time.time()
-    ttl_f = safe_nonneg_float(cache_ttl_seconds, default=float(ASSET_VALUE_CACHE_TTL_SECONDS))
+    ttl_f = safe_nonneg_float(
+        cache_ttl_seconds,
+        default=safe_nonneg_float(ASSET_VALUE_CACHE_TTL_SECONDS, default=0.0),
+    )
     if use_cache:
         with _asset_value_cache_lock:
             if (

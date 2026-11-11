@@ -35,6 +35,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from botcore import safe_nonneg_int
 from state_io import read_text_file
 
 # Detection dictionary. Diacritics are conclusive on their own; the word list holds
@@ -173,7 +174,7 @@ def cmd_scan(args) -> int:
         if runtime_doc:
             print("    WARNING: this file references __doc__; its module docstring may be"
                   " runtime CLI text — do not translate it as ordinary prose.")
-        shown = hits if args.all else hits[:max(0, int(args.limit))]
+        shown = hits if args.all else hits[:safe_nonneg_int(args.limit, default=0)]
         for line, kind, score, text in shown:
             print(f"  L{line:<5} {kind:<9} score={score:<3} {text[:100]}")
         if len(hits) > len(shown):

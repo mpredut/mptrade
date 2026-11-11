@@ -33,6 +33,7 @@ SAFETY:
 
 from __future__ import annotations
 
+import math
 import os
 import statistics
 import sys
@@ -178,7 +179,7 @@ class TrailingStop(TrailingAdapterBase):
         if symbol is None:
             return False
         now = time.time()
-        day = int(now // 86400)
+        day = math.floor(now / 86400.0)
         cached = self._long_trend_cache.get(symbol)
         try:
             if cached and cached[1] == day:

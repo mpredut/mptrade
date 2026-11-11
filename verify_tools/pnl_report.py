@@ -4,6 +4,7 @@ P&L (current position at current price). Sources: Binance get_filled_orders (dir
 not the incomplete cache) and Kraken/HL state. Binance uses a 120-day window, so older
 cost basis is approximate. Run with: ./myenv/bin/python verify_tools/pnl_report.py"""
 from collections import defaultdict
+import math
 import sys, os, time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -26,7 +27,7 @@ WINDOW_D = 120
 
 
 def binance_symbol(symbol):
-    st = int((time.time() - WINDOW_D * 24 * 3600) * 1000)
+    st = math.trunc((time.time() - WINDOW_D * 24 * 3600) * 1000)
     bn = mkt.provider_by_name("binance")
     raw_fills = bn.fetch_remote_trades_with_client(symbol, st, strict=False) if bn is not None else []
     fills = [f for f in (raw_fills or []) if isinstance(f, dict)]

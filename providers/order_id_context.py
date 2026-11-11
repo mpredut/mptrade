@@ -1,5 +1,6 @@
 """Cross-venue clientOrderId process-lineage, bot-prefix, and order-owner SSOT."""
 import itertools
+import math
 import os
 import re
 import sys
@@ -105,7 +106,7 @@ def create_client_order_id(process_name=None):
     tname = _sanitize_name(threading.current_thread().name, default="MainThread")
     prefix = _sanitize_name(f"{pname}_{tname}", default=pname)
     counter = next(_CLIENT_ORDER_COUNTER) % (36 * 36)
-    suffix = f"_{_base36(int(time.time() * 1000))[-8:]}{_base36(counter).zfill(2)}"
+    suffix = f"_{_base36(math.trunc(time.time() * 1000))[-8:]}{_base36(counter).zfill(2)}"
     max_prefix_len = CLIENT_ORDER_ID_MAX_LEN - len(suffix)
 
     if len(prefix) > max_prefix_len:

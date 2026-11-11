@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import statistics
 import sys
@@ -63,7 +64,7 @@ def _perc(xs, pct):
     if not xs:
         return 0.0
     xs = sorted(xs)
-    idx = max(0, min(len(xs) - 1, int(len(xs) * pct / 100)))
+    idx = max(0, min(len(xs) - 1, math.trunc(len(xs) * pct / 100)))
     return xs[idx]
 
 

@@ -217,12 +217,15 @@ class OrderReconciliationCapabilities:
             return
         if isinstance(horizon, bool) or not isinstance(horizon, (int, float, str)):
             raise TypeError("not_found_reliable_for_seconds must be a positive number")
-        try:
-            horizon_f = float(horizon)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise TypeError("not_found_reliable_for_seconds must be a positive number") from exc
-        horizon_pos = safe_pos_float(horizon_f, default=None)
+        horizon_pos = safe_pos_float(horizon, default=None)
         if horizon_pos is None:
+            if isinstance(horizon, str):
+                s_low = horizon.strip().lower()
+                if (
+                    s_low not in {"nan", "+nan", "-nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity"}
+                    and safe_float(horizon, default=None) is None
+                ):
+                    raise TypeError("not_found_reliable_for_seconds must be a positive number")
             raise ValueError("not_found_reliable_for_seconds must be finite and > 0")
         if not self.lookup_by_client_order_id:
             raise ValueError("a NOT_FOUND reliability horizon requires client-ID lookup")

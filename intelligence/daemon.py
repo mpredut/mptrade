@@ -27,6 +27,7 @@ from botcore import (
     obj_attr,
     obj_float,
     required_float_env,
+    safe_nonneg_int,
     safe_pos_float,
 )
 from intelligence.macro.daemon_ssot import (
@@ -108,7 +109,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
                 "Macro threat assessment: threat=%s, risk=%.2f, headlines=%d",
                 obj_attr(assessment, "threat_level", "NORMAL"),
                 obj_float(assessment, "risk_score"),
-                int(obj_float(assessment, "headlines_analyzed")),
+                safe_nonneg_int(obj_attr(assessment, "headlines_analyzed", 0), default=0),
             )
             return True
         except Exception as e:

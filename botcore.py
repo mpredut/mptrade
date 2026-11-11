@@ -1764,9 +1764,13 @@ def coerce_finite_float(
     return safe_pos_float(raw, default=default) if positive else safe_float(raw, default=default)
 
 
-def resolve_positive_max_age(max_age_sec: object, default: float) -> float | None:
-    """Return ``default`` when ``max_age_sec is None``, else a strictly positive finite float or ``None``."""
-    return default if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
+def resolve_positive_max_age(max_age_sec: object, default: float | None) -> float | None:
+    """Return sanitized positive ``default`` when ``max_age_sec is None``, else strictly positive finite float or ``None``."""
+    return (
+        safe_pos_float(default, default=None)
+        if max_age_sec is None
+        else safe_pos_float(max_age_sec, default=None)
+    )
 
 
 def resolve_mem_bounded_worker_cap(
@@ -2402,11 +2406,13 @@ class RuntimeServices:
         self.allow_shared_disk_cache = _parse_bool_flag(allow_shared_disk_cache, True)
 
 
-_RUNTIME_SERVICES: RuntimeServices = (
-    globals()["_RUNTIME_SERVICES"]
-    if isinstance(globals().get("_RUNTIME_SERVICES"), RuntimeServices)
-    else RuntimeServices()
-)
+_prev_rs = globals().get("_RUNTIME_SERVICES")
+if _prev_rs is not None and hasattr(_prev_rs, "enforce_rth_gate"):
+    with contextlib.suppress(TypeError):
+        _prev_rs.__class__ = RuntimeServices
+    _RUNTIME_SERVICES: RuntimeServices = _prev_rs  # type: ignore[assignment]
+else:
+    _RUNTIME_SERVICES = RuntimeServices()
 
 
 def configure_runtime_services(**kwargs: object) -> RuntimeServices:
@@ -2460,8 +2466,14 @@ def is_auto_start_websockets_enabled(env: dict | None = None) -> bool:
 def is_rth_gate_enabled(override: bool | None = None, *, rth_fn: object = None) -> bool:
     """Return whether US equities RTH session gating is active under the current runtime policy."""
     if override is not None:
-        return bool(override)
-    if rth_fn is not None and rth_fn is not is_us_rth_open:
+        return _parse_bool_flag(override, False)
+    if rth_fn is not None and not (
+        rth_fn is is_us_rth_open
+        or (
+            getattr(rth_fn, "__module__", None) == __name__
+            and getattr(rth_fn, "__qualname__", None) == "is_us_rth_open"
+        )
+    ):
         return True
     if bool_env("MPTRADE_FORCE_RTH_GATE", default=False):
         return True
@@ -2980,16 +2992,20 @@ def set_stop_event(instance: object, attr: str = "_stop_event") -> None:
 
 
 def sleep_monitoring_interval(
-    instance: object, interval_sec: object, *, max_sleep_step: float = 1.0
+    instance: object,
+    interval_sec: object,
+    *,
+    max_sleep_step: float = 1.0,
+    sleep_fn: object = None,
 ) -> None:
-    """Sleep in interruptible steps up to ``interval_sec`` while ``instance._running`` remains truthy."""
-    iv_f = safe_pos_float(interval_sec, default=60.0) or 60.0
-    steps = max(1, int(iv_f) + (1 if iv_f > int(iv_f) else 0))
-    step_sec = min(safe_pos_float(max_sleep_step, default=1.0) or 1.0, iv_f)
-    for _ in range(steps):
-        if not getattr(instance, "_running", False):
-            break
-        _time.sleep(step_sec)
+    """Sleep in interruptible steps summing to ``interval_sec`` while ``instance._running`` remains truthy."""
+    remaining = safe_pos_float(interval_sec, default=60.0) or 60.0
+    step_cap = safe_pos_float(max_sleep_step, default=1.0) or 1.0
+    sleeper = sleep_fn if callable(sleep_fn) else _time.sleep
+    while remaining > 1e-9 and _parse_bool_flag(getattr(instance, "_running", False), default=False):
+        chunk = min(step_cap, remaining)
+        sleeper(chunk)
+        remaining -= chunk
 
 
 def start_monitoring_daemon_thread(

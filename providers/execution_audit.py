@@ -1077,7 +1077,7 @@ def _resolve_intent_execution_details(
                     fill_ts_val = max(fill_ts_val, _f_s)
                     break
     if is_fill_exec and matched_fill_ts_ms > 0:
-        _mf_s = _ts_ms_to_s(float(matched_fill_ts_ms))
+        _mf_s = _ts_ms_to_s(safe_pos_float(matched_fill_ts_ms, default=0.0) or 0.0)
         if _mf_s > fill_ts_val:
             fill_ts_val = _mf_s
     if is_fill_exec and fill_ts_val <= ts_val and str(last_hist.get("action") or "") == "RECONCILED_EXECUTED":

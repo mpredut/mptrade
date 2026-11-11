@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 
 # BINANCE
@@ -134,7 +135,7 @@ def filter_recent_cached_orders(manager, order_type, symbol, max_age_seconds, *,
     max_age_val = safe_nonneg_float(max_age_seconds, default=None) if orders_for_symbol else None
     if max_age_val is None:
         return []
-    current_time_ms = int(time.time() * 1000)
+    current_time_ms = math.trunc(time.time() * 1000)
     max_age_ms = max_age_val * 1000.0
     filtered = []
     for order in orders_for_symbol:

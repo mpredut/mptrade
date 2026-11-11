@@ -6,6 +6,7 @@ rather than genuine whale capital accumulation (rising OI).
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from botcore import _parse_bool_flag, obj_attr, obj_attr_first, safe_float, safe_nonneg_float, safe_pos_float
@@ -160,7 +161,7 @@ class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
                     divergence_regime=regime,
                     top_long_pct=top_long_pct,
                 )
-            max_taker_ratio = (1.0 / self.min_taker_ratio) if self.min_taker_ratio > 0 else float("inf")
+            max_taker_ratio = (1.0 / self.min_taker_ratio) if self.min_taker_ratio > 0 else math.inf
             if taker_ratio > max_taker_ratio:
                 return GuardDecision.defer(
                     guard_name="WhaleDivergenceGuard",
@@ -171,7 +172,7 @@ class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
             max_downscale_ratio = (
                 (1.0 / self.taker_downscale_threshold)
                 if self.taker_downscale_threshold > self.min_taker_ratio > 0
-                else float("inf")
+                else math.inf
             )
             if taker_ratio > max_downscale_ratio:
                 return GuardDecision.downscale(

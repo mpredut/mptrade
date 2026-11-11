@@ -23,6 +23,7 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
+    safe_pos_int,
 )
 from strategies.replay_execution import (
     ExecutionModel,
@@ -745,5 +746,8 @@ def split_warmup_ohlc(
     ohlc: list, max_warmup: int = 30, divisor: int = 5
 ) -> tuple[int, list, list]:
     """Partition ``ohlc`` into ``(warmup_n, warmup_ohlc, run_ohlc)`` using ``min(max_warmup, len(ohlc) // divisor)``."""
-    warmup_n = min(max(0, safe_int(max_warmup, 30)), len(ohlc) // max(1, safe_int(divisor, 5)))
-    return warmup_n, ohlc[:warmup_n], ohlc[warmup_n:]
+    bars = list(ohlc) if ohlc is not None and not isinstance(ohlc, (str, bytes, bytearray, dict)) else []
+    div_i = safe_pos_int(divisor, default=5) or 5
+    max_w = safe_nonneg_int(max_warmup, default=30)
+    warmup_n = min(max_w, len(bars) // div_i)
+    return warmup_n, bars[:warmup_n], bars[warmup_n:]

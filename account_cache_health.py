@@ -8,6 +8,7 @@ intentionally ignored because it does not prove that Binance confirmed account s
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import os
 import sys
 import threading
@@ -107,7 +108,7 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
         clk_tck = exact_pos_int(os.sysconf("SC_CLK_TCK"), default=None)
         if clk_tck is None:
             return None
-        return int((boot_seconds + start_ticks / clk_tck) * 1000)
+        return math.trunc((boot_seconds + start_ticks / clk_tck) * 1000)
     except (OSError, StopIteration, TypeError, ValueError, IndexError):
         return None
 
@@ -285,7 +286,7 @@ def inspect_health(
 
     current_ms = resolve_now_ms(now_ms)
     max_age_val = safe_pos_float(max_age_sec, default=MAX_AGE_SEC)
-    future_tolerance_ms = int(safe_nonneg_float(future_tolerance_sec, default=5.0) * 1000)
+    future_tolerance_ms = round(safe_nonneg_float(future_tolerance_sec, default=5.0) * 1000)
 
     if order_sync_ms > current_ms + future_tolerance_ms or trade_sync_ms > current_ms + future_tolerance_ms:
         return CacheHealthStatus(False, "account_cache_timestamp_in_future")

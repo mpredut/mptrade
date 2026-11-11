@@ -160,9 +160,9 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
     def _headline_age_suffix(cls, h: Any, now: float, *, include_utc_time: bool = False) -> str:
         ts_val = cls._headline_effective_ts(h, now)
         age_f = parse_headline_age_minutes(h)
-        age_sfx = f", age={int(round(age_f))}m" if age_f is not None else ""
+        age_sfx = f", age={round(age_f)}m" if age_f is not None else ""
         if not age_sfx and 0.0 < ts_val <= now + 300.0:
-            age_m = max(0, int(round(max(0.0, now - ts_val) / 60.0)))
+            age_m = max(0, round(max(0.0, now - ts_val) / 60.0))
             if age_m <= 2880:
                 age_sfx = f", age={age_m}m"
         if include_utc_time and 0.0 < ts_val <= now + 300.0:

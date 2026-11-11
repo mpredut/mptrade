@@ -15,6 +15,7 @@ if _ROOT not in sys.path:
 from botcore import (  # noqa: E402
     BUCHAREST,
     ET,
+    _parse_bool_flag,
     load_dotenv,
     load_local_module,
     parse_dotenv,
@@ -98,12 +99,12 @@ def build_t212_client_from_env(
 ):
     """Instantiate ``client_cls`` using ``creds_fn()`` and standard T212 environment variables."""
     credentials = creds_fn()
-    raw_env = required_env("T212_ENV")
+    raw_env = required_env("T212_ENV").strip()
     kwargs = {
-        "env": raw_env.lower() if lower_env else raw_env,
+        "env": raw_env.lower() if _parse_bool_flag(lower_env, True) else raw_env,
         "min_gap_sec": required_float_env("T212_MIN_GAP_SEC"),
         "portfolio_ttl_sec": required_float_env("T212_PORTFOLIO_TTL_SEC"),
     }
-    if include_order_gap:
+    if _parse_bool_flag(include_order_gap, False):
         kwargs["order_min_gap_sec"] = required_float_env("T212_ORDER_MIN_GAP_SEC")
     return client_cls(credentials.key, credentials.secret, **kwargs)

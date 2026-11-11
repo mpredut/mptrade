@@ -7,6 +7,7 @@ trigger manual telemetry updates, and check background daemon health.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import time
 from typing import Any, Dict, Optional
@@ -59,7 +60,7 @@ def _stamp_age(data: Dict[str, Any], now: float, *, include_seconds: bool = True
         raw_ts = data.get(ts_fallback_key)
     ts = safe_nonneg_ts(raw_ts, 0.0)
     now_s = normalize_epoch_sec(now, default=now, allow_zero=True) or now
-    age = (now_s - ts) if ts > 0.0 else float("inf")
+    age = (now_s - ts) if ts > 0.0 else math.inf
     if include_seconds:
         age_f = safe_float(age, default=None)
         data["age_seconds"] = round(age_f, 1) if age_f is not None else None
@@ -77,7 +78,7 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
     )
     if "pid" in res:
         age = res.get("age_seconds")
-        res["age_formatted"] = _format_age(age if age is not None else float("inf"))
+        res["age_formatted"] = _format_age(age if age is not None else math.inf)
     return res
 
 

@@ -1233,7 +1233,9 @@ class BaseSpotMixin:
         """Store ``pending`` (or ``None``) in ``self.s[key]`` and persist strategy state."""
         self.s[key] = None if pending is None else dict(pending)
         self._save()
-        if require_write and getattr(self, "_state_write_failed", False):
+        if _parse_bool_flag(require_write, False) and _parse_bool_flag(
+            getattr(self, "_state_write_failed", False), False
+        ):
             raise error_cls("the intent state could not be persisted")
 
     def _resolve_run_mode_and_banner(
@@ -1243,11 +1245,11 @@ class BaseSpotMixin:
         ai_banner: str = "[OBSERVE ONLY -- AI MANAGED]",
     ) -> tuple[str, str]:
         """Return ``(mode_label, exec_banner)`` for strategy startup logging."""
-        mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
+        mode = "avg_tp" if _parse_bool_flag(getattr(self.p, "enable_takeprofit", False), False) else "dca_only"
         exec_banner = (
             ai_banner
-            if getattr(self, "observe_only", False)
-            else ("[PAPER]" if self.dry_run else real_banner)
+            if _parse_bool_flag(getattr(self, "observe_only", False), False)
+            else ("[PAPER]" if _parse_bool_flag(getattr(self, "dry_run", True), True) else real_banner)
         )
         return mode, exec_banner
 

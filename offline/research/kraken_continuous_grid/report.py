@@ -86,7 +86,7 @@ def _append_markdown_table_header(
     if title:
         lines.append(f"\n## {title}\n")
     lines.append(header_row)
-    lines.append("|" + "---|" * max(1, int(num_cols)))
+    lines.append("|" + "---|" * max(1, safe_nonneg_int(num_cols, default=1)))
 
 
 def _finalize_markdown_report(

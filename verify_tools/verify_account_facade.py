@@ -61,7 +61,7 @@ def order_key(o):
     if not isinstance(o, dict):
         return (0.0, 0.0, 0.0, "")
     return (
-        float(extract_timestamp_ms(o, default=0) or 0),
+        safe_float(extract_timestamp_ms(o, default=0), default=0.0),
         extract_order_price(o),
         extract_order_qty(o),
         str(extract_order_side(o) or "").upper(),

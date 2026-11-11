@@ -6,6 +6,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 import copy
+import math
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Callable
@@ -74,16 +75,20 @@ class PriceAlert:
         self.url = "" if isinstance(url, bool) or url is None else str(url)
         self.reference_time = None if isinstance(reference_time, bool) else reference_time
 
+    def _format_timestamp(self, *, iso: bool = False) -> str:
+        ts_f = safe_float(self.timestamp, default=None)
+        if ts_f is not None:
+            try:
+                dt = datetime.fromtimestamp(ts_f)
+                return dt.isoformat() if iso else dt.strftime("%Y-%m-%d %H:%M:%S")
+            except (OSError, OverflowError, ValueError):
+                pass
+        return str(self.timestamp)
+
     def __str__(self) -> str:
         direction = "🚀 RISE" if self.alert_type == "up" else "📉 DROP"
         emoji = "🟢" if self.alert_type == "up" else "🔴"
-        if self.reference_time:
-            reference_time = self.reference_time
-        else:
-            try:
-                reference_time = datetime.fromtimestamp(float(self.timestamp)).strftime("%Y-%m-%d %H:%M:%S")
-            except (TypeError, ValueError, OSError, OverflowError):
-                reference_time = str(self.timestamp)
+        reference_time = self.reference_time if self.reference_time else self._format_timestamp(iso=False)
         url_line = f"🔗 CoinMarketCap: {self.url}\n" if self.url else ""
         return (
             f"\n{emoji} {direction} {emoji}\n"
@@ -95,10 +100,7 @@ class PriceAlert:
         )
 
     def to_dict(self) -> dict:
-        try:
-            ts_readable = datetime.fromtimestamp(float(self.timestamp)).isoformat()
-        except (TypeError, ValueError, OSError, OverflowError):
-            ts_readable = str(self.timestamp)
+        ts_readable = self._format_timestamp(iso=True)
         return {
             "symbol": self.symbol,
             "alert_type": self.alert_type,
@@ -194,7 +196,7 @@ class PriceChecker:
             return []
         eff_hours = min(hours_f, 24.0 * 365.0)
         mins = eff_hours * 60.0
-        history_limit = max(1000, min(100_000, int(mins) + (1 if mins > int(mins) else 0) + 2))
+        history_limit = max(1000, min(100_000, math.ceil(mins) + 2))
         history = self.cachePriceAll.get_price_history(symbol, limit=history_limit)
         cutoff_time = (time.time() - eff_hours * 3600) * 1000
 
@@ -433,7 +435,7 @@ class PriceChecker:
                     print(f"[Checker] Error in main loop: {e}")
 
                 print(f"[Checker] Waiting {interval_seconds} seconds until next check...")
-                sleep_monitoring_interval(self, iv_f, max_sleep_step=iv_f + 1.0)
+                sleep_monitoring_interval(self, iv_f)
 
         start_monitoring_daemon_thread(self, run, "PriceChecker")
 

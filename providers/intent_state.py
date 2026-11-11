@@ -18,6 +18,7 @@ from botcore import (
     parse_notify_enabled_flag,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
 )
 from cachepaths import (
@@ -301,7 +302,7 @@ def generate_unique_intent_id(
     existing_intents: list[dict[str, Any]],
 ) -> str:
     """Generate a unique intent_id for the durable intent queue."""
-    base_id = f"intent_{int(now_ts)}_{side.lower()}_{symbol.lower()}"
+    base_id = f"intent_{safe_nonneg_int(now_ts, default=0)}_{side.lower()}_{symbol.lower()}"
     existing_ids = {_extract_intent_id(i) for i in existing_intents if isinstance(i, dict)} - {""}
     intent_id = base_id
     suffix = len(existing_intents) + 1
@@ -316,7 +317,7 @@ def normalize_intent_fields(
     now_ts: float,
 ) -> tuple[str, str, str, str]:
     """Extract and normalize (intent_id, decision, symbol, venue) from an intent dict."""
-    intent_id = _extract_intent_id(intent, default=f"intent_{int(now_ts)}")
+    intent_id = _extract_intent_id(intent, default=f"intent_{safe_nonneg_int(now_ts, default=0)}")
     decision = extract_intent_side(intent)
     raw_sym = intent.get("symbol", "")
     symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()

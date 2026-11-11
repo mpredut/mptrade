@@ -6,6 +6,7 @@ import re
 import atexit
 import datetime
 import logging
+import math
 import shutil
 import threading
 from time import monotonic as _monotonic
@@ -114,7 +115,7 @@ def _get_disk_free_percent(folder: str) -> float | None:
 
 def _delete_oldest_log(folder: str) -> None:
     oldest_path  = None
-    oldest_mtime = float("inf")
+    oldest_mtime = math.inf
     try:
         for entry in os.scandir(folder):
             if entry.is_file(follow_symlinks=False):

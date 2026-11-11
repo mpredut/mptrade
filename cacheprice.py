@@ -638,9 +638,7 @@ class Cache24PriceManager(CachePriceManagerBase):
     ) -> Optional[list[dict]]:
         """Read 24h tick history from ``cache_24_price_<SYM>.json`` when fresh and covering ``lookback_hours``."""
         lh_f = safe_pos_float(lookback_hours, default=None)
-        max_latest_age = (
-            120.0 if max_latest_age_sec is None else safe_pos_float(max_latest_age_sec, default=None)
-        )
+        max_latest_age = resolve_positive_max_age(max_latest_age_sec, 120.0)
         if lh_f is None or lh_f > 24.0 or max_latest_age is None or not candidates:
             return None
         now_s = _now_time()
