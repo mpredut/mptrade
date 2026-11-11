@@ -28,6 +28,7 @@ if ROOT_DIR not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
+    add_store_true_cli_args,
     evaluate_heartbeat_files_freshness,
     load_key_value_conf,
     parse_procs_manifest,
@@ -276,7 +277,7 @@ def harvest_fleet_and_system_telemetry(workspace_dir: str) -> tuple[List[Dict[st
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Autonomous Overnight Fleet & Backtest Monitor")
-    parser.add_argument("--once", action="store_true", help="Run a single check and exit")
+    add_store_true_cli_args(parser, ("--once", "Run a single check and exit"))
     parser.add_argument("--interval", type=float, default=60.0, help="Loop interval in seconds")
     args = parser.parse_args()
 

@@ -947,6 +947,24 @@ def create_env_cli_parser(description: str, env_file: str) -> argparse.ArgumentP
     return ap
 
 
+def add_store_true_cli_args(
+    parser: object, *specs: str | tuple[str, str]
+) -> None:
+    """Register one or more ``action='store_true'`` CLI flags (``flag`` or ``(flag, help_text)``) on ``parser``."""
+    add_arg = getattr(parser, "add_argument", None)
+    if not callable(add_arg):
+        return
+    for spec in specs:
+        if isinstance(spec, str):
+            add_arg(spec, action="store_true")
+        elif isinstance(spec, tuple) and len(spec) >= 2:
+            flag_name, flag_help = spec[0], spec[1]
+            if flag_help:
+                add_arg(flag_name, action="store_true", help=flag_help)
+            else:
+                add_arg(flag_name, action="store_true")
+
+
 def add_paper_skip_wait_cli_args(
     parser: object,
     *,
@@ -965,15 +983,10 @@ def add_paper_skip_wait_cli_args(
     add_arg = getattr(parser, "add_argument", None)
     if callable(add_arg):
         if include_desktop:
-            add_arg("--desktop", action="store_true")
+            add_store_true_cli_args(parser, "--desktop")
         if include_skip_wait:
-            add_arg("--skip-wait", action="store_true", help=skip_wait_help)
-        add_arg("--paper", action="store_true", help=paper_help)
-        for flag_name, flag_help in extra_store_true:
-            if flag_help:
-                add_arg(flag_name, action="store_true", help=flag_help)
-            else:
-                add_arg(flag_name, action="store_true")
+            add_store_true_cli_args(parser, ("--skip-wait", skip_wait_help))
+        add_store_true_cli_args(parser, ("--paper", paper_help), *extra_store_true)
         if test_strategy_metavar:
             add_arg("--test-strategy", metavar=test_strategy_metavar, help=test_strategy_help)
         if find_flag:

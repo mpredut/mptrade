@@ -35,6 +35,7 @@ if ROOT_DIR not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
+    add_store_true_cli_args,
     is_us_rth_open,
     load_key_value_conf,
 )
@@ -453,10 +454,13 @@ class AutonomousIntentGateway:
 def main() -> None:
     os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
     parser = argparse.ArgumentParser(description="MPTrade Autonomous Intent Gateway")
-    parser.add_argument("--process-pending", action="store_true", help="Process all pending trade intents")
     parser.add_argument("--mode", choices=["shadow", "enforce"], default=None, help="Override operational mode")
-    parser.add_argument("--status", action="store_true", help="Display status of queued intents")
-    parser.add_argument("--clear-pending", action="store_true", help="Cancel/clear all pending intents")
+    add_store_true_cli_args(
+        parser,
+        ("--process-pending", "Process all pending trade intents"),
+        ("--status", "Display status of queued intents"),
+        ("--clear-pending", "Cancel/clear all pending intents"),
+    )
     args = parser.parse_args()
 
     gateway = AutonomousIntentGateway(mode=args.mode)

@@ -14,6 +14,7 @@ if ROOT not in sys.path:
 from botcore import safe_float, safe_nonneg_int
 from state_io import atomic_write_json
 from strategies import spot_engine as strat
+from strategies.replay_metrics import print_ascii_table_header
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,
     evaluate_asset,
@@ -154,9 +155,14 @@ def main():
         }
 
     # Print summary table
-    print("\n" + "=" * 105)
-    print(f"{'Test ID':<8} | {'Variant Name':<20} | {'Pos Assets':<10} | {'Med Ret %':<10} | {'Worst Ret %':<11} | {'Med DD %':<9} | {'Max DD %':<9} | {'Exposure %':<10} | {'Cycles':<6}")
-    print("-" * 105)
+    print_ascii_table_header(
+        (
+            ("Test ID", 8), ("Variant Name", 20), ("Pos Assets", 10), ("Med Ret %", 10),
+            ("Worst Ret %", 11), ("Med DD %", 9), ("Max DD %", 9), ("Exposure %", 10), ("Cycles", 6),
+        ),
+        width=105,
+        bottom_char="-",
+    )
     for var in variants:
         if var in summary:
             s = summary[var]

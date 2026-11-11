@@ -29,6 +29,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import (  # noqa: E402
+    add_store_true_cli_args,
     load_local_module,
     load_shadow_environment,
     optional_env,
@@ -165,7 +166,7 @@ def snapshot(*, quiet: bool = False):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--quiet", action="store_true")
+    add_store_true_cli_args(parser, "--quiet")
     args = parser.parse_args(argv)
     load_shadow_environment(os.path.join(HERE, ".env"))
     try:

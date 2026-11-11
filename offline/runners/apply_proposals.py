@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import FileLock, _parse_bool_flag, bool_env, load_env_stack, optional_env, parse_dotenv, safe_pos_float  # noqa: E402
+from botcore import FileLock, _parse_bool_flag, add_store_true_cli_args, bool_env, load_env_stack, optional_env, parse_dotenv, safe_pos_float  # noqa: E402
 from state_io import parse_json_payload  # noqa: E402
 from offline.research.monitortrades_backtest import scheduled_pilot as sp  # noqa: E402
 
@@ -90,8 +90,9 @@ def _read_proposals(branch: str | None = None):
 
 def main(argv: list[str] | None = None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dry-run", action="store_true",
-                     help="show what it would apply, without writing config or committing")
+    add_store_true_cli_args(
+        ap, ("--dry-run", "show what it would apply, without writing config or committing")
+    )
     args = ap.parse_args(argv)
 
     try:

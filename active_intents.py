@@ -15,6 +15,7 @@ from typing import Iterable
 from botcore import (
     INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
+    add_store_true_cli_args,
     clean_order_id,
     coerce_dict_maps,
     normalize_side,
@@ -351,8 +352,7 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build the read-only active-intent index.")
     parser.add_argument("--root", default=os.path.dirname(os.path.abspath(__file__)))
-    parser.add_argument("--compact", action="store_true")
-    parser.add_argument("--summary", action="store_true", help="Print human-readable text summary.")
+    add_store_true_cli_args(parser, "--compact", ("--summary", "Print human-readable text summary."))
     args = parser.parse_args()
     result = build_active_intent_index(args.root)
     if args.summary:

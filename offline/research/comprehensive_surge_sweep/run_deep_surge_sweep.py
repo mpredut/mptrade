@@ -44,6 +44,7 @@ from botcore import (
 from offline.backtests.evaluation import parse_cli_float, parse_cli_int
 from state_io import atomic_write_json, atomic_write_text
 from strategies import spot_engine as strat, spot_replay as _spot_replay
+from strategies.replay_metrics import write_markdown_report
 from strategies.spot_replay import (
     prepare_spot_interval_params,
     run_replay,
@@ -691,9 +692,13 @@ def main():
                 lines.append(f"STRAT_REENTRY_BEAR_BOUNCE_PCT={sp.get('reentry_bear_bounce_pct')}")
     lines.append("```\n")
 
-    atomic_write_text(md_path, "\n".join(lines))
-
-    print(f"Generated comprehensive markdown report: {md_path}")
+    write_markdown_report(
+        md_path,
+        lines,
+        joiner="\n",
+        message_prefix="Generated comprehensive markdown report:",
+        write_fn=atomic_write_text,
+    )
     print("\n=== TOP 5 CANDIDATES PREVIEW ===")
     for idx, r in enumerate(top15[:5], 1):
         print(f"#{idx} {r['id']:<35} | PnL: ${r['total_profit_usd']:>9.2f} | MaxDD: {r['worst_maxdd_pct']:>5.2f}% | 2-Win: {r['beats_baseline_both_halves']} | {r['desc']}")

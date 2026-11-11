@@ -20,6 +20,7 @@ from notify_engine import alertnotifiers as alert
 from botcore import (
     FileLock,
     _parse_bool_flag,
+    add_store_true_cli_args,
     clean_upper_token,
     exact_nonneg_int,
     format_notify_qty,
@@ -1059,7 +1060,7 @@ def main():
     import log  # noqa: F401 — ensure stdout timestamps and daily logger file from startup
 
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--once", action="store_true", help="a single step, then exit")
+    add_store_true_cli_args(ap, ("--once", "a single step, then exit"))
     args = ap.parse_args()
 
     if args.once:

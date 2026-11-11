@@ -26,6 +26,7 @@ if _ROOT not in sys.path:
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from intelligence.internal.state.persistence import calculate_mann_kendall, calculate_hurst_exponent  # noqa: E402
 from botcore import (  # noqa: E402
+    add_store_true_cli_args,
     normalize_epoch_sec,
     safe_float,
     safe_int,
@@ -277,8 +278,11 @@ def parse_and_validate_forecast_args(
 
 def main(argv: list[str] | None = None) -> int:
     ap = create_ml_forecast_parser("Walk-forward machine learning forecast benchmark.")
-    ap.add_argument("--eval", action="store_true", help="the walk-forward report only")
-    ap.add_argument("--forecast", action="store_true", help="write forecast.json")
+    add_store_true_cli_args(
+        ap,
+        ("--eval", "the walk-forward report only"),
+        ("--forecast", "write forecast.json"),
+    )
     ap.add_argument(
         "--out",
         default=os.path.join(_ROOT, "offline", "results", "ml_forecast", "forecast.json"),

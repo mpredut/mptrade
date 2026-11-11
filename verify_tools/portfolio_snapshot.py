@@ -22,6 +22,7 @@ if ROOT not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from botcore import (  # noqa: E402
     _parse_bool_flag,
+    add_store_true_cli_args,
     http_request,
     is_live_network_backfill_enabled,
     optional_env,
@@ -202,9 +203,11 @@ def run_alerts(kr: list[dict]) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Cross-engine portfolio snapshot (read-only).")
-    ap.add_argument("--json", action="store_true", help="one JSON line (for cron/logs)")
-    ap.add_argument("--alert", action="store_true",
-                    help="check per-position drawdown and send an ntfy alert past the threshold")
+    add_store_true_cli_args(
+        ap,
+        ("--json", "one JSON line (for cron/logs)"),
+        ("--alert", "check per-position drawdown and send an ntfy alert past the threshold"),
+    )
     args = ap.parse_args()
 
     kr = kraken_rows()

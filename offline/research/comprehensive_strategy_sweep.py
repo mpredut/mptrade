@@ -28,6 +28,7 @@ from botcore import (
 )
 from state_io import atomic_write_json, atomic_write_text, read_json_file, read_text_file
 from strategies.spot_engine import StratParams
+from strategies.replay_metrics import write_markdown_report
 from strategies import spot_replay as kraken_replay
 from strategies.spot_replay import prepare_spot_interval_params
 from offline.backtests.datasets import load_dataset
@@ -624,9 +625,9 @@ def main():
                 f"{w_dd:.2f}% |\n"
             )
 
-    atomic_write_text(md_path, "".join(lines))
-
-    print(f"Report written to {md_path}")
+    write_markdown_report(
+        md_path, lines, joiner="", message_prefix="Report written to", write_fn=atomic_write_text
+    )
 
 
 if __name__ == "__main__":

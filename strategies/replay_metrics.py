@@ -464,16 +464,47 @@ def validate_replay_metrics(result: dict) -> None:
             raise AssertionError(f"ambiguous_bars must be a non-negative int, got {val!r}")
 
 
+def print_ascii_table_header(
+    columns: Sequence[tuple[str, int]],
+    *,
+    width: int = 105,
+    bottom_char: str = "=",
+    emit=print,
+) -> None:
+    """Print a pipe-separated ASCII table header with top ``=`` and bottom ``bottom_char`` rules."""
+    emit("\n" + "=" * width)
+    emit(" | ".join(f"{label:<{col_w}}" for label, col_w in columns))
+    emit(bottom_char * width)
+
+
+def write_markdown_report(
+    md_path: Any,
+    lines: Sequence[str],
+    *,
+    joiner: str = "",
+    message_prefix: str = "Report written to",
+    write_fn: Any = None,
+    emit=print,
+) -> None:
+    """Persist ``lines`` joined by ``joiner`` via ``write_fn(md_path, text)`` and print confirmation."""
+    if callable(write_fn):
+        write_fn(md_path, joiner.join(lines))
+    emit(f"{message_prefix} {md_path}")
+
+
 __all__ = [
     "add_common_backtest_cli_args",
     "buy_hold_pct",
     "calculate_performance_metrics",
+    "create_backtest_cli_parser",
     "format_performance_summary",
     "parse_bt_cli_float",
     "parse_bt_cli_int",
+    "print_ascii_table_header",
     "print_single_backtest_report",
     "round_metric",
     "run_cli_single_or_sweep_backtest",
     "run_tp_drop_sl_sweep",
     "validate_replay_metrics",
+    "write_markdown_report",
 ]

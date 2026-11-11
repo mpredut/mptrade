@@ -10,6 +10,7 @@ if ROOT not in sys.path:
 
 from pathlib import Path
 from strategies import spot_engine as strat
+from strategies.replay_metrics import print_ascii_table_header
 from strategies.spot_replay import prepare_spot_interval_params, prewarm_trend_series, run_replay
 from offline.backtests.datasets import load_dataset, validate_dataset
 from offline.backtests.evaluation import to_ohlc
@@ -92,12 +93,14 @@ def run_comparison(csv_path=None):
         )
         results.append((sl, res_base, res_prop))
 
-    print("\n" + "=" * 107)
-    print(
-        f"{'SL %':<6} | {'CONFIG':<10} | {'TOTAL ($)':<12} | {'NET PnL ($)':<12} | "
-        f"{'CYCLES':<8} | {'WINS':<6} | {'WIN %':<8} | {'MAX DD ($)':<12} | {'FILLS':<8}"
+    print_ascii_table_header(
+        (
+            ("SL %", 6), ("CONFIG", 10), ("TOTAL ($)", 12), ("NET PnL ($)", 12),
+            ("CYCLES", 8), ("WINS", 6), ("WIN %", 8), ("MAX DD ($)", 12), ("FILLS", 8),
+        ),
+        width=107,
+        bottom_char="=",
     )
-    print("=" * 107)
 
     for sl, base, prop in results:
         b_cyc = safe_nonneg_int(base.get('cycles'), default=0)
