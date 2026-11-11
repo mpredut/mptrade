@@ -519,6 +519,10 @@ def test_botcore_cache_path_reload_and_sequence_timestamp_extraction(monkeypatch
     orig_cp = utils.cache_path
     monkeypatch.setattr(utils, "cache_path", lambda name: f"/custom/{orig_cp(name).split('/')[-1]}")
     assert botcore.cache_path("cache_current_price.json") == "/custom/cache_current_price.json"
+    monkeypatch.undo()
+
+    with patch("utils.cache_path", side_effect=lambda name: f"/mocked/{name}"):
+        assert botcore.cache_path("cache_24_price_BTCUSDC.json") == "/mocked/cache_24_price_BTCUSDC.json"
 
     # 2. extract_timestamp_ms / extract_timestamp_s support [ts, price] sequence records
     assert botcore.extract_timestamp_ms(["1700000000000", 100.0], default=0) == 1_700_000_000_000

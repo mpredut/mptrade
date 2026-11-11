@@ -1613,7 +1613,7 @@ def cache_path(name):
     if not getattr(_CACHE_PATH_TLS, "active", False):
         u_mod = sys.modules.get("utils")
         u_cp = getattr(u_mod, "cache_path", None) if u_mod is not None else None
-        if callable(u_cp) and not getattr(u_cp, "_is_botcore_cache_path", False):
+        if callable(u_cp) and getattr(u_cp, "_is_botcore_cache_path", None) is not True:
             _CACHE_PATH_TLS.active = True
             try:
                 return u_cp(name)
@@ -1624,7 +1624,7 @@ def cache_path(name):
 
 cache_path._is_botcore_cache_path = True  # type: ignore[attr-defined]
 _u_reload_mod = sys.modules.get("utils")
-if _u_reload_mod is not None and getattr(getattr(_u_reload_mod, "cache_path", None), "_is_botcore_cache_path", False):
+if _u_reload_mod is not None and getattr(getattr(_u_reload_mod, "cache_path", None), "_is_botcore_cache_path", None) is True:
     _u_reload_mod.cache_path = cache_path  # type: ignore[attr-defined]
 
 
