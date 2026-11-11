@@ -914,7 +914,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
     def _normalize_dynamic_window_request(
         self, symbol, window_seconds, now=None, *, log_clamp: bool = False
-    ) -> Optional[tuple[float, str, Optional[float]]]:
+    ) -> Optional[tuple[float, str, float]]:
         req = safe_pos_float(window_seconds, default=None)
         if req is None:
             return None
@@ -922,6 +922,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             now = normalize_epoch_sec(now, default=None)
             if now is None:
                 return None
+        else:
+            now = time.time()
         min_sec = _cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", CM_DYNAMIC_WINDOW_MIN_SEC)
         max_sec = _cm_attr("CM_DYNAMIC_WINDOW_MAX_SEC", CM_DYNAMIC_WINDOW_MAX_SEC)
         clamped = min(max(req, min_sec), max_sec)
@@ -1003,18 +1005,17 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         )
         if norm is None:
             return None
-        clamped, w_key, now = norm
+        clamped, w_key, now_val = norm
 
         if self._cache24_managers is None:
             # Reader process: check published live_<SYMBOL>.json / shared file first,
             # then fall back to on-disk cache_24_price_<SYMBOL>.json if available.
-            pub = self._published_window(symbol, clamped, now=now)
+            pub = self._published_window(symbol, clamped, now=now_val)
             if pub is not None:
                 return pub
             disk_entries = self._load_disk_cache24_entries(symbol)
             if not disk_entries:
                 return None
-            now_val = now if now is not None else time.time()
             cutoff_ms = int((now_val - clamped) * 1000)
             a = bisect.bisect_left(disk_entries, cutoff_ms, key=lambda e: e[0])
             b = len(disk_entries) - 1
@@ -1027,7 +1028,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             return None
         c24_sym = matched_cand or symbol
 
-        now_val = now if now is not None else time.time()
         with self._lock:
             self._active_dynamic_windows.add(clamped)
 
@@ -1099,13 +1099,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
     def _published_window(self, symbol, window_seconds, now=None):
         """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""
-        norm = self._normalize_dynamic_window_request(
-            symbol, window_seconds, now=now, log_clamp=False
-        )
+        norm = self._normalize_dynamic_window_request(symbol, window_seconds, now)
         if norm is None:
             return None
         clamped, w_key, now = norm
-        now = now if now is not None else time.time()
 
         def _check_fresh(dyn):
             if not isinstance(dyn, dict):

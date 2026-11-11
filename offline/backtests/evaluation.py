@@ -23,7 +23,12 @@ from offline.backtests.datasets import dataset_metadata
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
 from state_io import atomic_write_json
 from strategies.replay_execution import ExecutionModel
-from strategies.replay_metrics import validate_bt_cli_token, validate_replay_metrics
+from strategies.replay_metrics import (
+    parse_bt_cli_float as parse_cli_float,
+    parse_bt_cli_int as parse_cli_int,
+    validate_bt_cli_token,
+    validate_replay_metrics,
+)
 from strategies.spot_replay import (
     make_spot_replay_adapter,
     prepare_spot_interval_params,
@@ -390,22 +395,6 @@ def parse_dataset_specs(specs: list[str]) -> dict[int, Path]:
         except (ValueError, OSError) as exc:
             raise ValueError(f"invalid dataset spec {spec!r}; format is INTERVAL=PATH") from exc
     return result
-
-
-def parse_cli_float(value: Any) -> float:
-    """Parse a finite CLI floating-point argument without raw ``float()`` coercion."""
-    parsed = safe_float(value, default=None)
-    if parsed is None:
-        raise argparse.ArgumentTypeError(f"invalid finite float value: {value!r}")
-    return parsed
-
-
-def parse_cli_int(value: Any) -> int:
-    """Parse an exact CLI integer argument without raw ``int()`` coercion."""
-    parsed = exact_int(value, default=None)
-    if parsed is None:
-        raise argparse.ArgumentTypeError(f"invalid integer value: {value!r}")
-    return parsed
 
 
 def add_walk_forward_cli_args(

@@ -1972,10 +1972,8 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
 
     def remove_symbol(self, symbol: str) -> bool:
         norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return False
         with self._lock:
-            if norm_s not in self._subscribed:
+            if not norm_s or norm_s not in self._subscribed:
                 return False
             self._subscribed.discard(norm_s)
             self._symbols = tuple(s for s in self._symbols if s != norm_s)
@@ -1984,10 +1982,8 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
 
     def get_price(self, symbol: str) -> Optional[float]:
         norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return None
         with self._lock:
-            return self._prices.get(norm_s)
+            return self._prices.get(norm_s) if norm_s else None
 
     def get_all_prices(self) -> Dict[str, float]:
         with self._lock:

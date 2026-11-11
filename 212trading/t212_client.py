@@ -435,6 +435,24 @@ class T212Client:
         target_path = str(explicit_path) if explicit_path else str(cache_path(CACHE_T212_TRADE_FILENAME))
         T212Provider.merge_ssot_fills_cache(target_path, by_symbol)
 
+    def _fresh_hist_cache_locked(self, ttl: float, *, require_list: bool = False):
+        hc = getattr(self, "_hist_cache", None)
+        if not hc or (time.monotonic() - hc[0]) >= ttl:
+            return None
+        if require_list and not isinstance(hc[1], list):
+            return None
+        return hc[1]
+
+    def _hist_matches_from_cache(self, target_oid: str, ttl: float) -> list[tuple[dict, dict | None]]:
+        with self._lock:
+            items = self._fresh_hist_cache_locked(ttl)
+            return T212Provider._extract_history_matches(items, target_oid) if items is not None else []
+
+    def _store_shared_hist_cache(self, s_age: float, s_val: list) -> None:
+        with self._lock:
+            self._hist_cache = (time.monotonic() - s_age, s_val)
+            self._fetch_fail.pop("_hist_cache", None)
+
     def get_historical_order(self, order_id) -> dict | bool | None:
         """Find a terminal order in the first history page.
 
@@ -446,26 +464,17 @@ class T212Client:
         target_oid = clean_order_id(order_id)
         if target_oid is None:
             return None
-        matches: list[tuple[dict, dict | None]] = []
-        with self._lock:
-            hc = getattr(self, "_hist_cache", None)
-            if hc and (time.monotonic() - hc[0]) < self._pf_ttl:
-                matches = T212Provider._extract_history_matches(hc[1], target_oid)
+        matches = self._hist_matches_from_cache(target_oid, self._pf_ttl)
         if not matches:
             with self._fetch_lock:
                 with self._shared_cache_file_lock():
-                    with self._lock:
-                        hc = getattr(self, "_hist_cache", None)
-                        if hc and (time.monotonic() - hc[0]) < self._pf_ttl:
-                            matches = T212Provider._extract_history_matches(hc[1], target_oid)
+                    matches = self._hist_matches_from_cache(target_oid, self._pf_ttl)
                     if not matches:
                         s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", self._pf_ttl)
                         if s_hit and isinstance(s_val, list):
                             s_matches = T212Provider._extract_history_matches(s_val, target_oid)
                             if s_matches:
-                                with self._lock:
-                                    self._hist_cache = (time.monotonic() - s_age, s_val)
-                                    self._fetch_fail.pop("_hist_cache", None)
+                                self._store_shared_hist_cache(s_age, s_val)
                                 matches = s_matches
                     if not matches:
                         items = self._fetch_order_history_locked()
@@ -475,10 +484,7 @@ class T212Client:
                                 self._record_shared_cache_fail("_hist_cache")
                                 matches = T212Provider._extract_history_matches(s_fb_val, target_oid)
                             if not matches:
-                                with self._lock:
-                                    hc = getattr(self, "_hist_cache", None)
-                                    if hc and (time.monotonic() - hc[0]) < 600.0:
-                                        matches = T212Provider._extract_history_matches(hc[1], target_oid)
+                                matches = self._hist_matches_from_cache(target_oid, 600.0)
                             if not matches:
                                 return None
                         else:
@@ -514,9 +520,7 @@ class T212Client:
             return None
         items = payload.get("items", []) if isinstance(payload, dict) else payload
         if isinstance(items, list):
-            with self._lock:
-                self._hist_cache = (time.monotonic(), items)
-                self._fetch_fail.pop("_hist_cache", None)
+            self._store_shared_hist_cache(0.0, items)
             self._write_shared_cache("_hist_cache", items)
             return items
         return []
@@ -525,20 +529,18 @@ class T212Client:
         """Return recent order history items, refreshing from T212 and syncing trade cache when stale."""
         ttl = max(1.0, safe_nonneg_float(max_age_sec, default=self._pf_ttl))
         with self._lock:
-            hc = getattr(self, "_hist_cache", None)
-            if hc and (time.monotonic() - hc[0]) < ttl and isinstance(hc[1], list):
-                return hc[1]
+            cached = self._fresh_hist_cache_locked(ttl, require_list=True)
+            if cached is not None:
+                return cached
         with self._fetch_lock:
             with self._shared_cache_file_lock():
                 with self._lock:
-                    hc = getattr(self, "_hist_cache", None)
-                    if hc and (time.monotonic() - hc[0]) < ttl and isinstance(hc[1], list):
-                        return hc[1]
+                    cached = self._fresh_hist_cache_locked(ttl, require_list=True)
+                    if cached is not None:
+                        return cached
                 s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", ttl)
                 if s_hit and isinstance(s_val, list):
-                    with self._lock:
-                        self._hist_cache = (time.monotonic() - s_age, s_val)
-                        self._fetch_fail.pop("_hist_cache", None)
+                    self._store_shared_hist_cache(s_age, s_val)
                     self._sync_trade_cache(s_val)
                     return s_val
                 return self._fetch_order_history_locked()

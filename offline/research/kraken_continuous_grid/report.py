@@ -105,6 +105,13 @@ def _finalize_markdown_report(
     return lines
 
 
+def _bind_report_generator(status_fn):
+    def generate_report(exp_dir: str | None = None) -> list[str]:
+        return status_fn(exp_dir)[0]
+
+    return generate_report
+
+
 def _risk_adjusted_score(ret_pct: float, dd_pct: float, dd_floor: float = 5.0) -> float:
     """Monotone risk-adjusted return score: penalises larger drawdowns even when return < 0."""
     r = safe_float(ret_pct, 0.0)

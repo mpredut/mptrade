@@ -166,6 +166,15 @@ def _count_delta_outcomes(deltas: list[float], tolerance: float = 1e-10) -> tupl
     return wins, ties, losses, active_windows, _one_sided_sign_pvalue(wins, losses)
 
 
+def _iter_validated_scenario_windows(baseline: dict, candidate: dict):
+    base_scenarios, candidate_scenarios = _validate_promotion_reports(baseline, candidate)
+    for name in sorted(base_scenarios):
+        base_windows, cand_windows, base_aggregate, candidate_aggregate = _extract_scenario_windows(
+            name, base_scenarios[name], candidate_scenarios[name]
+        )
+        yield name, base_windows, cand_windows, base_aggregate, candidate_aggregate
+
+
 def evaluate_promotion(
     baseline: dict,
     candidate: dict,
@@ -173,13 +182,10 @@ def evaluate_promotion(
 ) -> dict:
     """The candidate passes only if it is robust in ALL shared scenarios."""
     limits = thresholds or PromotionThresholds()
-    base_scenarios, candidate_scenarios = _validate_promotion_reports(baseline, candidate)
-
     scenario_results = {}
-    for name in sorted(base_scenarios):
-        base_windows, cand_windows, base_aggregate, candidate_aggregate = _extract_scenario_windows(
-            name, base_scenarios[name], candidate_scenarios[name]
-        )
+    for name, base_windows, cand_windows, base_aggregate, candidate_aggregate in _iter_validated_scenario_windows(
+        baseline, candidate
+    ):
         deltas = [
             _diff(cand_windows[key].get("return_pct"), base_windows[key].get("return_pct"))
             for key in sorted(base_windows, key=_window_sort_key)
@@ -254,14 +260,11 @@ def evaluate_risk_adjusted_promotion(
     each fold's curve, and the gate compares the medians of those values.
     """
     limits = thresholds or RiskAdjustedThresholds()
-    base_scenarios, candidate_scenarios = _validate_promotion_reports(baseline, candidate)
-
     scenario_results = {}
     tolerance = 1e-10
-    for name in sorted(base_scenarios):
-        base_windows, cand_windows, base_aggregate, candidate_aggregate = _extract_scenario_windows(
-            name, base_scenarios[name], candidate_scenarios[name]
-        )
+    for name, base_windows, cand_windows, base_aggregate, candidate_aggregate in _iter_validated_scenario_windows(
+        baseline, candidate
+    ):
 
         drawdown_improvements = [
             _diff(base_windows[key].get("max_drawdown_pct"), cand_windows[key].get("max_drawdown_pct"))

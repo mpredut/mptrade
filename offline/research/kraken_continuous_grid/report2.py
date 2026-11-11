@@ -14,6 +14,7 @@ from state_io import read_jsonl_dicts
 from offline.research.kraken_continuous_grid import grid2
 from offline.research.kraken_continuous_grid.report import (
     _append_markdown_table_header,
+    _bind_report_generator,
     _finalize_markdown_report,
     _fmt_num,
     _is_error_row,
@@ -207,9 +208,7 @@ def _generate_report_with_status(exp_dir: str | None = None) -> tuple[list[str],
     return lines, has_valid
 
 
-def generate_report(exp_dir: str | None = None) -> list[str]:
-    lines, _ = _generate_report_with_status(exp_dir)
-    return lines
+generate_report = _bind_report_generator(_generate_report_with_status)
 
 
 if __name__ == "__main__":

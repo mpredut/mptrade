@@ -258,14 +258,20 @@ def read_summary_row(cli_base: str, cid: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def snapshot_conversation_state(cli_base: str, cid: str) -> Optional[dict]:
-    """Capture a lightweight in-memory rollback checkpoint of ``<cid>.db`` and its summary row."""
+def _resolve_existing_conversation_db(cli_base: str, cid: str) -> Optional[tuple[str, str]]:
     if not cli_base or not isinstance(cli_base, str) or not cid or not isinstance(cid, str):
         return None
     clean_cid = cid.strip()
     db_path = conversation_db(cli_base, clean_cid)
-    if not os.path.exists(db_path):
+    return (clean_cid, db_path) if os.path.exists(db_path) else None
+
+
+def snapshot_conversation_state(cli_base: str, cid: str) -> Optional[dict]:
+    """Capture a lightweight in-memory rollback checkpoint of ``<cid>.db`` and its summary row."""
+    resolved = _resolve_existing_conversation_db(cli_base, cid)
+    if resolved is None:
         return None
+    clean_cid, db_path = resolved
     tables_state: dict[str, dict[str, Any]] = {}
     try:
         conn = sqlite3.connect(db_path, timeout=10)
@@ -313,12 +319,10 @@ def snapshot_conversation_state(cli_base: str, cid: str) -> Optional[dict]:
 
 def restore_conversation_state(cli_base: str, cid: str, snapshot: Optional[dict]) -> bool:
     """Roll back ``<cid>.db`` and its summary row to a checkpoint captured by ``snapshot_conversation_state``."""
-    if not isinstance(snapshot, dict) or not cli_base or not isinstance(cli_base, str) or not cid or not isinstance(cid, str):
+    resolved = _resolve_existing_conversation_db(cli_base, cid) if isinstance(snapshot, dict) else None
+    if resolved is None:
         return False
-    clean_cid = cid.strip()
-    db_path = conversation_db(cli_base, clean_cid)
-    if not os.path.exists(db_path):
-        return False
+    clean_cid, db_path = resolved
     tables_state = snapshot.get("tables")
     if not isinstance(tables_state, dict) or not tables_state:
         return False

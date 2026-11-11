@@ -705,11 +705,62 @@ def _bigram_stem_signature(term: str) -> Tuple[str, ...]:
     return tuple(sorted(dict.fromkeys(t for t in tokens if t)))
 
 
+def _resolve_dynamic_lexicon_context(
+    cache_dir: Optional[str] = None, now_ts: Optional[float] = None
+) -> Tuple[float, float, str]:
+    return (
+        resolve_now_ts(now_ts),
+        _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0),
+        _dynamic_lexicon_path(cache_dir),
+    )
+
+
+def _extract_valid_dynamic_entries(
+    raw_entries: Dict[str, Any], now: float, ttl: float, stopwords: Set[str]
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[Tuple[str, ...], str], bool]:
+    existing_entries: Dict[str, Dict[str, Any]] = {}
+    sig_to_key: Dict[Tuple[str, ...], str] = {}
+    pruned = False
+    raw_valid: List[Tuple[float, int, str, Dict[str, Any]]] = []
+    for idx, (k, v) in enumerate(raw_entries.items()):
+        if not isinstance(k, str) or not isinstance(v, dict):
+            pruned = True
+            continue
+        k_clean = re.sub(r"\s+", " ", k.strip().lower())
+        if _is_noise_dynamic_keyword(k_clean, stopwords):
+            pruned = True
+            continue
+        ts = normalize_epoch_sec(v.get("ts"), default=0.0) or 0.0
+        if ts <= 0.0 or (now - ts) > ttl:
+            pruned = True
+            continue
+        raw_valid.append((ts, idx, k_clean, dict(v, ts=ts)))
+    raw_valid.sort(key=lambda r: (-r[0], r[1]))
+    for _, _, k_clean, entry_dict in raw_valid:
+        sig = _bigram_stem_signature(k_clean) or (k_clean,)
+        if sig in sig_to_key:
+            pruned = True
+            continue
+        sig_to_key[sig] = k_clean
+        existing_entries[k_clean] = entry_dict
+    return existing_entries, sig_to_key, pruned
+
+
+def _save_and_invalidate_dynamic_lexicon(
+    path: str, now: float, entries: Dict[str, Dict[str, Any]]
+) -> None:
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        save_json_state(path, {"updated_ts": now, "entries": entries}, indent=2)
+    except Exception as exc:
+        logger.debug("Could not save dynamic lexicon to %s: %s", path, exc)
+    _LEXICON_FILE_CACHE.clear()
+    _LEXICON_EVAL_CACHE.clear()
+
+
 def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Dict[str, Tuple[str, ...]]:
     """Load unexpired dynamically discovered high-severity and acute-shock terms from cachedb."""
-    now = resolve_now_ts(now_ts)
-    ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
-    path = _dynamic_lexicon_path(cache_dir)
+    now, ttl, path = _resolve_dynamic_lexicon_context(cache_dir, now_ts)
     empty_res: Dict[str, Tuple[str, ...]] = {
         "high_severity_terms": (),
         "acute_shock_phrases": (),
@@ -776,9 +827,7 @@ def update_dynamic_lexicon(
     now_ts: Optional[float] = None,
 ) -> Dict[str, Tuple[str, ...]]:
     """Persist newly discovered crisis terms into ``cachedb/macro_lexicon_collect.json``."""
-    now = resolve_now_ts(now_ts)
-    ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
-    path = _dynamic_lexicon_path(cache_dir)
+    now, ttl, path = _resolve_dynamic_lexicon_context(cache_dir, now_ts)
 
     stopwords = _get_stopwords_set()
     existing_entries: Dict[str, Dict[str, Any]] = {}
@@ -786,28 +835,9 @@ def update_dynamic_lexicon(
     pruned_existing = False
     raw = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
     if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
-        raw_valid: List[Tuple[float, int, str, Dict[str, Any]]] = []
-        for idx, (k, v) in enumerate(raw["entries"].items()):
-            if isinstance(k, str) and isinstance(v, dict):
-                k_clean = re.sub(r"\s+", " ", k.strip().lower())
-                if _is_noise_dynamic_keyword(k_clean, stopwords):
-                    pruned_existing = True
-                    continue
-                ts = normalize_epoch_sec(v.get("ts"), default=0.0) or 0.0
-                if ts > 0.0 and (now - ts) <= ttl:
-                    raw_valid.append((ts, idx, k_clean, dict(v, ts=ts)))
-                else:
-                    pruned_existing = True
-            else:
-                pruned_existing = True
-        raw_valid.sort(key=lambda r: (-r[0], r[1]))
-        for _, _, k_clean, entry_dict in raw_valid:
-            sig = _bigram_stem_signature(k_clean) or (k_clean,)
-            if sig in sig_to_key:
-                pruned_existing = True
-                continue
-            sig_to_key[sig] = k_clean
-            existing_entries[k_clean] = entry_dict
+        existing_entries, sig_to_key, pruned_existing = _extract_valid_dynamic_entries(
+            raw["entries"], now, ttl, stopwords
+        )
 
     changed = pruned_existing
     for raw_t, tier_override in (
@@ -835,13 +865,7 @@ def update_dynamic_lexicon(
         changed = True
 
     if changed:
-        try:
-            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-            save_json_state(path, {"updated_ts": now, "entries": existing_entries}, indent=2)
-        except Exception as exc:
-            logger.debug("Could not save dynamic lexicon to %s: %s", path, exc)
-        _LEXICON_FILE_CACHE.clear()
-        _LEXICON_EVAL_CACHE.clear()
+        _save_and_invalidate_dynamic_lexicon(path, now, existing_entries)
 
     return load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now)
 
@@ -851,52 +875,21 @@ def demote_dynamic_acute_terms(
     now_ts: Optional[float] = None,
 ) -> bool:
     """Demote dynamically discovered ``acute`` terms to ``high`` once threat is not CRITICAL_SHOCK."""
-    now = resolve_now_ts(now_ts)
-    ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
-    path = _dynamic_lexicon_path(cache_dir)
+    now, ttl, path = _resolve_dynamic_lexicon_context(cache_dir, now_ts)
     raw = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
     if not isinstance(raw, dict) or not isinstance(raw.get("entries"), dict):
         return False
 
-    stopwords = _get_stopwords_set()
-    cleaned_entries: Dict[str, Dict[str, Any]] = {}
-    seen_sigs: Set[Tuple[str, ...]] = set()
-    raw_valid: List[Tuple[float, int, str, Dict[str, Any]]] = []
-    changed = False
-    for idx, (k, v) in enumerate(raw["entries"].items()):
-        if not isinstance(k, str) or not isinstance(v, dict):
-            changed = True
-            continue
-        k_clean = re.sub(r"\s+", " ", k.strip().lower())
-        if _is_noise_dynamic_keyword(k_clean, stopwords):
-            changed = True
-            continue
-        ts = normalize_epoch_sec(v.get("ts"), default=0.0) or 0.0
-        if ts <= 0.0 or (now - ts) > ttl:
-            changed = True
-            continue
-        entry = dict(v, ts=ts)
+    cleaned_entries, _, changed = _extract_valid_dynamic_entries(
+        raw["entries"], now, ttl, _get_stopwords_set()
+    )
+    for entry in cleaned_entries.values():
         if str(entry.get("tier", "high")).lower() == "acute":
             entry["tier"] = "high"
             changed = True
-        raw_valid.append((ts, idx, k_clean, entry))
-    raw_valid.sort(key=lambda r: (-r[0], r[1]))
-    for _, _, k_clean, entry in raw_valid:
-        sig = _bigram_stem_signature(k_clean) or (k_clean,)
-        if sig in seen_sigs:
-            changed = True
-            continue
-        seen_sigs.add(sig)
-        cleaned_entries[k_clean] = entry
 
     if changed:
-        try:
-            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-            save_json_state(path, {"updated_ts": now, "entries": cleaned_entries}, indent=2)
-        except Exception as exc:
-            logger.debug("Could not save demoted dynamic lexicon to %s: %s", path, exc)
-        _LEXICON_FILE_CACHE.clear()
-        _LEXICON_EVAL_CACHE.clear()
+        _save_and_invalidate_dynamic_lexicon(path, now, cleaned_entries)
     return changed
 
 

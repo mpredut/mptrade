@@ -58,25 +58,19 @@ def walk_forward_splits(
     return folds
 
 
-def _finite_number(val, name: str) -> float:
-    fval = safe_float(val, default=None)
-    if fval is None:
-        raise ValueError(f"{name} must be a finite number, got {val!r}")
-    return fval
+def _bind_named_validator(coercer, desc: str):
+    def _validate(val, name: str):
+        parsed = coercer(val, default=None)
+        if parsed is None:
+            raise ValueError(f"{name} must be a {desc}, got {val!r}")
+        return parsed
+
+    return _validate
 
 
-def _nonneg_finite_number(val, name: str) -> float:
-    fval = safe_nonneg_float(val, default=None)
-    if fval is None:
-        raise ValueError(f"{name} must be a non-negative finite number, got {val!r}")
-    return fval
-
-
-def _nonneg_exact_int(val, name: str) -> int:
-    ival = exact_nonneg_int(val, default=None)
-    if ival is None:
-        raise ValueError(f"{name} must be a non-negative integer, got {val!r}")
-    return ival
+_finite_number = _bind_named_validator(safe_float, "finite number")
+_nonneg_finite_number = _bind_named_validator(safe_nonneg_float, "non-negative finite number")
+_nonneg_exact_int = _bind_named_validator(exact_nonneg_int, "non-negative integer")
 
 
 def summarize_test_windows(windows: list[dict]) -> dict:

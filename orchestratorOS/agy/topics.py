@@ -212,15 +212,31 @@ class TopicSession(NamedTuple):
     compact: bool                    # compact the thread in-place with `/compact` after the turn completes
 
 
+def _load_topic_entry(
+    topic_key: str,
+    registry_path: Optional[str] = None,
+) -> tuple[str, Dict[str, Any], Optional[Dict[str, Any]]]:
+    resolved = canonical_topic_key(topic_key)
+    reg = load_topic_registry(registry_path)
+    entry = reg.get(resolved)
+    return resolved, reg, entry if isinstance(entry, dict) else None
+
+
+def _resolve_topic_context(
+    topic_key: str,
+    cli_base: Optional[str] = None,
+) -> tuple[Dict[str, str], str, str]:
+    spec = topic_spec(topic_key)
+    return spec, canonical_topic_key(topic_key), resolve_bot_cli_base(cli_base)
+
+
 def format_topic_history_prefix(
     topic_key: str,
     registry_path: Optional[str] = None,
 ) -> str:
     """Format the rolling decision memory for a topic as a prompt prefix."""
-    resolved = canonical_topic_key(topic_key)
-    reg = load_topic_registry(registry_path)
-    entry = reg.get(resolved)
-    if not isinstance(entry, dict):
+    _, _, entry = _load_topic_entry(topic_key, registry_path)
+    if entry is None:
         return ""
     history = [h for h in entry.get("rolling_history") or [] if isinstance(h, dict)]
     if not history:
@@ -257,9 +273,7 @@ def prepare_topic_session(
     max_steps: Optional[int] = None,
 ) -> TopicSession:
     """Resolve the permanent conversation of a topic and whether this turn must compact or rotate it."""
-    topic_spec(topic_key)
-    resolved = canonical_topic_key(topic_key)
-    base = resolve_bot_cli_base(cli_base)
+    _, resolved, base = _resolve_topic_context(topic_key, cli_base)
     if compact_steps is None:
         compact_steps = required_int_env("LLM_TOPIC_COMPACT_STEPS")
     compact_steps_i = exact_pos_int(compact_steps, default=None)
@@ -268,9 +282,8 @@ def prepare_topic_session(
     raw_max = max_steps if max_steps is not None else optional_env("LLM_TOPIC_MAX_STEPS", "")
     max_steps_i = safe_nonneg_int(raw_max, 0)
 
-    reg = load_topic_registry(registry_path)
-    entry = reg.get(resolved)
-    if not isinstance(entry, dict):
+    _, reg, entry = _load_topic_entry(resolved, registry_path)
+    if entry is None:
         return TopicSession(None, "", False)
 
     raw_cid = entry.get("conversation_id")
@@ -368,18 +381,15 @@ def record_topic_turn(
     via ``replace_conversation=True``; ``compacted`` marks a turn that compacted the thread in-place
     with `/compact` so the next compaction is scheduled from the current step count.
     """
-    spec = topic_spec(topic_key)
-    resolved = canonical_topic_key(topic_key)
-    base = resolve_bot_cli_base(cli_base)
+    spec, resolved, base = _resolve_topic_context(topic_key, cli_base)
     compacted = _parse_bool_flag(compacted, default=False)
     replace_conv = _parse_bool_flag(replace_conversation, default=False)
     max_history_entries = safe_nonneg_int(max_history_entries, default=None)
     if max_history_entries is None:
         max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
 
-    reg = load_topic_registry(registry_path)
-    entry = reg.get(resolved)
-    if not isinstance(entry, dict):
+    _, reg, entry = _load_topic_entry(resolved, registry_path)
+    if entry is None:
         entry = {"topic_key": resolved, "turn_count": 0, "rolling_history": []}
 
     clean_cid = conversation_id.strip() if isinstance(conversation_id, str) and conversation_id.strip() else None
