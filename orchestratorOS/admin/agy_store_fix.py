@@ -69,12 +69,14 @@ from orchestratorOS.agy.protobuf import (  # noqa: E402
 )
 from orchestratorOS.agy.summary_store import (  # noqa: E402
     checkpoint_db,
+    daemon_loaded_titles,
     drop_wal_sidecars,
     read_annotation_title,
     read_summary_row,
     upsert_ui_visible_summary,
 )
 from orchestratorOS.agy.topics import (  # noqa: E402
+    TOPIC_SPECS,
     get_active_topic_cids,
     get_topic_canonical_titles,
     get_topic_registry_path,
@@ -152,19 +154,40 @@ def mode_pre(force: bool = False) -> int:
     # Detect conversations that existed in D2 from a previous session but whose summary row was
     # deleted in the Web UI (removed from conversation_summaries.db). Move them to backups so
     # they are not resurrected into D1 on post.
+    topic_cids = get_active_topic_cids(_effective_topic_registry())
+    active_topic_titles = set(get_topic_canonical_titles(_effective_topic_registry()).values())
     known_cids: set[str] = set()
     if os.path.exists(DB):
         checkpoint_db(DB)
         try:
             con = sqlite3.connect(DB, timeout=15)
             try:
-                known_cids = {r[0] for r in con.execute("SELECT conversation_id FROM conversation_summaries")}
+                cols = {r[1] for r in con.execute("PRAGMA table_info(conversation_summaries)").fetchall()}
+                if "title" in cols:
+                    summary_rows = con.execute("SELECT conversation_id, title FROM conversation_summaries").fetchall()
+                else:
+                    summary_rows = [(r[0], "") for r in con.execute("SELECT conversation_id FROM conversation_summaries").fetchall()]
+                stale_topic_cids = [
+                    cid
+                    for cid, title in summary_rows
+                    if cid
+                    and cid not in topic_cids
+                    and active_topic_titles
+                    and ((title or "").strip() or read_annotation_title(CLI, cid)) in active_topic_titles
+                ]
+                if stale_topic_cids:
+                    con.execute(
+                        f"DELETE FROM conversation_summaries WHERE conversation_id IN ({','.join('?' for _ in stale_topic_cids)})",
+                        stale_topic_cids,
+                    )
+                    con.commit()
+                    log.info("pre: purged %d retired topic ghost rows flushed on daemon stop", len(stale_topic_cids))
+                stale_set = set(stale_topic_cids)
+                known_cids = {cid for cid, _ in summary_rows if cid and cid not in stale_set}
             finally:
                 con.close()
         except sqlite3.Error as e:
             log.warning("cannot read summary IDs from %s: %s", DB, e)
-
-    topic_cids = get_active_topic_cids(_effective_topic_registry())
     if known_cids:
         del_dir = os.path.join(BACKUPS, stamp, "deleted_in_ui")
         for p2 in sorted(glob.glob(os.path.join(glob.escape(D2), "*.db"))):
@@ -523,9 +546,37 @@ def _glog_rel_ts(line: str) -> float | None:
         return None
 
 
+def _daemon_started_at() -> float:
+    if not os.path.isdir(LOGS):
+        return 0.0
+    for ts, lf in sorted(
+        ((log_started_at(lf), lf) for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log"))),
+        reverse=True,
+    ):
+        if ts <= 0.0:
+            break
+        txt = read_text_file(lf, default=None, errors="ignore")
+        if txt and ("Connection status:" in txt or "summary store: reconciliation complete" in txt):
+            return ts
+    return 0.0
+
+
 def last_store_activity() -> float:
     """Newest mtime of interactive conversation content, active WAL writes, daemon Web UI stream, or brain artifacts."""
-    ignored = get_active_topic_cids(_effective_topic_registry())
+    ignored = set(get_active_topic_cids(_effective_topic_registry()))
+    canonical_spec_titles = {s.title for s in TOPIC_SPECS.values()}
+    for gcid, gtitle in daemon_loaded_titles(CLI).items():
+        if (gtitle or "").strip() in canonical_spec_titles:
+            ignored.add(gcid)
+    if os.path.isdir(ANN):
+        try:
+            for ann_name in os.listdir(ANN):
+                if ann_name.endswith(".pbtxt"):
+                    gcid = ann_name[:-6]
+                    if gcid not in ignored and read_annotation_title(CLI, gcid) in canonical_spec_titles:
+                        ignored.add(gcid)
+        except OSError:
+            pass
     newest = 0.0
     if os.path.exists(DB):
         try:
@@ -601,6 +652,7 @@ def last_store_activity() -> float:
             pass
     brain = os.path.join(CLI, "brain")
     now_ts = time.time()
+    daemon_started_ts = _daemon_started_at()
     if os.path.isdir(brain):
         try:
             brain_cids = os.listdir(brain)
@@ -615,11 +667,12 @@ def last_store_activity() -> float:
                 st = os.stat(tp)
             except OSError:
                 continue
-            if (now_ts - st.st_mtime) > 86400:
+            if (now_ts - st.st_mtime) > 86400 or (daemon_started_ts > 0.0 and st.st_mtime < daemon_started_ts):
                 continue
             records = read_tail_jsonl_dicts(tp, limit=80)
             oneshot_until = 0.0
             cron_active = False
+            cron_max_iter = 0
             sched_task_id = ""
             sched_cond = "never"
             awaiting_sched_task_id = False
@@ -648,10 +701,12 @@ def last_store_activity() -> float:
                     if "stopped due to server restart" in content:
                         oneshot_until = 0.0
                         cron_active = False
+                        cron_max_iter = 0
                         sched_task_id = ""
                         sched_calls = 0
-                    elif re.search(r"\(iteration\s+\d+\)\s*$", content):
+                    elif m_iter := re.search(r"\(iteration\s+(\d+)\)\s*$", content):
                         cron_active = True
+                        cron_max_iter = max(cron_max_iter, int(m_iter.group(1)))
                         m_sender = re.search(r"\bsender=(\S+)", content)
                         if m_sender:
                             sched_task_id = m_sender.group(1).strip()
@@ -680,6 +735,7 @@ def last_store_activity() -> float:
                         if not kill_tid or not sched_task_id or kill_tid == sched_task_id or sched_task_id.endswith(f"/{kill_tid}"):
                             oneshot_until = 0.0
                             cron_active = False
+                            cron_max_iter = 0
                             sched_task_id = ""
                             sched_calls = 0
                     elif name == "schedule":
@@ -702,12 +758,14 @@ def last_store_activity() -> float:
                             awaiting_sched_task_id = True
                         elif cron_raw:
                             cron_active = True
+                            cron_max_iter = 0
                             sched_task_id = ""
                             awaiting_sched_task_id = True
             if cron_active or now_ts < oneshot_until:
-                is_repeating_loop = sched_calls >= 2
-                is_stale_user_input = not cron_active and latest_user_input_ts > 0.0 and (now_ts - latest_user_input_ts) > 1800.0
-                if is_repeating_loop or is_stale_user_input:
+                is_repeating_loop = sched_calls >= 2 or cron_max_iter >= 2
+                is_stale_transcript = (now_ts - st.st_mtime) > 1800.0
+                is_stale_user_input = latest_user_input_ts > 0.0 and (now_ts - latest_user_input_ts) > 1800.0
+                if is_repeating_loop or is_stale_transcript or is_stale_user_input:
                     continue
                 return now_ts
     for root, dirs, files in os.walk(brain):
@@ -737,18 +795,7 @@ def mode_ui_sync_check(idle_sec: int, min_interval_sec: float = 0.0) -> int:
     now = time.time()
     min_itv_f = safe_pos_float(min_interval_sec, default=0.0) or 0.0
     if min_itv_f > 0.0:
-        started_ts = 0.0
-        if os.path.isdir(LOGS):
-            for ts, lf in sorted(
-                ((log_started_at(lf), lf) for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log"))),
-                reverse=True,
-            ):
-                if ts <= 0.0:
-                    break
-                txt = read_text_file(lf, default=None, errors="ignore")
-                if txt and ("Connection status:" in txt or "summary store: reconciliation complete" in txt):
-                    started_ts = ts
-                    break
+        started_ts = _daemon_started_at()
         uptime_for = now - started_ts if started_ts > 0.0 else min_itv_f
         if 0.0 <= uptime_for < max(0.0, min_itv_f - 60.0):
             log.info("ui-sync-check: %d pending, daemon uptime %.0fs (< %gs cadence); waiting", len(entries), uptime_for, min_itv_f)

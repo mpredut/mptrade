@@ -471,13 +471,13 @@ def test_stale_user_input_with_active_timer_does_not_block_ui_sync(store):
             os.utime(os.path.join(root, f), (sched_ts, sched_ts))
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
 
-    # Even after the original schedule call scrolls past the 80-record tail, a cron SYSTEM_MESSAGE '(iteration N)' keeps cron_active=True
+    # Even after the original schedule call scrolls past the 80-record tail, a first-iteration cron wakeup keeps cron_active=True
     tp.write_text(
         json.dumps(
             {
                 "step_index": 200,
                 "type": "SYSTEM_MESSAGE",
-                "content": "[Message] timestamp=2026-11-10T12:17:32Z sender=stale-cid/task-7417 priority=MESSAGE_PRIORITY_HIGH content=Run audit (iteration 8)",
+                "content": "[Message] timestamp=2026-11-10T12:17:32Z sender=stale-cid/task-7417 priority=MESSAGE_PRIORITY_HIGH content=Run audit (iteration 1)",
             }
         )
         + "\n"
@@ -487,6 +487,45 @@ def test_stale_user_input_with_active_timer_does_not_block_ui_sync(store):
         for f in files:
             os.utime(os.path.join(root, f), (sched_ts, sched_ts))
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+
+    # Once a cron loop reaches iteration >= 2, it is treated as an autonomous repeating loop and must not starve periodic UI sync
+    tp.write_text(
+        json.dumps(
+            {
+                "step_index": 201,
+                "type": "SYSTEM_MESSAGE",
+                "content": "[Message] timestamp=2026-11-10T12:37:32Z sender=stale-cid/task-7417 priority=MESSAGE_PRIORITY_HIGH content=Run audit (iteration 8)",
+            }
+        )
+        + "\n"
+    )
+    os.utime(tp, (sched_ts, sched_ts))
+    for root, _, files in os.walk(cli / "brain"):
+        for f in files:
+            os.utime(os.path.join(root, f), (sched_ts, sched_ts))
+    (cli.parent.parent / "ui_sync_state.json").unlink(missing_ok=True)
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+
+    # Likewise, a zombie pre-restart transcript older than the current daemon startup log must not block UI sync
+    tp.write_text(
+        json.dumps(
+            {
+                "step_index": 202,
+                "type": "SYSTEM_MESSAGE",
+                "content": "[Message] timestamp=2026-11-10T12:17:32Z sender=stale-cid/task-7417 priority=MESSAGE_PRIORITY_HIGH content=Run audit (iteration 1)",
+            }
+        )
+        + "\n"
+    )
+    os.utime(tp, (sched_ts, sched_ts))
+    daemon_log_dir = cli / "log"
+    daemon_log_dir.mkdir(parents=True, exist_ok=True)
+    restart_stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(sched_ts + 60.0))
+    daemon_log = daemon_log_dir / f"cli-{restart_stamp}.log"
+    daemon_log.write_text("I1110 12:18:32.000000 1 remote_control_v2.go:2056] Connection status: Connected\n", encoding="utf-8")
+    os.utime(daemon_log, (sched_ts, sched_ts))
+    (cli.parent.parent / "ui_sync_state.json").unlink(missing_ok=True)
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
 
 
 def test_mode_pre_protects_topic_cids_and_archives_orphan_annotations(store, tmp_path, monkeypatch):
@@ -670,12 +709,21 @@ def test_rotated_topic_preserves_ghost_trajectory_until_mode_pre_reaps_it(store,
     conn.close()
     assert mirror_topic_thread_to_ui(new_cid, topic_title, bot_cli_base=str(bot_base), ui_cli_base=str(cli)) is True
 
-    # Meanwhile pending_ui_sync still queues both gone:<old_cid> and new:<new_cid>
+    # Meanwhile pending_ui_sync still queues both gone:<old_cid> and new:<new_cid>, and fresh ghost updates do not block idle check
     pending = asf.pending_ui_sync()
     assert f"gone:{old_cid}" in pending
     assert f"new:{new_cid}" in pending
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
 
-    # On the next daemon restart, mode_pre reaps ghost old_cid.db and promotes new_cid.db cleanly into D2
+    # Even if graceful daemon shutdown flushes old_cid back into conversation_summaries right before mode_pre runs,
+    # mode_pre purges the stale topic ghost row and promotes only new_cid.db into D2
+    conn = sqlite3.connect(asf.DB)
+    conn.execute(
+        "INSERT OR REPLACE INTO conversation_summaries VALUES (?, ?, '', 'CASCADE_RUN_STATUS_IDLE', 'autonommptrade', 120, 0, ?)",
+        (old_cid, topic_title, raw_old),
+    )
+    conn.commit()
+    conn.close()
     assert asf.mode_pre(force=True) == 0
     assert not (d1 / f"{old_cid}.db").exists()
     assert not (d2 / f"{old_cid}.db").exists()
