@@ -23,6 +23,7 @@ from intelligence.macro.news_feed_collector import (
 )
 from intelligence.macro_analyzer import MacroAnalyzer
 from intelligence.sentiment.gemini_client import GeminiClient
+from tests.conftest import DummyGeminiClient
 from intelligence.sentiment.sentiment_advisor import (
     SentimentAdvisor,
     SentimentAdvisorAssessment,
@@ -202,21 +203,18 @@ class TestGeopoliticalThreatAnalyzer:
         assert assessment.risk_score <= 0.2
 
     def test_war_news_calls_llm(self, tmp_path):
-        def mock_llm_runner(prompt, model, timeout):
-            assert "Strait of Hormuz" in prompt
-            return json.dumps({
-                "threat_level": "CRITICAL_SHOCK",
-                "risk_score": 0.95,
-                "summary": "Imminent oil supply cut and naval escalation threaten severe risk-off crypto dump.",
-                "recommended_brake": "HARD_VETO_NEW_BUYS",
-            })
-
-        client = GeminiClient(custom_runner=mock_llm_runner)
+        client = DummyGeminiClient({
+            "threat_level": "CRITICAL_SHOCK",
+            "risk_score": 0.95,
+            "summary": "Imminent oil supply cut and naval escalation threaten severe risk-off crypto dump.",
+            "recommended_brake": "HARD_VETO_NEW_BUYS",
+        })
         state_file = str(tmp_path / "geopolitical_state.json")
         analyzer = GeopoliticalThreatAnalyzer(gemini_client=client, state_file=state_file)
 
         war_snapshot = NewsFeedCollector.parse_rss_xml(SAMPLE_RSS_XML_WAR)
         assessment = analyzer.assess(war_snapshot, force_refresh=True)
+        assert "Strait of Hormuz" in client.last_prompt
 
         assert assessment.threat_level == "CRITICAL_SHOCK"
         assert assessment.recommended_brake == "HARD_VETO_NEW_BUYS"
@@ -224,18 +222,12 @@ class TestGeopoliticalThreatAnalyzer:
         assert "oil supply cut" in assessment.summary
 
     def test_macro_llm_interval_caching(self, tmp_path, monkeypatch):
-        calls = []
-
-        def counting_runner(prompt, model, timeout):
-            calls.append(prompt)
-            return json.dumps({
-                "threat_level": "ELEVATED",
-                "risk_score": 0.6,
-                "summary": "Regional tensions require defensive sizing.",
-                "recommended_brake": "DOWNSCALE_50",
-            })
-
-        client = GeminiClient(custom_runner=counting_runner)
+        client = DummyGeminiClient({
+            "threat_level": "ELEVATED",
+            "risk_score": 0.6,
+            "summary": "Regional tensions require defensive sizing.",
+            "recommended_brake": "DOWNSCALE_50",
+        })
         state_file = str(tmp_path / "geopolitical_state.json")
         analyzer = GeopoliticalThreatAnalyzer(
             gemini_client=client,
@@ -247,21 +239,21 @@ class TestGeopoliticalThreatAnalyzer:
         t0 = 1000000.0
 
         res1 = analyzer.assess(war_snapshot, now_ts=t0)
-        assert len(calls) == 1
+        assert client.call_count == 1
         assert res1.threat_level == "ELEVATED"
 
         res2 = analyzer.assess(war_snapshot, now_ts=t0 + 3600.0)
-        assert len(calls) == 1
+        assert client.call_count == 1
         assert res2 == res1
 
         res3 = analyzer.assess(war_snapshot, now_ts=t0 + 7300.0)
-        assert len(calls) == 1
+        assert client.call_count == 1
         assert res3 == res1
 
         war_xml_2 = SAMPLE_RSS_XML_WAR.replace(b"Major military strike", b"Second military strike")
         war_snap_2 = NewsFeedCollector.parse_rss_xml(war_xml_2)
         analyzer.assess(war_snap_2, now_ts=t0 + 7300.0)
-        assert len(calls) == 2
+        assert client.call_count == 2
 
     def test_llm_timeout_fallback_uses_short_retry_ttl_and_avoids_false_critical_shock(self, tmp_path):
         calls = []
@@ -1095,35 +1087,30 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert reason_three_new == "high_severity_headline_surge_3"
 
         # GeopoliticalThreatAnalyzer.assess must not overwrite _last_headlines_digest while cache is still fresh
-        calls = []
-
-        def counting_runner(prompt, model, timeout):
-            calls.append(prompt)
-            return json.dumps({
-                "threat_level": "NORMAL",
-                "risk_score": 0.15,
-                "summary": "Routine macro headlines.",
-                "recommended_brake": "NONE",
-            })
-
+        counting_client = DummyGeminiClient({
+            "threat_level": "NORMAL",
+            "risk_score": 0.15,
+            "summary": "Routine macro headlines.",
+            "recommended_brake": "NONE",
+        })
         analyzer = GeopoliticalThreatAnalyzer(
-            gemini_client=GeminiClient(custom_runner=counting_runner),
+            gemini_client=counting_client,
             cache_ttl_sec=16200.0,
             state_file=str(tmp_path / "geo_digest_preserve.json"),
         )
         snap_initial = {"headlines": [{"title": t, "source": "Reuters", "is_high_severity": True} for t in old_titles[:4]]}
         _, initial_digest = extract_high_severity_headlines_and_digest(snap_initial)
         analyzer.assess(snap_initial, now_ts=1_700_000_000.0)
-        assert len(calls) == 1
+        assert counting_client.call_count == 1
         assert analyzer._last_headlines_digest == initial_digest
 
         # Call while not stale with modified headlines: must return cached assessment WITHOUT overwriting _last_headlines_digest
         analyzer.assess(snap_one_new, now_ts=1_700_000_600.0)
-        assert len(calls) == 1
+        assert counting_client.call_count == 1
         assert analyzer._last_headlines_digest == initial_digest
         # Once stale (after 16200s), the new digest must be evaluated by LLM
         analyzer.assess(snap_one_new, now_ts=1_700_017_000.0)
-        assert len(calls) == 2
+        assert counting_client.call_count == 2
 
     def test_news_feed_collector_no_resurrection_after_rolling_window_and_pubdate_filtering(self, tmp_path):
         import email.utils

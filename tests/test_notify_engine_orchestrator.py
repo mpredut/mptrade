@@ -1750,7 +1750,6 @@ def test_mailer__config_rejects_out_of_range_tcp_ports_iter66_s4(monkeypatch):
 
 def test_pricechecker__readable_time_start_monitoring_and_new_coins_discovery__safe_days_back_iter66_s5():
     """[ITER66 #5] PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back."""
-    from types import SimpleNamespace
     from market_monitor.new_coins_discovery import _safe_days_back, safe_float as _safe_num
     # 5. PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back
     assert isinstance(PriceChecker._readable_time((1e25, 100.0, None)), str)

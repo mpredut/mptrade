@@ -26,6 +26,16 @@ class MemoryState:
         self.value = copy.deepcopy(value)
 
 
+def _make_refuse_place(reason="guard_blocked"):
+    def _refuse_place(*_args, **kwargs):
+        ctx = kwargs.get("_outcome_context")
+        if isinstance(ctx, dict):
+            ctx.update(accepted=False, reason=reason, state="refused")
+        return None
+
+    return _refuse_place
+
+
 class AssetGuardianTest(unittest.TestCase):
     def test_config_validation(self):
         with self.subTest(msg="test_required_config_rejects_missing_and_empty_values"):
@@ -977,11 +987,7 @@ class AssetGuardianTest(unittest.TestCase):
             self.assertEqual(ag._completed_tier_values(campaign), set())
             self.assertLessEqual(len(campaign["pending"]["client_order_id"]), 36)
 
-        def _refuse_place(*_args, **kwargs):
-            ctx = kwargs.get("_outcome_context")
-            if isinstance(ctx, dict):
-                ctx.update(accepted=False, reason="guard_blocked", state="refused")
-            return None
+        _refuse_place = _make_refuse_place("guard_blocked")
 
         with self.subTest(msg="test_locally_refused_sell_clears_pending_and_reuses_attempt"):
             state = MemoryState()
@@ -1369,17 +1375,11 @@ class AssetGuardianTest(unittest.TestCase):
             provider = mock.Mock()
             provider.free_balance.return_value = 10.0
 
-            def _refuse_place(*_args, **kwargs):
-                ctx = kwargs.get("_outcome_context")
-                if isinstance(ctx, dict):
-                    ctx.update(accepted=False, reason="profit_guard", state="refused")
-                return None
-
             audit_mock = mock.Mock()
             with mock.patch.object(ag, "STATE", state), \
                  mock.patch.object(ag.api, "get_current_price", return_value=115.0), \
                  mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag.mkt, "place", side_effect=_refuse_place), \
+                 mock.patch.object(ag.mkt, "place", side_effect=_make_refuse_place("profit_guard")), \
                  mock.patch.object(ag.ORDER_LIFECYCLE, "audit", audit_mock):
                 ag.ORDER_LIFECYCLE._last_refusal_by_intent.clear()
                 tier, campaign, _ = ag._sell_campaign_tier(

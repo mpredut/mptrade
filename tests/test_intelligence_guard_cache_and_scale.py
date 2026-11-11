@@ -1300,25 +1300,19 @@ class TestBatch6IntelligenceAndRoutingFixes:
         monkeypatch.setattr(order_guard, "_symbol_trend", lambda *a, **k: "flat")
         monkeypatch.setattr(order_guard, "get_dynamic_window_sec_cfg", lambda *a, **k: 14400.0)
 
-        provider = MagicMock()
-        provider.name = "binance"
-
         # Earlier SELL at 95.0 (t=1000) was already bought back by a BUY at 93.0 (t=2000).
         # Active open SELL is at 105.0 (t=3000).
         # Buying at 100.0 is +4.76% below 105.0 (>= 1.15% required), even though min(recent_prices) is 95.0.
-        def fake_get_orders(symbol, side, window_s):
-            if side == "SELL":
-                return [
+        provider = DummySpotExecutionProvider(
+            "binance",
+            orders_by_side={
+                "SELL": [
                     {"price": 95.0, "qty": 1.0, "timestamp": 1000.0},
                     {"price": 105.0, "qty": 1.0, "timestamp": 3000.0},
-                ]
-            if side == "BUY":
-                return [
-                    {"price": 93.0, "qty": 1.0, "timestamp": 2000.0},
-                ]
-            return []
-
-        provider.get_orders.side_effect = fake_get_orders
+                ],
+                "BUY": [{"price": 93.0, "qty": 1.0, "timestamp": 2000.0}],
+            },
+        )
 
         allowed = order_guard.check_math_profit_reference(
             provider, "BTCUSDC", "BUY", 100.0, 1.15, window_ref=95.0
@@ -1517,23 +1511,17 @@ class TestBatch6IntelligenceAndRoutingFixes:
         monkeypatch.setattr(order_guard, "_symbol_trend", lambda *a, **k: "flat")
         monkeypatch.setattr(order_guard, "get_dynamic_window_sec_cfg", lambda *a, **k: 14400.0)
 
-        provider = MagicMock()
-        provider.name = "hyperliquid"
-
         # Hyperliquid fills use 'px', 'sz', and 'T' (milliseconds), not 'price' or 'timestamp'
-        def fake_get_orders(symbol, side, window_s):
-            if side == "SELL":
-                return [
+        provider = DummySpotExecutionProvider(
+            "hyperliquid",
+            orders_by_side={
+                "SELL": [
                     {"px": "95.0", "sz": "1.0", "T": 1000000},
                     {"px": "105.0", "sz": "1.0", "T": 3000000},
-                ]
-            if side == "BUY":
-                return [
-                    {"px": "93.0", "sz": "1.0", "T": 2000000},
-                ]
-            return []
-
-        provider.get_orders.side_effect = fake_get_orders
+                ],
+                "BUY": [{"px": "93.0", "sz": "1.0", "T": 2000000}],
+            },
+        )
         allowed = order_guard.check_math_profit_reference(
             provider, "HYPE/USDC", "BUY", 100.0, 1.15, window_ref=95.0
         )
@@ -2224,7 +2212,6 @@ def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_it
 
 def test_check_intelligence_guards_invalidates_cached_weibull_trend_exhausted_decision_when_trend_duration_seconds_iter12_s2(monkeypatch):
     """[ITER12 #2] check_intelligence_guards invalidates cached Weibull 'trend_exhausted' decision when trend_duration_seconds changes & canonical_base_asset preserves USDCUSDT so it is never conflated with USDC/EUR & check_llm_order_guards preserves stricter GLLM1 active_reason when GLLM3 has looser downscale."""
-    from types import SimpleNamespace
     # 2. check_intelligence_guards invalidates cached Weibull "trend_exhausted" decision when trend_duration_seconds changes
     base_m = dict(order_guard._load_margins())
     base_m.update(

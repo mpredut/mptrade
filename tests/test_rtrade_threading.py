@@ -1149,8 +1149,8 @@ class RTradeThreadingTest(unittest.TestCase):
             cancel_confirmed.assert_called_once_with("TAOUSDC", 42)
             preflight.assert_not_called()
 
-    def test_run_pair_aborts_surviving_leg_before_venue_dispatch_via_abort_if(self):
-        bot = _bot()
+    @staticmethod
+    def _make_abort_if_place_stub(refusal_reason: str):
         venue_dispatches = []
         sell_reached_abort_check = threading.Event()
 
@@ -1160,7 +1160,7 @@ class RTradeThreadingTest(unittest.TestCase):
             if side == "BUY":
                 sell_reached_abort_check.wait(timeout=1.0)
                 if isinstance(ctx, dict):
-                    ctx["reason"] = "qty_zero_after_policy"
+                    ctx["reason"] = refusal_reason
                 return None
             sell_reached_abort_check.set()
             if callable(abort_if) and abort_if():
@@ -1169,6 +1169,12 @@ class RTradeThreadingTest(unittest.TestCase):
                 return None
             venue_dispatches.append((side, price, qty))
             return {"orderId": 42, "price": str(price)}
+
+        return fake_place, venue_dispatches
+
+    def test_run_pair_aborts_surviving_leg_before_venue_dispatch_via_abort_if(self):
+        bot = _bot()
+        fake_place, venue_dispatches = self._make_abort_if_place_stub("qty_zero_after_policy")
 
         with patch.object(rtrade.api, "get_current_price", return_value=100.0), \
              patch.object(rtrade.mkt, "place", side_effect=fake_place):
@@ -1190,24 +1196,7 @@ class RTradeThreadingTest(unittest.TestCase):
         ):
             with self.subTest(refusal=refusal):
                 bot = _bot()
-                venue_dispatches = []
-                sell_reached_abort_check = threading.Event()
-
-                def fake_place(symbol, side, price, qty, **kwargs):
-                    ctx = kwargs.get("_outcome_context")
-                    abort_if = kwargs.get("abort_if")
-                    if side == "BUY":
-                        sell_reached_abort_check.wait(timeout=1.0)
-                        if isinstance(ctx, dict):
-                            ctx["reason"] = refusal
-                        return None
-                    sell_reached_abort_check.set()
-                    if callable(abort_if) and abort_if():
-                        if isinstance(ctx, dict):
-                            ctx["reason"] = "aborted_by_caller"
-                        return None
-                    venue_dispatches.append((side, price, qty))
-                    return {"orderId": 42, "price": str(price)}
+                fake_place, venue_dispatches = self._make_abort_if_place_stub(refusal)
 
                 with patch.object(rtrade.api, "get_current_price", return_value=100.0), \
                      patch.object(rtrade.mkt, "place", side_effect=fake_place), \

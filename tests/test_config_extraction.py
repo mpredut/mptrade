@@ -288,9 +288,8 @@ REQUIRED_KEYS = sorted(
 
 
 
-class _Executor:
-    def pair_precision(self, _symbol):
-        return PairPrecision(2, 4, 0.01, "ASSET")
+def _Executor():
+    return SimpleNamespace(pair_precision=lambda _symbol: PairPrecision(2, 4, 0.01, "ASSET"))
 
 
 def _params():
@@ -307,8 +306,7 @@ class SpotModuleBoundaryTest(unittest.TestCase):
         self.assertIs(strategies.spot_engine, spot_engine)
 
     def test_missing_venue_precision_fails_before_strategy_start(self):
-        executor = _Executor()
-        executor.pair_precision = lambda _symbol: None
+        executor = SimpleNamespace(pair_precision=lambda _symbol: None)
         with self.assertRaisesRegex(RuntimeError, "no pair metadata"):
             spot_engine.Strategy(
                 executor, "ASSETUSD", _params(), dry_run=False, initial_state=spot_engine._new_state(),

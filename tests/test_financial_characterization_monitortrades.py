@@ -2099,7 +2099,6 @@ def test_monitortrades__load_mt_state_re_anchors_clock_skewed_future_timestamps_
     import pytest
     from unittest.mock import MagicMock
     from instrument import Instrument
-    from tests.conftest import DummySpotExecutionProvider
     import rtrade
     pg_bypasses = []
     FakeKrakenProvider = lambda: DummySpotExecutionProvider(order_id="ord-22")

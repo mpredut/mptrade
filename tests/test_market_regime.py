@@ -552,7 +552,6 @@ def test_marketregimehorizon_parse_adverse_to_and_marketregimeservice_interval_c
 
 def test_market_regime_marketregimecontext_is_valid_for_compose__closed_series_iter107_s2():
     """[ITER107 #2] market_regime: MarketRegimeContext.is_valid_for, compose, _closed_series."""
-    from types import SimpleNamespace
     # 2. market_regime: MarketRegimeContext.is_valid_for, compose, _closed_series
     dec = mr.MarketRegimeEvaluator().unknown()
     ctx = mr.MarketRegimeContext(

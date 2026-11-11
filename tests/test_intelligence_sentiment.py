@@ -521,18 +521,14 @@ class TestSentimentAdvisor:
     """Tests for periodic SentimentAdvisor macro evaluations."""
 
     def test_advisor_review_and_caching(self, tmp_path):
-
-        def mock_runner(prompt, model, timeout):
-            return json.dumps({
-                "market_bias": "BULLISH",
-                "risk_level": "MODERATE",
-                "confidence": 0.85,
-                "summary": "Macro indicators suggest continued institutional accumulation.",
-                "key_risks": ["Upcoming CPI release", "Derivatives OI peak"],
-                "recommended_action": "ACCUMULATE",
-            })
-
-        client = GeminiClient(custom_runner=mock_runner)
+        client = DummyGeminiClient({
+            "market_bias": "BULLISH",
+            "risk_level": "MODERATE",
+            "confidence": 0.85,
+            "summary": "Macro indicators suggest continued institutional accumulation.",
+            "key_risks": ["Upcoming CPI release", "Derivatives OI peak"],
+            "recommended_action": "ACCUMULATE",
+        })
         cache_file = str(tmp_path / "sentiment_advisor.json")
         advisor = SentimentAdvisor(gemini_client=client, cache_file=cache_file, cache_ttl_sec=300.0)
 
@@ -551,38 +547,27 @@ class TestHighStakeGuard:
     """Tests for HighStakeGuard order vetting for >= 1000 EUR."""
 
     def test_sub_threshold_bypasses_llm(self):
-        # Client runner that raises if called
-        def failing_runner(prompt, model, timeout):
-            raise AssertionError("Should not be called for orders < 1000 EUR")
-
-        client = GeminiClient(custom_runner=failing_runner)
+        client = DummyGeminiClient()
         guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         # 500 EUR order -> instant pass
         dec = guard.check("BTCUSDT", "BUY", price=50000.0, qty=0.01, notional_eur=500.0)
         assert dec.allowed is True
         assert "below_high_stake_threshold" in dec.reason
+        assert client.call_count == 0
 
     def test_high_stake_approved(self):
-
-        def approve_runner(prompt, model, timeout):
-            assert "1,500.00 EUR" in prompt
-            return json.dumps({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Healthy trend and low funding"})
-
-        client = GeminiClient(custom_runner=approve_runner)
+        client = DummyGeminiClient({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Healthy trend and low funding"})
         guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         dec = guard.check("BTCUSDT", "BUY", price=60000.0, qty=0.025, notional_eur=1500.0)
+        assert "1,500.00 EUR" in client.last_prompt
         assert dec.allowed is True
         assert dec.brake_action == BrakeAction.NONE
         assert "Gemini approved" in dec.reason
 
     def test_high_stake_vetoed(self):
-
-        def veto_runner(prompt, model, timeout):
-            return json.dumps({"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Massive whale sell wall and euphoric top"})
-
-        client = GeminiClient(custom_runner=veto_runner)
+        client = DummyGeminiClient({"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Massive whale sell wall and euphoric top"})
         guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         dec = guard.check("BTCUSDT", "BUY", price=70000.0, qty=0.03, notional_eur=2100.0)
@@ -591,11 +576,7 @@ class TestHighStakeGuard:
         assert "Gemini vetoed" in dec.reason
 
     def test_high_stake_downscaled(self):
-
-        def downscale_runner(prompt, model, timeout):
-            return json.dumps({"decision": "DOWNSCALE", "suggested_scale": 0.35, "reason": "Caution: funding is elevated"})
-
-        client = GeminiClient(custom_runner=downscale_runner)
+        client = DummyGeminiClient({"decision": "DOWNSCALE", "suggested_scale": 0.35, "reason": "Caution: funding is elevated"})
         guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         dec = guard.check("BTCUSDT", "BUY", price=60000.0, qty=0.02, notional_eur=1200.0)
@@ -604,11 +585,7 @@ class TestHighStakeGuard:
         assert dec.suggested_scale == 0.35
 
     def test_high_stake_downscaled_percentage_scale(self):
-
-        def downscale_pct_runner(prompt, model, timeout):
-            return json.dumps({"decision": "DOWNSCALE", "suggested_scale": 25, "reason": "Scale to 25%"})
-
-        client = GeminiClient(custom_runner=downscale_pct_runner)
+        client = DummyGeminiClient({"decision": "DOWNSCALE", "suggested_scale": 25, "reason": "Scale to 25%"})
         guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         dec = guard.check("BTCUSDT", "BUY", price=60000.0, qty=0.02, notional_eur=1200.0)
@@ -637,11 +614,8 @@ class TestOrderGuardWithGemini:
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
 
-        def mock_veto_runner(prompt, model, timeout):
-            return json.dumps({"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Risky market"})
-
         mock_guard = HighStakeGuard(
-            gemini_client=GeminiClient(custom_runner=mock_veto_runner),
+            gemini_client=DummyGeminiClient({"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Risky market"}),
             min_notional_eur=1000.0,
         )
 
@@ -711,12 +685,8 @@ class TestOrderGuardWithGemini:
 
 
         called_notionals = []
-
-        def tracking_runner(prompt, model, timeout):
-            return json.dumps({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Good trade"})
-
         mock_guard = HighStakeGuard(
-            gemini_client=GeminiClient(custom_runner=tracking_runner),
+            gemini_client=DummyGeminiClient({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Good trade"}),
             min_notional_eur=1000.0,
         )
         orig_check = mock_guard.check

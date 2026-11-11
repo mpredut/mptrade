@@ -663,7 +663,6 @@ def test_account_cache_and_legacy_jsonl_border_cases(tmp_path: Path):
 
 def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(monkeypatch):
     """Verify declarative provider class specs, cross-venue live/dry-run symmetry, and border hardening."""
-    import re
     from providers.hyperliquid_provider import _call_hl_info_read
     from providers.quantity import clamp_notional_to_wallet_balance
 
@@ -1759,7 +1758,6 @@ def test_stop_loss_avg_archive_seed_replay_summary_fg_and_guard_preflight_border
     from intelligence.sentiment.collectors.portfolio_collector import _resolve_ai_intents_and_known_order_ids
     from offline.backtests.evaluation import parse_intervals
     from offline.research.monitortrades_backtest.sweep_mt_models import _accepts_two_positional_args
-    from providers.base import MarketDataProvider
     from state_io import read_jsonl_dicts
     from strategies.base_spot_mixin import BaseSpotMixin
     from strategies.spot_replay import summarize_grid_replay_metrics
@@ -1878,14 +1876,12 @@ def test_temporary_environ_daemon_fetch_equity_oi_remote_trades_and_guard_prefli
     """Regression suite for temporary_environ, daemon_ssot single-call fetch, equity OI bounds, remote trade LSP, and strategy/guard preflight."""
     import os
     import numpy as np
-    import order_guard
     import pricewindow as pw
     from botcore import temporary_environ
     from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
     from intelligence.macro.daemon_ssot import ExternalTelemetryMixin, run_daemon_cli_once_or_start
     from offline.research.monitortrades_backtest.run_replay_backtest import step_adaptive_trend_window
     from offline.research.monitortrades_backtest.sweep_mt_models import compute_window_bounds
-    from providers.base import MarketDataProvider
     from providers.replay_provider import ReplayMarketDataProvider
     from strategies.base_spot_mixin import BaseSpotMixin
     from verify_tools import portfolio_snapshot

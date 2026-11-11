@@ -759,7 +759,6 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
 def test_replay_execution_metrics_and_config_ssot_identity(monkeypatch, tmp_path):
     """Verify canonical SSOT identity across botcore, order_ohlc_utils, strategies.replay_*, and offline.backtests.*."""
     import importlib
-    import botcore
     import offline.backtests.datasets as ds
     import offline.backtests.evaluation as ev
     import offline.backtests.execution as ex

@@ -1408,7 +1408,6 @@ def test_incrementaltrendbuffer_trim_front_true_eval_slice_eps_k_validation_and_
 
 def test_pricewindow_from_cache24_with_string_window_seconds_and_windowanalyzer_check_price_change_iter166_s3():
     """[ITER166 #3] PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.check_price_change with string threshold."""
-    from types import SimpleNamespace
     # 3. PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.check_price_change with string threshold
     fake_c24 = SimpleNamespace(
         get_recent_entries=lambda sym, last_seconds: [[1700000000000 + i * 1000, 100.0 + i * 0.5] for i in range(15)],
