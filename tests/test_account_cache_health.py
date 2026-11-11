@@ -397,12 +397,23 @@ def test_persistence_and_cache_layer_dag_and_sibling_purity_ast():
                     roots.add(alias.name.split(".")[0])
             elif isinstance(node, ast.ImportFrom) and node.module:
                 roots.add(node.module.split(".")[0])
+            elif (
+                isinstance(node, ast.Call)
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                if (
+                    isinstance(node.func, ast.Attribute) and node.func.attr == "import_module"
+                ) or (
+                    isinstance(node.func, ast.Name) and node.func.id in ("import_module", "__import__")
+                ):
+                    roots.add(node.args[0].value.split(".")[0])
         return roots
 
     assert not (repo_root / "binance_cache_health.py").exists()
 
-    # cacheintegrity.py must remain pure Layer 2 (stdlib + botcore + state_io only).
-    ci_imports = _imported_roots("cacheintegrity.py")
+    # Layer 2 persistence & window modules must never import Layer 3+ cache/provider/strategy/intelligence modules.
     forbidden_layer2 = {
         "account_cache_health",
         "binance_cache_health",
@@ -422,7 +433,15 @@ def test_persistence_and_cache_layer_dag_and_sibling_purity_ast():
         "hyperliquid",
         "212trading",
     }
-    assert not (ci_imports & forbidden_layer2), f"cacheintegrity.py upward leak: {ci_imports & forbidden_layer2}"
+    for l2_mod in ("cachepaths.py", "state_io.py", "cacheintegrity.py", "pricewindow.py"):
+        l2_imports = _imported_roots(l2_mod)
+        assert not (l2_imports & forbidden_layer2), f"{l2_mod} upward leak: {l2_imports & forbidden_layer2}"
+    ach_imports = _imported_roots("account_cache_health.py")
+    assert not (ach_imports & (forbidden_layer2 - {"account_cache_health"})), (
+        f"account_cache_health.py upward leak: {ach_imports & (forbidden_layer2 - {'account_cache_health'})}"
+    )
+    ss_imports = _imported_roots("shadow_signals.py")
+    assert "intelligence" not in ss_imports, f"shadow_signals.py upward leak into intelligence: {ss_imports}"
 
     # All 5 cache modules must never import higher layers or venue SDK packages.
     forbidden_cache_upward = {
