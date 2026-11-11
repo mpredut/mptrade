@@ -441,7 +441,6 @@ def test_geopolitical_elevated_absorbed_by_market(tmp_path):
 def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure():
     """Verify that RE-BUY (bypass_guards={'math_reference'}) skips mathematical comparison
     against historical 14-day sales, but actively blocks on microstructure ask walls / cascades."""
-    import order_guard
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
     class _MockProvider:
@@ -498,7 +497,6 @@ def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure(
 
 def test_profit_guard_all_bypasses_everything():
     """Verify emergency stop-loss / 'all' bypasses both math reference and all pillars."""
-    import order_guard
 
     class _MockProvider:
         name = "binance"
@@ -576,7 +574,6 @@ def test_granular_bypass_p3_p4_avoids_unbound_local_error():
 def test_internal_guard_mode_off_does_not_disable_other_pillars(monkeypatch):
     from order_guard import check_intelligence_guards
     # internal_guard_mode=off should not return 'intelligence_guards_off' globally
-    import order_guard
     monkeypatch.setattr(
         order_guard,
         "_load_margins",
@@ -908,7 +905,6 @@ def test_batch39_composite_daemon_and_cli_hardening(tmp_path, monkeypatch):
 def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatch):
     """Verify alerts_config case-insensitive keys, new_coins_discovery timestamp/string coercion, pricefetcher CMC .previous recovery, and alertnotifiers delivery state .previous recovery."""
     import json
-    import time
     from unittest.mock import MagicMock
     from market_monitor.alerts_config import load_config, resolve
     from market_monitor.new_coins_discovery import (
@@ -1851,7 +1847,6 @@ def test_batch56_intelligence_backtest_full_composite_and_research_hardening(mon
 
 def test_batch57_binance_wf_baseline_t212_report_and_tradeall_backtest_guards(tmp_path):
     import json
-    from unittest.mock import patch
     from offline.runners import binance_walk_forward_baseline as bwf
     from offline.research.t212_continuous_grid import report as t212_report
     from offline.backtests import tradeall as bt_ta
@@ -2010,7 +2005,6 @@ def test_operational_category_isolation_case_insensitive_is_bypassed_iter8_s1():
 def test__read_cached_price_history_honors_now_and_rejects_future_dated_points_iter17_s1(monkeypatch, tmp_path):
     """[ITER17 #1] _read_cached_price_history honors `now` and rejects future-dated points."""
     import json
-    import order_guard
     import qlimit_order_guard
     # 1. _read_cached_price_history honors `now` and rejects future-dated points
     monkeypatch.setattr(order_guard, "get_cachedb_dir", lambda: str(tmp_path))
@@ -2171,7 +2165,6 @@ def test_external_order_guard_check_external_order_guards_side_normalization_boo
 def test_order_guard_side_normalization_daily_limit_guard_weight_limit_and__read_cached_price_history_iter100_s5():
     """[ITER100 #5] order_guard side normalization, daily_limit_guard, weight_limit, and _read_cached_price_history."""
     import pytest
-    import order_guard
     # 5. order_guard side normalization, daily_limit_guard, weight_limit, and _read_cached_price_history
     assert order_guard.opposite_side(" b ") == "SELL"
     assert order_guard.opposite_side(" s ") == "BUY"
@@ -2193,8 +2186,6 @@ def test_order_guard_weight_limit_preserves_float_inf_for_auto_quantity_iter101_
     """[ITER101 #5] order_guard.weight_limit preserves float('inf') for auto-quantity (requested_qty=None)."""
     import pytest
     # 5. order_guard.weight_limit preserves float("inf") for auto-quantity (requested_qty=None)
-    import order_guard
-    from unittest.mock import patch
     class _DummyProvider:
         name = "Dummy"
         def get_orders(self, sym, side, sec):

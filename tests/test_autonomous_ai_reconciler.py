@@ -1738,7 +1738,6 @@ def test_xbt_alias_7d_archive_with_24h_present_and_cross_venue_inheritance(tmp_p
     from types import SimpleNamespace
     from cachepaths import cache_symbol_variants, resolve_binance_lookup_symbol
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 
     assert "BTCUSDC" in cache_symbol_variants("XBTUSD")
@@ -4526,7 +4525,6 @@ def test_iteration24_prompt_formatters_lazy_position_limits_and_partial_liq():
 
 
 def test_iteration25_cache_symbol_variants_quote_priority_and_fiat_live_price(tmp_path):
-    import json
     import math
     from types import SimpleNamespace
     from cachepaths import cache_symbol_variants
@@ -4577,7 +4575,6 @@ def test_iteration25_cache_symbol_variants_quote_priority_and_fiat_live_price(tm
 
 
 def test_iteration26_compatible_quote_suffixes_and_unpriced_fiat_isolation(tmp_path):
-    import json
     from cachepaths import compatible_quote_suffixes
     from intelligence.sentiment.collectors.portfolio_collector import (
         parse_venue_cycle_state,
@@ -4660,8 +4657,6 @@ def test_iteration26_compatible_quote_suffixes_and_unpriced_fiat_isolation(tmp_p
 
 
 def test_iteration27_position_enrichment_and_audit_quote_isolation(tmp_path):
-    import json
-    from unittest.mock import MagicMock
     from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions, harvest_tradable_positions_and_orders
     from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
 
@@ -4734,8 +4729,6 @@ def test_iteration27_position_enrichment_and_audit_quote_isolation(tmp_path):
 
 
 def test_iteration28_pretrade_telemetry_quote_isolation_and_mock_base_quote_derivation(tmp_path):
-    import json
-    from unittest.mock import MagicMock
     from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
     from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders
 
@@ -4848,7 +4841,6 @@ def test_iteration29_prompt_sections_3a_and_3b_quote_family_grouping():
 
 def test_iteration30_submit_decisions_scope_xstock_guard_and_instrument_quote_resolution(tmp_path):
     from types import SimpleNamespace
-    from unittest.mock import MagicMock
     from instrument_registry import resolve_instrument_spec
     from orchestratorOS.lib.technical_repair_ssot import (
         build_sensor_health_summary,
@@ -5038,7 +5030,6 @@ def test_iteration31_binance_lookup_orderbook_quote_isolation_and_audit_dedup(tm
 
 def test_iteration32_resolve_assets_usdt_and_prompt_formatters_max_usd_and_eur_3b():
     from types import SimpleNamespace
-    from unittest.mock import MagicMock
     from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
     from orchestratorOS.supervisor.prompt_sections import (
         _format_microstructure_section,
@@ -5175,7 +5166,6 @@ def test_iteration33_cross_market_bellwether_quote_isolation_and_collector_alias
 
 
 def test_iteration34_microstructure_quote_isolation_near_parity_and_audit_reconcile(tmp_path):
-    import json
     from types import SimpleNamespace
     from intelligence.sentiment.collectors.macro_telemetry_collector import apply_asset_scope_filter
     from intelligence.sentiment.evaluators.microstructure_evaluator import (
@@ -5595,7 +5585,6 @@ def test_iteration39_cross_quote_trend_price_isolation_resolve_assets_and_bare_b
 
 
 def test_iteration40_monolithic_cache24_isolation_and_bare_base_series_micro_pretrade(tmp_path):
-    import json
     from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure, load_symbol_price_series
 
@@ -5892,7 +5881,6 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
 
 
 def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
-    from intelligence.sentiment.gemini_client import GeminiClient
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
     from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
     from orchestratorOS.agy.topics import topic_spec
@@ -6183,7 +6171,6 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     assert "more than" not in discovered
 
     # harvest_macro_and_news_sensors demotes cached false-alarm [HIGH-SEV] items
-    import json
     (tmp_path / "news_feed_collect.json").write_text(
         json.dumps(
             [

@@ -818,7 +818,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_get_symbol_volatility_1h_explicit_percentage_to_ratio_conversion(self):
         """Verify get_symbol_volatility_1h explicitly converts percentage to decimal ratio (no 100x blowup for vol < 0.10%)."""
-        import tempfile
         import json
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_data = {
@@ -1133,7 +1132,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_mt_state_persists_across_restart(self):
         """In-flight MHDSL bounce, MDHTP ride, and exit kinds must survive monitor restart via persistent state file."""
-        import tempfile
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
             temp_state_file = tf.name
         try:
@@ -1909,7 +1907,6 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
             )
 
     def test_executed_trade_resolves_owner_from_execution_audit(self):
-        import tempfile
         from providers.execution_audit import ExecutionAudit
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2073,7 +2070,6 @@ def test_monitortrades__can_pass_buy_quantity_policy_passes_cancelorders_true_an
     """[ITER10 #3] monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard."""
     import order_guard
     from types import SimpleNamespace
-    import monitortrades as mt
     # 3. monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard
     qdec_kwargs = []
 
@@ -2115,7 +2111,6 @@ def test_monitortrades__can_pass_buy_quantity_policy_passes_cancelorders_true_an
 def test_monitortrades__can_pass_buy_quantity_policy_honors_g_qlimit1_bypass_iter14_s1(monkeypatch):
     """[ITER14 #1] monitortrades._can_pass_buy_quantity_policy honors G_QLIMIT1 bypass."""
     from types import SimpleNamespace
-    import monitortrades as mt
     import order_guard
     from providers.quantity import QuantityDecision
     # 1. monitortrades._can_pass_buy_quantity_policy honors G_QLIMIT1 bypass
@@ -2168,7 +2163,6 @@ def test_monitortrades__load_mt_state_re_anchors_clock_skewed_future_timestamps_
     from instrument import Instrument
     from providers.quantity import QuantityDecision
     import rtrade
-    import monitortrades as mt
     pg_bypasses = []
     class FakeKrakenProvider:
         name = "kraken"
@@ -2279,7 +2273,6 @@ def test_monitortrades__load_mt_state_re_anchors_clock_skewed_future_timestamps_
 def test_monitortrades__compute_spot_position__place_guarded_iter32_s4():
     """[ITER32 #4] monitortrades._compute_spot_position & _place_guarded."""
     from types import SimpleNamespace
-    import monitortrades as mt
     # 4. monitortrades._compute_spot_position & _place_guarded
     owned, active_avg, _ = mt._compute_spot_position(
         buy_orders=[
@@ -2343,7 +2336,6 @@ def test_infer_record_owner_ignores_boolean_parent_owner_kind_and__format_record
 
 def test_monitortrades__extract_trade_uid_normalizes_integer_floats_and_rejects_nan_iter124_s4():
     """[ITER124 #4] monitortrades._extract_trade_uid normalizes integer floats and rejects NaN/'nan'/'null'."""
-    import monitortrades as mt
     # 4. monitortrades._extract_trade_uid normalizes integer floats and rejects NaN/"nan"/"null"
     assert mt._extract_trade_uid({"id": 555666.0}) == "555666"
     assert mt._extract_trade_uid({"id": float("nan"), "tradeId": "nan", "a": "777888"}) == "777888"
@@ -2382,7 +2374,6 @@ def test_scheduled_pilot__edge__safe_f_iter148_s2():
 
 def test_monitortrades__extract_trade_uid_rejects_and_normalizes_iter158_s1():
     """[ITER158 #1] monitortrades._extract_trade_uid rejects '0' and normalizes .0."""
-    import monitortrades as mt
     # 1. monitortrades._extract_trade_uid rejects "0" and normalizes .0
     assert mt._extract_trade_uid({"id": "0", "tradeId": 0, "a": "777.0"}) == "777"
     assert mt._extract_trade_uid({"id": "0", "tradeId": "nan"}) == ""
@@ -2390,7 +2381,6 @@ def test_monitortrades__extract_trade_uid_rejects_and_normalizes_iter158_s1():
 def test_monitortrades__load_mt_state_tolerates_bool_now_curr_and_non_dict_iter158_s2(monkeypatch, tmp_path):
     """[ITER158 #2] monitortrades._load_mt_state tolerates bool now_curr and non-dict sub-entries."""
     import json
-    import monitortrades as mt
     # 2. monitortrades._load_mt_state tolerates bool now_curr and non-dict sub-entries
     mt_state_file = tmp_path / "mt_state.json"
     mt_state_file.write_text(json.dumps({
@@ -2408,7 +2398,6 @@ def test_monitortrades__load_mt_state_tolerates_bool_now_curr_and_non_dict_iter1
 
 def test_monitortrades__can_pass_buy_quantity_policy_rejects_nan_final_qty_iter158_s3():
     """[ITER158 #3] monitortrades._can_pass_buy_quantity_policy rejects NaN final_qty."""
-    import monitortrades as mt
     # 3. monitortrades._can_pass_buy_quantity_policy rejects NaN final_qty
     class _NanDecision:
         final_qty = float("nan")

@@ -1744,7 +1744,6 @@ def test_spot_engine_set_simulated_time__evaluate_reentry_gate_ledger_reconcilia
 def test_rtradepairstore_guards_terminal_retention_accepted_order_id_and_checkpoint_state_iter62_s2(tmp_path):
     """[ITER62 #2] RTradePairStore guards terminal_retention, accepted order_id, and checkpoint state."""
     import pytest
-    from rtrade_pair_store import RTradePairStore
     # 2. RTradePairStore guards terminal_retention, accepted order_id, and checkpoint state
     store = RTradePairStore(path=str(tmp_path / "rtrade_pairs.json"), terminal_retention=True)
     assert store.terminal_retention == 200
@@ -1756,7 +1755,6 @@ def test_rtradepairstore_guards_terminal_retention_accepted_order_id_and_checkpo
 def test_orderticket_rejects_blank_boolean_order_id_and_paircoordinator__cancel_iter64_s4():
     """[ITER64 #4] OrderTicket rejects blank/boolean order_id and PairCoordinator._cancel catches venue cancel exceptions."""
     import pytest
-    from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
     # 4. OrderTicket rejects blank/boolean order_id and PairCoordinator._cancel catches venue cancel exceptions
     with pytest.raises(ValueError, match="invalid rtrade ticket"):
         OrderTicket(order_id=True, side="BUY", price=100.0, qty=1.0)
@@ -1784,7 +1782,6 @@ def test_orderticket_rejects_blank_boolean_order_id_and_paircoordinator__cancel_
 def test_rtradepairstore_rejects_boolean_ids_and_non_finite_quantities_iter71_s2(tmp_path):
     """[ITER71 #2] RTradePairStore rejects boolean IDs and non-finite quantities in _validate_intent and persist_intent."""
     import pytest
-    from rtrade_pair_store import RTradePairStore
     # 2. RTradePairStore rejects boolean IDs and non-finite quantities in _validate_intent and persist_intent
     with pytest.raises(ValueError):
         RTradePairStore._validate_intent("p1", "BTCUSDC", "limit:BUY", {
@@ -1811,7 +1808,6 @@ def test__should_notify_order_launched_treats_boolean_owner_as_true_not_suppress
 def test_orderticket_string_active_false_and_paircoordinator_from_state_validation_iter127_s3():
     """[ITER127 #3] OrderTicket string active='false' and PairCoordinator.from_state validation."""
     import pytest
-    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
     # 3. OrderTicket string active="false" and PairCoordinator.from_state validation
     t_inactive = OrderTicket(order_id="oid-1", side="BUY", price=100.0, qty=1.0, active="false")
     assert t_inactive.active is False
@@ -1850,7 +1846,6 @@ def test_rtrade_pair_orderticket_and_paircoordinator_from_state_hygiene_iter144_
     """[ITER144 #3] rtrade_pair OrderTicket and PairCoordinator.from_state hygiene."""
     import pytest
     from types import SimpleNamespace
-    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
     # 3. rtrade_pair OrderTicket and PairCoordinator.from_state hygiene
     for bad_oid in ("nan", "null", "none", "0", 0, -5, ["123"], {"id": 1}, True, None, ""):
         with pytest.raises(ValueError):
@@ -1931,7 +1926,6 @@ def test_active_intents_clean_order_id__parse_bool_flag__first__intent_row__walk
 def test_rtradepairstore_terminal_retention_float_string__clean_store_id_begin_qty_true_iter149_s3(tmp_path):
     """[ITER149 #3] RTradePairStore: terminal_retention float-string, _clean_store_id, begin(qty=True) rejection, checkpoint terminal='false'."""
     import pytest
-    from rtrade_pair_store import RTradePairStore
     # 3. RTradePairStore: terminal_retention float-string, _clean_store_id, begin(qty=True) rejection, checkpoint terminal="false"
     store_file = tmp_path / "rtrade_store.json"
     store = RTradePairStore(path=str(store_file), terminal_retention="50.0")
@@ -1967,7 +1961,6 @@ def test_strategy__sanitize_state_dict_strategy_init_boolean_flags_spot_replay_r
     """[ITER155 #2] Strategy._sanitize_state_dict & Strategy init boolean flags & spot_replay.run_replay with include_decision_trace='false' and intrabar_high='false' & rtrade_pair OrderTicket & PairCoordinator pair_id / snapshot key validation."""
     import pytest
     from providers.strategy_executor import PairPrecision
-    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
     from strategies.spot_engine import StratParams, Strategy
     from strategies.spot_replay import run_replay
     # 2. Strategy._sanitize_state_dict & Strategy init boolean flags

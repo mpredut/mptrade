@@ -363,7 +363,6 @@ class TestMirrorTopicThreadToUi:
         import subprocess
         from unittest.mock import patch
         from intelligence.sentiment.gemini_client import GeminiClient
-        from orchestratorOS.agy.topics import prepare_topic_session, record_topic_turn
 
         cli_base = str(tmp_path / "cli")
         os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
@@ -604,7 +603,6 @@ class TestMirrorTopicThreadToUi:
     ):
         from orchestratorOS.admin import agy_store_fix as asf
         from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
-        from orchestratorOS.agy.topics import load_topic_registry, record_topic_turn, save_topic_registry
 
         bot_base = str(tmp_path / "bot_cli")
         ui_base = str(tmp_path / "ui_cli")
@@ -800,7 +798,6 @@ class TestMirrorTopicThreadToUi:
         assert pre_dirty_file.read_text(encoding="utf-8") == "x = 2\n"
 
     def test_record_topic_turn_pins_recent_actionable_trades_across_hold_streaks(self, tmp_path):
-        from orchestratorOS.agy.topics import load_topic_registry, record_topic_turn
 
         reg_path = str(tmp_path / "reg.json")
         cli_base = str(tmp_path / "cli")
@@ -833,7 +830,6 @@ class TestMirrorTopicThreadToUi:
 
 def test_summary_store_safe_nonneg_int_and_topics_safe_int_iter57_s1(monkeypatch):
     """[ITER57 #1] summary_store.safe_nonneg_int and topics.safe_int."""
-    import pytest
     from orchestratorOS.agy.summary_store import get_thread_step_count, safe_nonneg_int
     from orchestratorOS.agy.topics import prepare_topic_session, safe_int
     # 1. summary_store.safe_nonneg_int and topics.safe_int
@@ -853,7 +849,6 @@ def test_summary_store_safe_nonneg_int_and_topics_safe_int_iter57_s1(monkeypatch
 
 def test_protobuf_dec_varint_rejects_overly_long_varints_and_parse_fields_iter80_s1():
     """[ITER80 #1] protobuf.dec_varint rejects overly long varints and parse_fields rejects tag 0."""
-    import pytest
     from orchestratorOS.agy import protobuf
     # 1. protobuf.dec_varint rejects overly long varints and parse_fields rejects tag 0
     with pytest.raises(ValueError, match="varint too long"):
@@ -864,7 +859,6 @@ def test_protobuf_dec_varint_rejects_overly_long_varints_and_parse_fields_iter80
 
 def test_summary_store_parse_db_timestamp_preserves_negative_positive_timezone_offsets_without_iter80_s2():
     """[ITER80 #2] summary_store.parse_db_timestamp preserves negative/positive timezone offsets without corrupting fractional digits."""
-    from datetime import datetime, timezone
     from orchestratorOS.agy import summary_store
     # 2. summary_store.parse_db_timestamp preserves negative/positive timezone offsets without corrupting fractional digits
     dt_neg = summary_store.parse_db_timestamp("2026-10-26T14:30:00.12-05:00")
@@ -884,7 +878,6 @@ def test_protobuf_summary_ui_visible_self_heals_corrupted_raw_bytes_and_iter81_s
 
 def test_agy_store_fix_rejects_non_finite_idle_sec_and_handles_missing_iter81_s2(monkeypatch):
     """[ITER81 #2] agy_store_fix rejects non-finite idle_sec and handles missing PB/DB files gracefully."""
-    import pytest
     from orchestratorOS.admin import agy_store_fix
     # 2. agy_store_fix rejects non-finite idle_sec and handles missing PB/DB files gracefully
     with pytest.raises(ValueError):
@@ -907,7 +900,6 @@ def test_topics_extract_json_object_preserves_trailing_json_outside_non_json_ite
 
 def test_orchestratoros_agy_topics_summary_store_ui_mirror_iter105_s1(tmp_path):
     """[ITER105 #1] orchestratorOS.agy.topics & summary_store & ui_mirror."""
-    import json
     from orchestratorOS.agy import topics, summary_store, ui_mirror
     # 1. orchestratorOS.agy.topics & summary_store & ui_mirror
     assert topics.canonical_topic_key(True) == ""

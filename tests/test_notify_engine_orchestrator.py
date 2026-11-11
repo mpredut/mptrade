@@ -726,7 +726,6 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
 
     def test_queue_retry_count_persistence_and_edge_cases(self):
         import asyncio
-        from notify_engine.alertnotifiers import AlertNotifier
         from orchestratorOS.lib import watchdog_common
         from intelligence.sentiment.gemini_client import GeminiClient
 
@@ -1539,7 +1538,6 @@ class EmailMirrorTest(unittest.TestCase):
             strip_owner_tags,
             synthesize_bulk_notifications,
         )
-        from notify_engine.server import NotificationServer
 
         b_same_mod, _, _, _ = synthesize_bulk_notifications([
             {"title": "SELL ARBUSDC@0.1692 [binance:assetguardian]", "body": "FILLED ~25.84 USDC", "priority": "urgent", "topic": "ntfy-trades-1978", "count": 1},
@@ -1715,7 +1713,6 @@ def test_dexscreenersource_refresh_rejects_bool_nan_listedat_and_newcoinsmonitor
 
 def test_fleethealthmonitor_handles_bool_nan_now_list_null_json_iter56_s3(tmp_path):
     """[ITER56 #3] FleetHealthMonitor handles bool/NaN now, list/null JSON in cachedb, and null market_trading_decision."""
-    import json
     from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
     # 3. FleetHealthMonitor handles bool/NaN now, list/null JSON in cachedb, and null market_trading_decision
     cachedb = tmp_path / "cachedb"
@@ -1753,7 +1750,6 @@ def test_visuals_drawprices_py_to_series_and_min_max_scale_iter57_s2():
 
 def test_mailer__config_rejects_out_of_range_tcp_ports_iter66_s4(monkeypatch):
     """[ITER66 #4] mailer._config rejects out-of-range TCP ports (<= 0 or > 65535)."""
-    from notify_engine import mailer
     # 4. mailer._config rejects out-of-range TCP ports (<= 0 or > 65535)
     monkeypatch.setenv("SMTP_USERNAME", "user@example.com")
     monkeypatch.setenv("SMTP_PASSWORD", "secret")
@@ -1794,7 +1790,6 @@ def test_visuals_drawprices_get_cache_for_symbol_and_min_max_inverse_iter77_s3()
 def test_notify_engine_server_process_line_handles_none_bool_negative_cooldown_minutes_iter77_s4():
     """[ITER77 #4] notify_engine.server process_line handles None/bool/negative cooldown_minutes and future last_time."""
     import re
-    from notify_engine.server import NotificationServer
     # 4. notify_engine.server process_line handles None/bool/negative cooldown_minutes and future last_time
     from collections import defaultdict
     svc = NotificationServer.__new__(NotificationServer)
@@ -1939,7 +1934,6 @@ def test_alerts_config_resolve_rejects_boolean_symbol_iter121_s5():
 
 def test_mailer_is_email_mirrored_handles_full_urls_inline_comments_and_iter122_s1(monkeypatch):
     """[ITER122 #1] mailer.is_email_mirrored handles full URLs, inline comments, and rejects booleans."""
-    from notify_engine import mailer
     # 1. mailer.is_email_mirrored handles full URLs, inline comments, and rejects booleans
     monkeypatch.setenv("NTFY_TOPIC_ERROR", "ntfy-err-custom # inline comment")
     assert mailer.is_email_mirrored("https://ntfy.sh/ntfy-err-custom/") is True
@@ -1953,7 +1947,6 @@ def test_mailer_is_email_mirrored_handles_full_urls_inline_comments_and_iter122_
 
 def test_notificationserver__send_ntfy_strips_cr_lf_from_headers_and_iter122_s2(monkeypatch, tmp_path):
     """[ITER122 #2] NotificationServer._send_ntfy strips CR/LF from headers and accepts full URL topic."""
-    from notify_engine.server import NotificationServer
     # 2. NotificationServer._send_ntfy strips CR/LF from headers and accepts full URL topic
     monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "0")
     monkeypatch.setenv("BACKTEST_MODE", "0")

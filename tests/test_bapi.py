@@ -396,7 +396,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         # 5. bapi_allorders.get_trade_orders and bapi_trades.get_trade_orders emit both timestamp/time and qty/quantity
         now_ms = int(time.time() * 1000)
         import threading
-        import types
         import cacheManager as cm_mod
         fake_order_mgr = types.SimpleNamespace(
             lock=threading.Lock(),
@@ -634,7 +633,6 @@ if __name__ == "__main__":
 
 def test_bapi_allorders_get_trade_orders_bapi_trades_get_trade_orders_and_aggregate_trades_iter28_s2(monkeypatch):
     """[ITER28 #2] bapi_allorders.get_trade_orders, bapi_trades.get_trade_orders, and aggregate_trades."""
-    import time
     import threading
     from types import SimpleNamespace
     import cacheManager as cm
@@ -703,10 +701,8 @@ def test_bapi_allorders_get_trade_orders_bapi_trades_get_trade_orders_and_aggreg
 
 def test_bapi_cancel_expired_orders_and_bapi_cancel_recent_orders_with_nan_bool_iter28_s3(monkeypatch):
     """[ITER28 #3] bapi.cancel_expired_orders and bapi.cancel_recent_orders with NaN/bool/non-positive bounds & future order_time."""
-    import time
     import threading
     import cacheManager as cm
-    from binance_api import bapi
     tm = cm.CacheTradeManager.__new__(cm.CacheTradeManager)
     tm.lock = threading.RLock()
     tm.sync_account_reader_if_needed = lambda: None
@@ -848,9 +844,7 @@ def test_binanceprovider_position_cost_basis_order_status_cancel_order_reject_bo
 
 def test_bapi_get_current_price_ignores_nan_bool_cached_values_and_iter41_s2(monkeypatch):
     """[ITER41 #2] bapi.get_current_price ignores NaN/bool cached values and cancel_order rejects bool order_id."""
-    import time
     import pytest
-    from binance_api import bapi
     # 2. bapi.get_current_price ignores NaN/bool cached values and cancel_order rejects bool order_id
     monkeypatch.setitem(bapi.cprice, "BTCUSDC", float("nan"))
     monkeypatch.setitem(bapi.cprice_time, "BTCUSDC", time.time())
@@ -1031,7 +1025,6 @@ def test_binance_api_market_data_parse_interval_minutes_fetch_ohlc_candles_rejec
 
 def test_binance_trailingstop__sync_retry_count_from_state__order_intent_iter58_s1():
     """[ITER58 #1] Binance TrailingStop._sync_retry_count_from_state & _order_intent."""
-    from unittest.mock import MagicMock
     from binance_api.trailing_stop import TrailingStop
     # 1. Binance TrailingStop._sync_retry_count_from_state & _order_intent
     ts = object.__new__(TrailingStop)
@@ -1047,7 +1040,6 @@ def test_binance_trailingstop__sync_retry_count_from_state__order_intent_iter58_
 def test_binanceprovider_open_orders_order_status_reject_bool_nan_iter58_s3(monkeypatch):
     """[ITER58 #3] BinanceProvider.open_orders & order_status reject bool/NaN."""
     import pytest
-    from unittest.mock import MagicMock
     from providers.market_api import BinanceProvider
     from providers.strategy_executor import ProviderError
     # 3. BinanceProvider.open_orders & order_status reject bool/NaN
@@ -1089,7 +1081,6 @@ def test_parse_trade_execution_report_derives_price_from_y_z_when_l_iter61_s1():
 
 def test_bapi_client_sync_time_rejects_boolean_invalid_servertime_without_corrupting_iter61_s4(monkeypatch):
     """[ITER61 #4] bapi_client.sync_time rejects boolean/invalid serverTime without corrupting timestamp_offset."""
-    from unittest.mock import MagicMock
     from binance_api import bapi_client
     # 4. bapi_client.sync_time rejects boolean/invalid serverTime without corrupting timestamp_offset
     fake_bclient = MagicMock()
@@ -1102,7 +1093,6 @@ def test_bapi_client_sync_time_rejects_boolean_invalid_servertime_without_corrup
 def test_binancepricestream__process_message_rejects_non_integer_e_timestamps_and_iter67_s1():
     """[ITER67 #1] BinancePriceStream._process_message rejects non-integer E timestamps and accepts valid int E."""
     import json
-    from binance_api.bapi_ws import BinancePriceStream
     # 1. BinancePriceStream._process_message rejects non-integer E timestamps and accepts valid int E
     ps = BinancePriceStream(symbols=["BTCUSDC"])
     ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "64600.25", "E": "not-an-int"}}))
@@ -1112,7 +1102,6 @@ def test_binancepricestream__process_message_rejects_non_integer_e_timestamps_an
 
 def test_binanceaccountstream__watchdog_loop_handles__last_event_ts_age_inf_without_overflowerror_iter67_s2():
     """[ITER67 #2] BinanceAccountStream._watchdog_loop handles _last_event_ts == 0.0 (age == inf) without OverflowError."""
-    from binance_api.bapi_ws import BinanceAccountStream
     # 2. BinanceAccountStream._watchdog_loop handles _last_event_ts == 0.0 (age == inf) without OverflowError
     unhealthy_called = []
     acc_stream = BinanceAccountStream(
@@ -1451,7 +1440,6 @@ def test_parse_trade_execution_report_does_not_leak_invalid_event_i_into_iter120
 
 def test_bapi_trades__valid_fill_id_rejects_containers_non_integer_floats_and_iter130_s1():
     """[ITER130 #1] bapi_trades._valid_fill_id rejects containers, non-integer floats, and sentinel strings while normalizing integer floats."""
-    from binance_api import bapi_trades
     # 1. bapi_trades._valid_fill_id rejects containers, non-integer floats, and sentinel strings while normalizing integer floats
     assert bapi_trades._valid_fill_id(777.0) == 777
     assert bapi_trades._valid_fill_id(12.5) is None
@@ -1514,7 +1502,6 @@ def test_bapi_ws_normalize_rejects_sentinel_strings_nan_null_and_containers_iter
 def test_bapi_get_current_price_normalizes_symbol_casing_whitespace_to_hit_iter133_s1():
     """[ITER133 #1] bapi.get_current_price normalizes symbol casing/whitespace to hit cprice cache."""
     import pytest
-    from binance_api import bapi
     # 1. bapi.get_current_price normalizes symbol casing/whitespace to hit cprice cache
     bapi.cprice["BTCUSDC"] = 64000.0
     bapi.cprice_time["BTCUSDC"] = bapi.time.time()
@@ -1523,7 +1510,6 @@ def test_bapi_get_current_price_normalizes_symbol_casing_whitespace_to_hit_iter1
 def test_bapi_get_open_orders_rejects_sentinel_container_orderid_and_normalizes_iter133_s2(monkeypatch):
     """[ITER133 #2] bapi.get_open_orders rejects sentinel/container orderId and normalizes integer float orderId."""
     from types import SimpleNamespace
-    from binance_api import bapi
     # 2. bapi.get_open_orders rejects sentinel/container orderId and normalizes integer float orderId
     monkeypatch.setattr(bapi.sym, "validate_params", lambda *_a: None)
     monkeypatch.setattr(
@@ -1543,7 +1529,6 @@ def test_bapi_get_open_orders_rejects_sentinel_container_orderid_and_normalizes_
 
 def test_bapi_cancel_order_rejects_sentinel_strings_nan_null_and_iter133_s3():
     """[ITER133 #3] bapi.cancel_order rejects sentinel strings ('nan', 'null') and containers."""
-    from binance_api import bapi
     # 3. bapi.cancel_order rejects sentinel strings ("nan", "null") and containers
     assert bapi.cancel_order("BTCUSDC", "nan") is False
     assert bapi.cancel_order("BTCUSDC", "null") is False
@@ -1577,7 +1562,6 @@ def test_providers_binance_filters_py_binanceorderrules_normalize_string_boolean
 def test_bapi_cancel_order_check_order_filled_and_get_open_orders_reject_negative_orderids_iter159_s3(monkeypatch):
     """[ITER159 #3] bapi: cancel_order, check_order_filled, and get_open_orders reject '0'/negative orderIds and parse bool flags."""
     from types import SimpleNamespace
-    from binance_api import bapi
     # 3. bapi: cancel_order, check_order_filled, and get_open_orders reject "0"/negative orderIds and parse bool flags
     monkeypatch.setattr(
         bapi,
@@ -1627,7 +1611,6 @@ def test_bapi_placeorder_order_candidate_price_and__submit_binance_order_handle_
 
 def test_bapi_allorders_paginate_my_trades_accepts_tail_id_and_get_filled_orders_does_iter159_s5(monkeypatch):
     """[ITER159 #5] bapi_allorders: paginate_my_trades accepts '100.0' tail id and get_filled_orders does not group orderId=0 fills."""
-    import time
     from binance_api import bapi_allorders
     # 5. bapi_allorders: paginate_my_trades accepts "100.0" tail id and get_filled_orders does not group orderId=0 fills
     pages = [
@@ -1724,7 +1707,6 @@ def test_binance_filters_decimal_places_with_decimal_str_float_and_invalid_iter1
 def test_bapi_allorders_snapshot_cache_symbol_rows_copies_rows_safely_under_lock_and_iter185_s2():
     """[ITER185 #2] bapi_allorders.snapshot_cache_symbol_rows copies rows safely under lock and resolves variants."""
     import threading
-    from binance_api import bapi_allorders as ao
     # 2. bapi_allorders.snapshot_cache_symbol_rows copies rows safely under lock and resolves variants
     class DummyCacheManager:
         def __init__(self):

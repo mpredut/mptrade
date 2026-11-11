@@ -196,7 +196,6 @@ class TestCacheSafetyAndHotReload:
         monkeypatch.setattr(order_guard, "_MARGINS_FILE_MTIME", 0.0)
 
         # Patch path in _load_margins
-        import os
         orig_abspath = os.path.abspath
         monkeypatch.setattr(
             os.path,
@@ -415,7 +414,6 @@ class TestCase5HistoryFailClosed:
     def test_kraken_fills_from_api_fails_closed_on_missing_or_invalid_payload(self):
         from providers.kraken_provider import KrakenProvider
         from providers.strategy_executor import ProviderError
-        from unittest.mock import MagicMock
 
         fake_client = MagicMock()
         kp = KrakenProvider(client=fake_client)
@@ -433,7 +431,6 @@ class TestCase5HistoryFailClosed:
     def test_kraken_cancel_order_fails_closed_on_missing_or_zero_count(self):
         from providers.kraken_provider import KrakenProvider
         from providers.strategy_executor import ProviderError
-        from unittest.mock import MagicMock
 
         fake_client = MagicMock()
         kp = KrakenProvider(client=fake_client)
@@ -451,7 +448,6 @@ class TestCase5HistoryFailClosed:
     def test_hyperliquid_fails_closed_on_invalid_user_fills_or_open_orders_type(self, monkeypatch):
         from providers.hyperliquid_provider import HyperliquidProvider
         from providers.strategy_executor import ProviderError
-        from unittest.mock import MagicMock
 
         monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0x1234567890abcdef")
         fake_client = MagicMock()
@@ -473,7 +469,6 @@ class TestCase5HistoryFailClosed:
     def test_binance_open_orders_fails_closed_on_none(self, monkeypatch):
         from providers.market_api import BinanceProvider
         from providers.strategy_executor import ProviderError
-        from unittest.mock import MagicMock
 
         bp = BinanceProvider()
         fake_bapi = MagicMock()
@@ -484,7 +479,6 @@ class TestCase5HistoryFailClosed:
             bp.open_orders("BTCUSDC")
 
     def test_gemini_high_stake_reevaluated_on_notional_jump(self, monkeypatch):
-        from market_regime import MarketRegimeContext, MarketRegimeDecision
         from intelligence.internal.guards.guard_decision import GuardDecision
 
         # Initial context evaluated at 1000 EUR
@@ -914,7 +908,6 @@ class TestSisterArchitecturalDefects:
         provider.get_orders.return_value = []
         provider.get_trades.return_value = []
         provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
-        from providers.quantity import decide_quantity
         provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
 
         placed_calls = []
@@ -967,7 +960,6 @@ class TestSisterArchitecturalDefects:
     def test_sister4_identity_enforced_in_symbol_trend_and_dynamic_window(self):
         """Sister 4: Anonymous context without symbol/provider is rejected by _symbol_trend
         and get_dynamic_window_sec_cfg via require_identity=True."""
-        from market_regime import MarketRegimeContext, MarketRegimeDecision
         anon_decision = MarketRegimeDecision("bull", 0.5, 0.1, 5.0, True, "test")
         anon_ctx = MarketRegimeContext.from_decision(
             anon_decision,
@@ -2142,8 +2134,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_short_trend_symbol_variants_and_bapi_if_place_safe_order_g_prof_bypass(self, tmp_path, monkeypatch):
         """Verify CacheShortTrendManager resolves cross-venue symbol variants (TAOUSD -> TAOUSDC)
         and bapi_placeorder.if_place_safe_order skips trade history fetch when G_PROF is bypassed."""
-        import json
-        import time
         from cachetrend import CacheShortTrendManager
         from binance_api import bapi_placeorder
 
@@ -2272,8 +2262,6 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
 
 def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_iter9_s1(monkeypatch):
     """[ITER9 #1] check_intelligence_guards cache hit across G_PROF/GLLM1 bypass & GLLM1 re-eval when un-bypassed."""
-    import order_guard
-    import order_guard
     _BASE_MARGINS = dict(order_guard._load_margins())
     def _margins(**overrides):
         return {
@@ -2285,7 +2273,6 @@ def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_it
             'weibull_exhaustion_policy': 'off',
             **overrides,
         }
-    from market_regime import MarketRegimeDecision, MarketRegimeContext
     def _build_test_context(symbol='BTCUSDC', provider='binance'):
         decision = MarketRegimeDecision(
             regime='bull', gradient=0.5, epsilon=0.1, strength=5.0,
@@ -2351,10 +2338,8 @@ def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_it
 
 def test_check_intelligence_guards_invalidates_cached_weibull_trend_exhausted_decision_when_trend_duration_seconds_iter12_s2(monkeypatch):
     """[ITER12 #2] check_intelligence_guards invalidates cached Weibull 'trend_exhausted' decision when trend_duration_seconds changes & canonical_base_asset preserves USDCUSDT so it is never conflated with USDC/EUR & check_llm_order_guards preserves stricter GLLM1 active_reason when GLLM3 has looser downscale."""
-    import pytest
     from types import SimpleNamespace
     import llm_order_guard
-    import order_guard
     # 2. check_intelligence_guards invalidates cached Weibull "trend_exhausted" decision when trend_duration_seconds changes
     base_m = dict(order_guard._load_margins())
     base_m.update(

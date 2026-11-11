@@ -123,7 +123,6 @@ def test_invalid_observational_state_can_reset(tmp_path):
 
 
 def test_trailing_once_commands_share_daemon_lock():
-    from pathlib import Path
     root = Path(__file__).resolve().parents[1]
     core_text = (root / "trailing_core.py").read_text(encoding="utf-8")
     assert "if not args.status:" in core_text
@@ -138,7 +137,6 @@ def test_trailing_once_commands_share_daemon_lock():
 
 
 def test_xstock_once_shares_lock_but_isolated_trial_does_not():
-    from pathlib import Path
     root = Path(__file__).resolve().parents[1]
     text = (root / "kraken/kraken_xstock_watch.py").read_text(encoding="utf-8")
     assert "if not args.status and not args.trial:" in text
@@ -146,7 +144,6 @@ def test_xstock_once_shares_lock_but_isolated_trial_does_not():
 
 
 def test_strategy_test_commands_use_instrument_daemon_locks():
-    from pathlib import Path
     root = Path(__file__).resolve().parents[1]
     kraken = (root / "kraken/kraken_bot.py").read_text(encoding="utf-8")
     hyperliquid = (root / "hyperliquid/hl_bot.py").read_text(encoding="utf-8")
@@ -331,7 +328,6 @@ def test_audit46_transactional_recovery_and_cross_venue_fallbacks(tmp_path, monk
 
 def test_atomic_write_json_allow_nan(tmp_path):
     p = tmp_path / "test_nan.json"
-    import pytest
     with pytest.raises(ValueError):
         atomic_write_json(p, {"nan_val": float("nan")}, allow_nan=False)
     atomic_write_json(p, {"nan_val": float("nan")}, allow_nan=True)
@@ -352,7 +348,6 @@ def test_atomic_text_writer_newline(tmp_path):
 
 def test_atomic_write_json_default(tmp_path):
     import datetime as dt
-    from pathlib import Path
     p = tmp_path / "test_default.json"
     data = {"path": Path("/some/path"), "time": dt.datetime(2026, 1, 1, 12, 0, 0)}
     atomic_write_json(p, data, default=str)
@@ -507,7 +502,6 @@ def test_stage_previous_generation_and_concurrent_reader_race(tmp_path, monkeypa
 
 def test_state_io_read_tail_lines_truncate_file_bytes_and_prune_rotated_archives_bool_zero_protection_iter46_s4(tmp_path):
     """[ITER46 #4] state_io: read_tail_lines, truncate_file_bytes, and prune_rotated_archives bool/zero protection."""
-    import pytest
     import state_io as sio
     # 4. state_io: read_tail_lines, truncate_file_bytes, and prune_rotated_archives bool/zero protection
     tail_file = tmp_path / "tail_test.txt"
@@ -521,7 +515,6 @@ def test_state_io_read_tail_lines_truncate_file_bytes_and_prune_rotated_archives
 
 def test_jsonstatestore_save_rejects_non_dict_state_and_state_io_iter64_s2(tmp_path):
     """[ITER64 #2] JsonStateStore.save rejects non-dict state and state_io.read_tail_lines guards directory/None limit."""
-    import pytest
     from state_io import read_tail_lines
     # 2. JsonStateStore.save rejects non-dict state and state_io.read_tail_lines guards directory/None limit
     from strategies.state_store import JsonStateStore, StatePersistenceError
@@ -539,7 +532,6 @@ def test_jsonstatestore_save_rejects_non_dict_state_and_state_io_iter64_s2(tmp_p
 
 def test_state_io_truncate_file_bytes_rejects_fractional_non_finite_sizes_and_iter89_s4(tmp_path):
     """[ITER89 #4] state_io.truncate_file_bytes rejects fractional/non-finite sizes and _positive_chunk_size falls back safely."""
-    import pytest
     import state_io
     # 4. state_io.truncate_file_bytes rejects fractional/non-finite sizes and _positive_chunk_size falls back safely
     f_path = tmp_path / "data.bin"
@@ -602,7 +594,6 @@ def test_read_json_recovering_read_json_dict_recovering_handle_missing_corrupt_p
 
 def test_read_json_dict_cached_memoizes_by_stat_signature_and_recovers_from_iter184_s3(tmp_path):
     """[ITER184 #3] read_json_dict_cached memoizes by stat signature and recovers from .previous."""
-    import json
     import state_io
     # 3. read_json_dict_cached memoizes by stat signature and recovers from .previous
     memo = {}

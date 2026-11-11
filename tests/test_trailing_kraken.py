@@ -427,7 +427,6 @@ class TestRebuyGuardsKraken(Base):
 
     def test_trend_value_resolves_cross_venue_symbol_variants(self):
         import json
-        import time
 
         fd, trend_path = tempfile.mkstemp(suffix=".json")
         os.close(fd)
@@ -534,9 +533,7 @@ class TestRebuyGuardsKraken(Base):
     def test_cross_venue_shared_cost_basis_cli_dispatch_and_strategy_dry_run_gates(self):
         import io
         import json
-        import time
         from contextlib import redirect_stdout
-        from types import SimpleNamespace
         from unittest.mock import patch
         from providers.base import MarketDataProvider
         from providers.hyperliquid_provider import HyperliquidProvider
@@ -948,7 +945,6 @@ def test_krakentrailing__submit_lifecycle_order_normalizes_bypass_guards_all_all
     """[ITER7 #3] KrakenTrailing._submit_lifecycle_order normalizes bypass_guards='ALL' / {'ALL'}."""
     from unittest.mock import MagicMock
     import order_guard
-    from kraken.trailing_stop import KrakenTrailing
     # 3. KrakenTrailing._submit_lifecycle_order normalizes bypass_guards="ALL" / {"ALL"}
     eng = object.__new__(KrakenTrailing)
     eng.executor = MagicMock()
@@ -971,7 +967,6 @@ def test_krakentrailing__submit_lifecycle_order_normalizes_bypass_guards_all_all
 def test_trailing_core_should_sell_krakentrailing__trend_value_previous_recovery_iter21_s3(tmp_path, monkeypatch):
     """[ITER21 #3] trailing_core.should_sell & KrakenTrailing._trend_value .previous recovery."""
     import json
-    import time
     import pytest
     import trailing_core
     import kraken.trailing_stop as kt
@@ -994,7 +989,6 @@ def test_trailing_core_should_sell_krakentrailing__trend_value_previous_recovery
 
 def test_kraken_trailing_stop_krakentrailing_reconcile_pending_execute_rebuy_nan_bool_safety_iter52_s3(tmp_path):
     """[ITER52 #3] kraken/trailing_stop: KrakenTrailing.reconcile_pending & execute_rebuy NaN/bool safety."""
-    from types import SimpleNamespace
     from kraken import trailing_stop as k_ts
     # 3. kraken/trailing_stop: KrakenTrailing.reconcile_pending & execute_rebuy NaN/bool safety
     kt = k_ts.KrakenTrailing(
@@ -1034,7 +1028,6 @@ def test_kraken_trailing_stop_krakentrailing_reconcile_pending_execute_rebuy_nan
 def test_krakentrailing__sync_retry_count_from_state__order_intent_iter57_s3():
     """[ITER57 #3] KrakenTrailing._sync_retry_count_from_state & _order_intent."""
     from unittest.mock import MagicMock
-    from kraken.trailing_stop import KrakenTrailing
     # 3. KrakenTrailing._sync_retry_count_from_state & _order_intent
     adapter = object.__new__(KrakenTrailing)
     adapter._retry_counts = {}
@@ -1048,7 +1041,6 @@ def test_krakentrailing__sync_retry_count_from_state__order_intent_iter57_s3():
 
 def test_krakentrailing_string_enabled_trailing_market_and_reconcile_pending_safety_iter117_s2(tmp_path):
     """[ITER117 #2] KrakenTrailing string enabled / trailing_market and reconcile_pending safety."""
-    from kraken.trailing_stop import KrakenTrailing
     # 2. KrakenTrailing string enabled / trailing_market and reconcile_pending safety
     kt = KrakenTrailing(
         client=object(),
@@ -1060,7 +1052,6 @@ def test_krakentrailing_string_enabled_trailing_market_and_reconcile_pending_saf
     assert kt.trailing_market is False
     assert kt.reconcile_pending(None, lambda _p: None) is None
     assert kt.reconcile_pending("not-a-dict", lambda _p: None) is None
-    from types import SimpleNamespace
     kt.order_lifecycle = SimpleNamespace(
         reconcile=lambda _p, persist: SimpleNamespace(outcome="absent", status=None)
     )

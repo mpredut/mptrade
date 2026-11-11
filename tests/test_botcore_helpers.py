@@ -731,7 +731,6 @@ def test_shared_intelligence_and_agent_primitives_promoted_to_core():
 
 
 def test_unified_heartbeat_api_and_cached_http_collector(tmp_path):
-    import json
     from intelligence.macro.daemon_ssot import CachedHttpJsonCollector, run_scheduled_step
 
     hb_path = tmp_path / "rtrade_BTCUSDC.heartbeat"
@@ -1012,7 +1011,6 @@ if __name__ == "__main__":
 def test_botcore_diff_percent_are_close_reject_bool_and_nan_iter47_s1():
     """[ITER47 #1] botcore: diff_percent, are_close reject bool and NaN."""
     import math
-    import botcore
     # 1. botcore: diff_percent, are_close reject bool and NaN
     assert math.isnan(botcore.diff_percent(1.0, True))
     assert math.isnan(botcore.diff_percent(float("nan"), 100.0))
@@ -1023,7 +1021,6 @@ def test_botcore_diff_percent_are_close_reject_bool_and_nan_iter47_s1():
 
 def test_credentials_resolve_credential_pair_rejects_boolean_values_instead_of_stringifying_iter63_s2():
     """[ITER63 #2] credentials.resolve_credential_pair rejects boolean values instead of stringifying True -> 'True'."""
-    import pytest
     from credentials import CredentialProfileMissingError, resolve_credential_pair
     # 2. credentials.resolve_credential_pair rejects boolean values instead of stringifying True -> "True"
     with pytest.raises(CredentialProfileMissingError):
@@ -1043,7 +1040,6 @@ def test_safe_float_is_us_rth_open_handle_overflowerror_booleans_and_out_of_iter
 
 def test_utils_gaussian_weights_from_idx_handles_overflowerror_and_clamps_huge_t_iter71_s5():
     """[ITER71 #5] utils.gaussian_weights_from_idx handles OverflowError and clamps huge T."""
-    import utils
     # 5. utils.gaussian_weights_from_idx handles OverflowError and clamps huge T
     t_arr, w_arr = utils.gaussian_weights_from_idx(10**400, 0)
     assert len(t_arr) == 0 and len(w_arr) == 0
@@ -1059,7 +1055,6 @@ def test_config__parse_bool_flag_handles_nan_inf_and_unrecognized_strings_iter81
 
 def test_jsonstatestore_rejects_non_dict_loaded_payloads_even_if_iter84_s2(monkeypatch, tmp_path):
     """[ITER84 #2] JsonStateStore rejects non-dict loaded payloads even if load_json_state returns a list of pairs."""
-    import pytest
     from strategies.state_store import JsonStateStore, StatePersistenceError
     # 2. JsonStateStore rejects non-dict loaded payloads even if load_json_state returns a list of pairs
     monkeypatch.setattr("strategies.state_store.load_json_state", lambda *a, **k: [["cycle", 99]])
@@ -1086,7 +1081,6 @@ def test_http_resilience_mount_connect_retry_rejects_boolean_negative_and_non_fi
 
 def test_botcore__dotenv_pairs_strips_trailing_inline_comments_after_quoted_iter89_s2(tmp_path):
     """[ITER89 #2] botcore._dotenv_pairs strips trailing inline comments after quoted values while preserving # inside quotes."""
-    import botcore
     # 2. botcore._dotenv_pairs strips trailing inline comments after quoted values while preserving # inside quotes
     env_file = tmp_path / "test.env"
     env_file.write_text(
@@ -1100,8 +1094,6 @@ def test_botcore__dotenv_pairs_strips_trailing_inline_comments_after_quoted_iter
 
 def test_credentials_kraken_credentials_normalizes_role_case_whitespace_and_rejects_iter89_s3():
     """[ITER89 #3] credentials.kraken_credentials normalizes role case/whitespace and rejects boolean role."""
-    import pytest
-    from credentials import kraken_credentials
     # 3. credentials.kraken_credentials normalizes role case/whitespace and rejects boolean role
     pair = kraken_credentials(
         " BOT ",
@@ -1113,7 +1105,6 @@ def test_credentials_kraken_credentials_normalizes_role_case_whitespace_and_reje
 
 def test_botcore_http_request_fail_closed_on_malformed_method_url_iter99_s2():
     """[ITER99 #2] botcore.http_request fail-closed on malformed method/url."""
-    import botcore
     # 2. botcore.http_request fail-closed on malformed method/url
     assert botcore.http_request(None, "https://example.com") == (0, b"")
     assert botcore.http_request(True, "https://example.com") == (0, b"")
@@ -1123,7 +1114,6 @@ def test_botcore_http_request_fail_closed_on_malformed_method_url_iter99_s2():
 
 def test_utils_timestamp_decay_helpers_iter99_s3():
     """[ITER99 #3] utils timestamp & decay helpers."""
-    import utils
     # 3. utils timestamp & decay helpers
     assert utils.timestampToTime(None) == "N/A"
     assert utils.timestampToTime(True) == "N/A"
@@ -1154,7 +1144,6 @@ def test_utils_value_diff_to_percent_secondsto_cache_path_iter110_s3():
 
 def test_botcore__dotenv_pairs_required_env_defined_env_required_bool_env_iter114_s2():
     """[ITER114 #2] botcore._dotenv_pairs, required_env, defined_env, required_bool_env."""
-    import pytest
     import botcore as bc
     # 2. botcore._dotenv_pairs, required_env, defined_env, required_bool_env
     assert bc._dotenv_pairs(None) == ([], False)
@@ -1202,7 +1191,6 @@ def test_botcore_rejects_none_pair_id_and_cleans_order_id_metadata_iter160_s2():
 
 def test_botcore_load_dotenv_override_false_does_not_overwrite_existing_iter162_s1(tmp_path, monkeypatch):
     """[ITER162 #1] botcore: load_dotenv(override='false') does not overwrite existing os.environ."""
-    import botcore
     # 1. botcore: load_dotenv(override="false") does not overwrite existing os.environ
     env_file = tmp_path / "test.env"
     env_file.write_text("ITER162_TEST_KEY=from_file\n", encoding="utf-8")
@@ -1226,7 +1214,6 @@ def test_config__parse_bool_flag_with_default_false_and__read_properties_file_wi
 
 def test_credentials_resolve_credential_pair_validation_for_non_mapping_values_and_iter165_s1():
     """[ITER165 #1] credentials.resolve_credential_pair validation for non-Mapping values and malformed profiles."""
-    import pytest
     import credentials
     # 1. credentials.resolve_credential_pair validation for non-Mapping values and malformed profiles
     with pytest.raises(credentials.CredentialConfigurationError):
@@ -1289,7 +1276,6 @@ def test_is_interval_due_handles_elapsed_non_elapsed_future_clock_skew_iter182_s
 
 def test_resolve_order_notional_handles_explicit_notional_price_qty_fallback_and_iter182_s2():
     """[ITER182 #2] resolve_order_notional handles explicit notional, price*qty fallback, and nonfinite behavior."""
-    import pytest
     from botcore import resolve_order_notional
     # 2. resolve_order_notional handles explicit notional, price*qty fallback, and nonfinite behavior
     assert resolve_order_notional(800.0, 100.0, 2.0) == pytest.approx(800.0)

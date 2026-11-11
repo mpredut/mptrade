@@ -2150,9 +2150,7 @@ if __name__ == "__main__":
 def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
     """[ITER5 #1] Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)."""
     from unittest.mock import MagicMock
-    import order_guard
     from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
-    from instrument import Instrument
     # 1. Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)
     provider = MagicMock()
     provider.name = "binance"
@@ -2202,12 +2200,9 @@ def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
 
 def test_gt_m_medium_trend_action_scale_idempotency_when_applied_scale_is_already_iter10_s1(monkeypatch):
     """[ITER10 #1] GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry."""
-    import time
     import pytest
     from unittest.mock import MagicMock
-    import order_guard
     from types import SimpleNamespace
-    from instrument import Instrument
     # 1. GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry
     submitted_qtys = []
     provider = MagicMock()
@@ -2291,9 +2286,7 @@ def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter2
     """[ITER21 #2] Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,."""
     import pytest
     from unittest.mock import MagicMock
-    import order_guard
     from tests.conftest import make_test_regime_context as _build_test_context
-    from instrument import Instrument
     from providers.quantity import QuantityDecision
     # 2. Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,
     #    skips profit_guard_window_ref when G_PROF is bypassed, and ignores suggested_scale on bypass_guards={'all'}
@@ -2391,7 +2384,6 @@ def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter2
 def test_instrument__apply_late_intelligence_scale_nan_bool_safety_instrument_place_rejects_iter35_s3():
     """[ITER35 #3] Instrument._apply_late_intelligence_scale NaN/bool safety & Instrument.place rejects boolean/NaN/negative limit prices on both BUY and SELL with 'invalid_price'."""
     from types import SimpleNamespace
-    from instrument import Instrument
     # 3. Instrument._apply_late_intelligence_scale NaN/bool safety
     class _DummyProvider:
         name = "kraken"
@@ -2447,9 +2439,7 @@ def test_instrument__apply_late_intelligence_scale_nan_bool_safety_instrument_pl
 def test_instrument_place_side_normalization_invalid_side_handling_and_iter98_s2():
     """[ITER98 #2] Instrument.place side normalization & invalid side handling, and Instrument.param safety."""
     import pytest
-    from instrument import Instrument
     from providers.base import MarketDataProvider
-    from providers.market_api import MarketApi
     # 2. Instrument.place side normalization & invalid side handling, and Instrument.param safety
     class _GuardInternalProvider(MarketDataProvider):
         name = "guard_internal"

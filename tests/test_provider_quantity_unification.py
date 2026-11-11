@@ -349,7 +349,6 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
     def test_import_providers_quantity_first_without_circular_import(self):
         """Importing providers.quantity before providers.base (as price_watcher does) must not raise ImportError."""
         import subprocess
-        import sys
 
         proc = subprocess.run(
             [sys.executable, "-c", "from providers.quantity import resolve_assets, compute_fills_cost_basis; assert resolve_assets('BTCUSDC') == ('BTC', 'USDC')"],
@@ -517,7 +516,6 @@ if __name__ == "__main__":
 
 def test_resolve_assets_strips_separators_while_preserving_unknown_suffixes_iter5_s3():
     """[ITER5 #3] resolve_assets strips separators while preserving unknown suffixes."""
-    from providers.quantity import resolve_assets
     # 3. resolve_assets strips separators while preserving unknown suffixes
     assert resolve_assets("HYPE/USDC") == ("HYPE", "USDC")
     assert resolve_assets("HYPE-USDC", base="HYPE") == ("HYPE", "USDC")
@@ -527,7 +525,6 @@ def test_resolve_assets_strips_separators_while_preserving_unknown_suffixes_iter
 def test_decide_quantity_with_nan_bool_policy_cap_and_nan_suggested_scale_iter27_s4():
     """[ITER27 #4] decide_quantity with NaN/bool policy_cap and NaN suggested_scale."""
     from types import SimpleNamespace
-    from providers.quantity import decide_quantity
     # 4. decide_quantity with NaN/bool policy_cap and NaN suggested_scale
     class DummyQtyProvider:
         def spent_asset(self, side, base, quote):
@@ -596,7 +593,6 @@ def test_compute_weight_capped_qty_must_accept_required_qty_float_inf_auto_quant
 def test_fee_cap_quantity_nan_bool_safety_iter35_s2():
     """[ITER35 #2] fee_cap_quantity NaN/bool safety."""
     import math
-    from providers.quantity import fee_cap_quantity
     # 2. fee_cap_quantity NaN/bool safety
     assert fee_cap_quantity(True, 0.001) == 0.0
     assert fee_cap_quantity(float("nan"), 0.001) == 0.0
@@ -649,7 +645,6 @@ def test_decide_quantity_ignores_boolean_negative_round_fn_return_values_iter39_
     """[ITER39 #4] decide_quantity ignores boolean/negative round_fn return values."""
     from types import SimpleNamespace
     import pytest
-    from providers.quantity import decide_quantity
     # 4. decide_quantity ignores boolean/negative round_fn return values
     prov_q = SimpleNamespace(
         name="dummy",
@@ -737,7 +732,6 @@ def test_replaymarketdataprovider_place_order_safely_returns_none_on_non_numeric
 
 def test_decide_quantity_must_never_downscale_sell_orders_even_when_iter85_s1():
     """[ITER85 #1] decide_quantity must never downscale SELL orders even when explicit scale=0.5 is passed (Theme 3)."""
-    from providers.quantity import decide_quantity
     # 1. decide_quantity must never downscale SELL orders even when explicit scale=0.5 is passed (Theme 3)
     class _DummyProvider:
         def free_balance(self, _asset):
@@ -774,7 +768,6 @@ def test_providers_base_bool_env_strips_inline_comments_quotes_and_iter85_s2(mon
 def test_pairprecision_rejects_non_finite_decimals_non_numeric_order_min_iter86_s1():
     """[ITER86 #1] PairPrecision rejects non-finite decimals, non-numeric order_min, and boolean base_asset with ValueError."""
     import pytest
-    from providers.strategy_executor import PairPrecision
     # 1. PairPrecision rejects non-finite decimals, non-numeric order_min, and boolean base_asset with ValueError
     with pytest.raises(ValueError, match="invalid price_decimals"):
         PairPrecision(price_decimals=float("inf"), volume_decimals=2, order_min=0.01)
@@ -928,7 +921,6 @@ def test_submissionoutcome_normalizes_integer_float_order_id_and_rejects_nan_ite
 
 def test_replaymarketdataprovider_sanitizes_fee_pct_and_non_finite_cur_px_in_iter127_s2():
     """[ITER127 #2] ReplayMarketDataProvider sanitizes fee_pct and non-finite cur_px in place_order."""
-    from providers.replay_provider import ReplayMarketDataProvider
     # 2. ReplayMarketDataProvider sanitizes fee_pct and non-finite cur_px in place_order
     rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, float("nan"))]}, fee_pct=True)
     assert rp._fee_pct == 0.1
@@ -976,7 +968,6 @@ def test_providers_quantity_py_remaining_average_cost_fill_id_normalization_sent
 
 def test_providers_quantity_py_decide_quantity_string_boolean_parsing_iter154_s3():
     """[ITER154 #3] providers/quantity.py: decide_quantity string boolean parsing."""
-    from providers.quantity import decide_quantity
     # 3. providers/quantity.py: decide_quantity string boolean parsing
     captured = {}
 

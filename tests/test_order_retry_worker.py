@@ -1448,7 +1448,6 @@ class ProcessOnceTest(unittest.TestCase):
         self.assertEqual(_resolve_provider_label(source="bin"), "Binance")
 
     def test_resolve_accepted_order_audits_terminal_cancel_and_reconciliation_deferred_dedupes(self):
-        from unittest.mock import patch
 
         audit_events = []
         with patch.object(worker._AUDIT, "record", side_effect=lambda ev, **kw: audit_events.append((ev, kw))):
@@ -1575,9 +1574,6 @@ if __name__ == "__main__":
 
 def test_order_retry_worker_preserves_wait_for_trend_false_for_kind_stop_enforces_iter6_s1(tmp_path, monkeypatch):
     """[ITER6 #1] order_retry_worker preserves wait_for_trend=False for kind='STOP', enforces True otherwise."""
-    import order_retry as oq
-    import order_retry_worker as worker
-    from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
     # 1. order_retry_worker preserves wait_for_trend=False for kind="STOP", enforces True otherwise
     q_file = str(tmp_path / "q.jsonl")
     l_file = str(tmp_path / "q.lock")
@@ -1619,8 +1615,6 @@ def test_order_retry_worker_preserves_wait_for_trend_false_for_kind_stop_enforce
 
 def test__persistentquarantineset___contains___syncs_from_disk_across_restart_maintains_iter20_s2(tmp_path, monkeypatch):
     """[ITER20 #2] _PersistentQuarantineSet.__contains__ syncs from disk across restart & maintains .previous."""
-    import order_retry as oq
-    import order_retry_worker as worker
     # 2. _PersistentQuarantineSet.__contains__ syncs from disk across restart & maintains .previous
     q_file = tmp_path / "order_retry_queue.jsonl"
     monkeypatch.setattr(oq, "QUEUE_FILE", str(q_file))
@@ -1661,9 +1655,7 @@ def test__persistentquarantineset___contains___syncs_from_disk_across_restart_ma
 
 def test_order_retry_worker_awaiting_cancel_with_nan_filled_qty_must_not_resolve_iter45_s2(monkeypatch, tmp_path):
     """[ITER45 #2] order_retry_worker: awaiting_cancel with NaN filled_qty must NOT resolve/delete the replacement record."""
-    from types import SimpleNamespace
     import pytest
-    import order_retry as oq
     import order_retry_worker as orw
     # 2. order_retry_worker: awaiting_cancel with NaN filled_qty must NOT resolve/delete the replacement record
     monkeypatch.setattr(oq, "QUEUE_FILE", str(tmp_path / "q45.jsonl"))
@@ -1734,7 +1726,6 @@ def test_order_retry_worker__format_record_context_incidentdigest_collect_valida
 
 def test_order_retry_order_retry_worker_non_dict_bool_safety_iter104_s4():
     """[ITER104 #4] order_retry & order_retry_worker non-dict / bool safety."""
-    import order_retry as oq
     import order_retry_worker as orw
     # 4. order_retry & order_retry_worker non-dict / bool safety
     assert oq.complete_claim(None, "release") is False
@@ -1745,7 +1736,6 @@ def test_order_retry_order_retry_worker_non_dict_bool_safety_iter104_s4():
 
 def test_order_retry_worker__provider_name_and_incidentdigest_iter114_s1(tmp_path):
     """[ITER114 #1] order_retry_worker._provider_name and IncidentDigest."""
-    from types import SimpleNamespace
     import pytest
     import order_retry_worker as orw
     # 1. order_retry_worker._provider_name and IncidentDigest
