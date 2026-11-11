@@ -979,12 +979,10 @@ class Strategy(BaseSpotMixin):
             if not self._has_pending_market_exit():
                 self._continue_market_exit(price)
             return True
-        if self.p.stop_loss_pct <= 0:
+        sl_ctx = self._resolve_stop_loss_avg_and_loss_pct(price)
+        if sl_ctx is None:
             return False
-        avg = self._avg()
-        if not avg:
-            return False
-        loss_pct = (avg - price) / avg * 100
+        avg, loss_pct = sl_ctx
 
         if not self.p.sl_mhdsl_enabled:
             if sr.hit_stop(avg, price, self.p.stop_loss_pct):

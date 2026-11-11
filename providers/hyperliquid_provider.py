@@ -971,10 +971,7 @@ class HyperliquidProvider(MarketDataProvider):
                      price: Optional[float] = None, *, market: bool = False,
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None) -> str:
-        self.validate_symbol(symbol)
-        s_norm = normalize_side(side)
-        if s_norm not in {"BUY", "SELL"}:
-            raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")
+        s_norm = self._validate_submit_order_side(symbol, side)
         is_buy = s_norm == "BUY"
         side = s_norm
         # Safety: real orders require HL_LIVE_ORDERS due to spot/DN co-mingling.

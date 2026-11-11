@@ -1093,6 +1093,17 @@ class MarketDataProvider(ABC):
     def place_order(self, symbol: str, side: str, price: float, qty: float, force: bool = False, **kwargs):
         return None
 
+    def _validate_submit_order_side(
+        self, symbol: str, side: str, *, validate_sym: bool = True
+    ) -> str:
+        """Validate ``symbol`` (when requested) and return normalized ``'BUY'``/``'SELL'`` or raise ``SubmissionRefused``."""
+        if validate_sym:
+            self.validate_symbol(symbol)
+        s_norm = normalize_side(side)
+        if s_norm not in {"BUY", "SELL"}:
+            raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")
+        return s_norm
+
     def submit_order(
         self,
         symbol: str,
@@ -1106,10 +1117,7 @@ class MarketDataProvider(ABC):
         **kwargs,
     ) -> str:
         """Submit an order via the strict ``StrategyExecutor`` contract and return its venue order ID."""
-        self.validate_symbol(symbol)
-        s_norm = normalize_side(side)
-        if s_norm not in {"BUY", "SELL"}:
-            raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")
+        s_norm = self._validate_submit_order_side(symbol, side)
         if not self.execution_enabled():
             raise ProviderError(f"submit_order({symbol}): real execution is disabled on {self.name}")
         is_market = _parse_bool_flag(market, False) or price is None

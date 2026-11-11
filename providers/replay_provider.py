@@ -476,9 +476,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         client_order_id: Optional[str] = None,
         **kwargs,
     ) -> str:
-        s_norm = normalize_side(side)
-        if s_norm not in {"BUY", "SELL"}:
-            raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")
+        s_norm = self._validate_submit_order_side(symbol, side, validate_sym=False)
         is_mkt = _parse_bool_flag(market, default=False)
         eff_price = price if (price is not None and not is_mkt) else self.get_current_price(symbol)
         res = self.place_order(symbol, s_norm, eff_price or 0.0, qty, market=is_mkt, kind=kind, client_order_id=client_order_id, **kwargs)

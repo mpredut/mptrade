@@ -631,12 +631,10 @@ class Strategy(BaseSpotMixin):
 
     def _check_stop_loss(self, price: float) -> bool:
         """Close the entire position when unrealized loss exceeds the configured threshold."""
-        if self.p.stop_loss_pct <= 0:
+        sl_ctx = self._resolve_stop_loss_avg_and_loss_pct(price, sign=self.sign)
+        if sl_ctx is None:
             return False
-        avg = self._avg()
-        if not avg:
-            return False
-        loss_pct = -self.sign * (price - avg) / avg * 100   # positive while losing
+        avg, loss_pct = sl_ctx
         if loss_pct >= self.p.stop_loss_pct - 1e-9:
             if not self.replay_mode:
                 log(f"  [STOP-LOSS] [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% -- CLOSING everything (cutting the loss)")

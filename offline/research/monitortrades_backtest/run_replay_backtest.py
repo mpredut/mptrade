@@ -67,6 +67,7 @@ from offline.research.monitortrades_backtest.replay_trend_source import (
     DEFAULT_WINDOW_SECONDS,
     ReplayTrendSource,
     _is_trend_up_tuple,
+    parse_optional_window_seconds,
     resolve_upward_eps_k,
 )
 
@@ -273,10 +274,11 @@ def run_symbol(
     tick_idx = 0
 
     def _replay_is_trend_up(sym, window_seconds=None, now=None):
-        ws_f = safe_pos_float(window_seconds, default=None) if window_seconds is not None else None
-        if window_seconds is not None and ws_f is None:
+        valid_ws, ws_f, same_win = parse_optional_window_seconds(
+            window_seconds, eff_tape_win_sec
+        )
+        if not valid_ws:
             return False
-        same_win = ws_f is None or math.isclose(ws_f, eff_tape_win_sec, rel_tol=0.0, abs_tol=1e-6)
         if cached_tape is not None and sym == symbol and same_win:
             if 0 <= tick_idx < len(cached_tape):
                 return cached_tape[tick_idx]

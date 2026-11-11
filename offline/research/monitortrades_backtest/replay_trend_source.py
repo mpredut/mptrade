@@ -48,6 +48,23 @@ from providers.base import normalize_side
 DEFAULT_WINDOW_SECONDS = 3.7 * 60
 
 
+def parse_optional_window_seconds(
+    window_seconds: Optional[float],
+    default_window_seconds: Optional[float] = None,
+) -> Tuple[bool, Optional[float], bool]:
+    """Return ``(is_valid, ws_f, is_same_as_default)`` for an optional ``window_seconds`` argument."""
+    if window_seconds is None:
+        return True, None, True
+    ws_f = safe_pos_float(window_seconds, default=None)
+    if ws_f is None:
+        return False, None, False
+    same = (
+        default_window_seconds is not None
+        and math.isclose(ws_f, default_window_seconds, rel_tol=0.0, abs_tol=1e-6)
+    )
+    return True, ws_f, same
+
+
 class ReplayTrendSource:
     """One PriceWindow per symbol, fed directly from replay ticks --
     entirely isolated (it never touches cache_short_trend.json). Instantiate it
@@ -128,14 +145,12 @@ class ReplayTrendSource:
         Without enough data yet -> False (the same "neutral" fallback as today:
         monitortrades.is_trend_up() returns False when it has no snapshot yet)."""
         win = self._windows.get(symbol)
-        ws_f = safe_pos_float(window_seconds, default=None) if window_seconds is not None else None
-        use_cache = window_seconds is None or (
-            win is not None
-            and ws_f is not None
-            and math.isclose(ws_f, win.window_seconds, rel_tol=0.0, abs_tol=1e-6)
+        valid_ws, ws_f, same_win = parse_optional_window_seconds(
+            window_seconds, win.window_seconds if win is not None else None
         )
-        if window_seconds is not None and ws_f is None:
+        if not valid_ws:
             return False
+        use_cache = window_seconds is None or same_win
         if use_cache:
             cached = self._cached_trend_up.get(symbol)
             if cached is not None:
@@ -174,10 +189,12 @@ class ReplayTrendSource:
         win = self._windows.get(symbol)
         if win is None:
             return False
-        ws_f = safe_pos_float(window_seconds, default=None) if window_seconds is not None else None
-        if window_seconds is not None and ws_f is None:
+        valid_ws, ws_f, same_win = parse_optional_window_seconds(
+            window_seconds, win.window_seconds
+        )
+        if not valid_ws:
             return False
-        if ws_f is not None and not math.isclose(ws_f, win.window_seconds, rel_tol=0.0, abs_tol=1e-6):
+        if ws_f is not None and not same_win:
             custom = self._custom_window_trend(symbol, ws_f)
             if custom is None:
                 return False

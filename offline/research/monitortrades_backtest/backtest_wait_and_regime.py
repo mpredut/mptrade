@@ -22,18 +22,16 @@ from cachepaths import cache_path
 from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_window_signals_from_bounds,
     load_archive_series,
+    load_fresh_365_npz_arrays,
 )
 
 
 def _load_ts_px(sym: str) -> tuple[np.ndarray, np.ndarray, str]:
     """Load (ts, px, src_label) for `sym`, preferring fresh dense 1s .npz / 365d .jsonl when available."""
-    npz_path = cache_path(f"cache_365_price_{sym}.npz")
+    arrs = load_fresh_365_npz_arrays(sym)
+    if arrs is not None:
+        return arrs[0], arrs[1], "1s-dense"
     jsonl_365 = cache_path(f"cache_365_price_{sym}.jsonl")
-    if os.path.exists(npz_path):
-        npz_fresh = not os.path.exists(jsonl_365) or os.path.getmtime(npz_path) >= os.path.getmtime(jsonl_365)
-        if npz_fresh:
-            with np.load(npz_path) as z:
-                return z["ts"].astype(np.float64), z["px"].astype(np.float64), "1s-dense"
     if os.path.exists(jsonl_365):
         series_365 = load_archive_series(sym, use_365=True)
         if series_365:

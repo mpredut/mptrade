@@ -1271,10 +1271,10 @@ class Strategy(BaseSpotMixin):
             return False
         if any(o.get("kind") in {"TR", "SL"} for o in self.s["orders"]):
             return True
-        avg = self._avg()
-        if not avg:
+        sl_ctx = self._resolve_stop_loss_avg_and_loss_pct(price)
+        if sl_ctx is None:
             return False
-        loss_pct = (avg - price) / avg * 100
+        avg, loss_pct = sl_ctx
 
         if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
             if not self._in_mhdsl_territory(loss_pct):

@@ -261,18 +261,27 @@ def make_tape(
     return cond.tolist()
 
 
-def load_archive_series(sym: str, use_365: bool = False) -> list[tuple[float, float]]:
-    """Load dense 1s (.npz / .jsonl) or sparse 329d price series for `sym`."""
+def load_fresh_365_npz_arrays(sym: str) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return ``(ts, px)`` float64 arrays from ``cache_365_price_<sym>.npz`` when fresh against ``.jsonl``."""
     npz_path = cache_path(f"cache_365_price_{sym}.npz")
     jsonl_365 = cache_path(f"cache_365_price_{sym}.jsonl")
-    if use_365 and os.path.exists(npz_path):
+    if os.path.exists(npz_path):
         try:
             npz_fresh = not os.path.exists(jsonl_365) or os.path.getmtime(npz_path) >= os.path.getmtime(jsonl_365)
             if npz_fresh:
                 with np.load(npz_path) as z:
-                    return list(zip(z["ts"].tolist(), z["px"].tolist()))
+                    return z["ts"].astype(np.float64), z["px"].astype(np.float64)
         except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
             pass
+    return None
+
+
+def load_archive_series(sym: str, use_365: bool = False) -> list[tuple[float, float]]:
+    """Load dense 1s (.npz / .jsonl) or sparse 329d price series for `sym`."""
+    if use_365:
+        arrs = load_fresh_365_npz_arrays(sym)
+        if arrs is not None:
+            return list(zip(arrs[0].tolist(), arrs[1].tolist()))
     path = rrb.resolve_archive_jsonl_path(sym, use_365=use_365)
     if not os.path.exists(path):
         return []
