@@ -25,7 +25,6 @@ import time
 from typing import Any, List, Optional, Sequence
 
 from botcore import (
-    _LOCAL_MODULE_LOCK,
     _parse_bool_flag,
     exact_nonneg_int,
     exact_pos_int,
@@ -33,6 +32,7 @@ from botcore import (
     is_env_defined,
     is_live_network_backfill_enabled,
     load_env_stack,
+    load_local_module,
     normalize_side,
     optional_env,
     required_bool_env,
@@ -90,15 +90,7 @@ _LIVE_ENV = "HL_LIVE_ORDERS"
 
 def _hl_client_module():
     """Import hyperliquid/hl_client.py while preserving sys.path."""
-    with _LOCAL_MODULE_LOCK:
-        saved_path = list(sys.path)
-        try:
-            if _HL_DIR not in sys.path:
-                sys.path.insert(0, _HL_DIR)
-            import hl_client
-            return hl_client
-        finally:
-            sys.path[:] = saved_path
+    return load_local_module(_HL_DIR, "hl_client")
 
 
 def _spot_symbol_alias(symbol: str, token: str = "HYPE") -> bool:

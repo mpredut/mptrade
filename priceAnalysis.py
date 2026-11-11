@@ -24,6 +24,7 @@ from botcore import (
     touch_module_heartbeat,
 )
 from cachepaths import cache_path, cache_symbol_variants
+import cacheManager as cm
 from intelligence.internal.state.persistence import (
     MIN_POINTS_PER_WINDOW,
     _TREND_MEMO_MAX_ENTRIES,
@@ -76,7 +77,6 @@ price_cache_manager = None
 
 def build_price_cache_manager(symbols=None, provider_names=None):
     global price_cache_manager
-    import cacheManager as cm
     if provider_names:
         cm.get_current_price_manager(
             symbols=symbols,

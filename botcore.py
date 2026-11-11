@@ -56,6 +56,7 @@ from cachepaths import (
     safe_pos_float,
     safe_pos_int,
 )
+from state_io import atomic_write_json, read_text_file
 
 HTTP_TIMEOUT = 25
 BUCHAREST = ZoneInfo("Europe/Bucharest")
@@ -1251,8 +1252,6 @@ def touch_heartbeat_file(
     if not force_flag and now_m - last_ts < interval_sec:
         return last_ts
     try:
-        from state_io import atomic_write_json
-
         hb_path = str(path)
         payload = build_heartbeat_payload(
             status,
@@ -1553,7 +1552,6 @@ def gaussian_weights_from_idx(T, idx: int):
 def _load_ed25519_signing_key():
     try:
         import nacl.signing
-        from state_io import read_text_file
 
         pem_data = read_text_file("keys/ed25519_private.pem")
         b64match = re.search(r"-----BEGIN PRIVATE KEY-----(.*?)-----END PRIVATE KEY-----", pem_data, re.DOTALL)

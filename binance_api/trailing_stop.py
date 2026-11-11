@@ -42,11 +42,13 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # binance_a
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)   # also support direct execution (python binance_api/trailing_stop.py)
 
+import instrument_registry as sym
 from instrument_registry import select_instruments
 from order_lifecycle import (
     TrackedOrderLifecycle,
     propagate_submission_refusal,
 )
+from providers.market_api import api as po   # single guarded .place() proxy; formerly bapi_placeorder
 
 from trailing_core import (  # noqa: E402
     COST_BASIS_LOOKBACK_S,
@@ -352,8 +354,6 @@ def main() -> int:
     args = parse_trailing_cli_args("Per-instrument trailing stop (Binance).", "binance_trailing")
 
     from binance_api import bapi as api
-    from providers.market_api import api as po   # single guarded .place() proxy; formerly bapi_placeorder
-    import instrument_registry as sym
     ts = TrailingStop(api, po, sym)
     return ts.dispatch_cli(args)
 

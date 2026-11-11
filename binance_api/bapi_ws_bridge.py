@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Any, Callable
 
+from binance_api import bapi_ws
 from binance_api.bapi_ws_normalize import (
     parse_order_execution_report,
     parse_trade_execution_report,
@@ -262,7 +263,6 @@ def enable_real_ws_event_sync(
     with _ws_bridge_lock:
         if _bridge_is_usable(_ws_bridge):
             return _ws_bridge
-        from binance_api import bapi_ws
 
         bridge = bapi_ws.BinanceAccountStream(
             on_event=on_event or handle_binance_ws_event,

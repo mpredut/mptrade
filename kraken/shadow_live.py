@@ -62,6 +62,7 @@ from botcore import (  # noqa: E402
 from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies import spot_engine as strat, spot_replay as rp
 prepare_shadow_runtime(ROOT, HERE)
+from kraken.market_data import fetch_ohlc_candles  # noqa: E402
 
 DEFAULT_ENV = os.path.join(HERE, ".env")
 LOG_DIR = os.path.join(ROOT, "logs", "shadow_live")
@@ -145,10 +146,6 @@ def _replay_interval_error(interval: int) -> str | None:
 def _fetch_with_ts(pair: str, interval: int):
     """Fetch candles like backtest.fetch_candles while retaining timestamps for anchoring.
     Return [(ts_sec, open, high, low, close), ...], excluding the forming final bar."""
-    try:
-        from kraken.market_data import fetch_ohlc_candles
-    except ImportError:
-        from market_data import fetch_ohlc_candles
     try:
         records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
     except Exception as exc:
