@@ -941,44 +941,12 @@ def test_walk_forward_compare_load_venue_module_registers_sys_modules_before_ite
 
 def test_212trading_replay_run_replay_validates_non_sequence_ohlc_and_iter117_s7():
     """[ITER117 #7] 212trading.replay.run_replay validates non-sequence ohlc and full OHLC envelope."""
-    # 7. 212trading.replay.run_replay validates non-sequence ohlc and full OHLC envelope
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    t212_mods = ("strategy", "signals", "price_analysis", "replay")
-    saved_mods = {k: sys.modules.get(k) for k in t212_mods}
-    try:
-        for k in t212_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import strategy as t212_strat
-        import replay as t212_replay
-        sp = t212_strat.StratParams(
-            currency="USD",
-            entry_amount=100.0,
-            entry_discount_pct=1.0,
-            dca_amount=100.0,
-            dca_drop_pct=2.0,
-            check_minutes=5.0,
-            takeprofit_pct=2.0,
-            max_budget=1000.0,
-            max_dca_buys=5,
-            validity="GOOD_TILL_CANCEL",
-            enable_takeprofit=True,
-            order_ttl_min=60.0,
-            stop_loss_pct=5.0,
-        )
-        with pytest.raises(ValueError, match="ohlc cannot be empty"):
-            t212_replay.run_replay("not-a-sequence", sp)
-        with pytest.raises(ValueError, match="invalid OHLC bar at index 0"):
-            # high (101) < open (105) even though high >= low (99)
-            t212_replay.run_replay([(105.0, 101.0, 99.0, 100.0, 1000)], sp)
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    sp = _params()
+    with pytest.raises(ValueError, match="ohlc cannot be empty"):
+        replay.run_replay("not-a-sequence", sp)
+    with pytest.raises(ValueError, match="invalid OHLC bar at index 0"):
+        # high (101) < open (105) even though high >= low (99)
+        replay.run_replay([(105.0, 101.0, 99.0, 100.0, 1000)], sp)
 
 
 def test_t212_wave3_fx_principal_translation_shadow_vol_and_ladder_cancel():

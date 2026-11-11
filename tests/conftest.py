@@ -1,8 +1,10 @@
 """Global safety and cleanup for the test suite."""
 
+import importlib
 import json
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -253,6 +255,44 @@ def make_synthetic_price_entries(
     if start_ts_ms is None:
         start_ts_ms = int(time.time() * 1000) - n * interval_ms
     return [[start_ts_ms + i * interval_ms, start_price + i * delta] for i in range(n)]
+
+
+_VENUE_ISOLATED_MODULES = (
+    "common",
+    "notify",
+    "hl_client",
+    "ipo_common",
+    "ipo_notify",
+    "t212_client",
+    "market_data",
+    "price_analysis",
+    "signals",
+    "strategy",
+    "replay",
+    "backtest",
+    "order_manager",
+)
+
+
+def load_venue_modules(venue_subdir: str, *module_names: str):
+    """Import ``module_names`` from ``<repo_root>/<venue_subdir>`` while preserving ``sys.path`` and ``sys.modules``."""
+    venue_dir = os.path.join(_botcore_init._REPO_ROOT, venue_subdir)
+    orig_sys_path = list(sys.path)
+    clear_keys = set(_VENUE_ISOLATED_MODULES) | set(module_names)
+    saved_mods = {k: sys.modules.get(k) for k in clear_keys}
+    try:
+        for k in clear_keys:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, venue_dir)
+        loaded = tuple(importlib.import_module(name) for name in module_names)
+        return loaded[0] if len(loaded) == 1 else loaded
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
 
 
 class TempDirTestCase(unittest.TestCase):

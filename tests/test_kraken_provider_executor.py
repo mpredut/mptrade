@@ -727,11 +727,6 @@ def test_krakenprovider_min_order_qty_free_balance_preflight_order_cancel_order_
 
 def test_kraken_client__read_ttl_last_price_price_decimals_add_order_ohlc_closes_with_timestamps_iter48_s1(monkeypatch):
     """[ITER48 #1] kraken_client: _read_ttl, last_price, price_decimals, add_order, ohlc_closes_with_timestamps."""
-    orig_sys_path = list(sys.path)
-    try:
-        from kraken import kraken_xstock_watch as kxw
-    finally:
-        sys.path[:] = orig_sys_path
     # 1. kraken_client: _read_ttl, last_price, price_decimals, add_order, ohlc_closes_with_timestamps
     assert kc._read_ttl("OHLC", {"interval": float("nan")}) == 30.0
     assert kc._read_ttl("OHLC", {"interval": True}) == 30.0
@@ -768,11 +763,7 @@ def test_kraken_cachemanager__ledger_to_fills_rejects_nan_bool_zero_amounts_and_
 
 def test_kraken_xstock_watch__bot_alive_rejects_boolean_true_pid_systemd_and_iter48_s3():
     """[ITER48 #3] kraken_xstock_watch: _bot_alive rejects boolean True (PID 1 systemd) and <= 1."""
-    orig_sys_path = list(sys.path)
-    try:
-        from kraken import kraken_xstock_watch as kxw
-    finally:
-        sys.path[:] = orig_sys_path
+    from kraken import kraken_xstock_watch as kxw
     # 3. kraken_xstock_watch: _bot_alive rejects boolean True (PID 1 systemd) and <= 1
     assert kxw._bot_alive(True) is False
     assert kxw._bot_alive(1) is False
@@ -891,9 +882,6 @@ def test_kraken_xstock_watch__load_state_merges_partial_json_onto_default_keys_i
 def test_krakenclient__parse_rejects_non_dict_json_payloads_cleanly_iter68_s1():
     """[ITER68 #1] KrakenClient._parse rejects non-dict JSON payloads cleanly and add_order rejects None/non-numeric volume/price with ValueError."""
     from kraken.kraken_client import KrakenClient, KrakenError
-    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
-    if hl_dir not in sys.path:
-        sys.path.insert(0, hl_dir)
     # 1. KrakenClient._parse rejects non-dict JSON payloads cleanly and add_order rejects None/non-numeric volume/price with ValueError
     with pytest.raises(KrakenError):
         KrakenClient._parse(200, b"[1, 2, 3]")
@@ -908,9 +896,6 @@ def test_krakenclient__parse_rejects_non_dict_json_payloads_cleanly_iter68_s1():
 def test_kraken_market_data_pair_precision_handles_float_strings_and_overflowerror_iter68_s2():
     """[ITER68 #2] kraken.market_data.pair_precision handles float strings and OverflowError."""
     from kraken.market_data import pair_precision
-    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
-    if hl_dir not in sys.path:
-        sys.path.insert(0, hl_dir)
     # 2. kraken.market_data.pair_precision handles float strings and OverflowError
     assert pair_precision({"pair_decimals": "2.0", "lot_decimals": "4.0", "ordermin": "0.01"}) == (2, 4, 0.01)
     assert pair_precision({"pair_decimals": 10**400, "lot_decimals": 10**400, "ordermin": 10**400}) == (2, 8, 0.0)

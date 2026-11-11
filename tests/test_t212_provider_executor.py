@@ -26,6 +26,7 @@ from providers.strategy_executor import (
 )
 from providers.t212_provider import T212Provider
 from botcore import load_local_module
+from tests.conftest import load_venue_modules
 from types import SimpleNamespace
 
 
@@ -791,26 +792,7 @@ def test_t212provider_rejects_boolean_qty_price_order_id_fill_fields_iter41_s1()
 
 def test_t212client_place_limit_order_place_market_order_reject_bool_nan_inf_before_iter50_s1():
     """[ITER50 #1] T212Client: place_limit_order & place_market_order reject bool/NaN/Inf/0 before HTTP."""
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
-    saved_mods = {k: sys.modules.get(k) for k in mod_names}
-    try:
-        for k in mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import t212_client as t212c
-        import market_data as t212_md
-        _ = t212_md
-        import strategy as t212_strat
-        import replay as t212_rep
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    t212c = load_venue_modules("212trading", "t212_client")
     # 1. T212Client: place_limit_order & place_market_order reject bool/NaN/Inf/0 before HTTP
     cli = t212c.T212Client("k", "s", env="demo", min_gap_sec=True, portfolio_ttl_sec=float("nan"), order_min_gap_sec=-1.0)
     assert cli._min_gap == 0.0
@@ -829,26 +811,7 @@ def test_t212client_place_limit_order_place_market_order_reject_bool_nan_inf_bef
 
 def test_212trading_strategy_generate_tp_ladder_adapt_ladder_rungs__avg_cost__portfolio_position_step_iter50_s2():
     """[ITER50 #2] 212trading/strategy: generate_tp_ladder, adapt_ladder_rungs, _avg_cost, _portfolio_position, step."""
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
-    saved_mods = {k: sys.modules.get(k) for k in mod_names}
-    try:
-        for k in mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import t212_client as t212c
-        import market_data as t212_md
-        _ = t212_md
-        import strategy as t212_strat
-        import replay as t212_rep
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    t212_strat = load_venue_modules("212trading", "strategy")
     # 2. 212trading/strategy: generate_tp_ladder, adapt_ladder_rungs, _avg_cost, _portfolio_position, step
     with pytest.raises(ValueError):
         t212_strat.generate_tp_ladder(True, 10.0, 5)
@@ -880,26 +843,7 @@ def test_212trading_strategy_generate_tp_ladder_adapt_ladder_rungs__avg_cost__po
 
 def test_212trading_replay__fx_rates__ols_slope_pct_reject_bool_nan_inf_iter50_s3():
     """[ITER50 #3] 212trading/replay: _fx_rates & _ols_slope_pct reject bool/NaN/Inf."""
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
-    saved_mods = {k: sys.modules.get(k) for k in mod_names}
-    try:
-        for k in mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import t212_client as t212c
-        import market_data as t212_md
-        _ = t212_md
-        import strategy as t212_strat
-        import replay as t212_rep
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    t212_rep = load_venue_modules("212trading", "replay")
     # 3. 212trading/replay: _fx_rates & _ols_slope_pct reject bool/NaN/Inf
     with pytest.raises(ValueError):
         t212_rep._fx_rates(True, 3)
@@ -930,22 +874,7 @@ def test_t212provider_order_status_rejects_nan_inf_filledquantity_filledvalue_fe
 def test_212trading_order_manager__portfolio_qty__matching_active_orders__reconcile_record_iter53_s1():
     """[ITER53 #1] 212trading/order_manager: _portfolio_qty, _matching_active_orders, _reconcile_record."""
     # 1. 212trading/order_manager: _portfolio_qty, _matching_active_orders, _reconcile_record
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "order_manager")
-    saved_mods = {k: sys.modules.get(k) for k in mod_names}
-    try:
-        for k in mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import order_manager as t212_om
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    t212_om = load_venue_modules("212trading", "order_manager")
 
     cli_nan_pf = SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": float("nan")}])
     assert t212_om._portfolio_qty(cli_nan_pf, "NVDA_US_EQ") is None
@@ -964,22 +893,7 @@ def test_212trading_order_manager__portfolio_qty__matching_active_orders__reconc
 def test_212trading_strategy_py_generate_tp_ladder__active_order_identity_iter57_s4():
     """[ITER57 #4] 212trading/strategy.py generate_tp_ladder & _active_order_identity."""
     # 4. 212trading/strategy.py generate_tp_ladder & _active_order_identity
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
-    saved_mods = {k: sys.modules.get(k) for k in mod_names}
-    try:
-        for k in mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import strategy as strat_mod
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    strat_mod = load_venue_modules("212trading", "strategy")
 
     with pytest.raises(ValueError, match="min_pct > -100"):
         strat_mod.generate_tp_ladder(-100.0, 10.0, 3, curve="geometric")
@@ -998,22 +912,7 @@ def test_212trading_strategy_py_generate_tp_ladder__active_order_identity_iter57
 def test_212trading_strategy_py_stratparams_from_env_rejects_nan_in_iter58_s6():
     """[ITER58 #6] 212trading/strategy.py StratParams.from_env rejects NaN in STRAT_TP_LADDER."""
     # 6. 212trading/strategy.py StratParams.from_env rejects NaN in STRAT_TP_LADDER
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
-    saved_mods = {k: sys.modules.get(k) for k in mod_names}
-    try:
-        for k in mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import strategy as strat_mod
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    strat_mod = load_venue_modules("212trading", "strategy")
 
     base_env = {
         "STRATEGY_MODE": "avg_tp",

@@ -1444,10 +1444,8 @@ def test_order_outcomes_log_log_order_outcome_sanitizes_boolean_fields_iter107_s
     assert parts[9:12] == ["", "", ""]
     assert parts[14] == ""
 
-def test_order_retry_enqueue_rejects_bool_replaces_order_id_bool_metadata_fields_iter113_s1(tmp_path, monkeypatch):
+def test_order_retry_enqueue_rejects_bool_replaces_order_id_bool_metadata_fields_iter113_s1(monkeypatch):
     """[ITER113 #1] order_retry.enqueue rejects bool replaces_order_id, bool metadata fields, and fractional attempts."""
-    monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
-    monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
     monkeypatch.setattr(oret, "RETRY_ENABLED", True)
     # 1. order_retry.enqueue rejects bool replaces_order_id, bool metadata fields, and fractional attempts
     assert oret.enqueue(
@@ -1460,22 +1458,16 @@ def test_order_retry_enqueue_rejects_bool_replaces_order_id_bool_metadata_fields
     assert oret.enqueue("BTCUSDC", "BUY", 1.0, failure_reason=True) is None
     assert oret.enqueue("BTCUSDC", "BUY", 1.0, attempts=1.5) is None
 
-def test_order_retry_get_and_claim_input_validation_iter113_s2(tmp_path, monkeypatch):
+def test_order_retry_get_and_claim_input_validation_iter113_s2():
     """[ITER113 #2] order_retry.get and claim input validation."""
-    monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
-    monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
-    monkeypatch.setattr(oret, "RETRY_ENABLED", True)
     # 2. order_retry.get and claim input validation
     assert oret.get(True) is None
     with pytest.raises(ValueError):
         oret.claim(["id1"], lease_sec="bad")
 
-def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_client_order_id_iter113_s3(tmp_path, monkeypatch):
+def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_client_order_id_iter113_s3():
     """[ITER113 #3] StrategyExecutorLifecycleApi rejects bool/None/blank order_id and client_order_id before str()."""
     from providers.strategy_executor import ProviderError
-    monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
-    monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
-    monkeypatch.setattr(oret, "RETRY_ENABLED", True)
     # 3. StrategyExecutorLifecycleApi rejects bool/None/blank order_id and client_order_id before str()
     exec_stub = SimpleNamespace(
         reconciliation_capabilities=lambda: OrderReconciliationCapabilities(
@@ -1493,12 +1485,9 @@ def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_clien
     with pytest.raises(ProviderError):
         api_adapter.cancel_order("BTCUSDC", "   ")
 
-def test_auditedstrategyexecutor_ohlc_series_rejects_bool_invalid_interval_min_iter113_s4(tmp_path, monkeypatch):
+def test_auditedstrategyexecutor_ohlc_series_rejects_bool_invalid_interval_min_iter113_s4():
     """[ITER113 #4] AuditedStrategyExecutor.ohlc_series rejects bool/invalid interval_min."""
     from providers.strategy_executor import ProviderError
-    monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
-    monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
-    monkeypatch.setattr(oret, "RETRY_ENABLED", True)
     # 4. AuditedStrategyExecutor.ohlc_series rejects bool/invalid interval_min
     audited = AuditedStrategyExecutor(SimpleNamespace(name="Stub", ohlc_closes=lambda _s, _i: [100.0]))
     with pytest.raises(ProviderError):
@@ -1506,12 +1495,9 @@ def test_auditedstrategyexecutor_ohlc_series_rejects_bool_invalid_interval_min_i
     with pytest.raises(ProviderError):
         audited.ohlc_series("BTCUSDC", 0)
 
-def test_state_io_discard_generation_file_safely_ignores_bool_int_iter113_s5(tmp_path, monkeypatch):
+def test_state_io_discard_generation_file_safely_ignores_bool_int_iter113_s5():
     """[ITER113 #5] state_io.discard_generation_file safely ignores bool/int."""
     import state_io as sio
-    monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
-    monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
-    monkeypatch.setattr(oret, "RETRY_ENABLED", True)
     # 5. state_io.discard_generation_file safely ignores bool/int
     sio.discard_generation_file(True)
     sio.discard_generation_file(123)

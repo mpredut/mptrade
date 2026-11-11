@@ -23,6 +23,7 @@ from providers.market_api import MarketApi  # noqa: E402
 from providers.strategy_executor import (  # noqa: E402
     StrategyExecutor, PairPrecision, ProviderError)
 from botcore import load_local_module
+from tests.conftest import load_venue_modules
 from types import SimpleNamespace
 
 
@@ -829,26 +830,7 @@ def test_hyperliquidprovider_preflight_order_order_status_cancel_order_reject_na
 
 def test_hl_client__round_px_mid_spot_mid_position_strict_spot_balance_strict_iter49_s1():
     """[ITER49 #1] hl_client: _round_px, mid, spot_mid, position_strict, spot_balance_strict."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    orig_sys_path = list(sys.path)
-    mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
-    saved_mods = {k: sys.modules.get(k) for k in mod_names}
-    try:
-        for k in mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import hl_client as hlc
-        import market_data as hl_md
-        import signals as hl_pa
-        import strategy as hl_strat
-        import replay as hl_rep
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hlc = load_venue_modules("hyperliquid", "hl_client")
     # 1. hl_client: _round_px, mid, spot_mid, position_strict, spot_balance_strict
     with pytest.raises(ValueError):
         hlc._round_px(True, 2)
@@ -875,26 +857,7 @@ def test_hl_client__round_px_mid_spot_mid_position_strict_spot_balance_strict_it
 
 def test_hyperliquid_market_data_normalize_closed_candles_rejects_bool_and_invalid_ohlc_iter49_s2():
     """[ITER49 #2] hyperliquid/market_data: normalize_closed_candles rejects bool and invalid OHLC bounds."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    orig_sys_path = list(sys.path)
-    mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
-    saved_mods = {k: sys.modules.get(k) for k in mod_names}
-    try:
-        for k in mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import hl_client as hlc
-        import market_data as hl_md
-        import signals as hl_pa
-        import strategy as hl_strat
-        import replay as hl_rep
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_md = load_venue_modules("hyperliquid", "market_data")
     # 2. hyperliquid/market_data: normalize_closed_candles rejects bool and invalid OHLC bounds
     rows = [
         {"t": True, "T": 2000, "o": 10, "h": 12, "l": 9, "c": 11},
@@ -907,52 +870,14 @@ def test_hyperliquid_market_data_normalize_closed_candles_rejects_bool_and_inval
 
 def test_hyperliquid_price_analysis_detect_long_term_trend_ignores_nan_bool_points_iter49_s3():
     """[ITER49 #3] hyperliquid/price_analysis: detect_long_term_trend ignores NaN/bool points."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    orig_sys_path = list(sys.path)
-    mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
-    saved_mods = {k: sys.modules.get(k) for k in mod_names}
-    try:
-        for k in mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import hl_client as hlc
-        import market_data as hl_md
-        import signals as hl_pa
-        import strategy as hl_strat
-        import replay as hl_rep
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_pa = load_venue_modules("hyperliquid", "signals")
     # 3. hyperliquid/price_analysis: detect_long_term_trend ignores NaN/bool points
     assert hl_pa.detect_long_term_trend([1000.0, 2000.0, 3000.0], [float("nan"), float("nan"), float("nan")]) is None
     assert hl_pa.detect_long_term_trend([True, False], [10.0, 11.0]) is None
 
 def test_hyperliquid_strategy_replay_step_ignores_nan_bool_price_iter49_s4():
     """[ITER49 #4] hyperliquid/strategy & replay: step ignores NaN/bool price and funding_at sanitizes NaN/bool funding rate."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    orig_sys_path = list(sys.path)
-    mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
-    saved_mods = {k: sys.modules.get(k) for k in mod_names}
-    try:
-        for k in mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import hl_client as hlc
-        import market_data as hl_md
-        import signals as hl_pa
-        import strategy as hl_strat
-        import replay as hl_rep
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_strat, hl_rep = load_venue_modules("hyperliquid", "strategy", "replay")
     # 4. hyperliquid/strategy & replay: step ignores NaN/bool price and funding_at sanitizes NaN/bool funding rate
     st_inst = hl_strat.Strategy(
         client=None, coin="HYPE", params=hl_strat.StratParams(direction="long"), dry_run=True, replay_mode=True
@@ -1018,23 +943,8 @@ def test_hyperliquidprovider_submit_order_market_rejects_nan_mid_price_iter58_s5
 
 def test_hlclient_metadata_and_order_placement_reject_boolean_nan_iter59_s5():
     """[ITER59 #5] HLClient metadata and order placement reject boolean/NaN/non-positive inputs."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    orig_sys_path = list(sys.path)
-    saved_mods = {k: sys.modules.get(k) for k in ("common", "hl_client")}
-    try:
-        for k in ("common", "hl_client"):
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import hl_client as hl_mod
-        HLClient = hl_mod.HLClient
-        HLError = hl_mod.HLError
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_mod = load_venue_modules("hyperliquid", "hl_client")
+    HLClient, HLError = hl_mod.HLClient, hl_mod.HLError
     # 5. HLClient metadata and order placement reject boolean/NaN/non-positive inputs
     hl = HLClient.__new__(HLClient)
     hl._meta_cache = {"HYPE": {"name": "HYPE", "szDecimals": True, "maxLeverage": False}}
@@ -1053,23 +963,7 @@ def test_hlclient_metadata_and_order_placement_reject_boolean_nan_iter59_s5():
 
 def test_hl_strategy_normalizes_uppercase_long_to_sign_and_iter60_s1():
     """[ITER60 #1] HL Strategy normalizes uppercase 'LONG' to sign=+1 and rejects invalid direction."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    orig_sys_path = list(sys.path)
-    hl_mod_names = ("common", "notify", "hl_client", "market_data", "signals", "strategy", "price_analysis")
-    saved_hl = {k: sys.modules.get(k) for k in hl_mod_names}
-    try:
-        for k in hl_mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import strategy as hl_strat_mod
-        import signals as hl_pa_mod
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_hl.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_strat_mod = load_venue_modules("hyperliquid", "strategy")
     # 1. HL Strategy normalizes uppercase "LONG" to sign=+1 and rejects invalid direction
     p_long = hl_strat_mod.StratParams(direction="LONG")
     st_long = hl_strat_mod.Strategy(
@@ -1087,23 +981,7 @@ def test_hl_strategy_normalizes_uppercase_long_to_sign_and_iter60_s1():
 
 def test_hl_price_analysis_detect_long_term_trend_rejects_step_hours_preventing_infinite_loop_iter60_s2():
     """[ITER60 #2] HL price_analysis.detect_long_term_trend rejects step_hours <= 0 (preventing infinite loop) and sorts unsorted timestamps."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    orig_sys_path = list(sys.path)
-    hl_mod_names = ("common", "notify", "hl_client", "market_data", "signals", "strategy", "price_analysis")
-    saved_hl = {k: sys.modules.get(k) for k in hl_mod_names}
-    try:
-        for k in hl_mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import strategy as hl_strat_mod
-        import signals as hl_pa_mod
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_hl.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_pa_mod = load_venue_modules("hyperliquid", "signals")
     # 2. HL price_analysis.detect_long_term_trend rejects step_hours <= 0 (preventing infinite loop) and sorts unsorted timestamps
     assert hl_pa_mod.detect_long_term_trend([1000, 2000, 3000], [10.0, 11.0, 12.0], window_hours=1, step_hours=0) is None
     ts_unsorted = [float(i * 3600) for i in range(1, 60)][::-1]
@@ -1113,39 +991,8 @@ def test_hl_price_analysis_detect_long_term_trend_rejects_step_hours_preventing_
 
 def test_t212client_get_historical_order_does_not_dilute_fillprice_when_a_iter60_s4(monkeypatch):
     """[ITER60 #4] T212Client.get_historical_order does not dilute fillPrice when a sub-fill has price=0."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    orig_sys_path = list(sys.path)
-    hl_mod_names = ("common", "notify", "hl_client", "market_data", "signals", "strategy", "price_analysis")
-    saved_hl = {k: sys.modules.get(k) for k in hl_mod_names}
-    try:
-        for k in hl_mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import strategy as hl_strat_mod
-        import signals as hl_pa_mod
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_hl.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
     # 4. T212Client.get_historical_order does not dilute fillPrice when a sub-fill has price=0
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    t212_mod_names = ("ipo_common", "t212_client")
-    saved_t212 = {k: sys.modules.get(k) for k in t212_mod_names}
-    try:
-        for k in t212_mod_names:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import t212_client as t212_mod
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_t212.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    t212_mod = load_venue_modules("212trading", "t212_client")
 
     cli = t212_mod.T212Client("k", "s", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
     payload = {
@@ -1161,9 +1008,6 @@ def test_t212client_get_historical_order_does_not_dilute_fillprice_when_a_iter60
 
 def test__round_px_hlclient_cancel_candles_reject_inf_bool_invalid_iter68_s4():
     """[ITER68 #4] _round_px & HLClient.cancel / candles reject inf/bool/invalid parameters."""
-    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
-    if hl_dir not in sys.path:
-        sys.path.insert(0, hl_dir)
     from hl_client import _round_px, HLClient
     # 4. _round_px & HLClient.cancel / candles reject inf/bool/invalid parameters
     with pytest.raises(ValueError):
@@ -1397,32 +1241,8 @@ def test_hyperliquidprovider_iter111_s2():
 
 def test_hlclient_strict_position_spot_balance_market_data_guards_iter115_s4():
     """[ITER115 #4] HLClient strict position/spot_balance & market_data guards."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
-    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
-    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
-    try:
-        for k in hl_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import hl_client as hlc
-        import market_data as hlmd
-        import strategy as hl_strat
-        HLClient, HLError = hlc.HLClient, hlc.HLError
-        sys.path[:] = orig_sys_path
-        for k in t212_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import strategy as t212_strat
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hlc, hlmd = load_venue_modules("hyperliquid", "hl_client", "market_data")
+    HLClient, HLError = hlc.HLClient, hlc.HLError
     # 4. HLClient strict position/spot_balance & market_data guards
     hl = HLClient.__new__(HLClient)
     hl.address = "0x123"
@@ -1444,32 +1264,8 @@ def test_hlclient_strict_position_spot_balance_market_data_guards_iter115_s4():
 
 def test_hl_and_t212_strategy_state_sanitization_iter115_s5():
     """[ITER115 #5] HL and T212 strategy state sanitization."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
-    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
-    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
-    try:
-        for k in hl_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import hl_client as hlc
-        import market_data as hlmd
-        import strategy as hl_strat
-        HLClient, HLError = hlc.HLClient, hlc.HLError
-        sys.path[:] = orig_sys_path
-        for k in t212_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import strategy as t212_strat
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_strat = load_venue_modules("hyperliquid", "strategy")
+    t212_strat = load_venue_modules("212trading", "strategy")
     # 5. HL and T212 strategy state sanitization
     hl_clean = hl_strat._sanitize_state({
         "orders": [
@@ -1495,31 +1291,7 @@ def test_hl_and_t212_strategy_state_sanitization_iter115_s5():
 
 def test_hlclient_spot_order_is_market_tif_validation_iter116_s3():
     """[ITER116 #3] HLClient.spot_order is_market & tif validation."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    hl_mods = ("common", "notify", "hl_client")
-    t212_mods = ("ipo_common", "ipo_notify", "t212_client")
-    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
-    try:
-        for k in hl_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import hl_client as hlc
-        HLClient = hlc.HLClient
-        sys.path[:] = orig_sys_path
-        for k in t212_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import t212_client as t212c
-        T212Client = t212c.T212Client
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    HLClient = load_venue_modules("hyperliquid", "hl_client").HLClient
     # 3. HLClient.spot_order is_market & tif validation
     hl = HLClient.__new__(HLClient)
     hl.exchange = SimpleNamespace(order=lambda *a, **kw: {"status": "ok"})
@@ -1529,31 +1301,8 @@ def test_hlclient_spot_order_is_market_tif_validation_iter116_s3():
 
 def test_t212client___init___place_market_order_extended_hours_false_and_get_historical_order_currency_iter116_s4(monkeypatch):
     """[ITER116 #4] T212Client.__init__, place_market_order extended_hours='false', and get_historical_order currency=True."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    hl_mods = ("common", "notify", "hl_client")
-    t212_mods = ("ipo_common", "ipo_notify", "t212_client")
-    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
-    try:
-        for k in hl_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import hl_client as hlc
-        HLClient = hlc.HLClient
-        sys.path[:] = orig_sys_path
-        for k in t212_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import t212_client as t212c
-        T212Client = t212c.T212Client
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    t212c = load_venue_modules("212trading", "t212_client")
+    T212Client = t212c.T212Client
     # 4. T212Client.__init__, place_market_order extended_hours="false", and get_historical_order currency=True
     with pytest.raises(ValueError):
         T212Client(api_key="", env="demo", min_gap_sec=0, portfolio_ttl_sec=1, order_min_gap_sec=0)
@@ -1579,30 +1328,7 @@ def test_t212client___init___place_market_order_extended_hours_false_and_get_his
 
 def test_hl_stratparams_from_dict_rejects_direction_false_and_out_iter118_s1():
     """[ITER118 #1] HL StratParams.from_dict rejects direction=False and out-of-range sz_decimals; sanitizes currency=True."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
-    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
-    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
-    try:
-        for k in hl_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import strategy as hl_strat
-        import replay as hl_replay
-        sys.path[:] = orig_sys_path
-        for k in t212_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import strategy as t212_strat
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_strat = load_venue_modules("hyperliquid", "strategy")
     # 1. HL StratParams.from_dict rejects direction=False and out-of-range sz_decimals; sanitizes currency=True
     with pytest.raises(ValueError):
         hl_strat.StratParams.from_dict({"direction": False})
@@ -1614,30 +1340,7 @@ def test_hl_stratparams_from_dict_rejects_direction_false_and_out_iter118_s1():
 
 def test_hl_strategy__apply_close_preserves_avg_cost_and_updates_iter118_s2(monkeypatch):
     """[ITER118 #2] HL Strategy._apply_close preserves avg cost and updates spent when real_avg=0 on partial close."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
-    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
-    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
-    try:
-        for k in hl_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import strategy as hl_strat
-        import replay as hl_replay
-        sys.path[:] = orig_sys_path
-        for k in t212_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import strategy as t212_strat
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_strat = load_venue_modules("hyperliquid", "strategy")
     # 2. HL Strategy._apply_close preserves avg cost and updates spent when real_avg=0 on partial close
     monkeypatch.setattr(hl_strat, "notify", lambda *a, **kw: None)
     st_hl = hl_strat.Strategy(
@@ -1658,30 +1361,7 @@ def test_hl_strategy__apply_close_preserves_avg_cost_and_updates_iter118_s2(monk
 
 def test_hl_replay_validates_ohlc_envelope_and_accepts_tuple_iter118_s3():
     """[ITER118 #3] HL replay validates OHLC envelope and accepts 5-tuple bars (o, h, l, c, ts)."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
-    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
-    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
-    try:
-        for k in hl_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import strategy as hl_strat
-        import replay as hl_replay
-        sys.path[:] = orig_sys_path
-        for k in t212_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import strategy as t212_strat
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_replay = load_venue_modules("hyperliquid", "replay")
     # 3. HL replay validates OHLC envelope and accepts 5-tuple bars (o, h, l, c, ts)
     res_5t = hl_replay.run_replay([(100.0, 101.0, 99.0, 100.0, 1000)])
     assert res_5t["initial_capital"] == 500.0
@@ -1690,30 +1370,7 @@ def test_hl_replay_validates_ohlc_envelope_and_accepts_tuple_iter118_s3():
 
 def test_t212_strategy__reconcile_real_falls_back_to_order_limit_iter118_s4(monkeypatch):
     """[ITER118 #4] T212 Strategy._reconcile_real falls back to order limit/real_avg when marginal_px <= 0."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
-    orig_sys_path = list(sys.path)
-    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
-    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
-    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
-    try:
-        for k in hl_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import strategy as hl_strat
-        import replay as hl_replay
-        sys.path[:] = orig_sys_path
-        for k in t212_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, t212_dir)
-        import strategy as t212_strat
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    t212_strat = load_venue_modules("212trading", "strategy")
     # 4. T212 Strategy._reconcile_real falls back to order limit/real_avg when marginal_px <= 0
     monkeypatch.setattr(t212_strat, "notify", lambda *a, **kw: None)
     dummy_client = SimpleNamespace(
@@ -1749,22 +1406,7 @@ def test_t212_strategy__reconcile_real_falls_back_to_order_limit_iter118_s4(monk
 
 def test_hyperliquid_backtest_precompute_signal_validates_signal_source_and_normalizes_iter119_s4():
     """[ITER119 #4] hyperliquid.backtest.precompute_signal validates signal source and normalizes case/whitespace."""
-    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
-    orig_sys_path = list(sys.path)
-    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay", "backtest")
-    saved_mods = {k: sys.modules.get(k) for k in hl_mods}
-    try:
-        for k in hl_mods:
-            sys.modules.pop(k, None)
-        sys.path.insert(0, hl_dir)
-        import backtest as hl_bt
-    finally:
-        sys.path[:] = orig_sys_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    hl_bt = load_venue_modules("hyperliquid", "backtest")
     # 4. hyperliquid.backtest.precompute_signal validates signal source and normalizes case/whitespace
     assert hl_bt.precompute_signal([100.0, 101.0], [1, 2], " OFF ", 2, 4, 0.01, 24, 8) == ["__any__", "__any__"]
     with pytest.raises(ValueError):
