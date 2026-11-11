@@ -23,6 +23,7 @@ import threading
 from decimal import Decimal
 from providers.base import extract_order_price
 from providers.strategy_executor import ProviderError
+from tests.conftest import MockHttpResponse
 
 SYMBOL = "BTCUSDC"
 TAO_SYMBOL = "TAOUSDC"
@@ -514,22 +515,9 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         page2 = [[1_700_000_000_000 + (1000 + i) * 60_000, "100", "101", "99", "100", "10", 1_700_000_059_999 + (1000 + i) * 60_000] for i in range(200)]
         calls = []
 
-        class _FakeResp:
-            def __init__(self, payload):
-                self._payload = payload
-
-            def read(self):
-                return json.dumps(self._payload).encode("utf-8")
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
         def _fake_urlopen(req, timeout=20):
             calls.append(req.full_url)
-            return _FakeResp(page1 if len(calls) == 1 else page2)
+            return MockHttpResponse(page1 if len(calls) == 1 else page2)
 
         with mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             candles = b_md.fetch_ohlc_candles(

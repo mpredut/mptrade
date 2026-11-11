@@ -1177,26 +1177,15 @@ def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_p
         "availableCredits": [],
     }
 
-    class _FakeResp:
-        def __init__(self, payload: dict):
-            self._raw = json.dumps(payload).encode("utf-8")
-
-        def read(self):
-            return self._raw
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
+    from tests.conftest import MockHttpResponse
 
     def _fake_urlopen(req, timeout=2.5):
         url = req.full_url if hasattr(req, "full_url") else str(req)
         assert req.headers.get("User-agent") == "antigravity/1.4.12"
         if "retrieveUserQuota" in url:
-            return _FakeResp({"buckets": api_state["buckets"]})
+            return MockHttpResponse({"buckets": api_state["buckets"]})
         if "loadCodeAssist" in url:
-            return _FakeResp({"paidTier": {"id": "g1-ultra-tier", "availableCredits": api_state["availableCredits"]}})
+            return MockHttpResponse({"paidTier": {"id": "g1-ultra-tier", "availableCredits": api_state["availableCredits"]}})
         raise AssertionError(f"Unexpected URL: {url}")
 
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)

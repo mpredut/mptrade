@@ -38,6 +38,7 @@ import subprocess
 from intelligence.daemon import IntelligenceTelemetryDaemon
 from offline.backtests.evaluation import load_venue_module
 from order_guard import check_intelligence_guards
+from tests.conftest import MockHttpResponse
 
 _BASE_MARGINS = dict(order_guard._load_margins())
 
@@ -1459,22 +1460,7 @@ def test_batch49_cmc_platform_and_news_feed_deadline_hardening(tmp_path, monkeyp
     collector = NewsFeedCollector()
     monkeypatch.setattr(collector, "get_active_feed_urls", lambda: ["https://feed1.example/rss", "https://feed2.example/rss"])
     calls = []
-
-    class _DummyResp:
-        status = 200
-        headers = {}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return b"<rss><channel><item><title>BTC surges</title></item></channel></rss>"
-
-        def getcode(self):
-            return 200
+    _DummyResp = lambda: MockHttpResponse(b"<rss><channel><item><title>BTC surges</title></item></channel></rss>")
 
     t_vals = iter([100.0, 100.1, 110.8])
     monkeypatch.setattr("intelligence.macro.news_feed_collector.time.monotonic", lambda: next(t_vals, 111.0))

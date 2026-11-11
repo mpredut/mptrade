@@ -32,6 +32,7 @@ from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
 from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
+from tests.conftest import MockHttpResponse
 from unittest.mock import MagicMock, patch
 
 
@@ -1966,19 +1967,7 @@ def test_orderbookdepthcollector_fetch_unsorted_bids_asks_and_crossed_book_iter9
     """[ITER98 #2] OrderbookDepthCollector.fetch: unsorted bids/asks and crossed book rejection."""
     # 2. OrderbookDepthCollector.fetch: unsorted bids/asks and crossed book rejection
     ob = OrderbookDepthCollector(cache_dir=str(tmp_path), depth_band_pct=2.0, cache_ttl_sec=0.0)
-
-    class _DummyResp:
-        def __init__(self, payload: dict):
-            self._bytes = json.dumps(payload).encode("utf-8")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return self._bytes
+    _DummyResp = MockHttpResponse
 
     # Crossed book (best bid 105 > best ask 100) -> rejected (returns None)
     monkeypatch.setattr(

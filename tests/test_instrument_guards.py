@@ -36,6 +36,7 @@ from providers.quantity import decide_quantity
 from order_lifecycle import extract_order_restore_params, restore_cancelled_orders
 from active_intents import build_active_intent_index, format_summary
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+from tests.conftest import DummySpotExecutionProvider, make_test_regime_context as _build_test_context
 from types import SimpleNamespace
 
 SYMBOL = "ZZZFAKEUSD"
@@ -2225,7 +2226,6 @@ def test_gt_m_medium_trend_action_scale_idempotency_when_applied_scale_is_alread
 
 def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter21_s2(monkeypatch):
     """[ITER21 #2] Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,."""
-    from tests.conftest import DummySpotExecutionProvider, make_test_regime_context as _build_test_context
     # 2. Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,
     #    skips profit_guard_window_ref when G_PROF is bypassed, and ignores suggested_scale on bypass_guards={'all'}
     window_ref_calls = []
@@ -2287,20 +2287,7 @@ def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter2
 def test_instrument__apply_late_intelligence_scale_nan_bool_safety_instrument_place_rejects_iter35_s3():
     """[ITER35 #3] Instrument._apply_late_intelligence_scale NaN/bool safety & Instrument.place rejects boolean/NaN/negative limit prices on both BUY and SELL with 'invalid_price'."""
     # 3. Instrument._apply_late_intelligence_scale NaN/bool safety
-    class _DummyProvider:
-        name = "kraken"
-        def validate_symbol(self, symbol):
-            return True
-        def guards_internally(self):
-            return False
-        def execution_enabled(self):
-            return True
-        def round_amount(self, symbol, q):
-            return round(float(q), 4)
-        def free_balance(self, asset):
-            return 1000.0
-
-    dummy_prov = _DummyProvider()
+    dummy_prov = DummySpotExecutionProvider(free_bal=1000.0)
     inst = Instrument(
         name="BTCUSDC",
         provider="kraken",
@@ -2341,28 +2328,12 @@ def test_instrument__apply_late_intelligence_scale_nan_bool_safety_instrument_pl
 def test_instrument_place_side_normalization_invalid_side_handling_and_iter98_s2():
     """[ITER98 #2] Instrument.place side normalization & invalid side handling, and Instrument.param safety."""
     # 2. Instrument.place side normalization & invalid side handling, and Instrument.param safety
-    class _GuardInternalProvider(MarketDataProvider):
-        name = "guard_internal"
-
+    class _GuardInternalProvider(_GuardsInternallyProvider):
         def __init__(self):
+            super().__init__(name="guard_internal")
             self.last_side = None
 
-        def get_current_price(self, symbol: str):
-            return 100.0
-
-        def get_price_history(self, symbol: str, lookback_h: float):
-            return []
-
         def supports_symbol(self, symbol: str) -> bool:
-            return True
-
-        def free_balance(self, asset: str):
-            return 1000.0
-
-        def get_orders(self, symbol: str, side, since_s: float):
-            return []
-
-        def guards_internally(self) -> bool:
             return True
 
         def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):

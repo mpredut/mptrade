@@ -343,7 +343,7 @@ class DummySpotExecutionProvider:
         return px
 
     def round_amount(self, sym, q):
-        return q
+        return round(float(q), 4)
 
     def free_balance(self, asset):
         return self._free_bal
@@ -386,6 +386,32 @@ def make_transient_complete_claim(order_retry_mod):
         return real_complete(*args, **kwargs)
 
     return attempts, transient_complete
+
+
+class MockHttpResponse:
+    """Reusable mock ``urllib.request.urlopen`` context-manager response supporting ``bytes``, ``str``, or JSON payloads."""
+
+    def __init__(self, payload: bytes | str | dict | list = b"{}", *, status: int = 200, headers: dict | None = None):
+        if isinstance(payload, bytes):
+            self._body = payload
+        elif isinstance(payload, str):
+            self._body = payload.encode("utf-8")
+        else:
+            self._body = json.dumps(payload).encode("utf-8")
+        self.status = status
+        self.headers = dict(headers) if headers is not None else {}
+
+    def read(self, _max_bytes: int | None = None) -> bytes:
+        return self._body
+
+    def getcode(self) -> int:
+        return self.status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
 
 
 class _TempDirPath(str):

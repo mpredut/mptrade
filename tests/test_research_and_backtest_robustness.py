@@ -57,6 +57,7 @@ from strategies.position_exit_manager import (
     ReentrySnapshot,
 )
 from strategies.spot_engine import StratParams
+from tests.conftest import MockHttpResponse as _DummyBytesResp
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import active_intents
@@ -1406,20 +1407,6 @@ def test_provider_env_value_and_order_price_validation(tmp_path):
         for k, v in saved_env.items():
             if v is not None:
                 os.environ[k] = v
-
-
-class _DummyBytesResp:
-    def __init__(self, body: bytes):
-        self._body = body
-
-    def read(self):
-        return self._body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
 
 
 def test_venue_market_data_client_and_strategy_edge_cases(tmp_path, monkeypatch):

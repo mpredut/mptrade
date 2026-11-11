@@ -31,6 +31,7 @@ from providers.order_ohlc_utils import derive_venue_128bit_client_order_id, form
 from providers.quantity import venue_adjust_partial_sell_quantity, venue_fee_cap_quantity
 from providers import order_id_context as oic
 import order_guard
+from tests.conftest import MockHttpResponse
 
 
 def test_freshness_parameters_fail_closed_on_nonpositive_bool_and_nan(tmp_path: Path):
@@ -885,17 +886,7 @@ def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkey
     with pytest.raises(ValueError, match="HTTP"):
         botcore.fetch_public_bytes("file:///etc/passwd", timeout=5.0)
 
-    class _FakeResp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self, _max_bytes=None):
-            return b"<rss><channel/></rss>"
-
-    monkeypatch.setattr(botcore.urllib.request, "urlopen", lambda req, timeout=10.0: _FakeResp())
+    monkeypatch.setattr(botcore.urllib.request, "urlopen", lambda req, timeout=10.0: MockHttpResponse(b"<rss><channel/></rss>"))
     assert botcore.fetch_public_bytes("https://example.com/feed.xml", timeout=5.0) == b"<rss><channel/></rss>"
 
     # 3. HLClient._coin_candidates & candles overflow safety
@@ -966,22 +957,10 @@ def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, t
 
     captured_req = {}
 
-    class _FakeHttpResp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return b"{}"
-
     def _fake_urlopen(req, timeout=10.0):
         captured_req["data"] = req.data
         captured_req["method"] = req.get_method()
-        return _FakeHttpResp()
+        return MockHttpResponse(b"{}")
 
     monkeypatch.setattr(botcore.urllib.request, "urlopen", _fake_urlopen)
     st_code, _ = botcore.http_request("POST", "https://example.com/hook", body=b"hello", timeout=5.0)
