@@ -6,9 +6,8 @@ guards_internally=False route through the provider-neutral Instrument pipeline.
 import os
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 mock_bapi = MagicMock()
@@ -17,6 +16,7 @@ sys.modules.setdefault("bapi_trades", MagicMock())
 sys.modules.setdefault("bapi_allorders", MagicMock())
 
 from binance_api import bapi, bapi_placeorder as po
+import order_guard
 from providers.market_api import BinanceProvider
 from providers.strategy_executor import (
     ProviderError,
@@ -250,7 +250,6 @@ class TestBinanceProviderHooks(unittest.TestCase):
             mechanics.assert_called_once_with("SELL", SYMBOL, 100.0, 0.2, force=True, enforce_business_minimum=False)
 
         with self.subTest(msg="profit guard window ref uses safeback"):
-            import order_guard
             with patch.object(order_guard, "window_reference", return_value=123.0) as f:
                 out = self.p.profit_guard_window_ref(SYMBOL, "BUY", 14 * 24 * 3600)
             self.assertEqual(out, 123.0)

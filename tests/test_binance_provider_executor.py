@@ -1,15 +1,17 @@
 """Verify the BinanceProvider StrategyExecutor contract with a fake API."""
+from decimal import Decimal
 import os
-import sys
 import unittest
 from unittest import mock
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+import pytest
 
-from providers import market_api  # noqa: E402
-from providers.market_api import BinanceProvider  # noqa: E402
+from binance_api import bapi_placeorder
+from providers import market_api
+from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import KrakenProvider
+from providers.market_api import BinanceProvider
+from providers.quantity import BinanceFilterError, BinanceOrderRules, binance_filter_refusal_reason, decimal_places
 from providers.strategy_executor import (
     OrderReconciliationCapabilities,
     PairPrecision,
@@ -18,12 +20,9 @@ from providers.strategy_executor import (
     SubmissionRefused,
     candle_interval,
 )
-from decimal import Decimal
-import pytest
-from providers.quantity import BinanceFilterError, BinanceOrderRules, binance_filter_refusal_reason, decimal_places
-from providers.hyperliquid_provider import HyperliquidProvider
-from providers.kraken_provider import KrakenProvider
 from providers.t212_provider import T212Provider
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class FakeClient:
@@ -85,7 +84,6 @@ class BinanceExecutorContractTest(unittest.TestCase):
         self.fake = FakeBapi()
         self._patch = mock.patch.object(market_api, "_bapi", self.fake)
         self._patch.start()
-        from binance_api import bapi_placeorder
         self.placeorder = bapi_placeorder
         self._trade_enabled_patch = mock.patch.object(
             bapi_placeorder.cfg, "is_trade_enabled", return_value=True,

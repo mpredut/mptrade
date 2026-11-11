@@ -1,16 +1,13 @@
 """Regression tests for bounded one-shot Binance cache submit permits."""
 
 import os
-import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from binance_api import bapi_placeorder as placeorder
 from account_cache_health import CacheHealthStatus
+from binance_api import bapi_placeorder as placeorder
 from providers.strategy_executor import SubmissionRefused
 
 

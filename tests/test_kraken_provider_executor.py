@@ -1,33 +1,48 @@
 """Kraken executor-contract tests with an injected offline fake client."""
 import base64
+import importlib
 import json
 import os
-import sys
+import time as _time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-import kraken.market_data as kmd
 import pytest
-from botcore import load_local_module
+
 from cacheaccount import CacheTradeManager
-from kraken import kraken_client as kc, kraken_xstock_watch as kxw
+import instrument as instrument_module
+from instrument import Instrument
+from kraken import kraken_bot as kb, kraken_client as kc, kraken_xstock_watch as kxw, shadow_live as k_sl
 from kraken.kraken_client import KrakenClient, KrakenError
+import kraken.market_data as kmd
+from kraken.market_data import pair_precision
+from offline.research.kraken_continuous_grid import grid as k_grid
+from offline.research.t212_continuous_grid import grid as t_grid
+import order_guard
+from providers import kraken_provider
+from providers.base import aggregate_fills_by_order_id
 from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import (
+    KrakenProvider,
+    _normalize_kraken_fill,
+    _parse_bool_flag as krk_bool,
+    kraken_pair_matches,
+)
+from providers.market_api import MarketApi, api
+from providers.order_ohlc_utils import clean_order_id, require_clean_order_id
+from providers.strategy_executor import (
+    OrderStatus,
+    PairPrecision,
+    ProviderError,
+    StrategyExecutor,
+    SubmissionRefused,
+)
+from providers.t212_provider import T212Provider
+from tests.conftest import load_venue_modules
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-import instrument as instrument_module  # noqa: E402
-import order_guard  # noqa: E402
-from instrument import Instrument  # noqa: E402
-from providers import kraken_provider  # noqa: E402
-from providers.kraken_provider import KrakenProvider  # noqa: E402
-from providers.market_api import MarketApi  # noqa: E402
-from providers.strategy_executor import (  # noqa: E402
-    StrategyExecutor, OrderStatus, PairPrecision, ProviderError)
 
 
 class FakeClient:
@@ -319,7 +334,6 @@ class KrakenExecutorContractTest(unittest.TestCase):
             )
 
         with self.subTest(msg="get_price_history_snaps_to_valid_kraken_ohlc_intervals"):
-            import time as _time
             now_s = int(_time.time())
             observed_intervals = []
             def _fake_public(endpoint, params=None):
@@ -504,9 +518,6 @@ class MinOrderQtyCacheTest(unittest.TestCase):
 
 class AddOrderRoundingTest(unittest.TestCase):
     def _client(self, pair_decimals):
-        if os.path.join(ROOT, "kraken") not in sys.path:
-            sys.path.insert(0, os.path.join(ROOT, "kraken"))
-
         c = KrakenClient.__new__(KrakenClient)
         c.pair_info = lambda pair: {"pair_decimals": pair_decimals}
         sent = {}
@@ -525,9 +536,6 @@ class AddOrderRoundingTest(unittest.TestCase):
                 self.assertEqual(sent["price"], expected)
 
     def test_price_decimals_fallback(self):
-        if os.path.join(ROOT, "kraken") not in sys.path:
-            sys.path.insert(0, os.path.join(ROOT, "kraken"))
-
         for label, pair_info in (
             ("missing", lambda pair: None),
             ("exception", mock.Mock(side_effect=RuntimeError("API down"))),
@@ -648,8 +656,6 @@ class PublicCacheTest(unittest.TestCase):
         self.assertGreater(cfg["lookback_sec"], 0.0)
 
     def test_wait_for_listing_suppresses_alert_on_transient_network_recovery(self):
-        import kraken.kraken_bot as kb
-
         client = kc.KrakenClient()
         with mock.patch.object(kc, "http_get", side_effect=[(0, b""), _KRAKEN_FULL]), \
              mock.patch.object(kb.time, "sleep"), \
@@ -680,7 +686,6 @@ if __name__ == "__main__":
 
 def test_aggregate_fills_by_order_id_window_reference_krakenprovider_get_orders_hyperliquidprovider_get_orders_with_nan_iter26_s4():
     """[ITER26 #4] aggregate_fills_by_order_id, window_reference, KrakenProvider.get_orders, HyperliquidProvider.get_orders with NaN."""
-    from providers.base import aggregate_fills_by_order_id
     # 4. aggregate_fills_by_order_id, window_reference, KrakenProvider.get_orders, HyperliquidProvider.get_orders with NaN
     rows = [{"orderId": "1", "side": "SELL", "price": 100.0, "qty": 1.0, "timestamp": 1_700_000_000_000}]
     assert aggregate_fills_by_order_id(rows, cutoff_ms=float("nan")) == []
@@ -797,14 +802,13 @@ def test_kraken_market_data_fetch_ohlc_candles_rejects_bool_nan_inf_interval_ite
 
 def test_kraken_kraken_bot__cmd_balance_ignores_bool_nan_inf_balances_iter52_s4(monkeypatch):
     """[ITER52 #4] kraken/kraken_bot._cmd_balance ignores bool/NaN/Inf balances without crashing."""
-    from kraken import kraken_bot as k_bot
     # 4. kraken/kraken_bot._cmd_balance ignores bool/NaN/Inf balances without crashing
     logged_lines = []
-    monkeypatch.setattr(k_bot, "log", lambda msg: logged_lines.append(msg))
+    monkeypatch.setattr(kb, "log", lambda msg: logged_lines.append(msg))
     fake_kcli = SimpleNamespace(
         balance=lambda: {"ZUSD": "100.5", "BAD_BOOL": True, "BAD_NAN": "nan", "BAD_INF": "inf", "ZERO": "0"}
     )
-    assert k_bot._cmd_balance(fake_kcli) == 0
+    assert kb._cmd_balance(fake_kcli) == 0
     assert any("ZUSD" in ln for ln in logged_lines)
     assert not any("BAD_" in ln for ln in logged_lines)
 
@@ -825,7 +829,6 @@ def test_kraken_kraken_xstock_watch_check_levels_ignores_bool_nan_inf_alloc_pric
 
 def test_kraken_shadow_live__load_history_filters_out_bool_nan_inf_iter52_s6(monkeypatch, tmp_path):
     """[ITER52 #6] kraken/shadow_live._load_history filters out bool/NaN/Inf/non-positive bars."""
-    from kraken import shadow_live as k_sl
     # 6. kraken/shadow_live._load_history filters out bool/NaN/Inf/non-positive bars
     monkeypatch.setattr(k_sl, "LOG_DIR", str(tmp_path))
     hist_file = tmp_path / "HYPEUSD_240m.ohlc.json"
@@ -842,7 +845,6 @@ def test_kraken_shadow_live__load_history_filters_out_bool_nan_inf_iter52_s6(mon
 
 def test_krakenprovider_pair_precision_rejects_nan_non_positive_ordermin_iter58_s4():
     """[ITER58 #4] KrakenProvider.pair_precision rejects NaN/non-positive ordermin."""
-    from unittest.mock import MagicMock
     # 4. KrakenProvider.pair_precision rejects NaN/non-positive ordermin
     kp = KrakenProvider(client=MagicMock())
     kp._cli.pair_info.return_value = {"pair_decimals": 2, "lot_decimals": 4, "ordermin": float("nan"), "base": "HYPE"}
@@ -882,7 +884,6 @@ def test_krakenclient__parse_rejects_non_dict_json_payloads_cleanly_iter68_s1():
 
 def test_kraken_market_data_pair_precision_handles_float_strings_and_overflowerror_iter68_s2():
     """[ITER68 #2] kraken.market_data.pair_precision handles float strings and OverflowError."""
-    from kraken.market_data import pair_precision
     # 2. kraken.market_data.pair_precision handles float strings and OverflowError
     assert pair_precision({"pair_decimals": "2.0", "lot_decimals": "4.0", "ordermin": "0.01"}) == (2, 4, 0.01)
     assert pair_precision({"pair_decimals": 10**400, "lot_decimals": 10**400, "ordermin": 10**400}) == (2, 8, 0.0)
@@ -895,8 +896,7 @@ def test__ledger_to_fills_tolerates_non_dict_ledger_or_non_dict_iter68_s3():
 
 def test_kraken_xstock_watch_check_pairs_tolerates_non_dict_entries_and_missing_iter70_s3():
     """[ITER70 #3] kraken_xstock_watch.check_pairs tolerates non-dict entries and missing alerted_pair in state dict."""
-    kraken_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
-    k_watch = load_local_module(kraken_dir, "kraken_xstock_watch.py", module_key="_k_watch_70", reload=True)
+    k_watch = load_venue_modules("kraken", "kraken_xstock_watch")
     # 3. kraken_xstock_watch.check_pairs tolerates non-dict entries and missing alerted_pair in state dict
     k_watch.notify = lambda **kw: None
     dummy_k = SimpleNamespace(
@@ -910,8 +910,6 @@ def test_kraken_xstock_watch_check_pairs_tolerates_non_dict_entries_and_missing_
 
 def test_kraken_t212_continuous_grid_load_handles_float_timestamps_and_iter74_s4(tmp_path):
     """[ITER74 #4] kraken/t212 continuous_grid.load handles float timestamps and skips non-positive/NaN OHLC."""
-    from offline.research.kraken_continuous_grid import grid as k_grid
-    from offline.research.t212_continuous_grid import grid as t_grid
     # 4. kraken/t212 continuous_grid.load handles float timestamps and skips non-positive/NaN OHLC
     k_csv = tmp_path / "XXBTZUSD.csv"
     k_csv.write_text("timestamp,open,high,low,close,volume\n1000.0,100,105,95,102,1\n1060.0,0,105,95,102,1\n", encoding="utf-8")
@@ -932,7 +930,6 @@ def test_kraken_t212_continuous_grid_load_handles_float_timestamps_and_iter74_s4
 
 def test_krakenprovider_rejects_boolean_client_order_id_and_invalid_order_sides_iter87_s1():
     """[ITER87 #1] KrakenProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order & HyperliquidProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order."""
-    from providers.strategy_executor import SubmissionRefused
     # 1. KrakenProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order
     with pytest.raises(ProviderError, match="client_order_id"):
         KrakenProvider.derive_client_order_id(True)
@@ -988,8 +985,6 @@ def test_kraken_market_data_fetch_ohlc_candles_check_pair_listing_pair_precision
 
 def test_kraken_kraken_xstock_watch_check_pairs_skips_non_tradable_status_iter92_s4():
     """[ITER92 #4] kraken.kraken_xstock_watch.check_pairs skips non-tradable status."""
-    import importlib
-    import importlib.util
     # 4. kraken.kraken_xstock_watch.check_pairs skips non-tradable status
     xw = importlib.import_module("kraken.kraken_xstock_watch")
     st_xw = xw._default_state()
@@ -1026,7 +1021,6 @@ def test_krakenclient_validation_on_pair_txid_and_price_decimals_non_iter94_s3(m
 
 def test_krakenprovider_kraken_pair_matches_free_balance_normalization_negative_fee_rejection_non_iter95_s2():
     """[ITER95 #2] KrakenProvider kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series."""
-    from providers.kraken_provider import kraken_pair_matches
     # 2. KrakenProvider kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series
     assert kraken_pair_matches("", "---") is False
     assert kraken_pair_matches(True, "BTCUSD") is False
@@ -1145,8 +1139,6 @@ def test_kraken_market_data_fetch_ohlc_candles_rejects_float_interval_with_inval
 
 def test_marketapi_krakenprovider_and_t212provider_reject_nan_inf_non_iter122_s3():
     """[ITER122 #3] MarketApi, KrakenProvider, and T212Provider reject NaN/Inf/non-integer order_id."""
-    from providers.t212_provider import T212Provider
-    from providers.market_api import api
     # 3. MarketApi, KrakenProvider, and T212Provider reject NaN/Inf/non-integer order_id
     for bad_id in (float("nan"), float("inf"), "nan", "INF", "null", 12.5, {"bad": 1}):
         with pytest.raises(ProviderError):
@@ -1223,7 +1215,6 @@ def test_kraken_cachemanager__ledger_to_fills_ignores_entries_with_sentinel_cont
 
 def test_derive_client_order_id_normalize_kraken_fill_and_krakenprovider_order_status_whitespace_handling_iter141_s2():
     """[ITER141 #2] derive_client_order_id, _normalize_kraken_fill, and KrakenProvider.order_status whitespace handling."""
-    from providers.kraken_provider import _normalize_kraken_fill
     # 2. derive_client_order_id, _normalize_kraken_fill, and KrakenProvider.order_status whitespace handling
     for bad_cid in ("nan", "null", "none", "inf", ["abc"], {"a": 1}, True, None, ""):
         with pytest.raises(ProviderError):
@@ -1247,8 +1238,7 @@ def test_derive_client_order_id_normalize_kraken_fill_and_krakenprovider_order_s
 def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_watch__load_state_iter146_s2(tmp_path, monkeypatch):
     """[ITER146 #2] hyperliquid/strategy.py _sanitize_state and _clean_oid & kraken_xstock_watch._load_state & _bot_alive & 212trading/price_alert.py _parse_armed_flag."""
     # 2. hyperliquid/strategy.py _sanitize_state and _clean_oid
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hl_mod = load_local_module(os.path.join(root, "hyperliquid"), "strategy", module_key="hl_strat_t146", register=False)
+    hl_mod = load_venue_modules("hyperliquid", "strategy")
 
     for bad_oid in ("nan", "null", "none", "0", 0, -3, ["1"], {"id": 1}, True, None, ""):
         assert hl_mod.clean_order_id(bad_oid) is None
@@ -1303,7 +1293,7 @@ def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_wa
 
 
     # 4. 212trading/price_alert.py _parse_armed_flag
-    pa_mod = load_local_module(os.path.join(root, "212trading"), "price_alert", module_key="t212_pa_t146", reload=True)
+    pa_mod = load_venue_modules("212trading", "price_alert")
     assert pa_mod._parse_armed_flag("0.0") is False
     assert pa_mod._parse_armed_flag("false") is False
     assert pa_mod._parse_armed_flag("null") is False
@@ -1312,7 +1302,6 @@ def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_wa
 
 def test_kraken_cachemanager_clean_order_id__normalize_and__load_initial_cache_iter147_s1(tmp_path):
     """[ITER147 #1] clean_order_id, KrakenProvider.normalize_ws_trade, and CacheTradeManager.load_sanitized_trade_snapshot."""
-    from providers.order_ohlc_utils import clean_order_id
     # 1. clean_order_id, KrakenProvider.normalize_ws_trade, and CacheTradeManager.load_sanitized_trade_snapshot
     for bad_id in ("nan", "null", "none", "0", 0, -5, 12.5, ["123"], {"id": 1}, True, None, ""):
         assert clean_order_id(bad_id) is None
@@ -1345,24 +1334,21 @@ def test_kraken_cachemanager_clean_order_id__normalize_and__load_initial_cache_i
 
 def test_kraken_shadow_live__get_anchor_handles_integral_float_strings_and_iter147_s2(tmp_path):
     """[ITER147 #2] kraken/shadow_live._get_anchor handles integral float strings and non-finite default_ts."""
-    from kraken import shadow_live as ksl
     # 2. kraken/shadow_live._get_anchor handles integral float strings and non-finite default_ts
-    orig_log_dir = ksl.LOG_DIR
-    ksl.LOG_DIR = str(tmp_path / "shadow_logs")
+    orig_log_dir = k_sl.LOG_DIR
+    k_sl.LOG_DIR = str(tmp_path / "shadow_logs")
     try:
-        os.makedirs(ksl.LOG_DIR, exist_ok=True)
-        anchor_p = os.path.join(ksl.LOG_DIR, f"{ksl._safe_pair('HYPEUSD')}_240m.anchor")
+        os.makedirs(k_sl.LOG_DIR, exist_ok=True)
+        anchor_p = os.path.join(k_sl.LOG_DIR, f"{k_sl._safe_pair('HYPEUSD')}_240m.anchor")
         with open(anchor_p, "w", encoding="utf-8") as fh:
             fh.write("1700000000.0\n")
-        assert ksl._get_anchor("HYPEUSD", 240, 1600000000) == 1700000000
-        assert ksl._get_anchor("ADAUSD", 240, float("nan")) == 0  # type: ignore[arg-type]
+        assert k_sl._get_anchor("HYPEUSD", 240, 1600000000) == 1700000000
+        assert k_sl._get_anchor("ADAUSD", 240, float("nan")) == 0  # type: ignore[arg-type]
     finally:
-        ksl.LOG_DIR = orig_log_dir
+        k_sl.LOG_DIR = orig_log_dir
 
 def test_krakenprovider__clean_kraken_order_id_strategy_dry_run_iter152_s2():
     """[ITER152 #2] require_clean_order_id(str_only=True) & KrakenProvider.strategy_dry_run."""
-    from providers.kraken_provider import _parse_bool_flag as krk_bool
-    from providers.order_ohlc_utils import require_clean_order_id
     # 2. require_clean_order_id(str_only=True) & KrakenProvider.strategy_dry_run
     assert krk_bool("false", True) is False
     assert KrakenProvider.strategy_dry_run(False, "false") is True  # type: ignore[arg-type]
