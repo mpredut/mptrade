@@ -49,9 +49,25 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether a parabolic surge (BUY) or vertical dump (SELL) defers the proposed order side."""
-        side_u, early_side = self._require_buy_sell_side(side, unsupported_reason="unsupported_side_skipped")
-        if early_side is not None:
-            return early_side
+        return self._check_buy_sell_side(
+            symbol,
+            side,
+            current_price,
+            price_history=price_history,
+            volatility_1h_pct=volatility_1h_pct,
+            now=now,
+            unsupported_reason="unsupported_side_skipped",
+        )
+
+    def _evaluate_buy_sell_side(
+        self,
+        symbol: str,
+        side_u: str,
+        current_price: float,
+        price_history: Optional[List[Tuple[float, float]]] = None,
+        volatility_1h_pct: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> GuardDecision:
 
         current_price_f = safe_pos_float(current_price, default=None)
         if current_price_f is None:

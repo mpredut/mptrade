@@ -58,7 +58,7 @@ ensure_local_module_priority(
 
 from cachepaths import canonical_base_asset  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
-from ipo_common import load_t212_environment, notify, now_str  # noqa: E402
+from ipo_common import build_t212_client_from_env, load_t212_environment, notify, now_str  # noqa: E402
 from listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
 from order_manager import place_order_with_retry, resolve_quantity  # noqa: E402
 from strategy import StratParams, Strategy  # noqa: E402
@@ -114,13 +114,8 @@ def main() -> int:
     os.environ["IPO_PROFILE"] = args.profile.strip()
 
     # --- .env configuration ---
-    credentials = t212_credentials()
-    t212_env    = required_env("T212_ENV").lower()
-    client = T212Client(
-        credentials.key, credentials.secret, env=t212_env,
-        min_gap_sec=required_float_env("T212_MIN_GAP_SEC"),
-        portfolio_ttl_sec=required_float_env("T212_PORTFOLIO_TTL_SEC"),
-    )
+    t212_env = required_env("T212_ENV").lower()
+    client = build_t212_client_from_env(T212Client, t212_credentials)
 
     # Generic instrument.
     t212_ticker  = (args.symbol or optional_env("T212_TICKER")).strip()

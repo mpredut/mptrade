@@ -84,10 +84,27 @@ class WeibullExhaustionGuard(OrderGuardEvaluatorBase):
         """Evaluate if the trend is mature/exhausted for the requested side."""
         if self.policy == "off":
             return GuardDecision.allow("WeibullExhaustionGuard", "weibull_policy_off")
+        return self._check_buy_sell_side(
+            symbol,
+            side,
+            trend_duration_seconds,
+            p90_days=p90_days,
+            median_days=median_days,
+            trend_direction=trend_direction,
+            gaussian_horizon_days=gaussian_horizon_days,
+            unsupported_reason="unsupported_side",
+        )
 
-        side_u, early_side = self._require_buy_sell_side(side, unsupported_reason="unsupported_side")
-        if early_side is not None:
-            return early_side
+    def _evaluate_buy_sell_side(
+        self,
+        symbol: str,
+        side_u: str,
+        trend_duration_seconds: float,
+        p90_days: Optional[float] = None,
+        median_days: Optional[float] = None,
+        trend_direction: Optional[str] = None,
+        gaussian_horizon_days: Optional[float] = None,
+    ) -> GuardDecision:
 
         if trend_direction is not None and not isinstance(trend_direction, bool):
             raw_dir = str(trend_direction).strip().lower()

@@ -12,7 +12,15 @@ from datetime import datetime, timezone
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # repository root
-from botcore import BUCHAREST, ET, load_dotenv, load_local_module, parse_dotenv  # noqa: E402
+from botcore import (  # noqa: E402
+    BUCHAREST,
+    ET,
+    load_dotenv,
+    load_local_module,
+    parse_dotenv,
+    required_env,
+    required_float_env,
+)
 from notify_engine.alertnotifiers import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "YAHOO_SYMBOL"), "STOCK")
@@ -79,3 +87,23 @@ def now_str() -> str:
         f"{n.astimezone(ET):%Y-%m-%d %H:%M:%S} ET  |  "
         f"{n.astimezone(BUCHAREST):%H:%M:%S} Bucharest"
     )
+
+
+def build_t212_client_from_env(
+    client_cls,
+    creds_fn,
+    *,
+    include_order_gap: bool = False,
+    lower_env: bool = True,
+):
+    """Instantiate ``client_cls`` using ``creds_fn()`` and standard T212 environment variables."""
+    credentials = creds_fn()
+    raw_env = required_env("T212_ENV")
+    kwargs = {
+        "env": raw_env.lower() if lower_env else raw_env,
+        "min_gap_sec": required_float_env("T212_MIN_GAP_SEC"),
+        "portfolio_ttl_sec": required_float_env("T212_PORTFOLIO_TTL_SEC"),
+    }
+    if include_order_gap:
+        kwargs["order_min_gap_sec"] = required_float_env("T212_ORDER_MIN_GAP_SEC")
+    return client_cls(credentials.key, credentials.secret, **kwargs)

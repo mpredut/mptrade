@@ -32,3 +32,9 @@ def load_isolated_kraken_cfg(
         override_prefixes=("KRAKEN_",),
         fallback_prefixes=(),
     )
+
+
+def build_kraken_client(client_cls, creds_fn, role: str = "bot"):
+    """Instantiate ``client_cls`` using ``creds_fn(role)``."""
+    credentials = creds_fn(role)
+    return client_cls(credentials.key, credentials.secret)

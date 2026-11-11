@@ -50,7 +50,7 @@ from botcore import (  # noqa: E402
     safe_nonneg_float,
     safe_pos_float,
 )
-from kraken_common import notify  # noqa: E402
+from kraken_common import build_kraken_client, notify  # noqa: E402
 from kraken_client import KrakenClient  # noqa: E402
 
 from trailing_core import (  # noqa: E402
@@ -536,8 +536,7 @@ def main() -> int:
     args = parse_trailing_cli_args("A trailing-stop circuit breaker on Kraken (with a re-buy).", "kraken_trailing")
     # A dedicated trailing key (KRAKEN_API_KEY_TRAIL) keeps its nonce separate from
     # _BOT (kraken_bot + xstock_watch). Fall back to _BOT when _TRAIL is absent.
-    credentials = kraken_credentials("trail")
-    client = KrakenClient(credentials.key, credentials.secret)
+    client = build_kraken_client(KrakenClient, kraken_credentials, "trail")
     ts = KrakenTrailing(client)
     return ts.dispatch_cli(args)
 

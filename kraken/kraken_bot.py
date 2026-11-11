@@ -39,7 +39,7 @@ from botcore import (
     safe_pos_float,
     single_instance,
 )
-from kraken.kraken_common import notify
+from kraken.kraken_common import build_kraken_client, notify
 from kraken.kraken_client import KrakenClient, KrakenError
 from kraken.market_data import check_pair_listing, get_price
 from strategies.spot_engine import Strategy, StratParams
@@ -53,8 +53,7 @@ from providers.execution_audit import AuditedStrategyExecutor  # noqa: E402
 from credentials import kraken_credentials  # noqa: E402
 
 def _build_client() -> KrakenClient:
-    credentials = kraken_credentials("bot")
-    return KrakenClient(credentials.key, credentials.secret)
+    return build_kraken_client(KrakenClient, kraken_credentials, "bot")
 
 
 def main() -> int:

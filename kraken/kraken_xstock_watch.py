@@ -52,7 +52,7 @@ from botcore import (
 )
 from providers.order_ohlc_utils import extract_yahoo_chart_latest_price
 from strategies.spot_engine import state_path_for
-from kraken.kraken_common import notify
+from kraken.kraken_common import build_kraken_client, notify
 from kraken.kraken_client import KrakenClient, KrakenError
 from kraken.market_data import is_pair_status_tradable
 from state_io import load_json_state, read_text_lines, save_json_state
@@ -495,8 +495,7 @@ def main() -> int:
     sl_pct = required_float_env("XSTOCK_SL_ALERT_PCT")
     yahoo_sym = required_env("XSTOCK_YAHOO")
 
-    credentials = kraken_credentials("bot")
-    client = KrakenClient(credentials.key, credentials.secret)
+    client = build_kraken_client(KrakenClient, kraken_credentials, "bot")
     if args.trial:
         return run_trial(client, args.desktop)
     st = _load_state()

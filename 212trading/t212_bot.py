@@ -46,7 +46,7 @@ from botcore import (  # noqa: E402
 )
 ensure_local_module_priority(_HERE, "ipo_common", "listing_watcher", "strategy", "t212_client")
 from credentials import t212_credentials  # noqa: E402
-from ipo_common import load_t212_environment, notify, parse_t212_cli_args  # noqa: E402
+from ipo_common import build_t212_client_from_env, load_t212_environment, notify, parse_t212_cli_args  # noqa: E402
 from listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
 from providers.order_ohlc_utils import format_strategy_execution_mode  # noqa: E402
 from strategy import StratParams, Strategy  # noqa: E402
@@ -144,13 +144,8 @@ def main() -> int:
                 f"{'STRAT' if on else 'OFF':<6} {'⚠ REAL' if real else 'PAPER'}")
         return 0
 
-    credentials = t212_credentials()
-    client = T212Client(
-        credentials.key, credentials.secret,
-        env=required_env("T212_ENV"),
-        min_gap_sec=required_float_env("T212_MIN_GAP_SEC"),
-        portfolio_ttl_sec=required_float_env("T212_PORTFOLIO_TTL_SEC"),
-        order_min_gap_sec=required_float_env("T212_ORDER_MIN_GAP_SEC"),
+    client = build_t212_client_from_env(
+        T212Client, t212_credentials, include_order_gap=True, lower_env=False
     )
 
     log(f"=== t212_bot: {len(assets)} assets in ONE process ({'PAPER forced' if args.paper else 'config'}) ===")

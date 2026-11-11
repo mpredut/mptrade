@@ -42,6 +42,7 @@ from botcore import (
 )
 from providers.order_ohlc_utils import get_cached_pair_info as _get_cached_pair_info
 from state_io import parse_json_payload
+from credentials import kraken_credentials
 
 API_URL = "https://api.kraken.com"
 
@@ -122,6 +123,13 @@ class KrakenClient:
     def public(cls) -> "KrakenClient":
         """Build a client that cannot call authenticated account endpoints."""
         return cls(api_key=None, api_secret=None)
+
+    @classmethod
+    def from_credentials(cls, role: str = "bot", *, creds_fn=None) -> "KrakenClient":
+        """Build an authenticated client for ``role`` using ``kraken_credentials(role)``."""
+        fn = creds_fn if callable(creds_fn) else kraken_credentials
+        credentials = fn(role)
+        return cls(credentials.key, credentials.secret)
 
     # ----- signature -----------------------------------------------------------
     @staticmethod
