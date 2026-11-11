@@ -323,8 +323,7 @@ class T212Provider(MarketDataProvider):
         by_symbol: dict[str, list[dict]] = {}
         for oid, matches in grouped.items():
             enriched = cls._aggregate_history_fills(matches)
-            inst_d = enriched.get("instrument") if isinstance(enriched.get("instrument"), dict) else {}
-            ticker = str(enriched.get("ticker") or inst_d.get("ticker") or "").strip().upper()
+            ticker = _order_ticker(enriched).upper()
             if not ticker:
                 continue
             raw_qty = safe_float(

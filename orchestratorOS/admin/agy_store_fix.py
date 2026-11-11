@@ -190,6 +190,16 @@ def mode_pre(force: bool = False) -> int:
             log.warning("cannot read summary IDs from %s: %s", DB, e)
     if known_cids:
         del_dir = os.path.join(BACKUPS, stamp, "deleted_in_ui")
+
+        def _retire_deleted_cid_artifacts(cid: str) -> None:
+            ann_file = os.path.join(ANN, cid + ".pbtxt")
+            if os.path.exists(ann_file):
+                try:
+                    shutil.move(ann_file, os.path.join(del_dir, cid + ".pbtxt"))
+                except OSError:
+                    pass
+            shutil.rmtree(os.path.join(CLI, "brain", cid), ignore_errors=True)
+
         for p2 in sorted(glob.glob(os.path.join(glob.escape(D2), "*.db"))):
             name = os.path.basename(p2)
             cid = name[:-3]
@@ -207,13 +217,7 @@ def mode_pre(force: bool = False) -> int:
                 except OSError:
                     pass
                 drop_wal_sidecars(p1, force=False)
-            ann_file = os.path.join(ANN, cid + ".pbtxt")
-            if os.path.exists(ann_file):
-                try:
-                    shutil.move(ann_file, os.path.join(del_dir, cid + ".pbtxt"))
-                except OSError:
-                    pass
-            shutil.rmtree(os.path.join(CLI, "brain", cid), ignore_errors=True)
+            _retire_deleted_cid_artifacts(cid)
             deleted += 1
         for p1 in sorted(glob.glob(os.path.join(glob.escape(D1), "*.db"))):
             if os.path.islink(p1):
@@ -226,13 +230,7 @@ def mode_pre(force: bool = False) -> int:
             os.makedirs(del_dir, exist_ok=True)
             shutil.move(p1, os.path.join(del_dir, name))
             drop_wal_sidecars(p1, force=False)
-            ann_file = os.path.join(ANN, cid + ".pbtxt")
-            if os.path.exists(ann_file):
-                try:
-                    shutil.move(ann_file, os.path.join(del_dir, cid + ".pbtxt"))
-                except OSError:
-                    pass
-            shutil.rmtree(os.path.join(CLI, "brain", cid), ignore_errors=True)
+            _retire_deleted_cid_artifacts(cid)
             deleted += 1
 
     for name in sorted(os.listdir(D1)):

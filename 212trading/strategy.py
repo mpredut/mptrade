@@ -53,7 +53,7 @@ from providers.order_ohlc_utils import (
 )
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
-from providers.t212_provider import T212Provider, _t212_tickers_match
+from providers.t212_provider import T212Provider, _order_ticker, _t212_tickers_match
 from strategies.base_spot_mixin import (
     BaseSpotMixin,
     SpotParamsMixin,
@@ -406,9 +406,7 @@ class Strategy(BaseSpotMixin):
 
     @staticmethod
     def _active_order_identity(order: dict) -> tuple[str, str, float | None, float | None]:
-        instrument = order.get("instrument")
-        nested_ticker = instrument.get("ticker") if isinstance(instrument, dict) else None
-        ticker = str(order.get("ticker") or nested_ticker or "").upper()
+        ticker = _order_ticker(order).upper()
         side = extract_order_side(order) or ""
         raw_qty = order.get("quantity", order.get("orderedQuantity", order.get("qty")))
         qty: float | None = safe_pos_float(raw_qty, default=None) or extract_orig_qty(order, default=0.0) or None
@@ -948,8 +946,7 @@ class Strategy(BaseSpotMixin):
                 latest = hist_fn(self.ticker, side=side, refresh=True)
                 if isinstance(latest, dict):
                     fill_oid = str(latest.get("orderId") or latest.get("id") or "").strip()
-                    raw_ts = safe_pos_float(latest.get("timestamp") or latest.get("time"), None)
-                    fill_ts_s = (raw_ts / 1000.0 if raw_ts > 1e11 else raw_ts) if raw_ts is not None else None
+                    fill_ts_s = normalize_epoch_sec(latest.get("timestamp") or latest.get("time"), None)
                     last_sell_ts = safe_pos_float(self.s.get("last_sell_ts"), None)
                     stale_hist = bool(
                         (fill_oid and fill_oid == str(self.s.get("last_hist_fill_id") or ""))
@@ -959,8 +956,7 @@ class Strategy(BaseSpotMixin):
                         latest_any = hist_fn(self.ticker, side=None, refresh=False)
                         if isinstance(latest_any, dict):
                             any_side = str(latest_any.get("side") or "").strip().upper()
-                            any_ts_raw = safe_pos_float(latest_any.get("timestamp") or latest_any.get("time"), None)
-                            any_ts_s = (any_ts_raw / 1000.0 if any_ts_raw > 1e11 else any_ts_raw) if any_ts_raw is not None else None
+                            any_ts_s = normalize_epoch_sec(latest_any.get("timestamp") or latest_any.get("time"), None)
                             if any_side and any_side != side.upper() and any_ts_s is not None and any_ts_s >= fill_ts_s:
                                 stale_hist = True
                     fill_qty = safe_pos_float(latest.get("executedQty") or latest.get("qty"), None)

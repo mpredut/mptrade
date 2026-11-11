@@ -14,7 +14,7 @@ from urllib.parse import quote
 from abc import ABC, abstractmethod
 
 import instrument_registry as sym
-from botcore import exact_pos_int, is_rth_gate_enabled, is_us_rth_open, required_env, safe_pos_float, safe_pos_int
+from botcore import exact_pos_int, is_rth_gate_enabled, is_us_rth_open, normalize_epoch_sec, required_env, safe_pos_float, safe_pos_int
 from cachepaths import CACHE_WATCHER_ALL_PRICE_FILENAME, cache_path, canonical_base_asset, normalize_venue_name
 from instrument_registry import casefold_get
 
@@ -837,7 +837,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             if ts_val is None or px_val is None:
                 continue
             try:
-                ts_sec = ts_val / 1000.0 if ts_val >= 10_000_000_000 else ts_val
+                ts_sec = normalize_epoch_sec(ts_val)
                 readable = datetime.fromtimestamp(ts_sec).strftime("%Y-%m-%d %H:%M:%S")
             except (TypeError, ValueError, OverflowError, OSError):
                 continue

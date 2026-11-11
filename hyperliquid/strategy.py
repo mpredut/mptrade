@@ -638,11 +638,11 @@ class Strategy(BaseSpotMixin):
         # STRAT_REENTRY_TOLERANCE_PCT=0 preserves exact legacy behavior.
         lop = self.s["last_open_price"]
         moved = self.sign * (price - lop) / lop if lop else 0   # logging only
-        prag_dca = lop * (1 - self.sign * self.p.dca_drop_pct / 100) if lop else None
-        dca_hit = prag_dca is not None and (
-            self.sign * (prag_dca - price) >= 0
+        dca_threshold = lop * (1 - self.sign * self.p.dca_drop_pct / 100) if lop else None
+        dca_hit = dca_threshold is not None and (
+            self.sign * (dca_threshold - price) >= 0
             or (self.p.reentry_tolerance_pct > 0
-                and are_close(price, prag_dca, self.p.reentry_tolerance_pct)))
+                and are_close(price, dca_threshold, self.p.reentry_tolerance_pct)))
         if (self.s["dca_buys"] < self.p.max_dca_buys and self.s["last_open_price"]
                 and dca_hit
                 and self.s["spent"] + self.p.dca_amount <= self.p.max_budget

@@ -36,6 +36,7 @@ from orchestratorOS.agy.summary_store import (  # noqa: E402
     delete_threads,
     parse_db_timestamp,
     resolve_project_ids,
+    summaries_db,
 )
 from orchestratorOS.agy.topics import TOPIC_SPECS, get_active_topic_cids, sync_all_topic_titles  # noqa: E402
 
@@ -109,6 +110,41 @@ def is_automated_thread(title: str, preview: str) -> bool:
     return any(pattern in combined for pattern in AUTONOMOUS_PROMPT_PATTERNS)
 
 
+def _partition_prune_candidates(
+    rows: List[sqlite3.Row],
+    *,
+    protected: Set[str],
+    autonomous_projects: Set[str],
+    all_threads_in_project: bool,
+    cutoff: datetime,
+    require_match: bool = True,
+) -> Tuple[Set[str], List[Tuple[datetime, str]]]:
+    candidates: Set[str] = set()
+    kept: List[Tuple[datetime, str]] = []
+    for row in rows:
+        row_keys = set(row.keys())
+        cid = str(row["conversation_id"] or "").strip()
+        if not cid or cid in protected:
+            continue
+        steps = safe_nonneg_int(row["step_count"] if "step_count" in row_keys else 0, default=0)
+        title_str = (row["title"] if "title" in row_keys else None) or ""
+        preview_str = (row["preview"] if "preview" in row_keys else None) or ""
+        automated = is_automated_thread(title_str, preview_str)
+        if not automated and steps > INTERACTIVE_MIN_STEPS:
+            continue  # multi-turn interactive conversation: never pruned, even with --all
+        if require_match:
+            proj = row["project_id"] if "project_id" in row_keys else None
+            short_autonomous = proj in autonomous_projects and steps <= INTERACTIVE_MIN_STEPS
+            if not (all_threads_in_project or automated or short_autonomous):
+                continue
+        dt = parse_db_timestamp(row["last_modified_time"] if "last_modified_time" in row_keys else None)
+        if dt is None or dt < cutoff:
+            candidates.add(cid)
+        else:
+            kept.append((dt, cid))
+    return candidates, kept
+
+
 def prune_old_cli_threads(
     cli_base: Optional[str] = None,
     retention_days: float = DEFAULT_RETENTION_DAYS,
@@ -127,7 +163,7 @@ def prune_old_cli_threads(
             sync_all_topic_titles(cli_base=base)
         except Exception as e:
             logger.debug("Topic title sync skipped: %s", e)
-    db_path = os.path.join(base, "conversation_summaries.db")
+    db_path = summaries_db(base)
     if not os.path.exists(db_path):
         logger.info("conversation_summaries.db not found at %s. Nothing to prune.", db_path)
         return (0, 0)
@@ -181,29 +217,14 @@ def prune_old_cli_threads(
 
     now_utc = datetime.now(timezone.utc)
     cutoff = now_utc - timedelta(days=retention_days)
-    candidates: Set[str] = set()
-    kept: List[Tuple[datetime, str]] = []
-    for row in rows:
-        row_keys = set(row.keys())
-        cid = str(row["conversation_id"] or "").strip()
-        proj = row["project_id"]
-        if not cid or cid in protected:
-            continue
-        raw_steps = row["step_count"] if "step_count" in row_keys else 0
-        steps = safe_nonneg_int(raw_steps, default=0)
-        title_str = (row["title"] if "title" in row_keys else None) or ""
-        preview_str = (row["preview"] if "preview" in row_keys else None) or ""
-        automated = is_automated_thread(title_str, preview_str)
-        if not automated and steps > INTERACTIVE_MIN_STEPS:
-            continue   # multi-turn interactive conversation: never pruned, even with --all
-        short_autonomous = proj in autonomous_projects and steps <= INTERACTIVE_MIN_STEPS
-        if not (all_threads_in_project or automated or short_autonomous):
-            continue
-        dt = parse_db_timestamp(row["last_modified_time"] if "last_modified_time" in row_keys else None)
-        if dt is None or dt < cutoff:
-            candidates.add(cid)
-        else:
-            kept.append((dt, cid))
+    candidates, kept = _partition_prune_candidates(
+        rows,
+        protected=protected,
+        autonomous_projects=autonomous_projects,
+        all_threads_in_project=all_threads_in_project,
+        cutoff=cutoff,
+        require_match=True,
+    )
 
     if norm_project_id is None:
         conv_dir = os.path.join(base, "conversations")
@@ -233,10 +254,9 @@ def prune_old_cli_threads(
         candidates.update(cid for _, cid in kept[max_threads_i:])
 
     ui_candidates: Set[str] = set()
-    ui_kept: List[Tuple[datetime, str]] = []
     ui_base = resolve_ui_cli_base() if cli_base is None else ""
     if ui_base and os.path.abspath(ui_base) != os.path.abspath(base) and autonomous_projects:
-        ui_db_path = os.path.join(ui_base, "conversation_summaries.db")
+        ui_db_path = summaries_db(ui_base)
         if os.path.exists(ui_db_path):
             try:
                 uconn = sqlite3.connect(ui_db_path, timeout=5.0)
@@ -248,22 +268,14 @@ def prune_old_cli_threads(
                     ).fetchall()
                 finally:
                     uconn.close()
-                for urow in urows:
-                    ukeys = set(urow.keys())
-                    ucid = str(urow["conversation_id"] or "").strip()
-                    if not ucid or ucid in protected:
-                        continue
-                    usteps = safe_nonneg_int(urow["step_count"] if "step_count" in ukeys else 0, default=0)
-                    utitle = (urow["title"] if "title" in ukeys else None) or ""
-                    upreview = (urow["preview"] if "preview" in ukeys else None) or ""
-                    uautomated = is_automated_thread(utitle, upreview)
-                    if not uautomated and usteps > INTERACTIVE_MIN_STEPS:
-                        continue
-                    udt = parse_db_timestamp(urow["last_modified_time"] if "last_modified_time" in ukeys else None)
-                    if udt is None or udt < cutoff:
-                        ui_candidates.add(ucid)
-                    else:
-                        ui_kept.append((udt, ucid))
+                ui_candidates, ui_kept = _partition_prune_candidates(
+                    urows,
+                    protected=protected,
+                    autonomous_projects=autonomous_projects,
+                    all_threads_in_project=False,
+                    cutoff=cutoff,
+                    require_match=False,
+                )
                 if max_threads_i is not None and 0 <= max_threads_i < len(ui_kept):
                     ui_kept.sort(reverse=True)
                     ui_candidates.update(ucid for _, ucid in ui_kept[max_threads_i:])

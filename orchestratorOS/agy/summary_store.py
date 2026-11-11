@@ -211,6 +211,17 @@ def upsert_summary_row_dict(cli_base: str, row_dict: dict) -> None:
         conn.close()
 
 
+def _replace_pb_summary_entries(cli_base: str, cid: str, raw_summary: Any) -> None:
+    if not raw_summary:
+        return
+    for name in SUMMARIES_PB_FILES:
+        pb_path = os.path.join(cli_base, name)
+        if os.path.exists(pb_path):
+            buf, updated = replace_summary_entry(read_bytes_file(pb_path, default=b""), cid, raw_summary)
+            if updated:
+                atomic_write_bytes(pb_path, buf)
+
+
 def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     """Insert/replace a summary row with the CLI source cleared and ``title`` applied (column + proto)."""
     if not isinstance(row, dict):
@@ -224,14 +235,7 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     if row.get("raw_summary"):
         row["raw_summary"] = summary_ui_visible(row["raw_summary"], title_str)
     upsert_summary_row_dict(cli_base, row)
-    raw_sum = row.get("raw_summary")
-    if raw_sum:
-        for name in SUMMARIES_PB_FILES:
-            pb_path = os.path.join(cli_base, name)
-            if os.path.exists(pb_path):
-                buf, updated = replace_summary_entry(read_bytes_file(pb_path, default=b""), clean_cid, raw_sum)
-                if updated:
-                    atomic_write_bytes(pb_path, buf)
+    _replace_pb_summary_entries(cli_base, clean_cid, row.get("raw_summary"))
     write_annotation_title(cli_base, clean_cid, title_str)
 
 
@@ -356,14 +360,7 @@ def restore_conversation_state(cli_base: str, cid: str, snapshot: Optional[dict]
     if isinstance(summary_row, dict):
         try:
             upsert_summary_row_dict(cli_base, summary_row)
-            raw_sum = summary_row.get("raw_summary")
-            if raw_sum:
-                for name in SUMMARIES_PB_FILES:
-                    pb_path = os.path.join(cli_base, name)
-                    if os.path.exists(pb_path):
-                        buf, updated = replace_summary_entry(read_bytes_file(pb_path, default=b""), clean_cid, raw_sum)
-                        if updated:
-                            atomic_write_bytes(pb_path, buf)
+            _replace_pb_summary_entries(cli_base, clean_cid, summary_row.get("raw_summary"))
         except (sqlite3.Error, OSError):
             pass
     return True

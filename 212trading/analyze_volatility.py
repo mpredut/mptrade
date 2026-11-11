@@ -14,11 +14,14 @@ import sys
 import urllib.error
 import urllib.parse
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import fetch_public_json, safe_float, safe_pos_float
+from botcore import fetch_public_json, load_local_module, safe_float, safe_pos_float
+
+_extract_yahoo_result_and_quote = load_local_module(_HERE, "market_data")._extract_yahoo_result_and_quote
 
 
 def fetch_ohlc(sym: str, rng: str, interval: str):
@@ -30,15 +33,9 @@ def fetch_ohlc(sym: str, rng: str, interval: str):
         data = fetch_public_json(url, timeout=25.0, user_agent="Mozilla/5.0")
     except (urllib.error.URLError, OSError, ValueError):
         return [], {}
-    chart = data.get("chart") if isinstance(data, dict) else None
-    chart = chart if isinstance(chart, dict) else {}
-    res = (chart.get("result") or [None])[0]
-    if not isinstance(res, dict) or not res:
+    res, _, ts, q = _extract_yahoo_result_and_quote(data)
+    if res is None:
         return [], {}
-    ts = res.get("timestamp") or []
-    indicators = res.get("indicators") if isinstance(res.get("indicators"), dict) else {}
-    quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
-    q = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
     o, h, l, c, v = (q.get(k) or [] for k in ("open", "high", "low", "close", "volume"))
     n_ohlc = min(len(o), len(h), len(l), len(c))
     out = []

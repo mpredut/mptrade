@@ -35,7 +35,7 @@ ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 from state_io import encode_json_payload, load_json_state, save_json_state
 from providers.base import extract_order_id
 from providers.order_ohlc_utils import extract_order_side
-from providers.t212_provider import _t212_tickers_match
+from providers.t212_provider import _order_ticker, _t212_tickers_match
 
 try:
     from .ipo_common import load_t212_market_data, notify, now_str
@@ -165,9 +165,7 @@ def _matching_active_orders(client: T212Client, record: dict) -> list[dict] | No
     for order in orders:
         if not isinstance(order, dict):
             continue
-        instrument = order.get("instrument")
-        nested_ticker = instrument.get("ticker") if isinstance(instrument, dict) else None
-        ticker = str(order.get("ticker") or nested_ticker or "").upper()
+        ticker = _order_ticker(order).upper()
         if not _t212_tickers_match(ticker, record.get("ticker") or ""):
             continue
         raw_sq = order.get("quantity", order.get("orderedQuantity", order.get("qty")))

@@ -143,7 +143,7 @@ def mirror_topic_thread_to_ui(
     if os.path.abspath(src_base) == os.path.abspath(dst_base) or not os.path.exists(src_db):
         return False
     row = read_summary_row(src_base, cid)
-    if row is None or not os.path.exists(os.path.join(dst_base, "conversation_summaries.db")):
+    if row is None or not os.path.exists(summaries_db(dst_base)):
         return False
     _, ui_steps, ui_status = get_thread_step_count(cid, dst_base)
     bot_steps = safe_nonneg_int(row.get("step_count"))

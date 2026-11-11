@@ -33,6 +33,7 @@ from providers.order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
 )
+from providers.t212_provider import _order_ticker
 
 
 def _retry(fn, tries=4, pause=2):
@@ -99,8 +100,7 @@ def main() -> int:
         q = extract_order_qty(o, default=0.0)
         lp = extract_order_price(o, default=None)
         side = extract_order_side(o) or "UNKNOWN"
-        inst = o.get("instrument") if isinstance(o.get("instrument"), dict) else {}
-        ticker = o.get("ticker") or inst.get("ticker") or ""
+        ticker = _order_ticker(o)
         oid = extract_order_id(o) or ""
         print(f"    {str(ticker):<14} {side} qty {q} @ {lp}  ({o.get('type','')}, {o.get('status','')}) id={oid}")
     print("==========================================")
