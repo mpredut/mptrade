@@ -19,7 +19,10 @@ from collections import deque
 from bisect import bisect_left
 
 from typing import Optional, Sequence, Tuple
-import numpy as np
+try:
+    import numpy as np
+except Exception:
+    np = None  # type: ignore[assignment]
 
 from botcore import (
     are_close,
