@@ -240,9 +240,9 @@ def evaluate_regime_900s(
 def main():
     os.chdir(ROOT)
     symbols = ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"]
-    print("=" * 110)
-    print("  BACKTEST 2: OPPORTUNISTIC EXECUTION DELAY GATE (should_wait / GT_S) ON 222s PRIMARY WINDOW")
-    print("=" * 110)
+    print(
+        f"{'=' * 110}\n  BACKTEST 2: OPPORTUNISTIC EXECUTION DELAY GATE (should_wait / GT_S) ON 222s PRIMARY WINDOW\n{'=' * 110}"
+    )
 
     for sym in symbols:
         ts, px, src_label = _load_ts_px(sym)

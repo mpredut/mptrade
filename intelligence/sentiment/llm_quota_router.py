@@ -1,6 +1,7 @@
 """LLM quota probing, credit accounting, and dynamic model routing for GeminiClient."""
 from __future__ import annotations
 
+from functools import partial
 import importlib
 import logging
 import os
@@ -31,10 +32,7 @@ QUOTA_API_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUs
 LOAD_ASSIST_API_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 AGY_QUOTA_USER_AGENT = "antigravity/1.4.12"
 
-
-def _gc_attr(name: str, default: Any) -> Any:
-    """Resolve an attribute through `intelligence.sentiment.gemini_client` first so monkeypatches take effect."""
-    return resolve_patched_attr(name, default, modules=("intelligence.sentiment.gemini_client",))
+_gc_attr = partial(resolve_patched_attr, modules=("intelligence.sentiment.gemini_client",))
 
 
 def canonical_rest_model(model_name: str) -> str:

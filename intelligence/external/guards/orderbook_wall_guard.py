@@ -26,6 +26,7 @@ class OrderbookWallGuard(OrderGuardEvaluatorBase):
 
     cls_name = "OrderbookWallGuard"
     GUARD_ID = "external_orderbook_wall"
+    _EMPTY_SNAPSHOT_REASON = "no_orderbook_snapshot"
 
     def __init__(
         self,
@@ -48,18 +49,6 @@ class OrderbookWallGuard(OrderGuardEvaluatorBase):
             allow_percent=True,
         )
         self.whale_wall_usd_limit = safe_pos_float(whale_wall_usd_limit, default=1_000_000.0) or 1_000_000.0
-
-    def check(
-        self,
-        symbol: str,
-        side: str,
-        snapshot: Optional[OrderbookSnapshot] = None,
-        now: Optional[float] = None,
-    ) -> GuardDecision:
-        """Evaluate order book liquidity and limit walls."""
-        return self._check_external_snapshot(
-            symbol, side, snapshot, now=now, empty_reason="no_orderbook_snapshot"
-        )
 
     def _evaluate_external_snapshot(
         self, side_norm: str, snapshot: OrderbookSnapshot

@@ -99,16 +99,9 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
     COLLECTOR_ID = "external_whale_positioning"
     _DISK_FILE_PREFIX = "whale_snapshot"
     _SNAPSHOT_CLS = WhalePositioningSnapshot
-
-    def __init__(
-        self,
-        cache_ttl_sec: float = 60.0,
-        cache_dir: Optional[str] = "cachedb",
-        disk_ttl_sec: float = 180.0,
-        *,
-        start_sync: Optional[bool] = None,
-    ) -> None:
-        super().__init__(cache_ttl_sec, 120.0, cache_dir, disk_ttl_sec, 300.0, start_sync=start_sync)
+    _DEFAULT_DISK_TTL_SEC = 180.0
+    _FALLBACK_CACHE_TTL_SEC = 120.0
+    _FALLBACK_DISK_TTL_SEC = 300.0
 
     def _resolve_price_1h_change_pct(self, symbol: str) -> float:
         """Resolve 1-hour price change percentage from cached price history (0 ms local)."""

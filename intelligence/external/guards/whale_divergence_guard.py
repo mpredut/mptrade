@@ -27,6 +27,7 @@ class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
 
     cls_name = "WhaleDivergenceGuard"
     GUARD_ID = "external_whale_divergence"
+    _EMPTY_SNAPSHOT_REASON = "no_whale_snapshot_data"
 
     def __init__(
         self,
@@ -51,18 +52,6 @@ class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
             default=0.50,
             min_positive=True,
             allow_percent=True,
-        )
-
-    def check(
-        self,
-        symbol: str,
-        side: str,
-        snapshot: Optional[WhalePositioningSnapshot] = None,
-        now: Optional[float] = None,
-    ) -> GuardDecision:
-        """Evaluate if whale positioning or OI divergence conflicts with the order."""
-        return self._check_external_snapshot(
-            symbol, side, snapshot, now=now, empty_reason="no_whale_snapshot_data"
         )
 
     def _evaluate_external_snapshot(

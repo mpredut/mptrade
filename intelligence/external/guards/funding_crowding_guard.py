@@ -27,6 +27,7 @@ class FundingCrowdingGuard(OrderGuardEvaluatorBase):
 
     cls_name = "FundingCrowdingGuard"
     GUARD_ID = "external_funding_crowding"
+    _EMPTY_SNAPSHOT_REASON = "no_telemetry_data"
 
     def __init__(
         self,
@@ -47,24 +48,6 @@ class FundingCrowdingGuard(OrderGuardEvaluatorBase):
             default=0.50,
             min_positive=True,
             allow_percent=True,
-        )
-
-    def check(
-        self,
-        symbol: str,
-        side: str,
-        telemetry: Optional[DerivativesTelemetry] = None,
-        now: Optional[float] = None,
-        *,
-        snapshot: Optional[DerivativesTelemetry] = None,
-    ) -> GuardDecision:
-        """Evaluate if perpetual funding rate warrants a brake."""
-        return self._check_external_snapshot(
-            symbol,
-            side,
-            telemetry if telemetry is not None else snapshot,
-            now=now,
-            empty_reason="no_telemetry_data",
         )
 
     def _evaluate_external_snapshot(

@@ -3,6 +3,7 @@ dust/filter checks, resting TP order management, and re-entry state helpers for 
 from __future__ import annotations
 
 import builtins
+from functools import partial
 import math
 from typing import Any, Optional, Tuple
 
@@ -192,8 +193,7 @@ def _inst_provider(inst: Any = None) -> Optional[str]:
     return raw if isinstance(raw, str) else (getattr(raw, "name", None) or getattr(raw, "provider_label", None))
 
 
-def _mt_attr(name: str, default: Any) -> Any:
-    return resolve_patched_attr(name, default, modules=("monitortrades",))
+_mt_attr = partial(resolve_patched_attr, modules=("monitortrades",))
 
 
 def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:

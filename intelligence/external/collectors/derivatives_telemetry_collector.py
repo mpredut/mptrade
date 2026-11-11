@@ -77,16 +77,6 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
     _DISK_FILE_PREFIX = "derivatives_telemetry"
     _SNAPSHOT_CLS = DerivativesTelemetry
 
-    def __init__(
-        self,
-        cache_ttl_sec: float = 60.0,
-        cache_dir: Optional[str] = "cachedb",
-        disk_ttl_sec: float = 120.0,
-        *,
-        start_sync: Optional[bool] = None,
-    ) -> None:
-        super().__init__(cache_ttl_sec, 60.0, cache_dir, disk_ttl_sec, 120.0, start_sync=start_sync)
-
     def _fetch_hyperliquid_derivatives(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
         """Fetch native funding rate and open interest from Hyperliquid L1 metaAndAssetCtxs."""
         ctx = self._fetch_hyperliquid_asset_ctx(symbol, timeout=4.0)

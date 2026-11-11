@@ -3020,14 +3020,15 @@ def start_monitoring_daemon_thread(
 
 
 def stop_monitoring_thread(
-    instance: object, label: str, *, timeout: float = 5.0
+    instance: object, label: str = "", *, timeout: float = 5.0
 ) -> None:
     """Stop a background monitoring loop backed by ``_running`` and ``_thread``."""
     setattr(instance, "_running", False)
     thread = getattr(instance, "_thread", None)
     if thread and thread is not threading.current_thread():
         thread.join(timeout=safe_nonneg_float(timeout, default=5.0))
-    print(f"[{label}] Monitoring stopped")
+    eff_label = label or getattr(instance, "_MONITOR_LABEL", None) or type(instance).__name__
+    print(f"[{eff_label}] Monitoring stopped")
 
 
 _REEXPORT_MODULE_NAMES = (

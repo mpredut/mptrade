@@ -439,5 +439,5 @@ class PriceChecker:
 
         start_monitoring_daemon_thread(self, run, "PriceChecker")
 
-    def stop_monitoring(self):
-        stop_monitoring_thread(self, "Checker", timeout=5)
+    _MONITOR_LABEL = "Checker"
+    stop_monitoring = stop_monitoring_thread

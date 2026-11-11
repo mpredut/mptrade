@@ -364,22 +364,30 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
     _DISK_FILE_PREFIX: str = ""
     _SNAPSHOT_CLS: Any = None
     _QUOTE_ISOLATED: bool = False
+    _DEFAULT_CACHE_TTL_SEC: float = 60.0
+    _DEFAULT_DISK_TTL_SEC: float = 120.0
+    _FALLBACK_CACHE_TTL_SEC: float = 60.0
+    _FALLBACK_DISK_TTL_SEC: float = 120.0
     start_sync: bool = False
 
     def __init__(
         self,
-        cache_ttl_sec: float,
-        default_cache_ttl: float,
-        cache_dir: Optional[str],
-        disk_ttl_sec: float,
-        default_disk_ttl: float,
+        cache_ttl_sec: Any = None,
+        cache_dir: Optional[str] = "cachedb",
+        disk_ttl_sec: Any = None,
         *,
         start_sync: Optional[bool] = None,
     ) -> None:
         super().__init__(start_sync=start_sync)
-        self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, default=default_cache_ttl)
+        self.cache_ttl_sec = safe_nonneg_float(
+            self._DEFAULT_CACHE_TTL_SEC if cache_ttl_sec is None else cache_ttl_sec,
+            default=self._FALLBACK_CACHE_TTL_SEC,
+        )
         self.cache_dir = cache_dir
-        self.disk_ttl_sec = safe_nonneg_float(disk_ttl_sec, default=default_disk_ttl)
+        self.disk_ttl_sec = safe_nonneg_float(
+            self._DEFAULT_DISK_TTL_SEC if disk_ttl_sec is None else disk_ttl_sec,
+            default=self._FALLBACK_DISK_TTL_SEC,
+        )
         self._cache: Dict[str, tuple[float, Any]] = {}
 
     def _invoke_fetch_with_cache_dir(

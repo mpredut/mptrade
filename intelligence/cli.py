@@ -201,9 +201,7 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
     raw_gp = report.get("guard_preview")
     gp = raw_gp if isinstance(raw_gp, dict) else {}
 
-    print("\n" + "=" * 76)
-    print(f"  🔍 MARKET INTELLIGENCE AUDIT — {symbol}")
-    print("=" * 76)
+    print(f"\n{'=' * 76}\n  🔍 MARKET INTELLIGENCE AUDIT — {symbol}\n{'=' * 76}")
 
     # Pillar 1
     print("\n📊 [PILLAR 1: INTERNAL QUANTITATIVE & SURVIVAL]")

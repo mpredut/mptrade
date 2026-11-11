@@ -102,6 +102,10 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
     _DISK_FILE_PREFIX = "orderbook_depth"
     _SNAPSHOT_CLS = OrderbookSnapshot
     _QUOTE_ISOLATED = True
+    _DEFAULT_CACHE_TTL_SEC = 5.0
+    _DEFAULT_DISK_TTL_SEC = 60.0
+    _FALLBACK_CACHE_TTL_SEC = 5.0
+    _FALLBACK_DISK_TTL_SEC = 60.0
 
     def __init__(
         self,
@@ -113,7 +117,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         *,
         start_sync: Optional[bool] = None,
     ) -> None:
-        super().__init__(cache_ttl_sec, 5.0, cache_dir, disk_ttl_sec, 60.0, start_sync=start_sync)
+        super().__init__(cache_ttl_sec, cache_dir, disk_ttl_sec, start_sync=start_sync)
         self.depth_band_pct = safe_pos_float(depth_band_pct, default=1.5) or 1.5
         self.whale_wall_usd = safe_pos_float(whale_wall_usd, default=500_000.0) or 500_000.0
         self._preferred_url: Dict[str, str] = {}

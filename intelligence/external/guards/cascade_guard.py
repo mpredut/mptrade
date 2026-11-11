@@ -25,6 +25,7 @@ class LiquidationCascadeGuard(OrderGuardEvaluatorBase):
 
     cls_name = "LiquidationCascadeGuard"
     GUARD_ID = "external_liquidation_cascade"
+    _EMPTY_SNAPSHOT_REASON = "no_liquidation_data"
 
     def __init__(
         self,
@@ -40,18 +41,6 @@ class LiquidationCascadeGuard(OrderGuardEvaluatorBase):
         super().__init__(collector=collector)
         self.max_active_cascade_usd = safe_pos_float(max_active_cascade_usd, default=500_000.0) or 500_000.0
         self.active_window_sec = safe_pos_float(active_window_sec, default=60.0) or 60.0
-
-    def check(
-        self,
-        symbol: str,
-        side: str,
-        summary: Optional[LiquidationSummary] = None,
-        now: Optional[float] = None,
-    ) -> GuardDecision:
-        """Evaluate whether an active cascade prevents order execution."""
-        return self._check_external_snapshot(
-            symbol, side, summary, now=now, empty_reason="no_liquidation_data"
-        )
 
     def _evaluate_external_snapshot(
         self, side_norm: str, summary: LiquidationSummary

@@ -542,8 +542,7 @@ class NewCoinsMonitor:
                 sleep_monitoring_interval(self, itv_f)
         start_monitoring_daemon_thread(self, run, "NewCoinsMonitor")
 
-    def stop_monitoring(self):
-        stop_monitoring_thread(self, "NewCoinsMonitor", timeout=5)
+    stop_monitoring = stop_monitoring_thread
 
     def get_report(self) -> str:
         report = "\n" + "=" * 80 + "\n"

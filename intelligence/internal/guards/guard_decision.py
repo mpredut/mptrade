@@ -163,6 +163,7 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
     """Abstract domain base class (Level 2) for order-guard evaluators across all 4 pillars."""
 
     cls_name: str = "OrderGuardEvaluatorBase"
+    _EMPTY_SNAPSHOT_REASON: str = "no_snapshot"
 
     def __init__(self, collector: Any = None) -> None:
         if type(self) is OrderGuardEvaluatorBase:
@@ -170,6 +171,7 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
         if (
             type(self).evaluate is OrderGuardEvaluatorBase.evaluate
             and type(self).check is OrderGuardEvaluatorBase.check
+            and type(self)._evaluate_external_snapshot is OrderGuardEvaluatorBase._evaluate_external_snapshot
         ):
             raise TypeError(
                 f"Cannot instantiate abstract class {type(self).__name__} without implementing 'evaluate' or 'check'"
@@ -180,14 +182,32 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
 
     def evaluate(self, *args: Any, **kwargs: Any) -> Any:
         """Polymorphic evaluation entrypoint delegating to ``check(*args, **kwargs)`` when defined on subclass."""
-        if type(self).check is not OrderGuardEvaluatorBase.check:
+        if (
+            type(self).check is not OrderGuardEvaluatorBase.check
+            or type(self)._evaluate_external_snapshot is not OrderGuardEvaluatorBase._evaluate_external_snapshot
+        ):
             return self.check(*args, **kwargs)
         raise NotImplementedError(f"{type(self).__name__} must implement evaluate() or check()")
 
     def check(self, *args: Any, **kwargs: Any) -> Any:
-        """Polymorphic guard check entrypoint delegating to ``evaluate(*args, **kwargs)`` when defined on subclass."""
+        """Polymorphic guard check entrypoint delegating to ``evaluate(*args, **kwargs)`` or ``_evaluate_external_snapshot``."""
         if type(self).evaluate is not OrderGuardEvaluatorBase.evaluate:
             return self.evaluate(*args, **kwargs)
+        if type(self)._evaluate_external_snapshot is not OrderGuardEvaluatorBase._evaluate_external_snapshot:
+            symbol = args[0] if len(args) > 0 else kwargs.get("symbol", "")
+            side = args[1] if len(args) > 1 else kwargs.get("side", "")
+            snap = (
+                args[2]
+                if len(args) > 2
+                else next(
+                    (kwargs[k] for k in ("snapshot", "telemetry", "summary") if kwargs.get(k) is not None),
+                    None,
+                )
+            )
+            now = args[3] if len(args) > 3 else kwargs.get("now")
+            return self._check_external_snapshot(
+                symbol, side, snap, now=now, empty_reason=self._EMPTY_SNAPSHOT_REASON
+            )
         raise NotImplementedError(f"{type(self).__name__} must implement check() or evaluate()")
 
     def _require_buy_sell_side(
