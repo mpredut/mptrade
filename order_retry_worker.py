@@ -31,6 +31,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     single_instance,
+    split_csv,
     touch_module_heartbeat,
 )
 from cachepaths import split_symbol_assets
@@ -139,7 +140,7 @@ _ALERTED_TERMINALS = _PersistentQuarantineSet("terminal")
 
 def _normalize_bypass_set(raw_bg) -> set[str]:
     if isinstance(raw_bg, str):
-        return {s.strip() for s in raw_bg.split(",") if s.strip()}
+        return set(split_csv(raw_bg))
     if isinstance(raw_bg, (list, tuple, set, frozenset)):
         return {
             str(s).strip()

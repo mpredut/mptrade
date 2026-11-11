@@ -27,6 +27,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
+    split_csv,
     touch_heartbeat_file,
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
@@ -114,11 +115,7 @@ RTRADE_PAIR_COORDINATOR_ENABLED = required_bool_env("RTRADE_PAIR_COORDINATOR_ENA
 RTRADE_PAIR_POLL_SEC = required_float_env("RTRADE_PAIR_POLL_SEC")
 RTRADE_PAIR_MAX_ACTIVE_ROUNDS = required_int_env("RTRADE_PAIR_MAX_ACTIVE_ROUNDS")
 RTRADE_PAIR_START_INTERVAL_SEC = required_float_env("RTRADE_PAIR_START_INTERVAL_SEC")
-RTRADE_PAIR_DIRECTIONS = tuple(
-    side.strip().upper()
-    for side in required_env("RTRADE_PAIR_DIRECTIONS").split(",")
-    if side.strip()
-)
+RTRADE_PAIR_DIRECTIONS = split_csv(required_env("RTRADE_PAIR_DIRECTIONS"), upper=True)
 RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC = required_float_env("RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC")
 RTRADE_PLACE_FAILURE_BACKOFF_SEC = required_float_env("RTRADE_PLACE_FAILURE_BACKOFF_SEC")
 RTRADE_INTENT_MISSING_CONFIRMATIONS = required_int_env("RTRADE_INTENT_MISSING_CONFIRMATIONS")
@@ -642,15 +639,18 @@ class _LivePairVenue:
             self.executor, self.symbol, side, price, qty,
             apply_policy=False, market=True, enforce_business_minimum=False,
         )
-        final_qty = float(decision.final_qty)
+        final_qty = safe_pos_float(decision.final_qty, default=0.0) or 0.0
         if final_qty <= 0:
             print(f"[{self.symbol}] {side} hard-stop BLOCKED: {decision.refuse_reason} asset={decision.balance_asset}")
             return None
         precision = self.audited_executor.pair_precision(self.symbol)
         if precision is not None:
-            quantum = Decimal(1).scaleb(-int(precision.volume_decimals))
-            final_qty = float(Decimal(str(final_qty)).quantize(quantum, rounding=ROUND_DOWN))
-            if final_qty <= 0 or final_qty < float(precision.order_min or 0.0):
+            vol_dec = safe_nonneg_int(getattr(precision, "volume_decimals", None), default=None)
+            if vol_dec is not None:
+                quantum = Decimal(1).scaleb(-vol_dec)
+                final_qty = float(Decimal(str(final_qty)).quantize(quantum, rounding=ROUND_DOWN))
+            min_qty = safe_nonneg_float(getattr(precision, "order_min", None), default=0.0) or 0.0
+            if final_qty <= 0 or final_qty < min_qty:
                 print(f"[{self.symbol}] {side} hard-stop BLOCKED: qty {final_qty} below the minimum {precision.order_min}")
                 return None
         kind = f"rtrade:{reason}:{pair_id or 'unknown-pair'}:revision:{revision}"

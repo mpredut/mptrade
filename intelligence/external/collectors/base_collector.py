@@ -16,9 +16,11 @@ import os
 import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
+import urllib.parse as _urlparse
 
 from botcore import (
     _parse_bool_flag,
+    exact_int,
     fetch_json_post,
     is_cache_fresh,
     is_rth_gate_enabled,
@@ -643,15 +645,10 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         fetch_fn = _resolve_module_fn(cls, "fetch_public_json", fetch_public_json)
         is_hl_info = isinstance(url, str) and url.startswith("https://api.hyperliquid.xyz/info?")
         if fetch_fn is _ORIG_MODULE_FNS["fetch_public_json"] and is_hl_info:
-            import urllib.parse as _urlparse
-
             q_params: Dict[str, Any] = dict(_urlparse.parse_qsl(url.split("?", 1)[1]))
             for int_k in ("nSigFigs", "mantissa"):
-                if int_k in q_params:
-                    try:
-                        q_params[int_k] = int(q_params[int_k])
-                    except (TypeError, ValueError):
-                        pass
+                if (int_v := exact_int(q_params.get(int_k), default=None)) is not None:
+                    q_params[int_k] = int_v
             raw_data = fetch_json_post(
                 "https://api.hyperliquid.xyz/info",
                 q_params,

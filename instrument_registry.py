@@ -25,6 +25,7 @@ from botcore import (
     safe_float,
     safe_int,
     safe_pos_float,
+    split_csv,
 )
 from cachepaths import (
     cache_symbol_variants,
@@ -400,10 +401,9 @@ def discover_kraken_cache_pairs(workspace_dir: str) -> list[tuple[str, str, str]
                 raw_pairs = ""
     out: list[tuple[str, str, str]] = []
     seen_pairs: set[str] = set()
-    for item in raw_pairs.split(","):
-        raw_item = item.strip()
+    for raw_item in split_csv(raw_pairs):
         pair = raw_item.upper()
-        if not pair or pair in seen_pairs or is_readonly_xstock_symbol(raw_item):
+        if pair in seen_pairs or is_readonly_xstock_symbol(raw_item):
             continue
         split = split_symbol_assets(pair)
         if split is not None and not is_readonly_xstock_symbol(split[0]):

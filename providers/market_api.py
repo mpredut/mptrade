@@ -480,7 +480,7 @@ class MarketApi:
                             continue
                     else:
                         continue
-                original_qty = float(extract_orig_qty(order, default=0.0) or 0.0)
+                original_qty = extract_orig_qty(order, default=0.0) or 0.0
                 raw_exec_qty = next(
                     (order.get(k) for k in ("executedQty", "z", "vol_exec") if order.get(k) is not None),
                     None,

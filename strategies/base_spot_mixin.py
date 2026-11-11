@@ -18,7 +18,7 @@ from botcore import (
     normalize_epoch_sec, optional_env,
     required_bool_env, required_env, required_float_env, required_int_env,
     safe_float, safe_int, safe_nonneg_float, safe_pos_float, safe_pos_int,
-    touch_module_heartbeat,
+    split_csv, touch_module_heartbeat,
 )
 from intelligence.internal.state.volatility import (
     adaptive_thresholds, resolve_cached_volatility_1h,
@@ -200,10 +200,7 @@ def parse_tp_ladder_env(env: dict | None, generate_ladder_fn: Callable) -> list[
             except (ValueError, OverflowError) as exc:
                 raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
         ladder: list[tuple[float, float]] = []
-        for part in raw_ladder.split(","):
-            part = part.strip()
-            if not part:
-                continue
+        for part in split_csv(raw_ladder):
             if ":" not in part:
                 raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
             lvl_s, frac_s = part.split(":", 1)
@@ -212,6 +209,8 @@ def parse_tp_ladder_env(env: dict | None, generate_ladder_fn: Callable) -> list[
             if lvl_f is None or frac_raw is None:
                 raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
             ladder.append((lvl_f, frac_raw / 100.0))
+        if not ladder:
+            raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
         if sum(f for _, f in ladder) > 1.0 + 1e-6:
             raise ValueError(f"Invalid STRAT_TP_LADDER (fractions exceed 100%): {raw_ladder!r}")
         return ladder

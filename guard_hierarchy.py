@@ -27,6 +27,7 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    split_csv,
 )
 from cachepaths import normalize_venue_name
 
@@ -91,9 +92,8 @@ class BaseGuard(ABC):
             elif isinstance(x, BaseGuard):
                 out.append(x.code.lower())
             elif x and not isinstance(x, bool):
-                for p in str(x).replace(";", ",").split(","):
-                    ps = p.strip().lower()
-                    if ps and ps not in _FALSY_BYPASS_TOKENS:
+                for ps in split_csv(str(x).replace(";", ","), lower=True):
+                    if ps not in _FALSY_BYPASS_TOKENS:
                         out.append(ps)
         return out
 

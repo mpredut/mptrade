@@ -29,6 +29,7 @@ from botcore import (
     diff_percent,
     float_env,
     normalize_epoch_sec,
+    optional_env,
     pos_float_env,
     safe_float,
     safe_int,
@@ -118,15 +119,22 @@ _SHORT_TREND_ESTIMATORS = (
 DEFAULT_STEP_WOLS_POWER = 2.0         # Default exponent p when symbol is not in instruments.conf
 
 
-def _resolve_short_trend_estimator() -> str:
-    raw = str(os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "") or "").strip().lower()
-    if not raw:
-        return SHORT_TREND_ESTIMATOR_STEP_WOLS
-    if raw not in _SHORT_TREND_ESTIMATORS:
+def _normalize_short_trend_estimator(raw: object) -> str | None:
+    est = str(raw or "").strip().lower()
+    if not est:
+        return None
+    if est not in _SHORT_TREND_ESTIMATORS:
         raise ValueError(
-            f"Unsupported MPTRADE_SHORT_TREND_ESTIMATOR={raw!r}; expected one of {_SHORT_TREND_ESTIMATORS}"
+            f"Unsupported short trend estimator {est!r}; expected one of {_SHORT_TREND_ESTIMATORS}"
         )
-    return raw
+    return est
+
+
+def _resolve_short_trend_estimator() -> str:
+    return (
+        _normalize_short_trend_estimator(optional_env("MPTRADE_SHORT_TREND_ESTIMATOR", ""))
+        or SHORT_TREND_ESTIMATOR_STEP_WOLS
+    )
 
 
 SHORT_TREND_ESTIMATOR = _resolve_short_trend_estimator()
@@ -143,13 +151,11 @@ def dynamic_window_key(window_seconds: float) -> str:
 def _env_or_estimator_power(estimator_name: str | None = None) -> float | None:
     if "MPTRADE_STEP_WOLS_POWER" in os.environ:
         return max(0.0, float_env("MPTRADE_STEP_WOLS_POWER", default=DEFAULT_STEP_WOLS_POWER))
-    est = str(estimator_name if estimator_name is not None else os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "")).strip().lower()
-    if not est:
+    est = _normalize_short_trend_estimator(
+        estimator_name if estimator_name is not None else optional_env("MPTRADE_SHORT_TREND_ESTIMATOR", "")
+    )
+    if est is None:
         return None
-    if est not in _SHORT_TREND_ESTIMATORS:
-        raise ValueError(
-            f"Unsupported short trend estimator {est!r}; expected one of {_SHORT_TREND_ESTIMATORS}"
-        )
     if est == SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC:
         return 3.0
     if est == SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR:

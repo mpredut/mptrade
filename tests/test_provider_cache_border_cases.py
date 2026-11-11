@@ -1391,3 +1391,53 @@ def test_mt_conf_fail_fast_ohlc_and_cycle_history_border_cases(
     assert len(eq_bases) == len(set(eq_bases))
 
 
+def test_auto_ws_ssot_tp_ladder_checkpoint_and_estimator_border_cases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify SSOT auto-WS flag, empty-comma TP ladder rejection, EET checkpoint bounds, and estimator validation."""
+    from intelligence.macro import calendar_ssot
+    from orchestratorOS.livecheck import os_resources_watchdog as wd
+    import pricewindow as pw
+    from strategies.base_spot_mixin import parse_tp_ladder_env
+
+    # 1. botcore.is_auto_start_websockets_enabled handles all falsy tokens ("n", "f", "0", "off") & env overrides
+    monkeypatch.setenv("BINANCE_AUTO_START_WEBSOCKETS", "n")
+    assert botcore.is_auto_start_websockets_enabled() is False
+    assert botcore.is_auto_start_websockets_enabled(env={"BINANCE_AUTO_START_WEBSOCKETS": "1"}) is True
+    monkeypatch.setenv("BINANCE_AUTO_START_WEBSOCKETS", "yes")
+    assert botcore.is_auto_start_websockets_enabled() is True
+
+    # 2. parse_tp_ladder_env rejects comma-only STRAT_TP_LADDER=" , " instead of silently returning []
+    with pytest.raises(ValueError, match="Invalid STRAT_TP_LADDER"):
+        parse_tp_ladder_env({"STRATEGY_MODE": "avg_tp", "STRAT_TP_LADDER": " , , "}, lambda *_a, **_kw: [])
+    assert parse_tp_ladder_env(
+        {"STRATEGY_MODE": "avg_tp", "STRAT_TP_LADDER": "3:40, 6:60"},
+        lambda *_a, **_kw: [],
+    ) == [(3.0, 0.4), (6.0, 0.6)]
+
+    # 3. calendar_ssot.did_cross_session_checkpoint ignores out-of-range hour/minute entries without crashing
+    monkeypatch.setattr(
+        mss,
+        "_cfg_str",
+        lambda sec, key, *a, **kw: "25:00:BAD_HOUR, 12:99:BAD_MIN, 09:00:EU_MORNING_BUY_OPEN"
+        if (sec, key) == ("sessions", "checkpoints_eet")
+        else "Europe/Bucharest",
+    )
+    # Cross 09:00 EET on a weekday (2026-01-12 06:00 UTC -> 08:00 UTC = 08:00 EET -> 10:00 EET)
+    t_before = 1768197600.0
+    t_after = 1768204800.0
+    assert calendar_ssot.did_cross_session_checkpoint(t_before, t_after, min_cooldown_sec=60.0) == "EU_MORNING_BUY_OPEN"
+
+    # 4. pricewindow._normalize_short_trend_estimator rejects unsupported names and normalizes empty to None
+    assert pw._normalize_short_trend_estimator("  ") is None
+    assert pw._normalize_short_trend_estimator("STEP_WOLS") == "step_wols"
+    with pytest.raises(ValueError, match="Unsupported short trend estimator"):
+        pw._normalize_short_trend_estimator("invalid_estimator")
+
+    # 5. os_resources_watchdog._parse_proc_stat rejects non-integer / negative tick fields cleanly
+    bad_stat = "123 (python3) S 1 123 123 0 -1 4194304 0 0 0 0 -5 10 0 0 20 0 1 0 1000 0 100"
+    with pytest.raises(ValueError, match="utime"):
+        wd._parse_proc_stat(bad_stat)
+
+
+

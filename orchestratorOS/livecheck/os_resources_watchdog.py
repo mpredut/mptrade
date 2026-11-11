@@ -13,6 +13,7 @@ from botcore import (
     _parse_bool_flag,
     exact_pos_int,
     load_env_stack,
+    require_int,
     required_bool_env,
     required_float_env,
     required_int_env,
@@ -108,7 +109,12 @@ def _restart_managed(proc, state, now):
 def _parse_proc_stat(stat_text: str) -> tuple[str, int, int, int]:
     """Parse (comm, start_time, total_ticks, rss_pages) from /proc/<pid>/stat safely."""
     comm, after = parse_proc_stat_fields(stat_text, min_fields=22)
-    return comm, int(after[19]), int(after[11]) + int(after[12]), int(after[21])
+    return (
+        comm,
+        require_int(after[19], name="start_time", min_value=0),
+        require_int(after[11], name="utime", min_value=0) + require_int(after[12], name="stime", min_value=0),
+        require_int(after[21], name="rss_pages"),
+    )
 
 
 def _usage(previous, current, previous_total, current_total, cpu_count):

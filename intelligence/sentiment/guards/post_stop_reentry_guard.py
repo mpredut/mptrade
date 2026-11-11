@@ -150,8 +150,8 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
             if safe_sell_px > 0 and safe_trough > 0
             else 0.0
         )
-        bounce_from_trough_pct = float(safe_bounce * 100.0)
-        notional = float(resolve_order_notional(notional_eur, safe_curr_px, safe_qty, default=0.0) or 0.0)
+        bounce_from_trough_pct = safe_bounce * 100.0
+        notional = resolve_order_notional(notional_eur, safe_curr_px, safe_qty, default=0.0) or 0.0
 
         header_lines = [
             f"- Symbol: {symbol}",
@@ -159,7 +159,7 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
             f"- Lowest Post-Stop Trough: ${safe_trough:.4f} (-{drop_after_sl_pct:.2f}% drop from SL)",
             f"- Current Recovery Price: ${safe_curr_px:.4f} (+{bounce_from_trough_pct:.2f}% bounce from trough)",
             f"- Proposed Re-entry Quantity: {safe_qty}",
-            f"- Estimated Notional Value: €{notional:,.2f} EUR",
+            f"- Estimated Notional Value: {notional:,.2f} EUR",
         ]
         if safe_sell_ts_f > 0:
             header_lines.append(f"- Elapsed Time Since Stop-Loss: {max(0.0, (now_ts - safe_sell_ts_f) / 60.0):.1f} minutes")

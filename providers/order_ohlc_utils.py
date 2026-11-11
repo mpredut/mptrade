@@ -809,7 +809,7 @@ def summarize_order_position(buy_orders: Any, sell_orders: Any) -> dict[str, Any
     avg_buy = (buy_val / buy_qty) if buy_qty > 0.0 else 0.0
     last_buy_px = (
         extract_order_price(
-            max((o for o, _, _ in valid_buys), key=lambda o: float(extract_timestamp_ms(o, default=0) or 0))
+            max((o for o, _, _ in valid_buys), key=lambda o: extract_timestamp_ms(o, default=0) or 0)
         )
         if valid_buys
         else 0.0

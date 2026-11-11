@@ -2226,7 +2226,7 @@ def configure_runtime_services(**kwargs: object) -> RuntimeServices:
         if k in ("clock_fn", "sleep_fn"):
             setattr(_RUNTIME_SERVICES, k, v if callable(v) else None)
         elif k == "stale_cache_retry_delay_sec":
-            setattr(_RUNTIME_SERVICES, k, float(safe_nonneg_float(v, default=1.5) or 0.0))
+            setattr(_RUNTIME_SERVICES, k, safe_nonneg_float(v, default=1.5))
         else:
             setattr(_RUNTIME_SERVICES, k, bool(v))
     return _RUNTIME_SERVICES

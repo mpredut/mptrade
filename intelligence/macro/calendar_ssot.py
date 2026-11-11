@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover
 from botcore import (
     _parse_bool_flag,
     clean_scale,
+    exact_int,
     normalize_epoch_sec,
     obj_attr,
     obj_float,
@@ -187,10 +188,11 @@ def did_cross_session_checkpoint(
     for item in split_csv(_ssot._cfg_str("sessions", "checkpoints_eet")):
         parts = item.split(":")
         if len(parts) >= 3:
-            try:
-                checkpoints.append((int(parts[0]), int(parts[1]), parts[2].strip()))
-            except ValueError:
-                continue
+            hour = exact_int(parts[0], default=None)
+            minute = exact_int(parts[1], default=None)
+            label = parts[2].strip()
+            if hour is not None and minute is not None and 0 <= hour <= 23 and 0 <= minute <= 59 and label:
+                checkpoints.append((hour, minute, label))
 
     dt_last, dt_now = _primary_eet_dt(last_f), _primary_eet_dt(now_f)
     candidate_days = [dt_last.date()] + ([dt_now.date()] if dt_now.date() != dt_last.date() else [])
