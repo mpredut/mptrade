@@ -74,11 +74,21 @@ def load_trailing_common_env(
     )
 
 
+def add_once_status_cli_args(
+    parser: argparse.ArgumentParser,
+    *,
+    once_help: str = "one check, then exit",
+    status_help: str = "the current peaks and thresholds",
+) -> None:
+    """Register standard ``--once`` and ``--status`` CLI flags on ``parser``."""
+    parser.add_argument("--once", action="store_true", help=once_help)
+    parser.add_argument("--status", action="store_true", help=status_help)
+
+
 def parse_trailing_cli_args(description: str, lock_name: str) -> argparse.Namespace:
     """Parse standard ``--once`` / ``--status`` CLI arguments and acquire the single-instance lock unless ``--status``."""
     ap = argparse.ArgumentParser(description=description)
-    ap.add_argument("--once", action="store_true", help="one check, then exit")
-    ap.add_argument("--status", action="store_true", help="the current peaks and thresholds")
+    add_once_status_cli_args(ap)
     args = ap.parse_args()
     if not args.status:
         single_instance(lock_name)

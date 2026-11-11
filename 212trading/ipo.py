@@ -38,6 +38,7 @@ _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 from botcore import (  # noqa: E402
+    add_paper_skip_wait_cli_args,
     ensure_local_module_priority,
     float_env,
     log,
@@ -93,10 +94,11 @@ def main() -> int:
                     default=required_float_env("POLL_SECONDS"))
     ap.add_argument("--desktop",           action="store_true")
     ap.add_argument("--market-hours-only", action="store_true")
-    ap.add_argument("--skip-wait",         action="store_true",
-                    help="Skip the launch check (start straight away even if the feed says it is not trading yet)")
-    ap.add_argument("--paper",             action="store_true",
-                    help="Force PAPER (a safe test, no money), whatever .env says")
+    add_paper_skip_wait_cli_args(
+        ap,
+        paper_help="Force PAPER (a safe test, no money), whatever .env says",
+        skip_wait_help="Skip the launch check (start straight away even if the feed says it is not trading yet)",
+    )
     ap.add_argument("--execute",           action="store_true",
                     help="Override: a real order (single-order mode)")
     ap.add_argument("--test-notify",       choices=["market", "trade", "all"], metavar="WHAT")

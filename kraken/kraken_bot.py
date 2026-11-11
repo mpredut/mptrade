@@ -28,6 +28,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
+    add_paper_skip_wait_cli_args,
     load_cli_env_stack,
     load_env_stack,
     log,
@@ -65,10 +66,11 @@ def main() -> int:
     ap.add_argument("--pair", help="Override the pair (otherwise from .env KRAKEN_PAIR)")
     ap.add_argument("--interval", type=int, default=poll_seconds)
     ap.add_argument("--desktop", action="store_true")
-    ap.add_argument("--skip-wait", action="store_true", help="Skip waiting for the listing")
-    ap.add_argument(
-        "--paper", action="store_true",
-        help="Force paper mode without using real money")
+    add_paper_skip_wait_cli_args(
+        ap,
+        paper_help="Force paper mode without using real money",
+        skip_wait_help="Skip waiting for the listing",
+    )
     ap.add_argument("--find-pair", metavar="TERM", help="Search Kraken pairs")
     ap.add_argument("--price", action="store_true", help="Show the current price and exit")
     ap.add_argument(

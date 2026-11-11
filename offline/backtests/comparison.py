@@ -227,3 +227,11 @@ def add_report_output_cli_args(parser: Any) -> None:
     """Register ``--output`` (JSON) and ``--markdown`` (Markdown) path CLI flags."""
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown", type=Path)
+
+
+def resolve_existing_report_path(raw_path: Path, label: str = "baseline") -> Path:
+    """Expand, resolve, and verify that ``raw_path`` points to an existing report file."""
+    resolved = Path(raw_path).expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"{label} report not found: {resolved}")
+    return resolved

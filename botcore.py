@@ -935,6 +935,19 @@ def load_cli_env_stack(
     return env_file
 
 
+def add_paper_skip_wait_cli_args(
+    parser: object,
+    *,
+    paper_help: str = "Force PAPER mode without real money",
+    skip_wait_help: str = "Skip waiting for the launch",
+) -> None:
+    """Register standard ``--skip-wait`` and ``--paper`` CLI flags on ``parser``."""
+    add_arg = getattr(parser, "add_argument", None)
+    if callable(add_arg):
+        add_arg("--skip-wait", action="store_true", help=skip_wait_help)
+        add_arg("--paper", action="store_true", help=paper_help)
+
+
 # ── 2.4. Global trade_enabled Configuration Cache & Hot-Reload Watcher ───────
 
 config_cache: dict = {}

@@ -37,6 +37,7 @@ from offline.backtests.comparison import (
     format_comparison_markdown,
     pareto_frontier,
     relative_to_baseline,
+    resolve_existing_report_path,
 )
 from offline.backtests.datasets import (
     dataset_sha256,
@@ -432,10 +433,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    baseline_path = args.baseline_report.expanduser().resolve()
     try:
-        if not baseline_path.is_file():
-            raise FileNotFoundError(f"baseline report not found: {baseline_path}")
+        baseline_path = resolve_existing_report_path(args.baseline_report, "baseline")
         source_report = _load_report(baseline_path)
         venue = _detect_venue(source_report, args.venue)
         datasets = _load_datasets(source_report, baseline_dir=baseline_path.parent)

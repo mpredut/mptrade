@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from botcore import safe_float  # noqa: E402
+from offline.backtests.comparison import resolve_existing_report_path  # noqa: E402
 from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
 from state_io import atomic_write_json, read_json_file  # noqa: E402
 
@@ -33,12 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        baseline_path = args.baseline.expanduser().resolve()
-        candidate_path = args.candidate.expanduser().resolve()
-        if not baseline_path.is_file():
-            raise FileNotFoundError(f"baseline report not found: {baseline_path}")
-        if not candidate_path.is_file():
-            raise FileNotFoundError(f"candidate report not found: {candidate_path}")
+        baseline_path = resolve_existing_report_path(args.baseline, "baseline")
+        candidate_path = resolve_existing_report_path(args.candidate, "candidate")
         baseline = read_json_file(baseline_path)
         candidate = read_json_file(candidate_path)
         if not isinstance(baseline, dict) or not isinstance(candidate, dict):

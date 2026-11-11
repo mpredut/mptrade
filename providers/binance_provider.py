@@ -590,10 +590,12 @@ class BinanceProvider(MarketDataProvider):
             raise
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"submit_order({symbol}): {e}") from e
-        oid = extract_order_id(res)
-        if oid is None:
-            raise ProviderError(f"submit_order({symbol}): a response without an orderId ({res})")
-        return oid
+        return self._require_submitted_order_id(
+            symbol,
+            extract_order_id(res),
+            f"submit_order({symbol}): a response without an orderId ({res})",
+            invalidate_fills_cache=False,
+        )
 
     def _order_fee_quote(self, symbol: str, order_id: int) -> float:
         """Return cumulative commission converted into the pair's quote currency.

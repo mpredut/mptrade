@@ -68,6 +68,23 @@ def order_key(o):
     )
 
 
+def finish_facade_verification(
+    failures: list[str],
+    *,
+    pass_msg: str,
+    fail_label: str = "differences",
+    width: int = 56,
+) -> None:
+    print("\n" + "=" * width)
+    if failures:
+        print(f"FAIL — {len(failures)} {fail_label}:")
+        for f in failures:
+            print(f"  - {f}")
+        sys.exit(1)
+    print(pass_msg)
+    sys.exit(0)
+
+
 def main():
     failures = []
     for s in SYMBOLS:
@@ -121,16 +138,14 @@ def main():
         print(f"  avg_buy: direct={avg_d:.8f} facade={avg_f:.8f} | net: direct={net_d:.8f} "
               f"facade={net_f:.8f} -> {'OK' if same_pos else 'DIFF'}")
         if not same_pos:
-            failures.append(f"{s}: direct position(avg={avg_d},net={net_d}) != facade(avg={avg_f},net={net_f})")
+            failures.append(f"{s}: direct position(avg={avg_d},net={net_d}) != facade(avg={avg_f},net={avg_f})")
 
-    print("\n" + "=" * 56)
-    if failures:
-        print(f"FAIL — {len(failures)} differences:")
-        for f in failures:
-            print(f"  - {f}")
-        sys.exit(1)
-    print("PASS — there are zero confirmable differences between the facade and legacy access.")
-    sys.exit(0)
+    finish_facade_verification(
+        failures,
+        pass_msg="PASS — there are zero confirmable differences between the facade and legacy access.",
+        fail_label="differences",
+        width=56,
+    )
 
 
 if __name__ == "__main__":

@@ -58,6 +58,7 @@ from kraken.market_data import is_pair_status_tradable
 from state_io import load_json_state, read_text_lines, save_json_state
 from credentials import kraken_credentials
 from instrument_registry import casefold_get
+from trailing_core import add_once_status_cli_args
 
 
 def _clean_pid(pid: object) -> int | None:
@@ -473,8 +474,11 @@ def main() -> int:
     load_env_stack(os.path.join(_HERE, ".env"))
 
     ap = argparse.ArgumentParser(description="xStocks allocation watcher (Kraken).")
-    ap.add_argument("--once", action="store_true", help="a single check, then exit")
-    ap.add_argument("--status", action="store_true", help="show the state and exit")
+    add_once_status_cli_args(
+        ap,
+        once_help="a single check, then exit",
+        status_help="show the state and exit",
+    )
     ap.add_argument("--trial", action="store_true",
                     help="an end-to-end DRILL with ZERO money: an existing asset as a simulated allocation, a PAPER bot, the watchdog tested, cleanup at the end")
     ap.add_argument("--desktop", action="store_true")

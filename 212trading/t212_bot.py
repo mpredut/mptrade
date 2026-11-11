@@ -32,6 +32,7 @@ _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 from botcore import (  # noqa: E402
+    add_paper_skip_wait_cli_args,
     bool_env,
     ensure_local_module_priority,
     log,
@@ -112,9 +113,12 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Unified T212 bot: one process, multiple assets (config.*.env).")
-    ap.add_argument("--paper", action="store_true", help="Force PAPER on all of them (a safe test)")
     ap.add_argument("--only", metavar="NAME", help="Run only the asset with this name (config.NAME.env)")
-    ap.add_argument("--skip-wait", action="store_true", help="Skip waiting for the launch")
+    add_paper_skip_wait_cli_args(
+        ap,
+        paper_help="Force PAPER on all of them (a safe test)",
+        skip_wait_help="Skip waiting for the launch",
+    )
     ap.add_argument("--list", action="store_true", help="Show the assets and exit")
     args = parse_t212_cli_args(ap, _HERE)
     if not args.list:

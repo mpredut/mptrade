@@ -816,12 +816,18 @@ class MarketDataProvider(ABC):
             )
 
     def _require_submitted_order_id(
-        self, symbol: str, order_id: Optional[str], missing_msg: str
+        self,
+        symbol: str,
+        order_id: Optional[str],
+        missing_msg: str,
+        *,
+        invalidate_fills_cache: bool = True,
     ) -> str:
-        """Require a non-empty ``order_id``, invalidate ``symbol`` fills cache, and return ``order_id``."""
+        """Require a non-empty ``order_id``, optionally invalidate ``symbol`` fills cache, and return ``order_id``."""
         if order_id is None:
             raise ProviderError(missing_msg)
-        self._invalidate_fills_cache(symbol)
+        if invalidate_fills_cache:
+            self._invalidate_fills_cache(symbol)
         return order_id
 
     def _invoke_fills_from_api(
@@ -1167,10 +1173,12 @@ class MarketDataProvider(ABC):
         if client_order_id is not None:
             call_kw["client_order_id"] = client_order_id
         res = self.place_order(symbol, s_norm, eff_price, qty, force=is_market, **call_kw)
-        oid = extract_order_id(res)
-        if oid is None:
-            raise ProviderError(f"submit_order({symbol}): response without orderId ({res})")
-        return oid
+        return self._require_submitted_order_id(
+            symbol,
+            extract_order_id(res),
+            f"submit_order({symbol}): response without orderId ({res})",
+            invalidate_fills_cache=False,
+        )
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
         raise ProviderError(f"{self.name}: order_status is unsupported")

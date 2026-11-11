@@ -25,6 +25,7 @@ if _ROOT not in sys.path:
 
 from providers.order_ohlc_utils import summarize_order_position
 from providers.market_api import api as mkt          # noqa: E402  (singleton facade)
+from verify_tools.verify_account_facade import finish_facade_verification
 
 HYPE = "HYPEUSDC"
 MAXAGE = 17 * 24 * 3600
@@ -144,14 +145,12 @@ def main():
             os.environ["HL_LIVE_ORDERS"] = saved_live_orders
     check("place_order(HYPEUSDC) DRY -> None (no real order)", res is None, repr(res))
 
-    print("\n" + "=" * 60)
-    if failures:
-        print(f"FAIL — {len(failures)} issues:")
-        for f in failures:
-            print(f"  - {f}")
-        sys.exit(1)
-    print("PASS — HYPE facade (Hyperliquid spot) is healthy in DRY-RUN.")
-    sys.exit(0)
+    finish_facade_verification(
+        failures,
+        pass_msg="PASS — HYPE facade (Hyperliquid spot) is healthy in DRY-RUN.",
+        fail_label="issues",
+        width=60,
+    )
 
 
 if __name__ == "__main__":
