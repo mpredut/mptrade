@@ -715,24 +715,22 @@ class TestOrderGuardWithGemini:
         def tracking_runner(prompt, model, timeout):
             return json.dumps({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Good trade"})
 
-        class MockGuard(HighStakeGuard):
-            def check(self, symbol, side, price, qty, notional_eur=None, **kw):
-                called_notionals.append(notional_eur)
-                return super().check(symbol, side, price, qty, notional_eur=notional_eur)
-
-        mock_guard = MockGuard(
+        mock_guard = HighStakeGuard(
             gemini_client=GeminiClient(custom_runner=tracking_runner),
             min_notional_eur=1000.0,
+        )
+        orig_check = mock_guard.check
+        mock_guard.check = lambda symbol, side, price, qty, notional_eur=None, **kw: (
+            called_notionals.append(notional_eur)
+            or orig_check(symbol, side, price, qty, notional_eur=notional_eur)
         )
         monkeypatch.setattr("intelligence.sentiment.guards.high_stake_guard.HighStakeGuard", lambda **kw: mock_guard)
 
         # Provider mockup
-        class _P:
-            name = "binance"
-            def last_opposite_fill(self, *a, **k): return 70000.0
+        p_stub = SimpleNamespace(name="binance", last_opposite_fill=lambda *a, **k: 70000.0)
 
         # BUY 0.05 BTC @ 65,000 = 3,250 EUR > 1000 EUR min
-        allowed = order_guard.profit_guard(_P(), "BTCUSDC", "BUY", 65000.0, 1.15, qty=0.05)
+        allowed = order_guard.profit_guard(p_stub, "BTCUSDC", "BUY", 65000.0, 1.15, qty=0.05)
         assert allowed is True
         assert len(called_notionals) == 1
         assert called_notionals[0] == 65000.0 * 0.05  # 3,250
@@ -745,11 +743,10 @@ class TestOrderGuardWithGemini:
             snapshot_called = True
             return {"gradient_recent": 0.8, "epsilon": 0.1, "ts": time.time()}
 
-        class MockShortTrendManager:
-            def get_fresh_snapshot(self, symbol, now=None):
-                return mock_snapshot(symbol, now)
-
-        monkeypatch.setattr("cacheManager.get_short_trend_manager", lambda: MockShortTrendManager())
+        monkeypatch.setattr(
+            "cacheManager.get_short_trend_manager",
+            lambda: SimpleNamespace(get_fresh_snapshot=mock_snapshot),
+        )
 
         # Calling symbol_regime directly without snapshot_resolver falls back gracefully
         decision = order_guard.symbol_regime("BTCUSDT", allow_fallback=True)
@@ -778,10 +775,10 @@ class TestOrderGuardWithGemini:
             ts=time.time(),
         )
 
-        class MockAnalyzer:
-            _cached_assessment = shock_geo
-
-        monkeypatch.setattr("intelligence.macro.geopolitical_analyzer.GeopoliticalThreatAnalyzer", lambda: MockAnalyzer())
+        monkeypatch.setattr(
+            "intelligence.macro.geopolitical_analyzer.GeopoliticalThreatAnalyzer",
+            lambda: SimpleNamespace(_cached_assessment=shock_geo),
+        )
 
         dispatched_alerts = []
         monkeypatch.setattr("notify_engine.alertnotifiers.notify", lambda **kw: dispatched_alerts.append(kw))
@@ -1553,19 +1550,18 @@ def test_find_duplicate_ai_open_limit_order_matches_wallet_clamped_intent():
     """Verify find_duplicate_ai_open_limit_order recognizes a resting AI limit order clamped by wallet balance."""
     from providers.execution_audit import find_duplicate_ai_open_limit_order
 
-    class _StubInst:
-        symbol = "TAOUSD"
-
-        def open_orders(self):
-            return [
-                {
-                    "orderId": "O-CLAMPED-1",
-                    "side": "BUY",
-                    "price": "100.0",
-                    "origQty": "3.2",
-                    "executedQty": "0.0",
-                }
-            ]
+    stub_inst = SimpleNamespace(
+        symbol="TAOUSD",
+        open_orders=lambda: [
+            {
+                "orderId": "O-CLAMPED-1",
+                "side": "BUY",
+                "price": "100.0",
+                "origQty": "3.2",
+                "executedQty": "0.0",
+            }
+        ],
+    )
 
     prior_intents = [
         {
@@ -1585,7 +1581,7 @@ def test_find_duplicate_ai_open_limit_order_matches_wallet_clamped_intent():
 
     # Same unclamped target notional ($500) -> matches existing $320 wallet-clamped order
     dup = find_duplicate_ai_open_limit_order(
-        _StubInst(),
+        stub_inst,
         "BUY",
         100.0,
         500.0,
@@ -1595,7 +1591,7 @@ def test_find_duplicate_ai_open_limit_order_matches_wallet_clamped_intent():
 
     # Intentionally changed target notional ($200) -> does NOT match the $500->$320 order
     dup_changed = find_duplicate_ai_open_limit_order(
-        _StubInst(),
+        stub_inst,
         "BUY",
         100.0,
         200.0,
@@ -4063,15 +4059,12 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     enrich_cross_venue_trends(pt_ag, {}, {}, {}, {}, {}, watcher_ag)
     assert pt_ag["ADAUSD"].get("_partial_7d_span_ms") is not None
 
-    class _FakeAdaProvider:
-        def ohlc_series(self, sym, interval):
-
-            n_bars = 168 if interval == 60 else 42
-            step_s = interval * 60
-            ts_list = [now_ag - (n_bars - 1 - idx) * step_s for idx in range(n_bars)]
-            closes = [0.2072 if idx == 0 else (0.214343 if idx == 30 else 0.1879) for idx in range(n_bars)]
-            return SimpleNamespace(timestamps=ts_list, closes=closes, lows=closes, highs=closes, volumes=[1000.0] * n_bars)
-
+    def _ada_ohlc_series(sym, interval):
+        n_bars = 168 if interval == 60 else 42
+        step_s = interval * 60
+        ts_list = [now_ag - (n_bars - 1 - idx) * step_s for idx in range(n_bars)]
+        closes = [0.2072 if idx == 0 else (0.214343 if idx == 30 else 0.1879) for idx in range(n_bars)]
+        return SimpleNamespace(timestamps=ts_list, closes=closes, lows=closes, highs=closes, volumes=[1000.0] * n_bars)
 
     enrich_24h_and_microstructure(
         str(cdir_36),
@@ -4079,7 +4072,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         pt_ag,
         {},
         {},
-        {"ADAUSD": SimpleNamespace(_provider=_FakeAdaProvider(), provider_name="kraken")},
+        {"ADAUSD": SimpleNamespace(_provider=SimpleNamespace(ohlc_series=_ada_ohlc_series), provider_name="kraken")},
         now_ag,
     )
     enrich_cross_venue_trends(pt_ag, {}, {}, {}, {}, {}, watcher_ag)
@@ -9130,16 +9123,12 @@ def test_premarket_gap_preservation_and_symmetric_sell_late_scale(tmp_path, monk
         encoding="utf-8",
     )
 
-    class _DummyInst:
-        symbol = "BTCUSDC"
-
-        def open_orders(self):
-            return [{"orderId": "10744856617", "clientOrderId": "MO_TA_OR_1", "side": "SELL", "price": "76046.32"}]
-
-        def cancel_order(self, oid):
-            return True
-
-    canceled = cancel_existing_ai_open_orders(_DummyInst(), "SELL", include_bot_orders=True)
+    dummy_inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        open_orders=lambda: [{"orderId": "10744856617", "clientOrderId": "MO_TA_OR_1", "side": "SELL", "price": "76046.32"}],
+        cancel_order=lambda oid: True,
+    )
+    canceled = cancel_existing_ai_open_orders(dummy_inst, "SELL", include_bot_orders=True)
     assert canceled == ["10744856617"]
     remaining_ids = [r.get("id") for r in order_retry.load_all()]
     assert remaining_ids == ["ai_accepted_sell_1"]
@@ -9362,15 +9351,14 @@ def test_compositemarketintelligence_evaluate_guards_forwards_dur_sec_and_now_to
     """[ITER17 #3] CompositeMarketIntelligence.evaluate_guards forwards `dur_sec` and `now` to gemini_guard.check."""
     # 3. CompositeMarketIntelligence.evaluate_guards forwards `dur_sec` and `now` to gemini_guard.check
     captured_gemini_kwargs = {}
+    spy_gemini_guard = SimpleNamespace(
+        min_notional_eur=700.0,
+        check=lambda symbol, side, price, qty, **kwargs: (
+            captured_gemini_kwargs.update(kwargs) or GuardDecision.allow("HighStakeGuard", "spy_ok")
+        ),
+    )
 
-    class _SpyGeminiGuard:
-        min_notional_eur = 700.0
-
-        def check(self, symbol, side, price, qty, **kwargs):
-            captured_gemini_kwargs.update(kwargs)
-            return GuardDecision.allow("HighStakeGuard", "spy_ok")
-
-    comp = CompositeMarketIntelligence(gemini_guard=_SpyGeminiGuard())
+    comp = CompositeMarketIntelligence(gemini_guard=spy_gemini_guard)
     comp_dec = comp.evaluate_guards(
         "TAOUSDC",
         "BUY",
@@ -9431,16 +9419,16 @@ def test_evaluate_high_stake_order_guard_with_nan_computed_notional_does_not_inv
     """[ITER34 #5] evaluate_high_stake_order_guard with NaN computed_notional does not invoke HighStakeGuard."""
     # 5. evaluate_high_stake_order_guard with NaN computed_notional does not invoke HighStakeGuard
     called_hs = []
-
-    class _FailIfCalledHS:
-        def __init__(self, *a, **kw):
-            pass
-
-        def check(self, *a, **kw):
-            called_hs.append((a, kw))
-            return SimpleNamespace(allowed=False, reason="veto", suggested_scale=0.0, brake_action="VETO")
-
-    monkeypatch.setattr(hsg_mod, "HighStakeGuard", _FailIfCalledHS)
+    monkeypatch.setattr(
+        hsg_mod,
+        "HighStakeGuard",
+        lambda *a, **kw: SimpleNamespace(
+            check=lambda *ca, **ckw: (
+                called_hs.append((ca, ckw))
+                or SimpleNamespace(allowed=False, reason="veto", suggested_scale=0.0, brake_action="VETO")
+            )
+        ),
+    )
     monkeypatch.setattr(hsg_mod, "is_llm_guard_exempt", lambda: False)
 
     ok_nan, r_nan, sc_nan = llm_order_guard.evaluate_high_stake_order_guard(

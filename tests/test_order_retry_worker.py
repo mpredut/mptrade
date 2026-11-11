@@ -34,6 +34,9 @@ class FakeMkt:
         lookup_error=None,
         status_error=None,
         order_id=1,
+        place_fn=None,
+        reconcile_caps=None,
+        price_error=None,
     ):
         self.price = price
         self.succeed = succeed
@@ -43,15 +46,22 @@ class FakeMkt:
         self.lookup_error = lookup_error
         self.status_error = status_error
         self.order_id = order_id
+        self.place_fn = place_fn
+        self.reconcile_caps = reconcile_caps
+        self.price_error = price_error
         self.calls = []
         self.status = OrderStatus("open", 0.0, 0.0, 0.0, "NEW")
         self.status_calls = []
         self.lookup_calls = []
 
     def get_current_price(self, symbol, provider_name=None):
+        if self.price_error is not None:
+            raise AssertionError(self.price_error)
         return self.price
 
     def place(self, symbol, side, price, qty, **kw):
+        if self.place_fn is not None:
+            return self.place_fn(self, symbol, side, price, qty, **kw)
         self.calls.append({"symbol": symbol, "side": side, "price": price, "qty": qty, "kw": kw})
         ctx = kw.get("_outcome_context")
         if self.refuse_reason is not None:
@@ -81,6 +91,8 @@ class FakeMkt:
         return self.lookup_result
 
     def reconciliation_capabilities(self, symbol, provider_name=None):
+        if self.reconcile_caps is not None:
+            return self.reconcile_caps
         return OrderReconciliationCapabilities(
             True, True, True, True,
             not_found_reliable_for_seconds=90 * 24 * 60 * 60)
@@ -562,14 +574,14 @@ class ProcessOnceTest(TempDirTestCase):
             oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
             seen = {}
 
-            class CheckMkt(FakeMkt):
-                def place(self, symbol, side, price, qty, **kw):
-                    queued = oq.load_all()
-                    seen["in_queue_during_place"] = len(queued)
-                    seen["due_during_place"] = oq.is_due(queued[0], now=1400.0)
-                    return super().place(symbol, side, price, qty, **kw)
+            def _check_place(m, symbol, side, price, qty, **kw):
+                queued = oq.load_all()
+                seen["in_queue_during_place"] = len(queued)
+                seen["due_during_place"] = oq.is_due(queued[0], now=1400.0)
+                m.place_fn = None
+                return m.place(symbol, side, price, qty, **kw)
 
-            mkt = CheckMkt(price=100.0, succeed=True)
+            mkt = FakeMkt(price=100.0, succeed=True, place_fn=_check_place)
             worker.process_once(mkt, now=1000.0 + 400)
             self.assertEqual(seen["in_queue_during_place"], 1)
             self.assertFalse(seen["due_during_place"])
@@ -579,11 +591,10 @@ class ProcessOnceTest(TempDirTestCase):
             oq.rewrite([])
             oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
 
-            class AmbiguousMkt(FakeMkt):
-                def place(self, *args, **kwargs):
-                    return {"status": "unknown"}
-
-            stats = worker.process_once(AmbiguousMkt(price=100.0), now=1400.0)
+            stats = worker.process_once(
+                FakeMkt(price=100.0, place_fn=lambda *_a, **_kw: {"status": "unknown"}),
+                now=1400.0,
+            )
             self.assertEqual(stats["succeeded"], 0)
             self.assertEqual(oq.load_all()[0]["attempts"], 1)
 
@@ -634,15 +645,12 @@ class ProcessOnceTest(TempDirTestCase):
             oq.rewrite([])
             self.alerts.clear()
             worker._ALERTED_PRODUCER_QUARANTINES.clear()
-            class KrakenClient:
-                def __init__(self):
-                    self.calls = []
-
-                def add_order(self, *args, **kwargs):
-                    self.calls.append((args, kwargs))
-                    raise AssertionError("an expired Kraken producer claim must not submit")
-
-            client = KrakenClient()
+            client = SimpleNamespace(
+                calls=[],
+                add_order=lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("an expired Kraken producer claim must not submit")
+                ),
+            )
             provider = KrakenProvider(client=client)
             market = MarketApi([provider])
             claimed = oq.enqueue_claimed(
@@ -859,18 +867,6 @@ class ProcessOnceTest(TempDirTestCase):
             self.assertEqual(len(mkt.lookup_calls), 1)
             self.assertEqual(len(mkt.calls), 1)
 
-        class UnboundedAbsenceMkt(FakeMkt):
-            def __init__(self, horizon):
-                super().__init__(price=100.0)
-                self.horizon = horizon
-
-            def reconciliation_capabilities(
-                    self, symbol, provider_name=None):
-                return SimpleNamespace(
-                    lookup_by_client_order_id=True,
-                    not_found_reliable_for_seconds=self.horizon,
-                )
-
         for horizon in (None, float("nan"), float("inf"), 0.0):
             with self.subTest(horizon=horizon):
                 oq.rewrite([])
@@ -878,7 +874,13 @@ class ProcessOnceTest(TempDirTestCase):
                     "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
                     failure_reason="submit_ambiguous",
                     provider_name="Unbounded", now=1000.0)
-                mkt = UnboundedAbsenceMkt(horizon)
+                mkt = FakeMkt(
+                    price=100.0,
+                    reconcile_caps=SimpleNamespace(
+                        lookup_by_client_order_id=True,
+                        not_found_reliable_for_seconds=horizon,
+                    ),
+                )
 
                 stats = worker.process_once(mkt, now=1400.0)
 
@@ -895,7 +897,13 @@ class ProcessOnceTest(TempDirTestCase):
                 "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
                 failure_reason="submit_ambiguous",
                 provider_name="Unbounded", now=1000.0)
-            mkt_missing = UnboundedAbsenceMkt(None)
+            mkt_missing = FakeMkt(
+                price=100.0,
+                reconcile_caps=SimpleNamespace(
+                    lookup_by_client_order_id=True,
+                    not_found_reliable_for_seconds=None,
+                ),
+            )
             alerts_captured = []
             with patch("order_retry_worker.alert.notify", side_effect=lambda **kw: alerts_captured.append(kw)):
                 worker.process_once(mkt_missing, now=1400.0)
@@ -908,7 +916,13 @@ class ProcessOnceTest(TempDirTestCase):
                 "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
                 failure_reason="submit_ambiguous",
                 provider_name="Bounded", now=1000.0)
-            mkt_bounded = UnboundedAbsenceMkt(100.0)
+            mkt_bounded = FakeMkt(
+                price=100.0,
+                reconcile_caps=SimpleNamespace(
+                    lookup_by_client_order_id=True,
+                    not_found_reliable_for_seconds=100.0,
+                ),
+            )
             alerts_captured.clear()
             with patch("order_retry_worker.alert.notify", side_effect=lambda **kw: alerts_captured.append(kw)):
                 worker.process_once(mkt_bounded, now=1400.0)  # 400 sec old > 100.0 sec horizon
@@ -1025,22 +1039,15 @@ class ProcessOnceTest(TempDirTestCase):
                 "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
                 failure_reason="submit_ambiguous", now=1000.0)
 
-            class ExistingOrderMkt(FakeMkt):
-                def get_current_price(self, symbol):
-                    raise AssertionError(
-                        "price must not gate reconciliation of an existing order")
-
-                def order_by_client_id(
-                        self, symbol, client_order_id, provider_name=None):
-                    self.lookup_calls.append(
-                        (symbol, client_order_id, provider_name))
-                    return {
-                        "orderId": 77,
-                        "status": "NEW",
-                        "clientOrderId": client_order_id,
-                    }
-
-            mkt = ExistingOrderMkt(price=1000.0)
+            mkt = FakeMkt(
+                price=1000.0,
+                price_error="price must not gate reconciliation of an existing order",
+                lookup_result=lambda client_order_id: {
+                    "orderId": 77,
+                    "status": "NEW",
+                    "clientOrderId": client_order_id,
+                },
+            )
             stats = worker.process_once(mkt, now=1400.0)
 
             self.assertEqual(stats["attempted"], 0)
@@ -1051,20 +1058,15 @@ class ProcessOnceTest(TempDirTestCase):
         with self.subTest("ambiguous_submit_reconciled_after_loss"):
             oq.rewrite([])
             oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
-
-            class LostResponseMkt(FakeMkt):
-                def __init__(self):
-                    super().__init__(price=100.0, succeed=False)
-                    self.lookups = 0
-
-                def order_by_client_id(self, symbol, client_order_id,
-                                       provider_name=None):
-                    self.lookups += 1
-                    if self.lookups == 1:
-                        return None
-                    return {"orderId": 88, "status": "NEW", "clientOrderId": client_order_id}
-
-            mkt = LostResponseMkt()
+            lookups = []
+            mkt = FakeMkt(
+                price=100.0,
+                succeed=False,
+                lookup_result=lambda client_order_id: (
+                    lookups.append(1)
+                    or (None if len(lookups) == 1 else {"orderId": 88, "status": "NEW", "clientOrderId": client_order_id})
+                ),
+            )
             stats = worker.process_once(mkt, now=1400.0)
             self.assertEqual(len(mkt.calls), 1)
             self.assertEqual(stats["reconciled"], 1)
@@ -1452,11 +1454,8 @@ class ProcessOnceTest(TempDirTestCase):
                 now=1001.0,
             )
 
-            class _NoReconcileMkt:
-                pass
-
-            worker.process_once(_NoReconcileMkt(), now=2000.0)
-            worker.process_once(_NoReconcileMkt(), now=2600.0)
+            worker.process_once(SimpleNamespace(), now=2000.0)
+            worker.process_once(SimpleNamespace(), now=2600.0)
             deferred_events = [e for e in audit_events if e[0] == "reconciliation_deferred"]
             self.assertEqual(len(deferred_events), 1)
 

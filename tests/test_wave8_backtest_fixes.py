@@ -36,6 +36,7 @@ from strategies.state_store import (
     safe_state_token,
     update_post_sell_anchors,
 )
+from tests.conftest import make_fake_chronos_pipeline
 
 ROOT = Path(__file__).resolve().parents[1]
 _KRAKEN_BT = load_local_module(str(ROOT / "kraken"), "backtest", module_key="test_w8_kraken_bt")
@@ -386,18 +387,7 @@ def test_wave8_2_monitortrades_regime_pilot_and_ml_fixes(
     assert len(pp.prices) == 12
 
     # 7. vol_chronos flat volatility (actual == base, pred > base) scores 0.0 direction accuracy (not 1.0)
-    class _FakeTensor:
-        def __init__(self, arr: np.ndarray) -> None:
-            self._arr = arr
-
-        def numpy(self) -> np.ndarray:
-            return self._arr
-
-    class _FakePipe:
-        def predict(self, contexts: list, prediction_length: int) -> list[_FakeTensor]:
-            return [_FakeTensor(np.full((3, prediction_length), 0.5, dtype=np.float64)) for _ in contexts]
-
-    monkeypatch.setattr(ml_vc, "_load_pipeline", lambda: _FakePipe())
+    monkeypatch.setattr(ml_vc, "_load_pipeline", lambda: make_fake_chronos_pipeline(0.5))
     monkeypatch.setattr(ml_vc, "torch", SimpleNamespace(float32="f32", tensor=lambda a, dtype=None: np.asarray(a)))
     flat_rv = np.full(30, 0.2, dtype=np.float64)
     wf_flat = ml_vc.walk_forward_vol(flat_rv, horizon=5, warmup=5, stride=10)

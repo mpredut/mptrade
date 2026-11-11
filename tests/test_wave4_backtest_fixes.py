@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from offline.backtests.evaluation import load_venue_module
+from tests.conftest import make_fake_chronos_pipeline
 
 
 def test_datasets_str_path_validation_and_finite_normalize(tmp_path):
@@ -323,23 +324,7 @@ def test_ml_forecast_purge_chronos_tail_and_priceprediction_isolation(monkeypatc
     seg = np.array([0.1, 0.2, np.nan, 0.3, 0.4], dtype=float)
     assert list(vc._clean_tail(seg)) == [0.3, 0.4]
 
-    class _FakeTensor:
-        def __init__(self, arr):
-            self._arr = np.asarray(arr, dtype=float)
-
-        def numpy(self):
-            return self._arr
-
-    class _FakePipe:
-        def predict(self, contexts, prediction_length):
-            out = []
-            for _ in contexts:
-                mat = np.ones((3, prediction_length), dtype=float)
-                mat[:, -1] = 9.0
-                out.append(_FakeTensor(mat))
-            return out
-
-    monkeypatch.setattr(vc, "_load_pipeline", lambda: _FakePipe())
+    monkeypatch.setattr(vc, "_load_pipeline", lambda: make_fake_chronos_pipeline(1.0, last_col_value=9.0))
     monkeypatch.setattr(vc, "torch", SimpleNamespace(float32="f32", tensor=lambda a, dtype=None: np.asarray(a)))
     rv = np.linspace(0.1, 0.5, 40)
     wf_vol = vc.walk_forward_vol(rv, horizon=5, warmup=5, stride=10)

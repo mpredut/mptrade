@@ -1611,28 +1611,19 @@ def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_
 
     # 1. HLClient.position_strict and spot_balance_strict reject empty-string numeric fields
     #    and support spot quote suffixes (/USDC, USDC) across max_leverage, coin_listed, etc.
-    class _FakeHLInfo:
-        coin_to_asset = {"HYPE": 10001}
-
-        def meta(self):
-            return {"universe": [{"name": "HYPE", "szDecimals": 2, "maxLeverage": 5}]}
-
-        def user_state(self, address):
-            return {"assetPositions": [{"position": {"coin": "HYPE", "szi": self._szi, "entryPx": self._entry}}]}
-
-        def spot_user_state(self, address):
-            return {"balances": [{"coin": "HYPE", "total": self._spot_tot}]}
-
-        def open_orders(self, address):
-            return [{"coin": "HYPE", "oid": 777}]
-
-        def meta_and_asset_ctxs(self):
-            return {"universe": [{"name": "HYPE"}]}, [{"funding": "0.00012"}]
-
-    info = _FakeHLInfo()
-    info._szi = ""
-    info._entry = "25.0"
-    info._spot_tot = ""
+    info = SimpleNamespace(
+        coin_to_asset={"HYPE": 10001},
+        _szi="",
+        _entry="25.0",
+        _spot_tot="",
+        meta=lambda: {"universe": [{"name": "HYPE", "szDecimals": 2, "maxLeverage": 5}]},
+        open_orders=lambda address: [{"coin": "HYPE", "oid": 777}],
+        meta_and_asset_ctxs=lambda: ({"universe": [{"name": "HYPE"}]}, [{"funding": "0.00012"}]),
+    )
+    info.user_state = lambda address: {
+        "assetPositions": [{"position": {"coin": "HYPE", "szi": info._szi, "entryPx": info._entry}}]
+    }
+    info.spot_user_state = lambda address: {"balances": [{"coin": "HYPE", "total": info._spot_tot}]}
 
     hl = HLClient.__new__(HLClient)
     hl.info = info
@@ -4263,25 +4254,14 @@ def test_iter78_tradeall_small_big_conflict_rtrade_orphan_cancel_and_quantity_sc
     assert canceled_rt == ["91", "92"]
 
     # 4. decide_quantity supports percentage string scale and _suggested_scale_by_side["BUY"], and T212 partial sell min_notional
-    class _DummyT212Prov:
-        provider_name = "t212"
-
-        def free_balance(self, asset):
-            return 1000.0 if asset == "USD" else 0.10
-
-        def policy_cap_quantity(self, symbol, side, price, requested, balance_cap, **kw):
-            return requested
-
-        def fee_cap_quantity(self, symbol, side, price, balance_cap):
-            return balance_cap
-
-        def round_amount(self, symbol, qty):
-            return round(qty, 2)
-
-        def order_filter_refusal(self, *args, **kwargs):
-            return None
-
-    prov = _DummyT212Prov()
+    prov = SimpleNamespace(
+        provider_name="t212",
+        free_balance=lambda asset: 1000.0 if asset == "USD" else 0.10,
+        policy_cap_quantity=lambda symbol, side, price, requested, balance_cap, **kw: requested,
+        fee_cap_quantity=lambda symbol, side, price, balance_cap: balance_cap,
+        round_amount=lambda symbol, qty: round(qty, 2),
+        order_filter_refusal=lambda *args, **kwargs: None,
+    )
     dec_buy = decide_quantity(
         prov,
         "NVDA_US_EQ",
@@ -4304,29 +4284,23 @@ def test_iter79_rtrade_pair_recovery_and_assetguardian_cancel(tmp_path, monkeypa
     from rtrade_pair_store import RTradePairStore
 
     # 1. PairCoordinator startup_recovery completes round when both BUY and SELL legs filled
-    class _StubVenue:
-        def __init__(self):
-            self.statuses = {
-                "L1": OrderSnapshot(status="closed", filled_qty=1.0, cost=99.36, fee=0.01),
-                "L2": OrderSnapshot(status="closed", filled_qty=1.0, cost=100.64, fee=0.01),
-            }
-            self.recovery_blocked = False
+    def _make_stub_venue():
+        statuses = {
+            "L1": OrderSnapshot(status="closed", filled_qty=1.0, cost=99.36, fee=0.01),
+            "L2": OrderSnapshot(status="closed", filled_qty=1.0, cost=100.64, fee=0.01),
+        }
+        return SimpleNamespace(
+            statuses=statuses,
+            recovery_blocked=False,
+            current_price=lambda: 100.0,
+            order_status=lambda oid: statuses[oid],
+            cancel=lambda oid: True,
+            recover_pair_intents=lambda _pair_id: [
+                (OrderTicket(order_id="L2", side="SELL", price=100.64, qty=1.0), statuses["L2"], "limit"),
+            ],
+        )
 
-        def current_price(self):
-            return 100.0
-
-        def order_status(self, oid):
-            return self.statuses[oid]
-
-        def cancel(self, oid):
-            return True
-
-        def recover_pair_intents(self, _pair_id):
-            return [
-                (OrderTicket(order_id="L2", side="SELL", price=100.64, qty=1.0), self.statuses["L2"], "limit"),
-            ]
-
-    venue = _StubVenue()
+    venue = _make_stub_venue()
     policy = PairPolicy(adjustment_fraction=0.0064)
     coord = PairCoordinator(
         venue,
@@ -4349,7 +4323,7 @@ def test_iter79_rtrade_pair_recovery_and_assetguardian_cancel(tmp_path, monkeypa
     assert out.first_fill_side == "BOTH"
 
     # 2. PairCoordinator._recover_persisted_intents does not prematurely set phase="stopping" while blocked
-    venue2 = _StubVenue()
+    venue2 = _make_stub_venue()
     venue2.statuses["S0"] = OrderSnapshot(status="canceled", filled_qty=0.4, cost=38.0, fee=0.01)
     venue2.recovery_blocked = True
     venue2.recover_pair_intents = lambda _pid: [
@@ -4451,33 +4425,29 @@ def test_iter80_pricefetcher_refresh_and_kraken_trailing_unlock(monkeypatch, tmp
     assert mgr.symbol_preferred_source == {}
 
     # 3. KrakenTrailing.unlock_qty continues cancelling remaining open SELL orders when one cancel raises or returns count=0
-    class _MultiSellClient:
-        def __init__(self):
-            self.cancelled = []
-            self.held = 10.0
+    cli = SimpleNamespace(
+        cancelled=[],
+        held=10.0,
+        open_orders=lambda: {
+            "TX-FAIL": {"descr": {"type": "sell", "pair": "HYPE/USD"}},
+            "TX-ZERO": {"descr": {"type": "sell", "pair": "HYPEUSD"}},
+            "TX-OK": {"descr": {"type": "sell", "pair": "HYPE/USD"}},
+        },
+    )
+    cli._private = lambda method, data=None: (
+        {"HYPE": {"balance": "10.0", "hold_trade": str(cli.held)}} if method == "BalanceEx" else {}
+    )
 
-        def _private(self, method, data=None):
-            if method == "BalanceEx":
-                return {"HYPE": {"balance": "10.0", "hold_trade": str(self.held)}}
-            return {}
+    def _cancel_multi(txid):
+        cli.cancelled.append(txid)
+        if txid == "TX-FAIL":
+            raise RuntimeError("transient cancel failure")
+        if txid == "TX-ZERO":
+            return {"count": 0}
+        cli.held = 0.0
+        return {"count": 1}
 
-        def open_orders(self):
-            return {
-                "TX-FAIL": {"descr": {"type": "sell", "pair": "HYPE/USD"}},
-                "TX-ZERO": {"descr": {"type": "sell", "pair": "HYPEUSD"}},
-                "TX-OK": {"descr": {"type": "sell", "pair": "HYPE/USD"}},
-            }
-
-        def cancel_order(self, txid):
-            self.cancelled.append(txid)
-            if txid == "TX-FAIL":
-                raise RuntimeError("transient cancel failure")
-            if txid == "TX-ZERO":
-                return {"count": 0}
-            self.held = 0.0
-            return {"count": 1}
-
-    cli = _MultiSellClient()
+    cli.cancel_order = _cancel_multi
     kt = KrakenTrailing(cli, log=lambda *_a: None, enabled=True, state_file=str(tmp_path / "kt.json"))
     assert kt.begin_tick() is True
     assert kt.free_qty("HYPE") == 0.0
@@ -4845,17 +4815,14 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
     assert sig_res["source"] == "patched_after_reload"
 
     # 4. SpotParamsMixin handles bool/None/string fields safely and BaseSpotMixin works without dca_vol_scale_k
-    class _DummyParams(SpotParamsMixin):
-        def __init__(self):
-            self.total_budget = True  # boolean must NOT be treated as positive float budget
-            self.alloc_pct = "50.0"
-            self.entry_pct = "10.0"
-            self.dca_pct = "20.0"
-            self.entry_amount = "25.0"
-            self.dca_amount = None
-            self.max_budget = None
-
-    dp = _DummyParams()
+    dp = SpotParamsMixin()
+    dp.total_budget = True  # boolean must NOT be treated as positive float budget
+    dp.alloc_pct = "50.0"
+    dp.entry_pct = "10.0"
+    dp.dca_pct = "20.0"
+    dp.entry_amount = "25.0"
+    dp.dca_amount = None
+    dp.max_budget = None
     assert dp.pct_sizing_on() is False
     assert dp.allocated_budget() == pytest.approx(0.0)
     assert dp.effective_entry_amount() == pytest.approx(25.0)

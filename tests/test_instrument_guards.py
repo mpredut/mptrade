@@ -45,13 +45,36 @@ SYMBOL = "ZZZFAKEUSD"
 class _FakeProvider(MarketDataProvider):
     """Minimal in-memory provider whose guards are handled by Instrument."""
 
-    def __init__(self, name="FakeVenue", price=100.0, *, live=True, policy_cap=None, window_ref=None, supports=False):
+    def __init__(
+        self,
+        name="FakeVenue",
+        price=100.0,
+        *,
+        live=True,
+        policy_cap=None,
+        window_ref=None,
+        supports=False,
+        free_bal=1_000_000.0,
+        fee_cap=None,
+        place_fn=None,
+        filter_refusal_fn=None,
+        adjust_price_fn=None,
+        defers_cancel=False,
+        reconcile_caps=None,
+    ):
         self._name = name
         self._price = price
         self.live = live
         self._policy_cap = policy_cap
         self._window_ref = window_ref
         self._supports = supports
+        self._free_bal = free_bal
+        self._fee_cap = fee_cap
+        self._place_fn = place_fn
+        self._filter_refusal_fn = filter_refusal_fn
+        self._adjust_price_fn = adjust_price_fn
+        self._defers_cancel = defers_cancel
+        self._reconcile_caps = reconcile_caps
         self._orders = []   # [{"side","price","qty","timestamp"(ms)}]
         self.placed = []    # REAL calls to place_order (after every gate)
         self.status_calls = []
@@ -61,6 +84,8 @@ class _FakeProvider(MarketDataProvider):
         return self._name
 
     def execution_enabled(self):
+        if callable(self.live):
+            return self.live()
         return self.live
 
     def get_current_price(self, symbol):
@@ -70,12 +95,35 @@ class _FakeProvider(MarketDataProvider):
         return self._supports
 
     def free_balance(self, asset):
-        return 1_000_000.0   # Enough that it never limits qty artificially in the tests.
+        return self._free_bal
+
+    def defers_smart_cancellation(self):
+        return self._defers_cancel
+
+    def reconciliation_capabilities(self):
+        if self._reconcile_caps is not None:
+            return self._reconcile_caps
+        return super().reconciliation_capabilities()
 
     def policy_cap_quantity(self, symbol, side, price, qty, available_qty, **kwargs):
         if self._policy_cap is not None:
-            return self._policy_cap(symbol, side, price, qty, available_qty) if callable(self._policy_cap) else self._policy_cap
+            return self._policy_cap(symbol, side, price, qty, available_qty, **kwargs) if callable(self._policy_cap) else self._policy_cap
         return super().policy_cap_quantity(symbol, side, price, qty, available_qty, **kwargs)
+
+    def fee_cap_quantity(self, symbol, side, price, available_qty):
+        if self._fee_cap is not None:
+            return self._fee_cap
+        return super().fee_cap_quantity(symbol, side, price, available_qty)
+
+    def order_filter_refusal(self, *args, **kwargs):
+        if self._filter_refusal_fn is not None:
+            return self._filter_refusal_fn(*args, **kwargs)
+        return super().order_filter_refusal(*args, **kwargs)
+
+    def adjust_order_price(self, symbol, side, price, cancel_opposite=True):
+        if self._adjust_price_fn is not None:
+            return self._adjust_price_fn(self, symbol, side, price, cancel_opposite=cancel_opposite)
+        return super().adjust_order_price(symbol, side, price, cancel_opposite=cancel_opposite)
 
     def profit_guard_window_ref(self, symbol, side, safeback_sec, **kwargs):
         if self._window_ref is not None:
@@ -91,6 +139,8 @@ class _FakeProvider(MarketDataProvider):
         return out
 
     def place_order(self, symbol, side, price, qty, **kwargs):
+        if self._place_fn is not None:
+            return self._place_fn(self, symbol, side, price, qty, **kwargs)
         self.placed.append((symbol, side, price, qty, kwargs))
         return {"orderId": len(self.placed)}
 
@@ -178,23 +228,23 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         entered_provider = threading.Event()
         release_provider = threading.Event()
 
-        class BlockingRecoverableProvider(_FakeProvider):
-            def reconciliation_capabilities(self):
-                return OrderReconciliationCapabilities(
-                    lookup_by_client_order_id=True,
-                    status_by_order_id=True,
-                    cancel_by_order_id=True,
-                    list_open_orders=True,
-                )
+        def _blocking_place(prov, symbol, side, price, qty, **kwargs):
+            entered_provider.set()
+            if not release_provider.wait(timeout=5.0):
+                raise TimeoutError("test did not release the provider")
+            prov.placed.append((symbol, side, price, qty, kwargs))
+            return {"orderId": "producer-only"}
 
-            def place_order(self, symbol, side, price, qty, **kwargs):
-                entered_provider.set()
-                if not release_provider.wait(timeout=5.0):
-                    raise TimeoutError("test did not release the provider")
-                self.placed.append((symbol, side, price, qty, kwargs))
-                return {"orderId": "producer-only"}
-
-        provider = BlockingRecoverableProvider(name="Recoverable")
+        provider = _FakeProvider(
+            name="Recoverable",
+            reconcile_caps=OrderReconciliationCapabilities(
+                lookup_by_client_order_id=True,
+                status_by_order_id=True,
+                cancel_by_order_id=True,
+                list_open_orders=True,
+            ),
+            place_fn=_blocking_place,
+        )
         instrument = self._inst(provider)
         result = {}
         errors = []
@@ -278,7 +328,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with self.subTest("keeps_quantity_policy_active"):
             quantity_calls = []
             p = _FakeProvider(
-                policy_cap=lambda sym, side, px, q, avail: quantity_calls.append((sym, side, px, q, avail)) or 0.25
+                policy_cap=lambda sym, side, px, q, avail, **_kw: quantity_calls.append((sym, side, px, q, avail)) or 0.25
             )
             p.seed_trade("SELL", age_sec=400.0, price=100.0)
             inst = self._inst(p)
@@ -324,13 +374,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with self.subTest("is_sell_only_and_keeps_profit_guard"):
             self._clear_state()
             policy_calls = []
-
-            class _ZeroPolicyProvider(_FakeProvider):
-                def policy_cap_quantity(self, *args, **kwargs):
-                    policy_calls.append((args, kwargs))
-                    return 0.0
-
-            p = _ZeroPolicyProvider()
+            p = _FakeProvider(policy_cap=lambda *args, **kwargs: policy_calls.append((args, kwargs)) or 0.0)
             p.seed_trade("BUY", age_sec=400.0, price=100.0)
             inst = self._inst(p)
 
@@ -371,17 +415,11 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("keeps_balance_and_fee_caps"):
             self._clear_state()
-            class _FeeCapProvider(_FakeProvider):
-                def free_balance(self, _asset):
-                    return 1.0
-
-                def policy_cap_quantity(self, *args, **kwargs):
-                    raise AssertionError("policy must be bypassed")
-
-                def fee_cap_quantity(self, symbol, side, price, available_qty):
-                    return 0.9
-
-            p = _FeeCapProvider()
+            p = _FakeProvider(
+                free_bal=1.0,
+                policy_cap=lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("policy must be bypassed")),
+                fee_cap=0.9,
+            )
             p.seed_trade("BUY", age_sec=400.0, price=100.0)
             order = self._inst(p).place(
                 "SELL", 102.0, 2.0, smart=False, caller_owns_retry=True,
@@ -404,14 +442,13 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with self.subTest("intent_persisted_with_same_client_id_before_submit"):
             self._clear_state()
 
-            class _InspectProvider(_FakeProvider):
-                def place_order(self, symbol, side, price, qty, **kwargs):
-                    queued = oq.load_all()
-                    self.persisted_during_submit = dict(queued[0])
-                    self.submitted_client_id = kwargs.get("client_order_id")
-                    return {"orderId": "persisted-1"}
+            def _inspect_place(prov, symbol, side, price, qty, **kwargs):
+                queued = oq.load_all()
+                prov.persisted_during_submit = dict(queued[0])
+                prov.submitted_client_id = kwargs.get("client_order_id")
+                return {"orderId": "persisted-1"}
 
-            p = _InspectProvider()
+            p = _FakeProvider(place_fn=_inspect_place)
             order = self._inst(p).place("BUY", 100.0, 1.0)
 
             self.assertEqual(order["orderId"], "persisted-1")
@@ -425,13 +462,11 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("truthy_payload_without_order_id_is_unknown"):
             self._clear_state()
-
-            class _AmbiguousProvider(_FakeProvider):
-                def place_order(self, symbol, side, price, qty, **kwargs):
-                    self.placed.append((symbol, side, price, qty, kwargs))
-                    return {"status": "UNKNOWN"}
-
-            p = _AmbiguousProvider()
+            p = _FakeProvider(
+                place_fn=lambda prov, symbol, side, price, qty, **kwargs: (
+                    prov.placed.append((symbol, side, price, qty, kwargs)) or {"status": "UNKNOWN"}
+                )
+            )
             order = self._inst(p).place("BUY", 100.0, 1.0)
 
             self.assertIsNone(order)
@@ -445,12 +480,11 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with self.subTest("submit_response_loss_keeps_pre_submit_intent"):
             self._clear_state()
 
-            class _LostResponseProvider(_FakeProvider):
-                def place_order(self, symbol, side, price, qty, **kwargs):
-                    self.submitted_client_id = kwargs.get("client_order_id")
-                    raise TimeoutError("response lost after possible venue acceptance")
+            def _lost_place(prov, symbol, side, price, qty, **kwargs):
+                prov.submitted_client_id = kwargs.get("client_order_id")
+                raise TimeoutError("response lost after possible venue acceptance")
 
-            p = _LostResponseProvider()
+            p = _FakeProvider(place_fn=_lost_place)
             order = self._inst(p).place("BUY", 100.0, 1.0)
 
             self.assertIsNone(order)
@@ -520,13 +554,11 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with self.subTest("smart_flag_gates_price_adjust"):
             self._clear_state()
             calls = []
-
-            class _SpyProvider(_FakeProvider):
-                def adjust_order_price(self, symbol, side, price, cancel_opposite=True):
-                    calls.append((symbol, side, cancel_opposite))
-                    return price
-
-            p = _SpyProvider()
+            p = _FakeProvider(
+                adjust_price_fn=lambda _prov, symbol, side, price, cancel_opposite=True: (
+                    calls.append((symbol, side, cancel_opposite)) or price
+                )
+            )
             inst = Instrument(name="ZZZFAKE", symbol=SYMBOL, provider=p.name.lower(),
                               base="ZZZFAKE", quote="USD", api=MarketApi([p]))
             inst.place("BUY", 100.0, 1.0, smart=True)
@@ -540,14 +572,11 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with self.subTest("cancelorders_and_hours_reach_quantity_hook"):
             self._clear_state()
             calls = []
-
-            class _QuantitySpyProvider(_FakeProvider):
-                def policy_cap_quantity(self, symbol, side, price, qty, available_qty,
-                                        base=None, quote=None, cancelorders=False, hours=5):
-                    calls.append((cancelorders, hours))
-                    return qty
-
-            p = _QuantitySpyProvider()
+            p = _FakeProvider(
+                policy_cap=lambda symbol, side, price, qty, available_qty, base=None, quote=None, cancelorders=False, hours=5, **_kw: (
+                    calls.append((cancelorders, hours)) or qty
+                )
+            )
             order = self._inst(p).place(
                 "BUY", 100.0, 1.0, smart=False, cancelorders=True, hours=2.7)
 
@@ -644,14 +673,12 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self._clear_state()
 
             business_minimum_flags = []
-
-            class _DustProvider(_FakeProvider):
-                def order_filter_refusal(self, *_args, **kwargs):
-                    business_minimum_flags.append(
-                        kwargs["enforce_business_minimum"])
-                    return "below_min_notional"
-
-            p = _DustProvider(price=90.0)
+            p = _FakeProvider(
+                price=90.0,
+                filter_refusal_fn=lambda *_args, **kwargs: (
+                    business_minimum_flags.append(kwargs["enforce_business_minimum"]) or "below_min_notional"
+                ),
+            )
             p.seed_trade("BUY", age_sec=400.0, price=100.0)
             outcome = {}
             order = self._inst(p).place(
@@ -667,14 +694,12 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with self.subTest("profit_bypass_buy_keeps_the_business_minimum"):
             self._clear_state()
             business_minimum_flags = []
-
-            class _PolicySpyProvider(_FakeProvider):
-                def order_filter_refusal(self, *_args, **kwargs):
-                    business_minimum_flags.append(
-                        kwargs["enforce_business_minimum"])
-                    return None
-
-            p = _PolicySpyProvider(price=90.0)
+            p = _FakeProvider(
+                price=90.0,
+                filter_refusal_fn=lambda *_args, **kwargs: (
+                    business_minimum_flags.append(kwargs["enforce_business_minimum"]) and None
+                ),
+            )
             order = self._inst(p).place(
                 "BUY", 90.0, 0.5, force=True, smart=False,
                 bypass_guards={"profit_guard"}, wait_for_trend=False,
@@ -685,13 +710,11 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("terminal_filter_refusal_after_prequeue_removes_claim"):
             self._clear_state()
-
-            class _LateDustProvider(_FakeProvider):
-                def place_order(self, *_args, **_kwargs):
-                    raise SubmissionRefused(
-                        "binance_filter_refused:quantity below lot size")
-
-            p = _LateDustProvider()
+            p = _FakeProvider(
+                place_fn=lambda *_a, **_kw: (_ for _ in ()).throw(
+                    SubmissionRefused("binance_filter_refused:quantity below lot size")
+                )
+            )
             order = self._inst(p).place(
                 "BUY", 100.0, 0.01, smart=False, wait_for_trend=False)
 
@@ -707,19 +730,17 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertTrue(p.placed[0][4]["force"])
 
     def test_trend_deferral_behaviors(self):
-        class _Deferred:
-            @staticmethod
-            def should_wait(_side, _symbol):
-                return True
-
-            @staticmethod
-            def wait_for_favorable_entry(*_args, **_kwargs):
-                raise AssertionError("Instrument.place must not enter a wait loop")
+        deferred = SimpleNamespace(
+            should_wait=lambda _side, _symbol: True,
+            wait_for_favorable_entry=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("Instrument.place must not enter a wait loop")
+            ),
+        )
 
         with self.subTest("returns_immediately_without_wait_loop"):
             p = _FakeProvider(price=100.0)
             p.seed_trade("BUY", age_sec=400.0, price=100.0)
-            with patch("cacheManager.get_short_trend_manager", return_value=_Deferred()):
+            with patch("cacheManager.get_short_trend_manager", return_value=deferred):
                 order = self._inst(p).place("SELL", 102.0, 1.0, force=False, smart=False)
 
             self.assertIsNone(order)
@@ -730,7 +751,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with self.subTest("auto_quantity_enters_outbox_with_numeric_qty"):
             open(oq.QUEUE_FILE, 'w').close()
             p = _FakeProvider(price=100.0)
-            with patch("cacheManager.get_short_trend_manager", return_value=_Deferred()):
+            with patch("cacheManager.get_short_trend_manager", return_value=deferred):
                 order = self._inst(p).place("BUY", 100.0, None, smart=False)
 
             self.assertIsNone(order)
@@ -1444,12 +1465,8 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertEqual(self._log_lines(), [])
 
             # 1c. execution_gate_unavailable
-            class _BrokenGateProvider(_FakeProvider):
-                def execution_enabled(self):
-                    raise RuntimeError("gate crash")
-
             ctx_gate = {}
-            inst_broken = self._inst(_BrokenGateProvider())
+            inst_broken = self._inst(_FakeProvider(live=lambda: (_ for _ in ()).throw(RuntimeError("gate crash"))))
             self.assertIsNone(inst_broken.place("BUY", 100.0, 1.0, _outcome_context=ctx_gate))
             self.assertEqual(ctx_gate, {"accepted": False, "reason": "execution_gate_unavailable", "state": "refused"})
             self.assertEqual(self._log_lines(), [])
@@ -1735,19 +1752,14 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         # ------------------------------------------------------------------
         with self.subTest("smart_pricing_defers_cancel_and_forwards_orig_price"):
             clear_all()
-
-            class _DeferredSmartProvider(_FakeProvider):
-                def defers_smart_cancellation(self):
-                    return True
-
-                def adjust_order_price(self, symbol, side, price, cancel_opposite=True):
-                    self.last_cancel_opposite = cancel_opposite
-                    return price - 0.5
-
-                def round_price(self, symbol, price):
-                    return round(price, 2)
-
-            p_def = _DeferredSmartProvider(price=100.0)
+            p_def = _FakeProvider(
+                price=100.0,
+                defers_cancel=True,
+                adjust_price_fn=lambda prov, symbol, side, price, cancel_opposite=True: (
+                    setattr(prov, "last_cancel_opposite", cancel_opposite) or (price - 0.5)
+                ),
+            )
+            p_def.round_price = lambda symbol, price: round(price, 2)
             inst_def = self._inst(p_def)
             ctx_def = {}
             res_def = inst_def.place(
@@ -2223,14 +2235,6 @@ def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter2
     window_ref_calls = []
     pg_bypasses = []
 
-    class FakeSpotProvider(DummySpotExecutionProvider):
-        def __init__(self):
-            super().__init__(order_id="ord-21")
-
-        def profit_guard_window_ref(self, *a, **k):
-            window_ref_calls.append(1)
-            raise RuntimeError("should not be called when G_PROF is bypassed")
-
     monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
     monkeypatch.setattr(
         order_guard,
@@ -2238,7 +2242,10 @@ def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter2
         lambda *a, **k: (pg_bypasses.append(set(k.get("bypass_guards") or set())) or True),
     )
 
-    fake_prov = FakeSpotProvider()
+    fake_prov = DummySpotExecutionProvider(order_id="ord-21")
+    fake_prov.profit_guard_window_ref = lambda *a, **k: (
+        window_ref_calls.append(1) or (_ for _ in ()).throw(RuntimeError("should not be called when G_PROF is bypassed"))
+    )
     fake_api = MagicMock()
     fake_api.provider_by_name.return_value = fake_prov
     fake_api.market_regime_context.return_value = None

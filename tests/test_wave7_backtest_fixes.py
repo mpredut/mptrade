@@ -168,10 +168,7 @@ def test_wave7b_base_spot_mixin_and_exit_manager_contracts():
     with pytest.raises(ValueError, match="cannot be smaller than STRAT_ENTRY"):
         parse_max_dca_buys_env({"STRAT_MAX_DCA_BUYS": "auto"}, budget=50.0, entry_amt=100.0, dca_amt=25.0)
 
-    class _DummyReplayBot(BaseSpotMixin):
-        pass
-
-    bot = _DummyReplayBot()
+    bot = BaseSpotMixin()
     bot.replay_mode = True
     bot._simulated_ts = 1700001234.0
     bot._clock = lambda: 9999999999.0
@@ -191,27 +188,18 @@ def test_wave7b_mt_accounting_rtrade_trailing_and_regime():
     assert _summarize_orders([o1, o2]) == _summarize_orders([o2, o1])
 
     # PairCoordinator.outcome() must compute realized gross_pnl only on matched qty
-    class _StubVenue:
-        def current_price(self):
-            return 100.0
-
-        def place_limit(self, side, price, qty, pair_id, *, revision=0):
-            return OrderTicket(order_id=f"{side}-1", side=side, price=price, qty=qty, pair_id=pair_id, revision=revision)
-
-        def place_market(self, side, qty, pair_id, *, reason, revision=0):
-            return None
-
-        def market_exit_allowed(self, exposure_side, loss_fraction, reason):
-            return False
-
-        def order_status(self, order_id):
-            return OrderSnapshot(status="open", filled_qty=0.0, cost=0.0, fee=0.0)
-
-        def cancel(self, order_id):
-            return True
-
+    stub_venue = SimpleNamespace(
+        current_price=lambda: 100.0,
+        place_limit=lambda side, price, qty, pair_id, *, revision=0: OrderTicket(
+            order_id=f"{side}-1", side=side, price=price, qty=qty, pair_id=pair_id, revision=revision
+        ),
+        place_market=lambda side, qty, pair_id, *, reason, revision=0: None,
+        market_exit_allowed=lambda exposure_side, loss_fraction, reason: False,
+        order_status=lambda order_id: OrderSnapshot(status="open", filled_qty=0.0, cost=0.0, fee=0.0),
+        cancel=lambda order_id: True,
+    )
     coord = PairCoordinator(
-        _StubVenue(), 2.0, PairPolicy(adjustment_fraction=0.01), clock=lambda: 10.0, sleeper=lambda _: None
+        stub_venue, 2.0, PairPolicy(adjustment_fraction=0.01), clock=lambda: 10.0, sleeper=lambda _: None
     )
     coord.start(mid=100.0, pair_id="p1")
     coord.snapshots["BUY-1"] = OrderSnapshot(status="closed", filled_qty=2.0, cost=199.0, fee=0.1)

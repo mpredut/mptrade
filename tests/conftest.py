@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock
 
@@ -568,6 +569,7 @@ class TrailingTestBase(unittest.TestCase):
         fd, self.sf = tempfile.mkstemp(suffix=".json")
         os.close(fd)
         os.remove(self.sf)
+        self._orig_trail_pct = {}
         if self.TRAIL_MODULE is not None:
             self._orig_trail_pct = dict(self.TRAIL_MODULE.TRAIL_PCT)
             self.TRAIL_MODULE.TRAIL_PCT.update(self.TRAIL_DEFAULTS)
@@ -579,6 +581,22 @@ class TrailingTestBase(unittest.TestCase):
         for p in (self.sf, self.sf + ".tmp"):
             if os.path.exists(p):
                 os.remove(p)
+
+
+def make_fake_chronos_pipeline(fill_value: float = 0.5, *, last_col_value: float | None = None):
+    """Return a minimal Chronos pipeline stub whose ``predict`` returns tensor-like objects with ``.numpy()``."""
+    import numpy as np
+
+    def _predict(contexts, prediction_length: int):
+        out = []
+        for _ in contexts:
+            mat = np.full((3, prediction_length), fill_value, dtype=float)
+            if last_col_value is not None:
+                mat[:, -1] = last_col_value
+            out.append(SimpleNamespace(numpy=lambda m=mat: m))
+        return out
+
+    return SimpleNamespace(predict=_predict)
 
 
 @pytest.fixture(autouse=True)

@@ -559,11 +559,8 @@ def test_backtest_suppresses_real_gemini_and_notifications(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("PostStopReentryGuard should be bypassed in replay!")),
     )
 
-    class _ReplayInst:
-        provider_name = "replay"
-
     allowed, bb, bq, q = mt._apply_post_stop_ai_guard(
-        "BTCUSDC", 100.0, 105.0, 1000.0, snap, 100.0, None, 1.0, inst=_ReplayInst()
+        "BTCUSDC", 100.0, 105.0, 1000.0, snap, 100.0, None, 1.0, inst=SimpleNamespace(provider_name="replay")
     )
     assert (allowed, bb, bq, q) == (True, 100.0, None, 1.0)
 
@@ -726,11 +723,11 @@ def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
     assert params.reentry_pullback_adaptive is False
 
     # 2. BacktestBroker.place_order_smart must reject unbacked SELL when flat even if trend_gate wants to wait
-    class _AlwaysWaitGate:
-        def should_wait(self, symbol, side, timeout_sec):
-            return True
-
-    broker = BacktestBroker(str(tmp_path), clock=lambda: 1000.0, trend_gate=_AlwaysWaitGate())
+    broker = BacktestBroker(
+        str(tmp_path),
+        clock=lambda: 1000.0,
+        trend_gate=SimpleNamespace(should_wait=lambda symbol, side, timeout_sec: True),
+    )
     assert broker.place_order_smart("SELL", "BTCUSDC", 50000.0) is None
     assert broker.n_waited == 0
     assert broker.pending == []
@@ -1064,11 +1061,7 @@ def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp
         m.setenv("TREND_WINDOW_HOURS", "24")
         m.setenv("TREND_RESAMPLE_HOURS", "8")
 
-        class _DummyClient:
-            def candles(self, coin, interval, lookback_hours=30):
-                return []
-
-        res = mod_sig.get_signal(_DummyClient(), "BTC")
+        res = mod_sig.get_signal(SimpleNamespace(candles=lambda coin, interval, lookback_hours=30: []), "BTC")
         assert res["trend"] == "neutral"
 
 
@@ -1118,31 +1111,21 @@ def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comme
             },
         )
 
-        class _BadMidClient:
-            def mid(self, _coin):
-                return "N/A"
-
-        sig = mod_pa.signal(_BadMidClient(), "HYPE")
+        sig = mod_pa.signal(SimpleNamespace(mid=lambda _coin: "N/A"), "HYPE")
         assert sig["trend"] == "up"
         assert sig["source"] == "analysis"
 
         # 5. hyperliquid/strategy.py _check_stop_loss keeps uncancelled orders tracked & run() survives step error
         mod_st = load_local_module(str(root_dir / "hyperliquid"), "strategy", module_key="hl_strat_run_test", reload=True)
-
-        class _FailCancelClient:
-            exchange = None
-
-            def sz_decimals(self, _coin):
-                return 2
-
-            def cancel(self, _coin, _oid):
-                return False
-
-            def place_limit(self, _coin, _is_buy, _sz, _px, reduce_only=False):
-                return True, "SL-1", "ok"
+        fail_cancel_client = SimpleNamespace(
+            exchange=None,
+            sz_decimals=lambda _coin: 2,
+            cancel=lambda _coin, _oid: False,
+            place_limit=lambda _coin, _is_buy, _sz, _px, reduce_only=False: (True, "SL-1", "ok"),
+        )
 
         strat = mod_st.Strategy(
-            client=_FailCancelClient(),
+            client=fail_cancel_client,
             coin="HYPE",
             params=mod_st.StratParams(direction="long", stop_loss_pct=5.0),
             dry_run=False,
@@ -3054,17 +3037,13 @@ def test_batch15_pricefetcher_new_coins_and_cooldown_hardening(monkeypatch, tmp_
 
     # 2. PricePlatformFactory.get_price normalizes symbol cache keys and rejects blank symbols
     pf_fac = object.__new__(pf.PricePlatformFactory)
-
-    class _DummyPlat:
-        platform_name = "Dummy"
-
-        def supports_symbol(self, sym):
-            return sym.strip().upper() == "BTC"
-
-        def get_price(self, sym):
-            return 50000.0
-
-    pf_fac._platforms = [_DummyPlat()]
+    pf_fac._platforms = [
+        SimpleNamespace(
+            platform_name="Dummy",
+            supports_symbol=lambda sym: sym.strip().upper() == "BTC",
+            get_price=lambda sym: 50000.0,
+        )
+    ]
     pf_fac._symbol_platform_cache = {}
     res = pf_fac.get_price(" btc ")
     assert res["price"] == 50000.0
@@ -3760,25 +3739,19 @@ def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(
     mgr = object.__new__(BotManager)
     mgr.verbose_stdout = False
     mgr.recent_lines = defaultdict(lambda: deque(maxlen=20))
-
-    class _BadLog:
-        def write(self, _s):
-            raise OSError("disk full")
-
-        def flush(self):
-            raise OSError("disk full")
-
-    class _BadServer:
-        def process_line(self, _line, _bot):
-            raise RuntimeError("boom")
-
-    mgr.server = _BadServer()
+    mgr.server = SimpleNamespace(
+        process_line=lambda _line, _bot: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    bad_log = SimpleNamespace(
+        write=lambda _s: (_ for _ in ()).throw(OSError("disk full")),
+        flush=lambda: (_ for _ in ()).throw(OSError("disk full")),
+    )
 
     async def _run_reader():
         reader = asyncio.StreamReader()
         reader.feed_data(b"hello world\nsecond line\n")
         reader.feed_eof()
-        await mgr._read_stream(reader, "test_bot", _BadLog())
+        await mgr._read_stream(reader, "test_bot", bad_log)
 
     asyncio.run(_run_reader())
     assert list(mgr.recent_lines["test_bot"]) == ["hello world", "second line"]
@@ -3988,21 +3961,20 @@ def test_batch31_intelligence_macro_gemini_parabolic_and_verify_tools_hardening(
         encoding="utf-8",
     )
     captured_fg = {}
-
-    class _FakeAdvisor:
-        def review(self, *, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None):
-            captured_fg["snap"] = fear_greed
-            return SimpleNamespace(
+    ma = MacroAnalyzer(cache_dir=str(cache_dir))
+    ma.shadow_notify = False
+    ma.gemini_advisor = SimpleNamespace(  # type: ignore[assignment]
+        review=lambda *, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None: (
+            captured_fg.update({"snap": fear_greed})
+            or SimpleNamespace(
                 market_bias="NEUTRAL",
                 risk_level="MODERATE",
                 recommended_action="HOLD",
                 summary="ok",
                 ts=1700000100.0,
             )
-
-    ma = MacroAnalyzer(cache_dir=str(cache_dir))
-    ma.shadow_notify = False
-    ma.gemini_advisor = _FakeAdvisor()  # type: ignore[assignment]
+        )
+    )
     assert ma.assess_market_advisor(force=True, now=1700000100.0) is True
     assert captured_fg["snap"] is not None
     assert captured_fg["snap"].is_extreme_fear is False
