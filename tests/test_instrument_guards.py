@@ -702,16 +702,16 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertTrue(p.placed[0][4]["force"])
 
     def test_trend_deferral_behaviors(self):
+        class _Deferred:
+            @staticmethod
+            def should_wait(_side, _symbol):
+                return True
+
+            @staticmethod
+            def wait_for_favorable_entry(*_args, **_kwargs):
+                raise AssertionError("Instrument.place must not enter a wait loop")
+
         with self.subTest("returns_immediately_without_wait_loop"):
-            class _Deferred:
-                @staticmethod
-                def should_wait(_side, _symbol):
-                    return True
-
-                @staticmethod
-                def wait_for_favorable_entry(*_args, **_kwargs):
-                    raise AssertionError("Instrument.place must not enter a wait loop")
-
             p = _FakeProvider(price=100.0)
             p.seed_trade("BUY", age_sec=400.0, price=100.0)
             with patch("cacheManager.get_short_trend_manager", return_value=_Deferred()):
@@ -724,13 +724,8 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("auto_quantity_enters_outbox_with_numeric_qty"):
             open(oq.QUEUE_FILE, 'w').close()
-            class _Deferred2:
-                @staticmethod
-                def should_wait(_side, _symbol):
-                    return True
-
             p = _FakeProvider(price=100.0)
-            with patch("cacheManager.get_short_trend_manager", return_value=_Deferred2()):
+            with patch("cacheManager.get_short_trend_manager", return_value=_Deferred()):
                 order = self._inst(p).place("BUY", 100.0, None, smart=False)
 
             self.assertIsNone(order)

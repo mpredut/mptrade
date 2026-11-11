@@ -414,6 +414,44 @@ class MockHttpResponse:
         return False
 
 
+class DummyTrailingAdapter:
+    """Minimal ``TrailingCore`` adapter stub with configurable ``assets_list``, ``free``, ``px``, and ``trend_val``."""
+
+    def __init__(
+        self,
+        *,
+        assets_list=None,
+        free=1.0,
+        px=100.0,
+        trend_val: float = 0.0,
+    ):
+        self._assets = list(assets_list) if assets_list is not None else [("BTC", "BTC", "BTCUSDC", 15.0)]
+        self.free = free
+        self.px = px
+        self.trend_val = trend_val
+
+    def assets(self):
+        return list(self._assets)
+
+    def begin_tick(self):
+        return True
+
+    def free_qty(self, _asset):
+        return self.free
+
+    def total_qty(self, _asset):
+        return self.free
+
+    def price(self, _pair):
+        return self.px
+
+    def trend(self, _pair):
+        return self.trend_val
+
+    def log_hold(self, *_a):
+        pass
+
+
 class _TempDirPath(str):
     """Temporary directory path string that also exposes ``.name`` and ``.cleanup()`` like ``TemporaryDirectory``."""
 

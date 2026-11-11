@@ -13,6 +13,7 @@ import json
 from binance_api import bapi_ws_bridge
 from providers.order_ohlc_utils import extract_remaining_qty
 from providers.market_api import api
+from tests.conftest import DummyTrailingAdapter
 
 
 def fill(i, side="BUY", qty=1, price=100, **values):
@@ -384,33 +385,7 @@ def test_cross_venue_and_ws_extract_normalization_edges():
 def test_trailing_core_partial_exit_Transition_to_flat_arms_rebuy(tmp_path):
     from trailing_core import TrailingCore
 
-    class DummyAdapter:
-        def __init__(self):
-            self.free = 0.0
-            self.px = 50.0
-
-        def assets(self):
-            return [("HYPE", "HYPE", "HYPEUSD", 18.0)]
-
-        def begin_tick(self):
-            return True
-
-        def free_qty(self, _asset):
-            return self.free
-
-        def total_qty(self, _asset):
-            return self.free
-
-        def price(self, _pair):
-            return self.px
-
-        def trend(self, _pair):
-            return 0.0
-
-        def log_hold(self, *_a):
-            pass
-
-    adapter = DummyAdapter()
+    adapter = DummyTrailingAdapter(assets_list=[("HYPE", "HYPE", "HYPEUSD", 18.0)], free=0.0, px=50.0)
     state_file = str(tmp_path / "trailing_state.json")
     core = TrailingCore(
         adapter,

@@ -21,8 +21,33 @@ make_hyperliquid_replay_adapter = hl_replay.make_hyperliquid_replay_adapter
 run_replay = hl_replay.run_replay
 
 from kraken.backtest_trail import simulate_trail  # noqa: E402
+from tests.conftest import MockHttpResponse  # noqa: E402
 import time
 import unittest
+
+
+class _FakeReconcileClient:
+    def __init__(self, *, pos=(1.5, 100.0), orders=None):
+        self.pos = pos
+        self.orders = [{"oid": "123"}] if orders is None else list(orders)
+        self.pos_fail = False
+        self.orders_fail = False
+
+    def sz_decimals(self, coin):
+        return 2
+
+    def position_strict(self, coin):
+        if self.pos_fail:
+            raise RuntimeError("transient HTTP timeout")
+        return self.pos
+
+    def open_orders_strict(self, coin):
+        if self.orders_fail:
+            raise RuntimeError("transient open_orders failure")
+        return self.orders
+
+    def cancel(self, coin, oid):
+        return True
 
 
 def test_hyperliquid_simulate_stop_loss_long():
@@ -529,26 +554,7 @@ def test_hyperliquid_replay_ttl_not_premature_on_bar_zero():
 def test_hyperliquid_reconcile_real_protects_against_transient_errors(tmp_path):
     Strategy = hl_replay.Strategy
     StratParams = hl_replay.StratParams
-
-    class FakeClient:
-        def __init__(self):
-            self.pos_fail = False
-            self.orders_fail = False
-
-        def sz_decimals(self, coin):
-            return 2
-
-        def position_strict(self, coin):
-            if self.pos_fail:
-                raise RuntimeError("transient HTTP timeout")
-            return (1.5, 100.0)
-
-        def open_orders_strict(self, coin):
-            if self.orders_fail:
-                raise RuntimeError("transient open_orders failure")
-            return [{"oid": "123"}]
-
-    client = FakeClient()
+    client = _FakeReconcileClient()
     strat = Strategy(
         client=client,
         coin="HYPE",
@@ -600,25 +606,7 @@ def test_hyperliquid_reconcile_paper_stop_fills_on_continued_crash():
 def test_hyperliquid_reconcile_real_marginal_dca_fill_price():
     Strategy = hl_replay.Strategy
     StratParams = hl_replay.StratParams
-
-    class FakeClient:
-        def __init__(self):
-            self.pos = (15.0, 1490.0 / 15.0)
-            self.orders = []
-
-        def sz_decimals(self, coin):
-            return 2
-
-        def position_strict(self, coin):
-            return self.pos
-
-        def open_orders_strict(self, coin):
-            return self.orders
-
-        def cancel(self, coin, oid):
-            return True
-
-    client = FakeClient()
+    client = _FakeReconcileClient(pos=(15.0, 1490.0 / 15.0), orders=[])
     strat = Strategy(
         client=client,
         coin="HYPE",
@@ -813,11 +801,8 @@ def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
         {"t": 1700000000000, "T": 1700003599999, "s": "HYPE", "i": "1h",
          "o": "20.0", "c": "21.0", "h": "22.0", "l": "19.5", "v": "100.0", "n": 50},
     ]
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = json.dumps(fake_candles).encode("utf-8")
-    mock_resp.__enter__.return_value = mock_resp
 
-    with patch("urllib.request.urlopen", return_value=mock_resp):
+    with patch("urllib.request.urlopen", return_value=MockHttpResponse(fake_candles)):
         records = _hl_md.fetch_ohlc_candles("HYPE", "1H", drop_incomplete=False)
         assert len(records) == 1
         assert records[0]["close"] == 21.0
@@ -826,18 +811,8 @@ def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
     Strategy = hl_replay.Strategy
     StratParams = hl_replay.StratParams
 
-    class ZeroPosClient:
-        def sz_decimals(self, coin):
-            return 2
-
-        def position_strict(self, coin):
-            return (0.0, 0.0)
-
-        def open_orders_strict(self, coin):
-            return []
-
     strat = Strategy(
-        client=ZeroPosClient(),
+        client=_FakeReconcileClient(pos=(0.0, 0.0), orders=[]),
         coin="HYPE",
         params=StratParams(direction="long"),
         dry_run=False,

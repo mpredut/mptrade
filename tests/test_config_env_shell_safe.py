@@ -26,6 +26,7 @@ from intelligence.sentiment.collectors.market_breadth_collector import MarketBre
 from market_monitor import pricefetcher as pf
 from market_monitor.pricechecker import PriceChecker
 from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairPolicy
+from tests.conftest import DummyTrailingAdapter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -724,21 +725,8 @@ def test_spot_engine_trailing_core_and_pricewindow_hardening():
     assert len(strat._shadow_prices) == 0
 
     # 2. trailing_core handles free_qty=None/NaN and corrupted rebuy low/qty safely
-    class _DummyAdapter:
-        def free_qty(self, _asset):
-            return None
-
-        def price(self, _pair):
-            return 100.0
-
-        def trend(self, _pair):
-            return 0.0
-
-        def log_hold(self, *_a):
-            pass
-
     core = tc.TrailingCore(
-        _DummyAdapter(),
+        DummyTrailingAdapter(free=None, px=100.0),
         log=lambda _m: None,
         enabled=False,
         state_file="dummy.json",

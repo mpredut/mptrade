@@ -11,7 +11,7 @@ from binance_api.trailing_stop import TrailingStop  # noqa: E402
 from trailing_core import TrailingCore, should_sell
 import binance_api.trailing_stop as binance_ts_mod  # noqa: E402
 from providers.strategy_executor import OrderStatus  # noqa: E402
-from tests.conftest import TrailingTestBase  # noqa: E402
+from tests.conftest import DummyTrailingAdapter, TrailingTestBase  # noqa: E402
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 import json
@@ -1043,18 +1043,8 @@ def test_trailingcore__process_ignores_invalid_trail_bool_nan_iter58_s2():
 def test_trailingcore_sanitizes_sets_normalizes_constructor_params_and_skips_iter65_s1(tmp_path):
     """[ITER65 #1] TrailingCore sanitizes sets, normalizes constructor params, and skips invalid string/overflow prices."""
     # 1. TrailingCore sanitizes sets, normalizes constructor params, and skips invalid string/overflow prices
-    class _DummyAdapter:
-        def assets(self):
-            return [("BTC", "BTC", "BTCUSDC", 15.0)]
-        def begin_tick(self):
-            return True
-        def free_qty(self, asset):
-            return 1.0
-        def price(self, pair):
-            return "not-a-number"
-
     tc = TrailingCore(
-        _DummyAdapter(),
+        DummyTrailingAdapter(px="not-a-number"),
         log=lambda _m: None,
         enabled=False,
         state_file=str(tmp_path / "trail_state.json"),
@@ -1158,27 +1148,8 @@ def test_trailingcore_string_false_in_st_is_flat_does_not_iter131_s1(tmp_path):
     with open(state_file, "w", encoding="utf-8") as fh:
         json.dump([1, 2, 3], fh)
 
-    class _DummyAdapter:
-        def assets(self):
-            return [("BTCUSDC", "BTC", "BTCUSDC", 15.0)]
-
-        def begin_tick(self):
-            return True
-
-        def free_qty(self, _asset):
-            return 1.0
-
-        def price(self, _pair):
-            return 120.0
-
-        def trend(self, _pair):
-            return 0.0
-
-        def log_hold(self, *a):
-            pass
-
     core_paper = TrailingCore(
-        _DummyAdapter(),
+        DummyTrailingAdapter(assets_list=[("BTCUSDC", "BTC", "BTCUSDC", 15.0)], free=1.0, px=120.0),
         log=lambda _m: None,
         enabled=False,
         state_file=state_file,
