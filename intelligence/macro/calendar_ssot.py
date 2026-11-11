@@ -42,8 +42,7 @@ class GlobalSessionContext:
     trader_flow_profile: str
     llm_session_guidance: str
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+    to_dict = asdict
 
 
 # Declarative intraday weekday session windows in EET minutes:

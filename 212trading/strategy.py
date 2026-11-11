@@ -378,8 +378,7 @@ class Strategy(BaseSpotMixin):
         if pending.get("amount") is not None:
             order["amount"] = pending["amount"]
         self.s["orders"].append(order)
-        self.s["pending_submit"] = None
-        self._save()
+        self._persist_pending_submit(None)
         return order
 
     def _submit_pending_order(self, pending: dict):

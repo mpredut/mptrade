@@ -27,6 +27,7 @@ from market_monitor.pricefetcher import create_cachePriceAll
 from market_monitor.new_coins_discovery import NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
 from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url
 from botcore import (
+    add_store_true_cli_args,
     load_env_stack,
     optional_env,
     required_bool_env,
@@ -220,7 +221,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 def main():
     ap = argparse.ArgumentParser(description="Alert monitor: new coins plus price thresholds (config-driven).")
     ap.add_argument("--config", default=os.path.join(_HERE, "price_watcher.conf"))
-    ap.add_argument("--check", action="store_true", help="validate the config plus the imports and exit (it does not start the monitor)")
+    add_store_true_cli_args(
+        ap,
+        ("--check", "validate the config plus the imports and exit (it does not start the monitor)"),
+    )
     args = ap.parse_args()
 
     cfg = load_config(args.config)

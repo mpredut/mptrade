@@ -61,8 +61,7 @@ class WhalePositioningSnapshot:
     cvd_1h_usd: Optional[float] = None
     cvd_4h_usd: Optional[float] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+    to_dict = asdict
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> WhalePositioningSnapshot:

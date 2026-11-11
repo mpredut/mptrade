@@ -29,6 +29,7 @@ if _ROOT not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
+    add_store_true_cli_args,
     bool_env,
     gaussian_weights_from_idx,
     is_live_network_backfill_enabled,
@@ -1038,7 +1039,7 @@ def main() -> int:
     ap.add_argument("--window", type=int, default=24, help="hours per window")
     ap.add_argument("--step", type=int, default=8)
     ap.add_argument("--T", type=float, default=14.0, help="prior Gaussian horizon (days)")
-    ap.add_argument("--estimate", action="store_true", help="only estimate T and exit")
+    add_store_true_cli_args(ap, ("--estimate", "only estimate T and exit"))
     args = ap.parse_args()
 
     if args.estimate:

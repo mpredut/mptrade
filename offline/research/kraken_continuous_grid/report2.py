@@ -45,10 +45,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         ):
             sel_by_asset[r["asset"]] = r
     sel = list(sel_by_asset.values())
-    L.append("## Walk-forward selection (365-day lookback, 90-day out-of-sample steps)\n")
-    L.append("Each step ranks the candidate set by trailing return/max(DD,5) and runs the winner on the "
-             "next 90 days. `sum` = sum of out-of-sample 90-day returns (% of budget); `beat live` = "
-             "steps where the pick beat `live`.\n")
+    L.extend([
+        "## Walk-forward selection (365-day lookback, 90-day out-of-sample steps)\n",
+        "Each step ranks the candidate set by trailing return/max(DD,5) and runs the winner on the "
+        "next 90 days. `sum` = sum of out-of-sample 90-day returns (% of budget); `beat live` = "
+        "steps where the pick beat `live`.\n",
+    ])
     cands = list(
         dict.fromkeys(
             c
@@ -59,8 +61,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             if isinstance(c, str) and c.strip()
         )
     )
-    L.append("| asset | steps | selector sum | live sum | best static (sum) | selector rank | beat live | picks |")
-    L.append("|---|---|---|---|---|---|---|---|")
+    _append_markdown_table_header(
+        L,
+        None,
+        "| asset | steps | selector sum | live sum | best static (sum) | selector rank | beat live | picks |",
+        8,
+    )
     tot = defaultdict(float)
     for r in sorted(sel, key=lambda r: str(r.get("asset", ""))):
         s = [x for x in (r.get("steps") or []) if isinstance(x, dict)]

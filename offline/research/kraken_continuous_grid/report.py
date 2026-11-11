@@ -255,14 +255,15 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             "calmar_med": st.median(f / max(d, 1.0) for f, d in zip(full, dd)) if full else 0.0,
         })
 
-    L = []
-    L.append("# Overnight Kraken spot-DCA grid\n")
-    L.append(f"{len(rows)} runs, {len(assets)} assets ({', '.join(assets)}), {len(summary)} complete configs, "
-             f"{len(errors)} errors. 4h bars, fee 0.26%/leg, returns as % of the 3900 USD cycle budget.\n")
-    L.append("Views: **full** = one continuous run over the whole history (state carries across cycles, "
-             "as live); **year** = continuous per calendar year; **w90/w30** = fresh-state rolling "
-             "windows of 90/30 days, step 30 days.\n")
-    L.append("`beat_full`/`beat_w90` = on how many assets the config beats `live`.\n")
+    L = [
+        "# Overnight Kraken spot-DCA grid\n",
+        f"{len(rows)} runs, {len(assets)} assets ({', '.join(assets)}), {len(summary)} complete configs, "
+        f"{len(errors)} errors. 4h bars, fee 0.26%/leg, returns as % of the 3900 USD cycle budget.\n",
+        "Views: **full** = one continuous run over the whole history (state carries across cycles, "
+        "as live); **year** = continuous per calendar year; **w90/w30** = fresh-state rolling "
+        "windows of 90/30 days, step 30 days.\n",
+        "`beat_full`/`beat_w90` = on how many assets the config beats `live`.\n",
+    ]
 
     def table(items, title):
         _append_markdown_table_header(
@@ -289,11 +290,14 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     table([s for s in summary if s["cfg"] in ("live", "old_live_pre0923") or s["cfg"].startswith("abl_")],
           "23 Sep promotion: live vs pre-promotion vs one-change-reverted ablations")
 
-    L.append("\n## Continuous full-run return % per asset (DD % in brackets)\n")
     key_cfgs = [c for c in ("live", "old_live_pre0923", "ov350_t6", "ov650_t8", "ov1000_t8", "ov2000_t8",
                             "ov650_t8_sl12.5", "peak2.2", "reentry0", "sl0", "tp_classic") if c in by]
-    L.append("| asset | buy&hold % | " + " | ".join(key_cfgs) + " |")
-    L.append("|" + "---|" * (len(key_cfgs) + 2))
+    _append_markdown_table_header(
+        L,
+        "Continuous full-run return % per asset (DD % in brackets)",
+        "| asset | buy&hold % | " + " | ".join(key_cfgs) + " |",
+        len(key_cfgs) + 2,
+    )
     for a in assets:
         bh_val = None
         for cfg_name in ("live", *cfgs):
@@ -314,9 +318,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 cells.append("-")
         L.append(f"| {a} | {bh:+.0f} | " + " | ".join(cells) + " |")
 
-    L.append("\n## Per-year continuous return %, live vs ov650_t8\n")
-    L.append("| asset | year | B&H % | live | ov650_t8 | old_live |")
-    L.append("|---|---|---|---|---|---|")
+    _append_markdown_table_header(
+        L,
+        "Per-year continuous return %, live vs ov650_t8",
+        "| asset | year | B&H % | live | ov650_t8 | old_live |",
+        6,
+    )
     for a in assets:
         live_years = by.get("live", {}).get(a, {}).get("year")
         if not isinstance(live_years, dict):

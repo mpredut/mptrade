@@ -40,8 +40,7 @@ class DerivativesTelemetry:
     perp_spot_basis_bps: float = 0.0
     funding_annualized_pct: float = 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+    to_dict = asdict
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> DerivativesTelemetry:

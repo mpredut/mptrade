@@ -57,8 +57,7 @@ class OrderbookSnapshot:
     depth_1pct_bid_usd: float = 0.0
     depth_1pct_ask_usd: float = 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+    to_dict = asdict
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> OrderbookSnapshot:

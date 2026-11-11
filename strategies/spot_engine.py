@@ -487,8 +487,7 @@ class Strategy(BaseSpotMixin):
             return
         if not any(clean_order_id(order.get("txid")) == order_id for order in self.s["orders"]):
             self.s["orders"].append(self._order_from_pending(pending))
-        self.s["pending_intent"] = None
-        self._save()
+        self._persist_pending_state_slot("pending_intent", None)
 
     # -- Helpers ---------------------------------------------------------------
     def _dust_safe_qty(self, qty: float) -> float:

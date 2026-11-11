@@ -26,6 +26,7 @@ from botcore import parse_symbol_list, safe_float, safe_int, safe_nonneg_float, 
 from instrument_registry import symbols_for
 from state_io import atomic_write_json
 from offline.research.chop_weight_backtest import (
+    _build_kalman_and_mean_rev_triggers,
     _clean_sorted_price_samples,
     _downsample_price_series,
     _req_pos_num,
@@ -35,8 +36,6 @@ from offline.research.chop_weight_backtest import (
     _validate_backtest_step_balance_fee,
 )
 from providers.replay_provider import load_price_series
-from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
-from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
@@ -98,8 +97,7 @@ def _precompute_intelligence_tape(
     """Precompute mode-independent indicators, triggers, and rolling window metrics once per bar."""
     step_seconds, step_sec_f = _req_pos_step_seconds(step_seconds)
     parabolic_surge_pct = _req_pos_num(parabolic_surge_pct, "parabolic_surge_pct")
-    kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_sec_f * 3.0))
-    mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bb_period=20)
+    kalman, mean_rev_trigger = _build_kalman_and_mean_rev_triggers(step_sec_f, min_gap_reset_sec=900.0)
     parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
 
     rolling_prices: List[float] = []
@@ -107,8 +105,7 @@ def _precompute_intelligence_tape(
     rolling_history: List[Tuple[float, float]] = []
     max_roll_bars = max(300, safe_int(round(18000.0 / step_sec_f), 60) + 4)
     max_asof_gap_sec = max(step_sec_f * 2.5, 900.0)
-    current_trend = "FLAT"
-    trend_start_ts: Optional[float] = None
+    current_trend, trend_start_ts = "FLAT", None
     tape: List[dict] = []
 
     def _price_asof(target_ts: float) -> float:

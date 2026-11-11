@@ -202,6 +202,18 @@ def detect_regime_slope(prices: np.ndarray, mk_alpha: float = 0.05) -> Tuple[str
     return "CHOP", norm_slope
 
 
+def _build_kalman_and_mean_rev_triggers(
+    step_sec_f: float,
+    *,
+    min_gap_reset_sec: float = 900.0,
+) -> Tuple[KalmanTrendTrigger, MeanReversionTrigger]:
+    """Instantiate Kalman trend and RSI/Bollinger mean-reversion triggers for a bar step."""
+    return (
+        KalmanTrendTrigger(gap_reset_sec=max(min_gap_reset_sec, step_sec_f * 3.0)),
+        MeanReversionTrigger(rsi_period=14, bb_period=20),
+    )
+
+
 def _precompute_chop_bar_tape(
     symbol: str,
     sampled: List[Tuple[float, float]],
@@ -213,8 +225,7 @@ def _precompute_chop_bar_tape(
     if not sampled:
         return []
 
-    kalman = KalmanTrendTrigger(gap_reset_sec=max(1800.0, step_sec_f * 3.0))
-    mean_rev = MeanReversionTrigger(rsi_period=14, bb_period=20)
+    kalman, mean_rev = _build_kalman_and_mean_rev_triggers(step_sec_f, min_gap_reset_sec=1800.0)
     btc_ts: List[float] = []
     btc_px: List[float] = []
     if btc_sampled:
@@ -232,10 +243,8 @@ def _precompute_chop_bar_tape(
     btc_rolling: List[float] = []
     btc_rolling_ts: List[float] = []
     last_btc_idx = -1
-    current_trend = "CHOP"
-    trend_start_ts: Optional[float] = None
-    btc_regime = "CHOP"
-    btc_trend_start_ts: Optional[float] = None
+    current_trend, trend_start_ts = "CHOP", None
+    btc_regime, btc_trend_start_ts = "CHOP", None
     last_regime_check_ts = 0.0
     tape: List[Dict[str, Any]] = []
 

@@ -29,6 +29,7 @@ from strategies.replay_metrics import (
     run_cli_single_or_sweep_backtest,
 )
 from botcore import (
+    add_store_true_cli_args,
     exact_nonneg_int,
     safe_float,
     safe_nonneg_float,
@@ -149,8 +150,9 @@ def main() -> int:
             "tp": 1.9, "maxdca": 10, "budget": 1000, "fee": 0.25, "sl": 10.0,
         },
     )
-    ap.add_argument("--fast", action="store_true",
-                    help="deprecated; faithful live engine rp.run_replay is always used")
+    add_store_true_cli_args(
+        ap, ("--fast", "deprecated; faithful live engine rp.run_replay is always used")
+    )
     args = ap.parse_args()
 
     if args.interval <= 0:
