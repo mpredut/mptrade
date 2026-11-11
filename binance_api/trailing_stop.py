@@ -56,7 +56,7 @@ from trailing_core import (  # noqa: E402
     load_trailing_common_env,
     parse_trailing_cli_args,
 )
-from botcore import (load_dotenv, log, required_bool_env, required_float_env,
+from botcore import (clean_upper_token, load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, safe_float, safe_nonneg_float, safe_pos_float)  # noqa: E402
 from cachepaths import resolve_venue_trailing_state_path  # noqa: E402
 
@@ -174,9 +174,9 @@ class TrailingStop(TrailingAdapterBase):
         Cache only the average, never its price-dependent verdict. Refresh after
         UTC midnight; missing/stale/malformed history or price blocks auto re-buy.
         """
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        symbol = clean_upper_token(symbol)
+        if symbol is None:
             return False
-        symbol = symbol.strip().upper()
         now = time.time()
         day = int(now // 86400)
         cached = self._long_trend_cache.get(symbol)

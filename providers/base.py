@@ -18,11 +18,13 @@ from botcore import (
     _parse_bool_flag,
     async_interruptible_sleep,
     bool_env,
+    clean_upper_token,
     exact_nonneg_int,
     is_shared_disk_cache_enabled,
     load_env_file_defaults,
     load_local_module,
     require_nonneg_float,
+    require_pos_float,
     resolve_patched_attr,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -952,9 +954,9 @@ class MarketDataProvider(ABC):
     @staticmethod
     def resolve_venue_instrument_spec(venue: Any, symbol: str) -> Any:
         """Resolve ``InstrumentSpec`` for ``symbol`` on ``venue`` from ``instrument_registry``."""
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        sym_u = clean_upper_token(symbol)
+        if sym_u is None:
             return None
-        sym_u = symbol.strip().upper()
         sym_clean = clean_symbol_key(sym_u)
         sym_canon = canonical_symbol_key(sym_u)
         try:
@@ -974,16 +976,14 @@ class MarketDataProvider(ABC):
 
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Return inventory-reconciled acquisition cost from fresh SSOT fills, or None when unknown."""
-        since_val = safe_pos_float(since_s, default=None)
-        if since_val is None:
-            raise ValueError("since_s must be finite and positive")
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        since_val = require_pos_float(since_s, "since_s")
+        sym_u = clean_upper_token(symbol)
+        if sym_u is None:
             return None
         fills_fn = getattr(self, "_fills_from_cache", None)
         rows = fills_fn(symbol) if callable(fills_fn) else None
         if rows is None:
             return None
-        sym_u = symbol.strip().upper()
         spec = self.resolve_venue_instrument_spec(getattr(self, "name", ""), sym_u)
         base_asset = spec.base if spec is not None else ""
         quote_asset = spec.quote if spec is not None else ""

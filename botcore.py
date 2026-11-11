@@ -196,6 +196,13 @@ def require_int(
     return parsed
 
 
+def clean_upper_token(val: object) -> str | None:
+    """Return ``val.strip().upper()`` when ``val`` is a non-empty string, else ``None``."""
+    if not isinstance(val, str) or not (s := val.strip()):
+        return None
+    return s.upper()
+
+
 def obj_attr(obj: object, key: str, default: object = None) -> object:
     """Extract ``key`` uniformly from either a ``dict`` or an object attribute."""
     if obj is None or isinstance(obj, (str, bytes, bytearray)):

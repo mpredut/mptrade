@@ -362,28 +362,24 @@ class Strategy(BaseSpotMixin):
                  observe_only: bool = False):
         self.client = client
         self.pair = pair
-        self.p = params
-        self.ccy = params.currency
-        self.dry_run = _parse_bool_flag(dry_run, True)
-        self.observe_only = _parse_bool_flag(observe_only, False)
-        self.replay_mode = _parse_bool_flag(replay_mode, False)
-        self.desktop = _parse_bool_flag(desktop, False)
         self._notifier = notifier
         self.notification_source = notification_source
         self.venue_label = venue_label
         self.fee_note = fee_note
         self._regime_service = regime_service or MarketRegimeService()
         self._regime_bar_context = None
-        self.state_file = state_path_for(pair) if state_dir is None else state_path_for(pair, state_dir)
-        self._state_write_failed = False
-        self._state_file_mtime: float = 0.0
-        raw_state = initial_state if isinstance(initial_state, dict) else self._load()
-        self.s = self._sanitize_state_dict(raw_state)
-        self.exit_manager: PositionExitManager | None = (
-            self._init_exit_manager() if (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled) else None
+        resolved_state_file = (
+            state_path_for(pair) if state_dir is None else state_path_for(pair, state_dir)
         )
-        self._paper_seq = 0
-        self._shadow_prices = deque(maxlen=90)
+        self._init_common_spot_runtime_state(
+            params,
+            state_file=resolved_state_file,
+            initial_state=initial_state,
+            dry_run=dry_run,
+            desktop=desktop,
+            replay_mode=replay_mode,
+            observe_only=observe_only,
+        )
         self._surge_replay_closes = (
             deque(maxlen=max(1, round(self.p.surge_window_hours / (max(1.0, safe_pos_float(self.p.trend_interval, 1.0)) / 60.0))) + 1)
             if self.replay_mode and params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0

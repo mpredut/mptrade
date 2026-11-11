@@ -8,6 +8,7 @@ import signal
 from botcore import (
     _parse_bool_flag,
     clean_order_id,
+    clean_upper_token,
     load_dotenv,
     normalize_scalar_order_id,
     required_float_env,
@@ -65,9 +66,9 @@ _normalize_side = sym._normalize_ordertype
 
 def update_price(symbol):
     """Refresh one REST quote without making an older value look fresh."""
-    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+    symbol = clean_upper_token(symbol)
+    if symbol is None:
         return None
-    symbol = symbol.strip().upper()
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
         raw_px = ticker["price"] if isinstance(ticker, dict) else None
@@ -85,9 +86,9 @@ def update_price(symbol):
 
 def get_current_price(symbol):
     """Return a bounded-age REST quote, failing closed after refresh failure."""
-    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+    symbol = clean_upper_token(symbol)
+    if symbol is None:
         return None
-    symbol = symbol.strip().upper()
     now = time.time()
     cached_at_f = safe_float(cprice_time.get(symbol), default=None)
     cached_f = safe_pos_float(cprice.get(symbol), default=None)
@@ -103,10 +104,11 @@ def get_current_price(symbol):
 
 def get_free_balance(asset: str):
     try:
-        if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
+        asset_u = clean_upper_token(asset)
+        if asset_u is None:
             return None
         # Return the free Binance balance for an asset.
-        asset_info = client.get_asset_balance(asset=asset.strip().upper())
+        asset_info = client.get_asset_balance(asset=asset_u)
         raw_free = (asset_info or {}).get("free", 0)
         if isinstance(raw_free, bool):
             raise TypeError(f"invalid boolean free balance: {raw_free!r}")

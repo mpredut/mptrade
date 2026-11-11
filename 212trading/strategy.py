@@ -301,12 +301,6 @@ class Strategy(BaseSpotMixin):
         self.client = client
         self.ticker = ticker
         self.yahoo_sym = params.yahoo_sym or canonical_base_asset(ticker)
-        self.p = params
-        self.dry_run = _parse_bool_flag(dry_run, True)
-        self.observe_only = _parse_bool_flag(observe_only, False)
-        self.desktop = desktop
-        self.ccy = params.currency
-        self.replay_mode = replay_mode or (clock is not None)
         self._clock = clock or time.time
         self._trend_slope_provider = trend_slope_provider or trend_slope_pct
         self.execution_audit = execution_audit or ExecutionAudit()
@@ -317,14 +311,18 @@ class Strategy(BaseSpotMixin):
         self.fx_to_usd = (
             self._fx_to_usd(params.currency) if fx_to_usd is None else (safe_pos_float(fx_to_usd) or 1.0)
         )
-        self.state_file = state_path_for(ticker)
-        self._state_write_failed = False
-        self.s = _sanitize_t212_state(initial_state if initial_state is not None else self._load())
-        self.exit_manager: PositionExitManager | None = (
-            self._init_exit_manager() if (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled) else None
+        self._init_common_spot_runtime_state(
+            params,
+            state_file=state_path_for(ticker),
+            initial_state=initial_state,
+            dry_run=dry_run,
+            desktop=desktop,
+            replay_mode=replay_mode or (clock is not None),
+            observe_only=observe_only,
+            require_dict_initial_state=False,
         )
-        self._shadow_prices: deque[tuple[float, float]] = deque(maxlen=90)
-        self._paper_seq = 0
+        self.desktop = desktop
+        self.replay_mode = replay_mode or (clock is not None)
 
     # -- Currency & Helpers ----------------------------------------------------
     def _fx_to_usd(self, currency: str) -> float:

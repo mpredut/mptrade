@@ -8,7 +8,7 @@ coordination, MDHTP take-profit configuration, and ReentrySnapshot evaluation ac
 
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import math
 import os
 import signal
@@ -529,6 +529,51 @@ class BaseSpotMixin:
     def set_simulated_time(self, ts: float | None) -> None:
         """Explicitly set simulated timestamp for replay and backtesting drivers."""
         self._simulated_ts = normalize_epoch_sec(ts, None, allow_zero=True)
+
+    def _init_common_spot_runtime_state(
+        self,
+        params: Any,
+        *,
+        state_file: str,
+        initial_state: dict | None = None,
+        dry_run: bool = True,
+        desktop: bool = False,
+        replay_mode: bool = False,
+        observe_only: bool = False,
+        require_dict_initial_state: bool = True,
+        coerce_flags: bool = True,
+        init_exit_manager: bool = True,
+        init_shadow_prices: bool = True,
+    ) -> None:
+        self.p = params
+        self.ccy = params.currency
+        self.dry_run = _parse_bool_flag(dry_run, True) if coerce_flags else dry_run
+        self.observe_only = _parse_bool_flag(observe_only, False)
+        self.replay_mode = _parse_bool_flag(replay_mode, False) if coerce_flags else replay_mode
+        self.desktop = _parse_bool_flag(desktop, False) if coerce_flags else desktop
+        self.state_file = state_file
+        self._state_write_failed = False
+        self._state_file_mtime: float = 0.0
+        has_init_state = (
+            isinstance(initial_state, dict)
+            if require_dict_initial_state
+            else (initial_state is not None)
+        )
+        if has_init_state:
+            self.s = self._sanitize_state_dict(initial_state)
+        elif self.replay_mode and not init_exit_manager:
+            self.s = self._mod_global("_new_state")()
+        else:
+            self.s = self._load()
+        if init_exit_manager:
+            self.exit_manager: PositionExitManager | None = (
+                self._init_exit_manager()
+                if (getattr(self.p, "sl_mhdsl_enabled", False) or getattr(self.p, "tp_mdhtp_enabled", False))
+                else None
+            )
+        self._paper_seq = 0
+        if init_shadow_prices:
+            self._shadow_prices = deque(maxlen=90)
 
     def _next_paper_order_id(self) -> str:
         self._paper_seq += 1

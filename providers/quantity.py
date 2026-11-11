@@ -13,6 +13,7 @@ from botcore import (
     clean_order_id_str,
     normalize_side,
     obj_attr,
+    require_pos_float,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -92,9 +93,7 @@ def compute_fills_cost_basis(
     validate_row_fn: Any = None,
 ) -> Optional[float]:
     """Compute inventory-reconciled acquisition cost (``remaining_average_cost``) from raw or normalized fill rows."""
-    since_val = safe_pos_float(since_s, default=None)
-    if since_val is None:
-        raise ValueError("since_s must be finite and positive")
+    since_val = require_pos_float(since_s, "since_s")
     if not isinstance(rows, (list, tuple)):
         return None
     now_ms = time.time() * 1000.0

@@ -299,34 +299,33 @@ class Strategy(BaseSpotMixin):
                  initial_state: dict | None = None, replay_mode: bool = False):
         self.client = client
         self.coin = coin
-        self.p = params
-        self.ccy = params.currency
-        self.dry_run = dry_run
-        self.desktop = desktop
         self.leverage = safe_pos_int(leverage, default=1)
-        self.replay_mode = replay_mode
         raw_dir = getattr(params, "direction", None)
         if isinstance(raw_dir, bool) or raw_dir is None or not str(raw_dir).strip():
             raise ValueError(f"Invalid Strategy direction: {raw_dir!r}")
         dir_norm = str(raw_dir).strip().lower()
         if dir_norm not in ("long", "short"):
             raise ValueError(f"Invalid Strategy direction: {params.direction!r}")
-        self.p.direction = dir_norm
-        if hasattr(self.p, "_validate_numeric_bounds"):
-            self.p._validate_numeric_bounds(dir_norm)
+        params.direction = dir_norm
+        if hasattr(params, "_validate_numeric_bounds"):
+            params._validate_numeric_bounds(dir_norm)
         self.sign = 1 if dir_norm == "long" else -1
         self.open_side = "buy" if self.sign > 0 else "sell"     # open or increase the position
         self.close_side = "sell" if self.sign > 0 else "buy"    # reduce-only close
-        self.state_file = state_path_for(coin, dir_norm)
-        if initial_state is not None:
-            self.s = _sanitize_state(initial_state)
-        elif replay_mode:
-            self.s = _new_state()
-        else:
-            self.s = self._load()
+        self._init_common_spot_runtime_state(
+            params,
+            state_file=state_path_for(coin, dir_norm),
+            initial_state=initial_state,
+            dry_run=dry_run,
+            desktop=desktop,
+            replay_mode=replay_mode,
+            require_dict_initial_state=False,
+            coerce_flags=False,
+            init_exit_manager=False,
+            init_shadow_prices=False,
+        )
         if replay_mode:
             self._save = lambda: None
-        self._paper_seq = 0
         default_sz_dec = 4 if replay_mode else 2
         dec_i = safe_int(getattr(params, "sz_decimals", default_sz_dec), default=None)
         self.sz_dec = max(0, min(18, dec_i)) if dec_i is not None else default_sz_dec

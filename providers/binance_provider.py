@@ -7,6 +7,7 @@ import account_cache_health as health
 import botcore as cfg
 from botcore import (
     _parse_bool_flag,
+    clean_upper_token,
     exact_pos_int,
     require_pos_float,
     resolve_patched_attr,
@@ -223,9 +224,9 @@ class BinanceProvider(MarketDataProvider):
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Use current immutable fills, not order aggregates or a BUY-only average."""
         since_s = require_pos_float(since_s, "since_s")
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        symbol = clean_upper_token(symbol)
+        if symbol is None:
             return None
-        symbol = symbol.strip().upper()
         sym_canon = canonical_symbol_key(symbol)
         spec = self.resolve_venue_instrument_spec(self.name, symbol)
         if spec is None:
