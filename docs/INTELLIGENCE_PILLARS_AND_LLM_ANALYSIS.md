@@ -1,57 +1,57 @@
-# Analiza Arhitecturală a Pilonilor de Inteligență și Utilizarea LLM-ului în mptrade
+# Architectural Analysis of Intelligence Pillars and LLM Usage in mptrade
 
-**Data**: 07 Octombrie 2026  
-**Status**: Documentație oficială de producție  
-**Componente cheie**: `intelligence/globaltelemetry_collector.py`, `intelligence/macro_analyzer.py`, `qlimit_order_guard.py`, `external_order_guard.py`, `llm_order_guard.py`, `order_guard.py`, `guard_hierarchy.py`, `intelligence/`
+**Date**: October 07, 2026  
+**Status**: Official production documentation  
+**Key components**: `intelligence/globaltelemetry_collector.py`, `intelligence/macro_analyzer.py`, `qlimit_order_guard.py`, `external_order_guard.py`, `llm_order_guard.py`, `order_guard.py`, `guard_hierarchy.py`, `intelligence/`
 
 ---
 
-## 1. Sinteza Pilonilor de Inteligență
+## 1. Intelligence Pillars Overview
 
-Sistemul `mptrade` utilizează o arhitectură pe **4 Piloni de Inteligență**, decuplată pentru viteză maximă de execuție și protecție multi-strat:
+The `mptrade` system uses a **4-Pillar Intelligence Architecture**, decoupled for ultra-low execution latency and multi-layered protection:
 
 ```mermaid
 flowchart TD
-    subgraph P1["Pilonul 1: Baza Matematică & Statistică Internă (intelligence/internal/)"]
+    subgraph P1["Pillar 1: Internal Mathematical & Statistical Base (intelligence/internal/)"]
         direction TB
-        M1["Filtru Kalman 1D (Trend & Viteză)"]
+        M1["1D Kalman Filter (Trend & Velocity)"]
         M2["Gradient Inflection & Surge"]
         M3["Weibull Survival (Trend Exhaustion P90)"]
         M4["ParabolicSurgeGuard (Anti-FOMO)"]
-        M5["NoiseFloorGuard & Regim Volatilitate"]
-        note1["100% Matematică locală (0 ms, FĂRĂ LLM)"]
+        M5["NoiseFloorGuard & Volatility Regime"]
+        note1["100% Local mathematics (0 ms, NO LLM)"]
     end
 
-    subgraph P2["Pilonul 2: Microstructură & Flow Extern (intelligence/external/)"]
+    subgraph P2["Pillar 2: External Microstructure & Flow (intelligence/external/)"]
         direction TB
         OB["L2 Orderbook Depth & Imbalance (15s)"]
-        WALL["OrderbookWallGuard (Detectare Ziduri)"]
-        WHALE["Whale Positioning & Divergențe (60s)"]
-        DERIV["Funding Rates & Open Interest Perps (30s)"]
-        note2["Telemetrie baze externe (0 ms execuție, FĂRĂ LLM)"]
+        WALL["OrderbookWallGuard (Wall Detection)"]
+        WHALE["Whale Positioning & Divergences (60s)"]
+        DERIV["Funding Rates & Perp Open Interest (30s)"]
+        note2["External telemetry feeds (0 ms execution, NO LLM)"]
     end
 
-    subgraph P3["Pilonul 3: Sentiment & LLM Reasoning (intelligence/sentiment/)"]
+    subgraph P3["Pillar 3: Sentiment & LLM Reasoning (intelligence/sentiment/)"]
         direction TB
         FG["Fear & Greed Collector (API / TTL 1h)"]
         MB["Market Breadth 24h Advance/Decline"]
-        HSG["HighStakeGuard<br/>(Event-driven: BUY >= 1000 EUR)"]
+        HSG["HighStakeGuard<br/>(Event-driven: BUY/SELL >= 700 USD)"]
         ADV["SentimentAdvisor<br/>(Periodic 3h / cachedb)"]
-        note3["Google Gemini LLM integrat"]
+        note3["Google Gemini LLM integrated"]
     end
 
-    subgraph P4["Pilonul 4: Macro Geopolitical Shield (intelligence/macro/)"]
+    subgraph P4["Pillar 4: Macro Geopolitical Shield (intelligence/macro/)"]
         direction TB
-        RSS["Fluxuri RSS Google News (la fiecare 120s)"]
-        POOL["Rolling Pool Rulant 4h (deduplicat)"]
+        RSS["Google News RSS Feeds (every 120s)"]
+        POOL["4h Rolling Pool (deduplicated)"]
         S1["Stage 1: Keyword Frequency Screening"]
-        S2["Stage 2: Digest Check (Șoc Macro)"]
-        S3["Stage 3: Gemini Flash Reasoning (la 4.5 ore / 16200s)"]
+        S2["Stage 2: Digest Check (Macro Shock)"]
+        S3["Stage 3: Gemini Flash Reasoning (every 4.5 hours / 16200s)"]
         GEO_GUARD["GeopoliticalShockGuard (Veto / Downscale)"]
-        note4["Google Gemini LLM integrat"]
+        note4["Google Gemini LLM integrated"]
     end
 
-    P1 --> GUARD["order_guard.py (Execuție boti / Latență microsecunde)"]
+    P1 --> GUARD["order_guard.py (Bot execution / microsecond latency)"]
     P2 --> GUARD
     P3 --> GUARD
     P4 --> GUARD
@@ -59,107 +59,107 @@ flowchart TD
 
 ---
 
-## 2. Diferențierea Strictă: Pilonul 1 vs. Pilonul 3
+## 2. Strict Differentiation: Pillar 1 vs. Pillar 3
 
-### Pilonul 1 — Baza Matematică Pură (`intelligence/internal/`)
-- **Rol**: Protecție anti-FOMO și detecție matematică a extenuării mișcărilor de preț.
-- **Tehnologii**:
-  - Filtre Kalman de viteză constantă (`KalmanTrendTrigger`).
-  - Distribuții empirice Weibull de timp de supraviețuire a trendului (`WeibullExhaustionGuard`).
-  - Calcul de deviație parabolică de preț (`ParabolicSurgeGuard`).
-  - Estimare de volatilitate și prag de zgomot (`NoiseFloorGuard`).
-- **Caracteristică esențială**: **Nu apelează niciodată LLM**. Rulează 100% în memorie locală la fiecare tic de preț cu latență $0\text{ ms}$.
+### Pillar 1 - Pure Mathematical Base (`intelligence/internal/`)
+- **Role**: Anti-FOMO protection and mathematical detection of price move exhaustion.
+- **Technologies**:
+  - Constant-velocity Kalman filters (`KalmanTrendTrigger`).
+  - Empirical Weibull trend-survival time distributions (`WeibullExhaustionGuard`).
+  - Parabolic price deviation calculation (`ParabolicSurgeGuard`).
+  - Volatility and noise-floor estimation (`NoiseFloorGuard`).
+- **Key property**: **Never invokes the LLM**. Runs 100% in local memory on every price tick with $0\text{ ms}$ latency.
 
-### Pilonul 3 — Sentiment & LLM Reasoning (`intelligence/sentiment/`)
-- **Rol**: Integrarea psihologiei de piață și a raționamentului calitativ prin LLM.
-- **Tehnologii**:
-  - `FearGreedCollector`: Index de frică și lăcomie cu acțiuni contrariene.
-  - `MarketBreadthCollector`: Avans/declin pe 24h pe piața Binance.
-  - `HighStakeGuard`: Verificare în timp real a riscului la ordine mari.
-  - `SentimentAdvisor`: Consilier macro/sentiment calitativ.
+### Pillar 3 - Sentiment & LLM Reasoning (`intelligence/sentiment/`)
+- **Role**: Integrates market psychology and qualitative LLM reasoning.
+- **Technologies**:
+  - `FearGreedCollector`: Fear & Greed Index with contrarian action signals.
+  - `MarketBreadthCollector`: 24h advance/decline across the Binance market.
+  - `HighStakeGuard`: Real-time pre-trade risk vetting on large orders.
+  - `SentimentAdvisor`: Qualitative macro/sentiment advisor.
 
 ---
 
-## 3. Unde și Cum se Folosește LLM-ul (Google Gemini via `agy CLI`)
+## 3. Where and How the LLM Is Used (Google Gemini via `agy CLI`)
 
-LLM-ul (`gemini-3.8-flash-low` prin CLI-ul local `agy`) este invocat în sistem **strict în două locuri**:
+The LLM (`gemini-3.8-flash-low` via the local `agy` CLI) is invoked in the system **strictly in the following components**:
 
-### A. Consilierul Periodic de Piață (`SentimentAdvisor`) — Pilonul 3
-- **Fișier sursă**: `intelligence/sentiment/sentiment_advisor.py`
+### A. Periodic Market Sentiment Advisor (`SentimentAdvisor`) - Pillar 3
+- **Source file**: `intelligence/sentiment/sentiment_advisor.py`
 - **Output**: `cachedb/sentiment_eval.json`
-- **Ce evaluează**:
-  - Fear & Greed Index (valoare, etichetă, variație pe 7 zile).
-  - 24h Market Breadth (% monede pe plus, schimbare mediană, regim).
-  - Telemetria de balene și derivate.
-- **Sinteză generată**:
+- **Evaluated inputs**:
+  - Fear & Greed Index (value, label, 7-day delta).
+  - 24h Market Breadth (% advancing coins, median change, breadth regime).
+  - Whale and derivatives telemetry.
+- **Generated synthesis**:
   - `market_bias`: `BULLISH` | `BEARISH` | `NEUTRAL` | `CAUTION`
   - `risk_level`: `LOW` | `MODERATE` | `HIGH` | `EXTREME`
   - `confidence`: $0.0 - 1.0$
-  - `summary`: Rezumat executiv în 1-2 fraze
-  - `key_risks`: Listă de riscuri structurale
+  - `summary`: 1-2 sentence executive summary
+  - `key_risks`: List of structural risks
   - `recommended_action`: `ACCUMULATE` | `HOLD` | `TRIM_PROFITS` | `DEFENSIVE`
-- **Frecvență și Trigger**:
-  - **Cache TTL**: **3 ore** (`10800.0` secunde). Dacă cache-ul este valid, returnează instant fără apel extern.
-  - **Trigger**: Periodic prin `intelligence/macro_analyzer.py` sau on-demand.
-  - **Observație de producție**: Decuplat de calea fierbinte de tranzacționare; scrie pasiv în `cachedb/`.
+- **Cadence and Trigger**:
+  - **Cache TTL**: **3 hours** (`10800.0` seconds). When the cache is fresh, returns immediately without an external call.
+  - **Trigger**: Periodically via `intelligence/macro_analyzer.py` or on-demand.
+  - **Production note**: Decoupled from the hot trading path; writes passively to `cachedb/`.
 
-### B. Guardul pentru Ordine de Miză Mare (`HighStakeGuard` / `GLLM1`) — Pilonul 3
-- **Fișier sursă**: `intelligence/sentiment/guards/high_stake_guard.py` (coordonat de `llm_order_guard.py`)
-- **Integrare**: Apelat direct în `order_guard.py` (`check_intelligence_guards`).
-- **Frecvență și Trigger**:
-  - **Fără frecvență de timp (Event-Driven)**: Se declanșează strict în momentul în care un bot de tranzacționare dorește să transmită un ordin.
-  - **Condiții de activare (Simetrice BUY & SELL)**:
-    1. Toate gărzile locale ($0\text{ ms}$: `G_QLIMIT2`, `GI_OBOOK`, `GI_WHALE`, `GI_FUNDING`) rulează simetric pe **orice** ordin `BUY` și `SELL`, indiferent de valoare.
-    2. `GLLM1` (`HighStakeGuard`) se activează simetric pe `BUY` și `SELL` exclusiv la valoare noțională $\ge 700\text{ USD}$ (`high_stake_min_notional_usd = 700.0`). Ordinele sub $700\text{ USD}$ sau cele de tip Stop-Loss nu invocă LLM-ul sincron.
-    3. Protecție cache noțional: dacă un context de ordin a fost deja evaluat la un nivel similar de noțional ($\pm 20\%$), decizia este refolosită fără re-interogare LLM.
-- **Decizii posibile**: `allow`, `downscale` (pe BUY), `defer_wait` (pe SELL în timpul unui short squeeze activ), `hard_veto` (blocare completă).
+### B. High-Stake Order Guard (`HighStakeGuard` / `GLLM1`) - Pillar 3
+- **Source file**: `intelligence/sentiment/guards/high_stake_guard.py` (coordinated by `llm_order_guard.py`)
+- **Integration**: Called directly in `order_guard.py` (`check_intelligence_guards`).
+- **Cadence and Trigger**:
+  - **Event-Driven (no fixed timer)**: Triggered strictly when a trading bot intends to submit an order.
+  - **Activation conditions (Symmetric BUY & SELL)**:
+    1. All local guards ($0\text{ ms}$: `G_QLIMIT2`, `GI_OBOOK`, `GI_WHALE`, `GI_FUNDING`) run symmetrically on **every** `BUY` and `SELL` order regardless of size.
+    2. `GLLM1` (`HighStakeGuard`) activates symmetrically on `BUY` and `SELL` exclusively when notional value $\ge 700\text{ USD}$ (`high_stake_min_notional_usd = 700.0`). Orders below $700\text{ USD}$ or Stop-Loss exits do not invoke synchronous LLM checks.
+    3. Notional cache protection: if an order context was recently evaluated at a similar notional level ($\pm 20\%$), the cached decision is reused without re-querying the LLM.
+- **Possible decisions**: `allow`, `downscale` (on BUY), `defer_wait` (on SELL during an active short squeeze), `hard_veto` (full block).
 
-### C. Scutul Macro Geopolitic (`GeopoliticalThreatAnalyzer`) — Pilonul 4
-- **Fișier sursă**: `intelligence/macro/geopolitical_analyzer.py`
-- **Output**: `cachedb/geopolitical_threat_state.json`
-- **Pipeline pe 3 Etape**:
-  1. *Stage 1 (Regex Screening)*: Filtrare locală rapidă pe cuvinte cheie în feed-urile RSS Google News colectate la fiecare **120 secunde** într-un pool rulant de 4 ore (`cachedb/news_feed_collect.json`).
-  2. *Stage 2 (Digest Check)*: Verificare frecvență și densitate amenințări.
-  3. *Stage 3 (LLM Reasoning)*: Invocare Gemini Flash pentru analiza geopolitică detaliată a întregului pool agregat.
-- **Frecvență și Trigger**:
-  - **Frecvență periodică automată în daemon**: **4.5 ore (16200 secunde)** (`MACRO_LLM_INTERVAL_SEC=16200`).
-  - **Trigger de siguranță**: Dacă nu apar șocuri majore în știri, Stage 3 se execută cel mult o dată la 4.5 ore.
-- **Impact asupra boților**:
-  - `NORMAL`: Fără restricții.
-  - `ELEVATED`: Reduce dimensiunea noilor ordine de BUY la 50%.
-  - `CRITICAL_SHOCK`: Veto complet pe toate cumpărările noi (vânzările/ieșirile rămân permise).
-
----
-
-## 4. Configurare Proiect CLI & Housekeeping Autonom
-
-- **Proiect dedicat Antigravity**:
-  - În `~/.gemini/config/projects/default-cli-project.json` și `autonommptrade.json`, numele proiectului a fost redenumit în **`autonommptrade`**.
-  - Toate interogările autonome din `gemini_client.py` folosesc `--project autonommptrade`, separând istoricul automat de sesiunile manuale.
-- **Curățare automată (Pruning)**:
-  - Scriptul `orchestratorOS/admin/prune_llm_threads.py` rulează automat prin cron (la fiecare 3h) și din daemon.
-  - **Retenție configurată**: **1 zi** (`CLI_THREAD_RETENTION_DAYS=1.0`).
-  - Thread-urile automate mai vechi de 24h sunt șterse automat din SQLite și din sistemul de fișiere, prevenind acumularea fișierelor și consumul de memorie.
+### C. Macro Geopolitical Shield (`GeopoliticalThreatAnalyzer`) - Pillar 4
+- **Source file**: `intelligence/macro/geopolitical_analyzer.py`
+- **Output**: `cachedb/geopolitical_eval.json`
+- **3-Stage Pipeline**:
+  1. *Stage 1 (Regex Screening)*: Fast local keyword screening across RSS feeds collected every **120 seconds** into a rolling pool (`cachedb/news_feed_collect.json`).
+  2. *Stage 2 (Digest Check)*: Threat frequency and density verification.
+  3. *Stage 3 (LLM Reasoning)*: Invokes Gemini Flash for detailed geopolitical analysis of the aggregated news pool.
+- **Cadence and Trigger**:
+  - **Base periodic cadence in daemon**: **4.5 hours (16200 seconds)** (`MACRO_LLM_INTERVAL_SEC=16200`).
+  - **Safety trigger**: When no major shocks appear in news feeds, Stage 3 runs at most once every 4.5-6.0 hours.
+- **Impact on bots**:
+  - `NORMAL`: No restrictions.
+  - `ELEVATED`: Scales down new BUY orders by 50% (`DOWNSCALE_50`).
+  - `CRITICAL_SHOCK`: Full veto on all new BUY orders (`HARD_VETO_NEW_BUYS`; sells/exits remain allowed).
 
 ---
 
-## 5. Matricea Parametrilor de Configurare (`config.env`)
+## 4. CLI Project Configuration & Autonomous Housekeeping
+
+- **Dedicated Antigravity Project**:
+  - In `~/.gemini/config/projects/default-cli-project.json` and `autonommptrade.json`, the project name is set to **`autonommptrade`**.
+  - All autonomous queries from `gemini_client.py` use `--project autonommptrade` in an isolated `agy-bot` store, separating automated history from manual sessions.
+- **Automated Pruning**:
+  - `orchestratorOS/admin/prune_llm_threads.py` runs automatically via cron and the daemon.
+  - **Configured retention**: **1 day** (`CLI_THREAD_RETENTION_DAYS=1.0`).
+  - Non-permanent automated threads older than 24h are pruned from SQLite and the filesystem, preventing unbounded disk and memory growth.
+
+---
+
+## 5. Configuration Parameter Matrix (`config.env` / `order_guard.conf`)
 
 ```ini
-# Pilonul 4: Evaluare Geopolitică & LLM
-MACRO_LLM_INTERVAL_SEC=16200          # Interval minim Stage 3 Gemini (16200s = 4.5 ore)
-MACRO_NEWS_INTERVAL_SEC=120           # Frecvență colectare RSS și agregare rulantă (120s = 2 min)
+# Pillar 4: Geopolitical & LLM Evaluation
+MACRO_LLM_INTERVAL_SEC=16200          # Base Stage 3 Gemini interval (16200s = 4.5 hours)
+MACRO_NEWS_INTERVAL_SEC=120           # RSS collection and rolling pool cadence (120s = 2 min)
 
 # Housekeeping & CLI
-CLI_THREAD_RETENTION_DAYS=1.0         # Ștergere automată a thread-urilor CLI > 1 zi
-AGY_PROJECT=autonommptrade            # Spațiu de lucru dedicat apelurilor autonome
+CLI_THREAD_RETENTION_DAYS=1.0         # Automated pruning of non-topic CLI threads > 1 day
+AGY_PROJECT=autonommptrade            # Dedicated workspace for autonomous calls
 
-# GLLM1: Guard Noțional Mare (order_guard.conf) — Simetric BUY & SELL
-llm_guard_mode=enforce                # Mod rulare: off | shadow | enforce
-high_stake_min_notional_usd=700.0     # Prag noțional unic (USD) pentru activarea GLLM1 (BUY & SELL)
-llm_timeout_sec=25.0                  # Timeout maxim pentru răspunsul LLM
-llm_fallback=allow                    # Acțiune de siguranță în caz de timeout LLM
+# GLLM1: High-Stake Notional Guard (order_guard.conf) - Symmetric BUY & SELL
+llm_guard_mode=enforce                # Execution mode: off | shadow | enforce
+high_stake_min_notional_usd=700.0     # Unified notional threshold (USD) for GLLM1 activation (BUY & SELL)
+llm_timeout_sec=120.0                 # Maximum timeout for LLM response
+llm_fallback=allow                    # Fail-open safety policy on LLM timeout
 
-# GT_S: Garda de Trend Scurt (5m) — Obligatorie pe toate modulele (nu poate fi dezactivată prin bypass_guards)
-# Timerul de 7 minute (420s) pe trend ascendent există exclusiv în Trailing Stop (trailing.conf: sell_trend_defer_max_sec)
+# GT_S: Short Trend Guard (5m) - Mandatory across modules (cannot be disabled via bypass_guards)
+# The 7-minute (420s) uptrend deferral timer lives in Trailing Stop (trailing.conf: sell_trend_defer_max_sec)
 ```

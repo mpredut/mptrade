@@ -9,8 +9,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$ROOT/orchestratorOS/lib/env_common.sh"
-[ -f "$ROOT/config.env" ] && { set -a; . "$ROOT/config.env" 2>/dev/null || true; set +a; }
-[ -f "$ROOT/.env" ] && { set -a; . "$ROOT/.env" 2>/dev/null || true; set +a; }
+load_root_env_sh --with-secrets
 # shellcheck source=../lib/pia_common.sh
 source "$ROOT/orchestratorOS/lib/pia_common.sh"
 

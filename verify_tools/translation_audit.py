@@ -51,7 +51,7 @@ si sa se doar dar daca cand care este sunt nu pentru cu din sau mai foarte trebu
 adica deci astfel verifica verificat calculeaza calculat returneaza foloseste folosim
 folosit avem aveam vrem putem poate trebuia facem face facut facuta facute
 pretul pret preturi ordine ordin ordinul cumparare vanzare vinde vandut cumpara
-cumparat pierdere pierderi castig castiguri prag praguri cadere sold soldul
+cumparat pierdere pierderi castig castiguri prag praguri cadere soldul
 fisier fisierul fisiere fereastra ferestre valoare valori cantitate cantitati
 toate toti toata fiecare acelasi aceeasi acest aceasta aceste acesti niciun nicio
 inainte dupa acum mereu niciodata deja inca apoi atunci astfel
@@ -66,10 +66,14 @@ motiv motive cauza scop rand randuri linie linii pas pasi etapa etape exemplu ex
 decizie decizii rulare comision marime pozitie pozitii simulare oprita istoric
 inchide inchis inchisa cicluri motorul combinatii difera intrarea umple
 graficul graficele ferestrei glisante minimului maximului ajustam incrementam curatam plotam actualizam
+moneda strategie valuta cumpararea cumparari plafon alocare pereche cheie cheia secrete
+copiaza completeaza notificari bani reali forteaza levier lichidare sigur eticheta balanta
 """.split())
 
 DOC_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-SKIP_DIRS = {".git", ".venv", "myenv", "__pycache__", "node_modules", ".pytest_cache"}
+SKIP_DIRS = {".git", ".venv", "myenv", "__pycache__", "node_modules", ".pytest_cache", "cachedb", "logs", "data", "archive"}
+SCAN_EXTS = (".py", ".sh", ".conf", ".env", ".example", ".md")
+_TOKEN_RE = re.compile(r'`+[^`]+`+|"[^"\n]+"|\([a-zA-Z0-9_]+\)|[a-zA-Z_][a-zA-Z0-9_]*(?:[-/][a-zA-Z0-9_$]+)*')
 
 
 # ── scan ──────────────────────────────────────────────────────────────────────
@@ -78,7 +82,7 @@ def romanian_score(text: str) -> int:
     """Heuristic score: 99 when diacritics are present, else the Romanian word count."""
     if any(ch in RO_DIACRITICS for ch in text):
         return 99
-    words = re.findall(r"\([a-zA-Z_]+\)|[a-zA-Z]+(?:-[a-zA-Z0-9$]+)*", text.lower())
+    words = _TOKEN_RE.findall(text.lower())
     return sum(1 for word in words if word in RO_WORDS)
 
 
@@ -89,6 +93,12 @@ def scan_file(path: str, min_score: int) -> Tuple[List[tuple], bool]:
         return [], False
 
     hits: List[tuple] = []
+    if not path.endswith(".py"):
+        for idx, line in enumerate(source.splitlines(), 1):
+            text = line if path.endswith(".md") else (m.group(0) if (m := re.search(r"#.*$", line)) else "")
+            if text and (score := romanian_score(text)) >= min_score:
+                hits.append((idx, "comment", score, text.strip()))
+        return hits, False
 
     try:
         for token in tokenize.generate_tokens(io.StringIO(source).readline):
@@ -126,7 +136,7 @@ def iter_python_files(targets: Iterable[str]) -> Iterable[str]:
         for root, dirs, files in os.walk(target):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             for name in sorted(files):
-                if name.endswith(".py"):
+                if name != ".env" and name.endswith(SCAN_EXTS):
                     yield os.path.join(root, name)
 
 

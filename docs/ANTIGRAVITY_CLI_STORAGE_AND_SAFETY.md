@@ -53,7 +53,7 @@ flowchart TD
 ### Gate 2: Workspace / Project Boundary Isolation (Crucial Defense)
 * **Mechanism:** Checks `project_id` and project metadata in `~/.gemini/config/projects/`.
 * **Guarantee:** The user's primary development workspace (`mptrade`, UUID `3ed4aa5d-0873-407a-a8e9-c21a932a565c`) is in `PROTECTED_PROJECT_NAMES`.
-* **User Keyword Safety:** **Even if you write prompts using the exact same phrases** (e.g. *"macroeconomic geopolitical risk assessment"*, *"crypto risk evaluation"*, or *"analiză risc tranzacție"*), **your thread will NEVER be pruned**. Gate 2 aborts evaluation immediately—the content filter in Gate 4 is never even reached for manual workspace threads.
+* **User Keyword Safety:** **Even if you write prompts using the exact same phrases** (e.g. *"macroeconomic geopolitical risk assessment"*, *"crypto risk evaluation"*, or *"pre-trade risk analysis"*), **your thread will NEVER be pruned**. Gate 2 aborts evaluation immediately—the content filter in Gate 4 is never even reached for manual workspace threads.
 
 ### Gate 3: Temporal Retention Horizon (24h Grace Period)
 * **Mechanism:** Evaluates `last_modified_time` against UTC `now() - timedelta(days=1.0)`.

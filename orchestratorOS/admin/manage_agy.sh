@@ -192,9 +192,7 @@ do_status() {
 
 do_ui_sync() {
     acquire_lock 10 || exit 0
-    local python_bin="${PYTHON_BIN:-$ROOT/.venv/bin/python3}" ssot_vals idle_sec="" min_interval_sec="" rc=0
-    [ -x "$python_bin" ] || python_bin="$ROOT/myenv/bin/python"
-    [ -x "$python_bin" ] || python_bin="/usr/bin/python3"
+    local python_bin="${PYTHON_BIN:-python3}" ssot_vals idle_sec="" min_interval_sec="" rc=0
     ssot_vals="$("$python_bin" -c "import sys; sys.path[:0] = ['$ROOT']; from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals; d = resolve_derived_telemetry_intervals(); print(f\"{int(d['ui_sync_idle_sec'])} {int(d['ui_sync_interval_sec'])}\")" 2>/dev/null | grep -E '^[0-9]+ [0-9]+$' | tail -n 1 || true)"
     read -r idle_sec min_interval_sec <<< "$ssot_vals"
     if ! [[ "$idle_sec" =~ ^[0-9]+$ ]] || [ "$idle_sec" -le 0 ]; then

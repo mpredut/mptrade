@@ -12,9 +12,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$ROOT/orchestratorOS/lib/env_common.sh"
 CONFIG="$ROOT/config.env"
 [ -r "$CONFIG" ] || { echo "missing required configuration: $CONFIG" >&2; exit 1; }
-set -a
-. "$CONFIG"
-set +a
+load_root_env_sh
 # shellcheck source=../lib/pia_common.sh
 source "$ROOT/orchestratorOS/lib/pia_common.sh"
 
