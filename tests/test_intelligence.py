@@ -1244,7 +1244,6 @@ def test_iter46_audited_executor_precision_daemon_ssot_monkeypatch_and_tca_hl_ca
 
 def test_iter47_lazy_intelligence_imports_monkeypatch_forwarding_and_strict_int_fields(tmp_path, monkeypatch):
 
-    import cacheManager
     import cacheintegrity
     import intelligence
 
@@ -1756,7 +1755,6 @@ def test_iter52_repair_ssot_monkeypatch_portfolio_scope_and_trailing_pct_lookup(
 
 
 def test_iter53_runtime_states_callable_arg_collector_monkeypatch_and_evaluator_guards(monkeypatch, tmp_path):
-    import intelligence.macro_sentiment_ssot as ssot
     import intelligence.sentiment.collectors.microstructure_collector as mc
     import intelligence.sentiment.collectors.portfolio_collector as pc
     from state_io import read_json_recovering
@@ -1810,7 +1808,7 @@ def test_iter53_runtime_states_callable_arg_collector_monkeypatch_and_evaluator_
             return {"value": 28, "classification": "Fear", "ts": now}
         return {"patched": True}
 
-    monkeypatch.setattr(ssot, "read_json_cached", _patched_cached)
+    monkeypatch.setattr(ssot_mod, "read_json_cached", _patched_cached)
     assert pc._resolve_read_json_cached(read_json_recovering) is _patched_cached
     assert mc._resolve_read_json_cached(read_json_recovering) is _patched_cached
     sensors, _ = mtc.harvest_macro_and_news_sensors(str(tmp_path), now, read_json_fn=read_json_recovering)
@@ -2081,7 +2079,6 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
     import intelligence.external.collectors.derivatives_telemetry_collector as dt_mod
     import intelligence.external.collectors.whale_positioning_collector as wp_mod
     import intelligence.external.guards.smart_stop_loss_guard as ssl_mod
-    import intelligence.sentiment.collectors.pretrade_telemetry_collector as pt_mod
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
 
     # 1. collect_pretrade_telemetry handles None values in m24/btc_m24/liq_c and forwards monkeypatched read_json_cached
@@ -2112,14 +2109,14 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
             }
         },
     }
-    monkeypatch.setattr(pt_mod, "read_json_cached", lambda path, **kw: virtual_files.get(str(path)), raising=False)
+    monkeypatch.setattr(ptc, "read_json_cached", lambda path, **kw: virtual_files.get(str(path)), raising=False)
     monkeypatch.setattr(
-        pt_mod,
+        ptc,
         "load_symbol_price_series",
         lambda cdir, sym, **kw: ([[now_ts * 1000 - 60000, 2490.0], [now_ts * 1000, 2500.0]], []),
     )
     monkeypatch.setattr(
-        pt_mod,
+        ptc,
         "compute_24h_price_metrics",
         lambda ser: {
             "chg_15m_pct": None,
@@ -2138,7 +2135,7 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
         },
     )
     monkeypatch.setattr(
-        pt_mod,
+        ptc,
         "compute_liquidation_clusters",
         lambda p_est, m_info: {
             "long_liq_px": 2350.0,
@@ -2150,7 +2147,7 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
             "liq_magnet_bias": "SHORT",
         },
     )
-    telem = pt_mod.collect_pretrade_telemetry("ETHUSDC", cachedb_dir=str(tmp_path))
+    telem = ptc.collect_pretrade_telemetry("ETHUSDC", cachedb_dir=str(tmp_path))
     assert "24h Multi-Horizon Price Evolution" in telem
     assert "24h Volume Profile (POC / Value Area)" in telem
     assert "Orderbook Bid-Ask Spread" in telem
@@ -3182,10 +3179,9 @@ def test_iter66_guard_bypass_revocation_market_regime_ms_now_and_price_history_o
     assert hist[-1][0] == pytest.approx(base_ts + 599.0)
 
     # 5. evaluate_whale_spread_flow uppercase / short_building & percentage downscale in llm_order_guard
-    import external_order_guard
-    monkeypatch.setattr(external_order_guard, "get_whale_collector", lambda: object())
+    monkeypatch.setattr(eog, "get_whale_collector", lambda: object())
     monkeypatch.setattr(
-        external_order_guard,
+        eog,
         "fetch_guard_snapshot",
         lambda collector, sym, **kw: {"div_regime": "SHORT_BUILDING", "oi_1h_chg_pct": 1.5, "whale_long_pct": 0.35},
     )
@@ -6838,7 +6834,6 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
 
     # 7. _refresh_stale_t212_cached_positions updates stale pos:t212:* prices and collect_pretrade_telemetry refreshes microstructure
     from intelligence.sentiment.collectors import microstructure_collector as ms_col_mod
-    from intelligence.sentiment.collectors import pretrade_telemetry_collector as pt_col_mod
     from providers import t212_provider as t212_prov_mod
 
     vb_file = ms_dir / "venue_balances_state.json"
@@ -6870,11 +6865,11 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
 
     refreshed_syms = []
     monkeypatch.setattr(
-        pt_col_mod,
+        ptc,
         "ensure_fresh_symbol_microstructure",
         lambda cdir, sym, **kw: refreshed_syms.append(sym),
     )
-    pt_col_mod.collect_pretrade_telemetry("HYPEUSDC", cachedb_dir=str(ms_dir))
+    ptc.collect_pretrade_telemetry("HYPEUSDC", cachedb_dir=str(ms_dir))
     assert "HYPEUSDC" in refreshed_syms
     assert "HYPEUSD" in refreshed_syms
 
@@ -8748,9 +8743,8 @@ def test_iter25_held_open_lots_retention_pretrade_lifo_lots_equity_ohlc_sync_and
     cdir_pt = tmp_path / "cdir_pt"
     cdir_pt.mkdir(parents=True, exist_ok=True)
     telemetry_out: dict = {}
-    import intelligence.sentiment.collectors.pretrade_telemetry_collector as ptc_mod
-    orig_loader = ptc_mod.load_symbol_best_recent_fills
-    ptc_mod.load_symbol_best_recent_fills = lambda *a, **kw: ro_tao["TAOUSDC"]
+    orig_loader = ptc.load_symbol_best_recent_fills
+    ptc.load_symbol_best_recent_fills = lambda *a, **kw: ro_tao["TAOUSDC"]
     try:
         RecentFillsExecutionStage().evaluate(
             SimpleNamespace(
@@ -8763,7 +8757,7 @@ def test_iter25_held_open_lots_retention_pretrade_lifo_lots_equity_ohlc_sync_and
             )
         )
     finally:
-        ptc_mod.load_symbol_best_recent_fills = orig_loader
+        ptc.load_symbol_best_recent_fills = orig_loader
     assert "Open LIFO Lots=[4.6774@258.5, 1.2515@240.494974, 1.4268@237.1, 3.5017@212.5]" in telemetry_out["Recent Venue Fills"]
 
     # 4. Equity 24h series merge preserves zero-volume Yahoo 5m open bars and skips sub-second duplicate poller tick
@@ -8828,14 +8822,13 @@ def test_iter25_held_open_lots_retention_pretrade_lifo_lots_equity_ohlc_sync_and
 
 def test_resolve_cached_gaussian_horizon_recovers_from_previous_generation_file_iter8_s3(tmp_path, monkeypatch):
     """[ITER8 #3] resolve_cached_gaussian_horizon recovers from .previous generation file."""
-    import intelligence.internal.state.survival as survival_mod
     from qlimit_order_guard import resolve_cached_gaussian_horizon
     # 3. resolve_cached_gaussian_horizon recovers from .previous generation file
     t_cache = tmp_path / "trend_T_cache.json"
     t_prev = tmp_path / "trend_T_cache.json.previous"
     t_cache.write_text("{corrupt_json", encoding="utf-8")
     t_prev.write_text(json.dumps({"TAOUSDC": {"T": 10.0, "p90_d": 8.5, "median_d": 4.0}}), encoding="utf-8")
-    monkeypatch.setattr(survival_mod, "T_CACHE_FILE", str(t_cache))
+    monkeypatch.setattr(survival, "T_CACHE_FILE", str(t_cache))
     p90_d, med_d, gauss_h = resolve_cached_gaussian_horizon("TAOUSD")
     assert p90_d == 8.5
     assert med_d == 4.0
@@ -9074,13 +9067,12 @@ def test_survival_non_str_symbol_and_episodes_length_mismatch_iter102_s3():
 
 def test_volatility_negative_values_and_non_str_symbol_path_iter102_s4():
     """[ITER102 #4] volatility: negative values and non-str symbol/path."""
-    from intelligence.internal.state import volatility
     # 4. volatility: negative values and non-str symbol/path
-    assert volatility.vol_pct_to_ratio(-2.5) == 0.0
-    assert volatility.vol_ratio_to_pct(-0.025) == 0.0
-    assert volatility._vol_symbol_variants(True) == ()
-    assert volatility._extract_vol_ratio_from_file(True, "BTCUSDC") is None
-    assert volatility._extract_vol_ratio_from_file("some_path.json", True) is None
+    assert vol_mod.vol_pct_to_ratio(-2.5) == 0.0
+    assert vol_mod.vol_ratio_to_pct(-0.025) == 0.0
+    assert vol_mod._vol_symbol_variants(True) == ()
+    assert vol_mod._extract_vol_ratio_from_file(True, "BTCUSDC") is None
+    assert vol_mod._extract_vol_ratio_from_file("some_path.json", True) is None
 
 def test_survival_verdict_accepts_string_keys_as_persisted_in_iter98_s3():
     """[ITER98 #3] survival.verdict: accepts string keys (as persisted in p_cont) and rejects invalid mid/cont."""

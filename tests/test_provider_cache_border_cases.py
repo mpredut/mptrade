@@ -1253,7 +1253,6 @@ def test_portfolio_lot_reconciliation_ssot_and_cache_coercion_border_cases(
     """Verify shared open-lot pruning/VWAP SSOT and timestamp/margin coercion border cases."""
     import assetguardian as ag
     import guard_hierarchy as gh
-    import order_guard as og
     from cacheprice import Cache365PriceManager
     from intelligence.sentiment.evaluators.portfolio_evaluator import (
         reconcile_fresh_lots_vwap,
@@ -1295,8 +1294,8 @@ def test_portfolio_lot_reconciliation_ssot_and_cache_coercion_border_cases(
     }
 
     # 3. guard_hierarchy._load_margins survives NaN / corrupt mtime or last_check on order_guard
-    monkeypatch.setattr(og, "_MARGINS_FILE_MTIME", float("nan"), raising=False)
-    monkeypatch.setattr(og, "_MARGINS_LAST_CHECK", "corrupt_ts", raising=False)
+    monkeypatch.setattr(order_guard, "_MARGINS_FILE_MTIME", float("nan"), raising=False)
+    monkeypatch.setattr(order_guard, "_MARGINS_LAST_CHECK", "corrupt_ts", raising=False)
     margins = gh._load_margins()
     assert isinstance(margins, dict)
 

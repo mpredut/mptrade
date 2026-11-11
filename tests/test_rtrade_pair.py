@@ -1880,17 +1880,16 @@ def test_strategy__sanitize_state_dict_strategy_init_boolean_flags_spot_replay_r
 
 def test_rtrade__touch_rtrade_heartbeat_and__livepairvenue_hygiene_iter158_s5(monkeypatch, tmp_path):
     """[ITER158 #5] rtrade._touch_rtrade_heartbeat and _LivePairVenue hygiene."""
-    import rtrade as rt
     # 5. rtrade._touch_rtrade_heartbeat and _LivePairVenue hygiene
     hb_path = tmp_path / "rtrade.heartbeat"
-    monkeypatch.setattr(rt, "_RTRADE_HEARTBEAT_PATH", str(hb_path))
-    monkeypatch.setattr(rt, "_rtrade_heartbeat_last", 100.0)
-    rt._touch_rtrade_heartbeat(force="false", now=105.0)
-    assert rt._rtrade_heartbeat_last == 100.0
-    rt._touch_rtrade_heartbeat(force=float("nan"), now=float("nan"))
-    assert math.isfinite(rt._rtrade_heartbeat_last)
+    monkeypatch.setattr(rtrade, "_RTRADE_HEARTBEAT_PATH", str(hb_path))
+    monkeypatch.setattr(rtrade, "_rtrade_heartbeat_last", 100.0)
+    rtrade._touch_rtrade_heartbeat(force="false", now=105.0)
+    assert rtrade._rtrade_heartbeat_last == 100.0
+    rtrade._touch_rtrade_heartbeat(force=float("nan"), now=float("nan"))
+    assert math.isfinite(rtrade._rtrade_heartbeat_last)
 
-    venue = object.__new__(rt._LivePairVenue)
+    venue = object.__new__(rtrade._LivePairVenue)
     venue.symbol = "TAOUSDC"
     venue._recovery_blocked_pairs = set()
     venue.recovery_blocked = False

@@ -567,9 +567,8 @@ def test_backtest_suppresses_real_gemini_and_notifications(monkeypatch):
 
 def test_kraken_continuous_grid_load_asset_prewarms_trend_series(tmp_path, monkeypatch):
     """spot_replay exports prewarm_trend_series and kraken_continuous_grid.grid.load_asset succeeds over >WARM bars."""
-    from strategies import spot_replay as krp
 
-    assert hasattr(krp, "prewarm_trend_series")
+    assert hasattr(spot_replay, "prewarm_trend_series")
     csv_path = tmp_path / "TEST_240m.csv"
     lines = ["timestamp,open,high,low,close"]
     base_ts = 1_700_000_000
@@ -776,7 +775,6 @@ def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
 def test_offline_research_ml_and_pilot_edge_cases(tmp_path, monkeypatch):
     """Verify edge-case guards in scheduled_pilot, slice_dense_archive, forecast, priceprediction, vol_chronos, and hybrid_reentry.harness."""
     from offline.research import slice_dense_archive as sda
-    from offline.research.hybrid_reentry import harness as hh
     from offline.research.ml_forecast import priceprediction as ml_pp
 
     # 1. scheduled_pilot._last_change_for ignores non-dict JSON lines
@@ -831,11 +829,11 @@ def test_offline_research_ml_and_pilot_edge_cases(tmp_path, monkeypatch):
         "1700000000,100.0,105.0,99.0,102.0\n1700003600,nan,106.0,98.0,101.0\n1700007200,102.0,107.0,100.0,104.0\n",
         encoding="utf-8",
     )
-    rows = hh.load_ohlc_csv(str(csv_no_hdr))
+    rows = hybrid_harness.load_ohlc_csv(str(csv_no_hdr))
     assert len(rows) == 2
     assert rows[0] == (100.0, 105.0, 99.0, 102.0)
 
-    row_fmt = hh.format_ablation_result(
+    row_fmt = hybrid_harness.format_ablation_result(
         "BTC", "Test 0", "Baseline",
         {"total": None, "cycles": None, "wins": None, "fills": None},
         capital=1000.0,
@@ -1032,7 +1030,6 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
 def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp_path, monkeypatch):
     """Verify inline comment/interpolation handling in scheduled_pilot, run_replay_backtest, trade_cooldown, and hl signals fallback."""
 
-    from offline.research.monitortrades_backtest import run_replay_backtest as rrb
 
     conf_file = tmp_path / "instruments.conf"
     conf_file.write_text(
@@ -1050,8 +1047,8 @@ def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp
     assert "mt.gain = 8.25 ; semicolon comment with 10% note" in updated_text
     assert sp._current_value("BTCEUR", "mt.gain") == 8.25
 
-    monkeypatch.setattr(rrb, "ROOT", str(tmp_path))
-    live_params = rrb._live_mt_params("BTCEUR")
+    monkeypatch.setattr(rb, "ROOT", str(tmp_path))
+    live_params = rb._live_mt_params("BTCEUR")
     assert live_params == {"mt.gain": "8.25", "mt.lost": "3.2"}
 
     root_dir = Path(sp.__file__).resolve().parents[3]
@@ -1229,7 +1226,6 @@ def test_glob_escape_bracket_paths_and_export_env_parsing(tmp_path):
 def test_xstock_watch_new_coins_and_pnl_report_guards(monkeypatch):
     """Verify kraken_xstock_watch, new_coins_discovery, and verify_tools/pnl_report guards."""
     from kraken import kraken_xstock_watch as xw
-    from verify_tools import pnl_report as pr
 
     # 1. kraken_xstock_watch.check_levels ignores non-positive thresholds and run_trial restores env
     sent = []
@@ -1275,9 +1271,9 @@ def test_xstock_watch_new_coins_and_pnl_report_guards(monkeypatch):
             {"price": "100.0", "executedQty": "2.0", "side": "BUY", "time": 1000}
         ]
     )
-    monkeypatch.setattr(pr.mkt, "provider_by_name", lambda name: fake_bn_pr if name == "binance" else None)
-    monkeypatch.setattr(pr.mkt, "get_current_price", lambda _s: None)
-    res = pr.binance_symbol("BTCUSDC")
+    monkeypatch.setattr(pnl_report.mkt, "provider_by_name", lambda name: fake_bn_pr if name == "binance" else None)
+    monkeypatch.setattr(pnl_report.mkt, "get_current_price", lambda _s: None)
+    res = pnl_report.binance_symbol("BTCUSDC")
     assert res["pos"] == 2.0
     assert res["unreal"] == 0.0
 
@@ -1286,7 +1282,6 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
     """Verify agy_store_fix bracketed glob handling and verify_tools isolation/guards."""
     from verify_tools import check_cache_coherence as ccc
     from verify_tools import kraken_pnl_backfill as kpb
-    from verify_tools import portfolio_snapshot as ps
     from verify_tools import verify_hype_facade as vhf
 
     # 1. check_cache_coherence can be imported without executing live checks
@@ -1313,7 +1308,7 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
     before_path = list(sys.path)
     sentinel_common = object()
     monkeypatch.setitem(sys.modules, "common", sentinel_common)
-    ps.hl_row()
+    portfolio_snapshot.hl_row()
     assert sys.path == before_path
     assert sys.modules.get("common") is sentinel_common
 
@@ -2304,7 +2299,6 @@ def test_monitororder_tradeall_and_assetguardian_edge_cases(monkeypatch):
 
 def test_position_exit_manager_rtrade_pair_and_bapi_placeorder_hardening():
     """Verify PositionExitManager, rtrade_pair, trailing_stop, and bapi_placeorder handle malformed inputs safely."""
-    from binance_api import bapi_placeorder as bpo
     from binance_api.trailing_stop import TRAIL_PCT
     from providers.strategy_executor import SubmissionRefused
     from strategies.position_exit_manager import ReentryAction
@@ -2358,11 +2352,11 @@ def test_position_exit_manager_rtrade_pair_and_bapi_placeorder_hardening():
 
     # 3. bapi_placeorder.issue_account_cache_submit_permit rejects None/bool symbol or side before cache I/O
     with pytest.raises(SubmissionRefused):
-        bpo.issue_account_cache_submit_permit(None, "BUY", 1.0, market=True)
+        bapi_placeorder.issue_account_cache_submit_permit(None, "BUY", 1.0, market=True)
     with pytest.raises(SubmissionRefused):
-        bpo.issue_account_cache_submit_permit(True, "BUY", 1.0, market=True)
+        bapi_placeorder.issue_account_cache_submit_permit(True, "BUY", 1.0, market=True)
     with pytest.raises(SubmissionRefused):
-        bpo.issue_account_cache_submit_permit("BTCUSDC", None, 1.0, market=True)
+        bapi_placeorder.issue_account_cache_submit_permit("BTCUSDC", None, 1.0, market=True)
 
     # 4. TrailingStop.trail_pct_for normalizes symbol case/whitespace
     if TRAIL_PCT:
@@ -2847,25 +2841,24 @@ def test_batch7_hardening():
 
 
 def test_batch8_hardening():
-    from offline.research.ml_forecast import forecast as ml_forecast
     from offline.research.monitortrades_backtest.replay_trend_source import DynamicReplayTrendSource
 
     # 1. ml_forecast.walk_forward and live_forecast handle empty and single-class datasets
-    empty_X = np.empty((0, len(ml_forecast.FEATURES)), dtype=float)
+    empty_X = np.empty((0, len(ml_fc.FEATURES)), dtype=float)
     empty_y_dir = np.empty(0, dtype=int)
     empty_y_mag = np.empty(0, dtype=float)
-    wf_empty = ml_forecast.walk_forward(empty_X, empty_y_dir, empty_y_mag)
+    wf_empty = ml_fc.walk_forward(empty_X, empty_y_dir, empty_y_mag)
     assert wf_empty["n_test"] == 0
-    lf_empty = ml_forecast.live_forecast(np.array([100.0, 101.0]), empty_X, empty_y_dir, empty_y_mag, wf_empty, "BTCUSDC")
+    lf_empty = ml_fc.live_forecast(np.array([100.0, 101.0]), empty_X, empty_y_dir, empty_y_mag, wf_empty, "BTCUSDC")
     assert lf_empty["proba_up"] == 0.5
 
-    single_X = np.ones((20, len(ml_forecast.FEATURES)), dtype=float)
+    single_X = np.ones((20, len(ml_fc.FEATURES)), dtype=float)
     single_y_dir = np.ones(20, dtype=int)
     single_y_mag = np.full(20, 0.01, dtype=float)
-    wf_single = ml_forecast.walk_forward(single_X, single_y_dir, single_y_mag, train_frac=0.5, refit_every=10)
+    wf_single = ml_fc.walk_forward(single_X, single_y_dir, single_y_mag, train_frac=0.5, refit_every=10)
     assert wf_single["logit"] == 1.0
     assert wf_single["boost"] == 1.0
-    lf_single = ml_forecast.live_forecast(np.linspace(100.0, 120.0, 300), single_X, single_y_dir, single_y_mag, wf_single, "BTCUSDC")
+    lf_single = ml_fc.live_forecast(np.linspace(100.0, 120.0, 300), single_X, single_y_dir, single_y_mag, wf_single, "BTCUSDC")
     assert lf_single["proba_up"] == 1.0
     assert lf_single["trend"] == "up"
 
@@ -3686,7 +3679,6 @@ def test_batch24_execution_evaluation_and_financial_benchmark_hardening():
 def test_batch25_datasets_rtrade_pair_exit_manager_and_verify_tools_hardening():
     from offline.backtests.datasets import align_previous_values, drop_incomplete_last_bar
     from strategies.rtrade_pair import anchored_exit_price, quote_prices
-    import verify_tools.portfolio_snapshot as ps
 
     # 1. datasets: normalize_record / drop_incomplete_last_bar / align_previous_values
     with pytest.raises(ValueError, match="missing required field"):
@@ -3738,8 +3730,8 @@ def test_batch25_datasets_rtrade_pair_exit_manager_and_verify_tools_hardening():
     assert dec.should_exit is True
 
     # 5. verify_tools/portfolio_snapshot._parse_bool_flag handles NaN float safely
-    assert ps._parse_bool_flag(float("nan"), False) is False
-    assert ps._parse_bool_flag(1.0, False) is True
+    assert portfolio_snapshot._parse_bool_flag(float("nan"), False) is False
+    assert portfolio_snapshot._parse_bool_flag(1.0, False) is True
 
 
 def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(tmp_path, monkeypatch):
@@ -3832,7 +3824,6 @@ def test_batch27_research_syspath_and_ml_forecast_hardening():
 
 
 def test_batch28_providers_spot_engine_and_visuals_hardening(monkeypatch):
-    import visuals.drawprices as dp
     import visuals.tradeall_observe as tobs
 
     # 1. HyperliquidProvider.order_status normalizes uppercase/whitespace venue_status ("FILLED" / "OPEN")
@@ -3910,8 +3901,8 @@ def test_batch28_providers_spot_engine_and_visuals_hardening(monkeypatch):
     assert sp.tp_tranches == [(3.0, 50.0), (6.0, 50.0)]
 
     # 5. visuals/drawprices and visuals/tradeall_observe edge-case hardening
-    assert len(dp.min_max_inverse(None, 0.0, 1.0)) == 0  # type: ignore[arg-type]
-    X_seq, y_seq = dp.make_sequences(None, 5)  # type: ignore[arg-type]
+    assert len(drawprices.min_max_inverse(None, 0.0, 1.0)) == 0  # type: ignore[arg-type]
+    X_seq, y_seq = drawprices.make_sequences(None, 5)  # type: ignore[arg-type]
     assert X_seq.shape == (0, 5, 1) and y_seq.shape == (0,)
     assert tobs.build_trend_regions(None, 100.0, 200.0) == []
     assert tobs.build_trend_regions([{"ts": 120.0, "state": "UP"}, {"bad": 1}], 100.0, 200.0) == [(120.0, 200.0, "UP")]
@@ -4494,9 +4485,8 @@ def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(
     assert telem["Trend Duration"] == "2.0 hours"
 
     # 4. intelligence.cli.inspect_symbol_intelligence resolves symbol variants (e.g. BTC/USDC -> BTCUSDC)
-    import order_guard as og
 
-    monkeypatch.setattr(og, "check_intelligence_guards", lambda **kw: (True, "ok", 1.0))
+    monkeypatch.setattr(order_guard, "check_intelligence_guards", lambda **kw: (True, "ok", 1.0))
     (tmp_path / "orderbook_depth_BTCUSDC.json").write_text(
         json.dumps({"symbol": "BTCUSDC", "imbalance_ratio": 0.6}),
         encoding="utf-8",
@@ -4517,7 +4507,6 @@ def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(
 
 def test_batch36_t212_hyperliquid_kraken_and_ws_normalize_hardening(monkeypatch):
     """Verify 212trading strategy/replay/backtest, hyperliquid strategy, kraken_client.add_order, and bapi_ws_normalize."""
-    from binance_api import bapi_ws_normalize as ws_norm
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     t212_dir = os.path.join(root, "212trading")
@@ -4600,11 +4589,11 @@ def test_batch36_t212_hyperliquid_kraken_and_ws_normalize_hardening(monkeypatch)
         "L": "60000.0",
         "T": 1700000000000,
     }
-    parsed_ord = ws_norm.parse_order_execution_report(ord_ev)
+    parsed_ord = bapi_ws_normalize.parse_order_execution_report(ord_ev)
     assert parsed_ord is not None
     assert parsed_ord[1]["orderId"] == "12345"
     assert parsed_ord[1]["_fillId"] == "67890"
-    parsed_tr = ws_norm.parse_trade_execution_report(ord_ev)
+    parsed_tr = bapi_ws_normalize.parse_trade_execution_report(ord_ev)
     assert parsed_tr is not None
     assert parsed_tr[1]["orderId"] == "12345"
     assert parsed_tr[1]["id"] == "67890"
@@ -4695,7 +4684,6 @@ def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tm
     """Verify order_retry None/float-string handling, order_retry_worker._alert_giveups, order_guard decisions_map lookup, assetguardian p3b confidence formatting, monitortrades tp_ref normalization, and tradeall TrendState.is_trend_a_minim_validated."""
     import order_retry as oq
     import order_retry_worker as orw
-    import tradeall
 
     # 1. order_retry.is_expired and is_due handle None ttl_started_ts / attempts / last_attempt_ts
     rec = {
@@ -4784,7 +4772,7 @@ def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tm
     assert cfg[10] == 0.0
 
     # 6. tradeall.TrendState.is_trend_a_minim_validated returns False when trend has not started
-    ts = tradeall.TrendState(50, 50)
+    ts = ta.TrendState(50, 50)
     assert ts.is_trend_a_minim_validated() is False
     assert ts.is_trend_consistent_validated() is False
     assert ts.is_trend_uniform_confirmed() is False
@@ -5183,7 +5171,6 @@ def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
 
 def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening(tmp_path, monkeypatch):
     import cacheintegrity as ci
-    import priceAnalysis as pa
 
     # 1. bapi: cancel_order
     assert bapi.cancel_order("   ", 123) is False
@@ -5229,7 +5216,7 @@ def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening
 
     # 6. priceAnalysis.write_all_trends tolerates partial/corrupt trend_data dicts without KeyError
     out_pa = tmp_path / "pa.json"
-    written = pa.write_all_trends(
+    written = priceAnalysis.write_all_trends(
         {"BTCUSDC": {"direction": "up"}, "ETHUSDC": "not_a_dict"},  # type: ignore[dict-item]
         filename=str(out_pa),
     )
@@ -5239,11 +5226,10 @@ def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening
 
 def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_and_monitors_hardening(tmp_path, monkeypatch):
     import order_lifecycle as aop
-    import active_intents as ai
     import order_retry as oret
 
     # 1. accepted_order_persistence.clean_order_id and active_intents.clean_order_id reject negative/zero and normalize '+123.0'
-    for fn in (aop.clean_order_id, ai.clean_order_id):
+    for fn in (aop.clean_order_id, active_intents.clean_order_id):
         assert fn(-5) is None
         assert fn("-5") is None
         assert fn("-5.0") is None
@@ -5358,20 +5344,19 @@ def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
 
 def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     from decimal import Decimal
-    from strategies import spot_engine as se
     from strategies import spot_rules as sr
     from strategies import position_exit_manager as pem
     from strategies import rtrade_pair as rp
     from providers import execution_audit as ea_mod
 
     # 1. spot_engine.clean_order_id and _sanitize_state_dict
-    assert se.clean_order_id(frozenset({"a"})) is None
-    assert se.clean_order_id(12.5) is None
-    assert se.clean_order_id("-abc") is None
-    assert se.clean_order_id("+0.0") is None
-    assert se.clean_order_id("+123.0") == "123"
-    assert se.clean_order_id("+123") == "123"
-    san = se.Strategy._sanitize_state_dict(
+    assert spot_engine.clean_order_id(frozenset({"a"})) is None
+    assert spot_engine.clean_order_id(12.5) is None
+    assert spot_engine.clean_order_id("-abc") is None
+    assert spot_engine.clean_order_id("+0.0") is None
+    assert spot_engine.clean_order_id("+123.0") == "123"
+    assert spot_engine.clean_order_id("+123") == "123"
+    san = spot_engine.Strategy._sanitize_state_dict(
         {
             "orders": [
                 {"txid": "+456.0", "side": " BUY ", "vol": "1.5", "price": "100.0", "ts": None},
@@ -5888,8 +5873,6 @@ def test_ohlc_tuples_csv_t212_grid_interval_alignment_and_vol_chronos_scalar_gua
 def test_load_venue_module_ssot_stratparams_from_dict_and_hl_candles_validation():
     """Verify load_venue_module sys.path preservation, Spot/T212 StratParams.from_dict defaults, and HL candle continuity validation."""
     from offline.runners.fetch_hyperliquid_candles import validate_continuity
-    from strategies.spot_engine import StratParams as SpotStratParams
-    from strategies import spot_replay as binance_replay
 
     # 1. load_venue_module loads hyperliquid and 212trading modules without mutating sys.path
     orig_path = list(sys.path)
@@ -5898,10 +5881,10 @@ def test_load_venue_module_ssot_stratparams_from_dict_and_hl_candles_validation(
     assert sys.path == orig_path
     assert hasattr(hl_replay, "make_hyperliquid_replay_adapter")
     assert hasattr(t212_replay, "make_t212_replay_adapter")
-    assert hasattr(binance_replay, "prewarm_trend_series")
+    assert hasattr(spot_replay, "prewarm_trend_series")
 
     # 2. Both SpotStratParams.from_dict and T212 StratParams.from_dict populate defaults and ignore removed fields
-    spot_p = SpotStratParams.from_dict({"takeprofit_pct": 6.5, "obsolete_key": 99})
+    spot_p = StratParams.from_dict({"takeprofit_pct": 6.5, "obsolete_key": 99})
     assert spot_p.takeprofit_pct == 6.5
     assert spot_p.currency == "USDC"
 
@@ -6078,12 +6061,9 @@ def test_t212_backtest_simulate_trail_and_calibrate_audit_fmt():
 
 def test_replay_align_exports_grid_replay_vol_chronos_and_sim_normalize(monkeypatch):
     """Verify align_spot_interval_params re-exports, kraken_continuous_grid interval alignment, vol_chronos list/inf handling, and PriceWindow.normalize_indices."""
-    from strategies import spot_replay as kraken_rp
-    from strategies import spot_replay as binance_rp
-    from offline.research.ml_forecast import vol_chronos
     from offline.simulations.sim import PriceWindow
 
-    assert kraken_rp.align_spot_interval_params is binance_rp.align_spot_interval_params
+    assert callable(spot_replay.align_spot_interval_params)
 
     # kraken_continuous_grid.grid.replay aligns params to 240m before calling run_replay
     captured = {}
@@ -6101,7 +6081,7 @@ def test_replay_align_exports_grid_replay_vol_chronos_and_sim_normalize(monkeypa
     assert captured["params"].dca_vol_interval == 240
 
     # vol_chronos.walk_forward_vol handles Python list with inf/nan without crashing when no valid window exists
-    res_vol = vol_chronos.walk_forward_vol([float("inf"), float("nan"), 0.01], horizon=24, warmup=0, stride=6)
+    res_vol = ml_vc.walk_forward_vol([float("inf"), float("nan"), 0.01], horizon=24, warmup=0, stride=6)
     assert res_vol["n_test"] == 0
 
     # PriceWindow.normalize_indices evicts expired entries before computing min_index

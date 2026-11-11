@@ -490,16 +490,15 @@ def test_stage_previous_generation_and_concurrent_reader_race(tmp_path, monkeypa
 
 def test_state_io_read_tail_lines_truncate_file_bytes_and_prune_rotated_archives_bool_zero_protection_iter46_s4(tmp_path):
     """[ITER46 #4] state_io: read_tail_lines, truncate_file_bytes, and prune_rotated_archives bool/zero protection."""
-    import state_io as sio
     # 4. state_io: read_tail_lines, truncate_file_bytes, and prune_rotated_archives bool/zero protection
     tail_file = tmp_path / "tail_test.txt"
     tail_file.write_text("line1\nline2\nline3\n", encoding="utf-8")
-    assert sio.read_tail_lines(str(tail_file), 2, chunk_size=0) == [b"line2", b"line3"]
-    assert sio.read_tail_lines(str(tail_file), 2, chunk_size=True) == [b"line2", b"line3"]
+    assert state_io.read_tail_lines(str(tail_file), 2, chunk_size=0) == [b"line2", b"line3"]
+    assert state_io.read_tail_lines(str(tail_file), 2, chunk_size=True) == [b"line2", b"line3"]
     with pytest.raises(ValueError):
-        sio.truncate_file_bytes(str(tail_file), True)
+        state_io.truncate_file_bytes(str(tail_file), True)
     with pytest.raises(ValueError):
-        sio.truncate_file_bytes(str(tail_file), -1)
+        state_io.truncate_file_bytes(str(tail_file), -1)
 
 def test_jsonstatestore_save_rejects_non_dict_state_and_state_io_iter64_s2(tmp_path):
     """[ITER64 #2] JsonStateStore.save rejects non-dict state and state_io.read_tail_lines guards directory/None limit."""

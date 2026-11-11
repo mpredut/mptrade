@@ -1706,13 +1706,12 @@ def test_external_guards_with_none_side_iter31_s2():
 
 def test_external_order_guard_fails_fast_on_empty_margins_allows_partial_iter37_s1(monkeypatch):
     """[ITER37 #1] external_order_guard fails fast on empty margins={}, allows partial margins with guard modes,."""
-    import external_order_guard as eog
     # 1. external_order_guard fails fast on empty margins={}, allows partial margins with guard modes,
     #    allows now=0.0, and sanitizes NaN/bool suggested_scale
     with pytest.raises(KeyError):
-        eog.check_external_order_guards("BTCUSDC", "BUY", 60000.0, margins={})
+        external_order_guard.check_external_order_guards("BTCUSDC", "BUY", 60000.0, margins={})
 
-    ok_part, r_part, scale_part = eog.check_external_order_guards(
+    ok_part, r_part, scale_part = external_order_guard.check_external_order_guards(
         "BTCUSDC",
         "BUY",
         60000.0,
@@ -1726,9 +1725,9 @@ def test_external_order_guard_fails_fast_on_empty_margins_allows_partial_iter37_
     import intelligence.external.guards.orderbook_wall_guard as owg
     import intelligence.external.guards.funding_crowding_guard as fcg
 
-    monkeypatch.setattr(eog, "get_whale_collector", lambda: SimpleNamespace(fetch=lambda *a, **kw: {}))
-    monkeypatch.setattr(eog, "get_orderbook_collector", lambda: SimpleNamespace(fetch=lambda *a, **kw: {}))
-    monkeypatch.setattr(eog, "get_derivatives_collector", lambda: SimpleNamespace(fetch=lambda *a, **kw: {}))
+    monkeypatch.setattr(external_order_guard, "get_whale_collector", lambda: SimpleNamespace(fetch=lambda *a, **kw: {}))
+    monkeypatch.setattr(external_order_guard, "get_orderbook_collector", lambda: SimpleNamespace(fetch=lambda *a, **kw: {}))
+    monkeypatch.setattr(external_order_guard, "get_derivatives_collector", lambda: SimpleNamespace(fetch=lambda *a, **kw: {}))
     monkeypatch.setattr(
         wdg, "WhaleDivergenceGuard",
         lambda **kw: SimpleNamespace(check=lambda *a, **k: SimpleNamespace(allowed=True, brake_action=BrakeAction.DOWNSCALE_QTY, suggested_scale=float("nan"), reason="w_nan")),
@@ -1741,7 +1740,7 @@ def test_external_order_guard_fails_fast_on_empty_margins_allows_partial_iter37_
         fcg, "FundingCrowdingGuard",
         lambda **kw: SimpleNamespace(check=lambda *a, **k: SimpleNamespace(allowed=True, brake_action=BrakeAction.DOWNSCALE_QTY, suggested_scale=0.75, reason="f_down")),
     )
-    ok_scale, r_scale, scale_val = eog.check_external_order_guards(
+    ok_scale, r_scale, scale_val = external_order_guard.check_external_order_guards(
         "BTCUSDC",
         "BUY",
         60000.0,

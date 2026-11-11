@@ -1303,10 +1303,9 @@ def test_strategies_spot_replay_ohlc_validation_params_isolation_when_dca_drop_s
     """[ITER93 #1] strategies.spot_replay: OHLC validation & params isolation when dca_drop_series / reentry_series is used."""
     # 1. strategies.spot_replay: OHLC validation & params isolation when dca_drop_series / reentry_series is used
     from offline.backtests.execution import ExecutionModel
-    from strategies.spot_engine import StratParams as SpotStratParams
     from strategies.spot_replay import run_replay
 
-    orig_params = SpotStratParams(
+    orig_params = StratParams(
         currency="USD",
         entry_amount=100.0,
         entry_discount_pct=0.2,

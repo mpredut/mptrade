@@ -575,9 +575,8 @@ def test_candle_interval_rejects_bool_iter29_s1():
 
 def test_compute_weight_capped_qty_must_accept_required_qty_float_inf_auto_quantity_iter35_s1():
     """[ITER35 #1] compute_weight_capped_qty must accept required_qty=float('inf') (auto-quantity from decide_quantity)."""
-    import order_guard as og
     # 1. compute_weight_capped_qty must accept required_qty=float('inf') (auto-quantity from decide_quantity)
-    capped_inf = og.compute_weight_capped_qty(
+    capped_inf = _order_guard.compute_weight_capped_qty(
         weight=0.5,
         price=100.0,
         required_qty=float("inf"),
@@ -587,8 +586,8 @@ def test_compute_weight_capped_qty_must_accept_required_qty_float_inf_auto_quant
     assert math.isclose(capped_inf, 5.0)
 
     # required_qty=NaN or bool must still return 0.0
-    assert og.compute_weight_capped_qty(0.5, 100.0, float("nan"), 10.0, 0.0) == 0.0
-    assert og.compute_weight_capped_qty(0.5, 100.0, True, 10.0, 0.0) == 0.0
+    assert _order_guard.compute_weight_capped_qty(0.5, 100.0, float("nan"), 10.0, 0.0) == 0.0
+    assert _order_guard.compute_weight_capped_qty(0.5, 100.0, True, 10.0, 0.0) == 0.0
 
 def test_fee_cap_quantity_nan_bool_safety_iter35_s2():
     """[ITER35 #2] fee_cap_quantity NaN/bool safety."""

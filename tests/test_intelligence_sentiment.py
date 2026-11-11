@@ -4103,7 +4103,6 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
             closes = [0.2072 if idx == 0 else (0.214343 if idx == 30 else 0.1879) for idx in range(n_bars)]
             return SimpleNamespace(timestamps=ts_list, closes=closes, lows=closes, highs=closes, volumes=[1000.0] * n_bars)
 
-    from types import SimpleNamespace as _SNS
 
     enrich_24h_and_microstructure(
         str(cdir_36),
@@ -4111,7 +4110,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         pt_ag,
         {},
         {},
-        {"ADAUSD": _SNS(_provider=_FakeAdaProvider(), provider_name="kraken")},
+        {"ADAUSD": SimpleNamespace(_provider=_FakeAdaProvider(), provider_name="kraken")},
         now_ag,
     )
     enrich_cross_venue_trends(pt_ag, {}, {}, {}, {}, {}, watcher_ag)
@@ -9041,13 +9040,12 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
         ),
         encoding="utf-8",
     )
-    import os as _os_134
 
-    _os_134.environ["MPTRADE_OFFLINE_DISK_CACHE"] = "1"
+    os.environ["MPTRADE_OFFLINE_DISK_CACHE"] = "1"
     try:
         pt_tele_134 = collect_pretrade_telemetry("TAO_USDC", cachedb_dir=str(cdir_134))
     finally:
-        _os_134.environ.pop("MPTRADE_OFFLINE_DISK_CACHE", None)
+        os.environ.pop("MPTRADE_OFFLINE_DISK_CACHE", None)
     assert "24h Range=[$218.0, $221.2]" in str(pt_tele_134.get("24h Multi-Horizon Price Evolution", ""))
     assert "-13.25%" in str(pt_tele_134.get("7d Price Range & Swing Structure", ""))
     assert "vp_source=REAL_VOL" in str(pt_tele_134.get("24h Volume Profile (POC / Value Area)", ""))
@@ -9462,7 +9460,6 @@ def test_highstakeguard_helpers_nan_bool_resilience_iter31_s3(monkeypatch):
 
 def test_evaluate_high_stake_order_guard_with_nan_computed_notional_does_not_invoke_highstakeguard_iter34_s5(monkeypatch):
     """[ITER34 #5] evaluate_high_stake_order_guard with NaN computed_notional does not invoke HighStakeGuard."""
-    import llm_order_guard as log_mod
     # 5. evaluate_high_stake_order_guard with NaN computed_notional does not invoke HighStakeGuard
     called_hs = []
 
@@ -9474,11 +9471,10 @@ def test_evaluate_high_stake_order_guard_with_nan_computed_notional_does_not_inv
             called_hs.append((a, kw))
             return SimpleNamespace(allowed=False, reason="veto", suggested_scale=0.0, brake_action="VETO")
 
-    import intelligence.sentiment.guards.high_stake_guard as hs_mod
-    monkeypatch.setattr(hs_mod, "HighStakeGuard", _FailIfCalledHS)
-    monkeypatch.setattr(hs_mod, "is_llm_guard_exempt", lambda: False)
+    monkeypatch.setattr(hsg_mod, "HighStakeGuard", _FailIfCalledHS)
+    monkeypatch.setattr(hsg_mod, "is_llm_guard_exempt", lambda: False)
 
-    ok_nan, r_nan, sc_nan = log_mod.evaluate_high_stake_order_guard(
+    ok_nan, r_nan, sc_nan = llm_order_guard.evaluate_high_stake_order_guard(
         symbol="BTCUSDC",
         side="BUY",
         price=85000.0,

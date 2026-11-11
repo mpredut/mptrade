@@ -1017,8 +1017,7 @@ def test_212trading_market_data_validation_future_timestamp_protection_iter91_s2
         t212_md.fetch_yahoo_candles("NVDA", True, "5m")
 
     # Future timestamp (>60s ahead) in check_market must not trigger fresh_series / really_trading
-    import time as _time
-    future_ts = _time.time() + 86400.0
+    future_ts = time.time() + 86400.0
     monkeypatch.setattr(
         t212_md,
         "_chart",

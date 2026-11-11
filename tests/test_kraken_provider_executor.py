@@ -791,16 +791,15 @@ def test_krakenprovider_get_price_history_open_orders_order_status_iter51_s5(mon
 
 def test_kraken_market_data_fetch_ohlc_candles_rejects_bool_nan_inf_interval_iter52_s2():
     """[ITER52 #2] kraken/market_data: fetch_ohlc_candles rejects bool/NaN/Inf/<=0 interval and timeout."""
-    from kraken import market_data as k_md
     # 2. kraken/market_data: fetch_ohlc_candles rejects bool/NaN/Inf/<=0 interval and timeout
     with pytest.raises(ValueError):
-        k_md.fetch_ohlc_candles("HYPEUSD", True)
+        kmd.fetch_ohlc_candles("HYPEUSD", True)
     with pytest.raises(ValueError):
-        k_md.fetch_ohlc_candles("HYPEUSD", 60, timeout=True)
+        kmd.fetch_ohlc_candles("HYPEUSD", 60, timeout=True)
     with pytest.raises(ValueError):
-        k_md.fetch_ohlc_candles("HYPEUSD", float("nan"))
+        kmd.fetch_ohlc_candles("HYPEUSD", float("nan"))
     with pytest.raises(ValueError):
-        k_md.fetch_ohlc_candles("HYPEUSD", 0)
+        kmd.fetch_ohlc_candles("HYPEUSD", 0)
 
 def test_kraken_kraken_bot__cmd_balance_ignores_bool_nan_inf_balances_iter52_s4(monkeypatch):
     """[ITER52 #4] kraken/kraken_bot._cmd_balance ignores bool/NaN/Inf balances without crashing."""
@@ -817,10 +816,9 @@ def test_kraken_kraken_bot__cmd_balance_ignores_bool_nan_inf_balances_iter52_s4(
 
 def test_kraken_kraken_xstock_watch_check_levels_ignores_bool_nan_inf_alloc_price_iter52_s5():
     """[ITER52 #5] kraken/kraken_xstock_watch.check_levels ignores bool/NaN/Inf alloc_price, tp_pct, sl_pct, price."""
-    from kraken import kraken_xstock_watch as k_xw
     # 5. kraken/kraken_xstock_watch.check_levels ignores bool/NaN/Inf alloc_price, tp_pct, sl_pct, price
     xw_st = {"allocated": {"asset": "SPCX", "qty": True}, "pair": "SPCXUSD", "alerted_tp": False, "alerted_sl": False}
-    k_xw.check_levels(
+    kxw.check_levels(
         SimpleNamespace(last_price=lambda _p: 150.0),
         xw_st,
         alloc_price=float("nan"),
@@ -1062,14 +1060,13 @@ def test_krakenprovider_kraken_pair_matches_free_balance_normalization_negative_
 
 def test_krakenprovider_iter111_s1():
     """[ITER111 #1] KrakenProvider."""
-    import providers.kraken_provider as kp
     # 1. KrakenProvider
-    assert kp.kraken_pair_key(True) == ""
-    assert kp.kraken_pair_key(None) == ""
-    norm = kp._normalize_kraken_fill({"side": "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000, "ordertxid": True})
+    assert kraken_provider.kraken_pair_key(True) == ""
+    assert kraken_provider.kraken_pair_key(None) == ""
+    norm = kraken_provider._normalize_kraken_fill({"side": "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000, "ordertxid": True})
     assert "orderId" not in norm
 
-    k_prov = kp.KrakenProvider.__new__(kp.KrakenProvider)
+    k_prov = kraken_provider.KrakenProvider.__new__(kraken_provider.KrakenProvider)
     k_prov.preflight_order("XXBTZUSD", True, 1.0)
     with pytest.raises(ProviderError):
         k_prov.order_status("XXBTZUSD", True)
@@ -1149,10 +1146,9 @@ def test_kraken_cachemanager__match_configured_pair__normalize_and__ledger_to_fi
 
 def test_kraken_market_data_fetch_ohlc_candles_rejects_float_interval_with_invalid_iter117_s1():
     """[ITER117 #1] kraken.market_data.fetch_ohlc_candles rejects float interval with 'invalid interval'."""
-    import kraken.market_data as k_md
     # 1. kraken.market_data.fetch_ohlc_candles rejects float interval with "invalid interval"
     with pytest.raises(ValueError, match="invalid interval"):
-        k_md.fetch_ohlc_candles("XXBTZUSD", 1.5)
+        kmd.fetch_ohlc_candles("XXBTZUSD", 1.5)
 
 def test_marketapi_krakenprovider_and_t212provider_reject_nan_inf_non_iter122_s3():
     """[ITER122 #3] MarketApi, KrakenProvider, and T212Provider reject NaN/Inf/non-integer order_id."""
@@ -1399,7 +1395,6 @@ def test_krakenprovider__fills_from_api_none_and_cancel_order_with_count_iter164
 
 def test_krakenprovider_open_orders_side_aliases_preflight_order_ask_alias_and_iter169_s3(monkeypatch):
     """[ITER169 #3] KrakenProvider open_orders side aliases, preflight_order ASK alias, and positional force."""
-    from providers import kraken_provider as krp
     # 3. KrakenProvider open_orders side aliases, preflight_order ASK alias, and positional force
     class _FakeKrakenClient:
         def open_orders(self):
@@ -1414,7 +1409,7 @@ def test_krakenprovider_open_orders_side_aliases_preflight_order_ask_alias_and_i
         def add_order(self, symbol, side, qty, price, **kw):
             return {"txid": ["OID2"], "ordertype": kw.get("ordertype"), "validate": kw.get("validate")}
 
-    kr = krp.KrakenProvider(client=_FakeKrakenClient())
+    kr = kraken_provider.KrakenProvider(client=_FakeKrakenClient())
     monkeypatch.setattr(kr, "execution_enabled", lambda: False)
     monkeypatch.setattr(kr, "round_quantity", lambda sym, q: float(q))
     monkeypatch.setattr(

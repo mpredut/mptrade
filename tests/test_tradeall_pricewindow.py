@@ -986,9 +986,8 @@ class TestTrendCoordinator(TempDirTestCase):
 
     def test_concurrent_update_and_read_no_crash(self):
         """A WS thread updates the window while the evaluation reads it."""
-        import threading as _t
         coord = self._make_coord()
-        stop = _t.Event()
+        stop = threading.Event()
         errors = []
 
         def writer():
@@ -1010,9 +1009,9 @@ class TestTrendCoordinator(TempDirTestCase):
                     errors.append(("reader", e))
 
         threads = [
-            _t.Thread(target=writer, name="writer"),
-            _t.Thread(target=reader, name="reader_1"),
-            _t.Thread(target=reader, name="reader_2"),
+            threading.Thread(target=writer, name="writer"),
+            threading.Thread(target=reader, name="reader_1"),
+            threading.Thread(target=reader, name="reader_2"),
         ]
         for th in threads:
             th.start()

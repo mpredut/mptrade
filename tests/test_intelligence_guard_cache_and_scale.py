@@ -240,13 +240,12 @@ class TestCacheSafetyAndHotReload:
 
     def test_price_analysis_cache_ttl_forces_recalculation(self, monkeypatch):
         """Verify get_weight_for_cash_permission_at_quant_time recalculates after 300s TTL."""
-        import priceAnalysis
 
         memo_key = ("BTCUSDC", "BUY", 14)
-        priceAnalysis.last_w[memo_key] = [0.99]
-        priceAnalysis.last_timestamp[memo_key] = 1000.0
-        priceAnalysis.last_calc_time[memo_key] = time.time() - 400.0  # > 300s old
-        priceAnalysis.last_duration[memo_key] = 86400.0
+        pa.last_w[memo_key] = [0.99]
+        pa.last_timestamp[memo_key] = 1000.0
+        pa.last_calc_time[memo_key] = time.time() - 400.0  # > 300s old
+        pa.last_duration[memo_key] = 86400.0
 
         # Mock trend cache in cacheManager
         mock_trend = {
@@ -265,9 +264,9 @@ class TestCacheSafetyAndHotReload:
             calc_called = True
             return np.array([0]), np.array([0.77])
 
-        monkeypatch.setattr(priceAnalysis, "get_trade_weight", mock_get_trade_weight)
+        monkeypatch.setattr(pa, "get_trade_weight", mock_get_trade_weight)
 
-        w = priceAnalysis.get_weight_for_cash_permission_at_quant_time(
+        w = pa.get_weight_for_cash_permission_at_quant_time(
             "BTCUSDC", "BUY", T_quanta=14
         )
         assert calc_called is True

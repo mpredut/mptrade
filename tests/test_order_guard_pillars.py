@@ -2116,11 +2116,10 @@ def test_qlimit_order_guard_check_qlimit2_order_guards_side_normalization_bool_r
 
 def test_external_order_guard_check_external_order_guards_side_normalization_bool_rejection_iter100_s3():
     """[ITER100 #3] external_order_guard.check_external_order_guards side normalization & bool rejection."""
-    import external_order_guard
     # 3. external_order_guard.check_external_order_guards side normalization & bool rejection
-    assert external_order_guard.check_external_order_guards("BTCUSDC", True, 100.0) == (True, "not_supported_side", 1.0)
-    assert external_order_guard.check_external_order_guards("BTCUSDC", None, 100.0) == (True, "not_supported_side", 1.0)
-    assert external_order_guard.check_external_order_guards(
+    assert eog.check_external_order_guards("BTCUSDC", True, 100.0) == (True, "not_supported_side", 1.0)
+    assert eog.check_external_order_guards("BTCUSDC", None, 100.0) == (True, "not_supported_side", 1.0)
+    assert eog.check_external_order_guards(
         "BTCUSDC", " s ", 100.0, margins={"intelligence_guards_mode": "off"}
     ) == (True, "intelligence_guards_off", 1.0)
 

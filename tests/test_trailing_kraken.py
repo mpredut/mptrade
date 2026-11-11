@@ -956,7 +956,6 @@ def test_krakentrailing__submit_lifecycle_order_normalizes_bypass_guards_all_all
 def test_trailing_core_should_sell_krakentrailing__trend_value_previous_recovery_iter21_s3(tmp_path, monkeypatch):
     """[ITER21 #3] trailing_core.should_sell & KrakenTrailing._trend_value .previous recovery."""
     import pytest
-    import kraken.trailing_stop as kt
     # 3. trailing_core.should_sell & KrakenTrailing._trend_value .previous recovery
     assert trailing_core.should_sell(0.0, 100.0, 15.0) is False
     assert trailing_core.should_sell(-5.0, 100.0, 15.0) is False
@@ -970,15 +969,14 @@ def test_trailing_core_should_sell_krakentrailing__trend_value_previous_recovery
         json.dumps({"HYPEUSDC": {"ts": time.time() * 1000.0, "gradient_recent": 0.42}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(kt, "CACHE_TREND", str(trend_file))
-    kt_inst = object.__new__(kt.KrakenTrailing)
+    monkeypatch.setattr(ts_mod, "CACHE_TREND", str(trend_file))
+    kt_inst = object.__new__(ts_mod.KrakenTrailing)
     assert kt_inst.trend("HYPE/USD") == pytest.approx(0.42)
 
 def test_kraken_trailing_stop_krakentrailing_reconcile_pending_execute_rebuy_nan_bool_safety_iter52_s3(tmp_path):
     """[ITER52 #3] kraken/trailing_stop: KrakenTrailing.reconcile_pending & execute_rebuy NaN/bool safety."""
-    from kraken import trailing_stop as k_ts
     # 3. kraken/trailing_stop: KrakenTrailing.reconcile_pending & execute_rebuy NaN/bool safety
-    kt = k_ts.KrakenTrailing(
+    kt = ts_mod.KrakenTrailing(
         client=SimpleNamespace(),
         log=lambda _m: None,
         enabled=False,
