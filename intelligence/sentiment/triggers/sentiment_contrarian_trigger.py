@@ -46,14 +46,14 @@ class SentimentContrarianTrigger:
         price_f = safe_pos_float(price, 0.0)
         if snapshot is None or price_f <= 0.0:
             return None, None
-        val_f = safe_float(obj_attr(snapshot, "value", None), default=None)
-        if val_f is None:
+        extracted = FearGreedSnapshot.extract_value_and_label(
+            snapshot, preserve_float=True
+        )
+        if extracted is None:
             return None, None
+        val, cls_label = extracted
         price = price_f
         now = resolve_now_ts(ts)
-        val = int(round(val_f)) if float(val_f).is_integer() else val_f
-        raw_cls = obj_attr(snapshot, "classification", None) or obj_attr(snapshot, "sentiment", None)
-        cls_label = str(raw_cls).strip() if (isinstance(raw_cls, str) and raw_cls.strip()) else "Unknown"
         trend_7d = obj_attr(snapshot, "trend_7d_change", None)
 
         # 1. Contrarian ENTRY BUY during Extreme Fear

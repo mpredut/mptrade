@@ -2,15 +2,13 @@
 
 from collections import deque
 import os
-import random
 import sys
-import time
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from offline.simulations.sim import PriceWindow
+from offline.simulations.sim import run_interactive_simulation
 import matplotlib.pyplot as plt  # noqa: E402
 
 
@@ -38,23 +36,13 @@ def plot_graphs(price_window, full_prices):
 
 
 def main():
-    window_size = 10
-    max_full_prices = 500
-    price_window = PriceWindow(window_size)
-    full_prices = deque(maxlen=max_full_prices)  # We keep up to 500 values.
-    random.seed(42)
+    full_prices = deque(maxlen=500)  # We keep up to 500 values.
 
-    plt.ion()  # Enable interactive mode so the charts can be watched in real time.
+    def _on_tick(price_window, price):
+        full_prices.append(price)
+        plot_graphs(price_window, full_prices)
 
-    try:
-        while True:
-            price = random.uniform(1, 100)
-            full_prices.append(price)  # Add the price to the full chart.
-            price_window.process_price(price)
-            plot_graphs(price_window, full_prices)
-            time.sleep(1.2)  # A small delay to simulate real time.
-    except KeyboardInterrupt:
-        print("Simulation stopped manually.")
+    run_interactive_simulation(10, sleep_sec=1.2, on_tick_fn=_on_tick)
 
 
 if __name__ == "__main__":

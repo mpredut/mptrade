@@ -49,6 +49,31 @@ class FearGreedSnapshot:
     is_extreme_fear: bool                # True if value <= 25
     is_extreme_greed: bool               # True if value >= 75
 
+    @staticmethod
+    def extract_value_and_label(
+        snapshot: Any, *, preserve_float: bool = False
+    ) -> Optional[Tuple[int | float, str]]:
+        """Extract ``(value, classification_label)`` from a ``FearGreedSnapshot`` or dict-like mapping."""
+        if snapshot is None:
+            return None
+        val_f = safe_float(obj_attr(snapshot, "value", None), default=None)
+        if val_f is None:
+            return None
+        val: int | float = (
+            (int(round(val_f)) if float(val_f).is_integer() else val_f)
+            if preserve_float
+            else int(round(val_f))
+        )
+        raw_cls = obj_attr(snapshot, "classification", None) or obj_attr(
+            snapshot, "sentiment", None
+        )
+        cls_label = (
+            str(raw_cls).strip()
+            if (isinstance(raw_cls, str) and raw_cls.strip())
+            else "Unknown"
+        )
+        return val, cls_label
+
 
 @dataclass(frozen=True)
 class MarketBreadthSnapshot:

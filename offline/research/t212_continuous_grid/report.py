@@ -12,8 +12,9 @@ from botcore import optional_env, safe_float
 from offline.research.kraken_continuous_grid.report import (
     _fmt_num as _fmt_cell,
     _format_errors_section,
+    load_grid_results_partitioned,
 )
-from state_io import atomic_write_text, read_jsonl_dicts
+from state_io import atomic_write_text
 
 EXP = optional_env("GRID_OUT") or os.path.join(ROOT, "offline", "results", "t212_continuous_grid")
 HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}
@@ -36,16 +37,9 @@ def generate_report(exp_dir=None):
     if not os.path.exists(results_path):
         return f"# Trading 212 grid\n\nNo results found at {results_path}.\n"
 
-    rows = read_jsonl_dicts(results_path)
-
-    errors = [r for r in rows if "error" in r]
-    valid_rows = [
-        r for r in rows
-        if "error" not in r
-        and isinstance(r.get("profile"), str) and r["profile"].strip()
-        and isinstance(r.get("variant"), str) and r["variant"].strip()
-        and isinstance(r.get("asset"), str) and r["asset"].strip()
-    ]
+    valid_rows, errors = load_grid_results_partitioned(
+        results_path, ("profile", "variant", "asset")
+    )
 
     by = defaultdict(dict)  # (profile, variant) -> asset -> row
     for r in valid_rows:

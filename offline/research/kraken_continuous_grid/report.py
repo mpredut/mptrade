@@ -84,15 +84,23 @@ def _risk_adjusted_score(ret_pct: float, dd_pct: float, dd_floor: float = 5.0) -
     return (r * d) / (dd_floor * dd_floor)
 
 
-def _load_grid_results_by_cfg(results_path: str) -> tuple[list[dict], list[dict], dict[str, dict[str, dict]], list[str]]:
+def load_grid_results_partitioned(
+    results_path: str, required_str_keys: tuple[str, ...]
+) -> tuple[list[dict], list[dict]]:
+    """Load JSONL grid rows and partition into ``(valid_rows, error_rows)``."""
     rows = read_jsonl_dicts(results_path)
     errors = [r for r in rows if "error" in r]
     valid_rows = [
-        r for r in rows
+        r
+        for r in rows
         if "error" not in r
-        and isinstance(r.get("cfg"), str) and r["cfg"].strip()
-        and isinstance(r.get("asset"), str) and r["asset"].strip()
+        and all(isinstance(r.get(k), str) and r[k].strip() for k in required_str_keys)
     ]
+    return valid_rows, errors
+
+
+def _load_grid_results_by_cfg(results_path: str) -> tuple[list[dict], list[dict], dict[str, dict[str, dict]], list[str]]:
+    valid_rows, errors = load_grid_results_partitioned(results_path, ("cfg", "asset"))
     by: dict[str, dict[str, dict]] = defaultdict(dict)
     for r in valid_rows:
         by[r["cfg"]][r["asset"]] = r

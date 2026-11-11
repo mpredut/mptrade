@@ -139,8 +139,12 @@ class PriceWindow:
             p.pause(0.1)  # A short pause so the chart updates.
 
 
-def main():
-    window_size = 10
+def run_interactive_simulation(
+    window_size: int = 10,
+    *,
+    sleep_sec: float = 7.5,
+    on_tick_fn=None,
+) -> None:
     price_window = PriceWindow(window_size)
     random.seed(42)
 
@@ -149,10 +153,17 @@ def main():
         while True:
             price = random.uniform(1, 100)
             price_window.process_price(price)
-            price_window.plot_window()
-            time.sleep(7.5)  # A small delay to simulate real time.
+            if on_tick_fn is not None:
+                on_tick_fn(price_window, price)
+            else:
+                price_window.plot_window()
+            time.sleep(sleep_sec)  # A small delay to simulate real time.
     except KeyboardInterrupt:
         print("Simulation stopped manually.")
+
+
+def main():
+    run_interactive_simulation(10, sleep_sec=7.5)
 
 
 if __name__ == "__main__":

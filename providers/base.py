@@ -1093,6 +1093,15 @@ class MarketDataProvider(ABC):
     def place_order(self, symbol: str, side: str, price: float, qty: float, force: bool = False, **kwargs):
         return None
 
+    def _resolve_live_order_flag(self, kwargs: dict) -> bool:
+        """Pop optional ``live_enabled`` override from ``kwargs`` or fall back to ``self.execution_enabled()``."""
+        live_override = kwargs.pop("live_enabled", None)
+        return (
+            self.execution_enabled()
+            if live_override is None
+            else _parse_bool_flag(live_override, False)
+        )
+
     def _validate_submit_order_side(
         self, symbol: str, side: str, *, validate_sym: bool = True
     ) -> str:

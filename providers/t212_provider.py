@@ -643,8 +643,7 @@ class T212Provider(MarketDataProvider):
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):
         order_validity = kwargs.pop("order_validity", None)
-        live_override = kwargs.pop("live_enabled", None)
-        live = self.execution_enabled() if live_override is None else _parse_bool_flag(live_override, False)
+        live = self._resolve_live_order_flag(kwargs)
         if not live:
             print(
                 f"[T212][DRY] would place {side} {symbol} qty={qty} @ {price} "

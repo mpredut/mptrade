@@ -12,11 +12,7 @@ from botcore import (
     normalize_side,
     safe_thresh,
 )
-from intelligence.macro_sentiment_ssot import (
-    clean_scale,
-    obj_attr,
-    safe_float,
-)
+from intelligence.macro_sentiment_ssot import clean_scale
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
 
@@ -57,12 +53,10 @@ class ExtremeGreedGuard(OrderGuardEvaluatorBase):
         if normalize_side(side) != "BUY":
             return GuardDecision.allow("ExtremeGreedGuard", "sell_permitted_in_greed")
 
-        val_f = safe_float(obj_attr(snapshot, "value", None), default=None)
-        if val_f is None:
+        extracted = FearGreedSnapshot.extract_value_and_label(snapshot)
+        if extracted is None:
             return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
-        val = int(round(val_f))
-        raw_cls = obj_attr(snapshot, "classification", None) or obj_attr(snapshot, "sentiment", None)
-        cls_label = str(raw_cls).strip() if (isinstance(raw_cls, str) and raw_cls.strip()) else "Unknown"
+        val, cls_label = extracted
 
         if val >= self.hard_veto_threshold:
             return GuardDecision.veto(
