@@ -28,7 +28,7 @@ from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, get_post_stop_reentry_guard
 from kraken.kraken_client import KrakenClient
-from market_monitor import new_coins_discovery as ncd
+from market_monitor import new_coins_discovery as ncd, pricefetcher as pf
 from market_monitor.pricechecker import PriceChecker
 from notify_engine import alertnotifiers, mailer
 from offline.backtests.evaluation import (
@@ -37,7 +37,7 @@ from offline.backtests.evaluation import (
     evaluate_segment,
     load_venue_module,
 )
-from offline.research.monitortrades_backtest import run_replay_backtest as rb
+from offline.research.monitortrades_backtest import run_replay_backtest as rb, scheduled_pilot as sp
 from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
 from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
@@ -45,6 +45,7 @@ from pathlib import Path
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
 from providers.replay_provider import ReplayMarketDataProvider
+from providers.strategy_executor import ProviderError
 from providers.t212_provider import T212Provider
 from strategies.position_exit_manager import (
     ExitAction,
@@ -64,6 +65,7 @@ import cacheManager as cm
 import cachepaths
 import external_order_guard as eog
 import importlib
+import importlib.util
 import io
 import math
 import monitororder as mo
@@ -118,8 +120,6 @@ from strategies.rtrade_pair import PairCoordinator, PairPolicy
 from strategies.spot_replay import align_spot_interval_params
 from verify_tools import pnl_report, portfolio_snapshot
 from visuals import drawprices
-from market_monitor import pricefetcher as pf
-from offline.research.monitortrades_backtest import scheduled_pilot as sp
 import offline.research.kraken_continuous_grid.grid as kgrid
 import urllib.request
 
@@ -996,7 +996,6 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     assert tob._load_cachedb_price_entries("cache_24_price_TEST.json", "TEST") == []
 
     # 11. analyze_volatility.pullbacks empty input, 212trading/backtest.simulate None/shorthand keys, hyperliquid/backtest.precompute_signal
-    import importlib.util
     root_dir = Path(tob.__file__).resolve().parent.parent
 
     mod_av = load_local_module(str(root_dir / "212trading"), "analyze_volatility", module_key="t212_analyze_vol_test", reload=True)
@@ -1077,7 +1076,6 @@ def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comme
     """Verify HL price_analysis non-numeric mid safety, HL Strategy.run exception resilience, backtest_ranges section comments, and chop_benchmark step validation."""
 
     from offline.research import chop_weight_backtest as cwb
-    import market_monitor.pricefetcher as pf
 
     # 1. backtest_ranges section header with inline comment
     conf_p = tmp_path / "ranges.conf"
@@ -1337,7 +1335,6 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
 def test_provider_env_value_and_order_price_validation(tmp_path):
     from botcore import env_value
     from providers.base import bool_env
-    from providers.strategy_executor import ProviderError
 
     # 1. providers.base.env_value strips export prefix and unquoted inline comments
     cfg_dir = tmp_path / "venue_cfg"
@@ -1715,7 +1712,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert snap_nf.total_fetched == 0
 
     # 10. Providers (Kraken ohlc_series, base aggregate_fills_by_order_id, quantity, replay_provider, _parse_tranches)
-    from providers.strategy_executor import ProviderError
     kp = KrakenProvider()
     with pytest.raises(ProviderError):
         kp.ohlc_series("HYPEUSD", True)
@@ -2422,7 +2418,6 @@ def test_cache_manager_item_validation_and_kraken_trailing_hardening():
 
 def test_venue_market_data_and_client_hardening():
     """Verify Binance, Kraken, Hyperliquid, and T212 market_data/client helpers reject malformed inputs."""
-    import importlib.util
     from binance_api import market_data as b_md
     from kraken import market_data as k_md
     t212_md = importlib.import_module("212trading.market_data")
@@ -3837,7 +3832,6 @@ def test_batch27_research_syspath_and_ml_forecast_hardening():
 
 
 def test_batch28_providers_spot_engine_and_visuals_hardening(monkeypatch):
-    from providers.strategy_executor import ProviderError
     import visuals.drawprices as dp
     import visuals.tradeall_observe as tobs
 
@@ -3924,7 +3918,6 @@ def test_batch28_providers_spot_engine_and_visuals_hardening(monkeypatch):
 
 
 def test_batch29_cross_venue_module_collision_and_syspath_isolation():
-    import importlib.util
     import types
     from botcore import prepare_shadow_runtime
 
@@ -5022,7 +5015,7 @@ def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening
 def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
     from providers.base import extract_order_price
     from providers.order_ohlc_utils import extract_order_fee
-    from providers.market_api import MarketApi, ProviderError
+    from providers.market_api import MarketApi
     from strategies import spot_rules
 
     # 1. extract_order_fee skips invalid first fee/asset key and falls back to valid alternate key
@@ -5105,7 +5098,6 @@ def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
 
 
 def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
-    import importlib.util
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -5313,7 +5305,6 @@ def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
     from providers import quantity as pqty
     from providers import market_api as pmarket
     from providers import kraken_provider as pkraken
-    from providers.strategy_executor import ProviderError
 
     # 1. providers.order_ohlc_utils.clean_order_id normalizes '+12345.0' and rejects '+0.0'
     assert oou.clean_order_id("+12345.0") == "12345"
@@ -6089,7 +6080,6 @@ def test_replay_align_exports_grid_replay_vol_chronos_and_sim_normalize(monkeypa
     """Verify align_spot_interval_params re-exports, kraken_continuous_grid interval alignment, vol_chronos list/inf handling, and PriceWindow.normalize_indices."""
     from strategies import spot_replay as kraken_rp
     from strategies import spot_replay as binance_rp
-    from offline.research.kraken_continuous_grid import grid as kgrid
     from offline.research.ml_forecast import vol_chronos
     from offline.simulations.sim import PriceWindow
 

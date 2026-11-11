@@ -97,7 +97,6 @@ from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from orchestratorOS.agy.topics import topic_spec
 from providers.order_ohlc_utils import extract_executed_qty, extract_order_side, normalize_open_order
 from verify_tools import portfolio_snapshot, watch_trade_decisions
-from orchestratorOS.supervisor.prompt_formatters import _format_market_prices_section, _format_microstructure_section
 
 
 @pytest.fixture
@@ -6784,11 +6783,6 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     3. enrich_24h_and_microstructure + harvest_recent_orders_and_enrich_positions synchronize Price (3A), ob_mid (3B), and px (3C).
     4. harvest_tradable_positions_and_orders + _format_portfolio_section surface locked_quote_usd & replace_max_buy (and symmetric locked_base & replace_max_sell).
     """
-    from orchestratorOS.supervisor.prompt_formatters import (
-        _format_market_prices_section,
-        _format_microstructure_section,
-        _format_portfolio_section,
-    )
 
     # 1. WhalePositioningCollector 5m rolling windows
     wc = WhalePositioningCollector(cache_dir=str(tmp_path))
@@ -7830,12 +7824,6 @@ def test_audit_remediations_a_through_g_and_crypto_completeness(tmp_path, monkey
     from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
     from intelligence.sentiment.collectors.portfolio_collector import _normalize_open_orders_list
     from market_regime import ClosedPriceSeries
-    from orchestratorOS.supervisor.prompt_formatters import (
-        _format_macro_and_news_section,
-        _format_market_prices_section,
-        _format_microstructure_section,
-        _format_portfolio_section,
-    )
 
     # --- A. Kraken Partial Sell Reconciliation Preserves Remaining Cycle Qty & Cost ---
     cache_dir = tmp_path / "cachedb"
@@ -8346,10 +8334,6 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
     from intelligence.sentiment.evaluators.tca_risk_evaluator import (
         compute_enterprise_portfolio_risk_metrics,
         enrich_open_limit_orders_tca,
-    )
-    from orchestratorOS.supervisor.prompt_formatters import (
-        _format_microstructure_section,
-        _format_portfolio_section,
     )
 
     # 1. Live Macro Calendar FOMC date recognition + Actual vs Consensus Surprise Z-Score (Layer II.2)

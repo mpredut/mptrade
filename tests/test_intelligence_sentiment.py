@@ -3,7 +3,7 @@ import json
 import time
 
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerSide
-from intelligence.internal.guards.guard_decision import BrakeAction
+from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
 from intelligence.sentiment.collectors.fear_greed_collector import (
     FearGreedCollector,
     FearGreedSnapshot,
@@ -121,7 +121,6 @@ from intelligence.macro_sentiment_ssot import extract_high_severity_headlines_an
 from intelligence.sentiment.guards import high_stake_guard as hsg_mod
 from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
 from market_regime import MarketRegimeContext, MarketRegimeDecision
-from intelligence.internal.guards.guard_decision import GuardDecision
 
 
 class TestFearGreedCollector:

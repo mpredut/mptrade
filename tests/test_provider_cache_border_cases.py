@@ -1507,9 +1507,6 @@ def test_botcore_reexport_sync_t212_check_market_and_shadow_env_border_cases(
 ) -> None:
     """Verify botcore reexport sync, state_io patch seams, T212 check_market NaN/ms guards, and shadow env paths."""
     import importlib
-    import math
-    import time
-    from pathlib import Path
     from instrument import Instrument
     from kraken import shadow_live as kraken_shadow
     import offline.backtests.evaluation as ev

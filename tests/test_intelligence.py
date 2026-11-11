@@ -937,7 +937,6 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
         orderbook_depth_collector,
         whale_positioning_collector,
     )
-    from intelligence.macro import daemon_ssot
     from intelligence.sentiment.collectors import (
         microstructure_collector,
         portfolio_collector,
