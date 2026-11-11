@@ -105,18 +105,41 @@ class _ReplayClient:
         return self._free_balance_fn(asset) if self._free_balance_fn is not None else self._default_balance
 
 
+def params_require_trend_interval(params) -> bool:
+    """Return True if ``params`` enable any regime/trend policy requiring ``trend_interval`` bars."""
+    surge_window_enabled = (
+        getattr(params, "surge_guard", False)
+        and getattr(params, "surge_window_hours", 0) > 0
+        and getattr(params, "surge_move_pct", 0) > 0
+    )
+    return bool(
+        getattr(params, "trend_overlay", False)
+        or getattr(params, "dca_trend_brake", False)
+        or getattr(params, "reentry_hybrid_enabled", False)
+        or surge_window_enabled
+        or getattr(params, "tp_dynamic_flat", False)
+    )
+
+
+def required_replay_intervals(params) -> set[int]:
+    """Return the set of bar intervals (in minutes) required by active policies on ``params``."""
+    required = {int(params.trend_interval)} if params_require_trend_interval(params) else set()
+    if getattr(params, "tp_trail_adaptive", False) or (
+        getattr(params, "surge_guard", False) and getattr(params, "surge_dynamic", False)
+    ):
+        required.add(int(params.tp_trail_vol_interval))
+    if getattr(params, "dca_vol_scale_k", 0):
+        required.add(int(params.dca_vol_interval))
+    return required
+
+
 def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
     validate_ohlc_bars(ohlc, check_envelope=False)
     if bar_minutes is not None and safe_pos_float(bar_minutes, default=None) is None:
         raise ValueError("bar_minutes must be finite and positive")
-    surge_window_enabled = params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0
-    if (
-        params.trend_overlay
-        or params.dca_trend_brake
-        or params.reentry_hybrid_enabled
-        or surge_window_enabled
-        or getattr(params, "tp_dynamic_flat", False)
-    ) and (bar_minutes is None or float(bar_minutes) != float(params.trend_interval)):
+    if params_require_trend_interval(params) and (
+        bar_minutes is None or float(bar_minutes) != float(params.trend_interval)
+    ):
         raise ValueError(
             f"regime-aware policies require bar_minutes to equal trend_interval ({params.trend_interval} minutes); resampling is not implemented"
         )

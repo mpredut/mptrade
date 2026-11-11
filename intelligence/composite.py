@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from guard_hierarchy import (
     GUARD_REGISTRY,
     _ALL_GUARD_ALIASES,
+    is_master_bypass,
     normalize_bypassed_guards,
     resolve_qlimit2_sub_bypasses,
 )
@@ -156,7 +157,7 @@ class CompositeMarketIntelligence(OrderGuardEvaluatorBase):
         def _is_bypassed(code: Optional[str], *legacy_names: str) -> bool:
             if not bypassed:
                 return False
-            if "all" in bypassed or "*" in bypassed:
+            if is_master_bypass(bypassed):
                 return True
             if code:
                 spec = GUARD_REGISTRY.get(code)

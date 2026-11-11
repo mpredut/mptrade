@@ -38,7 +38,6 @@ from botcore import (
 )
 from cachepaths import canonical_base_asset, canonical_symbol_key
 from instrument_registry import load_registry
-import utils as u
 
 # -- Window constants ----------------------------------------------------------
 DEFAULT_SAMPLE_RATE_SEC = 0.8     # Nominal fallback sampling rate.

@@ -29,8 +29,66 @@ from intelligence.internal.state.volatility import resolve_cached_volatility_1h,
 
 
 
+STOP_EXIT_KINDS: frozenset[str] = frozenset({"STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"})
+
+
 def _clean_symbol_str(symbol: Any) -> str:
     return str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+
+
+def is_stop_exit_kind(kind: Any) -> bool:
+    """Return True if ``kind`` is a recognized stop-loss exit kind token."""
+    if not kind or isinstance(kind, (bool, dict, list, tuple, set, frozenset)):
+        return False
+    return str(kind).strip().upper() in STOP_EXIT_KINDS
+
+
+def is_reentry_state_stale(state: Any, sell_time_s: float | None) -> bool:
+    """Return True if ``state`` predates or mismatches ``sell_time_s``, normalizing timestamps in-place."""
+    if not isinstance(state, dict) or not state or sell_time_s is None:
+        return False
+    st_sell_time = normalize_epoch_sec(state.get("sell_time"), default=None)
+    if st_sell_time is not None:
+        state["sell_time"] = st_sell_time
+    st_started = normalize_epoch_sec(state.get("started_at"), default=None)
+    if st_started is not None:
+        state["started_at"] = st_started
+    return (
+        (st_sell_time is not None and st_sell_time != sell_time_s)
+        or (st_sell_time is None and st_started is not None and st_started < sell_time_s)
+    )
+
+
+def update_reentry_anchors(
+    state: dict,
+    current_price: float,
+    *,
+    default_trough: float,
+    default_peak: float,
+    clamp_to_defaults: bool = True,
+) -> Tuple[float, float]:
+    """Update ``trough``, ``peak_bounce``, and ``peak`` in ``state`` for ``current_price``."""
+    cur_trough = safe_pos_float(state.get("trough"), default=default_trough)
+    cur_peak = safe_pos_float(state.get("peak"), default=default_peak)
+    cur_peak_bounce = safe_pos_float(state.get("peak_bounce"), default=current_price)
+    if current_price > 0:
+        eff_trough = (
+            min(cur_trough, default_trough, current_price)
+            if clamp_to_defaults
+            else min(cur_trough, current_price)
+        )
+        state["trough"] = eff_trough
+        state["peak_bounce"] = (
+            current_price
+            if (eff_trough < cur_trough or current_price < cur_trough)
+            else max(cur_peak_bounce, current_price)
+        )
+        state["peak"] = (
+            max(cur_peak, default_peak, current_price)
+            if clamp_to_defaults
+            else max(cur_peak, current_price)
+        )
+    return state.get("trough", cur_trough), state.get("peak", cur_peak)
 
 
 class ExitAction(str, Enum):
@@ -87,6 +145,18 @@ class PriceGeometrySnapshot:
             return False
         tol = safe_nonneg_float(tol_pct, default=None) or 0.0
         return self.bounce_ratio(tp) >= th or (tol > 0 and are_close(cp, tp * (1.0 + th), tol))
+
+    def has_pulled_back(self, peak_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
+        """Determine if price has pulled back from peak honoring fuzzy tolerance."""
+        cp, pp, th = (
+            safe_pos_float(getattr(self, "current_price", None), default=None),
+            safe_pos_float(peak_price, default=None),
+            safe_pos_float(threshold, default=None),
+        )
+        if cp is None or pp is None or th is None:
+            return False
+        tol = safe_nonneg_float(tol_pct, default=None) or 0.0
+        return self.pullback_ratio(pp) >= th or (tol > 0 and are_close(cp, pp * (1.0 - th), tol))
 
     def has_dropped(self, reference_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
@@ -932,17 +1002,10 @@ class PositionExitManager:
                 )
 
         existing_state = self.reentry_state.get(symbol)
-        if existing_state is not None and not isinstance(existing_state, dict):
+        if existing_state is not None and (
+            not isinstance(existing_state, dict) or is_reentry_state_stale(existing_state, sell_time_s)
+        ):
             self.reentry_state.pop(symbol, None)
-            existing_state = None
-        if existing_state and sell_time_s is not None:
-            st_sell_time = safe_pos_float(existing_state.get("sell_time"), default=None)
-            st_started = safe_pos_float(existing_state.get("started_at"), default=None)
-            if (
-                (st_sell_time is not None and st_sell_time != sell_time_s)
-                or (st_sell_time is None and st_started is not None and st_started < sell_time_s)
-            ):
-                self.reentry_state.pop(symbol, None)
 
         default_trough = safe_pos_float(snapshot.post_sell_trough, default=min(last_sell, current_price))
         default_peak = safe_pos_float(snapshot.post_sell_peak, default=max(last_sell, current_price))
@@ -956,19 +1019,12 @@ class PositionExitManager:
         if sell_time_s is not None and safe_pos_float(state.get("sell_time"), default=None) is None:
             state["sell_time"] = sell_time_s
 
-        cur_trough = safe_pos_float(state.get("trough"), default=default_trough)
-        cur_peak = safe_pos_float(state.get("peak"), default=default_peak)
-        cur_peak_bounce = safe_pos_float(state.get("peak_bounce"), default=current_price)
-        eff_trough = min(cur_trough, default_trough, current_price)
-        state["trough"] = eff_trough
-        state["peak_bounce"] = (
-            current_price if (eff_trough < cur_trough or current_price < cur_trough) else max(cur_peak_bounce, current_price)
+        trough, peak = update_reentry_anchors(
+            state, current_price, default_trough=default_trough, default_peak=default_peak
         )
-        state["peak"] = max(cur_peak, default_peak, current_price)
-        trough, peak = state["trough"], state["peak"]
 
         # Case 2: Post-STOP Re-entry (Bounce Trough Mirror)
-        if last_kind in {"STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"} and self.config.reentry_sl_bounce_pct > 0:
+        if is_stop_exit_kind(last_kind) and self.config.reentry_sl_bounce_pct > 0:
             if (
                 self.config.reentry_post_stop_cooldown_sec > 0
                 and sell_time_s is not None and now > 0
@@ -1018,19 +1074,7 @@ class PositionExitManager:
         if self.config.reentry_hybrid_enabled and (snapshot.trend_up or self.config.reentry_peak_relative):
             pullback_required = self.config.reentry_pullback_pct
             pullback_ratio = snapshot.pullback_ratio(peak)
-            cp, pp, th = (
-                safe_pos_float(getattr(snapshot, "current_price", None), default=None),
-                safe_pos_float(peak, default=None),
-                safe_pos_float(pullback_required, default=None),
-            )
-            tol = safe_nonneg_float(self.config.reentry_tolerance_pct, default=None) or 0.0
-            pulled_back = (
-                cp is not None
-                and pp is not None
-                and th is not None
-                and (pullback_ratio >= th or (tol > 0 and are_close(cp, pp * (1.0 - th), tol)))
-            )
-            if not pulled_back:
+            if not snapshot.has_pulled_back(peak, pullback_required, self.config.reentry_tolerance_pct):
                 target_px = peak * (1.0 - pullback_required)
                 return self._reentry_wait(
                     f"bull_reentry_pullback_waiting (price={current_price:.4f} > {target_px:.4f}, pullback={pullback_ratio*100:.2f}% < {pullback_required*100:.2f}%)",

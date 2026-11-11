@@ -13,7 +13,7 @@ from dataclasses import fields
 from botcore import _parse_bool_flag, safe_pos_float
 from cachepaths import resolve_venue_runtime_dir
 from state_io import StateReadError, load_json_state, save_json_state
-from .position_exit_manager import PositionExitConfig, PositionExitManager
+from .position_exit_manager import PositionExitConfig, PositionExitManager, is_stop_exit_kind
 
 
 def find_open_order(state: dict, side: str) -> dict | None:
@@ -118,9 +118,7 @@ def update_post_sell_anchors(
         return lsp
     state["post_sell_peak"] = max(safe_pos_float(state.get("post_sell_peak"), lsp), px_f)
     state["post_sell_trough"] = min(safe_pos_float(state.get("post_sell_trough"), lsp), px_f)
-    raw_kind = state.get("last_exit_kind")
-    exit_kind_u = "" if isinstance(raw_kind, bool) else str(raw_kind or "").strip().upper()
-    if track_stop_sl_low and exit_kind_u in {"STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"}:
+    if track_stop_sl_low and is_stop_exit_kind(state.get("last_exit_kind")):
         state["sl_low"] = min(safe_pos_float(state.get("sl_low"), px_f), px_f)
     return lsp
 

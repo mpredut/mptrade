@@ -1758,7 +1758,7 @@ def test_orderticket_rejects_blank_boolean_order_id_and_paircoordinator__cancel_
     import pytest
     from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
     # 4. OrderTicket rejects blank/boolean order_id and PairCoordinator._cancel catches venue cancel exceptions
-    with pytest.raises(ValueError, match="ticket rtrade invalid"):
+    with pytest.raises(ValueError, match="invalid rtrade ticket"):
         OrderTicket(order_id=True, side="BUY", price=100.0, qty=1.0)
 
     class _RaiseCancelVenue:

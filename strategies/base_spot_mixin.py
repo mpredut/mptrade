@@ -26,7 +26,7 @@ from intelligence.internal.state.volatility import (
 )
 from providers.base import MarketDataProvider, normalize_side
 from providers.order_ohlc_utils import clean_order_id
-from .position_exit_manager import PositionExitManager, PositionSnapshot, ReentrySnapshot
+from .position_exit_manager import PositionExitManager, PositionSnapshot, ReentrySnapshot, is_stop_exit_kind
 from .state_store import (
     JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
     compute_adaptive_reentry_pullback_pct, find_open_order, update_post_sell_anchors,
@@ -229,7 +229,7 @@ def parse_max_dca_buys_env(
 ) -> tuple[int, float]:
     """Parse ``STRAT_MAX_DCA_BUYS`` (supporting ``auto``/``budget`` or explicit non-negative integer)."""
     mdb = optional_env("STRAT_MAX_DCA_BUYS", env=env).lower()
-    if mdb in ("auto", "buget", "budget"):
+    if mdb in ("auto", "budget"):
         max_dca = max(0, int((budget - entry_amt) // dca_amt)) if dca_amt > 0 else 0
         return max_dca, budget - max_dca * dca_amt
     if mdb:
@@ -1055,7 +1055,7 @@ class BaseSpotMixin:
 
         raw_exit_kind = self.s.get("last_exit_kind")
         norm_exit_kind = "" if isinstance(raw_exit_kind, bool) else str(raw_exit_kind or "").strip().upper()
-        is_stop_exit = norm_exit_kind in {"STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"}
+        is_stop_exit = is_stop_exit_kind(norm_exit_kind)
         last_kind, trend_up, trend_down = self._resolve_reentry_context(
             mgr, norm_exit_kind, is_stop_exit, regime
         )

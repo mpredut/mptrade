@@ -33,7 +33,12 @@ from providers.quantity import (
     resolve_assets,
     round_provider_qty,
 )
-from strategies.position_exit_manager import PositionSnapshot
+from strategies.position_exit_manager import (
+    PositionSnapshot,
+    is_reentry_state_stale,
+    is_stop_exit_kind,
+    update_reentry_anchors,
+)
 import utils as u
 
 
@@ -307,7 +312,7 @@ def _eval_reentry_buy_quantity_decision(
     inst, provider, symbol: str, current_price: float, requested_qty: float,
     reentry_bg: set[str], buy_safeback_hours: float = 1.0,
 ):
-    bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
+    bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg)
     base_asset, quote_asset = _mt_attr("resolve_assets", resolve_assets)(
         symbol, getattr(inst, "base", None), getattr(inst, "quote", None)
     )
@@ -358,12 +363,12 @@ def _infer_mt_exit_kind(
     )
     latest_sell_kind = str(latest_sell.get("kind") or "").strip().upper()
     is_ai_sell = resolve_order_actor(latest_sell) == "AI" or latest_sell_kind.startswith("AI_")
-    if is_ai_sell and latest_sell_kind not in ("STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"):
+    if is_ai_sell and not is_stop_exit_kind(latest_sell_kind):
         if isinstance(last_exit_kind_map, dict):
             last_exit_kind_map.pop(symbol, None)
         return "SELL"
     raw_explicit = (last_exit_kind_map.get(symbol) if isinstance(last_exit_kind_map, dict) else None) or (latest_sell_kind or None)
-    if raw_explicit and str(raw_explicit).strip().upper() in ("STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"):
+    if is_stop_exit_kind(raw_explicit):
         explicit_exit_kind = "STOP"
         if isinstance(last_exit_kind_map, dict):
             last_exit_kind_map[symbol] = "STOP"
@@ -407,31 +412,22 @@ def _update_mt_reentry_state(
     now_s = normalize_epoch_sec(current_time_s, default=0.0, allow_zero=True) or 0.0
     current_time_s = int(now_s) if isinstance(current_time_s, int) and not isinstance(current_time_s, bool) else now_s
     prev_reentry_state = dict(reentry_state_map.get(symbol, {}))
-    if prev_reentry_state and sell_time_clean is not None:
-        state_sell_time = normalize_epoch_sec(prev_reentry_state.get("sell_time"), default=None)
-        if state_sell_time is not None:
-            prev_reentry_state["sell_time"] = state_sell_time
-        state_started_at = normalize_epoch_sec(prev_reentry_state.get("started_at"), default=None)
-        if state_started_at is not None:
-            prev_reentry_state["started_at"] = state_started_at
-        if (
-            (state_sell_time is not None and state_sell_time != sell_time_clean)
-            or (state_sell_time is None and state_started_at is not None and state_started_at < sell_time_clean)
-        ):
-            prev_reentry_state = {}
-            reentry_state_map.pop(symbol, None)
-            if isinstance(last_exit_kind_map, dict):
-                last_exit_kind_map.pop(symbol, None)
+    if is_reentry_state_stale(prev_reentry_state, sell_time_clean):
+        prev_reentry_state = {}
+        reentry_state_map.pop(symbol, None)
+        if isinstance(last_exit_kind_map, dict):
+            last_exit_kind_map.pop(symbol, None)
     cp_f = safe_pos_float(current_price, default=None)
     sp_f = safe_pos_float(sell_price, default=cp_f)
     if cp_f is None:
         cp_f = sp_f if sp_f is not None else 0.0
     if sp_f is None:
         sp_f = cp_f
+    default_trough, default_peak = min(sp_f, cp_f), max(sp_f, cp_f)
     if not prev_reentry_state:
         prev_reentry_state = {
-            "trough": min(sp_f, cp_f),
-            "peak": max(sp_f, cp_f),
+            "trough": default_trough,
+            "peak": default_peak,
             "peak_bounce": cp_f,
             "started_at": current_time_s,
             "sell_time": sell_time_clean,
@@ -439,16 +435,12 @@ def _update_mt_reentry_state(
     else:
         if sell_time_clean is not None and safe_pos_float(prev_reentry_state.get("sell_time"), default=None) is None:
             prev_reentry_state["sell_time"] = sell_time_clean
-        prev_trough = safe_pos_float(prev_reentry_state.get("trough"), default=min(sp_f, cp_f))
-        prev_peak_bounce = safe_pos_float(prev_reentry_state.get("peak_bounce"), default=cp_f)
-        if cp_f > 0:
-            if cp_f < prev_trough:
-                prev_reentry_state["trough"] = cp_f
-                prev_reentry_state["peak_bounce"] = cp_f
-            else:
-                prev_reentry_state["trough"] = min(prev_trough, cp_f)
-                prev_reentry_state["peak_bounce"] = max(prev_peak_bounce, cp_f)
-            prev_peak = safe_pos_float(prev_reentry_state.get("peak"), default=max(sp_f, cp_f))
-            prev_reentry_state["peak"] = max(prev_peak, cp_f)
+        update_reentry_anchors(
+            prev_reentry_state,
+            cp_f,
+            default_trough=default_trough,
+            default_peak=default_peak,
+            clamp_to_defaults=False,
+        )
     reentry_state_map[symbol] = dict(prev_reentry_state)
     return prev_reentry_state

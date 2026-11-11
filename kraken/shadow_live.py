@@ -128,23 +128,7 @@ def _variants(interval: int):
 
 def _replay_interval_error(interval: int) -> str | None:
     """Return why the live configuration cannot be replayed at this bar size, if it can't."""
-    base = _load_isolated_strat_params()
-    surge_window_enabled = (
-        getattr(base, "surge_guard", False)
-        and getattr(base, "surge_window_hours", 0) > 0
-        and getattr(base, "surge_move_pct", 0) > 0
-    )
-    required = {int(base.trend_interval)} if (
-        base.trend_overlay
-        or base.dca_trend_brake
-        or getattr(base, "reentry_hybrid_enabled", False)
-        or surge_window_enabled
-        or getattr(base, "tp_dynamic_flat", False)
-    ) else set()
-    if base.tp_trail_adaptive or (getattr(base, "surge_guard", False) and getattr(base, "surge_dynamic", False)):
-        required.add(int(base.tp_trail_vol_interval))
-    if base.dca_vol_scale_k:
-        required.add(int(base.dca_vol_interval))
+    required = rp.required_replay_intervals(_load_isolated_strat_params())
     if required and required != {interval}:
         return (f"the live configuration needs {sorted(required)}-minute bars "
                 f"(regime gate / volatility trail); --interval {interval} is not replayable")

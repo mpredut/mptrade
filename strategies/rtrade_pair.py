@@ -69,15 +69,15 @@ class OrderTicket:
         px = safe_pos_float(self.price, default=None)
         q = safe_pos_float(self.qty, default=None)
         if clean_oid is None or self.side not in {"BUY", "SELL"} or px is None or q is None:
-            raise ValueError("ticket rtrade invalid")
+            raise ValueError("invalid rtrade ticket")
         self.order_id, self.price, self.qty = clean_oid, px, q
         self.revision = _parse_nonneg_int(
-            self.revision, max_val=_MAX_LIMIT_REVISION, error_msg="ticket rtrade invalid"
+            self.revision, max_val=_MAX_LIMIT_REVISION, error_msg="invalid rtrade ticket"
         )
         if self.pair_id is not None:
             clean_pid = clean_order_id(self.pair_id)
             if clean_pid is None:
-                raise ValueError("ticket rtrade invalid")
+                raise ValueError("invalid rtrade ticket")
             self.pair_id = clean_pid
         self.active = _parse_bool_flag(self.active, default=False)
 
