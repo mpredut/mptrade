@@ -437,9 +437,17 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     base_tree = ast.parse(base_src, filename="providers/base.py")
     forbidden_base_imports = {
         "order_guard",
+        "guard_hierarchy",
+        "llm_order_guard",
+        "order_lifecycle",
+        "order_retry",
+        "order_retry_worker",
         "instrument",
         "strategies",
         "market_regime",
+        "intelligence",
+        "orchestratorTrade",
+        "orchestratorOS",
         "cacheManager",
         "binance_api",
         "kraken",
@@ -478,8 +486,16 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "cacheManager",
         "market_regime",
         "order_guard",
+        "guard_hierarchy",
+        "llm_order_guard",
+        "order_lifecycle",
+        "order_retry",
+        "order_retry_worker",
         "instrument",
         "strategies",
+        "intelligence",
+        "orchestratorTrade",
+        "orchestratorOS",
     }
     for mod_file in non_facade_modules:
         mod_src = (root / "providers" / mod_file).read_text(encoding="utf-8")
@@ -493,6 +509,31 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
                 mod_roots.add(node.module.split(".")[0])
         assert not (mod_roots & forbidden_upward_layers), (
             f"Upward DAG violation in providers/{mod_file}: {mod_roots & forbidden_upward_layers}"
+        )
+
+    binance_transport_modules = (
+        "bapi.py",
+        "bapi_allorders.py",
+        "bapi_client.py",
+        "bapi_placeorder.py",
+        "bapi_trades.py",
+        "bapi_ws.py",
+        "bapi_ws_bridge.py",
+        "bapi_ws_normalize.py",
+        "market_data.py",
+    )
+    for bmod_file in binance_transport_modules:
+        bmod_src = (root / "binance_api" / bmod_file).read_text(encoding="utf-8")
+        bmod_tree = ast.parse(bmod_src, filename=f"binance_api/{bmod_file}")
+        bmod_roots = set()
+        for node in ast.walk(bmod_tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    bmod_roots.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                bmod_roots.add(node.module.split(".")[0])
+        assert not (bmod_roots & forbidden_upward_layers), (
+            f"Upward DAG violation in binance_api/{bmod_file}: {bmod_roots & forbidden_upward_layers}"
         )
 
     facade_src = (root / "providers" / "market_api.py").read_text(encoding="utf-8")

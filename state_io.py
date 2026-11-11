@@ -32,6 +32,7 @@ from cachepaths import STALE_STAGING_MAX_AGE_SEC, resolve_cachedb_filepath
 
 T = TypeVar("T")
 _MISSING = object()
+JSONDecodeError = json.JSONDecodeError
 
 
 def _resolve_target_path(path: Any, *, abspath: bool = False) -> str:
@@ -479,9 +480,89 @@ def parse_json_payload(raw: str | bytes, *, default: Any = _MISSING) -> Any:
         raise
 
 
-def encode_json_payload(payload: Any) -> str:
+def encode_json_payload(
+    payload: Any,
+    *,
+    indent: int | None = None,
+    sort_keys: bool = False,
+    separators: Any = None,
+    ensure_ascii: bool = True,
+    default: Any = None,
+) -> str:
     """Serialize ``payload`` to a JSON string."""
-    return json.dumps(payload)
+    kwargs: dict[str, Any] = {"ensure_ascii": _parse_bool_flag(ensure_ascii, True)}
+    if indent is not None:
+        kwargs["indent"] = exact_nonneg_int(indent, default=None)
+    if sort_keys:
+        kwargs["sort_keys"] = True
+    if separators is not None:
+        kwargs["separators"] = separators
+    if default is not None:
+        kwargs["default"] = default
+    return json.dumps(payload, **kwargs)
+
+
+def read_line_aligned_byte_range(
+    path: str,
+    start_byte: int,
+    end_byte: int,
+    *,
+    short_file_error: str = "file is shorter than requested byte range",
+    boundary_error: str = "byte range does not start at a newline boundary",
+    partial_tail_error: str = "byte range ends with a partial line",
+) -> bytes:
+    """Read ``[start_byte, end_byte)`` from ``path`` and verify newline boundaries."""
+    target_path = _resolve_target_path(path)
+    with open(target_path, "rb") as handle:
+        file_size = os.fstat(handle.fileno()).st_size
+        if file_size < end_byte:
+            raise ValueError(short_file_error)
+        if start_byte > 0:
+            handle.seek(start_byte - 1)
+            if handle.read(1) != b"\n":
+                raise ValueError(boundary_error)
+        else:
+            handle.seek(0)
+        raw = handle.read(end_byte - start_byte)
+    if raw and not raw.endswith(b"\n"):
+        raise ValueError(partial_tail_error)
+    return raw
+
+
+def append_bytes_at_boundary(
+    path: str,
+    write_chunks_fn: Callable[[Callable[[bytes], Any]], T],
+    *,
+    previous_boundary: int | None = None,
+    short_file_error: str = "file is shorter than its committed boundary",
+    on_rollback_fn: Callable[[int], None] | None = None,
+) -> tuple[int, int, T]:
+    """Durably append bytes starting at ``previous_boundary`` (truncating uncommitted tail bytes first)."""
+    target_path = _resolve_target_path(path)
+    initial_size: int | None = None
+    try:
+        exists = os.path.exists(target_path)
+        mode = "r+b" if exists else "w+b"
+        with open(target_path, mode) as handle:
+            actual_size = os.fstat(handle.fileno()).st_size
+            if previous_boundary is not None:
+                if actual_size < previous_boundary:
+                    raise OSError(short_file_error)
+                initial_size = previous_boundary
+                if actual_size != previous_boundary:
+                    handle.truncate(previous_boundary)
+            else:
+                initial_size = actual_size
+            handle.seek(initial_size)
+            result = write_chunks_fn(handle.write)
+            handle.flush()
+            os.fsync(handle.fileno())
+            committed_bytes = handle.tell()
+        return initial_size, committed_bytes, result
+    except BaseException:
+        if initial_size is not None and on_rollback_fn is not None:
+            on_rollback_fn(initial_size)
+        raise
 
 
 def append_jsonl_bucket_delta(

@@ -18,6 +18,7 @@ from botcore import (
 )
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
+from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
     extract_order_price,
     extract_order_qty,
@@ -143,11 +144,10 @@ def filter_recent_cached_orders(manager, order_type, symbol, max_age_seconds):
 
 
 def get_trade_orders(order_type, symbol, max_age_seconds):
-    import cacheManager as cm
     # Consumer processes read the cache written by the dedicated cacheManager process.
     # Starting a second polling loop here duplicates API traffic and mixes cache logs
     # into callers such as order_retry_worker.
-    cache_order_manager = cm.get_cache_manager("BinanceOrder")
+    cache_order_manager = MarketDataProvider.get_ssot_cache_manager("BinanceOrder")
     return [
         {
             'orderId': order.get("orderId"),

@@ -4,13 +4,21 @@ from __future__ import annotations
 from collections import defaultdict
 from decimal import Decimal
 import hashlib
-import json
 import os
 from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
 from botcore import safe_pos_int, strict_ascii_int
-from state_io import format_jsonl_bucket_line, parse_json_payload, read_json_dict, read_text_file
+from state_io import (
+    JSONDecodeError,
+    append_bytes_at_boundary,
+    encode_json_payload,
+    format_jsonl_bucket_line,
+    parse_json_payload,
+    read_json_dict,
+    read_line_aligned_byte_range,
+    read_text_file,
+)
 
 CACHE_META_SCHEMA_VERSION = 2
 
@@ -35,7 +43,9 @@ def normalize_timestamp_map(
 
 def snapshot_data_version(items: dict[str, Any]) -> str:
     """Compute a deterministic Blake2s-128 content version for an Order items snapshot."""
-    canonical = json.dumps({"items": items}, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    canonical = encode_json_payload(
+        {"items": items}, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
     return "snapshot:" + hashlib.blake2s(canonical, digest_size=16).hexdigest()
 
 
@@ -60,7 +70,9 @@ def trade_records_digest(records: Iterable[tuple[str, dict[str, Any]]], initial_
     else:
         state = bytes(16)
     for symbol, item in records:
-        row = json.dumps({"s": symbol, "i": item}, ensure_ascii=True, separators=(",", ":")).encode("utf-8") + b"\n"
+        row = encode_json_payload(
+            {"s": symbol, "i": item}, ensure_ascii=True, separators=(",", ":")
+        ).encode("utf-8") + b"\n"
         state = hashlib.blake2s(state + row, digest_size=16).digest()
     return "chain:" + state.hex()
 
@@ -284,19 +296,14 @@ def read_trade_records_range_strict(
     try:
         if not _is_strict_int(start_byte) or not _is_strict_int(end_byte, start_byte):
             raise ValueError("Trade committed boundary moved backwards")
-        with open(path, "rb") as handle:
-            file_size = os.fstat(handle.fileno()).st_size
-            if file_size < end_byte:
-                raise ValueError("Trade cache is shorter than its manifest")
-            if start_byte > 0:
-                handle.seek(start_byte - 1)
-                if handle.read(1) != b"\n":
-                    raise ValueError("Trade suffix does not start at a newline boundary")
-            else:
-                handle.seek(0)
-            raw = handle.read(end_byte - start_byte)
-        if raw and not raw.endswith(b"\n"):
-            raise ValueError("Trade committed data ends with a partial row")
+        raw = read_line_aligned_byte_range(
+            path,
+            start_byte,
+            end_byte,
+            short_file_error="Trade cache is shorter than its manifest",
+            boundary_error="Trade suffix does not start at a newline boundary",
+            partial_tail_error="Trade committed data ends with a partial row",
+        )
         records: list[tuple[str, dict[str, Any]]] = []
         for line in raw.splitlines():
             if not line.strip():
@@ -312,7 +319,7 @@ def read_trade_records_range_strict(
                 raise ValueError("invalid Trade cache row")
             records.append((record["s"], record["i"]))
         return records
-    except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, TypeError, ValueError, JSONDecodeError) as exc:
         raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
 
 
@@ -358,44 +365,32 @@ def append_versioned_trade_jsonl(
     on_rollback_fn: Callable[[int], None] | None = None,
 ) -> tuple[int, int, dict[str, int], bool, list[tuple[str, dict[str, Any]]]]:
     """Durably append validated Trade JSONL rows from ``previous_counts`` at ``previous_boundary``."""
-    initial_size: int | None = None
-    try:
-        exists = os.path.exists(path)
-        mode = "r+b" if exists else "w+b"
-        with open(path, mode) as handle:
-            actual_size = os.fstat(handle.fileno()).st_size
-            if previous_version:
-                if actual_size < previous_boundary:
-                    raise OSError("Trade cache is shorter than its committed boundary")
-                initial_size = previous_boundary
-                if actual_size != previous_boundary:
-                    handle.truncate(previous_boundary)
-            else:
-                initial_size = actual_size
-            handle.seek(initial_size)
-            candidate_counts = dict(previous_counts)
-            wrote_rows = False
-            appended_records: list[tuple[str, dict[str, Any]]] = []
-            for symbol, items in cache.items():
-                start = previous_counts.get(symbol, 0)
-                for item in items[start:]:
-                    if (
-                        not is_valid_item_fn(item)
-                        or str(item["symbol"]).upper() != str(symbol).upper()
-                    ):
-                        raise ValueError("invalid Trade row in append delta")
-                    handle.write(format_jsonl_bucket_line(symbol, item).encode("utf-8"))
-                    wrote_rows = True
-                    appended_records.append((symbol, item))
-                candidate_counts[symbol] = len(items)
-            handle.flush()
-            os.fsync(handle.fileno())
-            committed_bytes = handle.tell()
-        return initial_size, committed_bytes, candidate_counts, wrote_rows, appended_records
-    except BaseException:
-        if initial_size is not None and on_rollback_fn is not None:
-            on_rollback_fn(initial_size)
-        raise
+    def _write_delta(write_fn: Callable[[bytes], Any]):
+        candidate_counts = dict(previous_counts)
+        wrote_rows = False
+        appended_records: list[tuple[str, dict[str, Any]]] = []
+        for symbol, items in cache.items():
+            start = previous_counts.get(symbol, 0)
+            for item in items[start:]:
+                if (
+                    not is_valid_item_fn(item)
+                    or str(item["symbol"]).upper() != str(symbol).upper()
+                ):
+                    raise ValueError("invalid Trade row in append delta")
+                write_fn(format_jsonl_bucket_line(symbol, item).encode("utf-8"))
+                wrote_rows = True
+                appended_records.append((symbol, item))
+            candidate_counts[symbol] = len(items)
+        return candidate_counts, wrote_rows, appended_records
+
+    initial_size, committed_bytes, (candidate_counts, wrote_rows, appended_records) = append_bytes_at_boundary(
+        path,
+        _write_delta,
+        previous_boundary=previous_boundary if previous_version else None,
+        short_file_error="Trade cache is shorter than its committed boundary",
+        on_rollback_fn=on_rollback_fn,
+    )
+    return initial_size, committed_bytes, candidate_counts, wrote_rows, appended_records
 
 
 def read_legacy_trade_jsonl_strict(
@@ -438,7 +433,7 @@ def read_legacy_trade_jsonl_strict(
             expected_counts = legacy_metadata.get("counts")
             actual_counts = {symbol: len(items) for symbol, items in cache.items()}
             recoverable_tail = (
-                isinstance(exc, json.JSONDecodeError)
+                isinstance(exc, JSONDecodeError)
                 and not any(value.strip() for value in lines[idx + 1 :])
                 and isinstance(expected_counts, dict)
                 and all(
@@ -528,7 +523,7 @@ def read_order_snapshot_strict(
         return items, normalized_fetchtime, actual_counts
     except account_cache_health.AccountCacheNotReady:
         raise
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, TypeError, ValueError, JSONDecodeError) as exc:
         raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
 
 

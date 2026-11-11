@@ -1874,5 +1874,7 @@ _MarketDataProvider.bind_order_guard_hooks(
     weight_limit_fn=lambda *a, **kw: weight_limit(*a, **kw),
     window_cfg_fn=lambda *a, **kw: get_window_cfg(*a, **kw),
     window_reference_fn=lambda *a, **kw: window_reference(*a, **kw),
+    resolve_trade_weight_fn=lambda *a, **kw: resolve_trade_weight(*a, **kw),
+    compute_weight_capped_qty_fn=lambda *a, **kw: compute_weight_capped_qty(*a, **kw),
 )
 

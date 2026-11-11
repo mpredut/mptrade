@@ -3020,11 +3020,14 @@ def test_ssot_state_io_hygiene_and_unified_cache_factory_getters():
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     checked_files = (
+        "cacheintegrity.py",
         "cacheInterface.py",
         "cacheaccount.py",
         "cacheprice.py",
         "cachetrend.py",
         "cacheManager.py",
+        "order_retry.py",
+        "binance_api/bapi_ws.py",
     )
     raw_violations = []
     for rel_path in checked_files:

@@ -1008,9 +1008,7 @@ def _resolve_intent_execution_details(
         and venue_open_verified
         and ts_val > 0
     ):
-        from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
-
-        cancel_grace_sec = resolve_derived_telemetry_intervals()["unfilled_order_cancel_grace_sec"]
+        cancel_grace_sec = MarketDataProvider.resolve_unfilled_order_cancel_grace_sec()
         if (now_ts - ts_val) > cancel_grace_sec:
             venue_st = "CANCELED_OR_EXPIRED"
     if fill_px is None and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW") and not is_unfilled_resting_limit:

@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from binance.exceptions import BinanceAPIException
 
 # MYLIB
-import order_guard
 import instrument_registry as sym
 import botcore as cfg
 from botcore import (
@@ -21,6 +20,7 @@ from botcore import (
     safe_pos_float,
 )
 from providers import order_id_context as rc
+from providers.base import MarketDataProvider
 
 from . import bapi as api
 from .bapi import _normalize_side
@@ -148,7 +148,7 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
         raise SubmissionRefused(reason) from exc
 
     try:
-        weight = safe_pos_float(order_guard.resolve_trade_weight(
+        weight = safe_pos_float(MarketDataProvider.resolve_order_guard_trade_weight(
             symbol, order_type, provider_name="binance", raise_on_error=True), default=None)
     except SubmissionRefused:
         raise
@@ -166,7 +166,7 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     if traded_value is None:
         raise SubmissionRefused("invalid_trade_stats")
 
-    adjusted_qty = order_guard.compute_weight_capped_qty(
+    adjusted_qty = MarketDataProvider.compute_order_guard_weight_capped_qty(
         weight=weight, price=price, required_qty=required_qty,
         available_qty=available_qty, traded_24h_value=traded_value,
     )
@@ -193,10 +193,9 @@ def require_account_cache_for_submit():
     if not cfg.is_trade_enabled():
         raise SubmissionRefused("trading_disabled")
     try:
-        import cacheManager as cm
         for _attempt in range(2):
             requested = binance_cache_health.require_fresh_account_cache()
-            cm.ensure_account_cache_readers(requested)
+            MarketDataProvider.ensure_ssot_account_cache_readers(requested)
             confirmed = binance_cache_health.require_fresh_account_cache()
             if (requested.order_cache_version, requested.trade_cache_version) == (
                 confirmed.order_cache_version, confirmed.trade_cache_version

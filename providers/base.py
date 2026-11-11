@@ -152,7 +152,15 @@ class MarketDataProvider(ABC):
     _policy_weight_limit_fn: Any = None
     _policy_window_cfg_fn: Any = None
     _policy_window_reference_fn: Any = None
+    _policy_resolve_trade_weight_fn: Any = None
+    _policy_compute_weight_capped_qty_fn: Any = None
     _bound_instrument_cls: Any = None
+    _bound_tracked_order_lifecycle_cls: Any = None
+    _retry_discard_refused_intent_fn: Any = None
+    _retry_discard_superseded_symbol_fn: Any = None
+    _retry_accepted_owner_map_fn: Any = None
+    _retry_resolve_accepted_order_fn: Any = None
+    _telemetry_intervals_resolver: Any = None
 
     @classmethod
     def bind_instrument_class(cls, instrument_cls: Any) -> None:
@@ -221,7 +229,7 @@ class MarketDataProvider(ABC):
         return fn(status) if callable(fn) else None
 
     @classmethod
-    def get_ssot_cache_manager(cls, cache_name: str) -> Any:
+    def get_ssot_cache_manager(cls, cache_name: str, *args: Any, **kwargs: Any) -> Any:
         """Return a named SSOT cache manager via bound hook (respecting ``cacheManager`` monkeypatches)."""
         cls._ensure_ssot_cache_bindings()
         fn = resolve_patched_attr(
@@ -232,7 +240,14 @@ class MarketDataProvider(ABC):
         )
         if not callable(fn):
             raise RuntimeError("SSOT cache manager getter is not bound")
-        return fn(cache_name)
+        if not args and not kwargs:
+            return fn(cache_name)
+        try:
+            return fn(cache_name, *args, **kwargs)
+        except TypeError:
+            if "symbols" in kwargs and not args:
+                return fn(cache_name, kwargs["symbols"])
+            raise
 
     @classmethod
     def get_ssot_short_trend_manager(cls) -> Any:
@@ -253,6 +268,8 @@ class MarketDataProvider(ABC):
         weight_limit_fn: Any = None,
         window_cfg_fn: Any = None,
         window_reference_fn: Any = None,
+        resolve_trade_weight_fn: Any = None,
+        compute_weight_capped_qty_fn: Any = None,
     ) -> None:
         """Bind order-guard policy callbacks from the higher Order Gateway layer."""
         if weight_limit_fn is not None:
@@ -261,6 +278,134 @@ class MarketDataProvider(ABC):
             cls._policy_window_cfg_fn = staticmethod(window_cfg_fn)
         if window_reference_fn is not None:
             cls._policy_window_reference_fn = staticmethod(window_reference_fn)
+        if resolve_trade_weight_fn is not None:
+            cls._policy_resolve_trade_weight_fn = staticmethod(resolve_trade_weight_fn)
+        if compute_weight_capped_qty_fn is not None:
+            cls._policy_compute_weight_capped_qty_fn = staticmethod(compute_weight_capped_qty_fn)
+
+    @classmethod
+    def _ensure_order_guard_bindings(cls) -> None:
+        if cls._policy_weight_limit_fn is None or cls._policy_resolve_trade_weight_fn is None:
+            importlib.import_module("order_guard")
+
+    @classmethod
+    def resolve_order_guard_trade_weight(cls, *args: Any, **kwargs: Any) -> Any:
+        """Resolve configured trade weight via bound ``order_guard`` hook (respecting monkeypatches)."""
+        cls._ensure_order_guard_bindings()
+        fn = resolve_patched_attr(
+            "resolve_trade_weight",
+            cls._policy_resolve_trade_weight_fn,
+            modules=("order_guard",),
+            require_callable=True,
+        )
+        if not callable(fn):
+            raise RuntimeError("order_guard.resolve_trade_weight is not bound")
+        return fn(*args, **kwargs)
+
+    @classmethod
+    def compute_order_guard_weight_capped_qty(cls, *args: Any, **kwargs: Any) -> Any:
+        """Compute 24h weight-capped quantity via bound ``order_guard`` hook (respecting monkeypatches)."""
+        cls._ensure_order_guard_bindings()
+        fn = resolve_patched_attr(
+            "compute_weight_capped_qty",
+            cls._policy_compute_weight_capped_qty_fn,
+            modules=("order_guard",),
+            require_callable=True,
+        )
+        if not callable(fn):
+            raise RuntimeError("order_guard.compute_weight_capped_qty is not bound")
+        return fn(*args, **kwargs)
+
+    @classmethod
+    def resolve_tracked_order_lifecycle_class(cls) -> Any:
+        """Return ``TrackedOrderLifecycle`` from ``order_lifecycle`` (respecting monkeypatches)."""
+        if cls._bound_tracked_order_lifecycle_cls is None:
+            mod = importlib.import_module("order_lifecycle")
+            cls._bound_tracked_order_lifecycle_cls = getattr(mod, "TrackedOrderLifecycle", None)
+        lifecycle_cls = resolve_patched_attr(
+            "TrackedOrderLifecycle",
+            cls._bound_tracked_order_lifecycle_cls,
+            modules=("order_lifecycle",),
+            require_callable=True,
+        )
+        if lifecycle_cls is None:
+            raise RuntimeError("TrackedOrderLifecycle class is not bound")
+        return lifecycle_cls
+
+    @classmethod
+    def bind_order_retry_hooks(
+        cls,
+        *,
+        discard_refused_intent_fn: Any = None,
+        discard_superseded_symbol_fn: Any = None,
+        accepted_owner_map_fn: Any = None,
+        resolve_accepted_order_fn: Any = None,
+    ) -> None:
+        """Bind persistent retry-outbox callbacks from ``order_retry`` without upward imports."""
+        if discard_refused_intent_fn is not None:
+            cls._retry_discard_refused_intent_fn = staticmethod(discard_refused_intent_fn)
+        if discard_superseded_symbol_fn is not None:
+            cls._retry_discard_superseded_symbol_fn = staticmethod(discard_superseded_symbol_fn)
+        if accepted_owner_map_fn is not None:
+            cls._retry_accepted_owner_map_fn = staticmethod(accepted_owner_map_fn)
+        if resolve_accepted_order_fn is not None:
+            cls._retry_resolve_accepted_order_fn = staticmethod(resolve_accepted_order_fn)
+
+    @classmethod
+    def _resolve_order_retry_hook(cls, attr_name: str, slot_name: str) -> Any:
+        fallback = getattr(cls, slot_name, None)
+        if fallback is None:
+            importlib.import_module("order_retry")
+            fallback = getattr(cls, slot_name, None)
+        return resolve_patched_attr(
+            attr_name,
+            fallback,
+            modules=("order_retry",),
+            require_callable=True,
+        )
+
+    @classmethod
+    def discard_refused_intent_retry_records(cls, intent_id: str) -> list[str]:
+        """Discard ``refused`` retry-outbox records matching ``intent_id``."""
+        fn = cls._resolve_order_retry_hook("discard_refused_intent_records", "_retry_discard_refused_intent_fn")
+        return list(fn(intent_id)) if callable(fn) else []
+
+    @classmethod
+    def discard_superseded_symbol_retry_records(cls, *args: Any, **kwargs: Any) -> list[str]:
+        """Discard superseded pending retry-outbox records for a symbol/side."""
+        fn = cls._resolve_order_retry_hook("discard_superseded_symbol_records", "_retry_discard_superseded_symbol_fn")
+        return list(fn(*args, **kwargs)) if callable(fn) else []
+
+    @classmethod
+    def get_accepted_retry_order_owner_map(cls) -> dict[str, str]:
+        """Return accepted retry-outbox owner map via bound ``order_retry`` hook."""
+        fn = cls._resolve_order_retry_hook("get_accepted_order_owner_map", "_retry_accepted_owner_map_fn")
+        res = fn() if callable(fn) else {}
+        return res if isinstance(res, dict) else {}
+
+    @classmethod
+    def resolve_accepted_retry_order(cls, symbol: str, order_id: Any) -> Any:
+        """Resolve an accepted retry-outbox order via bound ``order_retry`` hook."""
+        fn = cls._resolve_order_retry_hook("resolve_accepted_order", "_retry_resolve_accepted_order_fn")
+        return fn(symbol, order_id) if callable(fn) else None
+
+    @classmethod
+    def resolve_unfilled_order_cancel_grace_sec(cls) -> float:
+        """Return ``unfilled_order_cancel_grace_sec`` from telemetry SSOT (respecting monkeypatches)."""
+        if cls._telemetry_intervals_resolver is None:
+            mod = importlib.import_module("intelligence.macro_sentiment_ssot")
+            fn_init = getattr(mod, "resolve_derived_telemetry_intervals", None)
+            if callable(fn_init):
+                cls._telemetry_intervals_resolver = staticmethod(fn_init)
+        fn = resolve_patched_attr(
+            "resolve_derived_telemetry_intervals",
+            cls._telemetry_intervals_resolver,
+            modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot"),
+            require_callable=True,
+        )
+        if not callable(fn):
+            raise RuntimeError("resolve_derived_telemetry_intervals is not bound")
+        return float(fn()["unfilled_order_cancel_grace_sec"])
 
     @staticmethod
     def _invoke_fee_and_limits_callable(

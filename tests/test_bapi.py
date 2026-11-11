@@ -467,6 +467,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(restore_params["side"], "SELL")
 
         # 8. order_guard.daily_limit_guard enforces symmetric 24h daily cap
+        import order_guard
         now_s = int(time.time())
         fake_provider = types.SimpleNamespace(
             name="binance",
@@ -474,7 +475,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
                 {"price": 100.0, "qty": 1.0, "time": now_s - 2},
             ],
         )
-        ok, reason = po.order_guard.daily_limit_guard(
+        ok, reason = order_guard.daily_limit_guard(
             fake_provider, SYMBOL, "BUY", max_daily_trades=1,
         )
         self.assertFalse(ok)

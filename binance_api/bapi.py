@@ -21,6 +21,7 @@ import instrument_registry as sym
 from .bapi_client import client
 from . import bapi_ws
 from providers import order_id_context as rc
+from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
     extract_order_id,
     extract_order_price,
@@ -182,8 +183,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                 if cid.startswith("OR_"):
                     if accepted_owner_map is None:
                         try:
-                            import order_retry
-                            accepted_owner_map = order_retry.get_accepted_order_owner_map()
+                            accepted_owner_map = MarketDataProvider.get_accepted_retry_order_owner_map()
                         except Exception:
                             accepted_owner_map = {}
                     inferred = (
@@ -232,8 +232,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
 def _cancel_and_resolve(symbol, order_id) -> bool:
     if cancel_order(symbol, order_id):
         try:
-            import order_retry
-            order_retry.resolve_accepted_order(symbol, order_id)
+            MarketDataProvider.resolve_accepted_retry_order(symbol, order_id)
         except Exception:
             pass
         return True

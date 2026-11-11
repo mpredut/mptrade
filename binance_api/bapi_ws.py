@@ -17,7 +17,6 @@ BinanceAccountStream     (private user-data execution reports)
 """
 
 import asyncio
-import json
 import logging
 import threading
 import time
@@ -44,6 +43,7 @@ from providers.base import (
     WS_RECV_TIMEOUT,
     WS_STOP_TIMEOUT,
 )
+from state_io import JSONDecodeError, encode_json_payload, parse_json_payload
 
 import credentials as _credentials
 
@@ -153,7 +153,7 @@ class BinancePriceStream(PublicPriceStreamBase):
             except websockets.exceptions.ConnectionClosed:
                 logger.info("Connection closed by server, reconnecting...")
                 break
-            except json.JSONDecodeError as e:
+            except JSONDecodeError as e:
                 logger.warning("JSON decode error: %s", e)
                 continue
 
@@ -164,7 +164,7 @@ class BinancePriceStream(PublicPriceStreamBase):
             except asyncio.TimeoutError:
                 continue
             self._req_id += 1
-            payload = json.dumps({
+            payload = encode_json_payload({
                 "method": cmd["method"], "params": [cmd["stream"]], "id": self._req_id})
             try:
                 await ws.send(payload)
@@ -178,7 +178,7 @@ class BinancePriceStream(PublicPriceStreamBase):
     def _process_message(self, raw: str) -> None:
         """{"stream": "btcusdc@ticker", "data": {"s": "BTCUSDC", "c": "65432.10", ...}}"""
         try:
-            envelope = json.loads(raw)
+            envelope = parse_json_payload(raw)
             if not isinstance(envelope, dict):
                 raise TypeError("WS envelope must be a dict")
             if "result" in envelope:                    # subscribe/unsubscribe acknowledgment
@@ -218,7 +218,7 @@ class BinancePriceStream(PublicPriceStreamBase):
             with self._lock:
                 self._prices[symbol] = price
             self._notify_subscribers(symbol, [[ts_ms, price]])
-        except (KeyError, ValueError, TypeError, OverflowError, json.JSONDecodeError) as e:
+        except (KeyError, ValueError, TypeError, OverflowError, JSONDecodeError) as e:
             logger.warning("process_message error: %s | raw: %s", e, str(raw)[:120])
 
     # --- Enqueue command (thread-safe) ---------------------------------------
@@ -338,7 +338,7 @@ class BinanceAccountStream(BinanceWSBase):
         timestamp = int(time.time() * 1000)
         params_str = f"apiKey={api_key_ws}&timestamp={timestamp}"
         signature = u._sign_ed25519(self._signing_key, params_str)
-        return json.dumps({
+        return encode_json_payload({
             "id": msg_id, "method": "session.logon",
             "params": {"apiKey": api_key_ws, "timestamp": timestamp, "signature": signature}})
 
@@ -371,14 +371,14 @@ class BinanceAccountStream(BinanceWSBase):
         ) as ws:
             # Login
             await ws.send(self._signed_logon_msg("login"))
-            resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+            resp = parse_json_payload(await asyncio.wait_for(ws.recv(), timeout=10))
             if not isinstance(resp, dict) or resp.get("status") != 200:
                 raise RuntimeError(f"login failed: {resp}")     # The base reconnect loop applies backoff.
             logger.info("[WS] ✅ Login OK")
             # Do not reset backoff here. The reconnect loop does so only after a stable
             # session, protecting the connection rate limit from reconnect storms.
 
-            await ws.send(json.dumps({"id": "sub", "method": "userDataStream.subscribe"}))
+            await ws.send(encode_json_payload({"id": "sub", "method": "userDataStream.subscribe"}))
             self._mark_event()
             last_keepalive = last_ping = time.time()
 
@@ -393,7 +393,7 @@ class BinanceAccountStream(BinanceWSBase):
                     last_keepalive = now
                 ping_interval = max(1.0, self.loss_timeout_sec / 2.0)
                 if now - last_ping >= ping_interval:
-                    await ws.send(json.dumps({"id": "ping", "method": "ping"}))
+                    await ws.send(encode_json_payload({"id": "ping", "method": "ping"}))
                     last_ping = now
 
                 recv_timeout = min(
@@ -407,8 +407,8 @@ class BinanceAccountStream(BinanceWSBase):
                     continue
 
                 try:
-                    event = json.loads(raw)
-                except (TypeError, ValueError, json.JSONDecodeError) as e:
+                    event = parse_json_payload(raw)
+                except (TypeError, ValueError, JSONDecodeError) as e:
                     logger.warning("[WS] Invalid JSON on account stream: %s", e)
                     continue
                 if not isinstance(event, dict):

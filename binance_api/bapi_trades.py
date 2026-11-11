@@ -6,6 +6,7 @@ from botcore import clean_order_id, exact_nonneg_int, safe_nonneg_int
 from . import bapi as api
 from .bapi import _normalize_side
 from . import bapi_allorders as apiorders
+from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
     extract_client_order_id,
     extract_order_id,
@@ -16,9 +17,7 @@ from providers.order_ohlc_utils import (
 
 def init_cache_trade_manager():
     """Return the process-wide BinanceTrade cache reader from CacheFactory."""
-    import cacheManager as cm
-
-    return cm.get_cache_manager("BinanceTrade")
+    return MarketDataProvider.get_ssot_cache_manager("BinanceTrade")
 
 #######
 #######      get_my_trades     #######

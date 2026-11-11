@@ -331,8 +331,8 @@ class MarketApi:
         Persistence remains strategy-owned and is supplied to each lifecycle call;
         this facade supplies provider-neutral lookup/status/cancel routing.
         """
-        from order_lifecycle import TrackedOrderLifecycle
-        return TrackedOrderLifecycle(
+        lifecycle_cls = MarketDataProvider.resolve_tracked_order_lifecycle_class()
+        return lifecycle_cls(
             self,
             provider_name=provider_name,
             venue=venue,

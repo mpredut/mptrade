@@ -7,13 +7,12 @@ single consumer. Records are stored as JSONL under ``cachedb`` and queue mutatio
 are serialized with a cross-process file lock.
 """
 import hashlib
-import json
 import os
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, Optional
 
 from botcore import (
     exact_int,
@@ -31,9 +30,10 @@ from botcore import (
 )
 from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cachedb_filepath
 from lock import FileLock
-from providers.order_ohlc_utils import extract_order_id, extract_orig_qty
+from providers.base import MarketDataProvider
+from providers.order_ohlc_utils import extract_order_id, extract_orig_qty, resolve_order_actor
 from providers.strategy_executor import OrderStatus
-from state_io import atomic_write_jsonl, read_text_file, read_text_lines
+from state_io import atomic_write_jsonl, parse_json_payload, read_text_file, read_text_lines
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 load_dotenv()
@@ -197,7 +197,7 @@ def _read_nolock(*, validate=False):
         if not line:
             continue
         try:
-            item = json.loads(line)
+            item = parse_json_payload(line)
         except (TypeError, ValueError) as exc:
             raise RetryQueueCorruptionError(QUEUE_FILE, line_number, raw_line, str(exc)) from exc
         if not isinstance(item, dict):
@@ -1455,3 +1455,80 @@ def price_gate_ok(rec, current_price, tol=None):
     if not isinstance(rec, dict):
         return False
     return is_retry_price_favorable(rec.get("side"), current_price, rec.get("requested_price"), tol=tol)
+
+
+def discard_refused_intent_records(intent_id: str) -> list[str]:
+    """Discard queued records matching ``intent_id`` whose ``submission_state`` is ``refused``."""
+    if not intent_id:
+        return []
+    rm_ids = [
+        str(r["id"])
+        for r in load_all()
+        if isinstance(r, dict)
+        and str(r.get("intent_id") or "") == str(intent_id)
+        and str(r.get("submission_state") or "").lower() == "refused"
+        and r.get("id") is not None
+    ]
+    if rm_ids:
+        discard(rm_ids)
+    return rm_ids
+
+
+def discard_superseded_symbol_records(
+    symbol: str,
+    want_side: Optional[str],
+    *,
+    canceled_ids: Iterable[str] = (),
+    ai_order_ids: Optional[set[str]] = None,
+    include_bot_orders: bool = False,
+    any_side: bool = False,
+    cancel_fn_is_mock: bool = False,
+) -> list[str]:
+    """Discard superseded ``submit_pending`` / ``awaiting_cancel`` retry records for ``symbol``."""
+    sym_str = str(symbol or "").strip().upper()
+    if not sym_str:
+        return []
+    default_q = os.path.abspath(str(resolve_cachedb_filepath("order_retry_queue.jsonl")))
+    active_q = os.path.abspath(str(QUEUE_FILE))
+    if active_q == default_q and cancel_fn_is_mock:
+        return []
+    canceled_set = {str(x) for x in (canceled_ids or ()) if x}
+    ai_oids = set(ai_order_ids or ())
+    to_discard: list[str] = []
+    for rec in load_all():
+        if not isinstance(rec, dict) or str(rec.get("symbol") or "").strip().upper() != sym_str:
+            continue
+        rec_id = str(rec.get("id") or "").strip()
+        if not rec_id:
+            continue
+        rec_oid = str(rec.get("order_id") or "").strip()
+        if rec_oid and rec_oid in canceled_set:
+            to_discard.append(rec_id)
+            continue
+        lc = str(rec.get("lifecycle") or "submit_pending").strip().lower()
+        if lc not in ("submit_pending", "awaiting_cancel"):
+            continue
+        rec_side = normalize_side(rec.get("side"))
+        if not any_side and rec_side != want_side:
+            continue
+        rec_kw = rec.get("place_kwargs") if isinstance(rec.get("place_kwargs"), dict) else {}
+        rec_probe = {
+            "orderId": rec_oid,
+            "clientOrderId": rec_kw.get("client_order_id") or rec.get("prefix") or "",
+            "intent_id": rec.get("intent_id") or "",
+        }
+        is_ai_rec = resolve_order_actor(rec_probe, ai_oids) == "AI"
+        if not is_ai_rec and not include_bot_orders:
+            continue
+        to_discard.append(rec_id)
+    if to_discard:
+        discard(to_discard)
+    return to_discard
+
+
+MarketDataProvider.bind_order_retry_hooks(
+    discard_refused_intent_fn=discard_refused_intent_records,
+    discard_superseded_symbol_fn=discard_superseded_symbol_records,
+    accepted_owner_map_fn=get_accepted_order_owner_map,
+    resolve_accepted_order_fn=resolve_accepted_order,
+)
