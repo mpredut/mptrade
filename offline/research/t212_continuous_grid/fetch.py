@@ -40,18 +40,20 @@ if __name__ == "__main__":
     cli_args = ap.parse_args()
     missing_only = bool(cli_args.missing_only and not cli_args.force)
     os.makedirs(DATA, exist_ok=True)
-    attempted = 0
-    succeeded = 0
+    usable_total = 0
     for sym in ASSETS:
         for rng, itv in (("730d", "1h"), ("10y", "1d")):
             csv_path = os.path.join(DATA, f"{sym}_{itv}.csv")
-            if missing_only and os.path.exists(csv_path) and len(load_ohlc_tuples_csv(csv_path, strict=False)) > 32:
+            has_cached_csv = os.path.exists(csv_path) and len(load_ohlc_tuples_csv(csv_path, strict=False)) > 32
+            if missing_only and has_cached_csv:
+                usable_total += 1
                 continue
-            attempted += 1
             try:
                 candles = fetch_yahoo_candles(sym, range_=rng, interval=itv, drop_incomplete=True)
                 if not candles:
                     print(f"[fetch] {sym} {itv}: no bars returned", flush=True)
+                    if has_cached_csv:
+                        usable_total += 1
                     continue
                 validated = validate_dataset(candles)
                 if len(validated) <= 32:
@@ -59,16 +61,20 @@ if __name__ == "__main__":
                         f"[fetch] {sym} {itv}: insufficient bars ({len(validated)} <= 32) -- refusing overwrite",
                         flush=True,
                     )
+                    if has_cached_csv:
+                        usable_total += 1
                     continue
                 save_dataset(validated, Path(csv_path))
-                succeeded += 1
+                usable_total += 1
                 print(f"[fetch] {sym} {itv}: {len(validated)} bars "
                       f"{time.strftime('%Y-%m-%d', time.gmtime(validated[0]['timestamp']))} -> "
                       f"{time.strftime('%Y-%m-%d', time.gmtime(validated[-1]['timestamp']))}", flush=True)
             except Exception as exc:  # noqa: BLE001
                 print(f"[fetch] {sym} {itv}: {exc}", flush=True)
+                if has_cached_csv:
+                    usable_total += 1
             finally:
                 time.sleep(0.5)
-    if attempted > 0 and succeeded == 0:
-        print("[fetch] ERROR: all requested Yahoo candle fetches failed", file=sys.stderr, flush=True)
+    if usable_total == 0:
+        print("[fetch] ERROR: zero usable Yahoo candle CSVs available", file=sys.stderr, flush=True)
         sys.exit(1)

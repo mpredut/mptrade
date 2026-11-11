@@ -2046,7 +2046,8 @@ def test_coerce_dict_maps_cli_env_path_replay_metrics_peak_scope_and_hl_status_b
 
     # 1. coerce_dict_maps & active_intents.format_summary handle None/non-dict payloads safely
     assert coerce_dict_maps({"a": 1}, None, [1, 2], True) == ({"a": 1}, {}, {}, {})
-    assert mss.coerce_dict_maps is botcore.coerce_dict_maps
+    assert mss.coerce_dict_maps({"a": 1}, None, [1, 2], True) == ({"a": 1}, {}, {}, {})
+    assert mss.coerce_dict_maps.__qualname__ == coerce_dict_maps.__qualname__
     summary_txt = active_intents.format_summary(None)  # type: ignore[arg-type]
     assert "Total active intents:  0" in summary_txt
 

@@ -4,13 +4,12 @@ import datetime
 import os
 import sys
 import pandas as pd
-import requests
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_nonneg_float, safe_pos_float
+from botcore import fetch_public_json, safe_int, safe_nonneg_float, safe_pos_float
 
 KLINE_COLUMNS = [
     'timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time',
@@ -23,12 +22,12 @@ def _klines_to_df(data):
     df = pd.DataFrame(data, columns=KLINE_COLUMNS)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.set_index('timestamp', inplace=True)
-    df['close'] = df['close'].astype(float)
+    df['close'] = pd.to_numeric(df['close'], errors='coerce')
     return df
 
 
 def _thirty_day_window_ms() -> tuple[int, int]:
-    end_time = int(datetime.datetime.now().timestamp() * 1000)
+    end_time = safe_int(datetime.datetime.now().timestamp() * 1000, default=0)
     start_time = end_time - 30 * 24 * 60 * 60 * 1000  # Last 30 days
     return start_time, end_time
 
@@ -38,8 +37,8 @@ def fetch_data():
     start_time, end_time = _thirty_day_window_ms()
 
     url = f'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime={start_time}&endTime={end_time}'
-    response = requests.get(url)
-    data = response.json()
+    raw = fetch_public_json(url, timeout=15.0)
+    data = raw if isinstance(raw, list) else []
 
     # Create a DataFrame
     df = _klines_to_df(data)

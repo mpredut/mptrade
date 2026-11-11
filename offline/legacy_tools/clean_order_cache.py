@@ -24,7 +24,7 @@ import time
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-from botcore import safe_pos_float
+from botcore import safe_int, safe_pos_float
 from cachepaths import CACHE_BINANCE_ORDER_FILENAME, cache_path, get_cachedb_dir
 from state_io import atomic_write_json, durable_replace_file, read_json_dict
 
@@ -76,7 +76,7 @@ def main():
         print("Nothing to clean.")
         return
 
-    bak = ORDER_FILE + f".bak.{int(time.time())}"
+    bak = ORDER_FILE + f".bak.{safe_int(time.time(), default=0)}"
     durable_replace_file(ORDER_FILE, bak)
     print(f"Backup: {bak}")
     data["items"] = cleaned

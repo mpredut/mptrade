@@ -4,12 +4,12 @@ import os
 import sys
 import matplotlib.pyplot as plt
 import pandas as pd
-import requests
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from botcore import fetch_public_json, safe_int
 from offline.legacy_tools.test import _compute_interval_drops, _klines_to_df, _thirty_day_window_ms
 
 def fetch_data():
@@ -20,17 +20,17 @@ def fetch_data():
     df_list = []
     while start_time < end_time:
         url = f'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime={start_time}&endTime={end_time}&limit=1000'
-        response = requests.get(url)
-        data = response.json()
-        
+        raw = fetch_public_json(url, timeout=15.0)
+        data = raw if isinstance(raw, list) else []
+
         if not data:
             break
-        
+
         df = _klines_to_df(data)
-        
+
         df_list.append(df)
-        
-        start_time = int(df.index[-1].timestamp() * 1000) + 60000  # Move to the next minute after the last timestamp.
+
+        start_time = safe_int(df.index[-1].timestamp() * 1000, default=0) + 60000  # Move to the next minute after the last timestamp.
 
     if not df_list:
         return _klines_to_df([])

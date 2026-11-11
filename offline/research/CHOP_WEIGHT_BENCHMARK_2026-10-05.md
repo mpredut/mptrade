@@ -8,7 +8,7 @@ Conducted to address the parameterization of fallback weights when a symbol has 
 ---
 
 ## Dataset & Execution Parameters
-* **Historical Span:** 403.9 days (August 2025 – October 2026).
+* **Historical Span:** 403.9 days (August 2025 - October 2026).
 * **Tick Volume:** ~902,698 ticks for `TAOUSDC`, ~902,158 ticks for `BTCUSDC`.
 * **Resampling Resolution:** 15-minute bars (30,152 bars for TAO, 30,016 bars for BTC).
 * **Account Baseline:** \$10,000 initial equity, \$1,000 standard notional tranche.
@@ -52,7 +52,7 @@ Conducted to address the parameterization of fallback weights when a symbol has 
 2. **Capital Preservation on Bitcoin:**
    * For the market anchor (`BTCUSDC`), active trading during sideways regimes incurs fee and spread drag (-$7.64 across 44 chop trades at 0.03).
    * Increasing chop weights to 0.05 or 0.10 exacerbates drawdown (rising from 1.50% to 1.83%).
-   * Keeping the fallback weight low (`0.01`–`0.03`) prevents capital bleed while maintaining active order pipeline liveness.
+   * Keeping the fallback weight low (`0.01`-`0.03`) prevents capital bleed while maintaining active order pipeline liveness.
 
 3. **Optimal Configuration Enforced:**
    * **Altcoin Proxy:** `binance_weight_proxy = BTCUSDC` and `kraken_weight_proxy = BTCUSDC`.

@@ -125,26 +125,45 @@ def load_price_series(
 
 class _OrderList(list):
     """List subclass allowing O(1) sort-order and summary caching across replay ticks."""
-    __slots__ = ("_sorted_desc", "_summary")
+    __slots__ = ("_sorted_desc", "_summary_box")
 
-    def __init__(self, iterable=()):
+    def __init__(
+        self,
+        iterable=(),
+        *,
+        _sorted_desc: Optional[bool] = None,
+        _summary_box: Optional[list] = None,
+    ):
         super().__init__(iterable)
-        self._invalidate()
+        self._sorted_desc = (len(self) <= 1) if _sorted_desc is None else bool(_sorted_desc)
+        self._summary_box = (
+            _summary_box
+            if isinstance(_summary_box, list) and len(_summary_box) == 1
+            else [None]
+        )
+
+    @property
+    def _summary(self):
+        return self._summary_box[0]
+
+    @_summary.setter
+    def _summary(self, value) -> None:
+        self._summary_box[0] = value
 
     def _invalidate(self) -> None:
         self._sorted_desc = len(self) <= 1
-        self._summary = None
+        self._summary_box = [None]
 
     def sort(self, *, key=None, reverse: bool = False) -> None:
         super().sort(key=key, reverse=reverse)
         self._sorted_desc = True if len(self) <= 1 else bool(reverse)
-        self._summary = None
+        self._summary_box = [None]
 
     def reverse(self) -> None:
         was_desc = self._sorted_desc
         super().reverse()
         self._sorted_desc = True if len(self) <= 1 else (not was_desc)
-        self._summary = None
+        self._summary_box = [None]
 
     def append(self, item) -> None:
         super().append(item)
@@ -170,7 +189,7 @@ class _OrderList(list):
     def clear(self) -> None:
         super().clear()
         self._sorted_desc = True
-        self._summary = None
+        self._summary_box = [None]
 
     def __setitem__(self, index, value) -> None:
         super().__setitem__(index, value)
@@ -209,19 +228,28 @@ class ReplayMarketDataProvider(MarketDataProvider):
         self._fee_pct = safe_nonneg_float(fee_pct, default=0.1)
         self._orders: Dict[str, List[dict]] = {s: [] for s in self._series if isinstance(s, str)}
         self._orders_version: int = 0
-        self._orders_cache: Dict[Tuple[str, Optional[str]], Tuple[int, float, float, List[dict]]] = {}
+        self._orders_cache: Dict[Tuple[str, Optional[str]], Tuple[int, float, float, _OrderList]] = {}
         self._positions: Dict[str, Tuple[float, float]] = {}   # symbol -> (quantity, total cost)
-        self._asset_to_symbol: Dict[str, str] = {}
+        self._asset_to_symbols: Dict[str, List[str]] = {}
         self._precisions: Dict[str, PairPrecision] = {}
         for s in self._series:
             if not isinstance(s, str) or not s.strip():
                 continue
             base = _base_asset(s).upper()
-            self._asset_to_symbol[base] = s
-            canon = canonical_base_asset(base)
-            if canon:
-                self._asset_to_symbol.setdefault(canon, s)
+            self._register_asset_symbol(base, s)
             self._precisions[s] = PairPrecision(price_decimals=2, volume_decimals=4, order_min=0.0, base_asset=base)
+
+    def _register_asset_symbol(self, base: str, symbol: str) -> None:
+        if not base or not symbol:
+            return
+        raw_syms = self._asset_to_symbols.setdefault(base, [])
+        if symbol not in raw_syms:
+            raw_syms.append(symbol)
+        canon = canonical_base_asset(base)
+        if canon:
+            canon_syms = self._asset_to_symbols.setdefault(canon, [])
+            if symbol not in canon_syms:
+                canon_syms.append(symbol)
 
     @property
     def name(self) -> str:
@@ -254,7 +282,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         if prec is None:
             base = _base_asset(sym).upper()
             prec = self._precisions[sym] = PairPrecision(price_decimals=2, volume_decimals=4, order_min=0.0, base_asset=base)
-            self._asset_to_symbol.setdefault(base, sym)
+            self._register_asset_symbol(base, sym)
         return prec
 
     def _resolve_series_and_cursor(
@@ -327,22 +355,33 @@ class ReplayMarketDataProvider(MarketDataProvider):
 
     # -- Simulated offline broker account -------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:
-        # Find the symbol whose position uses this asset as its base (BTCUSDC -> BTC).
+        # Sum base-asset inventory across all symbols sharing this base asset (e.g. BTCUSDC + BTCUSDT).
         if not asset or isinstance(asset, bool):
             return 0.0
         asset_norm = str(asset).strip().upper()
         if not asset_norm:
             return 0.0
-        sym = self._asset_to_symbol.get(asset_norm) or self._asset_to_symbol.get(canonical_base_asset(asset_norm))
-        if sym is not None:
-            return self._positions.get(sym, (0.0, 0.0))[0]
         canon_target = canonical_base_asset(asset_norm)
-        for symbol in self._series:
-            base_u = _base_asset(symbol).upper()
-            if base_u == asset_norm or (canon_target and canonical_base_asset(base_u) == canon_target):
-                self._asset_to_symbol[asset_norm] = symbol
-                return self._positions.get(symbol, (0.0, 0.0))[0]
-        return 0.0
+        matched = list(
+            dict.fromkeys(
+                [
+                    *self._asset_to_symbols.get(asset_norm, ()),
+                    *(self._asset_to_symbols.get(canon_target, ()) if canon_target else ()),
+                ]
+            )
+        )
+        if not matched:
+            for symbol in (*self._series, *self._positions):
+                if not isinstance(symbol, str) or not symbol.strip():
+                    continue
+                base_u = _base_asset(symbol).upper()
+                if base_u == asset_norm or (canon_target and canonical_base_asset(base_u) == canon_target):
+                    self._register_asset_symbol(base_u, symbol)
+                    if symbol not in matched:
+                        matched.append(symbol)
+        if not matched:
+            return 0.0
+        return sum(self._positions.get(sym, (0.0, 0.0))[0] for sym in matched)
 
     def _resolve_recent_orders_window(
         self, symbol: str, since_s: float
@@ -398,7 +437,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         if cached is not None:
             ver, low_ms, high_ms, res = cached
             if ver == self._orders_version and low_ms < cutoff_ms <= high_ms:
-                return res
+                return _OrderList(res, _sorted_desc=res._sorted_desc, _summary_box=res._summary_box)
         out = _OrderList()
         low_ms = -1e18
         for o in reversed(orders):
@@ -417,7 +456,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         out._sorted_desc = len(out) <= 1
         high_ms = safe_float(out[0]["timestamp"], default=1e18) if out else 1e18
         self._orders_cache[cache_key] = (self._orders_version, low_ms, high_ms, out)
-        return out
+        return _OrderList(out, _sorted_desc=out._sorted_desc, _summary_box=out._summary_box)
 
     def position(self, symbol: str) -> Tuple[float, float]:
         """Return (quantity, total_cost) for the current simulated position.

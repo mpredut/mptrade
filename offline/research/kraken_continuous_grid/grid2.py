@@ -122,7 +122,13 @@ def task(args):
 
 
 if __name__ == "__main__":
+    if not os.path.isdir(DATA):
+        print(f"[grid2] ERROR: data directory missing: {DATA}", file=sys.stderr, flush=True)
+        sys.exit(1)
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
+    if not assets:
+        print(f"[grid2] ERROR: no *_240m.csv assets found in {DATA}", file=sys.stderr, flush=True)
+        sys.exit(1)
     for a in assets:
         grid.load_asset(a)
     for r in read_jsonl_dicts(grid.OUT):
@@ -174,39 +180,46 @@ if __name__ == "__main__":
         for c in FEE_SET:
             todo.append(("views", a, c, "stress"))
     canon_groups: dict = {}
+    canon_aliases: dict[tuple[str, str, str], list[str]] = {}
     canon_todo = []
     for item in todo:
         if item[0] == "select":
             canon_todo.append(item)
         else:
             _, a, c, fk = item
-            p, pk = ALL[c]
-            k = (a, repr(p), bool(pk), fk)
+            spec = ALL.get(c)
+            if spec is not None:
+                p, pk = spec
+                k = (a, repr(p), bool(pk), fk)
+            else:
+                k = (a, c, False, fk)
             if k not in canon_groups:
-                canon_groups[k] = []
+                aliases_list: list[str] = []
+                canon_groups[k] = aliases_list
+                canon_aliases[(a, c, fk)] = aliases_list
                 canon_todo.append(item)
             canon_groups[k].append(c)
     workers = grid.resolve_grid_workers()
     print(f"[grid2] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
+    valid_rows = 0
     atomic_write_jsonl(OUT, ())
     with Pool(workers) as pool:
         for r in pool.imap_unordered(task, canon_todo):
             tag = r.get("kind")
             if tag == "views":
-                p, pk = ALL[r["cfg"]]
-                aliases = canon_groups.get((r["asset"], repr(p), bool(pk), r["fee"]), [r["cfg"]])
+                aliases = canon_aliases.get((r["asset"], r["cfg"], r["fee"]), [r["cfg"]])
                 for idx, alias_cfg in enumerate(aliases):
                     done_count += 1
+                    valid_rows += 1
                     row = r if idx == 0 and alias_cfg == r["cfg"] else {**r, "cfg": alias_cfg, "secs": 0.0}
                     append_jsonl_record(OUT, row)
                     vtag = f"{row['asset']:<5} {row['cfg']:<24} {row['fee']:<6} full {row['full']['ret']:+8.2f}% dd {row['full']['dd']:6.2f}"
                     print(f"[grid2] {done_count}/{len(todo)} {vtag} [{time.time()-t0:.0f}s]", flush=True)
             elif tag == "error" and isinstance(r.get("args"), list) and len(r["args"]) == 4 and r["args"][0] == "views":
                 _, err_a, err_c, err_fk = r["args"]
-                p, pk = ALL[err_c]
-                aliases = canon_groups.get((err_a, repr(p), bool(pk), err_fk), [err_c])
+                aliases = canon_aliases.get((err_a, err_c, err_fk), [err_c])
                 for alias_cfg in aliases:
                     done_count += 1
                     err_row = {**r, "asset": err_a, "cfg": alias_cfg, "fee": err_fk, "args": ["views", err_a, alias_cfg, err_fk]}
@@ -214,8 +227,13 @@ if __name__ == "__main__":
                     print(f"[grid2] {done_count}/{len(todo)} ERROR {err_a} {alias_cfg} {err_fk} [{time.time()-t0:.0f}s]", flush=True)
             else:
                 done_count += 1
+                if tag != "error" and "error" not in r:
+                    valid_rows += 1
                 append_jsonl_record(OUT, r)
                 if tag == "select":
                     tag = f"select {r['asset']} ({len(r['steps'])} steps)"
                 print(f"[grid2] {done_count}/{len(todo)} {tag} [{time.time()-t0:.0f}s]", flush=True)
+    if valid_rows == 0:
+        print("[grid2] ERROR: zero valid rows produced", file=sys.stderr, flush=True)
+        sys.exit(1)
     print("[grid2] done", flush=True)

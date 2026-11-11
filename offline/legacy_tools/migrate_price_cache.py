@@ -21,6 +21,7 @@ import time
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+from botcore import safe_int
 from cachepaths import get_cachedb_dir
 from providers.base import extract_timestamp_ms
 from state_io import atomic_write_json, atomic_write_text, durable_replace_file, encode_json_payload, read_json_dict, read_jsonl_dicts
@@ -30,7 +31,7 @@ CACHE_DIR = get_cachedb_dir()
 
 def _entry_ts(item):
     # An item is [ts, price] (a list) or dict -- delegate to extract_timestamp_ms SSOT.
-    return int(extract_timestamp_ms(item, default=0) or 0)
+    return safe_int(extract_timestamp_ms(item, default=0), default=0)
 
 
 def migrate_file(json_path, dry_run=False):
@@ -81,7 +82,7 @@ def migrate_file(json_path, dry_run=False):
         return added_total
 
     atomic_write_text(jsonl_path, "".join(ln + "\n" for ln in lines))
-    atomic_write_json(jsonl_path + ".meta", {"max_ts": max_ts, "saved_at": int(time.time() * 1000),
+    atomic_write_json(jsonl_path + ".meta", {"max_ts": max_ts, "saved_at": safe_int(time.time() * 1000, default=0),
                                             "fetchtime": fetchtime, "counts": counts})
     durable_replace_file(json_path, json_path + ".bak")  # A backup; we do not delete directly.
     return added_total

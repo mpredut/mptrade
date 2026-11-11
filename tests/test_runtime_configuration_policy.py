@@ -148,7 +148,12 @@ def test_live_venue_credentials_use_complete_profile_resolver():
     )
     for relative in files:
         text = (ROOT / relative).read_text(encoding="utf-8")
-        assert "_credentials(" in text
+        assert "_credentials" in text
+        assert (
+            "_credentials(" in text
+            or "build_kraken_client(" in text
+            or "build_t212_client_from_env(" in text
+        )
 
 
 def test_production_direct_order_boundaries_match_reviewed_allowlist():

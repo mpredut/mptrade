@@ -48,7 +48,6 @@ from strategies.replay_metrics import write_markdown_report
 from strategies.spot_replay import (
     prepare_spot_interval_params,
     run_replay,
-    scale_subbar_timeout_params,
     split_warmup_ohlc,
 )
 from offline.research.hybrid_reentry.harness import load_ohlc_csv
@@ -63,7 +62,7 @@ DEFAULT_CONFIG = Path(ROOT) / "kraken" / "config.env"
 def load_base_params(config_path: str | Path) -> strat.StratParams:
     """Read one explicit profile without inheriting shell variables or secrets."""
     path = Path(config_path).resolve(strict=True)
-    return prepare_spot_interval_params(strat.StratParams.from_env(parse_dotenv(str(path))), 240)
+    return strat.StratParams.from_env(parse_dotenv(str(path)))
 
 R = dataclasses.replace
 
@@ -260,7 +259,7 @@ def _run_slice_replay(
 ) -> tuple[tuple[float, float, int], float, tuple[float, ...]]:
     res = run_replay(
         ohlc=run_ohlc,
-        params=scale_subbar_timeout_params(params, 240.0),
+        params=prepare_spot_interval_params(params, 240.0),
         fee_pct=fee_pct,
         bar_minutes=240.0,
         warmup_ohlc=warmup_ohlc,

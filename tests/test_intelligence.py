@@ -1386,7 +1386,11 @@ def test_iter48_portfolio_locked_balances_ws_enqueue_threadsafe_and_bool_env_pat
     assert "dd_from_peak_pct" not in pos_entry
 
     # 3. PublicPriceStreamBase handles non-iterable symbols=True and BinancePriceStream._enqueue_cmd uses call_soon_threadsafe
-    base_stream = PublicPriceStreamBase(symbols=True)
+    class _StubPriceStream(PublicPriceStreamBase):
+        async def _connect_and_run(self) -> None:
+            return None
+
+    base_stream = _StubPriceStream(symbols=True)
     assert base_stream._symbols == ()
 
     b_stream = BinancePriceStream(symbols=["BTCUSDC"])

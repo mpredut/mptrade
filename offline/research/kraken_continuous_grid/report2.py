@@ -23,7 +23,7 @@ from offline.research.kraken_continuous_grid.report import (
 )
 
 
-def generate_report(exp_dir: str | None = None) -> list[str]:
+def _generate_report_with_status(exp_dir: str | None = None) -> tuple[list[str], bool]:
     exp = _resolve_exp_dir(exp_dir)
     results2_path = os.path.join(exp, "results2.jsonl")
     rows = read_jsonl_dicts(results2_path)
@@ -195,11 +195,25 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 fee += [a, b]
     table(fee, "Fee stress: 0.26% vs 0.40% per leg")
 
-    return _finalize_markdown_report(
-        L, errors, os.path.join(exp, "REPORT2.md"), label_fn=lambda e: str(e.get("args", "?"))
+    has_valid = bool(sel or views)
+    report2_path = os.path.join(exp, "REPORT2.md")
+    lines = _finalize_markdown_report(
+        L,
+        errors,
+        report2_path,
+        label_fn=lambda e: str(e.get("args", "?")),
+        write_file=has_valid or not os.path.exists(report2_path),
     )
+    return lines, has_valid
+
+
+def generate_report(exp_dir: str | None = None) -> list[str]:
+    lines, _ = _generate_report_with_status(exp_dir)
+    return lines
 
 
 if __name__ == "__main__":
-    lines = generate_report()
+    lines, has_valid = _generate_report_with_status()
     print("\n".join(lines[:50]))
+    if not has_valid:
+        sys.exit(1)

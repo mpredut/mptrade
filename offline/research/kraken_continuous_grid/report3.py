@@ -19,10 +19,10 @@ from offline.research.kraken_continuous_grid.report import (
 )
 
 
-def generate_report(exp_dir: str | None = None) -> list[str]:
+def _generate_report_with_status(exp_dir: str | None = None) -> tuple[list[str], bool]:
     exp = _resolve_exp_dir(exp_dir)
     results3_path = os.path.join(exp, "results3.jsonl")
-    _, errors, by, assets = _load_grid_results_by_cfg(results3_path, spec_map=grid2.ALL)
+    valid_rows, errors, by, assets = _load_grid_results_by_cfg(results3_path, spec_map=grid2.ALL)
 
     L = ["# Finite-cash continuous runs (3900 USD, no refill after losses)\n",
          "Return and max drawdown as % of 3900 USD over the whole history per asset; "
@@ -89,9 +89,24 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 cells.append("- / -")
         L.append(f"| {a} | " + " | ".join(cells) + " |")
 
-    return _finalize_markdown_report(L, errors, os.path.join(exp, "REPORT3.md"))
+    has_valid = bool(valid_rows)
+    report3_path = os.path.join(exp, "REPORT3.md")
+    lines = _finalize_markdown_report(
+        L,
+        errors,
+        report3_path,
+        write_file=has_valid or not os.path.exists(report3_path),
+    )
+    return lines, has_valid
+
+
+def generate_report(exp_dir: str | None = None) -> list[str]:
+    lines, _ = _generate_report_with_status(exp_dir)
+    return lines
 
 
 if __name__ == "__main__":
-    lines = generate_report()
+    lines, has_valid = _generate_report_with_status()
     print("\n".join(lines))
+    if not has_valid:
+        sys.exit(1)

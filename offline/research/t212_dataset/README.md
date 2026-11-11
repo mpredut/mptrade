@@ -1,4 +1,4 @@
-# Trading212 — frozen datasets and the live baseline
+# Trading212 -- frozen datasets and the live baseline
 
 Date: 2026-08-20
 

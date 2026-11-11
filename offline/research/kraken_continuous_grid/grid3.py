@@ -51,36 +51,51 @@ def task(args):
 
 
 if __name__ == "__main__":
+    if not os.path.isdir(DATA):
+        print(f"[grid3] ERROR: data directory missing: {DATA}", file=sys.stderr, flush=True)
+        sys.exit(1)
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
+    if not assets:
+        print(f"[grid3] ERROR: no *_240m.csv assets found in {DATA}", file=sys.stderr, flush=True)
+        sys.exit(1)
     for a in assets:
         grid.load_asset(a)
     todo = [(a, c) for a in assets for c in CFGS]
     canon_groups: dict = {}
+    canon_aliases: dict[tuple[str, str], list[str]] = {}
     canon_todo = []
     for a, c in todo:
-        p, pk = grid2.ALL[c]
-        k = (a, repr(p), bool(pk))
+        spec = grid2.ALL.get(c)
+        if spec is not None:
+            p, pk = spec
+            k = (a, repr(p), bool(pk))
+        else:
+            k = (a, c, False)
         if k not in canon_groups:
-            canon_groups[k] = []
+            aliases_list: list[str] = []
+            canon_groups[k] = aliases_list
+            canon_aliases[(a, c)] = aliases_list
             canon_todo.append((a, c))
         canon_groups[k].append(c)
     done_count = 0
+    valid_rows = 0
     workers = grid.resolve_grid_workers()
     out3_path = os.path.join(EXP, "results3.jsonl")
     atomic_write_jsonl(out3_path, ())
     with Pool(workers) as pool:
         for r in pool.imap_unordered(task, canon_todo):
-            cfg_entry = grid2.ALL.get(r.get("cfg"))
-            aliases = (
-                canon_groups.get((r["asset"], repr(cfg_entry[0]), bool(cfg_entry[1])), [r["cfg"]])
-                if cfg_entry is not None
-                else [r.get("cfg", "?")]
-            )
+            r_asset = str(r.get("asset", "?"))
+            r_cfg = str(r.get("cfg", "?"))
+            aliases = canon_aliases.get((r_asset, r_cfg), [r_cfg])
             for idx, alias_cfg in enumerate(aliases):
                 done_count += 1
-                row = r if idx == 0 and alias_cfg == r["cfg"] else {**r, "cfg": alias_cfg}
+                row = r if idx == 0 and alias_cfg == r_cfg else {**r, "cfg": alias_cfg}
                 append_jsonl_record(out3_path, row)
                 if "error" in row:
                     print(f"[grid3] {done_count}/{len(todo)} {row['asset']:<5} {row['cfg']:<24} ERROR", flush=True)
                 else:
+                    valid_rows += 1
                     print(f"[grid3] {done_count}/{len(todo)} {row['asset']:<5} {row['cfg']:<24} {row.get('0.26', {})} ", flush=True)
+    if valid_rows == 0:
+        print("[grid3] ERROR: zero valid rows produced", file=sys.stderr, flush=True)
+        sys.exit(1)
