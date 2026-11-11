@@ -5,6 +5,7 @@ from abc import ABC
 from datetime import datetime, timezone
 import glob as _glob
 import logging
+import math
 import os
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -298,7 +299,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                     item_entry["globex_session_chg_pct"] = globex_session_chg
                 if len(pts) >= 2:
                     last_bar_ts = pts[-1][0]
-                    item_entry["last_bar_ts"] = int(last_bar_ts)
+                    item_entry["last_bar_ts"] = math.trunc(last_bar_ts)
                     if mkt_state != "CLOSED" and (eff_now <= 0.0 or (eff_now - last_bar_ts) <= 2700.0):
                         prior_pts = pts[:-1]
                         for target_sec, key_name in ((3600.0, "chg_1h_pct"), (900.0, "chg_15m_pct")):
@@ -338,7 +339,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                 pass
             # 2. Deribit BTC / ETH Implied Volatility Index (DVOL) & Institutional Options Surface
             try:
-                end_ms = int(eff_now * 1000)
+                end_ms = math.trunc(eff_now * 1000)
                 start_ms = end_ms - 3600 * 1000
                 dvol_tpl = _cfg_str("feeds", "deribit_dvol_url_template")
                 hvol_tpl = _cfg_str("feeds", "deribit_hist_vol_url_template")
@@ -438,7 +439,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                     mtime = os.path.getmtime(eff_path)
                     if ref_ts is None or (
                         is_fear_greed
-                        and int(ref_ts) % 86400 == 0
+                        and math.trunc(ref_ts) % 86400 == 0
                         and (now_ts - ref_ts) > 3600.0
                         and ref_ts < mtime <= now_ts + 60.0
                     ):
@@ -1229,7 +1230,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             snap_ts = max(sensor_ts_candidates) if sensor_ts_candidates else now_ts
         snap_age_sec = round(max(0.0, now_ts - snap_ts), 3)
         if not getattr(snapshot, "snapshot_id", ""):
-            snapshot.snapshot_id = f"market_portfolio:{scope_label}:{int(round(snap_ts * 1000.0))}"
+            snapshot.snapshot_id = f"market_portfolio:{scope_label}:{round(snap_ts * 1000.0)}"
         snapshot.source = snap_source
         snapshot.asset_scope = scope_label
         snapshot.ts = snap_ts

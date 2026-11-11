@@ -16,7 +16,7 @@ from botcore import bind_isolated_venue_cfg_loader  # noqa: E402
 from notify_engine.alertnotifiers import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
-load_isolated_kraken_cfg = bind_isolated_venue_cfg_loader(_HERE, ("KRAKEN_",))
+load_isolated_kraken_cfg = bind_isolated_venue_cfg_loader(_HERE, ("KRAKEN_",), dir_kwarg="kraken_dir")
 
 
 def build_kraken_client(client_cls, creds_fn, role: str = "bot"):

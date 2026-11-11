@@ -584,25 +584,38 @@ def load_isolated_venue_cfg(
     )
 
 
+_VENUE_DIR_UNSET = object()
+
+
 def bind_isolated_venue_cfg_loader(
     default_dir: str | os.PathLike[str],
     override_prefixes: tuple[str, ...] | list[str] = (),
     fallback_prefixes: tuple[str, ...] | list[str] = (),
+    *,
+    dir_kwarg: str | None = None,
 ):
     """Return a venue-specific isolated config loader bound to ``default_dir`` and ``override_prefixes``."""
     ov_tuple = tuple(override_prefixes)
     fb_tuple = tuple(fallback_prefixes)
 
     def _loader(
-        venue_dir: str | os.PathLike[str] = default_dir,
+        venue_dir: object = _VENUE_DIR_UNSET,
         *,
         config_path: str | os.PathLike[str] | None = None,
         env_path: str | os.PathLike[str] | None = None,
         **dir_kw: str | os.PathLike[str],
     ) -> dict[str, str]:
-        eff_dir = next(iter(dir_kw.values()), venue_dir)
+        eff_dir: object = venue_dir
+        if dir_kw:
+            if not dir_kwarg or set(dir_kw.keys()) != {dir_kwarg}:
+                bad = next(k for k in dir_kw if k != dir_kwarg)
+                raise TypeError(f"unexpected keyword argument {bad!r}")
+            if venue_dir is not _VENUE_DIR_UNSET:
+                raise TypeError(f"got multiple values for directory argument ({dir_kwarg!r})")
+            eff_dir = dir_kw[dir_kwarg]
+        resolved_dir = default_dir if (eff_dir is _VENUE_DIR_UNSET or eff_dir is None) else eff_dir
         return load_isolated_venue_cfg(
-            eff_dir,
+            resolved_dir,  # type: ignore[arg-type]
             config_path=config_path,
             env_path=env_path,
             override_prefixes=ov_tuple,
@@ -1787,6 +1800,21 @@ class StringEnum(str, Enum):
         return str(self.value)
 
 
+def bind_attr_call(method_name: str, *bound_args: object, **bound_kwargs: object):
+    """Bind a method dispatching ``getattr(self, method_name)`` at call time so overrides and monkeypatches apply."""
+
+    def _bound(self: object, *args: object, **kwargs: object):
+        merged_kw = {**bound_kwargs, **kwargs} if bound_kwargs else kwargs
+        return getattr(self, method_name)(*bound_args, *args, **merged_kw)
+
+    return _bound
+
+
+def bind_module_importer(module_name: str):
+    """Return a zero-arg callable resolving ``importlib.import_module(module_name)`` dynamically at call time."""
+    return lambda _m=module_name: importlib.import_module(_m)
+
+
 class LazyPluginRegistryFactory:
     """Shared lazy-loading plugin class registry and singleton factory base."""
 
@@ -1795,6 +1823,15 @@ class LazyPluginRegistryFactory:
     _defaults_loaded: bool = False
     _unknown_id_label: str = "plugin"
     _default_modules: tuple[str, ...] = ()
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if "_instances" not in cls.__dict__:
+            cls._instances = {}
+        if "_registry" not in cls.__dict__:
+            cls._registry = {}
+        if "_defaults_loaded" not in cls.__dict__:
+            cls._defaults_loaded = False
 
     @classmethod
     def register(cls, plugin_id: str, plugin_cls: type) -> None:

@@ -240,7 +240,7 @@ def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[st
         num = safe_float(num_s.strip(), None)
         den = safe_pos_float(den_s.strip(), 0.0)
         if num is not None and den > 0.0:
-            return float(num) / float(den)
+            return num / den
     return safe_float(raw, fallback)
 
 
@@ -768,7 +768,7 @@ def load_cached_fear_greed_snapshot(
             fg_data = reader(fg_path)
             if not isinstance(fg_data, dict) or not fg_data:
                 continue
-            fg_val = max(0, min(100, int(round(safe_float(fg_data.get("value"), 50.0)))))
+            fg_val = max(0, min(100, round(safe_float(fg_data.get("value"), 50.0))))
             fg_cls = _clean_nonbool_str(fg_data.get("classification"), "") or _clean_nonbool_str(fg_data.get("sentiment"), "Neutral")
             raw_fg_ts = (
                 fg_data.get("ts")
@@ -782,7 +782,7 @@ def load_cached_fear_greed_snapshot(
             fg_ts = normalize_epoch_sec(raw_fg_ts, default=eval_now) or eval_now
             raw_hist = fg_data.get("historical_values") or ()
             hist_vals = tuple(
-                max(0, min(100, int(round(v_f))))
+                max(0, min(100, round(v_f)))
                 for v in (raw_hist if isinstance(raw_hist, (list, tuple)) else ())
                 if (v_f := safe_float(v, -1.0)) >= 0.0
             )
@@ -791,7 +791,7 @@ def load_cached_fear_greed_snapshot(
                 classification=fg_cls,
                 timestamp=fg_ts,
                 historical_values=hist_vals,
-                trend_7d_change=int(round(safe_float(fg_data.get("trend_7d_change"), 0.0))),
+                trend_7d_change=round(safe_float(fg_data.get("trend_7d_change"), 0.0)),
                 is_extreme_fear=_parse_bool_flag(fg_data.get("is_extreme_fear"), fg_val <= 25),
                 is_extreme_greed=_parse_bool_flag(fg_data.get("is_extreme_greed"), fg_val >= 75),
             )
@@ -1100,7 +1100,7 @@ def compute_cross_asset_regime(
 def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
     """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / VIX / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface)."""
     items = _extract_benchmark_items(data)
-    if not items:
+    if items is None:
         return ""
     specs = get_macro_benchmark_specs()
     extra_keys: frozenset[str] = frozenset({

@@ -15,7 +15,6 @@ See the self-test at the end of the file, validated against Kraken's documentati
 from __future__ import annotations
 
 import base64
-from functools import partialmethod
 import hashlib
 import hmac
 import os
@@ -31,6 +30,7 @@ if _ROOT not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
+    bind_attr_call,
     clean_order_id,
     exact_nonneg_int,
     exact_pos_int,
@@ -246,14 +246,14 @@ class KrakenClient:
         res = self._public(method, {"pair": pair.strip().upper()})
         return next((v for v in res.values() if isinstance(v, dict)), None) if res else None
 
-    pair_info = partialmethod(_public_first_dict, "AssetPairs")
+    pair_info = bind_attr_call("_public_first_dict", "AssetPairs")
 
     def cached_pair_info(self, candidates) -> dict | None:
         """Return in-memory cached pair metadata for ``candidates`` without network I/O."""
         own_cache = getattr(self, "_CACHE", None)
         return get_cached_pair_info(candidates, own_cache if isinstance(own_cache, dict) else None)
 
-    ticker = partialmethod(_public_first_dict, "Ticker")
+    ticker = bind_attr_call("_public_first_dict", "Ticker")
 
     def ohlc_closes_with_timestamps(
         self, pair: str, interval: int,
@@ -320,7 +320,7 @@ class KrakenClient:
         return self._private("Balance")
 
     balance._is_default_kraken_balance = True  # type: ignore[attr-defined]
-    balance_ex = partialmethod(_private, "BalanceEx")
+    balance_ex = bind_attr_call("_private", "BalanceEx")
 
     def price_decimals(self, pair: str) -> int:
         """Return Kraken's allowed PRICE decimals for the pair from AssetPairs,
@@ -389,15 +389,16 @@ class KrakenClient:
     def _private_txid_call(self, method: str, txid: str) -> dict:
         return self._private(method, {"txid": self._clean_txid(txid)})
 
-    cancel_order = partialmethod(_private_txid_call, "CancelOrder")
-    query_orders = partialmethod(_private_txid_call, "QueryOrders")
+    cancel_order = bind_attr_call("_private_txid_call", "CancelOrder")
+    query_orders = bind_attr_call("_private_txid_call", "QueryOrders")
 
     def _private_dict_field(self, method: str, field: str) -> dict:
-        raw = self._private(method).get(field)
+        resp = self._private(method)
+        raw = resp.get(field) if isinstance(resp, dict) else None
         return raw if isinstance(raw, dict) else {}
 
-    open_orders = partialmethod(_private_dict_field, "OpenOrders", "open")
-    closed_orders = partialmethod(_private_dict_field, "ClosedOrders", "closed")
+    open_orders = bind_attr_call("_private_dict_field", "OpenOrders", "open")
+    closed_orders = bind_attr_call("_private_dict_field", "ClosedOrders", "closed")
 
 
 # ---------------------------------------------------------------------------

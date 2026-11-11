@@ -15,7 +15,7 @@ Run with the Python interpreter from the SDK virtual environment:
 
 from __future__ import annotations
 
-from functools import partialmethod
+import math
 import os
 import sys
 import time
@@ -26,6 +26,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (  # noqa: E402
+    bind_attr_call,
     clean_nonempty_str,
     coerce_dict_maps,
     exact_int,
@@ -72,22 +73,23 @@ def _round_px(px: float, sz_decimals: int, is_perp: bool = True) -> float:
     """Round an HL price to 5 significant figures and at most (6/8 - szDecimals) decimals."""
     if isinstance(px, bool) or isinstance(sz_decimals, bool):
         raise ValueError("px and sz_decimals must not be boolean")
-    try:
-        px_raw = float(px)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("px and sz_decimals must be finite numbers") from exc
+    px_finite = safe_float(px, default=None)
+    if px_finite is None and not (isinstance(px, float) and (math.isnan(px) or math.isinf(px))):
+        raise ValueError("px and sz_decimals must be finite numbers")
     dec_f = safe_float(sz_decimals, default=None)
     if dec_f is None:
         raise ValueError("px and sz_decimals must be finite numbers")
     dec_i = _exact_int_in_range(dec_f, 0)
     if dec_i is None:
         raise ValueError("sz_decimals must be a non-negative integer")
-    px_f = safe_pos_float(px_raw, default=None)
+    if px_finite is None:
+        return px
+    px_f = safe_pos_float(px_finite, default=None)
     if px_f is None:
-        return px_raw
+        return px_finite
     max_dec = (6 if is_perp else 8) - dec_i
-    px = float(f"{px_f:.5g}")           # five significant figures
-    return round(px, max(max_dec, 0))
+    px_sig = safe_pos_float(f"{px_f:.5g}", default=px_f) or px_f  # five significant figures
+    return round(px_sig, max(max_dec, 0))
 
 
 def _validate_and_round_order_params(
@@ -293,7 +295,7 @@ class HLClient:
             log(f"  ! {label}({key}) failed: {e}")
             return None
 
-    mid = partialmethod(_mid_for_key, label="mid")
+    mid = bind_attr_call("_mid_for_key", label="mid")
 
     # ----- account (read-only, address only) ----------------------------------
     def _user_state(self) -> dict:
@@ -401,7 +403,7 @@ class HLClient:
                     return mapped_s
         return None
 
-    spot_mid = partialmethod(_mid_for_key, label="spot_mid")
+    spot_mid = bind_attr_call("_mid_for_key", label="spot_mid")
 
     def funding_rate(self, coin: str) -> float | None:
         """Return the current hourly perpetual funding rate; positive means longs pay shorts."""

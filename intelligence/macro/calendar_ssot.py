@@ -291,11 +291,11 @@ def resolve_macro_economic_calendar(
     for item in split_csv(_ssot._cfg_str("sessions", "macro_calendar_windows_eet")):
         parts = [p.strip() for p in item.split("|")]
         if len(parts) >= 3 and ":" in parts[0]:
-            try:
-                hh_s, mm_s = parts[0].split(":", 1)
-                parsed_windows.append((int(hh_s), int(mm_s), parts[1], parts[2]))
-            except ValueError:
-                pass
+            hh_s, mm_s = parts[0].split(":", 1)
+            hh_i = exact_int(hh_s, default=None)
+            mm_i = exact_int(mm_s, default=None)
+            if hh_i is not None and mm_i is not None:
+                parsed_windows.append((hh_i, mm_i, parts[1], parts[2]))
         if len(parts) >= 4 and parts[1] and parts[3]:
             routine_labels[parts[1]] = parts[3]
     windows = tuple(parsed_windows)
@@ -357,10 +357,10 @@ def resolve_macro_economic_calendar(
             max_ago_min = -15.0 if code == "US_WALL_STREET_CLOSE" else -20.0
             if (max_ago_min < delta_min <= 0.0 if code == "US_WALL_STREET_CLOSE" else max_ago_min <= delta_min <= 0.0) and active_window is None:
                 win_tag = "ACTIVE VOLATILITY WINDOW" if (is_confirmed_win or code not in routine_labels) else "ACTIVE SESSION WINDOW"
-                active_window = f"{eff_desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — {win_tag})"
+                active_window = f"{eff_desc} at {time_lbl} ({abs(round(delta_min))}m ago \u2014 {win_tag})"
                 active_window_is_high_impact = is_confirmed_win
             elif delta_min > 0.0:
-                m_cnt = int(round(abs(delta_min)))
+                m_cnt = round(abs(delta_min))
                 h_cnt, rem_cnt = divmod(m_cnt, 60)
                 cnt_lbl = f"{m_cnt}m" if m_cnt < 60 else (f"{h_cnt}h{rem_cnt:02d}m" if rem_cnt else f"{h_cnt}h")
                 upcoming.append((delta_min, code, eff_desc, f"{eff_desc} at {time_lbl} in {cnt_lbl}", is_confirmed_win))

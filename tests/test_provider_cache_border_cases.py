@@ -93,6 +93,8 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import VenueFeeAndLimi
 from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
 from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from kraken import shadow_live as kraken_shadow
+from kraken.kraken_client import KrakenClient
+from kraken.kraken_common import load_isolated_kraken_cfg
 from kraken.trailing_stop import KrakenTrailing
 import llm_order_guard
 from market_monitor.new_coins_discovery import NewCoinsFactory
@@ -111,6 +113,7 @@ from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_window_bounds,
 )
 from offline.runners import apply_proposals
+from orchestratorOS.agy import paths as agy_paths, ui_mirror as agy_ui_mirror
 from orchestratorOS.livecheck import os_resources_watchdog as wd
 import order_guard
 from order_lifecycle import TrackedOrderLifecycle
@@ -132,7 +135,9 @@ from providers.order_ohlc_utils import (
     validate_dataset,
 )
 from providers.quantity import (
+    BinanceFilterError,
     clamp_notional_to_wallet_balance,
+    decimal_places,
     dust_protected_partial_sell_qty,
     dust_protected_sell_balance_cap,
     venue_adjust_partial_sell_quantity,
@@ -172,6 +177,7 @@ from tests.conftest import (
     load_venue_modules,
     make_test_margins,
 )
+import tradeall
 from trailing_core import TrailingAdapterBase
 import utils
 from verify_tools import monitor_night, portfolio_snapshot
@@ -2040,7 +2046,7 @@ def test_coerce_dict_maps_cli_env_path_replay_metrics_peak_scope_and_hl_status_b
 
     # 1. coerce_dict_maps & active_intents.format_summary handle None/non-dict payloads safely
     assert coerce_dict_maps({"a": 1}, None, [1, 2], True) == ({"a": 1}, {}, {}, {})
-    assert mss.coerce_dict_maps is coerce_dict_maps
+    assert mss.coerce_dict_maps is botcore.coerce_dict_maps
     summary_txt = active_intents.format_summary(None)  # type: ignore[arg-type]
     assert "Total active intents:  0" in summary_txt
 
@@ -2318,13 +2324,18 @@ def test_wave13_sleep_interval_max_age_ladders_warmup_and_guard_border_cases(tmp
     atomic_write_text(str(log_f), '{"a":1}\n{"a":2}\n')
     assert read_tail_complete_lines_text(str(log_f), "bad") == '{"a":2}\n'  # type: ignore[arg-type]
 
-    pre_rth_fn = botcore.is_us_rth_open
-    botcore.configure_runtime_services(enforce_rth_gate=False)
-    importlib.reload(botcore)
-    assert botcore._RUNTIME_SERVICES.enforce_rth_gate is False
-    assert botcore.is_rth_gate_enabled(None, rth_fn=pre_rth_fn) is False
-    assert botcore.is_rth_gate_enabled(None, rth_fn=lambda: False) is True
-    assert botcore.is_rth_gate_enabled("false") is False  # type: ignore[arg-type]
+    saved_botcore_dict = dict(botcore.__dict__)
+    try:
+        pre_rth_fn = botcore.is_us_rth_open
+        botcore.configure_runtime_services(enforce_rth_gate=False)
+        importlib.reload(botcore)
+        assert botcore._RUNTIME_SERVICES.enforce_rth_gate is False
+        assert botcore.is_rth_gate_enabled(None, rth_fn=pre_rth_fn) is False
+        assert botcore.is_rth_gate_enabled(None, rth_fn=lambda: False) is True
+        assert botcore.is_rth_gate_enabled("false") is False  # type: ignore[arg-type]
+    finally:
+        botcore.__dict__.update(saved_botcore_dict)
+        botcore._sync_reexport_modules()
 
     # 7. Internal & External guard template methods accept unsupported sides and resolved snapshots cleanly
     assert ParabolicSurgeGuard().check("BTCUSDC", "HOLD", 60000.0).reason == "unsupported_side_skipped"
@@ -2463,5 +2474,110 @@ def test_wave14_markdown_report_default_writer_cli_specs_and_provider_border_cas
         lambda _sym, _iv: SimpleNamespace(timestamps=[1700000000], closes=[50000.0, 50100.0]),
     )
     assert krk_prov.fetch_historical_ohlc_points("BTCUSDC", days=1) == []
+
+
+def test_wave15_bind_attr_call_monkeypatch_seams_isolated_cfg_loader_and_nan_ts_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wave 15: dynamic bind_attr_call monkeypatch seams, strict kwarg resolvers, factory isolation, and NaN/empty-items guards."""
+    # 1. KrakenClient, HLClient, TradingBot, and T212Client honor instance monkeypatches on bound methods
+    krk = KrakenClient(api_key="", api_secret="")
+    priv_calls: list[tuple[str, Any]] = []
+    pub_calls: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        krk,
+        "_private",
+        lambda method, data=None: priv_calls.append((method, data)) or {
+            "open": {"O1": {"status": "open"}},
+            "closed": {"C1": {"status": "closed"}},
+            "ZUSD": {"vol": "100.0"},
+        },
+    )
+    monkeypatch.setattr(
+        krk,
+        "_public",
+        lambda endpoint, params=None: pub_calls.append((endpoint, params)) or {"XBTUSDC": {"c": ["95000.0"]}},
+    )
+    assert krk.balance_ex()["ZUSD"] == {"vol": "100.0"}
+    assert krk.open_orders() == {"O1": {"status": "open"}}
+    assert krk.closed_orders() == {"C1": {"status": "closed"}}
+    assert krk.cancel_order("OABCDE-12345-FGHIJK") is not None
+    assert krk.query_orders("OABCDE-12345-FGHIJK") is not None
+    assert krk.pair_info("XBTUSDC") == {"c": ["95000.0"]}
+    assert krk.ticker("XBTUSDC") == {"c": ["95000.0"]}
+    assert [m for m, _ in priv_calls] == ["BalanceEx", "OpenOrders", "ClosedOrders", "CancelOrder", "QueryOrders"]
+    assert [e for e, _ in pub_calls] == ["AssetPairs", "Ticker"]
+    monkeypatch.setattr(krk, "_private", lambda _method, _data=None: ["unexpected-list"])
+    assert krk.open_orders() == {}
+    assert krk.closed_orders() == {}
+
+    hl_client_mod, hl_common_mod = load_venue_modules("hyperliquid", "hl_client", "common")
+    hl_cli = hl_client_mod.HLClient.__new__(hl_client_mod.HLClient)
+    monkeypatch.setattr(hl_cli, "_mid_for_key", lambda key, label="": 42.5 if (key, label) == ("HYPE", "mid") else 43.0)
+    assert hl_cli.mid("HYPE") == pytest.approx(42.5)
+    assert hl_cli.spot_mid("@107") == pytest.approx(43.0)
+    assert math.isnan(hl_client_mod._round_px(float("nan"), 2))
+    with pytest.raises(ValueError):
+        hl_client_mod._round_px(25.0, True)
+
+    t212_client_mod = load_venue_modules("212trading", "t212_client")
+    t212_cli = t212_client_mod.T212Client.__new__(t212_client_mod.T212Client)
+    monkeypatch.setattr(t212_cli, "_read_cached_dict_list", lambda attr, path, label: [{"attr": attr, "path": path, "label": label}])
+    assert t212_cli.get_portfolio() == [{"attr": "_pf_cache", "path": "/equity/portfolio", "label": "portfolio"}]
+    assert t212_cli.list_active_orders() == [{"attr": "_ord_cache", "path": "/equity/orders", "label": "active orders"}]
+
+    bot_stub = rtrade.TradingBot.__new__(rtrade.TradingBot)
+    monkeypatch.setattr(bot_stub, "_repetitive_side_loop", lambda side, cp, fp: (side, cp, fp))
+    assert bot_stub.repetitive_buy(100.0, 105.0) == ("BUY", 100.0, 105.0)
+    assert bot_stub.repetitive_sell(100.0, 95.0) == ("SELL", 100.0, 95.0)
+
+    # 2. Strict keyword validation on bind_isolated_venue_cfg_loader and agy path resolvers
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        load_isolated_kraken_cfg(cfg_path=str(tmp_path))
+    with pytest.raises(TypeError, match="multiple values"):
+        load_isolated_kraken_cfg(str(tmp_path), kraken_dir=str(tmp_path))
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        hl_common_mod.load_isolated_hl_cfg(wrong_kw=str(tmp_path))
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        agy_paths.resolve_bot_cli_base(wrong_kw=str(tmp_path))
+    with pytest.raises(TypeError, match="multiple values"):
+        agy_paths.resolve_bot_cli_base(str(tmp_path), cli_base=str(tmp_path))
+    assert agy_paths.resolve_bot_cli_base(cli_base=str(tmp_path)) == str(tmp_path)
+
+    lock_file = tmp_path / "ui_store.lock"
+    monkeypatch.setattr(agy_ui_mirror, "resolve_store_lock_path", lambda: str(lock_file))
+    with agy_ui_mirror._store_flock():
+        assert lock_file.exists()
+
+    # 3. LazyPluginRegistryFactory isolates _registry and _instances per subclass
+    sub_a = type("SubFactoryA", (botcore.LazyPluginRegistryFactory,), {})
+    sub_b = type("SubFactoryB", (botcore.LazyPluginRegistryFactory,), {})
+    sub_a.register("alpha", SimpleNamespace)
+    assert "alpha" in sub_a._registry and "alpha" not in sub_b._registry
+    assert sub_a._instances is not sub_b._instances
+
+    # 4. Adverse trend normalization, bool rejection in decimal_places, NaN ts guard, and crypto-only macro summary
+    assert order_guard.is_adverse_trend("buy", "  BEAR ") is True
+    assert order_guard.is_adverse_trend("sell", " BULL ") is True
+    with pytest.raises(BinanceFilterError):
+        decimal_places(True)
+
+    coord = tradeall.TrendCoordinator.__new__(tradeall.TrendCoordinator)
+    coord.symbol_aliases = {}
+    coord.trend_states = {}
+    coord.trend_states_big = {}
+    coord._new_trend_state = lambda: SimpleNamespace()
+    coord._resolve_symbol = lambda sym: sym
+    coord.current_price_mgr = SimpleNamespace(
+        STALE_THRESHOLD_MS=5000,
+        get_price=lambda _sym: [float("nan"), 95000.0],
+    )
+    assert coord.evaluate("BTCUSDC") is None
+
+    summary_crypto_only = mss.format_macro_benchmarks_summary_line(
+        {"items": {}, "coinbase_premium_bps": 12.5, "btc_dvol": 55.0}
+    )
+    assert "CB_Premium=+12.5bps" in summary_crypto_only and "BTC_DVOL=55.0%" in summary_crypto_only
+
 
 

@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-from functools import partialmethod
 import importlib
 import inspect
 import logging
@@ -18,6 +17,7 @@ from requests.adapters import HTTPAdapter
 from botcore import (
     _parse_bool_flag,
     async_interruptible_sleep,
+    bind_attr_call,
     bool_env,
     clean_upper_token,
     exact_nonneg_int,
@@ -564,7 +564,7 @@ class MarketDataProvider(ABC):
     @classmethod
     def resolve_venue_tca_price_decimals(cls, venue: Any, limit_price: float = 0.0) -> int:
         """Return venue-specific TCA limit-price rounding decimals."""
-        return int(cls._resolve_venue_target_cls(venue).tca_price_decimals(limit_price))
+        return safe_nonneg_int(cls._resolve_venue_target_cls(venue).tca_price_decimals(limit_price), default=2) or 0
 
     @classmethod
     def uses_shared_registry_symbols(cls, venue: Any) -> bool:
@@ -622,7 +622,8 @@ class MarketDataProvider(ABC):
     @classmethod
     def resolve_venue_position_price_decimals(cls, venue: Any) -> int:
         """Return mark/position price rounding decimals for ``venue``."""
-        return int(getattr(cls._resolve_venue_target_cls(venue), "_POSITION_PRICE_DECIMALS", 6))
+        dec = safe_nonneg_int(getattr(cls._resolve_venue_target_cls(venue), "_POSITION_PRICE_DECIMALS", 6), default=6)
+        return 6 if dec is None else dec
 
     @classmethod
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
@@ -1219,11 +1220,11 @@ class MarketDataProvider(ABC):
     def _provider_bool_attr(self, attr: str) -> bool:
         return bool(MarketDataProvider._resolve_provider_attr(self, attr, False))
 
-    requires_cache_permit = partialmethod(_provider_bool_attr, "_REQUIRES_CACHE_PERMIT")
-    defers_smart_cancellation = partialmethod(_provider_bool_attr, "_DEFERS_SMART_CANCELLATION")
-    supports_business_minimum = partialmethod(_provider_bool_attr, "_SUPPORTS_BUSINESS_MINIMUM")
-    supports_order_validity = partialmethod(_provider_bool_attr, "_SUPPORTS_ORDER_VALIDITY")
-    defers_preflight_quantity = partialmethod(_provider_bool_attr, "_DEFERS_PREFLIGHT_QUANTITY")
+    requires_cache_permit = bind_attr_call("_provider_bool_attr", "_REQUIRES_CACHE_PERMIT")
+    defers_smart_cancellation = bind_attr_call("_provider_bool_attr", "_DEFERS_SMART_CANCELLATION")
+    supports_business_minimum = bind_attr_call("_provider_bool_attr", "_SUPPORTS_BUSINESS_MINIMUM")
+    supports_order_validity = bind_attr_call("_provider_bool_attr", "_SUPPORTS_ORDER_VALIDITY")
+    defers_preflight_quantity = bind_attr_call("_provider_bool_attr", "_DEFERS_PREFLIGHT_QUANTITY")
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         """Return normalized pair precision and limits, or None if unavailable."""
@@ -1269,7 +1270,7 @@ class MarketDataProvider(ABC):
             pass
         dec = exact_nonneg_int(self._pair_precision_attr(symbol, "price_decimals"), default=None)
         if dec is not None:
-            return float(round(10.0 ** (-min(dec, 18)), 18))
+            return round(10.0 ** (-min(dec, 18)), 18)
         return 0.0
 
     def min_order_qty(self, symbol: str) -> float:
@@ -1298,7 +1299,7 @@ class MarketDataProvider(ABC):
         if callable(fn):
             return fn(self, symbol, side, price, qty, available_qty=available_qty)
         avail = safe_pos_float(available_qty, default=0.0) or 0.0
-        req = float("inf") if qty is None or qty == float("inf") else (safe_pos_float(qty, default=0.0) or 0.0)
+        req = math.inf if qty is None or (not isinstance(qty, bool) and qty == math.inf) else (safe_pos_float(qty, default=0.0) or 0.0)
         return min(req, avail)
 
     def fee_cap_quantity(self, symbol: str, side: str, price: float,
@@ -1822,7 +1823,7 @@ class AsyncReconnectStreamBase(ABC):
                 loop.call_soon_threadsafe(task.cancel)
             except RuntimeError:
                 pass
-        eff_timeout = safe_nonneg_float(timeout, default=float(WS_STOP_TIMEOUT))
+        eff_timeout = safe_nonneg_float(timeout, default=WS_STOP_TIMEOUT * 1.0)
         if (
             self._thread
             and self._thread.is_alive()

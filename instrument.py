@@ -918,7 +918,8 @@ class Instrument:
                 else 1.0
             )
             dec_scale = safe_pos_float(raw_dec_scale, default=1.0)
-            ctx.applied_scale = min(float(ctx.caller_applied_scale), dec_scale)
+            caller_scale = safe_pos_float(ctx.caller_applied_scale, default=1.0) or 1.0
+            ctx.applied_scale = min(caller_scale, dec_scale)
             if ctx.qty <= 0:
                 print(
                     f"[{self.symbol}] {ctx.side_u} qty refused: "
@@ -1009,11 +1010,12 @@ class Instrument:
                     if scale_factor <= 0.0:
                         ctx.reason = "medium_trend_qty_zero"
                         return None
-                    if scale_factor < float(ctx.applied_scale):
+                    curr_scale = safe_pos_float(ctx.applied_scale, default=1.0) or 1.0
+                    if scale_factor < curr_scale:
                         ctx.qty = round_provider_qty(
                             self._provider,
                             self.symbol,
-                            max(0.0, ctx.qty * (scale_factor / float(ctx.applied_scale))),
+                            max(0.0, ctx.qty * (scale_factor / curr_scale)),
                         )
                         print(
                             f"[{self.symbol}] {ctx.side_u} scaled by medium-term trend "
@@ -1038,7 +1040,7 @@ class Instrument:
                             )
                             ctx.reason = gt2_refusal
                             return None
-                        ctx.applied_scale = min(float(ctx.applied_scale), scale_factor)
+                        ctx.applied_scale = min(safe_pos_float(ctx.applied_scale, default=1.0) or 1.0, scale_factor)
 
             if _is_aborted(ctx.early_abort_if):
                 ctx.reason = "aborted_by_caller"
@@ -1090,8 +1092,9 @@ class Instrument:
                 try:
                     if order_retry.RETRY_ENABLED:
                         prequeue_kwargs = {**ctx.retry_kwargs, "smart": ctx.smart}
-                        if 0.0 < float(ctx.applied_scale) < 1.0:
-                            prequeue_kwargs["applied_scale"] = float(ctx.applied_scale)
+                        eff_scale = safe_pos_float(ctx.applied_scale, default=1.0) or 1.0
+                        if 0.0 < eff_scale < 1.0:
+                            prequeue_kwargs["applied_scale"] = eff_scale
                         self._apply_outbox_lineage_prefix(prequeue_kwargs, ctx.kwargs)
                         ctx.prequeued_claim = order_retry.enqueue_claimed(
                             self.symbol,

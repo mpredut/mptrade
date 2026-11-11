@@ -7,7 +7,6 @@ on the next idle `manage_agy.sh ui-sync` restart.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import logging
 import os
 import shutil
@@ -19,7 +18,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import safe_nonneg_int
+from botcore import FileLock, safe_nonneg_int
 from orchestratorOS.agy.paths import (
     resolve_bot_cli_base,
     resolve_store_lock_path,
@@ -49,20 +48,12 @@ UI_TRAJECTORY_SOURCE = 1   # trajectory_meta.source of conversations created in 
 
 @contextlib.contextmanager
 def _store_flock():
-    lock_fh = None
-    try:
+    with contextlib.ExitStack() as stack:
         try:
-            lock_fh = open(resolve_store_lock_path(), "w")
-            fcntl.flock(lock_fh, fcntl.LOCK_EX)
+            stack.enter_context(FileLock(resolve_store_lock_path()))
         except OSError:
             pass
         yield
-    finally:
-        if lock_fh is not None:
-            try:
-                lock_fh.close()
-            except OSError:
-                pass
 
 
 def sync_topic_thread_from_ui(

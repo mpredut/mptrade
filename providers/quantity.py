@@ -241,7 +241,7 @@ def fee_cap_quantity(available_qty: float, fee_rate: float) -> float:
 
 
 def _floor_qty_decimals(val: float, qty_decimals: int) -> float:
-    scale = float(10 ** max(0, qty_decimals))
+    scale = 10.0 ** max(0, qty_decimals)
     return math.floor(val * scale + 1e-9) / scale
 
 
@@ -290,7 +290,7 @@ def dust_protected_partial_sell_qty(
         return req_f, None
     if 0.0 < (bal_f - req_f) * px_f < rem_min:
         max_part = _floor_qty_decimals(bal_f - (rem_min / px_f), qty_decimals)
-        min_step = float(10 ** (-max(0, qty_decimals)))
+        min_step = 10.0 ** (-max(0, qty_decimals))
         min_usd = safe_nonneg_float(min_notional_usd, default=0.0) or 0.0
         rem_tag = f"{rem_min:g}"
         if max_part >= min_step and round(max_part * px_f, 4) >= min_usd:
@@ -552,7 +552,7 @@ def decide_quantity(
 ) -> QuantityDecision:
     side = _require_buy_sell_side(side)
     if requested_qty is None:
-        requested = float("inf")
+        requested = math.inf
     else:
         raw_req = safe_float(requested_qty, default=None)
         if raw_req is None:
@@ -625,7 +625,7 @@ def decide_quantity(
         if final > 0
         else (
             "insufficient_funds"
-            if (wallet_constrained and wallet_final <= 0 and (requested == float("inf") or _round_qty(requested) > 0))
+            if (wallet_constrained and wallet_final <= 0 and (requested == math.inf or _round_qty(requested) > 0))
             else "qty_zero_after_policy"
         )
     )
@@ -640,7 +640,7 @@ def decide_quantity(
         if (
             wallet_constrained
             and (
-                requested == float("inf")
+                requested == math.inf
                 or (
                     _round_qty(requested) > 0
                     and not check_order_filter_refusal(
@@ -837,8 +837,9 @@ class BinanceOrderRules:
 
 def decimal_places(step: Decimal | str | int | float) -> int:
     """Return display precision implied by a positive tick or step."""
-    if not isinstance(step, (Decimal, int, float, str)):
+    if isinstance(step, bool) or not isinstance(step, (Decimal, int, float, str)):
         raise BinanceFilterError(f"invalid step for decimal_places: {step!r}")
     parsed = _decimal(step, name="step for decimal_places", allow_zero=False)
-    return max(0, -int(parsed.normalize().as_tuple().exponent))
+    exp = safe_int(parsed.normalize().as_tuple().exponent, default=0) or 0
+    return max(0, -exp)
 

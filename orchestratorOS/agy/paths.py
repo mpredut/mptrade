@@ -36,17 +36,27 @@ def _expand_or_env(override: Optional[str], env_key: str, *subpaths: str) -> str
     return os.path.join(base, *subpaths) if subpaths else base
 
 
-def _bind_env_path_resolver(env_key: str, *subpaths: str):
-    def _resolver(override: Optional[str] = None, **kw: Optional[str]) -> str:
-        eff_override = next(iter(kw.values()), override)
-        return _expand_or_env(eff_override, env_key, *subpaths)
+_PATH_OVERRIDE_UNSET = object()
+
+
+def _bind_env_path_resolver(env_key: str, *subpaths: str, override_kwarg: str):
+    def _resolver(override: object = _PATH_OVERRIDE_UNSET, **kw: Optional[str]) -> str:
+        if kw:
+            if override_kwarg not in kw or len(kw) > 1:
+                bad = next(k for k in kw if k != override_kwarg)
+                raise TypeError(f"unexpected keyword argument {bad!r}")
+            if override is not _PATH_OVERRIDE_UNSET:
+                raise TypeError(f"got multiple values for argument {override_kwarg!r}")
+            override = kw[override_kwarg]
+        eff_override = None if override is _PATH_OVERRIDE_UNSET else override
+        return _expand_or_env(eff_override, env_key, *subpaths)  # type: ignore[arg-type]
 
     return _resolver
 
 
-resolve_bot_cli_base = _bind_env_path_resolver("AGY_BOT_HOME", AGY_STORE_SUBDIR)
-resolve_ui_cli_base = _bind_env_path_resolver("AGY_UI_CLI_BASE")
-resolve_agy_bot_bin = _bind_env_path_resolver("AGY_BOT_BIN")
+resolve_bot_cli_base = _bind_env_path_resolver("AGY_BOT_HOME", AGY_STORE_SUBDIR, override_kwarg="cli_base")
+resolve_ui_cli_base = _bind_env_path_resolver("AGY_UI_CLI_BASE", override_kwarg="ui_cli_base")
+resolve_agy_bot_bin = _bind_env_path_resolver("AGY_BOT_BIN", override_kwarg="cli_path")
 
 
 def visible_conversations_dir(cli_base: str) -> str:

@@ -340,7 +340,9 @@ def get_margin_cfg(provider_name):
 
 
 def _trend_matches_sides(side: str, trend: Any, buy_trend: str, sell_trend: str) -> bool:
-    return (side == "BUY" and trend == buy_trend) or (side == "SELL" and trend == sell_trend)
+    side_u = normalize_side(side)
+    trend_l = trend.strip().lower() if isinstance(trend, str) else ""
+    return (side_u == "BUY" and trend_l == buy_trend) or (side_u == "SELL" and trend_l == sell_trend)
 
 
 _is_favorable_trend = partial(_trend_matches_sides, buy_trend="bull", sell_trend="bear")

@@ -1,4 +1,4 @@
-from functools import partial, partialmethod
+import math
 import os
 import signal as _signal
 import time
@@ -32,10 +32,11 @@ from pricewindow import (  # noqa: F401 (re-export: test compat)
 # config.env before reading any environment variables below.
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
-from botcore import (exact_nonneg_int, exact_pos_int, format_price_log, load_dotenv,
-                     normalize_epoch_sec, required_bool_env, required_float_env,
-                     required_int_env, resolve_now_ts, safe_nonneg_float, safe_pos_float,
-                     sanitize_pipe_field, timeToHMS, touch_module_heartbeat)
+from botcore import (bind_attr_call, exact_nonneg_int, exact_pos_int, format_price_log,
+                     load_dotenv, normalize_epoch_sec, required_bool_env,
+                     required_float_env, required_int_env, resolve_now_ts, safe_float,
+                     safe_nonneg_float, safe_pos_float, sanitize_pipe_field, timeToHMS,
+                     touch_module_heartbeat)
 load_dotenv()
 
 
@@ -296,7 +297,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     )
     num_orders, price_step = 1, eff_min_proc
     if prop_f is None or curr_f is None:
-        base_price = float("nan")
+        base_price = math.nan
     else:
         entry_offset = eff_min_proc / 100.0
         base_price = (
@@ -402,7 +403,9 @@ class TrendState:
         self._last_attempt_up_ts = None
         self._last_attempt_down_ts = None
 
-    _norm_ts = staticmethod(partial(normalize_epoch_sec, default=None, allow_zero=True))
+    @staticmethod
+    def _norm_ts(ts):
+        return normalize_epoch_sec(ts, default=None, allow_zero=True)
 
     def _now_sec(self):
         return resolve_now_ts(self._now(), allow_zero=True)
@@ -465,7 +468,7 @@ class TrendState:
         if elapsed_time < fresh_trend_time:
             return True
 
-        print(f"No fresh trend! Current trend start {int(elapsed_time)} sec back > {int(fresh_trend_time)} sec ")
+        print(f"No fresh trend! Current trend start {math.trunc(elapsed_time)} sec back > {math.trunc(fresh_trend_time)} sec ")
         return False
 
 
@@ -520,8 +523,8 @@ class TrendState:
             return self.confirm_count if target_state == "HOLD" else 0
         return self.confirm_count if self.state == target_state else 0
 
-    is_trend_up = partialmethod(_confirm_count_for, "UP")
-    is_trend_down = partialmethod(_confirm_count_for, "DOWN")
+    is_trend_up = bind_attr_call("_confirm_count_for", "UP")
+    is_trend_down = bind_attr_call("_confirm_count_for", "DOWN")
   
 
 
@@ -841,12 +844,14 @@ class TrendCoordinator:
             if not entry or len(entry) < 2:
                 return None
             ts_ms, current_price = entry[0], entry[1]
-            try:
-                age_ms = time.time() * 1000.0 - float(ts_ms)
-                max_age_ms = float(getattr(
-                    self.current_price_mgr, "STALE_THRESHOLD_MS", 5_000))
-            except (TypeError, ValueError):
+            ts_ms_f = safe_float(ts_ms, default=None)
+            max_age_ms = safe_float(
+                getattr(self.current_price_mgr, "STALE_THRESHOLD_MS", 5_000),
+                default=None,
+            )
+            if ts_ms_f is None or max_age_ms is None:
                 return None
+            age_ms = time.time() * 1000.0 - ts_ms_f
             # get_price() attempts an HTTP refresh, but historically returned its old
             # cached entry when that refresh failed.  Do not trade on that stale value
             # or on a timestamp materially in the future.

@@ -778,8 +778,13 @@ def test_replay_execution_metrics_and_config_ssot_identity(monkeypatch, tmp_path
     assert mt.buy_hold_pct is replay_metrics.buy_hold_pct
     assert ev.load_layered_env_config is botcore.load_layered_env_config
 
-    importlib.reload(botcore)
-    assert ev.load_layered_env_config is botcore.load_layered_env_config
+    saved_botcore_dict = dict(botcore.__dict__)
+    try:
+        importlib.reload(botcore)
+        assert ev.load_layered_env_config is botcore.load_layered_env_config
+    finally:
+        botcore.__dict__.update(saved_botcore_dict)
+        botcore._sync_reexport_modules()
 
     assert _resolve_provider_label("xstock_watch", "") == "Kraken"
     assert _resolve_provider_label("hl_bot", "") == "Hyperliquid"

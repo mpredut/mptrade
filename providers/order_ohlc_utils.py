@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib
+import math
 import re
 import time
 from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence
@@ -365,8 +366,8 @@ def normalize_open_order(
                 break
     if ts_ms is not None and ts_ms > 0:
         eff_now_s = resolve_now_ts(now_ts)
-        age_m = round(max(0.0, (eff_now_s * 1000.0 - float(ts_ms)) / 60000.0), 1)
-        rec["created_ts"] = round(float(ts_ms) / 1000.0, 1)
+        age_m = round(max(0.0, (eff_now_s * 1000.0 - ts_ms) / 60000.0), 1)
+        rec["created_ts"] = round(ts_ms / 1000.0, 1)
         rec["age_min"] = age_m
         rec["age"] = f"{age_m:.1f}m" if age_m < 60.0 else f"{age_m / 60.0:.1f}h"
     return rec
@@ -664,7 +665,7 @@ def parse_ohlc_interval_minutes(
         if allow_unit_multiplier and len(cleaned) >= 2:
             num_part, unit = cleaned[:-1], cleaned[-1].lower()
             if num_part.isascii() and num_part.isdigit() and unit in _OHLC_UNIT_MULTIPLIERS:
-                minutes = int(num_part) * _OHLC_UNIT_MULTIPLIERS[unit]
+                minutes = (exact_int(num_part, default=0) or 0) * _OHLC_UNIT_MULTIPLIERS[unit]
                 if minutes <= 0:
                     raise ValueError(
                         "the interval must be positive" if require_unit_suffix else f"interval must be positive: {interval}"
@@ -674,7 +675,7 @@ def parse_ohlc_interval_minutes(
             raise ValueError(f"invalid {venue_label} interval: {interval!r}; examples: 5m, 1h, 1d")
         digits = cleaned[1:] if cleaned.startswith("+") else cleaned
         if digits.isascii() and digits.isdigit():
-            val = int(digits)
+            val = exact_int(digits, default=0) or 0
             if val <= 0:
                 raise ValueError(f"interval must be positive: {interval}")
             return val
@@ -776,14 +777,14 @@ def validate_ohlc_candle_bar(
     c_v = safe_pos_float(close_px, default=None)
     if ot_f is None or o_v is None or h_v is None or l_v is None or c_v is None:
         return None
-    open_i = int(ot_f)
+    open_i = math.trunc(ot_f)
     if open_i <= 0:
         return None
     if close_ts is not _MISSING:
         ct_f = safe_pos_float(close_ts, default=None)
         if ct_f is None:
             return None
-        close_i = int(ct_f)
+        close_i = math.trunc(ct_f)
         if close_i < open_i:
             return None
         if drop_incomplete and now_ms is not None and ((close_i >= now_ms) if close_inclusive else (close_i > now_ms)):

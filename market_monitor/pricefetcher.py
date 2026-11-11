@@ -1,4 +1,5 @@
 # pricefetcher.py
+import math
 import os
 import sys
 
@@ -505,7 +506,7 @@ class PricePlatformFactory:
                         self._symbol_platform_cache[sym_norm] = platform.platform_name
                         return {
                             "symbol": symbol, "price": price,
-                            "platform": platform.platform_name, "timestamp": int(time.time())
+                            "platform": platform.platform_name, "timestamp": math.trunc(time.time())
                         }
                     self._symbol_platform_cache.pop(sym_norm, None)
                     break
@@ -519,7 +520,7 @@ class PricePlatformFactory:
                     self._symbol_platform_cache[sym_norm] = platform.platform_name
                     return {
                         "symbol": symbol, "price": price,
-                        "platform": platform.platform_name, "timestamp": int(time.time())
+                        "platform": platform.platform_name, "timestamp": math.trunc(time.time())
                     }
         if not supported:
             raise ValueError(f"Symbol '{symbol}' is not supported by any platform")
@@ -677,7 +678,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                     if plat_norm == pref_norm or plat_raw == preferred_source.strip().lower():
                         price_val = safe_pos_float(platform.get_price(symbol), default=None)
                         if price_val is not None:
-                            timestamp_ms = int(time.time() * 1000)
+                            timestamp_ms = math.trunc(time.time() * 1000)
                             print(f"[Pricefetcher][{symbol}] ${price_val:.4f} (source: {preferred_source} - preferred)")
                             return [[timestamp_ms, price_val]]
                         print(f"[Pricefetcher][{symbol}] Preferred source {preferred_source} failed; trying fallback providers")
@@ -687,7 +688,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             if price_val is None:
                 return []
             platform_used = result["platform"]
-            timestamp_ms = int(time.time() * 1000)
+            timestamp_ms = math.trunc(time.time() * 1000)
             print(f"[Pricefetcher][{symbol}] ${price_val:.4f} (source: {platform_used})")
             return [[timestamp_ms, price_val]]
         except Exception as e:
@@ -811,7 +812,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 continue
             history.append(
                 {
-                    "timestamp": int(ts_val) if ts_val.is_integer() else ts_val,
+                    "timestamp": math.trunc(ts_val) if ts_val.is_integer() else ts_val,
                     "timestamp_readable": readable,
                     "price": px_val,
                 }

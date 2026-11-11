@@ -22,7 +22,7 @@ from botcore import bind_isolated_venue_cfg_loader, load_layered_env_config  # n
 from notify_engine.alertnotifiers import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "HL_COIN"), "HL")
-load_isolated_hl_cfg = bind_isolated_venue_cfg_loader(_HERE, ("HL_",))
+load_isolated_hl_cfg = bind_isolated_venue_cfg_loader(_HERE, ("HL_",), dir_kwarg="hl_dir")
 
 
 def load_hl_default_env(hl_dir: str | os.PathLike[str] = _HERE) -> dict[str, str]:

@@ -1,6 +1,5 @@
 """Binance MarketDataProvider adapter for market data, account reads, and order mechanics."""
 
-from functools import partial
 import importlib
 import math
 from typing import Any, List, Optional
@@ -9,6 +8,7 @@ import account_cache_health as health
 import botcore as cfg
 from botcore import (
     _parse_bool_flag,
+    bind_module_importer,
     clean_upper_token,
     exact_pos_int,
     require_pos_float,
@@ -105,7 +105,7 @@ def _get_allorders():
     return _default_get_allorders()
 
 
-_get_placeorder = partial(importlib.import_module, "binance_api.bapi_placeorder")
+_get_placeorder = bind_module_importer("binance_api.bapi_placeorder")
 
 
 def _parse_nonneg_order_field(raw: Any) -> Optional[float]:
@@ -684,9 +684,9 @@ class BinanceProvider(MarketDataProvider):
         oid = require_int_order_id(order_id, f"cancel_order({order_id})")
         self._execute_confirmed_cancel(order_id, lambda: _get_bapi().cancel_order(symbol, oid))
 
-    resolve_default_api_client = staticmethod(partial(importlib.import_module, "binance_api.bapi"))
-    resolve_allorders_module = staticmethod(partial(importlib.import_module, "binance_api.bapi_allorders"))
-    resolve_ws_bridge_module = staticmethod(partial(importlib.import_module, "binance_api.bapi_ws_bridge"))
+    resolve_default_api_client = staticmethod(bind_module_importer("binance_api.bapi"))
+    resolve_allorders_module = staticmethod(bind_module_importer("binance_api.bapi_allorders"))
+    resolve_ws_bridge_module = staticmethod(bind_module_importer("binance_api.bapi_ws_bridge"))
 
     @classmethod
     def get_default_price_ws_manager(cls):

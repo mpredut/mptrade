@@ -1,6 +1,7 @@
 """Parabolic surge guard: prevents buying at the peak of vertical price spikes (Anti-FOMO)."""
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Tuple
 
 from botcore import normalize_epoch_sec, safe_nonneg_float, safe_pos_float
@@ -142,7 +143,7 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
                 ts_now - self.window_seconds,
                 safe_nonneg_float(st.get("disarmed_peak_ts"), default=0.0) or 0.0,
             )
-            max_allowed_ts = (ts_now + 5.0) if ts_now > 0 else float("inf")
+            max_allowed_ts = (ts_now + 5.0) if ts_now > 0 else math.inf
             window_pts = []
             for item in history_seq:
                 if not isinstance(item, (list, tuple)) or len(item) < 2:
@@ -153,8 +154,8 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
                     window_pts.append((t_f, p_f))
             if len(window_pts) > 1:
                 window_pts.sort(key=lambda x: x[0])
-            if ts_now >= window_start_ts and (not window_pts or window_pts[-1] != (float(ts_now), float(current_price))):
-                window_pts.append((float(ts_now), float(current_price)))
+            if ts_now >= window_start_ts and (not window_pts or window_pts[-1] != (ts_now * 1.0, current_price * 1.0)):
+                window_pts.append((ts_now * 1.0, current_price * 1.0))
             if window_pts:
                 running_anchor = window_pts[0][1]
                 best_move_pct = 0.0

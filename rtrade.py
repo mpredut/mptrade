@@ -1,4 +1,3 @@
-from functools import partialmethod
 import math
 import sys
 import threading
@@ -15,6 +14,7 @@ import external_order_guard as eog
 from botcore import (
     _parse_bool_flag,
     are_close,
+    bind_attr_call,
     exact_int,
     format_price_log,
     load_dotenv,
@@ -1214,8 +1214,8 @@ class TradingBot:
                         pending.clear()
                     cond.notify_all()
 
-    repetitive_buy = partialmethod(_repetitive_side_loop, "BUY")
-    repetitive_sell = partialmethod(_repetitive_side_loop, "SELL")
+    repetitive_buy = bind_attr_call("_repetitive_side_loop", "BUY")
+    repetitive_sell = bind_attr_call("_repetitive_side_loop", "SELL")
 
     def _run_pair(self, executor, current_price):
         """Run both sides concurrently on the bot's persistent workers."""

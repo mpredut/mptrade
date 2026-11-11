@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import base64
 import contextlib
-from functools import partialmethod
 import hashlib
 import os
 import sys
@@ -26,6 +25,7 @@ if _ROOT not in sys.path:
 from botcore import (
     FileLock,
     _parse_bool_flag,
+    bind_attr_call,
     clean_order_id,
     http_get,
     http_post_json,
@@ -725,8 +725,8 @@ class T212Client:
                 self._write_shared_cache(attr, data)
                 return data
 
-    get_portfolio = partialmethod(_read_cached_dict_list, "_pf_cache", "/equity/portfolio", "portfolio")
-    list_active_orders = partialmethod(_read_cached_dict_list, "_ord_cache", "/equity/orders", "active orders")
+    get_portfolio = bind_attr_call("_read_cached_dict_list", "_pf_cache", "/equity/portfolio", "portfolio")
+    list_active_orders = bind_attr_call("_read_cached_dict_list", "_ord_cache", "/equity/orders", "active orders")
 
     def get_cash(self) -> dict | None:
         """Return account cash breakdown (free, invested, blocked, total) in account base currency."""
