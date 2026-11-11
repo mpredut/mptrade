@@ -1606,7 +1606,7 @@ def test_pia_audit_fixes_readonly_check_dip_priority_tunnel_stuck_and_notify_byp
     calls_text = piactl_calls.read_text(encoding="utf-8")
     assert "dedicatedip" not in calls_text and "login" not in calls_text
 
-    # 3. manage_agy.sh is_tunnel_stuck handles 80-line file_watcher.go bursts and post-silence-timeout 1st failure
+    # 3. manage_agy.sh is_tunnel_stuck handles 80-line file_watcher.go bursts without hair-triggering on 1-2 transient retries
     fake_home = tmp_path / "agy_home"
     agy_cli_dir = fake_home / ".gemini" / "antigravity-cli"
     agy_cli_dir.mkdir(parents=True)
@@ -1629,21 +1629,22 @@ def test_pia_audit_fixes_readonly_check_dip_priority_tunnel_stuck_and_notify_byp
     log_file.write_text("W1110 20:00:01.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n" + noise, encoding="utf-8")
     assert check_stuck() != 0
 
-    # Two consecutive failures diluted by 80 file_watcher.go lines -> stuck!
-    log_file.write_text(
-        "W1110 20:00:01.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n"
-        + noise
-        + "W1110 20:00:50.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n"
-        + noise,
-        encoding="utf-8",
-    )
-    assert check_stuck() == 0
-
-    # Connected -> inbound silence timeout (VPN IP switch) -> 1st Failed before open + 80 noise lines -> stuck immediately!
+    # Connected -> inbound silence timeout -> 1st or 2nd transient Failed before open -> NOT stuck yet (allows built-in backoff recovery)
     log_file.write_text(
         "I1110 20:10:00.000000 1 remote_control_v2.go:1] Connection status: Connected\n"
         "W1110 20:16:41.000000 1 client.go:478] No inbound traffic from server for 1m0s; assuming dead tunnel and closing\n"
         "W1110 20:17:29.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n"
+        + noise
+        + "W1110 20:18:19.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n"
+        + noise,
+        encoding="utf-8",
+    )
+    assert check_stuck() != 0
+
+    # Three consecutive failures diluted by 80 file_watcher.go lines -> genuinely stuck!
+    log_file.write_text(
+        log_file.read_text(encoding="utf-8")
+        + "W1110 20:19:15.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n"
         + noise,
         encoding="utf-8",
     )

@@ -21,6 +21,9 @@ Modes (run by the systemd drop-in of antigravity-cli-daemon.service):
          conversations, e.g. mirrored autonomous topic threads) AND no conversation activity for N seconds,
          i.e. an idle restart is due (driven by `manage_agy.sh ui-sync`). 10=nothing pending, 11=busy,
          12=same divergence survived the previous restart (no restart loop).
+  active-check --idle-sec N
+         read-only: exit 11 (UI_SYNC_BUSY) when interactive inference, background tool tasks, subagents,
+         timers, or conversation activity occurred within N seconds; exit 0 when idle and safe to restart.
 
 Safety: a file is never deleted unless the identical inode/content already exists in the visible dir; anything that
 diverges is moved into ~/agy_store_fix_backups/<timestamp>/ instead of being overwritten.
@@ -528,6 +531,135 @@ _DAEMON_ACTIVE_STREAM_MARKERS = (
     "LLM Monitor",
     "Monitor agy_tool_safety",
 )
+_RUNNING_SESSION_MAX_AGE_SEC = 900.0
+_ACTIVE_BG_TASK_MAX_AGE_SEC = 3600.0
+_BENIGN_DAEMON_CMD_MARKERS = (
+    "agy remote-control",
+    "agy_store_fix.py",
+    "manage_agy.sh",
+    "systemctl --user",
+)
+
+
+def _parse_proc_stat(proc_root: str, pid: int) -> tuple[str, int, int] | None:
+    raw = read_text_file(os.path.join(proc_root, str(pid), "stat"), default="", errors="ignore")
+    rparen = raw.rfind(")")
+    if rparen < 0:
+        return None
+    fields = raw[rparen + 2:].split()
+    if len(fields) < 20:
+        return None
+    state = fields[0]
+    ppid = safe_nonneg_int(fields[1], default=0) or 0
+    start_ticks = safe_nonneg_int(fields[19], default=0) or 0
+    return state, ppid, start_ticks
+
+
+def _daemon_has_active_child_tasks(
+    *,
+    daemon_pid: str | int | None = None,
+    proc_root: str = "/proc",
+    cgroup_root: str = "/sys/fs/cgroup",
+    max_age_sec: float = _ACTIVE_BG_TASK_MAX_AGE_SEC,
+) -> bool:
+    """Return True when the live antigravity-cli-daemon service owns active tool child processes."""
+    if daemon_pid is None:
+        if os.environ.get("AGY_FIX_HOME") is not None:
+            return False
+        real_cli = os.path.abspath(os.path.expanduser("~/.gemini/antigravity-cli"))
+        if os.path.abspath(CLI) != real_cli:
+            return False
+        daemon_pid = main_pid()
+    root_pid = safe_nonneg_int(daemon_pid, default=0) or 0
+    if root_pid <= 0 or not os.path.isdir(proc_root):
+        return False
+
+    excluded_pids: set[int] = {root_pid}
+    if os.path.abspath(proc_root) == "/proc":
+        cur_pid = os.getpid()
+        for _ in range(32):
+            if cur_pid <= 1 or cur_pid in excluded_pids:
+                break
+            excluded_pids.add(cur_pid)
+            st_cur = _parse_proc_stat(proc_root, cur_pid)
+            if st_cur is None:
+                break
+            cur_pid = st_cur[1]
+
+    candidate_pids: set[int] = set()
+    cg_raw = read_text_file(os.path.join(proc_root, str(root_pid), "cgroup"), default="", errors="ignore")
+    for ln in cg_raw.splitlines():
+        if ln.startswith("0::"):
+            cg_rel = ln[3:].strip().lstrip("/")
+            if cg_rel:
+                procs_txt = read_text_file(os.path.join(cgroup_root, cg_rel, "cgroup.procs"), default="", errors="ignore")
+                for tok in procs_txt.split():
+                    p_val = safe_nonneg_int(tok, default=0) or 0
+                    if p_val > 0:
+                        candidate_pids.add(p_val)
+            break
+
+    if not candidate_pids:
+        children_map: dict[int, list[int]] = collections.defaultdict(list)
+        try:
+            proc_entries = os.listdir(proc_root)
+        except OSError:
+            proc_entries = []
+        for entry in proc_entries:
+            if not entry.isdigit():
+                continue
+            p_val = safe_nonneg_int(entry, default=0) or 0
+            if p_val <= 0:
+                continue
+            st_entry = _parse_proc_stat(proc_root, p_val)
+            if st_entry is not None and st_entry[1] > 0:
+                children_map[st_entry[1]].append(p_val)
+        stack = list(children_map.get(root_pid, ()))
+        while stack:
+            child_p = stack.pop()
+            if child_p not in candidate_pids:
+                candidate_pids.add(child_p)
+                stack.extend(children_map.get(child_p, ()))
+
+    candidate_pids -= excluded_pids
+    if not candidate_pids:
+        return False
+
+    btime_sec = 0.0
+    stat_txt = read_text_file(os.path.join(proc_root, "stat"), default="", errors="ignore")
+    for ln in stat_txt.splitlines():
+        if ln.startswith("btime "):
+            parts = ln.split()
+            if len(parts) >= 2:
+                btime_sec = safe_pos_float(parts[1], default=0.0) or 0.0
+            break
+    clk_tck = safe_pos_float(os.sysconf("SC_CLK_TCK") if hasattr(os, "SC_CLK_TCK") else 100, default=100.0) or 100.0
+    now_ts = time.time()
+    bound_s = safe_pos_float(max_age_sec, default=_ACTIVE_BG_TASK_MAX_AGE_SEC) or _ACTIVE_BG_TASK_MAX_AGE_SEC
+
+    for cpid in sorted(candidate_pids):
+        st_child = _parse_proc_stat(proc_root, cpid)
+        if st_child is None:
+            continue
+        state, _ppid, start_ticks = st_child
+        if state in ("Z", "X", "x"):
+            continue
+        raw_cmd = read_bytes_file(os.path.join(proc_root, str(cpid), "cmdline"), default=b"")
+        cmdline = (raw_cmd or b"").replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+        if not cmdline:
+            continue
+        if any(marker in cmdline for marker in _BENIGN_DAEMON_CMD_MARKERS):
+            continue
+        if btime_sec > 0.0 and start_ticks > 0:
+            started_ts = btime_sec + (start_ticks / clk_tck)
+        else:
+            try:
+                started_ts = os.stat(os.path.join(proc_root, str(cpid))).st_mtime
+            except OSError:
+                continue
+        if (now_ts - started_ts) < bound_s:
+            return True
+    return False
 
 
 def _glog_rel_ts(line: str) -> float | None:
@@ -560,6 +692,8 @@ def _daemon_started_at() -> float:
 
 def last_store_activity() -> float:
     """Newest mtime of interactive conversation content, active WAL writes, daemon Web UI stream, or brain artifacts."""
+    if _daemon_has_active_child_tasks():
+        return time.time()
     ignored = set(get_active_topic_cids(_effective_topic_registry()))
     canonical_spec_titles = {s.title for s in TOPIC_SPECS.values()}
     for gcid, gtitle in daemon_loaded_titles(CLI).items():
@@ -594,14 +728,20 @@ def last_store_activity() -> float:
                         try:
                             if os.path.exists(p):
                                 found_on_disk = True
-                                if (now - os.stat(p).st_mtime) < 900:
+                                if (now - os.stat(p).st_mtime) < _RUNNING_SESSION_MAX_AGE_SEC:
                                     return now
                         except OSError:
                             pass
+                tp_run = os.path.join(CLI, "brain", rcid, ".system_generated", "logs", "transcript.jsonl")
+                try:
+                    if os.path.exists(tp_run) and (now - os.stat(tp_run).st_mtime) < _RUNNING_SESSION_MAX_AGE_SEC:
+                        return now
+                except OSError:
+                    pass
                 if not found_on_disk:
                     for sum_p in (DB, DB + "-wal"):
                         try:
-                            if os.path.exists(sum_p) and (now - os.stat(sum_p).st_mtime) < 900:
+                            if os.path.exists(sum_p) and (now - os.stat(sum_p).st_mtime) < _RUNNING_SESSION_MAX_AGE_SEC:
                                 return now
                         except OSError:
                             pass
@@ -676,25 +816,41 @@ def last_store_activity() -> float:
             awaiting_sched_task_id = False
             sched_calls = 0
             latest_user_input_ts = 0.0
+            active_bg_tasks: dict[str, float] = {}
+            active_subagents: dict[str, float] = {}
+
+            def _record_ts(record: dict) -> float:
+                raw_ts = str(record.get("created_at") or "").strip()
+                if raw_ts:
+                    try:
+                        return datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        pass
+                return st.st_mtime
+
             for rec in records:
                 step_type = str(rec.get("type") or "")
                 content = str(rec.get("content") or "")
                 if step_type == "USER_INPUT":
                     sched_calls = 0
-                    created_raw = str(rec.get("created_at") or "").strip()
-                    if created_raw:
-                        try:
-                            latest_user_input_ts = max(
-                                latest_user_input_ts,
-                                datetime.fromisoformat(created_raw.replace("Z", "+00:00")).timestamp(),
-                            )
-                        except Exception:
-                            latest_user_input_ts = max(latest_user_input_ts, st.st_mtime)
+                    latest_user_input_ts = max(latest_user_input_ts, _record_ts(rec))
                 if awaiting_sched_task_id and step_type == "GENERIC":
                     m_tid = re.search(r"background task with task id:\s*(\S+)", content)
                     if m_tid and ("Timer:" in content or "Cron:" in content or "schedule" in content):
                         sched_task_id = m_tid.group(1).strip()
                     awaiting_sched_task_id = False
+                if step_type == "GENERIC":
+                    m_bg = re.search(r"Tool is running as a background task with task id:\s*(\S+)", content)
+                    if m_bg and not re.search(r"Task Description:\s*(?:Timer|Cron):", content):
+                        bg_tid = m_bg.group(1).strip()
+                        if bg_tid and bg_tid != sched_task_id:
+                            active_bg_tasks[bg_tid] = _record_ts(rec)
+                    if "Created the following subagent" in content:
+                        sub_ts = _record_ts(rec)
+                        for m_sub in re.finditer(r'"conversationId"\s*:\s*"([^"]+)"', content):
+                            sub_cid = m_sub.group(1).strip()
+                            if sub_cid:
+                                active_subagents[sub_cid] = sub_ts
                 if step_type == "SYSTEM_MESSAGE":
                     if "stopped due to server restart" in content:
                         oneshot_until = 0.0
@@ -703,15 +859,20 @@ def last_store_activity() -> float:
                         latest_sched_ts = 0.0
                         sched_task_id = ""
                         sched_calls = 0
+                        active_bg_tasks.clear()
+                        active_subagents.clear()
                     elif m_iter := re.search(r"\(iteration\s+(\d+)\)", content):
                         cron_active = True
-                        cron_max_iter = max(cron_max_iter, int(m_iter.group(1)))
+                        cron_max_iter = max(cron_max_iter, safe_nonneg_int(m_iter.group(1), default=0) or 0)
                         m_sender = re.search(r"\bsender=(\S+)", content)
                         if m_sender:
                             sched_task_id = m_sender.group(1).strip()
                     else:
                         m_sender = re.search(r"\bsender=(\S+)", content)
                         sender_id = m_sender.group(1).strip() if m_sender else ""
+                        if sender_id:
+                            active_bg_tasks.pop(sender_id, None)
+                            active_subagents.pop(sender_id, None)
                         if (
                             not sender_id
                             or not sched_task_id
@@ -731,6 +892,11 @@ def last_store_activity() -> float:
                     args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
                     if name == "manage_task" and str(args.get("Action") or "").strip().strip('"') == "kill":
                         kill_tid = str(args.get("TaskId") or "").strip().strip('"')
+                        if not kill_tid:
+                            active_bg_tasks.clear()
+                        else:
+                            for tid in [k for k in active_bg_tasks if k == kill_tid or k.endswith(f"/{kill_tid}")]:
+                                active_bg_tasks.pop(tid, None)
                         if not kill_tid or not sched_task_id or kill_tid == sched_task_id or sched_task_id.endswith(f"/{kill_tid}"):
                             oneshot_until = 0.0
                             cron_active = False
@@ -738,15 +904,22 @@ def last_store_activity() -> float:
                             latest_sched_ts = 0.0
                             sched_task_id = ""
                             sched_calls = 0
+                    elif name == "manage_subagents":
+                        sub_action = str(args.get("Action") or "").strip().strip('"')
+                        if sub_action == "kill_all":
+                            active_subagents.clear()
+                        elif sub_action == "kill":
+                            raw_ids = args.get("ConversationIds")
+                            if isinstance(raw_ids, list) and raw_ids:
+                                for raw_id in raw_ids:
+                                    kill_cid = str(raw_id or "").strip().strip('"')
+                                    if kill_cid:
+                                        active_subagents.pop(kill_cid, None)
+                            else:
+                                active_subagents.clear()
                     elif name == "schedule":
                         sched_calls += 1
-                        created_raw = str(rec.get("created_at") or "").strip()
-                        sched_ts = st.st_mtime
-                        if created_raw:
-                            try:
-                                sched_ts = datetime.fromisoformat(created_raw.replace("Z", "+00:00")).timestamp()
-                            except Exception:
-                                sched_ts = st.st_mtime
+                        sched_ts = _record_ts(rec)
                         latest_sched_ts = max(latest_sched_ts, sched_ts)
                         dur_raw = str(args.get("DurationSeconds") or "").strip().strip('"')
                         cron_raw = str(args.get("CronExpression") or "").strip().strip('"')
@@ -762,6 +935,12 @@ def last_store_activity() -> float:
                             cron_max_iter = 0
                             sched_task_id = ""
                             awaiting_sched_task_id = True
+            if any(
+                (now_ts - started_ts) < _ACTIVE_BG_TASK_MAX_AGE_SEC
+                and (daemon_started_ts <= 0.0 or started_ts >= daemon_started_ts)
+                for started_ts in (*active_bg_tasks.values(), *active_subagents.values())
+            ):
+                return now_ts
             if cron_active or now_ts < oneshot_until:
                 is_repeating_loop = sched_calls >= 2 or cron_max_iter >= 2
                 is_stale_schedule = latest_sched_ts > 0.0 and (now_ts - latest_sched_ts) > 1800.0
@@ -781,6 +960,19 @@ def last_store_activity() -> float:
             except OSError:
                 pass
     return newest
+
+
+def mode_active_check(idle_sec: float) -> int:
+    idle_sec_f = safe_pos_float(idle_sec, default=None)
+    if idle_sec_f is None:
+        raise ValueError(f"--idle-sec must be > 0, got {idle_sec}")
+    last_act = last_store_activity()
+    now = time.time()
+    idle_for = max(0.0, now - last_act)
+    if idle_for < idle_sec_f:
+        log.info("active-check: store active %.0fs ago (< %gs); busy", idle_for, idle_sec_f)
+        return UI_SYNC_BUSY
+    return UI_SYNC_READY
 
 
 def mode_ui_sync_check(idle_sec: int, min_interval_sec: float = 0.0) -> int:
@@ -870,18 +1062,20 @@ def main(argv) -> int:
                     for k, v in sorted(cnt.items()):
                         print(" ", v, k)
                 return 0
-            if mode == "ui-sync-check":
+            if mode in ("ui-sync-check", "active-check"):
                 if _ROOT_DIR not in sys.path:
                     sys.path.insert(0, _ROOT_DIR)
                 from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
                 ssot_itvs = resolve_derived_telemetry_intervals()
-                idle_sec = float(ssot_itvs.get("ui_sync_idle_sec", 120.0))
+                idle_arg: object = ssot_itvs.get("ui_sync_idle_sec", 120.0)
                 if "--idle-sec" in argv and argv.index("--idle-sec") + 1 < len(argv):
-                    idle_sec = float(argv[argv.index("--idle-sec") + 1])
-                min_itv = float(ssot_itvs.get("ui_sync_interval_sec", 720.0))
+                    idle_arg = argv[argv.index("--idle-sec") + 1]
+                if mode == "active-check":
+                    return mode_active_check(idle_arg)  # type: ignore[arg-type]
+                min_itv = safe_pos_float(ssot_itvs.get("ui_sync_interval_sec"), default=720.0) or 720.0
                 if "--min-interval-sec" in argv and argv.index("--min-interval-sec") + 1 < len(argv):
                     min_itv = safe_pos_float(argv[argv.index("--min-interval-sec") + 1], default=0.0) or 0.0
-                return mode_ui_sync_check(idle_sec, min_interval_sec=min_itv)
+                return mode_ui_sync_check(idle_arg, min_interval_sec=min_itv)  # type: ignore[arg-type]
             print(__doc__)
             return 1
         except Exception:

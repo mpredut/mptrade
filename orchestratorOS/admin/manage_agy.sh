@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# manage_agy.sh — Unified manager for Antigravity CLI (agy) & remote-control daemon
+# manage_agy.sh - Unified manager for Antigravity CLI (agy) & remote-control daemon
 # Commands: update (default) | watchdog | cron-update | restart | ui-sync | status | stop
 set -euo pipefail
 
@@ -16,9 +16,10 @@ fi
 
 INSTANCE_NAME="prod-vm"
 LOCK_FILE="${XDG_RUNTIME_DIR}/manage_agy.lock"
+UPDATE_PENDING_FILE="${XDG_RUNTIME_DIR}/agy_update_restart_pending"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [manage_agy] $*"; }
-send_alert() { send_os_ntfy "AGY Manager ($(hostname))" "$1" default || true; }
+send_alert() { [ "${AGY_SUPPRESS_ALERTS:-0}" = "1" ] && return 0; send_os_ntfy "AGY Manager ($(hostname))" "$1" default || true; }
 
 AGY_BIN="$(command -v agy || true)"
 [ -z "$AGY_BIN" ] && [ -x "$HOME/.local/bin/agy" ] && AGY_BIN="$HOME/.local/bin/agy"
@@ -45,17 +46,17 @@ is_active() {
 }
 
 is_tunnel_stuck() {
-    local log_file status_lines last_status last_conn_line
+    local log_file min_failures="${AGY_TUNNEL_STUCK_MIN_FAILURES:-3}" status_lines total_count fail_count
+    if ! [[ "$min_failures" =~ ^[0-9]+$ ]] || [ "$min_failures" -lt 2 ]; then
+        min_failures=3
+    fi
     log_file="$(resolve_agy_log)"
     if [ -n "$log_file" ] && [ -f "$log_file" ]; then
-        status_lines="$(grep "Connection status:" "$log_file" 2>/dev/null | tail -n 2 || true)"
-        last_status="$(printf '%s\n' "$status_lines" | tail -n 1)"
-        if [ -n "$last_status" ] && printf '%s\n' "$last_status" | grep -qi "Failed before open"; then
-            if [ "$(printf '%s\n' "$status_lines" | grep -ci "Failed before open" || true)" -ge 2 ]; then
-                return 0
-            fi
-            last_conn_line="$(grep -n "Connection status: Connected" "$log_file" 2>/dev/null | tail -n 1 | cut -d: -f1 || true)"
-            if [[ "$last_conn_line" =~ ^[0-9]+$ ]] && tail -n +"$last_conn_line" "$log_file" 2>/dev/null | grep -Eiq "inbound silence timeout|No inbound traffic from server"; then
+        status_lines="$(grep "Connection status:" "$log_file" 2>/dev/null | tail -n "$min_failures" || true)"
+        if [ -n "$status_lines" ]; then
+            total_count="$(printf '%s\n' "$status_lines" | grep -c "Connection status:" || true)"
+            fail_count="$(printf '%s\n' "$status_lines" | grep -ci "Failed before open" || true)"
+            if [ "$total_count" -ge "$min_failures" ] && [ "$fail_count" -ge "$min_failures" ]; then
                 return 0
             fi
         fi
@@ -76,9 +77,45 @@ acquire_lock() {
     _MANAGE_AGY_LOCKED=1
 }
 
+resolve_python_bin() {
+    local python_bin="${PYTHON_BIN:-python3}"
+    if ! command -v "$python_bin" >/dev/null 2>&1 && [ ! -x "$python_bin" ]; then
+        [ -x "$ROOT/.venv/bin/python3" ] && python_bin="$ROOT/.venv/bin/python3" || python_bin="/usr/bin/python3"
+    fi
+    echo "$python_bin"
+}
+
+resolve_ui_sync_params() {
+    local python_bin ssot_vals idle_sec="" min_interval_sec=""
+    python_bin="$(resolve_python_bin)"
+    ssot_vals="$("$python_bin" -c "import sys; sys.path[:0] = ['$ROOT']; from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals; d = resolve_derived_telemetry_intervals(); print(f\"{int(d['ui_sync_idle_sec'])} {int(d['ui_sync_interval_sec'])}\")" 2>/dev/null | grep -E '^[0-9]+ [0-9]+$' | tail -n 1 || true)"
+    read -r idle_sec min_interval_sec <<< "$ssot_vals" || true
+    if ! [[ "$idle_sec" =~ ^[0-9]+$ ]] || [ "$idle_sec" -le 0 ]; then
+        idle_sec="$(env_get AGY_UI_SYNC_IDLE_SEC 120 | grep -Eo '^[0-9]+' || echo 120)"
+    fi
+    if ! [[ "$min_interval_sec" =~ ^[0-9]+$ ]] || [ "$min_interval_sec" -le 0 ]; then
+        min_interval_sec=720
+    fi
+    echo "$idle_sec $min_interval_sec"
+}
+
+is_interactive_busy() {
+    local python_bin params idle_sec="" min_interval_sec="" rc=0
+    python_bin="$(resolve_python_bin)"
+    params="$(resolve_ui_sync_params)"
+    read -r idle_sec min_interval_sec <<< "$params" || true
+    if ! [[ "$idle_sec" =~ ^[0-9]+$ ]] || [ "$idle_sec" -le 0 ]; then
+        idle_sec=120
+    fi
+    "$python_bin" "$SCRIPT_DIR/agy_store_fix.py" active-check --idle-sec "$idle_sec" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ]
+}
+
 do_restart() {
+    rm -f "$UPDATE_PENDING_FILE" 2>/dev/null || true
     log "Cycling daemon (stop -> start --name '${INSTANCE_NAME}')..."
-    if grep -q "antigravity-cli-daemon.service" /proc/self/cgroup 2>/dev/null && command -v systemd-run >/dev/null 2>&1; then
+    local self_cgroup="${AGY_SELF_CGROUP_FILE:-/proc/self/cgroup}"
+    if [ -r "$self_cgroup" ] && grep -q "antigravity-cli-daemon.service" "$self_cgroup" 2>/dev/null && command -v systemd-run >/dev/null 2>&1; then
         log "Executing inside daemon cgroup. Delegating restart to transient user systemd service..."
         local job_unit="agy-restart-$(date +%s)-$$"
         systemd-run --user --unit="$job_unit" bash -c "
@@ -145,9 +182,13 @@ do_watchdog() {
             exit 2
         fi
     elif is_tunnel_stuck; then
-        log "WARNING: Daemon is running but tunnel is STUCK in reconnection failure. Triggering auto-recovery..."
-        do_restart
-        send_alert "Antigravity remote-control daemon tunnel was found stuck/broken and was automatically restarted as '${INSTANCE_NAME}'."
+        if is_interactive_busy; then
+            log "WARNING: Daemon tunnel has persistent reconnection failures, but interactive chats/tasks are active; deferring restart until idle."
+        else
+            log "WARNING: Daemon is running, store is idle, and tunnel is STUCK in reconnection failure. Triggering auto-recovery..."
+            do_restart
+            send_alert "Antigravity remote-control daemon tunnel was found stuck/broken while idle and was automatically restarted as '${INSTANCE_NAME}'."
+        fi
     else
         if [ -t 1 ] || [ "${1:-}" = "--verbose" ] || { [ -f "$ROOT/logs/manage_agy.log" ] && tail -n 5 "$ROOT/logs/manage_agy.log" 2>/dev/null | grep -Eiq "error:|warning:|failed"; }; then
             log "Daemon is active and healthy (instance: ${INSTANCE_NAME})."
@@ -165,8 +206,13 @@ do_update() {
 
     if [ "$mode" = "cron" ]; then
         if echo "$update_output" | grep -iq "Update successful"; then
-            log "Update applied successfully under cron. Cycling daemon..."
-            do_restart
+            if is_interactive_busy; then
+                touch "$UPDATE_PENDING_FILE"
+                log "Update applied under cron, but interactive chats/tasks are active; queued deferred restart ($UPDATE_PENDING_FILE)."
+            else
+                log "Update applied successfully under cron and store is idle. Cycling daemon..."
+                do_restart
+            fi
         elif echo "$update_output" | grep -iq "already on the latest version"; then
             log "Already up to date. Cron check complete; no restart needed."
         else
@@ -192,20 +238,22 @@ do_status() {
 
 do_ui_sync() {
     acquire_lock 10 || exit 0
-    local python_bin="${PYTHON_BIN:-python3}" ssot_vals idle_sec="" min_interval_sec="" rc=0
-    ssot_vals="$("$python_bin" -c "import sys; sys.path[:0] = ['$ROOT']; from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals; d = resolve_derived_telemetry_intervals(); print(f\"{int(d['ui_sync_idle_sec'])} {int(d['ui_sync_interval_sec'])}\")" 2>/dev/null | grep -E '^[0-9]+ [0-9]+$' | tail -n 1 || true)"
-    read -r idle_sec min_interval_sec <<< "$ssot_vals"
-    if ! [[ "$idle_sec" =~ ^[0-9]+$ ]] || [ "$idle_sec" -le 0 ]; then
-        idle_sec="$(env_get AGY_UI_SYNC_IDLE_SEC 120 | grep -Eo '^[0-9]+' || echo 120)"
-    fi
-    if ! [[ "$min_interval_sec" =~ ^[0-9]+$ ]] || [ "$min_interval_sec" -le 0 ]; then
-        min_interval_sec=720
-    fi
+    local python_bin params idle_sec="" min_interval_sec="" rc=0
+    python_bin="$(resolve_python_bin)"
+    params="$(resolve_ui_sync_params)"
+    read -r idle_sec min_interval_sec <<< "$params" || true
     if ! [[ "$idle_sec" =~ ^[0-9]+$ ]] || [ "$idle_sec" -le 0 ]; then
         log "ERROR: ui_sync_idle_sec / AGY_UI_SYNC_IDLE_SEC missing or invalid ('$idle_sec')" >&2
         exit 1
     fi
     is_active || exit 0
+    if [ -f "$UPDATE_PENDING_FILE" ]; then
+        if ! is_interactive_busy; then
+            log "ui-sync: deferred CLI update restart is pending and store is idle (>= ${idle_sec}s); cycling daemon."
+            do_restart
+            return 0
+        fi
+    fi
     "$python_bin" "$SCRIPT_DIR/agy_store_fix.py" ui-sync-check --idle-sec "$idle_sec" --min-interval-sec "$min_interval_sec" >/dev/null 2>&1 || rc=$?
     case "$rc" in
         0)  log "ui-sync: store diverged from daemon and idle >= ${idle_sec}s (cadence >= ${min_interval_sec}s); restarting to surface threads."

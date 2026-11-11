@@ -731,6 +731,290 @@ def test_rotated_topic_preserves_ghost_trajectory_until_mode_pre_reaps_it(store,
     assert asf.daemon_known_cids() == {new_cid}
 
 
+def test_active_background_command_and_subagent_block_restart_until_completed(store, tmp_path, monkeypatch):
+    import json
+    from datetime import datetime, timezone
+
+    cli, d1, _ = store
+    monkeypatch.setattr(asf, "LOG_FILE", str(tmp_path / "agy_store_fix.log"))
+    monkeypatch.setattr(asf, "LOCK", str(tmp_path / "agy_store_fix.lock"))
+
+    (d1 / "pending-topic.db").write_text("y")
+    _set_rows(["pending-topic"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
+    _age_store(d1, 2400)
+
+    log_dir = cli / "brain" / "backtest-cid" / ".system_generated" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    tp = log_dir / "transcript.jsonl"
+
+    user_ts = time.time() - 2400.0  # USER_INPUT 40m ago (>30m stale user input must NOT unblock live bg command!)
+    user_iso = datetime.fromtimestamp(user_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cmd_ts = time.time() - 400.0    # background regression launched ~6.6m ago (>120s idle_sec)
+    cmd_iso = datetime.fromtimestamp(cmd_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 1. Active background run_command blocks both ui-sync-check and active-check (even after sender=system notice)
+    tp.write_text(
+        json.dumps({"step_index": 1, "type": "USER_INPUT", "created_at": user_iso, "content": "run regression"})
+        + "\n"
+        + json.dumps(
+            {
+                "step_index": 2,
+                "type": "GENERIC",
+                "status": "RUNNING",
+                "created_at": cmd_iso,
+                "content": (
+                    "Created At: 2026-11-11T11:31:41+02:00\n"
+                    "Tool is running as a background task with task id: backtest-cid/task-2216\n"
+                    "Task Description: ./offline/runners/trigger_dev_regression.sh --wait\n"
+                ),
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "step_index": 3,
+                "type": "SYSTEM_MESSAGE",
+                "created_at": cmd_iso,
+                "content": "[Message] sender=system priority=MESSAGE_PRIORITY_LOW content=[Notice] background info",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(tp, (cmd_ts, cmd_ts))
+    for root, _, files in os.walk(cli / "brain"):
+        for f in files:
+            os.utime(os.path.join(root, f), (cmd_ts, cmd_ts))
+
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+    assert asf.main(["agy_store_fix.py", "active-check", "--idle-sec", "120"]) == asf.UI_SYNC_BUSY
+
+    # 2. Once task-2216 finishes (SYSTEM_MESSAGE from sender=backtest-cid/task-2216) and stays idle, restart unblocks
+    tp.write_text(
+        tp.read_text(encoding="utf-8")
+        + json.dumps(
+            {
+                "step_index": 4,
+                "type": "SYSTEM_MESSAGE",
+                "created_at": cmd_iso,
+                "content": "[Message] sender=backtest-cid/task-2216 priority=MESSAGE_PRIORITY_HIGH content=Regression PASS",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(tp, (cmd_ts, cmd_ts))
+    assert asf.main(["agy_store_fix.py", "active-check", "--idle-sec", "120"]) == asf.UI_SYNC_READY
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+    (tmp_path / "ui_sync_state.json").unlink(missing_ok=True)
+
+    # 3. Active invoke_subagent blocks until subagent replies or manage_subagents kills it
+    sub_cid = "3afdb20b-94a8-40ae-bac1-3cc33714728e"
+    tp.write_text(
+        tp.read_text(encoding="utf-8")
+        + json.dumps(
+            {
+                "step_index": 5,
+                "type": "GENERIC",
+                "status": "DONE",
+                "created_at": cmd_iso,
+                "content": f'Created the following subagent:\n{{\n  "conversationId":  "{sub_cid}"\n}}\n',
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(tp, (cmd_ts, cmd_ts))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+    assert asf.mode_active_check(120) == asf.UI_SYNC_BUSY
+
+    tp.write_text(
+        tp.read_text(encoding="utf-8")
+        + json.dumps(
+            {
+                "step_index": 6,
+                "type": "PLANNER_RESPONSE",
+                "created_at": cmd_iso,
+                "tool_calls": [{"name": "manage_subagents", "args": {"Action": "kill", "ConversationIds": [sub_cid]}}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(tp, (cmd_ts, cmd_ts))
+    assert asf.mode_active_check(120) == asf.UI_SYNC_READY
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+
+
+def test_running_status_with_old_db_but_fresh_transcript_blocks_restart(store):
+    cli, d1, _ = store
+    conn = sqlite3.connect(asf.DB)
+    conn.execute("DROP TABLE conversation_summaries")
+    conn.execute(
+        "CREATE TABLE conversation_summaries ("
+        "conversation_id text primary key, status text)"
+    )
+    conn.execute("INSERT INTO conversation_summaries VALUES ('thinking-chat', 'CASCADE_RUN_STATUS_RUNNING')")
+    conn.execute("INSERT INTO conversation_summaries VALUES ('pending-topic', 'CASCADE_RUN_STATUS_IDLE')")
+    conn.commit()
+    conn.close()
+
+    (d1 / "thinking-chat.db").write_text("old-checkpoint")
+    (d1 / "pending-topic.db").write_text("y")
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids(["thinking-chat"]))
+    _age_store(d1, 1500)  # .db has not checkpointed for 25 minutes (> 900s)
+
+    tp_dir = cli / "brain" / "thinking-chat" / ".system_generated" / "logs"
+    tp_dir.mkdir(parents=True, exist_ok=True)
+    tp = tp_dir / "transcript.jsonl"
+    tp.write_text('{"step_index": 1, "type": "USER_INPUT", "content": "deep audit"}\n', encoding="utf-8")
+    fresh_turn_ts = time.time() - 300.0  # turn started 5m ago (>120s idle_sec, <900s running bound)
+    os.utime(tp, (fresh_turn_ts, fresh_turn_ts))
+
+    assert asf.mode_active_check(120) == asf.UI_SYNC_BUSY
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+
+
+def test_daemon_has_active_child_tasks_cgroup_and_proc_tree(tmp_path):
+    proc_root = tmp_path / "proc"
+    cg_root = tmp_path / "cgroup"
+    cg_dir = cg_root / "user.slice" / "antigravity-cli-daemon.service"
+    cg_dir.mkdir(parents=True)
+    proc_root.mkdir(parents=True)
+
+    clk_tck = int(os.sysconf("SC_CLK_TCK")) if hasattr(os, "SC_CLK_TCK") else 100
+    btime = int(time.time()) - 10000
+    (proc_root / "stat").write_text(f"cpu  1 2 3 4\nbtime {btime}\n", encoding="utf-8")
+
+    def write_proc(pid: int, ppid: int, state: str, age_s: int, cmd: str) -> None:
+        pdir = proc_root / str(pid)
+        pdir.mkdir(parents=True, exist_ok=True)
+        start_ticks = max(1, int((time.time() - age_s - btime) * clk_tck))
+        rest = ["0"] * 25
+        rest[0] = state
+        rest[1] = str(ppid)
+        rest[19] = str(start_ticks)
+        (pdir / "stat").write_text(f"{pid} (proc name) {' '.join(rest)}\n", encoding="utf-8")
+        (pdir / "cmdline").write_bytes(cmd.encode("utf-8").replace(b" ", b"\x00") + b"\x00")
+
+    write_proc(500, 1, "S", 5000, "/home/predut/.local/bin/agy remote-control serve")
+    (proc_root / "500" / "cgroup").write_text(
+        "11:net_cls:/\n0::/user.slice/antigravity-cli-daemon.service\n",
+        encoding="utf-8",
+    )
+    # Benign management helper + zombie + stale (>3600s) task must NOT block
+    write_proc(501, 500, "S", 5, "/usr/bin/python3 orchestratorOS/admin/agy_store_fix.py active-check")
+    write_proc(502, 500, "Z", 10, "bash -c defunct")
+    write_proc(503, 500, "S", 4000, "sleep 99999")
+    (cg_dir / "cgroup.procs").write_text("500\n501\n502\n503\n", encoding="utf-8")
+
+    assert asf._daemon_has_active_child_tasks(daemon_pid=500, proc_root=str(proc_root), cgroup_root=str(cg_root)) is False
+
+    # Live background regression child task (<3600s) blocks via cgroup v2 AND via /proc ppid fallback
+    write_proc(504, 500, "S", 300, "bash ./offline/runners/run_dev_regression.sh trigger --wait")
+    (cg_dir / "cgroup.procs").write_text("500\n504\n", encoding="utf-8")
+    assert asf._daemon_has_active_child_tasks(daemon_pid=500, proc_root=str(proc_root), cgroup_root=str(cg_root)) is True
+    (cg_dir / "cgroup.procs").unlink()
+    assert asf._daemon_has_active_child_tasks(daemon_pid=500, proc_root=str(proc_root), cgroup_root=str(cg_root)) is True
+
+
+def test_manage_agy_defers_stuck_tunnel_and_cron_update_restarts_when_chats_active(tmp_path):
+    import stat
+    import subprocess
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    manage_agy = os.path.join(root_dir, "orchestratorOS", "admin", "manage_agy.sh")
+    fake_home = tmp_path / "home"
+    cli_dir = fake_home / ".gemini" / "antigravity-cli"
+    (cli_dir / "conversations").mkdir(parents=True)
+    (fake_home / ".gemini" / "antigravity" / "conversations").mkdir(parents=True)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True)
+    calls_log = tmp_path / "agy_calls.log"
+
+    # Populate a fresh interactive conversation (<120s old) so active-check returns UI_SYNC_BUSY (11)
+    active_db = cli_dir / "conversations" / "active-chat.db"
+    active_db.write_text("live-turn", encoding="utf-8")
+    sum_conn = sqlite3.connect(str(cli_dir / "conversation_summaries.db"))
+    sum_conn.execute("CREATE TABLE conversation_summaries (conversation_id text primary key, status text)")
+    sum_conn.execute("INSERT INTO conversation_summaries VALUES ('active-chat', 'CASCADE_RUN_STATUS_RUNNING')")
+    sum_conn.commit()
+    sum_conn.close()
+
+    # 3 consecutive Failed before open -> is_tunnel_stuck() == 0
+    (cli_dir / "cli.log").write_text(
+        "W1111 12:15:00.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n"
+        "W1111 12:16:00.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n"
+        "W1111 12:17:00.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n",
+        encoding="utf-8",
+    )
+
+    def make_stub(name: str, body: str) -> None:
+        p = fake_bin / name
+        p.write_text("#!/usr/bin/env bash\n" + body + "\n", encoding="utf-8")
+        p.chmod(p.stat().st_mode | stat.S_IXUSR)
+
+    stopped_flag = tmp_path / "daemon_stopped"
+    fake_cgroup = tmp_path / "self.cgroup"
+    fake_cgroup.write_text("0::/user.slice/cron.service\n", encoding="utf-8")
+
+    make_stub(
+        "agy",
+        f'echo "$*" >> "{calls_log}"\n'
+        'case "${1:-} ${2:-}" in\n'
+        '  "--version ") echo "1.4.0" ;;\n'
+        f'  "remote-control stop") touch "{stopped_flag}" ;;\n'
+        f'  "remote-control start") rm -f "{stopped_flag}" ;;\n'
+        '  "remote-control status") echo "Daemon status: active" ;;\n'
+        '  "update ") echo "Update successful" ;;\n'
+        '  *) exit 0 ;;\n'
+        'esac',
+    )
+    make_stub(
+        "systemctl",
+        f'if [ "${{2:-}}" = "is-active" ]; then [ ! -f "{stopped_flag}" ]; exit $?; fi\n'
+        'if [ "${2:-}" = "show" ] && [ "${4:-}" = "ActiveState" ]; then echo "active"; exit 0; fi\n'
+        'exit 1',
+    )
+    make_stub("curl", "exit 0")
+    make_stub("systemd-run", "exit 1")
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "HOME": str(fake_home),
+            "AGY_FIX_HOME": str(fake_home),
+            "AGY_SELF_CGROUP_FILE": str(fake_cgroup),
+            "AGY_SUPPRESS_ALERTS": "1",
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "XDG_RUNTIME_DIR": str(tmp_path),
+            "PYTHON_BIN": os.path.join(root_dir, ".venv", "bin", "python3"),
+        }
+    )
+
+    # 1. Stuck tunnel while chat is active -> restart MUST be deferred (zero `remote-control stop` calls!)
+    r1 = subprocess.run(["/bin/bash", manage_agy, "watchdog"], cwd=root_dir, env=env, capture_output=True, text=True, timeout=15)
+    assert r1.returncode == 0
+    assert "deferring restart until idle" in r1.stdout
+    assert "remote-control stop" not in (calls_log.read_text(encoding="utf-8") if calls_log.exists() else "")
+
+    # 2. Cron update while chat is active -> queues pending restart file without stopping daemon
+    r2 = subprocess.run(["/bin/bash", manage_agy, "cron-update"], cwd=root_dir, env=env, capture_output=True, text=True, timeout=15)
+    assert r2.returncode == 0
+    assert (tmp_path / "agy_update_restart_pending").exists()
+    assert "remote-control stop" not in calls_log.read_text(encoding="utf-8")
+
+    # 3. Once active chat is aged past 15m (>900s running bound & >120s idle), watchdog cycles the stuck daemon cleanly
+    old_ts = time.time() - 1500.0
+    os.utime(active_db, (old_ts, old_ts))
+    r3 = subprocess.run(["/bin/bash", manage_agy, "watchdog"], cwd=root_dir, env=env, capture_output=True, text=True, timeout=20)
+    assert r3.returncode == 0
+    assert "remote-control stop" in calls_log.read_text(encoding="utf-8")
+    assert not (tmp_path / "agy_update_restart_pending").exists()
+
+
+
 
 
 
