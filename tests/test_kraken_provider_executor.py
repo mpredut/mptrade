@@ -167,9 +167,7 @@ class KrakenExecutorContractTest(unittest.TestCase):
                     self.p.submit_order("HYPEUSD", "buy", 1.0, price=60.0)
 
         with self.subTest(msg="venue_submit_error_becomes_provider_error"):
-            def boom(*a, **k):
-                raise RuntimeError("Kraken: EOrder:Insufficient funds")
-            with patch.object(self.fake, "add_order", side_effect=boom):
+            with patch.object(self.fake, "add_order", side_effect=RuntimeError("Kraken: EOrder:Insufficient funds")):
                 with self.assertRaises(kraken_provider.SubmissionRefused):
                     self.p.submit_order("HYPEUSD", "buy", 1.0, price=60.0)
             with patch.object(self.fake, "add_order", side_effect=RuntimeError("network timeout")):
@@ -244,9 +242,7 @@ class KrakenExecutorContractTest(unittest.TestCase):
             self.p.preflight_order("HYPEUSD", "sell", 2.5, price=60.0)
 
         with self.subTest(msg="buy_leaves_fee_and_slippage_to_venue"):
-            def boom():
-                return (_ for _ in ()).throw(AssertionError("BUY preflight must not read balance"))
-            with patch.object(self.fake, "balance", side_effect=boom):
+            with patch.object(self.fake, "balance", side_effect=AssertionError("BUY preflight must not read balance")):
                 self.p.preflight_order("HYPEUSD", "buy", 100.0, price=60.0)
 
         with self.subTest(msg="final_submit_gate_observes_a_switch_flip"):
@@ -276,9 +272,7 @@ class KrakenExecutorContractTest(unittest.TestCase):
             self.assertEqual(self.fake.calls[-1], ("cancel_order", "OABC-123"))
 
         with self.subTest(msg="cancel_is_idempotent_on_an_unknown_order"):
-            def boom(txid):
-                raise RuntimeError("EOrder:Unknown order")
-            with patch.object(self.fake, "cancel_order", side_effect=boom):
+            with patch.object(self.fake, "cancel_order", side_effect=RuntimeError("EOrder:Unknown order")):
                 self.p.cancel_order("HYPEUSD", "GONE")
 
         with self.subTest(msg="unconfirmed_cancel_raises"):
@@ -534,10 +528,10 @@ class AddOrderRoundingTest(unittest.TestCase):
         if os.path.join(ROOT, "kraken") not in sys.path:
             sys.path.insert(0, os.path.join(ROOT, "kraken"))
 
-        def boom(pair):
-            raise RuntimeError("API down")
-
-        for label, pair_info in (("missing", lambda pair: None), ("exception", boom)):
+        for label, pair_info in (
+            ("missing", lambda pair: None),
+            ("exception", mock.Mock(side_effect=RuntimeError("API down"))),
+        ):
             with self.subTest(case=label):
                 c = KrakenClient.__new__(KrakenClient)
                 c.pair_info = pair_info

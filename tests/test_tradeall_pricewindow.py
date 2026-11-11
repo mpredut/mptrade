@@ -74,6 +74,7 @@ finally:
         _ca_mod.apiorders = _real_bapi_allorders
 
 mock_bapi = _mock_bapi
+from pricewindow import PriceWindow, WindowAnalyzer
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1226,7 +1227,6 @@ def test_order_retry_enqueue_sanitizes_nan_bool_requested_price_ref_price_and_it
 
 def test_pricewindow_windowanalyzer_iter54_s4():
     """[ITER54 #4] PriceWindow & WindowAnalyzer."""
-    from pricewindow import PriceWindow, WindowAnalyzer
     # 4. PriceWindow & WindowAnalyzer
     pw = PriceWindow("BTCUSDC", window_size=True, sample_rate_sec=float("nan"), window_seconds=True)
     assert pw.window_size == 10
@@ -1243,7 +1243,6 @@ def test_pricewindow_windowanalyzer_iter54_s4():
 
 def test_pricewindow_symbol_clamps_to_while_bool_nan_inf_iter55_s1():
     """[ITER55 #1] PriceWindow(symbol, 0) clamps to 1, while bool/NaN/Inf fall back to 10."""
-    from pricewindow import PriceWindow
     # 1. PriceWindow(symbol, 0) clamps to 1, while bool/NaN/Inf fall back to 10
     assert PriceWindow("BTCUSDC", 0).window_size == 1
     assert PriceWindow("BTCUSDC", -5).window_size == 1
@@ -1366,7 +1365,6 @@ def test_backtestbroker_normalizes_lowercase_whitespace_order_type_and_sanitizes
 
 def test_tradeall_track_and_place_order_deduplicates_ids_ignores_and_stores_clean_iter158_s4(monkeypatch):
     """[ITER158 #4] tradeall.track_and_place_order deduplicates .0 IDs, ignores '0', and stores clean orderId."""
-    import tradeall as ta
     # 4. tradeall.track_and_place_order deduplicates .0 IDs, ignores "0", and stores clean orderId
     cancelled_oids = []
     monkeypatch.setattr(ta, "TRADEALL_FIRE_SYMBOLS", {"BTCUSDC"})

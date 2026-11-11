@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 import subprocess
 import re
 
@@ -418,8 +419,6 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_bapi_client_recvwindow_and_minus_1021_resync_retry(self):
-        from types import SimpleNamespace
-
         calls = []
 
         def _req_retry(method, uri, signed, force_params=False, **kwargs):
@@ -469,7 +468,6 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         self.assertNotIn("\r", ctx.exception.message)
 
     def test_get_client_disables_init_ping_and_installs_retries_before_sync(self):
-        from types import SimpleNamespace
         import credentials
 
         init_kwargs = {}

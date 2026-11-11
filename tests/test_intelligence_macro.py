@@ -1,6 +1,7 @@
 """Unit tests for Macro Geopolitical & Energy Shock Shield (Pillar Macro) and MacroAnalyzer."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -66,8 +67,6 @@ class _FakeAccountStreamWS:
         self.sent_frames.append(json.loads(msg))
 
     async def recv(self):
-        import asyncio
-
         self.step += 1
         if self.step == 1:
             return json.dumps({"id": "login", "status": 200})
@@ -1339,7 +1338,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
 
 
 def test_binance_account_stream_dynamic_recv_timeout_and_response_health(monkeypatch):
-    import asyncio
     from binance_api import bapi_ws
 
     sent_frames = []

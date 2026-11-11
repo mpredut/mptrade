@@ -50,20 +50,27 @@ _build_test_context = make_test_regime_context
 MockProvider = MockProv = lambda: DummySpotExecutionProvider("binance")
 
 
-def _setup_gemini_notional_check(monkeypatch):
+def _setup_gemini_notional_check(
+    monkeypatch,
+    *,
+    result_box=None,
+    set_margins: bool = True,
+):
     calls = []
+    box = result_box or [GuardDecision.allow("Gemini approved")]
 
-    def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None):
+    def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None, **kw):
         calls.append(notional_eur)
-        return GuardDecision.allow("Gemini approved")
+        return box[0]
 
-    monkeypatch.setattr(order_guard, "_load_margins", lambda: _margins(
-        internal_guard_mode="enforce",
-        intelligence_guards_mode="enforce",
-        llm_guard_mode="enforce",
-        high_stake_min_notional_usd=1000.0,
-        regime_context_max_age_sec=120.0,
-    ))
+    if set_margins:
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            llm_guard_mode="enforce",
+            high_stake_min_notional_usd=1000.0,
+            regime_context_max_age_sec=120.0,
+        ))
     monkeypatch.setattr(
         "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
         fake_gemini_check,
@@ -751,25 +758,8 @@ class TestSisterArchitecturalDefects:
         """Sister 3: Gemini decisions (rejection and downscaling) must be cached and re-applied
         on identical subsequent checks rather than reverting to allow/1.0."""
         ctx = _build_test_context()
-        calls = []
-
         gemini_result = [GuardDecision.veto("gemini", "Gemini high-risk block")]
-
-        def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None):
-            calls.append(notional_eur)
-            return gemini_result[0]
-
-        monkeypatch.setattr(order_guard, "_load_margins", lambda: _margins(
-            internal_guard_mode="enforce",
-            intelligence_guards_mode="enforce",
-            llm_guard_mode="enforce",
-            high_stake_min_notional_usd=1000.0,
-            regime_context_max_age_sec=120.0,
-        ))
-        monkeypatch.setattr(
-            "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
-            fake_gemini_check
-        )
+        calls = _setup_gemini_notional_check(monkeypatch, result_box=gemini_result)
 
         # 1. Initial check at 100 EUR (< 1000 min_notional): passes baseline
         ok, reason, scale = order_guard.check_intelligence_guards(
@@ -1800,16 +1790,9 @@ class TestBatch6IntelligenceAndRoutingFixes:
         )
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
-        calls = []
         gemini_result = [GuardDecision.veto("HighStakeGuard", "gemini_high_stake_veto")]
-
-        def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None, **kw):
-            calls.append(notional_eur)
-            return gemini_result[0]
-
-        monkeypatch.setattr(
-            "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
-            fake_gemini_check,
+        calls = _setup_gemini_notional_check(
+            monkeypatch, result_box=gemini_result, set_margins=False
         )
 
         # Case A: Order 1 ($1500) vetoed by GLLM1 -> Order 2 ($100) on same context must pass (1.0)

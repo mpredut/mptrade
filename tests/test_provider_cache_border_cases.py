@@ -4,26 +4,33 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 import botcore
+import pricewindow as pw
 from cacheaccount import CacheTradeManager
 from cacheprice import (
     Cache24PriceManager,
+    Cache365PriceManager,
     CacheCurrentPriceManager,
     resolve_cached_symbol_price,
     resolve_ssot_price_from_cache,
 )
 from cachetrend import CacheShortTrendManager
+from kraken.trailing_stop import KrakenTrailing
 from providers.base import MarketDataProvider
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
+from providers.strategy_executor import ProviderError
 from providers.t212_provider import T212Provider
 from state_io import previous_generation_path
+from strategies.base_spot_mixin import BaseSpotMixin
 import cachepaths
 import intelligence.macro_sentiment_ssot as mss
 from providers.binance_provider import BinanceProvider
@@ -343,8 +350,6 @@ def test_provider_base_border_cases_live_quote_falsy_client_and_fills_typeerror(
 
 def test_fee_and_limits_resolution_symmetry_and_no_double_trailing_rest_call(tmp_path: Path):
     """Verify resolve_cached_fee_and_limits across venues/stubs and single REST call on KrakenTrailing failure."""
-    from kraken.trailing_stop import KrakenTrailing
-
     # 1. Custom MarketDataProvider subclass named 'kraken' resolves Kraken fee/limits via base class
     stub = _TestMarketProvider(
         "kraken",
@@ -533,7 +538,6 @@ def test_equity_asset_class_ssot_helpers_and_intent_scope_filtering():
 
 def test_dust_protected_sell_sizing_and_ohlc_client_id_border_cases():
     """Verify venue-agnostic dust-protected SELL sizing, client ID venue alias resolution, and OHLC window overflow."""
-    from providers.order_ohlc_utils import ProviderError
     from providers.quantity import dust_protected_partial_sell_qty, dust_protected_sell_balance_cap
 
     # Parameterized dust-protected cap and partial sell adjuster work across arbitrary decimals & thresholds
@@ -774,7 +778,6 @@ def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
     """Verify parse_ratio_or_pct, derive_client_order_id, cancel grace, and extreme lookback border cases."""
     from botcore import clean_scale, parse_ratio_or_pct
     from providers.order_ohlc_utils import build_price_history_points
-    from providers.strategy_executor import ProviderError
 
     # 1. parse_ratio_or_pct & clean_scale strict border validation
     assert parse_ratio_or_pct("2.5%") == pytest.approx(0.025)
@@ -864,7 +867,6 @@ def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
 
 def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkeypatch, tmp_path):
     """Verify state_io embedded JSON helpers, botcore.fetch_public_bytes, HLClient._coin_candidates/candles, and iter_venue_cycle_state_files."""
-    import os
     from cachepaths import iter_venue_cycle_state_files
     from state_io import decode_embedded_json_dict, extract_json_object
 
@@ -1237,7 +1239,6 @@ def test_portfolio_lot_reconciliation_ssot_and_cache_coercion_border_cases(
     """Verify shared open-lot pruning/VWAP SSOT and timestamp/margin coercion border cases."""
     import assetguardian as ag
     import guard_hierarchy as gh
-    from cacheprice import Cache365PriceManager
     from intelligence.sentiment.evaluators.portfolio_evaluator import (
         reconcile_fresh_lots_vwap,
         select_fresh_open_lots,
@@ -1381,7 +1382,6 @@ def test_auto_ws_ssot_tp_ladder_checkpoint_and_estimator_border_cases(
     """Verify SSOT auto-WS flag, empty-comma TP ladder rejection, EET checkpoint bounds, and estimator validation."""
     from intelligence.macro import calendar_ssot
     from orchestratorOS.livecheck import os_resources_watchdog as wd
-    import pricewindow as pw
     from strategies.base_spot_mixin import parse_tp_ladder_env
 
     # 1. botcore.is_auto_start_websockets_enabled handles all falsy tokens ("n", "f", "0", "off") & env overrides
@@ -1582,7 +1582,6 @@ def test_ws_normalize_headline_age_apply_proposals_and_csv_border_cases(
     tmp_path: Any,
 ) -> None:
     """Verify WS trade ID float-string guards, headline age SSOT, branch validation, and CSV trimming."""
-    import numpy as np
     from binance_api import bapi_ws_normalize as ws_norm
     from intelligence.macro.calendar_ssot import headline_effective_ts, parse_headline_age_minutes
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
@@ -1635,7 +1634,6 @@ def test_expired_orders_sync_mode_trailing_status_and_runtime_flag_border_cases(
     from intelligence.macro.news_feed_collector import NewsFeedCollector
     from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
-    from kraken.trailing_stop import KrakenTrailing
     from trailing_core import TrailingAdapterBase
 
     # 1. iter_expired_open_order_ids rejects non-positive/bool/NaN expire_sec and normalizes ms current_time_sec
@@ -1750,7 +1748,6 @@ def test_stop_loss_avg_archive_seed_replay_summary_fg_and_guard_preflight_border
     """Regression suite for stop-loss zero-price guard, 365d seed bounds, replay summary, F&G clamping, and guard/collector SSOT."""
     import functools
     import external_order_guard
-    from cacheprice import Cache365PriceManager
     from guard_hierarchy import preflight_intelligence_guard_entry
     from intelligence.macro_sentiment_ssot import FearGreedSnapshot
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
@@ -1758,7 +1755,6 @@ def test_stop_loss_avg_archive_seed_replay_summary_fg_and_guard_preflight_border
     from offline.backtests.evaluation import parse_intervals
     from offline.research.monitortrades_backtest.sweep_mt_models import _accepts_two_positional_args
     from state_io import read_jsonl_dicts
-    from strategies.base_spot_mixin import BaseSpotMixin
     from strategies.spot_replay import summarize_grid_replay_metrics
 
     # 1. BaseSpotMixin._resolve_stop_loss_avg_and_loss_pct never triggers +100% SL on 0/None/bool/NaN price
@@ -1873,16 +1869,12 @@ def test_temporary_environ_daemon_fetch_equity_oi_remote_trades_and_guard_prefli
     tmp_path, monkeypatch
 ):
     """Regression suite for temporary_environ, daemon_ssot single-call fetch, equity OI bounds, remote trade LSP, and strategy/guard preflight."""
-    import os
-    import numpy as np
-    import pricewindow as pw
     from botcore import temporary_environ
     from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
     from intelligence.macro.daemon_ssot import ExternalTelemetryMixin, run_daemon_cli_once_or_start
     from offline.research.monitortrades_backtest.run_replay_backtest import step_adaptive_trend_window
     from offline.research.monitortrades_backtest.sweep_mt_models import compute_window_bounds
     from providers.replay_provider import ReplayMarketDataProvider
-    from strategies.base_spot_mixin import BaseSpotMixin
     from verify_tools import portfolio_snapshot
 
     # 1. temporary_environ sets/unsets and restores exact environment even on exceptions
@@ -2003,13 +1995,11 @@ def test_coerce_dict_maps_cli_env_path_replay_metrics_peak_scope_and_hl_status_b
     tmp_path, monkeypatch
 ):
     """Regression suite for coerce_dict_maps SSOT, resolve_cli_env_path, replay_metrics, post_exit_peak_step_scope, and HL status extraction."""
-    import os
     import active_intents
     from botcore import coerce_dict_maps, load_cli_env_stack, load_local_module, resolve_cli_env_path
     hl_client_mod = load_local_module(os.path.join(botcore.ROOT_DIR, "hyperliquid"), "hl_client")
     _first_exchange_status = hl_client_mod._first_exchange_status
     _parse_order_response = hl_client_mod._parse_order_response
-    from providers.strategy_executor import ProviderError
     from strategies.replay_metrics import print_single_backtest_report, run_cli_single_or_sweep_backtest
     from strategies.spot_replay import post_exit_peak_step_scope
 

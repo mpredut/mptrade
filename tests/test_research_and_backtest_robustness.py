@@ -40,10 +40,12 @@ from offline.backtests.evaluation import (
     load_venue_module,
 )
 from offline.research.monitortrades_backtest import run_replay_backtest as rb, scheduled_pilot as sp
+from orchestratorOS.livecheck import os_resources_watchdog
 from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
 from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 from pathlib import Path
+import order_retry_worker
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
 from providers.replay_provider import ReplayMarketDataProvider
@@ -2883,7 +2885,6 @@ def test_batch10_archive_hardening(tmp_path):
 
 def test_batch11_verify_tools_and_watchdog_hardening(tmp_path, monkeypatch):
     from verify_tools import check_cache_coherence, translation_audit
-    from orchestratorOS.livecheck import os_resources_watchdog as orw
 
     # 1. translation_audit skips myenv
     assert "myenv" in translation_audit.SKIP_DIRS
@@ -2895,11 +2896,11 @@ def test_batch11_verify_tools_and_watchdog_hardening(tmp_path, monkeypatch):
     assert len(sys.path) == orig_len
 
     # 3. os_resources_watchdog handles proc dict missing pid/command without KeyError
-    monkeypatch.setattr(orw, "STATE_FILE", tmp_path / "rw_state.json")
-    monkeypatch.setattr(orw.wc, "send_ntfy", lambda *a, **kw: True)
-    procs = {"999:1": {"rss_mb": orw.MEMORY_THRESHOLD_MB + 100.0}}
-    for step in range(orw.CONSECUTIVE + 1):
-        orw.check_once(now=1000.0 + step * 60.0, total_ticks=1000 + step * 100, processes=procs, cpu_count=1)
+    monkeypatch.setattr(os_resources_watchdog, "STATE_FILE", tmp_path / "rw_state.json")
+    monkeypatch.setattr(os_resources_watchdog.wc, "send_ntfy", lambda *a, **kw: True)
+    procs = {"999:1": {"rss_mb": os_resources_watchdog.MEMORY_THRESHOLD_MB + 100.0}}
+    for step in range(os_resources_watchdog.CONSECUTIVE + 1):
+        os_resources_watchdog.check_once(now=1000.0 + step * 60.0, total_ticks=1000 + step * 100, processes=procs, cpu_count=1)
 
 
 def test_batch12_verify_tools_pnl_and_facade_hardening(monkeypatch, capsys):
@@ -3078,7 +3079,6 @@ def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monke
     from intelligence import macro_analyzer as ma
     from orchestratorOS.admin import prune_llm_threads as plt
     from orchestratorOS.lib import watchdog_common as wc
-    from orchestratorOS.livecheck import os_resources_watchdog as orw
 
     # 1. prune_llm_threads._parse_bool_flag rejects NaN and prune_old_cli_threads blocks whitespace-padded protected project_id
     assert plt._parse_bool_flag(float("nan"), default=False) is False
@@ -3108,8 +3108,8 @@ def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monke
     assert wc.format_ntfy_url("https://ntfy.sh/my-topic") == "https://ntfy.sh/my-topic"
 
     # 3. os_resources_watchdog._parse_bool_flag normalizes string "false" in persisted state
-    assert orw._parse_bool_flag("false", default=True) is False
-    assert orw._parse_bool_flag(float("nan"), default=False) is False
+    assert os_resources_watchdog._parse_bool_flag("false", default=True) is False
+    assert os_resources_watchdog._parse_bool_flag(float("nan"), default=False) is False
 
     # 4. GlobalTelemetryCollector and MacroAnalyzer write_heartbeat sanitize non-dict status and NaN ts
     col = object.__new__(gtc.GlobalTelemetryCollector)
@@ -4287,7 +4287,6 @@ def test_batch33_cacheintegrity_instrument_registry_rtrade_and_providers_hardeni
 
 def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_path):
     """Verify StratParams/Strategy, order_retry_worker._safe_int, state_io.load_json_state, and utils._sign_ed25519."""
-    import order_retry_worker as orw
     from strategies.spot_engine import Strategy
 
     # 1. StratParams.from_dict coerces integer strings and rejects bools/non-dicts
@@ -4322,9 +4321,9 @@ def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_
     assert strat._find_open(True) is None  # type: ignore[arg-type]
 
     # 4. order_retry_worker.safe_int handles bool, float strings, NaN, and None
-    assert orw.safe_int(True, 0) == 0
-    assert orw.safe_int("5.0", 0) == 5
-    assert orw.safe_int(float("nan"), 3) == 3
+    assert order_retry_worker.safe_int(True, 0) == 0
+    assert order_retry_worker.safe_int("5.0", 0) == 5
+    assert order_retry_worker.safe_int(float("nan"), 3) == 3
 
     # 5. state_io.load_json_state honors fail_closed for invalid/empty paths
     assert state_io.load_json_state(None, default_factory=dict, fail_closed=False, label="test") == {}  # type: ignore[arg-type]
@@ -4612,7 +4611,6 @@ def test_batch36b_watchdog_overnight_monitor_agy_store_fix_and_macro_hardening(t
 def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tmp_path, monkeypatch):
     """Verify order_retry None/float-string handling, order_retry_worker._alert_giveups, order_guard decisions_map lookup, assetguardian p3b confidence formatting, monitortrades tp_ref normalization, and tradeall TrendState.is_trend_a_minim_validated."""
     import order_retry as oq
-    import order_retry_worker as orw
 
     # 1. order_retry.is_expired and is_due handle None ttl_started_ts / attempts / last_attempt_ts
     rec = {
@@ -4632,9 +4630,9 @@ def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tm
 
     # 2. order_retry_worker._alert_giveups handles attempts=None or float-string without TypeError
     monkeypatch.setattr(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl"))
-    monkeypatch.setattr(orw, "_audit_event", lambda *a, **kw: None)
-    monkeypatch.setattr(orw.alert, "notify", lambda *a, **kw: None)
-    orw._alert_giveups(
+    monkeypatch.setattr(order_retry_worker, "_audit_event", lambda *a, **kw: None)
+    monkeypatch.setattr(order_retry_worker.alert, "notify", lambda *a, **kw: None)
+    order_retry_worker._alert_giveups(
         [
             {
                 "id": "g1",
