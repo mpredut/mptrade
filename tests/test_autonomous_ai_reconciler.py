@@ -1,57 +1,147 @@
 """Unit tests for AutonomousAIReconciler and FleetHealthMonitor."""
 from __future__ import annotations
 
+import assetguardian as ag
+import base64
+import importlib
 import json
+import kraken.kraken_client as kc
+import math
+import monitororder
+import numpy as np
+import order_retry as oq
 import os
-import time
-from unittest.mock import MagicMock, patch
-
 import pytest
-
-from orchestratorOS.livecheck.fleet_health_monitor import (
-    FleetHealthMonitor,
-    FleetHealthReport,
-)
-from intelligence.sentiment.gemini_client import GeminiClient
-from orchestratorOS.supervisor.autonomous_ai_reconciler import (
-    AutonomousAIReconciler,
-    LogEventSummary,
-    SupervisorAuditReport,
-    TelemetrySensorSnapshot,
+import subprocess
+import tempfile
+import time
+import types
+import verify_tools.check_cache_coherence as ccc
+from botcore import (
+    evaluate_heartbeat_files_freshness,
+    extract_current_price_item,
+    obj_attr,
+    safe_float,
+    safe_pos_float,
 )
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
+    compatible_quote_suffixes,
     normalize_cache_base_asset,
+    normalize_venue_name,
     resolve_binance_lookup_symbol,
+    split_symbol_assets,
 )
 from datetime import datetime, timezone
-from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
-from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
-from intelligence.macro.news_feed_collector import NewsFeedCollector
-from intelligence.sentiment.collectors.macro_telemetry_collector import apply_asset_scope_filter, harvest_macro_and_news_sensors
+from instrument import resolve_instrument_live_price
+from instrument_registry import discover_kraken_cache_pairs, resolve_instrument_spec, select_instruments
+from intelligence.external.collectors.derivatives_telemetry_collector import (
+    DerivativesTelemetry,
+    DerivativesTelemetryCollector,
+)
+from intelligence.external.collectors.orderbook_depth_collector import (
+    OrderbookDepthCollector,
+    OrderbookSnapshot,
+    round_spread_bps,
+)
+from intelligence.external.collectors.whale_positioning_collector import (
+    WhalePositioningCollector,
+    WhalePositioningSnapshot,
+)
+from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+from intelligence.internal.guards.guard_decision import clean_guard_symbol_key
+from intelligence.macro.calendar_ssot import (
+    compute_dynamic_sentiment_interval,
+    parse_live_macro_release_surprises,
+    resolve_macro_economic_calendar,
+)
+from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+from intelligence.macro.lexicon_ssot import (
+    discover_dynamic_terms_from_headlines,
+    filter_valid_severity_keywords,
+    has_financial_or_geopolitical_context,
+    headlines_are_semantic_duplicates,
+    is_excluded_reference_news_item,
+    is_off_topic_general_news_title,
+)
+from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
+from intelligence.sentiment.collectors.macro_telemetry_collector import (
+    apply_asset_scope_filter,
+    build_cycle_fallback_prices,
+    collect_macro_benchmarks_snapshot,
+    compute_deribit_options_surface,
+    format_macro_benchmarks_summary_line,
+    harvest_macro_and_news_sensors,
+)
+from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_24h_and_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
+    _normalize_open_orders_list,
     harvest_bot_runtime_states,
+    harvest_kraken_xstocks,
     harvest_recent_orders_and_enrich_positions,
     harvest_tradable_positions_and_orders,
     parse_venue_cycle_state,
 )
+from intelligence.sentiment.evaluators.microstructure_evaluator import (
+    compute_liquidation_clusters,
+    enrich_cross_venue_trends,
+    enrich_microstructure_cvd,
+    sync_sibling_symbol_telemetry,
+)
 from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     _compute_kalman_from_series,
+    _compute_short_slopes_from_series,
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
+    compute_swing_wave_metrics,
     compute_volume_profile_metrics,
 )
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     build_cross_market_context,
+    compute_enterprise_portfolio_risk_metrics,
+    enrich_open_limit_orders_tca,
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
+)
+from intelligence.sentiment.gemini_client import GeminiClient
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, collect_pretrade_telemetry
+from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+from market_regime import ClosedPriceSeries
+from orchestratorOS.agy.topics import topic_spec
+from orchestratorOS.lib.technical_repair_ssot import (
+    ALL_DIAGNOSED_CATEGORIES,
+    ALL_REPAIR_ACTIONS,
+    apply_code_patch_safely,
+    build_sensor_health_summary,
+    build_system_admin_command,
+    fleet_script_basenames,
+    harvest_heartbeats_and_state_files,
+    harvest_log_anomalies_from_dirs,
+    normalize_repair_action,
+    parse_procs_manifest,
+    read_json_recovering,
+    recent_log_lines,
+    resolve_manifest_process,
+    resolve_patchable_target,
+    submit_supervisor_trading_decisions,
+    summarize_fleet_sensor_status,
+)
+from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor, FleetHealthReport
+from orchestratorOS.supervisor.autonomous_ai_reconciler import (
+    AutonomousAIReconciler,
+    LogEventSummary,
+    SupervisorAuditReport,
+    TelemetrySensorSnapshot,
 )
 from orchestratorOS.supervisor.prompt_formatters import (
     _format_macro_and_news_section,
@@ -61,43 +151,59 @@ from orchestratorOS.supervisor.prompt_formatters import (
     build_supervisor_prompt,
 )
 from orchestratorOS.supervisor.prompt_sections import (
+    _fmt_slope_val,
     _format_recent_order_line,
     _format_tradable_position_line,
     _format_venue_cycle_line,
 )
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+from order_retry import _same_deferred_stream
+from pathlib import Path
+from providers.base import extract_order_price, normalize_side
 from providers.execution_audit import (
+    AuditedStrategyExecutor,
+    _resolve_intent_execution_details,
     build_last_cycle_execution_status,
+    cancel_existing_ai_open_orders,
+    execute_enforce_intent_order,
     extract_intent_notional,
+    intent_client_order_id,
+    new_intent_id,
     normalize_trading_decisions,
+    preflight_intent_and_resolve_price,
     reconcile_intents_from_execution_audit,
     summarize_recent_ai_intents,
 )
-from providers.kraken_provider import KrakenProvider
-from providers.quantity import resolve_assets
-from providers.t212_provider import T212Provider
-from types import SimpleNamespace
-from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
-from intelligence.sentiment.evaluators.microstructure_evaluator import compute_liquidation_clusters, enrich_cross_venue_trends, enrich_microstructure_cvd, sync_sibling_symbol_telemetry
-from orchestratorOS.lib.technical_repair_ssot import (
-    harvest_log_anomalies_from_dirs,
-    parse_procs_manifest,
-    recent_log_lines,
-    submit_supervisor_trading_decisions,
-    summarize_fleet_sensor_status,
+from providers.kraken_provider import KrakenProvider, _kraken_balance_asset_candidates, kraken_pair_matches
+from providers.market_api import BinanceProvider, api as market_api
+from providers.order_ohlc_utils import (
+    extract_executed_qty,
+    extract_order_side,
+    extract_remaining_qty,
+    normalize_open_order,
+    normalize_order,
 )
-import subprocess
-from instrument import resolve_instrument_live_price
-from instrument_registry import discover_kraken_cache_pairs, resolve_instrument_spec
-from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
-from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, collect_pretrade_telemetry
-from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
-from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
-from orchestratorOS.agy.topics import topic_spec
-from providers.order_ohlc_utils import extract_executed_qty, extract_order_side, normalize_open_order
-from verify_tools import portfolio_snapshot, watch_trade_decisions
+from providers.quantity import clamp_notional_to_wallet_balance, resolve_assets
+from providers.replay_provider import ReplayMarketDataProvider
+from providers.strategy_executor import PairPrecision
+from providers.t212_provider import T212Provider
+from state_io import save_json_state
+from strategies.rtrade_pair import OrderTicket, anchored_exit_price
+from strategies.spot_engine import StratParams, Strategy
 from tests.conftest import DummyGeminiClient
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+from verify_tools import (
+    kraken_pnl_backfill,
+    monitor_night,
+    parse_shadow,
+    pnl_report,
+    portfolio_snapshot,
+    watch_trade_decisions,
+)
+from visuals import drawprices
+
+
 
 
 @pytest.fixture
@@ -601,7 +707,6 @@ def test_apply_code_patch_safely_guards_workspace_boundary_and_restores_in_memor
 
 
 def test_intent_gateway_and_advisors_reject_nan_bool_and_null_json_fields(temp_env, tmp_path):
-    from intelligence.macro.news_feed_collector import NewsFeedSnapshot, NewsHeadline
 
     workspace, _, _ = temp_env
     gw = AutonomousIntentGateway(workspace_dir=workspace, mode="shadow", min_confidence=0.80, max_notional_usd=2000.0)
@@ -970,7 +1075,7 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert report.venue_actions == []
 
     # Verify auto_technical_repair receives ONLY fleet, bot heartbeats, Linux system resources, internet/VPN (wgpia0),
-    # config audit, and persistent log anomalies — NEVER market prices, slopes, portfolio balances, or active positions.
+    # config audit, and persistent log anomalies -- NEVER market prices, slopes, portfolio balances, or active positions.
     reconciler.run_cycle(topic_key="auto_technical_repair")
     repair_prompt = captured_prompts[-1]
     assert "LOG ANOMALIES & GUARD VETOES" in repair_prompt
@@ -1190,7 +1295,6 @@ def test_harvest_and_synthesize_surfaces_active_avg_buy_tranches_and_open_orders
 
 
 def test_verify_tools_monitor_night_snapshot_and_watch_decisions():
-    from verify_tools import monitor_night
 
     # 1. monitor_night.load_procs resolves fleet labels and comma-separated hb_log paths
     procs_text = (
@@ -1237,9 +1341,6 @@ def test_verify_tools_monitor_night_snapshot_and_watch_decisions():
         assert last_buy == 260.0
 
     # 4. parse_shadow, kraken_pnl_backfill, and visuals.drawprices edge-case guards
-    from verify_tools import parse_shadow, kraken_pnl_backfill
-    from visuals import drawprices
-    import numpy as np
 
     assert parse_shadow.safe_float(None) == 0.0
     assert parse_shadow.safe_float(True) == 0.0
@@ -1393,7 +1494,6 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
 
 
 def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_env, tmp_path, monkeypatch):
-    from verify_tools import pnl_report
 
     workspace, cache_dir, _ = temp_env
 
@@ -1674,7 +1774,7 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     # Verify equities do not have vs_btc
     eq_line = [ln for ln in prompt.splitlines() if "AAPL_US_EQ" in ln][0]
     assert "vs_btc" not in eq_line
-    # Verify prescriptive rotation clichés and pre-judged BULL/BEAR trend labels were removed
+    # Verify prescriptive rotation cliches and pre-judged BULL/BEAR trend labels were removed
     assert "INTER-MARKET CAPITAL ROTATION PRINCIPLE" not in prompt
     assert "Phase 1 (BTC Breakout" not in prompt
     assert "Trend=BULL" not in prompt
@@ -1787,7 +1887,6 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     3. Kraken xStock holdings (SPCXx.T) and allocation parameters are harvested into kraken_xstocks
        and exposed in both crypto and equities (t212) scopes, linked with SPCX_US_EQ.
     """
-    from cachepaths import split_symbol_assets
 
     assert normalize_cache_base_asset("SPCXx.T") == "SPCX"
     assert canonical_base_asset("XBTUSD") == "BTC"
@@ -1976,7 +2075,6 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
 
 def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
     """Verify Single Source of Truth (SSOT) normalization across all auto_technical_repair targets and actions."""
-    from orchestratorOS.lib.technical_repair_ssot import ALL_DIAGNOSED_CATEGORIES, ALL_REPAIR_ACTIONS, build_system_admin_command, fleet_script_basenames, normalize_repair_action, resolve_manifest_process, resolve_patchable_target
 
     (tmp_path / "procs.conf").write_text(
         "rtrade.py|$ROOT|python rtrade.py|rtrade|cachedb/rtrade.heartbeat|180|fleet\n"
@@ -2027,7 +2125,6 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
     assert n_cancel["order_id"] == "778899"
 
     # check_cache_coherence supports scalar + fetchtime, dict, and list currentprice entries + cross-venue variants
-    import verify_tools.check_cache_coherence as ccc
     now_s = time.time()
     with (
         patch.object(ccc, "expected_symbols", return_value=["BTCUSDC", "HYPEUSD", "SPCX_US_EQ"]),
@@ -2074,7 +2171,6 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
     assert "CONFIG_ERROR" in ALL_DIAGNOSED_CATEGORIES
 
     # Heartbeat freshness evaluation and fleet sensor status SSOT
-    from botcore import evaluate_heartbeat_files_freshness
     now_t = 1_700_000_000.0
     hb1 = tmp_path / "hb1.heartbeat"
     hb1.write_text("ok", encoding="utf-8")
@@ -2116,7 +2212,6 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
 
 def test_extract_current_price_item_instrument_resolution_and_trailing_state_normalization(tmp_path):
     """Verify extract_current_price_item, canonical base priority in resolve_instrument, and trailing_state key normalization."""
-    from botcore import extract_current_price_item
 
     # 1. extract_current_price_item handles scalar, 1-element list, [ts, px] series, and dicts
     assert extract_current_price_item(85123.5) == 85123.5
@@ -2184,8 +2279,6 @@ def test_extract_current_price_item_instrument_resolution_and_trailing_state_nor
 
 
 def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(tmp_path):
-    from cachepaths import normalize_venue_name
-    from providers.kraken_provider import kraken_pair_matches
 
     # 1. Venue alias normalization
     assert normalize_venue_name("trading212") == "t212"
@@ -2339,12 +2432,6 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert submitted["status"] == "OBSERVED_SHADOW"
 
     # 8. ExecutionAudit, MarketApi.provider_by_name, resolve_assets, and Kraken balance candidates normalize venue/asset aliases
-    from botcore import obj_attr, safe_float, safe_pos_float
-    from providers.base import normalize_side
-    from providers.execution_audit import intent_client_order_id, new_intent_id
-    from providers.kraken_provider import _kraken_balance_asset_candidates
-    from providers.market_api import api as market_api
-    from intelligence.internal.guards.guard_decision import clean_guard_symbol_key
 
     hl_intent = new_intent_id("hl", "HYPEUSDC", "buy")
     assert hl_intent.startswith("hyperliquid-HYPEUSDC-buy-")
@@ -2376,9 +2463,6 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert safe_pos_float("-1.0", 2.0) == 2.0
 
     # 9. instrument_registry, order_retry, rtrade_pair, and 212trading normalize venue, side, and T212 ticker aliases
-    from instrument_registry import select_instruments
-    from order_retry import _same_deferred_stream
-    from strategies.rtrade_pair import OrderTicket, anchored_exit_price
 
     assert set(select_instruments("trading212", only_enabled=False)) == set(
         select_instruments("t212", only_enabled=False)
@@ -2414,7 +2498,6 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
 
 
 def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tmp_path):
-    from intelligence.sentiment.evaluators.price_series_evaluator import compute_swing_wave_metrics
 
     # 1. Pure objective ZigZag swing wave extraction on rally (+8.68%) and subsequent drop (-7.82%)
     series_rally = [
@@ -2702,7 +2785,6 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
 
     now_s = int(time.time())
     fake_bars = [(now_s - (20 - i) * 300, 200.0 + i * 0.7, 1000.0) for i in range(21)]
-    import types
     fake_md = types.ModuleType("market_data")
     fake_md._chart = lambda sym, rng="5d", interval="5m": ({"regularMarketPrice": 214.0}, fake_bars)
     monkeypatch.setitem(os.sys.modules, "market_data", fake_md)
@@ -2867,7 +2949,6 @@ def test_telemetry_bugfixes_and_api_normalization(tmp_path):
     """Verifies bug fixes across spread rounding, 24h range decimation, VP timestamp filtering,
     canceled order exclusion, multi-fill aggregation, T212 sell dust cap, and flat trailing peak cleanup.
     """
-    from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 
     # 1. round_spread_bps precision & inverted book protection
     assert round_spread_bps(best_bid=100_000.0, best_ask=100_000.5) == 0.05
@@ -3015,7 +3096,6 @@ def test_telemetry_bugfixes_and_api_normalization(tmp_path):
     assert resting_status["filled_qty"] is None
     assert resting_status["slippage_bps"] is None
 
-    from providers.execution_audit import cancel_existing_ai_open_orders
     krk_inst = MagicMock(symbol="HYPEUSD")
     krk_inst.open_orders.return_value = [
         {"ordertxid": "OKRK_AI_1", "descr": {"type": "buy", "ordertype": "limit", "price": "42.0"}},
@@ -3031,7 +3111,6 @@ def test_telemetry_bugfixes_and_api_normalization(tmp_path):
 
 def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_path):
     """Verify open_limit_orders, SPY/QQQ/DXY/US10Y/Futures 24h delta macro benchmarks, and last_cycle_execution_status."""
-    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_macro_benchmarks_snapshot
 
     workspace = str(tmp_path)
     cache_dir = os.path.join(workspace, "cachedb")
@@ -3444,7 +3523,6 @@ def test_bot_module_rule_tag_cvd_15m_and_depth_1pct_in_prompt(temp_env):
 
 def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tmp_path):
     """Verify collect_pretrade_telemetry populates microstructure/liquidation clusters without 24h series and gateway_max_usd forwards."""
-    from intelligence.sentiment.collectors.macro_telemetry_collector import build_cycle_fallback_prices
 
     # 1. build_cycle_fallback_prices falls back to (best_bid + best_ask) / 2.0 when ob_mid_price is absent
     fb_px = build_cycle_fallback_prices(
@@ -3698,7 +3776,6 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert w_snap.taker_buy_vol_usd == pytest.approx(8_800_000.0)
     assert w_snap.taker_sell_vol_usd == pytest.approx(8_000_000.0)
 
-    from providers.execution_audit import execute_enforce_intent_order
 
     mock_inst = MagicMock(symbol="BTCUSDC", provider_name="binance")
     mock_inst.place.return_value = {"orderId": "ok_cid"}
@@ -3879,8 +3956,6 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert "trailing_peak" not in live_pos_with_closed_cyc[0]
 
     # 7. Iteration 17: Hyperliquid msg='resting' / 'filled <qty> @ <px>' parsing & extract_remaining_qty without status
-    from providers.base import extract_order_price
-    from providers.order_ohlc_utils import extract_remaining_qty
 
     assert extract_remaining_qty({"origQty": "10.0"}) == pytest.approx(10.0)
     assert extract_order_price({"orderId": 124, "ok": True, "msg": "filled 32.5 @ 61.42"}) == pytest.approx(61.42)
@@ -3938,7 +4013,6 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
 
 
 def test_iteration18_normalize_order_partial_fills_and_pretrade_freshest_venue(tmp_path):
-    from providers.order_ohlc_utils import normalize_order
 
     # 1. normalize_order and extract_symbol_recent_fills use executed qty on partial fills and skip resting HL orders
     norm_partial = normalize_order(
@@ -4293,7 +4367,6 @@ def test_iteration24_prompt_formatters_lazy_position_limits_and_partial_liq():
 
 
 def test_iteration25_cache_symbol_variants_quote_priority_and_fiat_live_price(tmp_path):
-    import math
 
     # 1. cache_symbol_variants prioritizes same-quote cross-venue equivalents and USD family before EUR
     v_xbtusd = cache_symbol_variants("XBTUSD")
@@ -4340,7 +4413,6 @@ def test_iteration25_cache_symbol_variants_quote_priority_and_fiat_live_price(tm
 
 
 def test_iteration26_compatible_quote_suffixes_and_unpriced_fiat_isolation(tmp_path):
-    from cachepaths import compatible_quote_suffixes
 
     # 1. compatible_quote_suffixes and resolve_symbol_price isolate USD vs EUR valuation families
     assert compatible_quote_suffixes("BTCUSDC") == ("USDC", "USDT", "USD")
@@ -4585,7 +4657,6 @@ def test_iteration29_prompt_sections_3a_and_3b_quote_family_grouping():
 
 
 def test_iteration30_submit_decisions_scope_xstock_guard_and_instrument_quote_resolution(tmp_path):
-    from orchestratorOS.lib.technical_repair_ssot import build_sensor_health_summary
 
     # 1. submit_supervisor_trading_decisions blocks cross-scope and read-only Kraken xStocks
     gw = MagicMock()
@@ -4760,7 +4831,6 @@ def test_iteration31_binance_lookup_orderbook_quote_isolation_and_audit_dedup(tm
 
 
 def test_iteration32_resolve_assets_usdt_and_prompt_formatters_max_usd_and_eur_3b():
-    from providers.quantity import clamp_notional_to_wallet_balance
 
     # 1. resolve_assets and clamp_notional_to_wallet_balance support USDT pairs and unset MagicMock base/quote
     assert resolve_assets("BTCUSDT") == ("BTC", "USDT")
@@ -4831,8 +4901,6 @@ def test_iteration32_resolve_assets_usdt_and_prompt_formatters_max_usd_and_eur_3
 
 
 def test_iteration33_cross_market_bellwether_quote_isolation_and_collector_aliases():
-    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
-    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
 
     # 1. build_cross_market_context prefers USD-quoted bellwether over EUR-quoted even when EUR has more keys
     ctx = build_cross_market_context(
@@ -4890,7 +4958,6 @@ def test_iteration33_cross_market_bellwether_quote_isolation_and_collector_alias
 
 
 def test_iteration34_microstructure_quote_isolation_near_parity_and_audit_reconcile(tmp_path):
-    from providers.execution_audit import _resolve_intent_execution_details
 
     # 1. load_symbol_microstructure strips USD price anchors when loading BTCUSDC orderbook for XBTEUR
     # even when EUR/USD is 1.05 (78,000 EUR vs 82,000 USD, <10% difference)
@@ -5009,9 +5076,6 @@ def test_iteration34_microstructure_quote_isolation_near_parity_and_audit_reconc
 
 
 def test_iteration35_kraken_xstock_discovery_filter_and_external_guard_aliases(tmp_path):
-    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
-    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
-    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
 
     # 1. discover_kraken_cache_pairs excludes read-only Kraken xStocks (.T / X.T)
     kr_dir = tmp_path / "kraken"
@@ -5058,7 +5122,6 @@ def test_iteration35_kraken_xstock_discovery_filter_and_external_guard_aliases(t
 
 
 def test_iteration37_prompt_sibling_merge_max_usd_clamp_and_bare_btc_preflight():
-    from providers.execution_audit import preflight_intent_and_resolve_price
 
     # 1. Section 3A & 3B merge missing telemetry from collapsed sibling entries and Section 3C clamps precomputed max_buy/max_sell to max_usd
     sensors = SimpleNamespace(
@@ -5401,7 +5464,6 @@ def test_intraday_6h_bottom_structure_and_smt_divergence_formatting():
 
 
 def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_path):
-    from state_io import save_json_state
 
     t0 = 1_793_300_000_000
     hr = 3_600_000
@@ -5642,10 +5704,6 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     5. build_last_cycle_execution_status preserves active OPEN_RESTING limit orders from earlier cycles on other symbols.
     6. News severity keyword filter strips generic stopwords, publisher names, and substring stem false positives.
     """
-    from intelligence.macro.lexicon_ssot import (
-        discover_dynamic_terms_from_headlines,
-        filter_valid_severity_keywords,
-    )
 
     # 1. Sub-$1 coin slopes & g_coeff scientific formatting (< 1e-4)
     lines_3a = _format_market_prices_section(
@@ -5905,8 +5963,6 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
     4. order_retry does not wipe accumulated ttl_started_ts when transitioning out of a transient non-failure deferral at attempts > 0.
     5. monitororder.MODULE_ORDER_TTLS grants ai_executor a 24h default TTL instead of the 4h fallback.
     """
-    import monitororder
-    import order_retry as oq
 
     # 1. KrakenProvider falls back to _bot_fallback_cli on Permission denied / missing order in SPARE
     kp = KrakenProvider()
@@ -6071,7 +6127,6 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
     assert monitororder.resolve_effective_order_ttl("1", "AI_intent_123_buy_btcusdc") == 86400.0
 
     # 6. harvest_bot_runtime_states & assetguardian._sell_campaign_tier clear dust (<$5) sell campaigns
-    import assetguardian as ag
 
     ag_file = tmp_path / "assetguardian_state.json"
     ag_file.write_text(
@@ -6157,7 +6212,6 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
     assert sum_hl[0]["venue_status"] == "FILLED"
 
     # 8. _fmt_slope_val zeroes sub-5e-8 IEEE-754 polyfit noise while keeping low-price slopes >= 5e-8
-    from orchestratorOS.supervisor.prompt_sections import _fmt_slope_val
 
     assert _fmt_slope_val(-1.22e-8) == "+0.00000"
     assert _fmt_slope_val(2.72e-7) == "+2.72e-07"
@@ -6257,7 +6311,6 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
 
 def test_t212_client_cross_process_shared_disk_cache(tmp_path, monkeypatch):
     """Verify T212Client shares fresh portfolio/order snapshots across processes and falls back on HTTP 429."""
-    import importlib
     t212_mod = importlib.import_module("212trading.t212_client")
     T212Client = t212_mod.T212Client
 
@@ -6543,8 +6596,6 @@ def test_reconcile_executed_intents_from_audit_and_kraken_t212_fill_attribution(
 
 def test_orderbook_usdc_spot_priority_and_kraken_private_network_resilience(tmp_path, monkeypatch):
     """Verify OrderbookDepthCollector queries native <BASE>USDC spot first and KrakenClient._private fails closed on (0, b'')."""
-    import base64
-    import kraken.kraken_client as kc
 
     # 1. OrderbookDepthCollector queries symbol=BTCUSDC before symbol=BTCUSDT
     fetched_urls = []
@@ -6600,7 +6651,7 @@ def test_orderbook_usdc_spot_priority_and_kraken_private_network_resilience(tmp_
 def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quote_usd(tmp_path, monkeypatch):
     """Verify:
     1. WhalePositioningCollector uses 5m intervals (limit=3 for 15m taker flow, limit=13 for 60m OI delta) and 60s/180s TTLs.
-    2. MarketBreadthCollector filters out non-ASCII symbols (e.g. '牛来USDT') and requires >= $10M 24h volume for top_gainers/top_losers.
+    2. MarketBreadthCollector filters out non-ASCII symbols and requires >= $10M 24h volume for top_gainers/top_losers.
     3. enrich_24h_and_microstructure + harvest_recent_orders_and_enrich_positions synchronize Price (3A), ob_mid (3B), and px (3C).
     4. harvest_tradable_positions_and_orders + _format_portfolio_section surface locked_quote_usd & replace_max_buy (and symmetric locked_base & replace_max_sell).
     """
@@ -6638,7 +6689,7 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     # OI change across 13 bars (1000 -> 1060 = +6.0%)
     assert w_snap.open_interest_1h_change_pct == pytest.approx(6.0)
 
-    # 2. MarketBreadthCollector filters out non-ASCII symbols ('牛来USDT') and sub-$10M microcaps from top_gainers
+    # 2. MarketBreadthCollector filters out non-ASCII symbols and sub-$10M microcaps from top_gainers
     mb_snap = MarketBreadthCollector.parse_tickers(
         [
             {"symbol": "牛来USDT", "quoteVolume": "15000000", "priceChangePercent": "45.0"},
@@ -6652,7 +6703,7 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
         now_ts=1793627000.0,
     )
     assert mb_snap is not None
-    # '牛来USDT' is completely excluded; 'RAREUSDT' ($6M) counts in breadth (5 symbols total) but is excluded from top_gainers (< $10M)
+    # Non-ASCII symbol is completely excluded; 'RAREUSDT' ($6M) counts in breadth (5 symbols total) but is excluded from top_gainers (< $10M)
     assert mb_snap.total_count == 5
     gainer_syms = [g[0] for g in mb_snap.top_gainers]
     assert "牛来USDT" not in gainer_syms
@@ -6993,9 +7044,6 @@ def test_top_of_hour_open_orders_cache_recovery_and_false_canceled_guard(tmp_pat
 
 def test_audited_executor_observe_only_locked_sell_qty_and_retry_filter(tmp_path):
     """Verify AuditedStrategyExecutor open_orders delegation, observe_only locked SELL qty reconciliation, and terminal AI retry filtering."""
-    from providers.execution_audit import AuditedStrategyExecutor
-    from providers.strategy_executor import PairPrecision
-    from strategies.spot_engine import StratParams, Strategy
 
     prov = SimpleNamespace(
         name="Kraken",
@@ -7231,7 +7279,6 @@ def test_cross_market_telemetry_sparse_7d_t212_audit_submit_ts_and_no_qty_format
 
 
 def test_harvest_heartbeats_and_state_files_supports_mtime_rtrade_heartbeat_and_resource_watchdog_state(tmp_path):
-    from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files, read_json_recovering
 
     cache_dir = tmp_path / "cachedb"
     hb_dir = cache_dir / "system" / "heartbeat"
@@ -7578,7 +7625,6 @@ def test_iteration51_long_trend_freshness_neutral_override_and_parse_rss_valid_k
 
 
 def test_harvest_log_anomalies_ignores_supervisor_gated_ntfy_and_patch_rollback_preserves_uncommitted(tmp_path, monkeypatch):
-    from orchestratorOS.lib.technical_repair_ssot import apply_code_patch_safely
 
     log_dir = tmp_path / "logger"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -7621,10 +7667,6 @@ def test_harvest_log_anomalies_ignores_supervisor_gated_ntfy_and_patch_rollback_
 
 def test_audit_remediations_a_through_g_and_crypto_completeness(tmp_path, monkeypatch):
     """Verify Audit Remediations A-G and Section 3 (HYPEUSDC/HYPEUSD native L1 telemetry & ETH/BTC + BTCDOM rotation)."""
-    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
-    from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
-    from intelligence.sentiment.collectors.portfolio_collector import _normalize_open_orders_list
-    from market_regime import ClosedPriceSeries
 
     # --- A. Kraken Partial Sell Reconciliation Preserves Remaining Cycle Qty & Cost ---
     cache_dir = tmp_path / "cachedb"
@@ -7963,12 +8005,6 @@ def test_production_deep_audit_cross_btc_alignment_sell_tranches_and_slopes(tmp_
     - _format_recent_order_line formats Recent SELL Tranches alongside Recent BUY Tranches
     - harvest_kraken_xstocks discovers .xstock_state.json (dotfile) as well as xstock_state.json
     """
-    from intelligence.sentiment.collectors.portfolio_collector import (
-        harvest_kraken_xstocks,
-    )
-    from intelligence.sentiment.evaluators.price_series_evaluator import (
-        _compute_short_slopes_from_series,
-    )
 
     # 1. 5m OHLC close at k*300_000 ms vs 1s tick at k*300_000 - 1000 ms
     base_ms = 1_793_700_000_000
@@ -8013,10 +8049,6 @@ def test_production_deep_audit_cross_btc_alignment_sell_tranches_and_slopes(tmp_
 
 
 def test_enterprise_telemetry_upgrades_calendar_dedup_liq_gravity_and_tactical_cost(tmp_path):
-    from intelligence.macro.lexicon_ssot import (
-        headlines_are_semantic_duplicates,
-        is_excluded_reference_news_item,
-    )
 
     # 1. Macro calendar uses routine session description when no macro release headlines are detected
     cal_routine = resolve_macro_economic_calendar(
@@ -8129,11 +8161,6 @@ def test_enterprise_telemetry_upgrades_calendar_dedup_liq_gravity_and_tactical_c
 
 def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(tmp_path):
     """Verify Institutional Quant Desk Layers (II.1 - II.5) & Discrepancies 1-8 end-to-end."""
-    from intelligence.macro.calendar_ssot import parse_live_macro_release_surprises
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
-        compute_enterprise_portfolio_risk_metrics,
-        enrich_open_limit_orders_tca,
-    )
 
     # 1. Live Macro Calendar FOMC date recognition + Actual vs Consensus Surprise Z-Score (Layer II.2)
     fomc_day_cal = resolve_macro_economic_calendar(
@@ -8277,11 +8304,7 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
     assert "post_trade_edge(" not in sec_3c_lines
     assert "smart_routing(" not in sec_3c_lines
 
-    # 6. Deribit Options Surface (RV, VRP, Put/Call OI, 25d Skew — without fake GammaPin/DealerGamma)
-    from intelligence.sentiment.collectors.macro_telemetry_collector import (
-        compute_deribit_options_surface,
-        format_macro_benchmarks_summary_line,
-    )
+    # 6. Deribit Options Surface (RV, VRP, Put/Call OI, 25d Skew -- without fake GammaPin/DealerGamma)
 
     opt_surf = compute_deribit_options_surface(
         [
@@ -8304,7 +8327,6 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
 
 def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     """Verify the 5 AI prompt de-anchoring and cognitive noise optimizations."""
-    from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section, _format_market_prices_section, _format_portfolio_section
 
     # 1 & 4. Section 1 omits directive labels (bias/risk/action/level/brake) and distinguishes routine session windows
     s1_routine = "\n".join(
@@ -8576,7 +8598,6 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
 
     # 6. live_btc_flow_delta strips '-old ACCUMULATE' -> '-old summary' and appends CB_Prem,
     #    and lexicon_ssot filters value-trap / running-out-of-gas filler
-    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context, is_off_topic_general_news_title
 
     assert not has_financial_or_geopolitical_context(
         "Sandisk Stock Is Down 45% Over the Past Four Months. Is It a Bargain or a Value Trap?"
@@ -8611,8 +8632,6 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     assert "/HOLD" not in s1_compound_posture
 
     # 7. harvest_log_anomalies_from_dirs collapses tick-level float variations in guard_interventions samples
-    import tempfile
-    from pathlib import Path
 
     with tempfile.TemporaryDirectory() as tmp_d:
         guard_log = Path(tmp_d) / "guard_dedup.log"
@@ -8783,8 +8802,6 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
         assert not net_res.persistent_errors
 
     # 12. ProviderBase.get_trades and BinanceProvider/ReplayProvider/T212Provider.get_orders accept authoritative/publish_cache
-    from providers.market_api import BinanceProvider
-    from providers.replay_provider import ReplayMarketDataProvider
 
     with patch("providers.market_api._get_allorders") as mock_ao:
         mock_ao.return_value.get_trade_orders.return_value = [
