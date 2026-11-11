@@ -1,24 +1,24 @@
-"""Tests for order_retry_worker.process_once — the pure queue-draining logic, with a
+"""Tests for order_retry_worker.process_once -- the pure queue-draining logic, with a
 FAKE `mkt` (no network). The queue is isolated in tmp."""
-import os
-import subprocess
-import sys
-import unittest
-from types import SimpleNamespace
-from unittest.mock import patch
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import cacheManager as cm
 import order_retry as oq
 import order_retry_worker as worker
-from providers.strategy_executor import (
-    OrderReconciliationCapabilities, OrderStatus,
-)
+import os
+import pytest
+import subprocess
+import sys
+import unittest
+from cachepaths import split_symbol_assets
+from notify_engine.server import _resolve_provider_label
+from pathlib import Path
 from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi
-import pytest
+from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
+from state_io import stage_previous_generation
 from tests.conftest import DummySpotExecutionProvider, TempDirTestCase
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class FakeMkt:
@@ -423,7 +423,6 @@ class ProcessOnceTest(TempDirTestCase):
             self.assertEqual(len(alerts), 1)
 
     def test_giveup_behaviors(self):
-        from pathlib import Path
         with self.subTest(msg="batch_audited_individually_and_summary_flushes_empty_queue"):
             self.alerts.clear()
             oq.rewrite([])
@@ -1359,8 +1358,6 @@ class ProcessOnceTest(TempDirTestCase):
         self.assertIn("(BTCUSDC · BINANCE · ai_executor)", ctx)
 
     def test_cross_venue_display_assets_and_provider_label_normalization(self):
-        from cachepaths import split_symbol_assets
-        from notify_engine.server import _resolve_provider_label
 
         self.assertEqual(split_symbol_assets("SPCXx.T"), ("SPCX", "USD"))
         self.assertEqual(split_symbol_assets("SPCXx.T/EUR"), ("SPCX", "EUR"))
@@ -1523,7 +1520,6 @@ def test__persistentquarantineset___contains___syncs_from_disk_across_restart_ma
     assert ("rec1", 0, "ord1", "canceled") in pset2
 
     # Simulate mid-write crash where only .previous exists on disk
-    from state_io import stage_previous_generation
     stage_previous_generation(str(alerts_path))
     alerts_path.unlink()
     pset3 = worker._PersistentQuarantineSet("terminal")

@@ -2,28 +2,21 @@
 
 from __future__ import annotations
 
+import botcore
+import external_order_guard as eog
 import json
+import order_guard
 import os
-import time
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
-
 import pytest
-
-from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
-from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
-from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry, DerivativesTelemetryCollector
-from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
-from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
-from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
-from cacheaccount import CacheAccountManagerBase, CacheAssetValueManager, CacheOrderManager, CacheTradeManager
-from state_io import save_json_state
-from intelligence.external.collectors.base_collector import (
-    TelemetryCacheCollectorInterface,
-    TelemetryCollectorFactory,
-    _DiskBackedSymbolCollector,
+import subprocess
+import threading
+import time
+from cacheaccount import (
+    CacheAccountManagerBase,
+    CacheAssetValueManager,
+    CacheOrderManager,
+    CacheTradeManager,
 )
-from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, PreTradeLLMGuardBase
 from cachepaths import (
     TRAILING_STATE_FILENAME,
     iter_venue_cycle_state_files,
@@ -31,10 +24,65 @@ from cachepaths import (
     resolve_venue_runtime_dir,
     resolve_venue_trailing_state_path,
 )
-from cacheprice import Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CacheSparsePriceManager
+from cacheprice import (
+    Cache24PriceManager,
+    Cache365PriceManager,
+    CacheCurrentPriceManager,
+    CachePriceManagerBase,
+    CacheSparsePriceManager,
+)
 from cachetrend import CacheLongTrendManager, CacheShortTrendManager
-from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorBase, OrderGuardEvaluatorFactory, OrderGuardEvaluatorInterface
+from external_order_guard import ExternalOrderGuardsEvaluator
+from instrument_registry import venue_for_symbol
+from intelligence.composite import CompositeMarketIntelligence
+from intelligence.external.collectors.base_collector import (
+    TelemetryCacheCollectorInterface,
+    TelemetryCollectorFactory,
+    _DiskBackedSymbolCollector,
+)
+from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+from intelligence.external.collectors.derivatives_telemetry_collector import (
+    DerivativesTelemetry,
+    DerivativesTelemetryCollector,
+)
+from intelligence.external.collectors.orderbook_depth_collector import (
+    OrderbookDepthCollector,
+    OrderbookSnapshot,
+)
+from intelligence.external.collectors.whale_positioning_collector import (
+    WhalePositioningCollector,
+    WhalePositioningSnapshot,
+)
+from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+    OrderGuardEvaluatorInterface,
+    fetch_guard_snapshot,
+)
+from intelligence.internal.guards.noise_guard import NoiseFloorGuard
+from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+from intelligence.internal.state import survival as surv_mod
+from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 from intelligence.macro.news_feed_collector import NewsFeedCollector
+from intelligence.macro_analyzer import MacroAnalyzer
+from intelligence.sentiment.collectors import (
+    microstructure_collector as mc_mod,
+    pretrade_telemetry_collector as ptc_mod,
+)
+from intelligence.sentiment.collectors.fear_greed_collector import (
+    FearGreedCollector,
+    FearGreedSnapshot,
+)
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     InitialPricesAndTrendsCollector,
     MacroAndNewsSensorsCollector,
@@ -42,6 +90,18 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MacroTelemetryCollectorBase,
     MarketAndPortfolioSnapshotOrchestrator,
     PortfolioAndVenueCyclesCollector,
+)
+from intelligence.sentiment.collectors.market_breadth_collector import (
+    MarketBreadthCollector,
+    MarketBreadthSnapshot,
+)
+from intelligence.sentiment.collectors.microstructure_collector import (
+    CompositeSymbolPriceSeriesLoader,
+    EquityYahoo5dChartCollector,
+    Fleet24hAndMicrostructureEnricher,
+    MicrostructureCacheCollectorBase,
+    PriceSeriesCacheCollectorBase,
+    SymbolMicrostructureSnapshotCollector,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
     BotRuntimeStatesCollector,
@@ -60,6 +120,8 @@ from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
     PretradeTelemetryOrchestrator,
     PretradeTelemetrySnapshot,
     collect_pretrade_telemetry,
+    read_pretrade_telemetry_snapshot,
+    refresh_pretrade_telemetry_caches,
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     AssetScopeFilterEvaluator,
@@ -90,6 +152,9 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
     VenueCycleStateEvaluator,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    AssetSessionPolicy,
+    Crypto24x7SessionPolicy,
+    EquityRthSessionPolicy,
     Horizon24hPriceEvaluator,
     PriceSeriesEvaluatorBase,
     ShortTrendAndKalmanEvaluator,
@@ -108,37 +173,29 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     TcaRiskEvaluatorBase,
     VenueFeeAndLimitsEvaluator,
 )
-from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
-import external_order_guard as eog
-from external_order_guard import ExternalOrderGuardsEvaluator
-from instrument_registry import venue_for_symbol
-from intelligence.composite import CompositeMarketIntelligence
-from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
-from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
-from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
-from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
-from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
-from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
-from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-from intelligence.internal.guards.noise_guard import NoiseFloorGuard
-from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
-from intelligence.internal.state import survival as surv_mod
-from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-from intelligence.macro_analyzer import MacroAnalyzer
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+from intelligence.sentiment.guards.high_stake_guard import (
+    HighStakeGuard,
+    PreTradeLLMGuardBase,
+    _HIGH_STAKE_DECISION_CACHE,
+)
 from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+from intelligence.sentiment.guards.post_stop_reentry_guard import (
+    PostStopReentryGuard,
+    clear_post_stop_reentry_cache,
+)
 from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from llm_order_guard import LLMOrderGuardsEvaluator
-import order_guard
+from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot
 from order_guard import (
     CompositeProfitGuardEvaluator,
     IntelligenceMacroSentimentGuardEvaluator,
     MathProfitReferenceGuardEvaluator,
 )
-from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot
 from qlimit_order_guard import QLimit2OrderGuardEvaluator
+from state_io import save_json_state
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 
 class _CustomAuditStage(PretradePillarCollectorBase):
@@ -291,7 +348,6 @@ def test_collector_bounded_step_timeout_still_writes_heartbeat(temp_cache_dir):
 
 
 def test_bounded_step_skips_overlapping_thread_and_backs_off(temp_cache_dir):
-    import threading
 
     collector = GlobalTelemetryCollector(
         symbols=["HYPEUSD"],
@@ -366,15 +422,6 @@ def test_bounded_step_skips_overlapping_thread_and_backs_off(temp_cache_dir):
 
 
 def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_dir):
-    from intelligence.sentiment.collectors.microstructure_collector import (
-        CompositeSymbolPriceSeriesLoader,
-        EquityYahoo5dChartCollector,
-        Fleet24hAndMicrostructureEnricher,
-        MicrostructureCacheCollectorBase,
-        PriceSeriesCacheCollectorBase,
-        SymbolMicrostructureSnapshotCollector,
-    )
-    from intelligence.sentiment.evaluators.price_series_evaluator import AssetSessionPolicy, Crypto24x7SessionPolicy, EquityRthSessionPolicy
 
     for abstract_cls in (
         TelemetryEvaluatorInterface,
@@ -432,7 +479,6 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert Cache24PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_24_price_BTCUSDC.json"
     assert CacheSparsePriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_sparse_price_BTCUSDC.jsonl"
     assert CacheCurrentPriceManager.disk_filename_for_symbol() == "cache_current_price.json"
-    from cacheprice import CachePriceManagerBase
 
     assert CacheShortTrendManager.disk_filename_for_symbol() == "cache_short_trend.json"
     assert CacheShortTrendManager.live_window_relpath_for_symbol("BTCUSDC").replace("\\", "/") == "24trend/live_BTCUSDC.json"
@@ -455,8 +501,6 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
 
 
 def test_runtime_services_dependency_injection_and_zero_pytest_branches():
-    import subprocess
-    import botcore
 
     slept = []
     botcore.configure_runtime_services(
@@ -495,12 +539,6 @@ def test_runtime_services_dependency_injection_and_zero_pytest_branches():
 
 
 def test_pretrade_telemetry_read_write_separation_and_explicit_snapshot_contract(temp_cache_dir, monkeypatch):
-    from intelligence.internal.guards.guard_decision import BrakeAction, fetch_guard_snapshot
-    from intelligence.sentiment.collectors import microstructure_collector as mc_mod
-    from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc_mod
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import read_pretrade_telemetry_snapshot, refresh_pretrade_telemetry_caches
-    from intelligence.sentiment.guards.high_stake_guard import _HIGH_STAKE_DECISION_CACHE
-    from intelligence.sentiment.guards.post_stop_reentry_guard import clear_post_stop_reentry_cache
 
     _HIGH_STAKE_DECISION_CACHE.clear()
     clear_post_stop_reentry_cache()
@@ -1374,11 +1412,5 @@ def test_bare_equity_symbol_matches_suffixed_equity_in_pretrade_telemetry(tmp_pa
     assert "Relative Strength vs BTC (24h Benchmark)" not in t_eq
     assert t_bare.get("24h Multi-Horizon Price Evolution") == t_eq.get("24h Multi-Horizon Price Evolution")
     assert t_bare.get("24h Volume Profile (POC / Value Area)") == t_eq.get("24h Volume Profile (POC / Value Area)")
-
-
-
-
-
-
 
 

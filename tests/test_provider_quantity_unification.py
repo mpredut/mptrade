@@ -2,23 +2,17 @@
 filter refusal, and available-balance order placement across all providers.
 """
 
+import botcore
 import json
 import math
+import order_guard as _order_guard
 import os
+import pytest
+import subprocess
 import sys
 import unittest
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
 from binance_api import bapi_placeorder as po
-import botcore
 from instrument import Instrument
-import order_guard as _order_guard
 from providers import (
     base as pbase,
     order_ohlc_utils as oou,
@@ -34,12 +28,13 @@ from providers.base import (
 )
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
-from providers.market_api import MarketApi
+from providers.market_api import BinanceProvider, MarketApi
 from providers.order_ohlc_utils import clean_order_id, extract_order_side, require_int_order_id
 from providers.quantity import (
     BinanceFilterError,
     BinanceOrderRules,
     balance_cap_quantity,
+    clamp_notional_to_wallet_balance,
     decide_quantity,
     fee_cap_quantity,
     remaining_average_cost,
@@ -52,8 +47,14 @@ from providers.strategy_executor import (
     ProviderError,
     SubmissionOutcome,
     SubmissionRefused,
+    candle_interval,
 )
 from providers.t212_provider import T212Provider
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class CustomProvider(MarketDataProvider):
@@ -262,7 +263,6 @@ class TestBinanceTransientBalanceSoftSkip(unittest.TestCase):
             mock_rules.normalize.return_value = ("2.0", "100.0")
             mock_rules_info.return_value = mock_rules
 
-            from providers.market_api import BinanceProvider
             bp = BinanceProvider()
             bp.validate_symbol = lambda s: None
 
@@ -350,7 +350,6 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
 
     def test_ssot_hyperliquid_buy_and_t212_sell_clamping_in_general_pipeline(self):
         """Verify Hyperliquid 0.95 BUY reserve and T212 $6 SELL dust/remainder rules work in decide_quantity and Instrument.place."""
-        from providers.quantity import clamp_notional_to_wallet_balance
 
         # 1. Hyperliquid oversized BUY via Instrument.place clamps to 0.95 * free_balance without preflight failure
         hl = HyperliquidProvider(token="HYPE", live_enabled=True)
@@ -388,7 +387,6 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
 
     def test_import_providers_quantity_first_without_circular_import(self):
         """Importing providers.quantity before providers.base (as price_watcher does) must not raise ImportError."""
-        import subprocess
 
         proc = subprocess.run(
             [sys.executable, "-c", "from providers.quantity import resolve_assets, compute_fills_cost_basis; assert resolve_assets('BTCUSDC') == ('BTC', 'USDC')"],
@@ -397,8 +395,6 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
             check=False,
         )
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
-
-
 
 
 class _QtyDecisionFakeProvider(MarketDataProvider):
@@ -586,7 +582,6 @@ def test_decide_quantity_with_nan_bool_policy_cap_and_nan_suggested_scale_iter27
 
 def test_candle_interval_rejects_bool_iter29_s1():
     """[ITER29 #1] candle_interval rejects bool."""
-    from providers.strategy_executor import candle_interval
     # 1. candle_interval rejects bool
     with pytest.raises(ProviderError):
         candle_interval(True)

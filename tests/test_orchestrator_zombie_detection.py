@@ -1,15 +1,22 @@
+import botcore
+import importlib
+import json
+import log as mp_log
 import os
-import sys
 import tempfile
 import time
 import unittest
+from intelligence.macro.lexicon_ssot import discover_dynamic_terms_from_headlines
+from market_monitor.pricechecker import PriceChecker
+from market_monitor.pricefetcher import is_rth_equity_symbol
+from notify_engine import alertnotifiers as _an, mailer as _mailer, server as _ns
+from notify_engine.server import NotificationServer
+from orchestratorTrade.orchestrator import BotManager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 
-from orchestratorTrade.orchestrator import BotManager
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
@@ -229,11 +236,6 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
                 self.assertLess(time.time() - os.path.getmtime(hb_file), 10.0)
 
     async def test_hot_reload_loop_watches_git_head_and_spliced_stdout_intents(self):
-        import json
-        import botcore
-        import log as mp_log
-        from intelligence.macro.lexicon_ssot import discover_dynamic_terms_from_headlines
-        from notify_engine.server import NotificationServer
 
         with tempfile.TemporaryDirectory() as tmp:
             git_refs = os.path.join(tmp, ".git", "refs", "heads")
@@ -356,15 +358,8 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.processes, {})
 
     async def test_reload_runtime_modules_reloads_alertnotifiers_before_mailer_and_rth_equity_price_checker_gates(self):
-        import importlib
-        import notify_engine.alertnotifiers as _an
-        import notify_engine.mailer as _mailer
-        import notify_engine.server as _ns
-        from market_monitor.pricechecker import PriceChecker
-        from market_monitor.pricefetcher import is_rth_equity_symbol
 
         reload_order = []
-        real_reload = importlib.reload
 
         def _spy_reload(mod):
             reload_order.append(getattr(mod, "__name__", ""))
@@ -416,7 +411,6 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([h[1] for h in hist], [124.0, 123.62])
             alerts = checker.check_symbol("SPCX")
             self.assertEqual(alerts, [])
-
 
 
 if __name__ == "__main__":

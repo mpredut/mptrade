@@ -8,36 +8,57 @@ their guard chain bypass this shared layer.
 The minimal in-memory fake provider is fully isolated from the network and uses
 the default guards_internally() == False contract.
 """
-import json
-import os
-import sys
-import time
+
+import contextlib
 import glob
-import tempfile
-import threading
-import unittest
-from unittest.mock import ANY, MagicMock, patch
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-from providers.market_api import MarketApi, MarketDataProvider
-from providers.strategy_executor import (
-    OrderReconciliationCapabilities, SubmissionRefused,
-)
-from instrument import Instrument
+import instrument as _inst_mod
+import io
+import json
 import order_guard
 import order_lifecycle as outcomes_log
-import instrument as _inst_mod
 import order_retry as oq
 import order_retry_worker as worker
+import os
 import pytest
-from providers.quantity import decide_quantity
-from order_lifecycle import extract_order_restore_params, restore_cancelled_orders
+import tempfile
+import threading
+import time
+import unittest
 from active_intents import build_active_intent_index, format_summary
-from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
-from tests.conftest import DummySpotExecutionProvider, make_test_regime_context as _build_test_context
+from guard_hierarchy import (
+    BaseGuard,
+    GUARD_CATEGORIES,
+    GUARD_REGISTRY,
+    IntelligenceGuard,
+    LLMGuard,
+    OperationalGuard,
+    ProfitGuard,
+    QuantLimitGuard,
+    TrendGuard,
+    normalize_bypassed_guards,
+)
+from instrument import Instrument, _parse_bool_flag
+from market_regime import MarketRegimeContext, MarketRegimeDecision
+from order_lifecycle import extract_order_restore_params, restore_cancelled_orders
+from providers.market_api import MarketApi, MarketDataProvider
+from providers.quantity import decide_quantity
+from providers.strategy_executor import OrderReconciliationCapabilities, SubmissionRefused
+from strategies.position_exit_manager import (
+    ExitAction,
+    PositionExitConfig,
+    PositionExitManager,
+    PositionSnapshot,
+)
+from tests.conftest import (
+    DummySpotExecutionProvider,
+    make_test_regime_context as _build_test_context,
+)
 from types import SimpleNamespace
+from unittest.mock import ANY, MagicMock, patch
+
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+
 
 SYMBOL = "ZZZFAKEUSD"
 
@@ -203,12 +224,12 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._log_tmp
         self._orig_exec_audit_dir = _inst_mod._EXECUTION_AUDIT.directory
         _inst_mod._EXECUTION_AUDIT.directory = self._log_tmp
-        # The re-placement queue: isolated — Instrument.place() enqueues on failure, and
+        # The re-placement queue: isolated -- Instrument.place() enqueues on failure, and
         # these tests trigger many expected failures (cooldown/daily-limit) -> they must NOT
         # pollute the real cachedb/order_retry_queue.jsonl.
         oq.QUEUE_FILE = os.path.join(self._tmp, "order_retry_queue.jsonl")
         oq.LOCK_FILE = os.path.join(self._tmp, "order_retry_queue.lock")
-        # Explicit pin — the tests must not depend on the kill switch in the live config
+        # Explicit pin -- the tests must not depend on the kill switch in the live config
         oq.RETRY_ENABLED = True
         oq.RETRY_DEDUP = True
         self._clear_state()
@@ -522,7 +543,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                 p.submitted_client_id)
             self.assertEqual(queued[0]["last_failure_reason"], "submit_ambiguous")
 
-    # ── rapid-fire order placement without trade_cooldown lock ──────────────────
+    # -- rapid-fire order placement without trade_cooldown lock ------------------
     def test_cooldown_behaviors(self):
         with self.subTest("orders_not_blocked_by_cooldown_lock"):
             self._clear_state()
@@ -1168,7 +1189,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_guard_hierarchy_and_categories(self):
         """Verify object-oriented guard hierarchy, category grouping, and is_bypassed behavior."""
-        from guard_hierarchy import BaseGuard, OperationalGuard, TrendGuard, ProfitGuard, QuantLimitGuard, IntelligenceGuard, LLMGuard, GUARD_CATEGORIES
 
         # Hierarchy validation
         self.assertIsInstance(GUARD_REGISTRY["GO1"], OperationalGuard)
@@ -1231,7 +1251,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_medium_trend_guard_runtime(self):
         """Verify GT_M (medium_trend) gate runtime actions (defer, scale, bypass)."""
-        from market_regime import MarketRegimeContext, MarketRegimeDecision
 
         bear_ctx = MarketRegimeContext.from_decision(
             MarketRegimeDecision(
@@ -1352,8 +1371,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         # 5. Pre-sizing refusal (Stage 1 G_PROF or GO1 daily_limit) with auto-qty (qty=None)
         # symmetrically on BUY and SELL must not raise UnboundLocalError on applied_scale.
-        import contextlib
-        import io
         for side, blocked_px, seed_side, seed_px in (
             ("SELL", 98.0, "BUY", 100.0),
             ("BUY", 102.0, "SELL", 100.0),
@@ -1379,7 +1396,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
     def test_gt_s_ignores_bypass_guards_and_stop_loss_module_owns_timer(self):
         """GT_S cannot be bypassed by bypass_guards ('GT_S' or 'all') in Instrument.place,
         and Instrument.place contains no is_stop timer logic (managed by PositionExitManager)."""
-        from strategies.position_exit_manager import PositionExitManager, PositionExitConfig, PositionSnapshot, ExitAction
         self._clear_state()
         p = _FakeProvider(price=100.0)
         inst = self._inst(p)
@@ -1777,10 +1793,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertAlmostEqual(p_def.placed[0][4]["_cancel_opposite_requested_price"], 100.0)
 
 
-
-
-
-
 class TestOrderRollback(unittest.TestCase):
     def test_extract_order_restore_params_binance_and_kraken(self):
         b_ord = {"orderId": "12345", "side": "SELL", "price": "150.25", "origQty": "2.5"}
@@ -1855,7 +1867,6 @@ class TestOrderRollback(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Consolidated from tests/test_trade_cooldown.py & tests/test_active_intents.py
 # ---------------------------------------------------------------------------
-
 
 
 def _write_intent_file(path, payload, *, lines=False):
@@ -2360,7 +2371,6 @@ def test_instrument_place_side_normalization_invalid_side_handling_and_iter98_s2
 
 def test_instrument_param_with_cast_bool_and_instrument_enabled_iter156_s1():
     """[ITER156 #1] Instrument.param with cast=bool and Instrument.enabled boolean parsing."""
-    from instrument import _parse_bool_flag
     # 1. Instrument.param with cast=bool and Instrument.enabled boolean parsing
     dummy_prov = SimpleNamespace(name="dummy", validate_symbol=lambda s: None)
     dummy_api = SimpleNamespace(provider_by_name=lambda p: dummy_prov)

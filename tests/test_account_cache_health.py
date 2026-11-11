@@ -1,12 +1,15 @@
 """Regression tests for the shared Binance account-cache freshness marker."""
 
-import json
-import os
-import unittest
-from unittest.mock import patch
-
 import account_cache_health as health
+import ast
+import json
+import math
+import os
+import pytest
+import unittest
+from pathlib import Path
 from tests.conftest import TempDirTestCase
+from unittest.mock import patch
 
 
 class BinanceAccountCacheHealthTest(TempDirTestCase):
@@ -323,7 +326,6 @@ class BinanceCacheHealthConfigTest(unittest.TestCase):
         self.assertEqual(health.require_pos_float("0.5", "TEST_VALUE"), 0.5)
 
     def test_zero_negative_nan_and_infinity_are_rejected(self):
-        import math
         for value in (0, -1, math.nan, math.inf, -math.inf):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(
@@ -365,7 +367,6 @@ def test_account_cache_health__clean_version_str_rejects_sentinel_strings_iter15
 
 def test_account_cache_health_require_int_accepts_integer_strings_floats_and_rejects_iter160_s4():
     """[ITER160 #4] account_cache_health: require_int accepts integer strings/floats and rejects bool/negative."""
-    import pytest
     # 4. account_cache_health: require_int accepts integer strings/floats and rejects bool/negative
     assert health.require_int("123.0", "pid", min_value=1) == 123
     assert health.require_int("0.0", "gen", min_value=0) == 0
@@ -377,8 +378,6 @@ def test_account_cache_health_require_int_accepts_integer_strings_floats_and_rej
 
 def test_persistence_and_cache_layer_dag_and_sibling_purity_ast():
     """Enforce strict acyclic DAG imports across Layer 1/2 Persistence and Layer 3 Cache modules."""
-    import ast
-    from pathlib import Path
 
     repo_root = Path(__file__).resolve().parent.parent
 

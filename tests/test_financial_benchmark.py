@@ -1,18 +1,19 @@
 import copy
 import json
-from pathlib import Path
+import tempfile
 import unittest
-
-from offline.backtests.financial_benchmark import (
-    aggregate_financial_windows,
-    default_scenarios,
-)
+from offline.backtests.financial_benchmark import aggregate_financial_windows, default_scenarios
 from offline.backtests.promotion import (
     PromotionThresholds,
     evaluate_dual_promotion,
     evaluate_promotion,
     evaluate_risk_adjusted_promotion,
 )
+from offline.runners.spot_profile_review import review
+from pathlib import Path
+from unittest.mock import patch
+from verify_tools import portfolio_snapshot as ps
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET_DIR = ROOT / "offline" / "research" / "hype_dataset"
@@ -326,10 +327,6 @@ class RiskAdjustedPromotionGateTest(unittest.TestCase):
         self.assertEqual(dual_none["promotion_paths"], [])
 
     def test_spot_profile_review_rejects_invalid_cash_and_snapshot_handles_non_dict_json(self):
-        import tempfile
-        from unittest.mock import patch
-        from offline.runners.spot_profile_review import review
-        from verify_tools import portfolio_snapshot as ps
 
         for bad_cash in (0, -100, float("nan"), float("inf"), True):
             with self.assertRaisesRegex(ValueError, "cash must be a finite positive number"):

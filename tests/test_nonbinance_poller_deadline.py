@@ -6,21 +6,28 @@ during DNS resolution. The fetch now runs in a separate worker, while
 future.result(timeout) prevents the poller itself from waiting indefinitely.
 The provider client remains responsible for ending the network call.
 """
-import os
-import sys
-import time
-import unittest
-import concurrent.futures as futures
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import cacheManager as cm
 import cacheprice
+import concurrent.futures as futures
 import json
+import os
 import tempfile
-from types import SimpleNamespace
+import time
+import unittest
+from binance_api.bapi_ws import BinancePriceStream, PublicPriceStreamBase
+from botcore import clamp_price_to_bbo_mid
+from intelligence.sentiment.collectors.portfolio_collector import _load_open_order_timestamps
+from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
+from providers.execution_audit import find_duplicate_ai_open_limit_order
 from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import KrakenProvider
+from providers.order_ohlc_utils import extract_order_fee, validate_ohlc_candle_bar
+from trailing_core import TrailingAdapterBase
+from types import SimpleNamespace
+
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class _StubCpm:
@@ -55,7 +62,7 @@ class _FakeApi:
         self.calls += 1
         self.provider_names.append(provider_name)
         # A TRANSIENT blockage: it stays blocked while the flag is True, and unblocks
-        # when the network "comes back" (hang=False) — like a DNS/socket recovering.
+        # when the network "comes back" (hang=False) -- like a DNS/socket recovering.
         waited = 0.0
         while self.hang and waited < 30:
             time.sleep(0.05); waited += 0.05
@@ -333,9 +340,6 @@ class TestFetchDeadline(unittest.TestCase):
             self.assertFalse(hl_ws._fills_ws_seeded)
 
     def test_validate_ohlc_close_ts_sentinel_and_duplicate_ai_order_and_trailing_lookup(self):
-        from providers.order_ohlc_utils import validate_ohlc_candle_bar
-        from providers.execution_audit import find_duplicate_ai_open_limit_order
-        from trailing_core import TrailingAdapterBase
 
         # 1. Explicit close_ts=None must be rejected, whereas omitted close_ts is accepted
         self.assertIsNone(
@@ -411,7 +415,6 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertNotIn("HYPEUSDC", hl_stream._resolved_spot_keys)
 
         # 2. clamp_price_to_bbo_mid must not fabricate mid from wide (>5%) spread when price is None
-        from botcore import clamp_price_to_bbo_mid
         self.assertIsNone(clamp_price_to_bbo_mid(None, "10.0", "20.0"))
         self.assertAlmostEqual(clamp_price_to_bbo_mid(None, "100.0", "101.0"), 100.5)
 
@@ -432,7 +435,6 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertFalse(cpm.is_real_ws_healthy("HYPEUSD"))
 
         # 4. read_ssot_fills_cache skips stale alias key and returns fresh matching key
-        from providers.kraken_provider import KrakenProvider
 
         kp = KrakenProvider(client=object())
         fills_file = os.path.join(tmp_dir, "cache_trade_kraken.json")
@@ -458,7 +460,6 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertIsNone(kp.read_ssot_fills_cache("BTCUSD", fills_file, max_stale_sec=90.0))
 
         # 5. PublicPriceStreamBase shared inheritance and cross-venue position_cost_basis symmetry
-        from binance_api.bapi_ws import BinancePriceStream, PublicPriceStreamBase
 
         self.assertTrue(issubclass(BinancePriceStream, PublicPriceStreamBase))
         self.assertTrue(issubclass(cm.HyperliquidPriceStream, PublicPriceStreamBase))
@@ -528,9 +529,6 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertAlmostEqual(hlp.position_cost_basis("HYPEUSDC", 3.0, 3600.0), 30.10, places=4)
 
         # 6. Kraken fee asset aliases (XXBT / ZUSD), live price geometry 15m/6h updates, and open order ts lookup from list intents
-        from providers.order_ohlc_utils import extract_order_fee
-        from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
-        from intelligence.sentiment.collectors.portfolio_collector import _load_open_order_timestamps
 
         fee_btc = extract_order_fee({"fee": 0.001, "feeAsset": "XXBT"}, base_asset="BTC", quote_asset="USD", fill_price=90000.0)
         self.assertIsNotNone(fee_btc)

@@ -1,17 +1,20 @@
-from pathlib import Path
-from types import SimpleNamespace
-import subprocess
-import re
-
-from verify_tools.direct_order_api_inventory import inventory, scan_direct_calls
-from botcore import resolve_cli_env_path
-from binance_api import bapi_client
-from unittest.mock import MagicMock, patch
+import credentials
+import order_guard
 import os
+import pytest
+import re
+import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 import unittest
+from binance_api import bapi_client
+from botcore import resolve_cli_env_path
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+from verify_tools.direct_order_api_inventory import inventory, scan_direct_calls
 from verify_tools.ownership_inventory import build_inventory, find_overlaps
 
 
@@ -197,8 +200,6 @@ def test_tracked_text_files_use_unix_line_endings():
         if b"\r" in path.read_bytes()
     ]
     assert offenders == [], f"tracked text files contain CR/CRLF: {offenders}"
-
-
 
 
 def _write_inv(root: Path, relative: str, text: str) -> None:
@@ -473,7 +474,6 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         self.assertNotIn("\r", ctx.exception.message)
 
     def test_get_client_disables_init_ping_and_installs_retries_before_sync(self):
-        import credentials
 
         init_kwargs = {}
         events = []
@@ -507,9 +507,6 @@ class RuntimeImportSafetyTest(unittest.TestCase):
 
 
 def test_pyproject_python_version_and_active_packages_aligned():
-    import tomllib
-    import pytest
-    import order_guard
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["requires-python"] == ">=3.12"

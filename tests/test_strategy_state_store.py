@@ -1,21 +1,26 @@
 """The shared persistence contract for the financial engines."""
 
+import ast
 import json
 import os
+import pytest
 import tempfile
 import unittest
-from unittest.mock import patch
-
+from assetguardian import AssetGuardianState
+from pathlib import Path
+from providers.base import MarketDataProvider
+from state_io import StateReadError
+from strategies.base_spot_mixin import BaseSpotMixin
+from strategies.spot_engine import Strategy as SpotStrategy
 from strategies.state_store import (
     JsonStateStore,
     StatePersistenceError,
     safe_state_token,
     state_path_for,
 )
-import pytest
-from assetguardian import AssetGuardianState
-from state_io import StateReadError
+from tests.conftest import load_venue_modules
 from trailing_core import TrailingCore
+from unittest.mock import patch
 
 
 def _defaults():
@@ -90,19 +95,8 @@ class JsonStateStoreTest(unittest.TestCase):
         )
 
     def test_base_spot_mixin_and_step_sub_stages_present_on_both_engines(self):
-        import importlib.util
-        import sys
-        from strategies.base_spot_mixin import BaseSpotMixin
-        from strategies.spot_engine import Strategy as SpotStrategy
 
-        spec = importlib.util.spec_from_file_location(
-            "t212_strategy_mod",
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "212trading", "strategy.py"),
-        )
-        t212_mod = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = t212_mod
-        spec.loader.exec_module(t212_mod)
-        T212Strategy = t212_mod.Strategy
+        T212Strategy = load_venue_modules("212trading", "strategy").Strategy
 
         self.assertTrue(issubclass(SpotStrategy, BaseSpotMixin))
         self.assertTrue(issubclass(T212Strategy, BaseSpotMixin))
@@ -121,8 +115,6 @@ class JsonStateStoreTest(unittest.TestCase):
                 "_recover_state_write_or_skip",
             ):
                 self.assertTrue(callable(getattr(cls, method_name, None)), f"Missing {method_name} on {cls}")
-
-
 
 
 def test_assetguardian_initializes_its_state_directory(tmp_path, monkeypatch):
@@ -177,9 +169,6 @@ def test_hyperliquid_live_engines_declare_fail_closed_reads():
 
 def test_strategies_core_modules_dag_and_venue_purity():
     """Enforce DAG layering and zero hardcoded venue/mode branches across strategies/."""
-    import ast
-    from pathlib import Path
-    from providers.base import MarketDataProvider
 
     assert MarketDataProvider.resolve_venue_strategy_heartbeat("Hyperliquid", "HYPE") == "HL-bot"
     assert MarketDataProvider.resolve_venue_strategy_heartbeat("Kraken", "HYPEUSD") == "Kraken-HYPE"
@@ -237,7 +226,6 @@ def test_strategies_core_modules_dag_and_venue_purity():
                 assert not any(tok in low for tok in venue_tokens), (
                     f"{py_file.name}:{node.lineno} contains hardcoded venue literal {node.value!r}"
                 )
-
 
 
 if __name__ == "__main__":

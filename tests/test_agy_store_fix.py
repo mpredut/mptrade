@@ -1,13 +1,17 @@
 """Unit tests for agy_store_fix ui-sync-check (idle-gated daemon restart decision)."""
-import os
-import sqlite3
-import time
 
-import pytest
-
-from orchestratorOS.admin import agy_store_fix as asf
-from datetime import datetime, timezone
 import json
+import os
+import pytest
+import sqlite3
+import stat
+import subprocess
+import time
+from datetime import datetime, timezone
+from orchestratorOS.admin import agy_store_fix as asf
+from orchestratorOS.agy.protobuf import summary_ui_visible
+from orchestratorOS.agy.topics import topic_spec
+from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
 
 
 def _pb_with_cids(cids):
@@ -614,9 +618,6 @@ def test_last_store_activity_handles_oneshot_cli_logs_and_file_watcher_noise(sto
 
 
 def test_rotated_topic_preserves_ghost_trajectory_until_mode_pre_reaps_it(store, tmp_path, monkeypatch):
-    from orchestratorOS.agy.protobuf import summary_ui_visible
-    from orchestratorOS.agy.topics import topic_spec
-    from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
 
     cli, d1, d2 = store
     ann = cli / "annotations"
@@ -930,8 +931,6 @@ def test_daemon_has_active_child_tasks_cgroup_and_proc_tree(tmp_path):
 
 
 def test_manage_agy_defers_stuck_tunnel_and_cron_update_restarts_when_chats_active(tmp_path):
-    import stat
-    import subprocess
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     manage_agy = os.path.join(root_dir, "orchestratorOS", "admin", "manage_agy.sh")
@@ -1075,14 +1074,5 @@ def test_webchannel_reconnect_and_mid_turn_background_polls_do_not_mask_active_i
     )
     os.utime(daemon_log, (now, now))
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
-
-
-
-
-
-
-
-
-
 
 

@@ -1,5 +1,5 @@
 """
-Tests for tradeall.py — PriceWindow, PriceTrendAnalyzer, TrendState
+Tests for tradeall.py -- PriceWindow, PriceTrendAnalyzer, TrendState
 and the integration with Cache24PriceManager.
 
 Coverage:
@@ -10,18 +10,42 @@ Coverage:
   - TrendState: complete lifecycle
   - TrendState: cooldown per trend instance (fire_limit_reached/mark_confirmed
     with FIRE_MAX_PER_TREND executions, can_retry_fire/mark_fire_attempt with
-    FIRE_MIN_RETRY_INTERVAL_SEC, reset on new start_trend) — Jul 22
+    FIRE_MIN_RETRY_INTERVAL_SEC, reset on new start_trend) -- Jul 22
   - CacheCurrentPriceManager: get_sample_rate / get_update_frequency
 """
-import os, sys, json, time, tempfile, threading, unittest
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+
+import json
 import order_retry
+import os
 import pricewindow as pw_mod
 import pytest
+import random
+import shadow_signals
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from offline.backtests.tradeall import BacktestBroker
+from offline.simulations.sim import PriceWindow as SimPriceWindow
+from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
+from orchestratorOS.livecheck import os_resources_watchdog
+from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
+from pricewindow import PriceTrendAnalyzer, PriceWindow, WindowAnalyzer, instant_trend_from_prices
 from tests.conftest import TempDirTestCase, make_cache24_test_manager, make_synthetic_price_entries
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+from visuals import tradeall_observe
+from visuals.tradeall_observe import (
+    _parse_shadow_rows,
+    format_state_text,
+    load_backtest_order_events,
+    load_backtest_price_samples,
+    load_backtest_trend_starts,
+)
 
-# ── mocks for the external dependencies (before any local import) ─────────
+
+# -- mocks for the external dependencies (before any local import) ---------
 _mock_bapi = MagicMock()
 _mock_bapi.get_current_price = MagicMock(return_value=60000.0)
 _mock_bapi.cancel_order      = MagicMock(return_value=True)
@@ -74,30 +98,11 @@ finally:
         _ca_mod.apiorders = _real_bapi_allorders
 
 mock_bapi = _mock_bapi
-from offline.backtests.tradeall import BacktestBroker
-from offline.simulations.sim import PriceWindow as SimPriceWindow
-from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
-from orchestratorOS.livecheck import os_resources_watchdog
-from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
-from pricewindow import (
-    PriceTrendAnalyzer,
-    PriceWindow,
-    WindowAnalyzer,
-    instant_trend_from_prices,
-)
-from visuals import tradeall_observe
-from visuals.tradeall_observe import (
-    _parse_shadow_rows,
-    format_state_text,
-    load_backtest_order_events,
-    load_backtest_price_samples,
-    load_backtest_trend_starts,
-)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # Tradeall order boundary
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 class TestTradeallOrderBoundary(unittest.TestCase):
 
@@ -170,7 +175,6 @@ class TestTradeallOrderBoundary(unittest.TestCase):
                     self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "SELL")[0])
 
         with self.subTest("ages signal on replay clock"):
-            import shadow_signals
             sim_now = [1_780_000_000.0]
             shadow = shadow_signals.KalmanStateTracker(
                 journal=shadow_signals.KalmanJournal(fixed_path=os.devnull),
@@ -188,9 +192,9 @@ class TestTradeallOrderBoundary(unittest.TestCase):
                 self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # Helpers
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 def _window(prices, sample_rate=0.8, symbol="BTCUSDT"):
     pw = ta.PriceWindow(symbol, len(prices), sample_rate_sec=sample_rate)
@@ -206,9 +210,9 @@ def _make_cache24_manager(symbol, entries, tmp_dir):
 _synthetic_entries = make_synthetic_price_entries
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # PriceTrendAnalyzer
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 class TestPriceTrendAnalyzer(unittest.TestCase):
 
@@ -244,9 +248,9 @@ class TestPriceTrendAnalyzer(unittest.TestCase):
                     self.assertGreater(average * expected_sign, 0)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PriceWindow — sample_rate_sec + recent_n
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# PriceWindow -- sample_rate_sec + recent_n
+# ===========================================================================
 
 class TestPriceWindowSampleRate(unittest.TestCase):
 
@@ -310,9 +314,9 @@ class TestPriceWindowSampleRate(unittest.TestCase):
         self.assertAlmostEqual(pw.window_seconds, 24.0)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # PriceWindow._sample_rate_from_entries
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 class TestSampleRateFromEntries(unittest.TestCase):
 
@@ -331,9 +335,9 @@ class TestSampleRateFromEntries(unittest.TestCase):
                 rate = ta.PriceWindow._sample_rate_from_entries(entries)
                 self.assertAlmostEqual(rate, ta.TIME_SLEEP_GET_PRICE)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PriceWindow.from_cache24 — the factory with Cache24PriceManager
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# PriceWindow.from_cache24 -- the factory with Cache24PriceManager
+# ===========================================================================
 
 class TestPriceWindowFromCache24(TempDirTestCase):
 
@@ -343,30 +347,30 @@ class TestPriceWindowFromCache24(TempDirTestCase):
             window_seconds = len(entries) * 0.8
         return ta.PriceWindow.from_cache24(symbol, window_seconds, mgr)
 
-    # ── synthetic data ──────────────────────────────────────────────────────
+    # -- synthetic data ------------------------------------------------------
 
     def test_window_properties_initialization(self):
         with self.subTest(msg="prices_loaded"):
             entries = _synthetic_entries(50)
             pw = self._make(entries, window_seconds=50 * 0.8)
             self.assertGreater(len(pw.prices), 0)
-        
+
         with self.subTest(msg="size_bounded_by_window_seconds"):
             entries = _synthetic_entries(200, interval_ms=800)
             pw = self._make(entries, window_seconds=60.0)  # 60s / 0.8s = 75 samples
             self.assertLessEqual(pw.window_size, 100)
-            
+
         with self.subTest(msg="sample_rate_computed_from_intervals"):
             entries = _synthetic_entries(50, interval_ms=2000)  # 2s per sample
             pw = self._make(entries, window_seconds=100.0)
             self.assertAlmostEqual(pw.sample_rate_sec, 2.0, delta=0.1)
-            
+
         with self.subTest(msg="window_within_24h_only"):
             entries = _synthetic_entries(100, interval_ms=800)
             max_seconds = cm.Cache24PriceManager.KEEP_HOURS * 3600
             pw = self._make(entries, window_seconds=max_seconds)
             self.assertLessEqual(pw.window_size, max_seconds / pw.sample_rate_sec + 1)
-            
+
         with self.subTest(msg="minimum_window_size_ten"):
             entries = _synthetic_entries(2)
             pw = self._make(entries, window_seconds=1.0)
@@ -379,14 +383,14 @@ class TestPriceWindowFromCache24(TempDirTestCase):
             final_trend, gc, sf, gr = pw.get_short_trend()
             self.assertEqual(final_trend, 1)
             self.assertGreater(gc, 0)
-            
+
         with self.subTest(msg="downtrend"):
             entries = _synthetic_entries(60, delta=-10.0, interval_ms=800)
             pw = self._make(entries, window_seconds=60 * 0.8)
             final_trend, gc, sf, gr = pw.get_short_trend()
             self.assertEqual(final_trend, -1)
             self.assertLess(gc, 0)
-            
+
         with self.subTest(msg="small_window_detects_reversal"):
             now_ms = int(time.time() * 1000)
             prices = [100.0 + i for i in range(100)]
@@ -394,20 +398,20 @@ class TestPriceWindowFromCache24(TempDirTestCase):
             entries = [[now_ms - (len(prices) - 1 - i) * 1000, price]
                        for i, price in enumerate(prices)]
             manager = _make_cache24_manager("BTCUSDC", entries, self.tmp)
-    
+
             large = ta.PriceWindow.from_cache24("BTCUSDC", 119.0, manager)
             small = ta.PriceWindow.from_cache24("BTCUSDC", 15.0, manager)
             _, _, large_slope, _ = large.get_short_trend()
             _, _, small_slope, _ = small.get_short_trend()
-    
+
             self.assertGreater(large_slope, 0)
             self.assertLess(small_slope, 0)
             self.assertLess(len(small.prices), len(large.prices))
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PriceWindow — get_short_trend()'s 4 values
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# PriceWindow -- get_short_trend()'s 4 values
+# ===========================================================================
 
 class TestPriceWindowGetTrend(unittest.TestCase):
 
@@ -467,9 +471,9 @@ class TestPriceWindowGetTrend(unittest.TestCase):
             self.assertGreater(sf, 0)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PriceWindow — min/max/slope/proximities
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# PriceWindow -- min/max/slope/proximities
+# ===========================================================================
 
 class TestPriceWindowMinMax(unittest.TestCase):
 
@@ -491,9 +495,9 @@ class TestPriceWindowMinMax(unittest.TestCase):
             self.assertNotIn(10, pw.prices)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # TrendState
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 class TestTrendState(unittest.TestCase):
 
@@ -508,7 +512,7 @@ class TestTrendState(unittest.TestCase):
             ts = self._ts()
             self.assertEqual(ts.state, "HOLD")
             self.assertEqual(ts.confirm_count, 0)
-            
+
         with self.subTest(msg="start_confirm_and_direction"):
             ts = self._ts()
             ts.start_trend("UP")
@@ -519,7 +523,7 @@ class TestTrendState(unittest.TestCase):
             self.assertFalse(ts.is_trend_a_minim_validated())
             ts.confirm_trend()
             self.assertEqual(ts.confirm_count, 2)
-            
+
         with self.subTest(msg="start_invalid_raises"):
             with self.assertRaises(AssertionError):
                 self._ts().start_trend("INVALID")
@@ -530,7 +534,7 @@ class TestTrendState(unittest.TestCase):
             ts.start_trend("UP")
             self.now += 1.1
             self.assertTrue(ts.check_trend_expiration())
-            
+
         with self.subTest(msg="freshness_window"):
             fresh = self._ts(fresh_time=60)
             stale = self._ts(fresh_time=1)
@@ -539,7 +543,7 @@ class TestTrendState(unittest.TestCase):
             self.assertTrue(fresh.is_trend_fresh())
             self.now += 1.1
             self.assertFalse(stale.is_trend_fresh())
-            
+
         with self.subTest(msg="older_than"):
             ts = self._ts()
             ts.start_trend("UP")
@@ -548,7 +552,7 @@ class TestTrendState(unittest.TestCase):
             self.assertFalse(ts.is_started_trend_older_than(9999))
 
 class TestTrendStateCooldown(unittest.TestCase):
-    """Cooldown per trend instance (Jul 22) — see FIRE_MIN_RETRY_INTERVAL_SEC.
+    """Cooldown per trend instance (Jul 22) -- see FIRE_MIN_RETRY_INTERVAL_SEC.
     A fake clock (a mutable counter) so we do not depend on real 30-minute sleeps."""
 
     def _ts_with_clock(self):
@@ -586,9 +590,9 @@ class TestTrendStateCooldown(unittest.TestCase):
         ts.start_trend("UP")
         self.assertTrue(ts.can_retry_fire("UP"))
 
-# ═══════════════════════════════════════════════════════════════════════════
-# CacheCurrentPriceManager — get_sample_rate / get_update_frequency
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# CacheCurrentPriceManager -- get_sample_rate / get_update_frequency
+# ===========================================================================
 
 class TestCacheCurrentPriceFrequency(TempDirTestCase):
 
@@ -633,9 +637,9 @@ class TestCacheCurrentPriceFrequency(TempDirTestCase):
             self.assertAlmostEqual(self.mgr.get_sample_rate("BTCUSDT", fallback=1.23), 1.23)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # Subscriber pattern inherited from CacheManagerInterface + WS attachment
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 class _FakeWSManager:
     """Mimics BinanceWebSocketManager: subscribe(sub) + push() -> on_items_update."""
@@ -716,9 +720,9 @@ class TestSubscriberPatternInheritance(TempDirTestCase):
             self.assertTrue(mgr._ws_is_healthy())
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PriceWindow — complete Cache24PriceManager → PriceWindow wiring
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# PriceWindow -- complete Cache24PriceManager -> PriceWindow wiring
+# ===========================================================================
 
 class TestPriceWindowCache24Wiring(TempDirTestCase):
 
@@ -737,7 +741,7 @@ class TestPriceWindowCache24Wiring(TempDirTestCase):
             plain = ta.PriceWindow("BTCUSDT", 50)
             self.assertTrue(wired._subscribed_to_cache24)
             self.assertFalse(plain._subscribed_to_cache24)
-            
+
         with self.subTest(msg="subscribe_method_directly"):
             entries = _synthetic_entries(10)
             mgr = _make_cache24_manager("BTCUSDT", entries, self.tmp)
@@ -747,7 +751,7 @@ class TestPriceWindowCache24Wiring(TempDirTestCase):
             self.assertTrue(pw._subscribed_to_cache24)
             mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 88888.0)
             self.assertIn(88888.0, pw.prices)
-            
+
         with self.subTest(msg="unsubscribe_stops_updates"):
             entries = _synthetic_entries(10)
             pw, mgr = self._make_wired(entries, symbol="BTCUSDT")
@@ -765,7 +769,7 @@ class TestPriceWindowCache24Wiring(TempDirTestCase):
             self.assertEqual(len(pw.prices), n_before)
             pw.on_price_update("BTCUSDT", int(time.time() * 1000), 99999.0)
             self.assertEqual(len(pw.prices), min(n_before + 1, pw.window_size))
-            
+
         with self.subTest(msg="cache24_notifies_pricewindow"):
             entries = _synthetic_entries(10)
             pw, mgr = self._make_wired(entries, symbol="BTCUSDT")
@@ -774,23 +778,23 @@ class TestPriceWindowCache24Wiring(TempDirTestCase):
             mgr.on_price_update("BTCUSDT", ts_ms, 77777.0)
             self.assertEqual(len(pw.prices), min(n_before + 1, pw.window_size))
             self.assertIn(77777.0, pw.prices)
-            
+
         with self.subTest(msg="multiple_windows_same_cache24"):
             entries = _synthetic_entries(50)
             mgr = _make_cache24_manager("BTCUSDT", entries, self.tmp)
             pw_small = ta.PriceWindow.from_cache24("BTCUSDT", 20 * 0.8, mgr)
             pw_big   = ta.PriceWindow.from_cache24("BTCUSDT", 50 * 0.8, mgr)
-    
+
             ts_ms = int(time.time() * 1000)
             mgr.on_price_update("BTCUSDT", ts_ms, 12345.0)
-    
+
             self.assertIn(12345.0, pw_small.prices)
             self.assertIn(12345.0, pw_big.prices)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# WindowAnalyzer — the metrics moved out of PriceWindow
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# WindowAnalyzer -- the metrics moved out of PriceWindow
+# ===========================================================================
 
 class TestWindowAnalyzer(unittest.TestCase):
 
@@ -828,7 +832,6 @@ class TestWindowAnalyzer(unittest.TestCase):
                         self.assertGreater(gradient * expected_sign, 0)
 
         with self.subTest("noise epsilon cases"):
-            import random
             random.seed(1)
             constant = _window([100.0] * 20).get_noise_epsilon()
             volatile = _window([100 + random.uniform(-5, 5) for _ in range(30)]).get_noise_epsilon()
@@ -863,9 +866,9 @@ class TestWindowAnalyzer(unittest.TestCase):
             self.assertIs(an.window, pw)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# TrendCoordinator — event-driven + heartbeat + cache
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# TrendCoordinator -- event-driven + heartbeat + cache
+# ===========================================================================
 
 class TestTrendCoordinator(TempDirTestCase):
 
