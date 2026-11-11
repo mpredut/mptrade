@@ -167,24 +167,22 @@ def test_crash_after_accepted_replacement_is_reconciled_without_resubmit():
     assert pending["submission_state"] == "producer_claimed"
     client_order_id = pending["place_kwargs"]["client_order_id"]
 
-    class RecoveryMarket:
-        def __init__(self):
-            self.place_calls = []
-            self.lookup_calls = []
+    recovery = SimpleNamespace(
+        place_calls=[],
+        lookup_calls=[],
+        reconciliation_capabilities=lambda symbol, provider_name=None: SimpleNamespace(lookup_by_client_order_id=True),
+    )
 
-        def reconciliation_capabilities(self, symbol, provider_name=None):
-            return SimpleNamespace(lookup_by_client_order_id=True)
+    def _order_by_client_id(symbol, wanted, provider_name=None):
+        recovery.lookup_calls.append((symbol, wanted, provider_name))
+        assert wanted == client_order_id
+        return {"orderId": "new-crash", "status": "NEW"}
 
-        def order_by_client_id(self, symbol, wanted, provider_name=None):
-            self.lookup_calls.append((symbol, wanted, provider_name))
-            assert wanted == client_order_id
-            return {"orderId": "new-crash", "status": "NEW"}
-
-        def place(self, *args, **kwargs):
-            self.place_calls.append((args, kwargs))
-            raise AssertionError("recovery must not submit the accepted replacement again")
-
-    recovery = RecoveryMarket()
+    recovery.order_by_client_id = _order_by_client_id
+    recovery.place = lambda *args, **kwargs: (
+        recovery.place_calls.append((args, kwargs))
+        or (_ for _ in ()).throw(AssertionError("recovery must not submit the accepted replacement again"))
+    )
     with patch.object(
             monitororder.order_retry, "producer_claim_owner_state",
             return_value="dead"):

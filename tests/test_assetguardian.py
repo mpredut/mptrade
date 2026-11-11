@@ -1496,17 +1496,12 @@ def test_assetguardian__sell_campaign_tier_does_not_double_subtract_already_fill
         },
     )
 
-    class DummyProvider:
-        name = "binance"
-        def open_orders(self, symbol):
-            return []
-
     tier_res, _, growth = ag._sell_campaign_tier(
         "TAOUSDC",
         current_price=100.0 * (1.0 + last_thr / 100.0 + 0.05),
         minimum_row={"price": 100.0, "timestamp": 1000.0},
         free_qty=rem_expected,
-        provider=DummyProvider(),
+        provider=SimpleNamespace(name="binance", open_orders=lambda symbol: []),
     )
     assert tier_res is not None
     thr_out, alloc_out, rem_qty = tier_res

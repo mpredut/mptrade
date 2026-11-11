@@ -57,7 +57,7 @@ from strategies.position_exit_manager import (
     ReentrySnapshot,
 )
 from strategies.spot_engine import StratParams
-from tests.conftest import DummyGeminiClient, MockHttpResponse, MockHttpResponse as _DummyBytesResp
+from tests.conftest import DummyGeminiClient, DummySpotExecutionProvider, MockHttpResponse, MockHttpResponse as _DummyBytesResp
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import active_intents
@@ -3486,21 +3486,7 @@ def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
     cap, asset = balance_cap_quantity(lambda _a: 500.0, "BTCUSDC", "bid", 100.0)
     assert cap == 5.0 and asset == "USDC"
 
-    class _DummyProvider(MarketDataProvider):
-        @property
-        def name(self):
-            return "Dummy"
-
-        def get_current_price(self, symbol: str):
-            return 100.0
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return True
-
-        def ohlc_series(self, symbol: str, interval_min: int):
-            return None
-
-    dp = _DummyProvider()
+    dp = DummySpotExecutionProvider("Dummy")
     assert dp.ohlc_closes("BTCUSDC", 60) == []
 
     rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, 50000.0)]})

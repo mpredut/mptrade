@@ -1206,19 +1206,18 @@ def test_macroanalyzer_string_shadow_notify_previous_fallback_recovery_clock_ske
 
     captured_review = {}
 
-    class _DummyAssessment:
-        market_bias = "DEFENSIVE"
-        risk_level = "HIGH"
-        recommended_action = "HOLD"
-        summary = "test"
-        ts = 5005.0
-
     def _fake_review(fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None):
         captured_review["fg"] = fear_greed
         captured_review["mb"] = breadth
         captured_review["whale"] = whale_telemetry
         captured_review["now_ts"] = now_ts
-        return _DummyAssessment()
+        return SimpleNamespace(
+            market_bias="DEFENSIVE",
+            risk_level="HIGH",
+            recommended_action="HOLD",
+            summary="test",
+            ts=5005.0,
+        )
 
     monkeypatch.setattr(analyzer.gemini_advisor, "review", _fake_review)
     monkeypatch.setattr(analyzer, "assess_geopolitical_threat", lambda force=False, now=None: True)

@@ -714,14 +714,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
         # Subtest 4: If STOP placement outcome is unknown (in-flight / timeout), do NOT restore cancelled TP order!
         with self.subTest(msg="does_not_restore_tp_when_stop_outcome_unknown"):
-            class UnknownOutcomeInstrument(FakeInstrument):
-                def place(self, side, price, qty, **kwargs):
-                    super().place(side, price, qty, **kwargs)
-                    outcome_ctx = kwargs.get("_outcome_context")
-                    if outcome_ctx is not None and isinstance(outcome_ctx, dict):
-                        outcome_ctx.update(accepted=False, reason="timeout", state="unknown")
-                    return None
-
             inst = UnknownOutcomeInstrument(
                 price=94.0,
                 free=0.0,

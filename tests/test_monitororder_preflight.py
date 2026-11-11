@@ -1,5 +1,6 @@
 import json
 import os
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -359,15 +360,10 @@ class MonitorOrderPreflightTest(TempDirTestCase):
                 self.assertEqual(
                     monitororder.order_retry.load_all(), [])
 
-        class RecoveryMarket:
-            def __init__(self):
-                self.place_calls = []
-
-            def place(self, *args, **kwargs):
-                self.place_calls.append((args, kwargs))
-                return {"orderId": "must-not-submit"}
-
-        recovery = RecoveryMarket()
+        recovery = SimpleNamespace(place_calls=[])
+        recovery.place = lambda *args, **kwargs: (
+            recovery.place_calls.append((args, kwargs)) or {"orderId": "must-not-submit"}
+        )
         stats = order_retry_worker.process_once(recovery, now=10_000.0)
         self.assertEqual(stats["attempted"], 0)
         self.assertEqual(recovery.place_calls, [])

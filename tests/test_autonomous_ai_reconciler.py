@@ -7152,29 +7152,16 @@ def test_audited_executor_observe_only_locked_sell_qty_and_retry_filter(tmp_path
     from providers.strategy_executor import PairPrecision
     from strategies.spot_engine import StratParams, Strategy
 
-    class _FakeVenueProvider:
-        name = "Kraken"
-
-        def __init__(self, free_hype: float, open_rows: list):
-            self.free_hype = free_hype
-            self.open_rows = open_rows
-
-        def pair_precision(self, symbol: str):
-            return PairPrecision(price_decimals=2, volume_decimals=6, order_min=0.01, base_asset="HYPE")
-
-        def free_balance(self, asset: str):
-            return self.free_hype if asset == "HYPE" else 2000.0
-
-        def open_orders(self, symbol: str):
-            return self.open_rows
-
-        def get_current_price(self, symbol: str):
-            return 83.42
-
-        def ohlc_closes(self, symbol: str, interval_min: int):
-            return [83.0] * 35
-
-    prov = _FakeVenueProvider(0.0617, [{"side": "SELL", "qty": 4.876931, "price": 93.85}])
+    prov = SimpleNamespace(
+        name="Kraken",
+        free_hype=0.0617,
+        open_rows=[{"side": "SELL", "qty": 4.876931, "price": 93.85}],
+        pair_precision=lambda symbol: PairPrecision(price_decimals=2, volume_decimals=6, order_min=0.01, base_asset="HYPE"),
+        free_balance=lambda asset: 0.0617 if asset == "HYPE" else 2000.0,
+        open_orders=lambda symbol: [{"side": "SELL", "qty": 4.876931, "price": 93.85}],
+        get_current_price=lambda symbol: 83.42,
+        ohlc_closes=lambda symbol, interval_min: [83.0] * 35,
+    )
     audited = AuditedStrategyExecutor(prov, venue="Kraken")
     assert audited._inner is prov
     assert len(audited.open_orders("HYPEUSD")) == 1

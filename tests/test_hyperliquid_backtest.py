@@ -23,6 +23,7 @@ run_replay = hl_replay.run_replay
 from kraken.backtest_trail import simulate_trail  # noqa: E402
 from tests.conftest import MockHttpResponse  # noqa: E402
 import time
+from types import SimpleNamespace
 import unittest
 
 
@@ -661,15 +662,14 @@ def test_hyperliquid_price_analysis_and_signals_edge_cases(tmp_path):
     signals = load_local_module(_HL_DIR, "signals", module_key="hl_sig_module", reload=True)
     price_analysis = signals
 
-    class FakeCandleClient:
-        def candles(self, coin, interval, lookback_hours=None):
-            rows = [{"t": (1700000000 + i * 3600) * 1000, "c": str(100.0 + i * 0.1)} for i in range(60)]
-            # Inject malformed candles missing 't' or 'c'
-            rows.insert(5, {"t": 1700000000 * 1000})
-            rows.insert(10, {"c": "101.0"})
-            return rows
+    def _candles(coin, interval, lookback_hours=None):
+        rows = [{"t": (1700000000 + i * 3600) * 1000, "c": str(100.0 + i * 0.1)} for i in range(60)]
+        # Inject malformed candles missing 't' or 'c'
+        rows.insert(5, {"t": 1700000000 * 1000})
+        rows.insert(10, {"c": "101.0"})
+        return rows
 
-    res = price_analysis.analyze(FakeCandleClient(), "HYPE")
+    res = price_analysis.analyze(SimpleNamespace(candles=_candles), "HYPE")
     assert res is not None
     assert res["direction"] == "up"
 
@@ -679,7 +679,7 @@ def test_hyperliquid_price_analysis_and_signals_edge_cases(tmp_path):
     assert sig_res["trend"] == "neutral"
     assert sig_res["source"] == "file(corrupt)"
 
-    builtin_res = signals._builtin_trend(FakeCandleClient(), "HYPE")
+    builtin_res = signals._builtin_trend(SimpleNamespace(candles=_candles), "HYPE")
     assert builtin_res["trend"] in ("up", "down", "neutral")
     assert builtin_res["source"] == "builtin"
 

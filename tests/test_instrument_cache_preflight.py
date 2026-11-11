@@ -657,18 +657,13 @@ class InstrumentCachePreflightTest(TempDirTestCase):
                 raise RuntimeError("test provider was not released")
             return {"orderId": "producer-order"}
 
-        class UnsupportedRecoveryMarket:
-            def __init__(self):
-                self.place_calls = []
-
-            def get_current_price(self, symbol):
-                return 100.0
-
-            def place(self, *args, **kwargs):
-                self.place_calls.append((args, kwargs))
-                return {"orderId": "duplicate"}
-
-        worker_market = UnsupportedRecoveryMarket()
+        worker_market = SimpleNamespace(
+            place_calls=[],
+            get_current_price=lambda symbol: 100.0,
+        )
+        worker_market.place = lambda *args, **kwargs: (
+            worker_market.place_calls.append((args, kwargs)) or {"orderId": "duplicate"}
+        )
         with (
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),

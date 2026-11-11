@@ -465,32 +465,23 @@ def test_hyperliquid_strategy_keeps_order_when_cancel_fails(tmp_path):
         os.environ.clear()
         os.environ.update(saved_env)
 
-    class FakeHLClient:
-        def __init__(self):
-            self.cancel_ok = False
-            self.open_orders_fail = False
-            self.placed = []
-
-        def sz_decimals(self, _coin):
-            return 2
-
-        def position_strict(self, _coin):
-            return (1.0, 100.0)
-
-        def open_orders_strict(self, _coin):
-            if self.open_orders_fail:
-                raise RuntimeError("hl open_orders timeout")
-            return [{"oid": 10}, {"oid": 20}]
-
-        def cancel(self, _coin, _oid):
-            return self.cancel_ok
-
-        def place_limit(self, _coin, is_buy, sz, px, reduce_only=False):
-            oid = 100 + len(self.placed)
-            self.placed.append((oid, is_buy, sz, px, reduce_only))
-            return True, oid, "resting"
-
-    client = FakeHLClient()
+    client = SimpleNamespace(
+        cancel_ok=False,
+        open_orders_fail=False,
+        placed=[],
+        sz_decimals=lambda _coin: 2,
+        position_strict=lambda _coin: (1.0, 100.0),
+        open_orders_strict=lambda _coin: (
+            (_ for _ in ()).throw(RuntimeError("hl open_orders timeout"))
+            if client.open_orders_fail
+            else [{"oid": 10}, {"oid": 20}]
+        ),
+        cancel=lambda _coin, _oid: client.cancel_ok,
+        place_limit=lambda _coin, is_buy, sz, px, reduce_only=False: (
+            client.placed.append((100 + len(client.placed), is_buy, sz, px, reduce_only))
+            or (True, 99 + len(client.placed), "resting")
+        ),
+    )
     params = StratParams(
         direction="long",
         entry_amount=50.0,

@@ -1681,20 +1681,16 @@ def test_enforce_intent_order_cleans_up_refused_retry_record_when_second_attempt
 
     calls = []
 
-    class _DummyInst:
-        symbol = "BTCUSDC"
-        provider_name = "binance"
-
-        def place(self, **kwargs):
-            calls.append(kwargs)
-            ctx = kwargs.get("_outcome_context")
-            if len(calls) == 1:
-                if isinstance(ctx, dict):
-                    ctx.update({"state": "refused", "reason": "account_cache_not_fresh"})
-                return None
+    def _dummy_place(**kwargs):
+        calls.append(kwargs)
+        ctx = kwargs.get("_outcome_context")
+        if len(calls) == 1:
             if isinstance(ctx, dict):
-                ctx.update({"state": "accepted", "accepted": True})
-            return {"orderId": "99887766", "status": "FILLED"}
+                ctx.update({"state": "refused", "reason": "account_cache_not_fresh"})
+            return None
+        if isinstance(ctx, dict):
+            ctx.update({"state": "accepted", "accepted": True})
+        return {"orderId": "99887766", "status": "FILLED"}
 
     intent = {
         "intent_id": "intent_1793650000_buy_btcusdc",
@@ -1703,7 +1699,7 @@ def test_enforce_intent_order_cleans_up_refused_retry_record_when_second_attempt
         "status": "PENDING",
     }
     execute_enforce_intent_order(
-        _DummyInst(),
+        SimpleNamespace(symbol="BTCUSDC", provider_name="binance", place=_dummy_place),
         intent,
         intent_id="intent_1793650000_buy_btcusdc",
         decision="BUY",

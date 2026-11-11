@@ -325,23 +325,67 @@ def test_decision_caching_and_notify_cooldown():
 class _MinNotionalBinanceProvider:
     name = "binance"
 
-    def __init__(self, *, policy_cap: float = 0.0, refuse_reason: str | None = "qty_zero_after_policy"):
+    def __init__(
+        self,
+        *,
+        policy_cap: float = 0.0,
+        refuse_reason: str | None = "qty_zero_after_policy",
+        cap_to_requested: bool = False,
+    ):
         self._policy_cap = policy_cap
         self._refuse_reason = refuse_reason
+        self._cap_to_requested = cap_to_requested
+        self.placed_orders = []
+
+    def validate_symbol(self, symbol):
+        return True
+
+    def guards_internally(self):
+        return False
+
+    def requires_cache_permit(self):
+        return False
+
+    def defers_smart_cancellation(self):
+        return False
+
+    def supports_business_minimum(self):
+        return True
+
+    def execution_enabled(self):
+        return True
+
+    def preflight_order(self, *args, **kwargs):
+        return object()
+
+    def adjust_order_price(self, symbol, side, price, **kwargs):
+        return price
+
+    def round_price(self, symbol, price):
+        return round(float(price), 4)
 
     def free_balance(self, asset):
-        return 20338.80
+        return 20000.0 if self._cap_to_requested else 20338.80
 
     def quantity_decision(self, symbol, side, price, qty, **kwargs):
+        final_qty = min(float(qty), self._policy_cap) if self._cap_to_requested else self._policy_cap
         return QuantityDecision(
-            requested_qty=qty,
-            balance_cap=20338.80 / price,
+            requested_qty=float(qty),
+            balance_cap=self.free_balance("USDC") / float(price),
             policy_cap=self._policy_cap,
             fee_cap=self._policy_cap,
-            final_qty=self._policy_cap,
+            final_qty=final_qty,
             refuse_reason=self._refuse_reason,
             balance_asset="USDC",
         )
+
+    def profit_guard_window_ref(self, symbol, side, safeback_sec, regime_context=None):
+        return None
+
+    def place_order(self, symbol, side, price, qty, **kwargs):
+        order = {"orderId": "999001", "symbol": symbol, "side": side, "price": price, "qty": qty}
+        self.placed_orders.append(order)
+        return order
 
     def round_amount(self, symbol, qty):
         return round(float(qty), 1)
@@ -450,61 +494,7 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
     the order is scaled once (to 50%) rather than twice (to 25% below min_notional)."""
     from instrument import Instrument
 
-    class LiveScaleProvider(_MinNotionalBinanceProvider):
-        def validate_symbol(self, symbol):
-            return True
-
-        def guards_internally(self):
-            return False
-
-        def requires_cache_permit(self):
-            return False
-
-        def defers_smart_cancellation(self):
-            return False
-
-        def supports_business_minimum(self):
-            return True
-
-        def execution_enabled(self):
-            return True
-
-        def preflight_order(self, *args, **kwargs):
-            return object()
-
-        def adjust_order_price(self, symbol, side, price, **kwargs):
-            return price
-
-        def round_price(self, symbol, price):
-            return round(float(price), 4)
-
-        def free_balance(self, asset):
-            return 20000.0
-
-        def quantity_decision(self, symbol, side, price, qty, **kwargs):
-            capped = min(float(qty), 600.0)
-            return QuantityDecision(
-                requested_qty=float(qty),
-                balance_cap=20000.0 / float(price),
-                policy_cap=600.0,
-                fee_cap=600.0,
-                final_qty=capped,
-                refuse_reason=None,
-                balance_asset="USDC",
-            )
-
-        def profit_guard_window_ref(self, symbol, side, safeback_sec, regime_context=None):
-            return None
-
-        def __init__(self):
-            self.placed_orders = []
-
-        def place_order(self, symbol, side, price, qty, **kwargs):
-            order = {"orderId": "999001", "symbol": symbol, "side": side, "price": price, "qty": qty}
-            self.placed_orders.append(order)
-            return order
-
-    provider = LiveScaleProvider()
+    provider = _MinNotionalBinanceProvider(policy_cap=600.0, refuse_reason=None, cap_to_requested=True)
     mock_api = MagicMock()
     mock_api.provider_by_name.return_value = provider
 

@@ -1266,10 +1266,11 @@ def test_t212provider__signed_qty_aliases_and_positional_force_in_place_order_it
     assert t212p.T212Provider._signed_qty("BID", 1.234) == pytest.approx(1.23)
     assert t212p.T212Provider._signed_qty("ASK", 1.234) == pytest.approx(-1.23)
 
-    class _FakeT212Client:
-        def place_market_order(self, symbol, signed_qty, extended_hours=False):
-            return 200, {"id": 98765, "quantity": signed_qty}
-
-    t212 = t212p.T212Provider(client=_FakeT212Client(), live_enabled="y")
+    t212 = t212p.T212Provider(
+        client=SimpleNamespace(
+            place_market_order=lambda symbol, signed_qty, extended_hours=False: (200, {"id": 98765, "quantity": signed_qty})
+        ),
+        live_enabled="y",
+    )
     res_t212 = t212.place_order("AAPL_US_EQ", "LONG", 180.0, 1.5, True)
     assert res_t212["orderId"] == "98765" and res_t212["quantity"] == pytest.approx(1.5)
