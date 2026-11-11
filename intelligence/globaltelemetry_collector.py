@@ -349,9 +349,14 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 def main():
     """Command-line entrypoint for the global telemetry collector."""
     parser = argparse.ArgumentParser(description="Global Market Telemetry Collector Daemon")
-    add_external_telemetry_cli_args(parser)
-    parser.add_argument("--skip-news", action="store_true", help="Skip RSS macro news collection.")
-    parser.add_argument("--news-interval", type=float, default=None, help="Macro news RSS aggregation interval in seconds.")
+    add_external_telemetry_cli_args(
+        parser,
+        skip_flag="--skip-news",
+        skip_help="Skip RSS macro news collection.",
+        extra_float_flags=(
+            ("--news-interval", "Macro news RSS aggregation interval in seconds."),
+        ),
+    )
     args = parse_and_configure_daemon_cli(parser)
 
     collector = GlobalTelemetryCollector(

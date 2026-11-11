@@ -464,15 +464,42 @@ def add_external_telemetry_cli_args(
     ob_default: Optional[float] = None,
     deriv_default: Optional[float] = None,
     whale_default: Optional[float] = None,
+    skip_flag: Optional[str] = None,
+    skip_help: str = "",
+    extra_float_flags: tuple[tuple[str, str], ...] = (),
 ) -> None:
     """Register shared CLI arguments for external telemetry collector daemons."""
     parser.add_argument("--symbols", type=str, default="", help="Comma-separated symbols to monitor.")
-    parser.add_argument("--once", action="store_true", help="Run a single update cycle and exit.")
-    parser.add_argument("--skip-external", action="store_true", help="Skip external orderbook and derivatives telemetry.")
-    parser.add_argument("--ob-interval", type=float, default=ob_default, help="Orderbook refresh interval in seconds.")
-    parser.add_argument("--deriv-interval", type=float, default=deriv_default, help="Derivatives refresh interval in seconds.")
-    parser.add_argument("--whale-interval", type=float, default=whale_default, help="Whale positioning refresh interval in seconds.")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
+    for flag_name, flag_help in (
+        ("--once", "Run a single update cycle and exit."),
+        ("--skip-external", "Skip external orderbook and derivatives telemetry."),
+        *(((skip_flag, skip_help),) if skip_flag else ()),
+        ("--verbose", "Enable verbose DEBUG logging."),
+    ):
+        args = ("--verbose", "-v") if flag_name == "--verbose" else (flag_name,)
+        parser.add_argument(*args, action="store_true", help=flag_help)
+    for flag_name, default_val, flag_help in (
+        ("--ob-interval", ob_default, "Orderbook refresh interval in seconds."),
+        ("--deriv-interval", deriv_default, "Derivatives refresh interval in seconds."),
+        ("--whale-interval", whale_default, "Whale positioning refresh interval in seconds."),
+        *((name, None, hlp) for name, hlp in extra_float_flags),
+    ):
+        parser.add_argument(flag_name, type=float, default=default_val, help=flag_help)
+
+
+def add_macro_analyzer_cli_args(parser: Any) -> None:
+    """Register CLI arguments for ``MacroAnalyzer`` daemon."""
+    for flags, flag_help in (
+        (("--once",), "Run a single evaluation cycle and exit."),
+        (("--force",), "Force execution of LLM assessment regardless of cache TTL."),
+        (("--verbose", "-v"), "Enable verbose DEBUG logging."),
+    ):
+        parser.add_argument(*flags, action="store_true", help=flag_help)
+    for flag_name, flag_help in (
+        ("--macro-llm-interval", "Geopolitical LLM evaluation interval in seconds."),
+        ("--advisor-interval", "Market advisor synthesis interval in seconds."),
+    ):
+        parser.add_argument(flag_name, type=float, default=None, help=flag_help)
 
 
 def run_daemon_cli_once_or_start(

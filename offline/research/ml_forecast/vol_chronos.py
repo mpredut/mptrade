@@ -30,7 +30,7 @@ from offline.backtests.evaluation import parse_cli_int  # noqa: E402
 from offline.research.ml_forecast.forecast import (  # noqa: E402
     _to_price_array,
     create_ml_forecast_parser,
-    validate_forecast_symbol,
+    parse_and_validate_forecast_args,
 )
 
 MODEL_NAME = "amazon/chronos-t5-tiny"   # smallest 8M-parameter model; CPU-friendly
@@ -157,9 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--horizon", type=parse_cli_int, default=24, help="how many hours ahead we predict")
     ap.add_argument("--stride", type=parse_cli_int, default=6, help="the step between test windows (hours)")
     ap.add_argument("--eval", action="store_true")
-    args = ap.parse_args(argv)
-    if (symbol := validate_forecast_symbol(args.symbol)) is None:
-        ap.error(f"invalid --symbol: {args.symbol!r}")
+    args, symbol = parse_and_validate_forecast_args(ap, argv)
     days, win, horizon, stride = (
         safe_pos_int(getattr(args, k), default=None)
         for k in ("days", "win", "horizon", "stride")

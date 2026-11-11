@@ -265,6 +265,16 @@ def create_ml_forecast_parser(description: str) -> argparse.ArgumentParser:
     return ap
 
 
+def parse_and_validate_forecast_args(
+    ap: argparse.ArgumentParser, argv: list[str] | None = None
+) -> tuple[argparse.Namespace, str]:
+    """Parse ``argv`` with ``ap`` and validate ``--symbol``."""
+    args = ap.parse_args(argv)
+    if (symbol := validate_forecast_symbol(args.symbol)) is None:
+        ap.error(f"invalid --symbol: {args.symbol!r}")
+    return args, symbol
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = create_ml_forecast_parser("Walk-forward machine learning forecast benchmark.")
     ap.add_argument("--eval", action="store_true", help="the walk-forward report only")
@@ -274,9 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         default=os.path.join(_ROOT, "offline", "results", "ml_forecast", "forecast.json"),
     )
     ap.add_argument("--loop", type=parse_cli_float, default=0.0, help="minutes between forecasts (0 = once)")
-    args = ap.parse_args(argv)
-    if (symbol := validate_forecast_symbol(args.symbol)) is None:
-        ap.error(f"invalid --symbol: {args.symbol!r}")
+    args, symbol = parse_and_validate_forecast_args(ap, argv)
     if (days := safe_pos_int(args.days, default=None)) is None:
         ap.error("--days must be positive")
     if (loop_nonneg := safe_nonneg_float(args.loop, default=None)) is None:

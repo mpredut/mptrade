@@ -276,14 +276,15 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
 
     # Order Guard Preview
     print("\n🚦 [ORDER GUARD EXECUTION PREVIEW (order_guard.py)]")
-    buy_std = gp.get("buy_standard")
-    if isinstance(buy_std, dict) and buy_std:
-        status_std = "✅ ALLOWED" if _parse_bool_flag(buy_std.get("allowed")) else "⛔ BLOCKED"
-        print(f"  • Standard BUY (250 EUR):   {status_std} | Scale: {clean_scale(buy_std.get('suggested_scale'), 1.0, allow_percent=True)*100:.0f}% | Reason: {buy_std.get('reason', '')}")
-    buy_hi = gp.get("buy_high_stake")
-    if isinstance(buy_hi, dict) and buy_hi:
-        status_hi = "✅ ALLOWED" if _parse_bool_flag(buy_hi.get("allowed")) else "⛔ BLOCKED"
-        print(f"  • High-Stake BUY (1500 EUR): {status_hi} | Scale: {clean_scale(buy_hi.get('suggested_scale'), 1.0, allow_percent=True)*100:.0f}% | Reason: {buy_hi.get('reason', '')}")
+    for key, label in (
+        ("buy_standard", "Standard BUY (250 EUR):  "),
+        ("buy_high_stake", "High-Stake BUY (1500 EUR):"),
+    ):
+        entry = gp.get(key)
+        if isinstance(entry, dict) and entry:
+            status_lbl = "✅ ALLOWED" if _parse_bool_flag(entry.get("allowed")) else "⛔ BLOCKED"
+            scale_pct = clean_scale(entry.get("suggested_scale"), 1.0, allow_percent=True) * 100
+            print(f"  • {label} {status_lbl} | Scale: {scale_pct:.0f}% | Reason: {entry.get('reason', '')}")
 
     print("=" * 76 + "\n")
 
@@ -297,21 +298,13 @@ def main():
         default="BTCUSDC",
         help="Target symbol to inspect (default: BTCUSDC).",
     )
-    parser.add_argument(
-        "--refresh",
-        action="store_true",
-        help="Trigger immediate collection and refresh of snapshots before inspecting.",
-    )
-    parser.add_argument(
-        "--daemon-status",
-        action="store_true",
-        help="Inspect the background telemetry collector daemon health.",
-    )
-    parser.add_argument(
-        "--test-guard",
-        action="store_true",
-        help="Run an interactive order guard simulation.",
-    )
+    for flag_name, flag_help in (
+        ("--refresh", "Trigger immediate collection and refresh of snapshots before inspecting."),
+        ("--daemon-status", "Inspect the background telemetry collector daemon health."),
+        ("--test-guard", "Run an interactive order guard simulation."),
+        ("--json", "Output raw machine-readable JSON format."),
+    ):
+        parser.add_argument(flag_name, action="store_true", help=flag_help)
     parser.add_argument(
         "--side",
         type=str,
@@ -319,23 +312,11 @@ def main():
         choices=["BUY", "SELL"],
         help="Order side for guard test (default: BUY).",
     )
-    parser.add_argument(
-        "--qty",
-        type=float,
-        default=1.0,
-        help="Order quantity for guard test (default: 1.0).",
-    )
-    parser.add_argument(
-        "--notional",
-        type=float,
-        default=250.0,
-        help="Order notional in EUR for guard test (default: 250.0).",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output raw machine-readable JSON format.",
-    )
+    for flag_name, default_val, flag_help in (
+        ("--qty", 1.0, "Order quantity for guard test (default: 1.0)."),
+        ("--notional", 250.0, "Order notional in EUR for guard test (default: 250.0)."),
+    ):
+        parser.add_argument(flag_name, type=float, default=default_val, help=flag_help)
 
     args = parser.parse_args()
     symbol = args.symbol.strip().upper()

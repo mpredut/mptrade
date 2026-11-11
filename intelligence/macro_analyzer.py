@@ -39,6 +39,7 @@ from intelligence.macro.calendar_ssot import (
     resolve_global_trading_session,
 )
 from intelligence.macro.daemon_ssot import (
+    add_macro_analyzer_cli_args,
     compute_step_retry_ts,
     finalize_daemon_cycle,
     normalize_cycle_args,
@@ -477,11 +478,7 @@ class MacroAnalyzer:
 def main():
     """Command-line entrypoint for the macro intelligence analyzer."""
     parser = argparse.ArgumentParser(description="Macro Intelligence & Threat Analyzer Daemon")
-    parser.add_argument("--once", action="store_true", help="Run a single evaluation cycle and exit.")
-    parser.add_argument("--force", action="store_true", help="Force execution of LLM assessment regardless of cache TTL.")
-    parser.add_argument("--macro-llm-interval", type=float, default=None, help="Geopolitical LLM evaluation interval in seconds.")
-    parser.add_argument("--advisor-interval", type=float, default=None, help="Market advisor synthesis interval in seconds.")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
+    add_macro_analyzer_cli_args(parser)
     args = parse_and_configure_daemon_cli(parser)
 
     analyzer = MacroAnalyzer(

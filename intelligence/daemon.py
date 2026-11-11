@@ -190,11 +190,17 @@ def main():
     """Command-line entrypoint for the telemetry collector daemon."""
     parser = argparse.ArgumentParser(description="Market Intelligence Telemetry Background Daemon")
     add_external_telemetry_cli_args(
-        parser, ob_default=15.0, deriv_default=30.0, whale_default=60.0
+        parser,
+        ob_default=15.0,
+        deriv_default=30.0,
+        whale_default=60.0,
+        skip_flag="--skip-macro",
+        skip_help="Skip RSS and Gemini macro news assessment.",
+        extra_float_flags=(
+            ("--macro-interval", "Macro news RSS aggregation interval in seconds."),
+            ("--macro-llm-interval", "Stage 3 Gemini LLM macro reasoning interval in seconds."),
+        ),
     )
-    parser.add_argument("--skip-macro", action="store_true", help="Skip RSS and Gemini macro news assessment.")
-    parser.add_argument("--macro-interval", type=float, default=None, help="Macro news RSS aggregation interval in seconds.")
-    parser.add_argument("--macro-llm-interval", type=float, default=None, help="Stage 3 Gemini LLM macro reasoning interval in seconds.")
     args = parse_and_configure_daemon_cli(
         parser, fmt="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s"
     )
