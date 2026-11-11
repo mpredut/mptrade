@@ -1,15 +1,25 @@
-import unittest
-from unittest.mock import patch, MagicMock
-
-from providers import order_id_context as rc
-from binance_api import bapi
-import monitororder
-from providers.base import MarketDataProvider
-from providers.market_api import MarketApi
-import order_retry as oq
+import ast
+import importlib
 import os
+import pathlib
 import tempfile
 import time
+import unittest
+from unittest.mock import MagicMock, patch
+
+from binance_api import bapi, bapi_allorders, bapi_placeorder as bp, bapi_trades
+import botcore
+from instrument import Instrument
+import intelligence.macro_sentiment_ssot as mss
+import monitororder
+import monitortrades as mt
+import order_retry as oq
+from providers import order_id_context as rc
+from providers.base import MarketDataProvider
+from providers.market_api import MarketApi
+from providers.order_id_context import _base36
+from providers.strategy_executor import OrderReconciliationCapabilities
+import tradeall as ta
 
 
 class TestBinanceOrderIdContext(unittest.TestCase):
@@ -196,7 +206,6 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             self.assertEqual(mock_enqueue.call_args[0][3].get("prefix"), "MO_MN_OR")
 
     def test_instrument_apply_outbox_lineage_prefix_preserves_bot_lineage(self):
-        from instrument import Instrument
         target = {}
         with patch("providers.order_id_context.get_process_name", return_value="TA"):
             Instrument._apply_outbox_lineage_prefix(target, {})
@@ -325,8 +334,6 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             self.assertEqual(mock_enqueue.call_args[0][3].get("prefix"), "MO_TA_OR")
 
     def test_tradeall_cancels_outbox_accepted_orders_and_resolves_tracker(self):
-        import tradeall as ta
-
         ta._symbol_order_ids.clear()
         with patch.object(ta.api, "cancel_expired_orders"), \
              patch.object(ta.mkt, "cancel_order", return_value=True) as mock_cancel, \
@@ -339,8 +346,6 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             self.assertEqual(order_ids, [10574512957])
 
     def test_monitortrades_hard_tp_preserves_8_decimals_and_passes_tp_kind(self):
-        import monitortrades as mt
-
         snapshot = MagicMock()
         snapshot.symbol = "BTCUSDC"
         snapshot.sellable_qty = 0.00066
@@ -362,8 +367,6 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             mock_resolve.assert_called_once_with("BTCUSDC", inst, kind="TP")
 
     def test_cancel_open_recent_and_opposite_orders_resolve_accepted_retry_tracker(self):
-        from binance_api import bapi_placeorder as bp
-
         now_s = int(time.time())
         open_map = {"9001": {"price": 80000.0, "timestamp": now_s - 5}}
         with patch.object(bapi.sym, "validate_params"), \
@@ -394,7 +397,6 @@ def test_order_id_context_boolean_clientorderid_case_insensitive_allowed_owners_
 
 def test__base36_handles_none_bool_inf_nan_and_invalid_iter67_s3():
     """[ITER67 #3] _base36 handles None, bool, inf, nan, and invalid strings safely."""
-    from providers.order_id_context import _base36
     # 3. _base36 handles None, bool, inf, nan, and invalid strings safely
     assert _base36(None) == "0"
     assert _base36(True) == "0"
@@ -405,8 +407,6 @@ def test__base36_handles_none_bool_inf_nan_and_invalid_iter67_s3():
 
 def test_bapi_bapi_allorders_bapi_trades_order_id_context_iter108_s4():
     """[ITER108 #4] bapi / bapi_allorders / bapi_trades / order_id_context."""
-    from binance_api import bapi_allorders
-    from binance_api import bapi_trades
     # 4. bapi / bapi_allorders / bapi_trades / order_id_context
     assert bapi.update_price(True) is None
     assert bapi.get_current_price(True) is None
@@ -455,8 +455,6 @@ class _StubVenueProvider(MarketDataProvider):
         return 1000.0
 
     def reconciliation_capabilities(self):
-        from providers.strategy_executor import OrderReconciliationCapabilities
-
         return OrderReconciliationCapabilities(
             lookup_by_client_order_id=True,
             status_by_order_id=True,
@@ -552,9 +550,6 @@ def test_market_api_polymorphic_fetch_ohlc_candles_routes_across_venues():
 
 def test_production_runtime_zero_direct_venue_sdk_imports_ast():
     """Lock DAG boundary: no module outside venue adapters & providers imports venue SDKs statically or dynamically."""
-    import ast
-    import pathlib
-
     repo_root = pathlib.Path(__file__).resolve().parent.parent
     forbidden_roots = frozenset({"binance", "binance_api", "kraken", "hyperliquid", "212trading"})
     exempt_prefixes = (
@@ -607,11 +602,6 @@ def test_production_runtime_zero_direct_venue_sdk_imports_ast():
 
 def test_polymorphic_venue_fee_precision_and_intraday_chart_ssot():
     """Verify MarketDataProvider declarative fee/precision specs, MarketApi.fetch_intraday_chart, and botcore reload-safe fetch_public_json."""
-    import importlib
-
-    import botcore
-    import intelligence.macro_sentiment_ssot as mss
-
     assert MarketDataProvider.resolve_venue_default_fee_spec("binance") == ("VIP0", 10.0, 10.0, 5.0)
     assert MarketDataProvider.resolve_venue_default_fee_spec("kraken") == ("PRO_TIER0", 16.0, 26.0, 1.0)
     assert MarketDataProvider.resolve_venue_default_fee_spec("hyperliquid") == ("SPOT_TIER0", 4.0, 7.0, 10.0)

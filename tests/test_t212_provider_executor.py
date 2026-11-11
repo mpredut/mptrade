@@ -1,14 +1,18 @@
 """The StrategyExecutor contract for Trading212, without network or real keys."""
 
+import importlib
 import os
 import sys
+import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
-import importlib
+from unittest.mock import MagicMock
+
 import pytest
-import tempfile
-from cachepaths import canonical_base_asset
+
+from cachepaths import STALE_STAGING_MAX_AGE_SEC, canonical_base_asset
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 T212_DIR = os.path.join(ROOT, "212trading")
@@ -17,18 +21,28 @@ if T212_DIR not in sys.path:
 
 import t212_client  # noqa: E402
 
+from botcore import load_local_module
+from cacheaccount import CacheTradeManager
+from instrument import Instrument
+from offline.research.t212_continuous_grid import report as t_rep
+from offline.runners.t212_walk_forward_baseline import fx_quote, periods_per_year
+import order_guard
+from providers.market_api import MarketApi
 from providers.strategy_executor import (
     OrderStatus,
     PairPrecision,
     ProviderError,
-    SubmissionRefused,
     StrategyExecutor,
+    SubmissionRefused,
 )
-from providers.t212_provider import T212Provider
-from botcore import load_local_module
+import providers.t212_provider as t212_prov_mod
+from providers.t212_provider import (
+    T212Provider,
+    _definitive_submit_failure,
+    _parse_bool_flag as t212_bool,
+)
+from state_io import read_json_dict, save_json_state
 from tests.conftest import load_venue_modules
-from types import SimpleNamespace
-from cacheaccount import CacheTradeManager
 
 
 class FakeT212Client:
@@ -314,9 +328,6 @@ class T212ExecutorContractTest(unittest.TestCase):
         self.assertIn("HTTP 400", str(ctx.exception))
 
         # Instrument integration verification: definitive rejection marks state as 'refused'
-        from instrument import Instrument
-        from providers.market_api import MarketApi
-        import order_guard
         inst = Instrument("RGNT", "RGNT_US_EQ", "t212", api=MarketApi([self.provider]))
         outcome = {}
         with mock.patch.object(order_guard, "daily_limit_guard", return_value=(True, None)):
@@ -450,8 +461,6 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertEqual(client._ord_cache[1], cached_orders)
 
     def test_runtime_env_fallback_and_post_order_endpoint_pacing(self):
-        import providers.t212_provider as t212_prov_mod
-
         with tempfile.TemporaryDirectory() as tmpdir:
             with open(os.path.join(tmpdir, "runtime.env"), "w", encoding="utf-8") as fh:
                 fh.write("T212_LIVE_ORDERS=true\nT212_ORDER_VALIDITY=DAY\n")
@@ -592,7 +601,6 @@ class T212ClientTransportTest(unittest.TestCase):
             # and _hist_cache syncs FILLED orders into _trade_cache_path (cache_trade_t212.json)
             instr_sidecar = c1._instr_shared_cache_path()
             self.assertTrue(os.path.exists(instr_sidecar))
-            from cachepaths import STALE_STAGING_MAX_AGE_SEC
             stale_tmp = os.path.join(tmpdir, ".shared_t212.json.orphan123.tmp")
             with open(stale_tmp, "w", encoding="utf-8") as fh:
                 fh.write("{}")
@@ -613,7 +621,6 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertEqual(ord_res["status"], "FILLED")
             self.assertFalse(os.path.exists(stale_tmp))
             self.assertTrue(os.path.exists(trade_cache_file))
-            from state_io import read_json_dict
             saved_trades = read_json_dict(trade_cache_file, default={})
             self.assertIn("SPCX_US_EQ", saved_trades.get("items", {}))
             self.assertEqual(len(saved_trades["items"]["SPCX_US_EQ"]), 1)
@@ -631,7 +638,6 @@ class T212ClientTransportTest(unittest.TestCase):
 
             # Verify T212Provider.get_orders reads real BUY/SELL fills from cache_trade_t212.json
             now_ms = int(time.time() * 1000)
-            from state_io import save_json_state
             save_json_state(
                 trade_cache_file,
                 {
@@ -927,7 +933,6 @@ def test_212trading_strategy_py_stratparams_from_env_rejects_nan_in_iter58_s6():
 
 def test_t212provider_free_balance_eur_converts_ron_using_usd_ron_eur_usd_iter61_s2(monkeypatch):
     """[ITER61 #2] T212Provider.free_balance('EUR') converts RON using usd_ron * eur_usd, and order_status rejects negative fee."""
-    from unittest.mock import MagicMock
     # 2. T212Provider.free_balance("EUR") converts RON using usd_ron * eur_usd, and order_status rejects negative fee
     fake_cli = MagicMock()
     fake_cli.get_cash.return_value = {"free": 496.8}
@@ -973,7 +978,6 @@ def test_212trading_t212_bot_verify_instrument_isin_tolerates_non_dict_items_in_
 
 def test_t212_continuous_grid_report_g_safely_rejects_non_dict_sub_iter75_s3():
     """[ITER75 #3] t212_continuous_grid.report.g safely rejects non-dict sub-entries, bools, and NaN."""
-    from offline.research.t212_continuous_grid import report as t_rep
     # 3. t212_continuous_grid.report.g safely rejects non-dict sub-entries, bools, and NaN
     assert t_rep.g({"1h": "corrupt"}, "1h", "ret") is None
     assert t_rep.g({"1h": {"ret": True}}, "1h", "ret") is None
@@ -982,7 +986,6 @@ def test_t212_continuous_grid_report_g_safely_rejects_non_dict_sub_iter75_s3():
 
 def test_t212provider__definitive_submit_failure_and_pair_precision_safety_iter87_s3():
     """[ITER87 #3] T212Provider._definitive_submit_failure and pair_precision safety."""
-    from providers.t212_provider import _definitive_submit_failure
     # 3. T212Provider._definitive_submit_failure and pair_precision safety
     assert _definitive_submit_failure(None, "order rejected by venue") is True
     assert _definitive_submit_failure(True, "timeout") is False
@@ -1040,7 +1043,6 @@ def test_212trading_order_manager_ticker_validity_validation_iter91_s3():
 
 def test_t212client_get_order_status_cancel_order_212trading_t212_bot_relative_import_isolation_iter94_s1(monkeypatch):
     """[ITER94 #1] T212Client get_order_status / cancel_order & 212trading.t212_bot relative import isolation & verify_instrument_isin validation."""
-    import importlib.util
     # 1. T212Client get_order_status / cancel_order
     t212_client_mod = importlib.import_module("212trading.t212_client")
     cli = t212_client_mod.T212Client(
@@ -1081,9 +1083,8 @@ def test_212trading_ipo_import_works_even_when_212trading_is_iter103_s5():
 
 def test_t212provider_iter111_s3():
     """[ITER111 #3] T212Provider."""
-    import providers.t212_provider as tp
     # 3. T212Provider
-    t_prov = tp.T212Provider.__new__(tp.T212Provider)
+    t_prov = T212Provider.__new__(T212Provider)
     assert t_prov.free_balance(True) is None
     assert t_prov.free_balance("   ") is None
     with pytest.raises(ProviderError):
@@ -1114,7 +1115,6 @@ def test_212trading_order_manager__persist_marker_and_integer_sanitization_iter1
 
 def test_periods_per_year_rejects_nan_inf_bool_and_non_positive_iter136_s1():
     """[ITER136 #1] periods_per_year rejects NaN, inf, bool, and non-positive values."""
-    from offline.runners.t212_walk_forward_baseline import periods_per_year
     # 1. periods_per_year rejects NaN, inf, bool, and non-positive values
     for bad_im in (float("nan"), float("inf"), -10, 0, True, "bad"):
         with pytest.raises(ValueError, match="interval_minutes must be positive"):
@@ -1123,7 +1123,6 @@ def test_periods_per_year_rejects_nan_inf_bool_and_non_positive_iter136_s1():
 
 def test_fx_quote_normalizes_whitespace_casing_and_rejects_empty_boolean_iter136_s2():
     """[ITER136 #2] fx_quote normalizes whitespace/casing and rejects empty/boolean currency."""
-    from offline.runners.t212_walk_forward_baseline import fx_quote
     # 2. fx_quote normalizes whitespace/casing and rejects empty/boolean currency
     assert fx_quote(" ron ") == ("USDRON=X", True)
     assert fx_quote(" eur ") == ("EURUSD=X", False)
@@ -1245,7 +1244,6 @@ def test_212trading_analyze_volatility_py_pct_pullbacks_iter150_s2():
 
 def test_t212provider__orders_live_rejects_nan_false_containers_iter152_s3():
     """[ITER152 #3] T212Provider _orders_live rejects NaN / 'false' / containers."""
-    from providers.t212_provider import _parse_bool_flag as t212_bool
     # 3. T212Provider _orders_live rejects NaN / "false" / containers
     assert t212_bool("false", True) is False
     assert t212_bool(float("nan"), False) is False
@@ -1261,12 +1259,11 @@ def test_t212provider__position_none_strict_false_returns_none_without_iter164_s
 
 def test_t212provider__signed_qty_aliases_and_positional_force_in_place_order_iter169_s4():
     """[ITER169 #4] T212Provider _signed_qty aliases and positional force in place_order."""
-    from providers import t212_provider as t212p
     # 4. T212Provider _signed_qty aliases and positional force in place_order
-    assert t212p.T212Provider._signed_qty("BID", 1.234) == pytest.approx(1.23)
-    assert t212p.T212Provider._signed_qty("ASK", 1.234) == pytest.approx(-1.23)
+    assert T212Provider._signed_qty("BID", 1.234) == pytest.approx(1.23)
+    assert T212Provider._signed_qty("ASK", 1.234) == pytest.approx(-1.23)
 
-    t212 = t212p.T212Provider(
+    t212 = T212Provider(
         client=SimpleNamespace(
             place_market_order=lambda symbol, signed_qty, extended_hours=False: (200, {"id": 98765, "quantity": signed_qty})
         ),

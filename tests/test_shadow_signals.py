@@ -8,21 +8,42 @@ stale direction.
 import contextlib
 import dataclasses
 import io
+import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from botcore import load_local_module
-import shadow_signals as ss
-import tradeall as ta
-from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+from botcore import (
+    load_local_module,
+    prepare_shadow_runtime,
+    require_shadow_interval,
+    sanitize_pipe_field,
+)
+from intelligence.macro.lexicon_ssot import (
+    filter_valid_severity_keywords,
+    match_high_severity_keywords,
+)
+from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+    enrich_sentiment_advisor_live_flow_divergence,
+)
+from intelligence.sentiment.evaluators.price_series_evaluator import (
+    compute_24h_price_metrics,
+    recalculate_live_price_geometry,
+)
+import pricewindow as pw
 from pricewindow import PriceWindow
+import shadow_signals as ss
 from shadow_signals import KalmanStateTracker
+import tradeall as ta
 
 
 class TestKalmanTrendContinuous(unittest.TestCase):
@@ -94,7 +115,6 @@ class TestKalmanTrendGapReset(unittest.TestCase):
 
     def test_long_gap_resets_trend_even_when_conf_exit_is_zero(self):
         """Even if CONF_EXIT is 0.0, a gap > GAP_RESET_SEC must reset trend to 0."""
-        import pricewindow as pw
         kf = ss.KalmanTrend()
         ts, price, out = self._warm_up_uptrend(kf, 1_000_000.0, 100.0)
         self.assertEqual(out["trend"], 1)
@@ -136,7 +156,6 @@ class TestShadowRuntime(unittest.TestCase):
     """Runtime setup idempotency and interval validation."""
 
     def test_prepare_shadow_runtime_is_idempotent(self):
-        from botcore import prepare_shadow_runtime
         with tempfile.TemporaryDirectory() as tmp_dir:
             old_val = os.environ.get("BINANCE_AUTO_START_WEBSOCKETS")
             try:
@@ -155,14 +174,12 @@ class TestShadowRuntime(unittest.TestCase):
                     sys.path.remove(tmp_dir)
 
     def test_shadow_interval_validation(self):
-        from botcore import require_shadow_interval
         require_shadow_interval(240, 240, "HL shadow")
         with self.assertRaisesRegex(ValueError, "240m"):
             require_shadow_interval(60, 240, "HL shadow")
 
     def test_kalman_60s_step_noise_transitions_after_60_samples(self):
         """At 60s sampling with adaptive step-noise epsilon, KalmanTrend must not lock at 0 after 60 samples."""
-        import numpy as np
         kf = ss.KalmanTrend()
         fed = []
         ts = 1_000_000.0
@@ -234,7 +251,6 @@ class TestShadowRuntime(unittest.TestCase):
 
     def test_kalman_state_tracker_ports_legacy_shadow_state_to_kalman_state(self):
         """KalmanStateTracker ports legacy shadow_state.json to cache_kalman_trend.json on init and loads state."""
-        import json
         with tempfile.TemporaryDirectory() as tmp_dir:
             legacy_path = os.path.join(tmp_dir, "shadow_state.json")
             new_path = os.path.join(tmp_dir, "cache_kalman_trend.json")
@@ -249,11 +265,6 @@ class TestShadowRuntime(unittest.TestCase):
 
     def test_tape_15m_range_bounds_and_non_crisis_wildlife_attack_filter(self):
         """15m_range includes -15m tape anchor, 3m covers up to 4.999m, and wildlife attack headlines are excluded."""
-        from intelligence.macro.lexicon_ssot import (
-            filter_valid_severity_keywords,
-            match_high_severity_keywords,
-        )
-
         headline = "Mother and daughter both killed in grizzly bear attack, Canadian authorities confirm - The Guardian"
         self.assertEqual(match_high_severity_keywords(headline), ())
         self.assertEqual(filter_valid_severity_keywords(["attack"], title=headline), ())
@@ -274,11 +285,6 @@ class TestShadowRuntime(unittest.TestCase):
 
     def test_wave11_sparse_horizon_bounds_7d_chg_clamp_and_5m_bull_flow_reversal(self):
         """1h does not steal a 3.7h bar on sparse series, recalculate_live_price_geometry clamps chg_7d_pct >= dd_7d_high_pct, and 5m selloff triggers LIVE_SELL_REVERSAL."""
-        from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-            enrich_sentiment_advisor_live_flow_divergence,
-        )
-        from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
-
         now_ms = 1_793_824_700_000
         rgnt_series = [
             [now_ms - int((1400 - i * 60) * 60_000), 1.40] for i in range(18)
@@ -513,7 +519,6 @@ if __name__ == "__main__":
 def test_sanitize_pipe_field_strips_cr_lf_pipe_and_kalmanstatetracker_current_trend_iter62_s3():
     """[ITER62 #3] sanitize_pipe_field strips CR/LF/pipe and KalmanStateTracker.current_trend fails closed on corrupt future ts."""
     # 3. sanitize_pipe_field strips CR/LF/pipe and KalmanStateTracker.current_trend fails closed on corrupt future ts
-    from botcore import sanitize_pipe_field
     assert sanitize_pipe_field("a|b\rc\nd") == "a/b c d"
     tracker = KalmanStateTracker(state_path=None, now_fn=lambda: 1000.0)
     tracker._state["BTCUSDC"] = {"kalman_trend": 1, "ts": 5000.0}
@@ -523,7 +528,6 @@ def test_sanitize_pipe_field_strips_cr_lf_pipe_and_kalmanstatetracker_current_tr
 
 def test_kalmanstatetracker_current_trend_rejects_non_integer_kalman_trend_like_and_iter71_s4():
     """[ITER71 #4] KalmanStateTracker.current_trend rejects non-integer kalman_trend like 1.9 and handles OverflowError."""
-    from types import SimpleNamespace
     # 4. KalmanStateTracker.current_trend rejects non-integer kalman_trend like 1.9 and handles OverflowError
     tracker = KalmanStateTracker(state_path=None, journal=SimpleNamespace(log_transition=lambda *a: None))
     tracker._state["BTCUSDC"] = {"ts": 1000.0, "kalman_trend": 1.9}
@@ -536,10 +540,8 @@ def test_kalmanstatetracker_current_trend_rejects_non_integer_kalman_trend_like_
 
 def test_shadow_runtime_require_shadow_interval_rejects_float_or_non_positive_expected_iter121_s4():
     """[ITER121 #4] shadow_runtime.require_shadow_interval rejects float or non-positive expected/interval."""
-    import pytest
-    import botcore as sr
     # 4. shadow_runtime.require_shadow_interval rejects float or non-positive expected/interval
     with pytest.raises(ValueError):
-        sr.require_shadow_interval(60.0, 60, "test")
+        require_shadow_interval(60.0, 60, "test")
     with pytest.raises(ValueError):
-        sr.require_shadow_interval(0, 0, "test")
+        require_shadow_interval(0, 0, "test")

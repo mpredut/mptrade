@@ -1,22 +1,33 @@
 """Focused tests for cross-process Binance account-cache reader versions."""
 
 import gzip
+import inspect
 import json
 import os
 import sys
 import tempfile
 import threading
+import time
+from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from binance_api import bapi_ws_bridge
 import account_cache_health as health
+from binance_api import (
+    bapi_allorders as allorders,
+    bapi_placeorder as placeorder,
+    bapi_trades as trades_mod,
+    bapi_ws_bridge,
+)
+import cacheaccount
+import cacheintegrity
 import cacheManager as cm
+from providers.strategy_executor import SubmissionRefused
+from state_io import stage_previous_generation
 from tests.conftest import TempDirTestCase
-from types import SimpleNamespace
 
 
 def _order(order_id, timestamp):
@@ -797,8 +808,6 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         self.assertEqual([first], manager.cache["BTCUSDC"])
 
     def test_restart_recovers_previous_generation_after_compaction_crash(self):
-        from state_io import stage_previous_generation
-
         first = _trade(1, 1000)
         writer = self._trade_manager([first], 1000)
         writer.save_state = True
@@ -1281,9 +1290,6 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             health.disable_writer(now_ms=4000)
 
     def test_main_claims_single_writer_before_health_and_cache_touch(self):
-        import inspect
-        import cacheaccount
-
         with open(cm.__file__, encoding="utf-8") as handle:
             source = handle.read()
         main = source.split('if __name__ == "__main__":', 1)[1]
@@ -1351,9 +1357,6 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             manager.shutdown()
 
     def test_consumer_get_trade_orders_auto_syncs_new_writer_generation(self):
-        from binance_api import bapi_allorders as allorders
-        from binance_api import bapi_trades as trades_mod
-
         now_ms = int(cm.time.time() * 1000)
         first_order = _order(1, now_ms - 5000)
         second_order = {**_order(2, now_ms - 1000), "price": "125"}
@@ -1635,7 +1638,6 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             cm.atomic_snapshot_file(
                 writer.filename, writer._previous_generation_path()
             )
-            import cacheintegrity
             v2_items = {"BTCUSDC": [first_order, second_order]}
             v2_ft = {"BTCUSDC": now_ms + 1000}
             v2_version = cacheintegrity.snapshot_data_version(v2_items)
@@ -1713,7 +1715,6 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
 
 class AccountCacheReaderConfirmationTest(unittest.TestCase):
     def setUp(self):
-        from binance_api import bapi_placeorder as placeorder
         self._placeorder = placeorder
         self.trade_enabled = patch.object(
             placeorder.cfg, "is_trade_enabled", return_value=True)
@@ -1745,7 +1746,6 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
             requested)
 
     def test_one_bounded_retry_loads_a_marker_that_advanced(self):
-        from unittest.mock import call
         first = self._status("order-1", "trade-1")
         advanced = self._status("order-2", "trade-2")
         cache_module = SimpleNamespace(
@@ -1765,7 +1765,6 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
         )
 
     def test_marker_becoming_stale_during_reader_load_refuses(self):
-        from providers.strategy_executor import SubmissionRefused
         requested = self._status("order-1", "trade-1")
         cache_module = SimpleNamespace(
             ensure_account_cache_readers=MagicMock())
@@ -1787,8 +1786,6 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
             requested)
 
     def test_data_sync_mode_reader_resync_regressions(self):
-        import time
-
         with self.subTest("non_append_trade_cache_get_last_opposite_fill_price_resyncs_disk_state"):
             tmp_dir = tempfile.mkdtemp()
             trade_file = os.path.join(tmp_dir, "cache_trade_kraken.json")
