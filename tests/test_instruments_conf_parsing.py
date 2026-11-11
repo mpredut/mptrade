@@ -1,25 +1,41 @@
 """Regression coverage for the authoritative instrument registry (instruments.conf)."""
+
+import ast
 import configparser
+import instrument_registry as registry
+import json
+import order_guard
 import os
-from pathlib import Path
+import pytest
 import subprocess
 import sys
 import textwrap
-import unittest
-
-import pytest
-import json
 import time
-from instrument_registry import InstrumentSpec, ROLES
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-from instrument import load_instruments, load_tradable_instruments  # noqa: E402
-import instrument_registry as registry  # noqa: E402
+import unittest
+from cacheprice import (
+    CachePriceManagerBase,
+    resolve_cached_symbol_price,
+    resolve_ssot_price_from_cache,
+)
+from cachetrend import CacheShortTrendManager
+from instrument import Instrument, load_instruments, load_tradable_instruments
+from instrument_registry import InstrumentSpec, ROLES, venue_for_symbol
+from intelligence.external.collectors import base_collector as obd_mod
+from intelligence.external.collectors.base_collector import _has_hyperliquid_instrument
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+from offline.research.backtest_ranges import scan_backtest_ranges
+from pathlib import Path
+from providers.base import MarketDataProvider, live_price_fetch_context
+from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import KrakenProvider
+from providers.market_api import MarketApi
 from tests.conftest import DummySpotExecutionProvider, SingleProviderApi, TempDirTestCase
 from types import SimpleNamespace
+from verify_tools.ownership_inventory import _python_symbols
+
+
+ROOT = Path(__file__).resolve().parents[1]
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 NUMERIC_MT_KEYS = [
@@ -179,7 +195,6 @@ class TestInstrumentsSingleSource(unittest.TestCase):
             getattr(registry, "nonexistentsymbol")
 
     def test_ownership_inventory_symbols_fallback(self):
-        from verify_tools.ownership_inventory import _python_symbols
         syms, tao = _python_symbols(ROOT)
         self.assertEqual(syms, ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
         self.assertEqual(tao, "TAOUSDC")
@@ -445,13 +460,6 @@ def test_load_tradable_instruments_duplicate_kraken_base(monkeypatch, tmp_path):
 
 
 def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
-    from providers.base import live_price_fetch_context
-    from providers.hyperliquid_provider import HyperliquidProvider
-    from providers.kraken_provider import KrakenProvider
-    from instrument_registry import venue_for_symbol
-    from intelligence.external.collectors.base_collector import (
-        _has_hyperliquid_instrument,
-    )
 
     now = time.time()
     price_cache = tmp_path / "cache_current_price.json"
@@ -516,7 +524,6 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     assert hist is not None and len(hist) == 12
 
     # Short-trend slope resolution lives canonically in CacheShortTrendManager (decoupled from providers)
-    from cachetrend import CacheShortTrendManager
 
     hl_snap = CacheShortTrendManager.read_ssot_short_trend_file(
         str(trend_cache), hl_prov._ssot_symbol_candidates("HYPEUSDC")
@@ -547,9 +554,6 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     assert _has_hyperliquid_instrument("ADAUSD") is False
 
     # SSOT orderbook payload normalization and collector reference price coupling
-    from cacheprice import CachePriceManagerBase, resolve_ssot_price_from_cache
-    from providers.base import MarketDataProvider
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
     assert resolve_ssot_price_from_cache("HYPEUSDC", cache_dir=str(tmp_path), now_ts=now) == pytest.approx(41.25)
     assert resolve_ssot_price_from_cache("ADAUSD", cache_dir=str(tmp_path), now_ts=now) == pytest.approx(0.725)
@@ -594,7 +598,6 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     assert "XBTUSD" in kr_prov._ssot_symbol_candidates("XXBTZUSD")
 
     # _resolve_configured_venue & _is_multi_venue_base inspect dict-based load_registry() without AttributeError
-    import intelligence.external.collectors.base_collector as obd_mod
     orig_load = registry.load_registry
     try:
         registry.load_registry = lambda path=None: {
@@ -610,9 +613,6 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
 
 
 def test_registry_execution_independence_and_layered_binding(tmp_path):
-    import ast
-    from cacheprice import resolve_cached_symbol_price
-    from instrument import Instrument
 
     # 1. AST hygiene: instrument_registry has zero imports of execution/cache/intelligence layers and zero reload()
     reg_src = (ROOT / "instrument_registry.py").read_text(encoding="utf-8")
@@ -685,8 +685,6 @@ if __name__ == "__main__":
 
 def test_marketapi_place_inherits_instrument_params_from_instrument_registry_bool_iter28_s4(monkeypatch):
     """[ITER28 #4] MarketApi.place inherits instrument params from instrument_registry & bool rejections."""
-    import order_guard
-    from providers.market_api import MarketApi
     # 4. MarketApi.place inherits instrument params from instrument_registry & bool rejections
     captured_bypasses = []
     orig_margins = dict(order_guard._load_margins())
@@ -742,7 +740,6 @@ def test_instrumentspec_programmatic_non_string_and_mixed_case_params_iter97_s1(
 
 def test_scan_backtest_ranges_rejects_bool_int_path_and_strips_trailing_iter139_s1(tmp_path):
     """[ITER139 #1] scan_backtest_ranges rejects bool/int path and strips trailing semicolon comments."""
-    from offline.research.backtest_ranges import scan_backtest_ranges
     # 1. scan_backtest_ranges rejects bool/int path and strips trailing semicolon comments
     assert scan_backtest_ranges(True) == {}  # type: ignore[arg-type]
     assert scan_backtest_ranges(1) == {}  # type: ignore[arg-type]

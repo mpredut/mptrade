@@ -6,21 +6,35 @@ Per-symbol power from instruments.conf (trend.step_wols_power):
   - Altcoins / Equities (TAOUSDC, HYPEUSD, ARBUSDC, ...): p=2.0 (Quadratic Step-WOLS)
 Supports p=1 (Linear), p=2 (Quadratic), p=3 (Cubic), and arbitrary powers p >= 0.
 """
-import math
-import os
-import sys
-from types import SimpleNamespace
-import unittest
-from unittest.mock import patch
 
-import numpy as np
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import pricewindow as pw
+import assetguardian as ag
 import cacheManager as cm
+import cachetrend
+import math
 import monitortrades as mt
+import numpy as np
+import os
+import pricewindow as pw
+import rtrade
+import shadow_signals as ss
 import time
+import unittest
+from binance_api.trailing_stop import TrailingStop
+from cachetrend import CacheShortTrendManager
+from intelligence.internal.state.persistence import calculate_hurst_exponent
+from intelligence.internal.state.survival import block_slopes, episodes
+from intelligence.internal.state.volatility import calculate_volatility_1h
+from intelligence.sentiment.evaluators.price_series_evaluator import apply_short_trend_item
+from kraken import trailing_stop as kt_mod
+from offline.research.monitortrades_backtest.replay_trend_source import (
+    DynamicReplayTrendSource,
+    ReplayTrendSource,
+)
+from providers.market_api import MarketApi, _runtime_market_regime_snapshot
+from shadow_signals import KalmanStateTracker
+from types import SimpleNamespace
+from unittest.mock import patch
+from visuals.drawprices import forecast_linear
 
 
 def _naive_step_wols(prices, power=None, symbol=None):
@@ -158,7 +172,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertEqual(ft_gated, 0)
 
     def test_scale_invariant_upward_formula(self):
-        from cachetrend import CacheShortTrendManager
         # Sparse window (n_samples=11 -> m=10): threshold is 0.25 * eps = 0.25
         self.assertFalse(CacheShortTrendManager._eval_upward_formula(
             {"growth_coefficient": 0.10, "epsilon": 1.0, "n_samples": 11}
@@ -166,7 +179,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertTrue(CacheShortTrendManager._eval_upward_formula(
             {"growth_coefficient": 0.30, "epsilon": 1.0, "n_samples": 11}
         ))
-        # Dense 1-second window (n_samples=222 -> m=221): threshold scales by sqrt(10/221) ≈ 0.2127 -> ~0.0532
+        # Dense 1-second window (n_samples=222 -> m=221): threshold scales by sqrt(10/221) ~ 0.2127 -> ~0.0532
         self.assertTrue(CacheShortTrendManager._eval_upward_formula(
             {"growth_coefficient": 0.10, "epsilon": 1.0, "n_samples": 222}
         ))
@@ -192,7 +205,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertAlmostEqual(win.get_recent_gradient(), expected2, places=11)
 
     def test_volatility_1h_uses_o1_trend_buf_via_price_deque(self):
-        from intelligence.internal.state.volatility import calculate_volatility_1h
         rng = np.random.default_rng(11)
         sample_px = [float(x) for x in (60000.0 + np.cumsum(rng.normal(0, 15.0, 400)))]
         win = pw.PriceWindow("BTCUSDC", 500, sample_rate_sec=1.0, window_seconds=9000.0)
@@ -205,7 +217,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertAlmostEqual(v_fast, v_list, places=4)
 
     def test_rtrade_effective_trend_filter_k_scale_invariance(self):
-        import rtrade
         with patch.object(rtrade, "RTRADE_TREND_FILTER_K", 2.0):
             self.assertEqual(rtrade._effective_trend_filter_k(None), 2.0)
             self.assertEqual(rtrade._effective_trend_filter_k({}), 2.0)
@@ -217,7 +228,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             )
 
     def test_per_symbol_fast_trend_window_tao_90s(self):
-        import cachetrend
         self.assertEqual(pw.fast_trend_window_for_symbol("TAOUSDC"), 90.0)
         self.assertEqual(pw.fast_trend_window_for_symbol("TAO"), 90.0)
         self.assertIsNone(pw.fast_trend_window_for_symbol("BTCUSDC"))
@@ -243,10 +253,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertEqual(queried, [("fallback", "BTCUSDC", None)])
 
     def test_replay_trend_source_fast_window_and_dynamic_noise_gate(self):
-        from offline.research.monitortrades_backtest.replay_trend_source import (
-            DynamicReplayTrendSource,
-            ReplayTrendSource,
-        )
         rts = ReplayTrendSource(["TAOUSDC", "BTCUSDC"])
         self.assertEqual(rts._windows["TAOUSDC"].window_seconds, 90.0)
         self.assertAlmostEqual(rts._windows["BTCUSDC"].window_seconds, 222.0, places=6)
@@ -311,7 +317,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertEqual(queried, [("SELL", "TAOUSDC", 90.0, False)])
 
     def test_market_api_regime_service_for_reuses_and_caches_services(self):
-        from providers.market_api import MarketApi
 
         api_inst = MarketApi([SimpleNamespace(name="dummy", supports_symbol=lambda s: True)])
         s_default = api_inst._regime_service_for(None)
@@ -324,7 +329,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertIs(s_custom1, s_custom2)
 
     def test_survival_flat_window_slopes_and_episodes(self):
-        from intelligence.internal.state.survival import block_slopes, episodes
         ts = np.arange(0.0, 200.0 * 3600.0, 3600.0)
         px_flat = np.full_like(ts, 100.0)
         bt, bs = block_slopes(ts, px_flat, window_h=24, step_h=8)
@@ -334,8 +338,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertEqual(eps, [])
 
     def test_hurst_and_forecast_linear_closed_form_ols_parity(self):
-        from intelligence.internal.state.persistence import calculate_hurst_exponent
-        from visuals.drawprices import forecast_linear
         rng = np.random.default_rng(42)
         prices = [float(x) for x in (1000.0 + np.cumsum(rng.normal(0.1, 1.5, 500)))]
         h = calculate_hurst_exponent(prices)
@@ -351,7 +353,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
         np.testing.assert_allclose(fp, m_ref * x_future + b_ref, rtol=1e-11, atol=1e-11)
 
     def test_kalman_state_tracker_current_trend_normalized_lookup(self):
-        from shadow_signals import KalmanStateTracker
         tracker = KalmanStateTracker(["TAOUSDC"])
         tracker._now = lambda: 1010.0
         tracker._state["TAOUSDC"] = {"ts": 1000.0, "kalman_trend": 1.0}
@@ -359,7 +360,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertEqual(tracker.current_trend("TAOUSDC"), (1, 10.0))
 
     def test_assetguardian_trend_defer_uses_fast_window_and_mem_published_window(self):
-        import assetguardian as ag
 
         now_ts = time.time()
         mgr = cm.CacheShortTrendManager(["TAOUSDC"])
@@ -390,8 +390,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertIn("trend_defer", new_state)
 
     def test_trailing_stop_trend_value_prefers_symbol_fast_window_when_available(self):
-        from binance_api.trailing_stop import TrailingStop
-        from kraken import trailing_stop as kt_mod
 
         now_ts = time.time()
         snap_tao = {
@@ -431,7 +429,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertAlmostEqual(kt_obj.trend("XBTUSD"), 0.04, places=6)
 
     def test_apply_short_trend_item_populates_growth_horizons(self):
-        from intelligence.sentiment.evaluators.price_series_evaluator import apply_short_trend_item
 
         entry = {}
         tinfo = {
@@ -452,7 +449,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertAlmostEqual(entry["growth_2_5h"], 0.08, places=6)
 
     def test_runtime_market_regime_snapshot_uses_symbol_fast_window(self):
-        from providers.market_api import _runtime_market_regime_snapshot
 
         w90 = {"growth_coefficient": -0.15, "gradient_recent": -0.15, "epsilon": 0.02, "window_seconds": 90.0, "ts": 1000.0}
         snap = {
@@ -470,7 +466,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertIs(_runtime_market_regime_snapshot("BTCUSDC", now=1001.0), snap)
 
     def test_kalman_grad_std_and_adaptive_thresholds_in_update(self):
-        import shadow_signals as ss
 
         fed = [100.0, 101.2, 100.8, 102.5, 103.1, 102.9, 104.0]
         ref_std = float(np.std(np.gradient(np.asarray(fed, dtype=float))))

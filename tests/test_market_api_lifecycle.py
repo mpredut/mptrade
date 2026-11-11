@@ -1,23 +1,47 @@
-import unittest
+import ast
+import botcore
+import importlib
+import market_regime
+import order_guard
+import pytest
 import time
-from unittest.mock import Mock, patch
-
+import unittest
+from cachepaths import (
+    is_primary_stream_venue,
+    is_readonly_xstock_symbol,
+    matches_asset_scope,
+    strip_equity_suffix,
+    uses_cycle_state_files,
+)
+from collections import defaultdict
 from market_regime import ClosedPriceSeries, MarketRegimeService
-from providers.base import MarketDataProvider
+from notify_engine.server import _resolve_provider_label
+from offline.backtests import datasets as ds, evaluation as ev, execution as ex, metrics as mt
+from pathlib import Path
+from providers import market_api as ma, order_ohlc_utils, strategy_executor as sexec
+from providers.base import ClosedPriceSeries as BaseClosedPriceSeries, MarketDataProvider
+from providers.binance_provider import BinanceProvider
+from providers.hyperliquid_provider import HyperliquidProvider
+from providers.intent_execution import resolve_intent_topic_tag
+from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi, _runtime_market_regime_snapshot, api
+from providers.order_ohlc_utils import (
+    ClosedPriceSeries as OhlcClosedPriceSeries,
+    candles_to_historical_points,
+    extract_yahoo_chart_latest_price,
+    extract_yahoo_chart_result_and_quote,
+)
+from providers.replay_provider import ReplayMarketDataProvider
 from providers.strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
     ProviderError,
+    StrategyExecutor,
+    SubmissionRefused,
 )
-import ast
-import providers.market_api as ma
-import pytest
-from pathlib import Path
-from providers.hyperliquid_provider import HyperliquidProvider
-from providers.kraken_provider import KrakenProvider
 from providers.t212_provider import T212Provider
-import botcore
+from strategies import replay_execution, replay_metrics
+from unittest.mock import Mock, patch
 
 
 class FakeProvider(MarketDataProvider):
@@ -366,7 +390,6 @@ def test_marketapi_latest_fill_price_and_market_regime_context_raise_valueerror_
 
 def test_market_api__parse_bool_flag_and_require_int_order_id_iter170_s1():
     """[ITER170 #1] market_api._parse_bool_flag and require_int_order_id."""
-    from providers import strategy_executor as sexec
     # 1. market_api._parse_bool_flag and require_int_order_id
     assert ma._parse_bool_flag("y", False) is True
     assert ma._parse_bool_flag("n", True) is False
@@ -437,13 +460,6 @@ def test_declarative_venue_attributes_and_unified_routing(monkeypatch):
 
 def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     """Enforce strict downward DAG across providers/ and verify unified submit_order, ClosedPriceSeries SSOT, and declarative intent tags."""
-    import market_regime
-    import order_guard
-    from providers.base import ClosedPriceSeries as BaseClosedPriceSeries
-    from providers.intent_execution import resolve_intent_topic_tag
-    from providers.order_ohlc_utils import ClosedPriceSeries as OhlcClosedPriceSeries
-    from providers.replay_provider import ReplayMarketDataProvider
-    from providers.strategy_executor import StrategyExecutor, SubmissionRefused
 
     root = Path(__file__).resolve().parents[1]
     base_src = (root / "providers" / "base.py").read_text(encoding="utf-8")
@@ -596,7 +612,6 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         )
 
     # Enforce 0 module-level SCCs and 0 top-level package SCCs across the entire repository
-    from collections import defaultdict
 
     venv_roots = {
         d.name
@@ -758,14 +773,6 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
 
 def test_replay_execution_metrics_and_config_ssot_identity(monkeypatch, tmp_path):
     """Verify canonical SSOT identity across botcore, order_ohlc_utils, strategies.replay_*, and offline.backtests.*."""
-    import importlib
-    import offline.backtests.datasets as ds
-    import offline.backtests.evaluation as ev
-    import offline.backtests.execution as ex
-    import offline.backtests.metrics as mt
-    from notify_engine.server import _resolve_provider_label
-    from providers import order_ohlc_utils
-    from strategies import replay_execution, replay_metrics
 
     assert ex.ExecutionModel is replay_execution.ExecutionModel
     assert ex.FeeModel is replay_execution.FeeModel
@@ -821,19 +828,6 @@ def test_replay_execution_metrics_and_config_ssot_identity(monkeypatch, tmp_path
 
 def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     """Lock Open-Closed Principle: all non-venue-adapter production modules across the repository contain zero venue name comparisons."""
-    from cachepaths import (
-        is_primary_stream_venue,
-        is_readonly_xstock_symbol,
-        matches_asset_scope,
-        strip_equity_suffix,
-        uses_cycle_state_files,
-    )
-    from providers.binance_provider import BinanceProvider
-    from providers.order_ohlc_utils import (
-        candles_to_historical_points,
-        extract_yahoo_chart_latest_price,
-        extract_yahoo_chart_result_and_quote,
-    )
 
     root = Path(__file__).resolve().parents[1]
     venue_tokens = {"binance", "kraken", "hyperliquid", "t212", "trading212"}
@@ -973,6 +967,5 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     monkeypatch.setattr("botcore.is_live_network_backfill_enabled", lambda: True)
     pts = facade.fetch_historical_ohlc_points("BTCUSDC", 7, interval="1h")
     assert len(pts) == 60
-
 
 

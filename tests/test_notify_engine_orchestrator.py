@@ -1,20 +1,45 @@
 """Consolidated tests for NotificationServer intent parsing, guard & price routing,
 log.py intent bypass, and test-environment isolation.
 """
+
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import numpy as np
+import order_retry
 import os
+import pytest
+import re
+import smtplib
+import subprocess
 import sys
 import tempfile
-from types import SimpleNamespace
-from unittest import mock
-
+from collections import defaultdict
+from intelligence.sentiment.gemini_client import GeminiClient
+from market_monitor import alerts_config, new_coins_discovery as ncd
+from market_monitor.new_coins_discovery import (
+    DexScreenerSource,
+    NewCoinsMonitor,
+    _safe_days_back,
+    safe_float as _safe_num,
+)
+from market_monitor.pricechecker import PRICE_ALERT_CONFIG, PriceAlert, PriceChecker
+from market_monitor.pricefetcher import StockYahooPricePlatform
+from notify_engine import mailer, server
 from notify_engine.alertnotifiers import (
     AlertNotifier,
+    _GATE_ACCEPTED_REASONS,
+    _GATE_SUPPRESSED_REASONS,
+    _dedup_seconds,
     _is_guard_alert,
     _mark_provider_daily_limit,
+    format_notify_price,
+    format_notify_qty,
+    format_owner_tags,
+    format_trade_notification,
+    format_trade_venue_tag,
     notify,
     pass_common_gate,
     pop_due_bulk_batch,
@@ -24,26 +49,36 @@ from notify_engine.alertnotifiers import (
 from notify_engine.server import (
     NotificationServer,
     _category_for_title_and_source,
+    _resolve_provider_label,
     _topic_for_category,
 )
-from market_monitor.pricechecker import PriceAlert, PriceChecker
-from market_monitor import alerts_config
-from notify_engine import mailer
-import asyncio
-import numpy as np
-import pytest
 from orchestratorOS.lib import watchdog_common
+from orchestratorOS.lib.technical_repair_ssot import (
+    format_supervisor_ntfy_notification,
+    recent_log_lines,
+)
+from orchestratorOS.livecheck import os_resources_watchdog as wd
 from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
+from orchestratorOS.supervisor.autonomous_ai_reconciler import (
+    AutonomousAIReconciler,
+    SupervisorAuditReport,
+)
+from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 from tests.conftest import MockHttpResponse, TempDirTestCase
+from types import SimpleNamespace
+from unittest import mock
+from unittest.mock import MagicMock
+from verify_tools import (
+    gen_alert_thresholds,
+    portfolio_snapshot as ps,
+    verify_account_facade as vaf,
+    watch_trade_decisions as wtd,
+)
+from visuals import drawprices
+from visuals.drawprices import min_max_scale, to_series
+
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _sub in (("orchestratorOS", "lib"), ("orchestratorOS", "livecheck")):
-    _p = os.path.join(ROOT_DIR, *_sub)
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-import os_resources_watchdog as wd  # noqa: E402
-import watchdog_common as wc  # noqa: E402
 
 
 class TestNotifyEngineOrchestrator(TempDirTestCase):
@@ -187,7 +222,6 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
     def test_server_topic_requires_canonical_key(self):
         """Verify resolve_topic('SERVER') requires NTFY_TOPIC_SERVER and does not fall back to aliases."""
-        from notify_engine import server
         with (
             mock.patch.dict(os.environ, {"NTFY_TOPIC_SERVER": "", "NTFY_TOPIC_DEADMAN": "fallback-deadman"}),
             mock.patch.object(server, "load_env_stack", lambda: None),
@@ -197,7 +231,6 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
     def test_provider_label_resolution(self):
         """Verify provider resolution strips coins and formats providers cleanly."""
-        from notify_engine.server import _resolve_provider_label
         self.assertEqual(_resolve_provider_label("Kraken-ADA", "kraken"), "Kraken")
         self.assertEqual(_resolve_provider_label("Kraken-TAO", "kraken"), "Kraken")
         self.assertEqual(_resolve_provider_label("HL-bot", "hyperliquid"), "Hyperliquid")
@@ -618,7 +651,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1, "Different alert within 5m gate must be buffered for bulk")
 
             # 4. 45 seconds later: SIMILAR repeat of buffered alert #1 (different price & order ID)
-            # Must be eliminated and increment repeat count (×2) on buffered item #1
+            # Must be eliminated and increment repeat count (x2) on buffered item #1
             with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 45):
                 diff_1_repeat = {
                     "type": "bot_event",
@@ -752,7 +785,6 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             self.assertNotIn("0.1686", bulk_msg["title"])
 
     def test_queue_retry_count_persistence_and_edge_cases(self):
-        from intelligence.sentiment.gemini_client import GeminiClient
 
         # 1. format_new_coin_message rejects NaN/non-positive prices
         msg_nan = AlertNotifier.format_new_coin_message({"symbol": "ABC", "price": float("nan")})
@@ -798,9 +830,6 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         self.assertEqual(cli.query_json("p1", cache_ttl_sec=60.0), {"a": 1})
 
     def test_orchestrator_reconciler_gateway_and_monitor_safety(self):
-        from orchestratorOS.lib.technical_repair_ssot import recent_log_lines
-        from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
-        from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 
         # 1. recent_log_lines: handles NaN file_mtime, None lines, and non-str items in lines
         self.assertEqual(recent_log_lines(None, 1000.0, 500.0), [])  # type: ignore[arg-type]
@@ -830,8 +859,6 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         self.assertEqual(sensors["geopolitical_threat"]["risk_score"], 0.65)
 
     def test_bulk_synthesis_strips_redundant_headers_and_preserves_full_summary(self):
-        from orchestratorOS.lib.technical_repair_ssot import format_supervisor_ntfy_notification
-        from orchestratorOS.supervisor.autonomous_ai_reconciler import SupervisorAuditReport
 
         report = SupervisorAuditReport(
             ts=1793669701.0,
@@ -1187,7 +1214,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertIn("Pre-midnight Beta", popped_after_midnight[0])
 
                 # 7. When a second error arrives after the gate opens and synthesizes a bulk with a buffered error,
-                #    _send_email receives only the single new error (not the synthesized '📦 Bulk')
+                #    _send_email receives only the single new error (not the synthesized 'Bulk')
                 mirrored_emails.clear()
                 t_err = midnight_after + 1000.0
                 with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t_err):
@@ -1230,7 +1257,7 @@ class SendNtfyRetryTest(TempDirTestCase):
     def test_retry_on_429_then_success(self):
         with mock.patch("requests.post") as mpost, mock.patch("time.sleep") as msleep:
             mpost.side_effect = [_WatchdogResp(429, {"Retry-After": "1"}), _WatchdogResp(200)]
-            ok = wc.send_ntfy("title", "message")
+            ok = watchdog_common.send_ntfy("title", "message")
         self.assertTrue(ok)
         self.assertEqual(mpost.call_count, 2)
         msleep.assert_called_once()
@@ -1238,8 +1265,8 @@ class SendNtfyRetryTest(TempDirTestCase):
     def test_daily_429_does_not_retry_and_blocks_following_attempts(self):
         with mock.patch("requests.post") as mpost, mock.patch("time.sleep"):
             mpost.return_value = _WatchdogResp(429, text='{"code":42908,"error":"daily limit reached"}')
-            ok = wc.send_ntfy("title", "message")
-            blocked = wc.send_ntfy("second title", "second message")
+            ok = watchdog_common.send_ntfy("title", "message")
+            blocked = watchdog_common.send_ntfy("second title", "second message")
         self.assertFalse(ok)
         self.assertFalse(blocked)
         self.assertEqual(mpost.call_count, 1)
@@ -1247,7 +1274,7 @@ class SendNtfyRetryTest(TempDirTestCase):
     def test_success_first_try_no_sleep(self):
         with mock.patch("requests.post") as mpost, mock.patch("time.sleep") as msleep:
             mpost.side_effect = [_WatchdogResp(200)]
-            ok = wc.send_ntfy("title", "message")
+            ok = watchdog_common.send_ntfy("title", "message")
         self.assertTrue(ok)
         self.assertEqual(mpost.call_count, 1)
         msleep.assert_not_called()
@@ -1399,7 +1426,6 @@ class EmailMirrorTest(TempDirTestCase):
         self.assertEqual(payload, {"__orchestrator_intent__": "email", "subject": "S", "message": "B"})
 
     def test_auth_rejected_email_is_not_queued_for_retry(self):
-        import smtplib
         with mock.patch.object(
             mailer, "_smtp_send", side_effect=smtplib.SMTPAuthenticationError(535, b"BadCredentials")
         ):
@@ -1469,7 +1495,6 @@ class EmailMirrorTest(TempDirTestCase):
         self.assertIn("SERVER DOWN", self.sent[0][0]["Subject"])
 
     def test_owner_tag_stripping_and_refused_guard_classification(self):
-        import order_retry
 
         self.assertEqual(strip_owner_tags("🎉 BUY BTCUSDC [ai_executor]"), "🎉 BUY BTCUSDC ")
         self.assertEqual(strip_owner_tags("📝 BUY HYPEUSD [spot_dca]"), "📝 BUY HYPEUSD ")
@@ -1527,7 +1552,6 @@ class EmailMirrorTest(TempDirTestCase):
             self.assertIsNotNone(batch)
             self.assertIn("Order 1002", batch[1])
 
-        from notify_engine.alertnotifiers import _GATE_ACCEPTED_REASONS, _GATE_SUPPRESSED_REASONS, _dedup_seconds, format_notify_price, format_notify_qty, format_owner_tags, format_trade_notification, format_trade_venue_tag
 
         b_same_mod, _, _, _ = synthesize_bulk_notifications([
             {"title": "SELL ARBUSDC@0.1692 [binance:assetguardian]", "body": "FILLED ~25.84 USDC", "priority": "urgent", "topic": "ntfy-trades-1978", "count": 1},
@@ -1553,7 +1577,6 @@ class EmailMirrorTest(TempDirTestCase):
         ])
         self.assertEqual(b_exec_pair, "📦 Bulk (2): SELL ARBUSDC [binance:ai_executor]")
 
-        import subprocess
         with tempfile.TemporaryDirectory() as bash_tmp:
             os.makedirs(os.path.join(bash_tmp, "logs"), exist_ok=True)
             script = f"""
@@ -1662,19 +1685,16 @@ def test_pricechecker__should_send_alert_recovers_from_nan_bool_last_time_and_it
 
 def test_portfolio_snapshot_kraken_rows_handles_nan__kraken_price_and_none_orders_iter56_s1(monkeypatch):
     """[ITER56 #1] portfolio_snapshot.kraken_rows handles NaN _kraken_price and None orders without ValueError/TypeError."""
-    import verify_tools.portfolio_snapshot as ps_mod
     # 1. portfolio_snapshot.kraken_rows handles NaN _kraken_price and None orders without ValueError/TypeError
-    monkeypatch.setattr(ps_mod, "_load_state", lambda pair: {"qty": 2.0, "cost": 100.0, "orders": None})
-    monkeypatch.setattr(ps_mod, "_kraken_price", lambda pair: float("nan"))
-    rows = ps_mod.kraken_rows()
-    assert len(rows) == len(ps_mod.KRAKEN_PAIRS)
+    monkeypatch.setattr(ps, "_load_state", lambda pair: {"qty": 2.0, "cost": 100.0, "orders": None})
+    monkeypatch.setattr(ps, "_kraken_price", lambda pair: float("nan"))
+    rows = ps.kraken_rows()
+    assert len(rows) == len(ps.KRAKEN_PAIRS)
     assert rows[0]["value_usd"] == 0.0
     assert rows[0]["open_orders"] == 0
 
 def test_dexscreenersource_refresh_rejects_bool_nan_listedat_and_newcoinsmonitor_iter56_s2(monkeypatch):
     """[ITER56 #2] DexScreenerSource.refresh rejects bool/NaN listedAt and NewCoinsMonitor handles non-numeric max_monitored_symbols."""
-    from unittest.mock import MagicMock
-    from market_monitor.new_coins_discovery import DexScreenerSource, NewCoinsMonitor
     # 2. DexScreenerSource.refresh rejects bool/NaN listedAt and NewCoinsMonitor handles non-numeric max_monitored_symbols
     fake_resp = MagicMock()
     fake_resp.status_code = 200
@@ -1719,7 +1739,6 @@ def test_fleethealthmonitor_handles_bool_nan_now_list_null_json_iter56_s3(tmp_pa
 
 def test_visuals_drawprices_py_to_series_and_min_max_scale_iter57_s2():
     """[ITER57 #2] visuals/drawprices.py to_series and min_max_scale."""
-    from visuals.drawprices import to_series, min_max_scale
     # 2. visuals/drawprices.py to_series and min_max_scale
     ts, prices, dt = to_series([
         (1700000000000, 100.0),
@@ -1750,7 +1769,6 @@ def test_mailer__config_rejects_out_of_range_tcp_ports_iter66_s4(monkeypatch):
 
 def test_pricechecker__readable_time_start_monitoring_and_new_coins_discovery__safe_days_back_iter66_s5():
     """[ITER66 #5] PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back."""
-    from market_monitor.new_coins_discovery import _safe_days_back, safe_float as _safe_num
     # 5. PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back
     assert isinstance(PriceChecker._readable_time((1e25, 100.0, None)), str)
     checker = PriceChecker(SimpleNamespace(original_symbols=[]))
@@ -1761,7 +1779,6 @@ def test_pricechecker__readable_time_start_monitoring_and_new_coins_discovery__s
 
 def test_visuals_drawprices_get_cache_for_symbol_and_min_max_inverse_iter77_s3():
     """[ITER77 #3] visuals.drawprices get_cache_for_symbol and min_max_inverse."""
-    from visuals import drawprices
     # 3. visuals.drawprices get_cache_for_symbol and min_max_inverse
     assert drawprices.get_cache_for_symbol("__NON_EXISTENT_SYMBOL__") == []
     inv_nan = drawprices.min_max_inverse(np.array([0.2, 0.8]), float("nan"), 10.0)
@@ -1771,9 +1788,7 @@ def test_visuals_drawprices_get_cache_for_symbol_and_min_max_inverse_iter77_s3()
 
 def test_notify_engine_server_process_line_handles_none_bool_negative_cooldown_minutes_iter77_s4():
     """[ITER77 #4] notify_engine.server process_line handles None/bool/negative cooldown_minutes and future last_time."""
-    import re
     # 4. notify_engine.server process_line handles None/bool/negative cooldown_minutes and future last_time
-    from collections import defaultdict
     svc = NotificationServer.__new__(NotificationServer)
     svc.traceback_buffers = defaultdict(list)
     svc.rules = [
@@ -1794,7 +1809,6 @@ def test_notify_engine_server_process_line_handles_none_bool_negative_cooldown_m
 
 def test_pricechecker__get_thresholds_for_symbol_handles_partial_or_invalid_per_coin_dicts_iter78_s1():
     """[ITER78 #1] PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts."""
-    from market_monitor.pricechecker import PRICE_ALERT_CONFIG
     # 1. PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts
     checker = PriceChecker(
         SimpleNamespace(symbol_added_time={}),
@@ -1856,7 +1870,6 @@ def test_alerts_config_resolve_normalizes_case_and_handles_none_per_coin_iter79_
 
 def test_gen_alert_thresholds__perc_and_suggest_input_validation_iter79_s3():
     """[ITER79 #3] gen_alert_thresholds._perc and suggest input validation."""
-    from verify_tools import gen_alert_thresholds
     # 3. gen_alert_thresholds._perc and suggest input validation
     assert gen_alert_thresholds._perc([], 85) == 0.0
     assert gen_alert_thresholds.suggest("BTC", days=False) is None
@@ -1878,7 +1891,6 @@ def test_watchdog_common_send_ntfy_strips_inline_comments_and_handles_full_iter1
 
 def test_stockyahoopriceplatform_splits_string_tickers_filters_non_strings_and_iter121_s4(monkeypatch):
     """[ITER121 #4] StockYahooPricePlatform splits string tickers, filters non-strings, and URL-encodes symbols."""
-    from market_monitor.pricefetcher import StockYahooPricePlatform
     # 4. StockYahooPricePlatform splits string tickers, filters non-strings, and URL-encodes symbols
     yahoo = StockYahooPricePlatform(tickers=" nvda_us_eq , spcx ")
     assert yahoo.get_available_symbols() == {"NVDA_US_EQ", "SPCX"}
@@ -1933,7 +1945,6 @@ def test_notificationserver__send_ntfy_strips_cr_lf_from_headers_and_iter122_s2(
 
 def test_newcoinsfactory_splits_comma_separated_string_enabled_sources_and_coinmarketcapsource_iter122_s3(monkeypatch):
     """[ITER122 #3] NewCoinsFactory splits comma-separated string enabled_sources and CoinMarketCapSource rejects whitespace api_key."""
-    from market_monitor import new_coins_discovery as ncd
     # 3. NewCoinsFactory splits comma-separated string enabled_sources and CoinMarketCapSource rejects whitespace api_key
     cmc_blank = ncd.CoinMarketCapSource(api_key="   ")
     assert cmc_blank.is_available() is False
@@ -1944,7 +1955,6 @@ def test_newcoinsfactory_splits_comma_separated_string_enabled_sources_and_coinm
 
 def test_portfolio_snapshot_run_alerts_treats_string_false_paper_flag_as_iter136_s4(tmp_path, monkeypatch):
     """[ITER136 #4] portfolio_snapshot.run_alerts treats string 'false' paper flag as a live position."""
-    from verify_tools import portfolio_snapshot as ps
     # 4. portfolio_snapshot.run_alerts treats string "false" paper flag as a live position
     alert_file = tmp_path / "alert_state.json"
     monkeypatch.setattr(ps, "ALERT_STATE", str(alert_file))
@@ -1955,13 +1965,12 @@ def test_portfolio_snapshot_run_alerts_treats_string_false_paper_flag_as_iter136
 
 def test_gen_alert_thresholds_resolve_id_strips_whitespace_for_exact_match_and_iter137_s1(monkeypatch):
     """[ITER137 #1] gen_alert_thresholds.resolve_id strips whitespace for exact match and rejects empty/bool symbols."""
-    from verify_tools import gen_alert_thresholds as gat
     # 1. gen_alert_thresholds.resolve_id strips whitespace for exact match and rejects empty/bool symbols
-    assert gat.resolve_id(None) == (None, None, None)
-    assert gat.resolve_id(True) == (None, None, None)
-    assert gat.resolve_id("   ") == (None, None, None)
+    assert gen_alert_thresholds.resolve_id(None) == (None, None, None)
+    assert gen_alert_thresholds.resolve_id(True) == (None, None, None)
+    assert gen_alert_thresholds.resolve_id("   ") == (None, None, None)
     monkeypatch.setattr(
-        gat,
+        gen_alert_thresholds,
         "_get",
         lambda _url: {
             "coins": [
@@ -1970,13 +1979,12 @@ def test_gen_alert_thresholds_resolve_id_strips_whitespace_for_exact_match_and_i
             ]
         },
     )
-    assert gat.resolve_id(" btc ") == ("bitcoin", "BTC", "Bitcoin")
-    assert gat.thresholds_from_prices([100.0 + i for i in range(30)], window=float("nan")) is None
-    assert gat.thresholds_from_prices([100.0 + i for i in range(30)], window="10.0") is not None
+    assert gen_alert_thresholds.resolve_id(" btc ") == ("bitcoin", "BTC", "Bitcoin")
+    assert gen_alert_thresholds.thresholds_from_prices([100.0 + i for i in range(30)], window=float("nan")) is None
+    assert gen_alert_thresholds.thresholds_from_prices([100.0 + i for i in range(30)], window="10.0") is not None
 
 def test_verify_account_facade_position_from_and_order_key_handle_both_legacy_quantity_iter137_s2():
     """[ITER137 #2] verify_account_facade.position_from and order_key handle both legacy (quantity, type, time) and normalized (qty, side, timestamp) dicts."""
-    from verify_tools import verify_account_facade as vaf
     # 2. verify_account_facade.position_from and order_key handle both legacy (quantity, type, time) and normalized (qty, side, timestamp) dicts
     avg, net = vaf.position_from(
         [{"price": "100.0", "quantity": "2.0", "time": 1700000000000, "type": "BUY"}],
@@ -1993,7 +2001,6 @@ def test_verify_account_facade_position_from_and_order_key_handle_both_legacy_qu
 
 def test_watch_trade_decisions_position_handles_buy_orders_with_missing_none_iter137_s3(monkeypatch):
     """[ITER137 #3] watch_trade_decisions.position handles buy orders with missing/None timestamps without TypeError."""
-    from verify_tools import watch_trade_decisions as wtd
     # 3. watch_trade_decisions.position handles buy orders with missing/None timestamps without TypeError
     monkeypatch.setattr(
         wtd.apiorders,

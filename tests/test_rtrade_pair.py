@@ -1,7 +1,27 @@
+import active_intents as ai
+import botcore
+import external_order_guard
+import json
+import math
+import monitororder as mo
+import order_guard
+import os
+import pytest
+import rtrade
+import tempfile
+import time
 import unittest
-from unittest.mock import MagicMock, Mock, patch
-
+from intelligence.external.collectors.whale_positioning_collector import (
+    WhalePositioningCollector,
+    WhalePositioningSnapshot,
+)
+from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files
+from pathlib import Path
+from providers.kraken_provider import KrakenProvider
 from providers.strategy_executor import PairPrecision, SubmissionRefused
+from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
+from strategies import rtrade_pair as rp, spot_engine as se, spot_replay as srep
 from strategies.rtrade_pair import (
     OrderSnapshot,
     OrderTicket,
@@ -10,18 +30,11 @@ from strategies.rtrade_pair import (
     anchored_exit_price,
     quote_prices,
 )
-import json
-import math
-import order_guard
-import pytest
-import rtrade
-import time
-from types import SimpleNamespace
-import os
-import tempfile
-from pathlib import Path
-from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
+from strategies.spot_engine import Strategy
+from strategies.spot_replay import run_replay
 from tests.conftest import TempDirTestCase, make_spot_test_params
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock, patch
 
 
 class FakeVenue:
@@ -998,7 +1011,6 @@ class PairCoordinatorTest(unittest.TestCase):
             self.assertEqual(outcome.reason, "hard_stop_recovery_pending")
 
 
-
 _RTRADE_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -1137,8 +1149,6 @@ class RTradeHeartbeatTest(unittest.TestCase):
             self.assertGreater(stale_s, 0.0, f"Process {label} must have a positive hb_stale_s in procs.conf")
 
     def test_touch_module_heartbeat_and_harvest_fleet_heartbeats(self):
-        import botcore
-        from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files
 
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "system" / "heartbeat").mkdir(parents=True, exist_ok=True)
@@ -1392,8 +1402,6 @@ def test__livepairvenue__submit_limit_intent_honours_rtrade_bypass_profit_guard_
 
 def test_rtrade__whale_flow_blocks_side_and__effective_adjustment_fraction_honor_gi_whale_bypass_iter14_s2(monkeypatch):
     """[ITER14 #2] rtrade._whale_flow_blocks_side and _effective_adjustment_fraction honor GI_WHALE bypass."""
-    import external_order_guard
-    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot, WhalePositioningCollector
     # 2. rtrade._whale_flow_blocks_side and _effective_adjustment_fraction honor GI_WHALE bypass
     collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
     collector.record_snapshot(
@@ -1440,7 +1448,6 @@ def test_rtrade_also_honors_whale_guard_mode_shadow_off_in_order_guard_iter14_s3
 
 def test_krakenprovider__fills_from_cache_rejects_nan_and_future_timestamps_accepts_iter22_s3(tmp_path, monkeypatch):
     """[ITER22 #3] KrakenProvider._fills_from_cache rejects NaN and future timestamps, accepts seconds."""
-    from providers.kraken_provider import KrakenProvider
     # 3. KrakenProvider._fills_from_cache rejects NaN and future timestamps, accepts seconds
     kp = KrakenProvider()
     cache_path = tmp_path / "cache_trade_kraken.json"
@@ -1468,7 +1475,6 @@ def test_krakenprovider__fills_from_cache_rejects_nan_and_future_timestamps_acce
 
 def test_collect_pretrade_telemetry_handles_non_numeric_slopes_and_empty_macro_iter22_s4(tmp_path, monkeypatch):
     """[ITER22 #4] collect_pretrade_telemetry handles non-numeric slopes and empty macro dicts."""
-    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
     # 4. collect_pretrade_telemetry handles non-numeric slopes and empty macro dicts
     (tmp_path / "cache_short_trend.json").write_text(
         json.dumps({"items": {"TAOUSDC": {"dynamic": {"222": {"slope_full": None}, "900": {"slope_full": "bad"}}}}}),
@@ -1481,9 +1487,6 @@ def test_collect_pretrade_telemetry_handles_non_numeric_slopes_and_empty_macro_i
 
 def test_spot_engine_set_simulated_time__evaluate_reentry_gate_ledger_reconciliation_and_peak_tracking_iter46_s1(tmp_path):
     """[ITER46 #1] spot_engine: set_simulated_time, _evaluate_reentry_gate, ledger reconciliation, and peak tracking & rtrade_pair: PairPolicy, quote_prices, anchored_exit_price, and clock/step NaN/bool rejection & spot_replay: _validate_replay and align_spot_interval_params NaN/bool protection."""
-    from strategies import spot_engine as se
-    from strategies import rtrade_pair as rp
-    from strategies import spot_replay as srep
     # 1. spot_engine: set_simulated_time, _evaluate_reentry_gate, ledger reconciliation, and peak tracking
     fake_client = SimpleNamespace(
         pair_precision=lambda _pair: PairPrecision(2, 4, 0.001, "BTC"),
@@ -1612,7 +1615,6 @@ def test_rtradepairstore_rejects_boolean_ids_and_non_finite_quantities_iter71_s2
 
 def test__should_notify_order_launched_treats_boolean_owner_as_true_not_suppressed_iter124_s2():
     """[ITER124 #2] _should_notify_order_launched treats boolean owner as True (not suppressed)."""
-    import monitororder as mo
     # 2. _should_notify_order_launched treats boolean owner as True (not suppressed)
     assert mo._should_notify_order_launched(True) is True
     assert mo._should_notify_order_launched("rtrade") is False
@@ -1694,7 +1696,6 @@ def test_rtrade_pair_orderticket_and_paircoordinator_from_state_hygiene_iter144_
 
 def test_active_intents_clean_order_id__parse_bool_flag__first__intent_row__walk_iter149_s1(tmp_path):
     """[ITER149 #1] active_intents: clean_order_id, _parse_bool_flag, _first, _intent_row, _walk."""
-    import active_intents as ai
     # 1. active_intents: clean_order_id, _parse_bool_flag, _first, _intent_row, _walk
     for bad in ("0", "0.0", "nan", "null", "none", "inf", True, ["1"], {"a": 1}, None, ""):
         assert ai.clean_order_id(bad) is None
@@ -1768,8 +1769,6 @@ def test_rtradepairstore_terminal_retention_float_string__clean_store_id_begin_q
 
 def test_strategy__sanitize_state_dict_strategy_init_boolean_flags_spot_replay_run_replay_iter155_s2(tmp_path):
     """[ITER155 #2] Strategy._sanitize_state_dict & Strategy init boolean flags & spot_replay.run_replay with include_decision_trace='false' and intrabar_high='false' & rtrade_pair OrderTicket & PairCoordinator pair_id / snapshot key validation."""
-    from strategies.spot_engine import Strategy
-    from strategies.spot_replay import run_replay
     # 2. Strategy._sanitize_state_dict & Strategy init boolean flags
     sanitized = Strategy._sanitize_state_dict({
         "orders": ["not_a_dict", {"txid": "0", "side": "buy", "market": "false"}],

@@ -1,16 +1,28 @@
 """Unit tests for Centralized PositionExitManager (MHDSL Stop-Loss & MDHTP Take-Profit Mirror)."""
 
-from decimal import Decimal
+import external_order_guard
+import json
 import math
-from types import SimpleNamespace
-import unittest
-
+import monitortrades as mt
+import order_guard
 import pytest
-
+import time
+import unittest
+from decimal import Decimal
+from intelligence.external.collectors.whale_positioning_collector import (
+    WhalePositioningCollector,
+    WhalePositioningSnapshot,
+)
+from intelligence.external.guards import smart_stop_loss_guard as ssl_mod
 from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerSide
+from intelligence.sentiment.guards import (
+    high_stake_guard as hs_mod,
+    post_stop_reentry_guard as ps_mod,
+)
+from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
 from market_regime import MarketRegimeHorizon
-import monitortrades as mt
+from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 from strategies.position_exit_manager import (
     ExitAction,
     PositionExitConfig,
@@ -20,7 +32,10 @@ from strategies.position_exit_manager import (
     ReentrySnapshot,
     _parse_bool_flag as pem_bool,
 )
-from strategies.spot_engine import _parse_bool_flag as se_bool
+from strategies.rtrade_pair import OrderSnapshot, PairPolicy
+from strategies.spot_engine import StratParams, Strategy, _new_state, _parse_bool_flag as se_bool
+from strategies.spot_replay import _ReplayClient
+from types import SimpleNamespace
 
 
 class TestPositionExitManager(unittest.TestCase):
@@ -964,9 +979,6 @@ class TestPositionReentryManager(unittest.TestCase):
         self.assertIn("mdhtp_peak_pullback", dec3.reason)
 
     def test_corrupted_state_and_strategy_helpers_safety(self):
-        from strategies.rtrade_pair import OrderSnapshot, PairPolicy
-        from strategies.spot_engine import Strategy, StratParams, _new_state
-        from strategies.spot_replay import _ReplayClient
 
         # 1. PositionExitManager corrupted state entries
         self.mgr.sl_bounce_state["BTCUSDT"] = "corrupt"
@@ -1136,14 +1148,6 @@ def test_positionexitmanager_preserves_episode_started_at_across_trend_up_flips_
 
 def test_get_post_stop_reentry_guard_honors_llm_guard_mode_and_intelligence_guards_mode_monitortrades__apply_post_stop_ai_guard__execute_reentry_buy_iter15_s1(monkeypatch, tmp_path):
     """[ITER15 #1] get_post_stop_reentry_guard honors llm_guard_mode and intelligence_guards_mode & monitortrades._apply_post_stop_ai_guard & _execute_reentry_buy preserve HighStakeGuard when PostStopReentryGuard is off/shadow & smart_stop_loss_guard._load_grace_state recovers from .previous and evaluate_smart_stop_loss honors external_guard_mode & external_order_guard caps whale_guard_mode='enforce' to 'shadow' when external_guard_mode='shadow' & AutonomousIntentGateway._get_live_price recovers from .previous and skips 0/NaN price entries."""
-    import json
-    import time
-    import external_order_guard
-    import order_guard
-    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
-    from intelligence.external.guards import smart_stop_loss_guard as ssl_mod
-    from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
-    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
     # 1. get_post_stop_reentry_guard honors llm_guard_mode and intelligence_guards_mode
     base_m = dict(order_guard._load_margins())
     m_llm_off = {**base_m, "post_stop_reentry_mode": "enforce", "llm_guard_mode": "off"}
@@ -1508,8 +1512,6 @@ def test_monitortrades__apply_post_stop_ai_guard_sanitizes_post_sell_trough_nan_
         ),
     )
 
-    import intelligence.sentiment.guards.post_stop_reentry_guard as ps_mod
-    import intelligence.sentiment.guards.high_stake_guard as hs_mod
     monkeypatch.setattr(ps_mod, "get_post_stop_reentry_guard", lambda: dummy_ps_guard)
     monkeypatch.setattr(hs_mod, "is_llm_guard_exempt", lambda: False)
     monkeypatch.setattr(mt, "_is_simulated_env_or_inst", lambda inst: False)

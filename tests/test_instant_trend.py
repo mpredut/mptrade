@@ -3,13 +3,39 @@
   - opportunistic gate (should_wait / wait_for_favorable_entry) and epsilon
   - calculation API and fast on_price_update channel
 """
-import os, sys, json, time, unittest
+
+import account_cache_health as bch
+import cacheManager as cm
+import cacheintegrity
+import json
+import numpy as np
+import order_guard
+import os
+import priceAnalysis as pa
+import pricewindow as pw_mod
+import subprocess
+import sys
+import threading
+import time
+import unittest
+from binance_api import bapi, bapi_allorders, bapi_trades, bapi_ws, bapi_ws_bridge
+from binance_api.bapi_ws import BinancePriceStream
+from cachepaths import migrate_legacy_filename_if_needed
+from cacheprice import HyperliquidPriceStream
+from decimal import Decimal
+from market_monitor import pricefetcher as pf
+from pricewindow import IncrementalTrendBuffer, instant_trend_from_prices
+from providers.base import extract_order_price, extract_timestamp_ms, extract_timestamp_s
+from providers.order_ohlc_utils import (
+    extract_order_fee,
+    extract_order_qty,
+    extract_order_side,
+    extract_remaining_qty,
+)
+from tests.conftest import TempDirTestCase, make_cache24_test_manager, make_synthetic_price_entries
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-import cacheintegrity
-import pricewindow as pw_mod
-from binance_api import bapi_allorders, bapi_trades, bapi_ws, bapi_ws_bridge
-from market_monitor import pricefetcher as pf
+
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
@@ -19,10 +45,6 @@ mock_api.client = MagicMock()
 sys.modules.setdefault("bapi", mock_api)
 sys.modules.setdefault("bapi_trades", MagicMock())
 sys.modules.setdefault("bapi_allorders", MagicMock())
-
-import cacheManager as cm
-from tests.conftest import TempDirTestCase, make_cache24_test_manager, make_synthetic_price_entries
-from binance_api.bapi_ws import BinancePriceStream
 
 
 def _make_cache24(symbol, entries, tmp):
@@ -43,9 +65,9 @@ class _ShortTrendMgrTestCase(TempDirTestCase):
         self.m = _mgr(self.tmp)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # Store + merge
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 class TestStore(_ShortTrendMgrTestCase):
 
     def test_basic_snapshot_operations(self):
@@ -54,7 +76,7 @@ class TestStore(_ShortTrendMgrTestCase):
             snap = self.m.get_snapshot("BTCUSDT")
             self.assertEqual(snap["gradient_recent"], -0.5)
             self.assertEqual(snap["symbol"], "BTCUSDT")
-        
+
         with self.subTest(msg="merge_preserves_fields"):
             self.m.update_snapshot("BTCUSDT", slope_big=5.0, gradient_recent=0.1)
             self.m.update_snapshot("BTCUSDT", gradient_recent=-0.9)
@@ -72,7 +94,7 @@ class TestStore(_ShortTrendMgrTestCase):
             m.update_snapshot("BTCUSDT", gradient_recent=0.5)
             self.assertFalse(os.path.exists(fname))     # A non-writer does not write.
             self.assertIsNotNone(m.get_snapshot("BTCUSDT"))  # It still retains memory state.
-        
+
         with self.subTest(msg="writer writes file"):
             fname = os.path.join(self.tmp, "w.json")
             m = cm.CacheShortTrendManager(["BTCUSDT"], fname, data_sync_mode="producer")
@@ -160,9 +182,9 @@ class TestStore(_ShortTrendMgrTestCase):
             self.assertEqual(reader.get_snapshot("BTCUSDT")["gradient_recent"], -0.9)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # Gate + epsilon
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 class TestGate(_ShortTrendMgrTestCase):
 
     def _pub(self, **f):
@@ -213,9 +235,9 @@ class TestGate(_ShortTrendMgrTestCase):
             self.assertFalse(self.m.should_wait("BUY", "BTCUSDT"))
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # Calculation API and fast channel (start_computation / on_price_update).
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 class TestComputation(TempDirTestCase):
     def setUp(self):
         super().setUp()
@@ -232,7 +254,7 @@ class TestComputation(TempDirTestCase):
             self.assertIsNotNone(self.m.get_window("BTCUSDT"))
             self.assertIsNotNone(self.m.get_window("BTCUSDT", self.m.window_big_sec))
             self.assertIsNotNone(self.m.get_analyzer("BTCUSDT"))
-            
+
         with self.subTest(msg="get instant trend"):
             ft, gc, sf, gr = self.m.get_short_trend("BTCUSDT")
             self.assertIn(ft, (-1, 0, 1))
@@ -246,7 +268,7 @@ class TestComputation(TempDirTestCase):
             self.assertIn("epsilon", snap)
             self.assertEqual(snap["current_price"], 60500.0)
             self.assertEqual(snap["ts_fast"], ts_ms / 1000.0)
-            
+
         with self.subTest(msg="cache24 tick updates window and snapshot"):
             win = self.m.get_window("BTCUSDT")
             n_before = len(win.prices)
@@ -384,11 +406,11 @@ class TestComputation(TempDirTestCase):
         self.assertTrue(m2._full_eval_thread.is_alive())
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # Dynamic window: get_short_trend_for_window, is_trend_up_for_window, and
 # should_wait(window_seconds=...) calculate on demand from raw Cache24 data
 # instead of using the two fixed precomputed windows.
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 def _entries_trending(n, interval_sec, start, delta, end_offset_sec=0.0):
     """Build a strictly monotonic price series ending ``end_offset_sec`` ago.
 
@@ -470,7 +492,7 @@ class TestDynamicWindow(TempDirTestCase):
             m.update_snapshot("BTCUSDT", growth_coefficient=5.0, ts=time.time())
             self.assertFalse(m.should_wait("BUY", "BTCUSDT"))
             self.assertTrue(m.should_wait("BUY", "BTCUSDT", window_seconds=60, use_noise_gate=False))
-            
+
         with self.subTest(msg="dynamic sell side"):
             m = self._mgr_with_cache24(self._cache24_up(delta=5.0))
             self.assertTrue(m.should_wait("SELL", "BTCUSDT", window_seconds=60, use_noise_gate=False))
@@ -506,8 +528,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
     """Verify O(1) prefix-sum trend buffer, 24trend/ persistence, provider timestamps, and renamings."""
 
     def test_incremental_buffer_matches_exact_formula_with_trims_and_appends(self):
-        import numpy as np
-        from pricewindow import IncrementalTrendBuffer, instant_trend_from_prices
 
         rng = np.random.default_rng(123)
         prices = 60000.0 + np.cumsum(rng.normal(0.5, 4.0, 400))
@@ -723,7 +743,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertFalse(os.path.exists(sparse_file + ".previous"))
 
     def test_cachetrend_first_import_order_has_no_circular_error(self):
-        import subprocess
         code = (
             "import sys; from unittest.mock import MagicMock; "
             "sys.modules['bapi'] = MagicMock(); "
@@ -892,7 +911,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertFalse(reader.should_wait("SELL", "BTCUSDT", window_seconds=900, now=now_sec))
 
     def test_legacy_migration_respects_previous_and_ws_bridge_init_rollback(self):
-        from cachepaths import migrate_legacy_filename_if_needed
 
         mig_dir = os.path.join(self.tmp, "mig")
         os.makedirs(mig_dir, exist_ok=True)
@@ -1049,12 +1067,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(bapi_ws.BinanceAccountStream._classify(None), ("event", {}))
 
         # providers.base extractors reject bool values instead of treating True as 1.0 or "TRUE"
-        from providers.base import extract_order_price
-        from providers.order_ohlc_utils import (
-            extract_order_qty,
-            extract_order_side,
-            extract_remaining_qty,
-        )
 
         self.assertEqual(extract_order_price({"price": True}), 0.0)
         self.assertEqual(extract_order_price({"cost": True, "vol": 1.0}), 0.0)
@@ -1458,8 +1470,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
 
     def test_audit39_health_pid_overflow_and_sub_satoshi_aggregation_and_ws_classify(self):
         """Audit #39: _pid_is_alive overflow guard, sub-satoshi get_filled_orders/aggregate_trades, and _classify non-dict inner event."""
-        import threading
-        import account_cache_health as bch
 
         # 1. _pid_is_alive guards against OverflowError / invalid PIDs without raising
         self.assertFalse(bch._pid_is_alive(2**80))
@@ -1513,12 +1523,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
 
     def test_audit40_update_frequency_expiry_and_bapi_timestamp_guards(self):
         """Audit #40: get_update_frequency prunes expired samples, _ws_is_healthy guards clock rollback, and base/bapi timestamp & fee guards."""
-        from binance_api import bapi
-        from providers.base import (
-            extract_timestamp_ms,
-            extract_timestamp_s,
-        )
-        from providers.order_ohlc_utils import extract_order_fee
 
         # 1. CacheCurrentPriceManager._ws_is_healthy rejects far-future _ws_last_event_ts caused by clock rollback
         cpm = cm.CacheCurrentPriceManager(
@@ -1570,7 +1574,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
 
     def test_audit41_primary_window_float_precision_and_price_coercion(self):
         """Audit #41: CacheShortTrendManager primary window 222.0 exact matching, price coercion in Cache24/Sparse/CurrentPrice, and bapi_ws_health mirroring."""
-        from decimal import Decimal
 
         # 1. WINDOW_SECONDS[0] is exact 222.0 and matches both 222 and 3.7*60 without duplicate evaluation
         stm = cm.CacheShortTrendManager(
@@ -1630,7 +1633,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
 
     def test_audit42_long_trend_neutral_snapshot_and_pricefetcher_guards(self):
         """Audit #42: explicit trailing None in cache_long_trend.json stops reverse scan, order_guard recovers .previous, and pricefetcher guards malformed entries."""
-        import order_guard
 
         # 1. Explicit trailing None in cache_long_trend.json is a neutral snapshot and does not resurrect stale entry
         lt_path = os.path.join(self.tmp, "cache_long_trend.json")
@@ -1696,7 +1698,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
 
     def test_audit43_live_and_hist_trend_files_recover_from_previous(self):
         """Audit #43: 24trend/live_<SYMBOL>.json, hist_<SYMBOL>.json, and priceanalysis.json stage and recover .previous."""
-        import priceAnalysis as pa
 
         stm = cm.CacheShortTrendManager(
             ["BTCUSDT"], os.path.join(self.tmp, "st_audit43.json"), data_sync_mode="producer"
@@ -1866,7 +1867,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertFalse(stm.is_trend_up("BTCUSDT", now=now_sec))
 
 
-
 _WS_BRIDGE_SYMBOLS = ["BTCUSDC"]
 
 
@@ -1990,7 +1990,6 @@ class TestWsBridgeIntegration(TempDirTestCase):
         self.assertEqual(entries[0][1], 58000.0)
 
     def test_hyperliquid_price_stream_resolve_env_user_address(self):
-        from cacheprice import HyperliquidPriceStream
 
         with unittest.mock.patch.dict(os.environ, {"HL_ACCOUNT_ADDRESS": "0xabc123"}):
             hl_ws = HyperliquidPriceStream(symbols=["HYPE"], resolve_env_user_address=True)

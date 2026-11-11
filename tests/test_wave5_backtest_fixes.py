@@ -1,14 +1,41 @@
 """Targeted regression tests for Wave 5 backtest, replay, runner, and research fixes."""
+
 from __future__ import annotations
 
+import botcore
+import importlib
 import math
-import shutil
-import subprocess
-from pathlib import Path
-from unittest.mock import patch
-
 import numpy as np
 import pytest
+import shutil
+import subprocess
+import utils
+from offline.backtests import tradeall as bt_ta
+from offline.backtests.comparison import pareto_frontier, relative_to_baseline
+from offline.backtests.evaluation import load_venue_module
+from offline.backtests.execution_calibration import calibrate_execution_events
+from offline.backtests.hype_candidates import Candidate, default_candidates
+from offline.backtests.metrics import calculate_performance_metrics, run_tp_drop_sl_sweep
+from offline.backtests.promotion import _assumption_signature, _relative_change, evaluate_promotion
+from offline.research import (
+    chop_weight_backtest as cwb,
+    intelligence_backtest as ib,
+    short_trend_estimator_benchmark as stb,
+)
+from offline.research.kraken_continuous_grid import report3
+from offline.research.monitortrades_backtest import scheduled_pilot as sp
+from offline.simulations.sim import PriceWindow
+from pathlib import Path
+from state_io import atomic_write_jsonl
+from strategies.position_exit_manager import (
+    PositionExitConfig,
+    PositionExitManager,
+    ReentrySnapshot,
+)
+from strategies.spot_engine import StratParams
+from strategies.spot_replay import run_replay
+from unittest.mock import patch
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -77,11 +104,6 @@ def test_wave5_ascii_and_shell_syntax_hygiene():
 
 
 def test_batch_a_position_exit_manager_zero_pullback_trend_bypass():
-    from strategies.position_exit_manager import (
-        PositionExitConfig,
-        PositionExitManager,
-        ReentrySnapshot,
-    )
 
     snap = ReentrySnapshot(
         symbol="BTCUSD",
@@ -123,8 +145,6 @@ def test_batch_a_position_exit_manager_zero_pullback_trend_bypass():
 
 
 def test_batch_a_spot_replay_cycle_wins_and_finite_cash():
-    from strategies.spot_engine import StratParams
-    from strategies.spot_replay import run_replay
 
     # Multi-tranche TP cycle counts at most 1 win per closed cycle (wins <= cycles)
     params = StratParams(
@@ -156,7 +176,6 @@ def test_batch_a_spot_replay_cycle_wins_and_finite_cash():
 
 
 def test_batch_a_hyperliquid_replay_multihour_funding_and_sl_vs_dca():
-    from offline.backtests.evaluation import load_venue_module
 
     hl_rp = load_venue_module("hyperliquid", "replay.py", "hl_replay_wave5_test")
 
@@ -214,7 +233,6 @@ def test_batch_a_hyperliquid_replay_multihour_funding_and_sl_vs_dca():
 
 
 def test_batch_b_comparison_pareto_all_invalid_and_bool_window_exclusion():
-    from offline.backtests.comparison import pareto_frontier, relative_to_baseline
 
     bad_items = {
         "nan_cand": {"mean_return_pct": None, "worst_max_drawdown_pct": 5.0},
@@ -239,7 +257,6 @@ def test_batch_b_comparison_pareto_all_invalid_and_bool_window_exclusion():
 
 
 def test_batch_b_execution_calibration_partial_cancel_cost_and_market_exclusion():
-    from offline.backtests.execution_calibration import calibrate_execution_events
 
     valid_cid = "a" * 32
     events = [
@@ -333,8 +350,6 @@ def test_batch_b_execution_calibration_partial_cancel_cost_and_market_exclusion(
 
 
 def test_batch_b_metrics_absorbing_ruin_and_promotion_zero_base_and_assumptions():
-    from offline.backtests.metrics import calculate_performance_metrics, run_tp_drop_sl_sweep
-    from offline.backtests.promotion import _assumption_signature, _relative_change
 
     # Absorbing ruin: equity hits 0 at bar 1, goes negative at bar 2, stays <= 0 at bar 3
     perf = calculate_performance_metrics(
@@ -355,7 +370,6 @@ def test_batch_b_metrics_absorbing_ruin_and_promotion_zero_base_and_assumptions(
 
 
 def test_batch_b_tradeall_backtest_positive_order_ids_and_state_isolation(tmp_path):
-    from offline.backtests import tradeall as bt_ta
 
     clock = bt_ta.SimClock()
     clock.ts = 1700000000.0
@@ -392,8 +406,6 @@ def test_batch_b_tradeall_backtest_positive_order_ids_and_state_isolation(tmp_pa
 
 
 def test_batch_c_classic_tp_disables_mdhtp_and_pilot_missing_key_guard(tmp_path, monkeypatch):
-    from offline.backtests.hype_candidates import Candidate, default_candidates
-    from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
     raw_ov = {"takeprofit_pct": 4.0}
     cand = Candidate("custom", "desc", raw_ov)
@@ -424,12 +436,6 @@ def test_batch_c_classic_tp_disables_mdhtp_and_pilot_missing_key_guard(tmp_path,
 
 
 def test_batch_d_chop_intelligence_short_trend_report3_and_sim_window(tmp_path, monkeypatch):
-    from offline.research import chop_weight_backtest as cwb
-    from offline.research import intelligence_backtest as ib
-    from offline.research import short_trend_estimator_benchmark as stb
-    from offline.research.kraken_continuous_grid import report3
-    from offline.simulations.sim import PriceWindow
-    from state_io import atomic_write_jsonl
 
     # 1. Chop backtest rejects invalid policy even on empty series and guards NaN weights
     with pytest.raises(ValueError, match="Unknown chop policy"):
@@ -505,10 +511,6 @@ def test_batch_d_chop_intelligence_short_trend_report3_and_sim_window(tmp_path, 
 
 
 def test_botcore_cache_path_reload_and_sequence_timestamp_extraction(monkeypatch):
-    import importlib
-    import botcore
-    import utils
-    from offline.backtests.promotion import evaluate_promotion
 
     # 1. Reloading botcore does not trigger RecursionError in botcore.cache_path / utils.cache_path
     importlib.reload(botcore)
