@@ -30,7 +30,7 @@ if ROOT not in sys.path:
 from botcore import normalize_epoch_sec, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_path, canonical_base_asset
 from instrument_registry import symbols_for
-from priceAnalysis import get_trade_weight
+from intelligence.internal.state.survival import get_trade_weight
 from providers.replay_provider import load_price_series
 from state_io import atomic_write_json
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger

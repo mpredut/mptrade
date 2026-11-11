@@ -42,7 +42,7 @@ from botcore import (  # noqa: E402
     safe_nonneg_float,
     safe_pos_float,
 )
-from priceAnalysis import detect_long_term_trend as _root_detect_long_term_trend  # noqa: E402
+from intelligence.internal.state.persistence import detect_long_term_trend as _root_detect_long_term_trend  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
 _common_mod = load_local_module(_HERE, "common")

@@ -9,7 +9,7 @@ from decimal import Decimal, ROUND_DOWN
 # Financial policy and operational invariants are documented in docs/RTRADE.md.
 # Effective configuration remains in config.env.
 
-import cacheManager as cm
+import cachetrend as cm
 import external_order_guard as eog
 from botcore import (
     _parse_bool_flag,

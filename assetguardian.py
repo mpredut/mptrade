@@ -25,7 +25,9 @@ from intelligence.macro_sentiment_ssot import load_cached_sentiment_advisor_eval
 import order_guard as _og
 import pricewindow as pw
 
-import cacheManager as cm
+from cacheaccount import get_asset_value_manager
+from cacheprice import get_24_price_manager
+import cachetrend as cm
 from instrument_registry import casefold_get, symbols_for
 
 # Load tunable parameters from the versioned, secret-free config before reading
@@ -286,7 +288,7 @@ def _price_row(row):
 def _read_symbol_price_rows(symbol):
     """Copy one symbol's shared 24h price history under the manager lock."""
     try:
-        managers = cm.get_cache_manager("24Price", symbols=list(TRACKED_SYMBOLS))
+        managers = get_24_price_manager(symbols=list(TRACKED_SYMBOLS))
         manager = casefold_get(managers, symbol) if isinstance(managers, dict) else None
         if manager is None:
             print(f"ERROR 24Price manager missing for {symbol}")
@@ -413,7 +415,7 @@ def _get_symbol_window_extrema(symbol, current_price,
 def _read_total_asset_value_rows():
     """Copy shared TOTAL portfolio USDC history from AssetValue cache."""
     try:
-        manager = cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
+        manager = get_asset_value_manager(symbols=["TOTAL"])
         if manager is None:
             return []
         if hasattr(manager, "resync_mem_file"):
@@ -422,7 +424,7 @@ def _read_total_asset_value_rows():
             rows = list(manager.cache.get("TOTAL", []))
         return rows
     except Exception as exc:
-        print(f"ERROR reading AssetValue cache via cacheManager: {exc}")
+        print(f"ERROR reading AssetValue cache: {exc}")
         return []
 
 

@@ -24,6 +24,7 @@ import builtins
 from collections import defaultdict, deque
 import concurrent.futures as _futures
 import os
+import sys
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -41,6 +42,7 @@ from botcore import (
     is_us_rth_open,
     load_dotenv,
     normalize_timestamp_ms,
+    parse_symbol_list,
     required_float_env,
     required_int_env,
     resolve_now_ms,
@@ -86,6 +88,7 @@ from instrument_registry import (
     casefold_get,
     is_equity_symbol,
     is_symbol_market_open,
+    tracked_price_instruments,
 )
 import providers.market_api as _market_api
 from providers.base import (
@@ -2299,5 +2302,203 @@ def stop_price_ws_streams(shutdown_deadline: float) -> None:
         _bn_price_prov_cls.stop_price_ws_manager(
             timeout=min(0.3, max(0.05, shutdown_deadline - _monotonic_time()))
         )
+
+
+SPARSE_PRICE_SYNC_INTERVAL_SEC = 3 * 60
+PRICE_24_SYNC_INTERVAL_SEC = 30
+CURRENT_PRICE_SYNC_INTERVAL_SEC = 30
+_READONLY_PRICE_LOCK = threading.RLock()
+_READONLY_PRICE_READERS: dict[str, Any] = {}
+
+
+def get_current_price_manager(
+    ws_manager=None,
+    symbols=None,
+    sync_ts=None,
+    provider_names=None,
+    read_only=None,
+    *,
+    data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
+) -> CacheCurrentPriceManager:
+    """Return or lazily create the ``CacheCurrentPriceManager`` singleton (disk_reader by default)."""
+    cm_mod = sys.modules.get("cacheManager")
+    if cm_mod is not None:
+        cm_fn = getattr(cm_mod, "get_current_price_manager", None)
+        if callable(cm_fn) and getattr(cm_fn, "_is_ssot_current_price_getter", None) is not True:
+            if (
+                ws_manager is None
+                and symbols is None
+                and sync_ts is None
+                and provider_names is None
+                and read_only is None
+                and data_sync_mode == CacheManagerInterface.MODE_DISK_READER
+            ):
+                return cm_fn()
+            return cm_fn(
+                ws_manager=ws_manager,
+                symbols=symbols,
+                sync_ts=sync_ts,
+                provider_names=provider_names,
+                read_only=read_only,
+                data_sync_mode=data_sync_mode,
+            )
+        factory = getattr(cm_mod, "CacheFactory", None)
+        if factory is not None:
+            return factory.get(
+                "CurrentPrice",
+                symbols=symbols,
+                data_sync_mode=data_sync_mode,
+                provider_names=provider_names,
+                ws_manager=ws_manager,
+                sync_ts=sync_ts,
+                read_only=read_only,
+            )
+
+    resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(data_sync_mode)
+    if ws_manager is not None and resolved_mode == CacheManagerInterface.MODE_DISK_READER:
+        resolved_mode = CacheManagerInterface.MODE_LIVE_READER
+    with _READONLY_PRICE_LOCK:
+        inst = _READONLY_PRICE_READERS.get("CurrentPrice")
+        if (
+            inst is not None
+            and symbols is None
+            and not provider_names
+            and ws_manager is None
+            and sync_ts is None
+            and not save_state_flag
+            and not start_periodic
+        ):
+            return inst
+        default_symbols, _, default_providers = tracked_price_instruments()
+        eff_symbols = (
+            default_symbols
+            if symbols is None
+            else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
+        )
+        eff_providers = default_providers if (provider_names is None and default_providers) else provider_names
+        eff_read_only = (
+            _parse_bool_flag(read_only, default=False)
+            if read_only is not None
+            else (not save_state_flag and not start_periodic)
+        )
+        inst = CacheCurrentPriceManager(
+            sync_ts=CURRENT_PRICE_SYNC_INTERVAL_SEC if sync_ts is None else sync_ts,
+            symbols=eff_symbols,
+            filename=CacheCurrentPriceManager.DEFAULT_FILENAME,
+            ws_manager=ws_manager,
+            provider_names=eff_providers,
+            read_only=eff_read_only,
+            data_sync_mode=resolved_mode,
+        )
+        if symbols is None and not provider_names and ws_manager is None:
+            _READONLY_PRICE_READERS["CurrentPrice"] = inst
+        return inst
+
+
+get_current_price_manager._is_ssot_current_price_getter = True  # type: ignore[attr-defined]
+
+
+def _get_per_symbol_price_managers(
+    cache_name: str,
+    manager_cls: type,
+    default_sync_ts: float,
+    *,
+    symbols=None,
+    data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
+    getter_tag: str,
+    cm_getter_name: str,
+):
+    cm_mod = sys.modules.get("cacheManager")
+    if cm_mod is not None:
+        cm_fn = getattr(cm_mod, cm_getter_name, None)
+        if callable(cm_fn) and getattr(cm_fn, getter_tag, None) is not True:
+            if symbols is None and data_sync_mode == CacheManagerInterface.MODE_DISK_READER:
+                return cm_fn()
+            return cm_fn(symbols=symbols, data_sync_mode=data_sync_mode)
+        cm_gcm = getattr(cm_mod, "get_cache_manager", None)
+        if callable(cm_gcm) and getattr(cm_gcm, "_is_ssot_cache_manager_getter", None) is not True:
+            if symbols is None and data_sync_mode == CacheManagerInterface.MODE_DISK_READER:
+                return cm_gcm(cache_name)
+            return cm_gcm(cache_name, symbols, data_sync_mode=data_sync_mode)
+        factory = getattr(cm_mod, "CacheFactory", None)
+        if factory is not None:
+            return factory.get(cache_name, symbols=symbols, data_sync_mode=data_sync_mode)
+
+    resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(data_sync_mode)
+    eff_symbols = (
+        tracked_price_instruments()[0]
+        if symbols is None
+        else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
+    )
+    with _READONLY_PRICE_LOCK:
+        inst = _READONLY_PRICE_READERS.get(cache_name)
+        if isinstance(inst, dict) and not save_state_flag and not start_periodic:
+            wanted = {str(s).strip().upper() for s in eff_symbols if s}
+            if wanted.issubset({str(k).strip().upper() for k in inst}):
+                for sym_k, mgr in inst.items():
+                    if (
+                        str(sym_k).strip().upper() in wanted
+                        and getattr(mgr, "read_only", False)
+                        and hasattr(mgr, "resync_mem_file")
+                    ):
+                        try:
+                            mgr.resync_mem_file()
+                        except Exception:
+                            pass
+                return inst
+        prefix, ext = manager_cls.FILE_PREFIX, manager_cls.FILE_EXT
+        eff_read_only = not save_state_flag and not start_periodic
+        inst = {
+            s: manager_cls(
+                sync_ts=default_sync_ts,
+                filename=f"{prefix}{s}.{ext}",
+                symbols=[s],
+                read_only=eff_read_only,
+                data_sync_mode=resolved_mode,
+            )
+            for s in eff_symbols
+        }
+        _READONLY_PRICE_READERS[cache_name] = inst
+        return inst
+
+
+def get_24_price_manager(
+    symbols=None,
+    *,
+    data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
+):
+    """Return the per-symbol ``Cache24PriceManager`` reader dict without importing ``cacheManager``."""
+    return _get_per_symbol_price_managers(
+        "24Price",
+        Cache24PriceManager,
+        PRICE_24_SYNC_INTERVAL_SEC,
+        symbols=symbols,
+        data_sync_mode=data_sync_mode,
+        getter_tag="_is_ssot_24_price_getter",
+        cm_getter_name="get_24_price_manager",
+    )
+
+
+get_24_price_manager._is_ssot_24_price_getter = True  # type: ignore[attr-defined]
+
+
+def get_sparse_price_manager(
+    symbols=None,
+    *,
+    data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
+):
+    """Return the per-symbol ``CacheSparsePriceManager`` reader dict without importing ``cacheManager``."""
+    return _get_per_symbol_price_managers(
+        "SparsePrice",
+        CacheSparsePriceManager,
+        SPARSE_PRICE_SYNC_INTERVAL_SEC,
+        symbols=symbols,
+        data_sync_mode=data_sync_mode,
+        getter_tag="_is_ssot_sparse_price_getter",
+        cm_getter_name="get_sparse_price_manager",
+    )
+
+
+get_sparse_price_manager._is_ssot_sparse_price_getter = True  # type: ignore[attr-defined]
 
 

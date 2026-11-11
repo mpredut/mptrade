@@ -198,12 +198,19 @@ def _evaluate_reprice_trend_state(symbol: str, order_type: str) -> tuple[bool, b
     Fails open to ``(False, False)`` if trend caches are unavailable.
     """
     try:
-        import cacheManager as cm
+        import sys
+        import cachetrend as ct
         import pricewindow as pw
 
-        if hasattr(mkt.place, "_mock_name") and not hasattr(cm.get_short_trend_manager, "_mock_name"):
+        _cm_mod = sys.modules.get("cacheManager")
+        _cm_st_fn = getattr(_cm_mod, "get_short_trend_manager", None) if _cm_mod is not None else None
+        if (
+            hasattr(mkt.place, "_mock_name")
+            and not hasattr(ct.get_short_trend_manager, "_mock_name")
+            and not hasattr(_cm_st_fn, "_mock_name")
+        ):
             return False, False
-        short_tm = cm.get_short_trend_manager()
+        short_tm = ct.get_short_trend_manager()
         if short_tm is None:
             return False, False
         short_favorable = bool(
@@ -211,7 +218,7 @@ def _evaluate_reprice_trend_state(symbol: str, order_type: str) -> tuple[bool, b
                 short_tm,
                 order_type,
                 symbol,
-                short_trend_cls=getattr(cm, "CacheShortTrendManager", None),
+                short_trend_cls=getattr(ct, "CacheShortTrendManager", None),
             )
         )
         super_short_favorable = bool(

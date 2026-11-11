@@ -37,16 +37,23 @@ from cacheInterface import (
     _monotonic_time,
 )
 from cacheaccount import (
+    ASSET_VALUE_SYNC_INTERVAL_SEC,
     CacheAccountManagerBase,
     CacheAssetValueManager,
     CacheOrderManager,
     CacheTradeManager,
+    ORDER_SYNC_INTERVAL_SEC,
+    TRADE_SYNC_INTERVAL_SEC,
+    _READONLY_ACCOUNT_READERS,
     account_cache_health,
     api,
     attach_hyperliquid_user_fills_bridge,
     bind_account_cache_getter,
     disable_account_cache_daemon_writer,
     ensure_account_cache_readers,
+    get_asset_value_manager,
+    get_binance_order_manager,
+    get_trade_manager,
     request_stop_account_ws_streams,
     start_account_cache_daemon,
     stop_account_ws_streams,
@@ -56,6 +63,7 @@ from cacheprice import (
     CM_LONG_ARCHIVE_MEMORY_ROWS,
     CM_LONG_ARCHIVE_MONTHS,
     CM_LONG_ARCHIVE_SAMPLE_SEC,
+    CURRENT_PRICE_SYNC_INTERVAL_SEC,
     Cache24PriceManager,
     Cache365PriceManager,
     CacheCurrentPriceManager,
@@ -63,8 +71,14 @@ from cacheprice import (
     CacheSparsePriceManager,
     HyperliquidPriceStream,
     KrakenPriceStream,
+    PRICE_24_SYNC_INTERVAL_SEC,
+    SPARSE_PRICE_SYNC_INTERVAL_SEC,
+    _READONLY_PRICE_READERS,
     _start_nonbinance_trend_poller,
     attach_default_price_ws_stream,
+    get_24_price_manager,
+    get_current_price_manager,
+    get_sparse_price_manager,
     request_stop_price_ws_streams,
     stop_price_ws_streams,
 )
@@ -91,35 +105,6 @@ from state_io import (
 
 load_dotenv()
 HyperliquidPriceStream.register_stream_init_hook(attach_hyperliquid_user_fills_bridge)
-
-
-def get_current_price_manager(
-    ws_manager=None,
-    symbols=None,
-    sync_ts=None,
-    provider_names=None,
-    read_only=None,
-    *,
-    data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
-) -> CacheCurrentPriceManager:
-    """Return or lazily create the CacheCurrentPriceManager singleton (disk_reader by default)."""
-    return CacheFactory.get(
-        "CurrentPrice",
-        symbols=symbols,
-        data_sync_mode=data_sync_mode,
-        provider_names=provider_names,
-        ws_manager=ws_manager,
-        sync_ts=sync_ts,
-        read_only=read_only,
-    )
-
-
-ORDER_SYNC_INTERVAL_SEC = 0.4 * 60
-TRADE_SYNC_INTERVAL_SEC = 3 * 60
-SPARSE_PRICE_SYNC_INTERVAL_SEC = 3 * 60
-PRICE_24_SYNC_INTERVAL_SEC = 30
-CURRENT_PRICE_SYNC_INTERVAL_SEC = 30
-ASSET_VALUE_SYNC_INTERVAL_SEC = 10 * 60
 
 _PRICE_TREND_CACHES = frozenset(
     {
@@ -478,6 +463,8 @@ class CacheFactory:
             cls._instances = {}
             cls._sync_started = set()
             _READONLY_TREND_READERS.clear()
+            _READONLY_PRICE_READERS.clear()
+            _READONLY_ACCOUNT_READERS.clear()
             for manager in managers:
                 req_stop = getattr(manager, "request_stop", None)
                 if callable(req_stop):
@@ -498,6 +485,8 @@ class CacheFactory:
             value = cls._instances.get(name)
             cls._sync_started.discard(name)
             _READONLY_TREND_READERS.pop(name, None)
+            _READONLY_PRICE_READERS.pop(name, None)
+            _READONLY_ACCOUNT_READERS.pop(name, None)
             if value is None:
                 return True
             results = [
@@ -599,8 +588,9 @@ def get_cache_manager(
 
 get_cache_manager._is_ssot_cache_manager_getter = True  # type: ignore[attr-defined]
 with CacheFactory._lock:
-    for _trend_key, _trend_inst in list(_READONLY_TREND_READERS.items()):
-        CacheFactory._instances.setdefault(_trend_key, _trend_inst)
+    for _reader_map in (_READONLY_TREND_READERS, _READONLY_PRICE_READERS, _READONLY_ACCOUNT_READERS):
+        for _reader_key, _reader_inst in list(_reader_map.items()):
+            CacheFactory._instances.setdefault(_reader_key, _reader_inst)
 
 
 # Inject readers and runtime services across the domain base classes and MarketDataProvider.

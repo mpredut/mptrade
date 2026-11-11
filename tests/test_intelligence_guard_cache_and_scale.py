@@ -2519,8 +2519,12 @@ def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
         imps = _collect_imports(rel)
         assert "external_order_guard" not in imps, f"{rel} must resolve collectors via base_collector SSOT: {imps}"
 
-    # 5. Producer-Consumer Decoupling: gateway, trailing, survival, and guards never import cacheManager daemon
+    # 5. Producer-Consumer Decoupling: bots, monitors, gateway, trailing, survival, and guards never import cacheManager or priceAnalysis daemons
     for rel in (
+        "assetguardian.py",
+        "rtrade.py",
+        "monitortrades.py",
+        "monitororder.py",
         "instrument.py",
         "trailing_core.py",
         "intelligence/internal/state/survival.py",
@@ -2529,9 +2533,11 @@ def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
         "qlimit_order_guard.py",
         "external_order_guard.py",
         "llm_order_guard.py",
+        "hyperliquid/signals.py",
     ):
         imps = _collect_imports(rel)
-        assert "cacheManager" not in imps, f"{rel} must consume trend/price caches via domain SSOT, not cacheManager: {imps}"
+        assert "cacheManager" not in imps, f"{rel} must consume caches via domain SSOT, not cacheManager: {imps}"
+        assert "priceAnalysis" not in imps, f"{rel} must consume trend/survival compute via domain SSOT, not priceAnalysis: {imps}"
 
     # 6. TelemetrySensorSnapshot canonical SSOT placement in intelligence.macro_sentiment_ssot
     from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot as _SSOTSnapshot
@@ -2541,10 +2547,33 @@ def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
     assert _SSOTSnapshot is _CollectorSnapshot
     assert _SSOTSnapshot is _ReconcilerSnapshot
 
-    # 7. importlib.reload(botcore) keeps botcore.cache_path / utils.cache_path recursion-free and patchable
+    # 7. importlib.reload(botcore) keeps botcore.cache_path, utils.*, and macro_sentiment_ssot.* synchronized
     import importlib
+    import intelligence.macro_sentiment_ssot as _ssot_mod
     import utils as _utils_mod
 
     importlib.reload(botcore)
     assert botcore.cache_path("cache_short_trend.json").endswith("cache_short_trend.json")
     assert _utils_mod.cache_path("cache_short_trend.json").endswith("cache_short_trend.json")
+    assert _ssot_mod.fetch_public_json is botcore.fetch_public_json
+
+    # 8. Zero raw json.load/loads/dump/dumps outside state_io.py and botcore.py across production code
+    import subprocess
+
+    tracked_py = subprocess.check_output(["git", "ls-files", "*.py"], cwd=repo_root, text=True).splitlines()
+    for rel in tracked_py:
+        if rel.startswith("tests/") or rel in {"state_io.py", "botcore.py"}:
+            continue
+        p = repo_root / rel
+        if not p.exists():
+            continue
+        tree = ast.parse(p.read_text(encoding="utf-8"), filename=rel)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "json"
+                and node.func.attr in {"load", "loads", "dump", "dumps"}
+            ):
+                raise AssertionError(f"{rel}:{node.lineno} calls raw json.{node.func.attr} outside state_io/botcore")

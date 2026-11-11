@@ -2680,5 +2680,19 @@ class ClosedPriceSeries:
         )
 
 
+for _reexport_mod_name in ("utils", "intelligence.macro_sentiment_ssot", "macro_sentiment_ssot"):
+    _reexport_mod = sys.modules.get(_reexport_mod_name)
+    if _reexport_mod is None:
+        continue
+    for _attr_name, _attr_val in list(_reexport_mod.__dict__.items()):
+        if (
+            not _attr_name.startswith("__")
+            and _attr_name in globals()
+            and callable(_attr_val)
+            and getattr(_attr_val, "__module__", None) == __name__
+        ):
+            setattr(_reexport_mod, _attr_name, globals()[_attr_name])
+
+
 
 

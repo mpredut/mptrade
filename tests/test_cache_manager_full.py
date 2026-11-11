@@ -2729,7 +2729,18 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
     """Verify the 3 cache operating models (producer, live_reader, disk_reader) via data_sync_mode."""
     import inspect
 
-    for fn in (cm.get_cache_manager, cm.CacheFactory.get, cm.get_current_price_manager, cm.get_short_trend_manager):
+    for fn in (
+        cm.get_cache_manager,
+        cm.CacheFactory.get,
+        cm.get_current_price_manager,
+        cm.get_24_price_manager,
+        cm.get_sparse_price_manager,
+        cm.get_short_trend_manager,
+        cm.get_long_trend_manager,
+        cm.get_asset_value_manager,
+        cm.get_binance_order_manager,
+        cm.get_trade_manager,
+    ):
         params = inspect.signature(fn).parameters
         assert params["data_sync_mode"].default in (cm.CacheManagerInterface.MODE_DISK_READER, None)
         assert "start_sync" not in params
@@ -2822,7 +2833,13 @@ def test_ast_only_producers_enable_cache_sync_or_writer():
     cache_getters = {
         "get_cache_manager",
         "get_current_price_manager",
+        "get_24_price_manager",
+        "get_sparse_price_manager",
         "get_short_trend_manager",
+        "get_long_trend_manager",
+        "get_asset_value_manager",
+        "get_binance_order_manager",
+        "get_trade_manager",
         "attach_default_price_ws_stream",
     }
     legacy_aliases = {"start_sync", "sync_to_file", "mode", "writer"}

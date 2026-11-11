@@ -22,7 +22,7 @@ from botcore import (
     secondsToHours,
     touch_module_heartbeat,
 )
-import cacheManager as cm
+import cachetrend as cm
 import cachepaths
 from guard_hierarchy import GUARD_REGISTRY
 from instrument import Instrument, load_for

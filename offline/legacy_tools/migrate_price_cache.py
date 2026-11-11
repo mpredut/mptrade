@@ -14,7 +14,6 @@ concurrent write on the .jsonl. Idempotent (re-running does not duplicate).
 """
 import os
 import sys
-import json
 import glob
 import time
 
@@ -25,7 +24,7 @@ if REPO_ROOT not in sys.path:
 from botcore import safe_pos_float
 from cachepaths import get_cachedb_dir
 from providers.base import extract_timestamp_ms
-from state_io import atomic_write_json, atomic_write_text, durable_replace_file, read_json_dict, read_jsonl_dicts
+from state_io import atomic_write_json, atomic_write_text, durable_replace_file, encode_json_payload, read_json_dict, read_jsonl_dicts
 
 CACHE_DIR = get_cachedb_dir()
 
@@ -70,7 +69,7 @@ def migrate_file(json_path, dry_run=False):
     for sym, items in merged.items():
         counts[sym] = len(items)
         for item in items:
-            lines.append(json.dumps({"s": sym, "i": item}))
+            lines.append(encode_json_payload({"s": sym, "i": item}))
             max_ts = max(max_ts, _entry_ts(item))
         if items:
             fetchtime[sym] = _entry_ts(items[-1])
