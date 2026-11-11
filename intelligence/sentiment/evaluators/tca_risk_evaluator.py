@@ -335,11 +335,13 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
         if not isinstance(portfolio_summary, dict):
             return {}
         t_pos = portfolio_summary.get("tradable_positions") if isinstance(portfolio_summary.get("tradable_positions"), list) else []
-        vq_cash = portfolio_summary.get("venue_quote_cash") if isinstance(portfolio_summary.get("venue_quote_cash"), dict) else {}
-        rec_orders = portfolio_summary.get("recent_orders") if isinstance(portfolio_summary.get("recent_orders"), dict) else {}
+        vq_cash, rec_orders, hl_ro = coerce_dict_maps(
+            portfolio_summary.get("venue_quote_cash"),
+            portfolio_summary.get("recent_orders"),
+            portfolio_summary.get("hyperliquid_readonly"),
+        )
 
         bn_snap = safe_pos_float(portfolio_summary.get("live_binance_equity_usdc") or portfolio_summary.get("total_value_usdc"), default=0.0) or 0.0
-        hl_ro = portfolio_summary.get("hyperliquid_readonly") if isinstance(portfolio_summary.get("hyperliquid_readonly"), dict) else {}
         hl_snap = safe_pos_float(hl_ro.get("live_reconciled_spot_usd") or hl_ro.get("total_equity_usd"), default=0.0) or 0.0
         nav = compute_venue_nav_breakdown(
             positions=t_pos,

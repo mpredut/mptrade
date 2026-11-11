@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
     _parse_bool_flag,
+    coerce_dict_maps,
     is_live_network_backfill_enabled,
     safe_nonneg_float,
 )
@@ -1633,8 +1634,7 @@ class SiblingSymbolTelemetrySyncEvaluator(MicrostructureEvaluatorBase):
         persist_cycle_deltas: bool = False,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        pt_map = data if isinstance(data, dict) else {}
-        m_map = microstructure if isinstance(microstructure, dict) else {}
+        pt_map, m_map = coerce_dict_maps(data, microstructure)
         raw_hist = cycle_history if isinstance(cycle_history, dict) else kwargs.get("history")
         eff_hist = raw_hist if isinstance(raw_hist, dict) else ({} if not persist_cycle_deltas and not cache_dir else None)
         sync_sibling_symbol_telemetry(

@@ -218,6 +218,11 @@ def obj_float(obj: object, key: str, default: float = 0.0) -> float:
     return safe_float(obj_attr(obj, key, None), default)
 
 
+def coerce_dict_maps(*maps: object) -> tuple[dict, ...]:
+    """Return a tuple where each item is preserved if ``isinstance(item, dict)`` else ``{}``."""
+    return tuple(m if isinstance(m, dict) else {} for m in maps)
+
+
 def clean_json_value(val: object, *, stringify_keys: bool = True) -> object:
     """Recursively sanitize non-finite floats (NaN/Inf -> None) and optionally normalize dict keys to strings."""
     if isinstance(val, float):
@@ -902,6 +907,19 @@ def temporary_environ(overrides: Mapping[str, str | None] | None = None, **kw_ov
                 os.environ[k] = prev
 
 
+def resolve_cli_env_path(
+    script_file: str | os.PathLike,
+    argv: list[str] | tuple[str, ...] | None = None,
+    *,
+    env_flag: str = "--env-file",
+    env_var: str = "ENV_FILE",
+) -> str:
+    """Resolve ``--env-file`` / ``ENV_FILE`` relative to ``script_file``, falling back on blank values."""
+    default_env = optional_env(env_var, os.path.join(os.path.dirname(os.fspath(script_file)), ".env"))
+    raw_arg = resolve_cli_arg(sys.argv if argv is None else argv, env_flag, default_env)
+    return raw_arg.strip() if isinstance(raw_arg, str) and raw_arg.strip() else default_env
+
+
 def load_cli_env_stack(
     script_file: str | os.PathLike,
     argv: list[str] | tuple[str, ...] | None = None,
@@ -911,8 +929,7 @@ def load_cli_env_stack(
     load_fn: object = None,
 ) -> str:
     """Resolve ``--env-file`` / ``ENV_FILE`` relative to ``script_file`` and load its environment stack."""
-    default_env = optional_env(env_var, os.path.join(os.path.dirname(os.fspath(script_file)), ".env"))
-    env_file = resolve_cli_arg(sys.argv if argv is None else argv, env_flag, default_env) or default_env
+    env_file = resolve_cli_env_path(script_file, argv, env_flag=env_flag, env_var=env_var)
     eff_load = load_fn if callable(load_fn) else load_env_stack
     eff_load(env_file)
     return env_file

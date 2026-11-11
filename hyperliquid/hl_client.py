@@ -25,6 +25,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (  # noqa: E402
+    coerce_dict_maps,
     exact_int,
     load_local_module,
     log,
@@ -105,16 +106,21 @@ def _validate_and_round_order_params(
     return sz_r, px_r, None
 
 
+def _first_exchange_status(res: object) -> object:
+    """Return ``res['response']['data']['statuses'][0]`` when ``res['status'] == 'ok'``, else ``None``."""
+    if not isinstance(res, dict) or res.get("status") != "ok":
+        return None
+    (resp_obj,) = coerce_dict_maps(res.get("response"))
+    (data_obj,) = coerce_dict_maps(resp_obj.get("data"))
+    statuses = data_obj.get("statuses") if isinstance(data_obj.get("statuses"), list) else []
+    return statuses[0] if statuses else None
+
+
 def _parse_order_response(res: object, *, include_avg_px: bool = False) -> tuple[bool, int | None, str]:
     """Extract (ok, oid, status_message) from a Hyperliquid Exchange.order payload."""
-    if not isinstance(res, dict) or res.get("status") != "ok":
+    st = _first_exchange_status(res)
+    if not isinstance(st, dict):
         return False, None, str(res)
-    resp_obj = res.get("response") if isinstance(res.get("response"), dict) else {}
-    data_obj = resp_obj.get("data") if isinstance(resp_obj.get("data"), dict) else {}
-    statuses = data_obj.get("statuses") if isinstance(data_obj.get("statuses"), list) else []
-    if not statuses or not isinstance(statuses[0], dict):
-        return False, None, str(res)
-    st = statuses[0]
     if "resting" in st and isinstance(st["resting"], dict):
         return True, st["resting"].get("oid"), "resting"
     if "filled" in st and isinstance(st["filled"], dict):
@@ -543,14 +549,9 @@ class HLClient:
             return False
         try:
             res = self.exchange.cancel(coin, oid_i)
-            if not isinstance(res, dict) or res.get("status") != "ok":
+            st = _first_exchange_status(res)
+            if st is None:
                 return False
-            resp_obj = res.get("response") if isinstance(res.get("response"), dict) else {}
-            data_obj = resp_obj.get("data") if isinstance(resp_obj.get("data"), dict) else {}
-            statuses = data_obj.get("statuses") if isinstance(data_obj.get("statuses"), list) else []
-            if not statuses:
-                return False
-            st = statuses[0]
             if st == "success":
                 return True
             if isinstance(st, dict) and "error" in st:

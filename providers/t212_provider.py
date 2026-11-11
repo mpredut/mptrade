@@ -539,20 +539,16 @@ class T212Provider(MarketDataProvider):
     # -- Placement remains dry until T212_LIVE_ORDERS=true. --------------------
     @staticmethod
     def _signed_qty(side: str, qty: float) -> float:
-        if not isinstance(side, str):
+        side_u = normalize_side(side, require_str=True)
+        if not side_u:
             raise ProviderError(f"invalid T212 side: {side!r}")
-        side_u = normalize_side(side)
         raw_f = safe_pos_float(qty, default=None)
         if raw_f is None:
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
         qty_f = round(raw_f, _VOLUME_DECIMALS)
         if safe_pos_float(qty_f, default=0.0) < _ORDER_MIN:
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
-        if side_u == "BUY":
-            return qty_f
-        if side_u == "SELL":
-            return -qty_f
-        raise ProviderError(f"invalid T212 side: {side!r}")
+        return qty_f if side_u == "BUY" else -qty_f
 
     def _send_order(self, symbol: str, side: str, qty: float,
                     price: Optional[float], *, market: bool,

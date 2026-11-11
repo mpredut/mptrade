@@ -29,6 +29,7 @@ import intelligence.macro_sentiment_ssot as _mss
 from intelligence.macro_sentiment_ssot import (
     TelemetrySensorSnapshot,
     _cfg_str,
+    coerce_dict_maps,
     get_breadth_excluded_bases,
     get_deribit_options_currencies,
     get_yahoo_chart_url,
@@ -225,9 +226,9 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                 mkt_state = str(meta.get("marketState") or "").strip().upper()
                 reg_time_s = normalize_epoch_sec(meta.get("regularMarketTime"), default=None)
                 if not mkt_state and bool(meta.get("hasPrePostMarketData")) and isinstance(ctp := meta.get("currentTradingPeriod"), dict):
-                    reg_d = ctp.get("regular") if isinstance(ctp.get("regular"), dict) else {}
-                    pre_d = ctp.get("pre") if isinstance(ctp.get("pre"), dict) else {}
-                    post_d = ctp.get("post") if isinstance(ctp.get("post"), dict) else {}
+                    reg_d, pre_d, post_d = coerce_dict_maps(
+                        ctp.get("regular"), ctp.get("pre"), ctp.get("post")
+                    )
                     r_start = normalize_epoch_sec(reg_d.get("start"), default=None)
                     r_end = normalize_epoch_sec(reg_d.get("end"), default=None)
                     pre_start = normalize_epoch_sec(pre_d.get("start"), default=None)
@@ -856,10 +857,9 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
         now_ts: Optional[float] = None,
         **kwargs: Any,
     ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-        eff_ps = portfolio_summary if isinstance(portfolio_summary, dict) else {}
-        eff_pt = prices_and_trends if isinstance(prices_and_trends, dict) else {}
-        eff_ms = microstructure if isinstance(microstructure, dict) else {}
-        eff_inst = inst_by_sym if isinstance(inst_by_sym, dict) else {}
+        eff_ps, eff_pt, eff_ms, eff_inst = coerce_dict_maps(
+            portfolio_summary, prices_and_trends, microstructure, inst_by_sym
+        )
         _rj = read_json_fn or read_json_cached
         _mc._ensure_cacheprice_classes_bound()
         av_cls = _mc.CacheAssetValueManager

@@ -46,6 +46,7 @@ from botcore import (  # noqa: E402
     required_env,
     required_float_env,
     resolve_cli_arg,
+    resolve_cli_env_path,
     safe_pos_float,
 )
 ensure_local_module_priority(
@@ -67,8 +68,7 @@ from t212_client import T212Client  # noqa: E402
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
-    here = os.path.dirname(os.path.abspath(__file__))
-    env_file = resolve_cli_arg(sys.argv, "--env-file", optional_env("ENV_FILE", os.path.join(here, ".env")))
+    env_file = resolve_cli_env_path(__file__, sys.argv)
     profile = resolve_cli_arg(sys.argv, ("--profile", "-p"), optional_env("IPO_PROFILE") or None)
     profile_file = None
     if profile:                                            # versioned per-profile config: config.<profile>.env

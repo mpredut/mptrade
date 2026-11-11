@@ -827,8 +827,9 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
                     merged_vv[vk] = vv
             portfolio_summary["venues_value_usd"] = merged_vv
             portfolio_summary["portfolio_total_usd"] = round(sum(merged_vv.values()), 2)
-        venue_pos_map = nav.get("venue_pos_usd") if isinstance(nav.get("venue_pos_usd"), dict) else {}
-        venue_cash_map = nav.get("venue_cash_usd") if isinstance(nav.get("venue_cash_usd"), dict) else {}
+        venue_pos_map, venue_cash_map = coerce_dict_maps(
+            nav.get("venue_pos_usd"), nav.get("venue_cash_usd")
+        )
         def _zero_readonly_spot(ro_d: Dict[str, Any], cash_sum: float) -> None:
             if "qty" in ro_d or "value_usd" in ro_d:
                 ro_d["qty"] = 0.0

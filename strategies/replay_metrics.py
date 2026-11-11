@@ -279,6 +279,7 @@ def print_single_backtest_report(
         raise ValueError("budget must be positive")
     md = m if isinstance(m, dict) else {}
     bh_f = safe_float(bh, 0.0)
+    inc_fund = _parse_bool_flag(include_funding, default=False)
     qty_dec = safe_nonneg_int(open_qty_decimals, default=4)
     tot = safe_float(md.get("total"), 0.0) / b_val * 100.0
     net_pct = safe_float(md.get("net"), 0.0) / b_val * 100.0
@@ -292,7 +293,7 @@ def print_single_backtest_report(
     open_qty = safe_float(md.get("open_qty"), 0.0)
     emit(header)
     emit(f"  params: {params_line}")
-    if include_funding:
+    if inc_fund:
         funding = safe_float(md.get("funding"), 0.0)
         emit(
             f"  REAL TOTAL: {tot:+.2f}% of the budget  <= realised ${realized:+.2f} "
@@ -312,7 +313,7 @@ def print_single_backtest_report(
         emit(f"  cycles: {cycles}  win-rate {wr:.0f}%   max drawdown ${maxdd:.2f}")
     for line in format_performance_summary(md, indent="  "):
         emit(line)
-    if include_funding:
+    if inc_fund:
         status = "LOSING" if upnl < -1 else "ok"
         emit(f"  buy&hold: {bh_f:+.2f}%   final position: {open_qty:.{qty_dec}f} ({status})")
     else:
@@ -387,11 +388,13 @@ def run_cli_single_or_sweep_backtest(
     emit=print,
 ) -> int:
     """Execute either a single CLI backtest report or a TPxDROP(xSL) parameter sweep."""
-    if ohlc is not None and len(ohlc) < min_bars:
+    min_bars_i = safe_nonneg_int(min_bars, default=20)
+    if ohlc is not None and len(ohlc) < min_bars_i:
         emit(f"not enough bars ({len(ohlc)}); aborting")
         return 1
-    bh_val = safe_float(bh, 0.0) if bh is not None else (buy_hold_pct(ohlc) if ohlc is not None else 0.0)
-    if mode == "single":
+    bh_val = safe_float(bh, default=0.0) if bh is not None else (buy_hold_pct(ohlc) if ohlc is not None else 0.0)
+    mode_norm = "" if isinstance(mode, bool) else str(mode or "").strip().lower()
+    if mode_norm == "single":
         m = eval_fn(base)
         print_single_backtest_report(
             single_header,

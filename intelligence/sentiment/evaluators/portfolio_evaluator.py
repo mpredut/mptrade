@@ -935,8 +935,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                 )
                 cyc_qty_cur = safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0
                 if isinstance(ro_c, dict) and is_equity_venue(c_venue) and cyc_qty_cur > 1e-8:
-                    lb_ro = ro_c.get("last_buy") if isinstance(ro_c.get("last_buy"), dict) else {}
-                    ls_ro = ro_c.get("last_sell") if isinstance(ro_c.get("last_sell"), dict) else {}
+                    lb_ro, ls_ro = coerce_dict_maps(ro_c.get("last_buy"), ro_c.get("last_sell"))
                     if ro_c.get("recent_buys") and (lb_px_ro := safe_pos_float(lb_ro.get("price"), default=None)) is not None:
                         cyc["last_buy_price"] = round(lb_px_ro, avg_dec)
                     if ro_c.get("recent_sells") and (ls_px_ro := safe_pos_float(ls_ro.get("price"), default=None)) is not None:

@@ -9,6 +9,7 @@ from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
+    coerce_dict_maps,
     extract_current_price_item,
     is_live_network_backfill_enabled,
     is_offline_disk_cache_enabled,
@@ -1309,10 +1310,9 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         persist: bool = True,
         **kwargs: Any,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        pt_map = prices_and_trends if isinstance(prices_and_trends, dict) else {}
-        m_map = microstructure if isinstance(microstructure, dict) else {}
-        cp_map = cur_p_items if isinstance(cur_p_items, dict) else {}
-        inst_map = inst_by_sym if isinstance(inst_by_sym, dict) else {}
+        pt_map, m_map, cp_map, inst_map = coerce_dict_maps(
+            prices_and_trends, microstructure, cur_p_items, inst_by_sym
+        )
         eff_now, _rj = _resolve_now_and_read_json(now_ts, read_json_fn)
         btc_series_24h, btc_vals_7d = load_symbol_price_series(
             cachedb_dir, symbol or "BTCUSDC", current_price_items=cp_map, include_7d=True

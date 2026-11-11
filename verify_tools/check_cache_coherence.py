@@ -9,7 +9,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import extract_current_price_item, normalize_epoch_sec, safe_pos_float  # noqa: E402
+from botcore import coerce_dict_maps, extract_current_price_item, normalize_epoch_sec, safe_pos_float  # noqa: E402
 from cachepaths import cache_symbol_variants, is_primary_stream_venue  # noqa: E402
 from instrument_registry import casefold_get, select_instruments, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
@@ -66,10 +66,8 @@ def main() -> int:
     # 2. current price
     cp = read_json_dict(os.path.join(CACHEDB, "cache_current_price.json"), default=None, recover_previous=True) or {}
     # format: {'fetchtime': {...}, 'items': {symbol: price_or_rows}} (or directly per symbol)
-    raw_items = cp.get("items", cp) if isinstance(cp, dict) else {}
-    items = raw_items if isinstance(raw_items, dict) else {}
-    raw_fetchtime = cp.get("fetchtime") if isinstance(cp, dict) else {}
-    fetchtime_map = raw_fetchtime if isinstance(raw_fetchtime, dict) else {}
+    (cp_d,) = coerce_dict_maps(cp)
+    items, fetchtime_map = coerce_dict_maps(cp_d.get("items", cp_d), cp_d.get("fetchtime"))
     print(f"-- cache_current_price.json: {sorted(k for k in items.keys() if k != 'fetchtime')}")
     for s in exp:
         entries = None

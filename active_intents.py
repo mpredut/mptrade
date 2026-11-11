@@ -16,6 +16,7 @@ from botcore import (
     INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_order_id,
+    coerce_dict_maps,
     normalize_side,
     safe_float,
     safe_nonneg_float,
@@ -230,9 +231,11 @@ def _build_summary(intents: list[dict], exposures: list[dict]) -> dict:
 
 
 def format_summary(result: dict) -> str:
-    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
-    notional = summary.get("pending_notional") if isinstance(summary.get("pending_notional"), dict) else {}
-    exposures = summary.get("net_exposures") if isinstance(summary.get("net_exposures"), dict) else {}
+    (res_d,) = coerce_dict_maps(result)
+    (summary,) = coerce_dict_maps(res_d.get("summary"))
+    notional, exposures = coerce_dict_maps(
+        summary.get("pending_notional"), summary.get("net_exposures")
+    )
     total_cost_val = safe_float(exposures.get("total_cost"), default=0.0) or 0.0
     total_buy_val = safe_float(notional.get("total_buy"), default=0.0) or 0.0
     total_sell_val = safe_float(notional.get("total_sell"), default=0.0) or 0.0
@@ -240,7 +243,7 @@ def format_summary(result: dict) -> str:
         "=" * 60,
         "ACTIVE INTENTS & EXPOSURE SUMMARY",
         "=" * 60,
-        f"Total active intents:  {len(result.get('intents') or [])}",
+        f"Total active intents:  {len(res_d.get('intents') or [])}",
         f"Total open positions:  {len(exposures.get('positions') or [])}",
         f"Total cost basis:      ${total_cost_val:.2f}",
         f"Pending BUY notional:  ${total_buy_val:.2f}",

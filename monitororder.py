@@ -30,6 +30,7 @@ from botcore import (
     OrderedIdSet,
     are_close,
     clean_order_id_str,
+    clean_upper_token,
     diff_percent,
     format_notify_price,
     format_notify_qty,
@@ -241,7 +242,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     durable record submittable. ``failed_orders`` remains a compatibility-only
     argument for old callers; this function neither writes nor drains it.
     """
-    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+    if clean_upper_token(symbol) is None:
         return
     order_type_u = normalize_side(order_type)
     if order_type_u not in ("BUY", "SELL"):

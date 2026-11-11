@@ -2000,6 +2000,101 @@ def test_temporary_environ_daemon_fetch_equity_oi_remote_trades_and_guard_prefli
     )
 
 
+def test_coerce_dict_maps_cli_env_path_replay_metrics_peak_scope_and_hl_status_border_cases(
+    tmp_path, monkeypatch
+):
+    """Regression suite for coerce_dict_maps SSOT, resolve_cli_env_path, replay_metrics, post_exit_peak_step_scope, and HL status extraction."""
+    import os
+    import active_intents
+    from botcore import coerce_dict_maps, load_cli_env_stack, load_local_module, resolve_cli_env_path
+    hl_client_mod = load_local_module(os.path.join(botcore.ROOT_DIR, "hyperliquid"), "hl_client")
+    _first_exchange_status = hl_client_mod._first_exchange_status
+    _parse_order_response = hl_client_mod._parse_order_response
+    from providers.strategy_executor import ProviderError
+    from providers.t212_provider import T212Provider
+    from strategies.replay_metrics import print_single_backtest_report, run_cli_single_or_sweep_backtest
+    from strategies.spot_replay import post_exit_peak_step_scope
+
+    # 1. coerce_dict_maps & active_intents.format_summary handle None/non-dict payloads safely
+    assert coerce_dict_maps({"a": 1}, None, [1, 2], True) == ({"a": 1}, {}, {}, {})
+    assert mss.coerce_dict_maps is coerce_dict_maps
+    summary_txt = active_intents.format_summary(None)  # type: ignore[arg-type]
+    assert "Total active intents:  0" in summary_txt
+
+    # 2. resolve_cli_env_path & load_cli_env_stack fall back cleanly when --env-file is blank/whitespace
+    fake_script = tmp_path / "bot_runner.py"
+    monkeypatch.delenv("ENV_FILE", raising=False)
+    expected_default = str(tmp_path / ".env")
+    assert resolve_cli_env_path(fake_script, ["bot", "--env-file", "   "]) == expected_default
+    loaded_paths: list[str] = []
+    assert (
+        load_cli_env_stack(
+            fake_script,
+            ["bot", "--env-file=   "],
+            load_fn=loaded_paths.append,
+        )
+        == expected_default
+    )
+    assert loaded_paths == [expected_default]
+
+    # 3. run_cli_single_or_sweep_backtest & print_single_backtest_report sanitize bool/NaN bh, mode, min_bars, include_funding
+    emitted: list[str] = []
+    rc_single = run_cli_single_or_sweep_backtest(
+        " SINGLE ",
+        {"tp": 2.0, "drop": 2.0},
+        lambda _p: {"total": 15.0, "net": 15.0, "cycles": 2, "wins": 1, "realized": 15.0, "final_upnl": 0.0, "fees": 0.5, "maxdd": 3.0, "open_qty": 0.0},
+        budget=100.0,
+        bh=True,  # type: ignore[arg-type]
+        ohlc=[(1, 1, 1, 1)] * 5,
+        min_bars="3",  # type: ignore[arg-type]
+        single_header="HDR",
+        single_params_line="PARAMS",
+        sweep_header="SWEEP",
+        include_funding="false",  # type: ignore[arg-type]
+        emit=emitted.append,
+    )
+    assert rc_single == 0
+    joined_out = "\n".join(emitted)
+    assert "funding $" not in joined_out and "buy&hold: +0.00%" in joined_out
+
+    emitted.clear()
+    print_single_backtest_report(
+        "HDR2",
+        "P2",
+        {"total": 5.0, "funding": 2.0},
+        budget=100.0,
+        bh=float("nan"),
+        include_funding="false",  # type: ignore[arg-type]
+        emit=emitted.append,
+    )
+    assert all("funding $" not in ln for ln in emitted)
+
+    # 4. post_exit_peak_step_scope parses string flags ("false") and tolerates non-dict flags
+    orig_fn = lambda: "orig"
+    peak_fn = lambda: "peak"
+    dummy_cls = SimpleNamespace(step=orig_fn)
+    flags_box = {"peak": True}
+    with post_exit_peak_step_scope(dummy_cls, flags_box, "false", peak_fn, orig_fn):
+        assert flags_box["peak"] is False and dummy_cls.step is orig_fn
+    assert flags_box["peak"] is True and dummy_cls.step is orig_fn
+    with post_exit_peak_step_scope(dummy_cls, None, "true", peak_fn, orig_fn):  # type: ignore[arg-type]
+        assert dummy_cls.step is peak_fn
+    assert dummy_cls.step is orig_fn
+
+    # 5. Hyperliquid _first_exchange_status / _parse_order_response & T212Provider._signed_qty
+    assert _first_exchange_status({"status": "ok", "response": {"data": {"statuses": ["success"]}}}) == "success"
+    assert _first_exchange_status({"status": "ok", "response": None}) is None
+    assert _parse_order_response({"status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": 77}}]}}}) == (
+        True,
+        77,
+        "resting",
+    )
+    with pytest.raises(ProviderError, match="invalid T212 side"):
+        T212Provider._signed_qty(True, 1.0)  # type: ignore[arg-type]
+    assert T212Provider._signed_qty(" sell ", 1.5) == pytest.approx(-1.5)
+
+
+
 
 
 
