@@ -412,7 +412,7 @@ def test_bapi_bapi_allorders_bapi_trades_order_id_context_iter108_s4():
     assert bapi.get_current_price(True) is None
     assert bapi._normalize_side(" b ") == "BUY"
     assert bapi_allorders._normalize_side(" s ") == "SELL"
-    assert bapi_trades._normalize_side(" b ") == "BUY"
+    assert bapi_trades.api._normalize_side(" b ") == "BUY"
     assert rc.resolve_order_owner([1, 2, 3]) == "unspecified"
     assert rc.resolve_order_owner(12345) == "unspecified"
 

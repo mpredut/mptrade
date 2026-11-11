@@ -155,8 +155,8 @@ class BapiTradesReaderTest(unittest.TestCase):
 
             with (
                 mock.patch.object(bapi_trades, "init_cache_trade_manager", return_value=manager),
-                mock.patch.object(bapi_trades.sym, "validate_ordertype"),
-                mock.patch.object(bapi_trades.sym, "validate_symbols"),
+                mock.patch.object(bapi_trades.apiorders.sym, "validate_ordertype"),
+                mock.patch.object(bapi_trades.apiorders.sym, "validate_symbols"),
                 mock.patch.object(bapi_trades.time, "time", return_value=2_001.0),
             ):
                 result = bapi_trades.get_trade_orders("BUY", SYMBOL, 10)
@@ -647,7 +647,6 @@ def test_bapi_allorders_get_trade_orders_bapi_trades_get_trade_orders_and_aggreg
     assert cpm.get_price_value("tao/usd") == 420.5
     # 2. bapi_allorders.get_trade_orders, bapi_trades.get_trade_orders, and aggregate_trades
     monkeypatch.setattr(bapi_allorders.sym, "validate_symbols", lambda s: None)
-    monkeypatch.setattr(bapi_trades.sym, "validate_symbols", lambda s: None)
     future_ts = now_ms + 3_600_000  # 1 hour in the future (clock skew)
     valid_ts = now_ms - 10_000
     fake_order_mgr = SimpleNamespace(
