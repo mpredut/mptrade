@@ -974,11 +974,12 @@ def _extract_benchmark_items(data: Any) -> Optional[Dict[str, Any]]:
     return items if isinstance(items, dict) else {}
 
 
-def compute_equity_macro_regime(data: Any) -> str:
-    """Classify the US equity & macro rate regime ('RISK_ON', 'RISK_OFF', or 'NEUTRAL') from SPY/QQQ/ES=F/NQ=F/VIX/DXY."""
+def _extract_equity_benchmark_changes(
+    data: Any,
+) -> Optional[tuple[Dict[str, Any], List[float], List[float]]]:
     items = _extract_benchmark_items(data)
     if items is None:
-        return "NEUTRAL"
+        return None
     eq_24h: List[float] = []
     eq_1h: List[float] = []
     for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
@@ -990,6 +991,15 @@ def compute_equity_macro_regime(data: Any) -> str:
             eq_24h.append(c24)
         if m_state != "CLOSED" and (c1 := safe_float(entry.get("chg_1h_pct"), default=None)) is not None:
             eq_1h.append(c1)
+    return items, eq_24h, eq_1h
+
+
+def compute_equity_macro_regime(data: Any) -> str:
+    """Classify the US equity & macro rate regime ('RISK_ON', 'RISK_OFF', or 'NEUTRAL') from SPY/QQQ/ES=F/NQ=F/VIX/DXY."""
+    extracted = _extract_equity_benchmark_changes(data)
+    if extracted is None:
+        return "NEUTRAL"
+    items, eq_24h, eq_1h = extracted
     if not eq_24h and not eq_1h:
         explicit = str(data.get("equity_regime") or "").strip().upper()
         return explicit if explicit in ("RISK_ON", "RISK_OFF", "NEUTRAL") else "NEUTRAL"
@@ -1029,14 +1039,10 @@ def compute_cross_asset_regime(
 ) -> str:
     """Classify the symmetric US Equity vs Crypto Institutional correlation regime."""
     allowed = get_cross_asset_regimes()
-    items = _extract_benchmark_items(data)
-    if items is None:
+    extracted = _extract_equity_benchmark_changes(data)
+    if extracted is None:
         return "NEUTRAL"
-    eq_24h: List[float] = []
-    for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
-        entry = items.get(sym)
-        if isinstance(entry, dict) and (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
-            eq_24h.append(c24)
+    items, eq_24h, _eq_1h = extracted
     eq_regime = str(data.get("equity_regime") or "").strip().upper()
     if eq_regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (
         eq_regime == "NEUTRAL" and "futures_lead_regime" not in data and compute_futures_premarket_lead(data)

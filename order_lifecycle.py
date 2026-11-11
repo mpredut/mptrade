@@ -156,19 +156,22 @@ class StrategyExecutorLifecycleApi:
             raise ProviderError("invalid client_order_id")
         return method(symbol, clean_cid)
 
-    def order_status(self, symbol: str, order_id: str, *, provider_name=None):
-        self._require("status_by_order_id", "order_status")
+    def _require_order_id_op(self, cap: str, method_name: str, order_id: str) -> str:
+        self._require(cap, method_name)
         clean_oid = extract_order_id(order_id)
         if not clean_oid:
             raise ProviderError("invalid order_id")
-        return self.executor.order_status(symbol, clean_oid)
+        return clean_oid
+
+    def order_status(self, symbol: str, order_id: str, *, provider_name=None):
+        return self.executor.order_status(
+            symbol, self._require_order_id_op("status_by_order_id", "order_status", order_id)
+        )
 
     def cancel_order(self, symbol: str, order_id: str, *, provider_name=None):
-        self._require("cancel_by_order_id", "cancel_order")
-        clean_oid = extract_order_id(order_id)
-        if not clean_oid:
-            raise ProviderError("invalid order_id")
-        return self.executor.cancel_order(symbol, clean_oid)
+        return self.executor.cancel_order(
+            symbol, self._require_order_id_op("cancel_by_order_id", "cancel_order", order_id)
+        )
 
 
 _RESERVED_INTENT_KEYS = frozenset({

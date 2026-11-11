@@ -163,10 +163,15 @@ def get_account_assets_balances(raise_errors=False):
 
 
 
-def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
-    strict = _parse_bool_flag(strict, False)
+def _validate_side(order_type, symbol) -> str:
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
+    return order_type
+
+
+def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
+    strict = _parse_bool_flag(strict, False)
+    order_type = _validate_side(order_type, symbol)
     symbol = symbol.strip().upper()
         
     try:
@@ -255,8 +260,7 @@ def cancel_order(symbol, order_id):
         return False
 
 def cancel_open_orders(order_type, symbol, allowed_owners=None):
-    order_type = _normalize_side(order_type)
-    sym.validate_params(order_type, symbol)
+    order_type = _validate_side(order_type, symbol)
     try:
         open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
         for order_id in open_orders:
@@ -267,8 +271,7 @@ def cancel_open_orders(order_type, symbol, allowed_owners=None):
 
 
 def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
-    order_type = _normalize_side(order_type)
-    sym.validate_params(order_type, symbol)
+    order_type = _validate_side(order_type, symbol)
     if (expire_val := safe_pos_float(expire_time, default=None)) is None:
         return
     if not (open_orders := get_open_orders(order_type, symbol, allowed_owners=allowed_owners)):

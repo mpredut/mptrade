@@ -267,6 +267,19 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
     def rebuild_fetchtimes(self):
         return self._rebuild_symbol_entry_fetchtimes()
 
+    def _validate_monotonic_tick(
+        self, symbol: str, ts_ms: object, price: object
+    ) -> Optional[tuple[int, float]]:
+        ts_val = safe_pos_int(ts_ms, default=None)
+        price_val = safe_pos_float(price, default=None)
+        if ts_val is None or price_val is None:
+            return None
+        with self.lock:
+            entries = self.cache.get(symbol)
+            if entries and ts_val < self._entry_timestamp_ms(entries[-1]):
+                return None
+        return ts_val, price_val
+
     def get_remote_items(self, symbol, startTime):
         if (
             is_equity_symbol(symbol)
@@ -295,17 +308,8 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
 
         if not entry or entry[1] is None:
             return []
-        ts_ms, price = entry
-        ts_val = safe_pos_int(ts_ms, default=None)
-        price_val = safe_pos_float(price, default=None)
-        if ts_val is None or price_val is None:
-            return []
-        with self.lock:
-            entries = self.cache.get(symbol)
-            if entries and ts_val < self._entry_timestamp_ms(entries[-1]):
-                return []
-
-        return [[ts_val, price_val]]
+        tick = self._validate_monotonic_tick(symbol, entry[0], entry[1])
+        return [[tick[0], tick[1]]] if tick is not None else []
 
 
 class CacheSparsePriceManager(CachePriceManagerBase):
@@ -482,14 +486,10 @@ class Cache24PriceManager(CachePriceManagerBase):
         """Receive every new WebSocket or HTTP price from CacheCurrentPriceManager."""
         if symbol not in self.symbols:
             return
-        ts_val = safe_pos_int(ts_ms, default=None)
-        price_val = safe_pos_float(price, default=None)
-        if ts_val is None or price_val is None:
+        tick = self._validate_monotonic_tick(symbol, ts_ms, price)
+        if tick is None:
             return
-        with self.lock:
-            entries = self.cache.get(symbol)
-            if entries and ts_val < self._entry_timestamp_ms(entries[-1]):
-                return
+        ts_val, price_val = tick
         self._ensure_fetchtimes_initialized()
         self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
         self._trim_old_data(symbol)

@@ -335,33 +335,34 @@ class MarketDataProvider(ABC):
         if cls._policy_weight_limit_fn is None or cls._policy_resolve_trade_weight_fn is None:
             importlib.import_module("order_guard")
 
-    @classmethod
-    def resolve_order_guard_trade_weight(cls, *args: Any, **kwargs: Any) -> Any:
-        """Resolve configured trade weight via bound ``order_guard`` hook (respecting monkeypatches)."""
-        cls._ensure_order_guard_bindings()
-        fn = resolve_patched_attr(
-            "resolve_trade_weight",
-            cls._policy_resolve_trade_weight_fn,
-            modules=("order_guard",),
-            require_callable=True,
-        )
-        if not callable(fn):
-            raise RuntimeError("order_guard.resolve_trade_weight is not bound")
-        return fn(*args, **kwargs)
+    @staticmethod
+    def _bind_order_guard_hook(method_name: str, attr_name: str, fallback_attr: str):
+        def _method(cls, *args: Any, **kwargs: Any) -> Any:
+            cls._ensure_order_guard_bindings()
+            fn = resolve_patched_attr(
+                attr_name,
+                getattr(cls, fallback_attr, None),
+                modules=("order_guard",),
+                require_callable=True,
+            )
+            if not callable(fn):
+                raise RuntimeError(f"order_guard.{attr_name} is not bound")
+            return fn(*args, **kwargs)
 
-    @classmethod
-    def compute_order_guard_weight_capped_qty(cls, *args: Any, **kwargs: Any) -> Any:
-        """Compute 24h weight-capped quantity via bound ``order_guard`` hook (respecting monkeypatches)."""
-        cls._ensure_order_guard_bindings()
-        fn = resolve_patched_attr(
-            "compute_weight_capped_qty",
-            cls._policy_compute_weight_capped_qty_fn,
-            modules=("order_guard",),
-            require_callable=True,
-        )
-        if not callable(fn):
-            raise RuntimeError("order_guard.compute_weight_capped_qty is not bound")
-        return fn(*args, **kwargs)
+        _method.__name__ = method_name
+        _method.__qualname__ = f"MarketDataProvider.{method_name}"
+        return classmethod(_method)
+
+    resolve_order_guard_trade_weight = _bind_order_guard_hook(
+        "resolve_order_guard_trade_weight",
+        "resolve_trade_weight",
+        "_policy_resolve_trade_weight_fn",
+    )
+    compute_order_guard_weight_capped_qty = _bind_order_guard_hook(
+        "compute_order_guard_weight_capped_qty",
+        "compute_weight_capped_qty",
+        "_policy_compute_weight_capped_qty_fn",
+    )
 
     @classmethod
     def resolve_tracked_order_lifecycle_class(cls) -> Any:
@@ -1435,17 +1436,23 @@ class MarketDataProvider(ABC):
             return True
         return is_shared_disk_cache_enabled()
 
-    def _cached_current_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
-        """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
+    def _prepare_ssot_price_candidates(self, symbol: str) -> Optional[tuple[str, ...]]:
         if not self._USES_SSOT_MARKET_CACHE or not self._allow_ssot_price_cache():
-            return None
-        eff_age = resolve_positive_max_age(max_age_sec, 12.0)
-        if eff_age is None:
             return None
         candidates = self._ssot_symbol_candidates(symbol)
         if not candidates:
             return None
         self._ensure_ssot_cache_bindings()
+        return candidates
+
+    def _cached_current_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
+        """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
+        eff_age = resolve_positive_max_age(max_age_sec, 12.0)
+        if eff_age is None:
+            return None
+        candidates = self._prepare_ssot_price_candidates(symbol)
+        if not candidates:
+            return None
         cp_cls = self._ssot_current_price_cls
         if cp_cls is None:
             return None
@@ -1466,12 +1473,9 @@ class MarketDataProvider(ABC):
         max_latest_age_sec: float = 120.0,
     ) -> Optional[list[dict]]:
         """Read 24h tick history from Cache24PriceManager when fresh and covering ``lookback_hours``."""
-        if not self._USES_SSOT_MARKET_CACHE or not self._allow_ssot_price_cache():
-            return None
-        candidates = self._ssot_symbol_candidates(symbol)
+        candidates = self._prepare_ssot_price_candidates(symbol)
         if not candidates:
             return None
-        self._ensure_ssot_cache_bindings()
         p24_cls = self._ssot_price24_cls
         if p24_cls is None:
             return None
@@ -1662,6 +1666,12 @@ class MarketDataProvider(ABC):
         asks.sort(key=lambda x: x[0])
         return {"bids": bids, "asks": asks}
 
+    def _resolve_ssot_trade_cache_cls(self, symbol: str, cache_file: str) -> Any:
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
+            return None
+        self._ensure_ssot_cache_bindings()
+        return self._ssot_trade_cache_cls
+
     def read_ssot_fills_cache(
         self,
         symbol: str,
@@ -1672,10 +1682,7 @@ class MarketDataProvider(ABC):
         normalize_fn: Any = None,
     ) -> Optional[List[dict]]:
         """Read normalized fills for ``symbol`` from a shared SSOT trade cache file (`items` + `fetchtime`)."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
-            return None
-        self._ensure_ssot_cache_bindings()
-        tm_cls = self._ssot_trade_cache_cls
+        tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
         if tm_cls is None:
             return None
         return tm_cls.read_venue_fills_snapshot(
@@ -1689,10 +1696,7 @@ class MarketDataProvider(ABC):
 
     def write_ssot_fills_cache(self, symbol: str, cache_file: str, fills: List[dict]) -> bool:
         """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
-            return False
-        self._ensure_ssot_cache_bindings()
-        tm_cls = self._ssot_trade_cache_cls
+        tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
         if tm_cls is None:
             return False
         sym_key = clean_symbol_key(symbol) or str(symbol).strip().upper()
@@ -1715,10 +1719,7 @@ class MarketDataProvider(ABC):
         self, symbol: str, cache_file: str, *, match_fn: Any = None
     ) -> None:
         """Expire ``fetchtime`` for ``symbol`` in the shared SSOT trade cache after order execution."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
-            return
-        self._ensure_ssot_cache_bindings()
-        tm_cls = self._ssot_trade_cache_cls
+        tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
         if tm_cls is not None:
             tm_cls.invalidate_venue_fills_snapshot(
                 symbol,

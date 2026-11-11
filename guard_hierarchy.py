@@ -104,16 +104,21 @@ class BaseGuard(ABC):
         target.add(self.canonical)
         target.add(self.code.lower())
 
-    def is_bypassed(self, bypassed_guards: set[str]) -> bool:
-        """Return whether this guard is bypassed by the given set of active bypass keys."""
-        low = set(BaseGuard._extract_raw_bypass_tokens(bypassed_guards))
-        if not low:
-            return False
+    def _is_category_or_master_bypassed(self, low: set[str]) -> bool:
         cat_aliases = _CATEGORY_BYPASS_ALIASES.get(self.category, frozenset({self.category}))
         return bool(
             is_master_bypass(low)
             or bool(low.intersection(cat_aliases))
             or (self.code == "G_QLIMIT1" and "profit_guard" in low)
+        )
+
+    def is_bypassed(self, bypassed_guards: set[str]) -> bool:
+        """Return whether this guard is bypassed by the given set of active bypass keys."""
+        low = set(BaseGuard._extract_raw_bypass_tokens(bypassed_guards))
+        if not low:
+            return False
+        return bool(
+            self._is_category_or_master_bypassed(low)
             or self.code.lower() in low
             or self.canonical in low
             or bool(low.intersection(self.aliases))
@@ -252,18 +257,8 @@ class LLMGuard(BaseGuard):
     """Guards powered by LLM reasoning (live pre-trade, 3h sentiment advisor, 4.5h geopolitical)."""
     category = "llm"
 
-    def is_bypassed(self, bypassed_guards: set[str]) -> bool:
-        low = set(BaseGuard._extract_raw_bypass_tokens(bypassed_guards))
-        if not low:
-            return False
-        return bool(
-            "all" in low
-            or "*" in low
-            or _is_llm_category_bypass(low)
-            or self.code.lower() in low
-            or self.canonical in low
-            or bool(low.intersection(self.aliases))
-        )
+    def _is_category_or_master_bypassed(self, low: set[str]) -> bool:
+        return bool("all" in low or "*" in low or _is_llm_category_bypass(low))
 
 
 class LLMHighStakeGuardSpec(LLMGuard):

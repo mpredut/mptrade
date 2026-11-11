@@ -425,6 +425,10 @@ def _safe_recent_n(recent_sec: float, sample_rate_sec) -> int:
     return max(2, safe_int(rs / sr, default=2))
 
 
+def _effective_recent_n(window_seconds, sample_rate_sec) -> int:
+    return _safe_recent_n(effective_recent_gradient_seconds(window_seconds), sample_rate_sec)
+
+
 def instant_trend_from_prices(
     prices,
     sample_rate_sec,
@@ -446,8 +450,7 @@ def instant_trend_from_prices(
     if slope_full is None:
         slope_full = 0.0
     gradient_lst, _ = analyzer.calculate_gradient()
-    recent_sec = effective_recent_gradient_seconds(window_seconds)
-    recent_n = _safe_recent_n(recent_sec, sample_rate_sec)
+    recent_n = _effective_recent_n(window_seconds, sample_rate_sec)
     if len(gradient_lst) >= recent_n:
         gradient_recent = float(np.mean(gradient_lst[-recent_n:]))
     else:
@@ -713,8 +716,7 @@ class IncrementalTrendBuffer:
             cov_xy = s1_raw - (self.offset + a + 0.5 * (n - 1)) * s0
             slope_full = float((12.0 * cov_xy) / (n * (n * n - 1)))
 
-        recent_sec = effective_recent_gradient_seconds(window_seconds)
-        recent_n = _safe_recent_n(recent_sec, sample_rate_sec)
+        recent_n = _effective_recent_n(window_seconds, sample_rate_sec)
         sum_g_all, gradient_recent = _telescoped_mean_gradient(p, a, b, recent_n)
         if abs(gradient_recent) <= 1e-12:
             gradient_recent = 0.0
@@ -819,10 +821,7 @@ class PriceWindow:
     @property
     def recent_n(self) -> int:
         """Return the sample count corresponding to the effective recent-gradient window."""
-        return _safe_recent_n(
-            effective_recent_gradient_seconds(self.window_seconds),
-            self.sample_rate_sec,
-        )
+        return _effective_recent_n(self.window_seconds, self.sample_rate_sec)
 
     def set_sample_rate(self, rate):
         """Update observed sampling rate and resize a duration-based window."""
@@ -973,17 +972,18 @@ class PriceWindow:
             max_price = self.get_max()
             return max_price, self._centroid_index_for(max_price)
 
+    def _trend_buf_lengths(self) -> tuple[int, int]:
+        return len(self.prices), len(self._trend_buf.prices)
+
     def _is_trend_buf_synced(self) -> bool:
-        n = len(self.prices)
-        blen = len(self._trend_buf.prices)
+        n, blen = self._trend_buf_lengths()
         return (
             blen >= n
             and (n == 0 or (self._trend_buf.prices[blen - n] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
         )
 
     def _eval_synced_trend_buf(self, eff_power: float | None = None):
-        n = len(self.prices)
-        blen = len(self._trend_buf.prices)
+        n, blen = self._trend_buf_lengths()
         if eff_power is None:
             eff_power = step_wols_power_for_symbol(self.symbol)
         noise_gate_k = max(0.0, float_env("MPTRADE_TREND_NOISE_GATE_K", default=TREND_NOISE_GATE_K))

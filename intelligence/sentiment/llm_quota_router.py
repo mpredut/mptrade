@@ -158,6 +158,14 @@ class GeminiQuotaRouterMixin:
         return total
 
     @classmethod
+    def _quota_io_context(cls) -> tuple[str, Any, Any]:
+        return (
+            cls._get_quota_state_path(),
+            _gc_attr("read_json_dict", read_json_dict),
+            _gc_attr("save_json_state", save_json_state),
+        )
+
+    @classmethod
     def probe_live_model_quota(
         cls,
         bot_cli_base: Optional[str] = None,
@@ -172,9 +180,7 @@ class GeminiQuotaRouterMixin:
         """
         now = time.time()
         ttl_sec = max(5.0, float_env("LLM_QUOTA_CACHE_TTL_SEC", default=30.0) or 30.0)
-        state_path = cls._get_quota_state_path()
-        _read_json_dict = _gc_attr("read_json_dict", read_json_dict)
-        _save_json_state = _gc_attr("save_json_state", save_json_state)
+        state_path, _read_json_dict, _save_json_state = cls._quota_io_context()
         _fetch_json_post = _gc_attr("fetch_json_post", fetch_json_post)
         _resolve_bot_cli_base = _gc_attr("resolve_bot_cli_base", resolve_bot_cli_base)
         _resolve_ui_cli_base = _gc_attr("resolve_ui_cli_base", resolve_ui_cli_base)
@@ -343,9 +349,7 @@ class GeminiQuotaRouterMixin:
             return
         now = time.time()
         exp_until = now + max(15.0, safe_float(ttl_sec, default=120.0) or 120.0)
-        state_path = cls._get_quota_state_path()
-        _read_json_dict = _gc_attr("read_json_dict", read_json_dict)
-        _save_json_state = _gc_attr("save_json_state", save_json_state)
+        state_path, _read_json_dict, _save_json_state = cls._quota_io_context()
         snapshot: Optional[Dict[str, Any]] = None
         with cls._QUOTA_LOCK:
             data = _read_json_dict(state_path, default={})

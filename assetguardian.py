@@ -357,6 +357,11 @@ def _symbol_volatility_mult(symbol):
     return _clamp_volatility_mult(row.get("volatility_mult") if isinstance(row, dict) else None)
 
 
+def _resolve_window_bounds(minutes_back: float) -> tuple[float, float]:
+    now_ts = float(time.time())
+    return now_ts, now_ts - minutes_back * 60.0
+
+
 def _get_symbol_window_extrema(symbol, current_price,
                                minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     """Return validated per-symbol price minimum/maximum for the rolling window."""
@@ -366,8 +371,7 @@ def _get_symbol_window_extrema(symbol, current_price,
     if minutes_back is None or current_price is None:
         print(f"[{symbol}] Invalid price/cache window; skip evaluation.")
         return None
-    now_ts = float(time.time())
-    target_ts = now_ts - minutes_back * 60.0
+    now_ts, target_ts = _resolve_window_bounds(minutes_back)
 
     local = _local_price_samples.setdefault(symbol, [])
     local.append([now_ts, current_price])
@@ -426,8 +430,7 @@ def _get_portfolio_growth_percent(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFA
     minutes_back = _finite_float(minutes_back, positive=True)
     if minutes_back is None:
         return None
-    now_ts = float(time.time())
-    target_ts = now_ts - minutes_back * 60.0
+    now_ts, target_ts = _resolve_window_bounds(minutes_back)
     rows = _read_total_asset_value_rows()
     valid = []
     for row in rows:

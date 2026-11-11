@@ -129,8 +129,7 @@ class _OrderList(list):
 
     def __init__(self, iterable=()):
         super().__init__(iterable)
-        self._sorted_desc = len(self) <= 1
-        self._summary = None
+        self._invalidate()
 
     def _invalidate(self) -> None:
         self._sorted_desc = len(self) <= 1
@@ -258,17 +257,21 @@ class ReplayMarketDataProvider(MarketDataProvider):
             self._asset_to_symbol.setdefault(base, sym)
         return prec
 
+    def _resolve_series_and_cursor(
+        self, symbol: str
+    ) -> Tuple[str, Optional[List[Tuple[float, float]]], int]:
+        sym = self._resolve_symbol(symbol)
+        return sym, self._series.get(sym), self._cursor.get(sym, 0)
+
     # -- Clock advancement: called by the backtest driver, not bot code -------
     def advance(self, symbol: str, steps: int = 1) -> Optional[float]:
         """Advance a symbol cursor by ``steps`` and return its new current price."""
         steps_int = exact_pos_int(steps, default=None)
         if steps_int is None:
             return None
-        sym = self._resolve_symbol(symbol)
-        series = self._series.get(sym)
+        sym, series, cur_idx = self._resolve_series_and_cursor(symbol)
         if not series:
             return None
-        cur_idx = self._cursor.get(sym, 0)
         new_idx = min(cur_idx + steps_int, len(series))
         if new_idx == cur_idx and new_idx >= len(series):
             return None   # Already at the end; nothing to advance.
@@ -289,9 +292,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return max(finite_vals, default=0.0)
 
     def _active_series_idx(self, symbol: str) -> Tuple[Optional[List[Tuple[float, float]]], int]:
-        sym = self._resolve_symbol(symbol)
-        series = self._series.get(sym)
-        idx = self._cursor.get(sym, 0)
+        _sym, series, idx = self._resolve_series_and_cursor(symbol)
         return (series, idx) if (series and idx > 0) else (None, 0)
 
     # -- Market data ----------------------------------------------------------
