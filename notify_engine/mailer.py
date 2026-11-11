@@ -33,9 +33,7 @@ if ROOT_DIR not in sys.path:
 
 from botcore import _parse_bool_flag, load_env_stack, optional_env, safe_pos_int
 from notify_engine.alertnotifiers import (
-    EMAIL_MIRRORED_CATEGORIES,
     _GATE_ACCEPTED_REASONS,
-    _canonical_topic_key,
     _external_notifications_disabled,
     is_email_mirrored,
     pass_common_gate,

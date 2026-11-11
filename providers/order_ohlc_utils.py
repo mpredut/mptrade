@@ -8,13 +8,7 @@ from typing import Any, List, Optional
 
 from botcore import (
     ClosedPriceSeries,
-    _COST_EXEC_KEY_PAIRS,
-    _ORDER_ID_KEYS,
-    _PRICE_KEYS,
-    _QTY_KEYS,
-    _TIMESTAMP_KEYS,
     _first_mapped,
-    _is_fresh_obs_ts,
     _nonneg_abs_float,
     _parse_bool_flag,
     _parse_epoch_or_iso_s,

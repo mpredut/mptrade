@@ -35,7 +35,7 @@ from botcore import (
     safe_pos_float,
     value_diff_to_percent,
 )
-from typing import Optional, Callable, Any, List, Tuple, Dict
+from typing import Optional, Callable, Any, Tuple
 from cachepaths import (
     get_cachedb_dir,
     normalize_venue_name,
@@ -43,15 +43,8 @@ from cachepaths import (
 import guard_hierarchy as _gh
 from guard_hierarchy import (
     GUARD_REGISTRY,
-    VALID_GUARD_MODES,
-    VALID_PROFIT_GUARD_MODES,
-    _DISCRETE_POLICY_SETS,
-    _GUARD_MODE_KEYS,
-    _MODULE_REFERENCE_KEYS,
-    _REQUIRED_ORDER_GUARD_KEYS,
     _is_valid_regime_context,
     _load_margins,
-    _validate_discrete_cfg,
     _validate_margins_cfg,
     _venue_cfg,
     is_category_bypassed,
@@ -67,11 +60,9 @@ from guard_hierarchy import (
     validate_profit_guard_mode_cfg,
 )
 from intelligence.internal.state.survival import (
-    _JSON_RECOVERING_MEMO,
     _read_cached_price_history,
     _resolve_trend_direction,
     _resolve_trend_duration,
-    _scan_cached_long_trend,
     get_weight_for_cash_permission_at_quant_time,
     resolve_effective_trend_duration,
 )

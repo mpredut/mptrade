@@ -61,9 +61,13 @@ def test_env_common_env_get_works_under_set_u_without_home():
     )
     assert proc.returncode == 0 and "ENV_GET_OK" in proc.stdout, proc.stderr
 
+    with open(os.path.join(ROOT, "orchestratorOS", "lib", "env_common.sh"), encoding="utf-8") as fh:
+        env_common_text = fh.read()
+    assert env_common_text.index('. "$ROOT/config.env"') < env_common_text.index('. "$ROOT/.env"')
+
     with open(os.path.join(ROOT, "orchestratorOS", "livecheck", "pia_supervisor.sh"), encoding="utf-8") as fh:
         pia_text = fh.read()
-    assert pia_text.index('. "$ROOT/config.env"') < pia_text.index('. "$ROOT/.env"')
+    assert "load_root_env_sh --with-secrets" in pia_text
     assert 'if [ "$current_reg" = "$target_region" ] && vpn_healthy; then' in pia_text
 
     with open(os.path.join(ROOT, "orchestratorOS", "livecheck", "vpn_watchdog.sh"), encoding="utf-8") as fh:
