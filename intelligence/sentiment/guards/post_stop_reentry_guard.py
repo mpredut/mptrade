@@ -22,6 +22,7 @@ from botcore import (
     format_price_log,
     resolve_order_notional,
     safe_nonneg_ts,
+    topic_spec,
 )
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
@@ -44,7 +45,6 @@ from intelligence.sentiment.guards.high_stake_guard import (
     collect_pretrade_telemetry,
     is_llm_guard_exempt,
 )
-from orchestratorOS.agy.topics import topic_spec
 
 logger = logging.getLogger("intelligence.sentiment.guards.post_stop_reentry_guard")
 

@@ -5,6 +5,8 @@ import time
 from typing import Any, Callable, Optional
 
 from botcore import (
+    TOPIC_SPECS,
+    canonical_topic_key,
     clean_scale,
     format_notify_price,
     format_notify_qty,
@@ -35,24 +37,13 @@ from .order_ohlc_utils import (
     resolve_order_actor,
 )
 
-_TOPIC_BRACKET_TAGS: dict[str, str] = {
-    "auto_technical_repair": "[auto_technical_repair]",
-    "auto_cryptotrade_executor": "[auto_cryptotrade_executor]",
-    "auto_trade_executor": "[auto_cryptotrade_executor]",
-    "auto_sharetrade_executor": "[auto_sharetrade_executor]",
-    "macro_geopolitical": "[auto_macro_geopolitical]",
-    "macro_sentiment": "[auto_macro_sentiment]",
-    "guard_high_stake": "[auto_guard_large_order]",
-    "guard_post_stop": "[auto_guard_post_stop]",
-}
-
 
 def resolve_intent_topic_tag(intent: dict[str, Any], venue: str) -> str:
     """Resolve canonical topic bracket tag ('[auto_cryptotrade_executor]' or '[auto_sharetrade_executor]') for an intent."""
     raw_src = intent.get("created_by") if isinstance(intent, dict) else None
-    src_topic = "" if raw_src is None or isinstance(raw_src, bool) else str(raw_src).strip()
-    if src_topic in _TOPIC_BRACKET_TAGS:
-        return _TOPIC_BRACKET_TAGS[src_topic]
+    src_topic = canonical_topic_key("" if raw_src is None or isinstance(raw_src, bool) else str(raw_src).strip())
+    if src_topic in TOPIC_SPECS:
+        return TOPIC_SPECS[src_topic].bracket_tag
     return MarketDataProvider.resolve_venue_intent_executor_tag(venue)
 
 

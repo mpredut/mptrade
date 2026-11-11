@@ -11,6 +11,7 @@ Estimates trend longevity distributions (Weibull / Kaplan-Meier) and calibrated 
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import math
 import os
 import sys
@@ -23,11 +24,13 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+import utils as u
 from botcore import (
     _parse_bool_flag,
     is_live_network_backfill_enabled,
     lru_dict_put,
     normalize_epoch_sec,
+    normalize_trend_direction,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
@@ -37,7 +40,8 @@ from botcore import (
 )
 from cachepaths import CACHE_T_TREND_FILENAME, cache_path, canonical_symbol_key, normalize_cache_base_asset
 from instrument_registry import is_equity_symbol
-from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
+from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
+from providers.base import normalize_side
 from state_io import read_json_dict_cached, save_json_state
 
 _DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", CACHE_T_TREND_FILENAME)
@@ -76,6 +80,7 @@ def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarr
         np.asarray([t for t, _ in pts], dtype=float),
         np.asarray([p for _, p in pts], dtype=float),
     )
+
 
 def _coerce_xy_pairs(xs: Any, ys: Any, parser_x: Any, parser_y: Any) -> tuple[list[float], list[float]]:
     if xs is None or ys is None or isinstance(xs, (bool, str, bytes)) or isinstance(ys, (bool, str, bytes)):
@@ -549,6 +554,295 @@ def estimate_remaining_trend_hours(
     return round(max(1.0, weibull_rem_h), 1)
 
 
+def _dbg_weight(*args: Any, **kwargs: Any) -> None:
+    pa_mod = sys.modules.get("priceAnalysis")
+    dbg_flag = getattr(pa_mod, "_DEBUG", None) if pa_mod is not None else None
+    if dbg_flag is None:
+        dbg_flag = _parse_bool_flag(os.environ.get("PRICEANALYSIS_DEBUG"), False)
+    if dbg_flag:
+        print(*args, **kwargs)
+
+
+def format_duration(seconds: Any) -> str:
+    """Convert seconds to the human-readable ``Xd Yh Zm`` format."""
+    sec_f = safe_pos_float(seconds, default=None)
+    if sec_f is None:
+        return "0m"
+    days = int(sec_f // 86400)
+    hours = int((sec_f % 86400) // 3600)
+    minutes = int((sec_f % 3600) // 60)
+
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+
+    return " ".join(parts) if parts else "0m"
+
+
+def format_timestamp(ts: Any) -> str:
+    """Convert a timestamp to a human-readable representation."""
+    ts_f = safe_nonneg_float(ts, default=0.0)
+    if ts_f >= 1e11:
+        ts_f /= 1000.0
+    try:
+        return datetime.fromtimestamp(ts_f).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, OSError, OverflowError):
+        return datetime.fromtimestamp(0).strftime("%Y-%m-%d %H:%M:%S")
+
+
+last_timestamp: dict = {}
+last_w: dict = {}
+last_calc_time: dict = {}
+last_duration: dict = {}
+
+
+# Zone 1: 0 to T is Gaussian, confident in the middle and uncertain at endpoints.
+# Zone 2: T to T*(1+percentage) is an over-age but persistent trend; high weight (0.86).
+# Zone 3: above T*(1+percentage) is a very old trend; use a conservative weight (0.22).
+# Aligned BUY+UP or SELL+DOWN scales the Gaussian peak to peak_weight.
+# Countertrend SELL+UP or BUY+DOWN uses the inverse global Gaussian.
+def get_trade_weight(
+    T: Any,
+    trend_len: Any,
+    trend: Any,
+    order_type: Any,
+    exceed_percent: float = 0.4,
+    max_against_trend: float = 0.15,
+    peak_weight: float = 0.95,
+    min_weight: float = 0.02,
+    lindy_plateau: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute Gaussian survival-adjusted allocation weight curve for a trend episode."""
+    if not isinstance(order_type, str) or not isinstance(trend, str):
+        return np.array([]), np.array([])
+    T_f = safe_pos_float(T, default=None)
+    trend_len_f = safe_nonneg_float(trend_len, default=None)
+    if T_f is None or trend_len_f is None:
+        return np.array([]), np.array([])
+    T = T_f
+    trend_len = trend_len_f
+    exceed_percent = safe_nonneg_float(exceed_percent, 0.4)
+    max_against_trend = safe_nonneg_float(max_against_trend, 0.15)
+    peak_weight = safe_nonneg_float(peak_weight, 0.95)
+    min_weight = safe_nonneg_float(min_weight, 0.02)
+    side_u = normalize_side(order_type)
+    if side_u not in ("BUY", "SELL"):
+        return np.array([]), np.array([])
+    trend_norm = normalize_trend_direction(trend, default=None)
+    if trend_norm is None:
+        return np.array([]), np.array([])
+    aligned = (side_u == "BUY" and trend_norm == "up") or (side_u == "SELL" and trend_norm == "down")
+
+    T_extended = T * (1 + exceed_percent)
+
+    if T < trend_len <= T_extended:
+        w_val = 0.86 if aligned else max_against_trend
+        _dbg_weight(
+            f"[DEBUG] Zone 2: trend_len={trend_len:.2f} exceeds T={T} "
+            f"but is below T_extended={T_extended}. Aligned={aligned}, return {w_val}  "
+        )
+        return np.array([0.0]), np.array([w_val])
+
+    if trend_len > T_extended:
+        w_val = 0.22 if aligned else max_against_trend
+        _dbg_weight(
+            f"[DEBUG] Zone 3: trend_len={trend_len:.2f} is above "
+            f"T_extended={T_extended}. Aligned={aligned}, return {w_val} "
+        )
+        return np.array([0.0]), np.array([w_val])
+
+    t_steps = max(1, int(round(T)))
+    idx = max(0, min(int(trend_len), t_steps - 1))
+    t_full, w_full = u.gaussian_weights_from_idx(T=t_steps, idx=0)
+    if len(w_full) == 0:
+        _dbg_weight("[DEBUG] Zone 1: gaussian_weights_from_idx returned empty. return [0.05]")
+        return np.array([0.0]), np.array([0.05])
+    w01_full = w_full / w_full.max()
+    if _parse_bool_flag(lindy_plateau, True):
+        peak_i = int(np.argmax(w01_full))
+        w01_full = w01_full.copy()
+        w01_full[peak_i:] = 1.0
+    t_seq, w01 = t_full[idx:], w01_full[idx:]
+    _dbg_weight(
+        f"[DEBUG] Zone 1: trend_len={trend_len:.2f}, slice from idx={idx} "
+        f"up to T={T}. Aligned={aligned}, gauss01[0]={w01[0]:.4f}"
+    )
+
+    if aligned:
+        w_seq = w01 * peak_weight
+    else:
+        _dbg_weight(
+            f"[DEBUG] Order type {order_type} is not aligned with the trend {trend}, "
+            f"globally inverted, max_against_trend={max_against_trend}"
+        )
+        w_seq = min_weight + (1.0 - w01) * (max_against_trend - min_weight)
+
+    return t_seq, w_seq
+
+
+def get_weight_for_cash_permission_at_quant_time(
+    symbol: Any,
+    order_type: Any,
+    T_quanta: Any = None,
+    quant_seconds: Any = 3600 * 24,
+    draw: bool = False,
+    *,
+    allow_network: bool = False,
+) -> Optional[float]:
+    """Resolve Gaussian cash-permission allocation weight from cached long-term trend and empirical T.
+
+    Read-only consumers (`allow_network=False`, the default on the order guard path) read
+    `cache_long_trend.json` and `cache_T_trend.json` without triggering live OHLC network fetches
+    or importing heavy plotting daemons.
+    """
+    import cacheManager as cm
+
+    if not isinstance(symbol, str) or not symbol.strip():
+        return None
+    if not isinstance(order_type, str):
+        return None
+    side_u = normalize_side(order_type)
+    if side_u not in ("BUY", "SELL"):
+        return None
+    if isinstance(T_quanta, bool) or isinstance(quant_seconds, bool):
+        return None
+
+    lt_mgr = cm.get_cache_manager("LongTrend")
+    if hasattr(lt_mgr, "resync_mem_file"):
+        lt_mgr.resync_mem_file()
+    all_trend_data = lt_mgr.cache
+    items = lookup_symbol_cache_items(all_trend_data, symbol)
+    if not items:
+        print(f"Symbol {symbol} is not present in the trends that were read.")
+        return None
+
+    trend = scan_latest_long_trend_value(
+        items, lambda e: e if e.get("duration_seconds") is not None else None
+    )
+    if trend is None:
+        print(f" No trend in cache for symbol {symbol}.")
+        return None
+
+    est = None
+    if T_quanta is None:
+        try:
+            _est_fn = resolve_patched_attr(
+                "estimate_T",
+                _ORIG_ESTIMATE_T,
+                local_val=estimate_T,
+                modules=("priceAnalysis", "intelligence.internal.state.survival", "forecast.trend_survival"),
+                require_callable=True,
+            )
+            _fk_fn = resolve_patched_attr(
+                "fetch_klines",
+                _ORIG_FETCH_KLINES,
+                local_val=fetch_klines,
+                modules=("priceAnalysis", "intelligence.internal.state.survival", "forecast.trend_survival"),
+                require_callable=True,
+            )
+            is_est_patched = (_est_fn is not _ORIG_ESTIMATE_T) or (_fk_fn is not _ORIG_FETCH_KLINES)
+            if _parse_bool_flag(allow_network, False) or is_est_patched:
+                est = _est_fn(symbol)
+            else:
+                est = get_cached_t_entry(symbol) or {"T": 14}
+            T_quanta = est["T"]
+        except Exception as e:
+            T_quanta = 14
+            print(f"[{symbol}] T estimation failed ({e}) — using the prior T=14")
+
+    dur_sec = safe_pos_float(trend.get("duration_seconds"), default=None)
+    t_quanta_f = safe_pos_float(T_quanta, default=None)
+    quant_sec_f = safe_pos_float(quant_seconds, default=None)
+    if dur_sec is None or t_quanta_f is None or quant_sec_f is None:
+        print(f"[{symbol}] duration_seconds/T_quanta invalid, return None")
+        return None
+
+    direction = normalize_trend_direction(trend.get("direction"), default=None)
+    if direction is None:
+        return None
+
+    duration_days = dur_sec / 86400.0
+    start_ts_val = safe_float(trend.get("start_timestamp"), default=0.0)
+    timestamp = safe_pos_float(trend.get("timestamp"), default=None)
+    memo_key = (
+        (symbol, side_u, t_quanta_f, direction)
+        if quant_sec_f == 86400.0
+        else (symbol, side_u, t_quanta_f, direction, quant_sec_f)
+    )
+    curr_now = time.time()
+    cache_age = curr_now - last_calc_time.get(memo_key, 0.0)
+    dur_drift = abs(dur_sec - last_duration.get(memo_key, 0.0))
+
+    if (
+        timestamp is not None
+        and timestamp == last_timestamp.get(memo_key)
+        and 0.0 <= cache_age < 300.0
+        and dur_drift < 300.0
+    ):
+        cached_w = last_w.get(memo_key)
+        if cached_w is not None and len(cached_w) > 0 and not np.isnan(cached_w[0]):
+            print(f"not new timestamp (age={cache_age:.1f}s), use weight from mem cache.")
+            return float(cached_w[0])
+
+    if isinstance(est, dict):
+        print(
+            f"[{symbol}] T AUTO (empirical hybrid): {T_quanta} days  "
+            f"(n={est.get('n')} episodes, w_empirical={est.get('w')}, "
+            f"median={est.get('median_d')}d, P90={est.get('p90_d')}d)"
+        )
+    print(f"Trend read from the cache manager for symbol {symbol}: {trend}")
+    print(f"   Start trend:     {format_timestamp(start_ts_val)}")
+    print(f"   Duration:        {format_duration(dur_sec)} ({duration_days:.1f} days)")
+
+    trend_len_quanta = dur_sec / quant_sec_f
+    if safe_pos_float(trend_len_quanta, default=None) is None:
+        print(f"[{symbol}] duration_seconds invalid, return None")
+        return None
+
+    _tw_fn = resolve_patched_attr(
+        "get_trade_weight",
+        _ORIG_GET_TRADE_WEIGHT,
+        local_val=get_trade_weight,
+        modules=("priceAnalysis", "intelligence.internal.state.survival", "forecast.trend_survival"),
+        require_callable=True,
+    )
+    t, w = _tw_fn(
+        T=t_quanta_f,
+        trend_len=trend_len_quanta,
+        trend=direction,
+        order_type=side_u,
+    )
+
+    if len(w) == 0:
+        print(f"[{symbol}] w is empty, returning None")
+        return None
+
+    current_weight = float(w[0])
+    if np.isnan(current_weight) or current_weight <= 0:
+        print(f"[{symbol}] Invalid weight: {current_weight}, returning None")
+        return None
+
+    print(f"[{symbol}] first 5 weights: {w[:5]}")
+    print(f"Sum of all {len(w)} weights = {w.sum():.4f}")
+
+    if _parse_bool_flag(draw, False):
+        import matplotlib.pyplot as plt
+
+        plt.plot(t, w, label=symbol)
+        plt.legend()
+        plt.show()
+
+    lru_dict_put(last_w, memo_key, w, 256)
+    lru_dict_put(last_timestamp, memo_key, timestamp, 256)
+    lru_dict_put(last_calc_time, memo_key, curr_now, 256)
+    lru_dict_put(last_duration, memo_key, dur_sec, 256)
+    return current_weight
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Empirical trend survival analysis.")
     ap.add_argument("--symbol", default="BTCUSDC")
@@ -583,6 +877,7 @@ def main() -> int:
 
 _ORIG_FETCH_KLINES = fetch_klines
 _ORIG_ESTIMATE_T = estimate_T
+_ORIG_GET_TRADE_WEIGHT = get_trade_weight
 
 
 if __name__ == "__main__":

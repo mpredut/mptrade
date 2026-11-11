@@ -8,7 +8,6 @@ one bounded lifecycle step per pass.
 """
 import argparse
 from datetime import datetime
-import json
 import os
 import sys
 import time
@@ -40,6 +39,7 @@ from providers.base import normalize_side
 from providers.execution_audit import ExecutionAudit
 from providers.quantity import resolve_assets
 from state_io import (
+    encode_json_payload,
     load_json_state,
     previous_generation_path,
     save_json_state,
@@ -887,7 +887,7 @@ class IncidentDigest:
                     or not all(isinstance(k, str) and isinstance(v, str) for k, v in labels.items())
                 ):
                     raise ValueError("invalid notification digest event")
-                key = json.dumps(labels, sort_keys=True, separators=(",", ":"))
+                key = encode_json_payload(labels, sort_keys=True, separators=(",", ":"))
                 group = groups.setdefault(key, {
                     "labels": labels, "next_at": now, "reported": False,
                     "count": 0, "quantity": 0.0, "attempts": 0,

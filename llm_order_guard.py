@@ -28,6 +28,7 @@ from botcore import (
     resolve_now_ts,
     resolve_order_notional,
     safe_pos_float,
+    topic_spec,
 )
 from cachepaths import clean_symbol_key
 from guard_hierarchy import (
@@ -175,7 +176,6 @@ def evaluate_high_stake_order_guard(
         if not is_cache_hit and do_notify and check_cooldown_gate(_LLM_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), side), resolve_now_ts(now)):
             try:
                 from notify_engine.alertnotifiers import notify
-                from orchestratorOS.agy.topics import topic_spec
 
                 hs_tag = topic_spec("guard_high_stake").bracket_tag
                 scale_pct = int(g_scale * 100)
@@ -324,7 +324,6 @@ def check_geopolitical_order_guards(
                 ):
                     try:
                         from notify_engine.alertnotifiers import notify
-                        from orchestratorOS.agy.topics import topic_spec
 
                         geo_tag = topic_spec("macro_geopolitical").bracket_tag
                         scale_pct = int(geo_scale * 100)

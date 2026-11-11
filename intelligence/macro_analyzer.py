@@ -29,6 +29,7 @@ from botcore import (
     load_dotenv,
     safe_nonneg_ts,
     sanitize_heartbeat_status,
+    topic_spec,
 )
 from cachepaths import resolve_cachedb_filepath
 from intelligence.macro.calendar_ssot import (
@@ -170,7 +171,6 @@ class MacroAnalyzer:
         if self.shadow_notify:
             try:
                 from notify_engine.alertnotifiers import notify
-                from orchestratorOS.agy.topics import topic_spec
 
                 tag = topic_spec(topic_id).bracket_tag
                 notify(title=f"{icon} {tag} {headline_suffix}", body=body, source="macro_shadow", symbol="GLOBAL")

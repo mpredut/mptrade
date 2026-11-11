@@ -19,7 +19,7 @@ from botcore import _parse_bool_flag, exact_int, parse_dotenv_line, safe_float, 
 from cachepaths import cache_symbol_variants, canonical_base_asset
 from instrument_registry import casefold_get
 from providers.quantity import resolve_assets
-from state_io import read_text_lines
+from state_io import encode_json_payload, read_text_lines
 
 # Scalar key -> (type, destination: "ac" in alert_config or "top" in cfg).
 _SETTING_KEYS = {
@@ -153,7 +153,7 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
 
 
 if __name__ == "__main__":
-    import json
     import sys
+
     p = sys.argv[1] if len(sys.argv) > 1 else "price_watcher.conf"
-    print(json.dumps(load_config(p), indent=2))
+    print(encode_json_payload(load_config(p), indent=2))

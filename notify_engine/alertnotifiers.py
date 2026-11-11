@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import sys
@@ -10,7 +9,7 @@ sys.modules.setdefault("alertnotifiers", sys.modules[__name__])
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from state_io import read_json_dict, save_json_state
+from state_io import encode_json_payload, read_json_dict, save_json_state
 from typing import Any, Optional
 
 # Import your modules
@@ -647,7 +646,7 @@ def _alert_identity(alert: Any) -> dict:
 
 def _delivery_fingerprint(alerts: list[Any]) -> str:
     identities = sorted(
-        (json.dumps(_alert_identity(alert), sort_keys=True, default=str) for alert in alerts),
+        (encode_json_payload(_alert_identity(alert), sort_keys=True, default=str) for alert in alerts),
     )
     return hashlib.sha256("\n".join(identities).encode("utf-8")).hexdigest()
 
@@ -939,7 +938,7 @@ def _is_provider_daily_limit(response: Any) -> bool:
 
 
 def _emit_orchestrator_intent(payload: dict[str, Any], *, default: Any = None) -> bool:
-    sys.stdout.write(json.dumps(payload, default=default) + "\n")
+    sys.stdout.write(encode_json_payload(payload, default=default) + "\n")
     sys.stdout.flush()
     return True
 

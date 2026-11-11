@@ -1,15 +1,10 @@
 
 import os
 import time
-import psutil
+from datetime import datetime
+from typing import List, Optional, Tuple
 
 import numpy as np
-from typing import List, Tuple, Optional
-
-# Drawing dependencies.
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from datetime import datetime
 
 # Local imports.
 import utils as u
@@ -35,7 +30,19 @@ from intelligence.internal.state.persistence import (
     calculate_mann_kendall,
     classify_hurst_regime,
 )
-from intelligence.internal.state.survival import estimate_T, estimate_remaining_trend_hours, fetch_klines
+from intelligence.internal.state.survival import (
+    estimate_T,
+    estimate_remaining_trend_hours,
+    fetch_klines,
+    format_duration,
+    format_timestamp,
+    get_trade_weight,
+    get_weight_for_cash_permission_at_quant_time,
+    last_calc_time,
+    last_duration,
+    last_timestamp,
+    last_w,
+)
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
 from instrument_registry import casefold_get, is_equity_symbol
 from providers.base import normalize_side
@@ -131,6 +138,9 @@ def drawPriceLst(timestamps, prices, trend_block_indices, symbol, trend_directio
     Trend calculations use the complete series. Only the PNG renderer receives a
     bounded uniform sample; otherwise Matplotlib creates tens of thousands of datetime
     objects and array copies every minute, and the allocator retains their RSS."""
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+
     timestamps = np.asarray(timestamps)
     prices = np.asarray(prices)
     plot_idx = _bounded_plot_indices(len(timestamps))
@@ -238,37 +248,6 @@ def _fast_linear_regression_1d(x: np.ndarray, y: np.ndarray) -> tuple[float, flo
     slope = float(np.dot(dev_x, y) / var_x)
     intercept = mean_y - slope * mean_dx
     return slope, intercept
-
-
-def format_duration(seconds):
-    """Convert seconds to the human-readable ``Xd Yh Zm`` format."""
-    sec_f = safe_pos_float(seconds, default=None)
-    if sec_f is None:
-        return "0m"
-    days = int(sec_f // 86400)
-    hours = int((sec_f % 86400) // 3600)
-    minutes = int((sec_f % 3600) // 60)
-    
-    parts = []
-    if days > 0:
-        parts.append(f"{days}d")
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0:
-        parts.append(f"{minutes}m")
-    
-    return " ".join(parts) if parts else "0m"
-
-
-def format_timestamp(ts):
-    """Convert a timestamp to a human-readable representation."""
-    ts_f = safe_nonneg_float(ts, default=0.0)
-    if ts_f >= 1e11:
-        ts_f /= 1000.0
-    try:
-        return datetime.fromtimestamp(ts_f).strftime('%Y-%m-%d %H:%M:%S')
-    except (ValueError, OSError, OverflowError):
-        return datetime.fromtimestamp(0).strftime('%Y-%m-%d %H:%M:%S')
 
 
 # Minimum points required for a credible window slope; fewer points constitute a gap.
@@ -669,248 +648,9 @@ def write_all_trends(all_trends, filename=None):
     return all_trends
 
 
-def get_weight_for_cash_permission_at_quant_time(
-    symbol,
-    order_type,
-    T_quanta=None,
-    quant_seconds=3600*24,
-    draw=False,
-    *,
-    allow_network: bool = False,
-):
-    """Use an empirical per-symbol T when ``T_quanta`` is None.
-
-    trend_survival.estimate_T blends history with a 14-day prior, favoring
-    empirical data when enough episodes exist, and caches it on disk. Passing 14
-    explicitly restores legacy behavior. Read-only consumers (`allow_network=False`,
-    the default on the order guard path) read `cache_T_trend.json` in 0 ms without
-    triggering live OHLC network fetches or disk writes.
-    """
-    import cacheManager as cm
-
-    if not isinstance(symbol, str) or not symbol.strip():
-        return None
-    if not isinstance(order_type, str):
-        return None
-    side_u = normalize_side(order_type)
-    if side_u not in ("BUY", "SELL"):
-        return None
-    if isinstance(T_quanta, bool) or isinstance(quant_seconds, bool):
-        return None
-
-    lt_mgr = cm.get_cache_manager("LongTrend")
-    if hasattr(lt_mgr, "resync_mem_file"):
-        lt_mgr.resync_mem_file()
-    all_trend_data = lt_mgr.cache
-    items = lookup_symbol_cache_items(all_trend_data, symbol)
-    if not items:
-        print(f"Symbol {symbol} is not present in the trends that were read.")
-        return None
-
-    # Retrieve latest trend record; an explicit trailing None is a neutral snapshot
-    trend = scan_latest_long_trend_value(
-        items, lambda e: e if e.get("duration_seconds") is not None else None
-    )
-
-    if trend is None:
-        print(f" No trend in cache for symbol {symbol}.")
-        return None
-
-    est = None
-    if T_quanta is None:
-        try:
-            from intelligence.internal.state import survival as _surv_mod
-
-            is_est_patched = (
-                estimate_T is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
-                or getattr(_surv_mod, "estimate_T", None) is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
-                or getattr(_surv_mod, "fetch_klines", None) is not getattr(_surv_mod, "_ORIG_FETCH_KLINES", None)
-                or fetch_klines is not getattr(_surv_mod, "_ORIG_FETCH_KLINES", None)
-            )
-            if _parse_bool_flag(allow_network, False) or is_est_patched:
-                est = estimate_T(symbol)
-            else:
-                est = _surv_mod.get_cached_t_entry(symbol) or {"T": 14}
-            T_quanta = est["T"]
-        except Exception as e:
-            T_quanta = 14
-            print(f"[{symbol}] T estimation failed ({e}) — using the prior T=14")
-
-    dur_sec = safe_pos_float(trend.get("duration_seconds"), default=None)
-    t_quanta_f = safe_pos_float(T_quanta, default=None)
-    quant_sec_f = safe_pos_float(quant_seconds, default=None)
-    if dur_sec is None or t_quanta_f is None or quant_sec_f is None:
-        print(f"[{symbol}] duration_seconds/T_quanta invalid, return None")
-        return None
-
-    direction = normalize_trend_direction(trend.get("direction"), default=None)
-    if direction is None:
-        return None
-
-    duration_days = dur_sec / 86400.0
-    start_ts_val = safe_float(trend.get("start_timestamp"), default=0.0)
-    timestamp = safe_pos_float(trend.get("timestamp"), default=None)
-    # Include order type, T, and direction in the memo key because their weights differ
-    # and automatic T or direction may change after re-estimation.
-    memo_key = (
-        (symbol, side_u, t_quanta_f, direction)
-        if quant_sec_f == 86400.0
-        else (symbol, side_u, t_quanta_f, direction, quant_sec_f)
-    )
-    curr_now = time.time()
-    cache_age = curr_now - last_calc_time.get(memo_key, 0.0)
-    dur_drift = abs(dur_sec - last_duration.get(memo_key, 0.0))
-
-    # Recalculate if timestamp changed, cache age > 300s (5min fallback TTL) or < 0 (clock skew), or duration drifted > 300s
-    if (
-        timestamp is not None
-        and timestamp == last_timestamp.get(memo_key)
-        and 0.0 <= cache_age < 300.0
-        and dur_drift < 300.0
-    ):
-        cached_w = last_w.get(memo_key)
-        if cached_w is not None and len(cached_w) > 0 and not np.isnan(cached_w[0]):
-            print(f"not new timestamp (age={cache_age:.1f}s), use weight from mem cache.")
-            return float(cached_w[0])
-
-    if isinstance(est, dict):
-        print(
-            f"[{symbol}] T AUTO (empirical hybrid): {T_quanta} days  "
-            f"(n={est.get('n')} episodes, w_empirical={est.get('w')}, "
-            f"median={est.get('median_d')}d, P90={est.get('p90_d')}d)"
-        )
-    print(f"Trend read from the cache manager for symbol {symbol}: {trend}")
-    print(f"   Start trend:     {format_timestamp(start_ts_val)}")
-    print(f"   Duration:        {format_duration(dur_sec)} ({duration_days:.1f} days)")
-
-    trend_len_quanta = dur_sec / quant_sec_f
-    if safe_pos_float(trend_len_quanta, default=None) is None:
-        print(f"[{symbol}] duration_seconds invalid, return None")
-        return None
-
-    t, w = get_trade_weight(
-        T=t_quanta_f,
-        trend_len=trend_len_quanta,
-        trend=direction,
-        order_type=side_u
-    )
-
-    if len(w) == 0:
-        print(f"[{symbol}] w is empty, returning None")
-        return None
-
-    current_weight = float(w[0])  # The slice's first value is the current weight.
-
-    if np.isnan(current_weight) or current_weight <= 0:
-        print(f"[{symbol}] Invalid weight: {current_weight}, returning None")
-        return None
-
-    print(f"[{symbol}] first 5 weights: {w[:5]}")
-    print(f"Sum of all {len(w)} weights = {w.sum():.4f}")
-
-    if _parse_bool_flag(draw, False):
-        plt.plot(t, w, label=symbol)
-        plt.legend()
-        plt.show()
-
-    lru_dict_put(last_w, memo_key, w, 256)
-    lru_dict_put(last_timestamp, memo_key, timestamp, 256)
-    lru_dict_put(last_calc_time, memo_key, curr_now, 256)
-    lru_dict_put(last_duration, memo_key, dur_sec, 256)
-    return current_weight     # w[0] is the current weight.
-
-last_timestamp = {}
-last_w = {}
-last_calc_time = {}
-last_duration = {}
-
-
-# Zone 1: 0 to T is Gaussian, confident in the middle and uncertain at endpoints.
-# Zone 2: T to T*(1+percentage) is an over-age but persistent trend; high weight (0.86).
-# Zone 3: above T*(1+percentage) is a very old trend; use a conservative weight (0.22).
-
-# Aligned BUY+UP or SELL+DOWN scales the Gaussian peak to peak_weight.
-# Middle -> 0.95 (maximum allocation); endpoints -> about 0.17 (small allocation).
-
-# Countertrend SELL+UP or BUY+DOWN uses the inverse global Gaussian.
-# Middle -> 0.02 (do not trade); both endpoints -> about 0.13 to 0.15.
-
-def get_trade_weight(T, trend_len, trend, order_type,
-                     exceed_percent=0.4, max_against_trend=0.15,
-                     peak_weight=0.95, min_weight=0.02, lindy_plateau=True):
-    if not isinstance(order_type, str) or not isinstance(trend, str):
-        return np.array([]), np.array([])
-    T_f = safe_pos_float(T, default=None)
-    trend_len_f = safe_nonneg_float(trend_len, default=None)
-    if T_f is None or trend_len_f is None:
-        return np.array([]), np.array([])
-    T = T_f
-    trend_len = trend_len_f
-    exceed_percent = safe_nonneg_float(exceed_percent, 0.4)
-    max_against_trend = safe_nonneg_float(max_against_trend, 0.15)
-    peak_weight = safe_nonneg_float(peak_weight, 0.95)
-    min_weight = safe_nonneg_float(min_weight, 0.02)
-    side_u = normalize_side(order_type)
-    if side_u not in ("BUY", "SELL"):
-        return np.array([]), np.array([])
-    trend_norm = normalize_trend_direction(trend, default=None)
-    if trend_norm is None:
-        return np.array([]), np.array([])
-    aligned = (
-        (side_u == "BUY"  and trend_norm == "up") or
-        (side_u == "SELL" and trend_norm == "down")
-    )
-
-    T_extended = T * (1 + exceed_percent)
-
-    # Zone 2: an over-age but persistent trend has strong aligned momentum.
-    if T < trend_len <= T_extended:
-        w_val = 0.86 if aligned else max_against_trend
-        _dbg(f"[DEBUG] Zone 2: trend_len={trend_len:.2f} exceeds T={T} but is below T_extended={T_extended}. Aligned={aligned}, return {w_val}  ")
-        return np.array([0.0]), np.array([w_val])
-
-    # Zone 3: use conservative weights in both directions for a very old trend.
-    if trend_len > T_extended:
-        w_val = 0.22 if aligned else max_against_trend
-        _dbg(f"[DEBUG] Zone 3: trend_len={trend_len:.2f} is above T_extended={T_extended}. Aligned={aligned}, return {w_val} ")
-        return np.array([0.0]), np.array([w_val])
-
-    # Zone 1: Gaussian over the full T, sliced from the trend's current age.
-    # Clamp index to t_steps-1 so trend_len==T leaves a nonempty slice at the zone seam.
-    t_steps = max(1, int(round(T)))
-    idx = max(0, min(int(trend_len), t_steps - 1))
-    t_full, w_full = u.gaussian_weights_from_idx(T=t_steps, idx=0)
-    if len(w_full) == 0:
-        _dbg("[DEBUG] Zone 1: gaussian_weights_from_idx returned empty. return [0.05]")
-        return np.array([0.0]), np.array([0.05])
-    # utils normalizes a probability distribution. Rescale its peak to one for
-    # trading weights, avoiding the former 8-40x zone-scale mismatch.
-    w01_full = w_full / w_full.max()                  # 0..1 with a peak of one.
-    if _parse_bool_flag(lindy_plateau, True):
-        # Empirical BTC and TAO survival data supports a Lindy plateau: conditional
-        # one-day survival remains roughly 0.65-0.75 after the midpoint. Hold the
-        # curve at its peak rather than following the Gaussian's declining tail.
-        peak_i = int(np.argmax(w01_full))
-        w01_full = w01_full.copy()
-        w01_full[peak_i:] = 1.0
-    t_seq, w01 = t_full[idx:], w01_full[idx:]
-    _dbg(f"[DEBUG] Zone 1: trend_len={trend_len:.2f}, slice from idx={idx} up to T={T}. Aligned={aligned}, gauss01[0]={w01[0]:.4f}")
-
-    if aligned:
-        w_seq = w01 * peak_weight
-    else:
-        # Invert the global curve, not its slice: midpoint maps to min_weight and
-        # endpoints to max_against_trend.
-        _dbg(f"[DEBUG] Order type {order_type} is not aligned with the trend {trend}, globally inverted, max_against_trend={max_against_trend}")
-        w_seq = min_weight + (1.0 - w01) * (max_against_trend - min_weight)
-
-    return t_seq, w_seq  # slice [idx..T-1]
-    
-    
-    
-    
-UPDATE_AND_REFRESH_TREND = 60*1 # One minute.
+UPDATE_AND_REFRESH_TREND = 60 * 1  # One minute.
 if __name__ == "__main__":
+    import psutil
     from instrument_registry import tracked_price_instruments
     symbols, _nb_syms, _nb_providers = tracked_price_instruments()
     build_price_cache_manager(symbols=symbols, provider_names=_nb_providers or None)

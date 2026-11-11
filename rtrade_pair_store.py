@@ -1,7 +1,6 @@
 """Atomic rtrade round store, separate from the generic order outbox."""
 from __future__ import annotations
 
-import json
 import hashlib
 import threading
 import time
@@ -17,7 +16,7 @@ from botcore import (
 )
 from cachepaths import canonical_symbol_key, resolve_cachedb_filepath
 from lock import FileLock
-from state_io import atomic_write_json, read_json_file
+from state_io import atomic_write_json, encode_json_payload, parse_json_payload, read_json_file
 
 
 def rtrade_client_order_id(pair_id, side, kind="limit"):
@@ -195,7 +194,7 @@ class RTradePairStore:
 
     def _read(self):
         if not self.path:
-            return self._validate(json.loads(json.dumps(self._mem_data)))
+            return self._validate(parse_json_payload(encode_json_payload(self._mem_data)))
         eff_path = str(resolve_cachedb_filepath(self.path))
         try:
             return self._validate(read_json_file(eff_path, recover_previous=True))
@@ -204,7 +203,7 @@ class RTradePairStore:
 
     def _write(self, data):
         if not self.path:
-            self._mem_data = json.loads(json.dumps(data))
+            self._mem_data = parse_json_payload(encode_json_payload(data))
             return
         atomic_write_json(
             str(resolve_cachedb_filepath(self.path)),

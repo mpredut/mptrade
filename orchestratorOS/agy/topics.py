@@ -20,13 +20,18 @@ if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
 from botcore import (
+    TOPIC_ALIASES,
+    TOPIC_SPECS,
+    TopicSpec,
     _parse_bool_flag,
+    canonical_topic_key,
     exact_pos_int,
     load_dotenv,
     optional_env,
     required_int_env,
     safe_int,
     safe_nonneg_int,
+    topic_spec,
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
 
@@ -53,96 +58,9 @@ from state_io import read_json_dict, save_json_state
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 
-
-@dataclass(frozen=True)
-class TopicSpec:
-    """Permanent identity and capabilities of an LLM topic thread."""
-    title: str                    # thread name shown in the Web UI (never changes)
-    can_trade: bool = False       # may submit trade intents to the AutonomousIntentGateway
-    can_self_heal: bool = False   # may apply verified code-remediation patches
-    asset_scope: str = "all"      # "crypto" | "equities" | "all"
-    preferred_model: Optional[str] = None  # per-topic primary LLM model tier override
-    default_timeout_sec: float = 120.0     # default per-topic execution timeout in seconds
-
-    @property
-    def bracket_tag(self) -> str:
-        """Canonical '[auto_...]' tag from the thread title."""
-        m = re.search(r"(\[[^\]]+\])", self.title)
-        return m.group(1) if m else self.title
-
-    @property
-    def ntfy_prefix(self) -> str:
-        """Canonical '<icon> [auto_...]' prefix from the beginning of the thread title."""
-        m = re.match(r"^([^\[]*\[[^\]]+\])", self.title)
-        return m.group(1).strip() if m else self.title
-
-
 HIGH_STAKE_MODEL = optional_env("LLM_HIGH_STAKE_MODEL", "gemini-4-argon-high")
 EXECUTOR_MODEL = optional_env("LLM_DEFAULT_MODEL", "gemini-4-argon-medium")
 LOW_STAKE_MODEL = optional_env("LLM_LOW_STAKE_MODEL", "gpt-oss-120b-medium")
-
-TOPIC_SPECS: Dict[str, TopicSpec] = {
-    "auto_technical_repair": TopicSpec(
-        "🛠 [auto_technical_repair] System Audit & Code Self-Heal (03:35)",
-        can_self_heal=True,
-        preferred_model=EXECUTOR_MODEL,
-        default_timeout_sec=120.0,
-    ),
-    "auto_cryptotrade_executor": TopicSpec(
-        "🎯 [auto_cryptotrade_executor] Autonomous Crypto Trade Decisions (Binance/Kraken/HL 6m)",
-        can_trade=True,
-        asset_scope="crypto",
-        preferred_model=EXECUTOR_MODEL,
-        default_timeout_sec=90.0,
-    ),
-    "auto_sharetrade_executor": TopicSpec(
-        "📈 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 30m)",
-        can_trade=True,
-        asset_scope="equities",
-        preferred_model=EXECUTOR_MODEL,
-        default_timeout_sec=90.0,
-    ),
-    "macro_geopolitical": TopicSpec(
-        "🌍 [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake",
-        preferred_model=LOW_STAKE_MODEL,
-        default_timeout_sec=120.0,
-    ),
-    "macro_sentiment": TopicSpec(
-        "🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)",
-        preferred_model=EXECUTOR_MODEL,
-        default_timeout_sec=120.0,
-    ),
-    "guard_high_stake": TopicSpec(
-        "🛡 [auto_guard_large_order] Pre-Trade Veto for Large Orders (>=700 EUR)",
-        preferred_model=HIGH_STAKE_MODEL,
-        default_timeout_sec=120.0,
-    ),
-    "guard_post_stop": TopicSpec(
-        "🛡 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce",
-        preferred_model=EXECUTOR_MODEL,
-        default_timeout_sec=120.0,
-    ),
-}
-
-TOPIC_ALIASES: Dict[str, str] = {
-    "auto_trade_executor": "auto_cryptotrade_executor",
-}
-
-
-def canonical_topic_key(topic_key: Any) -> str:
-    """Resolve legacy topic aliases (e.g. auto_trade_executor -> auto_cryptotrade_executor)."""
-    if not isinstance(topic_key, str):
-        return ""
-    cleaned = topic_key.strip()
-    return TOPIC_ALIASES.get(cleaned, cleaned)
-
-
-def topic_spec(topic_key: str) -> TopicSpec:
-    """Spec of a registered topic; unknown topics fail fast."""
-    resolved = canonical_topic_key(topic_key)
-    if resolved not in TOPIC_SPECS:
-        raise KeyError(f"Unknown LLM topic '{topic_key}'; register it in TOPIC_SPECS")
-    return TOPIC_SPECS[resolved]
 
 
 def get_topic_registry_path(registry_path: Optional[str] = None) -> str:

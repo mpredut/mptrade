@@ -1,5 +1,4 @@
 import builtins
-import json
 import os
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -42,7 +41,7 @@ from providers.order_ohlc_utils import (
 )
 from providers.market_api import api as mkt
 from providers.quantity import check_order_filter_refusal, resolve_assets
-from state_io import discard_generation_file, read_json_dict, save_json_state
+from state_io import canonical_json_key, discard_generation_file, read_json_dict, save_json_state
 from strategies.mt_position_accounting import (
     _FifoTradeIdTracker,
     _build_sl_bounce_state,
@@ -389,7 +388,7 @@ def _save_mt_state(ts: float | None = None):
             "pending_stop_exit": _PENDING_STOP_EXIT,
             "hard_tp_last": _hard_tp_last,
         }
-        serialized = json.dumps(payload, sort_keys=True)
+        serialized = canonical_json_key(payload)
         cache_key = (st_file, serialized)
         if _LAST_SAVED_MT_STATE_KEY == cache_key and os.path.exists(st_file):
             return

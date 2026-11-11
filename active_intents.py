@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import glob
-import json
 import os
 from dataclasses import dataclass
 from typing import Iterable
@@ -23,7 +22,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import legacy_filenames_for, normalize_venue_name, resolve_cachedb_filepath
-from state_io import read_json_file, read_jsonl_records, read_recovering_previous
+from state_io import encode_json_payload, read_json_file, read_jsonl_records, read_recovering_previous
 
 
 @dataclass(frozen=True)
@@ -356,7 +355,7 @@ def main() -> int:
     if args.summary:
         print(format_summary(result))
     else:
-        print(json.dumps(result, indent=None if args.compact else 2, sort_keys=True))
+        print(encode_json_payload(result, indent=None if args.compact else 2, sort_keys=True))
     return 1 if result["errors"] else 0
 
 

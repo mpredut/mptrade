@@ -28,6 +28,7 @@ from botcore import (
     parse_dotenv,
     resolve_now_ts,
     resolve_order_notional,
+    resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -52,6 +53,7 @@ from guard_hierarchy import (
     normalize_bypassed_guards,
     normalize_intel_bypass_with_qlimit2_subs,
 )
+from intelligence.internal.state.survival import get_weight_for_cash_permission_at_quant_time
 from intelligence.macro_sentiment_ssot import (
     lookup_symbol_cache_items,
     scan_latest_long_trend_value,
@@ -901,7 +903,7 @@ def get_chop_weight_cfg(provider_name):
 
 
 def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weight=None, raise_on_error=False):
-    """Resolve trade weight using priceAnalysis Gaussian curve, proxy, or conservative fallback.
+    """Resolve trade weight using survival Gaussian curve, proxy, or conservative fallback.
 
     1. Gaussian weight for symbol when long trend exists.
     2. Proxy Gaussian weight (e.g. BTCUSDC) when symbol has no trend.
@@ -910,8 +912,13 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
 
     def _gauss(sym):
         try:
-            import priceAnalysis as pa
-            val = pa.get_weight_for_cash_permission_at_quant_time(sym, order_type)
+            weight_fn = resolve_patched_attr(
+                "get_weight_for_cash_permission_at_quant_time",
+                get_weight_for_cash_permission_at_quant_time,
+                modules=("priceAnalysis", "intelligence.internal.state.survival"),
+                require_callable=True,
+            )
+            val = weight_fn(sym, order_type)
             fval = safe_pos_float(val, default=None)
             if fval is not None and fval <= 1.0:
                 return fval

@@ -2434,3 +2434,66 @@ def test_check_intelligence_guards_invalidates_cached_weibull_trend_exhausted_de
     assert llm_ok is True
     assert llm_scale == pytest.approx(0.30)
     assert "whale flow weak" in llm_reason
+
+
+def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
+    """Verify order_guard never imports priceAnalysis, guards never import orchestratorOS, and state_io JSON SSOT holds."""
+    import ast
+    from pathlib import Path
+    import botcore
+    from providers.intent_execution import resolve_intent_topic_tag
+
+    repo_root = Path(__file__).resolve().parent.parent
+
+    def _collect_imports(rel_path: str, *, top_level_only: bool = False) -> set[str]:
+        tree = ast.parse((repo_root / rel_path).read_text(encoding="utf-8"), filename=rel_path)
+        nodes = tree.body if top_level_only else ast.walk(tree)
+        out: set[str] = set()
+        for node in nodes:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    out.add(alias.name)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                out.add(node.module)
+        return out
+
+    # 1. Producer-Consumer decoupling: order_guard never imports priceAnalysis; priceAnalysis lazy-loads matplotlib/psutil
+    og_imports = _collect_imports("order_guard.py")
+    assert "priceAnalysis" not in og_imports
+    pa_top_imports = _collect_imports("priceAnalysis.py", top_level_only=True)
+    assert not any(m.startswith("matplotlib") or m == "psutil" for m in pa_top_imports)
+
+    # 2. Strict Vertical DAG: guards, analyzers, and intent_execution resolve TopicSpec from botcore, never orchestratorOS
+    for rel in (
+        "llm_order_guard.py",
+        "intelligence/sentiment/guards/post_stop_reentry_guard.py",
+        "intelligence/macro_analyzer.py",
+        "providers/intent_execution.py",
+    ):
+        imps = _collect_imports(rel)
+        assert not any(m.startswith("orchestratorOS") for m in imps), f"{rel} has upward orchestratorOS import: {imps}"
+
+    assert botcore.topic_spec("auto_trade_executor") == botcore.topic_spec("auto_cryptotrade_executor")
+    assert resolve_intent_topic_tag({"created_by": "auto_trade_executor"}, "binance") == "[auto_cryptotrade_executor]"
+    assert resolve_intent_topic_tag({"created_by": "guard_high_stake"}, "binance") == "[auto_guard_large_order]"
+
+    # 3. state_io SSOT hygiene across gateway, store, monitor, and notifier modules
+    for rel in (
+        "order_retry_worker.py",
+        "active_intents.py",
+        "rtrade_pair_store.py",
+        "monitortrades.py",
+        "market_monitor/alerts_config.py",
+        "notify_engine/alertnotifiers.py",
+    ):
+        tree = ast.parse((repo_root / rel).read_text(encoding="utf-8"), filename=rel)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "json"
+                and node.func.attr in {"load", "loads", "dump", "dumps"}
+            ):
+                raise AssertionError(f"{rel}:{node.lineno} calls raw json.{node.func.attr}")
+
