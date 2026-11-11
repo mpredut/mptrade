@@ -150,14 +150,18 @@ def main():
 
     print("-" * 57)
     print(f"{'TOTAL':<22}{tot_r:>+11.2f}{tot_u:>+12.2f}   -> NET {tot_r+tot_u:+.2f} USD")
-    print("\nNote: the Binance realised figure covers a 120-day window (a cost basis older than that is approximated).")
-    print("No Binance fees in realized (the API fills do not expose them here); ~0.075%/leg with BNB.")
+    print(
+        "\nNote: the Binance realised figure covers a 120-day window (a cost basis older than that is approximated).\n"
+        "No Binance fees in realized (the API fills do not expose them here); ~0.075%/leg with BNB."
+    )
 
     print("\n=== ATTRIBUTION PER BOT (clientOrderId; realized_own = only its own round trips) ===")
     for _sym in symbols_for("binance"):
         per_bot(_sym)
-    print("Note: bots that trade inventory between themselves (tradeall buys / rtrade sells the same TAO)")
-    print("have no cleanly separable realized — net_qty shows who accumulates (+) versus who distributes (-).")
+    print(
+        "Note: bots that trade inventory between themselves (tradeall buys / rtrade sells the same TAO)\n"
+        "have no cleanly separable realized — net_qty shows who accumulates (+) versus who distributes (-)."
+    )
 
 
 if __name__ == "__main__":

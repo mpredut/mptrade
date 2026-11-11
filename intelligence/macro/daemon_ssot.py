@@ -1,6 +1,7 @@
 """Shared Daemon Runtime, Heartbeat, Bounded Step Execution, and Collector/Agent Base Classes (SSOT)."""
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import asdict
 import importlib
 import inspect
@@ -720,7 +721,7 @@ class ExternalTelemetryMixin:
         )
 
 
-class CachedHttpJsonCollector(SyncModeMixin):
+class CachedHttpJsonCollector(SyncModeMixin, ABC):
     """Shared base class for HTTP JSON collectors with in-memory TTL caching and stale fallback."""
 
     _USER_AGENT: str = "mptrade-sentiment/1.0"
@@ -743,8 +744,9 @@ class CachedHttpJsonCollector(SyncModeMixin):
         self._last_fetch_ts: float = 0.0
         self._init_sync_mode(start_sync)
 
+    @abstractmethod
     def _parse_fetched_payload(self, data: Any, now: float) -> Any:
-        raise NotImplementedError
+        """Parse the fetched HTTP JSON payload into a domain snapshot."""
 
     def fetch(
         self,

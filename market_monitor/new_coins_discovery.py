@@ -112,6 +112,13 @@ def is_trackable_symbol(symbol: str, name: str = "", slug: str = "") -> bool:
 # ============================================
 
 class NewCoinsSource(ABC):
+    SOURCE_NAME: str = ""
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.__dict__.get("SOURCE_NAME") and "get_name" not in cls.__dict__:
+            cls.get_name = lambda self, _name=cls.SOURCE_NAME: _name
+
     @abstractmethod
     def get_name(self) -> str:
         pass
@@ -131,6 +138,8 @@ class NewCoinsSource(ABC):
 # ============================================
 
 class CoinMarketCapSource(NewCoinsSource):
+    SOURCE_NAME = "CoinMarketCap"
+
     def __init__(self, api_key: str = CMC_API_KEY):
         self.api_key = api_key
         self.headers = {'Accepts': 'application/json', 'X-CMC_PRO_API_KEY': self.api_key}
@@ -138,9 +147,6 @@ class CoinMarketCapSource(NewCoinsSource):
         self._cache: List[Dict] = []
         if self.api_key:
             self.refresh()
-    
-    def get_name(self) -> str:
-        return "CoinMarketCap"
     
     def is_available(self) -> bool:
         return isinstance(self.api_key, str) and len(self.api_key.strip()) > 0
@@ -198,17 +204,13 @@ class CoinMarketCapSource(NewCoinsSource):
 # ============================================
 
 class CoinGeckoSource(NewCoinsSource):
+    SOURCE_NAME = "CoinGecko"
+
     def __init__(self):
         self.base_url = "https://api.coingecko.com/api/v3"
         self._cache: List[Dict] = []
         self._last_refresh = 0
         self.refresh()
-    
-    def get_name(self) -> str:
-        return "CoinGecko"
-    
-    def is_available(self) -> bool:
-        return True
     
     def refresh(self):
         try:
@@ -248,18 +250,14 @@ class CoinGeckoSource(NewCoinsSource):
 # ============================================
 
 class BinanceNewListingsSource(NewCoinsSource):
+    SOURCE_NAME = "Binance"
+
     def __init__(self):
         self.base_url = "https://api.binance.com/api/v3"
         self._new_listings: List[Dict] = []
         self._last_refresh = 0
         self._historical_symbols: Set[str] = set()
         self.refresh()
-    
-    def get_name(self) -> str:
-        return "Binance"
-    
-    def is_available(self) -> bool:
-        return True
     
     def refresh(self):
         try:
@@ -309,17 +307,13 @@ class BinanceNewListingsSource(NewCoinsSource):
 # ============================================
 
 class DexScreenerSource(NewCoinsSource):
+    SOURCE_NAME = "DexScreener"
+
     def __init__(self):
         self.base_url = "https://api.dexscreener.com/latest/dex"
         self._cache: List[Dict] = []
         self._last_refresh = 0
         self.refresh()
-    
-    def get_name(self) -> str:
-        return "DexScreener"
-    
-    def is_available(self) -> bool:
-        return True
     
     def refresh(self):
         try:

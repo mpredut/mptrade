@@ -1800,7 +1800,7 @@ WS_RETRY_MAX = 60.0
 _ws_logger = logging.getLogger("providers.ws")
 
 
-class AsyncReconnectStreamBase:
+class AsyncReconnectStreamBase(ABC):
     """Shared thread, asyncio loop, reconnect backoff, and clean shutdown for venue WebSocket streams."""
 
     STABLE_SESSION_SEC = 60.0
@@ -1905,8 +1905,9 @@ class AsyncReconnectStreamBase:
     def _on_session_end(self, exc: Optional[Exception]) -> None:
         pass
 
+    @abstractmethod
     async def _connect_and_run(self) -> None:
-        raise NotImplementedError
+        """Connect to the venue WebSocket and run one session until disconnect."""
 
     async def _interruptible_sleep(self, delay: float, step: float = 0.2) -> None:
         await async_interruptible_sleep(self._stop_event, delay, step, sleep_fn=asyncio.sleep)

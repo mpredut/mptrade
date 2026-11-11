@@ -17,7 +17,7 @@ Provides:
 
 from __future__ import annotations
 
-from abc import ABC
+from abc import ABC, abstractmethod
 import asyncio
 import bisect
 import builtins
@@ -1700,7 +1700,7 @@ def resolve_cached_symbol_price(
 # ── Non-Binance Venue WebSocket Price Streams & Fallback Poller ───────────────
 
 
-class _VenuePriceStreamBase(PublicPriceStreamBase):
+class _VenuePriceStreamBase(PublicPriceStreamBase, ABC):
     """Shared public WebSocket price stream base for non-Binance venues."""
 
     MIN_SAME_PRICE_EMIT_MS = 1000
@@ -1838,8 +1838,9 @@ class _VenuePriceStreamBase(PublicPriceStreamBase):
                 except Exception:
                     continue
 
+    @abstractmethod
     def _build_subscribe_payload(self) -> Optional[str]:
-        raise NotImplementedError
+        """Build the venue-specific WebSocket subscription message."""
 
     def _build_extra_subscribe_payloads(self) -> tuple[str, ...]:
         payloads: list[str] = []
@@ -1849,8 +1850,9 @@ class _VenuePriceStreamBase(PublicPriceStreamBase):
                 payloads.extend(p for p in built if p)
         return tuple(payloads)
 
+    @abstractmethod
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
-        raise NotImplementedError
+        """Process one incoming venue WebSocket message."""
 
 
 class HyperliquidPriceStream(_VenuePriceStreamBase):

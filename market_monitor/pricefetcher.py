@@ -102,6 +102,8 @@ class PricePlatformInterface(ABC):
 
 
 class BinancePricePlatform(PricePlatformInterface):
+    platform_name = "Binance"
+
     def __init__(self, api_client=None):
 # The price client is the market-data facade. Binance pairs route to bapi with
 # identical behavior. ``self.api_client`` remains an object exposing
@@ -113,10 +115,6 @@ class BinancePricePlatform(PricePlatformInterface):
         self._last_refresh = 0
         self._refresh_interval = 3600
         self._load_symbols()
-    
-    @property
-    def platform_name(self) -> str:
-        return "Binance"
     
     def _load_symbols(self):
         try:
@@ -226,6 +224,8 @@ class BinancePricePlatform(PricePlatformInterface):
 
 
 class HyperliquidPricePlatform(PricePlatformInterface):
+    platform_name = "Hyperliquid"
+
     def __init__(self):
         self._url = "https://api.hyperliquid.xyz/info"
         self._supported_symbols: Set[str] = set()
@@ -233,10 +233,6 @@ class HyperliquidPricePlatform(PricePlatformInterface):
         self._last_refresh = 0
         self._refresh_interval = 300
         self._load_symbols()
-    
-    @property
-    def platform_name(self) -> str:
-        return "Hyperliquid"
     
     def _load_symbols(self):
         try:
@@ -281,6 +277,8 @@ _CMC_KEY_UNSET = object()
 
 
 class CoinMarketCapPricePlatform(PricePlatformInterface):
+    platform_name = "CoinMarketCap"
+
     def __init__(self, api_key: Optional[str] = _CMC_KEY_UNSET):  # type: ignore[assignment]
         # Respect explicit api_key=None (offline/disabled) without falling back to os.environ.
         if api_key is _CMC_KEY_UNSET:
@@ -300,10 +298,6 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         else:
             print("[CMCPlatform] No API key - platform disabled")
 
-    @property
-    def platform_name(self) -> str:
-        return "CoinMarketCap"
-    
     def _load_symbols_from_disk_cache(self, max_age_s: Optional[float] = None) -> bool:
         try:
             prev_file = f"{self._cache_file}.previous"
@@ -436,15 +430,12 @@ class StockYahooPricePlatform(PricePlatformInterface):
     """
     _YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
     _UA = {"User-Agent": "Mozilla/5.0 (pricefetcher)"}
+    platform_name = "Yahoo"
 
     def __init__(self, tickers: Optional[List[str]] = None):
         raw_tickers = required_env("STOCK_TICKERS") if tickers is None else tickers
         self._symbols: Set[str] = set(parse_symbol_list(raw_tickers))
         self._supported_symbols = self._symbols
-
-    @property
-    def platform_name(self) -> str:
-        return "Yahoo"
 
     def supports_symbol(self, symbol: str) -> bool:
         # Accept only configured tickers; do not divert crypto or make a network call here.

@@ -370,8 +370,10 @@ def _print(owners: list[Owner], *, require_running: bool) -> None:
         if require_running else
         "Scope: versioned/local configuration (the process may not be running right now)"
     )
-    print("venue         account_ref          symbol          owner                         role        active")
-    print("------------- -------------------- --------------- ----------------------------- ----------- ------")
+    print(
+        "venue         account_ref          symbol          owner                         role        active\n"
+        "------------- -------------------- --------------- ----------------------------- ----------- ------"
+    )
     for owner in owners:
         active = "yes" if owner.active(require_running=require_running) else "no"
         print(
