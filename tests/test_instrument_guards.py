@@ -332,12 +332,12 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertEqual(policy_calls, [], "the weight policy must be skipped only on a SELL")
             self.assertEqual(p.placed[0][3], 1.0)
 
+        class _ZeroPolicyProvider(_FakeProvider):
+            def policy_cap_quantity(self, *args, **kwargs):
+                return 0.0
+
         with self.subTest("is_ignored_for_buy"):
             self._clear_state()
-            class _ZeroPolicyProvider(_FakeProvider):
-                def policy_cap_quantity(self, *args, **kwargs):
-                    return 0.0
-
             p = _ZeroPolicyProvider()
             p.seed_trade("SELL", age_sec=400.0, price=100.0)
             order = self._inst(p).place(
@@ -349,10 +349,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("is_allowed_for_assetguardian_buy"):
             self._clear_state()
-            class _ZeroPolicyProvider(_FakeProvider):
-                def policy_cap_quantity(self, *args, **kwargs):
-                    return 0.0
-
             p = _ZeroPolicyProvider()
             p.seed_trade("SELL", age_sec=400.0, price=100.0)
             order = self._inst(p).place(

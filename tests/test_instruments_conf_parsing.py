@@ -715,39 +715,8 @@ if __name__ == "__main__":
 def test_marketapi_place_inherits_instrument_params_from_instrument_registry_bool_iter28_s4(monkeypatch):
     """[ITER28 #4] MarketApi.place inherits instrument params from instrument_registry & bool rejections."""
     import order_guard
-    import threading
-    import cacheManager as cm
     import instrument_registry
     from providers.market_api import MarketApi
-    tm = cm.CacheTradeManager.__new__(cm.CacheTradeManager)
-    tm.lock = threading.RLock()
-    tm.sync_account_reader_if_needed = lambda: None
-    tm.cache = {
-        "BTCUSDC": [
-            {
-                "symbol": "BTCUSDC",
-                "id": 101,
-                "orderId": 201,
-                "price": "88500.0",
-                "qty": "0.1",
-                "time": 1_700_000_000_000,
-                "isBuyer": False,
-            }
-        ]
-    }
-    assert tm.get_last_opposite_fill_price("BTC/USDC", "BUY") == 88500.0
-    assert tm.get_last_opposite_fill_price("btcusdc", "BUY") == 88500.0
-    cpm = cm.CacheCurrentPriceManager.__new__(cm.CacheCurrentPriceManager)
-    cpm.cls_name = "CacheCurrentPriceManager"
-    cpm.lock = threading.RLock()
-    cpm.symbols = ["TAOUSD"]
-    cpm._provider_names = {"TAOUSD": "kraken"}
-    now_ms = int(time.time() * 1000)
-    cpm.cache = {"TAOUSD": [[now_ms, 420.5]]}
-    assert cpm.provider_name_for("tao/usd") == "kraken"
-    obs = cpm.get_cached_price_observation("TAO/USD", 10.0)
-    assert obs is not None and obs[1] == 420.5
-    assert cpm.get_price_value("tao/usd") == 420.5
     # 4. MarketApi.place inherits instrument params from instrument_registry & bool rejections
     captured_bypasses = []
     orig_margins = dict(order_guard._load_margins())

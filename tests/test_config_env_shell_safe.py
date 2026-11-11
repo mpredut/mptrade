@@ -1411,6 +1411,12 @@ def test_backup_sync_common_modular_primitives(tmp_path):
     assert len(targets) <= 5
 
 
+def _write_bash_stub(fake_bin, name: str, body: str) -> None:
+    p = fake_bin / name
+    p.write_text("#!/usr/bin/env bash\n" + body + "\n", encoding="utf-8")
+    p.chmod(0o755)
+
+
 def test_pia_common_ssot_and_bounded_wait_for_vpn(tmp_path):
 
     with open(os.path.join(ROOT, "config.env"), encoding="utf-8") as fh:
@@ -1422,14 +1428,9 @@ def test_pia_common_ssot_and_bounded_wait_for_vpn(tmp_path):
     fake_bin.mkdir()
     state_file = tmp_path / "pia_supervisor.state"
 
-    def write_stub(name: str, body: str) -> None:
-        p = fake_bin / name
-        p.write_text("#!/usr/bin/env bash\n" + body + "\n", encoding="utf-8")
-        p.chmod(0o755)
-
     # 1. pia() strips CR and preserves piactl exit codes; supervisor heartbeat SSOT detects fresh vs stale
-    write_stub("piactl", 'if [ "${1:-}" = "failcmd" ]; then exit 7; fi; printf "Connected\\r\\n"')
-    write_stub("systemctl", 'if [ "${1:-}" = "show" ] && [ "${3:-}" = "ActiveState" ]; then echo active; exit 0; fi; echo 0')
+    _write_bash_stub(fake_bin, "piactl", 'if [ "${1:-}" = "failcmd" ]; then exit 7; fi; printf "Connected\\r\\n"')
+    _write_bash_stub(fake_bin, "systemctl", 'if [ "${1:-}" = "show" ] && [ "${3:-}" = "ActiveState" ]; then echo active; exit 0; fi; echo 0')
     ssot_cmd = (
         f'export PATH="{fake_bin}:$PATH" PIA_SUPERVISOR_STATE_FILE="{state_file}" CONNECT_SETTLE=0; '
         f'source "{os.path.join(ROOT, "orchestratorOS", "lib", "env_common.sh")}"; '
@@ -1445,11 +1446,11 @@ def test_pia_common_ssot_and_bounded_wait_for_vpn(tmp_path):
     assert res.returncode == 0 and "SSOT_OK" in res.stdout, res.stderr
 
     wait_script = os.path.join(ROOT, "orchestratorOS", "livecheck", "wait_for_vpn.sh")
-    write_stub("systemctl", "exit 0")
+    _write_bash_stub(fake_bin, "systemctl", "exit 0")
 
     # 2. Fast-path when VPN route is already UP (< 1.5s)
-    write_stub("piactl", 'echo Connected')
-    write_stub("ip", 'if [ "${1:-}" = "link" ]; then echo "3: wgpia0: <POINTOPOINT,NOARP,UP,LOWER_UP>"; else echo "1.1.1.1 dev wgpia0 src 10.0.0.2"; fi')
+    _write_bash_stub(fake_bin, "piactl", 'echo Connected')
+    _write_bash_stub(fake_bin, "ip", 'if [ "${1:-}" = "link" ]; then echo "3: wgpia0: <POINTOPOINT,NOARP,UP,LOWER_UP>"; else echo "1.1.1.1 dev wgpia0 src 10.0.0.2"; fi')
     t0 = time.monotonic()
     r_up = subprocess.run(
         ["/bin/bash", wait_script],
@@ -1462,8 +1463,8 @@ def test_pia_common_ssot_and_bounded_wait_for_vpn(tmp_path):
     assert r_up.returncode == 0 and (time.monotonic() - t0) < 1.5
 
     # 3. Fast-path when PIA is intentionally Disconnected (ISP fallback) and default route is up
-    write_stub("piactl", 'echo Disconnected')
-    write_stub("ip", 'if [ "${1:-}" = "route" ]; then echo "1.1.1.1 via 192.168.0.1 dev ens18"; else exit 1; fi')
+    _write_bash_stub(fake_bin, "piactl", 'echo Disconnected')
+    _write_bash_stub(fake_bin, "ip", 'if [ "${1:-}" = "route" ]; then echo "1.1.1.1 via 192.168.0.1 dev ens18"; else exit 1; fi')
     t0 = time.monotonic()
     r_isp = subprocess.run(
         ["/bin/bash", wait_script],
@@ -1476,8 +1477,8 @@ def test_pia_common_ssot_and_bounded_wait_for_vpn(tmp_path):
     assert r_isp.returncode == 0 and (time.monotonic() - t0) < 1.5
 
     # 4. Bounded wall-clock wait when PIA is stuck in Connecting — exits 0 after AGY_VPN_WAIT_MAX_SEC
-    write_stub("piactl", 'echo Connecting')
-    write_stub("ip", 'if [ "${1:-}" = "route" ]; then echo "1.1.1.1 via 192.168.0.1 dev ens18"; else exit 1; fi')
+    _write_bash_stub(fake_bin, "piactl", 'echo Connecting')
+    _write_bash_stub(fake_bin, "ip", 'if [ "${1:-}" = "route" ]; then echo "1.1.1.1 via 192.168.0.1 dev ens18"; else exit 1; fi')
     t0 = time.monotonic()
     r_cap = subprocess.run(
         ["/bin/bash", wait_script],
@@ -1496,13 +1497,9 @@ def test_pia_audit_fixes_readonly_check_dip_priority_tunnel_stuck_and_notify_byp
     fake_bin.mkdir()
     piactl_calls = tmp_path / "piactl_calls.log"
 
-    def write_stub(name: str, body: str) -> None:
-        p = fake_bin / name
-        p.write_text("#!/usr/bin/env bash\n" + body + "\n", encoding="utf-8")
-        p.chmod(0o755)
-
     # Alphabetical regions list where dedicated-belgium appears BEFORE dedicated-de-frankfurt
-    write_stub(
+    _write_bash_stub(
+        fake_bin,
         "piactl",
         f'printf "%s\\n" "$*" >> "{piactl_calls}"\n'
         'case "${1:-} ${2:-}" in\n'
@@ -1515,8 +1512,8 @@ def test_pia_audit_fixes_readonly_check_dip_priority_tunnel_stuck_and_notify_byp
         '  *) exit 1 ;;\n'
         'esac',
     )
-    write_stub("ip", "exit 1")
-    write_stub("curl", "exit 1")
+    _write_bash_stub(fake_bin, "ip", "exit 1")
+    _write_bash_stub(fake_bin, "curl", "exit 1")
 
     # 1. pia_preferred_dedicated_region selects Frankfurt DIP over Belgium DIP despite alphabetical sort
     dip_cmd = (
@@ -1530,7 +1527,8 @@ def test_pia_audit_fixes_readonly_check_dip_priority_tunnel_stuck_and_notify_byp
     assert r_dip.stdout.strip() == "dedicated-de-frankfurt-192.109.159.105"
 
     # 2. pia_supervisor.sh --check is strictly read-only (never calls dedicatedip add or login) and reports DISCONNECTED
-    write_stub(
+    _write_bash_stub(
+        fake_bin,
         "piactl",
         f'printf "%s\\n" "$*" >> "{piactl_calls}"\n'
         'case "${1:-} ${2:-}" in\n'
@@ -1567,8 +1565,8 @@ def test_pia_audit_fixes_readonly_check_dip_priority_tunnel_stuck_and_notify_byp
     agy_cli_dir = fake_home / ".gemini" / "antigravity-cli"
     agy_cli_dir.mkdir(parents=True)
     log_file = agy_cli_dir / "cli.log"
-    write_stub("agy", "echo 'Antigravity CLI 1.4.0'")
-    write_stub("systemctl", "exit 1")
+    _write_bash_stub(fake_bin, "agy", "echo 'Antigravity CLI 1.4.0'")
+    _write_bash_stub(fake_bin, "systemctl", "exit 1")
 
     manage_agy = os.path.join(ROOT, "orchestratorOS", "admin", "manage_agy.sh")
     noise = "".join(f"E1110 20:20:01.{i:06d} 89 file_watcher.go:194] skipping empty or temp file:\n" for i in range(80))

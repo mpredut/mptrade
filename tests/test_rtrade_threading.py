@@ -523,7 +523,8 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertNotIn("order_id", intent)
         self.assertFalse(venue.recovery_blocked)
 
-    def test_live_pair_recovers_lost_submit_response_without_resubmit(self):
+    @staticmethod
+    def _recovered_open_executor():
         class Executor:
             name = "Binance"
 
@@ -551,6 +552,9 @@ class RTradeThreadingTest(unittest.TestCase):
             def order_status(_symbol, _order_id):
                 return OrderStatus("open", 0.0, 0.0, 0.0)
 
+        return Executor()
+
+    def test_live_pair_recovers_lost_submit_response_without_resubmit(self):
         with tempfile.TemporaryDirectory(prefix="rtrade-recover-") as root:
             store = RTradePairStore(os.path.join(root, "pairs.json"))
             client_id = rtrade_client_order_id("pair-1", "BUY", "limit")
@@ -561,7 +565,7 @@ class RTradeThreadingTest(unittest.TestCase):
             stored = record["intents"]["limit:BUY"]
             with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
                  patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=Executor()), \
+                 patch.object(rtrade.mkt, "provider_by_name", return_value=self._recovered_open_executor()), \
                  patch.object(rtrade.mkt, "place") as place:
                 venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
                 ticket, snapshot = venue.recover_intent(record, stored)
@@ -573,38 +577,11 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertEqual(canonical["order_id"], "88")
 
     def test_place_limit_recovers_response_loss_on_later_call_without_resubmit(self):
-        class Executor:
-            name = "Binance"
-
-            @staticmethod
-            def free_balance(_asset):
-                return 1000.0
-
-            @staticmethod
-            def reconciliation_capabilities():
-                return OrderReconciliationCapabilities(
-                    lookup_by_client_order_id=True,
-                    status_by_order_id=True,
-                    cancel_by_order_id=True,
-                    list_open_orders=True,
-                )
-
-            @staticmethod
-            def order_by_client_id(_symbol, _client_id):
-                return {
-                    "orderId": "88", "status": "NEW",
-                    "price": "99.25", "origQty": "0.8",
-                }
-
-            @staticmethod
-            def order_status(_symbol, _order_id):
-                return OrderStatus("open", 0.0, 0.0, 0.0)
-
         with tempfile.TemporaryDirectory(prefix="rtrade-live-loss-") as root:
             store = RTradePairStore(os.path.join(root, "pairs.json"))
             with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
                  patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                patch.object(rtrade.mkt, "provider_by_name", return_value=Executor()), \
+                patch.object(rtrade.mkt, "provider_by_name", return_value=self._recovered_open_executor()), \
                  patch.object(rtrade.mkt, "place", return_value=None) as place:
                 venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
                 ticket = venue.place_limit("BUY", 99.36, 1.0, "pair-1")

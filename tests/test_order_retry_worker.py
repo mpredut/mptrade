@@ -615,10 +615,8 @@ class ProcessOnceTest(unittest.TestCase):
             oq.RETRY_TTL_SEC = 1.0
             oq.RETRY_MAX_ATTEMPTS = 1
 
-            class UnsupportedLookupMkt(FakeMkt):
-                order_by_client_id = None
-
-            mkt = UnsupportedLookupMkt(price=100.0)
+            mkt = FakeMkt(price=100.0)
+            mkt.order_by_client_id = None
             stats = worker.process_once(mkt, now=100000.0)
 
             self.assertEqual(stats["attempted"], 0)
@@ -1037,10 +1035,8 @@ class ProcessOnceTest(unittest.TestCase):
                 failure_reason="profit_guard",
                 provider_name="T212", now=1000.0)
 
-            class UnsupportedLookupMkt(FakeMkt):
-                order_by_client_id = None
-
-            mkt = UnsupportedLookupMkt(price=100.0)
+            mkt = FakeMkt(price=100.0)
+            mkt.order_by_client_id = None
             stats = worker.process_once(mkt, now=1400.0)
 
             self.assertEqual(stats["attempted"], 1)

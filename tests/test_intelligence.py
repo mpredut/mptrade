@@ -3421,6 +3421,11 @@ def test_iter68_accepted_ttl_map_spot_rules_ms_and_exit_manager_ms(monkeypatch):
     assert dec.action == ReentryAction.WAIT and "post_stop_stabilization_cooldown" in dec.reason and "elapsed=30s < 60s" in dec.reason
 
 
+class _DummySpotExec:
+    def pair_precision(self, pair):
+        return SimpleNamespace(price_decimals=2, volume_decimals=4, order_min=0.001, base_asset="BTC")
+
+
 def test_iter69_spot_engine_sma_zero_ms_timestamps_and_monitororder_initial_prices(monkeypatch):
     from strategies.spot_engine import Strategy, StratParams
 
@@ -3431,12 +3436,8 @@ def test_iter69_spot_engine_sma_zero_ms_timestamps_and_monitororder_initial_pric
     assert Strategy._sma_from_closes([100.0, 102.0, 104.0], 3) == pytest.approx(102.0)
 
     # 2. Strategy._surge_window_move_pct handles None/NaN past_price and set_simulated_time normalizes ms (> 1e11)
-    class _DummyExec:
-        def pair_precision(self, pair):
-            return SimpleNamespace(price_decimals=2, volume_decimals=4, order_min=0.001, base_asset="BTC")
-
     params = StratParams.from_dict({"trend_sma_n": 0, "surge_guard": True, "surge_window_hours": 24.0, "trend_interval": 240})
-    strat = Strategy(_DummyExec(), "BTCUSDC", params, dry_run=True, replay_mode=True, initial_state={"entry_ts": 1700000000000.0})
+    strat = Strategy(_DummySpotExec(), "BTCUSDC", params, dry_run=True, replay_mode=True, initial_state={"entry_ts": 1700000000000.0})
     assert strat.s["entry_ts"] == pytest.approx(1700000000.0)
     strat.set_simulated_time(1700000600000.0)
     assert strat._now() == pytest.approx(1700000600.0)
@@ -3514,11 +3515,7 @@ def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
     assert "btcusdc" not in tracker._state
 
     # 4. BaseSpotMixin._shadow_vol_1h normalizes ms timestamps (> 1e11), descending order, and ignores inf prices
-    class _DummyExec:
-        def pair_precision(self, pair):
-            return SimpleNamespace(price_decimals=2, volume_decimals=4, order_min=0.001, base_asset="BTC")
-
-    strat = SpotStrategy(_DummyExec(), "BTCUSDC", SpotParams.from_dict({}), dry_run=True, replay_mode=True)
+    strat = SpotStrategy(_DummySpotExec(), "BTCUSDC", SpotParams.from_dict({}), dry_run=True, replay_mode=True)
     pts_sec = [(1700000000.0 + i * 60.0, 100.0 + (i % 3) * 0.5) for i in range(25)]
     strat._shadow_prices = list(pts_sec)
     vol_sec = strat._shadow_vol_1h()

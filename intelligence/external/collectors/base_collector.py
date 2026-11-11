@@ -641,11 +641,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         fetch_fn = _resolve_module_fn(cls, "fetch_public_json", fetch_public_json)
         is_hl_info = isinstance(url, str) and url.startswith("https://api.hyperliquid.xyz/info?")
         if fetch_fn is _ORIG_MODULE_FNS["fetch_public_json"] and is_hl_info:
-<<<<<<< HEAD
-            q_params: Dict[str, Any] = dict(_urlparse.parse_qsl(url.split("?", 1)[1]))
-=======
             q_params: Dict[str, Any] = dict(urllib.parse.parse_qsl(url.split("?", 1)[1]))
->>>>>>> f9b8738b (refactor(intelligence,orchestratorOS,providers): enforce 0 subpackage SCCs and hoist downward local imports)
             for int_k in ("nSigFigs", "mantissa"):
                 if (int_v := exact_int(q_params.get(int_k), default=None)) is not None:
                     q_params[int_k] = int_v

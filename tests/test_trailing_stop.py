@@ -519,6 +519,19 @@ class TestMinProfit(Base):
             self.assertEqual(len(self.po.orders), 1, "armed via real cost basis -> the crash sells")
             self.assertEqual(self.po.orders[0]["side"], "SELL")
 
+        def _bind_unlock(ts_inst, api_inst, restore_free=None):
+            unlocked_pairs = []
+
+            def _unlock(pair):
+                unlocked_pairs.append(pair)
+                if restore_free is not None:
+                    api_inst.free = restore_free
+                    ts_inst._balances = api_inst.get_account_assets_balances()
+                return True
+
+            ts_inst.unlock_qty = _unlock
+            return unlocked_pairs
+
         with self.subTest(msg="resting_orders_unlocked_when_free_balance_low"):
             self.tearDown(); self.setUp()
             api = FakeApi(250.0)
@@ -529,15 +542,7 @@ class TestMinProfit(Base):
             api.free = 0.0
             api.price = 190.0  # Crash of 24% (exceeds 22% TAO stop)
 
-            unlocked = []
-            def fake_unlock(pair):
-                unlocked.append(pair)
-                # Unlocking restores free balance
-                api.free = 5.0
-                ts._balances = api.get_account_assets_balances()
-                return True
-
-            ts.unlock_qty = fake_unlock
+            unlocked = _bind_unlock(ts, api, restore_free=5.0)
             ts.check_once()
             self.assertEqual(unlocked, ["TAOUSDC"])
             self.assertEqual(len(self.po.orders), 1, "unlocked coins allowed crash sell to execute")
@@ -552,12 +557,7 @@ class TestMinProfit(Base):
             api.free = 0.0
             api.price = 250.0
 
-            unlocked = []
-            def fake_unlock(pair):
-                unlocked.append(pair)
-                return True
-
-            ts.unlock_qty = fake_unlock
+            unlocked = _bind_unlock(ts, api)
             ts.check_once()
         with self.subTest(msg="resting_orders_not_unlocked_when_dry_run"):
             self.tearDown(); self.setUp()
@@ -567,12 +567,7 @@ class TestMinProfit(Base):
             api.free = 0.0
             api.price = 190.0  # Crash of 24% (exceeds 22% TAO stop)
 
-            unlocked = []
-            def fake_unlock(pair):
-                unlocked.append(pair)
-                return True
-
-            ts.unlock_qty = fake_unlock
+            unlocked = _bind_unlock(ts, api)
             ts.check_once()
             self.assertEqual(unlocked, [], "resting orders must NOT be cancelled in dry-run mode")
             self.assertEqual(self.po.orders, [], "no orders placed in dry run")
@@ -586,14 +581,7 @@ class TestMinProfit(Base):
             api.free = 0.2
             api.price = 190.0  # Crash
 
-            unlocked = []
-            def fake_unlock(pair):
-                unlocked.append(pair)
-                api.free = 5.0
-                ts._balances = api.get_account_assets_balances()
-                return True
-
-            ts.unlock_qty = fake_unlock
+            unlocked = _bind_unlock(ts, api, restore_free=5.0)
             ts.check_once()
             self.assertEqual(unlocked, ["TAOUSDC"], "resting orders must be unlocked even if partial free balance exists")
             self.assertEqual(len(self.po.orders), 1)

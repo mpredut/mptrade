@@ -1418,6 +1418,20 @@ def test_provider_env_value_and_order_price_validation(tmp_path):
                 os.environ[k] = v
 
 
+class _DummyBytesResp:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
 def test_venue_market_data_client_and_strategy_edge_cases(tmp_path, monkeypatch):
     """Verify null-safe Yahoo/Kraken/Hyperliquid payloads and T212/HL strategy edge cases."""
 
@@ -1439,25 +1453,12 @@ def test_venue_market_data_client_and_strategy_edge_cases(tmp_path, monkeypatch)
     # 2. 212trading.analyze_volatility.fetch_ohlc handles null chart/indicators/meta
     t212_av = load_local_module(t212_dir, "analyze_volatility.py", module_key="t212_av_test", reload=True)
 
-    class _DummyResp:
-        def __init__(self, body: bytes):
-            self._body = body
-
-        def read(self):
-            return self._body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-    monkeypatch.setattr(t212_av.urllib.request, "urlopen", lambda *a, **k: _DummyResp(b'{"chart": null}'))
+    monkeypatch.setattr(t212_av.urllib.request, "urlopen", lambda *a, **k: _DummyBytesResp(b'{"chart": null}'))
     assert t212_av.fetch_ohlc("RGNT", "1d", "5m") == ([], {})
 
     # 3. kraken.market_data.fetch_ohlc_candles handles null result
     from kraken import market_data as kr_md
-    monkeypatch.setattr(kr_md.urllib.request, "urlopen", lambda *a, **k: _DummyResp(b'{"error": [], "result": null}'))
+    monkeypatch.setattr(kr_md.urllib.request, "urlopen", lambda *a, **k: _DummyBytesResp(b'{"error": [], "result": null}'))
     assert kr_md.fetch_ohlc_candles("HYPEUSD", 60) == []
 
     # 4. hyperliquid.hl_client.HLClient handles malformed/null info payloads safely
@@ -1529,19 +1530,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     # 2. binance_api.market_data.fetch_klines accepts float strings for window params and rejects inconsistent OHLC bars
     from binance_api import market_data as bn_md
 
-    class _DummyResp:
-        def __init__(self, body: bytes):
-            self._body = body
-
-        def read(self):
-            return self._body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
     raw_klines = [
         # Valid candle with float-string open/close timestamps
         ["1700000000000.0", "100.0", "105.0", "95.0", "102.0", "10.0", "1700003599000.0"],
@@ -1554,7 +1542,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
 
     def _fake_urlopen(*a, **k):
         calls["n"] += 1
-        return _DummyResp(json.dumps(raw_klines if calls["n"] == 1 else []).encode("utf-8"))
+        return _DummyBytesResp(json.dumps(raw_klines if calls["n"] == 1 else []).encode("utf-8"))
 
     monkeypatch.setattr(bn_md.urllib.request, "urlopen", _fake_urlopen)
     candles = bn_md.fetch_ohlc_candles(

@@ -977,16 +977,16 @@ class AssetGuardianTest(unittest.TestCase):
             self.assertEqual(ag._completed_tier_values(campaign), set())
             self.assertLessEqual(len(campaign["pending"]["client_order_id"]), 36)
 
+        def _refuse_place(*_args, **kwargs):
+            ctx = kwargs.get("_outcome_context")
+            if isinstance(ctx, dict):
+                ctx.update(accepted=False, reason="guard_blocked", state="refused")
+            return None
+
         with self.subTest(msg="test_locally_refused_sell_clears_pending_and_reuses_attempt"):
             state = MemoryState()
             provider = mock.Mock()
             provider.free_balance.return_value = 10.0
-
-            def _refuse_place(*_args, **kwargs):
-                ctx = kwargs.get("_outcome_context")
-                if isinstance(ctx, dict):
-                    ctx.update(accepted=False, reason="guard_blocked", state="refused")
-                return None
 
             with mock.patch.object(ag, "STATE", state), \
                  mock.patch.object(ag.api, "get_current_price", return_value=225.0), \
@@ -1012,12 +1012,6 @@ class AssetGuardianTest(unittest.TestCase):
             }
             provider = mock.Mock()
             provider.free_balance.return_value = 1000.0
-
-            def _refuse_place(*_args, **kwargs):
-                ctx = kwargs.get("_outcome_context")
-                if isinstance(ctx, dict):
-                    ctx.update(accepted=False, reason="guard_blocked", state="refused")
-                return None
 
             with mock.patch.object(ag, "STATE", state), \
                  mock.patch.object(ag.api, "get_current_price", return_value=225.0), \

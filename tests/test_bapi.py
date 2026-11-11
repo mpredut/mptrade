@@ -708,35 +708,7 @@ def test_bapi_allorders_get_trade_orders_bapi_trades_get_trade_orders_and_aggreg
 
 def test_bapi_cancel_expired_orders_and_bapi_cancel_recent_orders_with_nan_bool_iter28_s3(monkeypatch):
     """[ITER28 #3] bapi.cancel_expired_orders and bapi.cancel_recent_orders with NaN/bool/non-positive bounds & future order_time."""
-    tm = cm.CacheTradeManager.__new__(cm.CacheTradeManager)
-    tm.lock = threading.RLock()
-    tm.sync_account_reader_if_needed = lambda: None
-    tm.cache = {
-        "BTCUSDC": [
-            {
-                "symbol": "BTCUSDC",
-                "id": 101,
-                "orderId": 201,
-                "price": "88500.0",
-                "qty": "0.1",
-                "time": 1_700_000_000_000,
-                "isBuyer": False,
-            }
-        ]
-    }
-    assert tm.get_last_opposite_fill_price("BTC/USDC", "BUY") == 88500.0
-    assert tm.get_last_opposite_fill_price("btcusdc", "BUY") == 88500.0
-    cpm = cm.CacheCurrentPriceManager.__new__(cm.CacheCurrentPriceManager)
-    cpm.cls_name = "CacheCurrentPriceManager"
-    cpm.lock = threading.RLock()
-    cpm.symbols = ["TAOUSD"]
-    cpm._provider_names = {"TAOUSD": "kraken"}
     now_ms = int(time.time() * 1000)
-    cpm.cache = {"TAOUSD": [[now_ms, 420.5]]}
-    assert cpm.provider_name_for("tao/usd") == "kraken"
-    obs = cpm.get_cached_price_observation("TAO/USD", 10.0)
-    assert obs is not None and obs[1] == 420.5
-    assert cpm.get_price_value("tao/usd") == 420.5
     # 3. bapi.cancel_expired_orders and bapi.cancel_recent_orders with NaN/bool/non-positive bounds & future order_time
     canceled_ids = []
     monkeypatch.setattr(bapi.sym, "validate_params", lambda ot, s: None)
