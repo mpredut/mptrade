@@ -122,13 +122,10 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
 
     def _fetch_equity_derivatives(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
         """Build a DerivativesTelemetry snapshot for an equity symbol using Cboe options Open Interest & skew."""
-        ctx = self._fetch_equity_market_context(symbol, now)
-        if not isinstance(ctx, dict):
+        resolved = self._resolve_equity_context_bars_and_price(symbol, now)
+        if resolved is None:
             return None
-        bars = ctx.get("bars") or []
-        mark_px = safe_pos_float(ctx.get("last_price"), default=0.0) or (bars[-1][4] if bars else 0.0)
-        if mark_px <= 0.0:
-            return None
+        ctx, _, mark_px = resolved
         call_oi = safe_nonneg_float(ctx.get("call_oi"), default=0.0) or 0.0
         put_oi = safe_nonneg_float(ctx.get("put_oi"), default=0.0) or 0.0
         total_opt_contracts = call_oi + put_oi

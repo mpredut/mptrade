@@ -252,11 +252,12 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
 
         if is_equity_symbol(symbol):
             try:
-                ctx = self._fetch_equity_market_context(symbol, now)
-                if isinstance(ctx, dict):
-                    bars = ctx.get("bars") or []
-                    mark_px = safe_pos_float(ctx.get("last_price"), default=0.0) or (bars[-1][4] if bars else 0.0)
-                    if mark_px > 0.0 or bars:
+                resolved = self._resolve_equity_context_bars_and_price(
+                    symbol, now, require_positive_price=False
+                )
+                if resolved is not None:
+                    ctx, bars, mark_px = resolved
+                    if True:
                         def _bars_buy_sell(bar_slice: list) -> tuple[float, float]:
                             b_usd = 0.0
                             s_usd = 0.0

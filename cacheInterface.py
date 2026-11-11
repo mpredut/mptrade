@@ -21,6 +21,7 @@ from botcore import (
     FileLock,
     _parse_bool_flag,
     extract_timestamp_ms,
+    extract_timestamp_s,
     load_dotenv,
     normalize_timestamp_ms,
     required_float_env,
@@ -299,6 +300,45 @@ class CacheManagerInterface(ABC):
     def rebuild_fetchtimes(self):
         """Allow subclasses to provide custom fetch-time reconstruction."""
         return None
+
+    def _rebuild_symbol_entry_fetchtimes(
+        self, *, entry_lookup_fn=None
+    ) -> dict:
+        """Reconstruct per-symbol latest entry timestamps (ms) for ``self.symbols``."""
+        if not self.cache:
+            return {}
+        last_times = {}
+        for symbol in self.symbols:
+            entries = (
+                entry_lookup_fn(self.cache, symbol, [])
+                if entry_lookup_fn is not None
+                else self.cache.get(symbol, [])
+            )
+            if isinstance(entries, list) and entries:
+                max_ts = max(
+                    (self._entry_timestamp_ms(entry) for entry in entries), default=0
+                )
+                if max_ts > 0:
+                    last_times[symbol] = max_ts
+        return last_times
+
+    def _rebuild_dict_sec_fetchtimes(self) -> dict:
+        """Reconstruct per-symbol fetchtimes (ms minus 60s safety margin) from dict items with second timestamps."""
+        last_times = {}
+        for symbol, items in self.cache.items():
+            if not isinstance(items, (list, tuple)) or not items:
+                continue
+            max_ts_sec = max(
+                (
+                    extract_timestamp_s(item, default=0.0) or 0.0
+                    for item in items
+                    if isinstance(item, dict)
+                ),
+                default=0.0,
+            )
+            if max_ts_sec > 0:
+                last_times[symbol] = max(0, int(round(max_ts_sec * 1000.0)) - 60_000)
+        return last_times
 
     def _rebuild_fetchtimes(self):
         last_times_per_sym = self.rebuild_fetchtimes()

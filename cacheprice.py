@@ -263,18 +263,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         return None
 
     def rebuild_fetchtimes(self):
-        if not self.cache:
-            return {}
-        last_times = {}
-        for symbol in self.symbols:
-            entries = self.cache.get(symbol, [])
-            if isinstance(entries, list) and entries:
-                max_ts = max(
-                    (self._entry_timestamp_ms(entry) for entry in entries), default=0
-                )
-                if max_ts > 0:
-                    last_times[symbol] = max_ts
-        return last_times
+        return self._rebuild_symbol_entry_fetchtimes()
 
     def get_remote_items(self, symbol, startTime):
         if (
@@ -1967,28 +1956,16 @@ class KrakenPriceStream(_VenuePriceStreamBase):
 
     def add_symbol(self, symbol: str) -> bool:
         norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
+        if not super().add_symbol(symbol) or not norm_s:
             return False
         with self._lock:
-            if norm_s in self._subscribed:
-                return False
-            self._subscribed.add(norm_s)
-            self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
             self._register_symbol_pair(norm_s)
         return True
 
     def remove_symbol(self, symbol: str) -> bool:
-        norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
+        if not super().remove_symbol(symbol):
             return False
         with self._lock:
-            if norm_s not in self._subscribed:
-                return False
-            self._subscribed.discard(norm_s)
-            self._symbols = tuple(s for s in self._symbols if s != norm_s)
-            self._prices.pop(norm_s, None)
-            self._last_emit_ts_ms.pop(norm_s, None)
-            self._last_emit_price.pop(norm_s, None)
             self._ws_pairs.clear()
             self._pair_to_symbol.clear()
             for s_sym in self._symbols:

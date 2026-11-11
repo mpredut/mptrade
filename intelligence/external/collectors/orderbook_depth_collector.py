@@ -272,13 +272,12 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
     def _fetch_equity_orderbook(self, symbol: str, now: float) -> Optional[OrderbookSnapshot]:
         """Build an equity OrderbookSnapshot from Nasdaq L1 quote and Yahoo 5m volume-by-price liquidity."""
-        ctx = self._fetch_equity_market_context(symbol, now, include_options=False)
-        if not isinstance(ctx, dict):
+        resolved = self._resolve_equity_context_bars_and_price(
+            symbol, now, include_options=False
+        )
+        if resolved is None:
             return None
-        bars = ctx.get("bars") or []
-        mid = safe_pos_float(ctx.get("last_price"), default=None) or (bars[-1][4] if bars else None)
-        if mid is None or mid <= 0.0:
-            return None
+        ctx, bars, mid = resolved
         best_bid = safe_pos_float(ctx.get("best_bid"), default=0.0) or 0.0
         best_ask = safe_pos_float(ctx.get("best_ask"), default=0.0) or 0.0
         quote_mid = (best_bid + best_ask) / 2.0 if (best_bid > 0.0 and best_ask >= best_bid) else 0.0

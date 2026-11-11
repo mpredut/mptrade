@@ -943,6 +943,30 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             )
         return ctx_out
 
+    def _resolve_equity_context_bars_and_price(
+        self,
+        symbol: str,
+        now: float,
+        *,
+        include_options: bool = True,
+        require_positive_price: bool = True,
+    ) -> Optional[Tuple[Dict[str, Any], list, float]]:
+        """Fetch equity market context and resolve ``(ctx, bars, mark_px)``."""
+        ctx = self._fetch_equity_market_context(
+            symbol, now, include_options=include_options
+        )
+        if not isinstance(ctx, dict):
+            return None
+        bars = ctx.get("bars") or []
+        mark_px = safe_pos_float(ctx.get("last_price"), default=0.0) or (
+            bars[-1][4] if bars else 0.0
+        )
+        if require_positive_price and mark_px <= 0.0:
+            return None
+        if not require_positive_price and mark_px <= 0.0 and not bars:
+            return None
+        return ctx, bars, mark_px
+
 
 # ============================================================================
 # Read-Only Collector Singletons (SSOT for Guards & Pre-Trade Telemetry)

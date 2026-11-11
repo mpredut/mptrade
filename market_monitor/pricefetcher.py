@@ -661,16 +661,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             self._load_symbol_metadata()
 
     def rebuild_fetchtimes(self):
-        if not self.cache:
-            return {}
-        last_times = {}
-        for symbol in self.symbols:
-            entries = casefold_get(self.cache, symbol, [])
-            if isinstance(entries, list) and entries:
-                max_ts = max((self._entry_timestamp_ms(entry) for entry in entries), default=0)
-                if max_ts > 0:
-                    last_times[symbol] = max_ts
-        return last_times
+        return self._rebuild_symbol_entry_fetchtimes(entry_lookup_fn=casefold_get)
     
     def get_remote_items(self, symbol, startTime):
         if (

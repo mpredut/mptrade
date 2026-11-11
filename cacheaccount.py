@@ -2098,21 +2098,7 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             self._migrated_usdt_on_load = True
 
     def rebuild_fetchtimes(self):
-        last_times = {}
-        for symbol, items in self.cache.items():
-            if not items:
-                continue
-            max_ts_sec = max(
-                (
-                    extract_timestamp_s(item, default=0.0) or 0.0
-                    for item in items
-                    if isinstance(item, dict)
-                ),
-                default=0.0,
-            )
-            if max_ts_sec > 0:
-                last_times[symbol] = max(0, int(max_ts_sec * 1000) - 60_000)
-        return last_times
+        return self._rebuild_dict_sec_fetchtimes()
 
     def get_remote_items(self, symbol, startTime):
         try:

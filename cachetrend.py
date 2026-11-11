@@ -209,14 +209,7 @@ class CacheLongTrendManager(CacheTrendManagerBase):
         )
 
     def rebuild_fetchtimes(self):
-        last_times = defaultdict(int)
-        for symbol, items in self.cache.items():
-            if not isinstance(items, (list, tuple)):
-                continue
-            for item in items:
-                if isinstance(item, dict) and (ts_sec := extract_timestamp_s(item, default=0.0) or 0.0) > 0:
-                    last_times[symbol] = max(last_times[symbol], int(round(ts_sec * 1000.0)))
-        return {sym: max(0, ts - 60_000) for sym, ts in last_times.items()}
+        return self._rebuild_dict_sec_fetchtimes()
 
     def get_remote_items(self, symbol, startTime):
         config_root = _cm_attr("_CONFIG_ROOT", os.path.dirname(os.path.abspath(__file__)))
