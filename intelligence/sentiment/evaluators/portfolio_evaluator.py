@@ -18,6 +18,7 @@ from cachepaths import (
     normalize_venue_name,
     uses_cycle_state_files,
 )
+from cacheprice import Cache365PriceManager, CacheSparsePriceManager
 from state_io import read_tail_jsonl_records, resolve_cachedb_filepath
 from botcore import safe_nonneg_float, safe_nonneg_int, safe_pos_int
 from intelligence.macro_sentiment_ssot import (
@@ -316,8 +317,6 @@ def _resolve_cycle_high_since(
     best_high = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
     now_ms = int(_time.time() * 1000)
     if cache_dir and oldest_ts_ms > 0 and (now_ms - oldest_ts_ms) > 24 * 3600 * 1000:
-        from cacheprice import Cache365PriceManager, CacheSparsePriceManager
-
         for cand in dict.fromkeys(cands):
             for mgr_cls in (Cache365PriceManager, CacheSparsePriceManager):
                 arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, mgr_cls.disk_filename_for_symbol(cand))))

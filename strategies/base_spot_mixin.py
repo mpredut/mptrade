@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 import os
+import signal
+import threading
 import time
 from typing import Any, Callable
 
@@ -1142,9 +1144,6 @@ class BaseSpotMixin:
         reload_external: bool = False,
     ) -> None:
         """Shared self-healing execution loop for spot and T212 strategies."""
-        import signal
-        import threading
-
         check_min = safe_pos_float(self.p.check_minutes, default=None)
         sleep_sec = max(1.0, check_min * 60.0) if check_min is not None else 60.0
         sleep_fn = self._mod_global("time", time).sleep

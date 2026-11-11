@@ -59,6 +59,7 @@ from guard_hierarchy import (
     validate_guard_mode_cfg,
     validate_profit_guard_mode_cfg,
 )
+import external_order_guard as _ext_order_guard
 from intelligence.internal.state.survival import (
     _read_cached_price_history,
     _resolve_trend_direction,
@@ -66,7 +67,10 @@ from intelligence.internal.state.survival import (
     get_weight_for_cash_permission_at_quant_time,
     resolve_effective_trend_duration,
 )
+import llm_order_guard as _llm_order_guard
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
+import providers.market_api as _market_api_mod
+from providers.order_id_context import get_process_name, resolve_order_owner
 from providers.order_ohlc_utils import (
     extract_order_price,
     extract_order_qty,
@@ -74,6 +78,7 @@ from providers.order_ohlc_utils import (
     extract_timestamp_s,
 )
 from providers.strategy_executor import ProviderError, SubmissionRefused
+import qlimit_order_guard as _qlimit_order_guard
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = _gh._MARGINS
@@ -110,7 +115,6 @@ def resolve_caller_module(
             return m_low
     if (client_order_id and not isinstance(client_order_id, bool)) or (prefix and not isinstance(prefix, bool)):
         try:
-            from providers.order_id_context import resolve_order_owner
             for candidate in (client_order_id, prefix):
                 if not candidate or isinstance(candidate, bool):
                     continue
@@ -120,7 +124,6 @@ def resolve_caller_module(
         except Exception:
             pass
     try:
-        from providers.order_id_context import get_process_name
         return _PROCESS_TO_MODULE.get(get_process_name())
     except Exception:
         return None
@@ -235,8 +238,7 @@ def symbol_regime(
     elif allow_fallback:
         # Graceful fallback for direct callers that did not inject a snapshot resolver
         try:
-            from providers.market_api import _runtime_market_regime_snapshot
-            snap = _runtime_market_regime_snapshot(symbol, now=now)
+            snap = _market_api_mod._runtime_market_regime_snapshot(symbol, now=now)
         except Exception:
             snap = None
 
@@ -248,8 +250,7 @@ def symbol_regime(
             target_provider = None
     elif allow_fallback and isinstance(provider, str) and provider:
         try:
-            from providers.market_api import api as _market_api
-            target_provider = _market_api.provider_by_name(provider) or provider
+            target_provider = _market_api_mod.api.provider_by_name(provider) or provider
         except Exception:
             target_provider = provider
 
@@ -988,8 +989,7 @@ def check_intelligence_guards(
         and qlimit2_inputs_changed
         and not (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass)
     ):
-        from qlimit_order_guard import check_qlimit2_order_guards
-        q_ok, q_reason, q_scale = check_qlimit2_order_guards(
+        q_ok, q_reason, q_scale = _qlimit_order_guard.check_qlimit2_order_guards(
             symbol=symbol,
             side=side,
             price=px_clean,
@@ -1007,8 +1007,7 @@ def check_intelligence_guards(
     # 2. Dynamic LLM Pre-Trade Guard (GLLM1) if notional crossed the threshold
     dur_sec = resolve_effective_trend_duration(symbol, explicit_dur_sec, regime_context)
 
-    from llm_order_guard import evaluate_high_stake_order_guard
-    hs_ok, hs_reason, hs_scale = evaluate_high_stake_order_guard(
+    hs_ok, hs_reason, hs_scale = _llm_order_guard.evaluate_high_stake_order_guard(
         symbol=symbol,
         side=side,
         price=price,
@@ -1071,8 +1070,7 @@ def _evaluate_intelligence_guards_raw(
 
     # 1. Internal Quantitative Mathematical Guards (G_QLIMIT2: Parabolic Surge, Weibull Exhaustion)
     if not (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass):
-        from qlimit_order_guard import check_qlimit2_order_guards
-        int_ok, int_reason, int_scale = check_qlimit2_order_guards(
+        int_ok, int_reason, int_scale = _qlimit_order_guard.check_qlimit2_order_guards(
             symbol=symbol,
             side=side,
             price=price,
@@ -1089,8 +1087,7 @@ def _evaluate_intelligence_guards_raw(
 
     # 2. External Microstructure & Derivatives Guards (GI_OBOOK, GI_WHALE, GI_FUNDING)
     if not is_category_bypassed("intelligence", bypassed):
-        from external_order_guard import check_external_order_guards
-        ext_ok, ext_reason, ext_scale = check_external_order_guards(
+        ext_ok, ext_reason, ext_scale = _ext_order_guard.check_external_order_guards(
             symbol=symbol,
             side=side,
             price=price,
@@ -1104,8 +1101,7 @@ def _evaluate_intelligence_guards_raw(
 
     # 3. LLM Guards (GLLM1 High-Stake + GLLM2 Sentiment + GLLM3 Geopolitical)
     if not is_category_bypassed("llm", bypassed):
-        from llm_order_guard import check_llm_order_guards
-        intel_ok, intel_reason, intel_scale = check_llm_order_guards(
+        intel_ok, intel_reason, intel_scale = _llm_order_guard.check_llm_order_guards(
             provider=provider,
             symbol=symbol,
             order_type=side,

@@ -33,7 +33,10 @@ import cachetrend as cm
 import cachepaths
 from guard_hierarchy import GUARD_REGISTRY
 from instrument import Instrument, load_for
+import intelligence.external.guards.smart_stop_loss_guard as _smart_sl_guard
 from intelligence.internal.state.volatility import resolve_cached_volatility_1h as get_symbol_volatility_1h
+import intelligence.sentiment.guards.high_stake_guard as _high_stake_guard
+import intelligence.sentiment.guards.post_stop_reentry_guard as _post_stop_guard
 import order_guard
 import order_retry
 import pricewindow as pw
@@ -281,8 +284,7 @@ def clear_position_stats_cache():
         d.clear()
     _LAST_SAVED_MT_STATE_KEY = None
     try:
-        from intelligence.sentiment.guards.post_stop_reentry_guard import clear_post_stop_reentry_cache
-        clear_post_stop_reentry_cache()
+        _post_stop_guard.clear_post_stop_reentry_cache()
     except Exception:
         pass
     if _MT_PERSISTENCE_ENABLED and "_MT_STATE_FILE" in globals():
@@ -493,8 +495,7 @@ def _is_simulated_env_or_inst(inst: Any = None) -> bool:
 def _clear_smart_sl_exit(symbol: str, provider: Any = None):
     """Cleanly purge Smart-SL grace records whenever an actual protective exit executes."""
     try:
-        from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss
-        clear_smart_stop_loss(symbol, provider=_inst_provider(provider))
+        _smart_sl_guard.clear_smart_stop_loss(symbol, provider=_inst_provider(provider))
     except Exception:
         pass
 
@@ -1070,8 +1071,7 @@ def _handle_position_recovery(inst, snapshot: PositionSnapshot, lost_threshold: 
     _TP_RIDE_STATE.pop(symbol, None)
     _save_mt_state()
     try:
-        from intelligence.external.guards.smart_stop_loss_guard import _DEFAULT_RECOVERY_GUARD
-        _DEFAULT_RECOVERY_GUARD.on_recovered(
+        _smart_sl_guard._DEFAULT_RECOVERY_GUARD.on_recovered(
             symbol, snapshot.loss_ratio, lost_threshold,
             now=snapshot.current_time_s,
             provider=snapshot.provider or _inst_provider(inst),
@@ -1177,15 +1177,13 @@ def _apply_post_stop_ai_guard(
     if _is_simulated_env_or_inst(inst):
         return True, buy_budget, buy_qty_cfg, qty
     try:
-        from intelligence.sentiment.guards.high_stake_guard import is_llm_guard_exempt
-        from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
         provider = (getattr(inst, "provider", None) or getattr(inst, "_provider", None)) if inst is not None else None
         caller_bg = _resolve_inst_bypass_guards(inst, provider=provider)
-        if GUARD_REGISTRY["GLLM1"].is_bypassed(caller_bg) or is_llm_guard_exempt():
+        if GUARD_REGISTRY["GLLM1"].is_bypassed(caller_bg) or _high_stake_guard.is_llm_guard_exempt():
             return True, buy_budget, buy_qty_cfg, qty
         if 0.0 < safe_float(current_price, 0.0) < safe_float(sell_price, 0.0):
             return True, buy_budget, buy_qty_cfg, qty
-        _ps_guard = get_post_stop_reentry_guard()
+        _ps_guard = _post_stop_guard.get_post_stop_reentry_guard()
         if getattr(_ps_guard, "mode", None) in ("off", "shadow"):
             _POST_STOP_AI_NOT_ENFORCED.add(symbol)
         raw_trough = safe_pos_float(reentry_snap.post_sell_trough, default=None)
@@ -1650,8 +1648,7 @@ def main():
                 print("--------------")
 
             try:
-                from intelligence.external.guards.smart_stop_loss_guard import flush_smart_stop_loss_alerts
-                flush_smart_stop_loss_alerts()
+                _smart_sl_guard.flush_smart_stop_loss_alerts()
             except Exception as _e:
                 print(f"flush_smart_stop_loss_alerts error: {_e}")
 

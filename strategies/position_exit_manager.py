@@ -25,6 +25,7 @@ from botcore import (
     safe_pos_float,
 )
 from .spot_rules import check_fast_profit_reversal
+import intelligence.external.guards.smart_stop_loss_guard as _smart_sl_guard
 from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_ratio_to_pct
 
 
@@ -388,8 +389,7 @@ class PositionExitConfig:
 
 def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
     try:
-        from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss
-        clear_smart_stop_loss(symbol, provider=provider)
+        _smart_sl_guard.clear_smart_stop_loss(symbol, provider=provider)
     except Exception:
         pass
 
@@ -739,11 +739,7 @@ class PositionExitManager:
         ):
             eval_fn = self.smart_sl_evaluator
             if eval_fn is None and getattr(self.config, "allow_external_cache", True):
-                try:
-                    from intelligence.external.guards.smart_stop_loss_guard import evaluate_smart_stop_loss
-                    eval_fn = evaluate_smart_stop_loss
-                except ImportError:
-                    eval_fn = None
+                eval_fn = getattr(_smart_sl_guard, "evaluate_smart_stop_loss", None)
 
             if eval_fn is not None:
                 try:

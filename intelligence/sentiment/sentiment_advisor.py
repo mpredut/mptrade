@@ -15,18 +15,28 @@ from botcore import (
 )
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_SENTIMENT_INTERVAL_SEC,
+    _extract_sorted_ts_px,
     clean_scale,
+    enrich_macro_benchmarks_live_state,
+    format_equity_macro_regime_line,
     get_cache_filenames,
+    get_deribit_options_currencies,
+    load_cached_macro_benchmarks,
     normalize_market_bias,
     normalize_recommended_action,
     normalize_risk_level,
     obj_attr,
     resolve_now_ts,
+    safe_float,
+    safe_pos_float,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
-from cachepaths import cache_path
+import intelligence.sentiment.collectors.microstructure_collector as _mc
+from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
+from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+from cachepaths import cache_path, resolve_cachedb_filepath
 
 logger = logging.getLogger("intelligence.sentiment.sentiment_advisor")
 
@@ -157,18 +167,6 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             )
             prompt_context.append(f"- Whales & Derivatives: {wt_clean}")
         try:
-            from cachepaths import resolve_cachedb_filepath
-            from intelligence.macro_sentiment_ssot import (
-                enrich_macro_benchmarks_live_state,
-                get_deribit_options_currencies,
-                load_cached_macro_benchmarks,
-                safe_float,
-                safe_pos_float,
-            )
-            from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-                format_equity_macro_regime_line,
-            )
-
             cache_dir = self._effective_cache_dir()
             eff_mb = (
                 dict(macro_benchmarks)
@@ -177,15 +175,6 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             )
             btc_chg_24h_live: Optional[float] = None
             struct_lines: List[str] = []
-            import intelligence.sentiment.collectors.microstructure_collector as _mc
-            from intelligence.sentiment.collectors.microstructure_collector import (
-                load_symbol_price_series,
-            )
-            from intelligence.sentiment.evaluators.price_series_evaluator import (
-                _extract_sorted_ts_px,
-                compute_24h_price_metrics,
-            )
-
             _mc._ensure_cacheprice_classes_bound()
             for ccy in get_deribit_options_currencies():
                 if not any(

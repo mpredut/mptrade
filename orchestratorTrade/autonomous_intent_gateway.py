@@ -43,6 +43,7 @@ from instrument import (
     resolve_instrument_live_price,
     resolve_tradable_instrument,
 )
+import notify_engine.alertnotifiers as _alertnotifiers
 from providers.execution_audit import (
     reconcile_intents_from_execution_audit,
 )
@@ -191,8 +192,7 @@ class AutonomousIntentGateway:
             return False
 
         try:
-            from notify_engine.alertnotifiers import notify
-            notify(
+            _alertnotifiers.notify(
                 title=title,
                 body=body,
                 source="llm_trader",

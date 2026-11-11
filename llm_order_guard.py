@@ -44,7 +44,13 @@ from guard_hierarchy import (
     resolve_high_stake_min_notional_usd,
     validate_guard_mode_cfg,
 )
+from instrument_registry import is_equity_symbol
 from intelligence.internal.guards.guard_decision import BrakeAction, OrderGuardEvaluatorBase, OrderGuardEvaluatorFactory
+import intelligence.macro.geopolitical_analyzer as _geo_analyzer
+import intelligence.macro.geopolitical_guard as _geo_guard
+from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks, read_first_cached_dict
+import intelligence.sentiment.guards.high_stake_guard as _high_stake_guard
+import notify_engine.alertnotifiers as _alertnotifiers
 
 logger = logging.getLogger("llm_order_guard")
 
@@ -89,19 +95,13 @@ def evaluate_high_stake_order_guard(
     notify_on_eval: bool = True,
 ) -> Tuple[bool, str, float]:
     """SSOT evaluator for HighStakeGuard (GLLM1) across both initial and cached-context re-evaluations."""
-    from intelligence.sentiment.guards.high_stake_guard import (
-        HIGH_STAKE_NOTIONAL_JUMP_RATIO,
-        HighStakeGuard,
-        is_llm_guard_exempt,
-    )
-
     side = normalize_side(side)
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
     if is_intelligence_master_off(margins):
         return True, "ok", 1.0
-    skip_llm = GUARD_REGISTRY["GLLM1"].is_bypassed(bypassed) or is_llm_guard_exempt()
+    skip_llm = GUARD_REGISTRY["GLLM1"].is_bypassed(bypassed) or _high_stake_guard.is_llm_guard_exempt()
     llm_mode = validate_guard_mode_cfg(margins["llm_guard_mode"], "llm_guard_mode")
     if skip_llm or llm_mode == "off":
         return True, "ok", 1.0
@@ -127,7 +127,7 @@ def evaluate_high_stake_order_guard(
 
     notional_jump = (
         prev_notional is not None
-        and (computed_notional - prev_notional) / max(prev_notional, 1.0) > HIGH_STAKE_NOTIONAL_JUMP_RATIO
+        and (computed_notional - prev_notional) / max(prev_notional, 1.0) > _high_stake_guard.HIGH_STAKE_NOTIONAL_JUMP_RATIO
     )
     if prev_notional is None or prev_notional < min_notional or notional_jump:
         ctx_usable = valid_context or isinstance(regime_context, dict)
@@ -135,7 +135,7 @@ def evaluate_high_stake_order_guard(
             dur_sec = obj_attr(regime_context, "trend_duration_seconds") or obj_attr(regime_context, "resolved_duration_sec")
         timeout_sec = safe_pos_float(margins.get("llm_timeout_sec"), 120.0)
         fallback = str(margins.get("llm_fallback") or "allow").strip().lower()
-        llm_guard = HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
+        llm_guard = _high_stake_guard.HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
         try:
             g_dec = llm_guard.check(
                 symbol, side, price, qty if qty is not None else 1.0,
@@ -181,8 +181,6 @@ def evaluate_high_stake_order_guard(
 
         if not is_cache_hit and do_notify and check_cooldown_gate(_LLM_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), side), resolve_now_ts(now)):
             try:
-                from notify_engine.alertnotifiers import notify
-
                 hs_tag = topic_spec("guard_high_stake").bracket_tag
                 scale_pct = int(g_scale * 100)
                 if not g_dec.allowed:
@@ -205,7 +203,7 @@ def evaluate_high_stake_order_guard(
                 qty_str = f"{qty_clean:g} " if qty_clean > 0.0 else ""
                 order_header = f"Order: {side} {qty_str}{symbol}" + (f" @ {price_str}" if price_str else "")
                 order_header += f" · {ccy_sym}{computed_notional:,.0f} (Scale: {scale_pct}%)"
-                notify(title=g_title, body=f"{order_header}\n{clean_reason}", source="order_guard", symbol=symbol)
+                _alertnotifiers.notify(title=g_title, body=f"{order_header}\n{clean_reason}", source="order_guard", symbol=symbol)
             except Exception:
                 pass
 
@@ -263,12 +261,10 @@ def check_geopolitical_order_guards(
     shadow_notify = _parse_bool_flag(m.get("shadow_notify"), False)
 
     try:
-        from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-        from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
         try:
-            analyzer = GeopoliticalThreatAnalyzer(start_sync=False)
+            analyzer = _geo_analyzer.GeopoliticalThreatAnalyzer(start_sync=False)
         except TypeError:
-            analyzer = GeopoliticalThreatAnalyzer()
+            analyzer = _geo_analyzer.GeopoliticalThreatAnalyzer()
         cached_geo = getattr(analyzer, "_cached_assessment", None)
         if cached_geo is not None:
             now_ts = resolve_now_ts(now)
@@ -277,9 +273,6 @@ def check_geopolitical_order_guards(
             market_absorbed = False
             if geo_level == "ELEVATED" and geo_ts > 0.0 and (now_ts - geo_ts) >= 1800.0:
                 try:
-                    from instrument_registry import is_equity_symbol
-                    from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks, read_first_cached_dict
-
                     cdir = (
                         analyzer._effective_cache_dir()
                         if hasattr(analyzer, "_effective_cache_dir")
@@ -316,7 +309,7 @@ def check_geopolitical_order_guards(
                                 market_absorbed = True
                 except Exception:
                     market_absorbed = False
-            geo_dec = GeopoliticalShockGuard().check(
+            geo_dec = _geo_guard.GeopoliticalShockGuard().check(
                 symbol, order_side, cached_geo, market_absorbed=market_absorbed
             )
             geo_scale = clean_scale(getattr(geo_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
@@ -331,8 +324,6 @@ def check_geopolitical_order_guards(
                     and check_cooldown_gate(_GEO_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), order_side), resolve_now_ts(now))
                 ):
                     try:
-                        from notify_engine.alertnotifiers import notify
-
                         geo_tag = topic_spec("macro_geopolitical").bracket_tag
                         scale_pct = int(geo_scale * 100)
                         geo_title = (
@@ -345,7 +336,7 @@ def check_geopolitical_order_guards(
                             clean_summary = geo_dec.reason.split("(", 1)[1].rstrip(")")
                         raw_tl = obj_attr(cached_geo, "threat_level", "UNKNOWN")
                         raw_rs = clean_scale(obj_attr(cached_geo, "risk_score", 0.0), default=0.0, allow_percent=True)
-                        notify(
+                        _alertnotifiers.notify(
                             title=geo_title,
                             body=f"Threat: {raw_tl} (Risk: {raw_rs:.2f}, Scale: {scale_pct}%)\n{clean_summary}",
                             source="macro_shadow",

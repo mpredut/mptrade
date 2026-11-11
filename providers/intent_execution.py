@@ -15,6 +15,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import is_equity_venue
+import notify_engine.alertnotifiers as _alertnotifiers
 from .base import MarketDataProvider
 from .intent_state import (
     _intent_order_ids,
@@ -36,6 +37,7 @@ from .order_ohlc_utils import (
     extract_orig_qty,
     resolve_order_actor,
 )
+from .quantity import _floor_qty_decimals, round_provider_qty
 
 
 def resolve_intent_topic_tag(intent: dict[str, Any], venue: str) -> str:
@@ -213,8 +215,6 @@ def execute_enforce_intent_order(
                 and "insufficient-free-for-stocks-buy" in reason_str.lower()
             ):
                 retried_insufficient_free = True
-                from .quantity import _floor_qty_decimals, round_provider_qty
-
                 scaled_qty = _floor_qty_decimals(
                     round_provider_qty(getattr(inst, "_provider", None), str(getattr(inst, "symbol", "") or ""), target_qty * 0.94),
                     2,
@@ -251,9 +251,7 @@ def execute_enforce_intent_order(
 
             if callable(dispatch_notify_fn):
                 try:
-                    from notify_engine.alertnotifiers import dispatch_order_event_notification
-
-                    dispatch_order_event_notification(
+                    _alertnotifiers.dispatch_order_event_notification(
                         inst.symbol,
                         decision,
                         order_id_str,

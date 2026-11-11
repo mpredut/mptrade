@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC
+from dataclasses import replace as _dc_replace
 import logging
 from typing import Any, Callable, Dict, Optional, Sequence
 
@@ -271,8 +272,6 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
                             evaluated_notional_eur=baseline_notional,
                             cache_hit=True,
                         )
-                    from dataclasses import replace as _dc_replace
-
                     return _dc_replace(
                         base_dec,
                         metadata={

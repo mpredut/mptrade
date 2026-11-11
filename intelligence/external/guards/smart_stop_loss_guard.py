@@ -39,6 +39,8 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
+from guard_hierarchy import _load_margins
+import intelligence.external.collectors.base_collector as _base_collector
 from intelligence.internal.guards.guard_decision import (
     OrderGuardEvaluatorBase,
     OrderGuardEvaluatorFactory,
@@ -47,6 +49,7 @@ from intelligence.internal.guards.guard_decision import (
     normalize_guard_mode,
     resolve_hierarchical_guard_mode,
 )
+import notify_engine.alertnotifiers as _alertnotifiers
 from state_io import read_json_dict_cached, save_json_state
 
 load_dotenv()
@@ -164,8 +167,7 @@ def _send_ntfy_alert(title: str, body: str, symbol: str) -> None:
     if is_replay_or_backtest_env():
         return
     try:
-        from notify_engine.alertnotifiers import notify
-        notify(title=title, body=body, source="smart_stop_loss", symbol=symbol)
+        _alertnotifiers.notify(title=title, body=body, source="smart_stop_loss", symbol=symbol)
     except Exception:
         pass
 
@@ -304,17 +306,15 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
             return True, reason, meta
 
         # 3. Microstructure Telemetry Retrieval (0 ms cache lookup; skipped in replay unless explicitly injected)
-        from intelligence.external.collectors.base_collector import get_orderbook_collector, get_whale_collector
-
         w_snap = (
             whale_snapshot
             if whale_snapshot is not None
-            else (None if is_sim else fetch_guard_snapshot(get_whale_collector(), sym_key, now=now_ts, allow_network=False))
+            else (None if is_sim else fetch_guard_snapshot(_base_collector.get_whale_collector(), sym_key, now=now_ts, allow_network=False))
         )
         ob_snap = (
             orderbook_snapshot
             if orderbook_snapshot is not None
-            else (None if is_sim else fetch_guard_snapshot(get_orderbook_collector(), sym_key, now=now_ts, allow_network=False))
+            else (None if is_sim else fetch_guard_snapshot(_base_collector.get_orderbook_collector(), sym_key, now=now_ts, allow_network=False))
         )
 
         raw_top_long = obj_attr(w_snap, "top_traders_long_pct", obj_attr(w_snap, "whale_long_pct", 0.50)) if w_snap else 0.50
@@ -511,7 +511,6 @@ def evaluate_smart_stop_loss(
     orderbook_snapshot=None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """Convenience functional interface for monitortrades.py."""
-    from guard_hierarchy import _load_margins
     m = _load_margins()
     if not isinstance(m, dict):
         m = {}

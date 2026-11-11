@@ -24,6 +24,7 @@ from botcore import (
     safe_nonneg_ts,
     topic_spec,
 )
+from guard_hierarchy import _load_margins
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
@@ -45,6 +46,7 @@ from intelligence.sentiment.guards.high_stake_guard import (
     collect_pretrade_telemetry,
     is_llm_guard_exempt,
 )
+import notify_engine.alertnotifiers as _alertnotifiers
 
 logger = logging.getLogger("intelligence.sentiment.guards.post_stop_reentry_guard")
 
@@ -199,8 +201,6 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
         if not self.notify_enabled:
             return
         try:
-            from notify_engine.alertnotifiers import notify
-
             scale_pct = int(round(clean_scale(getattr(decision, "suggested_scale", 1.0), 1.0) * 100))
             action_label = (
                 "VETO"
@@ -215,7 +215,7 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
             cur_s = format_price_log(current_price)
             trough_s = format_price_log(trough)
             sl_s = format_price_log(last_sell_price)
-            notify(
+            _alertnotifiers.notify(
                 title=f"{topic_spec('guard_post_stop').ntfy_prefix} {action_label} {symbol}",
                 body=(
                     f"{symbol} @ ${cur_s} (Bounce: +{bounce_pct:.2f}% from low ${trough_s}, SL at: ${sl_s})\n"
@@ -240,7 +240,6 @@ def get_post_stop_reentry_guard(
     """Factory retrieving or initializing the singleton PostStopReentryGuard."""
     global _POST_STOP_GUARD_INSTANCE
     if margins is None:
-        from guard_hierarchy import _load_margins
         m = _load_margins()
     else:
         m = margins

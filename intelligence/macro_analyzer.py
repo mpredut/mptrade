@@ -32,6 +32,7 @@ from botcore import (
     topic_spec,
 )
 from cachepaths import resolve_cachedb_filepath
+from guard_hierarchy import _load_margins
 from intelligence.macro.calendar_ssot import (
     compute_dynamic_geopolitical_interval,
     compute_dynamic_sentiment_interval,
@@ -44,6 +45,8 @@ from intelligence.macro.daemon_ssot import (
     run_daemon_loop,
     write_daemon_heartbeat,
 )
+import intelligence.macro.geopolitical_analyzer as _geo_analyzer
+import intelligence.macro.news_feed_collector as _news_collector
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     extract_high_severity_headlines_and_digest,
@@ -58,6 +61,8 @@ from intelligence.macro_sentiment_ssot import (
     safe_int,
     safe_pos_float,
 )
+import intelligence.sentiment.sentiment_advisor as _sentiment_advisor
+import notify_engine.alertnotifiers as _alertnotifiers
 
 load_dotenv()
 
@@ -85,7 +90,6 @@ class MacroAnalyzer:
         symbols: Optional[List[str]] = None,
     ) -> None:
         self.cache_dir = cache_dir
-        from guard_hierarchy import _load_margins
         conf_margins = _load_margins()
         derived = resolve_derived_telemetry_intervals()
         exec_scale = derived["crypto_executor_interval_sec"] / 360.0
@@ -105,15 +109,12 @@ class MacroAnalyzer:
         self.symbols = parse_symbol_list(symbols) or ["BTCUSDC"]
         self.running = False
 
-        from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-        from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
-
-        self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
+        self.geopolitical_analyzer = _geo_analyzer.GeopoliticalThreatAnalyzer(
             cache_ttl_sec=self.macro_llm_interval_sec,
             state_file=os.path.join(self.cache_dir, "geopolitical_eval.json"),
             start_sync=True,
         )
-        self.sentiment_advisor = SentimentAdvisor(
+        self.sentiment_advisor = _sentiment_advisor.SentimentAdvisor(
             cache_ttl_sec=self.advisor_interval_sec,
             cache_file=os.path.join(self.cache_dir, "sentiment_eval.json"),
             start_sync=True,
@@ -140,10 +141,8 @@ class MacroAnalyzer:
 
     def _load_news_snapshot(self, eval_now: float, explicit_now: Optional[float] = None) -> Any:
         """Load passive news feed pool snapshot from cache_dir without network I/O."""
-        from intelligence.macro.news_feed_collector import NewsFeedCollector
-
         cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
-        nc = NewsFeedCollector(history_file=cand_path, start_sync=False)
+        nc = _news_collector.NewsFeedCollector(history_file=cand_path, start_sync=False)
         return _call_with_optional_kwarg(nc.get_pool_snapshot, opt_key="now_ts", opt_val=eval_now, include_opt=explicit_now is not None)
 
     def _maybe_notify_assessment(
@@ -170,10 +169,8 @@ class MacroAnalyzer:
             return
         if self.shadow_notify:
             try:
-                from notify_engine.alertnotifiers import notify
-
                 tag = topic_spec(topic_id).bracket_tag
-                notify(title=f"{icon} {tag} {headline_suffix}", body=body, source="macro_shadow", symbol="GLOBAL")
+                _alertnotifiers.notify(title=f"{icon} {tag} {headline_suffix}", body=body, source="macro_shadow", symbol="GLOBAL")
                 setattr(self, ts_attr, assessment_ts)
             except Exception as exc:
                 logger.debug("Failed sending %s notification: %s", topic_id, exc)

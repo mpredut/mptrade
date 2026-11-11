@@ -94,6 +94,9 @@ from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
     round_spread_bps,
 )
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     load_microstructure_cycle_history,
@@ -140,9 +143,17 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     resolve_asset_session_policy,
     sort_ts_rows,
 )
-from instrument_registry import casefold_get, is_equity_symbol
+from instrument_registry import (
+    casefold_get,
+    discover_hyperliquid_spot,
+    is_equity_symbol,
+    is_symbol_market_open,
+)
+from providers import t212_provider as _t212_prov_mod
+from providers.base import MarketDataProvider
 from providers.market_api import api as mkt
 from state_io import (
+    read_json_dict,
     read_json_dict_recovering as _default_read_json_cached,
     read_json_recovering,
     read_tail_jsonl_records,
@@ -604,8 +615,6 @@ def ensure_fresh_symbol_microstructure(
     is_eq = is_equity_symbol(sym_u)
     if is_eq:
         try:
-            from instrument_registry import is_symbol_market_open
-
             rth_open = is_symbol_market_open(sym_u, eff_now)
         except Exception:
             rth_open = True
@@ -626,22 +635,16 @@ def ensure_fresh_symbol_microstructure(
 
     if _needs_fetch(CACHE_ORDERBOOK_DEPTH_PREFIX, max_age_ob_sec):
         try:
-            from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
-
             OrderbookDepthCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(sym_u, allow_network=True, now=eff_now)
         except Exception:
             pass
     if include_derivatives and _needs_fetch(CACHE_DERIVATIVES_TELEMETRY_PREFIX, max_age_whale_sec):
         try:
-            from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
-
             DerivativesTelemetryCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(sym_u, allow_network=True, now=eff_now)
         except Exception:
             pass
     if _needs_fetch(CACHE_WHALE_SNAPSHOT_PREFIX, max_age_whale_sec):
         try:
-            from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
-
             WhalePositioningCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(sym_u, allow_network=True, now=eff_now)
         except Exception:
             pass
@@ -723,8 +726,6 @@ def _refresh_stale_t212_cached_positions(
         return False
     if not is_live_network_backfill_enabled():
         try:
-            from providers import t212_provider as _t212_prov_mod
-
             if getattr(_t212_prov_mod.T212Provider, "__module__", "") == "providers.t212_provider":
                 return False
         except Exception:
@@ -741,11 +742,9 @@ def _refresh_stale_t212_cached_positions(
     if max_t212_ts <= 0.0 or (now_ts - max(min_t212_ts, _LAST_T212_PORTFOLIO_POLL_TS)) < max_age_sec:
         return False
     try:
-        from providers.t212_provider import T212Provider
-
         _LAST_T212_PORTFOLIO_POLL_TS = now_ts
         try:
-            t212_rows = T212Provider()._client().get_portfolio()
+            t212_rows = _t212_prov_mod.T212Provider()._client().get_portfolio()
         except Exception:
             t212_rows = []
         if not isinstance(t212_rows, list):
@@ -783,8 +782,6 @@ def _refresh_stale_t212_cached_positions(
             if (now_ts - prev_c_ts) < max_age_sec:
                 continue
             try:
-                from providers.base import MarketDataProvider
-
                 cur_px_fb = MarketDataProvider.resolve_venue_public_price_usd("t212", rticker)
                 if cur_px_fb is not None:
                     prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
@@ -842,11 +839,9 @@ def upgrade_tpo_vp_from_ohlc(
             cache_dir=cache_dir,
         )
         if (len(pts_vp) < 8 or (pts_vp[-1][0] - pts_vp[0][0]) < 18 * 3600 * 1000) and cache_dir and os.path.isdir(cache_dir):
-            from state_io import read_json_recovering as _rj_vp
-
             for c_vp in cache_symbol_variants(sym, include_original=True, include_base=False, quotes=compatible_quote_suffixes(sym)):
                 p_vp = os.path.join(cache_dir, f"cache_ohlc_24h_{c_vp}.json")
-                if os.path.exists(p_vp) and isinstance(d_vp := _rj_vp(p_vp), dict) and isinstance(d_vp.get("points"), list):
+                if os.path.exists(p_vp) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
                     cand_vp = [
                         [int(r[0]), float(r[1]), float(r[2])]
                         for r in d_vp["points"]
@@ -892,8 +887,6 @@ def _persist_refreshed_equity_chart_cache(
     if not (cache_dir and os.path.isdir(cache_dir) and is_live_network_backfill_enabled()):
         return
     try:
-        from state_io import read_json_dict
-
         _ensure_cacheprice_classes_bound()
         eff_p24_pts = pts_24h_to_save or pts_24h_bars
         p24_target = p24_eq_path or str(
@@ -1377,7 +1370,6 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             ):
                 t_entry["price"] = cached_t212_px
                 t212_seeded_from_cache.add(ticker)
-        from instrument_registry import discover_hyperliquid_spot
 
         for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
             ensure_fresh_symbol_microstructure(
@@ -1553,8 +1545,6 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 eq_rth_open = False
                 if is_eq_sym:
                     try:
-                        from instrument_registry import is_symbol_market_open
-
                         eq_rth_open = bool(is_symbol_market_open(sym, eff_now))
                         if not eq_rth_open and memo_chart is not None:
                             memo_ttl_s = 1800.0
