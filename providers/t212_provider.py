@@ -21,8 +21,6 @@ from botcore import (
     _parse_bool_flag,
     env_value,
     env_values_map,
-    load_local_module,
-    normalize_epoch_sec,
     normalize_side,
     safe_float,
     safe_nonneg_float,
@@ -37,6 +35,7 @@ from .base import (
 )
 from .order_ohlc_utils import (
     build_open_order_entry,
+    candles_to_historical_points,
     normalize_order,
     require_clean_order_id,
     resolve_market_flag,
@@ -110,6 +109,14 @@ class T212Provider(MarketDataProvider):
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_T212_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 86400.0 * 30
     _fills_match_fn = staticmethod(_t212_tickers_match)
+    _OHLC_MARKET_DATA_SPEC = (None, "212trading.market_data", "fetch_yahoo_candles")
+    _OHLC_DEFAULT_INTERVAL = "1h"
+    _RECONCILIATION_CAPABILITIES = OrderReconciliationCapabilities(
+        lookup_by_client_order_id=False,
+        status_by_order_id=True,
+        cancel_by_order_id=True,
+        list_open_orders=True,
+    )
 
     def __init__(self, client=None, live_enabled: Optional[bool] = None,
                  order_validity: Optional[str] = None):
@@ -133,14 +140,6 @@ class T212Provider(MarketDataProvider):
     @classmethod
     def tca_price_decimals(cls, limit_price: float = 0.0) -> int:
         return 2
-
-    def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
-        return OrderReconciliationCapabilities(
-            lookup_by_client_order_id=False,
-            status_by_order_id=True,
-            cancel_by_order_id=True,
-            list_open_orders=True,
-        )
 
     def supports_symbol(self, symbol: str) -> bool:
         return False  # explicit-only
@@ -215,25 +214,16 @@ class T212Provider(MarketDataProvider):
     ) -> list[tuple[float, float]]:
         sym_u = str(symbol or "").strip().upper()
         try:
-            market_data = importlib.import_module("212trading.market_data")
             yahoo_sym = canonical_base_asset(sym_u)
             iv_norm = str(interval or "1h").strip()
             if iv_norm not in ("5m", "15m", "30m", "1h", "1d"):
                 iv_norm = "1h"
             max_days = 59 if iv_norm in ("5m", "15m", "30m") else 720
             days_i = min(max(1, safe_pos_int(days, default=30) or 30), max_days)
-            bars = market_data.fetch_yahoo_candles(
-                yahoo_sym, f"{days_i}d", iv_norm, drop_incomplete=False
-            ) or []
-            out: list[tuple[float, float]] = []
-            for b in bars:
-                if not isinstance(b, dict):
-                    continue
-                tf = normalize_epoch_sec(b.get("timestamp"), default=None)
-                pf = safe_pos_float(b.get("close"), default=None)
-                if tf is not None and pf is not None:
-                    out.append((tf, pf))
-            return out
+            bars = self.fetch_ohlc_candles(
+                yahoo_sym, interval=iv_norm, range_=f"{days_i}d", drop_incomplete=False
+            )
+            return candles_to_historical_points(bars)
         except Exception:
             return []
 
@@ -857,25 +847,6 @@ class T212Provider(MarketDataProvider):
         except Exception as exc:
             raise ProviderError(f"open_orders({symbol}): {exc}") from exc
 
-    def fetch_ohlc_candles(
-        self,
-        symbol: str,
-        interval: Any = "1h",
-        *,
-        drop_incomplete: bool = True,
-        **kwargs: Any,
-    ) -> List[dict]:
-        md = load_local_module(_T212_DIR, "market_data")
-        return list(
-            md.fetch_yahoo_candles(
-                symbol,
-                interval=interval,
-                drop_incomplete=drop_incomplete,
-                **kwargs,
-            )
-            or []
-        )
-
     def fetch_intraday_chart(
         self,
         symbol: str,
@@ -883,7 +854,7 @@ class T212Provider(MarketDataProvider):
         rng: str = "5d",
         interval: str = "5m",
     ) -> tuple[Any, list]:
-        md = load_local_module(_T212_DIR, "market_data")
+        md = importlib.import_module("212trading.market_data")
         sym_clean = canonical_base_asset(symbol) or str(symbol or "").strip()
         return md._chart(sym_clean, rng=rng, interval=interval)
 

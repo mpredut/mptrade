@@ -19,6 +19,7 @@ from botcore import (
     exact_nonneg_int,
     is_shared_disk_cache_enabled,
     load_env_file_defaults,
+    load_local_module,
     require_nonneg_float,
     resolve_patched_attr,
     safe_nonneg_float,
@@ -60,6 +61,7 @@ from .order_ohlc_utils import (  # noqa: E402, F401
     VENUE_PROVIDER_SPECS,
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
+    candles_to_historical_points,
     derive_venue_128bit_client_order_id,
     extract_order_id,
     extract_order_price,
@@ -81,6 +83,9 @@ from .strategy_executor import (  # noqa: E402, F401
     ProviderError,
     SubmissionRefused,
 )
+
+
+_UNSET_INTERVAL = object()
 
 
 class MarketDataProvider(ABC):
@@ -156,6 +161,9 @@ class MarketDataProvider(ABC):
     _USES_BARE_BASE_ORDER_SYMBOLS: bool = False
     _USES_SHARED_TRAILING_MAP: bool = False
     _POSITION_PRICE_DECIMALS: int = 6
+    _RECONCILIATION_CAPABILITIES: OrderReconciliationCapabilities = OrderReconciliationCapabilities()
+    _OHLC_MARKET_DATA_SPEC: Optional[tuple[Optional[str], str, str]] = None
+    _OHLC_DEFAULT_INTERVAL: Any = 60
     _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = VENUE_PROVIDER_SPECS
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
@@ -961,7 +969,8 @@ class MarketDataProvider(ABC):
         ``open_orders`` implementation must never be mistaken for a confirmed
         empty venue snapshot.
         """
-        return OrderReconciliationCapabilities()
+        caps = MarketDataProvider._resolve_provider_attr(self, "_RECONCILIATION_CAPABILITIES", None)
+        return caps if isinstance(caps, OrderReconciliationCapabilities) else OrderReconciliationCapabilities()
 
     def preflight_order(self, symbol: str, side: str, qty: float,
                         price=None, *, market: bool = False,
@@ -1485,13 +1494,41 @@ class MarketDataProvider(ABC):
     def fetch_ohlc_candles(
         self,
         symbol: str,
-        interval: Any = 60,
+        interval: Any = _UNSET_INTERVAL,
         *,
         drop_incomplete: bool = True,
         **kwargs: Any,
     ) -> List[dict]:
         """Return historical OHLC bar dictionaries ``{'timestamp', 'open', 'high', 'low', 'close'}``."""
-        return []
+        spec = MarketDataProvider._resolve_provider_attr(self, "_OHLC_MARKET_DATA_SPEC", None)
+        if not (isinstance(spec, tuple) and len(spec) == 3):
+            return []
+        eff_interval = (
+            MarketDataProvider._resolve_provider_attr(self, "_OHLC_DEFAULT_INTERVAL", 60)
+            if interval is _UNSET_INTERVAL
+            else interval
+        )
+        mod_dir, mod_name, fn_name = spec
+        if mod_dir:
+            loader = resolve_patched_attr(
+                "load_local_module",
+                load_local_module,
+                modules=(type(self).__module__,),
+                require_callable=True,
+            ) or load_local_module
+            md = loader(mod_dir, mod_name)
+        else:
+            md = importlib.import_module(mod_name)
+        fetch_fn = getattr(md, fn_name)
+        return list(
+            fetch_fn(
+                symbol,
+                interval=eff_interval,
+                drop_incomplete=drop_incomplete,
+                **kwargs,
+            )
+            or []
+        )
 
     def fetch_intraday_chart(
         self,

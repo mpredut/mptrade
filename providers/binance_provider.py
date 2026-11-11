@@ -6,7 +6,6 @@ from typing import Any, List, Optional
 from botcore import (
     _parse_bool_flag,
     exact_pos_int,
-    normalize_epoch_sec,
     require_pos_float,
     resolve_patched_attr,
     safe_nonneg_float,
@@ -30,6 +29,7 @@ from .base import (
 from .order_ohlc_utils import (
     ClosedPriceSeries,
     build_open_order_entry,
+    candles_to_historical_points,
     clean_order_id,
     extract_order_fee,
     normalize_order,
@@ -127,6 +127,14 @@ class BinanceProvider(MarketDataProvider):
     _DEFERS_SMART_CANCELLATION: bool = True
     _SUPPORTS_BUSINESS_MINIMUM: bool = True
     _INTENT_CLIENT_ID_FORMAT: str = "SD_{token}"
+    _OHLC_MARKET_DATA_SPEC = (None, "binance_api.market_data", "fetch_ohlc_candles")
+    _RECONCILIATION_CAPABILITIES = OrderReconciliationCapabilities(
+        lookup_by_client_order_id=True,
+        status_by_order_id=True,
+        cancel_by_order_id=True,
+        list_open_orders=True,
+        not_found_reliable_for_seconds=_BINANCE_NOT_FOUND_RELIABLE_FOR_SECONDS,
+    )
 
     def __init__(self, live_enabled: Optional[bool] = None):
         self._live_enabled = live_enabled
@@ -141,15 +149,6 @@ class BinanceProvider(MarketDataProvider):
         import botcore as cfg
 
         return bool(cfg.is_trade_enabled())
-
-    def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
-        return OrderReconciliationCapabilities(
-            lookup_by_client_order_id=True,
-            status_by_order_id=True,
-            cancel_by_order_id=True,
-            list_open_orders=True,
-            not_found_reliable_for_seconds=_BINANCE_NOT_FOUND_RELIABLE_FOR_SECONDS,
-        )
 
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
         return _get_bapi().get_current_price(symbol)
@@ -508,41 +507,15 @@ class BinanceProvider(MarketDataProvider):
         )
         return spot_urls, (f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",)
 
-    def fetch_ohlc_candles(
-        self,
-        symbol: str,
-        interval: Any = 60,
-        *,
-        drop_incomplete: bool = True,
-        **kwargs: Any,
-    ) -> List[dict]:
-        md = importlib.import_module("binance_api.market_data")
-        return list(
-            md.fetch_ohlc_candles(
-                symbol,
-                interval=interval,
-                drop_incomplete=drop_incomplete,
-                **kwargs,
-            )
-            or []
-        )
-
     def fetch_historical_ohlc_points(
         self,
         symbol: str,
         days: int,
         interval: str = "1h",
     ) -> list[tuple[float, float]]:
-        candles = self.fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False)
-        out: list[tuple[float, float]] = []
-        for c in candles:
-            if not isinstance(c, dict):
-                continue
-            tf = normalize_epoch_sec(c.get("timestamp"), default=None)
-            pf = safe_pos_float(c.get("close"), default=None)
-            if tf is not None and pf is not None:
-                out.append((tf, pf))
-        return out
+        return candles_to_historical_points(
+            self.fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False)
+        )
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         iv = candle_interval(interval_min)

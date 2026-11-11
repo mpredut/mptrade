@@ -164,6 +164,16 @@ class KrakenProvider(MarketDataProvider):
     PRIVATE_WS_URL = "wss://ws-auth.kraken.com/"
     _fills_match_fn = staticmethod(kraken_pair_matches)
     _fills_normalize_fn = staticmethod(_normalize_kraken_fill)
+    _OHLC_MARKET_DATA_SPEC = (_KRAKEN_DIR, "market_data", "fetch_ohlc_candles")
+    # ClosedOrders is bounded and therefore cannot prove that an older
+    # client ID was never accepted. Keep automatic resubmission disabled;
+    # the forwarded cl_ord_id remains useful for manual reconciliation.
+    _RECONCILIATION_CAPABILITIES = OrderReconciliationCapabilities(
+        lookup_by_client_order_id=False,
+        status_by_order_id=True,
+        cancel_by_order_id=True,
+        list_open_orders=True,
+    )
 
     def __init__(self, client=None, live_enabled: Optional[bool] = None):
         # kraken_bot can inject its _BOT client to share connection and nonce.
@@ -183,17 +193,6 @@ class KrakenProvider(MarketDataProvider):
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
         sym = str(symbol or "").strip().upper()
         return "Kraken-HYPE" if ("HYPE" in sym or not sym) else f"Kraken-{sym}"
-
-    def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
-        return OrderReconciliationCapabilities(
-            # ClosedOrders is bounded and therefore cannot prove that an older
-            # client ID was never accepted. Keep automatic resubmission disabled;
-            # the forwarded cl_ord_id remains useful for manual reconciliation.
-            lookup_by_client_order_id=False,
-            status_by_order_id=True,
-            cancel_by_order_id=True,
-            list_open_orders=True,
-        )
 
     def supports_symbol(self, symbol: str) -> bool:
         # Explicit-only: claim no pattern and remain reachable only through Instrument.
@@ -1323,25 +1322,6 @@ class KrakenProvider(MarketDataProvider):
             return (f"https://api.kraken.com/0/public/Depth?pair={krk_eur_pair}&count=200",), ()
         kraken_pair = resolve_kraken_lookup_symbol(symbol)
         return (f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",), ()
-
-    def fetch_ohlc_candles(
-        self,
-        symbol: str,
-        interval: Any = 60,
-        *,
-        drop_incomplete: bool = True,
-        **kwargs: Any,
-    ) -> List[dict]:
-        md = load_local_module(_KRAKEN_DIR, "market_data")
-        return list(
-            md.fetch_ohlc_candles(
-                symbol,
-                interval,
-                drop_incomplete=drop_incomplete,
-                **kwargs,
-            )
-            or []
-        )
 
     def fetch_historical_ohlc_points(
         self,

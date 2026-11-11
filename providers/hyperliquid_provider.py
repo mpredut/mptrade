@@ -32,7 +32,6 @@ from botcore import (
     exact_pos_int,
     is_live_network_backfill_enabled,
     load_env_stack,
-    load_local_module,
     normalize_side,
     required_bool_env,
     safe_float,
@@ -172,6 +171,13 @@ class HyperliquidProvider(MarketDataProvider):
     _FILLS_CACHE_MAX_STALE_S = 60.0
     PUBLIC_WS_URL = "wss://api.hyperliquid.xyz/ws"
     KNOWN_SPOT_PAIRS = {"HYPE": "@107"}
+    _OHLC_MARKET_DATA_SPEC = (_HL_DIR, "market_data", "fetch_ohlc_candles")
+    _RECONCILIATION_CAPABILITIES = OrderReconciliationCapabilities(
+        lookup_by_client_order_id=True,
+        status_by_order_id=True,
+        cancel_by_order_id=True,
+        list_open_orders=True,
+    )
 
     #: Served spot token, defaulting to HYPE.
     def __init__(self, token: str = "HYPE", live_enabled: Optional[bool] = None, *, client=None):
@@ -212,14 +218,6 @@ class HyperliquidProvider(MarketDataProvider):
             and not getattr(self, "_env_loaded", False)
         ):
             self._load_env()
-
-    def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
-        return OrderReconciliationCapabilities(
-            lookup_by_client_order_id=True,
-            status_by_order_id=True,
-            cancel_by_order_id=True,
-            list_open_orders=True,
-        )
 
     def supports_symbol(self, symbol: str) -> bool:
         # Claim only exact aliases of this provider's configured USDC spot pair.
@@ -327,25 +325,6 @@ class HyperliquidProvider(MarketDataProvider):
         except Exception as e:  # noqa: BLE001
             print(f"[HL] get_current_price({symbol}) failed: {e}")
             return None
-
-    def fetch_ohlc_candles(
-        self,
-        symbol: str,
-        interval: Any = 60,
-        *,
-        drop_incomplete: bool = True,
-        **kwargs: Any,
-    ) -> List[dict]:
-        md = load_local_module(_HL_DIR, "market_data")
-        return list(
-            md.fetch_ohlc_candles(
-                symbol,
-                interval,
-                drop_incomplete=drop_incomplete,
-                **kwargs,
-            )
-            or []
-        )
 
     def spot_balances_and_mid(self, coin: str = "HYPE", quote: str = "USDC") -> dict:
         """Return read-only spot balances and mid price for ``coin``/``quote`` without polluting sys.modules."""

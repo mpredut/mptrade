@@ -768,8 +768,15 @@ def test_replay_execution_metrics_and_config_ssot_identity():
 
 
 def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
-    """Lock Open-Closed Principle: core providers, MarketApi facade, gateway, cache domain hierarchy, instrument registry, external collectors, and sentiment collectors/evaluators contain zero venue name comparisons."""
-    from cachepaths import is_primary_stream_venue, uses_cycle_state_files
+    """Lock Open-Closed Principle: core providers, MarketApi facade, gateway, cache domain hierarchy, instrument registry, orchestrator repair SSOT, external collectors, and sentiment collectors/evaluators contain zero venue name comparisons."""
+    from cachepaths import (
+        is_primary_stream_venue,
+        is_readonly_xstock_symbol,
+        matches_asset_scope,
+        uses_cycle_state_files,
+    )
+    from providers.binance_provider import BinanceProvider
+    from providers.order_ohlc_utils import candles_to_historical_points
 
     root = Path(__file__).resolve().parents[1]
     venue_tokens = {"binance", "kraken", "hyperliquid", "t212", "trading212"}
@@ -781,6 +788,7 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
         "cachetrend.py",
         "cacheManager.py",
         "instrument_registry.py",
+        "orchestratorOS/lib/technical_repair_ssot.py",
         "providers/base.py",
         "providers/market_api.py",
         "providers/execution_audit.py",
@@ -853,6 +861,24 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     assert MarketDataProvider.is_exact_telemetry_symbol_venue("binance", quote_isolated=True, multi_venue_base=False) is False
     assert MarketDataProvider.is_exact_telemetry_symbol_venue("binance", quote_isolated=True, multi_venue_base=True) is True
     assert MarketDataProvider.is_exact_telemetry_symbol_venue("kraken", quote_isolated=True, multi_venue_base=False) is True
+    assert is_readonly_xstock_symbol("SPCXx.T") is True
+    assert is_readonly_xstock_symbol("SPCXx/USD") is True
+    assert is_readonly_xstock_symbol("SPCXxUSD") is True
+    assert is_readonly_xstock_symbol("NVDAX.TUSD") is True
+    assert is_readonly_xstock_symbol("XBTUSD") is False
+    assert is_readonly_xstock_symbol("NVDA_US_EQ") is False
+    assert matches_asset_scope("NVDA_US_EQ", "t212", "equities") is True
+    assert matches_asset_scope("NVDA_US_EQ", "binance", "equities") is False
+    assert matches_asset_scope("BTCUSDC", "t212", "equities") is False
+    assert matches_asset_scope("BTCUSDC", "binance", "crypto") is True
+    assert matches_asset_scope("NVDA", "t212", "crypto") is False
+    assert candles_to_historical_points([{"timestamp": 1_700_000_000_000, "close": "42.5"}, {"timestamp": 0, "close": -1}]) == [
+        (1_700_000_000.0, 42.5)
+    ]
+    for cls in (BinanceProvider, KrakenProvider, HyperliquidProvider, T212Provider):
+        assert "reconciliation_capabilities" not in cls.__dict__
+        assert "fetch_ohlc_candles" not in cls.__dict__
+        assert isinstance(cls._OHLC_MARKET_DATA_SPEC, tuple) and len(cls._OHLC_MARKET_DATA_SPEC) == 3
 
     class _CryptoPrimary(MarketDataProvider):
         _ASSET_SCOPE = "crypto"

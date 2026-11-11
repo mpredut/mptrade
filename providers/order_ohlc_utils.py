@@ -23,6 +23,7 @@ from botcore import (
     extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
+    normalize_epoch_sec,
     normalize_side,
     normalize_timestamp_ms,
     obj_attr,
@@ -1067,5 +1068,20 @@ def align_previous_values(
             raise ValueError(f"non-positive aligned value at timestamp {target}")
         result.append(cur_f)
     return result
+
+
+def candles_to_historical_points(candles: Any) -> list[tuple[float, float]]:
+    """Extract ``(epoch_sec, close_price)`` tuples from OHLC candle dictionaries."""
+    if not isinstance(candles, Iterable) or isinstance(candles, (str, bytes, Mapping)):
+        return []
+    out: list[tuple[float, float]] = []
+    for c in candles:
+        if not isinstance(c, Mapping):
+            continue
+        tf = normalize_epoch_sec(c.get("timestamp"), default=None)
+        pf = safe_pos_float(c.get("close"), default=None)
+        if tf is not None and pf is not None:
+            out.append((tf, pf))
+    return out
 
 

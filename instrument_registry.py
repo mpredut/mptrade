@@ -36,6 +36,7 @@ from cachepaths import (
     is_equity_venue,
     is_equity_venue_or_suffix,
     is_primary_stream_venue,
+    is_readonly_xstock_symbol,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -43,7 +44,6 @@ from cachepaths import (
 DEFAULT_PATH = Path(__file__).resolve().with_name("instruments.conf")
 CORE = {"provider", "symbol", "base", "quote", "enabled", "isolation", "market_hours"}
 ROLES = {"mt", "tradeall_fire", "kalman_primary", "trailing", "assetguardian", "archive", "rtrade", "force_sell"}
-_READONLY_XSTOCK_SUFFIXES = ("X.T", ".T", "X.T/USD", "X.TUSD")
 _DEFAULT_USD_QUOTES = ("USDC", "USDT", "USD", "FDUSD")
 _REGISTRY_CACHE: dict = {}
 
@@ -400,11 +400,12 @@ def discover_kraken_cache_pairs(workspace_dir: str) -> list[tuple[str, str, str]
     out: list[tuple[str, str, str]] = []
     seen_pairs: set[str] = set()
     for item in raw_pairs.split(","):
-        pair = item.strip().upper()
-        if not pair or pair in seen_pairs or pair.endswith(_READONLY_XSTOCK_SUFFIXES):
+        raw_item = item.strip()
+        pair = raw_item.upper()
+        if not pair or pair in seen_pairs or is_readonly_xstock_symbol(raw_item):
             continue
         split = split_symbol_assets(pair)
-        if split is not None and not split[0].endswith(("X.T", ".T")):
+        if split is not None and not is_readonly_xstock_symbol(split[0]):
             seen_pairs.add(pair)
             out.append((pair, split[0], split[1]))
     return out
@@ -567,7 +568,7 @@ def resolve_instrument_spec(
 
     raw_sym_u = str(symbol or "").strip().upper()
     sym_norm = clean_symbol_key(symbol)
-    if not sym_norm or isinstance(venue, bool) or raw_sym_u.endswith(_READONLY_XSTOCK_SUFFIXES):
+    if not sym_norm or isinstance(venue, bool) or is_readonly_xstock_symbol(symbol):
         return None
     venue_norm = normalize_venue_name(venue) or None
     if has_equity_suffix(raw_sym_u) and venue_norm and not is_equity_venue(venue_norm):
@@ -597,7 +598,7 @@ def resolve_instrument_spec(
             req_is_eq is None
             or is_equity_venue_or_suffix(_candidate_symbol_u(item), _candidate_venue(item)) == req_is_eq
         )
-        and not _candidate_symbol_u(item).endswith(_READONLY_XSTOCK_SUFFIXES)
+        and not is_readonly_xstock_symbol(_candidate_symbol_u(item))
         and compatible_quote_suffixes(_candidate_symbol_u(item), _str_attr(item, "quote") or None, default_usd=_DEFAULT_USD_QUOTES) == req_quotes
     ]
 

@@ -37,9 +37,8 @@ from cachepaths import (
     clean_symbol_key,
     compatible_quote_suffixes,
     filter_candidates_by_asset_class,
-    has_equity_suffix,
-    is_equity_venue,
     is_equity_venue_or_suffix,
+    matches_asset_scope,
     normalize_venue_name,
 )
 from instrument_registry import casefold_get
@@ -795,18 +794,11 @@ def _filter_intents_by_scope(intents_data: Any, scope: str) -> list[dict[str, An
         intents_data = intents_data.get("intents")
     if not isinstance(intents_data, list):
         return []
-    scope_norm = str(scope or "all").strip().lower()
-    out: list[dict[str, Any]] = []
-    for i in intents_data:
-        if not isinstance(i, dict):
-            continue
-        if scope_norm in ("equities", "crypto"):
-            v_norm = normalize_venue_name(i.get("venue"))
-            is_eq = is_equity_venue(v_norm) if v_norm else has_equity_suffix(i.get("symbol"))
-            if is_eq != (scope_norm == "equities"):
-                continue
-        out.append(i)
-    return out
+    return [
+        i
+        for i in intents_data
+        if isinstance(i, dict) and matches_asset_scope(i.get("symbol"), i.get("venue"), scope)
+    ]
 
 
 def _resolve_intent_execution_details(

@@ -536,9 +536,36 @@ def _has_xstock_lowercase_x(token: str) -> bool:
     return len(token) > 2 and token.endswith("x") and token[:-1].isalnum() and token[:-1].isupper()
 
 
+READONLY_XSTOCK_SUFFIXES: tuple[str, ...] = ("X.T", ".T", "X.T/USD", "X.TUSD")
 _CRYPTO_QUOTE_SUFFIXES: tuple[str, ...] = (
     "USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH",
 )
+_EXPLICIT_CRYPTO_QUOTE_SUFFIXES: tuple[str, ...] = (
+    "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR",
+)
+
+
+def is_readonly_xstock_symbol(symbol: object) -> bool:
+    """Return True if ``symbol`` is a read-only Kraken xStock token or pair."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return False
+    raw = symbol.strip()
+    if not raw:
+        return False
+    sym_u = raw.upper()
+    if sym_u.endswith(READONLY_XSTOCK_SUFFIXES):
+        return True
+    raw_base = raw
+    for sep in ("/", "-", "_"):
+        if sep in raw:
+            raw_base = raw.split(sep, 1)[0].strip()
+            break
+    if raw_base.upper().endswith(("X.T", ".T")) or _has_xstock_lowercase_x(raw_base):
+        return True
+    for quote in CACHE_QUOTE_SUFFIXES:
+        if not _is_false_tusd_or_busd_match(raw_base.upper(), quote) and raw_base.upper().endswith(quote) and len(raw_base) > len(quote) + 2:
+            return _has_xstock_lowercase_x(raw_base[: -len(quote)])
+    return False
 
 
 def has_equity_suffix(symbol: object, *, include_compact: bool = False) -> bool:
@@ -691,6 +718,23 @@ def is_equity_venue(venue: object) -> bool:
 def is_equity_venue_or_suffix(symbol: object = None, venue: object = None) -> bool:
     """Return True if ``venue`` is an equities venue or ``symbol`` carries an equity suffix."""
     return is_equity_venue(venue) or has_equity_suffix(symbol)
+
+
+def matches_asset_scope(symbol: object, venue: object = None, scope: object = "all") -> bool:
+    """Return True if ``(symbol, venue)`` belongs to ``scope`` (``'crypto'``, ``'equities'``, or ``'all'``)."""
+    scope_norm = str(scope or "all").strip().lower() if not isinstance(scope, bool) else "all"
+    if scope_norm not in ("equities", "crypto"):
+        return True
+    v_norm = normalize_venue_name(venue)
+    sym_u = symbol.strip().upper() if isinstance(symbol, str) and not isinstance(symbol, bool) else ""
+    is_eq_sym = has_equity_suffix(sym_u)
+    if scope_norm == "equities":
+        return (
+            (not v_norm or is_equity_venue(v_norm))
+            and not sym_u.endswith(_EXPLICIT_CRYPTO_QUOTE_SUFFIXES)
+            and (is_equity_venue(v_norm) or is_eq_sym)
+        )
+    return not is_equity_venue(v_norm) and not is_eq_sym
 
 
 def is_primary_stream_venue(venue: object, *, default_primary: bool = False) -> bool:
