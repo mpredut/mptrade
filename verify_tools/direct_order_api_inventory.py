@@ -49,6 +49,7 @@ APPROVED_BOUNDARIES = {
     "providers/binance_provider.py": {"cancel_order"},
     "providers/hyperliquid_provider.py": {"spot_order"},
     "providers/kraken_provider.py": {"add_order", "cancel_order"},
+    "providers/market_api.py": {"cancel_order"},
     "providers/t212_provider.py": {
         "place_limit_order", "place_market_order", "cancel_order",
     },
