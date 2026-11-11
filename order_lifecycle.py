@@ -267,10 +267,14 @@ class TrackedOrderLifecycle:
     ) -> dict:
         if any(isinstance(x, bool) for x in (intent_id, client_order_id, symbol, side, kind)):
             raise ValueError("tracked intent identity fields must not be boolean")
-        if isinstance(requested_qty, bool):
+        qty_f = _lifecycle_finite(requested_qty, positive=True)
+        if qty_f is None:
             raise ValueError("tracked intent requested_qty must be positive")
-        if isinstance(requested_price, bool):
-            raise ValueError("tracked intent requested_price must be positive")
+        px_f = None
+        if requested_price is not None:
+            px_f = _lifecycle_finite(requested_price, positive=True)
+            if px_f is None:
+                raise ValueError("tracked intent requested_price must be positive")
         att_int = exact_pos_int(attempt, default=None)
         if att_int is None:
             raise ValueError("tracked intent attempt must be positive")
@@ -289,8 +293,8 @@ class TrackedOrderLifecycle:
             "symbol": clean_sym,
             "side": normalize_side(side),
             "kind": None if kind is None else str(kind),
-            "requested_qty": float(requested_qty),
-            "requested_price": None if requested_price is None else float(requested_price),
+            "requested_qty": qty_f,
+            "requested_price": px_f,
             "attempt": att_int,
             "created_at": self._now(),
             "lookup_misses": 0,

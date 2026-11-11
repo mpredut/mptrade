@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-import json
 from pathlib import Path
 import re
 import subprocess
@@ -27,6 +26,7 @@ from cachepaths import normalize_venue_name, split_symbol_assets  # noqa: E402
 from instrument_registry import single_symbol_for, symbols_for  # noqa: E402
 from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest  # noqa: E402
 from providers.quantity import resolve_assets  # noqa: E402
+from state_io import encode_json_payload  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -403,7 +403,7 @@ def main() -> int:
     owners = build_inventory(args.root, commands=commands)
     overlaps = find_overlaps(owners, require_running=args.running)
     if args.as_json:
-        print(json.dumps({
+        print(encode_json_payload({
             "scope": "running" if args.running else "configured",
             "owners": [
                 {**asdict(owner), "active": owner.active(require_running=args.running)}

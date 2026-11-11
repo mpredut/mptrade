@@ -25,15 +25,17 @@ from botcore import (
     normalize_side,
     normalize_trend_direction,
     obj_attr,
+    require_int,
+    require_nonneg_float,
     resolve_now_ts,
     resolve_order_notional,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    value_diff_to_percent,
 )
 from typing import Optional, Callable, Any, List, Tuple, Dict
-import botcore as u
 from cachepaths import (
     get_cachedb_dir,
     normalize_venue_name,
@@ -145,9 +147,9 @@ def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
     """Compute signed favorable profit percentage of `price` relative to `ref_price` symmetrically."""
     side = normalize_side(order_type)
     if side == "BUY":
-        return u.value_diff_to_percent(ref_price, price)
+        return value_diff_to_percent(ref_price, price)
     if side == "SELL":
-        return u.value_diff_to_percent(price, ref_price)
+        return value_diff_to_percent(price, ref_price)
     raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
 
 
@@ -443,7 +445,7 @@ def get_window_cfg(
                 regime_context=regime_context,
             )
 
-    return float(_venue_cfg(name, "_window_h")) * 3600.0
+    return require_nonneg_float(_venue_cfg(name, "_window_h"), name="window_h") * 3600.0
 
 
 def _order_ts_qty_price(o):
@@ -770,7 +772,7 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
     max_daily_trades = (
         resolved_max_trades
         if resolved_max_trades is not None
-        else int(_venue_cfg(name, "_max_daily_trades"))
+        else require_int(_venue_cfg(name, "_max_daily_trades"), name="max_daily_trades", min_value=0)
     )
     try:
         trades = provider.get_orders(symbol, order_type, DAILY_LIMIT_WINDOW_SEC)

@@ -7,11 +7,13 @@ import math
 from typing import Any, Optional, Tuple
 
 from botcore import (
+    extract_timestamp_ms,
     normalize_epoch_sec,
     resolve_patched_attr,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
+    timeToHMS,
 )
 from guard_hierarchy import GUARD_REGISTRY
 import order_guard
@@ -20,7 +22,6 @@ from order_lifecycle import restore_cancelled_orders
 from providers.base import (
     extract_order_id,
     extract_order_price,
-    extract_timestamp_ms,
 )
 from providers.order_ohlc_utils import (
     extract_order_qty,
@@ -39,7 +40,6 @@ from strategies.position_exit_manager import (
     is_stop_exit_kind,
     update_reentry_anchors,
 )
-import botcore as u
 
 
 class _FifoTradeIdTracker:
@@ -79,11 +79,6 @@ def _extract_trade_uid(trade: Any) -> str:
     return ""
 
 
-def _order_timestamp_ms(order: dict) -> float:
-    """Extract normalized millisecond timestamp from an order or fill record."""
-    return float(extract_timestamp_ms(order, default=0) or 0)
-
-
 def get_relevant_trade(trade_orders, trade_type, symbol=None):
     """Return latest execution price and timestamp for trade_type in normalized format."""
     if not trade_orders:
@@ -92,15 +87,16 @@ def get_relevant_trade(trade_orders, trade_type, symbol=None):
         return None, 0, True
 
     if len(trade_orders) > 1:
+        ts_key = lambda o: extract_timestamp_ms(o, default=0) or 0
         if isinstance(trade_orders, list):
-            trade_orders.sort(key=_order_timestamp_ms, reverse=True)
+            trade_orders.sort(key=ts_key, reverse=True)
         else:
-            trade_orders = sorted(trade_orders, key=_order_timestamp_ms, reverse=True)
+            trade_orders = sorted(trade_orders, key=ts_key, reverse=True)
     first = trade_orders[0]
     trade_price = extract_order_price(first)
-    trade_time = _order_timestamp_ms(first) / 1000.0
+    trade_time = (extract_timestamp_ms(first, default=0) or 0) / 1000.0
     if builtins.print.__name__ != "_dummy_print":
-        print(f"{trade_type.capitalize()} price for {symbol}: {trade_price} at {u.timeToHMS(trade_time)}")
+        print(f"{trade_type.capitalize()} price for {symbol}: {trade_price} at {timeToHMS(trade_time)}")
     return trade_price, trade_time, True
 
 
@@ -141,12 +137,12 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
         avg_px = (tot_v / tot_q) if tot_q > 0 else 0.0
         return tot_q, avg_px, avg_px
     events = [
-        (_order_timestamp_ms(o), 0, q, p)
+        (extract_timestamp_ms(o, default=0) or 0, 0, q, p)
         for o in buy_orders
         if (q := extract_order_qty(o)) > 0.0 and (p := extract_order_price(o)) > 0.0
     ]
     events.extend(
-        (_order_timestamp_ms(o), 1, q, extract_order_price(o))
+        (extract_timestamp_ms(o, default=0) or 0, 1, q, extract_order_price(o))
         for o in sell_orders
         if (q := extract_order_qty(o)) > 0.0
     )

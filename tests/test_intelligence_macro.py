@@ -1409,7 +1409,7 @@ def test_binance_account_stream_dynamic_recv_timeout_and_response_health(monkeyp
         loss_timeout_sec=40,
     )
     stream._signing_key = "dummy_key"
-    monkeypatch.setattr(bapi_ws.u, "_sign_ed25519", lambda k, p: "sig")
+    monkeypatch.setattr(bapi_ws, "_sign_ed25519", lambda k, p: "sig")
 
     asyncio.run(stream._connect_and_run())
 

@@ -30,9 +30,10 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_int,
+    timestampToTime,
 )
-import botcore as u
 import cacheintegrity as _cache_integrity
+import cachepaths
 from cachepaths import (
     EXACT_LEGACY_FILENAMES,
     clean_symbol_key,
@@ -255,7 +256,7 @@ class CacheManagerInterface(ABC):
         self.cls_name = self.__class__.__name__
         self.sync_ts = sync_ts
         self.symbols = _coerce_symbol_list(symbols)
-        self.filename = u.cache_path(filename)
+        self.filename = cachepaths.cache_path(filename)
         self.append_mode = _parse_bool_flag(append_mode, default=True)
         self.api_client = (
             api_client
@@ -1036,7 +1037,7 @@ class CacheManagerInterface(ABC):
                 )
             if not new_items:
                 print(
-                    f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {u.timestampToTime(startTime)} "
+                    f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {timestampToTime(startTime)} "
                 )
             else:
                 self._persist_items(symbol, new_items)

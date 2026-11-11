@@ -25,9 +25,10 @@ import websockets
 from typing import Optional, Callable
 
 import instrument_registry as sym
-import botcore as u
 from botcore import (
+    _load_ed25519_signing_key,
     _parse_bool_flag,
+    _sign_ed25519,
     clamp_price_to_bbo_mid,
     safe_float,
     safe_pos_float,
@@ -285,7 +286,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
         self.on_unhealthy = on_unhealthy or (lambda: None)
         self.keepalive_sec = safe_pos_float(keepalive_sec, default=float(WS_USERDATA_KEEPALIVE_SEC))
         self.loss_timeout_sec = safe_pos_float(loss_timeout_sec, default=float(WS_USERDATA_LOSS_TIMEOUT_SEC))
-        self._signing_key = u._load_ed25519_signing_key()
+        self._signing_key = _load_ed25519_signing_key()
         self._watchdog_thread: Optional[threading.Thread] = None
         self._health_lock = threading.Lock()
         self._last_event_ts = 0.0
@@ -334,7 +335,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
     def _signed_logon_msg(self, msg_id: str) -> str:
         timestamp = int(time.time() * 1000)
         params_str = f"apiKey={api_key_ws}&timestamp={timestamp}"
-        signature = u._sign_ed25519(self._signing_key, params_str)
+        signature = _sign_ed25519(self._signing_key, params_str)
         return encode_json_payload({
             "id": msg_id, "method": "session.logon",
             "params": {"apiKey": api_key_ws, "timestamp": timestamp, "signature": signature}})

@@ -2,7 +2,6 @@
 from botcore import (
     _load_ed25519_signing_key,
     _sign_ed25519,
-    cache_path,
     gaussian_weights_from_idx,
     secondsToDays,
     secondsToHours,
@@ -11,7 +10,7 @@ from botcore import (
     timestampToTime,
     value_diff_to_percent,
 )
-from cachepaths import get_cachedb_dir
+from cachepaths import cache_path, get_cachedb_dir
 
 CACHE_DIR = get_cachedb_dir()
 

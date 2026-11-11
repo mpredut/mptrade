@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""verify_tools/parse_shadow.py — Display latest forward/window shadow evaluation table."""
+"""verify_tools/parse_shadow.py -- Display latest forward/window shadow evaluation table."""
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 import sys
 
@@ -12,15 +11,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from botcore import safe_float, safe_int
-from state_io import read_text_lines
+from state_io import parse_json_payload, read_text_lines
 
 
 def _last_valid_record(lines: list[str]) -> dict | None:
     for raw in reversed(lines):
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
+        parsed = parse_json_payload(raw, default=None)
         if isinstance(parsed, dict):
             return parsed
     return None

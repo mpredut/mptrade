@@ -6,6 +6,7 @@ import glob
 import os
 import shutil
 import sys
+import threading
 import time
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -151,6 +152,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
 
 _SIDECAR_SUFFIXES: tuple[str, ...] = (".generation.lock", ".previous", ".meta", ".lock", ".tmp")
 _SORTED_SUBDOMAINS: tuple[str, ...] = tuple(sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True))
+_TOP_LEVEL_SUBDOMAINS: frozenset[str] = frozenset(sub.split("/", 1)[0] for sub in CACHEDB_SUBDOMAINS)
 STALE_STAGING_MAX_AGE_SEC: float = 300.0
 
 
@@ -313,7 +315,7 @@ def organize_cachedb_subdomains(
     moved: dict[str, list[str]] = {sub: [] for sub in CACHEDB_SUBDOMAINS}
     if not os.path.isdir(base):
         return moved
-    top_level_subs = {sub.split("/", 1)[0] for sub in CACHEDB_SUBDOMAINS}
+    top_level_subs = set(_TOP_LEVEL_SUBDOMAINS)
     if remove_stale_staging:
         _clean_stale_staging_in_dir(base)
         for sub in CACHEDB_SUBDOMAINS:
@@ -446,17 +448,34 @@ def get_cachedb_dir() -> str:
     return os.path.join(_ROOT, "cachedb")
 
 
+_CACHE_PATH_TLS = threading.local()
+
+
 def cache_path(name: str) -> str:
     """Return the path to a cache file inside the canonical cachedb directory.
 
     Preserves name when it is already absolute or None/empty, while resolving
     thematic cachedb subdomains when active on disk.
     """
+    if not getattr(_CACHE_PATH_TLS, "active", False):
+        u_mod = sys.modules.get("utils")
+        u_cp = getattr(u_mod, "cache_path", None) if u_mod is not None else None
+        if callable(u_cp) and getattr(u_cp, "_is_canonical_cache_path", None) is not True and u_cp is not cache_path:
+            _CACHE_PATH_TLS.active = True
+            try:
+                return u_cp(name)
+            finally:
+                _CACHE_PATH_TLS.active = False
     raw = _clean_path_str(name)
     if not raw:
         return name
     if os.path.isabs(raw):
         return str(resolve_cachedb_filepath(raw))
+    norm = _norm_rel_cache_path(raw, strip_cachedb_prefix=False)
+    if "/" in norm:
+        head = norm.split("/", 1)[0]
+        if head != "cachedb" and head != "24trend" and head not in _TOP_LEVEL_SUBDOMAINS:
+            return str(resolve_cachedb_filepath(raw))
     name = _norm_rel_cache_path(raw, strip_cachedb_prefix=True)
     d = get_cachedb_dir()
     try:
@@ -464,6 +483,9 @@ def cache_path(name: str) -> str:
     except Exception:
         pass
     return str(resolve_cachedb_filepath(os.path.join(d, name)))
+
+
+cache_path._is_canonical_cache_path = True  # type: ignore[attr-defined]
 
 
 CACHE_QUOTE_SUFFIXES: tuple[str, ...] = (

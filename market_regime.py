@@ -16,10 +16,12 @@ from typing import Mapping, Optional
 
 from botcore import (
     _parse_bool_flag,
+    exact_int,
     exact_pos_int,
     lru_dict_put,
     normalize_epoch_sec,
     normalize_side,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -365,12 +367,10 @@ class MarketRegimeEvaluator:
         window = snapshot.get("window_seconds")
         try:
             if samples is not None:
-                if isinstance(samples, str):
-                    s_clean = samples.strip()
-                    if s_clean.endswith(".0") and s_clean[:-2].isdigit():
-                        samples = s_clean[:-2]
-                parsed_samples = int(samples)
-                if isinstance(samples, bool) or float(samples) != parsed_samples or parsed_samples < 3:
+                parsed_samples = exact_int(samples, default=None)
+                if parsed_samples is None:
+                    return self.unknown("invalid_signal_metadata")
+                if parsed_samples < 3:
                     return self.unknown("invalid_sample_metadata")
                 samples = parsed_samples
             if window is not None:
@@ -486,8 +486,9 @@ class MarketRegimeService:
         if value is None or not isinstance(value, Mapping):
             return value
         keys = []
-        if interval_min is not None and not isinstance(interval_min, bool):
-            keys.extend((int(interval_min), str(int(interval_min))))
+        im_i = exact_pos_int(interval_min, default=None)
+        if im_i is not None:
+            keys.extend((im_i, str(im_i)))
         keys.extend((horizon, horizon.value, "default"))
         for key in keys:
             if key in value:
@@ -531,9 +532,9 @@ class MarketRegimeService:
             provider=str(getattr(provider, "name", "unknown")),
             symbol=str(symbol),
             decision=decision,
-            evaluated_at=float(evaluated_at),
+            evaluated_at=resolve_now_ts(evaluated_at),
             observed_at=observed_at,
-            interval_min=(int(interval_min) if interval_min is not None else None),
+            interval_min=exact_pos_int(interval_min, default=None),
             max_age_seconds=max_age_seconds,
             closed_candles=closed_candles,
             continuous_candles=continuous_candles,
@@ -863,13 +864,13 @@ class MarketRegimeService:
         if n < 3:
             return self.evaluator.unknown("insufficient_samples")
 
+        if any(safe_pos_float(value, default=None) is None for value in values):
+            return self.evaluator.unknown("non_finite_ohlc")
+
         cache_key = (itv, win, self.evaluator.strength_threshold, values)
         cached = self._EVAL_CLOSES_CACHE.get(cache_key)
         if cached is not None:
             return cached
-
-        if any(safe_pos_float(value, default=None) is None for value in values):
-            return self.evaluator.unknown("non_finite_ohlc")
 
         base = values[0]
         inv_base = 1.0 / base

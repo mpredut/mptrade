@@ -23,6 +23,7 @@ from botcore import (
     check_cooldown_gate,
     clean_scale,
     format_notify_price,
+    normalize_epoch_sec,
     normalize_side,
     obj_attr,
     resolve_now_ts,
@@ -271,7 +272,7 @@ def check_geopolitical_order_guards(
         cached_geo = getattr(analyzer, "_cached_assessment", None)
         if cached_geo is not None:
             now_ts = resolve_now_ts(now)
-            geo_ts = float(obj_attr(cached_geo, "ts", 0.0) or 0.0)
+            geo_ts = normalize_epoch_sec(obj_attr(cached_geo, "ts", None), allow_iso=True) or 0.0
             geo_level = str(obj_attr(cached_geo, "threat_level", "NORMAL") or "NORMAL").upper()
             market_absorbed = False
             if geo_level == "ELEVATED" and geo_ts > 0.0 and (now_ts - geo_ts) >= 1800.0:
@@ -287,7 +288,7 @@ def check_geopolitical_order_guards(
                     )
                     sa_data, _ = read_first_cached_dict(cdir, "sentiment_advisor_files", "sentiment_eval.json")
                     if isinstance(sa_data, dict):
-                        sa_ts = float(sa_data.get("ts") or 0.0)
+                        sa_ts = normalize_epoch_sec(sa_data.get("ts"), allow_iso=True) or 0.0
                         sa_action = str(
                             sa_data.get("recommended_action") or sa_data.get("recommended_posture") or ""
                         ).upper()
@@ -300,7 +301,11 @@ def check_geopolitical_order_guards(
                             market_absorbed = True
                     if not market_absorbed:
                         mb_data = load_cached_macro_benchmarks(cdir)
-                        mb_ts = float(mb_data.get("ts") or 0.0) if isinstance(mb_data, dict) else 0.0
+                        mb_ts = (
+                            (normalize_epoch_sec(mb_data.get("ts"), allow_iso=True) or 0.0)
+                            if isinstance(mb_data, dict)
+                            else 0.0
+                        )
                         if isinstance(mb_data, dict) and mb_ts > 0.0 and 0.0 <= (now_ts - mb_ts) <= 1800.0:
                             ca_reg = str(mb_data.get("cross_asset_regime") or "").upper()
                             target_decouple = (

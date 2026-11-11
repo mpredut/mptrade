@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import json
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -18,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from state_io import read_text_file
+from state_io import encode_json_payload, read_text_file
 
 SENSITIVE_METHODS = {
     "create_order", "order_limit_buy", "order_limit_sell",
@@ -127,7 +126,7 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=ROOT)
     args = parser.parse_args()
     report = inventory(args.root.resolve())
-    print(json.dumps(report, indent=2, sort_keys=True))
+    print(encode_json_payload(report, indent=2, sort_keys=True))
     return 1 if report["unapproved"] or report["stale_allowlist"] else 0
 
 

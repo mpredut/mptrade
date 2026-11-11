@@ -1476,7 +1476,7 @@ class TestCacheFactory(unittest.TestCase):
         with self.subTest("disk_reader_never_queries_remote_when_cache_missing_or_empty"):
             _reset()
             empty_dir = tempfile.mkdtemp()
-            with patch("utils.cache_path", side_effect=lambda f: os.path.join(empty_dir, f)), \
+            with patch("cachepaths.cache_path", side_effect=lambda f: os.path.join(empty_dir, f)), \
                  patch.object(cm.CacheTradeManager, "query_remote_and_update_cache") as trade_remote, \
                  patch.object(cm.CacheOrderManager, "query_remote_and_update_cache") as order_remote, \
                  patch.object(cm.CacheCurrentPriceManager, "query_remote_and_update_cache") as price_remote:
@@ -2506,7 +2506,7 @@ def test_cachetrademanager_string_symbols_normalization_read_only_true_flag_and_
     import pytest
     import cacheManager as cm
     # 2. CacheTradeManager: string symbols normalization, read_only="true" flag, and "B"/"S" side aliases in get_last_opposite_fill_price
-    monkeypatch.setattr("utils.cache_path", lambda fn: str(tmp_path / fn))
+    monkeypatch.setattr("cachepaths.cache_path", lambda fn: str(tmp_path / fn))
     tm = cm.CacheTradeManager(60, "BTCUSDC", "test_trades.jsonl", read_only="true")
     assert tm.symbols == ["BTCUSDC"]
     assert tm.read_only is True
@@ -2787,7 +2787,7 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
 
     cm.CacheFactory.remove("24Price")
     try:
-        with patch("utils.cache_path", side_effect=lambda f: str(tmp_path / os.path.basename(f))):
+        with patch("cachepaths.cache_path", side_effect=lambda f: str(tmp_path / os.path.basename(f))):
             p24_path = str(tmp_path / "cache_24_price_BTCUSDC.json")
             t0 = int(time.time()) - 300
             cm.Cache24PriceManager.persist_external_ohlc_series(

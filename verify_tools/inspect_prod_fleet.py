@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""inspect_prod_fleet.py — Clean, robust inspection of PROD live fleet state via SSH.
+"""inspect_prod_fleet.py -- Clean, robust inspection of PROD live fleet state via SSH.
 
 Queries mptrade-prod cachedb states and returns structured JSON or human-readable tables:
 - Cash balances (free and locked) across Binance, Kraken, Hyperliquid, Trading212
@@ -9,7 +9,6 @@ Queries mptrade-prod cachedb states and returns structured JSON or human-readabl
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import sys
@@ -28,7 +27,7 @@ from providers.order_ohlc_utils import (
     extract_order_side,
     extract_orig_qty,
 )
-from state_io import read_json_file
+from state_io import encode_json_payload, parse_json_payload, read_json_file
 
 
 _PROD_ROOT = "/home/predut/mptrade"
@@ -52,7 +51,7 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode == 0 and res.stdout.strip():
         try:
-            return json.loads(res.stdout)
+            return parse_json_payload(res.stdout)
         except Exception:
             return res.stdout
     if is_live_network_backfill_enabled() and os.path.isfile(prod_path):
@@ -231,7 +230,7 @@ def inspect_fleet(json_output: bool = False):
         }
 
     if json_output:
-        sys.stdout.write(json.dumps(result, indent=2) + "\n")
+        sys.stdout.write(encode_json_payload(result, indent=2) + "\n")
         return result
 
     print("=== CASH BALANCES ===")

@@ -48,6 +48,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
+    timestampToTime,
 )
 from cacheInterface import (
     CacheManagerInterface,
@@ -114,7 +115,6 @@ from state_io import (
     save_json_state,
     write_meta_json,
 )
-import botcore as u
 
 _NB_FETCH_DEADLINE_SEC = 8
 
@@ -1267,7 +1267,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 if is_rth_sym:
                     self._rth_empty_backoff_ts[symbol] = _now_time()
                 print(
-                    f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {u.timestampToTime(startTime)} "
+                    f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {timestampToTime(startTime)} "
                 )
             else:
                 if is_rth_sym:

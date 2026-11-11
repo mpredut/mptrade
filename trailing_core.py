@@ -637,10 +637,11 @@ class TrailingAdapterBase:
                 symbol,
                 predicate=lambda v: safe_pos_float(v, default=None) is not None,
             )
-            if val is not None:
-                return float(safe_pos_float(val, default=val))
+            pct = safe_pos_float(val, default=None)
+            if pct is not None:
+                return pct
         if default_pct is not None:
-            return float(default_pct)
+            return default_pct
         raise KeyError(symbol)
 
     def _submit_and_clear_if_refused(self, intent, persist, submit_fn):

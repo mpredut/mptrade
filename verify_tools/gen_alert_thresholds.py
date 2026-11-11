@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-    gen_alert_thresholds.py — generates alert thresholds (UP/DOWN) for coins from
+    gen_alert_thresholds.py -- generates alert thresholds (UP/DOWN) for coins from
     their actual VOLATILITY (CoinGecko), not from a blind default. (Formerly suggest_thresholds.py.)
 
     Logic: at every point, calculate the same measures as PriceChecker: "rise from the
@@ -14,18 +14,16 @@
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import statistics
 import sys
 import urllib.parse
-import urllib.request
 
 _ROOT = str(Path(__file__).resolve().parents[1])
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_pos_float, safe_pos_int
+from botcore import fetch_public_json, safe_pos_float, safe_pos_int
 from cachepaths import canonical_base_asset
 
 WINDOW = 24       # Approximate hourly observations in a 24-hour window (CoinGecko hourly granularity).
@@ -35,9 +33,7 @@ FLOOR = 3.0       # Do not lower the threshold below this value, or noise will t
 
 
 def _get(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read())
+    return fetch_public_json(url, timeout=20.0, user_agent="Mozilla/5.0")
 
 
 def resolve_id(symbol):

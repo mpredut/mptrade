@@ -8,7 +8,6 @@ from notify_engine import alertnotifiers as alert  # noqa: F401 (re-export: test
 import cacheManager as cm
 from intelligence.internal.state.volatility import get_kalman_state_path
 import order_retry
-import botcore as u
 from instrument_registry import casefold_get, select_instruments, symbols_for
 import order_lifecycle
 from providers.base import extract_order_id, normalize_side
@@ -33,7 +32,7 @@ from pricewindow import (  # noqa: F401 (re-export: test compat)
 from botcore import (exact_nonneg_int, exact_pos_int, format_price_log, load_dotenv,
                      normalize_epoch_sec, required_bool_env, required_float_env,
                      required_int_env, resolve_now_ts, safe_nonneg_float, safe_pos_float,
-                     sanitize_pipe_field, touch_module_heartbeat)
+                     sanitize_pipe_field, timeToHMS, touch_module_heartbeat)
 load_dotenv()
 
 
@@ -415,7 +414,7 @@ class TrendState:
         self._confirmed_count_down = 0
         self._last_attempt_up_ts = None
         self._last_attempt_down_ts = None
-        print(f"Start of {self.state} trend at {u.timeToHMS(self.start_time)}")
+        print(f"Start of {self.state} trend at {timeToHMS(self.start_time)}")
         return self.old_state
 
     def fire_limit_reached(self, direction):
@@ -440,7 +439,7 @@ class TrendState:
         assert self.start_time is not None, "Trend must be started before confirming"
         self.last_confirmation_time = self._now_sec()
         self.confirm_count += 1
-        print(f"{self.confirm_count} times trend confirmed: {self.state} at {u.timeToHMS(self.last_confirmation_time)}")
+        print(f"{self.confirm_count} times trend confirmed: {self.state} at {timeToHMS(self.last_confirmation_time)}")
         return self.confirm_count
 
     def get_started_trend_time(self):
@@ -502,7 +501,7 @@ class TrendState:
                 print(f"Trend expired: {self.state}. Time since last confirmation: {time_since_last_confirmation} seconds")
                 self.old_state = self.state
                 self.end_time = self.last_confirmation_time
-                print(f"Trend ended: {self.state} at {u.timeToHMS(self.end_time)} after {self.confirm_count} confirmations.")
+                print(f"Trend ended: {self.state} at {timeToHMS(self.end_time)} after {self.confirm_count} confirmations.")
                 self.old_confirm_count = self.confirm_count
                 self.state = 'HOLD'
                 self.confirm_count = 0

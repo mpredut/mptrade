@@ -959,4 +959,173 @@ def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkey
     ]
 
 
+def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, tmp_path):
+    """Verify cache_path SSOT, http_request body, guard config validation, geo ts normalization, MarketRegimeService, OrderLifecycle, and order_retry border cases."""
+    from types import SimpleNamespace
+    import cachepaths
+    import intelligence.macro.geopolitical_analyzer as geo_an_mod
+    import intelligence.macro.geopolitical_guard as geo_gd_mod
+    import intelligence.macro_sentiment_ssot as mss
+    import llm_order_guard
+    import order_guard
+    import order_retry
+    import utils
+    from market_regime import MarketRegimeHorizon, MarketRegimeService
+    from order_lifecycle import TrackedOrderLifecycle
+
+    # 1. cache_path SSOT: single canonical definition in cachepaths, re-exported identically in botcore and utils
+    assert botcore.cache_path is cachepaths.cache_path
+    assert utils.cache_path is cachepaths.cache_path
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
+    assert cachepaths.cache_path("custom_rel/file.json") == "custom_rel/file.json"
+    assert cachepaths.cache_path("cache_current_price.json").startswith(str(tmp_path))
+    monkeypatch.setattr(utils, "cache_path", lambda name: f"/override/{name}")
+    assert cachepaths.cache_path("foo.json") == "/override/foo.json"
+    monkeypatch.setattr(utils, "cache_path", cachepaths.cache_path)
+
+    # 2. botcore.http_request raw body mutual exclusion & delivery
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        botcore.http_request("POST", "https://example.com/hook", payload={"a": 1}, body=b"raw")
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        botcore.http_request("POST", "https://example.com/hook", form={"a": 1}, body=b"raw")
+
+    captured_req = {}
+
+    class _FakeHttpResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def _fake_urlopen(req, timeout=10.0):
+        captured_req["data"] = req.data
+        captured_req["method"] = req.get_method()
+        return _FakeHttpResp()
+
+    monkeypatch.setattr(botcore.urllib.request, "urlopen", _fake_urlopen)
+    st_code, _ = botcore.http_request("POST", "https://example.com/hook", body=b"hello", timeout=5.0)
+    assert st_code == 200 and captured_req == {"data": b"hello", "method": "POST"}
+
+    # 3. order_guard.get_window_cfg & daily_limit_guard reject corrupt/bool/fractional values
+    for bad_w in (True, -1.0, float("nan"), float("inf"), "bad"):
+        monkeypatch.setattr(order_guard, "_venue_cfg", lambda _n, _s, v=bad_w: v)
+        with pytest.raises(ValueError, match="window_h"):
+            order_guard.get_window_cfg("binance")
+    dummy_prov = SimpleNamespace(name="binance", get_orders=lambda *_a: [])
+    for bad_lim in (True, -1, 1.5, float("nan"), "bad"):
+        monkeypatch.setattr(order_guard, "_venue_cfg", lambda _n, _s, v=bad_lim: v)
+        with pytest.raises(ValueError, match="max_daily_trades"):
+            order_guard.daily_limit_guard(dummy_prov, "BTCUSDC", "BUY")
+
+    # 4. llm_order_guard.check_geopolitical_order_guards handles ISO/ms/bool/corrupt timestamps cleanly
+    from datetime import datetime, timezone
+
+    seen_absorbed: list[bool] = []
+    now_ts = 1700003600.0
+    iso_sa_ts = datetime.fromtimestamp(now_ts - 600.0, timezone.utc).isoformat().replace("+00:00", "Z")
+    monkeypatch.setattr(
+        geo_an_mod,
+        "GeopoliticalThreatAnalyzer",
+        lambda **_kw: SimpleNamespace(
+            _cached_assessment=SimpleNamespace(threat_level="ELEVATED", ts=int((now_ts - 2400.0) * 1000)),
+            _effective_cache_dir=lambda: str(tmp_path),
+        ),
+    )
+    monkeypatch.setattr(
+        geo_gd_mod,
+        "GeopoliticalShockGuard",
+        lambda: SimpleNamespace(
+            check=lambda _sym, _side, _ass, market_absorbed=False: (
+                seen_absorbed.append(market_absorbed)
+                or SimpleNamespace(allowed=True, reason="ok", brake_action="NONE", suggested_scale=1.0)
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        mss,
+        "read_first_cached_dict",
+        lambda *_a, **_kw: (
+            {
+                "ts": iso_sa_ts,
+                "market_bias": "BULLISH",
+                "recommended_action": "ACCUMULATE",
+            },
+            "sentiment_eval.json",
+        ),
+    )
+    monkeypatch.setattr(mss, "load_cached_macro_benchmarks", lambda *_a, **_kw: {"ts": "corrupt"})
+    ok, _, scale = llm_order_guard.check_geopolitical_order_guards(
+        "BTCUSDC",
+        "BUY",
+        margins={"intelligence_guards_enabled": True, "geopolitical_guard_mode": "enforce"},
+        now=now_ts,
+    )
+    assert ok is True and scale == 1.0 and seen_absorbed == [True]
+
+    seen_absorbed.clear()
+    monkeypatch.setattr(
+        mss,
+        "read_first_cached_dict",
+        lambda *_a, **_kw: ({"ts": True, "market_bias": "BULLISH", "recommended_action": "ACCUMULATE"}, "s.json"),
+    )
+    llm_order_guard.check_geopolitical_order_guards(
+        "BTCUSDC",
+        "BUY",
+        margins={"intelligence_guards_enabled": True, "geopolitical_guard_mode": "enforce"},
+        now=now_ts,
+    )
+    assert seen_absorbed == [False]
+
+    # 5. MarketRegimeService._age_limit, _evidence & evaluate_closes border cases
+    svc = MarketRegimeService()
+    age_cfg = {1: 120.0, "short": 600.0}
+    for bad_iv in (float("nan"), 1.5, True, "bad", -1):
+        assert svc._age_limit(age_cfg, MarketRegimeHorizon.SHORT, bad_iv) == 600.0
+    assert svc._age_limit(age_cfg, MarketRegimeHorizon.SHORT, 1) == 120.0
+    ev = svc._evidence(
+        SimpleNamespace(name="kraken"),
+        "HYPEUSD",
+        svc.evaluator.unknown("test"),
+        role="asset_short",
+        horizon=MarketRegimeHorizon.SHORT,
+        evaluated_at=1700000000.0,
+        interval_min=True,  # type: ignore[arg-type]
+    )
+    assert ev.interval_min is None
+    assert svc.evaluate_closes([10.0, 0.0, 12.0]).reason == "non_finite_ohlc"
+    assert svc.evaluate_closes([10.0, float("nan"), 12.0]).reason == "non_finite_ohlc"
+
+    # 6. TrackedOrderLifecycle.new_intent clean ValueError on corrupt/bool/<=0 requested_qty & requested_price
+    lc = TrackedOrderLifecycle(SimpleNamespace(), provider_name="binance")
+    for bad_q in (None, "bad", True, 0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="requested_qty must be positive"):
+            lc.new_intent(
+                intent_id="i1", client_order_id="c1", symbol="BTCUSDC", side="BUY", requested_qty=bad_q  # type: ignore[arg-type]
+            )
+    for bad_px in ("bad", True, 0, -5.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="requested_price must be positive"):
+            lc.new_intent(
+                intent_id="i1",
+                client_order_id="c1",
+                symbol="BTCUSDC",
+                side="BUY",
+                requested_qty=1.0,
+                requested_price=bad_px,  # type: ignore[arg-type]
+            )
+
+    # 7. order_retry._process_start_identity & _client_order_id border cases
+    for bad_pid in (True, False, 0, -5, 1.5, "bad", None):
+        with pytest.raises(ValueError, match="positive integer"):
+            order_retry._process_start_identity(bad_pid)
+    for bad_rev in (None, True, "bad", -3, 2.7):
+        assert order_retry._client_order_id("abcdef1234567890", bad_rev).endswith("_0")
+
+
+
 

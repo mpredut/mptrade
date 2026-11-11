@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 from notify_engine import alertnotifiers as alert
 from botcore import (
     _parse_bool_flag,
+    extract_timestamp_ms,
     format_price_log,
     load_dotenv,
     normalize_epoch_sec,
@@ -17,6 +18,8 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    secondsToDays,
+    secondsToHours,
     touch_module_heartbeat,
 )
 import cacheManager as cm
@@ -54,7 +57,6 @@ from strategies.mt_position_accounting import (
     _inst_provider,
     _is_terminal_dust_refusal,
     _is_untradable_dust,
-    _order_timestamp_ms,
     _resolve_inst_bypass_guards,
     _restore_resting_tp_orders,
     _state_matches_buy_price,
@@ -72,7 +74,6 @@ from strategies.position_exit_manager import (
     ReentrySnapshot,
 )
 import instrument_registry as sym
-import botcore as u
 
 load_dotenv()
 
@@ -87,7 +88,7 @@ MT_NOTIFY_ONLY = required_bool_env("MT_NOTIFY_ONLY")
 
 def _print_trade_order_counts(header: str, fetch_fn, maxage_trade_s):
     print(header)
-    days = u.secondsToDays(maxage_trade_s)
+    days = secondsToDays(maxage_trade_s)
     for symbol in sym.symbols:
         print(f"For {symbol}")
         for side in ("BUY", "SELL"):
@@ -142,7 +143,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 _record_warmup_trade_ids(orders)
                 _trades_monitor_warmup_failed_symbols.discard(symbol)
                 continue
-            orders = sorted((t for t in orders if isinstance(t, dict)), key=_order_timestamp_ms)
+            orders = sorted((t for t in orders if isinstance(t, dict)), key=lambda t: extract_timestamp_ms(t, default=0) or 0)
 
             new_trades = []
             for trade in orders:
@@ -182,7 +183,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                     (c for t in all_group if (c := extract_client_order_id(t, default=""))),
                     "",
                 )
-                trade_ts_ms = _order_timestamp_ms(first)
+                trade_ts_ms = extract_timestamp_ms(first, default=0) or 0
                 trade_ts_s = trade_ts_ms / 1000.0 if trade_ts_ms > 0 else None
                 try:
                     owner = order_retry.resolve_tracked_order_owner(
@@ -812,7 +813,7 @@ def _evaluate_hard_take_profit(
     if last_hard_f > current_time_s:
         last_hard_f = 0.0
     if last_hard_f > 0 and current_time_s - last_hard_f < hard_tp_cd:
-        print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% but in cooldown (the last one {u.secondsToHours(current_time_s - last_hard_f):.1f}h)")
+        print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% but in cooldown (the last one {secondsToHours(current_time_s - last_hard_f):.1f}h)")
         return False
     if _is_trend_gate_deferred(symbol, inst):
         print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% deferred by trend gate (trend up)")
@@ -1602,9 +1603,9 @@ def main():
         if _inst.provider_label.lower() == "binance":
             _sym = _inst.symbol
             close_sell_orders = mkt.get_orders(_sym, "SELL", maxage_trade_s)
-            print(f"get_trade_orders ({_sym}): Found {len(close_sell_orders)} close 'SELL' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
+            print(f"get_trade_orders ({_sym}): Found {len(close_sell_orders)} close 'SELL' orders in the last {secondsToDays(maxage_trade_s)} days.")
             close_buy_orders = mkt.get_orders(_sym, "BUY", maxage_trade_s)
-            print(f"get_trade_orders ({_sym}): Found {len(close_buy_orders)} close 'BUY' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
+            print(f"get_trade_orders ({_sym}): Found {len(close_buy_orders)} close 'BUY' orders in the last {secondsToDays(maxage_trade_s)} days.")
             print(f"close_buy_orders ({_sym}) {close_buy_orders}")
             print(f"close_sell_orders ({_sym}) {close_sell_orders}")
 

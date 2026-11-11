@@ -931,11 +931,19 @@ load_config()
 
 
 def http_request(
-    method: str, url: str, headers: dict | None = None, payload: dict | None = None, *, form: dict | None = None
+    method: str,
+    url: str,
+    headers: dict | None = None,
+    payload: dict | None = None,
+    *,
+    form: dict | None = None,
+    body: bytes | None = None,
+    timeout: float | None = None,
 ) -> tuple[int, bytes]:
     """Shared standard-library HTTP transport with a ``(status, body)`` contract."""
-    if payload is not None and form is not None:
-        raise ValueError("payload and form are mutually exclusive")
+    if sum(x is not None for x in (payload, form, body)) > 1:
+        raise ValueError("payload, form, and body are mutually exclusive")
+    timeout_f = HTTP_TIMEOUT if timeout is None else require_pos_float(timeout, name="timeout")
 
     request_headers = dict(headers) if isinstance(headers, dict) else {}
     data = None
@@ -945,6 +953,8 @@ def http_request(
     elif form is not None:
         data = urllib.parse.urlencode(form).encode()
         request_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+    elif body is not None:
+        data = bytes(body)
 
     if not method or isinstance(method, bool) or not isinstance(method, str) or not method.strip():
         return 0, b""
@@ -953,7 +963,7 @@ def http_request(
     verb = method.strip().upper()
     try:
         req = urllib.request.Request(url.strip(), data=data, headers=request_headers, method=verb)
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=timeout_f) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
@@ -1590,42 +1600,7 @@ def _sign_ed25519(signing_key, payload: str) -> str:
     return base64.b64encode(signing_key.sign(raw_bytes).signature).decode("ascii")
 
 
-_CACHE_PATH_TLS = threading.local()
-
-
-def _cache_path_impl(name):
-    """Return the cache path under ``cachedb``, preserving paths that already carry a directory separator."""
-    if not name or isinstance(name, bool) or not isinstance(name, (str, os.PathLike)):
-        return name
-    from cachepaths import cache_path as _cp_cache_path, resolve_cachedb_filepath
-
-    name_str = str(os.fspath(name))
-    if os.path.isabs(name_str) or os.sep in name_str or (os.altsep and os.altsep in name_str):
-        return str(resolve_cachedb_filepath(name_str))
-    return _cp_cache_path(name_str)
-
-
-_cache_path_impl._is_botcore_cache_path = True  # type: ignore[attr-defined]
-
-
-def cache_path(name):
-    """Return the cache path under ``cachedb``, honoring test monkeypatches on ``utils.cache_path``."""
-    if not getattr(_CACHE_PATH_TLS, "active", False):
-        u_mod = sys.modules.get("utils")
-        u_cp = getattr(u_mod, "cache_path", None) if u_mod is not None else None
-        if callable(u_cp) and getattr(u_cp, "_is_botcore_cache_path", None) is not True:
-            _CACHE_PATH_TLS.active = True
-            try:
-                return u_cp(name)
-            finally:
-                _CACHE_PATH_TLS.active = False
-    return _cache_path_impl(name)
-
-
-cache_path._is_botcore_cache_path = True  # type: ignore[attr-defined]
-_u_reload_mod = sys.modules.get("utils")
-if _u_reload_mod is not None and getattr(getattr(_u_reload_mod, "cache_path", None), "_is_botcore_cache_path", None) is True:
-    _u_reload_mod.cache_path = cache_path  # type: ignore[attr-defined]
+from cachepaths import cache_path
 
 
 def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:

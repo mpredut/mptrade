@@ -18,6 +18,7 @@ from botcore import (
     FileLock,
     exact_int,
     exact_nonneg_int,
+    exact_pos_int,
     load_dotenv,
     normalize_side,
     required_bool_env,
@@ -26,6 +27,7 @@ from botcore import (
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
 )
@@ -116,10 +118,10 @@ LOCK_FILE = os.path.join(_ROOT, "cachedb", "order_retry_queue.lock")
 
 def _process_start_identity(pid):
     """Return a Linux boot/process-start identity that survives PID reuse."""
-    if isinstance(pid, bool) or int(pid) <= 0:
+    pid_i = exact_pos_int(pid, default=None)
+    if pid_i is None:
         raise ValueError("process PID must be a positive integer")
-    pid = int(pid)
-    raw_stat = read_text_file(f"/proc/{pid}/stat", encoding="ascii").strip()
+    raw_stat = read_text_file(f"/proc/{pid_i}/stat", encoding="ascii").strip()
     closing_paren = raw_stat.rfind(")")
     if closing_paren < 0:
         raise ValueError("malformed process stat")
@@ -127,9 +129,9 @@ def _process_start_identity(pid):
     if len(fields) <= 19:
         raise ValueError("process stat has no start time")
     if fields[0] in {"Z", "X", "x"}:
-        raise ProcessLookupError(f"process {pid} is not running")
-    start_ticks = int(fields[19])
-    if start_ticks <= 0:
+        raise ProcessLookupError(f"process {pid_i} is not running")
+    start_ticks = exact_pos_int(fields[19], default=None)
+    if start_ticks is None:
         raise ValueError("process start time must be positive")
     boot_id = read_text_file("/proc/sys/kernel/random/boot_id", encoding="ascii").strip()
     if not boot_id:
@@ -214,7 +216,7 @@ def _read_nolock(*, validate=False):
 
 def _client_order_id(record_id, revision, prefix="OR"):
     """Return a Binance-compatible stable ID for one queued intent revision."""
-    rev_str = str(max(0, int(revision)))
+    rev_str = str(exact_nonneg_int(revision, default=0))
     max_pfx_len = max(1, 36 - 1 - 8 - 1 - len(rev_str))
     pfx = str(prefix or "OR").strip().rstrip("_")[:max_pfx_len].rstrip("_") or "OR"
     overhead = len(pfx) + 1 + len(rev_str) + 1
@@ -482,7 +484,7 @@ def enqueue(
     if _producer_lease_sec is not None:
         rec["claim_token"] = uuid.uuid4().hex
         rec["claim_until"] = now + _producer_lease_sec
-        rec["claim_revision"] = int(rec["revision"])
+        rec["claim_revision"] = safe_nonneg_int(rec.get("revision"), default=0)
         rec["submission_state"] = "producer_claimed"
         rec["producer_pid"] = producer_pid
         rec["producer_process_start_id"] = producer_process_start_id
@@ -534,7 +536,7 @@ def enqueue(
                     e["requested_price"] = requested_price
                     e["ref_price"] = ref_price
                     _set_record_qty(e, qty)
-                    revision = int(e.get("revision", 0)) + 1
+                    revision = safe_nonneg_int(e.get("revision"), default=0) + 1
                     refreshed_kwargs = _sanitize_place_kwargs(place_kwargs)
                     pfx = e.get("prefix") or refreshed_kwargs.get("prefix") or prefix or "OR"
                     refreshed_kwargs.setdefault(
@@ -545,9 +547,10 @@ def enqueue(
                     e["created_ts"] = min(safe_pos_float(e.get("created_ts"), default=cts) or cts, cts)
                     prev_attempts = max(0, exact_int(e.get("attempts"), 0))
                     prev_last_ts = safe_pos_float(e.get("last_attempt_ts"), default=None)
-                    e["attempts"] = max(prev_attempts, int(attempts))
+                    e["attempts"] = max(prev_attempts, safe_nonneg_int(attempts, default=0))
                     e["last_attempt_ts"] = max(
-                        safe_nonneg_float(e.get("last_attempt_ts"), default=0.0) or 0.0, float(last_attempt_ts)
+                        safe_nonneg_float(e.get("last_attempt_ts"), default=0.0) or 0.0,
+                        safe_nonneg_float(last_attempt_ts, default=0.0) or 0.0,
                     )
                     previous_reason = e.get("last_failure_reason")
                     next_reason = str(failure_reason) if failure_reason is not None else None
@@ -957,8 +960,8 @@ def _append_order_history(rec, *, observed_at, status=None):
     row = {
         "order_id": str(order_id),
         "client_order_id": _record_client_order_id(rec),
-        "revision": int(rec.get("revision", 0)),
-        "observed_at": float(observed_at),
+        "revision": safe_nonneg_int(rec.get("revision"), default=0),
+        "observed_at": resolve_now_ts(observed_at),
     }
     if status is not None:
         row.update({

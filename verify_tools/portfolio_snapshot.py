@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""portfolio_snapshot.py — UNIFIED cross-engine view (Kraken base v2 + HL long-hold).
+"""portfolio_snapshot.py -- UNIFIED cross-engine view (Kraken base v2 + HL long-hold).
 
 Read-only monitoring: reads the bot states plus the current price and reports
 positions, realised + unrealised P&L, exposure and drawdown per engine and in
@@ -13,10 +13,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
-import json
 import os
 import sys
-import urllib.request
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,6 +32,7 @@ with contextlib.redirect_stdout(io.StringIO()):
     )
     from botcore import (  # noqa: E402
         _parse_bool_flag,
+        http_request,
         is_live_network_backfill_enabled,
         parse_dotenv,
         required_float_env,
@@ -41,7 +40,7 @@ with contextlib.redirect_stdout(io.StringIO()):
     )
     os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
     from providers.market_api import api as mkt  # noqa: E402
-    from state_io import read_json_dict, save_json_state  # noqa: E402
+    from state_io import encode_json_payload, read_json_dict, save_json_state  # noqa: E402
     from strategies.state_store import state_path_for  # noqa: E402
 
 _ROOT_CONFIG = parse_dotenv(os.path.join(ROOT, "config.env"))
@@ -150,12 +149,15 @@ def _ntfy(title: str, body: str) -> None:
             clean_title, body_str, _, out_topic = out_payload
             url = format_ntfy_url(out_topic or topic) or url
     safe_title = AlertNotifier.utf8_header(clean_title) or "Alert"
-    req = urllib.request.Request(
-        url, data=body_str.encode("utf-8"),
-        headers={"Title": safe_title, "Priority": "high", "Tags": "warning"})
     try:
-        urllib.request.urlopen(req, timeout=10)
-    except Exception:  # noqa: BLE001 — best-effort alert, we do not block the snapshot
+        http_request(
+            "POST",
+            url,
+            headers={"Title": safe_title, "Priority": "high", "Tags": "warning"},
+            body=body_str.encode("utf-8"),
+            timeout=10.0,
+        )
+    except Exception:  # noqa: BLE001 -- best-effort alert, we do not block the snapshot
         pass
 
 
@@ -232,7 +234,7 @@ def main() -> int:
         snap["alerts_fired"] = fired
 
     if args.json:
-        print(json.dumps(snap))
+        print(encode_json_payload(snap))
         return 0
 
     if args.alert:

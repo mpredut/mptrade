@@ -24,9 +24,9 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-import botcore as u
 from botcore import (
     _parse_bool_flag,
+    gaussian_weights_from_idx,
     is_live_network_backfill_enabled,
     lru_dict_put,
     normalize_epoch_sec,
@@ -671,7 +671,7 @@ def get_trade_weight(
 
     t_steps = max(1, int(round(T)))
     idx = max(0, min(int(trend_len), t_steps - 1))
-    t_full, w_full = u.gaussian_weights_from_idx(T=t_steps, idx=0)
+    t_full, w_full = gaussian_weights_from_idx(T=t_steps, idx=0)
     if len(w_full) == 0:
         _dbg_weight("[DEBUG] Zone 1: gaussian_weights_from_idx returned empty. return [0.05]")
         return np.array([0.0]), np.array([0.05])
