@@ -324,21 +324,42 @@ class DummySpotExecutionProvider(MarketDataProvider):
         wait_short_trend: bool = False,
         requires_permit: bool = False,
         use_real_quantity_decision: bool = False,
+        last_fill: float | None = None,
+        orders=(),
+        side_filter: str | None = None,
+        orders_by_side: dict | None = None,
+        filter_orders_by_side: bool = False,
+        reject_empty_symbol: bool = False,
     ):
         if name is not None:
             self.name = name
+        if last_fill is None and orders and isinstance(orders[-1], dict) and "price" in orders[-1]:
+            last_fill = orders[-1]["price"]
         self._symbol = symbol
         self._order_id = order_id
         self._free_bal = free_bal
         self._wait_short_trend = wait_short_trend
         self._requires_permit = requires_permit
         self._use_real_quantity_decision = use_real_quantity_decision
+        self._last_fill = last_fill
+        self._orders = list(orders)
+        self._side_filter = side_filter
+        self._orders_by_side = orders_by_side
+        self._filter_orders_by_side = filter_orders_by_side
+        self._reject_empty_symbol = reject_empty_symbol
 
     def supports_symbol(self, sym):
         return self._symbol is None or sym == self._symbol
 
     def validate_symbol(self, sym):
+        if self._reject_empty_symbol and not sym:
+            raise ValueError("empty symbol")
         return None
+
+    def last_opposite_fill(self, symbol, order_type):
+        if self._last_fill is not None:
+            return self._last_fill
+        return super().last_opposite_fill(symbol, order_type)
 
     def guards_internally(self):
         return False
@@ -382,8 +403,14 @@ class DummySpotExecutionProvider(MarketDataProvider):
     def min_notional(self, _sym):
         return 5.0
 
-    def get_orders(self, _sym, _side, _since):
-        return []
+    def get_orders(self, _sym, side, _since):
+        if self._orders_by_side is not None:
+            return list(self._orders_by_side.get(side, []))
+        if self._side_filter is not None and side != self._side_filter:
+            return []
+        if self._filter_orders_by_side:
+            return [dict(x) for x in self._orders if x.get("side") == side]
+        return list(self._orders)
 
     def should_wait_for_short_trend(self, _sym, _side):
         return self._wait_short_trend
@@ -563,11 +590,40 @@ class TempDirTestCase(unittest.TestCase):
         self.tmp.cleanup()
 
 
+from intelligence.macro.daemon_ssot import CachedHttpJsonCollector
+
+
+class DummyCachedHttpJsonCollector(CachedHttpJsonCollector):
+    """Reusable ``CachedHttpJsonCollector`` test stub with configurable payload parser."""
+
+    def __init__(
+        self,
+        cache_ttl_sec: float = 60.0,
+        default_ttl_sec: float = 60.0,
+        endpoint_url: str = "https://example.test/api",
+        default_endpoint_fn=lambda: "https://example.test/api",
+        *,
+        parse_fn=None,
+        **kwargs,
+    ):
+        self._parse_fn = parse_fn
+        super().__init__(cache_ttl_sec, default_ttl_sec, endpoint_url, default_endpoint_fn, **kwargs)
+
+    def _parse_fetched_payload(self, data, now):
+        if self._parse_fn is not None:
+            return self._parse_fn(data, now)
+        if not isinstance(data, dict):
+            return None
+        return {"ok": True, "value": data.get("v", 0), "val": data.get("val"), "ts": now}
+
+
 class TrailingTestBase(unittest.TestCase):
     """Shared base class for trailing-stop unit tests with isolated temp state file and TRAIL_PCT restore."""
 
     TRAIL_MODULE = None
     TRAIL_DEFAULTS: dict[str, float] = {}
+    ENV_OVERRIDES: dict[str, str | None] = {}
+    SUPPRESS_MODULE_NOTIFY: bool = False
 
     def setUp(self):
         fd, self.sf = tempfile.mkstemp(suffix=".json")
@@ -577,8 +633,21 @@ class TrailingTestBase(unittest.TestCase):
         if self.TRAIL_MODULE is not None:
             self._orig_trail_pct = dict(self.TRAIL_MODULE.TRAIL_PCT)
             self.TRAIL_MODULE.TRAIL_PCT.update(self.TRAIL_DEFAULTS)
+            if self.SUPPRESS_MODULE_NOTIFY:
+                self.TRAIL_MODULE.notify = lambda **kw: None
+        self._orig_env = {k: os.environ.get(k) for k in self.ENV_OVERRIDES}
+        for k, v in self.ENV_OVERRIDES.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     def tearDown(self):
+        for k, prev in getattr(self, "_orig_env", {}).items():
+            if prev is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = prev
         if self.TRAIL_MODULE is not None:
             self.TRAIL_MODULE.TRAIL_PCT.clear()
             self.TRAIL_MODULE.TRAIL_PCT.update(self._orig_trail_pct)

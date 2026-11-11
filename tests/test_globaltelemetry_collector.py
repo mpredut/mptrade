@@ -26,10 +26,21 @@ from cachetrend import CacheLongTrendManager, CacheShortTrendManager
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorBase, OrderGuardEvaluatorFactory, OrderGuardEvaluatorInterface
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.sentiment.collectors.macro_telemetry_collector import MarketAndPortfolioSnapshotOrchestrator
-from intelligence.sentiment.collectors.pretrade_telemetry_collector import PretradeTelemetryOrchestrator, PretradeTelemetrySnapshot, collect_pretrade_telemetry
+from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
+    PretradeEvaluationContext,
+    PretradePillarCollectorBase,
+    PretradeTelemetryOrchestrator,
+    PretradeTelemetrySnapshot,
+    collect_pretrade_telemetry,
+)
 from intelligence.sentiment.evaluators.microstructure_evaluator import CrossVenueSiblingArbEvaluator, LiquidationClusterEvaluator, MicrostructureCycleDeltaEvaluator, MicrostructureEvaluatorBase, OrderbookCvdFlowEvaluator
 from intelligence.sentiment.evaluators.price_series_evaluator import Horizon24hPriceEvaluator, PriceSeriesEvaluatorBase, ShortTrendAndKalmanEvaluator, Structural7dWaveEvaluator, TelemetryEvaluatorInterface, VolumeProfileEvaluator, resolve_asset_session_policy
 from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+
+
+class _CustomAuditStage(PretradePillarCollectorBase):
+    def evaluate(self, ctx: PretradeEvaluationContext) -> None:
+        ctx.telemetry["Custom Polymorphic Pillar"] = f"{ctx.symbol}:{ctx.session_policy.cls_name}"
 
 
 def test_collector_initialization(temp_cache_dir):
@@ -336,10 +347,6 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert isinstance(TelemetryCollectorFactory.get_fleet_enricher(), Fleet24hAndMicrostructureEnricher)
     assert isinstance(TelemetryCollectorFactory.get_yahoo_chart_collector(), EquityYahoo5dChartCollector)
     assert isinstance(TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator), PretradeTelemetryOrchestrator)
-
-    class _CustomAuditStage(PretradePillarCollectorBase):
-        def evaluate(self, ctx: PretradeEvaluationContext) -> None:
-            ctx.telemetry["Custom Polymorphic Pillar"] = f"{ctx.symbol}:{ctx.session_policy.cls_name}"
 
     custom_tel = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=temp_cache_dir, stages=(_CustomAuditStage(),))
     assert custom_tel == {"Custom Polymorphic Pillar": "BTCUSDC:Crypto24x7SessionPolicy"}

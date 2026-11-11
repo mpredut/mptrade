@@ -35,8 +35,9 @@ from providers.order_ohlc_utils import (
 )
 from providers.quantity import venue_adjust_partial_sell_quantity, venue_fee_cap_quantity
 from providers import order_id_context as oic
+import re
 import order_guard
-from tests.conftest import DummyGeminiClient, MockHttpResponse
+from tests.conftest import DummyCachedHttpJsonCollector, DummyGeminiClient, MockHttpResponse
 
 
 class _StubKrakenPairClient:
@@ -49,13 +50,19 @@ class _StubKrakenPairClient:
 
 class _TestMarketProvider(MarketDataProvider):
     _USES_SSOT_MARKET_CACHE = False
+    _REMOTE_TRADES_CLIENT_ATTR = "fetch_fills"
 
-    def __init__(self, prov_name: str = "probe", *, price_fn=None, fills_fn=None, cli=None):
+    def __init__(self, prov_name: str = "probe", *, price_fn=None, fills_fn=None, cli=None, client=None):
+        eff_cli = client if client is not None else cli
         self._prov_name = prov_name
         self._price_fn = price_fn
-        self._fills_fn = fills_fn
-        if cli is not None:
-            self._cli = cli
+        self._fills_fn = fills_fn or (
+            (lambda sym, publish_cache=False: eff_cli.fetch_fills(sym))
+            if eff_cli is not None and callable(getattr(eff_cli, "fetch_fills", None))
+            else None
+        )
+        if eff_cli is not None:
+            self._cli = eff_cli
 
     @property
     def name(self) -> str:
@@ -69,6 +76,32 @@ class _TestMarketProvider(MarketDataProvider):
 
     def _fills_from_api(self, symbol: str, *, publish_cache: bool = False):
         return self._fills_fn(symbol, publish_cache=publish_cache) if self._fills_fn is not None else []
+
+
+class _CustomDexProvider(MarketDataProvider):
+    _LIVE_ORDERS_ENV = "CUSTOM_DEX_LIVE_ORDERS"
+    _CLIENT_ID_128BIT_SPEC = (
+        "CustomDex",
+        b"assertguardian:customdex:cloid:v1\0",
+        re.compile(r"^0x[0-9a-fA-F]{32}$"),
+        "0x",
+    )
+    _INTENT_CLIENT_ID_FORMAT = "CDX_{token}"
+    _BUY_SLIPPAGE_FEE_BUFFER = 0.97
+    _SELL_DUST_SPEC = (3, 5.0)
+
+    def __init__(self, live_enabled=None):
+        self._live_enabled = live_enabled
+
+    @property
+    def name(self) -> str:
+        return "CustomDex"
+
+    def supports_symbol(self, symbol: str) -> bool:
+        return True
+
+    def free_balance(self, asset: str):
+        return 1.0 if asset == "ABC" else 100.0
 
 
 def test_freshness_parameters_fail_closed_on_nonpositive_bool_and_nan(tmp_path: Path):
@@ -635,31 +668,6 @@ def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(mo
     from providers.quantity import clamp_notional_to_wallet_balance
 
     # 1. Open-Closed custom MarketDataProvider subclass works without touching any central dict
-    class _CustomDexProvider(MarketDataProvider):
-        _LIVE_ORDERS_ENV = "CUSTOM_DEX_LIVE_ORDERS"
-        _CLIENT_ID_128BIT_SPEC = (
-            "CustomDex",
-            b"assertguardian:customdex:cloid:v1\0",
-            re.compile(r"^0x[0-9a-fA-F]{32}$"),
-            "0x",
-        )
-        _INTENT_CLIENT_ID_FORMAT = "CDX_{token}"
-        _BUY_SLIPPAGE_FEE_BUFFER = 0.97
-        _SELL_DUST_SPEC = (3, 5.0)
-
-        def __init__(self, live_enabled=None):
-            self._live_enabled = live_enabled
-
-        @property
-        def name(self) -> str:
-            return "CustomDex"
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return True
-
-        def free_balance(self, asset: str):
-            return 1.0 if asset == "ABC" else 100.0
-
     monkeypatch.setenv("CUSTOM_DEX_LIVE_ORDERS", "false")
     custom_p = _CustomDexProvider()
     assert custom_p.execution_enabled() is False
@@ -1663,11 +1671,9 @@ def test_expired_orders_sync_mode_trailing_status_and_runtime_flag_border_cases(
     assert adv_default.review(now_ts=1_700_000_000.0, allow_llm="0") is None  # type: ignore[arg-type]
     assert dummy_llm.call_count == 0
 
-    class _DummyHttpCollector(CachedHttpJsonCollector):
-        def _parse_fetched_payload(self, data, now):
-            return {"ok": True, "ts": now}
-
-    http_col = _DummyHttpCollector(2e11, 60.0, "https://example.invalid/feed", lambda: "", start_sync="false")  # type: ignore[arg-type]
+    http_col = DummyCachedHttpJsonCollector(
+        2e11, 60.0, "https://example.invalid/feed", lambda: "", start_sync="false"
+    )  # type: ignore[arg-type]
     assert http_col.start_sync is False
     assert http_col.cache_ttl_sec == pytest.approx(2e11)
     assert http_col.fetch(now_ts=1_700_000_000.0) is None
@@ -1903,25 +1909,23 @@ def test_temporary_environ_daemon_fetch_equity_oi_remote_trades_and_guard_prefli
     # 3. ExternalTelemetryMixin._call_collector_fetch never double-invokes on internal TypeError & sanitizes flags
     calls: list[tuple] = []
 
-    class _CollectorWithNow:
-        def fetch(self, *, force_refresh: bool = False, now_ts=None):
-            calls.append((force_refresh, now_ts))
-            raise TypeError("internal collector bug")
+    def _fetch_with_now(*, force_refresh: bool = False, now_ts=None):
+        calls.append((force_refresh, now_ts))
+        raise TypeError("internal collector bug")
 
     with pytest.raises(TypeError, match="internal collector bug"):
         ExternalTelemetryMixin._call_collector_fetch(
-            _CollectorWithNow(), force_refresh="false", now_ts=1700000000.0  # type: ignore[arg-type]
+            SimpleNamespace(fetch=_fetch_with_now), force_refresh="false", now_ts=1700000000.0  # type: ignore[arg-type]
         )
     assert calls == [(False, 1700000000.0)]
 
-    class _CollectorLegacy:
-        def fetch(self, *, force_refresh: bool = False):
-            calls.append((force_refresh, None))
-            return {"ok": True}
+    def _fetch_legacy(*, force_refresh: bool = False):
+        calls.append((force_refresh, None))
+        return {"ok": True}
 
     calls.clear()
     assert ExternalTelemetryMixin._call_collector_fetch(
-        _CollectorLegacy(), force_refresh="true", now_ts=1700000000.0  # type: ignore[arg-type]
+        SimpleNamespace(fetch=_fetch_legacy), force_refresh="true", now_ts=1700000000.0  # type: ignore[arg-type]
     ) == {"ok": True}
     assert calls == [(True, None)]
 
@@ -1950,19 +1954,13 @@ def test_temporary_environ_daemon_fetch_equity_oi_remote_trades_and_guard_prefli
     ) == (10.0, 5.0, 15.0, 1500.0, 0.0)
 
     # 5. MarketDataProvider.fetch_remote_trades_with_client LSP + ReplayMarketDataProvider malformed order timestamp
-    class _DummyRemoteProvider(_TestMarketProvider):
-        _REMOTE_TRADES_CLIENT_ATTR = "fetch_fills"
-
-        def __init__(self, client=None):
-            super().__init__("dummy_remote", fills_fn=lambda sym, publish_cache=False: client.fetch_fills(sym), cli=client)
-
     fake_cli = SimpleNamespace(
         fetch_fills=lambda sym: [
             {"symbol": sym, "time": 1700000005000, "price": 100.0, "qty": 1.0},
             {"symbol": sym, "time": 1699999990000, "price": 99.0, "qty": 1.0},
         ]
     )
-    assert _DummyRemoteProvider.fetch_remote_trades_with_client("BTCUSDC", True, client=fake_cli) == [  # type: ignore[arg-type]
+    assert _TestMarketProvider.fetch_remote_trades_with_client("BTCUSDC", True, client=fake_cli) == [  # type: ignore[arg-type]
         {"symbol": "BTCUSDC", "time": 1700000005000, "price": 100.0, "qty": 1.0},
         {"symbol": "BTCUSDC", "time": 1699999990000, "price": 99.0, "qty": 1.0},
     ]

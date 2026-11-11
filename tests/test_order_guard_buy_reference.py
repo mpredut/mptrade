@@ -16,40 +16,23 @@ from providers.market_api import MarketApi
 from tests.conftest import DummySpotExecutionProvider
 
 
-class _Provider:
-    def __init__(self, name, last_fill=216.28, *, free_bal=10000.0):
-        self.name = name
-        self._last_fill = last_fill
-        self._free_bal = free_bal
-
-    def last_opposite_fill(self, _symbol, _order_type):
-        return self._last_fill
-
-    def free_balance(self, _asset):
-        return self._free_bal
-
-    def validate_symbol(self, _symbol):
-        pass
-
-    def guards_internally(self):
-        return False
+from types import SimpleNamespace
 
 
-class _OrdersProvider(_Provider):
-    def __init__(self, orders=(), *, last_fill=None, side_filter=None, name="binance", orders_by_side=None):
-        if last_fill is None and orders:
-            last_fill = orders[-1]["price"]
-        super().__init__(name, last_fill=last_fill)
-        self._orders = list(orders)
-        self._side_filter = side_filter
-        self._orders_by_side = orders_by_side
+def _Provider(name, last_fill=216.28, *, free_bal=10000.0):
+    return SimpleNamespace(
+        name=name,
+        last_opposite_fill=lambda _symbol, _order_type: last_fill,
+        free_balance=lambda _asset: free_bal,
+        validate_symbol=lambda _symbol: None,
+        guards_internally=lambda: False,
+    )
 
-    def get_orders(self, symbol, side, since_s):
-        if self._orders_by_side is not None:
-            return list(self._orders_by_side.get(side, []))
-        if self._side_filter is not None and side != self._side_filter:
-            return []
-        return list(self._orders)
+
+def _OrdersProvider(orders=(), *, last_fill=None, side_filter=None, name="binance", orders_by_side=None):
+    return DummySpotExecutionProvider(
+        name, orders=orders, last_fill=last_fill, side_filter=side_filter, orders_by_side=orders_by_side, free_bal=10000.0
+    )
 
 
 def _margins(**overrides):

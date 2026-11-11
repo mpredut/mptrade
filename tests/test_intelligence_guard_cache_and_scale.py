@@ -59,11 +59,7 @@ def _margins(**overrides):
 _build_test_context = make_test_regime_context
 
 
-class MockProvider:
-    name = "binance"
-
-
-MockProv = MockProvider
+MockProvider = MockProv = lambda: DummySpotExecutionProvider("binance")
 
 
 def _setup_gemini_notional_check(monkeypatch):

@@ -49,6 +49,33 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_
 from zoneinfo import ZoneInfo
 
 
+class _FakeAccountStreamWS:
+    def __init__(self, sent_frames, stop_event):
+        self.step = 0
+        self.sent_frames = sent_frames
+        self.stop_event = stop_event
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def send(self, msg):
+        self.sent_frames.append(json.loads(msg))
+
+    async def recv(self):
+        import asyncio
+
+        self.step += 1
+        if self.step == 1:
+            return json.dumps({"id": "login", "status": 200})
+        if self.step == 2:
+            return json.dumps({"id": "sub", "status": 200})
+        self.stop_event.set()
+        raise asyncio.TimeoutError()
+
+
 SAMPLE_RSS_XML_WAR = b"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
@@ -1335,35 +1362,13 @@ def test_binance_account_stream_dynamic_recv_timeout_and_response_health(monkeyp
     recv_timeouts = []
     healthy_count = 0
 
-    class FakeWS:
-        def __init__(self):
-            self.step = 0
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def send(self, msg):
-            sent_frames.append(json.loads(msg))
-
-        async def recv(self):
-            self.step += 1
-            if self.step == 1:
-                return json.dumps({"id": "login", "status": 200})
-            if self.step == 2:
-                return json.dumps({"id": "sub", "status": 200})
-            stream._stop_event.set()
-            raise asyncio.TimeoutError()
-
     orig_wait_for = asyncio.wait_for
 
     async def tracking_wait_for(coro, timeout=None):
         recv_timeouts.append(timeout)
         return await orig_wait_for(coro, timeout=timeout)
 
-    monkeypatch.setattr(bapi_ws.websockets, "connect", lambda *a, **kw: FakeWS())
+    monkeypatch.setattr(bapi_ws.websockets, "connect", lambda *a, **kw: _FakeAccountStreamWS(sent_frames, stream._stop_event))
     monkeypatch.setattr(bapi_ws.asyncio, "wait_for", tracking_wait_for)
 
     def on_healthy():

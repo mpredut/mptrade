@@ -43,6 +43,28 @@ from intelligence.internal.state.volatility import (
     vol_pct_to_ratio,
     vol_ratio_to_pct,
 )
+from market_monitor.pricefetcher import PricePlatformInterface
+from tests.conftest import DummyCachedHttpJsonCollector
+
+
+class _RebindingPlatform(PricePlatformInterface):
+    def __init__(self):
+        self._supported_symbols = {"BTC"}
+        self._last_refresh = 0.0
+        self._refresh_interval = 10.0
+
+    @property
+    def platform_name(self) -> str:
+        return "RebindTest"
+
+    def _load_symbols(self):
+        self._supported_symbols = {"BTC", "NEWTOKEN"}
+        self._last_refresh = 9999999999.0
+
+    def get_price(self, symbol: str):
+        return 1.0
+
+
 from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
@@ -1230,20 +1252,10 @@ def test_iter46_audited_executor_precision_daemon_ssot_monkeypatch_and_tca_hl_ca
     assert CacheShortTrendManager.extract_slope(sample_snap, "BTCUSDC") != 0.0
 
     # 2. CachedHttpJsonCollector respects monkeypatching intelligence.macro.daemon_ssot.fetch_public_json
-    class _DummyCollector(daemon_ssot.CachedHttpJsonCollector):
-        def __init__(self):
-            super().__init__(
-                cache_ttl_sec=60.0,
-                default_ttl_sec=60.0,
-                endpoint_url="https://example.test/api",
-                default_endpoint_fn=lambda: "https://example.test/api",
-            )
-
-        def _parse_fetched_payload(self, data, now):
-            return {"ok": True, "val": data.get("val"), "ts": now}
-
     monkeypatch.setattr(daemon_ssot, "fetch_public_json", lambda url, **kw: {"val": 777})
-    coll = _DummyCollector()
+    coll = DummyCachedHttpJsonCollector(
+        parse_fn=lambda data, now: {"ok": True, "val": data.get("val"), "ts": now},
+    )
     snap = coll.fetch(force_refresh=True, now_ts=1700000000.0)
     assert snap == {"ok": True, "val": 777, "ts": 1700000000.0}
 
@@ -4389,23 +4401,6 @@ def test_iter80_pricefetcher_refresh_and_kraken_trailing_unlock(monkeypatch, tmp
     import kraken.trailing_stop as kts_mod
 
     # 1. PricePlatformInterface.supports_symbol refreshes before reading _supported_symbols when _load_symbols rebinds the set
-    class _RebindingPlatform(PricePlatformInterface):
-        def __init__(self):
-            self._supported_symbols = {"BTC"}
-            self._last_refresh = 0.0
-            self._refresh_interval = 10.0
-
-        @property
-        def platform_name(self) -> str:
-            return "RebindTest"
-
-        def _load_symbols(self):
-            self._supported_symbols = {"BTC", "NEWTOKEN"}
-            self._last_refresh = 9999999999.0
-
-        def get_price(self, symbol: str):
-            return 1.0
-
     plat = _RebindingPlatform()
     assert plat.supports_symbol("NEWTOKENUSDC") is True
 

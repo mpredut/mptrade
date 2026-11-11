@@ -790,12 +790,15 @@ def test_unified_heartbeat_api_and_cached_http_collector(tmp_path):
         result_key="step",
     ) is False
 
-    class SampleCollector(CachedHttpJsonCollector):
-        def _parse_fetched_payload(self, data, now):
-            return {"value": data.get("v", 0), "ts": now} if isinstance(data, dict) else None
-
+    from tests.conftest import DummyCachedHttpJsonCollector
     import intelligence.macro_sentiment_ssot as mss
-    collector = SampleCollector(60.0, 60.0, "https://example.test/api", lambda: "https://example.test/api")
+    collector = DummyCachedHttpJsonCollector(
+        60.0,
+        60.0,
+        "https://example.test/api",
+        lambda: "https://example.test/api",
+        parse_fn=lambda data, now: {"value": data.get("v", 0), "ts": now} if isinstance(data, dict) else None,
+    )
     with patch.object(mss, "fetch_public_json", return_value={"v": 42}) as mock_fetch:
         first = collector.fetch(now_ts=1000.0)
         second = collector.fetch(now_ts=1020.0)

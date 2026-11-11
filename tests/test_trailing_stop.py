@@ -69,14 +69,14 @@ class FakeSym:
     symbols = ["TAOUSDC"]
 
 
-class Base(TrailingTestBase):
+class _BinanceTrailingBase(TrailingTestBase):
     TRAIL_MODULE = binance_ts_mod
     TRAIL_DEFAULTS = {"TAOUSDC": 22.0, "BTCUSDC": 13.0, "ARBUSDC": 26.0}
+    ENV_OVERRIDES = {"TRAILING_ENABLED": None}
 
     def setUp(self):
         super().setUp()
         self.po = FakePo()
-        os.environ.pop("TRAILING_ENABLED", None)
 
     def ts(self, api, enabled=True, frac=1.0, min_profit_pct=0.0):
         return TrailingStop(api, self.po, FakeSym(), log=lambda *a: None,
@@ -84,7 +84,7 @@ class Base(TrailingTestBase):
                             min_profit_pct=min_profit_pct)
 
 
-class TestLogic(unittest.TestCase):
+class TestTrailing(_BinanceTrailingBase):
     def test_should_sell(self):
         self.assertTrue(should_sell(90, 100, 10))      # exact -10%
         self.assertTrue(should_sell(89, 100, 10))
@@ -92,8 +92,6 @@ class TestLogic(unittest.TestCase):
         self.assertFalse(should_sell(100, 100, 10))
         self.assertFalse(should_sell(50, 0, 10))       # no peak
 
-
-class TestTrailing(Base):
     def test_basic_state_and_price_movements(self):
         with self.subTest(msg="an_empty_balance_snapshot_does_not_change_the_state"):
             api = FakeApi(250.0)
@@ -232,7 +230,7 @@ class TestTrailing(Base):
             self.assertEqual(json.load(open(self.sf))["TAOUSDC"]["peak"], 190.0)
 
 
-class TestPerCoinRebuy(Base):
+class TestPerCoinRebuy(_BinanceTrailingBase):
     """Re-buy is now per-coin (registry trailing.rebuy), not one global switch."""
 
     def _sell_then_confirm(self, ts, api):
@@ -377,7 +375,7 @@ class TestPerCoinRebuy(Base):
             self.assertEqual(self.po.orders[2]["bypass_guards"], {"math_reference"})
 
 
-class TestPerCoin(Base):
+class TestPerCoin(_BinanceTrailingBase):
     def test_per_coin_configurations(self):
         with self.subTest(msg="market_data_only_symbol_is_not_trailed_or_logged_as_managed"):
             ts = TrailingStop(FakeApi(1), self.po,
@@ -425,7 +423,7 @@ class TestPerCoin(Base):
                 self.ts(FakeApi(1.0), frac=float("nan"))
 
 
-class TestMinProfit(Base):
+class TestMinProfit(_BinanceTrailingBase):
     """The minimum profit threshold before the trailing activates."""
 
     def test_min_profit_behaviors(self):

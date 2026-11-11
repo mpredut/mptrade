@@ -302,8 +302,7 @@ def test_account_cache_health_require_int_accepts_integer_floats_and_normalize_c
     # 5. account_cache_health.require_int accepts integer floats and normalize_class_name handles class objects
     assert bch.require_int(100.0, "writer_pid", min_value=1) == 100
     assert bch.require_int(0.0, "generation", min_value=0) == 0
-    class CacheOrderManager:
-        pass
+    from cacheaccount import CacheOrderManager
     assert bch.normalize_class_name(CacheOrderManager) == "CacheOrderManager"
 
 def test_212trading_order_manager_waiting_with_sentinel_order_id_returns_false_iter153_s1(tmp_path, monkeypatch):

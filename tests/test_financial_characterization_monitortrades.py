@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import json
 import order_guard
 from providers.quantity import QuantityDecision
+from tests.conftest import DummySpotExecutionProvider
 
 
 NOW = 2_000_000_000.0
@@ -38,14 +39,9 @@ def _fill(side: str, price: float, qty: float, age_s: float = 4 * 3600) -> dict:
     }
 
 
-class FakeProvider:
+def FakeProvider(fills):
     """Only the account-history contract used by get_position_stats."""
-
-    def __init__(self, fills):
-        self.fills = list(fills)
-
-    def get_orders(self, symbol, side, since_s):
-        return [dict(x) for x in self.fills if x["side"] == side]
+    return DummySpotExecutionProvider(orders=fills, filter_orders_by_side=True)
 
 
 class FakeInstrument(mt.Instrument):

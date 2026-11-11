@@ -114,36 +114,23 @@ class FakeK:
         return {"count": 1}
 
 
-class Base(TrailingTestBase):
+class _KrakenTrailingBase(TrailingTestBase):
     TRAIL_MODULE = ts_mod
     TRAIL_DEFAULTS = {"HYPE": 18.0, "TAO": 22.0, "ADA": 25.0}
-
-    def setUp(self):
-        super().setUp()
-        self.previous_live = os.environ.get("KRAKEN_LIVE_ORDERS")
-        os.environ["KRAKEN_LIVE_ORDERS"] = "true"
-        ts_mod.notify = lambda **kw: None
-
-    def tearDown(self):
-        if self.previous_live is None:
-            os.environ.pop("KRAKEN_LIVE_ORDERS", None)
-        else:
-            os.environ["KRAKEN_LIVE_ORDERS"] = self.previous_live
-        super().tearDown()
+    ENV_OVERRIDES = {"KRAKEN_LIVE_ORDERS": "true"}
+    SUPPRESS_MODULE_NOTIFY = True
 
     def ts(self, client, enabled=True, min_profit_pct=0.0):
         return KrakenTrailing(client, log=lambda *a: None, enabled=enabled, state_file=self.sf,
                               min_profit_pct=min_profit_pct)
 
 
-class TestLogic(unittest.TestCase):
+class TestTrailingKraken(_KrakenTrailingBase):
     def test_should_sell(self):
         self.assertTrue(should_sell(82, 100, 18))
         self.assertFalse(should_sell(83, 100, 18))
         self.assertFalse(should_sell(50, 0, 18))
 
-
-class TestTrailingKraken(Base):
     def test_a_rise_updates_the_peak_and_does_not_sell(self):
         c = FakeK(60.0)
         self.ts(c).check_once()
@@ -224,7 +211,7 @@ class TestTrailingKraken(Base):
         self.assertEqual(messages, ["  [TRAIL-K] heartbeat"])
 
 
-class TestMinProfitKraken(Base):
+class TestMinProfitKraken(_KrakenTrailingBase):
     """Require minimum profit before Kraken trailing activates."""
 
     def test_warming_up_does_not_sell_below_the_threshold(self):
@@ -249,7 +236,7 @@ class TestMinProfitKraken(Base):
         self.assertEqual(c.orders[0]["side"], "sell")
 
 
-class TestRebuyGuardsKraken(Base):
+class TestRebuyGuardsKraken(_KrakenTrailingBase):
     """Verify Kraken re-buy uses bypass_guards={'math_reference'} and defers on guard refusal."""
 
     def test_rebuy_executes_when_guards_allow(self):

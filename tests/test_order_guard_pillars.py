@@ -1194,9 +1194,6 @@ def test_batch44_verify_tools_and_order_outcomes_log_hardening(tmp_path, monkeyp
     assert oi._commands() == []
 
     # 3. order_outcomes_log unwraps Enum values in regime_context while still rejecting primitives
-    class _RegimeEnum(enum.Enum):
-        BULL = "BULL_TREND"
-
     monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
     ool.log_order_outcome(
         symbol="TAOUSDC",
@@ -1208,7 +1205,7 @@ def test_batch44_verify_tools_and_order_outcomes_log_hardening(tmp_path, monkeyp
         motivation="test",
         caller="unit_test",
         regime_context={
-            "regime": _RegimeEnum.BULL,
+            "regime": enum.Enum("_RegimeEnum", {"BULL": "BULL_TREND"}).BULL,
             "strength": 0.75,
             "source": "cache",
             "fresh": True,

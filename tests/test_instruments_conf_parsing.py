@@ -28,17 +28,8 @@ NUMERIC_MT_KEYS = [
 ]
 
 
-class _Provider:
-    name = "fake"
-
-    @staticmethod
-    def validate_symbol(symbol):
-        if not symbol:
-            raise ValueError("empty symbol")
-
-
 def _Api():
-    return SingleProviderApi(_Provider())
+    return SingleProviderApi(DummySpotExecutionProvider("fake", reject_empty_symbol=True))
 
 
 def section(name="BINANCE_TEST", **overrides):
@@ -661,7 +652,7 @@ def test_registry_execution_independence_and_layered_binding(tmp_path):
     captured_kwargs = {}
     fake_t212 = SimpleNamespace(
         name="t212",
-        validate_symbol=_Provider.validate_symbol,
+        validate_symbol=DummySpotExecutionProvider("fake", reject_empty_symbol=True).validate_symbol,
         guards_internally=lambda: True,
         is_execution_enabled=lambda: True,
         place_order=lambda symbol, side, price, qty, **kwargs: (
