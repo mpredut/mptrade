@@ -353,7 +353,7 @@ class Strategy(BaseSpotMixin):
             "amount": amount,
             "kind": kind,
             "level": level,
-            "market": bool(market),
+            "market": _parse_bool_flag(market, False),
             "ts": self._now(),
             "before_qty": safe_nonneg_float(self.s.get("qty"), default=0.0) or 0.0,
             "lookup_misses": 0,

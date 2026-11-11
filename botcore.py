@@ -2214,11 +2214,11 @@ class RuntimeServices:
     ) -> None:
         self.clock_fn = clock_fn if callable(clock_fn) else None
         self.sleep_fn = sleep_fn if callable(sleep_fn) else None
-        self.stale_cache_retry_delay_sec = float(stale_cache_retry_delay_sec)
-        self.enforce_rth_gate = bool(enforce_rth_gate)
-        self.allow_live_network_backfill = bool(allow_live_network_backfill)
-        self.allow_unmocked_llm_queries = bool(allow_unmocked_llm_queries)
-        self.allow_shared_disk_cache = bool(allow_shared_disk_cache)
+        self.stale_cache_retry_delay_sec = safe_nonneg_float(stale_cache_retry_delay_sec, default=1.5)
+        self.enforce_rth_gate = _parse_bool_flag(enforce_rth_gate, True)
+        self.allow_live_network_backfill = _parse_bool_flag(allow_live_network_backfill, True)
+        self.allow_unmocked_llm_queries = _parse_bool_flag(allow_unmocked_llm_queries, True)
+        self.allow_shared_disk_cache = _parse_bool_flag(allow_shared_disk_cache, True)
 
 
 _RUNTIME_SERVICES: RuntimeServices = (
@@ -2238,7 +2238,7 @@ def configure_runtime_services(**kwargs: object) -> RuntimeServices:
         elif k == "stale_cache_retry_delay_sec":
             setattr(_RUNTIME_SERVICES, k, safe_nonneg_float(v, default=1.5))
         else:
-            setattr(_RUNTIME_SERVICES, k, bool(v))
+            setattr(_RUNTIME_SERVICES, k, _parse_bool_flag(v, getattr(_RUNTIME_SERVICES, k, True)))
     return _RUNTIME_SERVICES
 
 
@@ -2792,7 +2792,7 @@ def stop_monitoring_thread(
     setattr(instance, "_running", False)
     thread = getattr(instance, "_thread", None)
     if thread and thread is not threading.current_thread():
-        thread.join(timeout=timeout)
+        thread.join(timeout=safe_nonneg_float(timeout, default=5.0))
     print(f"[{label}] Monitoring stopped")
 
 

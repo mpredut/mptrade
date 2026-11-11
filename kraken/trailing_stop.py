@@ -465,7 +465,7 @@ class KrakenTrailing(TrailingAdapterBase):
         trail,
         use_market: bool,
     ) -> None:
-        order_desc = "MARKET" if use_market else f"@ ~{order_price:.4f}"
+        order_desc = "MARKET" if use_market else f"@ ~{safe_float(order_price, 0.0):.4f}"
         status_lbl, detail = self._extract_order_result_status(result)
         self.log(f"  [SELL] {self._LOG_TAG} SELL {status_lbl} {qty} {asset} {order_desc} ({detail})")
 
@@ -482,7 +482,10 @@ class KrakenTrailing(TrailingAdapterBase):
         status_lbl, detail = self._extract_order_result_status(result)
         rebuy_lbl = "RE-BUY REFUSED" if status_lbl == "REFUSED" else "REBUY PENDING"
         suffix = " (not catching the knife)" if status_lbl == "REFUSED" else ""
-        self.log(f"  [REBUY] {self._LOG_TAG} {rebuy_lbl} {qty} {asset} @ ~{order_price:.4f} ({detail}){suffix}")
+        self.log(
+            f"  [REBUY] {self._LOG_TAG} {rebuy_lbl} {qty} {asset} "
+            f"@ ~{safe_float(order_price, 0.0):.4f} ({detail}){suffix}"
+        )
 
     def print_status(self) -> None:
         state = self.core.load()

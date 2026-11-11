@@ -21,6 +21,7 @@ from botcore import (
     check_cooldown_gate,
     format_price_log,
     resolve_order_notional,
+    safe_nonneg_float,
     safe_nonneg_ts,
     topic_spec,
 )
@@ -252,7 +253,9 @@ def get_post_stop_reentry_guard(
         "fallback_action": str(raw_fb if raw_fb is not None and not isinstance(raw_fb, bool) else DEFAULT_FALLBACK).strip().lower() or DEFAULT_FALLBACK,
         "mode": resolve_hierarchical_guard_mode(m, "post_stop_reentry_mode", "llm_guard_mode", default="enforce"),
         "notify_enabled": True if raw_notify is None else _parse_bool_flag(raw_notify, default=False),
-        "cache_ttl_sec": safe_nonneg_ts(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_LLM_GUARD_CACHE_TTL_SEC),
+        "cache_ttl_sec": safe_nonneg_float(
+            m.get("post_stop_reentry_cache_ttl_sec"), default=DEFAULT_LLM_GUARD_CACHE_TTL_SEC
+        ),
     }
     if gemini_client is not None:
         return PostStopReentryGuard(gemini_client=gemini_client, **cfg)

@@ -7,7 +7,7 @@ import importlib
 import logging
 from typing import Any, Dict, Optional
 
-from botcore import _parse_bool_flag, load_dotenv, required_float_env, safe_nonneg_ts
+from botcore import _parse_bool_flag, load_dotenv, required_float_env, safe_nonneg_float, safe_nonneg_ts
 from cachepaths import cache_path
 from intelligence.macro.calendar_ssot import (
     headline_effective_ts,
@@ -82,8 +82,8 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         *,
         start_sync: Optional[bool] = None,
     ) -> None:
-        self.fallback_retry_ttl_sec = safe_nonneg_ts(
-            fallback_retry_ttl_sec, required_float_env("MACRO_FALLBACK_RETRY_TTL_SEC")
+        self.fallback_retry_ttl_sec = safe_nonneg_float(
+            fallback_retry_ttl_sec, default=required_float_env("MACRO_FALLBACK_RETRY_TTL_SEC")
         )
         self._last_headlines_digest: str = ""
         self._init_topic_agent_state(

@@ -14,7 +14,6 @@ from botcore import (
     resolve_order_notional,
     resolve_patched_attr,
     safe_nonneg_float,
-    safe_nonneg_ts,
 )
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
@@ -145,7 +144,7 @@ def resolve_llm_guard_cache_ttl(
 ) -> float:
     """Resolve effective LLM guard decision cache TTL (0.0 when custom client/runner is injected)."""
     if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
-        return safe_nonneg_ts(cache_ttl_sec, 0.0)
+        return safe_nonneg_float(cache_ttl_sec, default=0.0)
     return default_ttl_sec if (not explicit_client and getattr(gemini_client, "_custom_runner", None) is None) else 0.0
 
 

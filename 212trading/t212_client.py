@@ -115,7 +115,7 @@ class T212Client:
         )
         self._trade_cache_path: str | None = str(trade_cache_path) if trade_cache_path is not None else None
         self._enable_shared_disk_cache: bool | None = (
-            bool(enable_shared_disk_cache) if enable_shared_disk_cache is not None else None
+            _parse_bool_flag(enable_shared_disk_cache, False) if enable_shared_disk_cache is not None else None
         )
 
     def _shared_cache_enabled(self) -> bool:

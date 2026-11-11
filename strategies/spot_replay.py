@@ -12,6 +12,7 @@ import copy
 import dataclasses
 
 from botcore import (
+    _parse_bool_flag,
     exact_nonneg_int,
     normalize_side,
     require_pos_float,
@@ -293,7 +294,7 @@ def _run_once(
 
         def traced_place(side, vol, price, kind, amount=0.0, market=False, **place_kw):
             nonlocal cash_refusals
-            market = _strat._parse_bool_flag(market, False)
+            market = _parse_bool_flag(market, False)
             side_norm = normalize_side(side)
             vol_f = safe_pos_float(vol, default=None)
             px_f = safe_pos_float(price, default=None)
@@ -311,7 +312,7 @@ def _run_once(
                     "bar": current_bar,
                     "side": side,
                     "kind": kind,
-                    "market": bool(market),
+                    "market": market,
                     "price": round(px_f, 10),
                     "qty": round(vol_f, 10),
                 })

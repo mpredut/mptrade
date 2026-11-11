@@ -197,7 +197,47 @@ def _resolve_module_fn(cls_or_self: Any, attr_name: str, default_fn: Callable[..
     )
 
 
-class TelemetryCacheCollectorInterface(ABC):
+class SyncModeMixin:
+    """Shared producer/consumer sync-mode and runtime network/LLM gate state."""
+
+    start_sync: bool = False
+    _explicit_start_sync: Optional[bool] = None
+
+    def _init_sync_mode(self, start_sync: Optional[bool] = None) -> None:
+        self._explicit_start_sync = None if start_sync is None else _parse_bool_flag(start_sync, False)
+        self.start_sync = bool(self._explicit_start_sync)
+
+    def _resolve_allow_sync_flag(self, explicit_flag: Optional[bool] = None) -> bool:
+        return (
+            _parse_bool_flag(explicit_flag, False)
+            if explicit_flag is not None
+            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
+        )
+
+    def _check_in_memory_fetch_cache(
+        self,
+        *,
+        force_refresh: bool = False,
+        now_ts: Optional[float] = None,
+        allow_network: Optional[bool] = None,
+        offline_fallback_fn: Optional[Callable[[float], Any]] = None,
+    ) -> Tuple[float, bool, Any]:
+        """Resolve ``(now, should_fetch_network, cached_or_fallback_snapshot)`` for in-memory TTL collectors."""
+        now = resolve_now_ts(now_ts)
+        cached = getattr(self, "_cached_snapshot", None)
+        if not self._resolve_allow_sync_flag(allow_network):
+            return now, False, cached or (offline_fallback_fn(now) if callable(offline_fallback_fn) else None)
+        if cached and is_cache_fresh(
+            getattr(self, "_last_fetch_ts", 0.0),
+            now,
+            getattr(self, "cache_ttl_sec", 0.0),
+            force_refresh=force_refresh,
+        ):
+            return now, False, cached
+        return now, True, cached
+
+
+class TelemetryCacheCollectorInterface(SyncModeMixin, ABC):
     """Pure abstract base contract (Level 1) for cache-backed telemetry collectors.
 
     Modeled on ``CacheManagerInterface(ABC)``: encapsulates ``cachedb_dir`` resolution,
@@ -207,12 +247,11 @@ class TelemetryCacheCollectorInterface(ABC):
 
     cls_name = "TelemetryCacheCollectorInterface"
     COLLECTOR_ID: str = ""
-    start_sync: bool = False
 
-    def __init__(self, *, start_sync: bool = False) -> None:
+    def __init__(self, *, start_sync: Optional[bool] = False) -> None:
         if type(self) is TelemetryCacheCollectorInterface:
             raise TypeError("Cannot instantiate abstract class TelemetryCacheCollectorInterface")
-        self.start_sync = bool(start_sync)
+        self._init_sync_mode(start_sync)
 
     @staticmethod
     def resolve_session_policy(symbol: str) -> Any:
@@ -229,34 +268,6 @@ class TelemetryCacheCollectorInterface(ABC):
         call_kwargs.setdefault("persist", False)
         call_kwargs.setdefault("ensure_fresh", False)
         return self.collect(cachedb_dir, symbol, **call_kwargs)
-
-    def _check_in_memory_fetch_cache(
-        self,
-        *,
-        force_refresh: bool = False,
-        now_ts: Optional[float] = None,
-        allow_network: Optional[bool] = None,
-        offline_fallback_fn: Optional[Callable[[float], Any]] = None,
-    ) -> Tuple[float, bool, Any]:
-        """Resolve ``(now, should_fetch_network, cached_or_fallback_snapshot)`` for in-memory TTL collectors."""
-        now = resolve_now_ts(now_ts)
-        exp_sync = getattr(self, "_explicit_start_sync", None)
-        eff_allow_net = (
-            bool(allow_network)
-            if allow_network is not None
-            else (exp_sync if exp_sync is not None else True)
-        )
-        cached = getattr(self, "_cached_snapshot", None)
-        if not eff_allow_net:
-            return now, False, cached or (offline_fallback_fn(now) if callable(offline_fallback_fn) else None)
-        if cached and is_cache_fresh(
-            getattr(self, "_last_fetch_ts", 0.0),
-            now,
-            getattr(self, "cache_ttl_sec", 0.0),
-            force_refresh=force_refresh,
-        ):
-            return now, False, cached
-        return now, True, cached
 
 
 class TelemetryCollectorFactory:
@@ -985,10 +996,14 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         )
         if not isinstance(ctx, dict):
             return None
-        bars = ctx.get("bars") or []
-        mark_px = safe_pos_float(ctx.get("last_price"), default=0.0) or (
-            bars[-1][4] if bars else 0.0
-        )
+        raw_bars = ctx.get("bars")
+        bars = [
+            b
+            for b in (raw_bars if isinstance(raw_bars, (list, tuple)) else ())
+            if isinstance(b, (list, tuple)) and len(b) >= 6
+        ]
+        last_bar_px = safe_pos_float(bars[-1][4], default=0.0) if bars else 0.0
+        mark_px = safe_pos_float(ctx.get("last_price"), default=0.0) or last_bar_px or 0.0
         if require_positive_price and mark_px <= 0.0:
             return None
         if not require_positive_price and mark_px <= 0.0 and not bars:

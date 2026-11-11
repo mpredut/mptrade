@@ -23,6 +23,7 @@ from botcore import (
     resolve_now_ts,
     resolve_patched_attr,
     safe_float,
+    safe_nonneg_float,
     safe_nonneg_ts,
     safe_pos_float,
     split_csv,
@@ -39,7 +40,7 @@ from instrument_registry import (
     is_equity_symbol,
     tracked_price_instruments,
 )
-from intelligence.external.collectors.base_collector import TelemetryCacheCollectorInterface
+from intelligence.external.collectors.base_collector import SyncModeMixin
 from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
@@ -562,7 +563,7 @@ class ExternalTelemetryMixin:
         )
 
 
-class CachedHttpJsonCollector:
+class CachedHttpJsonCollector(SyncModeMixin):
     """Shared base class for HTTP JSON collectors with in-memory TTL caching and stale fallback."""
 
     _USER_AGENT: str = "mptrade-sentiment/1.0"
@@ -579,12 +580,11 @@ class CachedHttpJsonCollector:
         *,
         start_sync: Optional[bool] = None,
     ) -> None:
-        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, default_ttl_sec)
+        self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, default=default_ttl_sec)
         self.endpoint_url = (endpoint_url.strip() if isinstance(endpoint_url, str) else "") or default_endpoint_fn()
         self._cached_snapshot: Any = None
         self._last_fetch_ts: float = 0.0
-        self._explicit_start_sync: Optional[bool] = None if start_sync is None else bool(start_sync)
-        self.start_sync: bool = bool(start_sync) if start_sync is not None else False
+        self._init_sync_mode(start_sync)
 
     def _parse_fetched_payload(self, data: Any, now: float) -> Any:
         raise NotImplementedError
@@ -597,8 +597,7 @@ class CachedHttpJsonCollector:
         allow_network: Optional[bool] = None,
     ) -> Any:
         """Fetch the latest snapshot from ``self.endpoint_url``, respecting cache TTL with stale fallback."""
-        now, should_fetch, ready = TelemetryCacheCollectorInterface._check_in_memory_fetch_cache(
-            self,
+        now, should_fetch, ready = self._check_in_memory_fetch_cache(
             force_refresh=force_refresh,
             now_ts=now_ts,
             allow_network=allow_network,
@@ -644,7 +643,7 @@ class CachedHttpJsonCollector:
         return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=allow_network)
 
 
-class CachedTopicAssessmentAgent:
+class CachedTopicAssessmentAgent(SyncModeMixin):
     """Unified base class for stateful topic-backed macro/sentiment AI assessment agents."""
 
     TOPIC_KEY: str = ""
@@ -656,14 +655,8 @@ class CachedTopicAssessmentAgent:
 
     gemini_client: Any
     cache_ttl_sec: float
-    start_sync: bool = False
-    _explicit_start_sync: Optional[bool] = None
     _cached_assessment: Optional[Any]
     _last_eval_ts: float
-
-    def _init_sync_mode(self, start_sync: Optional[bool] = None) -> None:
-        self._explicit_start_sync = None if start_sync is None else bool(start_sync)
-        self.start_sync = bool(start_sync)
 
     def _init_topic_agent_state(
         self,
@@ -676,18 +669,13 @@ class CachedTopicAssessmentAgent:
     ) -> None:
         self._init_sync_mode(start_sync)
         self.gemini_client = gemini_client
-        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, default_ttl_sec)
+        self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, default=default_ttl_sec)
         setattr(self, self.STATE_FILE_ATTR, state_file)
         self._cached_assessment = None
         self._last_eval_ts = 0.0
         self._load_from_disk()
 
-    def _resolve_allow_llm(self, allow_llm: Optional[bool] = None) -> bool:
-        return bool(
-            allow_llm
-            if allow_llm is not None
-            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
-        )
+    _resolve_allow_llm = SyncModeMixin._resolve_allow_sync_flag
 
     def _effective_state_file(self) -> str:
         raw_f = getattr(self, self.STATE_FILE_ATTR, None) or self.DEFAULT_STATE_FILE

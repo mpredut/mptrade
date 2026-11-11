@@ -283,7 +283,7 @@ def _consume_account_cache_submit_permit(
             and side is not None and not isinstance(side, bool)
             and scope.symbol == str(symbol).strip().upper()
             and scope.side == str(_normalize_side(side))
-            and scope.market is bool(market)
+            and scope.market is market
             and scope.kind == str(kind or "")
             and actual_qty <= scope.max_qty
             and price_is_safe

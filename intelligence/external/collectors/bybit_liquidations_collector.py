@@ -87,7 +87,7 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
         *,
         start_sync: bool = False,
     ) -> None:
-        super().__init__(start_sync=bool(start_sync))
+        super().__init__(start_sync=start_sync)
         self._symbols = parse_symbol_list(symbols) or list(DEFAULT_SYMBOLS)
         self._retention = safe_pos_float(retention_sec, default=MAX_RETENTION_SEC) or MAX_RETENTION_SEC
         # symbol -> deque[(ts, "LONG"|"SHORT", notional_usd)]

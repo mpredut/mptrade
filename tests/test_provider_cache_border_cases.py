@@ -27,7 +27,12 @@ from state_io import previous_generation_path
 import cachepaths
 import intelligence.macro_sentiment_ssot as mss
 from providers.binance_provider import BinanceProvider
-from providers.order_ohlc_utils import derive_venue_128bit_client_order_id, format_venue_intent_client_order_id, resolve_ohlc_time_window_ms
+from providers.order_ohlc_utils import (
+    derive_venue_128bit_client_order_id,
+    format_venue_intent_client_order_id,
+    iter_expired_open_order_ids,
+    resolve_ohlc_time_window_ms,
+)
 from providers.quantity import venue_adjust_partial_sell_quantity, venue_fee_cap_quantity
 from providers import order_id_context as oic
 import order_guard
@@ -1619,6 +1624,135 @@ def test_ws_normalize_headline_age_apply_proposals_and_csv_border_cases(
     cfg_file = tmp_path / "sample.conf"
     cfg_file.write_text("[SEC]\n# BACKTEST: 1.0, , 2.5 , 4.0 # inline\nmt.gain = 2.5\n", encoding="utf-8")
     assert backtest_ranges.scan_backtest_ranges(str(cfg_file)) == {"SEC.mt.gain": ["1.0", "2.5", "4.0"]}
+
+
+def test_expired_orders_sync_mode_trailing_status_and_runtime_flag_border_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Verify Wave 8 border cases across iter_expired_open_order_ids, SyncModeMixin, equity context bars, trailing logs, and RuntimeServices."""
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.macro.daemon_ssot import CachedHttpJsonCollector
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from kraken.trailing_stop import KrakenTrailing
+    from trailing_core import TrailingAdapterBase
+
+    # 1. iter_expired_open_order_ids rejects non-positive/bool/NaN expire_sec and normalizes ms current_time_sec
+    orders = {
+        "ord_old": {"time": 1_700_000_000_000},
+        "ord_fresh": {"time": 1_700_000_090_000},
+    }
+    for bad_exp in (0, 0.0, -5.0, False, True, float("nan"), float("inf"), None):
+        assert iter_expired_open_order_ids(orders, bad_exp, current_time_sec=1_700_000_100.0) == []  # type: ignore[arg-type]
+    for bad_now in (0, -10.0, False, True, float("nan"), None):
+        assert iter_expired_open_order_ids(orders, 30.0, current_time_sec=bad_now) == []  # type: ignore[arg-type]
+    assert iter_expired_open_order_ids(orders, 30.0, current_time_sec=1_700_000_100_000) == ["ord_old"]
+
+    # 2. SyncModeMixin string boolean flags ("false"/"0") and non-timestamp TTL durations (>= 1e11)
+    class _DummyGemini:
+        calls = 0
+
+        def query_json(self, *_a, **_kw):
+            self.calls += 1
+            return {"market_bias": "NEUTRAL"}
+
+    dummy_llm = _DummyGemini()
+    adv = SentimentAdvisor(
+        gemini_client=dummy_llm,  # type: ignore[arg-type]
+        cache_ttl_sec=2e11,
+        cache_file=str(tmp_path / "sentiment_eval.json"),
+        start_sync="false",  # type: ignore[arg-type]
+    )
+    assert adv.start_sync is False
+    assert adv.cache_ttl_sec == pytest.approx(2e11)
+    assert adv.review(now_ts=1_700_000_000.0) is None
+    assert dummy_llm.calls == 0
+
+    adv_default = SentimentAdvisor(
+        gemini_client=dummy_llm,  # type: ignore[arg-type]
+        cache_file=str(tmp_path / "sentiment_eval2.json"),
+    )
+    assert adv_default.review(now_ts=1_700_000_000.0, allow_llm="0") is None  # type: ignore[arg-type]
+    assert dummy_llm.calls == 0
+
+    class _DummyHttpCollector(CachedHttpJsonCollector):
+        def _parse_fetched_payload(self, data, now):
+            return {"ok": True, "ts": now}
+
+    http_col = _DummyHttpCollector(2e11, 60.0, "https://example.invalid/feed", lambda: "", start_sync="false")  # type: ignore[arg-type]
+    assert http_col.start_sync is False
+    assert http_col.cache_ttl_sec == pytest.approx(2e11)
+    assert http_col.fetch(now_ts=1_700_000_000.0) is None
+
+    news_col = NewsFeedCollector(history_file=str(tmp_path / "news_collect.json"), cache_ttl_sec=2e11, start_sync="0")  # type: ignore[arg-type]
+    assert news_col.start_sync is False
+    assert news_col.cache_ttl_sec == pytest.approx(2e11)
+
+    bybit_col = BybitLiquidationCollector(symbols=["BTCUSDT"], start_sync="false")  # type: ignore[arg-type]
+    assert bybit_col.start_sync is False
+    assert resolve_llm_guard_cache_ttl(2e11, False, None, 600.0) == pytest.approx(2e11)
+
+    # 3. _resolve_equity_context_bars_and_price filters malformed bars and NaN/None close prices
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), start_sync=False)
+    monkeypatch.setattr(
+        ob_col,
+        "_fetch_equity_market_context",
+        lambda *_a, **_kw: {"last_price": 0.0, "bars": [[1, 2, 3], (1.0, 2.0, 3.0, 1.5, float("nan"), 10.0)]},
+    )
+    assert ob_col._resolve_equity_context_bars_and_price("AAPL_US_EQ", 1_700_000_000.0) is None
+    res_no_px = ob_col._resolve_equity_context_bars_and_price(
+        "AAPL_US_EQ", 1_700_000_000.0, require_positive_price=False
+    )
+    assert res_no_px is not None and res_no_px[2] == 0.0 and len(res_no_px[1]) == 1
+
+    # 4. TrailingAdapterBase._extract_order_result_status and KrakenTrailing log helpers handle None intent/price
+    assert TrailingAdapterBase._extract_order_result_status(None) == ("PENDING", "orderId=None")
+    assert TrailingAdapterBase._extract_order_result_status(SimpleNamespace(outcome="refused", intent=None)) == (
+        "REFUSED",
+        "None",
+    )
+    logged: list[str] = []
+    kt = object.__new__(KrakenTrailing)
+    kt.log = logged.append  # type: ignore[assignment]
+    kt._log_sell_result(
+        SimpleNamespace(outcome="refused", intent=None),
+        asset="HYPE",
+        pair="HYPEUSD",
+        qty=1.5,
+        price=None,
+        order_price=None,
+        peak=None,
+        trail=15.0,
+        use_market=False,
+    )
+    kt._log_rebuy_result(
+        SimpleNamespace(outcome="pending", intent=None),
+        asset="HYPE",
+        pair="HYPEUSD",
+        qty=1.5,
+        price_ref=0.0,
+        order_price=None,
+    )
+    assert len(logged) == 2 and "@ ~0.0000" in logged[0] and "@ ~0.0000" in logged[1]
+
+    # 5. RuntimeServices & configure_runtime_services coerce string booleans and non-finite retry delays
+    rs = botcore.RuntimeServices(
+        stale_cache_retry_delay_sec=float("nan"),
+        enforce_rth_gate="false",  # type: ignore[arg-type]
+        allow_unmocked_llm_queries="0",  # type: ignore[arg-type]
+    )
+    assert rs.stale_cache_retry_delay_sec == pytest.approx(1.5)
+    assert rs.enforce_rth_gate is False
+    assert rs.allow_unmocked_llm_queries is False
+    saved_unmocked = botcore._RUNTIME_SERVICES.allow_unmocked_llm_queries
+    try:
+        botcore.configure_runtime_services(allow_unmocked_llm_queries="false")
+        assert botcore._RUNTIME_SERVICES.allow_unmocked_llm_queries is False
+    finally:
+        botcore.configure_runtime_services(allow_unmocked_llm_queries=saved_unmocked)
+
 
 
 

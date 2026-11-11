@@ -870,9 +870,11 @@ class TrailingAdapterBase:
 
     @staticmethod
     def _extract_order_result_status(result) -> tuple[str, str]:
-        if result.outcome == "refused":
-            return "REFUSED", str(result.intent.get("refusal_reason"))
-        return "PENDING", f"orderId={result.intent.get('order_id')}"
+        raw_intent = getattr(result, "intent", None)
+        intent = raw_intent if isinstance(raw_intent, dict) else {}
+        if getattr(result, "outcome", None) == "refused":
+            return "REFUSED", str(intent.get("refusal_reason"))
+        return "PENDING", f"orderId={intent.get('order_id')}"
 
     def _log_sell_result(
         self,

@@ -6,6 +6,7 @@ from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
+    _parse_bool_flag,
     is_live_network_backfill_enabled,
     safe_nonneg_float,
 )
@@ -948,6 +949,7 @@ def enrich_cross_venue_trends(
             return raw["items"] if isinstance(raw.get("items"), dict) else raw
         return {}
 
+    allow_net_flag = None if allow_network is None else _parse_bool_flag(allow_network, False)
     trends_items_map, pa_map = _unwrap_items_dict(trends_data), _unwrap_items_dict(priceanalysis_data)
     long_map = _unwrap_items_dict(long_items)
     pa_root_ts = safe_pos_float(priceanalysis_data.get("timestamp") if isinstance(priceanalysis_data, dict) else None, default=0.0) or 0.0
@@ -1100,14 +1102,14 @@ def enrich_cross_venue_trends(
         elif (
             entry.get("weibull_median_d") is None
             and not has_equity_suffix(sym)
-            and allow_network is not False
+            and allow_net_flag is not False
         ):
             try:
                 is_est_patched = (
                     getattr(_surv_mod, "estimate_T", None) is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
                     or getattr(_surv_mod, "fetch_klines", None) is not getattr(_surv_mod, "_ORIG_FETCH_KLINES", None)
                 )
-                if (bool(allow_network) and is_live_network_backfill_enabled()) or is_est_patched:
+                if (bool(allow_net_flag) and is_live_network_backfill_enabled()) or is_est_patched:
                     if isinstance(est_tt := _surv_mod.estimate_T(sym), dict) and est_tt.get("median_d") is not None:
                         entry["weibull_median_d"], entry["weibull_p90_d"] = est_tt.get("median_d"), est_tt.get("p90_d")
                         tt_p_cont = est_tt.get("p_cont") if isinstance(est_tt.get("p_cont"), dict) else None

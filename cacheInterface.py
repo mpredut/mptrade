@@ -324,6 +324,8 @@ class CacheManagerInterface(ABC):
 
     def _rebuild_dict_sec_fetchtimes(self) -> dict:
         """Reconstruct per-symbol fetchtimes (ms minus 60s safety margin) from dict items with second timestamps."""
+        if not isinstance(self.cache, dict) or not self.cache:
+            return {}
         last_times = {}
         for symbol, items in self.cache.items():
             if not isinstance(items, (list, tuple)) or not items:
@@ -342,9 +344,11 @@ class CacheManagerInterface(ABC):
 
     def _rebuild_fetchtimes(self):
         last_times_per_sym = self.rebuild_fetchtimes()
-        if not last_times_per_sym:
+        if not last_times_per_sym and isinstance(self.cache, dict):
             last_times_per_sym = defaultdict(int)
             for symbol, trades in self.cache.items():
+                if not isinstance(trades, (list, tuple)):
+                    continue
                 for trade in trades:
                     time_ = self._entry_timestamp_ms(trade)
                     if time_ > last_times_per_sym[symbol]:

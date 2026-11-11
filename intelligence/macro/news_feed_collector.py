@@ -19,7 +19,7 @@ from botcore import (
     normalize_epoch_sec,
     obj_attr,
     resolve_now_ts,
-    safe_nonneg_ts,
+    safe_nonneg_float,
     safe_pos_float,
 )
 from cachepaths import cache_path, cachedb_root_for_file, resolve_cachedb_filepath
@@ -97,12 +97,11 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         *,
         start_sync: Optional[bool] = None,
     ) -> None:
-        self._explicit_start_sync: Optional[bool] = None if start_sync is None else bool(start_sync)
-        super().__init__(start_sync=bool(start_sync) if start_sync is not None else False)
+        super().__init__(start_sync=start_sync)
         self._explicit_rss_url = rss_url if (isinstance(rss_url, str) and rss_url.strip()) else None
         self.rss_url = self._explicit_rss_url or build_dynamic_rss_url()
         self.rss_urls = tuple(rss_urls) if rss_urls else ()
-        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 60.0)
+        self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, default=60.0)
         self.history_file = history_file
         self.rolling_window_sec = safe_pos_float(rolling_window_sec, DEFAULT_NEWS_ROLLING_WINDOW_SEC)
         self._cached_snapshot: Optional[NewsFeedSnapshot] = None

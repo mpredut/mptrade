@@ -1129,12 +1129,14 @@ def iter_expired_open_order_ids(
     current_time_sec: float,
 ) -> list[Any]:
     """Return order IDs from ``open_orders`` mapping whose timestamp is older than ``expire_sec`` seconds."""
-    if not isinstance(open_orders, Mapping):
+    exp_s = safe_pos_float(expire_sec, default=None)
+    now_s = normalize_epoch_sec(current_time_sec, default=None)
+    if not isinstance(open_orders, Mapping) or exp_s is None or now_s is None:
         return []
     expired_ids: list[Any] = []
     for order_id, order_details in open_orders.items():
         order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
-        if order_time > 0 and (current_time_sec - order_time) > expire_sec:
+        if order_time > 0 and (now_s - order_time) > exp_s:
             expired_ids.append(order_id)
     return expired_ids
 

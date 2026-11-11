@@ -22,7 +22,6 @@ import threading
 import time
 import weakref
 from abc import ABC
-from collections import defaultdict
 from datetime import date
 from typing import Any, Callable, List, Optional, Tuple
 
