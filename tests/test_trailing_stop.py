@@ -8,11 +8,10 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from binance_api.trailing_stop import TrailingStop  # noqa: E402
-from trailing_core import should_sell  # noqa: E402
+from trailing_core import TrailingCore, should_sell
 import binance_api.trailing_stop as binance_ts_mod  # noqa: E402
 from providers.strategy_executor import OrderStatus  # noqa: E402
 from tests.conftest import TrailingTestBase  # noqa: E402
-from trailing_core import TrailingCore
 from types import SimpleNamespace
 from unittest.mock import patch
 

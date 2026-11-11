@@ -9,8 +9,7 @@ import pytest
 
 from offline.backtests import execution_calibration, financial_benchmark
 from offline.research.chop_weight_backtest import run_single_simulation
-from offline.research.hybrid_reentry import harness as hybrid_harness
-from offline.research.hybrid_reentry import report as hybrid_report
+from offline.research.hybrid_reentry import harness as hybrid_harness, report as hybrid_report
 from offline.research.t212_continuous_grid import report as t212_report
 from strategies import spot_engine
 from binance_api import bapi, bapi_trades

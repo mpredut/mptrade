@@ -25,27 +25,40 @@ from intelligence.external.collectors.orderbook_depth_collector import Orderbook
 from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.sentiment.collectors.macro_telemetry_collector import apply_asset_scope_filter
-from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure, load_symbol_price_series
-from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions, harvest_tradable_positions_and_orders, parse_venue_cycle_state
+from intelligence.sentiment.collectors.microstructure_collector import (
+    enrich_24h_and_microstructure,
+    load_symbol_microstructure,
+    load_symbol_price_series,
+)
+from intelligence.sentiment.collectors.portfolio_collector import (
+    harvest_bot_runtime_states,
+    harvest_recent_orders_and_enrich_positions,
+    harvest_tradable_positions_and_orders,
+    parse_venue_cycle_state,
+)
 from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
-from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics, compute_volume_profile_metrics
 from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
 from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
-from orchestratorOS.supervisor.prompt_sections import _format_recent_order_line
+from orchestratorOS.supervisor.prompt_sections import (
+    _format_recent_order_line,
+    _format_tradable_position_line,
+    _format_venue_cycle_line,
+)
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
-from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional, normalize_trading_decisions
+from providers.execution_audit import (
+    build_last_cycle_execution_status,
+    extract_intent_notional,
+    normalize_trading_decisions,
+    summarize_recent_ai_intents,
+)
 from providers.kraken_provider import KrakenProvider
 from providers.quantity import resolve_assets
 from providers.t212_provider import T212Provider
 from types import SimpleNamespace
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
-from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
-from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
 from intelligence.sentiment.evaluators.microstructure_evaluator import compute_liquidation_clusters, enrich_cross_venue_trends, enrich_microstructure_cvd, sync_sibling_symbol_telemetry
-from intelligence.sentiment.evaluators.price_series_evaluator import compute_volume_profile_metrics
 from orchestratorOS.lib.technical_repair_ssot import summarize_fleet_sensor_status
-from orchestratorOS.supervisor.prompt_sections import _format_tradable_position_line, _format_venue_cycle_line
-from providers.execution_audit import summarize_recent_ai_intents
 
 
 @pytest.fixture

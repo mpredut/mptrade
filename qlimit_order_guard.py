@@ -34,7 +34,7 @@ from guard_hierarchy import (
     validate_guard_mode_cfg,
 )
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-from intelligence.internal.guards.guard_decision import BrakeAction
+from intelligence.internal.guards.guard_decision import BrakeAction, OrderGuardEvaluatorBase, OrderGuardEvaluatorFactory
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 import intelligence.internal.state.survival as _survival
 from intelligence.internal.state.survival import (
@@ -205,10 +205,6 @@ def check_qlimit2_order_guards(
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 
 
-from intelligence.internal.guards.guard_decision import (
-    OrderGuardEvaluatorBase,
-    OrderGuardEvaluatorFactory,
-)
 
 
 class QLimit2OrderGuardEvaluator(OrderGuardEvaluatorBase):

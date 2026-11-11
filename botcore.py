@@ -100,6 +100,7 @@ class FileLock:
 from cachepaths import (
     _coerce_int,
     _parse_bool_flag,
+    cache_path,
     clean_finite_floats,
     exact_int,
     exact_nonneg_int,
@@ -1533,7 +1534,6 @@ def _sign_ed25519(signing_key, payload: str) -> str:
     return base64.b64encode(signing_key.sign(raw_bytes).signature).decode("ascii")
 
 
-from cachepaths import cache_path
 
 
 def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:

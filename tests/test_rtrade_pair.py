@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock, patch as _patch
 
 from providers.strategy_executor import SubmissionRefused
 from strategies.rtrade_pair import (
@@ -990,10 +990,8 @@ import json as _json
 import os as _os
 import tempfile as _tempfile
 from pathlib import Path as _Path
-from unittest.mock import patch as _patch
 import rtrade as _rtrade
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
-from unittest.mock import MagicMock
 
 _RTRADE_ROOT = _Path(__file__).resolve().parents[1]
 

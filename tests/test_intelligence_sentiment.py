@@ -27,31 +27,56 @@ from intelligence.sentiment.guards.panic_washout_guard import (
 from intelligence.composite import CompositeMarketIntelligence
 from datetime import datetime, timezone
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
-from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval, parse_cited_taker_ratio
+from intelligence.macro.calendar_ssot import (
+    compute_dynamic_geopolitical_interval,
+    compute_dynamic_sentiment_interval,
+    parse_cited_taker_ratio,
+    resolve_macro_economic_calendar,
+)
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-from intelligence.macro.lexicon_ssot import filter_valid_severity_keywords, is_excluded_reference_news_item
+from intelligence.macro.lexicon_ssot import (
+    filter_valid_severity_keywords,
+    has_financial_or_geopolitical_context,
+    headlines_are_semantic_duplicates,
+    is_excluded_reference_news_item,
+    is_off_topic_general_news_title,
+)
 from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
 from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure, load_symbol_microstructure, load_symbol_price_series
-from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders
+from intelligence.sentiment.collectors.portfolio_collector import (
+    harvest_recent_orders_and_enrich_positions,
+    harvest_tradable_positions_and_orders,
+)
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import enrich_sentiment_advisor_live_flow_divergence
-from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends, enrich_microstructure_cvd, sync_sibling_symbol_telemetry, update_microstructure_cycle_deltas
+from intelligence.sentiment.evaluators.microstructure_evaluator import (
+    compute_liquidation_clusters,
+    enrich_cross_venue_trends,
+    enrich_microstructure_cvd,
+    reconcile_sibling_flow_and_liq_regimes,
+    sync_sibling_symbol_telemetry,
+    update_microstructure_cycle_deltas,
+)
 from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles, extract_symbol_recent_fills, reconcile_venue_cycles_with_recent_orders
-from intelligence.sentiment.evaluators.price_series_evaluator import _apply_24h_series_enrichment, _compute_short_slopes_from_series, apply_short_trend_item, recalculate_live_price_geometry
-from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+from intelligence.sentiment.evaluators.price_series_evaluator import (
+    _apply_24h_series_enrichment,
+    _compute_short_slopes_from_series,
+    apply_short_trend_item,
+    compute_24h_price_metrics,
+    compute_volume_profile_metrics,
+    recalculate_live_price_geometry,
+)
+from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+    build_cross_market_context,
+    compute_enterprise_portfolio_risk_metrics,
+    enrich_open_limit_orders_tca,
+)
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files, harvest_log_anomalies_from_dirs
 from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section, _format_portfolio_section, _format_recent_order_line, _format_tradable_position_line
-from providers.execution_audit import extract_intent_notional
+from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
 from types import SimpleNamespace
-from intelligence.macro.calendar_ssot import compute_dynamic_geopolitical_interval, resolve_macro_economic_calendar
-from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context, headlines_are_semantic_duplicates, is_off_topic_general_news_title
-from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
-from intelligence.sentiment.evaluators.microstructure_evaluator import compute_liquidation_clusters, reconcile_sibling_flow_and_liq_regimes
-from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics, compute_volume_profile_metrics
-from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics, enrich_open_limit_orders_tca
-from providers.execution_audit import build_last_cycle_execution_status
 
 
 class TestFearGreedCollector:

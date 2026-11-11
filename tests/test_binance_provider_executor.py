@@ -10,9 +10,13 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from providers import market_api  # noqa: E402
 from providers.market_api import BinanceProvider  # noqa: E402
-from providers.strategy_executor import (  # noqa: E402
-    StrategyExecutor, PairPrecision, ProviderError,
+from providers.strategy_executor import (
+    OrderReconciliationCapabilities,
+    PairPrecision,
+    ProviderError,
+    StrategyExecutor,
     SubmissionRefused,
+    candle_interval,
 )
 
 
@@ -217,12 +221,6 @@ from providers.quantity import (
 )
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
-from providers.strategy_executor import (
-    OrderReconciliationCapabilities,
-    PairPrecision,
-    StrategyExecutor,
-    candle_interval,
-)
 from providers.t212_provider import T212Provider
 
 CONTRACT_METHODS = (

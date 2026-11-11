@@ -60,8 +60,7 @@ from botcore import (  # noqa: E402
     safe_pos_float,
 )
 from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
-from strategies import spot_engine as strat  # noqa: E402
-from strategies import spot_replay as rp  # noqa: E402
+from strategies import spot_engine as strat, spot_replay as rp
 prepare_shadow_runtime(ROOT, HERE)
 
 DEFAULT_ENV = os.path.join(HERE, ".env")

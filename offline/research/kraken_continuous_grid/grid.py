@@ -34,8 +34,7 @@ from botcore import (
     safe_pos_float,
 )
 from state_io import append_jsonl_record, read_jsonl_dicts
-from strategies import spot_engine as strat  # noqa: E402
-from strategies import spot_replay as rp  # noqa: E402
+from strategies import spot_engine as strat, spot_replay as rp
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_layered_env_config  # noqa: E402
 

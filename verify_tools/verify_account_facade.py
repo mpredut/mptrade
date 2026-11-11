@@ -21,8 +21,7 @@ import sys
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-from binance_api import bapi as api                  # noqa: E402
-from binance_api import bapi_allorders as apiorders  # noqa: E402
+from binance_api import bapi as api, bapi_allorders as apiorders
 from providers.base import (
     extract_order_price,
     extract_timestamp_ms,

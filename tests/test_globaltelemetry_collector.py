@@ -10,13 +10,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
-from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
 from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
 from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 from cacheaccount import CacheTradeManager
-from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 from state_io import save_json_state
 from intelligence.external.collectors.base_collector import TelemetryCacheCollectorInterface, TelemetryCollectorFactory
 from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard

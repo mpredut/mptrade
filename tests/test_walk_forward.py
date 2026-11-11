@@ -15,13 +15,13 @@ from offline.runners.walk_forward import (
     VENUE_RUNNER_MODULES,
 )
 from offline.runners.walk_forward_compare import (
+    DEFAULT_FEE_STRESS,
+    _build_venue_evaluator,
     _detect_venue,
     _markdown,
     default_candidates,
-    DEFAULT_FEE_STRESS,
 )
 import offline.runners.kraken_walk_forward_compare as kraken_compare
-from offline.runners.walk_forward_compare import _build_venue_evaluator
 
 
 class WalkForwardSplitsTest(unittest.TestCase):

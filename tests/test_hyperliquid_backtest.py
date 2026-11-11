@@ -10,7 +10,7 @@ _HL_DIR = os.path.join(_ROOT, "hyperliquid")
 if _HL_DIR not in sys.path:
     sys.path.insert(0, _HL_DIR)
 
-from botcore import load_local_module  # noqa: E402
+from botcore import load_local_module
 
 hl_backtest = load_local_module(_HL_DIR, "backtest", module_key="hl_backtest_module", reload=True)
 hl_replay = load_local_module(_HL_DIR, "replay", module_key="hl_replay_module", reload=True)
@@ -865,7 +865,6 @@ def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
 import json as _json
 import time as _time
 import unittest as _unittest
-from botcore import load_local_module
 from unittest.mock import patch
 
 _DN_DIR = os.path.join(_ROOT, "archive", "hyperliquid", "delta_neutral")

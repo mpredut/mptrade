@@ -16,7 +16,7 @@ import glob
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch, ANY
+from unittest.mock import ANY, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
@@ -1878,10 +1878,8 @@ class TestOrderRollback(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 from active_intents import build_active_intent_index, format_summary
-from guard_hierarchy import normalize_bypassed_guards
+from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 from types import SimpleNamespace
-from unittest.mock import MagicMock
-from guard_hierarchy import GUARD_REGISTRY
 
 
 def _write_intent_file(path, payload, *, lines=False):

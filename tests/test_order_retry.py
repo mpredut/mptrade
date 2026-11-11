@@ -13,8 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import order_retry as oq
-from providers.strategy_executor import OrderStatus
-from providers.strategy_executor import OrderReconciliationCapabilities
+from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
 from types import SimpleNamespace
 
 

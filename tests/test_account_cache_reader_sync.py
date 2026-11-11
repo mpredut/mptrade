@@ -7,7 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
@@ -16,7 +16,6 @@ from binance_api import bapi_ws_bridge
 import account_cache_health as health
 import cacheManager as cm
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 
 def _order(order_id, timestamp):

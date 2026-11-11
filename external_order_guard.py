@@ -43,7 +43,12 @@ from intelligence.external.collectors.base_collector import (
 import intelligence.external.guards.funding_crowding_guard as fcg
 import intelligence.external.guards.orderbook_wall_guard as owg
 import intelligence.external.guards.whale_divergence_guard as wdg
-from intelligence.internal.guards.guard_decision import BrakeAction, fetch_guard_snapshot
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+    fetch_guard_snapshot,
+)
 
 _whale_collector = _READONLY_COLLECTOR_SINGLETONS.get("_whale_collector")
 _orderbook_collector = _READONLY_COLLECTOR_SINGLETONS.get("_orderbook_collector")
@@ -307,10 +312,6 @@ def resolve_whale_spread_adjustment(
     return base_adjustment
 
 
-from intelligence.internal.guards.guard_decision import (
-    OrderGuardEvaluatorBase,
-    OrderGuardEvaluatorFactory,
-)
 
 
 class ExternalOrderGuardsEvaluator(OrderGuardEvaluatorBase):

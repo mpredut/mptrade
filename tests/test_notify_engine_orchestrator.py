@@ -11,9 +11,15 @@ import tempfile
 import unittest
 from unittest import mock
 
-from notify_engine.alertnotifiers import AlertNotifier, notify
+from notify_engine.alertnotifiers import (
+    AlertNotifier,
+    _mark_provider_daily_limit,
+    notify,
+    pass_common_gate,
+    pop_due_bulk_batch,
+)
 from notify_engine.server import NotificationServer, _topic_for_category
-from market_monitor.pricechecker import PriceAlert
+from market_monitor.pricechecker import PriceAlert, PriceChecker
 
 
 class TestNotifyEngineOrchestrator(unittest.TestCase):
@@ -1188,8 +1194,6 @@ for _sub in (("orchestratorOS", "lib"), ("orchestratorOS", "livecheck")):
 import os_resources_watchdog as wd  # noqa: E402
 import watchdog_common as wc  # noqa: E402
 from market_monitor import alerts_config
-from market_monitor.pricechecker import PriceChecker
-from notify_engine.alertnotifiers import _mark_provider_daily_limit, pass_common_gate, pop_due_bulk_batch
 
 
 class _WatchdogResp:

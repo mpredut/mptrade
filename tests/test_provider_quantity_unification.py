@@ -5,20 +5,25 @@ filter refusal, and available-balance order placement across all providers.
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, patch as _patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from binance_api import bapi_placeorder as po
 from instrument import Instrument
-from providers.base import MarketDataProvider
+from providers.base import MarketDataProvider, aggregate_fills_by_order_id
 from providers.kraken_provider import KrakenProvider
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.market_api import MarketApi
-from providers.quantity import decide_quantity
+from providers.quantity import (
+    balance_cap_quantity,
+    decide_quantity,
+    fee_cap_quantity,
+    resolve_assets,
+)
 from providers.replay_provider import ReplayMarketDataProvider
-from providers.strategy_executor import PairPrecision
+from providers.strategy_executor import PairPrecision, SubmissionOutcome
 from providers.t212_provider import T212Provider
 
 
@@ -359,18 +364,9 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
 
 
-from types import SimpleNamespace as _SimpleNamespace
-from unittest.mock import patch as _patch
+from types import SimpleNamespace, SimpleNamespace as _SimpleNamespace
 import order_guard as _order_guard
-from providers.quantity import (
-    balance_cap_quantity,
-    fee_cap_quantity,
-    resolve_assets,
-)
 from providers import base as pbase, order_ohlc_utils as oou
-from providers.base import aggregate_fills_by_order_id
-from providers.strategy_executor import SubmissionOutcome
-from types import SimpleNamespace
 
 
 class _QtyDecisionFakeProvider(MarketDataProvider):

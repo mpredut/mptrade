@@ -18,7 +18,11 @@ from strategies.position_exit_manager import (
     ReentrySnapshot,
 )
 from strategies.spot_engine import StratParams, Strategy
-from strategies.spot_replay import run_replay
+from strategies.spot_replay import (
+    StratParams as _ReplayStratParams,
+    make_spot_replay_adapter,
+    run_replay,
+)
 
 
 def _sample_ohlc(length: int = 40, base_price: float = 100.0) -> list[tuple[float, float, float, float]]:
@@ -315,11 +319,6 @@ import pytest
 from binance_api.market_data import (
     fetch_ohlc_candles,
     parse_interval_minutes,
-)
-from strategies.spot_replay import (
-    StratParams as _ReplayStratParams,
-    make_spot_replay_adapter,
-    run_replay,
 )
 from offline.backtests.evaluation import evaluate_segment, evaluate_walk_forward
 from offline.backtests.metrics import validate_replay_metrics

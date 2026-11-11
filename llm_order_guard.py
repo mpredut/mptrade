@@ -44,7 +44,7 @@ from guard_hierarchy import (
     resolve_high_stake_min_notional_usd,
     validate_guard_mode_cfg,
 )
-from intelligence.internal.guards.guard_decision import BrakeAction
+from intelligence.internal.guards.guard_decision import BrakeAction, OrderGuardEvaluatorBase, OrderGuardEvaluatorFactory
 
 logger = logging.getLogger("llm_order_guard")
 
@@ -453,10 +453,6 @@ def check_llm_order_guards(
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 
 
-from intelligence.internal.guards.guard_decision import (
-    OrderGuardEvaluatorBase,
-    OrderGuardEvaluatorFactory,
-)
 
 
 class LLMOrderGuardsEvaluator(OrderGuardEvaluatorBase):

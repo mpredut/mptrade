@@ -20,7 +20,7 @@ from intelligence.internal.state.persistence import (  # noqa: E402
     calculate_mann_kendall,
     classify_hurst_regime,
 )
-from priceAnalysis import detect_long_term_trend  # noqa: E402
+from priceAnalysis import detect_long_term_trend, get_trade_weight
 
 H = 3600.0
 
@@ -268,7 +268,6 @@ from unittest.mock import patch
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 import priceAnalysis as pa
-from priceAnalysis import get_trade_weight
 
 
 def _uniform_series(days=20, step_sec=300.0, slope_per_day=1.0, base=100.0, end=None):

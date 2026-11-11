@@ -18,9 +18,8 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from market_regime import MarketRegimeDecision
 from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError
-from strategies import spot_engine as strat
+from strategies import spot_engine as strat, spot_rules as sr
 from test_kraken_strategy_provider_live import FakeExecutor, _strategy
-from strategies import spot_rules as sr
 from strategies.spot_engine import Strategy
 from types import SimpleNamespace
 

@@ -16,8 +16,7 @@ sys.modules.setdefault("bapi", mock_bapi)
 sys.modules.setdefault("bapi_trades", MagicMock())
 sys.modules.setdefault("bapi_allorders", MagicMock())
 
-from binance_api import bapi_placeorder as po
-from binance_api import bapi
+from binance_api import bapi, bapi_placeorder as po
 from providers.market_api import BinanceProvider
 from providers.strategy_executor import (
     ProviderError,
