@@ -27,6 +27,7 @@ from intelligence.internal.state.volatility import (
 from providers.base import MarketDataProvider, normalize_side
 from providers.order_ohlc_utils import clean_order_id
 from .position_exit_manager import PositionExitManager, PositionSnapshot, ReentrySnapshot, is_stop_exit_kind
+from .spot_rules import _iter_valid_shadow_prices
 from .state_store import (
     JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
     compute_adaptive_reentry_pullback_pct, find_open_order, update_post_sell_anchors,
@@ -743,20 +744,10 @@ class BaseSpotMixin:
                 self._shadow_vol_cache_val = val
                 self._cache_store(BaseSpotMixin._SHADOW_VOL_CACHE, cache_key, val)
             return val
-        clean_pts = []
-        for item in sp:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                tf = safe_float(item[0], default=None)
-                pf = safe_pos_float(item[1], default=None)
-                if tf is not None and pf is not None:
-                    if tf >= 1e11:
-                        tf /= 1000.0
-                    clean_pts.append((tf, pf))
+        clean_pts = _iter_valid_shadow_prices(sp)
         n_clean = len(clean_pts)
         if n_clean < 20:
             return None
-        if any(clean_pts[i][0] > clean_pts[i + 1][0] for i in range(n_clean - 1)):
-            clean_pts.sort(key=lambda x: x[0])
         mean_dt = (clean_pts[-1][0] - clean_pts[0][0]) / (n_clean - 1)
         if mean_dt <= 0:
             return None

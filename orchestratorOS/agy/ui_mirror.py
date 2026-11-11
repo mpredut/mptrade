@@ -6,6 +6,7 @@ on the next idle `manage_agy.sh ui-sync` restart.
 """
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import logging
 import os

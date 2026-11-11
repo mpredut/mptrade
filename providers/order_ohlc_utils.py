@@ -838,3 +838,33 @@ def summarize_order_position(buy_orders: Any, sell_orders: Any) -> dict[str, Any
         "sell_count": len(valid_sells),
         "last_buy_px": last_buy_px,
     }
+
+
+def get_cached_pair_info(candidates: Any, cache_dict: dict | None = None) -> dict | None:
+    """Return cached AssetPairs metadata for the first matching candidate without network I/O."""
+    if not isinstance(cache_dict, dict):
+        return None
+    cands = tuple(c for c in (candidates or ()) if isinstance(c, str) and c)
+    if not cands:
+        return None
+
+    def _cache_val(ckey: object) -> object:
+        hit = cache_dict.get(ckey)
+        return hit[1] if isinstance(hit, tuple) and len(hit) >= 2 else None
+
+    p_meta = next((m for kc in cands if isinstance((m := _cache_val(f"pair:{kc}")), dict)), None)
+    if p_meta is None:
+        p_meta = next(
+            (
+                v
+                for kc in cands
+                if isinstance((ap_res := _cache_val(("AssetPairs", (("pair", kc),)))), dict)
+                for v in ap_res.values()
+                if isinstance(v, dict)
+            ),
+            None,
+        )
+    if p_meta is None and isinstance((ap_all_res := _cache_val(("AssetPairs", ()))), dict):
+        p_meta = next((ap_all_res[kc] for kc in cands if isinstance(ap_all_res.get(kc), dict)), None)
+    return p_meta if isinstance(p_meta, dict) else None
+

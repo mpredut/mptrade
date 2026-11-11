@@ -1154,6 +1154,12 @@ def _restore_reentry_state(symbol: str, prev_reentry_state: dict, *, save: bool 
             _save_mt_state()
 
 
+def _resolve_mt_buy_qty(
+    current_price: float, buy_budget: Optional[float], buy_qty_cfg: Optional[float], fallback_qty: float = 1.0
+) -> float:
+    return round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or fallback_qty), 6)
+
+
 def _apply_post_stop_ai_guard(
     symbol: str, current_price: float, sell_price: float, sell_time: float,
     reentry_snap: ReentrySnapshot, buy_budget: Optional[float], buy_qty_cfg: Optional[float],
@@ -1178,7 +1184,7 @@ def _apply_post_stop_ai_guard(
             _POST_STOP_AI_NOT_ENFORCED.add(symbol)
         raw_trough = safe_pos_float(reentry_snap.post_sell_trough, default=None)
         _trough_px = raw_trough if raw_trough is not None else min(sell_price, current_price)
-        _est_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+        _est_qty = _resolve_mt_buy_qty(current_price, buy_budget, buy_qty_cfg, qty)
         if _has_live_quantity_policy(provider):
             try:
                 q_dec, _ = _eval_reentry_buy_quantity_decision(
@@ -1543,7 +1549,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         qty = 1
         _effective_held_qty = max(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
         _pos_value = _effective_held_qty * current_price
-        _initial_buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+        _initial_buy_qty = _resolve_mt_buy_qty(current_price, buy_budget, buy_qty_cfg, qty)
         _initial_projected_value = _pos_value + (_initial_buy_qty * current_price)
         if max_budget and _initial_projected_value > max_budget:
             _restore_reentry_state(symbol, prev_reentry_state)
@@ -1558,14 +1564,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 _restore_reentry_state(symbol, prev_reentry_state)
                 return
             print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
-            _POST_STOP_AI_APPLIED_SCALE.pop(symbol, None)
-            if _is_simulated_env_or_inst(inst):
-                allowed = True
-            else:
-                allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
-                    symbol, current_price, sell_price, sell_time, reentry_snap,
-                    buy_budget, buy_qty_cfg, qty, inst=inst,
-                )
+            allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
+                symbol, current_price, sell_price, sell_time, reentry_snap,
+                buy_budget, buy_qty_cfg, qty, inst=inst,
+            )
             _reentry_applied_scale = float(_POST_STOP_AI_APPLIED_SCALE.pop(symbol, 1.0) or 1.0)
             if not allowed:
                 _restore_reentry_state(symbol, prev_reentry_state)
@@ -1573,7 +1575,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         else:
             print(f"Price decreased with {reentry_snap.sale_drop_ratio * 100}% by more than {gain_threshold * 100}% versus sell price: Placing buy order")
 
-        _buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+        _buy_qty = _resolve_mt_buy_qty(current_price, buy_budget, buy_qty_cfg, qty)
         _projected_value = _pos_value + (_buy_qty * current_price)
         if max_budget and _projected_value > max_budget:
             _restore_reentry_state(symbol, prev_reentry_state, save=False)

@@ -131,6 +131,14 @@ def _normalize_signal_trend(raw: object) -> str:
     return normalize_trend_direction(raw, default="neutral", allow_long_short=True) or "neutral"
 
 
+def classify_fast_slow_closes(win_fast, win_slow, band: float) -> tuple[float, float, float, str]:
+    mf = statistics.fmean(win_fast)
+    ms = statistics.fmean(win_slow)
+    diff = (mf - ms) / ms if ms else 0.0
+    trend = "up" if diff > band else "down" if diff < -band else "neutral"
+    return mf, ms, diff, trend
+
+
 def _builtin_trend(client, coin: str) -> dict:
     fast = required_int_env("SIGNAL_FAST_H")
     slow = required_int_env("SIGNAL_SLOW_H")
@@ -145,10 +153,7 @@ def _builtin_trend(client, coin: str) -> dict:
     ]
     if len(closes) < max(fast, slow):
         return {**NEUTRAL, "source": "builtin(insuf. data)"}
-    mf = statistics.fmean(closes[-fast:])
-    ms = statistics.fmean(closes[-slow:])
-    diff = (mf - ms) / ms if ms else 0.0
-    trend = "up" if diff > band else "down" if diff < -band else "neutral"
+    mf, ms, diff, trend = classify_fast_slow_closes(closes[-fast:], closes[-slow:], band)
     conf = round(min(1.0, abs(diff) / (band * 3)), 2) if band > 0 else 0.0
     return {"trend": trend, "confidence": conf, "source": "builtin",
             "detail": f"avg{fast}h={mf:.3f} avg{slow}h={ms:.3f} diff={diff*100:+.2f}%"}

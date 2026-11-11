@@ -164,8 +164,7 @@ def inspect_fleet(json_output: bool = False):
     for sym in ("BTCUSDC", "TAOUSDC", "HYPEUSDC"):
         ob = ssh_cat(cache_path(f"telemetry/orderbook_depth_{sym}.json"))
         whale = ssh_cat(cache_path(f"telemetry/whale_snapshot_{sym}.json"))
-        _, px_raw = extract_current_price_item(prices_data.get(sym))
-        px_val = safe_float(px_raw, None) if px_raw > 0.0 else None
+        px_val = extract_current_price_item(prices_data.get(sym))
 
         entry_dict = {}
         if px_val is not None:

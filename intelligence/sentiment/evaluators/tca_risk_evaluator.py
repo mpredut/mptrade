@@ -9,7 +9,6 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     compatible_quote_suffixes,
-    compute_venue_nav_breakdown,
     ensure_equity_suffix,
     filter_asset_class_variants,
     has_equity_suffix,
@@ -18,6 +17,7 @@ from cachepaths import (
 )
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from botcore import (
+    compute_venue_nav_breakdown,
     normalize_side,
     safe_nonneg_float,
 )

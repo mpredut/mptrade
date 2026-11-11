@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
-    compute_venue_nav_breakdown,
     has_equity_suffix,
     normalize_venue_name,
 )
@@ -16,7 +15,7 @@ from intelligence.macro.calendar_ssot import (
     parse_cited_cvd_usd,
     parse_cited_taker_ratio,
 )
-from botcore import safe_nonneg_float
+from botcore import compute_venue_nav_breakdown, safe_nonneg_float
 from intelligence.macro_sentiment_ssot import (
     get_cross_asset_regimes,
     get_deribit_options_currencies,

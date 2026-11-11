@@ -1102,7 +1102,7 @@ class TradingBot:
                     if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not is_opp_filled():
                         print(f"[{self.symbol}] Aborting {side} loop because {opp_side} worker exited without fill.")
                         return _complete_followup()
-                    print(f"[{self.symbol}] Order {side} failed, retryed {failure_count} times. Retrying again ...")
+                    print(f"[{self.symbol}] Order {side} failed, retried {failure_count} times. Retrying again ...")
                     _touch_rtrade_heartbeat()
                     time.sleep(WAIT_FOR_ORDER)
                     failure_count += 1
@@ -1145,7 +1145,7 @@ class TradingBot:
                     and not are_close(current_price, filled_opp_price, RTRADE_BAD_DAY_TOLERANCE_PCT)
                 )
                 if bad_day:
-                    print(f"[{self.symbol}] Bed day :-(. Trying {side} at current price {'-' if is_buy else '+'} x2 {format_price_log(current_price)}")
+                    print(f"[{self.symbol}] Bad day :-(. Trying {side} at current price {'-' if is_buy else '+'} x2 {format_price_log(current_price)}")
                     adjustment_percent = RTRADE_BAD_DAY_MULTIPLIER * self.DEFAULT_ADJUSTMENT_PERCENT
                 aborting_unfilled = getattr(self, "_round_aborted", False) and not is_opp_filled()
                 if not aborting_unfilled:
@@ -1295,15 +1295,18 @@ class TradingBot:
                 return True
         return False
 
-    def _run_coordinator_forever(self):
-        pair_store = getattr(self, "pair_store", None) or RTradePairStore()
-        venue = _LivePairVenue(self.symbol, pair_store=pair_store)
-        policy = PairPolicy(
-            adjustment_fraction=self.DEFAULT_ADJUSTMENT_PERCENT,
+    def _build_pair_policy(self, adjustment_fraction: float) -> PairPolicy:
+        return PairPolicy(
+            adjustment_fraction=adjustment_fraction,
             quote_ttl_sec=WAIT_FOR_ORDER, poll_sec=RTRADE_PAIR_POLL_SEC,
             fast_fill_ratio=RTRADE_FAST_FILL_RATIO, min_edge_fraction=RTRADE_MIN_EDGE_PCT,
             shock_hard_stop_fraction=RTRADE_SHOCK_HARD_STOP_PCT, hard_stop_fraction=RTRADE_HARD_STOP_PCT,
         )
+
+    def _run_coordinator_forever(self):
+        pair_store = getattr(self, "pair_store", None) or RTradePairStore()
+        venue = _LivePairVenue(self.symbol, pair_store=pair_store)
+        policy = self._build_pair_policy(self.DEFAULT_ADJUSTMENT_PERCENT)
         if RTRADE_PAIR_MAX_ACTIVE_ROUNDS < 1:
             raise ValueError("RTRADE_PAIR_MAX_ACTIVE_ROUNDS must be >= 1")
         if RTRADE_PAIR_START_INTERVAL_SEC <= 0:
@@ -1459,12 +1462,7 @@ class TradingBot:
                         round_policy = (
                             policy
                             if eff_adjustment == self.DEFAULT_ADJUSTMENT_PERCENT
-                            else PairPolicy(
-                                adjustment_fraction=eff_adjustment,
-                                quote_ttl_sec=WAIT_FOR_ORDER, poll_sec=RTRADE_PAIR_POLL_SEC,
-                                fast_fill_ratio=RTRADE_FAST_FILL_RATIO, min_edge_fraction=RTRADE_MIN_EDGE_PCT,
-                                shock_hard_stop_fraction=RTRADE_SHOCK_HARD_STOP_PCT, hard_stop_fraction=RTRADE_HARD_STOP_PCT,
-                            )
+                            else self._build_pair_policy(eff_adjustment)
                         )
                         coordinator = PairCoordinator(venue, round_qty, round_policy, start_side=start_side)
                         outcome = coordinator.start(current_price, pair_id=reserved_pair_id)

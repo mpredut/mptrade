@@ -49,6 +49,7 @@ from .order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
     extract_timestamp_ms,
+    get_cached_pair_info,
     normalize_order,
     require_clean_order_id,
     resolve_market_flag,
@@ -1285,8 +1286,6 @@ class KrakenProvider(MarketDataProvider):
                     "_CACHE", None, modules=("kraken_client", "kraken.kraken_client")
                 )
             if isinstance(cache_dict, dict):
-                from kraken.kraken_client import get_cached_pair_info
-
                 p_meta = get_cached_pair_info(kr_cands, cache_dict)
         if isinstance(p_meta, dict):
             for fee_key, out_key in (("fees_maker", "maker_fee_bps"), ("fees", "taker_fee_bps")):

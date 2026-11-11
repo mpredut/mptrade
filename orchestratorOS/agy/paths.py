@@ -28,20 +28,22 @@ def expand_config_path(raw_path: str) -> str:
     return os.path.expanduser(os.path.expandvars(cleaned)) if cleaned else ""
 
 
-def resolve_bot_cli_base(cli_base: Optional[str] = None) -> str:
-    """Antigravity store used by autonomous LLM calls: explicit path or AGY_BOT_HOME/.gemini/antigravity-cli."""
-    expanded = expand_config_path(cli_base) if isinstance(cli_base, (str, os.PathLike)) else ""
+def _expand_or_env(override: Optional[str], env_key: str, *subpaths: str) -> str:
+    expanded = expand_config_path(override) if isinstance(override, (str, os.PathLike)) else ""
     if expanded:
         return expanded
-    return os.path.join(expand_config_path(required_env("AGY_BOT_HOME")), AGY_STORE_SUBDIR)
+    base = expand_config_path(required_env(env_key))
+    return os.path.join(base, *subpaths) if subpaths else base
+
+
+def resolve_bot_cli_base(cli_base: Optional[str] = None) -> str:
+    """Antigravity store used by autonomous LLM calls: explicit path or AGY_BOT_HOME/.gemini/antigravity-cli."""
+    return _expand_or_env(cli_base, "AGY_BOT_HOME", AGY_STORE_SUBDIR)
 
 
 def resolve_ui_cli_base(ui_cli_base: Optional[str] = None) -> str:
     """Antigravity store served by the Web UI daemon (AGY_UI_CLI_BASE)."""
-    expanded = expand_config_path(ui_cli_base) if isinstance(ui_cli_base, (str, os.PathLike)) else ""
-    if expanded:
-        return expanded
-    return expand_config_path(required_env("AGY_UI_CLI_BASE"))
+    return _expand_or_env(ui_cli_base, "AGY_UI_CLI_BASE")
 
 
 def resolve_agy_bot_bin(cli_path: Optional[str] = None) -> str:
@@ -49,10 +51,7 @@ def resolve_agy_bot_bin(cli_path: Optional[str] = None) -> str:
 
     Existence is checked by the caller at invocation time (the CLI may be absent on CI hosts).
     """
-    expanded = expand_config_path(cli_path) if isinstance(cli_path, (str, os.PathLike)) else ""
-    if expanded:
-        return expanded
-    return expand_config_path(required_env("AGY_BOT_BIN"))
+    return _expand_or_env(cli_path, "AGY_BOT_BIN")
 
 
 def visible_conversations_dir(cli_base: str) -> str:

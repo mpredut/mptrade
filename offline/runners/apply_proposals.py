@@ -25,8 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import _parse_bool_flag, load_env_stack, parse_dotenv, safe_nonneg_float  # noqa: E402
-from lock.cooldown import FileLock  # noqa: E402
+from botcore import FileLock, _parse_bool_flag, load_env_stack, parse_dotenv, safe_nonneg_float  # noqa: E402
 from state_io import parse_json_payload  # noqa: E402
 
 # Load .env + config.env BEFORE importing scheduled_pilot so PILOT_* thresholds and

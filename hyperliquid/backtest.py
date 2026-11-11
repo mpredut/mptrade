@@ -73,9 +73,9 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
     band_f = safe_float(band, default=0.0)
     win_f = safe_pos_float(win_h, default=24.0)
     step_f = safe_pos_float(step_h, default=8.0)
-    detect_fn = None
-    if src == "analysis":
-        detect_fn = load_local_module(_HERE, "signals").detect_long_term_trend
+    signals_mod = load_local_module(_HERE, "signals")
+    detect_fn = signals_mod.detect_long_term_trend if src == "analysis" else None
+    classify_fn = signals_mod.classify_fast_slow_closes
     max_lookback = max(256, safe_int(win_f * 4.0, default=256))
     for i in range(len(closes)):
         if src == "analysis":
@@ -87,10 +87,7 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
                 win_fast = [cf for c in closes[i+1-fast_i:i+1] if (cf := safe_pos_float(c, default=None)) is not None]
                 win_slow = [cs for c in closes[i+1-slow_i:i+1] if (cs := safe_pos_float(c, default=None)) is not None]
                 if len(win_fast) == fast_i and len(win_slow) == slow_i:
-                    mf = statistics.fmean(win_fast)
-                    ms = statistics.fmean(win_slow)
-                    diff = (mf - ms) / ms if ms else 0.0
-                    out[i] = "up" if diff > band_f else "down" if diff < -band_f else "neutral"
+                    _, _, _, out[i] = classify_fn(win_fast, win_slow, band_f)
     return out
 
 

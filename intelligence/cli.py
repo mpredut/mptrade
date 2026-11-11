@@ -22,6 +22,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import cache_symbol_variants, clean_symbol_key
+from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.macro.daemon_ssot import inspect_daemon_heartbeat
 from intelligence.macro_sentiment_ssot import (
     get_cache_filenames,
@@ -163,11 +164,11 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 5. Guard Preview (Simulate BUY order evaluation)
     try:
-        from order_guard import check_intelligence_guards
+        guard_eval = OrderGuardEvaluatorFactory.create("intelligence_guards")
         ob_item = result.get("pillar2_external", {}).get("orderbook")
         mid_px = safe_pos_float(ob_item.get("mid_price") if isinstance(ob_item, dict) else None, default=100.0)
         for preview_key, qty_val, notional_val in (("buy_standard", 1.0, 250.0), ("buy_high_stake", 15.0, 1500.0)):
-            allowed, reason, scale = check_intelligence_guards(
+            allowed, reason, scale = guard_eval.evaluate(
                 provider="binance", symbol=symbol, order_type="BUY", price=mid_px, qty=qty_val, notional_eur=notional_val
             )
             result["guard_preview"][preview_key] = {"allowed": allowed, "reason": reason, "suggested_scale": scale}
@@ -360,8 +361,8 @@ def main():
 
     # 3. Test Guard Simulation
     if args.test_guard:
-        from order_guard import check_intelligence_guards
-        allowed, reason, scale = check_intelligence_guards(
+        guard_eval = OrderGuardEvaluatorFactory.create("intelligence_guards")
+        allowed, reason, scale = guard_eval.evaluate(
             provider="binance",
             symbol=symbol,
             order_type=args.side,
