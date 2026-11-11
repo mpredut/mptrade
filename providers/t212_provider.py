@@ -674,10 +674,9 @@ class T212Provider(MarketDataProvider):
             is_market=bool(_parse_bool_flag(market, False) or price is None),
             caller="submit_order",
         )
-        if order_id is None:
-            raise ProviderError(f"submit_order({symbol}): response without an id: {data}")
-        self._invalidate_fills_cache(symbol)
-        return order_id
+        return self._require_submitted_order_id(
+            symbol, order_id, f"submit_order({symbol}): response without an id: {data}"
+        )
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
         clean_oid = require_clean_order_id(order_id, f"order_status({order_id})")

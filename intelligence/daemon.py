@@ -35,6 +35,7 @@ from intelligence.macro.daemon_ssot import (
     add_external_telemetry_cli_args,
     configure_daemon_cli_logging,
     detect_active_binance_symbols,
+    finalize_daemon_cycle,
     normalize_cycle_args,
     prune_automated_cli_threads,
     run_daemon_loop,
@@ -144,12 +145,15 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
             prune_automated_cli_threads(logger)
             self._last_thread_prune_ts = current_ts
 
-        if is_interval_due(current_ts, self._last_stdout_hb_ts, 60.0, force=force):
-            logger.info("Telemetry cycle active: %d symbols monitored (PID=%d)", len(self.symbols), os.getpid())
-            self._last_stdout_hb_ts = current_ts
-
-        self.write_heartbeat(results)
-        return results
+        return finalize_daemon_cycle(
+            self,
+            results,
+            current_ts=current_ts,
+            force=force,
+            logger_inst=logger,
+            hb_msg="Telemetry cycle active: %d symbols monitored (PID=%d)",
+            hb_args=(len(self.symbols), os.getpid()),
+        )
 
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
         """Write heartbeat metadata atomically to cachedb."""

@@ -40,6 +40,7 @@ from intelligence.macro.calendar_ssot import (
 )
 from intelligence.macro.daemon_ssot import (
     compute_step_retry_ts,
+    finalize_daemon_cycle,
     normalize_cycle_args,
     parse_and_configure_daemon_cli,
     prune_automated_cli_threads,
@@ -411,15 +412,16 @@ class MacroAnalyzer:
             results["threads_pruned"] = prune_automated_cli_threads(logger)
             self._last_thread_prune_ts = current_ts
 
-        if is_interval_due(current_ts, self._last_stdout_hb_ts, 120.0, force=force):
-            logger.info(
-                "Macro analyzer cycle active (PID=%d, session=%s, adv_itv=%.0fs [%s], geo_itv=%.0fs [%s])",
-                os.getpid(), session_ctx.session_key, adv_interval, adv_reason, geo_interval, geo_reason,
-            )
-            self._last_stdout_hb_ts = current_ts
-
-        self.write_heartbeat(results)
-        return results
+        return finalize_daemon_cycle(
+            self,
+            results,
+            current_ts=current_ts,
+            force=force,
+            hb_interval_sec=120.0,
+            logger_inst=logger,
+            hb_msg="Macro analyzer cycle active (PID=%d, session=%s, adv_itv=%.0fs [%s], geo_itv=%.0fs [%s])",
+            hb_args=(os.getpid(), session_ctx.session_key, adv_interval, adv_reason, geo_interval, geo_reason),
+        )
 
     @staticmethod
     def _compute_eval_retry_ts(

@@ -815,6 +815,15 @@ class MarketDataProvider(ABC):
                 symbol, cache_file, match_fn=getattr(type(self), "_fills_match_fn", None)
             )
 
+    def _require_submitted_order_id(
+        self, symbol: str, order_id: Optional[str], missing_msg: str
+    ) -> str:
+        """Require a non-empty ``order_id``, invalidate ``symbol`` fills cache, and return ``order_id``."""
+        if order_id is None:
+            raise ProviderError(missing_msg)
+        self._invalidate_fills_cache(symbol)
+        return order_id
+
     def _invoke_fills_from_api(
         self, symbol: str, *, publish_cache: bool = False
     ) -> Optional[List[dict]]:

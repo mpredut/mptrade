@@ -1064,9 +1064,7 @@ def _evaluate_intelligence_guards_raw(
         return True, "test_symbol_exempt", 1.0
 
     computed_notional = resolve_order_notional(notional_eur, price, qty, default=None)
-
-    effective_scale = 1.0
-    active_reason = "ok"
+    effective_scale, active_reason = 1.0, "ok"
 
     # 1. Internal Quantitative Mathematical Guards (G_QLIMIT2: Parabolic Surge, Weibull Exhaustion)
     if not (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass):

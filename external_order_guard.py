@@ -85,10 +85,7 @@ def check_external_order_guards(
             return True, "external_guards_off", 1.0
 
     price_f = safe_pos_float(price, 0.0)
-
-    effective_scale = 1.0
-    active_reason = "ok"
-
+    effective_scale, active_reason = 1.0, "ok"
     now_ts = resolve_now_ts(now)
     shadow_notify_enabled = _parse_bool_flag(m.get("shadow_notify"), False)
 

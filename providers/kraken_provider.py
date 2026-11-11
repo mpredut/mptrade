@@ -1068,11 +1068,9 @@ class KrakenProvider(MarketDataProvider):
             if self._is_definitive_refusal(e):
                 raise SubmissionRefused(f"submit_order {symbol} {s}: {e}") from e
             raise ProviderError(f"submit_order {symbol} {s}: {e}") from e
-        order_id = extract_order_id(res)
-        if order_id is None:
-            raise ProviderError(f"submit_order {symbol}: a response without a txid ({res})")
-        self._invalidate_fills_cache(symbol)
-        return order_id
+        return self._require_submitted_order_id(
+            symbol, extract_order_id(res), f"submit_order {symbol}: a response without a txid ({res})"
+        )
 
     def preflight_order(self, symbol: str, side: str, qty: float,
                         price: Optional[float] = None, *, market: bool = False,

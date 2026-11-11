@@ -396,9 +396,7 @@ def check_llm_order_guards(
     if early is not None:
         return early
 
-    effective_scale = 1.0
-    active_reason = "ok"
-
+    effective_scale, active_reason = 1.0, "ok"
     computed_notional = resolve_order_notional(notional_eur, price, qty, default=0.0) or 0.0
 
     # 1. GLLM1: High-Stake LLM Pre-Trade Guard (symmetric for BUY & SELL >= high_stake_min_notional_usd)

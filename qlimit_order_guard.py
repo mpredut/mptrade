@@ -105,9 +105,7 @@ def check_qlimit2_order_guards(
 
     p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
     e_guard = WeibullExhaustionGuard(default_p90_days=exhaust_p90, policy=exhaust_policy, exhausted_scale=exhaust_scale)
-
-    effective_scale = 1.0
-    active_reason = "ok"
+    effective_scale, active_reason = 1.0, "ok"
 
     # 1. Parabolic surge / vertical dump check (Anti-FOMO on BUY, Anti-Capitulation on SELL)
     px_clean = safe_pos_float(price, 0.0)

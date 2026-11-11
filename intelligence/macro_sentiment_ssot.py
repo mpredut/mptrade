@@ -297,9 +297,7 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
     if mkey is not None and (cached := _SORTED_TS_PX_MEMO.get(mkey)) is not None:
         return cached
     pts_vol: List[Tuple[float, float, Optional[float]]] = []
-    prev_t = -1.0
-    is_sorted = True
-    has_pos_vol = False
+    prev_t, is_sorted, has_pos_vol = -1.0, True, False
     for row in series:
         if (pt := _parse_ts_px_row(row)) is not None:
             if pt[0] < prev_t:

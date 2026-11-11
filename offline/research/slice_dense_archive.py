@@ -78,8 +78,7 @@ def main(argv: list[str] | None = None):
 
     cutoff = last_ts - days * 86400.0
     sliced: list[dict] = []
-    prev_t = -1.0
-    is_sorted = True
+    prev_t, is_sorted = -1.0, True
     for rec in iter_jsonl_dicts(src):
         t = _ts_sec(rec)
         if t >= cutoff and t > 0.0:

@@ -1664,8 +1664,7 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
     if not series_24h:
         return []
     cleaned_24h = []
-    prev_t = -1.0
-    is_sorted = True
+    prev_t, is_sorted = -1.0, True
     for row in series_24h:
         if (pt := _parse_ts_px_row(row)) is not None:
             if pt[0] < prev_t:

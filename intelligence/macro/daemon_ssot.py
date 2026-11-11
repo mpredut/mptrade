@@ -311,6 +311,26 @@ def normalize_cycle_args(force: Any = False, now: Optional[float] = None) -> Tup
     return _parse_bool_flag(force, default=False), resolve_now_ts(now)
 
 
+def finalize_daemon_cycle(
+    daemon_obj: Any,
+    results: Dict[str, Any],
+    *,
+    current_ts: float,
+    force: bool = False,
+    hb_interval_sec: float = 60.0,
+    logger_inst: Optional[logging.Logger] = None,
+    hb_msg: Optional[str] = None,
+    hb_args: Tuple[Any, ...] = (),
+) -> Dict[str, Any]:
+    """Emit periodic stdout heartbeat log, write daemon heartbeat file, and return ``results``."""
+    last_hb_ts = safe_nonneg_ts(getattr(daemon_obj, "_last_stdout_hb_ts", 0.0), 0.0)
+    if hb_msg and is_interval_due(current_ts, last_hb_ts, hb_interval_sec, force=force):
+        (logger_inst or logger).info(hb_msg, *hb_args)
+        daemon_obj._last_stdout_hb_ts = current_ts
+    daemon_obj.write_heartbeat(results)
+    return results
+
+
 def run_scheduled_step(
     obj: Any,
     *,
