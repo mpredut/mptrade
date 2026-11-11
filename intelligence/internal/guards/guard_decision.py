@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from botcore import clean_scale, safe_float
+from botcore import clean_scale, normalize_side, safe_float
 from cachepaths import canonical_symbol_key
 
 
@@ -191,6 +191,39 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
         if type(self).evaluate is not OrderGuardEvaluatorBase.evaluate:
             return self.evaluate(*args, **kwargs)
         raise NotImplementedError(f"{type(self).__name__} must implement check() or evaluate()")
+
+    def _prepare_external_guard_check(
+        self,
+        symbol: str,
+        side: str,
+        snapshot: Any = None,
+        *,
+        now: Optional[float] = None,
+        empty_reason: str = "no_snapshot",
+    ) -> tuple[str, Any, Optional[GuardDecision]]:
+        """Validate ``side`` and resolve ``self.collector`` snapshot, returning ``(side_norm, snapshot, early_decision)``."""
+        side_norm = normalize_side(side)
+        if side_norm not in ("BUY", "SELL"):
+            return "", None, GuardDecision.allow(
+                guard_name=self.cls_name,
+                reason="unsupported_side_allowed",
+            )
+        col = getattr(self, "collector", None)
+        if snapshot is None and col is not None:
+            if hasattr(self, "active_window_sec") and hasattr(col, "get_summary"):
+                win_sec = getattr(self, "active_window_sec")
+                try:
+                    snapshot = col.get_summary(symbol, window_sec=win_sec, now=now)
+                except TypeError:
+                    snapshot = col.get_summary(symbol, window_sec=win_sec)
+            else:
+                snapshot = fetch_guard_snapshot(col, symbol, now=now)
+        if snapshot is None:
+            return side_norm, None, GuardDecision.allow(
+                guard_name=self.cls_name,
+                reason=empty_reason,
+            )
+        return side_norm, snapshot, None
 
 
 class OrderGuardEvaluatorFactory:

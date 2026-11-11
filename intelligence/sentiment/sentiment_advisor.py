@@ -75,13 +75,13 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
         *,
         start_sync: Optional[bool] = None,
     ) -> None:
-        self._init_sync_mode(start_sync)
-        self.gemini_client = gemini_client or GeminiClient()
-        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, DEFAULT_SENTIMENT_INTERVAL_SEC)
-        self.cache_file = cache_file
-        self._cached_assessment: Optional[SentimentAdvisorAssessment] = None
-        self._last_eval_ts: float = 0.0
-        self._load_from_disk()
+        self._init_topic_agent_state(
+            gemini_client or GeminiClient(),
+            cache_ttl_sec,
+            DEFAULT_SENTIMENT_INTERVAL_SEC,
+            cache_file,
+            start_sync=start_sync,
+        )
 
     @staticmethod
     def _build_assessment(data: Dict[str, Any], ts_override: Optional[float] = None) -> SentimentAdvisorAssessment:
@@ -118,12 +118,7 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
     ) -> Optional[SentimentAdvisorAssessment]:
         """Synthesize market conditions and request a periodic qualitative macro assessment."""
         now = resolve_now_ts(now_ts)
-        eff_allow_llm = bool(
-            allow_llm
-            if allow_llm is not None
-            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
-        )
-        if not eff_allow_llm:
+        if not self._resolve_allow_llm(allow_llm):
             return self._cached_assessment
         if self._cached_assessment and is_cache_fresh(
             self._last_eval_ts, now, self.cache_ttl_sec, force_refresh=force_refresh

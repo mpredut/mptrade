@@ -18,7 +18,6 @@ from intelligence.external.collectors.bybit_liquidations_collector import (
     BybitLiquidationCollector,
     LiquidationSummary,
 )
-from providers.base import normalize_side
 
 
 class LiquidationCascadeGuard(OrderGuardEvaluatorBase):
@@ -51,28 +50,11 @@ class LiquidationCascadeGuard(OrderGuardEvaluatorBase):
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether an active cascade prevents order execution."""
-        side_norm = normalize_side(side)
-        if side_norm not in ("BUY", "SELL"):
-            return GuardDecision.allow(
-                guard_name="LiquidationCascadeGuard",
-                reason="unsupported_side_allowed",
-            )
-
-        if summary is None and self.collector is not None:
-            try:
-                summary = self.collector.get_summary(
-                    symbol, window_sec=self.active_window_sec, now=now
-                )
-            except TypeError:
-                summary = self.collector.get_summary(
-                    symbol, window_sec=self.active_window_sec
-                )
-
-        if summary is None:
-            return GuardDecision.allow(
-                guard_name="LiquidationCascadeGuard",
-                reason="no_liquidation_data",
-            )
+        side_norm, summary, early = self._prepare_external_guard_check(
+            symbol, side, summary, now=now, empty_reason="no_liquidation_data"
+        )
+        if early is not None:
+            return early
 
         long_liq = safe_float(obj_attr(summary, "long_liq_usd"), default=0.0) or 0.0
         short_liq = safe_float(obj_attr(summary, "short_liq_usd"), default=0.0) or 0.0

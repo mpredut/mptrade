@@ -13,14 +13,12 @@ from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
     OrderGuardEvaluatorFactory,
-    fetch_guard_snapshot,
 )
 from intelligence.external.collectors.whale_positioning_collector import (
     WhalePositioningCollector,
     WhalePositioningSnapshot,
 )
 from intelligence.macro_sentiment_ssot import clean_scale
-from providers.base import normalize_side
 
 
 class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
@@ -63,20 +61,11 @@ class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate if whale positioning or OI divergence conflicts with the order."""
-        side_norm = normalize_side(side)
-        if side_norm not in ("BUY", "SELL"):
-            return GuardDecision.allow(
-                guard_name="WhaleDivergenceGuard",
-                reason="unsupported_side_allowed",
-            )
-        if snapshot is None and self.collector is not None:
-            snapshot = fetch_guard_snapshot(self.collector, symbol, now=now)
-
-        if snapshot is None:
-            return GuardDecision.allow(
-                guard_name="WhaleDivergenceGuard",
-                reason="no_whale_snapshot_data",
-            )
+        side_norm, snapshot, early = self._prepare_external_guard_check(
+            symbol, side, snapshot, now=now, empty_reason="no_whale_snapshot_data"
+        )
+        if early is not None:
+            return early
 
         raw_reg = obj_attr(snapshot, "divergence_regime")
         if raw_reg is None:

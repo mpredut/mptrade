@@ -13,14 +13,12 @@ from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
     OrderGuardEvaluatorFactory,
-    fetch_guard_snapshot,
 )
 from intelligence.external.collectors.orderbook_depth_collector import (
     OrderbookDepthCollector,
     OrderbookSnapshot,
 )
 from intelligence.macro_sentiment_ssot import clean_scale
-from providers.base import normalize_side
 
 
 class OrderbookWallGuard(OrderGuardEvaluatorBase):
@@ -60,20 +58,11 @@ class OrderbookWallGuard(OrderGuardEvaluatorBase):
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order book liquidity and limit walls."""
-        side_norm = normalize_side(side)
-        if side_norm not in ("BUY", "SELL"):
-            return GuardDecision.allow(
-                guard_name="OrderbookWallGuard",
-                reason="unsupported_side_allowed",
-            )
-        if snapshot is None and self.collector is not None:
-            snapshot = fetch_guard_snapshot(self.collector, symbol, now=now)
-
-        if snapshot is None:
-            return GuardDecision.allow(
-                guard_name="OrderbookWallGuard",
-                reason="no_orderbook_snapshot",
-            )
+        side_norm, snapshot, early = self._prepare_external_guard_check(
+            symbol, side, snapshot, now=now, empty_reason="no_orderbook_snapshot"
+        )
+        if early is not None:
+            return early
 
         raw_imb = obj_attr(snapshot, "imbalance_ratio")
         if raw_imb is None:

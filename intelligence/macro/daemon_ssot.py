@@ -668,6 +668,30 @@ class CachedTopicAssessmentAgent:
         self._explicit_start_sync = None if start_sync is None else bool(start_sync)
         self.start_sync = bool(start_sync)
 
+    def _init_topic_agent_state(
+        self,
+        gemini_client: Any,
+        cache_ttl_sec: Optional[float],
+        default_ttl_sec: float,
+        state_file: str,
+        *,
+        start_sync: Optional[bool] = None,
+    ) -> None:
+        self._init_sync_mode(start_sync)
+        self.gemini_client = gemini_client
+        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, default_ttl_sec)
+        setattr(self, self.STATE_FILE_ATTR, state_file)
+        self._cached_assessment = None
+        self._last_eval_ts = 0.0
+        self._load_from_disk()
+
+    def _resolve_allow_llm(self, allow_llm: Optional[bool] = None) -> bool:
+        return bool(
+            allow_llm
+            if allow_llm is not None
+            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
+        )
+
     def _effective_state_file(self) -> str:
         raw_f = getattr(self, self.STATE_FILE_ATTR, None) or self.DEFAULT_STATE_FILE
         if raw_f == self.DEFAULT_STATE_FILE and self.DEFAULT_CACHE_FILENAME:

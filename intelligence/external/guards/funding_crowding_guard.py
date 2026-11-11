@@ -14,14 +14,12 @@ from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
     OrderGuardEvaluatorFactory,
-    fetch_guard_snapshot,
 )
 from intelligence.external.collectors.derivatives_telemetry_collector import (
     DerivativesTelemetry,
     DerivativesTelemetryCollector,
 )
 from intelligence.macro_sentiment_ssot import clean_scale
-from providers.base import normalize_side
 
 
 class FundingCrowdingGuard(OrderGuardEvaluatorBase):
@@ -62,22 +60,15 @@ class FundingCrowdingGuard(OrderGuardEvaluatorBase):
         snapshot: Optional[DerivativesTelemetry] = None,
     ) -> GuardDecision:
         """Evaluate if perpetual funding rate warrants a brake."""
-        side_norm = normalize_side(side)
-        if side_norm not in ("BUY", "SELL"):
-            return GuardDecision.allow(
-                guard_name="FundingCrowdingGuard",
-                reason="unsupported_side_allowed",
-            )
-        if telemetry is None and snapshot is not None:
-            telemetry = snapshot
-        if telemetry is None and self.collector is not None:
-            telemetry = fetch_guard_snapshot(self.collector, symbol, now=now)
-
-        if telemetry is None:
-            return GuardDecision.allow(
-                guard_name="FundingCrowdingGuard",
-                reason="no_telemetry_data",
-            )
+        side_norm, telemetry, early = self._prepare_external_guard_check(
+            symbol,
+            side,
+            telemetry if telemetry is not None else snapshot,
+            now=now,
+            empty_reason="no_telemetry_data",
+        )
+        if early is not None:
+            return early
 
         fr = safe_float(obj_attr(telemetry, "funding_rate"), default=0.0) or 0.0
 

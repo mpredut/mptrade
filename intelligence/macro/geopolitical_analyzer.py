@@ -82,17 +82,17 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         *,
         start_sync: Optional[bool] = None,
     ) -> None:
-        self._init_sync_mode(start_sync)
-        self.gemini_client = gemini_client or GeminiClient()
-        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, required_float_env("MACRO_LLM_INTERVAL_SEC"))
         self.fallback_retry_ttl_sec = safe_nonneg_ts(
             fallback_retry_ttl_sec, required_float_env("MACRO_FALLBACK_RETRY_TTL_SEC")
         )
-        self.state_file = state_file
-        self._cached_assessment: Optional[GeopoliticalThreatAssessment] = None
-        self._last_eval_ts: float = 0.0
         self._last_headlines_digest: str = ""
-        self._load_from_disk()
+        self._init_topic_agent_state(
+            gemini_client or GeminiClient(),
+            cache_ttl_sec,
+            required_float_env("MACRO_LLM_INTERVAL_SEC"),
+            state_file,
+            start_sync=start_sync,
+        )
 
     def _build_assessment(
         self,
@@ -181,12 +181,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         """Evaluate geopolitical threat level based on news headlines."""
         force_refresh = _parse_bool_flag(force_refresh, False)
         now = resolve_now_ts(now_ts)
-        eff_allow_llm = bool(
-            allow_llm
-            if allow_llm is not None
-            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
-        )
-        if not eff_allow_llm:
+        if not self._resolve_allow_llm(allow_llm):
             return self._cached_assessment or GeopoliticalThreatAssessment(
                 threat_level="NORMAL",
                 risk_score=0.1,
