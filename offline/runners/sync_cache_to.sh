@@ -23,7 +23,7 @@ sync_to_dev() {
         echo "[sync_cache_to:dev $(date '+%F %T')] WARN: git pull on dev timed out or failed: $pull_output" >&2
     }
     echo "$pull_output" | sed 's/^/  /'
-    if echo "$pull_output" | grep -q "Updating "; then
+    if echo "$pull_output" | grep -qE "Updating |deferred git pull"; then
         echo "[sync_cache_to:dev $(date '+%F %T')] code updated on DEV -> launching background regression"
         dev_launch_regression_bg
     fi

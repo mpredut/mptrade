@@ -18,6 +18,7 @@ LOCK="/tmp/dev_regression.lock"
 do_watch() {
     exec 9>"/tmp/dev_ci_watcher.lock"
     flock -n 9 || exit 0
+    flock -n /tmp/mptrade_overnight_master_suite.lock true 2>/dev/null || exit 0
     timeout 15 git fetch -q origin "$DEV_CODE_BRANCH" 2>/dev/null || exit 0
     local local_sha remote_sha
     local_sha="$(git rev-parse HEAD)"
@@ -79,7 +80,7 @@ try:
     cm = d.get("commit_short", "unknown")
     msg = d.get("commit_msg", "")
     ts_val = safe_int(d.get("ts"), default=0)
-    age = int(time.time() - ts_val) // 60 if ts_val else 0
+    age = max(0, safe_int(time.time() - ts_val, default=0)) // 60 if ts_val else 0
     if os.environ.get("IS_RUNNING") == "true":
         print(f"[DEV CI] RUNNING: A new regression is currently in progress on DEV (last finished: {st} on {cm} {age}m ago).")
     else:
@@ -99,20 +100,27 @@ do_run() {
         flock -w 600 8 || { echo "[dev_regression $(date '+%F %T')] ERROR: Timed out waiting for regression lock" >&2; exit 1; }
     fi
 
-    exec 7>"/tmp/dev_ci_watcher.lock"
-    flock -w 45 7 && dev_local_git_sync "$DEV_CODE_BRANCH" >/dev/null 2>&1 || true
-    flock -u 7 2>/dev/null || true
-    exec 7>&-
+    local sync_ok=true
+    if [ "${SKIP_GIT_SYNC:-0}" != "1" ]; then
+        exec 7>"/tmp/dev_ci_watcher.lock"
+        if flock -w 45 7; then
+            dev_local_git_sync "$DEV_CODE_BRANCH" >/dev/null 2>&1 || sync_ok=false
+        else
+            sync_ok=false
+        fi
+        flock -u 7 2>/dev/null || true
+        exec 7>&-
+    fi
 
     local commit_hash commit_short commit_msg start_ts start_iso rc=0 duration prev_status
     commit_hash="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
     commit_short="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
     commit_msg="$(git log -1 --pretty=%s 2>/dev/null || echo "unknown")"
 
-    if [ "$was_queued" = true ] && [ -f "$STATUS_JSON" ]; then
-        local last_cm last_rc
-        read -r last_cm last_rc < <("$PYTHON_BIN" -c 'import sys; from botcore import safe_int; from state_io import read_json_dict; d=read_json_dict(sys.argv[1], default={}); raw_rc=d.get("exit_code"); rc=safe_int(raw_rc, default=(0 if d.get("status")=="PASSED" else 1)); print(d.get("commit",""), rc)' "$STATUS_JSON" 2>/dev/null || echo "")
-        if [ -n "${last_cm:-}" ] && [ "$last_cm" = "$commit_hash" ]; then
+    if [ "$was_queued" = true ] && [ "$sync_ok" = true ] && [ -f "$STATUS_JSON" ]; then
+        local last_cm="" last_rc="1"
+        IFS='|' read -r last_cm last_rc < <("$PYTHON_BIN" -c 'import sys; from botcore import safe_int; from state_io import read_json_dict; d=read_json_dict(sys.argv[1], default={}); raw_rc=d.get("exit_code"); rc=safe_int(raw_rc, default=(0 if d.get("status")=="PASSED" else 1)); cm=str(d.get("commit") or "").strip(); print(f"{cm}|{rc}")' "$STATUS_JSON" 2>/dev/null || echo "|1")
+        if [ -n "$last_cm" ] && [ "$last_cm" = "$commit_hash" ]; then
             echo "[dev_regression $(date '+%F %T')] Commit $commit_short already tested while queued -- skipping duplicate run (exit=${last_rc:-0})"
             exit "${last_rc:-0}"
         fi
@@ -163,7 +171,7 @@ status = "PASSED" if rc == 0 and counts["failed"] == 0 and counts["errors"] == 0
 status_data = {
     "status": status, "exit_code": rc,
     "commit": os.environ.get("REG_COMMIT_HASH", ""), "commit_short": os.environ.get("REG_COMMIT_SHORT", ""), "commit_msg": os.environ.get("REG_COMMIT_MSG", ""),
-    **counts, "duration_sec": duration, "started_at": os.environ.get("REG_START_ISO", ""), "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "ts": int(time.time()),
+    **counts, "duration_sec": duration, "started_at": os.environ.get("REG_START_ISO", ""), "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "ts": safe_int(time.time(), default=0),
 }
 atomic_write_json(status_json_path, status_data, indent=2)
 print(f"[dev_regression] Status: {status} | Passed: {counts['passed']} | Failed: {counts['failed']} | Duration: {duration}s")

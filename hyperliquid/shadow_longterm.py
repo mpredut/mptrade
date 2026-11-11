@@ -35,6 +35,7 @@ from botcore import (  # noqa: E402
     prepare_shadow_runtime,
     require_shadow_interval,
     required_env,
+    safe_int,
 )
 from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
@@ -108,7 +109,7 @@ def _fetch_with_ts(_pair: str, interval: int):
                 spot_pair = resolved.strip()
     candle_coin = spot_pair or token
     candles = client.candles(candle_coin, "4h", lookback_hours=5000 * 4)
-    now_ms = int(time.time() * 1000)
+    now_ms = safe_int(time.time() * 1000, default=0)
     has_close_ts = False
     parsed: list[tuple[int, float, float, float, float]] = []
     for item in candles or []:

@@ -28,10 +28,10 @@ echo "==========================================================================
 
 START_SEC=$(date +%s); PASSED_STEPS=0; FAILED_STEPS=0; STEP_REPORT_LINES=""
 
-run_step() {  # $1=id $2=name $3=cmd
-    local id="$1" name="$2" cmd="$3" t0 rc=0 dt
+run_step() {  # $1=id $2=name $3=cmd [$4=timeout_sec]
+    local id="$1" name="$2" cmd="$3" step_tmo="${4:-${STEP_TIMEOUT_SEC:-3600}}" t0 rc=0 dt
     printf '\n--------------------------------------------------------------------------------\n[STEP %s] START: %s (%s) | CMD: %s\n--------------------------------------------------------------------------------\n' "$id" "$name" "$(date '+%T')" "$cmd"
-    t0=$(date +%s); ( exec 9>&-; eval "$cmd" ) || rc=$?; dt=$(( $(date +%s) - t0 ))
+    t0=$(date +%s); ( exec 9>&-; timeout --kill-after=60 "$step_tmo" bash -c "$cmd" ) || rc=$?; dt=$(( $(date +%s) - t0 ))
     if [ "$rc" -eq 0 ]; then
         PASSED_STEPS=$((PASSED_STEPS + 1))
         STEP_REPORT_LINES+="| \`$id\` | $name | PASS | ${dt}s |"$'\n'
@@ -78,15 +78,15 @@ run_wf_pair "2E" "2E_COMP" "Binance BTCUSDC 240m"       "binance_wf"     "BTCUSD
 # STEP 4..10: Strategy Sweeps, Monitortrades Replay, Proposals, Continuous Grids & Pytest Regression
 run_step "4A" "Comprehensive 30-Candidate Multi-Factor Strategy Sweep" "$PYTHON_BIN offline/research/comprehensive_strategy_sweep.py"
 run_step "4B_DATA" "Fetch/Refresh Kraken Multi-Asset 240m Datasets" "$PYTHON_BIN offline/research/kraken_continuous_grid/fetch_data.py"
-run_step "4B" "Deep Parabolic Surge & Bear-Bounce Multi-Variable Grid Sweep (969 Candidates)" "$PYTHON_BIN offline/research/comprehensive_surge_sweep/run_deep_surge_sweep.py --fee-pct 0.26"
+run_step "4B" "Deep Parabolic Surge & Bear-Bounce Multi-Variable Grid Sweep (969 Candidates)" "$PYTHON_BIN offline/research/comprehensive_surge_sweep/run_deep_surge_sweep.py --fee-pct 0.26 --workers ${WORKERS:-2}"
 run_step "4C" "Hybrid Re-Entry Ablation Suite (11 Crypto Assets & US Equities)" "$PYTHON_BIN offline/research/hybrid_reentry/run_suite.py && $PYTHON_BIN offline/research/hybrid_reentry/run_equities.py && $PYTHON_BIN offline/research/hybrid_reentry/report.py"
 run_step "4D" "MHDSL Reentry Replay Comparisons" "$PYTHON_BIN offline/research/compare_mhdsl_reentry_replay.py"
 run_step "7A" "Monitortrades Replay Backtest on Binance Historical Ticks" "$PYTHON_BIN offline/research/monitortrades_backtest/run_replay_backtest.py"
 run_step "7B" "Monitortrades MHDSL Structural Break Variant Comparison" "$PYTHON_BIN offline/research/monitortrades_backtest/compare_sl_variants.py"
 run_step "8"  "Scheduled Pilot Proposals Generation & Worktree Push" "bash offline/runners/run_backtest_cycle.sh local"
-run_step "9A" "Kraken Continuous Multi-Asset Grid (11 assets since 2018)" "bash offline/research/kraken_continuous_grid/run_all.sh"
-run_step "9B" "Trading212 Continuous Multi-Asset Factorial Grid (16 equities/ETFs, 54 variants)" "$PYTHON_BIN offline/research/t212_continuous_grid/fetch.py --missing-only && $PYTHON_BIN offline/research/t212_continuous_grid/grid.py && $PYTHON_BIN offline/research/t212_continuous_grid/report.py"
-run_step "10" "Full DEV Test Regression Suite (pytest tests/)" "bash offline/runners/run_dev_regression.sh run"
+run_step "9A" "Kraken Continuous Multi-Asset Grid (11 assets since 2018)" "bash offline/research/kraken_continuous_grid/run_all.sh" 7200
+run_step "9B" "Trading212 Continuous Multi-Asset Factorial Grid (16 equities/ETFs, 54 variants)" "$PYTHON_BIN offline/research/t212_continuous_grid/fetch.py --missing-only && $PYTHON_BIN offline/research/t212_continuous_grid/grid.py && $PYTHON_BIN offline/research/t212_continuous_grid/report.py" 5400
+run_step "10" "Full DEV Test Regression Suite (pytest tests/)" "SKIP_GIT_SYNC=1 bash offline/runners/run_dev_regression.sh run"
 
 TOTAL_ELAPSED=$(( $(date +%s) - START_SEC ))
 DURATION_FMT="$((TOTAL_ELAPSED / 3600))h $(( (TOTAL_ELAPSED % 3600) / 60 ))m $((TOTAL_ELAPSED % 60))s"

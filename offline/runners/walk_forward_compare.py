@@ -434,16 +434,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.candidate_set == "hype-240" and set(datasets) != {240}:
         parser.error("candidate set hype-240 requires a baseline containing only the 240 interval")
 
-    base_params, base_fee, segment_fn = _build_venue_evaluator(
-        venue, source_report, baseline_dir=baseline_path.parent
-    )
-    valid_exec_fields = {f.name for f in dataclasses.fields(ExecutionModel)}
-    raw_exec_model = source_report.get("execution_model")
-    exec_model_dict = raw_exec_model if isinstance(raw_exec_model, dict) else {}
-    filtered_exec = {
-        k: v for k, v in exec_model_dict.items() if k in valid_exec_fields
-    }
-    execution = ExecutionModel(**filtered_exec)
+    try:
+        base_params, base_fee, segment_fn = _build_venue_evaluator(
+            venue, source_report, baseline_dir=baseline_path.parent
+        )
+        valid_exec_fields = {f.name for f in dataclasses.fields(ExecutionModel)}
+        raw_exec_model = source_report.get("execution_model")
+        exec_model_dict = raw_exec_model if isinstance(raw_exec_model, dict) else {}
+        filtered_exec = {
+            k: v for k, v in exec_model_dict.items() if k in valid_exec_fields
+        }
+        execution = ExecutionModel(**filtered_exec)
+    except (OSError, ValueError, TypeError) as exc:
+        parser.error(str(exc))
 
     results = {}
     candidates = hype_240_candidates() if args.candidate_set == "hype-240" else default_candidates()

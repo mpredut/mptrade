@@ -564,6 +564,30 @@ def align_spot_interval_params(params, bar_minutes: float | int | None):
     return cloned
 
 
+def scale_subbar_timeout_params(params, bar_minutes: float | int | None):
+    """Scale sub-bar stagnation and trend-defer timeouts proportionally when bar_minutes > check_minutes."""
+    bm_f = safe_pos_float(bar_minutes, default=None)
+    check_min = safe_pos_float(getattr(params, "check_minutes", None), default=None)
+    if bm_f is None or check_min is None or bm_f <= check_min:
+        return params
+    bar_scale = bm_f / check_min
+    updates: dict[str, float] = {}
+    for attr in ("tp_stagnation_max_sec", "sl_trend_defer_max_sec"):
+        cur_val = safe_pos_float(getattr(params, attr, None), default=None)
+        if cur_val is not None:
+            updates[attr] = round(cur_val * bar_scale, 1)
+    if not updates:
+        return params
+    if dataclasses.is_dataclass(params):
+        field_names = {f.name for f in dataclasses.fields(params) if f.init}
+        valid_updates = {k: v for k, v in updates.items() if k in field_names}
+        return dataclasses.replace(params, **valid_updates) if valid_updates else params
+    cloned = copy.copy(params)
+    for k, v in updates.items():
+        setattr(cloned, k, v)
+    return cloned
+
+
 def prewarm_trend_series(
     ohlc,
     *,

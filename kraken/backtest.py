@@ -51,10 +51,14 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
     env = load_isolated_kraken_cfg(_HERE)
     p = StratParams.from_env(env=env)
 
-    def _pick(keys: tuple[str, ...], default):
+    def _pick(keys: tuple[str, ...], default, *, nonneg: bool = True, pos: bool = False):
         for k in keys:
             if k in base and base[k] is not None:
-                val = safe_float(base[k], default=None)
+                val = (
+                    safe_pos_float(base[k], default=None)
+                    if pos
+                    else (safe_nonneg_float(base[k], default=None) if nonneg else safe_float(base[k], default=None))
+                )
                 if val is None:
                     raise ValueError(f"invalid value not allowed for {k}: {base[k]!r}")
                 return val
@@ -65,13 +69,13 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
     if maxdca_i is None:
         raise ValueError(f"invalid value not allowed for maxdca: {base.get('maxdca')!r}")
     fields = dict(
-        entry_amount=_pick(("entry",), p.entry_amount),
-        dca_amount=_pick(("dca",), p.dca_amount),
+        entry_amount=_pick(("entry",), p.entry_amount, pos=True),
+        dca_amount=_pick(("dca",), p.dca_amount, pos=True),
         entry_discount_pct=_pick(("disc",), p.entry_discount_pct),
-        dca_drop_pct=_pick(("drop_fallback", "drop"), p.dca_drop_pct),
-        takeprofit_pct=_pick(("tp",), p.takeprofit_pct),
+        dca_drop_pct=_pick(("drop_fallback", "drop"), p.dca_drop_pct, pos=True),
+        takeprofit_pct=_pick(("tp",), p.takeprofit_pct, pos=True),
         max_dca_buys=maxdca_i,
-        max_budget=_pick(("budget",), p.max_budget),
+        max_budget=_pick(("budget",), p.max_budget, pos=True),
         stop_loss_pct=_pick(("sl",), p.stop_loss_pct),
         tp_trail_pct=_pick(("trail",), p.tp_trail_pct),
         reentry_drop_pct=_pick(("reentry_fallback", "reentry_drop", "reentry"), p.reentry_drop_pct),
@@ -145,14 +149,18 @@ def main() -> int:
                     help="deprecated; faithful live engine rp.run_replay is always used")
     args = ap.parse_args()
 
+    if args.interval <= 0:
+        print("! interval must be > 0"); return 1
+    if args.budget <= 0:
+        print("! budget must be > 0"); return 1
+    if args.fee < 0:
+        print("! fee must be >= 0"); return 1
     try:
         ohlc = fetch_candles(args.pair, args.interval)
     except Exception as e:  # noqa: BLE001
         print(f"! data error: {e}"); return 1
     if len(ohlc) < 20:
         print(f"! not enough data ({len(ohlc)})"); return 1
-    if args.budget <= 0:
-        print("! budget must be > 0"); return 1
     bh = buy_hold_pct(ohlc)
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop,
                 tp=args.tp, maxdca=args.maxdca, budget=args.budget, fee=args.fee,

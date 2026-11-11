@@ -37,10 +37,13 @@ def compute_adaptive_reentry_pullback_pct(
     """Compute volatility-scaled or fixed re-entry pullback threshold from peak."""
     if not getattr(params, "reentry_pullback_adaptive", False):
         return params.reentry_pullback_pct, "fixed"
-    if vol is None:
+    vol_f = safe_pos_float(vol, default=None)
+    if vol_f is None:
         return params.reentry_pullback_pct, fallback_reason
-    val = max(params.reentry_pullback_min, min(params.reentry_pullback_max, params.reentry_pullback_k * vol))
-    return val, f"adaptive ({vol_label} {vol:.2f}% x k={params.reentry_pullback_k} -> {val:.2f}%)"
+    lo = min(params.reentry_pullback_min, params.reentry_pullback_max)
+    hi = max(params.reentry_pullback_min, params.reentry_pullback_max)
+    val = max(lo, min(hi, params.reentry_pullback_k * vol_f))
+    return val, f"adaptive ({vol_label} {vol_f:.2f}% x k={params.reentry_pullback_k} -> {val:.2f}%)"
 
 
 def build_strategy_exit_manager(
@@ -119,7 +122,7 @@ def update_post_sell_anchors(
     state["post_sell_peak"] = max(safe_pos_float(state.get("post_sell_peak"), lsp), px_f)
     state["post_sell_trough"] = min(safe_pos_float(state.get("post_sell_trough"), lsp), px_f)
     if track_stop_sl_low and is_stop_exit_kind(state.get("last_exit_kind")):
-        state["sl_low"] = min(safe_pos_float(state.get("sl_low"), px_f), px_f)
+        state["sl_low"] = min(safe_pos_float(state.get("sl_low"), lsp), px_f)
     return lsp
 
 
@@ -135,7 +138,7 @@ def safe_state_token(
         return default
     s = val.strip().lower() if lower else val
     allowed = "._-=" if allow_equals else "._-"
-    return "".join(c for c in s if c.isalnum() or c in allowed).strip("._-") or default
+    return "".join(c for c in s if (c.isascii() and c.isalnum()) or c in allowed).strip(allowed) or default
 
 
 def state_path_for(

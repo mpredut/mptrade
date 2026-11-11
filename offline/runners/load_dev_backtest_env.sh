@@ -17,3 +17,17 @@ done
 
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export BACKTEST_MODE=1 DISABLE_EXTERNAL_NOTIFICATIONS=1 DISABLE_GEMINI_LLM=1
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+
+if [ -z "${WORKERS:-}" ]; then
+  _mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  if [ "${_mem_kb:-0}" -gt 0 ] && [ "$_mem_kb" -le 4718592 ]; then
+    export WORKERS=2
+  else
+    export WORKERS=4
+  fi
+  unset _mem_kb
+fi

@@ -178,7 +178,7 @@ def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     vi = exact_pos_int(read_text_file(path, default="").strip(), default=None)
     if vi is not None:
         return vi
-    anchor_val = int(safe_pos_float(default_ts, default=0.0))
+    anchor_val = safe_int(safe_pos_float(default_ts, default=0.0), default=0)
     if anchor_val > 0:
         atomic_write_text(path, f"{anchor_val}\n")
     return anchor_val

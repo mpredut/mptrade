@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import os
 import time  # noqa: F401 -- resolved via BaseSpotMixin._mod_global("time")
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, fields
 from typing import Callable
 
@@ -1066,7 +1066,7 @@ class Strategy(BaseSpotMixin):
             source=f"{self.notification_source}-bot", price=self.p.adopt_cost, desktop=self.desktop,
         )
 
-    _REPLAY_REGIME_CACHE: dict = {}
+    _REPLAY_REGIME_CACHE: OrderedDict = OrderedDict()
 
     def _effective_surge_gain_pct(self) -> float:
         """Return the dynamic volatility-scaled or fixed parabolic surge trigger."""
@@ -1145,20 +1145,23 @@ class Strategy(BaseSpotMixin):
                 self._regime_service.evaluator.strength_threshold,
             )
             if getattr(self, "_replay_regime_key", None) == replay_key:
-                return self._replay_regime_val
-            cached_ctx = Strategy._REPLAY_REGIME_CACHE.get(replay_key)
-            if cached_ctx is not None:
+                dec, cl_tup = self._replay_regime_val
+                return dec, list(cl_tup)
+            cached_ctx = self._cache_get(Strategy._REPLAY_REGIME_CACHE, replay_key)
+            if cached_ctx is not BaseSpotMixin._CACHE_MISS:
                 self._replay_regime_key = replay_key
                 self._replay_regime_val = cached_ctx
-                return cached_ctx
+                dec, cl_tup = cached_ctx
+                return dec, list(cl_tup)
             closes = self._trend_closes()
             decision = self._regime_service.evaluate_closes_for_horizon(
                 closes, horizon="long", interval_min=self.p.trend_interval
             )
-            res = (decision, closes)
+            cached_val = (decision, tuple(closes))
             self._replay_regime_key = replay_key
-            self._replay_regime_val = res
-            return self._cache_store(Strategy._REPLAY_REGIME_CACHE, replay_key, res)
+            self._replay_regime_val = cached_val
+            self._cache_store(Strategy._REPLAY_REGIME_CACHE, replay_key, cached_val)
+            return decision, closes
         closes = self._trend_closes()
         decision = self._regime_service.evaluate_closes_for_horizon(
             closes, horizon="long", interval_min=self.p.trend_interval
@@ -1197,6 +1200,7 @@ class Strategy(BaseSpotMixin):
                 mult=self.p.fast_profit_mult, shadow_prices=self._shadow_prices,
                 window_sec=self.p.fast_profit_window_min * 60.0, drop_pct=self.p.fast_profit_drop_pct,
                 current_time=tick_time,
+                min_ts=safe_nonneg_float(self.s.get("entry_ts"), default=None),
             )
             if triggered:
                 exit_px = round(price * 0.999, self.price_dec)

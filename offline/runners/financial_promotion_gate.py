@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(baseline, dict) or not isinstance(candidate, dict):
             raise ValueError("baseline and candidate reports must be JSON objects")
         result = evaluate_dual_promotion(baseline, candidate)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         parser.error(str(exc))
     paths = "/".join(result["promotion_paths"])
     print(f"PROMOTE {paths}" if paths else "DO NOT PROMOTE")

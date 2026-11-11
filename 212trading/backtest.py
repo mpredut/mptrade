@@ -100,7 +100,9 @@ def simulate(ohlc, P):
         return default
 
     base_env = P.get("_base_env") if isinstance(P.get("_base_env"), dict) else {}
-    budget = safe_pos_float(_p_val(("budget", "max_budget"), 500.0), default=500.0)
+    budget = safe_pos_float(_p_val(("budget", "max_budget"), 500.0), default=None)
+    if budget is None:
+        raise ValueError("budget must be finite and positive")
     raw_entry = safe_pos_float(_p_val(("entry", "entry_amount"), None), default=None)
     raw_dca = safe_pos_float(_p_val(("dca", "dca_amount"), None), default=None)
     entry_pct = safe_float(
@@ -177,7 +179,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Backtester DCA+TP T212 (Yahoo).")
     ap.add_argument("--mode", choices=["single", "sweep"], default="single")
     ap.add_argument("--profile", "-p", default=None, help="config profile to load (e.g. nvda, spcx, rgnt)")
-    ap.add_argument("--sym", default="NVDA")
+    ap.add_argument("--sym", default=None)
     ap.add_argument("--range", default="1y", help="ex: 1mo,3mo,6mo,1y,2y")
     ap.add_argument("--interval", default="1d", help="ex: 1h,1d")
     add_common_backtest_cli_args(ap)
@@ -204,7 +206,7 @@ def main() -> int:
     tp = args.tp if args.tp is not None else required_float_env("STRAT_TAKEPROFIT_PCT", cfg)
     sl = args.sl if args.sl is not None else required_float_env("STRAT_STOP_LOSS_PCT", cfg)
     fee = args.fee if args.fee is not None else required_float_env("STRAT_FX_FEE_PCT", cfg)
-    sym = args.sym if (args.sym != "NVDA" or not cfg.get("YAHOO_SYMBOL")) else required_env("YAHOO_SYMBOL", cfg)
+    sym = args.sym if args.sym else (cfg.get("YAHOO_SYMBOL") or required_env("YAHOO_SYMBOL", cfg))
 
     if args.maxdca is not None:
         maxdca = args.maxdca
@@ -220,15 +222,18 @@ def main() -> int:
     trail_pct = args.trail if args.trail is not None else (float_env("STRAT_TRAIL_PCT", cfg) or 0.0)
     trail_min_profit = args.trail_min_profit if args.trail_min_profit is not None else (float_env("STRAT_TRAIL_MIN_PROFIT_PCT", cfg) or 0.0)
 
+    bar_min = interval_minutes(args.interval)
+    if bar_min is None:
+        print(f"! unsupported interval: {args.interval}"); return 1
+    if budget <= 0:
+        print("! budget must be > 0"); return 1
     ohlc = fetch_candles(sym, args.range, args.interval)
     if len(ohlc) < 20:
         print(f"! not enough data ({len(ohlc)})"); return 1
-    if budget <= 0:
-        print("! budget must be > 0"); return 1
     bh = buy_hold_pct(ohlc)
     base = dict(entry=entry, dca=dca, disc=disc, drop=drop,
                 tp=tp, maxdca=maxdca, budget=budget, fee=fee, sl=sl,
-                sym=sym, bar_minutes=interval_minutes(args.interval),
+                sym=sym, bar_minutes=bar_min,
                 sl_mhdsl_enabled=sl_mhdsl, tp_mdhtp_enabled=tp_mdhtp,
                 trail_pct=trail_pct, trail_min_profit=trail_min_profit,
                 _base_env=cfg)

@@ -414,12 +414,14 @@ def sanitize_common_spot_state(
             for o in state["orders"]:
                 if not isinstance(o, dict):
                     continue
+                if isinstance(o.get("side"), bool):
+                    continue
+                s_norm = normalize_side(o.get("side"))
+                if s_norm not in ("BUY", "SELL"):
+                    continue
+                o["side"] = s_norm.lower() if lowercase_order_side else s_norm
                 if order_id_key in o and o.get(order_id_key) is not None:
                     o[order_id_key] = clean_order_id(o.get(order_id_key))
-                if "side" in o and not isinstance(o.get("side"), bool):
-                    s_norm = normalize_side(o.get("side"))
-                    if s_norm in ("BUY", "SELL"):
-                        o["side"] = s_norm.lower() if lowercase_order_side else s_norm
                 if "intent_id" in o:
                     o["intent_id"] = clean_order_id(o.get("intent_id"))
                 for pk in order_pos_float_keys:
@@ -472,7 +474,7 @@ class BaseSpotMixin:
     _TRAIL_VOL_CACHE: OrderedDict = OrderedDict()
     _HOURLY_VOL_CACHE: OrderedDict = OrderedDict()
     _VOL_CACHE_LOCK: threading.Lock = threading.Lock()
-    _REPLAY_CACHE_MAX: int = 262144
+    _REPLAY_CACHE_MAX: int = 16384
     _CACHE_MISS = object()
 
     @staticmethod

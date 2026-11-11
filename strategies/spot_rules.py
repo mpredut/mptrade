@@ -139,6 +139,7 @@ def check_fast_profit_reversal(
     window_sec: float,
     drop_pct: float,
     current_time: float | None = None,
+    min_ts: float | None = None,
 ) -> tuple[bool, float, float]:
     """Return (triggered, current_gain_pct, micro_drop_pct) for fast 2X profit reversal guard."""
     avg_f, px_f = safe_pos_float(avg_cost, default=None), safe_pos_float(current_price, default=None)
@@ -157,6 +158,9 @@ def check_fast_profit_reversal(
     now_f = normalize_epoch_sec(current_time, default=None, allow_zero=True)
     now = now_f if now_f is not None else valid_shadows[-1][0]
     cutoff = now - win_s
+    min_ts_f = normalize_epoch_sec(min_ts, default=None, allow_zero=True)
+    if min_ts_f is not None:
+        cutoff = max(cutoff, min_ts_f)
     recent = [p for t, p in valid_shadows if cutoff <= t <= now]
     if not recent:
         return False, current_gain_pct, 0.0

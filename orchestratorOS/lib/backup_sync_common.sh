@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# backup_sync_common.sh — Shared SSOT primitives for backup creation, restoration,
+# backup_sync_common.sh -- Shared SSOT primitives for backup creation, restoration,
 # Storj rclone transport, cachedb rsync, and DEV SSH orchestration across PROD, DEV, and WSL.
 
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,20 +103,42 @@ dev_local_git_sync() {  # [$1=branch]
     fi
 }
 
+dev_remote_path_expr() {
+    if [[ "$DEV_PATH" == /* ]]; then
+        printf '%s' "$DEV_PATH"
+    else
+        printf '$HOME/%s' "$DEV_PATH"
+    fi
+}
+
+dev_remote_scp_prefix() {
+    if [[ "$DEV_PATH" == /* ]]; then
+        printf '%s@%s:%s' "$DEV_USER" "$DEV_HOST" "$DEV_PATH"
+    else
+        printf '%s@%s:~/%s' "$DEV_USER" "$DEV_HOST" "$DEV_PATH"
+    fi
+}
+
 dev_remote_git_pull() {
-    dev_ssh "cd ~/$DEV_PATH && exec 8>/tmp/dev_regression.lock && if ! flock -n 8; then echo 'Regression currently in flight; deferred git pull until lock is released.'; else flock -w 45 /tmp/dev_ci_watcher.lock bash -c 'source orchestratorOS/lib/backup_sync_common.sh && dev_local_git_sync ${DEV_CODE_BRANCH:-main}'; fi"
+    local rpath
+    rpath="$(dev_remote_path_expr)"
+    dev_ssh "cd \"$rpath\" && exec 8>/tmp/dev_regression.lock && exec 9>/tmp/mptrade_overnight_master_suite.lock && if ! flock -n 8 || ! flock -n 9; then echo 'Regression or overnight suite currently in flight; deferred git pull until lock is released.'; else flock -w 45 /tmp/dev_ci_watcher.lock bash -c 'source orchestratorOS/lib/backup_sync_common.sh && dev_local_git_sync ${DEV_CODE_BRANCH:-main}'; fi"
 }
 
 dev_launch_regression_bg() {
-    dev_ssh "nohup bash -c 'cd ~/$DEV_PATH && ./offline/runners/run_dev_regression.sh run' </dev/null >/dev/null 2>&1 &" || true
+    local rpath
+    rpath="$(dev_remote_path_expr)"
+    dev_ssh "nohup bash -c 'cd \"$rpath\" && ./offline/runners/run_dev_regression.sh run' </dev/null >/dev/null 2>&1 &" || true
 }
 
 dev_sync_regression_status() {
+    local scp_base
+    scp_base="$(dev_remote_scp_prefix)"
     mkdir -p "$ROOT/cachedb/system"
     scp -o BatchMode=yes -o ConnectTimeout=3 -P "$DEV_PORT" \
-        "$DEV_USER@$DEV_HOST:~/$DEV_PATH/cachedb/system/dev_regression_status.json" \
+        "$scp_base/cachedb/system/dev_regression_status.json" \
         "$ROOT/cachedb/system/dev_regression_status.json" >/dev/null 2>&1 \
     || scp -o BatchMode=yes -o ConnectTimeout=3 -P "$DEV_PORT" \
-        "$DEV_USER@$DEV_HOST:~/$DEV_PATH/cachedb/dev_regression_status.json" \
+        "$scp_base/cachedb/dev_regression_status.json" \
         "$ROOT/cachedb/system/dev_regression_status.json" >/dev/null 2>&1 || true
 }
