@@ -2,7 +2,7 @@
 Binance WebSocket - shared infrastructure and two streams
 =========================================================
 
-BinanceWSBase
+AsyncReconnectStreamBase
     Shared thread and asyncio loop, reconnect backoff, clean shutdown, and
     interruptible sleep. Subclasses implement only ``_connect_and_run``.
 
@@ -64,9 +64,6 @@ WS_USERDATA_LOSS_TIMEOUT_SEC = 40
 class _Cmd:
     SUBSCRIBE   = "SUBSCRIBE"
     UNSUBSCRIBE = "UNSUBSCRIBE"
-
-
-BinanceWSBase = AsyncReconnectStreamBase
 
 
 class BinancePriceStream(PublicPriceStreamBase):
@@ -265,7 +262,7 @@ class BinancePriceStream(PublicPriceStreamBase):
 #  User data - private WS-API session.logon and execution reports
 # ==============================================================================
 
-class BinanceAccountStream(BinanceWSBase):
+class BinanceAccountStream(AsyncReconnectStreamBase):
     """
     Authenticated user-data stream. Events are delivered through callbacks so the
     stream does not depend on ``cacheManager`` or create an import cycle:

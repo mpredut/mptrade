@@ -484,7 +484,7 @@ class T212ExactFillReconciliationTest(unittest.TestCase):
                 engine = self._engine(client, audit_dir)
                 order = engine.s["orders"][0]
 
-                self.assertTrue(engine._cancel_specific(order))
+                self.assertTrue(engine._cancel_order(order))
                 self.assertIn(order, engine.s["orders"])
 
                 # One half executes in the very race with the cancellation. The terminal status
@@ -572,7 +572,7 @@ class T212CancellationLifecycleTest(unittest.TestCase):
                 order = self._order()
                 engine.s["orders"] = [order]
 
-                self.assertFalse(engine._cancel_specific(order))
+                self.assertFalse(engine._cancel_order(order))
                 self.assertEqual(engine.s["orders"], [order])
 
     def test_ladder_does_not_replace_an_order_whose_cancel_failed(self):
@@ -623,8 +623,8 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         order = self._order()
         engine.s["orders"] = [order]
 
-        self.assertTrue(engine._cancel_specific(order))
-        self.assertTrue(engine._cancel_specific(order))
+        self.assertTrue(engine._cancel_order(order))
+        self.assertTrue(engine._cancel_order(order))
 
         self.assertEqual(engine.s["orders"], [order])
         self.assertTrue(order["cancel_requested"])
@@ -652,7 +652,7 @@ class T212CancellationLifecycleTest(unittest.TestCase):
 
         engine._save.reset_mock()
         order = engine.s["orders"][0]
-        self.assertTrue(engine._cancel_specific(order))
+        self.assertTrue(engine._cancel_order(order))
         engine._save.assert_called_once()
 
     def test_live_submit_is_durable_before_external_post(self):

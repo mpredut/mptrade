@@ -650,7 +650,7 @@ class Strategy(BaseSpotMixin):
         log(f"  [STRAT] SELL {kind}{tag} placed id={outcome.order_id} {qty:.2f} {order_type}")
         return True
 
-    def _cancel_specific(self, o: dict) -> bool:
+    def _cancel_order(self, o: dict) -> bool:
         return self._cancel_tracked_order(
             o,
             "id",
@@ -661,8 +661,6 @@ class Strategy(BaseSpotMixin):
             ),
             log_prefix="cancelled order",
         )
-
-    _cancel_order = _cancel_specific
 
     def _local_vol_1h_sources(self):
         return ((self._resolve_shadow_vol_1h_pct, "shadow"),)
@@ -746,7 +744,7 @@ class Strategy(BaseSpotMixin):
     def _cancel_all_orders(self) -> bool:
         success = True
         for order in list(self.s["orders"]):
-            if not self._cancel_specific(order):
+            if not self._cancel_order(order):
                 success = False
         return success
 
@@ -754,7 +752,7 @@ class Strategy(BaseSpotMixin):
         for order in [
             x for x in list(self.s["orders"]) if str(x.get("side") or "").upper() == "SELL" and not x.get("market")
         ]:
-            self._cancel_specific(order)
+            self._cancel_order(order)
 
     def _restore_cancelled_orders(self, cancelled_orders: list[dict], reason: str = "") -> None:
         """Best-effort rollback: restore previously resting orders after a replacement or exit fails."""
@@ -801,7 +799,7 @@ class Strategy(BaseSpotMixin):
     def _manage_tp_ladder(self, held: float, avg: float) -> None:
         """Maintain one SELL per unsold ladder level at its target over average."""
         for o in [x for x in self.s["orders"] if x["side"] == "SELL" and x.get("level") is None]:
-            if not self._cancel_specific(o) or o in self.s["orders"]:
+            if not self._cancel_order(o) or o in self.s["orders"]:
                 return
         sold = set(self.s.get("tp_sold_levels", []))
         remaining = [(lvl, frac) for (lvl, frac) in self.p.tp_ladder if lvl not in sold]
@@ -828,7 +826,7 @@ class Strategy(BaseSpotMixin):
             d = desired.get(lvl)
             if d is None or d[1] <= 0 or abs(o["limit"] - d[1]) / d[1] > 0.001 or abs(o["qty"] - d[0]) > 1e-6:
                 cancelled_by_level[lvl] = dict(o)
-                if self._cancel_specific(o) and o not in self.s["orders"]:
+                if self._cancel_order(o) and o not in self.s["orders"]:
                     open_sells.pop(lvl, None)
         now = self._now()
         if not isinstance(self.s.get("tp_fail_until"), dict):
@@ -1134,7 +1132,7 @@ class Strategy(BaseSpotMixin):
             o.pop("lookup_misses", None)
             if self._buy_is_stale(o, price):
                 log(f"  [STRAT] BUY {o['id']} unfilled, the price rose — cancelling and re-placing")
-                self._cancel_specific(o)
+                self._cancel_order(o)
 
         is_flat = real_qty <= 1e-9
         all_tp_sold = self._all_tp_ladder_levels_sold()
@@ -1434,7 +1432,7 @@ class Strategy(BaseSpotMixin):
             existing_exit = next((o for o in self.s.get("orders", []) if _is_market_exit(o)), None)
             if existing_exit:
                 for o in [o for o in list(self.s["orders"]) if not _is_market_exit(o)]:
-                    self._cancel_specific(o)
+                    self._cancel_order(o)
                 if self.s["qty"] <= 1e-6:
                     log("  [STRAT] MDHTP exit: position closed — clearing exit intent")
                     self.s["tp_pending_exit"] = None

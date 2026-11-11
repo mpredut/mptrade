@@ -424,12 +424,6 @@ _HORIZON_SOURCES = {
 # Each bound includes the natural age of a just-closed candle plus bounded
 # publication and network delay. Legacy decision-only calls stay permissive.
 _DEFAULT_SNAPSHOT_MAX_AGE_SECONDS = 120.0
-_DEFAULT_OHLC_MAX_AGE_SECONDS = {
-    1: 180.0,
-    5: 600.0,
-    240: 6 * 3600.0,
-    1440: 36 * 3600.0,
-}
 
 
 class MarketRegimeService:

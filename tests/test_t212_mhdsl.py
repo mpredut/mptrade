@@ -405,7 +405,7 @@ class T212MDHTPTest(_T212BaseTest):
         )
         cancelled = []
         with patch.object(strategy, "notify"), \
-             patch.object(strat, "_cancel_specific", side_effect=lambda o: (cancelled.append(o), True)[1]), \
+             patch.object(strat, "_cancel_order", side_effect=lambda o: (cancelled.append(o), True)[1]), \
              patch.object(strat, "_place_sell") as mock_place_sell:
             strat.step(105.0)
             self.assertEqual(len(cancelled), 1)
@@ -1398,7 +1398,7 @@ class TestTrailingStopAndSellableQty(unittest.TestCase):
     def test_trailing_waits_for_existing_sell_order_cancellation_to_reconcile(self):
         tp_order = {"id": "TP-1", "side": "SELL", "qty": 2.88, "limit": 190.0, "kind": "TP", "level": 30.0}
         self.strat.s["orders"] = [tp_order]
-        self.strat._cancel_specific = lambda o: o.update({"cancel_requested": True}) or True
+        self.strat._cancel_order = lambda o: o.update({"cancel_requested": True}) or True
 
         res = self.strat._check_trailing(160.0)
         self.assertTrue(res)
@@ -1415,7 +1415,7 @@ class TestTrailingStopAndSellableQty(unittest.TestCase):
     def test_stop_loss_waits_for_existing_sell_order_cancellation_to_reconcile(self):
         tp_order = {"id": "TP-1", "side": "SELL", "qty": 2.88, "limit": 190.0, "kind": "TP", "level": 30.0}
         self.strat.s["orders"] = [tp_order]
-        self.strat._cancel_specific = lambda o: o.update({"cancel_requested": True}) or True
+        self.strat._cancel_order = lambda o: o.update({"cancel_requested": True}) or True
 
         res = self.strat._check_stop_loss(100.0)
         self.assertTrue(res)
@@ -1432,7 +1432,7 @@ class TestTrailingStopAndSellableQty(unittest.TestCase):
     def test_stop_loss_waits_for_existing_buy_order_cancellation_to_reconcile(self):
         buy_order = {"id": "DCA-1", "side": "BUY", "qty": 1.0, "limit": 90.0, "kind": "DCA"}
         self.strat.s["orders"] = [buy_order]
-        self.strat._cancel_specific = lambda o: o.update({"cancel_requested": True}) or True
+        self.strat._cancel_order = lambda o: o.update({"cancel_requested": True}) or True
 
         res = self.strat._check_stop_loss(100.0)
         self.assertTrue(res)
@@ -1483,7 +1483,7 @@ class TestTrailingStopAndSellableQty(unittest.TestCase):
             return True
 
         self.strat._place_sell = mock_place_sell
-        self.strat._cancel_specific = lambda o: True
+        self.strat._cancel_order = lambda o: True
 
         res = self.strat._check_trailing(160.0)
         self.assertTrue(res)

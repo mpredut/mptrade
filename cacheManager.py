@@ -90,9 +90,6 @@ load_dotenv()
 HyperliquidPriceStream.register_stream_init_hook(attach_hyperliquid_user_fills_bridge)
 
 
-_resolve_data_sync_mode = CacheManagerInterface.resolve_data_sync_mode
-
-
 def get_current_price_manager(
     ws_manager=None,
     symbols=None,
@@ -272,7 +269,7 @@ class CacheFactory:
         read_only=None,
         filename=None,
     ):
-        resolved_mode, save_state_flag, start_periodic = _resolve_data_sync_mode(
+        resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(
             data_sync_mode
         )
         if (
@@ -318,7 +315,7 @@ class CacheFactory:
                 raise ValueError("provider_names is supported only for CurrentPrice")
 
             cfg_read_only = bool(cls._CONFIG[name].get("read_only", False)) and name != "ShortTrend"
-            resolved_mode, save_state_flag, start_periodic = _resolve_data_sync_mode(
+            resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(
                 data_sync_mode,
                 config_read_only=cfg_read_only,
             )

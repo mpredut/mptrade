@@ -102,7 +102,6 @@ from state_io import (
     save_json_state as _default_save_json_state,
 )
 
-_default_fetch_public_json = fetch_public_json
 read_json_cached = _default_read_json_cached
 save_json_state = _default_save_json_state
 
@@ -204,7 +203,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
             )[0]
         cache_dir = cachedb_dir
         eff_now = resolve_now_ts(now_ts)
-        _fetch = fetch_fn or _resolve_macro_ssot_attr("fetch_public_json", fetch_public_json, _default_fetch_public_json)
+        _fetch = fetch_fn or _resolve_macro_ssot_attr("fetch_public_json", fetch_public_json, fetch_public_json)
         items: Dict[str, Dict[str, Any]] = {}
         for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
             try:

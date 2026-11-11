@@ -1287,10 +1287,6 @@ def merge_guard_scale(
     return effective_scale, active_reason
 
 
-_merge_guard_scale = merge_guard_scale
-_normalize_intel_bypass_with_qlimit2_subs = normalize_intel_bypass_with_qlimit2_subs
-
-
 def check_intelligence_guards(
     provider,
     symbol: str,
@@ -1433,7 +1429,7 @@ def check_intelligence_guards(
         )
         if not q_ok:
             return False, q_reason, 0.0
-        effective_scale, active_reason = _merge_guard_scale(effective_scale, active_reason, q_scale, q_reason)
+        effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, q_scale, q_reason)
 
     # 2. Dynamic LLM Pre-Trade Guard (GLLM1) if notional crossed the threshold
     dur_sec = resolve_effective_trend_duration(symbol, explicit_dur_sec, regime_context)
@@ -1457,7 +1453,7 @@ def check_intelligence_guards(
     )
     if not hs_ok:
         return False, hs_reason, 0.0
-    effective_scale, active_reason = _merge_guard_scale(effective_scale, active_reason, hs_scale, hs_reason)
+    effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, hs_scale, hs_reason)
 
     final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
     if valid_context:
@@ -1516,7 +1512,7 @@ def _evaluate_intelligence_guards_raw(
         )
         if not int_ok:
             return False, int_reason, 0.0
-        effective_scale, active_reason = _merge_guard_scale(effective_scale, active_reason, int_scale, int_reason)
+        effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, int_scale, int_reason)
 
     # 2. External Microstructure & Derivatives Guards (GI_OBOOK, GI_WHALE, GI_FUNDING)
     if not is_category_bypassed("intelligence", bypassed):
@@ -1531,7 +1527,7 @@ def _evaluate_intelligence_guards_raw(
         )
         if not ext_ok:
             return False, ext_reason, 0.0
-        effective_scale, active_reason = _merge_guard_scale(effective_scale, active_reason, ext_scale, ext_reason)
+        effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, ext_scale, ext_reason)
 
     # 3. LLM Guards (GLLM1 High-Stake + GLLM2 Sentiment + GLLM3 Geopolitical)
     if not is_category_bypassed("llm", bypassed):
@@ -1550,7 +1546,7 @@ def _evaluate_intelligence_guards_raw(
         )
         if not intel_ok:
             return False, intel_reason, 0.0
-        effective_scale, active_reason = _merge_guard_scale(effective_scale, active_reason, intel_scale, intel_reason)
+        effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, intel_scale, intel_reason)
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 

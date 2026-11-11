@@ -3176,7 +3176,7 @@ def test_cache_modules_delegate_venue_ws_protocols_to_providers():
                         raise AssertionError(f"{mod_name} imports forbidden venue module {alias.name}")
 
     # Canonical SSOT WebSocket stream bases in providers.base
-    assert bapi_ws.BinanceWSBase is AsyncReconnectStreamBase
+    assert issubclass(bapi_ws.BinanceAccountStream, AsyncReconnectStreamBase)
     assert bapi_ws.PublicPriceStreamBase is PublicPriceStreamBase
     assert issubclass(cp._VenuePriceStreamBase, PublicPriceStreamBase)
 

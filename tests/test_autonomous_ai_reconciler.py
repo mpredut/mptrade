@@ -4849,7 +4849,7 @@ def test_iteration29_prompt_sections_3a_and_3b_quote_family_grouping():
 def test_iteration30_submit_decisions_scope_xstock_guard_and_instrument_quote_resolution(tmp_path):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
-    from instrument_registry import resolve_tradable_instrument
+    from instrument_registry import resolve_instrument_spec
     from orchestratorOS.lib.technical_repair_ssot import (
         build_sensor_health_summary,
         submit_supervisor_trading_decisions,
@@ -4901,15 +4901,15 @@ def test_iteration30_submit_decisions_scope_xstock_guard_and_instrument_quote_re
     assert decs_cr[0]["symbol"] == "XBTUSD"
     assert len(emitted_cr) == 1
 
-    # 2. resolve_tradable_instrument isolates USD vs EUR quote families and rejects read-only Kraken xStocks
+    # 2. resolve_instrument_spec isolates USD vs EUR quote families and rejects read-only Kraken xStocks
     usd_inst = MagicMock(symbol="XBTUSD", provider_name="kraken", base="XBT", quote="USD", enabled=True)
     eur_inst = MagicMock(symbol="XBTEUR", provider_name="kraken", base="XBT", quote="EUR", enabled=True)
     inst_map = {"KRAKEN_XBT": usd_inst, "KRAKEN_XBTEUR": eur_inst}
 
-    assert resolve_tradable_instrument("BTCEUR", venue="kraken", instruments_map=inst_map) is eur_inst
-    assert resolve_tradable_instrument("BTCUSDC", venue="kraken", instruments_map=inst_map) is usd_inst
-    assert resolve_tradable_instrument("BTCEUR", venue="kraken", instruments_map={"KRAKEN_XBT": usd_inst}) is None
-    assert resolve_tradable_instrument("SPCXx.T", venue="kraken", instruments_map=inst_map) is None
+    assert resolve_instrument_spec("BTCEUR", venue="kraken", instruments_map=inst_map) is eur_inst
+    assert resolve_instrument_spec("BTCUSDC", venue="kraken", instruments_map=inst_map) is usd_inst
+    assert resolve_instrument_spec("BTCEUR", venue="kraken", instruments_map={"KRAKEN_XBT": usd_inst}) is None
+    assert resolve_instrument_spec("SPCXx.T", venue="kraken", instruments_map=inst_map) is None
 
     # 3. summarize_fleet_sensor_status normalizes taxonomy aliases & build_sensor_health_summary reports macro/micro counts
     sensors_status = summarize_fleet_sensor_status(
@@ -5307,7 +5307,7 @@ def test_iteration34_microstructure_quote_isolation_near_parity_and_audit_reconc
 
 def test_iteration35_kraken_xstock_discovery_filter_and_external_guard_aliases(tmp_path):
     from types import SimpleNamespace
-    from instrument_registry import discover_kraken_cache_pairs, resolve_tradable_instrument
+    from instrument_registry import discover_kraken_cache_pairs, resolve_instrument_spec
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
     from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
@@ -5322,14 +5322,14 @@ def test_iteration35_kraken_xstock_discovery_filter_and_external_guard_aliases(t
     pairs = discover_kraken_cache_pairs(str(tmp_path))
     assert [p[0] for p in pairs] == ["TAOUSD", "XBTUSD"]
 
-    # 2. resolve_tradable_instrument enforces quote compatibility on exact/variant loops even for bare symbols
+    # 2. resolve_instrument_spec enforces quote compatibility on exact/variant loops even for bare symbols
     inst_eur = SimpleNamespace(symbol="BTC", base="BTC", quote="EUR", provider_name="kraken", enabled=True)
     inst_usd = SimpleNamespace(symbol="XBTUSD", base="BTC", quote="USD", provider_name="kraken", enabled=True)
     inst_xstock = SimpleNamespace(symbol="SPCXX.T/USD", base="SPCXX.T", quote="USD", provider_name="kraken", enabled=True)
     imap = {"KR_EUR": inst_eur, "KR_USD": inst_usd, "KR_X": inst_xstock}
-    assert resolve_tradable_instrument("BTC", "kraken", imap) is inst_usd
-    assert resolve_tradable_instrument("BTCEUR", "kraken", imap) is inst_eur
-    assert resolve_tradable_instrument("SPCXX.T/USD", "kraken", imap) is None
+    assert resolve_instrument_spec("BTC", "kraken", imap) is inst_usd
+    assert resolve_instrument_spec("BTCEUR", "kraken", imap) is inst_eur
+    assert resolve_instrument_spec("SPCXX.T/USD", "kraken", imap) is None
 
     # 3. OrderbookWallGuard, WhaleDivergenceGuard, and FundingCrowdingGuard accept normalized telemetry aliases
     ob_guard = OrderbookWallGuard(min_buy_imbalance=0.25, whale_wall_usd_limit=1_000_000.0)

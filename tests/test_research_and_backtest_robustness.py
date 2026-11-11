@@ -2834,7 +2834,7 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     assert order_id_context.resolve_order_owner(float("-inf")) == "unspecified"  # type: ignore[arg-type]
     assert order_id_context._derive_process_name(True) == "PYTHON"
 
-    ws_base = bapi_ws.BinanceWSBase()
+    ws_base = bapi_ws.AsyncReconnectStreamBase()
     ws_base._thread = threading.current_thread()
     assert ws_base.stop(timeout=0.01) is True
 
@@ -3785,7 +3785,7 @@ def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
     assert bapi_ws.safe_nonneg_float(-5.0, default=8.0) == 8.0
     assert bapi_ws.safe_nonneg_float("2.5", default=8.0) == 2.5
 
-    ws_base = bapi_ws.BinanceWSBase()
+    ws_base = bapi_ws.AsyncReconnectStreamBase()
     asyncio.run(ws_base._interruptible_sleep(float("nan"), step=0.0))
     asyncio.run(ws_base._interruptible_sleep(-1.0, step=-1.0))
 

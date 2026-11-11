@@ -4155,10 +4155,10 @@ def test_iter75_order_guard_qlimit2_sub_bypasses_context_scale_and_cachetrend_it
     assert k_para != k_both
     assert k_weib != k_both
 
-    # 2. _normalize_intel_bypass_with_qlimit2_subs retains check_qlimit2_order_guards when only one sub-guard is bypassed
-    norm, p_only, w_only = order_guard._normalize_intel_bypass_with_qlimit2_subs({"parabolic_surge"})
+    # 2. normalize_intel_bypass_with_qlimit2_subs retains check_qlimit2_order_guards when only one sub-guard is bypassed
+    norm, p_only, w_only = order_guard.normalize_intel_bypass_with_qlimit2_subs({"parabolic_surge"})
     assert p_only is True and w_only is False and "parabolic_surge" in norm and "weibull_exhaustion" not in norm
-    norm_all, p_all, w_all = order_guard._normalize_intel_bypass_with_qlimit2_subs({"G_QLIMIT2"})
+    norm_all, p_all, w_all = order_guard.normalize_intel_bypass_with_qlimit2_subs({"G_QLIMIT2"})
     assert p_all is False and w_all is False and "g_qlimit2" in norm_all
 
     # 3. _record_context_suggested_scale handles string / percent / NaN existing scales without TypeError

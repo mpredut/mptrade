@@ -419,29 +419,29 @@ def test_resolve_tradable_instrument_filtering_and_variants():
     }
 
     # Rejects junk test symbols and empty/bool
-    assert ic.resolve_tradable_instrument("", instruments_map=inst_map) is None
-    assert ic.resolve_tradable_instrument(None, instruments_map=inst_map) is None
-    assert ic.resolve_tradable_instrument(False, instruments_map=inst_map) is None
-    assert ic.resolve_tradable_instrument("BTCUSDC", venue=True, instruments_map=inst_map) is None
-    assert ic.resolve_tradable_instrument("BTCX.T", instruments_map=inst_map) is None
-    assert ic.resolve_tradable_instrument("BTC.T", instruments_map=inst_map) is None
+    assert ic.resolve_instrument_spec("", instruments_map=inst_map) is None
+    assert ic.resolve_instrument_spec(None, instruments_map=inst_map) is None
+    assert ic.resolve_instrument_spec(False, instruments_map=inst_map) is None
+    assert ic.resolve_instrument_spec("BTCUSDC", venue=True, instruments_map=inst_map) is None
+    assert ic.resolve_instrument_spec("BTCX.T", instruments_map=inst_map) is None
+    assert ic.resolve_instrument_spec("BTC.T", instruments_map=inst_map) is None
 
     # Disabled instrument not returned
-    assert ic.resolve_tradable_instrument("ETHUSDC", instruments_map=inst_map) is None
+    assert ic.resolve_instrument_spec("ETHUSDC", instruments_map=inst_map) is None
 
     # Exact symbol and variant matching
-    assert ic.resolve_tradable_instrument("BTC/USD", venue="kraken", instruments_map=inst_map) is btc_usd
-    assert ic.resolve_tradable_instrument("BTCUSD", venue="kraken", instruments_map=inst_map) is btc_usd
-    assert ic.resolve_tradable_instrument("BTCUSDT", venue="kraken", instruments_map=inst_map) is btc_usd
-    assert ic.resolve_tradable_instrument("BTC", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert ic.resolve_instrument_spec("BTC/USD", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert ic.resolve_instrument_spec("BTCUSD", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert ic.resolve_instrument_spec("BTCUSDT", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert ic.resolve_instrument_spec("BTC", venue="kraken", instruments_map=inst_map) is btc_usd
 
     # Quote isolation: BTC/EUR should resolve to btc_eur, not btc_usd
-    assert ic.resolve_tradable_instrument("BTC/EUR", venue="kraken", instruments_map=inst_map) is btc_eur
-    assert ic.resolve_tradable_instrument("BTCEUR", venue="kraken", instruments_map=inst_map) is btc_eur
+    assert ic.resolve_instrument_spec("BTC/EUR", venue="kraken", instruments_map=inst_map) is btc_eur
+    assert ic.resolve_instrument_spec("BTCEUR", venue="kraken", instruments_map=inst_map) is btc_eur
 
     # Venue filtering
-    assert ic.resolve_tradable_instrument("HYPEUSDC", venue="hyperliquid", instruments_map=inst_map) is hype_usdc
-    assert ic.resolve_tradable_instrument("HYPEUSDC", venue="kraken", instruments_map=inst_map) is None
+    assert ic.resolve_instrument_spec("HYPEUSDC", venue="hyperliquid", instruments_map=inst_map) is hype_usdc
+    assert ic.resolve_instrument_spec("HYPEUSDC", venue="kraken", instruments_map=inst_map) is None
 
 
 def test_load_tradable_instruments_duplicate_kraken_base(monkeypatch, tmp_path):

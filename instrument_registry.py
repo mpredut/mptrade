@@ -615,9 +615,6 @@ def resolve_instrument_spec(
     return None
 
 
-resolve_tradable_instrument = resolve_instrument_spec
-
-
 # ─── Binance Symbol Validation & Precision Helpers ───────────────────────────
 
 
