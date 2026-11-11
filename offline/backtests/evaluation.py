@@ -25,9 +25,8 @@ from state_io import atomic_write_json
 from strategies.replay_execution import ExecutionModel
 from strategies.replay_metrics import validate_replay_metrics
 from strategies.spot_replay import (
-    align_spot_interval_params,
     make_spot_replay_adapter,
-    scale_subbar_timeout_params,
+    prepare_spot_interval_params,
 )
 from botcore import (
     exact_int,
@@ -517,7 +516,7 @@ def evaluate_spot_segment(
 ) -> dict:
     """Evaluate an OHLC segment using aligned spot parameters and the canonical spot replay adapter."""
     adapter = make_spot_replay_adapter(
-        scale_subbar_timeout_params(align_spot_interval_params(params, interval), interval),
+        prepare_spot_interval_params(params, interval),
         fee_pct=fee_pct,
         bar_minutes=interval,
         execution=execution,

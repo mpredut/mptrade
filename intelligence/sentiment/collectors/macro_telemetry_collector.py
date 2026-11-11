@@ -986,10 +986,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         known_ai_oids = raw_known_oids if raw_known_oids is not None else collect_known_ai_order_ids(intents_data)
         gw_max_usd = safe_pos_float(getattr(intent_gateway, "max_notional_usd", None), default=2000.0) or 2000.0
 
-        tradable_positions: List[Dict[str, Any]] = []
-        open_orders_list: List[Dict[str, Any]] = []
-        venue_quote_cash: Dict[str, Dict[str, Any]] = {}
-        inst_by_sym: Dict[str, Any] = {}
+        tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = [], [], {}, {}
         verified_open_venues: set[str] = set()
         load_tradable_fn = getattr(intent_gateway, "load_tradable_instruments", None)
         has_inst_source = (

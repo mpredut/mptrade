@@ -23,6 +23,7 @@ from botcore import (
     safe_nonneg_float,
 )
 from intelligence.macro_sentiment_ssot import (
+    coerce_dict_maps,
     safe_float,
     safe_pos_float,
 )
@@ -522,9 +523,9 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
         macro_benchmarks: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
-        microstructure = microstructure if isinstance(microstructure, dict) else {}
-        all_t212_cycles = all_t212_cycles if isinstance(all_t212_cycles, dict) else {}
+        prices_and_trends, microstructure, all_t212_cycles = coerce_dict_maps(
+            prices_and_trends, microstructure, all_t212_cycles
+        )
         ctx: Dict[str, Any] = {}
 
         def _bellwether_rank(s: str, p: Dict[str, Any]) -> Tuple[int, int, int]:

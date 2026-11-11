@@ -2087,9 +2087,9 @@ INVALID_SCALAR_STRINGS = frozenset((
 _INVALID_OID_STRINGS = INVALID_SCALAR_STRINGS | frozenset(("0", "0.0", "-0", "+0", "+0.0", "-0.0"))
 
 
-def normalize_side(side: object) -> str:
+def normalize_side(side: object, *, require_str: bool = False) -> str:
     """Normalize a scalar order side token to ``'BUY'`` or ``'SELL'`` (or ``''`` when unrecognized)."""
-    if side is None or isinstance(side, bool):
+    if side is None or isinstance(side, bool) or (require_str and not isinstance(side, str)):
         return ""
     s = " ".join(str(side).strip().upper().replace("_", " ").replace("-", " ").split())
     if s in _BUY_SIDE_TOKENS:

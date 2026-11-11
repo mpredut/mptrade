@@ -25,8 +25,7 @@ if ROOT not in sys.path:
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     buy_hold_pct,
-    print_single_backtest_report,
-    run_tp_drop_sl_sweep,
+    run_cli_single_or_sweep_backtest,
 )
 from botcore import (
     _parse_bool_flag,
@@ -243,22 +242,18 @@ def main() -> int:
             base["tp_mdhtp_enabled"] = False
             tp_mdhtp = False
 
-    if args.mode == "single":
-        m = simulate(ohlc, base)
-        prof_info = f" [profile={args.profile}]" if args.profile else ""
-        print_single_backtest_report(
-            f"=== BACKTEST T212 {sym} {args.range}/{args.interval} ({len(ohlc)} bars){prof_info} ===",
-            f"entry={entry:.1f} dca={dca:.1f} drop={drop}% tp={tp}% sl={sl}% fee={fee}%/leg | MHDSL={'ON' if sl_mhdsl else 'OFF'} MDHTP={'ON' if tp_mdhtp else 'OFF'}",
-            m,
-            budget=budget,
-            bh=bh,
-            open_qty_decimals=4,
-        )
-        return 0
-
-    print(f"=== SWEEP {sym} {args.range}/{args.interval}  (buy&hold {bh:+.1f}%) ===")
-    run_tp_drop_sl_sweep(base, lambda p: simulate(ohlc, p), budget=budget)
-    return 0
+    prof_info = f" [profile={args.profile}]" if args.profile else ""
+    return run_cli_single_or_sweep_backtest(
+        args.mode,
+        base,
+        lambda p: simulate(ohlc, p),
+        budget=budget,
+        bh=bh,
+        single_header=f"=== BACKTEST T212 {sym} {args.range}/{args.interval} ({len(ohlc)} bars){prof_info} ===",
+        single_params_line=f"entry={entry:.1f} dca={dca:.1f} drop={drop}% tp={tp}% sl={sl}% fee={fee}%/leg | MHDSL={'ON' if sl_mhdsl else 'OFF'} MDHTP={'ON' if tp_mdhtp else 'OFF'}",
+        sweep_header=f"=== SWEEP {sym} {args.range}/{args.interval}  (buy&hold {bh:+.1f}%) ===",
+        open_qty_decimals=4,
+    )
 
 
 if __name__ == "__main__":

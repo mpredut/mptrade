@@ -1537,10 +1537,8 @@ class CacheTradeManager(CacheAccountManagerBase):
     def get_last_opposite_fill_price(self, symbol, order_type):
         """Return the latest opposite fill price without a time limit."""
         self.sync_account_reader_if_needed()
-        if not isinstance(order_type, str):
-            return None
-        side_u = normalize_side(order_type)
-        if side_u not in ("BUY", "SELL"):
+        side_u = normalize_side(order_type, require_str=True)
+        if not side_u:
             return None
         want_buyer = side_u == "SELL"
         sym_clean = clean_symbol_key(symbol)

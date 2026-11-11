@@ -8,6 +8,7 @@ intrabar ambiguity resolution without network, notifications, or persistent stat
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import dataclasses
 
@@ -624,6 +625,26 @@ def scale_subbar_timeout_params(params, bar_minutes: float | int | None):
         if cur_val is not None:
             updates[attr] = round(cur_val * bar_scale, 1)
     return _clone_params_with_updates(params, updates)
+
+
+def prepare_spot_interval_params(params, bar_minutes: float | int | None):
+    """Align interval-dependent parameters and scale sub-bar timeouts for ``bar_minutes``."""
+    return scale_subbar_timeout_params(align_spot_interval_params(params, bar_minutes), bar_minutes)
+
+
+@contextlib.contextmanager
+def post_exit_peak_step_scope(strat_cls, flags: dict, peak, step_fn, orig_step_fn):
+    """Temporarily toggle ``flags['peak']`` and patch ``strat_cls.step`` for continuous-grid replay."""
+    prev_peak = flags.get("peak", False)
+    prev_step = getattr(strat_cls, "step", orig_step_fn)
+    use_peak = bool(peak)
+    flags["peak"] = use_peak
+    strat_cls.step = step_fn if use_peak else orig_step_fn
+    try:
+        yield
+    finally:
+        flags["peak"] = prev_peak
+        strat_cls.step = prev_step
 
 
 def prewarm_trend_series(

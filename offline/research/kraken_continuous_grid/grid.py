@@ -169,11 +169,7 @@ def resolve_grid_workers() -> int:
 
 
 def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
-    prev_peak = FLAGS["peak"]
-    prev_step = strat.Strategy.step
-    FLAGS["peak"] = bool(peak)
-    strat.Strategy.step = _step if peak else _orig_step
-    try:
+    with rp.post_exit_peak_step_scope(strat.Strategy, FLAGS, peak, _step, _orig_step):
         has_ts = bool(bars and len(bars[0]) == 5)
         has_w_ts = bool(warm and len(warm[0]) == 5)
         ohlc = [b[1:] for b in bars] if has_ts else bars
@@ -185,7 +181,7 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
                 return {"ret": 0.0, "dd": 0.0, "cyc": 0, "refused": 0, "min_cash": safe_nonneg_float(initial_cash, 0.0)}
             return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "bh": 0.0}
         fee_val = safe_nonneg_float(fee, 0.0)
-        interval_params = rp.scale_subbar_timeout_params(rp.align_spot_interval_params(params, 240), 240)
+        interval_params = rp.prepare_spot_interval_params(params, 240)
         m = rp.run_replay(
             ohlc, interval_params, fee_pct=fee_val, bar_minutes=240,
             warmup_ohlc=w_ohlc, initial_cash=initial_cash,
@@ -210,9 +206,6 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
             fee_pct=fee_val,
             bh_digits=3,
         )
-    finally:
-        FLAGS["peak"] = prev_peak
-        strat.Strategy.step = prev_step
 
 
 def task(args):

@@ -22,6 +22,7 @@ from cacheprice import Cache365PriceManager, CacheSparsePriceManager
 from state_io import read_tail_jsonl_records, resolve_cachedb_filepath
 from botcore import safe_nonneg_float, safe_nonneg_int, safe_pos_int
 from intelligence.macro_sentiment_ssot import (
+    coerce_dict_maps,
     safe_float,
     safe_pos_float,
 )
@@ -1184,12 +1185,9 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
     ) -> List[Dict[str, Any]]:
         prices_and_trends = prices_and_trends or {}
         inst_by_sym = inst_by_sym or {}
-        venue_recent_orders = venue_recent_orders if isinstance(venue_recent_orders, dict) else {}
-        recent_orders = recent_orders if isinstance(recent_orders, dict) else {}
-        kraken_cycles = kraken_cycles if isinstance(kraken_cycles, dict) else {}
-        hyperliquid_cycles = hyperliquid_cycles if isinstance(hyperliquid_cycles, dict) else {}
-        t212_cycles = t212_cycles if isinstance(t212_cycles, dict) else {}
-        cyc_sell_ts_map = cyc_sell_ts_map if isinstance(cyc_sell_ts_map, dict) else {}
+        venue_recent_orders, recent_orders, kraken_cycles, hyperliquid_cycles, t212_cycles, cyc_sell_ts_map = coerce_dict_maps(
+            venue_recent_orders, recent_orders, kraken_cycles, hyperliquid_cycles, t212_cycles, cyc_sell_ts_map
+        )
         seen_venue_syms: set[tuple[str, str]] = set()
         _cycle_high_memo: Dict[tuple[str, int], float] = {}
         for pos in tradable_positions:

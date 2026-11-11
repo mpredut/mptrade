@@ -18,6 +18,7 @@ from intelligence.macro.calendar_ssot import (
 )
 from botcore import compute_venue_nav_breakdown, safe_nonneg_float
 from intelligence.macro_sentiment_ssot import (
+    coerce_dict_maps,
     compute_cross_asset_regime as _ssot_compute_cross_asset_regime,
     compute_equity_macro_regime as _ssot_compute_equity_macro_regime,
     compute_futures_premarket_lead as _ssot_compute_futures_premarket_lead,
@@ -695,12 +696,9 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
         t212_cycles: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
-        prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
-        microstructure = microstructure if isinstance(microstructure, dict) else {}
-        if not isinstance(portfolio_summary, dict):
-            portfolio_summary = {}
-        inst_by_sym = inst_by_sym if isinstance(inst_by_sym, dict) else {}
-        t212_cycles = t212_cycles if isinstance(t212_cycles, dict) else {}
+        prices_and_trends, microstructure, portfolio_summary, inst_by_sym, t212_cycles = coerce_dict_maps(
+            prices_and_trends, microstructure, portfolio_summary, inst_by_sym, t212_cycles
+        )
         scope_norm = str(scope or "").strip().lower()
         if scope_norm not in ("equities", "crypto"):
             return prices_and_trends, microstructure

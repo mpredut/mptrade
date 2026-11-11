@@ -26,9 +26,9 @@ from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_venue_replay_module  # noqa: E402
 from state_io import append_jsonl_record, atomic_write_jsonl  # noqa: E402
 from strategies.spot_replay import (  # noqa: E402
-    align_spot_interval_params,
+    post_exit_peak_step_scope,
+    prepare_spot_interval_params,
     ratchet_post_exit_peak_sell_price,
-    scale_subbar_timeout_params,
     summarize_grid_replay_metrics,
 )
 
@@ -138,18 +138,14 @@ def params_for(profile, variant):
 
 
 def run(bars, params, peak, minutes, ohlc=None, ts=None):
-    FLAGS["peak"] = bool(peak)
-    strat.Strategy.step = _step if peak else _orig_step
-    try:
+    with post_exit_peak_step_scope(strat.Strategy, FLAGS, peak, _step, _orig_step):
         if ohlc is None:
             ohlc = [b[1:] for b in bars]
         if ts is None:
             ts = [b[0] for b in bars]
         if len(ohlc) <= WARM:
             return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "fills": 0, "bh": 0.0}
-        interval_params = scale_subbar_timeout_params(
-            align_spot_interval_params(params, minutes), minutes
-        )
+        interval_params = prepare_spot_interval_params(params, minutes)
         budget = safe_pos_float(params.max_budget, 0.0)
         m = rp.run_replay(ohlc[WARM:], interval_params, bar_minutes=minutes,
                           warmup_ohlc=ohlc[:WARM],
@@ -165,9 +161,6 @@ def run(bars, params, peak, minutes, ohlc=None, ts=None):
             bh_digits=2,
             include_fills=True,
         )
-    finally:
-        FLAGS["peak"] = False
-        strat.Strategy.step = _orig_step
 
 
 def task(args):

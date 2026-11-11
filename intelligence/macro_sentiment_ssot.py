@@ -760,6 +760,11 @@ def _clean_nonbool_str(val: Any, default: str = "") -> str:
     return str(val).strip() if (val is not None and not isinstance(val, bool) and str(val).strip()) else default
 
 
+def coerce_dict_maps(*maps: Any) -> Tuple[Dict[str, Any], ...]:
+    """Return a tuple where each item is preserved if ``isinstance(item, dict)`` else ``{}``."""
+    return tuple(m if isinstance(m, dict) else {} for m in maps)
+
+
 def load_cached_fear_greed_snapshot(
     cache_dir: str,
     now_ts: Optional[float] = None,

@@ -349,6 +349,53 @@ def run_tp_drop_sl_sweep(
     return rows
 
 
+def run_cli_single_or_sweep_backtest(
+    mode: str,
+    base: dict,
+    eval_fn,
+    *,
+    budget: float,
+    bh: float,
+    single_header: str,
+    single_params_line: str,
+    sweep_header: str,
+    include_funding: bool = False,
+    open_qty_decimals: int = 4,
+    pre_sweep_fn=None,
+    tp_values: Sequence[float] = (1.0, 1.5, 2.0, 3.0, 5.0),
+    drop_values: Sequence[float] = (1.0, 2.0, 3.0, 5.0),
+    sl_values: Sequence[float] | None = (8.0, 15.0),
+    emit=print,
+) -> int:
+    """Execute either a single CLI backtest report or a TPxDROP(xSL) parameter sweep."""
+    if mode == "single":
+        m = eval_fn(base)
+        print_single_backtest_report(
+            single_header,
+            single_params_line,
+            m,
+            budget=budget,
+            bh=bh,
+            include_funding=include_funding,
+            open_qty_decimals=open_qty_decimals,
+            emit=emit,
+        )
+        return 0
+    emit(sweep_header)
+    if callable(pre_sweep_fn):
+        pre_sweep_fn()
+    run_tp_drop_sl_sweep(
+        base,
+        eval_fn,
+        budget=budget,
+        tp_values=tp_values,
+        drop_values=drop_values,
+        sl_values=sl_values,
+        emit=emit,
+    )
+    return 0
+
+
 def validate_replay_metrics(result: dict) -> None:
     """Assert that a replay result conforms to the canonical metrics schema."""
     if not isinstance(result, dict):
@@ -391,6 +438,7 @@ __all__ = [
     "format_performance_summary",
     "print_single_backtest_report",
     "round_metric",
+    "run_cli_single_or_sweep_backtest",
     "run_tp_drop_sl_sweep",
     "validate_replay_metrics",
 ]

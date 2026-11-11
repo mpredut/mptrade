@@ -719,10 +719,8 @@ def get_weight_for_cash_permission_at_quant_time(
     """
     if not isinstance(symbol, str) or not symbol.strip():
         return None
-    if not isinstance(order_type, str):
-        return None
-    side_u = normalize_side(order_type)
-    if side_u not in ("BUY", "SELL"):
+    side_u = normalize_side(order_type, require_str=True)
+    if not side_u:
         return None
     if isinstance(T_quanta, bool) or isinstance(quant_seconds, bool):
         return None

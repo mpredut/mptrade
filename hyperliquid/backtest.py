@@ -49,8 +49,7 @@ from botcore import (
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     buy_hold_pct,
-    print_single_backtest_report,
-    run_tp_drop_sl_sweep,
+    run_cli_single_or_sweep_backtest,
 )
 
 
@@ -216,31 +215,22 @@ def main() -> int:
         enable_takeprofit=enable_tp,
     )
 
-    if args.mode == "single":
-        _total, m, _wr = run(coin, ohlc, ts, fund, sig, base, direction, budget)
-        print_single_backtest_report(
-            f"=== COMPLETE BACKTEST {coin} {args.days}d {direction} signal={args.signal} ===",
-            f"entry={entry} dca={dca} disc={disc}% drop={drop}% tp={tp}% sl={sl}% maxdca={maxdca}",
-            m,
-            budget=budget,
-            bh=bh,
-            include_funding=True,
-            open_qty_decimals=4,
-            emit=log,
-        )
-        return 0
-
-    log(f"=== SWEEP {coin} {args.days}d {direction} signal={args.signal} (buy&hold {bh:+.1f}%) ===")
-    run_tp_drop_sl_sweep(
+    return run_cli_single_or_sweep_backtest(
+        args.mode,
         base,
         lambda p: run_replay(ohlc, ts, fund, sig, p, direction=direction, coin=coin),
         budget=budget,
+        bh=bh,
+        single_header=f"=== COMPLETE BACKTEST {coin} {args.days}d {direction} signal={args.signal} ===",
+        single_params_line=f"entry={entry} dca={dca} disc={disc}% drop={drop}% tp={tp}% sl={sl}% maxdca={maxdca}",
+        sweep_header=f"=== SWEEP {coin} {args.days}d {direction} signal={args.signal} (buy&hold {bh:+.1f}%) ===",
+        include_funding=True,
+        open_qty_decimals=4,
         tp_values=(0.5, 0.8, 1.0, 1.5, 2.0, 3.0),
         drop_values=(1.0, 2.0, 3.0, 5.0),
         sl_values=None,
         emit=log,
     )
-    return 0
 
 
 if __name__ == "__main__":

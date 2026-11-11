@@ -31,6 +31,7 @@ from cachepaths import (
     split_symbol_assets,
 )
 from intelligence.macro_sentiment_ssot import (
+    coerce_dict_maps,
     normalize_epoch_sec,
     resolve_now_ts,
     resolve_read_json_cached,
@@ -776,10 +777,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         trailing_by_venue = trailing_by_venue or {}
         cache_dir = cachedb_dir or None
 
-        tradable_positions: List[Dict[str, Any]] = []
-        open_orders_list: List[Dict[str, Any]] = []
-        venue_quote_cash: Dict[str, Dict[str, Any]] = {}
-        inst_by_sym: Dict[str, Any] = {}
+        tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = [], [], {}, {}
         balance_memo: Dict[tuple[str, str], Optional[float]] = {}
         _rj_bals = _resolve_read_json_cached()
         bcache_path, cached_bals, _ = _load_venue_balances_state(cache_dir, _rj_bals)
@@ -1351,10 +1349,9 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
         cache_dir = cachedb_dir
         inst_by_sym = inst_by_sym or {}
         tradable_positions = tradable_positions if isinstance(tradable_positions, list) else []
-        prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
-        kraken_cycles = kraken_cycles if isinstance(kraken_cycles, dict) else {}
-        hyperliquid_cycles = hyperliquid_cycles if isinstance(hyperliquid_cycles, dict) else {}
-        t212_cycles = t212_cycles if isinstance(t212_cycles, dict) else {}
+        prices_and_trends, kraken_cycles, hyperliquid_cycles, t212_cycles = coerce_dict_maps(
+            prices_and_trends, kraken_cycles, hyperliquid_cycles, t212_cycles
+        )
 
         _rj = _resolve_read_json_cached(read_json_fn)
         ai_intents, known_ai_order_ids = _resolve_ai_intents_and_known_order_ids(
