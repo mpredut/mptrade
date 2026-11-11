@@ -29,6 +29,7 @@ from intelligence.external.collectors.base_collector import (
     _clean_snapshot_ts,
     _has_hyperliquid_instrument,
     is_cache_fresh,
+    read_json_dict,  # noqa: F401
 )
 from intelligence.macro_sentiment_ssot import fetch_public_json, resolve_now_ts
 

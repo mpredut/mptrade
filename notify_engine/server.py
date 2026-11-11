@@ -33,20 +33,32 @@ from state_io import (
 from notify_engine.alertnotifiers import (
     AlertNotifier,
     _AUTO_TOPIC_TAG_RE,
+    _BILINGUAL_ERROR_MARKERS,
+    _EXPLICIT_ERROR_MARKERS,
     _GATE_ACCEPTED_REASONS,
     _GATE_SUPPRESSED_REASONS,
+    _GUARD_MARKERS,
+    _OPS_MARKERS,
+    _PRICE_ALERT_SOURCES,
+    _PRIMARY_ERROR_MARKERS,
+    _SERVER_MARKERS,
     _TRADE_MARKERS,
     _alerts_are_urgent,
     _canonical_topic_key,
+    _category_for_title_and_source,
+    _clean_str,
     _external_notifications_disabled,
     _is_provider_daily_limit,
     _mark_provider_daily_limit,
     _queue_max_items,
+    _topic_for_category,
     format_ntfy_url,
     is_fake_alert_text,
     make_bot_event_alert,
     pass_common_gate,
     pop_due_bulk_batch,
+    register_notification_server_cls,
+    resolve_topic,
     sanitize_single_line,
     strip_owner_tags,
 )
@@ -63,22 +75,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orch
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-_GUARD_MARKERS = (
-    "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "SMART-SL", "POST-STOP", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
-    "LICHID", "CATASTROF", "IMBALANCE", "DEZECHILIBR", "QUARANTINE", "SL ", " SL",
-    "REFUSED", "BLOCKED", "SKIPPED",
-)
-_PRIMARY_ERROR_MARKERS = (
-    "ERROR", "FAILED", "EXCEPTION", "CRITICAL", "GIVE UP", "CORRUPTION", "REJECTED", "✗", "UNRECOGNIZED",
-)
-_BILINGUAL_ERROR_MARKERS = ("ESUAT", "ERORI", "DISPARUT", "GONE")
-_OPS_MARKERS = (*_PRIMARY_ERROR_MARKERS, *_BILINGUAL_ERROR_MARKERS, "MANUAL")
-_EXPLICIT_ERROR_MARKERS = (*_PRIMARY_ERROR_MARKERS, *_BILINGUAL_ERROR_MARKERS, "CRASH")
-_SERVER_MARKERS = (
-    "CONFIG RELOAD", "CONFIG CHANGED", "CONFIG PROPOSAL", "PILOT BACKTEST", "BACKTEST:",
-    "SERVER STATUS", "SERVER DOWN", "DEADMAN",
-)
-_PRICE_ALERT_SOURCES = ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier")
 _PRICE_WATCHER_BOTS = ("price_watcher", "price_watcher.py", "price_alert")
 _INTERNAL_LOG_MARKERS = (
     "Failed to send ntfy alert",
@@ -102,65 +98,11 @@ _TRAILING_VENUE_TAG_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
-def _clean_str(val: Any, default: str = "", *, strip: bool = False) -> str:
-    if isinstance(val, bool) or val is None:
-        return default
-    s = str(val).strip() if strip else str(val)
-    return s if s else default
-
 
 def _prefix_delayed(val: Any, default: str = "Alert") -> str:
     s = _clean_str(val, default, strip=True)
     return s if s.startswith("[DELAYED]") else f"[DELAYED] {s}"
 
-
-def resolve_topic(category: str) -> str:
-    cat = _clean_str(category, strip=True).upper()
-    if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
-        cat = "SERVER"
-    key = f"NTFY_TOPIC_{cat}"
-    if not os.environ.get(key, "").strip():
-        load_env_stack()
-    return required_env(key)
-
-def _category_for_title_and_source(title: str, source: str) -> str:
-    t = _clean_str(title).upper()
-    t_no_owner = strip_owner_tags(t)
-    s = _clean_str(source).lower()
-    if "AUTO_TECHNICAL_REPAIR" in t or s == "ai_supervisor":
-        if any(m in t_no_owner for m in _EXPLICIT_ERROR_MARKERS):
-            return "ERROR"
-        return "SERVER"
-    if "MACRO" in t or "macro" in s or "geopolitical" in s:
-        return "MACRO"
-    if any(m in t_no_owner for m in _PRIMARY_ERROR_MARKERS) or "watchdog" in s:
-        return "ERROR"
-    if any(m in t_no_owner for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
-        return "GUARD"
-    if any(m in t_no_owner for m in _SERVER_MARKERS) or "deadman" in s or "scheduled_pilot" in s:
-        return "SERVER"
-
-    # Real trades (order launched, order executed, fills) route to TRADES unless explicitly failed/errored
-    has_trade_marker = any(m in t_no_owner for m in _TRADE_MARKERS) or s in ("tradeall", "rtrade", "monitororder")
-    has_explicit_error = any(m in t_no_owner for m in _EXPLICIT_ERROR_MARKERS) or "watchdog" in s
-    if has_trade_marker and not has_explicit_error:
-        return "TRADES"
-
-    if any(m in t_no_owner for m in _OPS_MARKERS) or "watchdog" in s:
-        return "ERROR"
-
-    if (
-        "alert" in s or "price" in s or "prag" in t.lower() or "threshold" in t.lower()
-        or "listed on" in t.lower() or "coin" in t.lower()
-        or any(src in s for src in _PRICE_ALERT_SOURCES)
-        or any(m in t for m in ("▲", "▼", "📈", "📉", "RISE", "DROP"))
-    ):
-        return "PRICE"
-    return "TRADES"
-
-def _topic_for_category(title: str, source: str) -> str:
-    cat = _category_for_title_and_source(title, source)
-    return resolve_topic(cat)
 
 def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
     bot_str = _clean_str(bot_name)
@@ -775,3 +717,7 @@ class NotificationServer:
 
             except Exception as e:
                 logging.error(f"Error flushing notification queue: {e}")
+
+
+register_notification_server_cls(NotificationServer)
+

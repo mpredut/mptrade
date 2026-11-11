@@ -126,9 +126,9 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
 
         cached_meta: Dict[str, Any] = {}
         if inst is not None:
-            from instrument import Instrument
+            from providers.base import MarketDataProvider
 
-            cached_meta = Instrument.resolve_cached_fee_and_limits(
+            cached_meta = MarketDataProvider.resolve_instrument_cached_fee_and_limits(
                 inst, v_norm, symbol, price=px_f
             )
         if cached_meta:

@@ -258,9 +258,7 @@ class MarketDataProvider(ABC):
     def get_ssot_short_trend_manager(cls) -> Any:
         """Return the ShortTrend cache manager via bound hook (respecting ``cacheManager`` / ``cachetrend`` monkeypatches)."""
         if cls._ssot_short_trend_getter is None:
-            from cachetrend import get_short_trend_manager as _default_st_getter
-
-            default_fn = _default_st_getter
+            default_fn = getattr(importlib.import_module("cachetrend"), "get_short_trend_manager", None)
         else:
             default_fn = cls._ssot_short_trend_getter
         fn = resolve_patched_attr(

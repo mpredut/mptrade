@@ -70,9 +70,7 @@ def _default_get_bapi():
     if patched_mod is not None:
         return patched_mod
     if _bapi is None:
-        from binance_api import bapi
-
-        _bapi = bapi
+        _bapi = importlib.import_module("binance_api.bapi")
     return _bapi
 
 
@@ -91,9 +89,7 @@ def _default_get_allorders():
     if patched_mod is not None:
         return patched_mod
     if _allorders is None:
-        from binance_api import bapi_allorders
-
-        _allorders = bapi_allorders
+        _allorders = importlib.import_module("binance_api.bapi_allorders")
     return _allorders
 
 
@@ -102,6 +98,10 @@ def _get_allorders():
     if callable(fn) and fn is not _get_allorders:
         return fn()
     return _default_get_allorders()
+
+
+def _get_placeorder():
+    return importlib.import_module("binance_api.bapi_placeorder")
 
 
 def _parse_nonneg_order_field(raw: Any) -> Optional[float]:
@@ -317,7 +317,7 @@ class BinanceProvider(MarketDataProvider):
         market: bool = False,
         kind: Optional[str] = None,
     ) -> Any:
-        from binance_api import bapi_placeorder as _po
+        _po = _get_placeorder()
 
         return _po.issue_account_cache_submit_permit(
             symbol,
@@ -331,7 +331,7 @@ class BinanceProvider(MarketDataProvider):
 
     def prepare_order_state(self) -> tuple[str, str]:
         """Synchronize Binance account readers before shared policy checks."""
-        from binance_api import bapi_placeorder as _po
+        _po = _get_placeorder()
 
         status = _po.require_account_cache_for_submit()
         return str(status.order_cache_version), str(status.trade_cache_version)
@@ -355,7 +355,7 @@ class BinanceProvider(MarketDataProvider):
         enforce_business_minimum: bool = True,
         **kwargs,
     ):
-        from binance_api import bapi_placeorder as _po
+        _po = _get_placeorder()
 
         is_market = resolve_market_flag(force=force, **kwargs)
         mechanics_kwargs = {
@@ -382,21 +382,21 @@ class BinanceProvider(MarketDataProvider):
         return _po.place_order_mechanics(side, symbol, price, qty, **mechanics_kwargs)
 
     def adjust_order_price(self, symbol: str, side: str, price: float, cancel_opposite: bool = True) -> float:
-        from binance_api import bapi_placeorder as _po
+        _po = _get_placeorder()
 
         return _po.adjust_price_and_cancel_opposite(
             side, symbol, price, cancel_opposite=_parse_bool_flag(cancel_opposite, True)
         )
 
     def cancel_opposite_orders(self, symbol: str, side: str, requested_price: float) -> None:
-        from binance_api import bapi_placeorder as _po
+        _po = _get_placeorder()
 
         _po.cancel_opposite_orders(side, symbol, requested_price)
 
     def profit_guard_window_ref(
         self, symbol: str, side: str, safeback_sec, regime_context=None, reference_mode=None, module=None
     ):
-        from binance_api import bapi_placeorder as _po
+        _po = _get_placeorder()
 
         return super().profit_guard_window_ref(
             symbol,
@@ -410,7 +410,7 @@ class BinanceProvider(MarketDataProvider):
         )
 
     def last_opposite_fill(self, symbol: str, order_type: str, since_s: float = 0) -> Optional[float]:
-        from binance_api import bapi_placeorder as _po
+        _po = _get_placeorder()
 
         ref = self.get_ssot_cache_manager("BinanceTrade").get_last_opposite_fill_price(symbol, order_type)
         if ref is None:
@@ -420,13 +420,13 @@ class BinanceProvider(MarketDataProvider):
     def policy_cap_quantity(
         self, symbol: str, side: str, price: float, qty: float, available_qty: float, **kwargs
     ) -> float:
-        from binance_api import bapi_placeorder as _po
+        _po = _get_placeorder()
 
         is_auto = qty is None or (not isinstance(qty, bool) and isinstance(qty, (int, float)) and qty == float("inf"))
         return _po.apply_weight_limit(symbol, side, price, None if is_auto else qty, available_qty)
 
     def fee_cap_quantity(self, symbol: str, side: str, price: float, available_qty: float) -> float:
-        from binance_api import bapi_placeorder as _po
+        _po = _get_placeorder()
 
         return fee_cap_quantity(available_qty, _po.PLACE_ORDER_FEE_PCT)
 
@@ -455,7 +455,7 @@ class BinanceProvider(MarketDataProvider):
         enforce_business_minimum: bool = True,
     ) -> Optional[str]:
         """Validate the candidate with the authoritative Binance filter parser."""
-        from binance_api import bapi_placeorder as _po
+        _po = _get_placeorder()
 
         is_market = _parse_bool_flag(market, False)
         enforce_min = _parse_bool_flag(enforce_business_minimum, True)
@@ -579,7 +579,7 @@ class BinanceProvider(MarketDataProvider):
                 raise SubmissionRefused(binance_filter_refusal_reason(exc)) from exc
             qty = float(normalized_qty)
             price = None if normalized_price is None else float(normalized_price)
-            from binance_api import bapi_placeorder as _po
+            _po = _get_placeorder()
 
             if is_market or price is None:
                 res = _po._submit_binance_order(

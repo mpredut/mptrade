@@ -26,10 +26,12 @@ from botcore import (
     is_cache_fresh,
     is_live_network_backfill_enabled,
     load_env_stack,
+    load_local_module,
     normalize_epoch_sec,
     obj_attr,
     optional_env,
     parse_dotenv,
+    required_env,
     safe_float,
     safe_int,
     safe_nonneg_int,
@@ -1184,8 +1186,7 @@ class AlertNotifier:
                 {"__orchestrator_intent__": "email", "subject": subject, "message": message},
                 default=str,
             )
-        from notify_engine.server import NotificationServer
-        return NotificationServer()._send_email(subject, message)
+        return _get_notification_server()._send_email(subject, message)
 
     @staticmethod
     def send_phone_webhook_batch(alerts, webhook_url: Optional[str] = None):
@@ -1211,8 +1212,7 @@ class AlertNotifier:
                     else (obj.isoformat() if isinstance(obj, datetime) else str(obj))
                 ),
             )
-        from notify_engine.server import NotificationServer
-        return NotificationServer().dispatch_alerts(list(alerts), webhook_url=webhook_url)
+        return _get_notification_server().dispatch_alerts(list(alerts), webhook_url=webhook_url)
 
     @staticmethod
     def send(alert, enable_console=True, enable_file=True,
@@ -1237,6 +1237,101 @@ def _external_notifications_disabled() -> bool:
         _parse_bool_flag(os.environ.get(k, ""), False)
         for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
     )
+
+
+_GUARD_MARKERS = (
+    "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "SMART-SL", "POST-STOP", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
+    "LICHID", "CATASTROF", "IMBALANCE", "DEZECHILIBR", "QUARANTINE", "SL ", " SL",
+    "REFUSED", "BLOCKED", "SKIPPED",
+)
+_PRIMARY_ERROR_MARKERS = (
+    "ERROR", "FAILED", "EXCEPTION", "CRITICAL", "GIVE UP", "CORRUPTION", "REJECTED", "✗", "UNRECOGNIZED",
+)
+_BILINGUAL_ERROR_MARKERS = ("ESUAT", "ERORI", "DISPARUT", "GONE")
+_OPS_MARKERS = (*_PRIMARY_ERROR_MARKERS, *_BILINGUAL_ERROR_MARKERS, "MANUAL")
+_EXPLICIT_ERROR_MARKERS = (*_PRIMARY_ERROR_MARKERS, *_BILINGUAL_ERROR_MARKERS, "CRASH")
+_SERVER_MARKERS = (
+    "CONFIG RELOAD", "CONFIG CHANGED", "CONFIG PROPOSAL", "PILOT BACKTEST", "BACKTEST:",
+    "SERVER STATUS", "SERVER DOWN", "DEADMAN",
+)
+_PRICE_ALERT_SOURCES = ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier")
+_NOTIFICATION_SERVER_CLS: Any = None
+
+
+def register_notification_server_cls(cls: Any) -> None:
+    global _NOTIFICATION_SERVER_CLS
+    _NOTIFICATION_SERVER_CLS = cls
+
+
+def _get_notification_server() -> Any:
+    global _NOTIFICATION_SERVER_CLS
+    srv_mod = sys.modules.get("notify_engine.server")
+    if srv_mod is not None and hasattr(srv_mod, "NotificationServer"):
+        return srv_mod.NotificationServer()
+    if _NOTIFICATION_SERVER_CLS is None:
+        srv_mod = load_local_module(
+            "notify_engine.server",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py"),
+        )
+        _NOTIFICATION_SERVER_CLS = getattr(srv_mod, "NotificationServer", None)
+    return _NOTIFICATION_SERVER_CLS()
+
+
+def _clean_str(val: Any, default: str = "", *, strip: bool = False) -> str:
+    if isinstance(val, bool) or val is None:
+        return default
+    s = str(val).strip() if strip else str(val)
+    return s if s else default
+
+
+def resolve_topic(category: str) -> str:
+    cat = _clean_str(category, strip=True).upper()
+    if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
+        cat = "SERVER"
+    key = f"NTFY_TOPIC_{cat}"
+    if not os.environ.get(key, "").strip():
+        load_env_stack()
+    return required_env(key)
+
+
+def _category_for_title_and_source(title: str, source: str) -> str:
+    t = _clean_str(title).upper()
+    t_no_owner = strip_owner_tags(t)
+    s = _clean_str(source).lower()
+    if "AUTO_TECHNICAL_REPAIR" in t or s == "ai_supervisor":
+        if any(m in t_no_owner for m in _EXPLICIT_ERROR_MARKERS):
+            return "ERROR"
+        return "SERVER"
+    if "MACRO" in t or "macro" in s or "geopolitical" in s:
+        return "MACRO"
+    if any(m in t_no_owner for m in _PRIMARY_ERROR_MARKERS) or "watchdog" in s:
+        return "ERROR"
+    if any(m in t_no_owner for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
+        return "GUARD"
+    if any(m in t_no_owner for m in _SERVER_MARKERS) or "deadman" in s or "scheduled_pilot" in s:
+        return "SERVER"
+
+    has_trade_marker = any(m in t_no_owner for m in _TRADE_MARKERS) or s in ("tradeall", "rtrade", "monitororder")
+    has_explicit_error = any(m in t_no_owner for m in _EXPLICIT_ERROR_MARKERS) or "watchdog" in s
+    if has_trade_marker and not has_explicit_error:
+        return "TRADES"
+
+    if any(m in t_no_owner for m in _OPS_MARKERS) or "watchdog" in s:
+        return "ERROR"
+
+    if (
+        "alert" in s or "price" in s or "prag" in t.lower() or "threshold" in t.lower()
+        or "listed on" in t.lower() or "coin" in t.lower()
+        or any(src in s for src in _PRICE_ALERT_SOURCES)
+        or any(m in t for m in ("▲", "▼", "📈", "📉", "RISE", "DROP"))
+    ):
+        return "PRICE"
+    return "TRADES"
+
+
+def _topic_for_category(title: str, source: str) -> str:
+    cat = _category_for_title_and_source(title, source)
+    return resolve_topic(cat)
 
 
 EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN", "SERVER")
@@ -1273,7 +1368,6 @@ def notify(title: str, body: str, source: str, symbol: str,
     if _parse_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
         intent: dict[str, Any] = {"__orchestrator_intent__": "ntfy_webhook", "alerts": [alert]}
         if _AUTO_TOPIC_TAG_RE.search(str(title or "")):
-            from notify_engine.server import _topic_for_category
             urgent = _alerts_are_urgent([alert])
             intent.update({
                 "title": title,
@@ -1283,10 +1377,8 @@ def notify(title: str, body: str, source: str, symbol: str,
             })
         _emit_orchestrator_intent(intent)
     else:
-        from notify_engine.server import NotificationServer
-        NotificationServer().dispatch_alerts([alert])
+        _get_notification_server().dispatch_alerts([alert])
     if _parse_bool_flag(email, False):
-        from notify_engine.server import _topic_for_category
         if not is_email_mirrored(_topic_for_category(title, source)):
             AlertNotifier.send_email_batch([alert], subject=title)
 

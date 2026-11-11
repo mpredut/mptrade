@@ -218,11 +218,10 @@ def _resolve_cycle_high_since(
     best_high = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
     now_ms = int(_time.time() * 1000)
     if cache_dir and oldest_ts_ms > 0 and (now_ms - oldest_ts_ms) > 24 * 3600 * 1000:
-        import intelligence.sentiment.collectors.microstructure_collector as _mc
+        from cacheprice import Cache365PriceManager, CacheSparsePriceManager
 
-        _mc._ensure_cacheprice_classes_bound()
         for cand in dict.fromkeys(cands):
-            for mgr_cls in (_mc.Cache365PriceManager, _mc.CacheSparsePriceManager):
+            for mgr_cls in (Cache365PriceManager, CacheSparsePriceManager):
                 arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, mgr_cls.disk_filename_for_symbol(cand))))
                 if not os.path.exists(arch_path):
                     continue

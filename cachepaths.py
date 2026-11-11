@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import builtins
 import glob
+import math
+import numbers
 import os
 import shutil
 import sys
@@ -1009,6 +1011,117 @@ def filter_candidates_by_asset_class(candidates: object, *, is_equity: bool) -> 
             if isinstance(c, str) and (has_equity_suffix(c) or split_symbol_assets(c) is None)
         ]
     return [c for c in candidates if isinstance(c, str) and not has_equity_suffix(c)]
+
+
+def safe_float(val: object, default: float | None = 0.0) -> float | None:
+    """Safely coerce ``val`` to finite float, rejecting booleans, None, non-finite values, and non-numeric objects."""
+    if val is None or isinstance(val, bool):
+        return default
+    if not isinstance(val, (int, float, str, bytes, bytearray, numbers.Real)) and type(val).__name__ != "Decimal":
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def clean_finite_floats(values: object) -> list[float]:
+    """Filter an iterable into a list of finite floats, rejecting None, booleans, strings, and non-iterables."""
+    if values is None or isinstance(values, (bool, str, bytes, bytearray)):
+        return []
+    try:
+        return [vf for x in values if (vf := safe_float(x, default=None)) is not None]
+    except TypeError:
+        return []
+
+
+def safe_pos_float(val: object, default: float | None = 0.0) -> float | None:
+    """Safely coerce ``val`` to a strictly positive finite float, otherwise return ``default``."""
+    f = safe_float(val, default=None)
+    return f if (f is not None and f > 0.0) else default
+
+
+def safe_nonneg_float(val: object, default: float | None = 0.0) -> float | None:
+    """Safely coerce ``val`` to a non-negative finite float (>= 0.0), otherwise return ``default``."""
+    f = safe_float(val, default=None)
+    return f if (f is not None and f >= 0.0) else default
+
+
+def _coerce_int(val: object, default: int | None, *, exact: bool) -> int | None:
+    if val is None or isinstance(val, bool):
+        return default
+    if isinstance(val, int):
+        return val
+    if isinstance(val, (str, bytes, bytearray)):
+        try:
+            return int(val, 10)
+        except (TypeError, ValueError):
+            pass
+    f = safe_float(val, default=None)
+    if f is None or (exact and not f.is_integer()):
+        return default
+    try:
+        return int(f)
+    except (ValueError, OverflowError):
+        return default
+
+
+def safe_int(val: object, default: int | None = 0) -> int | None:
+    """Safely coerce ``val`` to an integer, rejecting booleans, None, non-finite values, and non-numeric objects."""
+    return _coerce_int(val, default, exact=False)
+
+
+def safe_pos_int(val: object, default: int | None = 1) -> int | None:
+    """Safely coerce ``val`` to a strictly positive integer (>= 1), otherwise return ``default``."""
+    i = safe_int(val, default=None)
+    return i if (i is not None and i >= 1) else default
+
+
+def safe_nonneg_int(val: object, default: int | None = 0) -> int | None:
+    """Safely coerce ``val`` to a non-negative integer (>= 0), otherwise return ``default``."""
+    i = safe_int(val, default=None)
+    return i if (i is not None and i >= 0) else default
+
+
+def exact_int(val: object, default: int | None = 0) -> int | None:
+    """Safely coerce ``val`` to an exact integer without truncating fractional floats or strings."""
+    return _coerce_int(val, default, exact=True)
+
+
+def exact_pos_int(val: object, default: int | None = 1) -> int | None:
+    """Safely coerce ``val`` to a strictly positive exact integer (>= 1), otherwise return ``default``."""
+    i = exact_int(val, default=None)
+    return i if (i is not None and i >= 1) else default
+
+
+def exact_nonneg_int(val: object, default: int | None = 0) -> int | None:
+    """Safely coerce ``val`` to a non-negative exact integer (>= 0), otherwise return ``default``."""
+    i = exact_int(val, default=None)
+    return i if (i is not None and i >= 0) else default
+
+
+def _parse_bool_flag(val, default: bool | None = False):
+    fb = None if default is None else (default if isinstance(default, bool) else _parse_bool_flag(default, False))
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
+    if isinstance(val, (int, float)):
+        return fb if (isinstance(val, float) and not math.isfinite(val)) else (val != 0)
+    if isinstance(val, str):
+        s = val.split("#", 1)[0].split(";", 1)[0].strip().strip('"').strip("'").strip().lower()
+        if not s or s in {"none", "null"}:
+            return fb
+        if s == "nan":
+            return False if fb is not None else None
+        if s in {"1", "1.0", "true", "yes", "on", "y", "t", "da"}:
+            return True
+        if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
+            return False
+        fv = safe_float(s, default=None)
+        return (fv != 0.0) if fv is not None else fb
+    return fb
 
 
 def __getattr__(name: str):

@@ -1335,29 +1335,8 @@ class Instrument:
         price: Optional[float] = None,
     ) -> dict:
         """Resolve cached fee and limit metadata from an ``Instrument`` or compatible stub."""
-        if inst is None:
-            return {}
-        inst_hook = getattr(type(inst), "cached_fee_and_limits", None)
-        if callable(inst_hook):
-            try:
-                res = inst.cached_fee_and_limits(price=price)
-                if isinstance(res, dict):
-                    return res
-            except Exception:
-                pass
-        mock_children = getattr(inst, "_mock_children", None)
-        if isinstance(mock_children, dict) and "provider" in mock_children and "_provider" not in mock_children:
-            prov = getattr(inst, "provider", None)
-        else:
-            prov = getattr(inst, "_provider", None)
-            if prov is None or isinstance(prov, str):
-                prov = getattr(inst, "provider", None)
-        if prov is None or isinstance(prov, str):
-            return {}
-        from providers.base import MarketDataProvider
-
-        return MarketDataProvider.resolve_provider_cached_fee_and_limits(
-            venue, symbol, prov, price=price
+        return MarketDataProvider.resolve_instrument_cached_fee_and_limits(
+            inst, venue, symbol, price=price
         )
 
     # ── params namespaced (mt.* / tradeall.* / rtrade.* / execution.*) ──────────

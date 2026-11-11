@@ -37,6 +37,7 @@ from providers.quantity import (
     BinanceOrderRules,
     balance_cap_quantity,
     binance_filter_refusal_reason,
+    decimal_places,
     fee_cap_quantity,
 )
 from providers.strategy_executor import SubmissionRefused
@@ -407,8 +408,9 @@ def adjust_price_and_cancel_opposite(order_type, symbol, price, cancel_opposite=
     if cp is not None and order_type in {"BUY", "SELL"}:
         price = order_candidate_price(order_type, price, cp) * (0.999 if order_type == "BUY" else 1.001)
     try:
-        from providers.market_api import api as mkt
-        return mkt.round_price(sym_str, price)
+        info = api.client.get_symbol_info(sym_str)
+        rules = BinanceOrderRules.from_symbol_info(info)
+        return round(price, min(decimal_places(rules.tick_size), 18))
     except Exception:
         return round(price, 8)
 

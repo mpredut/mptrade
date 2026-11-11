@@ -24,12 +24,13 @@ try:
 except ImportError:
     fcntl = None  # type: ignore[assignment]
 
-from botcore import (
+from cachepaths import (
+    STALE_STAGING_MAX_AGE_SEC,
     _parse_bool_flag,
     exact_nonneg_int,
     exact_pos_int,
+    resolve_cachedb_filepath,
 )
-from cachepaths import STALE_STAGING_MAX_AGE_SEC, resolve_cachedb_filepath
 
 T = TypeVar("T")
 _MISSING = object()
