@@ -94,6 +94,11 @@ class _GuardsInternallyProvider(_FakeProvider):
         return True
 
 
+class _ZeroPolicyProvider(_FakeProvider):
+    def policy_cap_quantity(self, *args, **kwargs):
+        return 0.0
+
+
 class InstrumentGuardsTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp()
@@ -334,10 +339,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertIsNotNone(profit)
             self.assertEqual(policy_calls, [], "the weight policy must be skipped only on a SELL")
             self.assertEqual(p.placed[0][3], 1.0)
-
-        class _ZeroPolicyProvider(_FakeProvider):
-            def policy_cap_quantity(self, *args, **kwargs):
-                return 0.0
 
         with self.subTest("is_ignored_for_buy"):
             self._clear_state()
@@ -826,12 +827,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
     def test_profit_guard_not_called_when_quantity_refused(self):
         """Ensure post-sizing profit_guard (and LLM HighStakeGuard) never runs when 24h weight policy refuses qty."""
         self._clear_state()
-
-        class _ZeroWeightProvider(_FakeProvider):
-            def policy_cap_quantity(self, *args, **kwargs):
-                return 0.0
-
-        provider = _ZeroWeightProvider(price=100.0)
+        provider = _ZeroPolicyProvider(price=100.0)
         inst = self._inst(provider)
         with patch("order_guard.profit_guard", return_value=True) as guard:
             result = inst.place("BUY", 100.0, 10.0, smart=False, wait_for_trend=False, caller_owns_retry=True)
@@ -2229,55 +2225,19 @@ def test_gt_m_medium_trend_action_scale_idempotency_when_applied_scale_is_alread
 
 def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter21_s2(monkeypatch):
     """[ITER21 #2] Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,."""
-    from tests.conftest import make_test_regime_context as _build_test_context
-    from providers.quantity import QuantityDecision
+    from tests.conftest import DummySpotExecutionProvider, make_test_regime_context as _build_test_context
     # 2. Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,
     #    skips profit_guard_window_ref when G_PROF is bypassed, and ignores suggested_scale on bypass_guards={'all'}
     window_ref_calls = []
     pg_bypasses = []
 
-    class FakeSpotProvider:
-        name = "kraken"
-        def validate_symbol(self, sym):
-            return None
-        def guards_internally(self):
-            return False
-        def requires_cache_permit(self):
-            return False
-        def defers_smart_cancel(self):
-            return False
-        def supports_business_minimum(self):
-            return False
-        def execution_enabled(self):
-            return True
-        def preflight_order(self, *a, **k):
-            return None
-        def round_price(self, sym, px):
-            return px
-        def round_amount(self, sym, q):
-            return q
-        def free_balance(self, asset):
-            return 10000.0
-        def get_current_price(self, sym):
-            return 100.0
+    class FakeSpotProvider(DummySpotExecutionProvider):
+        def __init__(self):
+            super().__init__(order_id="ord-21")
+
         def profit_guard_window_ref(self, *a, **k):
             window_ref_calls.append(1)
             raise RuntimeError("should not be called when G_PROF is bypassed")
-        def quantity_decision(self, symbol, side, price, qty, **kw):
-            rc = kw.get("regime_context")
-            sc = getattr(rc, "suggested_scale", 1.0) if (rc is not None and side == "BUY") else 1.0
-            final_q = float(qty or 1.0) * (sc if 0 < sc < 1.0 else 1.0)
-            return QuantityDecision(
-                requested_qty=float(qty or 1.0),
-                balance_cap=100.0,
-                policy_cap=100.0,
-                fee_cap=100.0,
-                final_qty=final_q,
-                scale_applied=(0 < sc < 1.0),
-                applied_scale=sc,
-            )
-        def place_order(self, symbol, side, price, qty, **kw):
-            return {"orderId": "ord-21", "qty": qty}
 
     monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
     monkeypatch.setattr(

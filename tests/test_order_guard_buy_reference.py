@@ -24,6 +24,20 @@ class _Provider:
         return self._last_fill
 
 
+class _OrdersProvider(_Provider):
+    def __init__(self, orders=(), *, last_fill=None, side_filter=None, name="binance"):
+        if last_fill is None and orders:
+            last_fill = orders[-1]["price"]
+        super().__init__(name, last_fill=last_fill)
+        self._orders = list(orders)
+        self._side_filter = side_filter
+
+    def get_orders(self, symbol, side, since_s):
+        if self._side_filter is not None and side != self._side_filter:
+            return []
+        return list(self._orders)
+
+
 def _margins(**overrides):
     base = dict(order_guard._load_margins())
     for k in (
@@ -215,19 +229,8 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                 self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 4.0 * 3600.0)  # clamped to min 4h
 
     def test_dynamic_window_protects_against_recent_top_and_permits_pullback(self):
-        class _OrderProvider:
-            def __init__(self, orders):
-                self.name = "binance"
-                self._orders = orders
-
-            def get_orders(self, symbol, side, since_s):
-                return self._orders
-
-            def last_opposite_fill(self, symbol, side):
-                return self._orders[0]["price"] if self._orders else None
-
         # Recent sell at 290.0 within 8h bull window
-        provider = _OrderProvider([{"price": 290.0, "qty": 1.0, "timestamp": 1000.0}])
+        provider = _OrdersProvider([{"price": 290.0, "qty": 1.0, "timestamp": 1000.0}])
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
             with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
                 # BUY at 293.0 is higher than recent sell 290.0 -> BLOCKED (protects from buying top)
@@ -238,19 +241,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                     provider, "TAOUSDC", "BUY", 285.0, 1.15, window_ref=290.0))
 
     def test_dynamic_window_ancient_sell_expires_in_bull_trend(self):
-        class _OrderProviderNoRecent:
-            def __init__(self):
-                self.name = "binance"
-
-            def get_orders(self, symbol, side, since_s):
-                # No fills in the last 8h
-                return []
-
-            def last_opposite_fill(self, symbol, side):
-                # Ancient fill from 14 days ago
-                return 216.28
-
-        provider = _OrderProviderNoRecent()
+        provider = _OrdersProvider(last_fill=216.28)
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
             with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
                 # window_ref is None because no orders in 8h -> permitted without 14-day lockup
@@ -261,18 +252,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                     provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
 
     def test_dynamic_window_bear_market_holds_long_defensive_memory(self):
-        class _OrderProviderBear:
-            def __init__(self):
-                self.name = "binance"
-
-            def get_orders(self, symbol, side, since_s):
-                # Sell from 48h ago (inside the 72h bear window)
-                return [{"price": 300.0, "qty": 1.0, "timestamp": 1000.0}]
-
-            def last_opposite_fill(self, symbol, side):
-                return 300.0
-
-        provider = _OrderProviderBear()
+        provider = _OrdersProvider([{"price": 300.0, "qty": 1.0, "timestamp": 1000.0}])
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
             with mock.patch.object(order_guard, "_symbol_trend", return_value="bear"):
                 # BUY at 298.0 against 300.0 sell is only 0.67% diff < 1.15% -> BLOCKED
@@ -280,19 +260,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                     provider, "TAOUSDC", "BUY", 298.0, 1.15, window_ref=300.0))
 
     def test_dynamic_window_ancient_sell_expires_in_flat_trend(self):
-        class _OrderProviderFlatNoRecent:
-            def __init__(self):
-                self.name = "binance"
-
-            def get_orders(self, symbol, side, since_s):
-                # No sells in the last 24h
-                return []
-
-            def last_opposite_fill(self, symbol, side):
-                # Ancient fill from 10 days ago
-                return 216.28
-
-        provider = _OrderProviderFlatNoRecent()
+        provider = _OrdersProvider(last_fill=216.28)
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
             with mock.patch.object(order_guard, "_symbol_trend", return_value="flat"):
                 # In flat trend (24h window), 10-day-old anchor 216.28 is outside 24h -> BUY at 298 is permitted!
@@ -477,19 +445,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_sell_reference_difficulty_tiers_hierarchy(self):
         """Verify all 4 SELL difficulty levels (strict, average, last, hybrid) and off."""
-        class _MultiBuyProvider:
-            name = "binance"
-
-            def __init__(self, orders):
-                self._orders = orders
-
-            def get_orders(self, symbol, side, since_s):
-                if side == "BUY":
-                    return list(self._orders)
-                return []
-
-            def last_opposite_fill(self, symbol, side):
-                return self._orders[-1]["price"] if self._orders else None
+        _MultiBuyProvider = lambda orders: _OrdersProvider(orders, side_filter="BUY")
 
         # Scenario 1: DCA down (bought 2 TAO @ 300.0 ten days ago, then 2 TAO @ 270.0 recently)
         # - strict (max)   = 300.0 -> requires >= 303.49
@@ -567,19 +523,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_buy_reference_difficulty_tiers_symmetry(self):
         """Verify BUY difficulty levels (strict, average, last, hybrid, off) are 100% symmetric with SELL."""
-        class _MultiSellProvider:
-            name = "binance"
-
-            def __init__(self, orders):
-                self._orders = orders
-
-            def get_orders(self, symbol, side, since_s):
-                if side == "SELL":
-                    return list(self._orders)
-                return []
-
-            def last_opposite_fill(self, symbol, side):
-                return self._orders[-1]["price"] if self._orders else None
+        _MultiSellProvider = lambda orders: _OrdersProvider(orders, side_filter="SELL")
 
         # Scenario 1: Scaled out on the way up (sold 2 TAO @ 270.0 earlier, then 2 TAO @ 300.0 recently)
         # - strict (min)   = 270.0 -> requires BUY <= ~266.89

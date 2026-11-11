@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import unittest
 
 from market_regime import (
@@ -11,6 +12,16 @@ from market_regime import (
 )
 import market_regime as mr
 import pytest
+
+
+class _OhlcClosesProvider:
+    def __init__(self, name="Binance"):
+        self.name = name
+        self.calls = []
+
+    def ohlc_closes(self, _symbol, interval):
+        self.calls.append(interval)
+        return [100, 101, 102, 103, 104, 105]
 
 
 class MarketRegimeEvaluatorTest(unittest.TestCase):
@@ -89,15 +100,7 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
             self.assertFalse(invalid_window.fresh)
 
     def test_snapshot_fallback_and_staleness_behavior(self):
-        class Provider:
-            name = "Binance"
-
-            def __init__(self):
-                self.calls = []
-
-            def ohlc_closes(self, _symbol, interval):
-                self.calls.append(interval)
-                return [100, 101, 102, 103, 104, 105]
+        Provider = _OhlcClosesProvider
 
         with self.subTest(msg="incomplete_snapshot_is_retained_before_ohlc_fallback"):
             provider = Provider()
@@ -235,15 +238,7 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertTrue(resolution.primary.continuous_candles)
 
     def test_alternate_collection_is_explicit_and_does_not_change_selection(self):
-        class Provider:
-            name = "Kraken"
-
-            def __init__(self):
-                self.calls = []
-
-            def ohlc_closes(self, _symbol, interval):
-                self.calls.append(interval)
-                return [100, 101, 102, 103, 104, 105]
+        Provider = lambda: _OhlcClosesProvider("Kraken")
 
         primary_provider = Provider()
         primary = MarketRegimeService().resolve_with_evidence(
@@ -511,14 +506,12 @@ def test_marketregimecontext_from_decision_accepts_provider_objects_with_name_an
         regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="directional_signal"
     )
 
-    class _ProvObj:
-        name = "Binance"
-
+    prov = SimpleNamespace(name="Binance")
     ctx = MarketRegimeContext.from_decision(
         dec,
         evaluated_at=1000.0,
         symbol=" btcusdc ",
-        provider=_ProvObj(),
+        provider=prov,
         trend_duration_seconds=True,
         benchmark_symbol=True,
     )
@@ -546,11 +539,11 @@ def test_marketregimecontext_from_decision_accepts_provider_objects_with_name_an
     # 3. MarketRegimeService rejects boolean now / interval_min and does not silently replace interval_min=0 with default
     svc = MarketRegimeService()
     with pytest.raises(ValueError, match="now must be a positive"):
-        svc.resolve_with_evidence(_ProvObj(), "BTCUSDC", now=True)
+        svc.resolve_with_evidence(prov, "BTCUSDC", now=True)
     with pytest.raises(ValueError, match="regime interval"):
-        svc.resolve_with_evidence(_ProvObj(), "BTCUSDC", interval_min=True)
+        svc.resolve_with_evidence(prov, "BTCUSDC", interval_min=True)
     with pytest.raises(ValueError, match="regime interval"):
-        svc.resolve_with_evidence(_ProvObj(), "BTCUSDC", interval_min=0)
+        svc.resolve_with_evidence(prov, "BTCUSDC", interval_min=0)
 
 def test_marketregimehorizon_parse_adverse_to_and_marketregimeservice_interval_closes_validation_iter98_s1():
     """[ITER98 #1] MarketRegimeHorizon.parse, adverse_to, and MarketRegimeService interval/closes validation."""

@@ -18,9 +18,8 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from instrument import load_instruments, load_tradable_instruments  # noqa: E402
 import instrument_registry as registry  # noqa: E402
-from tests.conftest import SingleProviderApi, TempDirTestCase
+from tests.conftest import DummySpotExecutionProvider, SingleProviderApi, TempDirTestCase
 from types import SimpleNamespace
-from providers.quantity import QuantityDecision
 
 
 NUMERIC_MT_KEYS = [
@@ -732,48 +731,7 @@ def test_marketapi_place_inherits_instrument_params_from_instrument_registry_boo
         },
     )
 
-    class DummyProv:
-        name = "kraken"
-        def supports_symbol(self, sym):
-            return sym == "TAOUSD"
-        def validate_symbol(self, sym):
-            return None
-        def guards_internally(self):
-            return False
-        def requires_cache_permit(self):
-            return False
-        def defers_smart_cancel(self):
-            return False
-        def supports_business_minimum(self):
-            return False
-        def execution_enabled(self):
-            return True
-        def preflight_order(self, *a, **k):
-            return None
-        def round_price(self, sym, px):
-            return px
-        def round_amount(self, sym, q):
-            return q
-        def free_balance(self, asset):
-            return 1000.0
-        def get_current_price(self, sym):
-            return 100.0
-        def profit_guard_window_ref(self, *a, **k):
-            return None
-        def quantity_decision(self, symbol, side, price, qty, **kw):
-            return QuantityDecision(
-                requested_qty=float(qty or 1.0),
-                balance_cap=100.0,
-                policy_cap=100.0,
-                fee_cap=100.0,
-                final_qty=float(qty or 1.0),
-                scale_applied=False,
-                applied_scale=1.0,
-            )
-        def place_order(self, symbol, side, price, qty, **kw):
-            return {"orderId": "ord-28", "qty": qty}
-
-    mapi = MarketApi([DummyProv()])
+    mapi = MarketApi([DummySpotExecutionProvider(symbol="TAOUSD", order_id="ord-28", free_bal=1000.0)])
     res_place = mapi.place(
         "TAOUSD", "BUY", 100.0, 1.0,
         provider_name="kraken", smart=False, wait_for_trend=False, caller_owns_retry=True,
@@ -819,10 +777,7 @@ def test_scan_backtest_ranges_rejects_bool_int_path_and_strips_trailing_iter139_
 def test_instrument_registry_select_instruments_accepts_provider_object_with_name_and_iter162_s4():
     """[ITER162 #4] instrument_registry: select_instruments accepts provider object with .name and rejects empty string provider."""
     # 4. instrument_registry: select_instruments accepts provider object with .name and rejects empty string provider
-    class _DummyProv:
-        name = "Binance"
-
-    selected = registry.select_instruments(_DummyProv())
+    selected = registry.select_instruments(SimpleNamespace(name="Binance"))
     assert len(selected) > 0
     with pytest.raises(ValueError):
         registry.select_instruments("   ")

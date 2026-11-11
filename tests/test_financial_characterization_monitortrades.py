@@ -2134,46 +2134,10 @@ def test_monitortrades__load_mt_state_re_anchors_clock_skewed_future_timestamps_
     import pytest
     from unittest.mock import MagicMock
     from instrument import Instrument
+    from tests.conftest import DummySpotExecutionProvider
     import rtrade
     pg_bypasses = []
-    class FakeKrakenProvider:
-        name = "kraken"
-        def validate_symbol(self, sym):
-            return None
-        def guards_internally(self):
-            return False
-        def requires_cache_permit(self):
-            return False
-        def defers_smart_cancel(self):
-            return False
-        def supports_business_minimum(self):
-            return False
-        def execution_enabled(self):
-            return True
-        def preflight_order(self, *a, **k):
-            return None
-        def round_price(self, sym, px):
-            return px
-        def round_amount(self, sym, q):
-            return q
-        def free_balance(self, asset):
-            return 10000.0
-        def get_current_price(self, sym):
-            return 100.0
-        def profit_guard_window_ref(self, *a, **k):
-            return None
-        def quantity_decision(self, symbol, side, price, qty, **kw):
-            return QuantityDecision(
-                requested_qty=float(qty or 1.0),
-                balance_cap=100.0,
-                policy_cap=100.0,
-                fee_cap=100.0,
-                final_qty=float(qty or 1.0),
-                scale_applied=False,
-                applied_scale=1.0,
-            )
-        def place_order(self, symbol, side, price, qty, **kw):
-            return {"orderId": "ord-22", "qty": qty}
+    FakeKrakenProvider = lambda: DummySpotExecutionProvider(order_id="ord-22")
     orig_margins = dict(order_guard._load_margins())
     monkeypatch.setattr(
         order_guard,

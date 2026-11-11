@@ -305,6 +305,75 @@ class SingleProviderApi:
         return None
 
 
+class DummySpotExecutionProvider:
+    """Minimal spot execution provider stub for ``Instrument.place`` and ``MarketApi.place`` tests."""
+
+    name = "kraken"
+
+    def __init__(self, *, symbol: str | None = None, order_id: str = "ord-1", free_bal: float = 10000.0):
+        self._symbol = symbol
+        self._order_id = order_id
+        self._free_bal = free_bal
+
+    def supports_symbol(self, sym):
+        return self._symbol is None or sym == self._symbol
+
+    def validate_symbol(self, sym):
+        return None
+
+    def guards_internally(self):
+        return False
+
+    def requires_cache_permit(self):
+        return False
+
+    def defers_smart_cancel(self):
+        return False
+
+    def supports_business_minimum(self):
+        return False
+
+    def execution_enabled(self):
+        return True
+
+    def preflight_order(self, *a, **k):
+        return None
+
+    def round_price(self, sym, px):
+        return px
+
+    def round_amount(self, sym, q):
+        return q
+
+    def free_balance(self, asset):
+        return self._free_bal
+
+    def get_current_price(self, sym):
+        return 100.0
+
+    def profit_guard_window_ref(self, *a, **k):
+        return None
+
+    def quantity_decision(self, symbol, side, price, qty, **kw):
+        from providers.quantity import QuantityDecision
+
+        rc = kw.get("regime_context")
+        sc = getattr(rc, "suggested_scale", 1.0) if (rc is not None and side == "BUY") else 1.0
+        final_q = float(qty or 1.0) * (sc if 0 < sc < 1.0 else 1.0)
+        return QuantityDecision(
+            requested_qty=float(qty or 1.0),
+            balance_cap=100.0,
+            policy_cap=100.0,
+            fee_cap=100.0,
+            final_qty=final_q,
+            scale_applied=(0 < sc < 1.0),
+            applied_scale=sc,
+        )
+
+    def place_order(self, symbol, side, price, qty, **kw):
+        return {"orderId": self._order_id, "qty": qty}
+
+
 class _TempDirPath(str):
     """Temporary directory path string that also exposes ``.name`` and ``.cleanup()`` like ``TemporaryDirectory``."""
 

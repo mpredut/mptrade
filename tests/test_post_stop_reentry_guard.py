@@ -408,14 +408,24 @@ def test_monitortrades_skips_ai_guard_when_weight_policy_blocks_buy():
     assert "ARBUSDC" in mt._REENTRY_STATE
 
 
+class _MinNotionalBinanceProvider:
+    name = "binance"
+
+    def round_amount(self, symbol, qty):
+        return round(float(qty), 1)
+
+    def order_filter_refusal(self, symbol, side, price, qty, market=False, enforce_business_minimum=True):
+        if float(price) * float(qty) < 50.0:
+            return "below_min_notional"
+        return None
+
+
 def test_monitortrades_skips_ai_guard_when_intelligence_downscale_triggers_below_min_notional():
     """Verify monitortrades does not invoke PostStopReentryGuard (or send repeated APPROVED alerts)
     when the 24h weight-capped BUY quantity would be downscaled by intelligence/geopolitical
     guards below the business minimum notional ($50 USDC)."""
 
-    class DownscaleRefusedProvider:
-        name = "binance"
-
+    class DownscaleRefusedProvider(_MinNotionalBinanceProvider):
         def free_balance(self, asset):
             return 20338.80
 
@@ -429,14 +439,6 @@ def test_monitortrades_skips_ai_guard_when_intelligence_downscale_triggers_below
                 refuse_reason=None,
                 balance_asset="USDC",
             )
-
-        def round_amount(self, symbol, qty):
-            return round(float(qty), 1)
-
-        def order_filter_refusal(self, symbol, side, price, qty, market=False, enforce_business_minimum=True):
-            if float(price) * float(qty) < 50.0:
-                return "below_min_notional"
-            return None
 
     fake_guard = MagicMock()
     mt._LAST_EXIT_KIND["ARBUSDC"] = "STOP"
@@ -487,9 +489,7 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
     the order is scaled once (to 50%) rather than twice (to 25% below min_notional)."""
     from instrument import Instrument
 
-    class LiveScaleProvider:
-        name = "binance"
-
+    class LiveScaleProvider(_MinNotionalBinanceProvider):
         def validate_symbol(self, symbol):
             return True
 
@@ -517,9 +517,6 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
         def round_price(self, symbol, price):
             return round(float(price), 4)
 
-        def round_amount(self, symbol, qty):
-            return round(float(qty), 1)
-
         def free_balance(self, asset):
             return 20000.0
 
@@ -534,11 +531,6 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
                 refuse_reason=None,
                 balance_asset="USDC",
             )
-
-        def order_filter_refusal(self, symbol, side, price, qty, market=False, enforce_business_minimum=True):
-            if float(price) * float(qty) < 50.0:
-                return "below_min_notional"
-            return None
 
         def profit_guard_window_ref(self, symbol, side, safeback_sec, regime_context=None):
             return None

@@ -65,6 +65,27 @@ class MockProvider:
 MockProv = MockProvider
 
 
+def _setup_gemini_notional_check(monkeypatch):
+    calls = []
+
+    def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None):
+        calls.append(notional_eur)
+        return GuardDecision.allow("Gemini approved")
+
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: _margins(
+        internal_guard_mode="enforce",
+        intelligence_guards_mode="enforce",
+        llm_guard_mode="enforce",
+        high_stake_min_notional_usd=1000.0,
+        regime_context_max_age_sec=120.0,
+    ))
+    monkeypatch.setattr(
+        "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
+        fake_gemini_check,
+    )
+    return calls
+
+
 class TestIntelligenceGuardDynamicEvaluation:
     def test_price_surge_blocked_on_same_regime_context(self, monkeypatch):
         """Verify that BUY at 100 is approved, but subsequent BUY at 125 is blocked by parabolic surge guard on the same context."""
@@ -491,22 +512,7 @@ class TestCase5HistoryFailClosed:
             trend_duration_seconds=3600.0,
         )
 
-        calls = []
-        def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None):
-            calls.append(notional_eur)
-            return GuardDecision.allow("Gemini approved")
-
-        monkeypatch.setattr("order_guard._load_margins", lambda: _margins(
-            internal_guard_mode="enforce",
-            intelligence_guards_mode="enforce",
-            llm_guard_mode="enforce",
-            high_stake_min_notional_usd=1000.0,
-            regime_context_max_age_sec=120.0,
-        ))
-        monkeypatch.setattr(
-            "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
-            fake_gemini_check
-        )
+        calls = _setup_gemini_notional_check(monkeypatch)
 
         # 1. First evaluation at notional 1000 EUR
         order_guard.check_intelligence_guards(
@@ -746,23 +752,7 @@ class TestSisterArchitecturalDefects:
     def test_sister3_gemini_evaluated_notional_prevents_ratchet_drift(self, monkeypatch):
         """Sister 3: Incremental notional growth must not ratchet baseline forward without evaluation."""
         ctx = _build_test_context()
-        calls = []
-
-        def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None):
-            calls.append(notional_eur)
-            return GuardDecision.allow("Gemini approved")
-
-        monkeypatch.setattr(order_guard, "_load_margins", lambda: _margins(
-            internal_guard_mode="enforce",
-            intelligence_guards_mode="enforce",
-            llm_guard_mode="enforce",
-            high_stake_min_notional_usd=1000.0,
-            regime_context_max_age_sec=120.0,
-        ))
-        monkeypatch.setattr(
-            "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
-            fake_gemini_check
-        )
+        calls = _setup_gemini_notional_check(monkeypatch)
 
         # 1. Initial evaluation at 1000 EUR
         order_guard.check_intelligence_guards(

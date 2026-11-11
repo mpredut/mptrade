@@ -282,45 +282,44 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         persisted = monitororder.order_retry.load_all()
         self.assertEqual(persisted[0]["qty"], 1.25)
 
+    def _run_post_cancel_replacement(self, *, place_side_effect=None, place_return=None, permit=None):
+        orders = {101: {"price": 100.0, "quantity": 2.0}}
+        place_kwargs = {"side_effect": place_side_effect} if place_side_effect is not None else {"return_value": place_return}
+        with (
+            mock.patch.object(monitororder.api, "get_open_orders", return_value=orders),
+            mock.patch.object(monitororder.api, "get_current_price", return_value=100.0),
+            mock.patch.object(monitororder, "are_close", return_value=True),
+            mock.patch.object(monitororder.mkt, "preflight_order", return_value=permit or object()),
+            mock.patch.object(monitororder.api, "cancel_order", return_value=True) as cancel_order,
+            mock.patch.object(
+                monitororder.mkt,
+                "order_status",
+                return_value=OrderStatus(
+                    status="canceled", filled_qty=0.0, cost=0.0, fee=0.0, venue_status="CANCELED"
+                ),
+            ),
+            mock.patch.object(monitororder.mkt, "place", **place_kwargs) as place,
+            mock.patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
+        return cancel_order, place
+
+    @staticmethod
+    def _make_outcome_refusal(reason: str, state: str = "refused"):
+        def _refuse(*args, **kwargs):
+            kwargs["_outcome_context"].update(accepted=False, reason=reason, state=state)
+            return None
+        return _refuse
+
     def test_post_cancel_policy_refusal_keeps_serializable_durable_intent(self):
         for refusal_reason in ("profit_guard", "trend_deferred", "cooldown"):
             with self.subTest(refusal_reason=refusal_reason):
                 if os.path.exists(monitororder.order_retry.QUEUE_FILE):
                     os.unlink(monitororder.order_retry.QUEUE_FILE)
-                orders = {101: {"price": 100.0, "quantity": 2.0}}
-                permit = object()
-
-                def refuse(*args, **kwargs):
-                    kwargs["_outcome_context"].update(
-                        accepted=False, reason=refusal_reason, state="refused")
-                    return None
-
-                with (
-                    mock.patch.object(
-                        monitororder.api, "get_open_orders",
-                        return_value=orders),
-                    mock.patch.object(
-                        monitororder.api, "get_current_price",
-                        return_value=100.0),
-                    mock.patch.object(
-                        monitororder, "are_close", return_value=True),
-                    mock.patch.object(
-                        monitororder.mkt, "preflight_order",
-                        return_value=permit),
-                    mock.patch.object(
-                        monitororder.api, "cancel_order", return_value=True),
-                    mock.patch.object(
-                        monitororder.mkt, "order_status",
-                        return_value=OrderStatus(
-                            status="canceled", filled_qty=0.0,
-                            cost=0.0, fee=0.0,
-                            venue_status="CANCELED")),
-                    mock.patch.object(
-                        monitororder.mkt, "place", side_effect=refuse),
-                    mock.patch("builtins.print"),
-                ):
-                    monitororder.monitor_open_orders_by_type(
-                        "BTCUSDC", "SELL")
+                self._run_post_cancel_replacement(
+                    place_side_effect=self._make_outcome_refusal(refusal_reason),
+                    permit=object(),
+                )
 
                 persisted = monitororder.order_retry.load_all()
                 self.assertEqual(len(persisted), 1)
@@ -331,36 +330,9 @@ class MonitorOrderPreflightTest(TempDirTestCase):
                 self.assertNotIn("cache_permit", serialized)
 
     def test_post_cancel_submit_response_loss_stays_unknown_for_reconciliation(self):
-        orders = {101: {"price": 100.0, "quantity": 2.0}}
-
-        def lose_response(*args, **kwargs):
-            kwargs["_outcome_context"].update(
-                accepted=False,
-                reason="response_without_order_id",
-                state="unknown",
-            )
-            return None
-
-        with (
-            mock.patch.object(
-                monitororder.api, "get_open_orders", return_value=orders),
-            mock.patch.object(
-                monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder, "are_close", return_value=True),
-            mock.patch.object(
-                monitororder.mkt, "preflight_order", return_value=object()),
-            mock.patch.object(
-                monitororder.api, "cancel_order", return_value=True),
-            mock.patch.object(
-                monitororder.mkt, "order_status",
-                return_value=OrderStatus(
-                    status="canceled", filled_qty=0.0, cost=0.0, fee=0.0,
-                    venue_status="CANCELED")),
-            mock.patch.object(
-                monitororder.mkt, "place", side_effect=lose_response),
-            mock.patch("builtins.print"),
-        ):
-            monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
+        self._run_post_cancel_replacement(
+            place_side_effect=self._make_outcome_refusal("response_without_order_id", state="unknown"),
+        )
 
         persisted = monitororder.order_retry.load_all()
         self.assertEqual(len(persisted), 1)
@@ -379,43 +351,9 @@ class MonitorOrderPreflightTest(TempDirTestCase):
             with self.subTest(refusal_reason=refusal_reason):
                 monitororder.order_retry.rewrite([])
                 monitororder.initial_sell_prices.clear()
-                orders = {101: {"price": 100.0, "quantity": 2.0}}
-
-                def terminal_refusal(*args, **kwargs):
-                    kwargs["_outcome_context"].update(
-                        accepted=False,
-                        reason=refusal_reason,
-                        state="refused",
-                    )
-                    return None
-
-                with (
-                    mock.patch.object(
-                        monitororder.api, "get_open_orders",
-                        return_value=orders),
-                    mock.patch.object(
-                        monitororder.api, "get_current_price",
-                        return_value=100.0),
-                    mock.patch.object(
-                        monitororder, "are_close", return_value=True),
-                    mock.patch.object(
-                        monitororder.mkt, "preflight_order",
-                        return_value=object()),
-                    mock.patch.object(
-                        monitororder.api, "cancel_order", return_value=True),
-                    mock.patch.object(
-                        monitororder.mkt, "order_status",
-                        return_value=OrderStatus(
-                            status="canceled", filled_qty=0.0,
-                            cost=0.0, fee=0.0,
-                            venue_status="CANCELED")),
-                    mock.patch.object(
-                        monitororder.mkt, "place",
-                        side_effect=terminal_refusal) as place,
-                    mock.patch("builtins.print"),
-                ):
-                    monitororder.monitor_open_orders_by_type(
-                        "BTCUSDC", "SELL")
+                _, place = self._run_post_cancel_replacement(
+                    place_side_effect=self._make_outcome_refusal(refusal_reason),
+                )
 
                 place.assert_called_once()
                 self.assertEqual(
@@ -436,30 +374,10 @@ class MonitorOrderPreflightTest(TempDirTestCase):
 
     def test_recent_trade_does_not_block_replacement(self):
         """Cooldown gate eliminated: recent trade does not block replacement preflight."""
-        orders = {101: {"price": 100.0, "quantity": 2.0}}
-        permit = object()
-        with (
-            mock.patch.object(
-                monitororder.api, "get_open_orders", return_value=orders),
-            mock.patch.object(
-                monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(
-                monitororder, "are_close", return_value=True),
-            mock.patch.object(
-                monitororder.mkt, "preflight_order", return_value=permit),
-            mock.patch.object(
-                monitororder.api, "cancel_order", return_value=True) as cancel_order,
-            mock.patch.object(
-                monitororder.mkt, "order_status",
-                return_value=OrderStatus(
-                    status="canceled", filled_qty=0.0, cost=0.0, fee=0.0,
-                    venue_status="CANCELED")),
-            mock.patch.object(
-                monitororder.mkt, "place", return_value={"orderId": "new-1"}) as place,
-            mock.patch("builtins.print"),
-        ):
-            monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
-
+        cancel_order, place = self._run_post_cancel_replacement(
+            place_return={"orderId": "new-1"},
+            permit=object(),
+        )
         cancel_order.assert_called_once()
         place.assert_called_once()
 
