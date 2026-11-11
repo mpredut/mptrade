@@ -325,7 +325,7 @@ class TestMonitororderNotifications(unittest.TestCase):
         placed = []
 
         def fake_place(symbol, side, price, qty, **kw):
-            placed.append((symbol, side, price, qty))
+            placed.append((symbol, side, price, qty, kw))
             return {"orderId": 722760715}
 
         with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders), \
@@ -340,6 +340,8 @@ class TestMonitororderNotifications(unittest.TestCase):
 
         self.assertEqual(len(placed), 1)
         self.assertAlmostEqual(placed[0][2], 217.90 * (1.0 + monitororder.REPRICE_OFFSET), places=6)
+        self.assertFalse(placed[0][4]["wait_for_trend"])
+        self.assertIn("GT_S", placed[0][4]["bypass_guards"])
 
     def test_favorable_short_and_super_short_trend_pushes_order_in_favor_of_profit(self):
         # SELL order very close to market (218.10 vs 217.90 -> 0.09% <= MID_PROC=0.425%)

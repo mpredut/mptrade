@@ -1060,7 +1060,7 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
             order_ids = ta.track_and_place_order("BUY", "BTCUSDT", 1, 100.0, 100.0)
             mock_exp.assert_called_once_with("BUY", "BTCUSDT", ta.EXP_TIME_BUY_ORDER, allowed_owners={"tradeall"})
             mock_fire.assert_called_once_with(
-                "BTCUSDT", "BUY", 99.9, "trend_signal"
+                "BTCUSDT", "BUY", 100.0 * (1.0 - ta.order_lifecycle.MONITOR_MIN_PROC / 100.0), "trend_signal"
             )
             # Placement alerts are centralized in monitororder, not emitted from tradeall
             mock_notify.assert_not_called()
@@ -1074,11 +1074,22 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
             order_ids = ta.track_and_place_order("SELL", "BTCUSDT", 1, 100.0, 100.0)
             mock_exp.assert_called_once_with("SELL", "BTCUSDT", ta.EXP_TIME_SELL_ORDER, allowed_owners={"tradeall"})
             mock_fire.assert_called_once_with(
-                "BTCUSDT", "SELL", 100.1, "trend_signal"
+                "BTCUSDT", "SELL", 100.0 * (1.0 + ta.order_lifecycle.MONITOR_MIN_PROC / 100.0), "trend_signal"
             )
             # Placement alerts are centralized in monitororder, not emitted from tradeall
             mock_notify.assert_not_called()
             self.assertEqual(order_ids, [2002])
+
+    def test_track_and_place_order_scales_entry_offset_by_tick_size(self):
+        ta._SYMBOL_TICK_SIZE_CACHE.clear()
+        with patch.object(ta.api, "cancel_expired_orders"), \
+             patch.object(ta.mkt, "price_tick_size", return_value=0.10), \
+             patch.object(ta, "_fire_order", return_value={"orderId": 2003}) as mock_fire:
+            ta.track_and_place_order("BUY", "TAOUSDC", 1, 200.0, 200.0)
+            eff_min, _, _, _ = ta.order_lifecycle.resolve_dynamic_reprice_bounds("TAOUSDC", 200.0, tick_size=0.10)
+            mock_fire.assert_called_once_with(
+                "TAOUSDC", "BUY", 200.0 * (1.0 - eff_min / 100.0), "trend_signal"
+            )
 
     def test_order_skipped_or_refused_does_not_alert(self):
         with patch.object(ta.api, "cancel_expired_orders"), \

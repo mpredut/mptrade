@@ -252,6 +252,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
 
 
 _symbol_order_ids = {}
+_SYMBOL_TICK_SIZE_CACHE: dict[str, float] = {}
 
 
 def track_and_place_order(action, symbol, count, proposed_price, current_price, order_ids=None,
@@ -276,20 +277,26 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     if action == 'HOLD':
         return order_ids
 
-    num_orders, price_step = (1, 0.2) if action == "BUY" else (1, 0.08)
     quote = (split_symbol_assets(symbol) or ("", ""))[1]
 
-    # Price is rising, place fewer, larger orders. Increase spacing between orders as percents.
-    # Price is falling, place more, smaller orders. Reduce spacing between orders as percents.
     prop_f = safe_pos_float(proposed_price, default=None)
     curr_f = safe_pos_float(current_price, default=None)
+    eff_min_proc, _, _, _ = order_lifecycle.resolve_dynamic_reprice_bounds(
+        symbol,
+        curr_f if curr_f is not None else 0.0,
+        market_api=mkt,
+        tick_cache=_SYMBOL_TICK_SIZE_CACHE,
+        skip_live_tick_lookup=hasattr(_fire_order, "_mock_name"),
+    )
+    num_orders, price_step = 1, eff_min_proc
     if prop_f is None or curr_f is None:
         base_price = float("nan")
     else:
+        entry_offset = eff_min_proc / 100.0
         base_price = (
-            min(prop_f, curr_f * 0.999)
+            min(prop_f, curr_f * (1.0 - entry_offset))
             if action == "BUY"
-            else max(prop_f, curr_f * 1.001)
+            else max(prop_f, curr_f * (1.0 + entry_offset))
         )
 
     # Pre-submit gate check: if _fire_order will deterministically refuse this

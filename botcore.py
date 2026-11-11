@@ -18,6 +18,7 @@ import time as _time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from datetime import datetime, time as dt_time, timezone
 from zoneinfo import ZoneInfo
 
@@ -235,6 +236,40 @@ def lru_dict_put(cache: dict, key: object, value: object, max_entries: int) -> N
         cache[key] = value
         while len(cache) > max_entries:
             cache.pop(next(iter(cache)), None)
+
+
+class OrderedIdSet:
+    """Insertion-ordered set of IDs with deterministic FIFO eviction."""
+
+    def __init__(self):
+        self._d = OrderedDict()
+
+    def add(self, item: str) -> None:
+        self._d[item] = None
+        self._d.move_to_end(item)
+
+    def clear(self) -> None:
+        self._d.clear()
+
+    def trim(self, keep: int = 5000) -> None:
+        while len(self._d) > keep:
+            self._d.popitem(last=False)
+
+    def difference_update(self, items) -> None:
+        for item in items:
+            self._d.pop(item, None)
+
+    def __contains__(self, item) -> bool:
+        return item in self._d
+
+    def __len__(self) -> int:
+        return len(self._d)
+
+    def __iter__(self):
+        return iter(self._d)
+
+
+_OrderedIdSet = OrderedIdSet
 
 
 def format_price_log(price: object) -> str:

@@ -28,8 +28,10 @@ from providers.strategy_executor import SubmissionRefused
 import order_retry
 import order_lifecycle
 from botcore import (
+    OrderedIdSet,
     are_close,
     clean_order_id_str,
+    diff_percent,
     format_notify_price,
     format_notify_qty,
     format_price_log,
@@ -44,23 +46,16 @@ from botcore import (
 
 load_dotenv()
 
-MIN_PROC = required_float_env("MONITOR_MIN_PROC")
-TICK_CUSHION = required_float_env("MONITOR_TICK_CUSHION")
-if (
-    safe_pos_float(MIN_PROC, default=None) is None
-    or MIN_PROC >= 10.0
-    or safe_nonneg_float(TICK_CUSHION, default=None) is None
-):
-    raise ValueError(
-        f"Invalid monitororder config: MIN_PROC={MIN_PROC!r}, TICK_CUSHION={TICK_CUSHION!r}"
-    )
-# Derived formulaically from primary anchor MONITOR_MIN_PROC:
-MAX_PROC = round(MIN_PROC * 9.6, 4)
-INITIAL_MAX_PROC = round(MIN_PROC * 21.25, 4)
-MID_PROC = (MIN_PROC + MAX_PROC) / 2.0
+MIN_PROC = order_lifecycle.MONITOR_MIN_PROC
+TICK_CUSHION = order_lifecycle.MONITOR_TICK_CUSHION
+MAX_PROC = order_lifecycle.MONITOR_MAX_PROC
+INITIAL_MAX_PROC = order_lifecycle.MONITOR_INITIAL_MAX_PROC
+MID_PROC = order_lifecycle.MONITOR_MID_PROC
 REPRICE_OFFSET = MIN_PROC / 100.0
 PUSHBACK_OFFSET = MID_PROC / 100.0
 MAX_TRACKED_ORDER_IDS = 10_000
+MONITOR_OPEN_ORDER_INTERVAL = required_int_env("MONITOR_OPEN_ORDER_INTERVAL")
+TIME_SLEEP_ERROR = max(1, MONITOR_OPEN_ORDER_INTERVAL // 3)
 
 # Order Market TTL configurations (in seconds)
 MAX_GLOBAL_ORDER_TTL_SEC = required_float_env("MAX_GLOBAL_ORDER_TTL_SEC")  # 3 days hard cap
@@ -143,37 +138,9 @@ def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=N
         )
     except Exception as exc:
         print(f"[MONITORORDER] Expiry notification failed for order {order_id}: {exc}")
-class _OrderedIdSet:
-    """Insertion-ordered set of order IDs with deterministic FIFO eviction."""
-
-    def __init__(self):
-        self._d = OrderedDict()
-
-    def add(self, item: str) -> None:
-        self._d[item] = None
-        self._d.move_to_end(item)
-
-    def clear(self) -> None:
-        self._d.clear()
-
-    def trim(self, keep: int = 5000) -> None:
-        while len(self._d) > keep:
-            self._d.popitem(last=False)
-
-    def difference_update(self, items) -> None:
-        for item in items:
-            self._d.pop(item, None)
-
-    def __contains__(self, item) -> bool:
-        return item in self._d
-
-    def __len__(self) -> int:
-        return len(self._d)
-
-    def __iter__(self):
-        return iter(self._d)
 
 
+_OrderedIdSet = OrderedIdSet
 initial_sell_prices = OrderedDict()
 initial_buy_prices = OrderedDict()
 
@@ -232,41 +199,18 @@ def resolve_dynamic_reprice_bounds(
     current_price: float,
     tick_size: float | None = None,
 ) -> tuple[float, float, float, float]:
-    """Compute ``(eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc)`` scaled by venue tick size.
-
-    Applies the general formula ``P + TICK_CUSHION * sqrt(P / MIN_PROC) * tick_pct``
-    across all bounds so venue price rounding/flooring across Binance, Kraken,
-    Hyperliquid, and T212 never collapses the repricing offset.
-    """
-    px_f = safe_pos_float(current_price, default=None)
-    if tick_size is None:
-        tick_fn = getattr(mkt, "price_tick_size", None)
-        if callable(tick_fn) and (
-            not hasattr(mkt.place, "_mock_name") or hasattr(tick_fn, "_mock_name")
-        ):
-            sym_key = str(symbol or "").strip().upper()
-            cached_tick = _SYMBOL_TICK_SIZE_CACHE.get(sym_key) if not hasattr(tick_fn, "_mock_name") else None
-            if cached_tick is not None:
-                tick_size = cached_tick
-            else:
-                try:
-                    resolved = safe_nonneg_float(tick_fn(symbol, reference_price=px_f), default=0.0)
-                    tick_size = resolved
-                    if sym_key and resolved > 0.0 and not hasattr(tick_fn, "_mock_name"):
-                        _SYMBOL_TICK_SIZE_CACHE[sym_key] = resolved
-                except Exception:
-                    tick_size = 0.0
-    tick_f = safe_pos_float(tick_size, default=0.0)
-    tick_pct = (tick_f / px_f * 100.0) if (px_f is not None and tick_f > 0.0) else 0.0
-
-    def _scale_proc(base_proc: float) -> float:
-        return base_proc + TICK_CUSHION * math.sqrt(base_proc / MIN_PROC) * tick_pct
-
-    eff_min_proc = _scale_proc(MIN_PROC)
-    eff_max_proc = _scale_proc(MAX_PROC)
-    eff_initial_max_proc = _scale_proc(INITIAL_MAX_PROC)
-    eff_mid_proc = (eff_min_proc + eff_max_proc) / 2.0
-    return eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc
+    """Compute ``(eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc)`` scaled by venue tick size."""
+    return order_lifecycle.resolve_dynamic_reprice_bounds(
+        symbol,
+        current_price,
+        tick_size=tick_size,
+        min_proc=MIN_PROC,
+        tick_cushion=TICK_CUSHION,
+        max_proc=MAX_PROC,
+        initial_max_proc=INITIAL_MAX_PROC,
+        market_api=mkt,
+        tick_cache=_SYMBOL_TICK_SIZE_CACHE,
+    )
 
 
 def _evaluate_reprice_trend_state(symbol: str, order_type: str) -> tuple[bool, bool]:
@@ -305,9 +249,6 @@ def _evaluate_reprice_trend_state(symbol: str, order_type: str) -> tuple[bool, b
         return short_favorable, super_short_favorable
     except Exception:
         return False, False
-
-
-TIME_SLEEP_ERROR = 10
 
 
 def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
@@ -446,7 +387,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         else:
             lru_dict_put(initial_prices, order_id, float(price), MAX_TRACKED_ORDER_IDS)
 
-        difference_percent = abs(current_price - price) / price * 100
+        difference_percent = diff_percent(current_price, price)
         print(f"{order_type.capitalize()} price {price}, current price {current_price} difference: {difference_percent:.2f}%, Order ID {order_id}")
         
         if are_close(current_price, price, eff_max_proc):
@@ -459,8 +400,6 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     new_price = max(float(price), current_price * (1.0 + eff_pushback_offset))
                 else:
                     new_price = min(float(price), current_price * (1.0 - eff_pushback_offset))
-                replace_bypass_guards = ["G_PROF", "GT_S"]
-                replace_wait_for_trend = False
                 print(
                     f"[MONITORORDER] Favorable short+super-short trend for {order_type} "
                     f"order {order_id} near market ({order_diff_percent:.2f}% <= {eff_mid_proc:.2f}%); "
@@ -473,7 +412,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 )
                 continue
             else:
-                difference_percent = abs(current_price - initial_prices[order_id]) / initial_prices[order_id] * 100
+                difference_percent = diff_percent(current_price, initial_prices[order_id])
                 if not are_close(current_price, initial_prices[order_id], eff_initial_max_proc):
                     print(f"However the price moved too much ({difference_percent}%) compared with the initial price ({initial_prices[order_id]}). The order is no longer modified.")
                     continue
@@ -482,8 +421,10 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     new_price = current_price * (1.0 + eff_reprice_offset)
                 else:
                     new_price = current_price * (1.0 - eff_reprice_offset)
-                replace_bypass_guards = ["G_PROF"]
-                replace_wait_for_trend = True
+            # Short trend was already evaluated pre-cancel; once we decide to cancel
+            # the live order on the exchange, do not re-defer the replacement via GT_S.
+            replace_bypass_guards = ["G_PROF", "GT_S"]
+            replace_wait_for_trend = False
             effective_new_price = new_price
             round_px = getattr(mkt, "round_price", None)
             if callable(round_px) and not hasattr(round_px, "_mock_name"):
@@ -746,9 +687,6 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     for tracked_set in (_notified_placed_order_ids, _notified_expired_order_ids, _derived_replacement_order_ids):
         if len(tracked_set) > MAX_TRACKED_ORDER_IDS:
             tracked_set.trim(5000)
-
-
-MONITOR_OPEN_ORDER_INTERVAL = required_int_env("MONITOR_OPEN_ORDER_INTERVAL")
 
 
 def warmup_open_orders():

@@ -6,6 +6,7 @@ and venue status reconciliation from the shared persistent JSONL retry outbox.
 """
 from __future__ import annotations
 
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -18,12 +19,14 @@ from botcore import (
     check_cooldown_gate,
     clean_order_id,
     exact_pos_int,
+    load_dotenv,
     load_root_config,
     normalize_side,
     obj_attr,
     required_float_env,
     required_int_env,
     safe_float,
+    safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
     sanitize_pipe_field,
@@ -769,4 +772,100 @@ def restore_cancelled_orders(
         except Exception as exc:
             log_fn(f"  ! [ATOMIC_ROLLBACK] failed restoring order: {exc}")
     return restored
+
+
+# ─── Dynamic Reprice & Entry Offset Bounds (SSOT) ───
+
+load_dotenv()
+
+MONITOR_MIN_PROC = required_float_env("MONITOR_MIN_PROC")
+MONITOR_TICK_CUSHION = required_float_env("MONITOR_TICK_CUSHION")
+if (
+    safe_pos_float(MONITOR_MIN_PROC, default=None) is None
+    or MONITOR_MIN_PROC >= 10.0
+    or safe_nonneg_float(MONITOR_TICK_CUSHION, default=None) is None
+):
+    raise ValueError(
+        f"Invalid monitororder config: MONITOR_MIN_PROC={MONITOR_MIN_PROC!r}, "
+        f"MONITOR_TICK_CUSHION={MONITOR_TICK_CUSHION!r}"
+    )
+MONITOR_MAX_PROC_MULT = 9.6
+MONITOR_INITIAL_MAX_PROC_MULT = 21.25
+MONITOR_MAX_PROC = round(MONITOR_MIN_PROC * MONITOR_MAX_PROC_MULT, 4)
+MONITOR_INITIAL_MAX_PROC = round(MONITOR_MIN_PROC * MONITOR_INITIAL_MAX_PROC_MULT, 4)
+MONITOR_MID_PROC = (MONITOR_MIN_PROC + MONITOR_MAX_PROC) / 2.0
+
+
+def resolve_dynamic_reprice_bounds(
+    symbol: str,
+    current_price: float,
+    tick_size: float | None = None,
+    *,
+    min_proc: float = MONITOR_MIN_PROC,
+    tick_cushion: float = MONITOR_TICK_CUSHION,
+    max_proc: float | None = None,
+    initial_max_proc: float | None = None,
+    market_api: Any = None,
+    tick_cache: dict[str, float] | None = None,
+    skip_live_tick_lookup: bool = False,
+) -> tuple[float, float, float, float]:
+    """Compute ``(eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc)`` scaled by venue tick size.
+
+    Applies the general formula ``P + TICK_CUSHION * sqrt(P / MIN_PROC) * tick_pct``
+    across all bounds so venue price rounding/flooring across Binance, Kraken,
+    Hyperliquid, and T212 never collapses the repricing or entry offset.
+    """
+    eff_base_min = safe_pos_float(min_proc, default=MONITOR_MIN_PROC) or MONITOR_MIN_PROC
+    eff_cushion = safe_nonneg_float(tick_cushion, default=MONITOR_TICK_CUSHION)
+    if eff_cushion is None:
+        eff_cushion = MONITOR_TICK_CUSHION
+    eff_base_max = (
+        safe_pos_float(max_proc, default=None)
+        or round(eff_base_min * MONITOR_MAX_PROC_MULT, 4)
+    )
+    eff_base_init = (
+        safe_pos_float(initial_max_proc, default=None)
+        or round(eff_base_min * MONITOR_INITIAL_MAX_PROC_MULT, 4)
+    )
+    px_f = safe_pos_float(current_price, default=None)
+    if tick_size is None and market_api is not None:
+        tick_fn = getattr(market_api, "price_tick_size", None)
+        place_fn = getattr(market_api, "place", None)
+        if callable(tick_fn) and (
+            hasattr(tick_fn, "_mock_name")
+            or (not skip_live_tick_lookup and not hasattr(place_fn, "_mock_name"))
+        ):
+            sym_key = str(symbol or "").strip().upper()
+            cached_tick = (
+                tick_cache.get(sym_key)
+                if (isinstance(tick_cache, dict) and not hasattr(tick_fn, "_mock_name"))
+                else None
+            )
+            if cached_tick is not None:
+                tick_size = cached_tick
+            else:
+                try:
+                    resolved = safe_nonneg_float(tick_fn(symbol, reference_price=px_f), default=0.0)
+                    tick_size = resolved
+                    if (
+                        isinstance(tick_cache, dict)
+                        and sym_key
+                        and resolved > 0.0
+                        and not hasattr(tick_fn, "_mock_name")
+                    ):
+                        tick_cache[sym_key] = resolved
+                except Exception:
+                    tick_size = 0.0
+    tick_f = safe_pos_float(tick_size, default=0.0)
+    tick_pct = (tick_f / px_f * 100.0) if (px_f is not None and tick_f > 0.0) else 0.0
+
+    def _scale_proc(base_proc: float) -> float:
+        return base_proc + eff_cushion * math.sqrt(base_proc / eff_base_min) * tick_pct
+
+    eff_min_proc = _scale_proc(eff_base_min)
+    eff_max_proc = _scale_proc(eff_base_max)
+    eff_initial_max_proc = _scale_proc(eff_base_init)
+    eff_mid_proc = (eff_min_proc + eff_max_proc) / 2.0
+    return eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc
+
 

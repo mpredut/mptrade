@@ -280,7 +280,7 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
     eff_kind = str(r.get("kind") or kwargs.get("kind") or "").strip()
     if "monitor_order_replace" in eff_kind:
         _enable_profit_math_bypass()
-        kwargs["wait_for_trend"] = True
+        kwargs["wait_for_trend"] = _parse_bool_flag(kwargs.get("wait_for_trend"), True)
     else:
         is_stop_expired_timer = (
             eff_kind.upper() == "STOP"
