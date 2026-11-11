@@ -969,11 +969,15 @@ def _append_order_history(rec, *, observed_at, status=None):
     rec["order_history"] = history[-20:]
 
 
+def _clean_id_set(ids) -> set:
+    if ids is None or isinstance(ids, (str, bytes, bool)):
+        return set()
+    return {i for i in ids if not isinstance(i, bool) and i}
+
+
 def claim(ids, now=None, lease_sec=None):
     """Lease entries without removing them, making crash recovery deterministic."""
-    if ids is None or isinstance(ids, (str, bytes, bool)):
-        return []
-    ids = {i for i in ids if not isinstance(i, bool) and i}
+    ids = _clean_id_set(ids)
     if not ids:
         return []
     now = resolve_now_ts(now)
@@ -1316,9 +1320,7 @@ def discard_expired(snapshots, now=None):
 
 def discard(ids):
     """Atomically remove records by ID without submitting them (expiry/give-up)."""
-    if ids is None or isinstance(ids, (str, bytes, bool)):
-        return []
-    ids = {i for i in ids if not isinstance(i, bool) and i}
+    ids = _clean_id_set(ids)
     if not ids:
         return []
     return _remove_matching_locked(lambda rec: rec.get("id") in ids)

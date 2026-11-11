@@ -388,17 +388,22 @@ class TrackedOrderLifecycle:
             self._audit("submit_ambiguous", pending, error="response_without_order_id")
         return TrackedOrderResult("active", pending)
 
-    def _persist_terminal(self, pending: dict, status: OrderStatus, persist: PersistPending) -> TrackedOrderResult:
-        pending = dict(pending)
+    def _record_status_and_persist(
+        self, pending: dict, status: OrderStatus, persist: PersistPending, event: str
+    ) -> None:
         pending["last_status"] = status.status
         pending["filled_qty"] = status.filled_qty
-        pending["terminal_status"] = _terminal_payload(status, self._now())
         persist(dict(pending))
         self._audit(
-            "order_terminal", pending, status=status.status,
+            event, pending, status=status.status,
             venue_status=status.venue_status,
             filled_qty=status.filled_qty, cost=status.cost, fee=status.fee,
         )
+
+    def _persist_terminal(self, pending: dict, status: OrderStatus, persist: PersistPending) -> TrackedOrderResult:
+        pending = dict(pending)
+        pending["terminal_status"] = _terminal_payload(status, self._now())
+        self._record_status_and_persist(pending, status, persist, "order_terminal")
         return TrackedOrderResult("terminal", pending, status)
 
     def reconcile(self, intent: dict, *, persist: PersistPending) -> TrackedOrderResult:
@@ -466,14 +471,7 @@ class TrackedOrderLifecycle:
         if status.terminal:
             return self._persist_terminal(pending, status, persist)
 
-        pending["last_status"] = status.status
-        pending["filled_qty"] = status.filled_qty
-        persist(dict(pending))
-        self._audit(
-            "order_status", pending, status=status.status,
-            venue_status=status.venue_status,
-            filled_qty=status.filled_qty, cost=status.cost, fee=status.fee,
-        )
+        self._record_status_and_persist(pending, status, persist, "order_status")
 
         created_at = _lifecycle_finite(pending.get("created_at"), positive=True)
         age_seconds = max(0.0, self._now() - created_at) if created_at is not None else None

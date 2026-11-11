@@ -36,22 +36,17 @@ def _expand_or_env(override: Optional[str], env_key: str, *subpaths: str) -> str
     return os.path.join(base, *subpaths) if subpaths else base
 
 
-def resolve_bot_cli_base(cli_base: Optional[str] = None) -> str:
-    """Antigravity store used by autonomous LLM calls: explicit path or AGY_BOT_HOME/.gemini/antigravity-cli."""
-    return _expand_or_env(cli_base, "AGY_BOT_HOME", AGY_STORE_SUBDIR)
+def _bind_env_path_resolver(env_key: str, *subpaths: str):
+    def _resolver(override: Optional[str] = None, **kw: Optional[str]) -> str:
+        eff_override = next(iter(kw.values()), override)
+        return _expand_or_env(eff_override, env_key, *subpaths)
+
+    return _resolver
 
 
-def resolve_ui_cli_base(ui_cli_base: Optional[str] = None) -> str:
-    """Antigravity store served by the Web UI daemon (AGY_UI_CLI_BASE)."""
-    return _expand_or_env(ui_cli_base, "AGY_UI_CLI_BASE")
-
-
-def resolve_agy_bot_bin(cli_path: Optional[str] = None) -> str:
-    """Path of the isolated agy-bot wrapper (AGY_BOT_BIN); never the plain, non-isolated `agy` binary.
-
-    Existence is checked by the caller at invocation time (the CLI may be absent on CI hosts).
-    """
-    return _expand_or_env(cli_path, "AGY_BOT_BIN")
+resolve_bot_cli_base = _bind_env_path_resolver("AGY_BOT_HOME", AGY_STORE_SUBDIR)
+resolve_ui_cli_base = _bind_env_path_resolver("AGY_UI_CLI_BASE")
+resolve_agy_bot_bin = _bind_env_path_resolver("AGY_BOT_BIN")
 
 
 def visible_conversations_dir(cli_base: str) -> str:

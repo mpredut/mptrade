@@ -166,23 +166,18 @@ class StratParams:
         if dir_val not in ("long", "short"):
             raise ValueError(f"Invalid HL_DIRECTION: {dir_val!r}")
 
+        def _first_cfg_val(keys: tuple[str, ...], default: object) -> object:
+            return next((d[k] for k in keys if k in d and d[k] is not None), default)
+
         def _f(keys: tuple[str, ...], default: float) -> float:
-            raw: object = default
-            for k in keys:
-                if k in d and d[k] is not None:
-                    raw = d[k]
-                    break
+            raw = _first_cfg_val(keys, default)
             val = safe_float(raw, default=None)
             if val is None:
                 raise ValueError(f"invalid float for {keys[0]}: {raw!r}")
             return val
 
         def _i(keys: tuple[str, ...], default: int) -> int:
-            raw: object = default
-            for k in keys:
-                if k in d and d[k] is not None:
-                    raw = d[k]
-                    break
+            raw = _first_cfg_val(keys, default)
             val_i = exact_int(raw, default=None)
             if val_i is None:
                 raise ValueError(f"non-integer value for {keys[0]}: {raw!r}")

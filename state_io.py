@@ -107,11 +107,17 @@ def cleanup_stale_staging_siblings(
         pass
 
 
+def _prepare_src_dst_paths(source: str, destination: str) -> tuple[str, str, str]:
+    src = os.path.abspath(os.fspath(source))
+    dst = os.path.abspath(os.fspath(destination))
+    directory = os.path.dirname(dst)
+    os.makedirs(directory, exist_ok=True)
+    return src, dst, directory
+
+
 def durable_replace_file(source: str, destination: str) -> None:
     """Atomically replace ``destination`` and durably publish the new entry."""
-    source = os.path.abspath(os.fspath(source))
-    destination = os.path.abspath(os.fspath(destination))
-    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    source, destination, _ = _prepare_src_dst_paths(source, destination)
     with open(source, "rb") as handle:
         os.fsync(handle.fileno())
     os.replace(source, destination)
@@ -122,10 +128,7 @@ def durable_replace_file(source: str, destination: str) -> None:
 
 def atomic_snapshot_file(source: str, destination: str) -> None:
     """Atomically preserve one immutable file generation at ``destination``."""
-    source = os.path.abspath(os.fspath(source))
-    destination = os.path.abspath(os.fspath(destination))
-    directory = os.path.dirname(destination)
-    os.makedirs(directory, exist_ok=True)
+    source, destination, directory = _prepare_src_dst_paths(source, destination)
     prefix = f".{os.path.basename(destination)}."
     staging_directory = tempfile.mkdtemp(dir=directory, prefix=prefix)
     staged = os.path.join(staging_directory, "generation")

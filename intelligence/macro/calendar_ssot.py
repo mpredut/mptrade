@@ -433,8 +433,7 @@ def _rank_taker_ratio_context(ctx: str) -> int:
     return 2
 
 
-def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Optional[float]:
-    """Extract a cited BTC taker buy/sell ratio from an advisor summary string (or sequence of strings), preferring overall/15m over 1h/4h over 1m/3m/5m sub-horizons unless a specific `horizon` is requested."""
+def _coerce_cited_text(text: Any) -> str:
     if isinstance(text, (list, tuple)):
         parts: List[str] = []
         for item in text:
@@ -443,7 +442,13 @@ def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Opti
             elif isinstance(item, (list, tuple)):
                 parts.extend(str(sub).strip() for sub in item if isinstance(sub, str) and str(sub).strip())
         text = "\n".join(parts)
-    if not isinstance(text, str) or not text:
+    return text if isinstance(text, str) else ""
+
+
+def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Optional[float]:
+    """Extract a cited BTC taker buy/sell ratio from an advisor summary string (or sequence of strings), preferring overall/15m over 1h/4h over 1m/3m/5m sub-horizons unless a specific `horizon` is requested."""
+    text = _coerce_cited_text(text)
+    if not text:
         return None
     hz_norm = str(horizon).strip().lower() if horizon else ""
     target_hz_re = (
@@ -530,15 +535,8 @@ def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Opti
 
 def parse_cited_cvd_usd(text: Any, horizon: str = "1h") -> Optional[float]:
     """Extract a cited BTC CVD dollar figure (e.g. `-$2.48M`, `+$5.69M`) for the specified horizon (`1h`, `15m`, `5m`, `4h`)."""
-    if isinstance(text, (list, tuple)):
-        parts: List[str] = []
-        for item in text:
-            if isinstance(item, str) and item.strip():
-                parts.append(item.strip())
-            elif isinstance(item, (list, tuple)):
-                parts.extend(str(sub).strip() for sub in item if isinstance(sub, str) and str(sub).strip())
-        text = "\n".join(parts)
-    if not isinstance(text, str) or not text:
+    text = _coerce_cited_text(text)
+    if not text:
         return None
     hz_norm = str(horizon or "1h").lower()
     hz_pat = {

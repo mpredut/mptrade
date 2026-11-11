@@ -154,12 +154,13 @@ def _extract_macro_benchmarks_line(mb_raw: Any, *, include_crypto: bool = True) 
 
 def _fmt_liq_usd(val: Any) -> str:
     vf = safe_float(val, 0.0)
-    if vf >= 1_000_000_000.0:
-        return f"${vf / 1_000_000_000.0:.2f}B"
-    if vf >= 1_000_000.0:
-        return f"${vf / 1_000_000.0:.2f}M"
-    if vf >= 1_000.0:
-        return f"${vf / 1_000.0:.1f}K"
+    for threshold, suffix, decimals in (
+        (1_000_000_000.0, "B", 2),
+        (1_000_000.0, "M", 2),
+        (1_000.0, "K", 1),
+    ):
+        if vf >= threshold:
+            return f"${vf / threshold:.{decimals}f}{suffix}"
     return f"${vf:.0f}"
 
 

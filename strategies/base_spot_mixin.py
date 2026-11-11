@@ -158,11 +158,16 @@ def _parse_tranches(spec: str) -> list:
 
 
 
-def load_common_core_strat_env(env: dict | None, *, include_entry_dca: bool = True) -> dict[str, Any]:
-    """Load shared core strategy settings across spot, T212, and Hyperliquid engines."""
+def _require_strategy_mode(env: dict | None) -> str:
     mode = required_env("STRATEGY_MODE", env).strip().lower()
     if mode not in {"avg_tp", "dca_only"}:
         raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
+    return mode
+
+
+def load_common_core_strat_env(env: dict | None, *, include_entry_dca: bool = True) -> dict[str, Any]:
+    """Load shared core strategy settings across spot, T212, and Hyperliquid engines."""
+    mode = _require_strategy_mode(env)
     f = required_float_env
     cfg: dict[str, Any] = {
         "currency": required_env("STRAT_CURRENCY", env).strip().upper(),
@@ -187,9 +192,7 @@ def load_common_core_strat_env(env: dict | None, *, include_entry_dca: bool = Tr
 
 def parse_tp_ladder_env(env: dict | None, generate_ladder_fn: Callable) -> list[tuple[float, float]]:
     """Parse ``STRAT_TP_LADDER`` or ``STRAT_TP_LADDER_MIN/MAX/STEPS`` via shared botcore env API."""
-    mode = required_env("STRATEGY_MODE", env).strip().lower()
-    if mode not in {"avg_tp", "dca_only"}:
-        raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
+    _require_strategy_mode(env)
     raw_ladder = optional_env("STRAT_TP_LADDER", env=env)
     ladder_curve = optional_env("STRAT_TP_LADDER_CURVE", "linear", env=env).lower()
     if raw_ladder:

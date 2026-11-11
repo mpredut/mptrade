@@ -110,10 +110,13 @@ class MarketDataProvider(ABC):
         """Venue-specific historical price series hook invoked on SSOT cache miss."""
         return None
 
+    def _validate_nonempty_symbol(self, symbol: str) -> bool:
+        self.validate_symbol(symbol)
+        return bool(symbol and not isinstance(symbol, bool) and str(symbol).strip())
+
     def get_current_price(self, symbol: str) -> Optional[float]:
         """Return fresh current price for ``symbol`` (SSOT cache first when enabled, then venue transport)."""
-        self.validate_symbol(symbol)
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        if not self._validate_nonempty_symbol(symbol):
             return None
         cached = self._cached_current_price(symbol)
         if cached is not None:
@@ -122,8 +125,7 @@ class MarketDataProvider(ABC):
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Return ascending historical prices over ``lookback_h`` hours (SSOT 24h cache first, then venue transport)."""
-        self.validate_symbol(symbol)
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        if not self._validate_nonempty_symbol(symbol):
             return None
         lookback_f = safe_nonneg_float(lookback_h, default=None)
         if lookback_f is None:

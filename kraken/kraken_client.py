@@ -386,12 +386,11 @@ class KrakenClient:
             raise ValueError(f"invalid Kraken txid: {txid!r}")
         return cleaned
 
-    def cancel_order(self, txid: str) -> dict:
-        return self._private("CancelOrder", {"txid": self._clean_txid(txid)})
+    def _private_txid_call(self, method: str, txid: str) -> dict:
+        return self._private(method, {"txid": self._clean_txid(txid)})
 
-    def query_orders(self, txids: str) -> dict:
-        """Return order status by txid, including closed orders without T212-style 404s."""
-        return self._private("QueryOrders", {"txid": self._clean_txid(txids)})
+    cancel_order = partialmethod(_private_txid_call, "CancelOrder")
+    query_orders = partialmethod(_private_txid_call, "QueryOrders")
 
     def _private_dict_field(self, method: str, field: str) -> dict:
         raw = self._private(method).get(field)

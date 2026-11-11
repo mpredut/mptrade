@@ -958,15 +958,21 @@ def _finalize_terminal_campaign_state(
     return state
 
 
-def _record_terminal_buy(symbol, state, status):
-    """Atomically apply one terminal BUY result and acknowledge generic pending."""
+def _extract_terminal_pending_tier(symbol, state, kind_label: str):
     pending = dict(state.get("pending") or {})
     threshold = _finite_float(pending.get("threshold"), positive=True)
     if threshold is None:
-        print(f"[{symbol}] Corrupt BUY terminal pending; preserve fail-closed.")
-        return state
+        print(f"[{symbol}] Corrupt {kind_label}; preserve fail-closed.")
+        return None
+    return pending, threshold, _tier_key(threshold)
 
-    key = _tier_key(threshold)
+
+def _record_terminal_buy(symbol, state, status):
+    """Atomically apply one terminal BUY result and acknowledge generic pending."""
+    extracted = _extract_terminal_pending_tier(symbol, state, "BUY terminal pending")
+    if extracted is None:
+        return state
+    pending, threshold, key = extracted
     raw_spent = state.get("spent_quote_by_tier")
     spent_by_tier = dict(raw_spent) if isinstance(raw_spent, dict) else {}
     prior_spent = safe_nonneg_float(spent_by_tier.get(key), default=0.0)
@@ -999,13 +1005,10 @@ def _record_terminal_buy(symbol, state, status):
 
 def _record_terminal_sell(symbol, state, status):
     """Apply one terminal venue status without inferring acceptance as a fill."""
-    pending = dict(state.get("pending") or {})
-    threshold = _finite_float(pending.get("threshold"), positive=True)
-    if threshold is None:
-        print(f"[{symbol}] Corrupt SELL pending tier; preserve fail-closed.")
+    extracted = _extract_terminal_pending_tier(symbol, state, "SELL pending tier")
+    if extracted is None:
         return state
-
-    key = _tier_key(threshold)
+    pending, threshold, key = extracted
     raw_filled = state.get("filled_qty_by_tier")
     filled_by_tier = dict(raw_filled) if isinstance(raw_filled, dict) else {}
     prior_filled = safe_nonneg_float(filled_by_tier.get(key), default=0.0)

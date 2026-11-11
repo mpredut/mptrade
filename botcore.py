@@ -153,41 +153,27 @@ def strict_ascii_int(
     return parsed
 
 
-def require_finite_float(
-    val: object, name: str = "value", *, min_value: float | None = None, error_msg: str | None = None
-) -> float:
-    """Coerce ``val`` to a finite float (optionally ``>= min_value``) or raise ``ValueError``."""
-    f = safe_float(val, default=None)
-    if f is None or (min_value is not None and f < min_value):
-        msg = f"{name} must be finite and >= {min_value}" if min_value is not None else f"{name} must be finite"
-        raise ValueError(error_msg or msg)
-    return f
+def _bind_required_float(fn_name: str, coercer: object, default_desc: str):
+    def _fn(
+        val: object, name: str = "value", *, min_value: float | None = None, error_msg: str | None = None
+    ) -> float:
+        f = coercer(val, default=None)  # type: ignore[operator]
+        if f is None or (min_value is not None and f < min_value):
+            msg = (
+                f"{name} must be finite and >= {min_value}"
+                if min_value is not None
+                else f"{name} must be {default_desc}"
+            )
+            raise ValueError(error_msg or msg)
+        return f
+
+    _fn.__name__ = _fn.__qualname__ = fn_name
+    return _fn
 
 
-def require_pos_float(
-    val: object, name: str = "value", *, min_value: float | None = None, error_msg: str | None = None
-) -> float:
-    """Coerce ``val`` to a finite positive float (optionally ``>= min_value``) or raise ``ValueError``."""
-    f = safe_pos_float(val, default=None)
-    if f is None or (min_value is not None and f < min_value):
-        msg = f"{name} must be finite and >= {min_value}" if min_value is not None else f"{name} must be finite and positive"
-        raise ValueError(error_msg or msg)
-    return f
-
-
-def require_nonneg_float(
-    val: object, name: str = "value", *, min_value: float | None = None, error_msg: str | None = None
-) -> float:
-    """Coerce ``val`` to a finite non-negative float (optionally ``>= min_value``) or raise ``ValueError``."""
-    f = safe_nonneg_float(val, default=None)
-    if f is None or (min_value is not None and f < min_value):
-        msg = (
-            f"{name} must be finite and >= {min_value}"
-            if min_value is not None
-            else f"{name} must be finite and non-negative"
-        )
-        raise ValueError(error_msg or msg)
-    return f
+require_finite_float = _bind_required_float("require_finite_float", safe_float, "finite")
+require_pos_float = _bind_required_float("require_pos_float", safe_pos_float, "finite and positive")
+require_nonneg_float = _bind_required_float("require_nonneg_float", safe_nonneg_float, "finite and non-negative")
 
 
 def require_int(
@@ -690,13 +676,19 @@ def _clean_env_str(val: object) -> str:
     return _strip_env_value_quotes_and_comment(str(val))
 
 
-def float_env(key: str, env: dict | float | None = None, default: float | None = None) -> float | None:
-    """Read a float from os.environ or an injected dictionary, ignoring inline comments."""
-    if env is not None and not hasattr(env, "get"):
-        default, env = env, None
-    src = os.environ if env is None else env
-    raw = _clean_env_str(src.get(key))
-    return safe_float(raw, default=default) if raw else default
+def _bind_coerced_env(name: str, coercer: object):
+    def _fn(key: str, env: object = None, default: object = None):
+        if env is not None and not hasattr(env, "get"):
+            default, env = env, None
+        src = os.environ if env is None else env
+        raw = _clean_env_str(src.get(key))  # type: ignore[union-attr]
+        return coercer(raw, default=default) if raw else default  # type: ignore[operator]
+
+    _fn.__name__ = _fn.__qualname__ = name
+    return _fn
+
+
+float_env = _bind_coerced_env("float_env", safe_float)
 
 
 def pos_float_env(key: str, default: float, env: dict | None = None) -> float:
@@ -704,13 +696,7 @@ def pos_float_env(key: str, default: float, env: dict | None = None) -> float:
     return safe_pos_float(float_env(key, env=env), default)
 
 
-def int_env(key: str, env: dict | int | None = None, default: int | None = None) -> int | None:
-    """Read an integer from os.environ or an injected dictionary, ignoring inline comments."""
-    if env is not None and not hasattr(env, "get"):
-        default, env = env, None
-    src = os.environ if env is None else env
-    raw = _clean_env_str(src.get(key))
-    return exact_int(raw, default=default) if raw else default
+int_env = _bind_coerced_env("int_env", exact_int)
 
 
 def required_env(key: str, env: dict | None = None) -> str:

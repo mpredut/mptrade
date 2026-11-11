@@ -545,6 +545,13 @@ _EXPLICIT_CRYPTO_QUOTE_SUFFIXES: tuple[str, ...] = (
 )
 
 
+def _split_first_symbol_separator(raw: str) -> str:
+    for sep in ("/", "-", "_"):
+        if sep in raw:
+            return raw.split(sep, 1)[0].strip()
+    return raw
+
+
 def is_readonly_xstock_symbol(symbol: object) -> bool:
     """Return True if ``symbol`` is a read-only Kraken xStock token or pair."""
     if isinstance(symbol, bool) or not isinstance(symbol, str):
@@ -555,11 +562,7 @@ def is_readonly_xstock_symbol(symbol: object) -> bool:
     sym_u = raw.upper()
     if sym_u.endswith(READONLY_XSTOCK_SUFFIXES):
         return True
-    raw_base = raw
-    for sep in ("/", "-", "_"):
-        if sep in raw:
-            raw_base = raw.split(sep, 1)[0].strip()
-            break
+    raw_base = _split_first_symbol_separator(raw)
     if raw_base.upper().endswith(("X.T", ".T")) or _has_xstock_lowercase_x(raw_base):
         return True
     for quote in CACHE_QUOTE_SUFFIXES:
@@ -676,11 +679,7 @@ def normalize_cache_base_asset(symbol: object) -> str:
         return ""
     if clean_symbol_key(raw) == "USDCUSDT":
         return "USDCUSDT"
-    raw_base = raw
-    for sep in ("/", "-", "_"):
-        if sep in raw:
-            raw_base = raw.split(sep, 1)[0].strip()
-            break
+    raw_base = _split_first_symbol_separator(raw)
     for quote in CACHE_QUOTE_SUFFIXES:
         if _is_false_tusd_or_busd_match(raw_base.upper(), quote):
             continue

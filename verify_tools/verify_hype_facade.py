@@ -44,18 +44,16 @@ def check(name, cond, detail=""):
 def main():
     failures.clear()
     print("==== Symbol ROUTING (Binance remains default) ====")
-    check("HYPEUSDC -> Hyperliquid", mkt.provider_name_for(HYPE) == "Hyperliquid",
-          mkt.provider_name_for(HYPE))
-    check("BTCUSDC  -> Binance", mkt.provider_name_for("BTCUSDC") == "Binance",
-          mkt.provider_name_for("BTCUSDC"))
-    check("TAOUSDC  -> Binance", mkt.provider_name_for("TAOUSDC") == "Binance",
-          mkt.provider_name_for("TAOUSDC"))
-    check("asset HYPE -> Hyperliquid", mkt.provider_name_for("HYPE") == "Hyperliquid",
-          mkt.provider_name_for("HYPE"))
-    check("asset BTC  -> Binance (default)", mkt.provider_name_for("BTC") == "Binance",
-          mkt.provider_name_for("BTC"))
-    check("asset TAO  -> Binance (default)", mkt.provider_name_for("TAO") == "Binance",
-          mkt.provider_name_for("TAO"))
+    for label, sym_arg, expected_prov in (
+        ("HYPEUSDC -> Hyperliquid", HYPE, "Hyperliquid"),
+        ("BTCUSDC  -> Binance", "BTCUSDC", "Binance"),
+        ("TAOUSDC  -> Binance", "TAOUSDC", "Binance"),
+        ("asset HYPE -> Hyperliquid", "HYPE", "Hyperliquid"),
+        ("asset BTC  -> Binance (default)", "BTC", "Binance"),
+        ("asset TAO  -> Binance (default)", "TAO", "Binance"),
+    ):
+        actual_prov = mkt.provider_name_for(sym_arg)
+        check(label, actual_prov == expected_prov, actual_prov)
 
     print("\n==== HYPE MARKET DATA (public, no key) ====")
     price = mkt.get_current_price(HYPE)

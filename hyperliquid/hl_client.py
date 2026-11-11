@@ -15,6 +15,7 @@ Run with the Python interpreter from the SDK virtual environment:
 
 from __future__ import annotations
 
+from functools import partialmethod
 import os
 import sys
 import time
@@ -292,8 +293,7 @@ class HLClient:
             log(f"  ! {label}({key}) failed: {e}")
             return None
 
-    def mid(self, coin: str) -> float | None:
-        return self._mid_for_key(coin, "mid")
+    mid = partialmethod(_mid_for_key, label="mid")
 
     # ----- account (read-only, address only) ----------------------------------
     def _user_state(self) -> dict:
@@ -401,9 +401,7 @@ class HLClient:
                     return mapped_s
         return None
 
-    def spot_mid(self, pair: str) -> float | None:
-        """Return the spot price for an @index pair, e.g. @107 = HYPE/USDC."""
-        return self._mid_for_key(pair, "spot_mid")
+    spot_mid = partialmethod(_mid_for_key, label="spot_mid")
 
     def funding_rate(self, coin: str) -> float | None:
         """Return the current hourly perpetual funding rate; positive means longs pay shorts."""

@@ -1,3 +1,4 @@
+from functools import partialmethod
 import math
 import sys
 import threading
@@ -1208,11 +1209,8 @@ class TradingBot:
                         pending.clear()
                     cond.notify_all()
 
-    def repetitive_buy(self, current_price, filled_sell_price):
-        return self._repetitive_side_loop("BUY", current_price, filled_sell_price)
-
-    def repetitive_sell(self, current_price, filled_buy_price):
-        return self._repetitive_side_loop("SELL", current_price, filled_buy_price)
+    repetitive_buy = partialmethod(_repetitive_side_loop, "BUY")
+    repetitive_sell = partialmethod(_repetitive_side_loop, "SELL")
 
     def _run_pair(self, executor, current_price):
         """Run both sides concurrently on the bot's persistent workers."""

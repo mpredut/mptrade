@@ -172,13 +172,20 @@ def read_annotation_title(cli_base: str, cid: str) -> str:
     return m.group(1).replace('\\"', '"').replace("\\\\", "\\").strip() if m else ""
 
 
-def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
-    """Set ``title`` in annotations/<cid>.pbtxt, preserving the other annotation lines."""
+def _clean_cid_and_title(cid: Any, title: Any) -> Optional[tuple[str, str]]:
     clean_cids = _clean_cid_set([cid])
     if not clean_cids:
-        return
-    clean_cid = next(iter(clean_cids))
+        return None
     title_str = ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
+    return next(iter(clean_cids)), title_str
+
+
+def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
+    """Set ``title`` in annotations/<cid>.pbtxt, preserving the other annotation lines."""
+    cleaned = _clean_cid_and_title(cid, title)
+    if cleaned is None:
+        return
+    clean_cid, title_str = cleaned
     annot_dir = os.path.join(cli_base, "annotations")
     os.makedirs(annot_dir, exist_ok=True)
     path = os.path.join(annot_dir, f"{clean_cid}.pbtxt")
@@ -226,11 +233,10 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     """Insert/replace a summary row with the CLI source cleared and ``title`` applied (column + proto)."""
     if not isinstance(row, dict):
         return
-    clean_cids = _clean_cid_set([row.get("conversation_id")])
-    if not clean_cids:
+    cleaned = _clean_cid_and_title(row.get("conversation_id"), title)
+    if cleaned is None:
         return
-    clean_cid = next(iter(clean_cids))
-    title_str = ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
+    clean_cid, title_str = cleaned
     row = dict(row, conversation_id=clean_cid, title=title_str, source="", status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
     if row.get("raw_summary"):
         row["raw_summary"] = summary_ui_visible(row["raw_summary"], title_str)
