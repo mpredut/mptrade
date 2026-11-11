@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 import pytest
 
-from botcore import load_local_module
 from offline.backtests.datasets import dataset_sha256, save_dataset
 from offline.backtests.evaluation import (
     ReplayContext,
@@ -35,7 +34,7 @@ from strategies.spot_engine import StratParams as SpotStratParams
 ROOT = Path(__file__).resolve().parents[1]
 _HL_MD = load_venue_module("hyperliquid", "market_data.py", "test_w10_hl_md")
 _HL_REPLAY = load_venue_replay_module("hyperliquid", "test_w10_hl_replay")
-_HL_BT = load_local_module(str(ROOT / "hyperliquid"), "backtest", module_key="test_w10_hl_bt")
+_HL_BT = load_venue_module("hyperliquid", "backtest.py", "test_w10_hl_bt")
 _T212_REPLAY = load_venue_replay_module("t212", "test_w10_t212_replay")
 
 WAVE10_PY_FILES = (

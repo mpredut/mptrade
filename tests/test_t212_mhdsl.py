@@ -1,10 +1,8 @@
 """Unified tests for Trading 212 environment loading, MHDSL, MDHTP, and Hybrid Re-entry."""
 
 import atexit
-import importlib
 import json
 import os
-import sys
 import tempfile
 import threading
 import time
@@ -13,20 +11,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from botcore import float_env, parse_dotenv
+from tests.conftest import load_venue_modules, make_t212_test_env
+
 ROOT = Path(__file__).resolve().parents[1]
 T212_DIR = ROOT / "212trading"
-for _p in (str(T212_DIR), str(ROOT)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
-from botcore import float_env, load_local_module, parse_dotenv  # noqa: E402
-from tests.conftest import make_t212_test_env  # noqa: E402
-
-ipo_common = importlib.import_module("ipo_common")
-strategy = load_local_module(str(T212_DIR), "strategy", module_key="t212_strategy_mhdsl_test", reload=True)
-market_data = load_local_module(str(T212_DIR), "market_data", module_key="t212_market_data_mhdsl_test")
-t212_bot = load_local_module(str(T212_DIR), "t212_bot", module_key="t212_bot_mhdsl_test")
-listing_watcher = load_local_module(str(T212_DIR), "listing_watcher", module_key="t212_listing_watcher_mhdsl_test")
+ipo_common, strategy, market_data, t212_bot, listing_watcher = load_venue_modules(
+    "212trading", "ipo_common", "strategy", "market_data", "t212_bot", "listing_watcher"
+)
 
 
 def _params(**overrides):
@@ -43,7 +36,7 @@ def _params(**overrides):
     return strategy.StratParams.from_env(make_t212_test_env(**base))
 
 
-# ─── Environment Precedence & Loader ────────────────────────────────────────
+# --- Environment Precedence & Loader ----------------------------------------
 
 def test_t212_environment_uses_one_documented_layer_order(monkeypatch, tmp_path):
     calls = []
@@ -91,7 +84,7 @@ def test_t212_environment_precedence_is_effective(monkeypatch, tmp_path):
         assert os.environ["RUNTIME_ONLY"] == "yes"
 
 
-# ─── Base Helper for T212 Strategy Tests ────────────────────────────────────
+# --- Base Helper for T212 Strategy Tests ------------------------------------
 
 class _T212BaseTest(unittest.TestCase):
     def setUp(self):
@@ -120,7 +113,7 @@ class _T212BaseTest(unittest.TestCase):
         return strat
 
 
-# ─── Hybrid Re-Entry Tests ──────────────────────────────────────────────────
+# --- Hybrid Re-Entry Tests --------------------------------------------------
 
 class T212HybridReentryTest(_T212BaseTest):
     def test_state_b_trend_confirmed_bypasses_sale_barrier_and_waits_pullback(self):
@@ -202,7 +195,7 @@ class T212HybridReentryTest(_T212BaseTest):
         self.assertEqual(strat.s["orders"][0]["kind"], "ENTRY")
 
 
-# ─── MDHTP Tests ────────────────────────────────────────────────────────────
+# --- MDHTP Tests ------------------------------------------------------------
 
 class T212MDHTPTest(_T212BaseTest):
     def _mdhtp_strat(self, *, clock=1000.0, slope=0.25, **overrides):
@@ -374,7 +367,7 @@ class T212MDHTPTest(_T212BaseTest):
             self.assertIsNone(strat.s.get("tp_pending_exit"))
 
 
-# ─── MHDSL Tests ────────────────────────────────────────────────────────────
+# --- MHDSL Tests ------------------------------------------------------------
 
 class T212MHDSLTest(_T212BaseTest):
     def test_mhdsl_disabled_preserves_legacy_stop(self):
@@ -627,7 +620,7 @@ class T212MHDSLTest(_T212BaseTest):
         self.assertEqual(captured[0][2], "DCA")
 
 
-# ─── Per-Asset Config Isolation & Discovery (from test_t212_bot.py) ─────────
+# --- Per-Asset Config Isolation & Discovery (from test_t212_bot.py) ---------
 
 _COMMON_ASSET_ENV = """
 STRATEGY_MODE=avg_tp
@@ -768,7 +761,7 @@ class TestDiscover(unittest.TestCase):
             self.assertEqual(names, ["nvda", "rgnt", "spcx"])
 
 
-# ─── Launch Detection & ISIN Verification (from test_launch_detect.py) ──────
+# --- Launch Detection & ISIN Verification (from test_launch_detect.py) ------
 
 def _chart_payload(price=None, meta_vol=0, meta_age_s=None, state="REGULAR", series=None):
     meta = {"marketState": state, "currency": "USD"}
@@ -882,7 +875,7 @@ class TestVerifyInstrumentIsin(unittest.TestCase):
         self.assertEqual(len(notified), 1)
 
 
-# ─── Dynamic TP Ladder Tests (from test_dynamic_ladder.py) ──────────────────
+# --- Dynamic TP Ladder Tests (from test_dynamic_ladder.py) ------------------
 
 class TestDynamicTPLadder(unittest.TestCase):
     def test_generate_tp_ladder_linear_10_steps(self):
@@ -960,7 +953,7 @@ class TestDynamicTPLadder(unittest.TestCase):
         self.assertEqual(p4.tp_ladder[2][0], 30.0)
 
 
-# ─── Cycle Completion & Dust Handling (from test_cycle_completion.py) ────────
+# --- Cycle Completion & Dust Handling (from test_cycle_completion.py) --------
 
 _CYCLE_TICK = "CYCLE_TEST_US_EQ"
 _TRAIL_TICK = "TRAILTEST_US_EQ"
@@ -1256,7 +1249,7 @@ class TestCycleCompletionAndDust(_T212StateFileTestBase):
         self.assertEqual(self.strat.s["tp_sold_levels"], [11.0])
 
 
-# ─── Trailing Stop & Sellable Qty (from test_t212_trailing_stop.py) ──────────
+# --- Trailing Stop & Sellable Qty (from test_t212_trailing_stop.py) ----------
 
 class TestTrailingStopAndSellableQty(_T212StateFileTestBase):
     TICKER = _TRAIL_TICK
@@ -1433,7 +1426,7 @@ class TestTrailingStopAndSellableQty(_T212StateFileTestBase):
         self.assertTrue(self.strat.s.get("sl_pending"))
 
 
-# ─── Stop-Loss Rebuy End-to-End Execution Path (from test_sl_rebuy.py) ───────
+# --- Stop-Loss Rebuy End-to-End Execution Path (from test_sl_rebuy.py) -------
 
 class TestSlRebuyEndToEnd(_T212StateFileTestBase):
     TICKER = _SLREBUY_TICK

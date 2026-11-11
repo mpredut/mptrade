@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from botcore import load_local_module
 from offline.backtests import tradeall as bt_tradeall
 from offline.backtests.evaluation import ReplayContext, load_venue_replay_module
 from offline.research import (
@@ -33,10 +32,11 @@ from state_io import atomic_write_jsonl, atomic_write_text, read_text_file
 from strategies import spot_replay
 from strategies.replay_execution import ExecutionModel, split_order_fill
 from strategies.replay_metrics import calculate_performance_metrics
+from tests.conftest import load_venue_modules
 
 ROOT = Path(__file__).resolve().parents[1]
 _HL_REPLAY = load_venue_replay_module("hyperliquid", "test_w9_hl_replay")
-_KRAKEN_TRAIL = load_local_module(str(ROOT / "kraken"), "backtest_trail", module_key="test_w9_kraken_trail")
+_KRAKEN_TRAIL = load_venue_modules("kraken", "backtest_trail")
 
 WAVE9_PY_FILES = (
     "hyperliquid/replay.py",

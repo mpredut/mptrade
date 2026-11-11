@@ -1,8 +1,8 @@
 """
-Tests for shadow_signals.py — in particular the behaviour on a data GAP
+Tests for shadow_signals.py -- in particular the behaviour on a data GAP
 in KalmanTrend.update(), fixed 21 Jul: a long gap (network down, process
 stopped) no longer propagates the old velocity (capped at DT_MAX) but resets
-the filter (as at warm-up) — the trend comes out FLAT after a gap, not "confident" in a
+the filter (as at warm-up) -- the trend comes out FLAT after a gap, not "confident" in a
 stale direction.
 """
 import contextlib
@@ -20,10 +20,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from botcore import (
-    load_local_module,
     prepare_shadow_runtime,
     require_shadow_interval,
     sanitize_pipe_field,
@@ -43,7 +40,10 @@ import pricewindow as pw
 from pricewindow import PriceWindow
 import shadow_signals as ss
 from shadow_signals import KalmanStateTracker
+from tests.conftest import load_venue_modules
 import tradeall as ta
+
+shadow = load_venue_modules("kraken", "shadow_live")
 
 
 class TestKalmanTrendContinuous(unittest.TestCase):
@@ -125,7 +125,7 @@ class TestKalmanTrendGapReset(unittest.TestCase):
 
 
 class TestVolAndThresholds(unittest.TestCase):
-    """Minimal sanity check on the rest of the module — unchanged by the gap fix."""
+    """Minimal sanity check on the rest of the module -- unchanged by the gap fix."""
 
     def test_warmup_outputs_are_unavailable(self):
         self.assertIsNone(ss.calculate_volatility_1h([100.0] * 5, sample_rate_sec=1.0))
@@ -330,10 +330,6 @@ class TestShadowRuntime(unittest.TestCase):
             },
         )
         self.assertIn("LIVE_SELL_REVERSAL", sa_bull.get("live_flow_divergence", ""))
-
-
-_KRAKEN_DIR = Path(__file__).resolve().parents[1] / "kraken"
-shadow = load_local_module(_KRAKEN_DIR, "shadow_live", module_key="kraken_shadow_live_under_test")
 
 
 class ShadowLiveTest(unittest.TestCase):

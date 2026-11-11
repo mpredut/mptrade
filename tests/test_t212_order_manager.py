@@ -3,21 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
+from types import SimpleNamespace
+import unittest
 
 import pytest
 
+import account_cache_health as bch
+from binance_api import bapi_ws_bridge as bapi_ws_health
+from cacheaccount import CacheOrderManager
+from tests.conftest import load_venue_modules
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-T212_DIR = os.path.join(ROOT, "212trading")
-sys.path.insert(0, T212_DIR)
-sys.path.insert(0, ROOT)
-
-from botcore import load_local_module  # noqa: E402
-import unittest
-
-order_manager = load_local_module(T212_DIR, "order_manager", module_key="t212_order_manager_under_test", reload=True)
+order_manager = load_venue_modules("212trading", "order_manager")
 
 
 TICKER = "NVDA_US_EQ"
@@ -286,7 +282,6 @@ class TestT212OrderManager(unittest.TestCase):
 
 def test_bapi_ws_health_normalizes_whitespace_padded_manager_names_and_class_iter131_s3():
     """[ITER131 #3] bapi_ws_health normalizes whitespace-padded manager names and class objects."""
-    from binance_api import bapi_ws_bridge as bapi_ws_health
     # 3. bapi_ws_health normalizes whitespace-padded manager names and class objects
     bapi_ws_health.mark_ws_available(True)
     bapi_ws_health.mark_ws_event_received()
@@ -296,20 +291,18 @@ def test_bapi_ws_health_normalizes_whitespace_padded_manager_names_and_class_ite
     bapi_ws_health.clear_ws_rest_resync_for_manager(" CacheOrderManager ")
     assert bapi_ws_health.should_poll_for_manager(" CacheOrderManager ", ws_only_mode=True) is False
 
+
 def test_account_cache_health_require_int_accepts_integer_floats_and_normalize_class_name_handles_iter133_s5():
     """[ITER133 #5] account_cache_health.require_int accepts integer floats and normalize_class_name handles class objects."""
-    import account_cache_health as bch
     # 5. account_cache_health.require_int accepts integer floats and normalize_class_name handles class objects
     assert bch.require_int(100.0, "writer_pid", min_value=1) == 100
     assert bch.require_int(0.0, "generation", min_value=0) == 0
-    from cacheaccount import CacheOrderManager
     assert bch.normalize_class_name(CacheOrderManager) == "CacheOrderManager"
+
 
 def test_212trading_order_manager_waiting_with_sentinel_order_id_returns_false_iter153_s1(tmp_path, monkeypatch):
     """[ITER153 #1] 212trading/order_manager: waiting with sentinel order_id='0' returns False, not True."""
-    from types import SimpleNamespace
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    om = load_local_module(os.path.join(root, "212trading"), "order_manager.py", module_key="t212_order_manager_it153", reload=True)
+    om = load_venue_modules("212trading", "order_manager")
     # 1. 212trading/order_manager: waiting with sentinel order_id="0" returns False, not True
     monkeypatch.setattr(om, "_marker_path", lambda ticker, test=False: str(tmp_path / f"marker_{ticker}.json"))
     monkeypatch.setattr(om, "get_price_usd", lambda sym: 100.0)

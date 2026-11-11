@@ -12,7 +12,6 @@ from unittest.mock import patch
 
 import pytest
 
-from botcore import load_local_module
 from offline.backtests import comparison, promotion
 from offline.backtests.datasets import save_dataset
 from offline.backtests.hype_candidates import Candidate
@@ -40,10 +39,11 @@ from strategies.replay_metrics import (
     parse_bt_cli_float,
     parse_bt_cli_int,
 )
+from tests.conftest import load_venue_modules
 
 ROOT = Path(__file__).resolve().parents[1]
-_T212_BT = load_local_module(str(ROOT / "212trading"), "backtest", module_key="test_w11_t212_bt")
-_KR_BT = load_local_module(str(ROOT / "kraken"), "backtest", module_key="test_w11_kr_bt")
+_T212_BT = load_venue_modules("212trading", "backtest")
+_KR_BT = load_venue_modules("kraken", "backtest")
 
 WAVE11_PY_FILES = (
     "212trading/backtest.py",

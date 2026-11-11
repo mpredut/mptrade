@@ -13,7 +13,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from botcore import load_local_module
 from offline.backtests.evaluation import load_venue_replay_module
 from offline.research import comprehensive_strategy_sweep as css, slice_dense_archive as sda
 from offline.research.hybrid_reentry import harness as hr_harness
@@ -36,11 +35,11 @@ from strategies.state_store import (
     safe_state_token,
     update_post_sell_anchors,
 )
-from tests.conftest import make_fake_chronos_pipeline
+from tests.conftest import load_venue_modules, make_fake_chronos_pipeline
 
 ROOT = Path(__file__).resolve().parents[1]
-_KRAKEN_BT = load_local_module(str(ROOT / "kraken"), "backtest", module_key="test_w8_kraken_bt")
-_T212_BT = load_local_module(str(ROOT / "212trading"), "backtest", module_key="test_w8_t212_bt")
+_KRAKEN_BT, _KRAKEN_COMMON = load_venue_modules("kraken", "backtest", "kraken_common")
+_T212_BT = load_venue_modules("212trading", "backtest")
 _T212_REPLAY = load_venue_replay_module("t212", "test_w8_t212_replay")
 
 WAVE8_1_PY_FILES = (
@@ -109,8 +108,7 @@ def test_replay_cache_bounds_and_immutable_regime_cache() -> None:
 
     bars = [(100.0 + i * 0.2, 101.0 + i * 0.2, 99.0 + i * 0.2, 100.0 + i * 0.2) for i in range(45)]
     base = spot_engine.StratParams.from_env(
-        load_local_module(str(ROOT / "kraken"), "kraken_common", module_key="kraken_common")
-        .load_isolated_kraken_cfg(ROOT / "kraken")
+        _KRAKEN_COMMON.load_isolated_kraken_cfg(ROOT / "kraken")
     )
     params = spot_replay.align_spot_interval_params(dataclasses.replace(base, tp_regime_gate=True), 240)
     res1 = spot_replay.run_replay(bars[40:], params, fee_pct=0.26, bar_minutes=240, warmup_ohlc=bars[:40])

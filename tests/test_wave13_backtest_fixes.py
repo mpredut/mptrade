@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from botcore import load_local_module
 from offline.backtests import tradeall as bt_tradeall
 from offline.backtests.datasets import dataset_metadata, save_dataset
 from offline.research import comprehensive_strategy_sweep as css
@@ -26,8 +25,11 @@ from offline.runners import (
     spot_profile_review as spr,
 )
 from state_io import atomic_write_json, atomic_write_text, read_json_file, read_text_file
+from tests.conftest import load_venue_modules
 
 ROOT = Path(__file__).resolve().parents[1]
+_HL_BT = load_venue_modules("hyperliquid", "backtest")
+_KR_TRAIL = load_venue_modules("kraken", "backtest_trail")
 
 WAVE13_PY_FILES = (
     "offline/runners/spot_profile_review.py",
@@ -320,9 +322,8 @@ def test_sweeps_hybrid_reentry_and_cli_backtest_validators(
     assert ts_list[1] > ts_list[0]
 
     # 4. hyperliquid/backtest.py validates parameters BEFORE fetch_ohlc_candles
-    hl_bt = load_local_module(str(ROOT / "hyperliquid"), "backtest", module_key="test_w13_hl_bt")
     fetch_called = []
-    monkeypatch.setattr(hl_bt, "fetch_ohlc_candles", lambda *a, **kw: fetch_called.append(1) or [])
+    monkeypatch.setattr(_HL_BT, "fetch_ohlc_candles", lambda *a, **kw: fetch_called.append(1) or [])
     for bad_argv in (
         ["--budget", "0"],
         ["--coin", "../BTC"],
@@ -330,13 +331,12 @@ def test_sweeps_hybrid_reentry_and_cli_backtest_validators(
         ["--fee", "100"],
     ):
         with pytest.raises(SystemExit):
-            hl_bt.main(bad_argv)
+            _HL_BT.main(bad_argv)
     assert fetch_called == []
 
     # 5. kraken/backtest_trail.py and offline/backtests/tradeall.py CLI validators
-    kr_trail = load_local_module(str(ROOT / "kraken"), "backtest_trail", module_key="test_w13_kr_trail")
     with pytest.raises(SystemExit):
-        kr_trail.main(["--wf", "HYPEUSD", "--interval", "1.5"])
+        _KR_TRAIL.main(["--wf", "HYPEUSD", "--interval", "1.5"])
 
     for bad_ta_argv in (
         ["tradeall.py", "--symbol", "../BTCUSDC", "--start", "2026-06-01"],

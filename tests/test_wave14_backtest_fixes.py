@@ -13,7 +13,6 @@ import sys
 import numpy as np
 import pytest
 
-from botcore import load_local_module
 from offline.backtests import evaluation as bt_eval
 from offline.research import short_trend_estimator_benchmark as st_bench
 from offline.research import slice_dense_archive as sda
@@ -36,11 +35,12 @@ from offline.runners import (
 )
 from state_io import atomic_write_json, atomic_write_jsonl, atomic_write_text, read_text_file
 from strategies.replay_metrics import validate_bt_cli_token
+from tests.conftest import load_venue_modules
 
 ROOT = Path(__file__).resolve().parents[1]
 HL_REPLAY = bt_eval.load_venue_replay_module("hyperliquid", "test_wave14_hl_replay")
-T212_BT = load_local_module(str(ROOT / "212trading"), "backtest", module_key="test_wave14_t212_bt")
-KRAKEN_BT = load_local_module(str(ROOT / "kraken"), "backtest", module_key="test_wave14_kraken_bt")
+T212_BT = load_venue_modules("212trading", "backtest")
+KRAKEN_BT = load_venue_modules("kraken", "backtest")
 
 WAVE14_PY_FILES = (
     "strategies/replay_metrics.py",
