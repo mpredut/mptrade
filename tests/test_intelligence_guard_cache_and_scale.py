@@ -7,38 +7,68 @@ Tests cover:
 4. Hot-reload of order_guard.conf on mtime change in _load_margins().
 5. TTL fallback timer in priceAnalysis.py cache.
 """
+import ast
+import botcore
+import cacheManager as cm
+import external_order_guard
+import importlib
+import intelligence.macro_sentiment_ssot as _ssot_mod
 import json
-import os
-import sys
-import time
-import pytest
-from unittest.mock import MagicMock
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+import llm_order_guard
+import monitortrades as mt
+import notify_engine.alertnotifiers as alertnotifiers
+import numpy as np
 import order_guard
-from market_regime import MarketRegimeDecision, MarketRegimeContext
-from providers.quantity import decide_quantity
+import order_retry
+import order_retry_worker as worker
+import os
+import priceAnalysis as pa
+import pytest
+import qlimit_order_guard
+import subprocess
+import time
+import urllib.request
+import utils as u
+from cachepaths import cache_symbol_variants, canonical_base_asset, resolve_binance_lookup_symbol
+from cachetrend import CacheShortTrendManager
+from instrument import Instrument
+from intelligence.external.collectors.derivatives_telemetry_collector import (
+    DerivativesTelemetry,
+    DerivativesTelemetryCollector,
+)
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+from intelligence.external.collectors.whale_positioning_collector import (
+    WhalePositioningCollector,
+    WhalePositioningSnapshot,
+)
+from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+from intelligence.internal.state import survival
+from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
+from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot as _SSOTSnapshot
+from intelligence.sentiment.collectors.macro_telemetry_collector import TelemetrySensorSnapshot as _CollectorSnapshot
+from intelligence.sentiment.guards import high_stake_guard as hsg_mod
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, collect_pretrade_telemetry
+from llm_order_guard import check_llm_order_guards
+from market_regime import MarketRegimeContext, MarketRegimeDecision
+from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot as _ReconcilerSnapshot
+from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+from pathlib import Path
+from providers.hyperliquid_provider import HyperliquidProvider
+from providers.intent_execution import resolve_intent_topic_tag
+from providers.kraken_provider import KrakenProvider
+from providers.market_api import BinanceProvider, MarketApi
+from providers.quantity import QuantityDecision, decide_quantity
+from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus, ProviderError
+from qlimit_order_guard import check_qlimit2_order_guards
 from tests.conftest import DummyGeminiClient, DummySpotExecutionProvider, make_test_margins, make_test_regime_context
 from types import SimpleNamespace
-from instrument import Instrument
-from intelligence.internal.guards.guard_decision import GuardDecision
-from providers.hyperliquid_provider import HyperliquidProvider
-from providers.kraken_provider import KrakenProvider
-from providers.market_api import BinanceProvider
-from providers.strategy_executor import ProviderError
-from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
-import external_order_guard
-import llm_order_guard
-import priceAnalysis as pa
-import qlimit_order_guard
-from cachepaths import canonical_base_asset
-from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
-from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
-from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
-from pathlib import Path
-import numpy as np
+from unittest.mock import MagicMock
+
+
 
 
 _margins = lambda **overrides: make_test_margins(disable_external_pillars=True, **overrides)
@@ -653,7 +683,6 @@ class TestArchitectureFixes4Cases:
     def test_case4_monitortrades_position_stats_cache_detects_quantity_change(self):
         """Case 4: Position stats cache includes total quantity in order signature,
         preventing stale cache reuse when order quantity changes from 1.0 to 7.25."""
-        import monitortrades as mt
         mt.clear_position_stats_cache()
 
         api = SimpleNamespace(name="test_venue")
@@ -831,8 +860,6 @@ class TestSisterArchitecturalDefects:
     def test_instrument_late_scale_synchronizes_retry_queue_and_partial_fill(self, tmp_path, monkeypatch):
         """Sister Priority 1: Late intelligence scaling in Instrument.place must update
         the retry queue record so partial fill remainder is calculated against submitted qty."""
-        import order_retry
-        from providers.strategy_executor import OrderStatus
 
         queue_file = str(tmp_path / "order_retry_queue.jsonl")
         lock_file = str(tmp_path / "order_retry_queue.lock")
@@ -957,7 +984,6 @@ class TestSisterArchitecturalDefects:
     def test_sister7_price_analysis_resolves_cross_venue_symbols_via_normalized_base(self, monkeypatch):
         """Sister 7: priceAnalysis.get_weight_for_cash_permission_at_quant_time must resolve
         cross-venue quote symbols (e.g. ARBUSD) against base-asset cache records (ARBUSDC)."""
-        import cacheManager as cm
 
         # Mock CacheLongTrendManager cache with ARBUSDC having an active trend
         trend_item = {
@@ -1008,17 +1034,15 @@ class TestSisterArchitecturalDefects:
     def test_sister9_order_retry_worker_syncs_late_scaled_qty_from_outcome_context(self, tmp_path, monkeypatch):
         """Sister 9: order_retry_worker must synchronize submitted_qty from outcome_context
         into the accepted claim record."""
-        import order_retry as oq
-        import order_retry_worker as worker
 
         queue_file = str(tmp_path / "order_retry_queue.jsonl")
         lock_file = str(tmp_path / "order_retry_queue.lock")
-        monkeypatch.setattr(oq, "QUEUE_FILE", queue_file)
-        monkeypatch.setattr(oq, "LOCK_FILE", lock_file)
-        monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+        monkeypatch.setattr(order_retry, "QUEUE_FILE", queue_file)
+        monkeypatch.setattr(order_retry, "LOCK_FILE", lock_file)
+        monkeypatch.setattr(order_retry, "RETRY_ENABLED", True)
 
         # Enqueue intent for 4.0 at now=1000.0
-        oq.enqueue("BTCUSDC", "BUY", 4.0, {}, requested_price=100.0, now=1000.0)
+        order_retry.enqueue("BTCUSDC", "BUY", 4.0, {}, requested_price=100.0, now=1000.0)
 
         # Simulate mkt.place reducing quantity to 1.0 and populating outcome_context
         def fake_place(symbol, side, price, qty, **kwargs):
@@ -1030,7 +1054,6 @@ class TestSisterArchitecturalDefects:
                 ctx["state"] = "accepted"
             return {"orderId": "ORD_WORKER_999", "status": "NEW", "executedQty": "0.0", "origQty": "1.0"}
 
-        from providers.strategy_executor import OrderReconciliationCapabilities
         monkeypatch.setattr(worker.alert, "notify", lambda **kw: None)
 
         mock_mkt = MagicMock()
@@ -1045,7 +1068,7 @@ class TestSisterArchitecturalDefects:
         assert res["succeeded"] == 1
 
         # Check queue record: qty must be 1.0, NOT 4.0!
-        records = oq.load_all()
+        records = order_retry.load_all()
         assert len(records) == 1
         assert records[0]["qty"] == 1.0
         assert records[0]["requested_qty_total"] == 1.0
@@ -1161,7 +1184,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
     def test_batch6_external_funding_min_short_rate_and_defer_notify(self, monkeypatch):
         """external_order_guard must pass funding_min_short_rate to FundingCrowdingGuard and notify on DEFER_WAIT."""
-        import notify_engine.alertnotifiers as alertnotifiers
 
         telem = DerivativesTelemetry(
             symbol="BTCUSDC",
@@ -1209,7 +1231,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
     def test_batch6_geopolitical_string_shadow_notify_no_crash(self, monkeypatch):
         """llm_order_guard must parse shadow_notify='true'/'false' without raising ValueError."""
-        from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 
         monkeypatch.setattr(
             "intelligence.macro.geopolitical_analyzer.GeopoliticalThreatAnalyzer",
@@ -1255,7 +1276,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         # Store direct OrderbookSnapshot in _cache, force expired TTL and broken network
         ob_collector._cache["BTCUSDC"] = snap
         # With allow_network=False and expired TTL, returns None; with allow_network=True and network error, falls back to cached snap without TypeError
-        import urllib.request
         orig_urlopen = urllib.request.urlopen
         try:
             def fail_urlopen(*a, **k):
@@ -1303,7 +1323,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert allowed is True
 
         # Verify MarketApi.place_order routes via provider_name instead of falling back to default provider
-        from providers.market_api import MarketApi
         api = MarketApi.__new__(MarketApi)
         mock_kraken = MagicMock()
         mock_kraken.place_order.return_value = {"orderId": "KRAKEN_1"}
@@ -1343,8 +1362,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
     def test_batch7_parabolic_and_weibull_symmetric_sell_and_direction_aware(self):
         """ParabolicSurgeGuard and WeibullExhaustionGuard must operate symmetrically on BUY and SELL."""
-        from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-        from qlimit_order_guard import check_qlimit2_order_guards
 
         p_guard = ParabolicSurgeGuard(surge_threshold_pct=10.0, pullback_required_pct=2.0)
 
@@ -1408,7 +1425,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
     def test_batch7_whale_divergence_symmetric_sell_checks(self):
         """WhaleDivergenceGuard must symmetrically protect SELL orders against capitulation, squeeze, and taker buying."""
-        from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
 
         guard = WhaleDivergenceGuard(
             min_taker_ratio=0.65,
@@ -1566,7 +1582,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_batch8_orderbook_wall_downscale_propagation_and_gateway_ssot(self, monkeypatch):
         """Verify OrderbookWallGuard DOWNSCALE_QTY propagates in check_external_order_guards,
         and AutonomousIntentGateway uses order_guard._load_margins and extract_order_id."""
-        from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
 
         monkeypatch.setattr(
             OrderbookWallGuard,
@@ -1588,7 +1603,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert reason == "orderbook_wall_downscale_test"
 
         # Verify AutonomousIntentGateway extracts Kraken txid via extract_order_id
-        from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
         gw = AutonomousIntentGateway(mode="enforce", max_notional_usd=500.0, min_confidence=0.80, notify_enabled=True)
         notified = []
         monkeypatch.setattr(gw, "_dispatch_notify", lambda title, body, symbol: notified.append((title, body, symbol)) or True)
@@ -1616,7 +1630,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert "Order ID: OQCLML-BW3P3-BUCMWZ" in notified[0][1]
 
         # Verify Instrument.place resolves regime_context for SELL in dynamic mode and scales SELL under GT2 medium_trend_action='scale'
-        from providers.quantity import QuantityDecision
 
         bull_ctx = MarketRegimeContext.from_decision(
             MarketRegimeDecision(
@@ -1671,9 +1684,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_cross_venue_collector_normalization_and_intelligence_context_validation(self, tmp_path, monkeypatch):
         """Verify cross-venue symbol normalization and disk-variant lookup in Pillar 2 collectors,
         and MarketRegimeContext.is_valid_for check in intelligence_order_guard."""
-        from cachepaths import resolve_binance_lookup_symbol
-        from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
-        from llm_order_guard import check_llm_order_guards
 
         assert resolve_binance_lookup_symbol("SOLUSD") == "SOLUSDT"
         assert resolve_binance_lookup_symbol("HYPE/USDC") == "HYPEUSDT"
@@ -1751,7 +1761,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
             "_intelligence_decisions_by_key",
             {cache_key: {"gemini_notional": 2000.0, "gemini_decision": (False, "wrong_sym_cached_veto", 0.0)}},
         )
-        from intelligence.internal.guards.guard_decision import BrakeAction
         monkeypatch.setattr(
             HighStakeGuard,
             "check",
@@ -1840,8 +1849,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_gaussian_horizon_and_collector_symbol_variants_normalization(self, tmp_path, monkeypatch):
         """Bug 2 & Bug 3 regression: resolve_cached_gaussian_horizon normalizes cross-venue/case symbols,
         and _symbol_variants prioritizes USDC before USDT and supports bare base assets."""
-        from intelligence.internal.state import survival
-        from cachepaths import cache_symbol_variants
 
         # 1. Verify cache_symbol_variants prioritizes USDC before USDT and supports bare base symbols
         variants_tao = cache_symbol_variants("TAOUSD")
@@ -1911,8 +1918,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         4. collect_pretrade_telemetry resolving 24h price evolution, short slopes, and fills across symbol variants.
         5. profit_guard evaluating check_intelligence_guards when notional_eur > 0 is passed with qty=None.
         """
-        import utils as u
-        from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
 
         assert canonical_base_asset("HYPE/USDC") == "HYPE"
         assert canonical_base_asset("SOL-USD") == "SOL"
@@ -2010,7 +2015,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_short_trend_symbol_variants_and_bapi_if_place_safe_order_g_prof_bypass(self, tmp_path, monkeypatch):
         """Verify CacheShortTrendManager resolves cross-venue symbol variants (TAOUSD -> TAOUSDC)
         and bapi_placeorder.if_place_safe_order skips trade history fetch when G_PROF is bypassed."""
-        from cachetrend import CacheShortTrendManager
 
         st_file = tmp_path / "cache_short_trend.json"
         now_s = time.time()
@@ -2053,7 +2057,6 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
     """Verify HighStakeGuard reuses a single LLM evaluation per (symbol, side) across $100 buckets
     without re-reading telemetry or re-querying LLM unless notional increases by > 100%, and
     check_intelligence_guards skips redundant G_QLIMIT2 re-evaluations when price/duration are unchanged."""
-    from intelligence.sentiment.guards import high_stake_guard as hsg_mod
 
     hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
     monkeypatch.setattr(hsg_mod, "is_llm_guard_exempt", lambda explicit_client=False: False)
@@ -2265,9 +2268,6 @@ def test_check_intelligence_guards_invalidates_cached_weibull_trend_exhausted_de
 
 def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
     """Verify order_guard never imports priceAnalysis, guards never import orchestratorOS, and state_io JSON SSOT holds."""
-    import ast
-    import botcore
-    from providers.intent_execution import resolve_intent_topic_tag
 
     repo_root = Path(__file__).resolve().parent.parent
 
@@ -2370,25 +2370,18 @@ def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
         assert "priceAnalysis" not in imps, f"{rel} must consume trend/survival compute via domain SSOT, not priceAnalysis: {imps}"
 
     # 6. TelemetrySensorSnapshot canonical SSOT placement in intelligence.macro_sentiment_ssot
-    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot as _SSOTSnapshot
-    from intelligence.sentiment.collectors.macro_telemetry_collector import TelemetrySensorSnapshot as _CollectorSnapshot
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot as _ReconcilerSnapshot
 
     assert _SSOTSnapshot is _CollectorSnapshot
     assert _SSOTSnapshot is _ReconcilerSnapshot
 
     # 7. importlib.reload(botcore) keeps botcore.cache_path, utils.*, and macro_sentiment_ssot.* synchronized
-    import importlib
-    import intelligence.macro_sentiment_ssot as _ssot_mod
-    import utils as _utils_mod
 
     importlib.reload(botcore)
     assert botcore.cache_path("cache_short_trend.json").endswith("cache_short_trend.json")
-    assert _utils_mod.cache_path("cache_short_trend.json").endswith("cache_short_trend.json")
+    assert u.cache_path("cache_short_trend.json").endswith("cache_short_trend.json")
     assert _ssot_mod.fetch_public_json is botcore.fetch_public_json
 
     # 8. Zero raw json.load/loads/dump/dumps outside state_io.py and botcore.py across production code
-    import subprocess
 
     tracked_py = subprocess.check_output(["git", "ls-files", "*.py"], cwd=repo_root, text=True).splitlines()
     for rel in tracked_py:
