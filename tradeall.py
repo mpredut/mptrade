@@ -10,12 +10,11 @@ from intelligence.internal.state.volatility import get_kalman_state_path
 import order_retry
 import utils as u
 from instrument_registry import casefold_get, select_instruments, symbols_for
-from binance_api import bapi as api
-from binance_api import bapi_trades as apitrades
 import order_lifecycle
 from providers.base import extract_order_id, normalize_side
 from cachepaths import clean_symbol_key, split_symbol_assets
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
+api = mkt
 from state_io import append_text_line
 
 from pricewindow import (  # noqa: F401 (re-export: test compat)
@@ -992,11 +991,9 @@ class TrendCoordinator:
 
 if __name__ == "__main__":
     _main_symbols = symbols_for("binance")
-    trades = apitrades.get_my_trades_24(
-        order_type=None,
-        symbol=_main_symbols[0] if _main_symbols else "BTCUSDC",
-        days_ago=0,
-        limit=1000,
+    trades = mkt.get_trades(
+        _main_symbols[0] if _main_symbols else "BTCUSDC",
+        86400.0,
     )
     print(f" --------- {len(trades)}")
     print(f" my trades of today : {trades}")
@@ -1004,9 +1001,9 @@ if __name__ == "__main__":
     # Price chain: WebSocket market data -> CacheCurrentPriceManager -> Cache24PriceManager -> PriceWindow.
     # Create CacheCurrentPriceManager before Cache24PriceManager with the correct sync_ts; otherwise
     # Cache24PriceManager.get_remote_items creates it internally with sync_ts=30.
-    from binance_api import bapi_ws
+    _bn_prov = mkt.provider_by_name("binance")
     current_price_mgr = cm.get_current_price_manager(
-        ws_manager=bapi_ws.get_ws_manager(),
+        ws_manager=_bn_prov.get_default_price_ws_manager() if _bn_prov is not None else None,
         symbols=_main_symbols,
         sync_ts=TIME_SLEEP_GET_PRICE,
     )

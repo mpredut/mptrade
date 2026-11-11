@@ -733,6 +733,15 @@ class MarketDataProvider(ABC):
             publish_cache=publish_cache,
         )
 
+    def get_trade_orders(
+        self,
+        order_type: Optional[str],
+        symbol: str,
+        max_age_seconds: float,
+    ) -> List[dict]:
+        """Return recent fill rows for ``symbol`` and optional ``order_type`` within ``max_age_seconds``."""
+        return self.get_orders(symbol, order_type, max_age_seconds)
+
     @staticmethod
     def resolve_venue_instrument_spec(venue: Any, symbol: str) -> Any:
         """Resolve ``InstrumentSpec`` for ``symbol`` on ``venue`` from ``instrument_registry``."""

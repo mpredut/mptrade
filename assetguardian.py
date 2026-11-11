@@ -6,7 +6,6 @@ import signal
 import threading
 import time
 
-from binance_api import bapi as api
 from providers.order_id_context import resolve_order_owner
 from providers.base import (
     extract_order_id,
@@ -15,6 +14,7 @@ from providers.base import (
 )
 from providers.order_ohlc_utils import extract_client_order_id, extract_order_side
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
+api = mkt
 from providers.execution_audit import ExecutionAudit
 from order_lifecycle import propagate_submission_refusal
 from order_retry import resolve_accepted_order

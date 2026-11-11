@@ -190,6 +190,20 @@ class BinanceProvider(MarketDataProvider):
         raw = _get_allorders().get_trade_orders(side, symbol, since_s) or []
         return [normalize_order(o) for o in raw]
 
+    def get_trade_orders(
+        self,
+        order_type: Optional[str],
+        symbol: str,
+        max_age_seconds: float,
+    ) -> List[dict]:
+        """Return cached recent fill rows normalized for execution monitoring."""
+        return list(
+            importlib.import_module("binance_api.bapi_trades").get_trade_orders(
+                order_type, symbol, max_age_seconds
+            )
+            or []
+        )
+
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Use current immutable fills, not order aggregates or a BUY-only average."""
         import account_cache_health as health

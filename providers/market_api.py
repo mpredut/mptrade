@@ -18,12 +18,15 @@ from typing import Any, Callable, List, Optional
 from botcore import (
     _parse_bool_flag,
     lru_dict_put,
+    normalize_scalar_order_id,
     require_finite_float,
     require_pos_float,
     safe_pos_float,
     safe_nonneg_float,
+    safe_nonneg_ts,
 )
 from cachepaths import normalize_venue_name
+from . import order_id_context as rc
 from .base import (
     MarketDataProvider,
     extract_order_price,
@@ -34,6 +37,8 @@ from .order_ohlc_utils import (
     clean_order_id,
     extract_order_qty,
     extract_order_side,
+    extract_orig_qty,
+    extract_remaining_qty,
     require_clean_order_id,
     require_int_order_id,
 )
@@ -98,6 +103,7 @@ class MarketApi:
         self._by_name: dict = {p.name.lower(): p for p in self._providers}
         self._regime_service = regime_service or MarketRegimeService()
         self._regime_snapshot_resolver = regime_snapshot_resolver
+        self.stop: bool = False
 
     def _provider_explicit_or_routed(self, symbol: str, provider_name=None):
         if provider_name is None:
@@ -221,6 +227,19 @@ class MarketApi:
             )
         return prov.get_trades(symbol, since_s)
 
+    def get_trade_orders(
+        self,
+        order_type: Optional[str],
+        symbol: str,
+        max_age_seconds: float,
+        *,
+        provider_name=None,
+    ) -> List[dict]:
+        """Return recent fill rows from the routed venue provider."""
+        return self._provider_explicit_or_routed(symbol, provider_name).get_trade_orders(
+            order_type, symbol, max_age_seconds
+        )
+
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float, *,
                             provider_name=None) -> Optional[float]:
         return self._provider_explicit_or_routed(symbol, provider_name).position_cost_basis(symbol, held_qty, since_s)
@@ -343,6 +362,165 @@ class MarketApi:
             symbol, provider_name, "cancel_by_order_id", "cancel_order"
         )
         method(symbol, self._clean_order_id_arg(order_id, provider.name))
+
+    def _validate_open_order_side_and_symbol(
+        self, order_type: str, symbol: str, *, provider_name=None
+    ) -> str:
+        side = normalize_side(order_type)
+        if side not in ("BUY", "SELL"):
+            raise ValueError(
+                f"Invalid order_type '{order_type}'. It must be either 'BUY' or 'SELL'."
+            )
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError(f"Invalid symbol '{symbol}'.")
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
+        if provider.name.lower() == "binance" and not provider.supports_symbol(symbol):
+            import instrument_registry as sym_reg
+
+            sym_reg.validate_symbols(symbol)
+        return side
+
+    def get_open_orders(
+        self,
+        order_type: str,
+        symbol: str,
+        *,
+        strict: bool = False,
+        allowed_owners=None,
+        provider_name=None,
+    ) -> dict:
+        """Return venue-normalized open orders keyed by scalar order ID for ``order_type``."""
+        strict_flag = _parse_bool_flag(strict, False)
+        side = self._validate_open_order_side_and_symbol(
+            order_type, symbol, provider_name=provider_name
+        )
+        sym_clean = symbol.strip().upper()
+        try:
+            open_list = self.open_orders(sym_clean, provider_name=provider_name)
+            filtered_orders: dict = {}
+            accepted_owner_map = None
+            for order in (open_list or ()):
+                if not isinstance(order, dict):
+                    continue
+                if extract_order_side(order) != side:
+                    continue
+                cid = clean_order_id(order.get("clientOrderId")) or ""
+                if allowed_owners is not None and not rc.order_matches_owner(cid, allowed_owners):
+                    if cid.startswith("OR_"):
+                        if accepted_owner_map is None:
+                            try:
+                                accepted_owner_map = MarketDataProvider.get_accepted_retry_order_owner_map()
+                            except Exception:
+                                accepted_owner_map = {}
+                        inferred = (
+                            accepted_owner_map.get(str(order.get("orderId") or ""))
+                            or accepted_owner_map.get(cid)
+                        )
+                        allowed_set = rc._normalize_allowed_owners(allowed_owners)
+                        if not inferred or str(inferred).strip().lower() not in allowed_set:
+                            continue
+                    else:
+                        continue
+                original_qty = float(extract_orig_qty(order, default=0.0) or 0.0)
+                raw_exec_qty = next(
+                    (order.get(k) for k in ("executedQty", "z", "vol_exec") if order.get(k) is not None),
+                    None,
+                )
+                executed_qty = safe_nonneg_float(raw_exec_qty, default=0.0)
+                remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
+                ts_ms = extract_timestamp_ms(order, default=0) or 0
+                ts_sec = safe_nonneg_ts(ts_ms, default=0.0)
+                raw_time = safe_nonneg_float(order.get("time"), default=None)
+                if raw_time is not None:
+                    ts_sec = (
+                        raw_time / 1000.0
+                        if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0)
+                        else raw_time
+                    )
+                raw_oid = normalize_scalar_order_id(order.get("orderId"))
+                if raw_oid is None:
+                    continue
+                filtered_orders[raw_oid] = {
+                    "price": extract_order_price(order),
+                    "quantity": original_qty,
+                    "origQty": original_qty,
+                    "qty": remaining_qty,
+                    "executedQty": executed_qty,
+                    "remainingQty": remaining_qty,
+                    "timestamp": ts_sec,
+                    "time": ts_ms,
+                    "clientOrderId": cid,
+                }
+            return filtered_orders
+        except Exception as exc:
+            print(f"Error getting open {side} orders: {exc}")
+            if strict_flag:
+                raise
+            return {}
+
+    def _cancel_open_order_and_resolve(
+        self, symbol: str, order_id: Any, *, provider_name=None
+    ) -> bool:
+        try:
+            res = self.cancel_order(symbol, order_id, provider_name=provider_name)
+            if res is False:
+                return False
+        except Exception as exc:
+            print(f"Error canceling order {order_id}: {exc}")
+            return False
+        try:
+            MarketDataProvider.resolve_accepted_retry_order(symbol, order_id)
+        except Exception:
+            pass
+        return True
+
+    def cancel_open_orders(
+        self,
+        order_type: str,
+        symbol: str,
+        allowed_owners=None,
+        *,
+        provider_name=None,
+    ) -> None:
+        """Cancel all open ``order_type`` orders for ``symbol`` matching ``allowed_owners``."""
+        side = self._validate_open_order_side_and_symbol(
+            order_type, symbol, provider_name=provider_name
+        )
+        try:
+            open_map = self.get_open_orders(
+                side, symbol, allowed_owners=allowed_owners, provider_name=provider_name
+            )
+            for order_id in open_map:
+                self._cancel_open_order_and_resolve(symbol, order_id, provider_name=provider_name)
+        except Exception as exc:
+            print(f"Error cancelling orders for {symbol}: {exc}")
+
+    def cancel_expired_orders(
+        self,
+        order_type: str,
+        symbol: str,
+        expire_time: float,
+        allowed_owners=None,
+        *,
+        provider_name=None,
+    ) -> None:
+        """Cancel open ``order_type`` orders for ``symbol`` older than ``expire_time`` seconds."""
+        side = self._validate_open_order_side_and_symbol(
+            order_type, symbol, provider_name=provider_name
+        )
+        expire_val = safe_pos_float(expire_time, default=None)
+        if expire_val is None:
+            return
+        open_map = self.get_open_orders(
+            side, symbol, allowed_owners=allowed_owners, provider_name=provider_name
+        )
+        if not open_map:
+            return
+        current_time = float(time.time())
+        for order_id, order_details in open_map.items():
+            order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
+            if order_time > 0 and current_time - order_time > expire_val:
+                self._cancel_open_order_and_resolve(symbol, order_id, provider_name=provider_name)
 
     def tracked_order_lifecycle(self, *, provider_name: str, venue=None,
                                 missing_confirmations=2,

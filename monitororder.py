@@ -3,13 +3,9 @@ import math
 import time
 from collections import OrderedDict
 
-# Binance imports.
-from binance.exceptions import BinanceAPIException
-
 # Project imports.
 from notify_engine import alertnotifiers as alert
 import instrument_registry as sym
-from binance_api import bapi as api
 from providers import order_id_context as rc
 from providers.base import (
     extract_order_id,
@@ -24,7 +20,8 @@ from providers.order_ohlc_utils import (
 )
 from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
-from providers.strategy_executor import SubmissionRefused
+api = mkt
+from providers.strategy_executor import ProviderError, SubmissionRefused
 import order_retry
 import order_lifecycle
 from botcore import (
@@ -533,7 +530,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 continue
 
             try:
-                cancel_confirmed = bool(api.cancel_order(symbol, order_id))
+                cancel_confirmed = api.cancel_order(symbol, order_id) is not False
             except Exception as exc:  # noqa: BLE001
                 cancel_confirmed = False
                 print(
@@ -732,8 +729,8 @@ def monitor_orders():
             touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
             time.sleep(MONITOR_OPEN_ORDER_INTERVAL)
 
-        except BinanceAPIException as e:
-            print(f"Binance API error: {e}")
+        except ProviderError as e:
+            print(f"Provider API error: {e}")
             touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
             time.sleep(TIME_SLEEP_ERROR)
         except Exception as e:

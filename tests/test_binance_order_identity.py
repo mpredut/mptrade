@@ -441,3 +441,131 @@ def test_order_id_context__base36_parses_float_strings_and_resolve_order_owner_t
     assert rc.resolve_order_owner("null") == "unspecified"
     assert rc.resolve_order_owner("0") == "unspecified"
     assert rc.is_order_repriceable_by_monitororder("None") is True
+
+
+def test_market_api_open_order_scoping_and_expired_cancel_across_venues():
+    """Verify MarketApi.get_open_orders, cancel_open_orders, and cancel_expired_orders across venue shapes."""
+    import time
+    from providers.base import MarketDataProvider
+    from providers.market_api import MarketApi
+    from providers.strategy_executor import OrderReconciliationCapabilities
+
+    class _DummyProvider(MarketDataProvider):
+        def __init__(self):
+            self.canceled = []
+
+        @property
+        def name(self) -> str:
+            return "Kraken"
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return str(symbol or "").strip().upper() == "SOL/USD"
+
+        def _fetch_current_price(self, symbol: str):
+            return 150.0
+
+        def free_balance(self, asset: str):
+            return 1000.0
+
+        def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
+            return OrderReconciliationCapabilities(
+                lookup_by_client_order_id=True,
+                status_by_order_id=True,
+                cancel_by_order_id=True,
+                list_open_orders=True,
+            )
+
+        def open_orders(self, symbol: str):
+            now_ms = int(time.time() * 1000)
+            return [
+                {
+                    "orderId": "K-101",
+                    "clientOrderId": "TA_sol_1",
+                    "side": "BUY",
+                    "price": 148.5,
+                    "origQty": 2.0,
+                    "executedQty": 0.5,
+                    "time": now_ms - 900_000,
+                },
+                {
+                    "orderId": "K-102",
+                    "clientOrderId": "RT_sol_2",
+                    "side": "BUY",
+                    "price": 147.0,
+                    "origQty": 1.0,
+                    "executedQty": 0.0,
+                    "time": now_ms - 900_000,
+                },
+                {
+                    "orderId": "K-103",
+                    "clientOrderId": "TA_sol_3",
+                    "side": "BUY",
+                    "price": 149.0,
+                    "origQty": 1.0,
+                    "executedQty": 0.0,
+                    "time": now_ms - 30_000,
+                },
+            ]
+
+        def cancel_order(self, symbol: str, order_id: str) -> None:
+            self.canceled.append((symbol, order_id))
+
+        def get_orders(self, symbol, side, since_s, **kwargs):
+            return [{"symbol": symbol, "side": side or "BUY", "price": 150.0, "qty": 1.0}]
+
+    prov = _DummyProvider()
+    facade = MarketApi([prov])
+    ta_orders = facade.get_open_orders("BUY", "SOL/USD", allowed_owners={"tradeall"})
+    assert set(ta_orders.keys()) == {"K-101", "K-103"}
+    assert ta_orders["K-101"]["qty"] == 1.5
+    assert ta_orders["K-101"]["origQty"] == 2.0
+
+    with patch.object(MarketDataProvider, "resolve_accepted_retry_order") as mock_resolve:
+        facade.cancel_expired_orders("BUY", "SOL/USD", 600.0, allowed_owners={"tradeall"})
+        assert prov.canceled == [("SOL/USD", "K-101")]
+        mock_resolve.assert_called_once_with("SOL/USD", "K-101")
+
+        prov.canceled.clear()
+        mock_resolve.reset_mock()
+        facade.cancel_open_orders("BUY", "SOL/USD", allowed_owners={"rtrade"})
+        assert prov.canceled == [("SOL/USD", "K-102")]
+        mock_resolve.assert_called_once_with("SOL/USD", "K-102")
+
+    assert len(facade.get_trade_orders("BUY", "SOL/USD", 3600.0)) == 1
+
+
+def test_production_runtime_zero_direct_venue_sdk_imports_ast():
+    """Lock DAG boundary: no production runtime module outside venue adapters & providers imports venue SDKs."""
+    import ast
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    forbidden_roots = frozenset({"binance", "binance_api", "kraken", "hyperliquid", "212trading"})
+    exempt_prefixes = (
+        "binance_api/",
+        "kraken/",
+        "hyperliquid/",
+        "212trading/",
+        "providers/",
+        "verify_tools/",
+        "tests/",
+        "offline/",
+        "visuals/",
+        ".venv/",
+        "myenv/",
+    )
+    violations: list[str] = []
+    for py_file in sorted(repo_root.rglob("*.py")):
+        rel = py_file.relative_to(repo_root).as_posix()
+        if rel.startswith(exempt_prefixes):
+            continue
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=rel)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".", 1)[0] in forbidden_roots:
+                        violations.append(f"{rel}:{node.lineno}: import {alias.name}")
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.split(".", 1)[0] in forbidden_roots:
+                    violations.append(f"{rel}:{node.lineno}: from {node.module} import ...")
+    assert violations == [], f"Forbidden direct venue SDK imports in production runtime: {violations}"

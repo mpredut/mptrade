@@ -4,8 +4,6 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from notify_engine import alertnotifiers as alert
-from binance_api import bapi_allorders as apiorders
-from binance_api import bapi_trades as apitrades
 from botcore import (
     _parse_bool_flag,
     format_price_log,
@@ -40,6 +38,7 @@ from providers.order_ohlc_utils import (
     extract_order_side,
 )
 from providers.market_api import api as mkt
+apitrades = mkt
 from providers.quantity import check_order_filter_refusal, resolve_assets
 from state_io import canonical_json_key, discard_generation_file, read_json_dict, save_json_state
 from strategies.mt_position_accounting import (
@@ -1600,9 +1599,9 @@ def main():
     for _inst in instruments.values():
         if _inst.provider_label.lower() == "binance":
             _sym = _inst.symbol
-            close_sell_orders = apiorders.get_trade_orders("SELL", _sym, maxage_trade_s)
+            close_sell_orders = mkt.get_orders(_sym, "SELL", maxage_trade_s)
             print(f"get_trade_orders ({_sym}): Found {len(close_sell_orders)} close 'SELL' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
-            close_buy_orders = apiorders.get_trade_orders("BUY", _sym, maxage_trade_s)
+            close_buy_orders = mkt.get_orders(_sym, "BUY", maxage_trade_s)
             print(f"get_trade_orders ({_sym}): Found {len(close_buy_orders)} close 'BUY' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
             print(f"close_buy_orders ({_sym}) {close_buy_orders}")
             print(f"close_sell_orders ({_sym}) {close_sell_orders}")
@@ -1616,7 +1615,11 @@ def main():
     )
     while True:
         try:
-            _print_trade_order_counts("ORDER COUNT", apiorders.get_trade_orders, maxage_trade_s)
+            _print_trade_order_counts(
+                "ORDER COUNT",
+                lambda side, symbol, age: mkt.get_orders(symbol, side, age),
+                maxage_trade_s,
+            )
             _print_trade_order_counts("TRADE COUNT", apitrades.get_trade_orders, maxage_trade_s)
             check_and_notify_executed_trades(maxage_trade_s)
         except Exception as _e:

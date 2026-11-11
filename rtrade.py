@@ -11,7 +11,6 @@ from decimal import Decimal, ROUND_DOWN
 
 import cacheManager as cm
 import external_order_guard as eog
-from binance_api import bapi as api
 from botcore import (
     _parse_bool_flag,
     are_close,
@@ -46,6 +45,7 @@ from providers.base import extract_order_id, extract_order_price
 from providers.order_ohlc_utils import extract_client_order_id
 from providers.execution_audit import AuditedStrategyExecutor
 from providers.market_api import api as mkt
+api = mkt
 from providers.quantity import balance_cap_quantity, decide_quantity
 from providers.strategy_executor import ProviderError, SubmissionRefused
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
