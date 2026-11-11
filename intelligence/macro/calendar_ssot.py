@@ -792,6 +792,12 @@ def compute_dynamic_sentiment_interval(
     return base, f"baseline_{session_ctx.session_key}"
 
 
+def parse_headline_age_minutes(h: Any, *, max_age_min: float = 2880.0) -> Optional[float]:
+    """Return bounded non-negative ``age_min`` from a headline item, or ``None`` when absent/invalid."""
+    age_f = safe_nonneg_float(obj_attr(h, "age_min", None), default=None)
+    return age_f if (age_f is not None and age_f <= max_age_min) else None
+
+
 def headline_effective_ts(h: Any, now: float) -> float:
     """Resolve effective publication/observation epoch timestamp (seconds) for a headline item."""
     ts_val = safe_nonneg_ts(
@@ -804,14 +810,9 @@ def headline_effective_ts(h: Any, now: float) -> float:
         pub_ts = NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), now)
         ts_val = pub_ts if pub_ts is not None else 0.0
     if ts_val <= 0.0:
-        raw_age = obj_attr(h, "age_min", None)
-        if raw_age is not None and not isinstance(raw_age, bool):
-            try:
-                age_f = float(raw_age)
-                if 0.0 <= age_f <= 2880.0:
-                    ts_val = now - age_f * 60.0
-            except (TypeError, ValueError):
-                pass
+        age_f = parse_headline_age_minutes(h)
+        if age_f is not None:
+            ts_val = now - age_f * 60.0
     return ts_val
 
 

@@ -163,7 +163,7 @@ def load_macro_intelligence_config(config_path: Optional[str] = None) -> configp
         DEFAULT_MACRO_CONFIG_PATH,
         modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
     )
-    target = config_path or os.environ.get("MACRO_INTELLIGENCE_CONF") or default_path
+    target = config_path or _botcore.optional_env("MACRO_INTELLIGENCE_CONF") or default_path
     try:
         return load_ini_config(target, must_exist=False, inline_comments=True)
     except Exception as exc:

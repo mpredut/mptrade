@@ -38,7 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import int_env, normalize_epoch_sec, safe_float, safe_int, safe_pos_float
+from botcore import int_env, normalize_epoch_sec, optional_env, safe_float, safe_int, safe_pos_float, split_csv
 from cachepaths import cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
 from state_io import atomic_write_bytes, read_jsonl_dicts
 
@@ -181,7 +181,7 @@ def platt_scale(sig, thr=0.6, fit_end: int | None = None):
 
 def build_candidates(px, fit_end: int | None = None):
     """Yield (name, signal) lazily to keep memory bounded on 6.8M-tick series."""
-    only = set(filter(None, os.environ.get("BENCH_ONLY", "").split(",")))
+    only = set(split_csv(optional_env("BENCH_ONLY")))
     want = (lambda n: (not only) or n in only)
     yield "LEGACY (sf+gr)/2", legacy(px)
     for p in (1, 2, 3, 4, 6, 8):
@@ -417,7 +417,7 @@ def main():
     base = "LEGACY (sf+gr)/2"
     rng = np.random.default_rng(0)
     non_empty_res = [r[2] for r in results if r[2]]
-    boot_cands = (list(non_empty_res[0].keys()) if non_empty_res else []) if os.environ.get("BENCH_ONLY") else [
+    boot_cands = (list(non_empty_res[0].keys()) if non_empty_res else []) if optional_env("BENCH_ONLY") else [
         "SW p1", "SW p2", "SW p3", "EXP hl30",
         "SW p2 + NoiseGate0.02", "SW p2 + NoiseGate0.025", "SW p2 + NoiseGate0.03", "SW p2 + NoiseGate0.04", "SW p2 + NoiseGate0.05",
         "SW p3 + NoiseGate0.02", "SW p3 + NoiseGate0.025", "SW p3 + NoiseGate0.03", "SW p3 + NoiseGate0.04", "SW p3 + NoiseGate0.05",

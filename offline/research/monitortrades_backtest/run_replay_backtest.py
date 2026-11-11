@@ -38,7 +38,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import _parse_bool_flag, load_ini_config, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, bool_env, load_ini_config, safe_float, safe_nonneg_float, safe_pos_float
 
 from cachepaths import cache_path
 from instrument_registry import select_instruments
@@ -209,7 +209,7 @@ def run_symbol(
 ):
     from_disk = series is None
     if from_disk:
-        use_365 = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), False)
+        use_365 = bool_env("MPTRADE_REPLAY_USE_365", default=False)
         path = resolve_archive_jsonl_path(symbol, use_365=use_365)
         series = load_price_series(path, symbol)
         if not series:

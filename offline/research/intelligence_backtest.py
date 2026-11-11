@@ -22,7 +22,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from cachepaths import cache_path as resolve_cache_path
-from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import parse_symbol_list, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from instrument_registry import symbols_for
 from state_io import atomic_write_json
 from offline.research.chop_weight_backtest import (
@@ -583,7 +583,7 @@ def run_intelligence_backtest(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     symbols = (
-        sys.argv[1].split(",")
+        parse_symbol_list(sys.argv[1])
         if len(sys.argv) > 1
         else symbols_for("binance", role="tradeall_fire")
     )

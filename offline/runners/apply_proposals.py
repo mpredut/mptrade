@@ -25,31 +25,43 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import FileLock, _parse_bool_flag, load_env_stack, parse_dotenv, safe_pos_float  # noqa: E402
+from botcore import FileLock, _parse_bool_flag, bool_env, load_env_stack, optional_env, parse_dotenv, safe_pos_float  # noqa: E402
 from state_io import parse_json_payload  # noqa: E402
 from offline.research.monitortrades_backtest import scheduled_pilot as sp  # noqa: E402
 
 _DEV_PROFILE = parse_dotenv(os.path.join(ROOT, "offline", "runners", "dev_backtest.env"))
-BRANCH = (os.environ.get("BACKTEST_PROPOSALS_BRANCH") or _DEV_PROFILE.get("BACKTEST_PROPOSALS_BRANCH") or "").strip()
+BRANCH = (optional_env("BACKTEST_PROPOSALS_BRANCH") or _DEV_PROFILE.get("BACKTEST_PROPOSALS_BRANCH") or "").strip()
 _ALLOWED_PILOT_PARAM_NAMES = frozenset(
     fk.split(".", 1)[1] for fk in sp.PILOT_KEYS if "." in fk
 )
 
 
+def _configured_branch(default: str = "") -> str:
+    return (
+        BRANCH
+        or optional_env("BACKTEST_PROPOSALS_BRANCH")
+        or str(_DEV_PROFILE.get("BACKTEST_PROPOSALS_BRANCH") or "")
+        or default
+    ).strip()
+
+
+def _validate_branch_name(raw: object) -> str:
+    clean = raw.strip() if isinstance(raw, str) and not isinstance(raw, bool) else ""
+    if not clean or clean.startswith("-") or ".." in clean or any(ch.isspace() for ch in clean):
+        raise RuntimeError(f"Invalid BACKTEST_PROPOSALS_BRANCH: {raw!r}")
+    return clean
+
+
 def _resolve_branch() -> str:
-    raw = (BRANCH or os.environ.get("BACKTEST_PROPOSALS_BRANCH") or _DEV_PROFILE.get("BACKTEST_PROPOSALS_BRANCH") or "").strip()
+    raw = _configured_branch()
     if not raw:
         raise RuntimeError("Missing BACKTEST_PROPOSALS_BRANCH in dev_backtest.env")
-    if raw.startswith("-") or ".." in raw or " " in raw:
-        raise RuntimeError(f"Invalid BACKTEST_PROPOSALS_BRANCH: {raw!r}")
-    return raw
+    return _validate_branch_name(raw)
 
 
 def _read_proposals(branch: str | None = None):
     """Read backtest_proposals.json from origin/BRANCH WITHOUT a checkout (git show)."""
-    target_branch = _resolve_branch() if branch is None else branch.strip()
-    if not target_branch or target_branch.startswith("-") or ".." in target_branch:
-        raise RuntimeError(f"Invalid BACKTEST_PROPOSALS_BRANCH: {target_branch!r}")
+    target_branch = _resolve_branch() if branch is None else _validate_branch_name(branch)
     try:
         fetch_res = subprocess.run(
             ["git", "-C", ROOT, "fetch", "-q", "origin", target_branch],
@@ -80,13 +92,13 @@ def main(argv: list[str] | None = None):
     except Exception:  # noqa: BLE001
         pass
 
-    if _parse_bool_flag(os.environ.get("APPLY_DISABLED"), False):
+    if bool_env("APPLY_DISABLED", default=False):
         print("[apply] APPLY_DISABLED=true -- exiting without doing anything")
         return
 
     proposals = _read_proposals()
     if not proposals:
-        branch_label = (BRANCH or os.environ.get("BACKTEST_PROPOSALS_BRANCH") or "backtest-proposals").strip()
+        branch_label = _configured_branch("backtest-proposals")
         print(f"[apply] no proposal on branch {branch_label} -- nothing to do")
         return
 

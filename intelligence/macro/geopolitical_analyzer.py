@@ -9,7 +9,11 @@ from typing import Any, Dict, Optional
 
 from botcore import _parse_bool_flag, load_dotenv, required_float_env, safe_nonneg_ts
 from cachepaths import cache_path
-from intelligence.macro.calendar_ssot import headline_effective_ts, resolve_global_trading_session
+from intelligence.macro.calendar_ssot import (
+    headline_effective_ts,
+    parse_headline_age_minutes,
+    resolve_global_trading_session,
+)
 from intelligence.macro.daemon_ssot import CachedTopicAssessmentAgent
 from intelligence.macro.lexicon_ssot import (
     demote_dynamic_acute_terms,
@@ -155,15 +159,8 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
     @classmethod
     def _headline_age_suffix(cls, h: Any, now: float, *, include_utc_time: bool = False) -> str:
         ts_val = cls._headline_effective_ts(h, now)
-        age_sfx = ""
-        raw_age = obj_attr(h, "age_min", None)
-        if raw_age is not None and not isinstance(raw_age, bool):
-            try:
-                age_f = float(raw_age)
-                if 0.0 <= age_f <= 2880.0:
-                    age_sfx = f", age={int(round(age_f))}m"
-            except (TypeError, ValueError):
-                pass
+        age_f = parse_headline_age_minutes(h)
+        age_sfx = f", age={int(round(age_f))}m" if age_f is not None else ""
         if not age_sfx and 0.0 < ts_val <= now + 300.0:
             age_m = max(0, int(round(max(0.0, now - ts_val) / 60.0)))
             if age_m <= 2880:

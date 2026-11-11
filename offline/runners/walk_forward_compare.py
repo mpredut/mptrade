@@ -28,6 +28,7 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
+    split_csv,
 )
 from cachepaths import normalize_venue_name
 from state_io import atomic_write_json, atomic_write_text, read_json_file
@@ -483,10 +484,7 @@ def main(argv: list[str] | None = None) -> int:
 
     fee_stress_str = args.fee_stress or DEFAULT_FEE_STRESS.get(venue, "0.16,0.26,0.35,0.50")
     fee_stress = {}
-    for fee_text in fee_stress_str.split(","):
-        fee_stripped = fee_text.strip()
-        if not fee_stripped:
-            continue
+    for fee_stripped in split_csv(fee_stress_str):
         fee = safe_nonneg_float(fee_stripped, default=None)
         if fee is None:
             parser.error(f"invalid fee value: {fee_stripped!r}")

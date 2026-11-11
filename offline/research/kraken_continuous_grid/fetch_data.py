@@ -13,11 +13,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from botcore import optional_env
 from offline.backtests.datasets import save_dataset, validate_dataset
 from providers.market_api import api as mkt
 from state_io import atomic_snapshot_file
 
-EXP = os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
+EXP = optional_env("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
 DATA = os.path.join(EXP, "data")
 ASSETS = ("TAO", "ADA", "SOL", "BTC", "ETH", "XRP", "DOGE", "LINK", "AVAX", "BNB")
 START_MS = 1514764800000   # 2018-01-01

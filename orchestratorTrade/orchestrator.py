@@ -53,7 +53,7 @@ class BotManager:
         self.recent_lines: Dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
         self.last_hb_status_log = time.time()
         self.running = True
-        self.venv = os.environ.get("VENV") or next(
+        self.venv = botcore.optional_env("VENV") or next(
             (cand for cand in (".venv", "myenv") if os.path.exists(os.path.join(ROOT_DIR, cand, "bin", "activate"))),
             "myenv",
         )
@@ -394,7 +394,7 @@ class BotManager:
             if not changed_paths:
                 continue
 
-            if self_path in changed_paths and os.environ.get("INVOCATION_ID"):
+            if self_path in changed_paths and botcore.optional_env("INVOCATION_ID"):
                 logging.warning("Orchestrator source changed under systemd; shutting down for clean service restart...")
                 await self.shutdown()
                 return

@@ -48,7 +48,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:   # executed directly by the systemd drop-in with /usr/bin/python3
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import TOPIC_SPECS, _parse_bool_flag, safe_nonneg_int, safe_pos_float
+from botcore import TOPIC_SPECS, _parse_bool_flag, is_env_defined, optional_env, safe_nonneg_int, safe_pos_float
 import intelligence.macro_sentiment_ssot as _mss
 from state_io import (  # noqa: E402
     atomic_write_bytes,
@@ -88,7 +88,7 @@ from orchestratorOS.agy.topics import (  # noqa: E402
 )
 
 
-HOME = os.environ.get("AGY_FIX_HOME") or os.path.expanduser("~")
+HOME = optional_env("AGY_FIX_HOME") or os.path.expanduser("~")
 CLI = os.path.join(HOME, ".gemini", "antigravity-cli")
 D1 = os.path.join(CLI, "conversations")                       # content dir (source forced to 17 by the daemon)
 D2 = visible_conversations_dir(CLI)                           # visible dir (source stays 0)
@@ -125,7 +125,7 @@ def backup_file(path: str, stamp: str) -> None:
 # ---------------------------------------------------------------- pre
 def mode_pre(force: bool = False) -> int:
     force = _parse_bool_flag(force, False)
-    if not force and os.environ.get("AGY_FIX_HOME") is None:
+    if not force and not is_env_defined("AGY_FIX_HOME"):
         try:
             active = subprocess.run(["systemctl", "--user", "is-active", UNIT], capture_output=True, text=True, timeout=10).stdout.strip() == "active"
         except Exception:
@@ -309,7 +309,7 @@ def repair_summaries(mt: dict) -> int:
     if not os.path.exists(DB):
         return 0
     topic_titles = get_topic_canonical_titles(_effective_topic_registry())
-    if topic_titles and os.environ.get("AGY_FIX_HOME") is None:
+    if topic_titles and not is_env_defined("AGY_FIX_HOME"):
         try:
             bot_base = resolve_bot_cli_base()
             if os.path.isdir(bot_base) and os.path.abspath(bot_base) != os.path.abspath(CLI):
@@ -381,7 +381,7 @@ def log_started_at(path: str) -> float:
 
 
 def main_pid() -> str:
-    unit = os.environ.get("AGY_FIX_UNIT", UNIT)
+    unit = optional_env("AGY_FIX_UNIT", UNIT) or UNIT
     try:
         r = subprocess.run(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit],
                            capture_output=True, text=True, timeout=10)
@@ -572,7 +572,7 @@ def _daemon_has_active_child_tasks(
 ) -> bool:
     """Return True when the live antigravity-cli-daemon service owns active tool child processes."""
     if daemon_pid is None:
-        if os.environ.get("AGY_FIX_HOME") is not None:
+        if is_env_defined("AGY_FIX_HOME"):
             return False
         real_cli = os.path.abspath(os.path.expanduser("~/.gemini/antigravity-cli"))
         if os.path.abspath(CLI) != real_cli:

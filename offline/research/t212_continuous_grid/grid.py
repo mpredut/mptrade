@@ -15,12 +15,12 @@ import os, sys, time, traceback
 from multiprocessing import Pool
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-EXP = os.environ.get("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid")
-DATA = os.path.join(EXP, "data")
-OUT = os.path.join(EXP, "results.jsonl")
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-from botcore import int_env, parse_dotenv, safe_float, safe_nonneg_int, safe_pos_float  # noqa: E402
+from botcore import int_env, optional_env, parse_dotenv, safe_float, safe_nonneg_int, safe_pos_float  # noqa: E402
+EXP = optional_env("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid")
+DATA = os.path.join(EXP, "data")
+OUT = os.path.join(EXP, "results.jsonl")
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_venue_replay_module  # noqa: E402
 from state_io import append_jsonl_record, atomic_write_jsonl  # noqa: E402

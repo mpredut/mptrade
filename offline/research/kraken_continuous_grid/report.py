@@ -8,7 +8,7 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import safe_float
+from botcore import optional_env, safe_float
 from state_io import atomic_write_json, atomic_write_text, read_jsonl_dicts
 
 
@@ -58,7 +58,7 @@ def _fmt_num(val, spec: str | None = None) -> str:
 
 
 def _resolve_exp_dir(exp_dir: str | None = None) -> str:
-    exp = exp_dir or os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
+    exp = exp_dir or optional_env("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
     os.makedirs(exp, exist_ok=True)
     return exp
 

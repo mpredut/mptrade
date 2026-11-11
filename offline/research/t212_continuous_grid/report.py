@@ -8,14 +8,14 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import safe_float
+from botcore import optional_env, safe_float
 from offline.research.kraken_continuous_grid.report import (
     _fmt_num as _fmt_cell,
     _format_errors_section,
 )
 from state_io import atomic_write_text, read_jsonl_dicts
 
-EXP = os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "t212_continuous_grid")
+EXP = optional_env("GRID_OUT") or os.path.join(ROOT, "offline", "results", "t212_continuous_grid")
 HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}
 
 
@@ -31,7 +31,7 @@ def g(r, itv, k):
 
 
 def generate_report(exp_dir=None):
-    exp = exp_dir or os.environ.get("GRID_OUT") or EXP
+    exp = exp_dir or optional_env("GRID_OUT") or EXP
     results_path = os.path.join(exp, "results.jsonl")
     if not os.path.exists(results_path):
         return f"# Trading 212 grid\n\nNo results found at {results_path}.\n"

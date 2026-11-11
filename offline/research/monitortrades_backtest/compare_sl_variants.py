@@ -11,7 +11,7 @@ if ROOT not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import monitortrades as mt
-from botcore import _parse_bool_flag, safe_float
+from botcore import bool_env, safe_float
 from offline.research.monitortrades_backtest.run_replay_backtest import (
     SYMBOLS,
     _TREND_TAPE_CACHE,
@@ -61,7 +61,7 @@ def main():
             ("BASELINE (structural break OFF)", False),
         ]
         results = {label: {} for label, _ in variants}
-        use_365 = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), False)
+        use_365 = bool_env("MPTRADE_REPLAY_USE_365", default=False)
         can_fork = "fork" in mp.get_all_start_methods()
 
         # Process one symbol at a time and share series + prewarmed trend tape across

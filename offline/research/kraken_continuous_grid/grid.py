@@ -21,19 +21,20 @@ from datetime import datetime, timezone
 from multiprocessing import Pool
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-EXP = os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
-DATA = os.path.join(EXP, "data")
-OUT = os.path.join(EXP, "results.jsonl")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import (
     int_env,
     load_local_module,
+    optional_env,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
 )
+EXP = optional_env("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
+DATA = os.path.join(EXP, "data")
+OUT = os.path.join(EXP, "results.jsonl")
 from state_io import append_jsonl_record, read_jsonl_dicts
 from strategies import spot_engine as strat, spot_replay as rp
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402

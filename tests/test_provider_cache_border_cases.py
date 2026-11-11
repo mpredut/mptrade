@@ -1593,6 +1593,56 @@ def test_botcore_reexport_sync_t212_check_market_and_shadow_env_border_cases(
     assert len(procs) == 1 and procs[0].log == "logs/kbot.log"
 
 
+def test_ws_normalize_headline_age_apply_proposals_and_csv_border_cases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Verify WS trade ID float-string guards, headline age SSOT, branch validation, and CSV trimming."""
+    import numpy as np
+    from binance_api import bapi_ws_normalize as ws_norm
+    from intelligence.macro.calendar_ssot import headline_effective_ts, parse_headline_age_minutes
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from offline.research import backtest_ranges, short_trend_estimator_benchmark as st_bench
+    from offline.runners import apply_proposals
+
+    # 1. bapi_ws_normalize rejects positive non-integer float string trade IDs ("12.5") while preserving 64-bit & alphanumeric IDs
+    base_trade = {"s": "BTCUSDC", "x": "TRADE", "S": "BUY", "i": "42", "L": "0", "Y": "5000.0", "l": "0.1"}
+    assert ws_norm.parse_trade_execution_report({**base_trade, "t": "12.5"}) is None
+    assert ws_norm.parse_trade_execution_report({**base_trade, "t": "-5.5"}) is None
+    ok_big = ws_norm.parse_trade_execution_report({**base_trade, "t": "9007199254740993.0"})
+    assert ok_big is not None and ok_big[1]["id"] == "9007199254740993"
+    assert float(ok_big[1]["price"]) == pytest.approx(50000.0)
+    ok_alpha = ws_norm.parse_trade_execution_report({**base_trade, "t": "TRD-77"})
+    assert ok_alpha is not None and ok_alpha[1]["id"] == "TRD-77"
+    ok_ord = ws_norm.parse_order_execution_report({**base_trade, "X": "FILLED", "t": "9007199254740993.0"})
+    assert ok_ord is not None and ok_ord[1]["_fillId"] == "9007199254740993"
+
+    # 2. parse_headline_age_minutes, headline_effective_ts, and _headline_age_suffix guard bool/NaN/out-of-range age_min
+    for bad_age in (True, False, float("nan"), float("inf"), -1.0, 5000.0, "bad"):
+        assert parse_headline_age_minutes({"age_min": bad_age}) is None
+        assert headline_effective_ts({"age_min": bad_age}, 10_000.0) == 0.0
+        assert GeopoliticalThreatAnalyzer._headline_age_suffix({"age_min": bad_age}, 10_000.0) == ""
+    assert parse_headline_age_minutes({"age_min": "15.4"}) == pytest.approx(15.4)
+    assert headline_effective_ts({"age_min": "15"}, 10_000.0) == pytest.approx(9_100.0)
+    assert GeopoliticalThreatAnalyzer._headline_age_suffix({"age_min": "15.4"}, 10_000.0) == ", age=15m"
+
+    # 3. apply_proposals._read_proposals rejects whitespace, dot-dot, flag-like, and non-string branch names
+    for bad_branch in ("", "  ", "-evil", "a..b", "main evil", "a\nb", True):
+        with pytest.raises(RuntimeError, match="Invalid BACKTEST_PROPOSALS_BRANCH"):
+            apply_proposals._read_proposals(bad_branch)  # type: ignore[arg-type]
+
+    # 4. short_trend_estimator_benchmark.build_candidates trims whitespace around BENCH_ONLY CSV entries
+    monkeypatch.setenv("BENCH_ONLY", " SW p1 , SW p2 ")
+    px_arr = np.linspace(100.0, 102.0, 400)
+    cand_names = [name for name, _sig in st_bench.build_candidates(px_arr)]
+    assert cand_names == ["LEGACY (sf+gr)/2", "SW p1", "SW p2"]
+
+    cfg_file = tmp_path / "sample.conf"
+    cfg_file.write_text("[SEC]\n# BACKTEST: 1.0, , 2.5 , 4.0 # inline\nmt.gain = 2.5\n", encoding="utf-8")
+    assert backtest_ranges.scan_backtest_ranges(str(cfg_file)) == {"SEC.mt.gain": ["1.0", "2.5", "4.0"]}
+
+
+
 
 
 

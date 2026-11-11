@@ -10,14 +10,14 @@ import os
 from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
 
-from botcore import load_dotenv
+from botcore import load_dotenv, secret_env
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-api_key = os.environ.get("BINANCE_API_KEY", "").strip()
-api_secret = os.environ.get("BINANCE_API_SECRET", "").strip()
+api_key = secret_env("BINANCE_API_KEY", "") or ""
+api_secret = secret_env("BINANCE_API_SECRET", "") or ""
 # The Ed25519 stream key is distinct from the HMAC REST credential.
-api_key_ws = os.environ.get("BINANCE_API_KEY_WS", "").strip()
+api_key_ws = secret_env("BINANCE_API_KEY_WS", "") or ""
 
 
 if not isinstance(globals().get("CredentialConfigurationError"), type) or not issubclass(

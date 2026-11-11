@@ -6,6 +6,7 @@ from pathlib import Path
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
+from botcore import optional_env
 from offline.backtests.datasets import load_ohlc_tuples_csv, save_dataset, validate_dataset
 from providers.market_api import api as mkt
 
@@ -19,7 +20,7 @@ def fetch_yahoo_candles(sym: str, *, range_: str = "730d", interval: str = "1h",
         provider_name="t212",
     )
 
-DATA = os.path.join(os.environ.get("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid"), "data")
+DATA = os.path.join(optional_env("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid"), "data")
 ASSETS = ["NVDA", "SPCX", "RGNT", "AAPL", "MSFT", "AMD", "TSLA", "AVGO", "META", "AMZN",
           "GOOGL", "NFLX", "PLTR", "COIN", "QQQ", "SPY"]
 

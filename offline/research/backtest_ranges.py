@@ -32,6 +32,7 @@ import os
 import re
 from typing import Dict, List, Optional
 
+from botcore import split_csv
 from state_io import read_text_lines
 
 _SECTION_RE = re.compile(r'^\s*\[([^\]]+)\]\s*(?:[#;].*)?$')
@@ -69,7 +70,7 @@ def scan_backtest_ranges(path: str | os.PathLike | bytes) -> Dict[str, List[str]
         m = _BACKTEST_RE.match(line)
         if m:
             raw_vals = m.group(1).split("#", 1)[0].split(";", 1)[0]
-            vals = [v.strip() for v in raw_vals.split(",") if v.strip()]
+            vals = list(split_csv(raw_vals))
             pending = vals if vals else None
             continue
         m2 = _KEY_RE.match(line)

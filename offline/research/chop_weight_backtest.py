@@ -27,7 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import normalize_epoch_sec, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import normalize_epoch_sec, parse_symbol_list, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_path, canonical_base_asset
 from instrument_registry import symbols_for
 from intelligence.internal.state.survival import get_trade_weight
@@ -582,7 +582,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    symbols = parse_symbol_list(args.symbols)
     results = run_chop_benchmark(symbols=symbols, step_seconds=args.step_sec)
 
     for sym, stats in results.items():

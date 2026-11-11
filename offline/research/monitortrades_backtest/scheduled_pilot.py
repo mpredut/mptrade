@@ -52,7 +52,7 @@ if ROOT not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import log
-from botcore import _parse_bool_flag, float_env, load_env_stack, load_ini_config, safe_float, single_instance
+from botcore import _parse_bool_flag, bool_env, float_env, load_env_stack, load_ini_config, safe_float, single_instance, split_csv
 from cachepaths import cache_path
 from instrument_registry import select_instruments
 from notify_engine import alertnotifiers as alert
@@ -479,7 +479,7 @@ def main():
                      help="where to write the proposals in --propose mode (default backtest_proposals.json)")
     args = ap.parse_args()
 
-    if _parse_bool_flag(os.environ.get("PILOT_DISABLED"), False):
+    if bool_env("PILOT_DISABLED", default=False):
         print("[scheduled_pilot] PILOT_DISABLED=true -- leaving without doing anything")
         return
 
@@ -492,7 +492,7 @@ def main():
     # output suppression is required (otherwise console I/O dominates execution time).
     log.disable_print()
 
-    only_terms = [t.strip() for t in args.only.split(",") if t.strip()]
+    only_terms = list(split_csv(args.only))
     keys = {k: v for k, v in PILOT_KEYS.items()
             if not only_terms or any(t in k for t in only_terms)}
     if not keys:
@@ -674,7 +674,7 @@ def main():
         # confirmed signal in this cycle (prod has nothing to apply).
         atomic_write_json(args.propose_out, proposals, indent=2, default=str)
         print(f"\n[scheduled_pilot] {len(proposals)} proposal(s) written to {args.propose_out}")
-        if proposals and _parse_bool_flag(os.environ.get("PILOT_NOTIFY_PROPOSALS"), False):
+        if proposals and bool_env("PILOT_NOTIFY_PROPOSALS", default=False):
             # notify user that new proposals are available to review and apply
             try:
                 load_env_stack()

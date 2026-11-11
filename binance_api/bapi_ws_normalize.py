@@ -7,6 +7,7 @@ from typing import Any
 from botcore import (
     INVALID_SCALAR_STRINGS,
     clean_order_id,
+    exact_nonneg_int,
     exact_pos_int,
     resolve_now_ms,
     safe_float,
@@ -103,18 +104,13 @@ def parse_order_execution_report(
         raw_s = event.get("S")
         if isinstance(raw_t, bool) or isinstance(raw_i, bool) or isinstance(raw_s, bool):
             raise ValueError("boolean Binance trade/order ID or side")
-        if isinstance(raw_t, float):
-            f = safe_float(raw_t, default=None)
-            if f is None or not f.is_integer():
-                raise ValueError("non-integer Binance trade ID")
-        elif isinstance(raw_t, str):
-            raw_t = _strip_int_str(raw_t) or ""
         raw_i = _normalize_ws_order_id(raw_i, strict_float=True)
         if raw_i is None:
             raise ValueError("missing or invalid Binance order ID")
-        fill_id = int(raw_t)
-        if fill_id < 0:
-            raise ValueError("missing Binance trade ID")
+        norm_t = _strip_int_str(raw_t) if isinstance(raw_t, str) else raw_t
+        fill_id = exact_nonneg_int(norm_t, default=None)
+        if fill_id is None:
+            raise ValueError("missing or non-integer Binance trade ID")
         side = extract_order_side(event)
         last_quantity = safe_pos_float(event.get("l"), default=0.0)
         if last_quantity <= 0 and event.get("X") == "FILLED":
@@ -176,30 +172,26 @@ def parse_trade_execution_report(
     if isinstance(raw_trade_id, bool) or isinstance(raw_order_id, bool):
         builtins.print("[cacheManager][WS] rejected Trade report with boolean ID")
         return None
-    if isinstance(raw_trade_id, float):
-        f = safe_float(raw_trade_id, default=None)
-        if f is None or not f.is_integer():
-            builtins.print("[cacheManager][WS] rejected Trade report with non-integer float trade ID")
+    if isinstance(raw_trade_id, (int, float)):
+        raw_trade_id = exact_nonneg_int(raw_trade_id, default=None)
+        if raw_trade_id is None:
+            builtins.print("[cacheManager][WS] rejected Trade report with invalid numeric trade ID")
             return None
-        raw_trade_id = int(f)
     elif isinstance(raw_trade_id, str):
         raw_trade_id = _strip_int_str(raw_trade_id)
-        if raw_trade_id is not None and (
-            raw_trade_id.startswith("-")
-            or raw_trade_id.lower() in INVALID_SCALAR_STRINGS
-        ):
-            builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
-            return None
-    elif raw_trade_id is not None and not isinstance(raw_trade_id, int):
+        if raw_trade_id is not None:
+            num_tid = safe_float(raw_trade_id, default=None)
+            if (
+                raw_trade_id.startswith("-")
+                or raw_trade_id.lower() in INVALID_SCALAR_STRINGS
+                or (num_tid is not None and (num_tid < 0 or not num_tid.is_integer()))
+            ):
+                builtins.print("[cacheManager][WS] rejected Trade report with invalid trade ID")
+                return None
+    elif raw_trade_id is not None:
         builtins.print("[cacheManager][WS] rejected Trade report with non-scalar trade ID")
         return None
     raw_order_id = _normalize_ws_order_id(raw_order_id, strict_float=False)
-    try:
-        if raw_trade_id is not None and int(raw_trade_id) < 0:
-            builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
-            return None
-    except (TypeError, ValueError, OverflowError):
-        pass
     if raw_trade_id is None and raw_order_id is None:
         builtins.print("[cacheManager][WS] rejected Trade report with missing trade and order ID")
         return None
@@ -221,8 +213,8 @@ def parse_trade_execution_report(
         extracted_px = extract_order_price(event, default=0.0)
         if _is_positive_finite(extracted_px):
             raw_price = str(extracted_px)
-        elif _is_positive_finite(raw_qty):
-            derived_px = _derive_ws_quote_fill_price(event, float(raw_qty))
+        elif (qty_f := safe_pos_float(raw_qty, default=None)) is not None:
+            derived_px = _derive_ws_quote_fill_price(event, qty_f)
             if derived_px > 0:
                 raw_price = str(derived_px)
     trade_item: dict[str, Any] = {
