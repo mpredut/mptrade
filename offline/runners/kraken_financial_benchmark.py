@@ -327,6 +327,19 @@ def _projection(report: dict) -> dict:
     }
 
 
+def add_financial_benchmark_common_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--train", type=int, default=720)
+    parser.add_argument("--validation", type=int, default=180)
+    parser.add_argument("--test", type=int, default=90)
+    parser.add_argument("--step", type=int, default=90)
+    parser.add_argument("--warmup", type=int, default=40)
+    parser.add_argument("--regime-threshold", type=float, default=3.0)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--markdown", type=Path)
+
+
 def validate_financial_benchmark_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     for name in ("train", "validation", "test", "step"):
         if exact_pos_int(getattr(args, name), default=None) is None:
@@ -338,24 +351,39 @@ def validate_financial_benchmark_args(parser: argparse.ArgumentParser, args: arg
         parser.error("warmup and regime-threshold cannot be negative")
 
 
+def write_financial_report_artifacts(
+    report: dict,
+    *,
+    stem: str,
+    markdown_text: str,
+    output_arg: Path | None = None,
+    markdown_arg: Path | None = None,
+) -> tuple[Path, Path]:
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output = (
+        output_arg.expanduser().resolve()
+        if output_arg
+        else ROOT / "offline" / "results" / "hype_financial" / f"{stem}_{stamp}.json"
+    )
+    markdown = (
+        markdown_arg.expanduser().resolve()
+        if markdown_arg
+        else output.with_suffix(".md")
+    )
+    atomic_write_json(output, report, indent=2, ensure_ascii=True)
+    atomic_write_text(markdown, markdown_text)
+    return output, markdown
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, default=KRAKEN_DIR / ".env")
     parser.add_argument("--config-file", type=Path, default=KRAKEN_DIR / "config.env")
-    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    add_financial_benchmark_common_args(parser)
     parser.add_argument("--params-report", type=Path)
     parser.add_argument("--name", default="base_v2_live")
-    parser.add_argument("--train", type=int, default=720)
-    parser.add_argument("--validation", type=int, default=180)
-    parser.add_argument("--test", type=int, default=90)
-    parser.add_argument("--step", type=int, default=90)
-    parser.add_argument("--warmup", type=int, default=40)
-    parser.add_argument("--regime-threshold", type=float, default=3.0)
     parser.add_argument("--compare-to", type=Path)
     parser.add_argument("--verify", type=Path)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--markdown", type=Path)
     args = parser.parse_args(argv)
 
     validate_financial_benchmark_args(parser, args)
@@ -370,17 +398,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         report = build_report(args)
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        output = (
-            args.output.expanduser().resolve() if args.output
-            else ROOT / "offline" / "results" / "hype_financial" / f"{args.name.strip()}_{stamp}.json"
+        output, markdown = write_financial_report_artifacts(
+            report,
+            stem=args.name.strip(),
+            markdown_text=markdown_report(report),
+            output_arg=args.output,
+            markdown_arg=args.markdown,
         )
-        markdown = (
-            args.markdown.expanduser().resolve() if args.markdown
-            else output.with_suffix(".md")
-        )
-        atomic_write_json(output, report, indent=2, ensure_ascii=True)
-        atomic_write_text(markdown, markdown_report(report))
 
         print(f"Financial benchmark JSON: {output}")
         print(f"Financial benchmark Markdown: {markdown}")

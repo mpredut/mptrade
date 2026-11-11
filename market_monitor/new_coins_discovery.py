@@ -3,7 +3,6 @@ import time
 import threading
 import requests
 import pandas as pd
-import os
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Set, Callable
 from abc import ABC, abstractmethod

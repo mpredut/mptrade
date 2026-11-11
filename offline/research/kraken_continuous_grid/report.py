@@ -75,6 +75,31 @@ def _format_errors_section(errors: list[dict], *, label_fn=None, limit: int = 20
     return lines
 
 
+def _risk_adjusted_score(ret_pct: float, dd_pct: float, dd_floor: float = 5.0) -> float:
+    """Monotone risk-adjusted return score: penalises larger drawdowns even when return < 0."""
+    r = safe_float(ret_pct, 0.0)
+    d = max(safe_float(dd_pct, 0.0), dd_floor)
+    if r >= 0.0:
+        return r / d
+    return (r * d) / (dd_floor * dd_floor)
+
+
+def _load_grid_results_by_cfg(results_path: str) -> tuple[list[dict], list[dict], dict[str, dict[str, dict]], list[str]]:
+    rows = read_jsonl_dicts(results_path)
+    errors = [r for r in rows if "error" in r]
+    valid_rows = [
+        r for r in rows
+        if "error" not in r
+        and isinstance(r.get("cfg"), str) and r["cfg"].strip()
+        and isinstance(r.get("asset"), str) and r["asset"].strip()
+    ]
+    by: dict[str, dict[str, dict]] = defaultdict(dict)
+    for r in valid_rows:
+        by[r["cfg"]][r["asset"]] = r
+    assets = sorted({r["asset"] for r in valid_rows})
+    return valid_rows, errors, by, assets
+
+
 def _rank_key(s: dict) -> tuple[bool, float, float]:
     full_med = safe_float(s.get("full_med"), default=float("-inf"))
     calmar_med = safe_float(s.get("calmar_med"), default=float("-inf"))
@@ -87,18 +112,7 @@ def _rank_key(s: dict) -> tuple[bool, float, float]:
 def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = _resolve_exp_dir(exp_dir)
     results_path = os.path.join(exp, "results.jsonl")
-    rows = read_jsonl_dicts(results_path)
-    errors = [r for r in rows if "error" in r]
-    rows = [
-        r for r in rows
-        if "error" not in r
-        and isinstance(r.get("cfg"), str) and r["cfg"].strip()
-        and isinstance(r.get("asset"), str) and r["asset"].strip()
-    ]
-    by = defaultdict(dict)
-    for r in rows:
-        by[r["cfg"]][r["asset"]] = r
-    assets = sorted({r["asset"] for r in rows})
+    rows, errors, by, assets = _load_grid_results_by_cfg(results_path)
     cfgs = list(by)
 
     summary = []

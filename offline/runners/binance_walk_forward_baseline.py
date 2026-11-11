@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 from botcore import load_layered_env_config, safe_nonneg_float, safe_pos_float, safe_pos_int
 from cachepaths import split_symbol_assets
 from offline.backtests.datasets import (
+    dataset_metadata,
     load_dataset,
     save_dataset,
     validate_dataset,

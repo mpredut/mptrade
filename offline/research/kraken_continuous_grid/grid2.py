@@ -21,6 +21,7 @@ if ROOT not in sys.path:
 from botcore import int_env, safe_float, safe_pos_float
 from state_io import append_jsonl_record, atomic_write_jsonl, read_jsonl_dicts
 from offline.research.kraken_continuous_grid import grid
+from offline.research.kraken_continuous_grid.report import _risk_adjusted_score
 CONFIGS, LIVE, OLD, R, ov, load = grid.CONFIGS, grid.LIVE, grid.OLD, grid.R, grid.ov, grid.load
 WARM, W30, W90, WSTEP, DATA, EXP = grid.WARM, grid.W30, grid.W90, grid.WSTEP, grid.DATA, grid.EXP
 
@@ -55,15 +56,6 @@ _VIEWS_CACHE: dict = {}
 
 
 replay = grid.replay
-
-
-def _risk_adjusted_score(ret_pct: float, dd_pct: float, dd_floor: float = 5.0) -> float:
-    """Monotone risk-adjusted return score: penalises larger drawdowns even when return < 0."""
-    r = safe_float(ret_pct, 0.0)
-    d = max(safe_float(dd_pct, 0.0), dd_floor)
-    if r >= 0.0:
-        return r / d
-    return (r * d) / (dd_floor * dd_floor)
 
 
 def views(asset, cfg, fee_key):

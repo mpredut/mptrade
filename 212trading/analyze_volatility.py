@@ -31,13 +31,13 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-ensure_local_module_priority(_HERE, "ipo_common")
+ensure_local_module_priority(_HERE, "ipo_common", "market_data")
 from cachepaths import has_equity_suffix, strip_equity_suffix
 from ipo_common import load_isolated_t212_cfg as _load_isolated_t212_cfg  # noqa: E402
+from market_data import parse_interval_minutes  # noqa: E402
 from providers.order_ohlc_utils import (
     drop_incomplete_last_bar,
     extract_yahoo_chart_result_and_quote as _extract_yahoo_result_and_quote,
-    parse_ohlc_interval_minutes,
 )
 
 
@@ -99,13 +99,7 @@ def fetch_ohlc(
     meta_d = meta if isinstance(meta, dict) else {}
     if drop_incomplete and records:
         try:
-            iv_min = parse_ohlc_interval_minutes(
-                str(interval or "").strip(),
-                str_to_min={},
-                allow_unit_multiplier=True,
-                require_unit_suffix=True,
-                venue_label="Yahoo",
-            )
+            iv_min = parse_interval_minutes(str(interval or "").strip())
             regular = ((meta_d.get("currentTradingPeriod") or {}).get("regular")) or {}
             eff_now = exact_pos_int(now_timestamp, default=None)
             if eff_now is None:

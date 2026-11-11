@@ -25,7 +25,7 @@ from offline.backtests.hype_candidates import (  # noqa: E402
     financial_priority_candidates,
 )
 from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
-from state_io import atomic_write_json, atomic_write_text, read_json_file  # noqa: E402
+from state_io import read_json_file  # noqa: E402
 
 
 DEFAULT_BASELINE = (
@@ -154,18 +154,9 @@ def markdown_report(report: dict) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
-    parser.add_argument("--dataset", type=Path, default=benchmark.DEFAULT_DATASET)
-    parser.add_argument("--manifest", type=Path, default=benchmark.DEFAULT_MANIFEST)
+    benchmark.add_financial_benchmark_common_args(parser)
     parser.add_argument("--candidate", action="append")
-    parser.add_argument("--train", type=int, default=720)
-    parser.add_argument("--validation", type=int, default=180)
-    parser.add_argument("--test", type=int, default=90)
-    parser.add_argument("--step", type=int, default=90)
-    parser.add_argument("--warmup", type=int, default=40)
-    parser.add_argument("--regime-threshold", type=float, default=3.0)
     parser.add_argument("--strict-baseline", action="store_true")
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--markdown", type=Path)
     args = parser.parse_args(argv)
     benchmark.validate_financial_benchmark_args(parser, args)
     args.baseline = args.baseline.expanduser().resolve()
@@ -174,18 +165,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         report = build_comparison(args)
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        output = (
-            args.output.expanduser().resolve() if args.output else
-            ROOT / "offline" / "results" / "hype_financial" /
-            f"candidate_comparison_{stamp}.json"
+        output, markdown = benchmark.write_financial_report_artifacts(
+            report,
+            stem="candidate_comparison",
+            markdown_text=markdown_report(report),
+            output_arg=args.output,
+            markdown_arg=args.markdown,
         )
-        markdown = (
-            args.markdown.expanduser().resolve() if args.markdown else
-            output.with_suffix(".md")
-        )
-        atomic_write_json(output, report, indent=2, ensure_ascii=True)
-        atomic_write_text(markdown, markdown_report(report))
     except (ValueError, OSError) as error:
         parser.error(str(error))
 

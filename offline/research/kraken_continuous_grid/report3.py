@@ -3,42 +3,24 @@
 import os
 import statistics as st
 import sys
-from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
-from state_io import atomic_write_text, read_jsonl_dicts
+from state_io import atomic_write_text
 from offline.research.kraken_continuous_grid.report import (
     _format_errors_section,
+    _load_grid_results_by_cfg,
     _resolve_exp_dir,
+    _risk_adjusted_score as _ret_dd_ratio,
 )
-
-
-def _ret_dd_ratio(ret_pct: float, dd_pct: float, dd_floor: float = 1.0) -> float:
-    """Monotone return-to-drawdown ratio: avoids inverting negative-return rankings on huge drawdowns."""
-    d = max(dd_pct, dd_floor)
-    if ret_pct >= 0.0:
-        return ret_pct / d
-    return (ret_pct * d) / (dd_floor * dd_floor)
 
 
 def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = _resolve_exp_dir(exp_dir)
     results3_path = os.path.join(exp, "results3.jsonl")
-    rows = read_jsonl_dicts(results3_path)
-    errors = [r for r in rows if "error" in r]
-    rows = [
-        r for r in rows
-        if "error" not in r
-        and isinstance(r.get("cfg"), str) and r["cfg"].strip()
-        and isinstance(r.get("asset"), str) and r["asset"].strip()
-    ]
-    by = defaultdict(dict)
-    for r in rows:
-        by[r["cfg"]][r["asset"]] = r
-    assets = sorted({r["asset"] for r in rows})
+    _, errors, by, assets = _load_grid_results_by_cfg(results3_path)
 
     L = ["# Finite-cash continuous runs (3900 USD, no refill after losses)\n",
          "Return and max drawdown as % of 3900 USD over the whole history per asset; "
