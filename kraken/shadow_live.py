@@ -51,6 +51,7 @@ from state_io import append_jsonl_record, atomic_write_json, atomic_write_text, 
 from botcore import (  # noqa: E402
     exact_pos_int,
     load_shadow_environment,
+    optional_env,
     prepare_shadow_runtime,
     required_env,
     safe_float,
@@ -68,17 +69,26 @@ DEFAULT_ENV = os.path.join(HERE, ".env")
 LOG_DIR = os.path.join(ROOT, "logs", "shadow_live")
 
 
+def _resolve_runtime_paths(
+    env_path: str | None = None,
+    config_path: str | None = None,
+) -> tuple[str, str]:
+    resolved_env = env_path or optional_env("ENV_FILE") or DEFAULT_ENV
+    resolved_cfg = config_path or os.path.join(os.path.dirname(resolved_env) or ".", "config.env")
+    return resolved_env, resolved_cfg
+
+
 def _load_runtime_config(env_path: str | None = None,
                          config_path: str | None = None) -> None:
-    """Reproduce kraken_bot load order exactly: .env takes priority, config fills gaps."""
-    env_path = env_path or os.environ.get("ENV_FILE", DEFAULT_ENV)
-    config_path = config_path or os.path.join(os.path.dirname(env_path) or ".", "config.env")
-    load_shadow_environment(env_path, config_path)
+    """Reproduce kraken_bot load order: .env takes priority, config fills gaps."""
+    resolved_env, resolved_cfg = _resolve_runtime_paths(env_path, config_path)
+    load_shadow_environment(resolved_env, resolved_cfg)
 
 
 def _load_isolated_strat_params() -> strat.StratParams:
-    _load_runtime_config()
-    cfg = load_isolated_kraken_cfg(HERE, env_path=os.environ.get("ENV_FILE", DEFAULT_ENV))
+    env_path, config_path = _resolve_runtime_paths()
+    _load_runtime_config(env_path, config_path)
+    cfg = load_isolated_kraken_cfg(HERE, config_path=config_path, env_path=env_path)
     return strat.StratParams.from_env(cfg)
 
 

@@ -31,6 +31,7 @@ if ROOT not in sys.path:
 from botcore import (  # noqa: E402
     load_local_module,
     load_shadow_environment,
+    optional_env,
     prepare_shadow_runtime,
     require_shadow_interval,
     required_env,
@@ -94,10 +95,10 @@ def _fetch_with_ts(_pair: str, interval: int):
 
     cfg = load_isolated_hl_cfg(HERE)
     load_shadow_environment(os.path.join(HERE, ".env"))
-    token = (os.environ.get("HL_SPOT_TOKEN") or cfg.get("HL_SPOT_TOKEN") or "").strip()
+    token = (optional_env("HL_SPOT_TOKEN") or cfg.get("HL_SPOT_TOKEN") or "").strip()
     if not token:
         token = required_env("HL_SPOT_TOKEN")
-    spot_pair = (os.environ.get("HL_SPOT_PAIR") or cfg.get("HL_SPOT_PAIR") or "").strip()
+    spot_pair = (optional_env("HL_SPOT_PAIR") or cfg.get("HL_SPOT_PAIR") or "").strip()
     client = HLClient.public()  # the unsigned client cannot submit orders
     if not spot_pair and not token.startswith("@"):
         resolve_fn = getattr(client, "resolve_spot_pair", None)

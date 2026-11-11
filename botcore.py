@@ -54,7 +54,7 @@ from cachepaths import (
     safe_pos_float,
     safe_pos_int,
 )
-from state_io import atomic_write_json, read_text_file
+import state_io as _state_io
 
 HTTP_TIMEOUT = 25
 BUCHAREST = ZoneInfo("Europe/Bucharest")
@@ -1262,7 +1262,7 @@ def touch_heartbeat_file(
             intervals=intervals if intervals is not None else {"heartbeat": interval_sec},
             extra=extra,
         )
-        atomic_write_json(hb_path, payload)
+        _state_io.atomic_write_json(hb_path, payload)
         os.utime(hb_path, None)
     except OSError:
         return last_ts
@@ -1383,9 +1383,7 @@ def resolve_heartbeat_paths(
 
     hb_paths: list[str] = []
     if hb_log:
-        for raw_part in hb_log.split(","):
-            if not (part := raw_part.strip()):
-                continue
+        for part in split_csv(hb_log):
             if os.path.isabs(part):
                 hb_paths.append(part)
             elif part.startswith("cachedb/"):
@@ -1556,7 +1554,7 @@ def _load_ed25519_signing_key():
     try:
         import nacl.signing
 
-        pem_data = read_text_file("keys/ed25519_private.pem")
+        pem_data = _state_io.read_text_file("keys/ed25519_private.pem")
         b64match = re.search(r"-----BEGIN PRIVATE KEY-----(.*?)-----END PRIVATE KEY-----", pem_data, re.DOTALL)
         if not b64match:
             raise ValueError("Invalid PEM")
@@ -2764,23 +2762,31 @@ class ClosedPriceSeries:
         )
 
 
-for _reexport_mod_name in (
+_REEXPORT_MODULE_NAMES = (
     "utils",
     "intelligence.macro_sentiment_ssot",
     "macro_sentiment_ssot",
     "offline.backtests.evaluation",
-):
-    _reexport_mod = sys.modules.get(_reexport_mod_name)
-    if _reexport_mod is None:
-        continue
-    for _attr_name, _attr_val in list(_reexport_mod.__dict__.items()):
-        if (
-            not _attr_name.startswith("__")
-            and _attr_name in globals()
-            and callable(_attr_val)
-            and getattr(_attr_val, "__module__", None) == __name__
-        ):
-            setattr(_reexport_mod, _attr_name, globals()[_attr_name])
+)
+
+
+def _sync_reexport_modules() -> None:
+    """Keep loaded re-export modules bound to the active ``botcore`` function objects."""
+    for mod_name in _REEXPORT_MODULE_NAMES:
+        reexport_mod = sys.modules.get(mod_name)
+        if reexport_mod is None:
+            continue
+        for attr_name, attr_val in list(reexport_mod.__dict__.items()):
+            if (
+                not attr_name.startswith("__")
+                and attr_name in globals()
+                and callable(attr_val)
+                and getattr(attr_val, "__module__", None) == __name__
+            ):
+                setattr(reexport_mod, attr_name, globals()[attr_name])
+
+
+_sync_reexport_modules()
 
 
 

@@ -8,7 +8,6 @@ Environment variables (from .env / config.env in the repository root):
   SMTP_USERNAME / SMTP_PASSWORD / ALERT_TO_EMAIL  — email (optional)
   SMTP_SERVER / SMTP_PORT                         — email server (default gmail:587)
 """
-import os
 from pathlib import Path
 import sys
 
@@ -16,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent  # orchestratorOS/lib/ -> r
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from botcore import optional_env  # noqa: E402
 from notify_engine.alertnotifiers import (  # noqa: E402
     AlertNotifier,
     format_ntfy_url,
@@ -39,8 +39,8 @@ def save_state(state_file, state):
 def send_ntfy(title, message):
     # watchdog = ERROR category -> prefer dedicated topic; fallback to PHONE_ALERT_URL
     url = (
-        format_ntfy_url(os.environ.get("NTFY_TOPIC_ERROR") or "")
-        or format_ntfy_url(os.environ.get("PHONE_ALERT_URL") or "")
+        format_ntfy_url(optional_env("NTFY_TOPIC_ERROR"))
+        or format_ntfy_url(optional_env("PHONE_ALERT_URL"))
         or None
     )
     if not url:

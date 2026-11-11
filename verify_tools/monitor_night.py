@@ -28,17 +28,17 @@ except ImportError:
 _REPO = Path(__file__).resolve().parent.parent   # verify_tools/ -> repository root
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
-from botcore import load_env_stack, required_int_env  # noqa: E402
+from botcore import load_env_stack, optional_env, required_int_env, secret_env, split_csv  # noqa: E402
 load_env_stack()
 
-HOST = os.environ.get("MONITOR_HOST")  # no default: an address must be configured
+HOST = optional_env("MONITOR_HOST") or None  # no default: an address must be configured
 try:
     PORT = required_int_env("MONITOR_PORT")
 except Exception:
     PORT = None
-USER = os.environ.get("MONITOR_USER")
-PASS = os.environ.get("MONITOR_PASS")  # No default: the secret DOES NOT live in code.
-ROOT = os.environ.get("MONITOR_ROOT")
+USER = optional_env("MONITOR_USER") or None
+PASS = secret_env("MONITOR_PASS")  # No default: the secret DOES NOT live in code.
+ROOT = optional_env("MONITOR_ROOT") or None
 
 # The process list is no longer hard-coded here. It is read live from the server's
 # procs.conf, the same single source of truth used by bots_start, flota_start, and
@@ -97,7 +97,7 @@ def load_procs(c):
             after_redir = start_cmd.split(">>", 1)[1].strip() if ">>" in start_cmd else ""
             rel = hb_log or (after_redir.split()[0] if after_redir else "")
             if "," in rel:
-                parts_rel = [p.strip() for p in rel.split(",") if p.strip()]
+                parts_rel = list(split_csv(rel))
                 log_candidates = [p for p in parts_rel if p.endswith(".log")]
                 rel = log_candidates[-1] if log_candidates else (parts_rel[-1] if parts_rel else "")
             if rel.startswith(("logs/", "cachedb/")):

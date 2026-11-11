@@ -952,6 +952,7 @@ def test_canonical_package1_unified_primitives():
         assert pre_reload_resolve("NONEXISTENT_ATTR", 42, modules=("botcore",)) == 42
     finally:
         botcore.__dict__.update(saved_botcore_dict)
+        botcore._sync_reexport_modules()
 
 
 class HttpResilienceTest(unittest.TestCase):

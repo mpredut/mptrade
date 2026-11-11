@@ -22,6 +22,7 @@ from botcore import (
     fetch_public_json,
     http_get,
     log,
+    normalize_epoch_sec,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -305,8 +306,9 @@ def check_market(sym: str) -> dict | None:
     meta_vol = safe_nonneg_float(meta.get("regularMarketVolume"), default=0)
     raw_state = meta.get("marketState")
     state    = raw_state.strip().upper() if isinstance(raw_state, str) else ""
-    ts_f = safe_pos_float(meta.get("regularMarketTime"), default=None)
-    age_sec = (time.time() - ts_f) if ts_f is not None else None
+    now_ts = time.time()
+    ts_f = normalize_epoch_sec(meta.get("regularMarketTime"), default=None)
+    age_sec = (now_ts - ts_f) if ts_f is not None else None
 
     # --- intraday SERIES signals robust to stale metadata ---
     series_age = series_vol = None
@@ -314,10 +316,11 @@ def check_market(sym: str) -> dict | None:
     series_moved = False
     if bars:
         recent = bars[-6:]                       # approximately the last 30 minutes
-        series_age = time.time() - float(bars[-1][0])
-        series_price = bars[-1][1]
-        series_vol = sum(v for _, _, v in recent if v) or 0
-        cs = [c for _, c, _ in recent]
+        last_bar_ts = normalize_epoch_sec(bars[-1][0], default=None)
+        series_age = (now_ts - last_bar_ts) if last_bar_ts is not None else None
+        series_price = safe_pos_float(bars[-1][1], default=None)
+        series_vol = sum(safe_nonneg_float(v, default=0.0) for _, _, v in recent)
+        cs = [c_f for _, c, _ in recent if (c_f := safe_pos_float(c, default=None)) is not None]
         series_moved = len(cs) >= 2 and (max(cs) - min(cs)) > 0
 
     fresh_meta = age_sec is not None and -60.0 <= age_sec < 15 * 60

@@ -1502,5 +1502,103 @@ def test_hoisted_patch_seams_symbol_csv_and_observe_cli_border_cases(
             tobs.main()
 
 
+def test_botcore_reexport_sync_t212_check_market_and_shadow_env_border_cases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Verify botcore reexport sync, state_io patch seams, T212 check_market NaN/ms guards, and shadow env paths."""
+    import importlib
+    import math
+    import time
+    from pathlib import Path
+    from instrument import Instrument
+    from kraken import shadow_live as kraken_shadow
+    import offline.backtests.evaluation as ev
+    from providers import order_id_context as oic
+    import state_io
+    from verify_tools import monitor_night
+
+    # 1. Instrument._apply_outbox_lineage_prefix honors providers.order_id_context.get_process_name monkeypatches
+    monkeypatch.setattr(oic, "get_process_name", lambda: "TA")
+    target_kw: dict[str, Any] = {}
+    Instrument._apply_outbox_lineage_prefix(target_kw, {})
+    assert target_kw == {"prefix": "TA_OR"}
+
+    # 2. botcore.touch_heartbeat_file honors state_io.atomic_write_json monkeypatch & CSV hb_log
+    captured_hb: list[tuple[str, Any]] = []
+    hb_file = tmp_path / "unit.heartbeat"
+    hb_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(state_io, "atomic_write_json", lambda p, payload: captured_hb.append((str(p), payload)))
+    botcore.touch_heartbeat_file(hb_file, force=True, now=100.0, status={"ok": True})
+    assert len(captured_hb) == 1 and captured_hb[0][0] == str(hb_file)
+
+    hb_paths, _ = botcore.resolve_heartbeat_paths(
+        str(tmp_path),
+        str(tmp_path),
+        "demo",
+        "demo.py",
+        "logs/a.log, , logs/b.log",
+        60.0,
+    )
+    assert hb_paths == [str(tmp_path / "logs/a.log"), str(tmp_path / "logs/b.log")]
+
+    # 3. botcore._sync_reexport_modules preserves cross-module function identity across dict rollback
+    saved_dict = dict(botcore.__dict__)
+    try:
+        importlib.reload(botcore)
+        assert ev.load_layered_env_config is botcore.load_layered_env_config
+    finally:
+        botcore.__dict__.update(saved_dict)
+        botcore._sync_reexport_modules()
+    assert ev.load_layered_env_config is botcore.load_layered_env_config
+
+    # 4. 212trading/market_data.py::check_market guards NaN/None bar volumes, closes, and ms timestamps
+    t212_md = botcore.load_local_module(
+        Path(__file__).resolve().parents[1] / "212trading",
+        "market_data",
+        module_key="t212_md_border_test",
+        register=False,
+    )
+    now_s = time.time()
+    monkeypatch.setattr(
+        t212_md,
+        "_chart",
+        lambda _sym: (
+            {
+                "regularMarketPrice": 25.5,
+                "regularMarketVolume": 0,
+                "marketState": "REGULAR",
+                "regularMarketTime": int(now_s * 1000),
+            },
+            [
+                (int((now_s - 300) * 1000), None, float("nan")),
+                (int((now_s - 180) * 1000), 25.0, 12.0),
+                (int((now_s - 60) * 1000), float("nan"), -5.0),
+            ],
+        ),
+    )
+    info = t212_md.check_market("SPCX")
+    assert info is not None
+    assert info["price"] == 25.5
+    assert info["volume"] == 12.0 and not math.isnan(info["volume"])
+    assert info["launched"] is True and info["trading"] is True
+
+    # 5. kraken/shadow_live._resolve_runtime_paths ignores empty ENV_FILE & monitor_night splits CSV hb_log
+    monkeypatch.setenv("ENV_FILE", "   ")
+    resolved_env, resolved_cfg = kraken_shadow._resolve_runtime_paths()
+    assert resolved_env == kraken_shadow.DEFAULT_ENV
+    assert resolved_cfg.endswith("kraken/config.env")
+
+    monkeypatch.setattr(monitor_night, "ROOT", "/srv/mptrade")
+    monkeypatch.setattr(
+        monitor_night,
+        "run",
+        lambda _c, _cmd: "bot.py | $ROOT/kraken | python3 bot.py | kbot | cachedb/system/heartbeat/k.heartbeat, logs/kbot.log | 120 | bot\n",
+    )
+    procs = monitor_night.load_procs(object())
+    assert len(procs) == 1 and procs[0].log == "logs/kbot.log"
+
+
+
 
 

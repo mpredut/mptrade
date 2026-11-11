@@ -27,6 +27,7 @@ from botcore import (  # noqa: E402
     ensure_local_module_priority,
     format_price_log,
     log,
+    optional_env,
     safe_pos_float,
 )
 ensure_local_module_priority(_HERE, "ipo_common", "market_data")
@@ -67,7 +68,7 @@ def main() -> int:
     # since the secrets moved there; loading only 212trading/.env left the alert mute.
     load_t212_environment(args.env_file)
     # PRICE alerts use the dedicated NTFY_TOPIC_PRICE.
-    topic = str(args.topic or os.environ.get("NTFY_TOPIC_PRICE") or "").strip()
+    topic = str(args.topic or optional_env("NTFY_TOPIC_PRICE") or "").strip()
     if not topic:
         log("! no ntfy topic (--topic / NTFY_TOPIC_PRICE in .env)"); return 1
     if args.below is None and args.above is None:

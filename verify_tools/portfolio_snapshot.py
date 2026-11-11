@@ -24,18 +24,12 @@ from botcore import (  # noqa: E402
     _parse_bool_flag,
     http_request,
     is_live_network_backfill_enabled,
+    optional_env,
     parse_dotenv,
     required_float_env,
     safe_float,
 )
-from notify_engine.alertnotifiers import (  # noqa: E402
-    AlertNotifier,
-    _canonical_topic_key,
-    _external_notifications_disabled,
-    format_ntfy_url,
-    pass_common_gate,
-    sanitize_single_line,
-)
+from notify_engine import alertnotifiers as _alertnotifiers  # noqa: E402
 from providers.market_api import api as mkt  # noqa: E402
 from state_io import encode_json_payload, read_json_dict, save_json_state  # noqa: E402
 from strategies.state_store import state_path_for  # noqa: E402
@@ -114,13 +108,9 @@ ALERT_STATE = os.path.join(ROOT, "logs", ".risk_alert_state.json")
 
 def _ntfy(title: str, body: str) -> None:
     """Send an ntfy notification (best-effort, no external dependencies)."""
-    if _external_notifications_disabled():
+    if _alertnotifiers._external_notifications_disabled():
         return
-    topic = (
-        os.environ.get("NTFY_TOPIC")
-        or os.environ.get("NTFY_TOPIC_GUARD")
-        or ""
-    ).strip()
+    topic = optional_env("NTFY_TOPIC") or optional_env("NTFY_TOPIC_GUARD")
     if not topic:
         for cfg in (os.path.join(ROOT, ".env"), os.path.join(KRAKEN_DIR, "config.env")):
             if os.path.exists(cfg):
@@ -131,21 +121,21 @@ def _ntfy(title: str, body: str) -> None:
                         break
                 except OSError:
                     topic = ""
-    url = format_ntfy_url(topic)
+    url = _alertnotifiers.format_ntfy_url(topic)
     if not url:
         return
-    clean_title = sanitize_single_line(title, "Alert")
+    clean_title = _alertnotifiers.sanitize_single_line(title, "Alert")
     body_str = "" if isinstance(body, bool) else str(body or "")
     if is_live_network_backfill_enabled():
-        allowed, _, _, out_payload = pass_common_gate(
-            "ntfy", clean_title, body_str, "high", _canonical_topic_key(url),
+        allowed, _, _, out_payload = _alertnotifiers.pass_common_gate(
+            "ntfy", clean_title, body_str, "high", _alertnotifiers._canonical_topic_key(url),
         )
         if not allowed:
             return
         if out_payload:
             clean_title, body_str, _, out_topic = out_payload
-            url = format_ntfy_url(out_topic or topic) or url
-    safe_title = AlertNotifier.utf8_header(clean_title) or "Alert"
+            url = _alertnotifiers.format_ntfy_url(out_topic or topic) or url
+    safe_title = _alertnotifiers.AlertNotifier.utf8_header(clean_title) or "Alert"
     try:
         http_request(
             "POST",

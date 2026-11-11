@@ -23,6 +23,7 @@ from botcore import (  # noqa: E402
     clean_order_id,
     ensure_local_module_priority,
     log,
+    optional_env,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -79,7 +80,7 @@ def resolve_quantity(order_price: float,
 # ---------------------------------------------------------------------------
 def _marker_path(ticker: str, *, test: bool = False) -> str:
     """Namespace one-shot state by profile and ticker, never across accounts."""
-    profile = sanitize_identifier(os.environ.get("IPO_PROFILE") or "default", sep="_", allow_dots_hyphens=True, strip_chars="._")
+    profile = sanitize_identifier(optional_env("IPO_PROFILE") or "default", sep="_", allow_dots_hyphens=True, strip_chars="._")
     raw_ticker = "" if isinstance(ticker, bool) or not isinstance(ticker, str) else ticker.strip().upper()
     symbol = sanitize_identifier(raw_ticker, sep="_", allow_dots_hyphens=True, strip_chars="._")
     suffix = ".test" if test else ""
