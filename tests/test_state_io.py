@@ -394,16 +394,7 @@ def test_read_json_dict(tmp_path):
 
 
 def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
-    from state_io import (
-        atomic_write_bytes,
-        atomic_write_text,
-        read_bytes_file,
-        read_csv_dicts,
-        read_tail_jsonl_dicts,
-        read_tail_jsonl_records,
-        read_text_file,
-        read_text_lines,
-    )
+    from state_io import atomic_write_text, read_bytes_file, read_csv_dicts, read_tail_jsonl_dicts, read_tail_jsonl_records, read_text_file, read_text_lines
 
     p_txt = tmp_path / "sample.txt"
     atomic_write_text(str(p_txt), " first \n\nsecond\n")
@@ -436,13 +427,7 @@ def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
     tail_recs = read_tail_jsonl_records(str(p_tail), limit=3, max_bytes=300)
     assert [r["idx"] for r in tail_recs] == [7, 8, 9]
 
-    from state_io import (
-        discard_generation_file,
-        read_json_dict,
-        read_json_dict_cached,
-        read_jsonl_records,
-        read_recovering_previous,
-    )
+    from state_io import discard_generation_file, read_json_dict, read_json_dict_cached, read_jsonl_records
     assert read_recovering_previous(None, default={"ok": 1}) == {"ok": 1}
     assert read_json_dict(None, default={"ok": 2}, recover_previous=True) == {"ok": 2}
     assert read_json_dict(123, default={"ok": 3}, recover_previous=True) == {"ok": 3}

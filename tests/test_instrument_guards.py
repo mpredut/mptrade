@@ -1007,7 +1007,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_composite_profit_guard_bypass_does_not_bypass_intelligence(self):
         """Verify bypass_guards={'profit_guard'} bypasses only G_PROF & G_QLIMIT1, not intelligence."""
-        from guard_hierarchy import normalize_bypassed_guards
         bypassed = normalize_bypassed_guards("profit_guard")
         self.assertIn("math_reference", bypassed)
         self.assertIn("math_profit", bypassed)
@@ -1036,7 +1035,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_fine_grained_bypass_guards_granularity(self):
         """Verify fine-grained bypass combinations and ensure non-bypassed guards apply by default."""
-        from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+        from guard_hierarchy import GUARD_REGISTRY
 
         # 0. GUARD_REGISTRY completeness (new canonical codes exist, legacy G1..G10 removed)
         canonical_codes = {
@@ -1141,18 +1140,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_guard_hierarchy_and_categories(self):
         """Verify object-oriented guard hierarchy, category grouping, and is_bypassed behavior."""
-        from guard_hierarchy import (
-            BaseGuard,
-            OperationalGuard,
-            TrendGuard,
-            ProfitGuard,
-            QuantLimitGuard,
-            IntelligenceGuard,
-            LLMGuard,
-            GUARD_REGISTRY,
-            GUARD_CATEGORIES,
-            normalize_bypassed_guards,
-        )
+        from guard_hierarchy import BaseGuard, OperationalGuard, TrendGuard, ProfitGuard, QuantLimitGuard, IntelligenceGuard, LLMGuard, GUARD_REGISTRY, GUARD_CATEGORIES
 
         # Hierarchy validation
         self.assertIsInstance(GUARD_REGISTRY["GO1"], OperationalGuard)
@@ -1365,7 +1353,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
     def test_gt_s_ignores_bypass_guards_and_stop_loss_module_owns_timer(self):
         """GT_S cannot be bypassed by bypass_guards ('GT_S' or 'all') in Instrument.place,
         and Instrument.place contains no is_stop timer logic (managed by PositionExitManager)."""
-        from unittest.mock import MagicMock
         from strategies.position_exit_manager import PositionExitManager, PositionExitConfig, PositionSnapshot, ExitAction
         self._clear_state()
         p = _FakeProvider(price=100.0)
@@ -1892,6 +1879,9 @@ class TestOrderRollback(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 from active_intents import build_active_intent_index, format_summary
+from guard_hierarchy import normalize_bypassed_guards
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 
 def _write_intent_file(path, payload, *, lines=False):
@@ -2149,8 +2139,7 @@ if __name__ == "__main__":
 
 def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
     """[ITER5 #1] Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)."""
-    from unittest.mock import MagicMock
-    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+    from guard_hierarchy import GUARD_REGISTRY
     # 1. Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)
     provider = MagicMock()
     provider.name = "binance"
@@ -2201,8 +2190,6 @@ def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
 def test_gt_m_medium_trend_action_scale_idempotency_when_applied_scale_is_already_iter10_s1(monkeypatch):
     """[ITER10 #1] GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry."""
     import pytest
-    from unittest.mock import MagicMock
-    from types import SimpleNamespace
     # 1. GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry
     submitted_qtys = []
     provider = MagicMock()
@@ -2285,7 +2272,6 @@ def test_gt_m_medium_trend_action_scale_idempotency_when_applied_scale_is_alread
 def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter21_s2(monkeypatch):
     """[ITER21 #2] Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,."""
     import pytest
-    from unittest.mock import MagicMock
     from tests.conftest import make_test_regime_context as _build_test_context
     from providers.quantity import QuantityDecision
     # 2. Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,
@@ -2383,7 +2369,6 @@ def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter2
 
 def test_instrument__apply_late_intelligence_scale_nan_bool_safety_instrument_place_rejects_iter35_s3():
     """[ITER35 #3] Instrument._apply_late_intelligence_scale NaN/bool safety & Instrument.place rejects boolean/NaN/negative limit prices on both BUY and SELL with 'invalid_price'."""
-    from types import SimpleNamespace
     # 3. Instrument._apply_late_intelligence_scale NaN/bool safety
     class _DummyProvider:
         name = "kraken"
@@ -2499,7 +2484,6 @@ def test_instrument_place_side_normalization_invalid_side_handling_and_iter98_s2
 
 def test_instrument_param_with_cast_bool_and_instrument_enabled_iter156_s1():
     """[ITER156 #1] Instrument.param with cast=bool and Instrument.enabled boolean parsing."""
-    from types import SimpleNamespace
     from instrument import _parse_bool_flag
     # 1. Instrument.param with cast=bool and Instrument.enabled boolean parsing
     dummy_prov = SimpleNamespace(name="dummy", validate_symbol=lambda s: None)

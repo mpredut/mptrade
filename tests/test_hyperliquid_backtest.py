@@ -394,7 +394,7 @@ def test_validate_replay_metrics_across_all_venues():
 
 def test_hyperliquid_market_data_fetchers():
     import json
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
     _hl_md = load_local_module(_HL_DIR, "market_data", module_key="hl_md_test", reload=True)
     fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
@@ -435,7 +435,6 @@ def test_hyperliquid_market_data_fetchers():
 
 def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
     import json
-    from unittest.mock import patch
     _wf_mod = load_local_module(
         os.path.join(_ROOT, "offline", "runners"), "hyperliquid_walk_forward_baseline", module_key="hl_wf_baseline", reload=True
     )
@@ -467,7 +466,6 @@ def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
 
 def test_hyperliquid_walk_forward_baseline_runner_perp_engine(tmp_path):
     import json
-    from unittest.mock import patch
     _wf_mod = load_local_module(
         os.path.join(_ROOT, "offline", "runners"), "hyperliquid_walk_forward_baseline", module_key="hl_wf_baseline", reload=True
     )
@@ -767,7 +765,6 @@ def test_hyperliquid_sz_decimals_spot_fallback_and_exact_sl_boundary():
 
 def test_walk_forward_baseline_missing_dataset_and_warmup_persistence(tmp_path):
     import json
-    from unittest.mock import patch
     from offline.runners import binance_walk_forward_baseline as bwf
     from offline.runners import hyperliquid_walk_forward_baseline as hwf
 
@@ -811,7 +808,7 @@ def test_walk_forward_baseline_missing_dataset_and_warmup_persistence(tmp_path):
 
 def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
     import json
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
     from providers.market_api import clean_order_id
 
     _hl_md = load_local_module(_HL_DIR, "market_data", module_key="hl_md_case_test", reload=True)
@@ -869,6 +866,7 @@ import json as _json
 import time as _time
 import unittest as _unittest
 from botcore import load_local_module
+from unittest.mock import patch
 
 _DN_DIR = os.path.join(_ROOT, "archive", "hyperliquid", "delta_neutral")
 if _DN_DIR not in sys.path:

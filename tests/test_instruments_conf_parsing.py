@@ -18,6 +18,7 @@ from instrument import load_instruments, load_tradable_instruments  # noqa: E402
 import instrument_registry as registry  # noqa: E402
 from instrument_registry import ROLES  # noqa: E402
 import instrument_registry as ic  # noqa: E402
+from types import SimpleNamespace
 
 
 NUMERIC_MT_KEYS = [
@@ -404,7 +405,6 @@ def _raw_param_presence():
 
 
 def test_resolve_tradable_instrument_filtering_and_variants():
-    from types import SimpleNamespace
 
     btc_usd = SimpleNamespace(symbol="BTC/USD", provider_name="kraken", base="BTC", quote="USD", enabled=True)
     btc_eur = SimpleNamespace(symbol="BTC/EUR", provider_name="kraken", base="BTC", quote="EUR", enabled=True)
@@ -614,7 +614,6 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     assert "XBTUSD" in kr_prov._ssot_symbol_candidates("XXBTZUSD")
 
     # _resolve_configured_venue & _is_multi_venue_base inspect dict-based load_registry() without AttributeError
-    from types import SimpleNamespace
     import intelligence.external.collectors.base_collector as obd_mod
     import instrument_registry as ir_mod
     orig_load = ir_mod.load_registry
@@ -720,7 +719,6 @@ def test_marketapi_place_inherits_instrument_params_from_instrument_registry_boo
     import time
     import order_guard
     import threading
-    from types import SimpleNamespace
     import cacheManager as cm
     import instrument_registry
     from providers.market_api import MarketApi

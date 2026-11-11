@@ -29,6 +29,8 @@ sys.modules.setdefault("bapi_allorders", MagicMock())
 
 import cacheManager as cm
 from tests.conftest import TempDirTestCase
+from binance_api import bapi_ws, bapi_ws_bridge
+from providers.kraken_provider import KrakenProvider
 
 
 class _CurrentPriceResetTestCase(TempDirTestCase):
@@ -425,7 +427,6 @@ class TestCacheTradeManager(TempDirTestCase):
             self.assertEqual(items[0]["id"], "T100")
             self.assertEqual(items[0]["symbol"], "HYPEUSD")
             self.assertTrue(items[0]["isBuyer"])
-            from providers.kraken_provider import KrakenProvider
 
             ws_item = KrakenProvider.normalize_ws_trade(
                 "200",
@@ -1297,7 +1298,6 @@ class TestCacheCurrentPriceManager(_CurrentPriceResetTestCase):
 class TestWsHealthFunctions(unittest.TestCase):
 
     def setUp(self):
-        from binance_api import bapi_ws_bridge
 
         self.bws = bapi_ws_bridge
         self.bws._ws_available = False
@@ -1618,7 +1618,6 @@ class TestRefreshSymbolInCache(TempDirTestCase):
     """Test the WebSocket handler helper that refreshes one symbol."""
 
     def test_refresh_symbol_in_cache(self):
-        from binance_api import bapi_ws_bridge
 
         with self.subTest("refresh single symbol"):
             fname = _tmp_file(self.tmp)
@@ -2044,7 +2043,6 @@ class TestAtomicWrite(TempDirTestCase):
                 self.assertFalse(os.path.exists(old_p), f"Expected {old_name} to be moved")
 
     def test_factory_shutdown_all_clears_short_trend_and_ws_bridge_rollback_on_start_error(self):
-        from binance_api import bapi_ws, bapi_ws_bridge
 
         st = cm.CacheFactory.get("ShortTrend", symbols=["BTCUSDC"])
         self.assertIs(cm.CacheFactory._instances.get("ShortTrend"), st)
@@ -2657,7 +2655,6 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
     assert "subscribe_price" not in cm.CacheManagerInterface.__dict__
     assert "bind_runtime_services" not in cm.CacheManagerInterface.__dict__
 
-    from binance_api import bapi_ws
 
     monkeypatch.setattr(bapi_ws, "get_ws_manager", lambda: "fake-ws-mgr")
     cpm_calls = []
@@ -2983,7 +2980,6 @@ def test_venue_agnostic_trade_cache_and_t212_ssot_price_routing(tmp_path):
 def test_ssot_state_io_hygiene_and_unified_cache_factory_getters():
     """Verify cache modules use state_io/cacheintegrity instead of raw open/json calls and unify factory getters."""
     import ast
-    from providers.kraken_provider import KrakenProvider
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     checked_files = (
@@ -3045,7 +3041,6 @@ def test_ssot_state_io_hygiene_and_unified_cache_factory_getters():
 def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
     """Verify _KrakenAccountTradeBridge starts in poll mode, persists fills, and stops cleanly."""
     import cacheaccount
-    from providers.kraken_provider import KrakenProvider
     from state_io import read_json_dict
 
     cache_file = str(tmp_path / "cache_trade_kraken.json")
@@ -3104,14 +3099,12 @@ def test_cache_modules_delegate_venue_ws_protocols_to_providers():
     """Enforce zero concrete provider or venue-transport imports and wss:// URLs in cache*.py."""
     import ast
     from pathlib import Path
-    from binance_api import bapi_ws
     import cacheprice as cp
     from providers.base import (
         AsyncReconnectStreamBase,
         PublicPriceStreamBase,
     )
     from providers.hyperliquid_provider import HyperliquidProvider
-    from providers.kraken_provider import KrakenProvider
 
     repo_root = Path(__file__).resolve().parent.parent
     forbidden_exact_mods = {

@@ -27,6 +27,8 @@ from intelligence.sentiment.sentiment_advisor import (
     SentimentAdvisor,
     SentimentAdvisorAssessment,
 )
+from datetime import datetime
+from types import SimpleNamespace
 
 
 SAMPLE_RSS_XML_WAR = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -554,7 +556,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert normalize_recommended_brake("ALLOW", threat_level="NORMAL") == "NONE"
 
     def test_global_trading_sessions_europe_morning_buy_and_evening_close(self):
-        from datetime import datetime
         from zoneinfo import ZoneInfo
         from intelligence.macro.calendar_ssot import (
             did_cross_session_checkpoint,
@@ -601,7 +602,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert did_cross_session_checkpoint(t_1730, t_1835) == "EU_EVENING_POSITION_CLOSE"
 
     def test_dynamic_sentiment_interval_adapts_to_context(self):
-        from datetime import datetime
         from zoneinfo import ZoneInfo
         from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
         from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
@@ -892,7 +892,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert reason_normal_fresh == "acute_shock_keyword_alert"
 
     def test_dynamic_telemetry_interval_scaling_from_executor_cadence(self, tmp_path, monkeypatch):
-        from datetime import datetime, timezone
+        from datetime import timezone
         from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
         from intelligence.macro_sentiment_ssot import (
             resolve_crypto_executor_interval_sec,
@@ -1542,7 +1542,6 @@ def test_contiguous_dynamic_lexicon_runs_test_log_isolation_and_dotenv_dedup(tmp
 
 def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     """Verify VIX benchmark spec, symmetric cross_asset_regime classification, and unified Crypto/Equity AI telemetry."""
-    from types import SimpleNamespace
     from intelligence.macro_sentiment_ssot import (
         get_cross_asset_regimes,
         get_macro_benchmark_specs,
@@ -2578,7 +2577,6 @@ def test_geopoliticalthreatanalyzer_sentimentadvisor_and_newsfeedcollector_sanit
 
 def test_macroanalyzer_assess_market_advisor_null_json_fields_iter26_s3(tmp_path):
     """[ITER26 #3] MacroAnalyzer.assess_market_advisor null JSON fields."""
-    from types import SimpleNamespace
     # 3. MacroAnalyzer.assess_market_advisor null JSON fields
     (tmp_path / "fear_greed_collect.json").write_text(
         json.dumps({
@@ -2755,7 +2753,6 @@ def test_geopoliticalshockguard_accepts_dict_assessment_iter175_s2():
 
 def test_geopoliticalthreatanalyzer_assess_accepts_dict_news_snapshot_and_dict_headlines_iter175_s3(tmp_path):
     """[ITER175 #3] GeopoliticalThreatAnalyzer.assess accepts dict news_snapshot and dict headlines & SentimentAdvisor.review accepts dict fear_greed and dict breadth."""
-    from types import SimpleNamespace
     # 3. GeopoliticalThreatAnalyzer.assess accepts dict news_snapshot and dict headlines
     captured_prompts = []
     fake_gemini = SimpleNamespace(
@@ -2869,7 +2866,6 @@ def test_feargreedcollector_marketbreadthcollector_newsfeedcollector_accept_now_
 
 def test_extract_high_severity_headlines_and_digest_supports_both_dicts_and_objects_iter182_s3():
     """[ITER182 #3] extract_high_severity_headlines_and_digest supports both dicts and objects."""
-    from types import SimpleNamespace
     from intelligence.macro_sentiment_ssot import (
         extract_high_severity_headlines_and_digest,
     )

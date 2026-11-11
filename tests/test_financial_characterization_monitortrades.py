@@ -19,6 +19,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import monitortrades as mt
 from providers.base import MarketDataProvider
+from types import SimpleNamespace
 
 
 NOW = 2_000_000_000.0
@@ -1519,7 +1520,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
                 mock_notify.assert_not_called()
 
         with self.subTest(msg="post_stop_ai_guard_scales_policy_capped_qty_and_defers_below_min_notional"):
-            from types import SimpleNamespace
             snap = mt.ReentrySnapshot(
                 symbol="ARBUSDC",
                 current_price=0.18,
@@ -2069,7 +2069,6 @@ def test_monitortrades__resolve_exit_and__handle_position_recovery_clear__sl_epi
 def test_monitortrades__can_pass_buy_quantity_policy_passes_cancelorders_true_and_checks_go1_iter10_s3(monkeypatch):
     """[ITER10 #3] monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard."""
     import order_guard
-    from types import SimpleNamespace
     # 3. monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard
     qdec_kwargs = []
 
@@ -2110,7 +2109,6 @@ def test_monitortrades__can_pass_buy_quantity_policy_passes_cancelorders_true_an
 
 def test_monitortrades__can_pass_buy_quantity_policy_honors_g_qlimit1_bypass_iter14_s1(monkeypatch):
     """[ITER14 #1] monitortrades._can_pass_buy_quantity_policy honors G_QLIMIT1 bypass."""
-    from types import SimpleNamespace
     import order_guard
     from providers.quantity import QuantityDecision
     # 1. monitortrades._can_pass_buy_quantity_policy honors G_QLIMIT1 bypass
@@ -2272,7 +2270,6 @@ def test_monitortrades__load_mt_state_re_anchors_clock_skewed_future_timestamps_
 
 def test_monitortrades__compute_spot_position__place_guarded_iter32_s4():
     """[ITER32 #4] monitortrades._compute_spot_position & _place_guarded."""
-    from types import SimpleNamespace
     # 4. monitortrades._compute_spot_position & _place_guarded
     owned, active_avg, _ = mt._compute_spot_position(
         buy_orders=[

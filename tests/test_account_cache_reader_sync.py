@@ -15,6 +15,8 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from binance_api import bapi_ws_bridge
 import account_cache_health as health
 import cacheManager as cm
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 
 def _order(order_id, timestamp):
@@ -1214,7 +1216,6 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         )
 
     def test_multi_symbol_health_time_uses_earliest_request_start(self):
-        from types import SimpleNamespace
 
         manager = self._trade_manager([_trade(1, 1000)], 1000)
         manager.symbols = ["BTCUSDC", "ETHUSDC"]
@@ -1737,8 +1738,6 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
             True, "", age, age, order_version, trade_version)
 
     def test_reader_is_confirmed_against_a_post_load_marker(self):
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
         requested = self._status("order-1", "trade-1")
         confirmed = self._status("order-1", "trade-1", age=2.0)
         cache_module = SimpleNamespace(
@@ -1756,8 +1755,7 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
             requested)
 
     def test_one_bounded_retry_loads_a_marker_that_advanced(self):
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock, call
+        from unittest.mock import call
         first = self._status("order-1", "trade-1")
         advanced = self._status("order-2", "trade-2")
         cache_module = SimpleNamespace(
@@ -1777,8 +1775,6 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
         )
 
     def test_marker_becoming_stale_during_reader_load_refuses(self):
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
         from providers.strategy_executor import SubmissionRefused
         requested = self._status("order-1", "trade-1")
         cache_module = SimpleNamespace(

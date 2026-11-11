@@ -13,6 +13,10 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from binance_api import bapi, bapi_allorders as ao, bapi_placeorder as po, bapi_trades, bapi_ws
 from binance_api.bapi_ws import BinanceAccountStream, BinancePriceStream
+from binance_api import bapi_allorders, bapi_placeorder, bapi_ws_normalize
+from providers.market_api import BinanceProvider
+from providers.quantity import BinanceOrderRules
+from types import SimpleNamespace
 
 SYMBOL = "BTCUSDC"
 TAO_SYMBOL = "TAOUSDC"
@@ -634,9 +638,7 @@ if __name__ == "__main__":
 def test_bapi_allorders_get_trade_orders_bapi_trades_get_trade_orders_and_aggregate_trades_iter28_s2(monkeypatch):
     """[ITER28 #2] bapi_allorders.get_trade_orders, bapi_trades.get_trade_orders, and aggregate_trades."""
     import threading
-    from types import SimpleNamespace
     import cacheManager as cm
-    from binance_api import bapi_allorders
     tm = cm.CacheTradeManager.__new__(cm.CacheTradeManager)
     tm.lock = threading.RLock()
     tm.sync_account_reader_if_needed = lambda: None
@@ -771,7 +773,6 @@ def test_bapi_placeorder_rejects_boolean_qty_price_cancel_opposite_requested_pri
 
 def test__require_submit_permit_headroom_refuses_nan_negative_or_boolean_cache_ages_iter38_s1():
     """[ITER38 #1] _require_submit_permit_headroom refuses NaN, negative, or boolean cache ages."""
-    from types import SimpleNamespace
     import pytest
     from binance_api import bapi_placeorder as bp
     # 1. _require_submit_permit_headroom refuses NaN, negative, or boolean cache ages
@@ -811,7 +812,7 @@ def test_cancel_opposite_orders_ignores_zero_missing_price_on_buy_symmetrically_
 def test_binance_filters__decimal_rejects_bool_and__parse_bool_flag_handles_string_iter39_s1():
     """[ITER39 #1] binance_filters._decimal rejects bool and _parse_bool_flag handles string 'false'."""
     import pytest
-    from providers.quantity import BinanceFilterError, BinanceOrderRules, _decimal, _parse_bool_flag
+    from providers.quantity import BinanceFilterError, _decimal, _parse_bool_flag
     # 1. binance_filters._decimal rejects bool and _parse_bool_flag handles string "false"
     with pytest.raises(BinanceFilterError):
         _decimal(True, name="qty")
@@ -832,7 +833,6 @@ def test_binanceprovider_position_cost_basis_order_status_cancel_order_reject_bo
     """[ITER39 #3] BinanceProvider.position_cost_basis / order_status / cancel_order reject boolean inputs."""
     import pytest
     from providers.strategy_executor import ProviderError
-    from providers.market_api import BinanceProvider
     # 3. BinanceProvider.position_cost_basis / order_status / cancel_order reject boolean inputs
     bp_prov = BinanceProvider()
     with pytest.raises(ValueError):
@@ -856,7 +856,6 @@ def test_bapi_get_current_price_ignores_nan_bool_cached_values_and_iter41_s2(mon
 def test_bapi_allorders_get_total_traded_stats_ignores_malformed_nan_bool_trades_and_iter41_s3(monkeypatch):
     """[ITER41 #3] bapi_allorders.get_total_traded_stats ignores malformed/NaN/bool trades and get_filled_orders keeps unkeyed fills separate."""
     import pytest
-    from binance_api import bapi_allorders
     # 3. bapi_allorders.get_total_traded_stats ignores malformed/NaN/bool trades and get_filled_orders keeps unkeyed fills separate
     monkeypatch.setattr(
         bapi_allorders,
@@ -875,7 +874,6 @@ def test_bapi_allorders_get_total_traded_stats_ignores_malformed_nan_bool_trades
 
 def test_bapi_ws_normalize_now_ms_true_nan_falls_back_to_current_iter42_s2():
     """[ITER42 #2] bapi_ws_normalize: now_ms=True / NaN falls back to current epoch ms; boolean commission ignored."""
-    from binance_api import bapi_ws_normalize
     # 2. bapi_ws_normalize: now_ms=True / NaN falls back to current epoch ms; boolean commission ignored
     ev = {
         "s": "BTCUSDC",
@@ -922,7 +920,6 @@ def test_market_data_fetch_ohlc_candles_rejects_boolean_window_parameters_iter43
 
 def test_trailingstop_rejects_boolean_price_balance_trend_iter43_s5():
     """[ITER43 #5] TrailingStop rejects boolean price/balance/trend."""
-    from types import SimpleNamespace
     from binance_api import trailing_stop
     # 5. TrailingStop rejects boolean price/balance/trend
     dummy_api = SimpleNamespace(
@@ -940,9 +937,7 @@ def test_trailingstop_rejects_boolean_price_balance_trend_iter43_s5():
 
 def test_bapi_placeorder__submit_binance_order_rejects_bool_nan_inf_even_when_iter51_s1():
     """[ITER51 #1] bapi_placeorder._submit_binance_order rejects bool/NaN/Inf/<=0 even when cache_permit is None."""
-    from types import SimpleNamespace
     import pytest
-    from binance_api import bapi_placeorder
     # 1. bapi_placeorder._submit_binance_order rejects bool/NaN/Inf/<=0 even when cache_permit is None
     dummy_bclient = SimpleNamespace(
         order_limit_buy=lambda **kw: {"orderId": 1},
@@ -967,8 +962,6 @@ def test_bapi_placeorder__submit_binance_order_rejects_bool_nan_inf_even_when_it
 
 def test_bapi_allorders_paginate_my_trades_rejects_bool_start_time_ms_normalizes_bool_limit_iter51_s2():
     """[ITER51 #2] bapi_allorders.paginate_my_trades rejects bool start_time_ms & normalizes bool limit to 1000."""
-    from types import SimpleNamespace
-    from binance_api import bapi_allorders
     # 2. bapi_allorders.paginate_my_trades rejects bool start_time_ms & normalizes bool limit to 1000
     assert bapi_allorders.paginate_my_trades(SimpleNamespace(), "BTCUSDC", start_time_ms=True) == []
     seen_limits = []
@@ -985,7 +978,6 @@ def test_bapi_allorders_paginate_my_trades_rejects_bool_start_time_ms_normalizes
 
 def test_trailingstop_reconcile_pending_handles_nan_bool_filled_qty_and_req_qty_iter51_s3():
     """[ITER51 #3] TrailingStop.reconcile_pending handles NaN/bool filled_qty and req_qty safely."""
-    from types import SimpleNamespace
     from binance_api import trailing_stop
     # 3. TrailingStop.reconcile_pending handles NaN/bool filled_qty and req_qty safely
     ts = trailing_stop.TrailingStop(
@@ -1040,7 +1032,6 @@ def test_binance_trailingstop__sync_retry_count_from_state__order_intent_iter58_
 def test_binanceprovider_open_orders_order_status_reject_bool_nan_iter58_s3(monkeypatch):
     """[ITER58 #3] BinanceProvider.open_orders & order_status reject bool/NaN."""
     import pytest
-    from providers.market_api import BinanceProvider
     from providers.strategy_executor import ProviderError
     # 3. BinanceProvider.open_orders & order_status reject bool/NaN
     bp = BinanceProvider()
@@ -1057,7 +1048,6 @@ def test_binanceprovider_open_orders_order_status_reject_bool_nan_iter58_s3(monk
 def test_parse_trade_execution_report_derives_price_from_y_z_when_l_iter61_s1():
     """[ITER61 #1] parse_trade_execution_report derives price from Y/z when L, p, l are NaN/0."""
     import pytest
-    from binance_api import bapi_ws_normalize
     # 1. parse_trade_execution_report derives price from Y/z when L, p, l are NaN/0
     sym_t, trd = bapi_ws_normalize.parse_trade_execution_report(
         {
@@ -1117,7 +1107,6 @@ def test_binanceaccountstream__watchdog_loop_handles__last_event_ts_age_inf_with
 
 def test_bapi_ws_normalize_strips_uppercases_symbols_rejects_whitespace_symbols_and_iter82_s2():
     """[ITER82 #2] bapi_ws_normalize strips/uppercases symbols, rejects whitespace symbols, and replaces negative timestamps with fallback."""
-    from binance_api import bapi_ws_normalize
     # 2. bapi_ws_normalize strips/uppercases symbols, rejects whitespace symbols, and replaces negative timestamps with fallback
     assert bapi_ws_normalize.parse_order_execution_report({"s": "   ", "x": "TRADE", "X": "FILLED", "t": 1}) is None
     res_order = bapi_ws_normalize.parse_order_execution_report(
@@ -1137,7 +1126,7 @@ def test_bapi_ws_normalize_strips_uppercases_symbols_rejects_whitespace_symbols_
 def test_providers_binance_filters__parse_bool_flag_handles_nan_and_binanceorderrules_rejects_iter85_s3():
     """[ITER85 #3] providers.binance_filters._parse_bool_flag handles NaN and BinanceOrderRules rejects boolean baseAsset/quoteAsset."""
     import pytest
-    from providers.quantity import BinanceFilterError, BinanceOrderRules, _parse_bool_flag
+    from providers.quantity import BinanceFilterError, _parse_bool_flag
     # 3. providers.binance_filters._parse_bool_flag handles NaN and BinanceOrderRules rejects boolean baseAsset/quoteAsset
     assert _parse_bool_flag(float("nan"), default=False) is False
     assert _parse_bool_flag("unknown", default=True) is True
@@ -1155,7 +1144,6 @@ def test_binanceprovider_submit_order_rejects_invalid_sides_instead_of_mapping_i
     """[ITER86 #2] BinanceProvider.submit_order rejects invalid sides instead of mapping them to SELL or BUY & BinanceProvider.order_status normalizes lowercase/whitespace venue status."""
     import pytest
     from providers.strategy_executor import SubmissionRefused
-    from providers.market_api import BinanceProvider
     import providers.market_api as market_api_mod
     # 2. BinanceProvider.submit_order rejects invalid sides instead of mapping them to SELL or BUY
     bp = BinanceProvider()
@@ -1186,7 +1174,7 @@ def test_marketdataprovider_last_opposite_fill_bool_invalid_order_type_fractiona
     """[ITER96 #3] MarketDataProvider.last_opposite_fill bool/invalid order_type & fractional decimals in round_quantity/round_price & ReplayMarketDataProvider fractional advance, case-insensitive/whitespace free_balance, and get_orders side validation & resolve_assets & balance_cap_quantity bool rejection & BinanceProvider.supports_symbol & non-integer float order_id rejection + MarketApi.latest_fill_price."""
     import pytest
     from providers.base import MarketDataProvider
-    from providers.market_api import BinanceProvider, MarketApi
+    from providers.market_api import MarketApi
     from providers.quantity import balance_cap_quantity, resolve_assets
     from providers.replay_provider import ReplayMarketDataProvider
     from providers.strategy_executor import ProviderError
@@ -1305,7 +1293,6 @@ def test_bapi_ws_bridge_handle_binance_ws_event_ignores_unhashable_or_boolean_ev
 
 def test_binance_api_trailing_stop_string_false_enabled_flag_and_boolean_iter109_s4(tmp_path):
     """[ITER109 #4] binance_api.trailing_stop: string 'false' enabled flag and boolean symbol guards."""
-    from types import SimpleNamespace
     from binance_api import trailing_stop as bts
     # 4. binance_api.trailing_stop: string 'false' enabled flag and boolean symbol guards
     dummy_api = SimpleNamespace()
@@ -1318,7 +1305,6 @@ def test_binance_api_trailing_stop_string_false_enabled_flag_and_boolean_iter109
 
 def test_binanceprovider_open_orders_rejects_missing_bool_orderid_and_bool_iter112_s1(monkeypatch):
     """[ITER112 #1] BinanceProvider.open_orders rejects missing/bool orderId and bool status/side."""
-    from types import SimpleNamespace
     import pytest
     from providers.base import ProviderError
     import providers.market_api as ma
@@ -1392,9 +1378,7 @@ def test_parse_order_execution_report_rejects_none_or_orderid_iter117_s4():
 
 def test_bapi_allorders_paginate_my_trades_symbol_validation_and_limit_cap_at_iter120_s1():
     """[ITER120 #1] bapi_allorders.paginate_my_trades symbol validation and limit cap at 1000."""
-    from types import SimpleNamespace
     import pytest
-    from binance_api import bapi_allorders
     # 1. bapi_allorders.paginate_my_trades symbol validation and limit cap at 1000
     assert bapi_allorders.paginate_my_trades(object(), "", 1000) == []
     assert bapi_allorders.paginate_my_trades(object(), True, 1000) == []
@@ -1450,8 +1434,6 @@ def test_bapi_trades__valid_fill_id_rejects_containers_non_integer_floats_and_it
 
 def test_bapi_placeorder__submit_binance_order_replaces_boolean_blank_client_order_id_and_tolerates_iter130_s4(monkeypatch):
     """[ITER130 #4] bapi_placeorder._submit_binance_order replaces boolean/blank client_order_id and tolerates order dict without 'orderId' key."""
-    from types import SimpleNamespace
-    from binance_api import bapi_placeorder
     # 4. bapi_placeorder._submit_binance_order replaces boolean/blank client_order_id and tolerates order dict without 'orderId' key
     captured = {}
 
@@ -1472,7 +1454,6 @@ def test_bapi_placeorder__submit_binance_order_replaces_boolean_blank_client_ord
 
 def test_bapi_ws_normalize_rejects_sentinel_strings_nan_null_and_containers_iter131_s2():
     """[ITER131 #2] bapi_ws_normalize rejects sentinel strings ('0', 'nan', 'null') and containers for order/trade IDs."""
-    from binance_api import bapi_ws_normalize
     # 2. bapi_ws_normalize rejects sentinel strings ("0", "nan", "null") and containers for order/trade IDs
     assert (
         bapi_ws_normalize.parse_order_execution_report(
@@ -1509,7 +1490,6 @@ def test_bapi_get_current_price_normalizes_symbol_casing_whitespace_to_hit_iter1
 
 def test_bapi_get_open_orders_rejects_sentinel_container_orderid_and_normalizes_iter133_s2(monkeypatch):
     """[ITER133 #2] bapi.get_open_orders rejects sentinel/container orderId and normalizes integer float orderId."""
-    from types import SimpleNamespace
     # 2. bapi.get_open_orders rejects sentinel/container orderId and normalizes integer float orderId
     monkeypatch.setattr(bapi.sym, "validate_params", lambda *_a: None)
     monkeypatch.setattr(
@@ -1545,7 +1525,6 @@ def test_bapi_client_stop_periodic_resync_tolerates_boolean_nan_negative_timeout
 def test_providers_binance_filters_py_binanceorderrules_normalize_string_boolean_market_iter154_s4():
     """[ITER154 #4] providers/binance_filters.py: BinanceOrderRules.normalize string boolean market='false'."""
     from decimal import Decimal
-    from providers.quantity import BinanceOrderRules
     # 4. providers/binance_filters.py: BinanceOrderRules.normalize string boolean market="false"
     rules = BinanceOrderRules.from_symbol_info({
         "baseAsset": "BTC",
@@ -1561,7 +1540,6 @@ def test_providers_binance_filters_py_binanceorderrules_normalize_string_boolean
 
 def test_bapi_cancel_order_check_order_filled_and_get_open_orders_reject_negative_orderids_iter159_s3(monkeypatch):
     """[ITER159 #3] bapi: cancel_order, check_order_filled, and get_open_orders reject '0'/negative orderIds and parse bool flags."""
-    from types import SimpleNamespace
     # 3. bapi: cancel_order, check_order_filled, and get_open_orders reject "0"/negative orderIds and parse bool flags
     monkeypatch.setattr(
         bapi,
@@ -1585,7 +1563,6 @@ def test_bapi_cancel_order_check_order_filled_and_get_open_orders_reject_negativ
 
 def test_bapi_placeorder_order_candidate_price_and__submit_binance_order_handle_market_false_and_iter159_s4(monkeypatch):
     """[ITER159 #4] bapi_placeorder: order_candidate_price and _submit_binance_order handle market='false' and client_order_id='0'."""
-    from binance_api import bapi_placeorder
     # 4. bapi_placeorder: order_candidate_price and _submit_binance_order handle market="false" and client_order_id="0"
     assert bapi_placeorder.order_candidate_price("BUY", 60000.0, 60100.0, market="false") == 60000.0
     captured_submit = {}
@@ -1611,7 +1588,6 @@ def test_bapi_placeorder_order_candidate_price_and__submit_binance_order_handle_
 
 def test_bapi_allorders_paginate_my_trades_accepts_tail_id_and_get_filled_orders_does_iter159_s5(monkeypatch):
     """[ITER159 #5] bapi_allorders: paginate_my_trades accepts '100.0' tail id and get_filled_orders does not group orderId=0 fills."""
-    from binance_api import bapi_allorders
     # 5. bapi_allorders: paginate_my_trades accepts "100.0" tail id and get_filled_orders does not group orderId=0 fills
     pages = [
         [{"id": "100.0", "orderId": 0, "price": "100.0", "qty": "1.0", "time": int(time.time() * 1000), "isBuyer": True}],
@@ -1634,7 +1610,6 @@ def test_bapi_allorders_paginate_my_trades_accepts_tail_id_and_get_filled_orders
 
 def test_providers_market_api_binanceprovider_ohlc_series_with_marketapi_provider_by_name_with_iter164_s2(monkeypatch):
     """[ITER164 #2] providers.market_api: BinanceProvider.ohlc_series with '15.0', MarketApi.provider_by_name with provider object, and market_regime_context(use_runtime_snapshot='false')."""
-    from types import SimpleNamespace
     from providers import market_api as mapi
     # 2. providers.market_api: BinanceProvider.ohlc_series with "15.0", MarketApi.provider_by_name with provider object, and market_regime_context(use_runtime_snapshot="false")
     bp = mapi.BinanceProvider()

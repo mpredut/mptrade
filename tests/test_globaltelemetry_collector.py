@@ -15,6 +15,9 @@ from intelligence.external.collectors.derivatives_telemetry_collector import Der
 from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+from cacheaccount import CacheTradeManager
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+from state_io import save_json_state
 
 
 def test_collector_initialization(temp_cache_dir):
@@ -163,7 +166,6 @@ def test_collector_bounded_step_timeout_still_writes_heartbeat(temp_cache_dir):
 
 def test_bounded_step_skips_overlapping_thread_and_backs_off(temp_cache_dir):
     import threading
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
     collector = GlobalTelemetryCollector(
         symbols=["HYPEUSD"],
@@ -338,7 +340,7 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert Cache24PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_24_price_BTCUSDC.json"
     assert CacheSparsePriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_sparse_price_BTCUSDC.jsonl"
     assert CacheCurrentPriceManager.disk_filename_for_symbol() == "cache_current_price.json"
-    from cacheaccount import CacheAssetValueManager, CacheOrderManager, CacheTradeManager
+    from cacheaccount import CacheAssetValueManager, CacheOrderManager
     from cacheprice import CachePriceManagerBase
     from cachetrend import CacheLongTrendManager, CacheShortTrendManager
 
@@ -671,10 +673,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         assert TelemetryCollectorFactory.get_collector(col_cls) is inst
 
     # 3. Cache hierarchy filename & schema contracts are reused
-    from cacheaccount import (
-        CacheAccountManagerBase,
-        CacheTradeManager,
-    )
+    from cacheaccount import CacheAccountManagerBase
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
     from intelligence.internal.guards.guard_decision import (
@@ -717,7 +716,6 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         assert trd_inst.append_persist is (expected_fmt == "jsonl")
 
     kraken_trd_path = os.path.join(temp_cache_dir, CacheTradeManager.disk_filename("kraken"))
-    from state_io import save_json_state
 
     save_json_state(
         kraken_trd_path,
@@ -843,7 +841,6 @@ def test_external_collectors_and_survival_producer_consumer_decoupling(
     """Verify Step 2 Producer-Consumer decoupling across external symbol collectors, survival estimation, and cycle deltas."""
     import external_order_guard as eog
     from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
     from intelligence.internal.state import survival as surv_mod
     from intelligence.sentiment.evaluators.microstructure_evaluator import (
@@ -919,7 +916,6 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
         MarketAndPortfolioSnapshotOrchestrator,
     )
     from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot
-    from state_io import save_json_state
 
     monkeypatch.setenv("MPTRADE_ENABLE_LIVE_BACKFILL", "1")
     now_ts = 1700000500.0
@@ -1076,7 +1072,6 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     from intelligence.macro_analyzer import MacroAnalyzer
     from intelligence.external.collectors.base_collector import TelemetryCollectorFactory
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
-    from state_io import save_json_state
 
     # 1. TelemetryCollectorFactory start_sync consumer vs producer separation
     mb_consumer = TelemetryCollectorFactory.create("macro_benchmarks_snapshot", start_sync=False)
@@ -1174,7 +1169,6 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     assert auto_snap.age_sec == 50.0
 
     # 4. Cross-venue CacheTradeManager.get_last_opposite_fill_price & equity order_guard._read_cached_price_history
-    from cacheaccount import CacheTradeManager
     import order_guard
 
     krk_tm = CacheTradeManager(
@@ -1238,7 +1232,6 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     )
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
     from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
@@ -1365,7 +1358,6 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
         "t212", workspace_dir=ws_dir, filename="trailing_peaks.json"
     ) == os.path.join(ws_dir, "212trading", "trailing_peaks.json")
 
-    from cacheaccount import CacheTradeManager
 
     tm_str_flag = CacheTradeManager(
         60,

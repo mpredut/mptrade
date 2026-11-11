@@ -20,6 +20,12 @@ import order_guard
 from market_regime import MarketRegimeDecision, MarketRegimeContext
 from providers.quantity import decide_quantity
 from tests.conftest import make_test_regime_context
+from instrument import Instrument
+from intelligence.internal.guards.guard_decision import GuardDecision
+from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import KrakenProvider
+from providers.market_api import BinanceProvider
+from providers.strategy_executor import ProviderError
 
 
 _BASE_MARGINS = dict(order_guard._load_margins())
@@ -99,7 +105,6 @@ class TestIntelligenceGuardDynamicEvaluation:
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
         monkeypatch.setattr(order_guard, "_resolve_trend_duration", lambda s: 3600.0)
 
-        from intelligence.internal.guards.guard_decision import GuardDecision
 
         gemini_called = []
 
@@ -254,7 +259,6 @@ class TestCacheSafetyAndHotReload:
 
 class TestCase3BinanceArchivedIsolation:
     def test_archived_order_recognized_only_on_get_order(self, monkeypatch):
-        from providers.market_api import BinanceProvider
         bp = BinanceProvider()
         mock_bapi = MagicMock()
         class BinanceApiErr(Exception):
@@ -268,7 +272,6 @@ class TestCase3BinanceArchivedIsolation:
         assert status.venue_status == "ARCHIVED_CANCELED"
 
     def test_fee_error_does_not_convert_filled_order_to_archived_canceled(self, monkeypatch):
-        from providers.market_api import BinanceProvider
         bp = BinanceProvider()
         mock_bapi = MagicMock()
         mock_bapi.client.get_order.return_value = {
@@ -328,8 +331,6 @@ class TestCase4MarketRegimeContextValidation:
 
 class TestCase5HistoryFailClosed:
     def test_kraken_history_failure_raises_provider_error(self, monkeypatch):
-        from providers.kraken_provider import KrakenProvider
-        from providers.strategy_executor import ProviderError
         kp = KrakenProvider()
         monkeypatch.setattr(kp, "_fills_from_cache", lambda s: None)
         def bad_api(s):
@@ -340,8 +341,6 @@ class TestCase5HistoryFailClosed:
             kp.get_orders("BTCUSDC", "BUY", 86400)
 
     def test_hyperliquid_history_failure_raises_provider_error(self, monkeypatch):
-        from providers.hyperliquid_provider import HyperliquidProvider
-        from providers.strategy_executor import ProviderError
         hp = HyperliquidProvider(token="PURR")
         monkeypatch.setattr(hp, "_hl", lambda: None)
 
@@ -349,7 +348,6 @@ class TestCase5HistoryFailClosed:
             hp.get_orders("PURR/USDC", "BUY", 86400)
 
     def test_order_guard_daily_limit_and_weight_limit_fail_closed_on_history_error(self):
-        from providers.strategy_executor import ProviderError
         class BrokenHistoryProvider:
             name = "mock"
             def get_orders(self, symbol, side, since_s):
@@ -364,8 +362,6 @@ class TestCase5HistoryFailClosed:
             order_guard.weight_limit(p, "BTCUSDC", "BUY", 100.0, 1.0, available_qty=10.0)
 
     def test_hyperliquid_open_orders_failure_raises_provider_error(self, monkeypatch):
-        from providers.hyperliquid_provider import HyperliquidProvider
-        from providers.strategy_executor import ProviderError
         hp = HyperliquidProvider(token="PURR")
         monkeypatch.setattr(hp, "_hl", lambda: None)
 
@@ -373,7 +369,6 @@ class TestCase5HistoryFailClosed:
             hp.open_orders("PURR/USDC")
 
     def test_window_reference_and_last_opposite_fill_fail_closed_on_none_history(self):
-        from providers.strategy_executor import ProviderError
         from providers.base import MarketDataProvider
         class NoneHistoryProvider(MarketDataProvider):
             @property
@@ -394,7 +389,6 @@ class TestCase5HistoryFailClosed:
             p.last_opposite_fill("BTCUSDC", "BUY")
 
     def test_profit_guard_dynamic_window_fails_closed_on_unavailable_history(self, monkeypatch):
-        from providers.strategy_executor import ProviderError
         class FailingHistoryProvider:
             name = "binance"
             def get_orders(self, symbol, side, since_s):
@@ -412,8 +406,6 @@ class TestCase5HistoryFailClosed:
         assert allowed is False
 
     def test_kraken_fills_from_api_fails_closed_on_missing_or_invalid_payload(self):
-        from providers.kraken_provider import KrakenProvider
-        from providers.strategy_executor import ProviderError
 
         fake_client = MagicMock()
         kp = KrakenProvider(client=fake_client)
@@ -429,8 +421,6 @@ class TestCase5HistoryFailClosed:
             kp._fills_from_api("BTCUSDC")
 
     def test_kraken_cancel_order_fails_closed_on_missing_or_zero_count(self):
-        from providers.kraken_provider import KrakenProvider
-        from providers.strategy_executor import ProviderError
 
         fake_client = MagicMock()
         kp = KrakenProvider(client=fake_client)
@@ -446,8 +436,6 @@ class TestCase5HistoryFailClosed:
             kp.cancel_order("HYPEUSD", "ORD-123")
 
     def test_hyperliquid_fails_closed_on_invalid_user_fills_or_open_orders_type(self, monkeypatch):
-        from providers.hyperliquid_provider import HyperliquidProvider
-        from providers.strategy_executor import ProviderError
 
         monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0x1234567890abcdef")
         fake_client = MagicMock()
@@ -467,8 +455,6 @@ class TestCase5HistoryFailClosed:
             hp.open_orders("HYPEUSDC")
 
     def test_binance_open_orders_fails_closed_on_none(self, monkeypatch):
-        from providers.market_api import BinanceProvider
-        from providers.strategy_executor import ProviderError
 
         bp = BinanceProvider()
         fake_bapi = MagicMock()
@@ -479,7 +465,6 @@ class TestCase5HistoryFailClosed:
             bp.open_orders("BTCUSDC")
 
     def test_gemini_high_stake_reevaluated_on_notional_jump(self, monkeypatch):
-        from intelligence.internal.guards.guard_decision import GuardDecision
 
         # Initial context evaluated at 1000 EUR
         ctx = MarketRegimeContext.from_decision(
@@ -580,7 +565,6 @@ class TestArchitectureFixes4Cases:
     def test_case2_late_intelligence_downscale_applied_to_placed_order(self, monkeypatch):
         """Case 2: If profit_guard / intelligence guard recommends downscale late (e.g. 0.25),
         Instrument.place updates quantity dispatched to venue from 4.0 to 1.0."""
-        from instrument import Instrument
 
         ctx = _build_test_context()
         provider = MagicMock()
@@ -756,7 +740,6 @@ class TestSisterArchitecturalDefects:
 
         def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None):
             calls.append(notional_eur)
-            from intelligence.internal.guards.guard_decision import GuardDecision
             return GuardDecision.allow("Gemini approved")
 
         monkeypatch.setattr(order_guard, "_load_margins", lambda: _margins(
@@ -803,7 +786,6 @@ class TestSisterArchitecturalDefects:
     def test_sister3_gemini_decision_preserved_on_identical_subsequent_check(self, monkeypatch):
         """Sister 3: Gemini decisions (rejection and downscaling) must be cached and re-applied
         on identical subsequent checks rather than reverting to allow/1.0."""
-        from intelligence.internal.guards.guard_decision import GuardDecision
         ctx = _build_test_context()
         calls = []
 
@@ -881,7 +863,6 @@ class TestSisterArchitecturalDefects:
         """Sister Priority 1: Late intelligence scaling in Instrument.place must update
         the retry queue record so partial fill remainder is calculated against submitted qty."""
         import order_retry
-        from instrument import Instrument
         from providers.strategy_executor import OrderStatus
 
         queue_file = str(tmp_path / "order_retry_queue.jsonl")
@@ -1661,7 +1642,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """Verify OrderbookWallGuard DOWNSCALE_QTY propagates in check_external_order_guards,
         and AutonomousIntentGateway uses order_guard._load_margins and extract_order_id."""
         import external_order_guard
-        from intelligence.internal.guards.guard_decision import GuardDecision
         from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
 
         monkeypatch.setattr(
@@ -1712,7 +1692,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert "Order ID: OQCLML-BW3P3-BUCMWZ" in notified[0][1]
 
         # Verify Instrument.place resolves regime_context for SELL in dynamic mode and scales SELL under GT2 medium_trend_action='scale'
-        from instrument import Instrument
         from providers.quantity import QuantityDecision
 
         bull_ctx = MarketRegimeContext.from_decision(
@@ -1860,7 +1839,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             {cache_key: {"gemini_notional": 2000.0, "gemini_decision": (False, "wrong_sym_cached_veto", 0.0)}},
         )
         from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
-        from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+        from intelligence.internal.guards.guard_decision import BrakeAction
         monkeypatch.setattr(
             HighStakeGuard,
             "check",
@@ -1894,7 +1873,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_gllm1_high_stake_decision_does_not_leak_to_sub_700_orders_on_shared_context(self, monkeypatch):
         """Bug 1 regression: If Order 1 (>= $700) on a shared MarketRegimeContext is blocked or downscaled by GLLM1,
         Order 2 (< $700) on the same context must NOT be blocked or downscaled by GLLM1."""
-        from intelligence.internal.guards.guard_decision import GuardDecision
 
         margins = _margins(
             internal_guard_mode="enforce",
@@ -2279,7 +2257,6 @@ def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_it
             fresh=True, reason='signal', source='mock',
         )
         return MarketRegimeContext.from_decision(decision, symbol=symbol, provider=provider)
-    from intelligence.internal.guards.guard_decision import GuardDecision
     # 1. check_intelligence_guards cache hit across G_PROF/GLLM1 bypass & GLLM1 re-eval when un-bypassed
     ctx = _build_test_context()
     raw_calls = []

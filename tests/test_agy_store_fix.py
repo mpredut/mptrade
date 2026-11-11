@@ -6,6 +6,7 @@ import time
 import pytest
 
 from orchestratorOS.admin import agy_store_fix as asf
+from datetime import datetime, timezone
 
 
 def _pb_with_cids(cids):
@@ -267,7 +268,6 @@ def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_rest
 
 def test_active_schedule_timer_in_interactive_transcript_blocks_ui_sync(store):
     import json
-    from datetime import datetime, timezone
 
     cli, d1, _ = store
     (d1 / "pending-topic.db").write_text("y")
@@ -357,7 +357,6 @@ def test_active_schedule_timer_in_interactive_transcript_blocks_ui_sync(store):
 def test_repeating_schedule_loop_does_not_block_ui_sync(store):
     """An autonomous loop with multiple schedule calls must not permanently starve UI sync."""
     import json
-    from datetime import datetime, timezone
 
     cli, d1, _ = store
     (d1 / "pending-topic.db").write_text("y")
@@ -400,7 +399,6 @@ def test_repeating_schedule_loop_does_not_block_ui_sync(store):
 def test_stale_user_input_with_active_timer_does_not_block_ui_sync(store):
     """A conversation where user input occurred >30m ago does not block UI sync even if a timer is active."""
     import json
-    from datetime import datetime, timezone
 
     cli, d1, _ = store
     (d1 / "pending-topic.db").write_text("y")
@@ -733,7 +731,6 @@ def test_rotated_topic_preserves_ghost_trajectory_until_mode_pre_reaps_it(store,
 
 def test_active_background_command_and_subagent_block_restart_until_completed(store, tmp_path, monkeypatch):
     import json
-    from datetime import datetime, timezone
 
     cli, d1, _ = store
     monkeypatch.setattr(asf, "LOG_FILE", str(tmp_path / "agy_store_fix.log"))

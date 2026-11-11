@@ -5,6 +5,8 @@ must be sourceable from an empty environment. Use `~/...` for user paths (expand
 """
 import os
 import subprocess
+from intelligence.macro.news_feed_collector import NewsFeedCollector
+from types import SimpleNamespace
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -158,7 +160,6 @@ def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         shadow_runtime.require_shadow_interval(True, 1.0, "test")
 
-    from types import SimpleNamespace
     monkeypatch.setattr(order_outcomes_log, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
     order_outcomes_log.log_order_outcome(
         symbol="BTCUSDC",
@@ -392,7 +393,6 @@ def test_triggers_guards_and_collectors_hardening(tmp_path):
     from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
-    from intelligence.macro.news_feed_collector import NewsFeedCollector
 
     dec_nan = GuardDecision.downscale("test_guard", float("nan"), "nan_scale")
     assert dec_nan.allowed is False
@@ -542,7 +542,6 @@ def test_price_analysis_market_regime_and_monitororder_hardening(monkeypatch):
 
 
 def test_qlimit_tradeall_and_order_retry_hardening(monkeypatch):
-    from types import SimpleNamespace
     import order_retry
     import qlimit_order_guard as qog
     import tradeall as ta
@@ -588,7 +587,6 @@ def test_qlimit_tradeall_and_order_retry_hardening(monkeypatch):
 
 
 def test_assetguardian_rtrade_and_spot_rules_hardening(monkeypatch):
-    from types import SimpleNamespace
     import assetguardian as ag
     import rtrade as rt
     from strategies import spot_rules as sr
@@ -857,7 +855,6 @@ def test_intelligence_cli_macro_analyzer_and_instrument_hardening(tmp_path):
 
 
 def test_persistence_survival_and_triggers_hardening():
-    from types import SimpleNamespace
     import numpy as np
     from intelligence.internal.state import persistence as pers
     from intelligence.internal.state import survival as surv
@@ -894,7 +891,6 @@ def test_persistence_survival_and_triggers_hardening():
 def test_collectors_and_gemini_client_hardening():
     import math
     from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
-    from intelligence.macro.news_feed_collector import NewsFeedCollector
     from intelligence.sentiment.gemini_client import GeminiClient
 
     # 1. WhalePositioningCollector.fetch handles price_1h_change_pct=None/NaN/bool without TypeError
@@ -923,7 +919,6 @@ def test_collectors_and_gemini_client_hardening():
 
 
 def test_geopolitical_sentiment_advisor_and_high_stake_hardening(tmp_path):
-    from types import SimpleNamespace
     import math
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
@@ -1018,7 +1013,6 @@ def test_smart_sl_exhaustion_and_resources_watchdog_hardening(monkeypatch):
 
 
 def test_liquidation_kalman_mean_reversion_and_breadth_triggers_hardening():
-    from types import SimpleNamespace
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
     from intelligence.internal.guards.noise_guard import NoiseFloorGuard
     from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
@@ -1071,9 +1065,7 @@ def test_liquidation_kalman_mean_reversion_and_breadth_triggers_hardening():
 def test_news_feed_history_macro_analyzer_and_pricechecker_hardening(tmp_path):
     import json
     import time
-    from types import SimpleNamespace
     import pytest
-    from intelligence.macro.news_feed_collector import NewsFeedCollector
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     from intelligence.macro_analyzer import MacroAnalyzer
     from market_monitor.pricechecker import PriceChecker
@@ -1133,7 +1125,6 @@ def test_news_feed_history_macro_analyzer_and_pricechecker_hardening(tmp_path):
 
 
 def test_external_sentiment_parabolic_and_composite_guards_hardening():
-    from types import SimpleNamespace
     from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
     from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
@@ -1176,7 +1167,6 @@ def test_external_sentiment_parabolic_and_composite_guards_hardening():
 
 
 def test_new_coins_discovery_and_pricefetcher_hardening():
-    from types import SimpleNamespace
     import pandas as pd
     import pytest
     from market_monitor import new_coins_discovery as ncd

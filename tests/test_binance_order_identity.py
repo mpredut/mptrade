@@ -4,6 +4,8 @@ from unittest.mock import patch, MagicMock
 from providers import order_id_context as rc
 from binance_api import bapi as api
 import monitororder
+from providers.base import MarketDataProvider
+from providers.market_api import MarketApi
 
 
 class TestBinanceOrderIdContext(unittest.TestCase):
@@ -443,8 +445,6 @@ def test_order_id_context__base36_parses_float_strings_and_resolve_order_owner_t
 def test_market_api_open_order_scoping_and_expired_cancel_across_venues():
     """Verify MarketApi.get_open_orders, cancel_open_orders, and cancel_expired_orders across venue shapes."""
     import time
-    from providers.base import MarketDataProvider
-    from providers.market_api import MarketApi
     from providers.strategy_executor import OrderReconciliationCapabilities
 
     class _DummyProvider(MarketDataProvider):
@@ -532,8 +532,6 @@ def test_market_api_open_order_scoping_and_expired_cancel_across_venues():
 
 
 def test_market_api_polymorphic_fetch_ohlc_candles_routes_across_venues():
-    from providers.base import MarketDataProvider
-    from providers.market_api import MarketApi
 
     class _DummyOHLCProvider(MarketDataProvider):
         def __init__(self, venue_name: str):
@@ -628,8 +626,6 @@ def test_polymorphic_venue_fee_precision_and_intraday_chart_ssot():
 
     import botcore
     import intelligence.macro_sentiment_ssot as mss
-    from providers.base import MarketDataProvider
-    from providers.market_api import MarketApi
 
     assert MarketDataProvider.resolve_venue_default_fee_spec("binance") == ("VIP0", 10.0, 10.0, 5.0)
     assert MarketDataProvider.resolve_venue_default_fee_spec("kraken") == ("PRO_TIER0", 16.0, 26.0, 1.0)

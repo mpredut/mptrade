@@ -285,6 +285,7 @@ REQUIRED_KEYS = sorted(
 
 
 from tests.conftest import make_spot_test_params
+from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
 
 
 class _Executor:
@@ -405,7 +406,6 @@ def test_empty_and_valid_tranches_are_supported():
 
 
 def test_sweep_uses_selected_profile_not_cwd_or_shell(tmp_path, monkeypatch):
-    from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("STRAT_ENTRY", "999999")
@@ -422,7 +422,6 @@ def test_sweep_uses_selected_profile_not_cwd_or_shell(tmp_path, monkeypatch):
 
 
 def test_sweep_threads_cash_and_explicit_fees_through_all_replays(monkeypatch):
-    from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
 
     params = StratParams.from_env(PROFILES["hyperliquid"])
     candidate = sweep.build_candidate_grid(params)[0]
@@ -441,7 +440,6 @@ def test_sweep_threads_cash_and_explicit_fees_through_all_replays(monkeypatch):
 
 
 def test_sweep_refuses_missing_datasets(tmp_path, monkeypatch):
-    from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
 
     monkeypatch.setattr("sys.argv", ["sweep", "--fee-pct", "0.4", "--data-dir", str(tmp_path),
                                      "--out-dir", str(tmp_path / "output")])
@@ -454,7 +452,6 @@ def test_sweep_refuses_missing_datasets(tmp_path, monkeypatch):
 @pytest.mark.parametrize("fail_control", [False, True])
 def test_sweep_report_is_complete_and_records_effective_policy(tmp_path, monkeypatch, fail_control):
     from concurrent.futures import ThreadPoolExecutor
-    from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
 
     profile = ROOT / "hyperliquid/config.env"
     params = sweep.load_base_params(profile)

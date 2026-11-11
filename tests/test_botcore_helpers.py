@@ -26,6 +26,8 @@ from credentials import (
     t212_credentials,
 )
 import utils
+from providers.base import mount_connect_retry
+from strategies.state_store import JsonStateStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -957,7 +959,6 @@ def test_canonical_package1_unified_primitives():
 class HttpResilienceTest(unittest.TestCase):
     def _retry(self, **kw):
         import requests
-        from providers.base import mount_connect_retry
 
         session = requests.Session()
         self.assertTrue(mount_connect_retry(session, **kw))
@@ -971,7 +972,6 @@ class HttpResilienceTest(unittest.TestCase):
 
     def test_both_schemes_share_the_mounted_adapter(self):
         import requests
-        from providers.base import mount_connect_retry
 
         session = requests.Session()
         mount_connect_retry(session)
@@ -991,7 +991,6 @@ class HttpResilienceTest(unittest.TestCase):
         self.assertNotIn("POST", {str(m).upper() for m in allowed})
 
     def test_best_effort_returns_false_without_raising(self):
-        from providers.base import mount_connect_retry
 
         class _BadSession:
             def mount(self, *_a, **_k):
@@ -1055,7 +1054,7 @@ def test_config__parse_bool_flag_handles_nan_inf_and_unrecognized_strings_iter81
 
 def test_jsonstatestore_rejects_non_dict_loaded_payloads_even_if_iter84_s2(monkeypatch, tmp_path):
     """[ITER84 #2] JsonStateStore rejects non-dict loaded payloads even if load_json_state returns a list of pairs."""
-    from strategies.state_store import JsonStateStore, StatePersistenceError
+    from strategies.state_store import StatePersistenceError
     # 2. JsonStateStore rejects non-dict loaded payloads even if load_json_state returns a list of pairs
     monkeypatch.setattr("strategies.state_store.load_json_state", lambda *a, **k: [["cycle", 99]])
     store = JsonStateStore(
@@ -1157,7 +1156,6 @@ def test_botcore__dotenv_pairs_required_env_defined_env_required_bool_env_iter11
 
 def test_jsonstatestore_normalizes_string_fail_closed_false_iter127_s4(tmp_path):
     """[ITER127 #4] JsonStateStore normalizes string fail_closed='false'."""
-    from strategies.state_store import JsonStateStore
     # 4. JsonStateStore normalizes string fail_closed="false"
     store = JsonStateStore(
         str(tmp_path / "corrupt.json"),
@@ -1170,7 +1168,6 @@ def test_jsonstatestore_normalizes_string_fail_closed_false_iter127_s4(tmp_path)
 
 def test_jsonstatestore_fail_closed_boolean_parsing_iter155_s1(tmp_path):
     """[ITER155 #1] JsonStateStore fail_closed boolean parsing."""
-    from strategies.state_store import JsonStateStore
     # 1. JsonStateStore fail_closed boolean parsing
     s_nan = JsonStateStore(str(tmp_path / "s.json"), dict, label="T", logger=lambda _: None, fail_closed=float("nan"))  # type: ignore[arg-type]
     assert s_nan.fail_closed is True
