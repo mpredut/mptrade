@@ -23,23 +23,22 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
+    ensure_local_module_priority,
     exact_pos_int,
     fetch_public_json,
     float_env,
-    load_local_module,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
+ensure_local_module_priority(_HERE, "ipo_common")
 from cachepaths import has_equity_suffix, strip_equity_suffix
+from ipo_common import load_isolated_t212_cfg as _load_isolated_t212_cfg  # noqa: E402
 from providers.order_ohlc_utils import (
     drop_incomplete_last_bar,
     extract_yahoo_chart_result_and_quote as _extract_yahoo_result_and_quote,
     parse_ohlc_interval_minutes,
 )
-
-_ipo_common_mod = load_local_module(_HERE, "ipo_common", module_key="t212_ipo_common")
-_load_isolated_t212_cfg = _ipo_common_mod.load_isolated_t212_cfg
 
 
 def _quantile_sorted(sorted_vals: list[float], q: float) -> float:

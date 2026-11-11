@@ -29,7 +29,6 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import (  # noqa: E402
-    load_layered_env_config,
     load_local_module,
     load_shadow_environment,
     prepare_shadow_runtime,
@@ -40,6 +39,8 @@ from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE, KRAKEN_DIR)
 from kraken import shadow_live as shadow  # noqa: E402
+_common_mod = load_local_module(HERE, "common")
+load_isolated_hl_cfg = _common_mod.load_isolated_hl_cfg
 
 
 LOG_DIR = os.path.join(ROOT, "logs", "hyperliquid_shadow")
@@ -47,12 +48,7 @@ LOG_DIR = os.path.join(ROOT, "logs", "hyperliquid_shadow")
 
 def _variants(interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm")
-    cfg = load_layered_env_config(
-        os.path.join(HERE, "config.env"),
-        os.path.join(HERE, ".env"),
-        override_prefixes=("HL_",),
-        fallback_prefixes=(),
-    )
+    cfg = load_isolated_hl_cfg(HERE)
 
     base = StratParams.from_env(cfg)
     variants = {
@@ -96,12 +92,7 @@ def _fetch_with_ts(_pair: str, interval: int):
         hl_mod = load_local_module(HERE, "hl_client", module_key="hl_client")
     HLClient = hl_mod.HLClient
 
-    cfg = load_layered_env_config(
-        os.path.join(HERE, "config.env"),
-        os.path.join(HERE, ".env"),
-        override_prefixes=("HL_",),
-        fallback_prefixes=(),
-    )
+    cfg = load_isolated_hl_cfg(HERE)
     load_shadow_environment(os.path.join(HERE, ".env"))
     token = (os.environ.get("HL_SPOT_TOKEN") or cfg.get("HL_SPOT_TOKEN") or "").strip()
     if not token:

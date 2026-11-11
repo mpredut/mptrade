@@ -33,7 +33,6 @@ if _ROOT not in sys.path:
 
 
 from botcore import (
-    load_layered_env_config,
     load_local_module,
     log,
     normalize_epoch_sec,
@@ -52,7 +51,8 @@ from strategies.replay_metrics import (
 )
 
 
-load_local_module(_HERE, "common")
+_common_mod = load_local_module(_HERE, "common")
+load_isolated_hl_cfg = _common_mod.load_isolated_hl_cfg
 _md_local = load_local_module(_HERE, "market_data")
 fetch_ohlc_candles = _md_local.fetch_ohlc_candles
 fetch_funding_history = _md_local.fetch_funding_history
@@ -127,12 +127,7 @@ def main() -> int:
     if args.days <= 0:
         ap.error("--days must be > 0")
 
-    cfg = load_layered_env_config(
-        os.path.join(_HERE, "config.env"),
-        os.path.join(_HERE, ".env"),
-        override_prefixes=("HL_",),
-        fallback_prefixes=(),
-    )
+    cfg = load_isolated_hl_cfg(_HERE)
 
     coin = (args.coin or required_env("HL_COIN", env=cfg)).strip().upper()
     direction = (args.direction or required_env("HL_DIRECTION", env=cfg)).strip().lower()

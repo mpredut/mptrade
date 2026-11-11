@@ -14,9 +14,33 @@ import socket
 # Globally default sockets without explicit timeouts to 30 seconds.
 socket.setdefaulttimeout(30)
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # repository root
+from botcore import load_layered_env_config  # noqa: E402
 from notify_engine.alertnotifiers import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "HL_COIN"), "HL")
+
+
+def load_isolated_hl_cfg(
+    hl_dir: str | os.PathLike[str] = _HERE,
+    *,
+    config_path: str | os.PathLike[str] | None = None,
+    env_path: str | os.PathLike[str] | None = None,
+) -> dict[str, str]:
+    """Load Hyperliquid config.env + .env into an isolated dict without mutating os.environ."""
+    base_dir = os.fspath(hl_dir)
+    resolved_env = os.fspath(env_path) if env_path is not None else os.path.join(base_dir, ".env")
+    resolved_cfg = (
+        os.fspath(config_path)
+        if config_path is not None
+        else os.path.join(os.path.dirname(resolved_env) or base_dir, "config.env")
+    )
+    return load_layered_env_config(
+        resolved_cfg,
+        resolved_env,
+        override_prefixes=("HL_",),
+        fallback_prefixes=(),
+    )

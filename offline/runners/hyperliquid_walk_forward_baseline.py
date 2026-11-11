@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from botcore import (
-    load_layered_env_config,
+    load_local_module,
     required_env,
     required_float_env,
     safe_nonneg_float,
@@ -50,6 +50,8 @@ def fetch_ohlc_candles(symbol: str, interval: int | str = 60, **kwargs) -> list[
     return mkt.fetch_ohlc_candles(symbol, interval, provider_name="hyperliquid", **kwargs)
 
 
+_hl_common = load_local_module(str(HL_DIR), "common")
+load_isolated_hl_cfg = _hl_common.load_isolated_hl_cfg
 _hl_replay = load_venue_replay_module("hyperliquid", "hl_wf_replay")
 make_hyperliquid_replay_adapter = _hl_replay.make_hyperliquid_replay_adapter
 StratParams = _hl_replay.StratParams
@@ -87,8 +89,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--lookback-days must be positive")
 
     try:
-        cfg = load_layered_env_config(
-            args.config_file, args.env_file, override_prefixes=("HL_",), fallback_prefixes=(),
+        cfg = load_isolated_hl_cfg(
+            HL_DIR, config_path=args.config_file, env_path=args.env_file,
         )
         coin = (args.coin or required_env("HL_COIN", env=cfg)).strip().upper()
         if not coin or "/" in coin or "\\" in coin or ".." in coin:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 from collections import Counter
+import dataclasses
 from dataclasses import dataclass
 import datetime as dt
 from pathlib import Path
@@ -18,9 +19,12 @@ from statistics import fmean
 from typing import Any
 
 from cachepaths import normalize_venue_name
+from offline.backtests.datasets import dataset_metadata
+from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
+from state_io import atomic_write_json
 from strategies.replay_execution import ExecutionModel
 from strategies.replay_metrics import validate_replay_metrics
-from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
+from strategies.spot_replay import align_spot_interval_params, make_spot_replay_adapter
 from botcore import (
     exact_int,
     exact_pos_int,
@@ -458,8 +462,6 @@ def evaluate_spot_segment(
     validate_contract: bool = True,
 ) -> dict:
     """Evaluate an OHLC segment using aligned spot parameters and the canonical spot replay adapter."""
-    from strategies.spot_replay import align_spot_interval_params, make_spot_replay_adapter
-
     adapter = make_spot_replay_adapter(
         align_spot_interval_params(params, interval),
         fee_pct=fee_pct,
@@ -491,10 +493,6 @@ def build_and_save_interval_baseline_report(
     output_dir: Path,
 ) -> dict[str, Any]:
     """Run walk-forward evaluation for a single interval, assess evidence, and write the baseline JSON report."""
-    import dataclasses as _dc
-    from offline.backtests.datasets import dataset_metadata
-    from state_io import atomic_write_json
-
     train_size, val_size, test_size, step_size = resolve_window_sizes(args, len(records))
     warmup_bars = max(0, safe_int(getattr(args, "warmup", None), 0))
     wf_result = evaluate_walk_forward(
@@ -517,7 +515,7 @@ def build_and_save_interval_baseline_report(
         "runtime": runtime,
         "strategy_params": strategy_params,
         "fee_pct_per_leg": fee_pct,
-        "execution_model": _dc.asdict(execution),
+        "execution_model": dataclasses.asdict(execution),
         "dataset": {
             "source": source_label,
             "frozen_file": str(frozen_path),
