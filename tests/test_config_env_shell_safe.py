@@ -7,6 +7,7 @@ import os
 import subprocess
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from types import SimpleNamespace
+from strategies.position_exit_manager import PositionSnapshot
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -186,11 +187,7 @@ def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
     import account_cache_health
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from providers import quantity as binance_filters, execution_audit
-    from strategies.position_exit_manager import (
-        PositionExitManager,
-        PositionSnapshot,
-        ReentrySnapshot,
-    )
+    from strategies.position_exit_manager import PositionExitManager, ReentrySnapshot
 
     monkeypatch.setenv("EXECUTION_AUDIT_CACHE_MAX", "5000 # inline comment")
     assert execution_audit._parse_cache_max() == 5000
@@ -499,7 +496,7 @@ def test_price_analysis_market_regime_and_monitororder_hardening(monkeypatch):
     from market_regime import MarketRegimeContext, MarketRegimeDecision, MarketRegimeEvaluator, MarketRegimeService
     import monitororder as mo
     import priceAnalysis as pa
-    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager
 
     # 1. PositionExitManager preserves t=0.0 episode/bounce/peak timestamps across simulation ticks
     mgr = PositionExitManager(
@@ -634,7 +631,7 @@ def test_external_order_guard_rtrade_pair_and_monitortrades_hardening(monkeypatc
     import external_order_guard as eog
     import monitortrades as mt
     from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
-    from strategies.position_exit_manager import ExitAction, ExitDecision, PositionSnapshot
+    from strategies.position_exit_manager import ExitAction, ExitDecision
 
     # 1. external_order_guard.check_external_order_guards fails fast on empty margins and works with explicit keys
     with pytest.raises(KeyError):

@@ -23,6 +23,7 @@ from kraken.trailing_stop import KrakenTrailing
 from trailing_core import should_sell
 from strategies import spot_engine as _xstock_strategy
 from tests.conftest import TrailingTestBase
+from unittest.mock import patch
 
 
 class FakeK:
@@ -197,7 +198,6 @@ class TestRebuyGuardsKraken(Base):
     """Verify Kraken re-buy uses bypass_guards={'math_reference'} and defers on guard refusal."""
 
     def test_rebuy_executes_when_guards_allow(self):
-        from unittest.mock import patch
         c = FakeK(60.0, total=25.0, held=0.0)
         ts = self.ts(c)
         rb_state = {"qty": 10.0, "sell_price": 40.0, "low": 40.0}
@@ -212,7 +212,6 @@ class TestRebuyGuardsKraken(Base):
             self.assertIsNotNone(res.intent.get("order_id"))
 
     def test_rebuy_defers_when_guards_block_cascade(self):
-        from unittest.mock import patch
         c = FakeK(60.0, total=25.0, held=0.0)
         ts = self.ts(c)
         rb_state = {"qty": 10.0, "sell_price": 40.0, "low": 40.0}
@@ -226,7 +225,6 @@ class TestRebuyGuardsKraken(Base):
             self.assertEqual(persisted, [None], "Pending order cleared so rebuy intent persists")
 
     def test_rebuy_downscales_quantity_when_intelligence_guard_suggests_scale(self):
-        from unittest.mock import patch
         c = FakeK(60.0, total=25.0, held=0.0)
         ts = self.ts(c)
         rb_state = {"qty": 10.0, "sell_price": 40.0, "low": 40.0}
@@ -240,7 +238,6 @@ class TestRebuyGuardsKraken(Base):
             self.assertAlmostEqual(res.intent.get("requested_qty"), 5.0)
 
     def test_rebuy_below_sell_price_bypasses_all_guards(self):
-        from unittest.mock import patch
         c = FakeK(60.0, total=25.0, held=0.0)
         ts = self.ts(c)
         rb_state = {"qty": 10.0, "sell_price": 45.0, "low": 40.0}
@@ -476,7 +473,6 @@ class TestRebuyGuardsKraken(Base):
         self.assertEqual(cancelled, ["TX-NULL-DESCR"])
 
     def test_sell_trend_defer_up_to_7m_then_forces_sell(self):
-        from unittest.mock import patch
         c = FakeK(60.0, total=25.0, held=0.0)
         logs = []
         ts = KrakenTrailing(c, log=logs.append, enabled=True, state_file=self.sf)
@@ -496,7 +492,6 @@ class TestRebuyGuardsKraken(Base):
         self.assertTrue(any("sell trend deferral expired" in m for m in logs))
 
     def test_rebuy_clamps_limit_below_sell_price_and_enforces_daily_limit_above_sell_price(self):
-        from unittest.mock import patch
         c = FakeK(60.0, total=25.0, held=0.0)
         ts = self.ts(c)
         ts.check_once()  # peak=60.0
@@ -534,7 +529,6 @@ class TestRebuyGuardsKraken(Base):
         import io
         import json
         from contextlib import redirect_stdout
-        from unittest.mock import patch
         from providers.base import MarketDataProvider
         from providers.hyperliquid_provider import HyperliquidProvider
         from providers.kraken_provider import KrakenProvider

@@ -67,6 +67,20 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positio
 from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
 from strategies.base_spot_mixin import BaseSpotMixin
 from types import SimpleNamespace
+from cachepaths import cache_symbol_variants
+from intelligence.macro.lexicon_ssot import update_dynamic_lexicon
+from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
+from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states, harvest_recent_orders_and_enrich_positions
+from intelligence.sentiment.evaluators.macro_telemetry_evaluator import apply_asset_scope_filter, enrich_sentiment_advisor_live_flow_divergence, reconcile_live_venue_equity_summary
+from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends, enrich_microstructure_cvd, reconcile_sibling_flow_and_liq_regimes, sync_sibling_symbol_telemetry, update_microstructure_cycle_deltas
+from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills, reconcile_venue_cycles_with_recent_orders
+from intelligence.sentiment.evaluators.price_series_evaluator import _apply_24h_series_enrichment, compute_24h_price_metrics
+from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context, compute_enterprise_portfolio_risk_metrics, enrich_open_limit_orders_tca
+from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section, _format_portfolio_section
+from providers.execution_audit import extract_intent_notional, summarize_recent_ai_intents
+from strategies.position_exit_manager import PositionExitConfig, PositionExitManager
 
 
 class TestIntelligenceTriggers(unittest.TestCase):
@@ -788,12 +802,7 @@ def test_survival_metrics_returns_gaussian_horizon_days_and_respects_allow_netwo
 
 
 def test_position_exit_manager_evaluate_hard_tp_cooldown_does_not_double_initiate_ride():
-    from strategies.position_exit_manager import (
-        ExitAction,
-        PositionExitConfig,
-        PositionExitManager,
-        PositionSnapshot,
-    )
+    from strategies.position_exit_manager import ExitAction, PositionSnapshot
 
     cfg = PositionExitConfig(
         hard_tp_enabled=True,
@@ -902,16 +911,8 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
 
 def test_iter44_intents_dict_unwrap_read_json_cached_and_orderbook_wall_and_bucket_dedup(tmp_path, monkeypatch):
     """Verify dict-wrapped intents unwrapping, read_json_cached list-root fallback, whale wall preservation, and nSigFigs bucket dedup."""
-    from intelligence.sentiment.collectors.macro_telemetry_collector import (
-        MarketAndPortfolioSnapshotOrchestrator,
-        harvest_macro_and_news_sensors,
-    )
-    from providers.execution_audit import (
-        _filter_intents_by_scope,
-        collect_known_ai_order_ids,
-        extract_intent_notional,
-        summarize_recent_ai_intents,
-    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MarketAndPortfolioSnapshotOrchestrator
+    from providers.execution_audit import _filter_intents_by_scope, collect_known_ai_order_ids
     from state_io import read_json_dict_recovering as read_json_cached
 
     now_ts = 1_780_000_000.0
@@ -1013,10 +1014,7 @@ def test_iter45_hl_spot_fallbacks_portfolio_per_symbol_fills_and_interval_plus_s
         normalize_open_order,
         parse_ohlc_interval_minutes,
     )
-    from intelligence.sentiment.collectors.portfolio_collector import (
-        _load_open_order_timestamps,
-        harvest_recent_orders_and_enrich_positions,
-    )
+    from intelligence.sentiment.collectors.portfolio_collector import _load_open_order_timestamps
 
     HLClient = _hl_client_module().HLClient
     # 1. HLClient.resolve_spot_pair & sz_decimals handle empty spot_meta() and /USDC or USDC suffixes
@@ -1323,12 +1321,7 @@ def test_iter49_lazy_sentiment_subpackages_gemini_quota_monkeypatch_and_evaluato
     import subprocess
     import sys
     import intelligence.sentiment.gemini_client as gc_mod
-    from intelligence.sentiment.evaluators.portfolio_evaluator import (
-        _populate_cycle_fallback_recent_order,
-        reconcile_venue_cycles_with_recent_orders,
-    )
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics
-    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
+    from intelligence.sentiment.evaluators.portfolio_evaluator import _populate_cycle_fallback_recent_order
 
     # 1. Importing collectors/evaluators subpackages when numpy is blocked succeeds via PEP 562 lazy loading
     proc = subprocess.run(
@@ -1622,13 +1615,7 @@ def test_iter52_repair_ssot_monkeypatch_portfolio_scope_and_trailing_pct_lookup(
     from kraken import trailing_stop as krk_ts
     from orchestratorOS.lib import technical_repair_ssot as tr_ssot
     from orchestratorOS.supervisor import autonomous_ai_reconciler as ar_mod
-    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
-    from providers.execution_audit import (
-        extract_intent_limit_price,
-        extract_intent_notional,
-        extract_intent_side,
-        validate_and_build_intent_dict,
-    )
+    from providers.execution_audit import extract_intent_limit_price, extract_intent_side, validate_and_build_intent_dict
     from trailing_core import TrailingAdapterBase, TrailingCore
 
     # 1. Monkeypatching autonomous_ai_reconciler.read_json_recovering / save_json_state
@@ -1715,11 +1702,7 @@ def test_iter53_runtime_states_callable_arg_collector_monkeypatch_and_evaluator_
     import intelligence.sentiment.collectors.macro_telemetry_collector as mtc
     import intelligence.sentiment.collectors.microstructure_collector as mc
     import intelligence.sentiment.collectors.portfolio_collector as pc
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-        apply_asset_scope_filter,
-        build_cycle_fallback_prices,
-    )
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import build_cycle_fallback_prices
     from state_io import read_json_recovering
 
     # 1. harvest_bot_runtime_states supports 2nd-positional callable read_json_fn even when order_retry_queue.jsonl exists
@@ -1822,21 +1805,13 @@ def test_iter53_runtime_states_callable_arg_collector_monkeypatch_and_evaluator_
 
 def test_iter54_breadth_vol_share_intent_timestamp_iso_ms_and_evaluator_sanitization():
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
-    from intelligence.sentiment.evaluators.microstructure_evaluator import (
-        compute_cross_venue_arb_metrics,
-        enrich_cross_venue_trends,
-        sync_sibling_symbol_telemetry,
-    )
-    from intelligence.sentiment.evaluators.portfolio_evaluator import (
-        extract_symbol_recent_fills,
-        parse_venue_cycle_state,
-    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import compute_cross_venue_arb_metrics
+    from intelligence.sentiment.evaluators.portfolio_evaluator import parse_venue_cycle_state
     from intelligence.sentiment.evaluators.price_series_evaluator import (
         apply_live_24trend_windows,
         apply_short_trend_item,
         compute_7d_range_metrics,
     )
-    from providers.execution_audit import extract_intent_notional, summarize_recent_ai_intents
 
     # 1. MarketBreadthCollector.parse_tickers caps BTC/ETH volume share <= 100% even when sub-threshold BTC/ETH pairs exist
     tickers = [
@@ -1914,8 +1889,6 @@ def test_iter55_geopolitical_fallback_lexicon_dir_guard_cache_notional_and_news_
     import intelligence.macro.geopolitical_analyzer as geo_mod
     import intelligence.sentiment.sentiment_advisor as sa_mod
     import intelligence.sentiment.guards.high_stake_guard as hsg_mod
-    from intelligence.macro.lexicon_ssot import update_dynamic_lexicon
-    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
     from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
 
     # 1. GeopoliticalThreatAnalyzer.assess passes state_cache_dir and now_ts to has_acute_shock_keywords on LLM fallback
@@ -2349,20 +2322,9 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
 
 
 def test_iter58_5m_series_vol_breadth_greed_percent_scales_and_tca_variants(tmp_path, monkeypatch):
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-        enrich_sentiment_advisor_live_flow_divergence,
-    )
     from intelligence.sentiment.evaluators.microstructure_evaluator import (
         _infer_symbol_venue_and_fees_bps,
         _resolve_non_static_prev_metric,
-    )
-    from intelligence.sentiment.evaluators.price_series_evaluator import (
-        _apply_24h_series_enrichment,
-        compute_24h_price_metrics,
-    )
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
-        compute_enterprise_portfolio_risk_metrics,
-        enrich_open_limit_orders_tca,
     )
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
     from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
@@ -2464,8 +2426,6 @@ def test_iter59_parabolic_ms_timestamps_persistence_pairs_and_percent_scales(tmp
         compute_dynamic_geopolitical_interval,
         compute_dynamic_sentiment_interval,
     )
-    from intelligence.macro.news_feed_collector import NewsFeedSnapshot, NewsHeadline
-    from intelligence.macro.lexicon_ssot import update_dynamic_lexicon
 
     # 1. ParabolicSurgeGuard normalizes millisecond timestamps in price_history and now
     psg = ParabolicSurgeGuard(surge_threshold_pct=5.0, window_seconds=3600.0)
@@ -2620,10 +2580,6 @@ def test_iter61_whale_spread_flow_sentiment_advisor_and_price_series_ordering(mo
         compute_cross_btc_metrics,
         compute_swing_wave_metrics,
     )
-    from intelligence.sentiment.evaluators.microstructure_evaluator import (
-        enrich_microstructure_cvd,
-        update_microstructure_cycle_deltas,
-    )
 
     # 1. evaluate_whale_spread_flow & resolve_whale_spread_adjustment support side aliases, dict snapshots, and no-kwarg collectors
     class _DictCollector:
@@ -2697,16 +2653,7 @@ def test_iter62_tca_risk_pretrade_and_macro_telemetry_normalization(monkeypatch,
     from intelligence.sentiment.collectors.macro_telemetry_collector import (
         collect_macro_benchmarks_snapshot,
     )
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-        apply_asset_scope_filter,
-        build_cycle_fallback_prices,
-        compute_deribit_options_surface,
-        reconcile_live_venue_equity_summary,
-    )
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
-        compute_enterprise_portfolio_risk_metrics,
-        enrich_open_limit_orders_tca,
-    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import build_cycle_fallback_prices, compute_deribit_options_surface
 
     # 1. enrich_open_limit_orders_tca supports pair/ticker, side aliases (bid/ask), and px/limit_price keys
     open_orders = [
@@ -2806,7 +2753,6 @@ def test_iter63_microstructure_archive_sorting_post_stop_ms_and_news_iso_dates(m
     from intelligence.cli import _stamp_age, print_intelligence_report
     from intelligence.macro.calendar_ssot import did_cross_session_checkpoint
     from intelligence.macro.daemon_ssot import inspect_daemon_heartbeat
-    from intelligence.macro.news_feed_collector import NewsFeedCollector
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
     import intelligence.sentiment.guards.post_stop_reentry_guard as psrg
 
@@ -3021,12 +2967,7 @@ def test_iter65_internal_state_2d_series_external_snapshots_and_lexicon_ms_times
     from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
-    from intelligence.macro.lexicon_ssot import (
-        demote_dynamic_acute_terms,
-        has_acute_shock_keywords,
-        load_dynamic_lexicon,
-        update_dynamic_lexicon,
-    )
+    from intelligence.macro.lexicon_ssot import demote_dynamic_acute_terms, has_acute_shock_keywords, load_dynamic_lexicon
 
     # 1. calculate_volatility_1h handles 2D (ts, price) arrays and unsorted (ts, price) tuples identically to 1D prices
     px_1d = [100.0 + 0.5 * i + ((-1) ** i) * 0.2 for i in range(20)]
@@ -3385,13 +3326,7 @@ def test_iter67_pricewindow_sample_rate_cachetrend_ms_and_composite_granular_qli
 def test_iter68_accepted_ttl_map_spot_rules_ms_and_exit_manager_ms(monkeypatch):
     import order_retry
     from strategies import spot_rules
-    from strategies.position_exit_manager import (
-        PositionExitConfig,
-        PositionExitManager,
-        PositionSnapshot,
-        ReentryAction,
-        ReentrySnapshot,
-    )
+    from strategies.position_exit_manager import PositionSnapshot, ReentryAction, ReentrySnapshot
 
     # 1. order_retry.get_accepted_order_ttl_map only includes lifecycle == "accepted"
     fake_records = [
@@ -3654,14 +3589,7 @@ def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
 def test_iter71_dotenv_strict_ini_cache_memo_and_sibling_sync(tmp_path):
     import subprocess
     import botcore
-    from intelligence.sentiment.evaluators.microstructure_evaluator import (
-        reconcile_sibling_flow_and_liq_regimes,
-        sync_sibling_symbol_telemetry,
-    )
-    from intelligence.sentiment.evaluators.price_series_evaluator import (
-        _extract_sorted_ts_px,
-        compute_24h_price_metrics,
-    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import _extract_sorted_ts_px
 
     # 1. parse_dotenv_line preserves quoted '#' in strict=True and rejects unquoted '#' before '=' in both modes
     assert botcore.parse_dotenv_line('KEY="val#with#hash" # inline comment', strict=True) == ("KEY", "val#with#hash")
@@ -3759,12 +3687,7 @@ def test_iter71_dotenv_strict_ini_cache_memo_and_sibling_sync(tmp_path):
 
 
 def test_iter72_series_24h_double_ms_order_ts_iso_and_portfolio_enrichment(tmp_path):
-    from intelligence.sentiment.collectors.portfolio_collector import (
-        _load_audit_terminal_orders,
-        _load_open_order_timestamps,
-        harvest_bot_runtime_states,
-    )
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+    from intelligence.sentiment.collectors.portfolio_collector import _load_audit_terminal_orders, _load_open_order_timestamps
 
     # 1. load_symbol_price_series does not double-multiply synthetic (<1e8) timestamps from archive_pts or scalar overlay
     (tmp_path / "cache_24_price_SYNTHUSDC.json").write_text(
@@ -4122,14 +4045,6 @@ def test_iter75_order_guard_qlimit2_sub_bypasses_context_scale_and_cachetrend_it
 def test_iter76_execution_audit_intent_ids_scope_filter_and_self_healing_loop_shutdown():
     import threading
     import types
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-        apply_asset_scope_filter,
-        enrich_sentiment_advisor_live_flow_divergence,
-        reconcile_live_venue_equity_summary,
-    )
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
-        compute_enterprise_portfolio_risk_metrics,
-    )
     from providers.execution_audit import (
         _intent_order_ids,
         find_duplicate_ai_open_limit_order,
@@ -4852,7 +4767,7 @@ def test_iter82_late_intelligence_scale_retry_worker_kind_and_guard_hierarchy(mo
 def test_iter83_mt_exit_kind_stop_variants_state_store_and_price_analysis_ms():
     from strategies.mt_position_accounting import _infer_mt_exit_kind, _update_mt_reentry_state
     from strategies.state_store import update_post_sell_anchors
-    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, ReentryAction, ReentrySnapshot
+    from strategies.position_exit_manager import ReentryAction, ReentrySnapshot
     import order_retry
     import priceAnalysis
 
@@ -5204,7 +5119,6 @@ def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes
 def test_iter11_cited_taker_buying_ratio_and_first_person_plural_advice_column_exclusion():
     from intelligence.macro.calendar_ssot import parse_cited_taker_ratio
     from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import enrich_sentiment_advisor_live_flow_divergence
 
     summary_ax = (
         "Risk assets and crypto are staging a strong intraday relief bounce with BTC reclaiming $77,600 (+2.58%) "
@@ -5368,15 +5282,7 @@ def test_iter87_kalman_multiprocess_merge_execution_audit_cancel_ts_and_archive_
 ):
     import importlib
     from intelligence.internal.state.survival import estimate_remaining_trend_hours
-    from intelligence.sentiment.evaluators.microstructure_evaluator import (
-        enrich_microstructure_cvd,
-        reconcile_sibling_flow_and_liq_regimes,
-    )
-    from providers.execution_audit import (
-        build_last_cycle_execution_status,
-        extract_intent_notional,
-        reconcile_intents_from_execution_audit,
-    )
+    from providers.execution_audit import build_last_cycle_execution_status, reconcile_intents_from_execution_audit
     from shadow_signals import KalmanStateTracker
 
     # 1. Multi-process KalmanStateTracker._write_state preserves newer disk_ts entries from another process
@@ -5565,12 +5471,6 @@ def test_iter88_cachetrend_adapt_thresholds_compact_repo_rules_whale_delta_4dec_
     import subprocess
     import cachetrend
     from cachepaths import resolve_cachedb_filepath
-    from intelligence.sentiment.evaluators.microstructure_evaluator import (
-        update_microstructure_cycle_deltas,
-    )
-    from intelligence.sentiment.evaluators.price_series_evaluator import (
-        _apply_24h_series_enrichment,
-    )
     from intelligence.sentiment.gemini_client import GeminiClient
     from orchestratorOS.agy.topics import TopicSession
 
@@ -5697,7 +5597,6 @@ def test_iter88_cachetrend_adapt_thresholds_compact_repo_rules_whale_delta_4dec_
 def test_iter13_equity_post_rth_24h_cutoff_and_archive_7d_fallback(tmp_path, monkeypatch):
     import types
     from intelligence.sentiment.collectors import microstructure_collector as mc_mod
-    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
     from state_io import save_json_state
 
     # 1. Discrepancy BB: when cache_sparse_price has < 5d span (and need_24h_supplement is False),
@@ -5818,12 +5717,6 @@ def test_iter13_equity_post_rth_24h_cutoff_and_archive_7d_fallback(tmp_path, mon
 def test_iter89_geopolitical_subset_deescalation_news_first_seen_post_rth_slopes_and_sibling_geometry(
     tmp_path, monkeypatch
 ):
-    from intelligence.macro.news_feed_collector import (
-        NewsFeedCollector,
-        NewsFeedSnapshot,
-        NewsHeadline,
-    )
-    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section
 
     # 1. NewsFeedCollector._aggregate preserves headline.first_seen_ts when pub_date is empty
     hist_f = tmp_path / "trends" / "news_feed_collect.json"
@@ -5974,9 +5867,6 @@ def test_iter14_non_tradable_t212_cycle_recent_order_avg_sync():
     assert recent_orders["RGNT_US_EQ"]["active_avg_buy_px"] == pytest.approx(1.4395)
     assert recent_orders["RGNT_US_EQ"]["tactical_avg_buy_px"] == pytest.approx(1.43)
 
-    from intelligence.sentiment.evaluators.portfolio_evaluator import (
-        reconcile_venue_cycles_with_recent_orders,
-    )
 
     ro_tao = {
         "venue": "kraken",
@@ -6015,7 +5905,6 @@ def test_iter90_cross_cycle_dca_buys_multi_fill_oversold_pnl_taker_horizon_claus
         compute_dynamic_geopolitical_interval,
         parse_cited_taker_ratio,
     )
-    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills, reconcile_venue_cycles_with_recent_orders
 
     # 1. reconcile_venue_cycles_with_recent_orders does not inflate dca_buys or flip TP->REDUCE
     #    when buys_before and last_sell occurred BEFORE the current cycle's _entry_ts_ms
@@ -6161,9 +6050,6 @@ def test_iter90_cross_cycle_dca_buys_multi_fill_oversold_pnl_taker_horizon_claus
 
 
 def test_iter16_post_close_equity_pos_ts_clamp_and_partial_15m_tape_prune(tmp_path):
-    from intelligence.sentiment.collectors.microstructure_collector import (
-        enrich_24h_and_microstructure,
-    )
     from state_io import save_json_state
 
     # 1. When T212 balance harvester updates pos:t212:NVDA_US_EQ['ts'] 12.5m after the last 5m chart bar
@@ -6228,10 +6114,6 @@ def test_iter16_post_close_equity_pos_ts_clamp_and_partial_15m_tape_prune(tmp_pa
 
 
 def test_iter91_multi_fill_stale_7d_pnl_post_sell_new_cycle_lifo_reset_t212_retry_and_manifest_shutdown_order(tmp_path):
-    from intelligence.sentiment.evaluators.portfolio_evaluator import (
-        extract_symbol_recent_fills,
-        reconcile_venue_cycles_with_recent_orders,
-    )
     from orchestratorTrade.orchestrator import BotManager
 
     # 1. Multi-fill core SELL after >7d lot exhaustion followed by new BUY resets lifo_realized_pnl_usd == 0.0
@@ -6365,12 +6247,6 @@ def test_iter92_neutral_hold_cited_flow_stale_advisor_retry_delta_whale_freshest
     from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
     from intelligence.macro_analyzer import MacroAnalyzer
     from intelligence.macro_sentiment_ssot import load_cached_whale_telemetry
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-        enrich_sentiment_advisor_live_flow_divergence,
-    )
-    from intelligence.sentiment.evaluators.portfolio_evaluator import (
-        reconcile_venue_cycles_with_recent_orders,
-    )
     from orchestratorOS.lib.technical_repair_ssot import gather_system_and_vpn_telemetry
 
     # 1. CAUTION/HOLD posture with already-cited low/high taker ratio does not trigger false LIVE_SELL_REVERSAL / LIVE_BUY_REVERSAL
@@ -6531,7 +6407,6 @@ def test_iter92_neutral_hold_cited_flow_stale_advisor_retry_delta_whale_freshest
 
 
 def test_iter17_post_rth_equity_cache_preservation_horizon_deltas_and_guard_pattern(tmp_path):
-    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
 
     cdir = tmp_path / "cachedb"
     pdir = cdir / "prices"
@@ -6613,8 +6488,6 @@ def test_iter93_7d_archive_over_watcher_post_rth_kalman_preservation_ref_ob_scal
        when batch git checkout HEAD fails on a staged unborn file.
     """
     import subprocess
-    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
-    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
     from intelligence.sentiment.gemini_client import GeminiClient
 
     cdir = tmp_path / "cachedb"
@@ -6725,10 +6598,7 @@ def test_iter18_pretrade_btc_7d_archive_precedence_and_post_rth_vp_invariance(tm
     3. Post-RTH equity overrides preserve RTH Session Volume Profile anchors (poc_px, val_px, vah_px)
        instead of shifting closing-bar volume to the overnight price.
     """
-    from intelligence.sentiment.collectors.microstructure_collector import (
-        _load_stitched_7d_ohlc_closes,
-        enrich_24h_and_microstructure,
-    )
+    from intelligence.sentiment.collectors.microstructure_collector import _load_stitched_7d_ohlc_closes
 
     cdir = tmp_path / "cachedb"
     pdir = cdir / "prices"
@@ -6816,9 +6686,6 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     3. CacheFactory.remove('ShortTrend') only clears ShortTrend from _instances when shutdown succeeds.
     """
     import cacheManager as cm
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-        enrich_sentiment_advisor_live_flow_divergence,
-    )
 
     # 1a. >=15m-old BULLISH/ACCUMULATE with key_risks citing overall 0.60 and strong live buying -> LIVE_FLOW_RECOVERY (not LIVE_BUY_REVERSAL vs ACCUMULATE)
     sa_bull = {
@@ -6908,7 +6775,6 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     # 4. canonical_base_asset strips TUSD/BUSD suffixes while preserving bare stablecoin tickers
     from cachepaths import canonical_base_asset, normalize_cache_base_asset
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
-    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
 
     assert canonical_base_asset("SOLTUSD") == "SOL"
     assert canonical_base_asset("SOLBUSD") == "SOL"
@@ -7072,14 +6938,7 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
 
 
 def test_iter96_known_t_b_bases_fdusd_venue_fees_retry_queue_venue_and_crypto_scope_microstructure(tmp_path):
-    from cachepaths import (
-        cache_symbol_variants,
-        compatible_quote_suffixes,
-        normalize_cache_base_asset,
-        split_symbol_assets,
-    )
-    from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import apply_asset_scope_filter
+    from cachepaths import compatible_quote_suffixes, normalize_cache_base_asset, split_symbol_assets
     from intelligence.sentiment.evaluators.microstructure_evaluator import _infer_symbol_venue_and_fees_bps
 
     # 1. Known 4+ letter bases ending in T or B paired with USD are not truncated by TUSD/BUSD
@@ -7181,12 +7040,8 @@ def test_iter96_known_t_b_bases_fdusd_venue_fees_retry_queue_venue_and_crypto_sc
 def test_iter97_prompt_sections_btc_merge_24h_horizons_micro_wall_sync_and_pretrade_sib_rescale(tmp_path):
     import time as _t_mod
 
-    from intelligence.sentiment.evaluators.microstructure_evaluator import sync_sibling_symbol_telemetry
     from orchestratorOS.lib.technical_repair_ssot import _is_decision_in_scope
-    from orchestratorOS.supervisor.prompt_sections import (
-        _format_market_prices_section,
-        _format_microstructure_section,
-    )
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
 
     now_s = _t_mod.time()
 
@@ -7347,9 +7202,6 @@ def test_iter21_ohlc_24h_disk_cache_news_macro_relevance_and_dated_log_dedup(tmp
         has_financial_or_geopolitical_context,
         is_off_topic_general_news_title,
     )
-    from intelligence.sentiment.collectors.macro_telemetry_collector import (
-        harvest_macro_and_news_sensors,
-    )
     from intelligence.sentiment.evaluators import price_series_evaluator as pse
 
     # 1. Discrepancy BR: _load_stitched_24h_ohlc_points persists and serves a 240s on-disk 24h OHLC cache
@@ -7440,10 +7292,6 @@ def test_iter21_ohlc_24h_disk_cache_news_macro_relevance_and_dated_log_dedup(tmp
 
 def test_iter98_tca_front_run_wall_pos_asset_scope_and_trailing_peak_variants():
     import time as _time
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
-        compute_enterprise_portfolio_risk_metrics,
-        enrich_open_limit_orders_tca,
-    )
     from intelligence.sentiment.evaluators.portfolio_evaluator import parse_venue_cycle_state
 
     # 1. enrich_open_limit_orders_tca: order placed at recommended_front_run_px is FRONT_OF_ASK_WALL / FRONT_OF_BID_WALL,
@@ -7560,14 +7408,6 @@ def test_iter98_tca_front_run_wall_pos_asset_scope_and_trailing_peak_variants():
 
 def test_iter99_cycle_fallback_entry_ts_peak_hl_flat_snapshot_and_bellwether_micro():
     import time as _time
-    from intelligence.sentiment.evaluators.portfolio_evaluator import reconcile_venue_cycles_with_recent_orders
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
-        build_cross_market_context,
-        compute_enterprise_portfolio_risk_metrics,
-    )
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-        reconcile_live_venue_equity_summary,
-    )
 
     # 1. reconcile_venue_cycles_with_recent_orders preserves _entry_ts_ms in cyc_sell_ts_map
     #    so _populate_cycle_fallback_recent_order and enrich_positions_with_orders_and_cycles
@@ -7684,7 +7524,7 @@ def test_iter99_cycle_fallback_entry_ts_peak_hl_flat_snapshot_and_bellwether_mic
 
 
 def test_iter100_portfolio_collector_audit_origins_hl_active_cycle_best_fills_and_ag_dust(tmp_path):
-    from intelligence.sentiment.collectors.portfolio_collector import _load_recent_audit_origins, harvest_bot_runtime_states, harvest_venue_cycles
+    from intelligence.sentiment.collectors.portfolio_collector import _load_recent_audit_origins, harvest_venue_cycles
 
     ws_dir = tmp_path / "ws"
     cdir = ws_dir / "cachedb"
@@ -7773,12 +7613,7 @@ def test_iter101_macro_benchmarks_24h_ext_px_cached_bals_ro_and_prompt_asset_sco
        sibling groups, and _format_portfolio_section deduplicates resting orders by client_order_id as well as order_id.
     """
     from intelligence.sentiment.collectors.macro_telemetry_collector import collect_macro_benchmarks_snapshot
-    from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
-    from orchestratorOS.supervisor.prompt_sections import (
-        _format_market_prices_section,
-        _format_microstructure_section,
-        _format_portfolio_section,
-    )
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
 
     cdir = tmp_path / "cachedb"
     cdir.mkdir(parents=True, exist_ok=True)
@@ -7956,11 +7791,7 @@ def test_iter102_pretrade_telemetry_quote_price_scope_and_micro_arb_isolation(tm
     2. compute_cross_venue_arb_metrics, update_microstructure_cycle_deltas, and reconcile_sibling_flow_and_liq_regimes
        isolate _EQ/_US_EQ symbols from crypto symbols.
     """
-    from intelligence.sentiment.evaluators.microstructure_evaluator import (
-        compute_cross_venue_arb_metrics,
-        reconcile_sibling_flow_and_liq_regimes,
-        update_microstructure_cycle_deltas,
-    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import compute_cross_venue_arb_metrics
 
     cdir = tmp_path / "cachedb"
     cdir.mkdir(parents=True, exist_ok=True)
@@ -8016,12 +7847,8 @@ def test_iter102_pretrade_telemetry_quote_price_scope_and_micro_arb_isolation(tm
 
 
 def test_iter103_price_series_microstructure_tca_and_bellwether_equity_crypto_isolation(tmp_path):
-    from intelligence.sentiment.collectors.microstructure_collector import discover_reference_microstructure_symbols, enrich_24h_and_microstructure, load_symbol_microstructure
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
-        build_cross_market_context,
-        enrich_open_limit_orders_tca,
-        resolve_symbol_price,
-    )
+    from intelligence.sentiment.collectors.microstructure_collector import discover_reference_microstructure_symbols, load_symbol_microstructure
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_symbol_price
 
     cdir = tmp_path / "cachedb"
     cdir.mkdir(parents=True, exist_ok=True)
@@ -8099,7 +7926,6 @@ def test_iter103_price_series_microstructure_tca_and_bellwether_equity_crypto_is
 
 
 def test_iter104_portfolio_flat_ro_pos_clear_equity_scope_and_7d_swing_sync(tmp_path):
-    from intelligence.sentiment.evaluators.price_series_evaluator import _apply_24h_series_enrichment
 
     # 1. Flat Binance position after SELL clears stale cost-basis anchors on pos and swing_subcycle_qty/active_cycle_rem_qty on ro
     pos_bn_flat = {
@@ -8218,9 +8044,6 @@ def test_iter104_portfolio_flat_ro_pos_clear_equity_scope_and_7d_swing_sync(tmp_
 
 def test_iter105_same_venue_wallet_dedup_xstocks_px_and_cycle_equity_scope(tmp_path):
     from intelligence.sentiment.collectors.portfolio_collector import harvest_kraken_xstocks
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import reconcile_live_venue_equity_summary
-    from intelligence.sentiment.evaluators.portfolio_evaluator import reconcile_venue_cycles_with_recent_orders
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics
 
     # 1. reconcile_live_venue_equity_summary & compute_enterprise_portfolio_risk_metrics deduplicate same-venue same-base spot wallets
     ps = {
@@ -8282,8 +8105,6 @@ def test_iter22_near_balanced_cvd_spot_absorbing_single_stock_shares_and_calm_ge
         has_financial_or_geopolitical_context,
         is_off_topic_general_news_title,
     )
-    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
-    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_microstructure_cvd
 
     # 1. Discrepancy BU: enrich_microstructure_cvd classifies mild negative 15m CVD with taker_ratio >= 0.90,
     #    flat/positive 15m price change (>= -0.02%), and positive 5m momentum as spot_absorbing rather than aggressive_market_dumps
@@ -8351,15 +8172,6 @@ def test_iter22_near_balanced_cvd_spot_absorbing_single_stock_shares_and_calm_ge
 
 
 def test_iter106_equity_crypto_scope_isolation_in_trends_sibling_sync_fills_and_risk():
-    from intelligence.sentiment.evaluators.microstructure_evaluator import (
-        enrich_cross_venue_trends,
-        sync_sibling_symbol_telemetry,
-    )
-    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
-        compute_enterprise_portfolio_risk_metrics,
-        enrich_open_limit_orders_tca,
-    )
 
     # 1. enrich_cross_venue_trends & sync_sibling_symbol_telemetry do not cross-contaminate COIN_US_EQ and COINUSDC
     pt = {
@@ -8571,10 +8383,7 @@ def test_equity_telemetry_and_rth_market_gating(tmp_path, monkeypatch):
 def test_iter107_equity_crypto_scope_isolation_in_instrument_registry_and_execution_audit(tmp_path):
     import math
     from instrument import resolve_instrument_live_price, resolve_tradable_instrument
-    from providers.execution_audit import (
-        normalize_trading_decisions,
-        summarize_recent_ai_intents,
-    )
+    from providers.execution_audit import normalize_trading_decisions
 
     # 1. resolve_tradable_instrument never resolves COIN_US_EQ to crypto COINUSDC or COINUSDC to t212 COIN_US_EQ
     coin_crypto = SimpleNamespace(
@@ -8677,7 +8486,6 @@ def test_iter23_cycle_realized_pnl_sync_legacy_whale_refresh_and_post_rth_zero_v
        post-RTH bars separated by a >20m gap so 15m/30m deltas do not vanish on SPCX_US_EQ.
     """
     from botcore import safe_pos_int
-    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
 
     # 1. BX: Cycle realized_pnl_usd synchronization in Loop 1 and Loop 2
     assert safe_pos_int(42, 0) == 42
@@ -8792,11 +8600,7 @@ def test_iter23_cycle_realized_pnl_sync_legacy_whale_refresh_and_post_rth_zero_v
 
 
 def test_iter108_portfolio_collector_and_scope_filter_equity_crypto_isolation(tmp_path):
-    from cachepaths import cache_symbol_variants
-    from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions, harvest_tradable_positions_and_orders, harvest_venue_cycles
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-        apply_asset_scope_filter,
-    )
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders, harvest_venue_cycles
 
     # 1. harvest_venue_cycles and harvest_tradable_positions_and_orders isolate bare t212 COIN from crypto COINUSDC
     t212_dir = tmp_path / "212trading"
@@ -8900,7 +8704,6 @@ def test_iter108_portfolio_collector_and_scope_filter_equity_crypto_isolation(tm
 
 
 def test_iter24_btc_phantom_lot_avg_reconciliation_eq_bid_ask_precision_and_daemon_timeout_recovery(tmp_path):
-    from cachepaths import cache_symbol_variants
     from intelligence.sentiment.evaluators.microstructure_evaluator import align_equity_orderbook_to_spot
 
     # 1. Reconcile active_avg_buy_px when fresh open_lots cover >= 98% of wallet balance and unfiltered > 115%
@@ -8984,7 +8787,6 @@ def test_iter24_btc_phantom_lot_avg_reconciliation_eq_bid_ask_precision_and_daem
 def test_iter25_held_open_lots_retention_pretrade_lifo_lots_equity_ohlc_sync_and_daemon_recovery(tmp_path):
     import botcore
     from intelligence.sentiment.collectors.pretrade_telemetry_collector import RecentFillsExecutionStage
-    from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
 
     # 1. botcore.resolve_now_ts safely handles missing _RUNTIME_SERVICES during circular-import startup
     saved_rt = botcore.__dict__.pop("_RUNTIME_SERVICES", None)

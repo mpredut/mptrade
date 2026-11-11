@@ -24,6 +24,7 @@ from intelligence.sentiment.guards.post_stop_reentry_guard import (
     clear_post_stop_reentry_cache,
     get_post_stop_reentry_guard,
 )
+from providers.quantity import QuantityDecision
 
 
 class FakeGeminiClient(GeminiClient):
@@ -346,7 +347,6 @@ def test_decision_caching_and_notify_cooldown():
 def test_monitortrades_skips_ai_guard_when_weight_policy_blocks_buy():
     """Verify monitortrades does not invoke PostStopReentryGuard (or send APPROVED alerts)
     when the provider's 24h weight policy refuses the BUY with qty_zero_after_policy."""
-    from providers.quantity import QuantityDecision
 
     class PolicyBlockedProvider:
         name = "binance"
@@ -411,7 +411,6 @@ def test_monitortrades_skips_ai_guard_when_intelligence_downscale_triggers_below
     """Verify monitortrades does not invoke PostStopReentryGuard (or send repeated APPROVED alerts)
     when the 24h weight-capped BUY quantity would be downscaled by intelligence/geopolitical
     guards below the business minimum notional ($50 USDC)."""
-    from providers.quantity import QuantityDecision
 
     class DownscaleRefusedProvider:
         name = "binance"
@@ -486,7 +485,6 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
     GeopoliticalGuard in Instrument.place also recommends suggested_scale=0.5,
     the order is scaled once (to 50%) rather than twice (to 25% below min_notional)."""
     from instrument import Instrument
-    from providers.quantity import QuantityDecision
 
     class LiveScaleProvider:
         name = "binance"

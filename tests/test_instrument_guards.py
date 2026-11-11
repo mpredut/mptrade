@@ -1035,7 +1035,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_fine_grained_bypass_guards_granularity(self):
         """Verify fine-grained bypass combinations and ensure non-bypassed guards apply by default."""
-        from guard_hierarchy import GUARD_REGISTRY
 
         # 0. GUARD_REGISTRY completeness (new canonical codes exist, legacy G1..G10 removed)
         canonical_codes = {
@@ -1140,7 +1139,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_guard_hierarchy_and_categories(self):
         """Verify object-oriented guard hierarchy, category grouping, and is_bypassed behavior."""
-        from guard_hierarchy import BaseGuard, OperationalGuard, TrendGuard, ProfitGuard, QuantLimitGuard, IntelligenceGuard, LLMGuard, GUARD_REGISTRY, GUARD_CATEGORIES
+        from guard_hierarchy import BaseGuard, OperationalGuard, TrendGuard, ProfitGuard, QuantLimitGuard, IntelligenceGuard, LLMGuard, GUARD_CATEGORIES
 
         # Hierarchy validation
         self.assertIsInstance(GUARD_REGISTRY["GO1"], OperationalGuard)
@@ -1882,6 +1881,7 @@ from active_intents import build_active_intent_index, format_summary
 from guard_hierarchy import normalize_bypassed_guards
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from guard_hierarchy import GUARD_REGISTRY
 
 
 def _write_intent_file(path, payload, *, lines=False):
@@ -2139,7 +2139,6 @@ if __name__ == "__main__":
 
 def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
     """[ITER5 #1] Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)."""
-    from guard_hierarchy import GUARD_REGISTRY
     # 1. Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)
     provider = MagicMock()
     provider.name = "binance"

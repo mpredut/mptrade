@@ -27,6 +27,8 @@ from intelligence.macro.geopolitical_analyzer import (
 )
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
 from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
+from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+from types import SimpleNamespace
 
 _BASE_MARGINS = dict(order_guard._load_margins())
 
@@ -718,7 +720,6 @@ def test_weibull_uses_symbol_p90_days_when_qlimit1_is_bypassed(monkeypatch):
 
 def test_normalize_bypassed_guards_accepts_frozenset():
     """Verify normalize_bypassed_guards handles frozenset inputs (e.g. AUTONOMOUS_BYPASS_GUARDS)."""
-    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
     from orchestratorTrade.autonomous_intent_gateway import AUTONOMOUS_BYPASS_GUARDS
 
     assert isinstance(AUTONOMOUS_BYPASS_GUARDS, frozenset)
@@ -734,7 +735,6 @@ def test_gllm1_bypass_does_not_leak_to_gllm2_or_gllm3():
     """Bug 4 regression: bypassing GLLM1 individually must NOT bypass GLLM2 or GLLM3 via category collision,
     even when normalize_bypassed_guards is called multiple times (idempotent), whereas bypassing
     category 'llm' or 'gllm' bypasses all three."""
-    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 
     only_gllm1 = normalize_bypassed_guards(bypass_guards={"GLLM1"})
     assert "llm" in only_gllm1
@@ -757,7 +757,6 @@ def test_gllm1_bypass_does_not_leak_to_gllm2_or_gllm3():
 def test_batch38b_summary_store_visible_dir_topics_intent_gateway_and_geo_guard(tmp_path, monkeypatch):
     """Verify summary_store visible_conversations_dir handling, topics.get_topic_registry_path, AutonomousIntentGateway string wallet balance & status normalization, and GeopoliticalShockGuard BID/LONG/percentage downscale."""
     import sqlite3
-    from types import SimpleNamespace
     from orchestratorOS.agy import summary_store, topics
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
@@ -837,7 +836,6 @@ def test_batch38b_summary_store_visible_dir_topics_intent_gateway_and_geo_guard(
 def test_batch39_composite_daemon_and_cli_hardening(tmp_path, monkeypatch):
     """Verify CompositeMarketIntelligence side alias & percentage scale normalization, IntelligenceTelemetryDaemon update_macro now propagation, and intelligence.cli local cache_T_trend lookup."""
     import json
-    from types import SimpleNamespace
     from intelligence.composite import CompositeMarketIntelligence
     from intelligence.daemon import IntelligenceTelemetryDaemon
     from intelligence.cli import inspect_symbol_intelligence
@@ -1702,7 +1700,6 @@ def test_batch54_apply_proposals_and_scheduled_pilot_hardening(monkeypatch):
 
 def test_batch55_undefined_globals_and_shadow_live_hardening(tmp_path, monkeypatch):
     import os
-    from types import SimpleNamespace
     from botcore import load_local_module
     import cachetrend as ct
     from kraken import shadow_live as kr_sl
@@ -1751,7 +1748,6 @@ def test_batch55_undefined_globals_and_shadow_live_hardening(tmp_path, monkeypat
 
 
 def test_batch56_intelligence_backtest_full_composite_and_research_hardening(monkeypatch):
-    from types import SimpleNamespace
     import numpy as np
     import offline.research.intelligence_backtest as ib_mod
     from offline.research.chop_weight_backtest import _downsample_price_series
@@ -1990,7 +1986,7 @@ def test_format_price_log_ssot():
 
 def test_operational_category_isolation_case_insensitive_is_bypassed_iter8_s1():
     """[ITER8 #1] Operational category isolation & case-insensitive is_bypassed."""
-    from guard_hierarchy import GUARD_CATEGORIES, GUARD_REGISTRY, normalize_bypassed_guards
+    from guard_hierarchy import GUARD_CATEGORIES
     # 1. Operational category isolation & case-insensitive is_bypassed
     assert [g.code for g in GUARD_CATEGORIES["operational"]] == ["GO1"]
     op_byp = normalize_bypassed_guards("operational")
@@ -2080,7 +2076,6 @@ def test_select_extreme_reference__aggregate_reference_prices_with_nan_bool_iter
 
 def test_check_math_profit_reference_rejects_nan_bool_price_or_profit_percentage_iter34_s3():
     """[ITER34 #3] check_math_profit_reference rejects NaN/bool price or profit_percentage."""
-    from types import SimpleNamespace
     import order_guard as og
     # 3. check_math_profit_reference rejects NaN/bool price or profit_percentage
     dummy_prov = SimpleNamespace(name="binance", last_opposite_fill=lambda s, o: 100.0)
@@ -2106,7 +2101,6 @@ def test_compute_weight_capped_qty_with_nan_bool_iter34_s4():
 
 def test_daily_limit_guard_ignores_bool_nan_max_daily_trades_and_inf_timestamps_iter36_s1():
     """[ITER36 #1] daily_limit_guard ignores bool/NaN max_daily_trades and inf timestamps."""
-    from types import SimpleNamespace
     import order_guard as og
     # 1. daily_limit_guard ignores bool/NaN max_daily_trades and inf timestamps
     prov_dl = SimpleNamespace(
@@ -2124,7 +2118,6 @@ def test_daily_limit_guard_ignores_bool_nan_max_daily_trades_and_inf_timestamps_
 
 def test_guard_hierarchy_is_bypassed_normalize_bypassed_guards_with_bool_str_and_category_iter100_s1():
     """[ITER100 #1] guard_hierarchy.is_bypassed & normalize_bypassed_guards with bool, str, and category shortcuts."""
-    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
     # 1. guard_hierarchy.is_bypassed & normalize_bypassed_guards with bool, str, and category shortcuts
     assert GUARD_REGISTRY["GO1"].is_bypassed(True) is True
     assert GUARD_REGISTRY["GO1"].is_bypassed(False) is False
@@ -2288,7 +2281,7 @@ def test_check_qlimit2_order_guards_respects_dict_regime_context_trend_duration_
 
 def test_make_intel_cache_key_builds_deterministic_side_frozenset_ignoring_gllm1_g_prof_iter181_s1():
     """[ITER181 #1] make_intel_cache_key builds deterministic (side, frozenset) ignoring GLLM1 / G_PROF."""
-    from guard_hierarchy import make_intel_cache_key, normalize_bypassed_guards
+    from guard_hierarchy import make_intel_cache_key
     # 1. make_intel_cache_key builds deterministic (side, frozenset) ignoring GLLM1 / G_PROF
     b1 = normalize_bypassed_guards({"g_qlimit2", "g_prof", "gllm1"})
     b2 = normalize_bypassed_guards({"internal_quant_limit"})
@@ -2297,7 +2290,6 @@ def test_make_intel_cache_key_builds_deterministic_side_frozenset_ignoring_gllm1
 
 def test__is_valid_regime_context_handles_none_simplenamespace_and_objects_with_is_valid_for_iter181_s2():
     """[ITER181 #2] _is_valid_regime_context handles None, SimpleNamespace, and objects with is_valid_for."""
-    from types import SimpleNamespace
     from order_guard import _is_valid_regime_context
     # 2. _is_valid_regime_context handles None, SimpleNamespace, and objects with is_valid_for
     assert _is_valid_regime_context(None, "BTCUSDC", "binance") is False
@@ -2306,7 +2298,6 @@ def test__is_valid_regime_context_handles_none_simplenamespace_and_objects_with_
 def test__record_context_suggested_scale_updates__suggested_scale_by_side_for_both_sides_and_suggested_scale_iter181_s3():
     """[ITER181 #3] _record_context_suggested_scale updates _suggested_scale_by_side for both sides and suggested_scale for BUY only."""
     import pytest
-    from types import SimpleNamespace
     from order_guard import _record_context_suggested_scale
     # 3. _record_context_suggested_scale updates _suggested_scale_by_side for both sides and suggested_scale for BUY only
     ctx = SimpleNamespace(suggested_scale=1.0)
@@ -2322,7 +2313,6 @@ def test__record_context_suggested_scale_updates__suggested_scale_by_side_for_bo
 def test__resolve_window_ref_from_orders_resolves_active_cycle_reference_across_modes_iter181_s4():
     """[ITER181 #4] _resolve_window_ref_from_orders resolves active cycle reference across Modes."""
     import pytest
-    from types import SimpleNamespace
     from order_guard import _resolve_window_ref_from_orders
     # 4. _resolve_window_ref_from_orders resolves active cycle reference across Modes
     fake_prov = SimpleNamespace(get_orders=lambda sym, side, win: [])

@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import order_retry as oq
 from providers.strategy_executor import OrderStatus
+from providers.strategy_executor import OrderReconciliationCapabilities
+from types import SimpleNamespace
 
 
 class OrderRetryStoreTest(unittest.TestCase):
@@ -1111,7 +1113,6 @@ def test_order_retry_update_claimed_qty_persists_applied_scale_into_place_kwargs
 def test_instrument_place_persists_medium_trend_action_medium_trend_scale_from_self_params_iter11_s2(monkeypatch):
     """[ITER11 #2] Instrument.place persists medium_trend_action & medium_trend_scale from self.params into retry_kwargs."""
     import pytest
-    from types import SimpleNamespace
     import instrument as inst_mod
     # 2. Instrument.place persists medium_trend_action & medium_trend_scale from self.params into retry_kwargs
     enqueued_kwargs = []
@@ -1261,7 +1262,6 @@ def test_order_retry_enqueue_update_claimed_qty_resolve_record_ttl_reject_boolea
 
 def test_order_outcomes_log_sanitizes_cr_lf_and_ignores_nan_bool_iter40_s1(monkeypatch, tmp_path):
     """[ITER40 #1] order_outcomes_log sanitizes CR/LF and ignores NaN/bool strength."""
-    from types import SimpleNamespace
     import order_lifecycle as ool
     # 1. order_outcomes_log sanitizes CR/LF and ignores NaN/bool strength
     assert ool._sanitize_outcome_field("a|b\r\nc") == "a/b  c"
@@ -1423,7 +1423,6 @@ def test_order_rollback_restore_cancelled_orders_rejects_non_list_and_bool_reaso
 
 def test_order_outcomes_log_log_order_outcome_sanitizes_boolean_fields_iter107_s3(tmp_path, monkeypatch):
     """[ITER107 #3] order_outcomes_log: log_order_outcome sanitizes boolean fields."""
-    from types import SimpleNamespace
     import order_lifecycle as ool
     # 3. order_outcomes_log: log_order_outcome sanitizes boolean fields
     monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
@@ -1484,9 +1483,8 @@ def test_order_retry_get_and_claim_input_validation_iter113_s2(tmp_path, monkeyp
 
 def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_client_order_id_iter113_s3(tmp_path, monkeypatch):
     """[ITER113 #3] StrategyExecutorLifecycleApi rejects bool/None/blank order_id and client_order_id before str()."""
-    from types import SimpleNamespace
     import pytest
-    from providers.strategy_executor import OrderReconciliationCapabilities, ProviderError
+    from providers.strategy_executor import ProviderError
     import order_retry as oret
     monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
     monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
@@ -1511,7 +1509,6 @@ def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_clien
 
 def test_auditedstrategyexecutor_ohlc_series_rejects_bool_invalid_interval_min_iter113_s4(tmp_path, monkeypatch):
     """[ITER113 #4] AuditedStrategyExecutor.ohlc_series rejects bool/invalid interval_min."""
-    from types import SimpleNamespace
     import pytest
     from providers.strategy_executor import ProviderError
     from providers.execution_audit import AuditedStrategyExecutor
@@ -1547,7 +1544,7 @@ def test_order_rollback_sanitizes_nan_level_in_extract_order_restore_params_iter
 def test_auditedstrategyexecutor_normalizes_symbol_case_whitespace_and_order_id_across_iter123_s2(tmp_path):
     """[ITER123 #2] AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status & StrategyExecutorLifecycleApi rejects NaN/'nan'/'null' and normalizes integer float IDs."""
     import pytest
-    from providers.strategy_executor import OrderReconciliationCapabilities, ProviderError
+    from providers.strategy_executor import ProviderError
     from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
     # 2. AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status
     class _DummyExec:
@@ -1746,7 +1743,6 @@ def test_strategyexecutorlifecycleapi_rejects_and_normalizes_iter157_s2():
     import order_lifecycle as ol
     from providers.base import ProviderError
     # 2. StrategyExecutorLifecycleApi rejects "0" and normalizes .0
-    from providers.strategy_executor import OrderReconciliationCapabilities
 
     class _DummyExec:
         name = "binance"

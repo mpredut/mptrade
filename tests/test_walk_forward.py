@@ -21,6 +21,7 @@ from offline.runners.walk_forward_compare import (
     DEFAULT_FEE_STRESS,
 )
 import offline.runners.kraken_walk_forward_compare as kraken_compare
+from offline.runners.walk_forward_compare import _build_venue_evaluator
 
 
 class WalkForwardSplitsTest(unittest.TestCase):
@@ -308,7 +309,6 @@ class WalkForwardCompareTest(unittest.TestCase):
         self.assertEqual(summary["down_market_windows"], 0)
 
     def test_build_venue_evaluator_hyperliquid_spot(self):
-        from offline.runners.walk_forward_compare import _build_venue_evaluator
         source_report = {
             "venue": "hyperliquid",
             "runtime": {"engine": "spot", "coin": "HYPE"},
@@ -1030,7 +1030,6 @@ def test_hybrid_reentry_run_suite_helpers_iter148_s3():
 
 def test_walk_forward_compare__build_venue_evaluator_fee_ppy_sanitization_iter150_s1():
     """[ITER150 #1] walk_forward_compare._build_venue_evaluator fee & ppy sanitization."""
-    from offline.runners.walk_forward_compare import _build_venue_evaluator
     # 1. walk_forward_compare._build_venue_evaluator fee & ppy sanitization
     _p, fee_k, _fn = _build_venue_evaluator("kraken", {"fee_pct_per_leg": True})
     assert fee_k == 0.26
@@ -1167,7 +1166,7 @@ def test_declarative_venue_replay_and_benchmark_registries():
     import pytest
     from offline.backtests.evaluation import VENUE_REPLAY_DIRS, load_venue_replay_module
     from offline.backtests.financial_benchmark import VENUE_BENCHMARK_SCENARIOS, default_scenarios
-    from offline.runners.walk_forward_compare import VENUE_EVALUATOR_BUILDERS, _build_venue_evaluator
+    from offline.runners.walk_forward_compare import VENUE_EVALUATOR_BUILDERS
 
     assert set(VENUE_REPLAY_DIRS) == {"hyperliquid", "t212"}
     assert set(VENUE_EVALUATOR_BUILDERS) == {"kraken", "binance", "hyperliquid", "t212"}

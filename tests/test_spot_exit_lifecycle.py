@@ -20,6 +20,9 @@ from market_regime import MarketRegimeDecision
 from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError
 from strategies import spot_engine as strat
 from test_kraken_strategy_provider_live import FakeExecutor, _strategy
+from strategies import spot_rules as sr
+from strategies.spot_engine import Strategy
+from types import SimpleNamespace
 
 
 @pytest.fixture(autouse=True)
@@ -1010,7 +1013,6 @@ def test_spot_engine_pending_stop_exit_does_not_reinitiate_mhdsl_bounce_watch():
 
 
 def test_reconcile_venue_ledger_uses_remaining_qty_on_partial_open_sell_and_latest_buy_fill():
-    from types import SimpleNamespace
     from providers.order_ohlc_utils import extract_remaining_qty
 
     assert extract_remaining_qty({"origQty": 1.0, "executedQty": 0.4}) == pytest.approx(0.6)
@@ -1047,7 +1049,6 @@ def test_reconcile_venue_ledger_uses_remaining_qty_on_partial_open_sell_and_late
 
 
 def test_ledger_reconcile_exit_kind_and_partial_fill_audit_notional(tmp_path, monkeypatch):
-    from types import SimpleNamespace
     from providers.execution_audit import _resolve_intent_execution_details, cancel_existing_ai_open_orders
     from providers.t212_provider import T212Provider
     import order_retry as oq
@@ -1144,8 +1145,6 @@ def test_ledger_reconcile_exit_kind_and_partial_fill_audit_notional(tmp_path, mo
 
 def test_strategy__order_from_pending_honors_submitted_qty_and_scales_amount_proportionally_iter10_s4():
     """[ITER10 #4] Strategy._order_from_pending honors submitted_qty and scales amount proportionally."""
-    from types import SimpleNamespace
-    from strategies.spot_engine import Strategy
     # 4. Strategy._order_from_pending honors submitted_qty and scales amount proportionally
     dummy_strat = SimpleNamespace(_now=lambda: 1700000000.0)
     order_rec = Strategy._order_from_pending(
@@ -1211,8 +1210,7 @@ def test_spot_rules_nan_hardening_iter26_s1():
 
 def test_strategy__placement_backoff_remaining_clamping_nan_safety_iter26_s2():
     """[ITER26 #2] Strategy._placement_backoff_remaining clamping & NaN safety."""
-    from types import SimpleNamespace
-    from strategies.spot_engine import Strategy, _PLACEMENT_BACKOFF_CAP_SEC
+    from strategies.spot_engine import _PLACEMENT_BACKOFF_CAP_SEC
     # 2. Strategy._placement_backoff_remaining clamping & NaN safety
     dummy_strat = SimpleNamespace(
         s={
@@ -1231,7 +1229,6 @@ def test_strategy__placement_backoff_remaining_clamping_nan_safety_iter26_s2():
 
 def test_spot_rules_hit_stop_and_dca_price_hit_reject_false_true_nan_iter45_s1():
     """[ITER45 #1] spot_rules: hit_stop and dca_price_hit reject 0.0 / False / True / NaN prices."""
-    from strategies import spot_rules as sr
     # 1. spot_rules: hit_stop and dca_price_hit reject 0.0 / False / True / NaN prices
     assert sr.hit_stop(100.0, 0.0, 5.0) is False
     assert sr.hit_stop(100.0, False, 5.0) is False
@@ -1252,7 +1249,6 @@ def test_spot_rules_hit_stop_and_dca_price_hit_reject_false_true_nan_iter45_s1()
 
 def test_spot_rules_handles_malformed_shadow_prices_entries_and_string_numbers_iter64_s3():
     """[ITER64 #3] spot_rules handles malformed shadow_prices entries and string numbers in check_parabolic_surge_exhaustion."""
-    from strategies import spot_rules as sr
     # 3. spot_rules handles malformed shadow_prices entries and string numbers in check_parabolic_surge_exhaustion
     trig, gain, drop = sr.check_fast_profit_reversal(
         current_price=110.0,
@@ -1369,7 +1365,6 @@ def test_spot_rules_string_false_boolean_flag_handling_iter112_s5():
 
 def test_spot_replay_align_spot_interval_params_with_sub_minute_bar_minutes_and_run_replay_iter112_s6():
     """[ITER112 #6] spot_replay: align_spot_interval_params with sub-minute bar_minutes < 1.0 and run_replay bad initial_cash."""
-    from types import SimpleNamespace
     import strategies.spot_replay as srep
     # 6. spot_replay: align_spot_interval_params with sub-minute bar_minutes < 1.0 and run_replay bad initial_cash
     dummy_params = SimpleNamespace(trend_interval=60, tp_trail_vol_interval=60, dca_vol_interval=60, regime_min_samples=20)
@@ -1384,7 +1379,6 @@ def test_spot_engine_state_path_for_handles_bool_punctuation_only_and_path_iter1
 
 def test_spot_engine__apply_fill_handles_order_with_amount_none_by_iter119_s2():
     """[ITER119 #2] spot_engine._apply_fill handles order with amount=None by falling back to vol * price."""
-    from types import SimpleNamespace
     import strategies.spot_engine as se
     # 2. spot_engine._apply_fill handles order with amount=None by falling back to vol * price
     dummy_exec = SimpleNamespace(pair_precision=lambda _p: PairPrecision(2, 4, 0.01, "HYPE"))
@@ -1399,7 +1393,6 @@ def test_spot_engine__apply_fill_handles_order_with_amount_none_by_iter119_s2():
 
 def test_spot_rules__parse_bool_flag_rejects_nan_and_containers_iter144_s1():
     """[ITER144 #1] spot_rules._parse_bool_flag rejects NaN and containers."""
-    from strategies import spot_rules as sr
     # 1. spot_rules._parse_bool_flag rejects NaN and containers
     assert sr._parse_bool_flag(float("nan")) is False
     assert sr._parse_bool_flag(["true"]) is False
@@ -1409,8 +1402,7 @@ def test_spot_rules__parse_bool_flag_rejects_nan_and_containers_iter144_s1():
 
 def test_spot_engine__parse_bool_flag_clean_order_id_and__sanitize_state_dict_iter144_s2():
     """[ITER144 #2] spot_engine._parse_bool_flag, clean_order_id, and _sanitize_state_dict."""
-    from types import SimpleNamespace
-    from strategies.spot_engine import StratParams, Strategy, clean_order_id, _parse_bool_flag
+    from strategies.spot_engine import StratParams, clean_order_id, _parse_bool_flag
     # 2. spot_engine._parse_bool_flag, clean_order_id, and _sanitize_state_dict
     assert _parse_bool_flag("false") is False
     assert _parse_bool_flag("0") is False

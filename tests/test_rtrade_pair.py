@@ -993,6 +993,7 @@ from pathlib import Path as _Path
 from unittest.mock import patch as _patch
 import rtrade as _rtrade
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
+from unittest.mock import MagicMock
 
 _RTRADE_ROOT = _Path(__file__).resolve().parents[1]
 
@@ -1058,7 +1059,6 @@ class RTradeHeartbeatTest(unittest.TestCase):
         self.assertFalse(venue.pair_recovery_blocked("pair-1"))
 
     def test_coordinator_loop_exits_on_venue_recovery_blocked_timeout(self):
-        from unittest.mock import MagicMock
         bot = _rtrade.TradingBot.__new__(_rtrade.TradingBot)
         bot.symbol = "TAOUSDC"
         bot.DEFAULT_ADJUSTMENT_PERCENT = 0.005
@@ -1084,7 +1084,6 @@ class RTradeHeartbeatTest(unittest.TestCase):
             mock_exit.assert_called_once_with(1)
 
     def test_startup_recovery_terminal_record_clears_venue_blockage(self):
-        from unittest.mock import MagicMock
         bot = _rtrade.TradingBot.__new__(_rtrade.TradingBot)
         bot.symbol = "TAOUSDC"
         bot.DEFAULT_ADJUSTMENT_PERCENT = 0.005
@@ -1363,7 +1362,6 @@ if __name__ == "__main__":
 
 def test__livepairvenue__submit_limit_intent_honours_rtrade_bypass_profit_guard_on_buy_sell_iter7_s2(monkeypatch):
     """[ITER7 #2] _LivePairVenue._submit_limit_intent honours RTRADE_BYPASS_PROFIT_GUARD on BUY & SELL."""
-    from unittest.mock import MagicMock
     import rtrade
     # 2. _LivePairVenue._submit_limit_intent honours RTRADE_BYPASS_PROFIT_GUARD on BUY & SELL
     monkeypatch.setattr(rtrade, "RTRADE_BYPASS_PROFIT_GUARD", True)
@@ -1450,7 +1448,6 @@ def test_krakenprovider__fills_from_cache_rejects_nan_and_future_timestamps_acce
     """[ITER22 #3] KrakenProvider._fills_from_cache rejects NaN and future timestamps, accepts seconds."""
     import json
     import time
-    from unittest.mock import MagicMock
     import order_guard
     from instrument import Instrument
     from providers.quantity import QuantityDecision
@@ -1557,7 +1554,6 @@ def test_krakenprovider__fills_from_cache_rejects_nan_and_future_timestamps_acce
 def test_collect_pretrade_telemetry_handles_non_numeric_slopes_and_empty_macro_iter22_s4(tmp_path, monkeypatch):
     """[ITER22 #4] collect_pretrade_telemetry handles non-numeric slopes and empty macro dicts."""
     import json
-    from unittest.mock import MagicMock
     import order_guard
     from instrument import Instrument
     from providers.quantity import QuantityDecision

@@ -367,6 +367,10 @@ from providers.quantity import (
     fee_cap_quantity,
     resolve_assets,
 )
+from providers import base as pbase, order_ohlc_utils as oou
+from providers.base import aggregate_fills_by_order_id
+from providers.strategy_executor import SubmissionOutcome
+from types import SimpleNamespace
 
 
 class _QtyDecisionFakeProvider(MarketDataProvider):
@@ -524,7 +528,6 @@ def test_resolve_assets_strips_separators_while_preserving_unknown_suffixes_iter
 
 def test_decide_quantity_with_nan_bool_policy_cap_and_nan_suggested_scale_iter27_s4():
     """[ITER27 #4] decide_quantity with NaN/bool policy_cap and NaN suggested_scale."""
-    from types import SimpleNamespace
     # 4. decide_quantity with NaN/bool policy_cap and NaN suggested_scale
     class DummyQtyProvider:
         def spent_asset(self, side, base, quote):
@@ -635,14 +638,12 @@ def test_marketdataprovider_round_quantity_round_price_order_filter_refusal_and_
 def test_submissionoutcome_rejects_boolean_order_id_iter39_s2():
     """[ITER39 #2] SubmissionOutcome rejects boolean order_id."""
     import pytest
-    from providers.strategy_executor import SubmissionOutcome
     # 2. SubmissionOutcome rejects boolean order_id
     with pytest.raises(ValueError):
         SubmissionOutcome("accepted", order_id=True)
 
 def test_decide_quantity_ignores_boolean_negative_round_fn_return_values_iter39_s4():
     """[ITER39 #4] decide_quantity ignores boolean/negative round_fn return values."""
-    from types import SimpleNamespace
     import pytest
     # 4. decide_quantity ignores boolean/negative round_fn return values
     prov_q = SimpleNamespace(
@@ -677,7 +678,6 @@ def test_replaymarketdataprovider_and_simclock_reject_bool_nan_inputs_iter43_s4(
 def test_aggregate_fills_by_order_id_does_not_dilute_vwap_when_a_partial_iter59_s1():
     """[ITER59 #1] aggregate_fills_by_order_id does not dilute VWAP when a partial fill has price=0."""
     import pytest
-    from providers.base import aggregate_fills_by_order_id
     # 1. aggregate_fills_by_order_id does not dilute VWAP when a partial fill has price=0
     fills = [
         {"orderId": "ord-1", "side": "BUY", "price": 100.0, "qty": 2.0, "timestamp": 1000},
@@ -785,7 +785,6 @@ def test_extract_order_side_string_isbuyer_false_vs_true_iter96_s1():
 
 def test_aggregate_fills_by_order_id_none_invalid_rows_and_bool_invalid_side_iter96_s2():
     """[ITER96 #2] aggregate_fills_by_order_id None/invalid rows and bool/invalid side."""
-    from providers.base import aggregate_fills_by_order_id
     # 2. aggregate_fills_by_order_id None/invalid rows and bool/invalid side
     assert aggregate_fills_by_order_id(None) == []
     assert aggregate_fills_by_order_id([{"orderId": "1", "side": "BUY", "price": 100.0, "qty": 1.0}], side=True) == []
@@ -794,7 +793,7 @@ def test_aggregate_fills_by_order_id_none_invalid_rows_and_bool_invalid_side_ite
 def test_providers_strategy_executor_bool_rejection_in_submissionrefused_submissionoutcome_orderstatus_iter105_s3():
     """[ITER105 #3] providers.strategy_executor: bool rejection in SubmissionRefused, SubmissionOutcome, OrderStatus."""
     import pytest
-    from providers.strategy_executor import OrderStatus, SubmissionOutcome, SubmissionRefused
+    from providers.strategy_executor import OrderStatus, SubmissionRefused
     # 3. providers.strategy_executor: bool rejection in SubmissionRefused, SubmissionOutcome, OrderStatus
     with pytest.raises(ValueError):
         SubmissionRefused(True)
@@ -806,7 +805,6 @@ def test_providers_strategy_executor_bool_rejection_in_submissionrefused_submiss
 def test_providers_quantity_remaining_average_cost_balance_cap_quantity_decide_quantity_iter106_s1():
     """[ITER106 #1] providers.quantity: remaining_average_cost, balance_cap_quantity, decide_quantity."""
     import pytest
-    from types import SimpleNamespace
     from providers import quantity as pq
     # 1. providers.quantity: remaining_average_cost, balance_cap_quantity, decide_quantity
     assert pq.remaining_average_cost(True, 1.0) is None
@@ -853,8 +851,6 @@ def test_binanceorderrules_from_symbol_info_rejects_non_iterable_filters_and_non
 def test_botcore_providers_env_value_bool_env_extract_order_id_extract_order_fee_aggregate_fills_by_order_id_iter109_s1(tmp_path):
     """[ITER109 #1] botcore/providers: env_value, bool_env, extract_order_id, extract_order_fee, aggregate_fills_by_order_id."""
     import botcore
-    from providers import base as pbase
-    from providers import order_ohlc_utils as oou
     # 1. botcore/providers: env_value, bool_env, extract_order_id, extract_order_fee, aggregate_fills_by_order_id
     assert botcore.env_value(True, "KEY") is None
     assert botcore.env_value(str(tmp_path), True) is None
@@ -909,7 +905,6 @@ def test_require_int_order_id_preserves_bit_integer_precision_iter122_s2():
 def test_submissionoutcome_normalizes_integer_float_order_id_and_rejects_nan_iter123_s1():
     """[ITER123 #1] SubmissionOutcome normalizes integer float order_id and rejects NaN/'nan'/'null'/non-integer floats."""
     import pytest
-    from providers.strategy_executor import SubmissionOutcome
     # 1. SubmissionOutcome normalizes integer float order_id and rejects NaN/"nan"/"null"/non-integer floats
     outcome = SubmissionOutcome("accepted", order_id=98765.0)
     assert outcome.order_id == "98765"
@@ -1002,7 +997,7 @@ def test_providers_quantity_py_decide_quantity_string_boolean_parsing_iter154_s3
 
 def test_providers_base_py_extract_order_id_aggregate_fills_by_order_id_normalization_sentinel_rejection_iter154_s5():
     """[ITER154 #5] providers/base.py: extract_order_id & aggregate_fills_by_order_id .0 normalization & sentinel rejection."""
-    from providers.base import aggregate_fills_by_order_id, extract_order_id
+    from providers.base import extract_order_id
     # 5. providers/base.py: extract_order_id & aggregate_fills_by_order_id .0 normalization & sentinel rejection
     assert extract_order_id({"orderId": "12345.0"}) == "12345"
     agg = aggregate_fills_by_order_id([
@@ -1017,8 +1012,6 @@ def test_providers_base_py_extract_order_id_aggregate_fills_by_order_id_normaliz
 def test_botcore_providers_env_value_quoted_value_with_trailing_comment_iter164_s1(tmp_path):
     """[ITER164 #1] botcore/providers: env_value quoted value with trailing comment, bool_env default='false', extract_order_fee(require_explicit_asset='false')."""
     import botcore
-    from providers import base as pbase
-    from providers import order_ohlc_utils as oou
     # 1. botcore/providers: env_value quoted value with trailing comment, bool_env default="false", extract_order_fee(require_explicit_asset="false")
     (tmp_path / ".env").write_text('QUOTED_KEY="my_secret#1" # trailing comment\nFLAG_KEY="true" # comment\n', encoding="utf-8")
     assert botcore.env_value(str(tmp_path), "QUOTED_KEY") == "my_secret#1"
@@ -1044,8 +1037,6 @@ def test_providers_quantity_resolve_assets_with_usdt_fdusd_gbp_and_iter168_s2():
 
 def test_providers_base_boolean_and_side_extraction_iter169_s1():
     """[ITER169 #1] providers.base boolean and side extraction."""
-    from providers import base as pbase
-    from providers import order_ohlc_utils as oou
     # 1. providers.base boolean and side extraction
     assert pbase._parse_bool_flag("", default=True) is True
     assert pbase._parse_bool_flag("y", default=False) is True

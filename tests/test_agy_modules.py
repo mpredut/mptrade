@@ -32,6 +32,9 @@ from orchestratorOS.agy.topics import (
 )
 from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
 from tests.conftest import setup_isolated_agy_stores
+from intelligence.sentiment.gemini_client import GeminiClient
+from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
+from unittest.mock import patch
 
 
 @pytest.fixture(autouse=True)
@@ -185,7 +188,7 @@ class TestTopics:
             prepare_topic_session("not_a_topic", compact_steps=6)
 
     def test_gemini_client_compacts_after_prompt_preserving_json_decision(self, tmp_path):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
         import subprocess
         from intelligence.sentiment import gemini_client as gc
         from orchestratorOS.agy.topics import TopicSession
@@ -361,8 +364,6 @@ class TestMirrorTopicThreadToUi:
 
     def test_gemini_client_one_off_fallback_injects_rolling_topic_history(self, tmp_path, monkeypatch):
         import subprocess
-        from unittest.mock import patch
-        from intelligence.sentiment.gemini_client import GeminiClient
 
         cli_base = str(tmp_path / "cli")
         os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
@@ -430,7 +431,6 @@ class TestMirrorTopicThreadToUi:
 
     def test_prune_old_cli_threads_handles_minimal_schema_and_orphan_db_files(self, tmp_path, monkeypatch):
         import time
-        from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
 
         cli_base = str(tmp_path / "bot_cli")
         conv_dir = os.path.join(cli_base, "conversations")
@@ -541,8 +541,6 @@ class TestMirrorTopicThreadToUi:
 
     def test_query_json_falls_back_to_next_model_when_candidate_returns_non_json_prose(self, tmp_path, monkeypatch):
         import subprocess
-        from unittest.mock import patch
-        from intelligence.sentiment.gemini_client import GeminiClient
 
         fake_bin = tmp_path / "agy-bot"
         fake_bin.write_text("#!/bin/sh\n")
@@ -602,7 +600,6 @@ class TestMirrorTopicThreadToUi:
         self, tmp_path, monkeypatch
     ):
         from orchestratorOS.admin import agy_store_fix as asf
-        from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
 
         bot_base = str(tmp_path / "bot_cli")
         ui_base = str(tmp_path / "ui_cli")
@@ -695,7 +692,7 @@ class TestMirrorTopicThreadToUi:
         self, tmp_path, monkeypatch
     ):
         import subprocess
-        from intelligence.sentiment.gemini_client import GeminiClient, _ROOT_DIR
+        from intelligence.sentiment.gemini_client import _ROOT_DIR
 
         fake_bin = tmp_path / "agy-bot"
         fake_bin.write_text("#!/bin/sh\n")
@@ -749,7 +746,7 @@ class TestMirrorTopicThreadToUi:
     ):
         import subprocess
         import intelligence.sentiment.gemini_client as gc_mod
-        from intelligence.sentiment.gemini_client import GeminiClient, _ORIG_SUBPROCESS_RUN
+        from intelligence.sentiment.gemini_client import _ORIG_SUBPROCESS_RUN
 
         repo_dir = tmp_path / "repo"
         repo_dir.mkdir()
@@ -932,7 +929,7 @@ def test_prune_llm_threads_is_automated_thread_handles_non_string_title_preview_
 
 def test_prune_llm_threads__parse_bool_flag_and_missing_db_path_with_string_flags_iter127_s1(tmp_path):
     """[ITER127 #1] prune_llm_threads._parse_bool_flag and missing db_path with string flags."""
-    from orchestratorOS.admin.prune_llm_threads import _parse_bool_flag, prune_old_cli_threads
+    from orchestratorOS.admin.prune_llm_threads import _parse_bool_flag
     # 1. prune_llm_threads._parse_bool_flag and missing db_path with string flags
     assert _parse_bool_flag("false", True) is False
     assert _parse_bool_flag("0", True) is False

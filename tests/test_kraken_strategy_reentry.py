@@ -489,6 +489,7 @@ class TestHybridReentry(unittest.TestCase):
 
 
 from strategies import spot_rules as sr
+from market_regime import MarketRegimeDecision
 
 
 class StratRulesTest(unittest.TestCase):
@@ -736,7 +737,6 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
             exited = []
             st._request_market_exit = lambda px, kind: exited.append((px, kind)) or True
 
-            from market_regime import MarketRegimeDecision
             dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
             handled = st._overlay_step(110.5, dummy_regime, [100.0] * 30, tick_time=now)
             self.assertTrue(handled)
@@ -758,7 +758,6 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
             exited = []
             st._request_market_exit = lambda px, kind, **kwargs: exited.append((px, kind)) or True
 
-            from market_regime import MarketRegimeDecision
             dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
             handled = st._overlay_step(122.0, dummy_regime, [100.0] * 30, tick_time=10000.0)
             self.assertTrue(handled)
@@ -787,7 +786,6 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
             exited = []
             st._request_market_exit = lambda px, kind: exited.append((px, kind)) or True
 
-            from market_regime import MarketRegimeDecision
             dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
             handled = st._overlay_step(118.0, dummy_regime, [100.0] * 30, tick_time=now)
             self.assertTrue(handled)
@@ -812,7 +810,6 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
             exited = []
             st._request_market_exit = lambda px, kind: exited.append((px, kind)) or True
 
-            from market_regime import MarketRegimeDecision
             dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
 
             handled = st._overlay_step(116.5, dummy_regime, [100.0] * 30, tick_time=10000.0)
@@ -836,7 +833,6 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
             st.s["cost"] = 100.0
             st.s["entry_price"] = 100.0
 
-            from market_regime import MarketRegimeDecision
             st._regime_context = lambda: (
                 MarketRegimeDecision("sideways", 0.0, 0.01, 0.0, True, "sideways"),
                 [100.0] * 30,
@@ -919,7 +915,6 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
             self.assertIsNone(st._surge_window_move_pct(130.0, closed[1:] + [130.0]))
 
         with self.subTest("missing_surge_window_never_uses_a_different_regime_horizon"):
-            from market_regime import MarketRegimeDecision
             regime = MarketRegimeDecision(
                 "bull", 0.02, 0.01, 2.0, True, "above_epsilon", n_samples=21,
             )
@@ -943,7 +938,6 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
                         st._request_market_exit.assert_not_called()
 
         with self.subTest("position_gain_and_latched_state_remain_independent"):
-            from market_regime import MarketRegimeDecision
             regime = MarketRegimeDecision("sideways", 0.0, 0.01, 0.0, True, "sideways")
             for overlay in (False, True):
                 for price, closes, armed in (

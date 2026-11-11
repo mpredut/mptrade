@@ -12,6 +12,9 @@ from trailing_core import should_sell  # noqa: E402
 import binance_api.trailing_stop as binance_ts_mod  # noqa: E402
 from providers.strategy_executor import OrderStatus  # noqa: E402
 from tests.conftest import TrailingTestBase  # noqa: E402
+from trailing_core import TrailingCore
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class FakeApi:
@@ -267,7 +270,6 @@ class TestPerCoinRebuy(Base):
 
         with self.subTest(msg="core_rebuy_for_falls_back_to_global_without_adapter_method"):
             self.tearDown(); self.setUp()
-            from trailing_core import TrailingCore
             class Bare:  # no rebuy_enabled_for attribute
                 pass
             core = TrailingCore(Bare(), log=lambda *_: None, enabled=True, state_file=self.sf,
@@ -304,7 +306,6 @@ class TestPerCoinRebuy(Base):
         with self.subTest(msg="long_trend_up_uses_the_configured_sma_and_fails_closed"):
             self.tearDown(); self.setUp()
             import binance_api.trailing_stop as m
-            from types import SimpleNamespace
             api = FakeApi(250.0); ts = self.ts(api)
             day = int(m.time.time() // 86400)
             kl = lambda n: [[d * 86400000, 0, 0, 0, "100.0", 0,
@@ -320,7 +321,6 @@ class TestPerCoinRebuy(Base):
         with self.subTest(msg="auto_keeps_recovery_intent_while_down_then_buys_after_recovery"):
             self.tearDown(); self.setUp()
             import binance_api.trailing_stop as m
-            from unittest.mock import patch
             api = FakeApi(250.0); ts = self.ts(api)
             ts.core.sell_skip_if_trend_up = False
             with patch.dict(m.REBUY_MODE_BY_SYMBOL, TAOUSDC="auto"):
@@ -339,8 +339,6 @@ class TestPerCoinRebuy(Base):
         with self.subTest(msg="auto_rejects_stale_gapped_and_nonfinite_candles"):
             self.tearDown(); self.setUp()
             import binance_api.trailing_stop as m
-            from types import SimpleNamespace
-            from unittest.mock import patch
             day = 20000
             good = [[d * 86400000, 0, 0, 0, "100", 0, (d + 1) * 86400000 - 1]
                     for d in range(day - 3, day + 1)]
@@ -371,7 +369,7 @@ class TestPerCoinRebuy(Base):
             self.assertEqual(self.po.orders, [])
 
         with self.subTest(msg="trend_uses_get_fresh_snapshot_not_stale_get_snapshot"):
-            from unittest.mock import MagicMock, patch
+            from unittest.mock import MagicMock
             ts = self.ts(FakeApi(100.0))
             fake_mgr = MagicMock()
             fake_mgr.get_fresh_snapshot.return_value = None
@@ -399,7 +397,6 @@ class TestPerCoinRebuy(Base):
 class TestPerCoin(Base):
     def test_per_coin_configurations(self):
         with self.subTest(msg="market_data_only_symbol_is_not_trailed_or_logged_as_managed"):
-            from types import SimpleNamespace
             ts = TrailingStop(FakeApi(1), self.po,
                               SimpleNamespace(symbols=["TAOUSDC", "DATAONLYUSDC"]),
                               state_file=self.sf, log=lambda *_args: None)
@@ -411,7 +408,6 @@ class TestPerCoin(Base):
 
         with self.subTest(msg="new_arb_state_is_not_implicitly_preseeded_or_armed"):
             self.tearDown(); self.setUp()
-            from types import SimpleNamespace
             ts = TrailingStop(FakeApi(0.17, free=100, asset="ARB"), self.po,
                               SimpleNamespace(symbols=["ARBUSDC"]), enabled=True,
                               state_file=self.sf, min_profit_pct=5, log=lambda *_args: None)
@@ -864,7 +860,6 @@ class TestMinProfit(Base):
 
         with self.subTest(msg="sell_skip_if_trend_up_defers_sell_when_enabled"):
             self.tearDown(); self.setUp()
-            from unittest.mock import patch
             api = FakeApi(250.0, free=2.0)
             logs = []
             ts = TrailingStop(api, self.po, FakeSym(), log=logs.append,
@@ -999,7 +994,6 @@ class TestMinProfit(Base):
 
         with self.subTest(msg="expired_sell_trend_deferral_persists_if_order_canceled_zero_fill"):
             self.tearDown(); self.setUp()
-            from unittest.mock import patch
             api = FakeApi(250.0, free=2.0)
             ts = self.ts(api)
             ts.trend = lambda _s: 1.0
@@ -1035,7 +1029,6 @@ if __name__ == "__main__":
 
 def test_trailingcore__safe_trend_ignores_boolean_true_so_sell_skip_if_trend_up_does_iter44_s1(tmp_path):
     """[ITER44 #1] TrailingCore._safe_trend ignores boolean True so sell_skip_if_trend_up does not skip a crash sell."""
-    from types import SimpleNamespace
     import trailing_core
     # 1. TrailingCore._safe_trend ignores boolean True so sell_skip_if_trend_up does not skip a crash sell
     sold_calls = []
@@ -1070,7 +1063,6 @@ def test_trailingcore__safe_trend_ignores_boolean_true_so_sell_skip_if_trend_up_
 def test_trailingcore__process_ignores_invalid_trail_bool_nan_iter58_s2():
     """[ITER58 #2] TrailingCore._process ignores invalid trail (bool, NaN, <=0, >=100)."""
     from unittest.mock import MagicMock
-    from trailing_core import TrailingCore
     # 2. TrailingCore._process ignores invalid trail (bool, NaN, <=0, >=100)
     core = object.__new__(TrailingCore)
     core.a = MagicMock()
@@ -1084,7 +1076,6 @@ def test_trailingcore__process_ignores_invalid_trail_bool_nan_iter58_s2():
 
 def test_trailingcore_sanitizes_sets_normalizes_constructor_params_and_skips_iter65_s1(tmp_path):
     """[ITER65 #1] TrailingCore sanitizes sets, normalizes constructor params, and skips invalid string/overflow prices."""
-    from trailing_core import TrailingCore
     # 1. TrailingCore sanitizes sets, normalizes constructor params, and skips invalid string/overflow prices
     class _DummyAdapter:
         def assets(self):
@@ -1116,8 +1107,6 @@ def test_trailingcore_sanitizes_sets_normalizes_constructor_params_and_skips_ite
 
 def test_trailingcore__reconcile_pending_cleans_up_corrupted_non_dict_pending_order_iter70_s4(tmp_path):
     """[ITER70 #4] TrailingCore._reconcile_pending cleans up corrupted non-dict pending_order without crashing."""
-    from types import SimpleNamespace
-    from trailing_core import TrailingCore
     # 4. TrailingCore._reconcile_pending cleans up corrupted non-dict pending_order without crashing
     core = TrailingCore(
         SimpleNamespace(),
@@ -1162,7 +1151,6 @@ def test_trailingcore__finish_pending_cleans_up_target_exit_qty_on_fill_terminal
 
 def test_trailing_core_string_false_flags_and_malformed_pending_metadata_iter110_s1(tmp_path):
     """[ITER110 #1] trailing_core: string 'false' flags and malformed pending metadata in _finish_pending."""
-    from types import SimpleNamespace
     import trailing_core as tc
     # 1. trailing_core: string 'false' flags and malformed pending metadata in _finish_pending
     adapter = SimpleNamespace(
@@ -1200,7 +1188,6 @@ def test_trailing_core_string_false_flags_and_malformed_pending_metadata_iter110
 def test_trailingcore_string_false_in_st_is_flat_does_not_iter131_s1(tmp_path):
     """[ITER131 #1] TrailingCore: string 'false' in st['is_flat'] does not block peak tracking or reset warmup."""
     import json
-    from trailing_core import TrailingCore
     # 1. TrailingCore: string "false" in st["is_flat"] does not block peak tracking or reset warmup
     state_file = str(tmp_path / "trail_state.json")
     with open(state_file, "w", encoding="utf-8") as fh:

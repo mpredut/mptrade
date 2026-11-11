@@ -18,6 +18,8 @@ from intelligence.sentiment.collectors.market_breadth_collector import MarketBre
 from cacheaccount import CacheTradeManager
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 from state_io import save_json_state
+from intelligence.external.collectors.base_collector import TelemetryCacheCollectorInterface, TelemetryCollectorFactory
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 
 
 def test_collector_initialization(temp_cache_dir):
@@ -254,10 +256,6 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
         PriceSeriesCacheCollectorBase,
         SymbolMicrostructureSnapshotCollector,
     )
-    from intelligence.external.collectors.base_collector import (
-        TelemetryCacheCollectorInterface,
-        TelemetryCollectorFactory,
-    )
     from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
         PretradeEvaluationContext,
         PretradePillarCollectorBase,
@@ -418,10 +416,7 @@ def test_pretrade_telemetry_read_write_separation_and_explicit_snapshot_contract
         read_pretrade_telemetry_snapshot,
         refresh_pretrade_telemetry_caches,
     )
-    from intelligence.sentiment.guards.high_stake_guard import (
-        _HIGH_STAKE_DECISION_CACHE,
-        HighStakeGuard,
-    )
+    from intelligence.sentiment.guards.high_stake_guard import _HIGH_STAKE_DECISION_CACHE
     from intelligence.sentiment.guards.post_stop_reentry_guard import (
         PostStopReentryGuard,
         clear_post_stop_reentry_cache,
@@ -598,10 +593,6 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         MacroTelemetryCollectorBase,
         MarketAndPortfolioSnapshotOrchestrator,
         PortfolioAndVenueCyclesCollector,
-    )
-    from intelligence.external.collectors.base_collector import (
-        TelemetryCacheCollectorInterface,
-        TelemetryCollectorFactory,
     )
     from intelligence.sentiment.collectors.portfolio_collector import (
         BotRuntimeStatesCollector,
@@ -1070,7 +1061,6 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
 def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_cache_dir):
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.macro_analyzer import MacroAnalyzer
-    from intelligence.external.collectors.base_collector import TelemetryCollectorFactory
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 
     # 1. TelemetryCollectorFactory start_sync consumer vs producer separation
@@ -1134,7 +1124,6 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
 
     # 3. Border cases: PretradeTelemetrySnapshot age recomputation on later guard check + corrupted explicit telemetry
     from intelligence.sentiment.collectors.pretrade_telemetry_collector import PretradeTelemetrySnapshot
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 
     snap_t0 = PretradeTelemetrySnapshot.from_raw(
         {"Orderbook Depth Imbalance": "0.58 (58% bids vs 42% asks)"},
@@ -1225,11 +1214,7 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     )
     from external_order_guard import ExternalOrderGuardsEvaluator
     from intelligence.composite import CompositeMarketIntelligence
-    from intelligence.external.collectors.base_collector import (
-        TelemetryCacheCollectorInterface,
-        TelemetryCollectorFactory,
-        _DiskBackedSymbolCollector,
-    )
+    from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
     from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
@@ -1250,7 +1235,7 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     from intelligence.macro.news_feed_collector import NewsFeedCollector
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, PreTradeLLMGuardBase
+    from intelligence.sentiment.guards.high_stake_guard import PreTradeLLMGuardBase
     from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
     from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
     from llm_order_guard import LLMOrderGuardsEvaluator

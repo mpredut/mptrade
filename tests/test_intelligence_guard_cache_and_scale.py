@@ -26,6 +26,7 @@ from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
 from providers.market_api import BinanceProvider
 from providers.strategy_executor import ProviderError
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
 
 
 _BASE_MARGINS = dict(order_guard._load_margins())
@@ -1290,7 +1291,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_batch6_collectors_cache_fallback_ttl_and_usdcusdt(self, tmp_path):
         """Verify OrderbookDepthCollector non-tuple cache fallback, WhalePositioningCollector funding disk TTL,
         and USDCUSDT preservation."""
-        from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
         from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
         ob_collector = OrderbookDepthCollector(cache_ttl_sec=0.0, cache_dir=str(tmp_path))
@@ -1748,10 +1748,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """Verify cross-venue symbol normalization and disk-variant lookup in Pillar 2 collectors,
         and MarketRegimeContext.is_valid_for check in intelligence_order_guard."""
         from cachepaths import resolve_binance_lookup_symbol
-        from intelligence.external.collectors.orderbook_depth_collector import (
-            OrderbookDepthCollector,
-            OrderbookSnapshot,
-        )
         from intelligence.external.collectors.derivatives_telemetry_collector import (
             DerivativesTelemetry,
             DerivativesTelemetryCollector,
@@ -1938,10 +1934,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         import qlimit_order_guard
         from intelligence.internal.state import survival
         from cachepaths import cache_symbol_variants
-        from intelligence.external.collectors.orderbook_depth_collector import (
-            OrderbookDepthCollector,
-            OrderbookSnapshot,
-        )
 
         # 1. Verify cache_symbol_variants prioritizes USDC before USDT and supports bare base symbols
         variants_tao = cache_symbol_variants("TAOUSD")

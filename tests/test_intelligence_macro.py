@@ -29,6 +29,8 @@ from intelligence.sentiment.sentiment_advisor import (
 )
 from datetime import datetime
 from types import SimpleNamespace
+from intelligence.macro.calendar_ssot import compute_dynamic_geopolitical_interval, compute_dynamic_sentiment_interval
+from intelligence.macro.lexicon_ssot import discover_dynamic_terms_from_headlines, is_excluded_reference_news_item, load_dynamic_lexicon, match_high_severity_keywords, record_dynamic_crisis_terms_from_assessment, update_dynamic_lexicon
 
 
 SAMPLE_RSS_XML_WAR = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -603,7 +605,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
 
     def test_dynamic_sentiment_interval_adapts_to_context(self):
         from zoneinfo import ZoneInfo
-        from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
         from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
         from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
@@ -752,16 +753,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
             get_fear_greed_endpoint_url,
             get_market_breadth_endpoint_url,
         )
-        from intelligence.macro.lexicon_ssot import (
-            build_dynamic_rss_url,
-            discover_dynamic_terms_from_headlines,
-            get_active_acute_shock_phrases,
-            get_active_severity_keywords,
-            get_specialized_rss_urls,
-            load_dynamic_lexicon,
-            match_high_severity_keywords,
-            record_dynamic_crisis_terms_from_assessment,
-        )
+        from intelligence.macro.lexicon_ssot import build_dynamic_rss_url, get_active_acute_shock_phrases, get_active_severity_keywords, get_specialized_rss_urls
 
         # 1. Config-driven endpoints, exclusions, and specialized feeds
         assert "alternative.me" in get_fear_greed_endpoint_url()
@@ -776,11 +768,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert any("aljazeera.com" in u for u in urls)
         assert any("feeds.finance.yahoo.com" in u and "NVDA" in u for u in urls)
 
-        from intelligence.macro.lexicon_ssot import (
-            build_equity_tickers_rss_url,
-            has_tracked_equity_entity,
-            is_excluded_reference_news_item,
-        )
+        from intelligence.macro.lexicon_ssot import build_equity_tickers_rss_url, has_tracked_equity_entity
 
         eq_rss = build_equity_tickers_rss_url()
         assert "NVDA" in eq_rss and "SPCX" in eq_rss and "RGNT" in eq_rss
@@ -844,7 +832,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert len(get_active_acute_shock_phrases(cache_dir=str(tmp_path), now_ts=1_700_000_250.0)) > 0
 
         # 4. compute_dynamic_geopolitical_interval only returns 0.0s on ELEVATED when a NEW acute phrase arrives
-        from intelligence.macro.calendar_ssot import compute_dynamic_geopolitical_interval
 
         existing_digest = "strait of hormuz shipping update|fed inflation remarks"
         non_acute_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -897,10 +884,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         from intelligence.macro_sentiment_ssot import (
             resolve_crypto_executor_interval_sec,
             resolve_derived_telemetry_intervals,
-        )
-        from intelligence.macro.calendar_ssot import (
-            compute_dynamic_geopolitical_interval,
-            compute_dynamic_sentiment_interval,
         )
 
         # 1. Baseline 6-minute (360s) cadence
@@ -976,14 +959,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert geo_itv == pytest.approx(min(scaled_itvs["max_dynamic_geopolitical_interval_sec"], 27000.0 * 1.15))
 
     def test_freeze_stem_excludes_freezers_and_normal_assessment_demotes_dynamic_acute_terms(self, tmp_path):
-        from intelligence.macro.lexicon_ssot import (
-            demote_dynamic_acute_terms,
-            discover_dynamic_terms_from_headlines,
-            get_active_acute_shock_phrases,
-            load_dynamic_lexicon,
-            match_high_severity_keywords,
-            update_dynamic_lexicon,
-        )
+        from intelligence.macro.lexicon_ssot import demote_dynamic_acute_terms, get_active_acute_shock_phrases
 
         # 1. "freezers" must not match the "freeze" crisis stem unless an actual crisis word is in the bigram
         freezer_headlines = [
@@ -1035,9 +1011,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
     def test_geopolitical_surge_counts_only_new_headlines_and_preserves_digest_until_stale(self, tmp_path):
         from intelligence.macro_sentiment_ssot import (
             extract_high_severity_headlines_and_digest,
-        )
-        from intelligence.macro.calendar_ssot import (
-            compute_dynamic_geopolitical_interval,
         )
 
         # Simulate a 6h rolling pool with high_severity_count=79 where 11 of top 12 were already in last_headlines_digest
@@ -1121,7 +1094,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
 
     def test_news_feed_collector_no_resurrection_after_rolling_window_and_pubdate_filtering(self, tmp_path):
         import email.utils
-        from intelligence.macro.lexicon_ssot import discover_dynamic_terms_from_headlines
 
         history_file = str(tmp_path / "news_resurrect.json")
         collector = NewsFeedCollector(
@@ -1175,10 +1147,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         # Archival RSS items older than 7 days (e.g., months-old Google News background articles)
         # must not return None from _parse_recent_pub_date_ts, must not crowd out fresh items in parse_rss_xml,
         # and must not pollute dynamic lexicon with editorial words like "war timeline" or "war exposes".
-        from intelligence.macro.lexicon_ssot import (
-            load_dynamic_lexicon,
-            update_dynamic_lexicon,
-        )
 
         archival_items = "\n".join(
             f"""  <item>
@@ -1423,10 +1391,6 @@ def test_contiguous_dynamic_lexicon_runs_test_log_isolation_and_dotenv_dedup(tmp
     import logging
     import botcore
     import log as log_mod
-    from intelligence.macro.lexicon_ssot import (
-        discover_dynamic_terms_from_headlines,
-        record_dynamic_crisis_terms_from_assessment,
-    )
     from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
 
     # 1. Cross-punctuation and cross-stopword synthetic bigrams are never discovered
@@ -1736,7 +1700,6 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert "CB_Premium=+9.4bps" in captured_sa_prompts[0]
 
     # 5. Dynamic Sentiment Interval & Stale SentimentAdvisor Live Institutional Divergence (BUY & SELL symmetry)
-    from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
     from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
         enrich_sentiment_advisor_live_flow_divergence,
     )
@@ -2086,15 +2049,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
 
 def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path):
     """Verify LLM prose/derivatives bigrams are pruned from dynamic lexicon and non-kinetic war/nuclear/default headlines do not trigger high-severity."""
-    from intelligence.macro.lexicon_ssot import (
-        filter_valid_severity_keywords,
-        has_acute_shock_keywords,
-        is_excluded_reference_news_item,
-        load_dynamic_lexicon,
-        match_high_severity_keywords,
-        record_dynamic_crisis_terms_from_assessment,
-        update_dynamic_lexicon,
-    )
+    from intelligence.macro.lexicon_ssot import filter_valid_severity_keywords, has_acute_shock_keywords
 
     now = 1_793_913_000.0
     update_dynamic_lexicon(
@@ -2242,13 +2197,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
 
 def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path, monkeypatch):
     """Verify semantic stem deduplication of dynamic bigrams, UTC publication timestamps on headlines, and polluted digest de-escalation."""
-    from intelligence.macro.lexicon_ssot import (
-        _bigram_stem_signature,
-        build_dynamic_rss_url,
-        is_excluded_reference_news_item,
-        load_dynamic_lexicon,
-        update_dynamic_lexicon,
-    )
+    from intelligence.macro.lexicon_ssot import _bigram_stem_signature, build_dynamic_rss_url
     from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
     from orchestratorOS.supervisor.prompt_sections import _age_sfx
 

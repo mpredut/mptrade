@@ -21,6 +21,8 @@ from providers.strategy_executor import (
     StrategyExecutor,
 )
 from providers.t212_provider import T212Provider
+from botcore import load_local_module
+from types import SimpleNamespace
 
 
 class FakeT212Client:
@@ -733,7 +735,6 @@ if __name__ == "__main__":
 
 def test_t212provider_get_orders_and_order_status_iter29_s2():
     """[ITER29 #2] T212Provider.get_orders and order_status."""
-    from types import SimpleNamespace
     # 2. T212Provider.get_orders and order_status
     fake_cli = SimpleNamespace(
         get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "averagePrice": 120.0, "quantity": 5.0}],
@@ -762,7 +763,6 @@ def test_t212provider_get_orders_and_order_status_iter29_s2():
 
 def test_t212provider_rejects_boolean_qty_price_order_id_fill_fields_iter41_s1():
     """[ITER41 #1] T212Provider rejects boolean qty/price/order_id/fill fields."""
-    from types import SimpleNamespace
     import pytest
     # 1. T212Provider rejects boolean qty/price/order_id/fill fields
     tp = T212Provider(
@@ -830,7 +830,6 @@ def test_t212client_place_limit_order_place_market_order_reject_bool_nan_inf_bef
 
 def test_212trading_strategy_generate_tp_ladder_adapt_ladder_rungs__avg_cost__portfolio_position_step_iter50_s2():
     """[ITER50 #2] 212trading/strategy: generate_tp_ladder, adapt_ladder_rungs, _avg_cost, _portfolio_position, step."""
-    from types import SimpleNamespace
     import pytest
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
@@ -916,7 +915,6 @@ def test_212trading_replay__fx_rates__ols_slope_pct_reject_bool_nan_inf_iter50_s
 
 def test_t212provider_order_status_rejects_nan_inf_filledquantity_filledvalue_fee_iter51_s6(monkeypatch):
     """[ITER51 #6] T212Provider: order_status rejects NaN/Inf filledQuantity, filledValue, fee, fillPrice."""
-    from types import SimpleNamespace
     import pytest
     # 6. T212Provider: order_status rejects NaN/Inf filledQuantity, filledValue, fee, fillPrice
     tp = T212Provider()
@@ -935,7 +933,6 @@ def test_t212provider_order_status_rejects_nan_inf_filledquantity_filledvalue_fe
 
 def test_212trading_order_manager__portfolio_qty__matching_active_orders__reconcile_record_iter53_s1():
     """[ITER53 #1] 212trading/order_manager: _portfolio_qty, _matching_active_orders, _reconcile_record."""
-    from types import SimpleNamespace
     # 1. 212trading/order_manager: _portfolio_qty, _matching_active_orders, _reconcile_record
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
@@ -1063,7 +1060,6 @@ def test_t212provider_free_balance_eur_converts_ron_using_usd_ron_eur_usd_iter61
 def test_212trading_market_data_212trading_strategy_generate_tp_ladder_iter69_s4():
     """[ITER69 #4] 212trading.market_data & 212trading.strategy.generate_tp_ladder."""
     import pytest
-    from botcore import load_local_module
     t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
     t212_md = load_local_module(t212_dir, "market_data.py", module_key="_t212_market_data_69", reload=True)
     t212_strat = load_local_module(t212_dir, "strategy.py", module_key="_t212_strategy_69", reload=True)
@@ -1079,8 +1075,6 @@ def test_212trading_market_data_212trading_strategy_generate_tp_ladder_iter69_s4
 
 def test_212trading_t212_bot_verify_instrument_isin_tolerates_non_dict_items_in_iter70_s2():
     """[ITER70 #2] 212trading.t212_bot.verify_instrument_isin tolerates non-dict items in instruments list."""
-    from types import SimpleNamespace
-    from botcore import load_local_module
     t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
     t212_bot = load_local_module(t212_dir, "t212_bot.py", module_key="_t212_bot_70", reload=True)
     # 2. 212trading.t212_bot.verify_instrument_isin tolerates non-dict items in instruments list
@@ -1282,7 +1276,6 @@ def test_t212_client_mod_clean_order_id_normalizes_integer_floats_and_rejects_se
 def test_t212provider_order_status_and_cancel_order_accept_integer_floats_while_iter138_s2():
     """[ITER138 #2] T212Provider.order_status and cancel_order accept integer floats while rejecting sentinel strings / containers."""
     import pytest
-    from types import SimpleNamespace
     # 2. T212Provider.order_status and cancel_order accept integer floats while rejecting sentinel strings / containers
     seen_ids = []
     fake_cli = SimpleNamespace(
@@ -1370,7 +1363,6 @@ def test__sanitize_t212_state_parses_string_boolean_flags_false_false_and_iter14
 
 def test_212trading_analyze_volatility_py_pct_pullbacks_iter150_s2():
     """[ITER150 #2] 212trading/analyze_volatility.py pct & pullbacks."""
-    from botcore import load_local_module
     # 2. 212trading/analyze_volatility.py pct & pullbacks
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     av_mod = load_local_module(os.path.join(root, "212trading"), "analyze_volatility", module_key="t212_av_t150", reload=True)
@@ -1392,7 +1384,6 @@ def test_t212provider__orders_live_rejects_nan_false_containers_iter152_s3():
 
 def test_t212provider__position_none_strict_false_returns_none_without_iter164_s4():
     """[ITER164 #4] T212Provider: _position(None, strict='false') returns None without raising ProviderError."""
-    from types import SimpleNamespace
     # 4. T212Provider: _position(None, strict="false") returns None without raising ProviderError
     tp = T212Provider(client=SimpleNamespace(get_portfolio=lambda: []))
     assert tp._position(None, strict="false") is None

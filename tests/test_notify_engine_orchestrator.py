@@ -1009,7 +1009,6 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
                 self.assertEqual(self.dispatched[1]["topic"], "ntfy-server-test")
 
         # Verify bounded Producer-Consumer queue caps per-topic and total items (dropping overflow / evicting lower priority)
-        from notify_engine.alertnotifiers import pass_common_gate, pop_due_bulk_batch
         with mock.patch.dict(os.environ, {
             "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
             "NOTIFICATION_GATE_SECONDS": "600",
@@ -1084,7 +1083,6 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.assertEqual(q_titles, ["Q2", "Q3", "Q4"])
 
     def test_gated_ntfy_accepted_status_email_mirror_and_blocked_pop(self):
-        from notify_engine.alertnotifiers import _mark_provider_daily_limit, pass_common_gate, pop_due_bulk_batch
 
         with mock.patch.dict(os.environ, {
             "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
@@ -1189,6 +1187,9 @@ for _sub in (("orchestratorOS", "lib"), ("orchestratorOS", "livecheck")):
 
 import os_resources_watchdog as wd  # noqa: E402
 import watchdog_common as wc  # noqa: E402
+from market_monitor import alerts_config
+from market_monitor.pricechecker import PriceChecker
+from notify_engine.alertnotifiers import _mark_provider_daily_limit, pass_common_gate, pop_due_bulk_batch
 
 
 class _WatchdogResp:
@@ -1417,7 +1418,6 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
 
     def test_trades_never_mirrored_to_email_even_when_ntfy_blocked(self):
-        from notify_engine.alertnotifiers import _mark_provider_daily_limit
         _mark_provider_daily_limit("ntfy", cooldown_seconds=3600.0)
 
         trade_alert = {
@@ -1432,7 +1432,6 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertEqual(self.sent, [])
 
     def test_errors_still_mirrored_to_email_when_ntfy_blocked(self):
-        from notify_engine.alertnotifiers import _mark_provider_daily_limit
         _mark_provider_daily_limit("ntfy", cooldown_seconds=3600.0)
 
         error_alert = {
@@ -1448,7 +1447,6 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertIn("Exception in bot runner", self.sent[0][0]["Subject"])
 
     def test_deadman_still_mirrored_to_email_when_ntfy_blocked(self):
-        from notify_engine.alertnotifiers import _mark_provider_daily_limit
         _mark_provider_daily_limit("ntfy", cooldown_seconds=3600.0)
 
         server_alert = {
@@ -1498,7 +1496,6 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertIn("PID 123", self.sent[0][0].get_payload(decode=True).decode("utf-8"))
 
     def test_distinct_trades_within_topic_bulk_window_are_batched_not_eliminated(self):
-        from notify_engine.alertnotifiers import pass_common_gate, pop_due_bulk_batch
 
         with mock.patch.dict(os.environ, {
             "NOTIFICATION_GATE_SECONDS": "180",
@@ -1662,7 +1659,6 @@ send_os_ntfy "DEV CI Regression RECOVERED" "Commit eeeeeee passed all tests" "de
 
 def test_pricechecker__should_send_alert_recovers_from_nan_bool_last_time_and_iter55_s3():
     """[ITER55 #3] PriceChecker._should_send_alert recovers from NaN/bool last_time and cooldown_minutes."""
-    from market_monitor.pricechecker import PriceChecker
     # 3. PriceChecker._should_send_alert recovers from NaN/bool last_time and cooldown_minutes
     checker = PriceChecker(cachePriceAll=None, config={"cooldown_minutes": float("nan")})
     checker._last_alert_time["BTC_up"] = float("nan")
@@ -1765,7 +1761,6 @@ def test_pricechecker__readable_time_start_monitoring_and_new_coins_discovery__s
     """[ITER66 #5] PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back."""
     from types import SimpleNamespace
     import pytest
-    from market_monitor.pricechecker import PriceChecker
     from market_monitor.new_coins_discovery import _safe_days_back, safe_float as _safe_num
     # 5. PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back
     assert isinstance(PriceChecker._readable_time((1e25, 100.0, None)), str)
@@ -1811,7 +1806,7 @@ def test_notify_engine_server_process_line_handles_none_bool_negative_cooldown_m
 
 def test_pricechecker__get_thresholds_for_symbol_handles_partial_or_invalid_per_coin_dicts_iter78_s1():
     """[ITER78 #1] PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts."""
-    from market_monitor.pricechecker import PriceChecker, PRICE_ALERT_CONFIG
+    from market_monitor.pricechecker import PRICE_ALERT_CONFIG
     # 1. PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts
     class _DummyCache:
         symbol_added_time = {}
@@ -1840,7 +1835,6 @@ def test_pricechecker__get_thresholds_for_symbol_handles_partial_or_invalid_per_
 def test_alerts_config__pair_rejects_extra_slashes_and_load_config_rejects_iter79_s1(tmp_path):
     """[ITER79 #1] alerts_config._pair rejects extra slashes and load_config rejects fractional integer settings."""
     import pytest
-    from market_monitor import alerts_config
     # 1. alerts_config._pair rejects extra slashes and load_config rejects fractional integer settings
     with pytest.raises(ValueError):
         alerts_config._pair("6 / 10 / 15")
@@ -1867,7 +1861,6 @@ def test_alerts_config__pair_rejects_extra_slashes_and_load_config_rejects_iter7
 
 def test_alerts_config_resolve_normalizes_case_and_handles_none_per_coin_iter79_s2():
     """[ITER79 #2] alerts_config.resolve normalizes case and handles None per_coin."""
-    from market_monitor import alerts_config
     # 2. alerts_config.resolve normalizes case and handles None per_coin
     ac = {
         "default": {"up_percent": 4.0, "down_percent": 8.0},
@@ -1922,7 +1915,6 @@ def test_stockyahoopriceplatform_splits_string_tickers_filters_non_strings_and_i
 
 def test_alerts_config_resolve_rejects_boolean_symbol_iter121_s5():
     """[ITER121 #5] alerts_config.resolve rejects boolean symbol."""
-    from market_monitor import alerts_config
     # 5. alerts_config.resolve rejects boolean symbol
     ac = {
         "per_coin": {"TRUE": {"up_percent": 99.0, "down_percent": 99.0}},

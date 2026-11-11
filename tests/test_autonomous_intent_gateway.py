@@ -10,6 +10,7 @@ from orchestratorTrade.autonomous_intent_gateway import (
     AUTONOMOUS_BYPASS_GUARDS,
     AutonomousIntentGateway,
 )
+from providers.execution_audit import extract_intent_notional, summarize_recent_ai_intents
 
 
 @pytest.fixture
@@ -808,7 +809,7 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
     from providers.order_id_context import REPRICEABLE_BOTS, resolve_order_owner
     from orchestratorOS.agy.topics import condense_decision
     from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
-    from providers.execution_audit import normalize_trading_decisions, summarize_recent_ai_intents
+    from providers.execution_audit import normalize_trading_decisions
 
     ws, _ = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
@@ -916,7 +917,6 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
     assert norm[0]["limit_price"] == pytest.approx(79850.0)
     assert norm[0]["replace_open_orders"] is True
 
-    from providers.execution_audit import extract_intent_notional
     recent_summary = summarize_recent_ai_intents(
         gw.load_all_intents(),
         "crypto",
@@ -1064,12 +1064,7 @@ def test_cancel_bot_open_orders_and_balance_unlock_via_replacement(temp_workspac
 
 def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect_ai_ids():
     """Verify unfilled resting LIMIT orders and non-executed intents do not inherit prior fills from recent_orders."""
-    from providers.execution_audit import (
-        build_last_cycle_execution_status,
-        collect_known_ai_order_ids,
-        extract_intent_notional,
-        summarize_recent_ai_intents,
-    )
+    from providers.execution_audit import build_last_cycle_execution_status, collect_known_ai_order_ids
 
     now_ts = 1_760_000_100.0
     intents = [
@@ -1184,11 +1179,7 @@ def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect
 def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_intent_cids():
     """AI orders are never repriced by monitororder, and bot/repriced orders are never adopted as AI orders."""
     from providers import order_id_context as rc
-    from providers.execution_audit import (
-        _resolve_intent_execution_details,
-        cancel_existing_ai_open_orders,
-        extract_intent_notional,
-    )
+    from providers.execution_audit import _resolve_intent_execution_details, cancel_existing_ai_open_orders
 
     # 1. AI_ cids resolve to ai_executor and are protected from monitororder repricing
     assert rc.resolve_order_owner("AI_20261102-BUY-BTCUSDC_ab12cd_7f9e1a2") == "ai_executor"
@@ -1263,7 +1254,7 @@ def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_inten
 
 def test_execution_details_finds_own_ai_fill_behind_later_bot_fill_and_matches_by_order_id():
     """A later same-side BOT fill (e.g. monitororder-repriced tradeall order) must not hide the intent's own fill."""
-    from providers.execution_audit import _resolve_intent_execution_details, extract_intent_notional
+    from providers.execution_audit import _resolve_intent_execution_details
 
     now_ts = time.time()
     intent = {
@@ -1493,7 +1484,7 @@ def test_duplicate_open_ai_limit_order_is_skipped_while_ladder_at_distinct_price
         hl_inst.place.assert_called_once()
 
     # Lot-size rounded small order ($10.00 requested -> 0.11 * $84.00 = $9.24 resting) is also recognized as duplicate
-    from providers.execution_audit import find_duplicate_ai_open_limit_order, summarize_recent_ai_intents, extract_intent_notional
+    from providers.execution_audit import find_duplicate_ai_open_limit_order
     hl_inst.open_orders.return_value = [
         {
             "oid": 592714999999,
@@ -1544,11 +1535,7 @@ def test_duplicate_open_ai_limit_order_is_skipped_while_ladder_at_distinct_price
 
 
 def test_reconcile_canceled_prior_open_orders_and_carried_resting_multi_tranche(tmp_path):
-    from providers.execution_audit import (
-        build_last_cycle_execution_status,
-        extract_intent_notional,
-        reconcile_intents_from_execution_audit,
-    )
+    from providers.execution_audit import build_last_cycle_execution_status, reconcile_intents_from_execution_audit
 
     now_ts = 1793660000.0
     intents = [
