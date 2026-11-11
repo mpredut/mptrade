@@ -150,6 +150,9 @@ class HyperliquidProvider(MarketDataProvider):
     _DEFERS_PREFLIGHT_QUANTITY = True
     _DEFAULT_FEE_SPEC = ("SPOT_TIER0", 4.0, 7.0, 10.0)
     _PREFER_STATIC_TICK_SIZE = True
+    _ORDERBOOK_L2_INFO_BOOK = True
+    _EXACT_TELEMETRY_CACHE_SYMBOL = True
+    _HAS_NATIVE_L1_DERIVATIVES = True
     _STRATEGY_HEARTBEAT_NAME = "HL-bot"
     _RUNTIME_ENV_RELPATH = ("hyperliquid", "config.env")
     _LIVE_ORDERS_ENV = _LIVE_ENV

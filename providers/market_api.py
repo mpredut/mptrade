@@ -172,16 +172,29 @@ class MarketApi:
             **kwargs,
         )
 
+    def _default_provider_for_scope(self, scope: str, symbol: str) -> MarketDataProvider:
+        for candidate in self._providers:
+            if getattr(candidate, "_ASSET_SCOPE", "crypto") == scope:
+                return candidate
+        return self._provider_for(symbol)
+
     def fetch_intraday_chart(
         self,
         symbol: str,
         *,
         rng: str = "5d",
         interval: str = "5m",
-        provider_name="t212",
+        provider_name=None,
     ) -> tuple[Any, list]:
         """Return ``(meta, bars)`` intraday chart data routed through the target venue provider."""
-        return self._provider_explicit_or_routed(symbol, provider_name).fetch_intraday_chart(
+        if provider_name is not None or self.supports_symbol(symbol):
+            provider = self._provider_explicit_or_routed(symbol, provider_name)
+        else:
+            provider = self._default_provider_for_scope("equities", symbol)
+            validate_fn = getattr(provider, "validate_symbol", None)
+            if callable(validate_fn):
+                validate_fn(symbol)
+        return provider.fetch_intraday_chart(
             symbol,
             rng=rng,
             interval=interval,
@@ -198,18 +211,28 @@ class MarketApi:
         from instrument_registry import is_equity_symbol
 
         sym_u = str(symbol or "").strip().upper()
-        if is_equity_symbol(sym_u):
-            t212_prov = self.provider_by_name("t212")
-            return t212_prov.fetch_historical_ohlc_points(sym_u, days, interval=interval) if t212_prov is not None else []
-        bn_prov = self.provider_by_name("binance")
-        pts = bn_prov.fetch_historical_ohlc_points(symbol, days, interval=interval) if bn_prov is not None else []
-        if len(pts) < 50 and is_live_network_backfill_enabled():
-            krk_prov = self.provider_by_name("kraken")
-            if krk_prov is not None:
+        is_eq = is_equity_symbol(sym_u)
+        target_scope = "equities" if is_eq else "crypto"
+        query_sym = sym_u if is_eq else symbol
+        candidates = sorted(
+            (
+                prov
+                for prov in self._providers
+                if getattr(prov, "_ASSET_SCOPE", "crypto") == target_scope
+                and getattr(prov, "_HISTORICAL_OHLC_PRIORITY", None) is not None
+            ),
+            key=lambda prov: int(prov._HISTORICAL_OHLC_PRIORITY),
+        )
+        if not candidates:
+            return []
+        pts = candidates[0].fetch_historical_ohlc_points(query_sym, days, interval=interval)
+        if not is_eq and len(pts) < 50 and len(candidates) > 1 and is_live_network_backfill_enabled():
+            for fallback_prov in candidates[1:]:
                 try:
-                    k_pts = krk_prov.fetch_historical_ohlc_points(symbol, days, interval=interval)
-                    if len(k_pts) >= 50:
-                        pts = k_pts
+                    fb_pts = fallback_prov.fetch_historical_ohlc_points(query_sym, days, interval=interval)
+                    if len(fb_pts) >= 50:
+                        pts = fb_pts
+                        break
                 except Exception:
                     pass
         return pts
@@ -412,10 +435,9 @@ class MarketApi:
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             raise ValueError(f"Invalid symbol '{symbol}'.")
         provider = self._provider_explicit_or_routed(symbol, provider_name)
-        if provider.name.lower() == "binance" and not provider.supports_symbol(symbol):
-            import instrument_registry as sym_reg
-
-            sym_reg.validate_symbols(symbol)
+        validate_open_fn = getattr(provider, "validate_open_order_symbol", None)
+        if callable(validate_open_fn):
+            validate_open_fn(symbol)
         return side
 
     def get_open_orders(

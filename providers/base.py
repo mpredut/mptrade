@@ -146,6 +146,12 @@ class MarketDataProvider(ABC):
     _SELL_DUST_SPEC: Optional[tuple[int, float]] = None
     _DEFAULT_FEE_SPEC: tuple[str, float, float, float] = ("STANDARD", 15.0, 15.0, 5.0)
     _PREFER_STATIC_TICK_SIZE: bool = False
+    _USES_SHARED_REGISTRY_SYMBOLS: bool = False
+    _HISTORICAL_OHLC_PRIORITY: Optional[int] = None
+    _ORDERBOOK_L2_INFO_BOOK: bool = False
+    _EXACT_TELEMETRY_CACHE_SYMBOL: bool = False
+    _QUOTE_ISOLATED_TELEMETRY_VENUE: bool = True
+    _HAS_NATIVE_L1_DERIVATIVES: bool = False
     _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = VENUE_PROVIDER_SPECS
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
@@ -516,6 +522,42 @@ class MarketDataProvider(ABC):
         return int(target_cls.tca_price_decimals(limit_price))
 
     @classmethod
+    def uses_shared_registry_symbols(cls, venue: Any) -> bool:
+        """Return whether ``venue`` defaults to ``instrument_registry.symbols`` when ``symbols=None``."""
+        v_str = str(getattr(venue, "name", venue) or "").strip()
+        if not v_str:
+            return True
+        prov_cls = cls.resolve_venue_provider_class(v_str)
+        return bool(getattr(prov_cls, "_USES_SHARED_REGISTRY_SYMBOLS", False))
+
+    @classmethod
+    def is_exact_telemetry_symbol_venue(
+        cls,
+        venue: Any,
+        *,
+        quote_isolated: bool = False,
+        multi_venue_base: bool = False,
+    ) -> bool:
+        """Return whether external telemetry disk caching requires exact symbol isolation for ``venue``."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        target_cls = prov_cls if prov_cls is not None else cls
+        if getattr(target_cls, "_EXACT_TELEMETRY_CACHE_SYMBOL", False):
+            return True
+        return bool(
+            quote_isolated
+            and (
+                getattr(target_cls, "_QUOTE_ISOLATED_TELEMETRY_VENUE", True)
+                or multi_venue_base
+            )
+        )
+
+    @classmethod
+    def has_native_l1_derivatives(cls, venue: Any) -> bool:
+        """Return whether ``venue`` exposes native L1 perpetual funding/OI telemetry."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        return bool(getattr(prov_cls, "_HAS_NATIVE_L1_DERIVATIVES", False))
+
+    @classmethod
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
         """Return the daemon heartbeat module name for this provider's strategy engine."""
         if cls._STRATEGY_HEARTBEAT_NAME:
@@ -650,6 +692,10 @@ class MarketDataProvider(ABC):
     def validate_symbol(self, symbol: str) -> None:
         """Reject a symbol incompatible with this configured provider instance."""
         return None
+
+    def validate_open_order_symbol(self, symbol: str) -> None:
+        """Validate ``symbol`` before querying open orders on this venue."""
+        self.validate_symbol(symbol)
 
     def _ensure_client_lock(self):
         lock = getattr(self, "_client_lock", None)
@@ -1341,39 +1387,49 @@ class MarketDataProvider(ABC):
         canon_sym = canonical_symbol_key(symbol)
         if canon_sym.endswith("EUR"):
             eur_urls: list[str] = []
-            for v_key in ("binance", "kraken"):
+            for v_key in cls._VENUE_PROVIDER_SPECS:
                 prov_cls = cls.resolve_venue_provider_class(v_key)
-                if prov_cls is not None:
+                if prov_cls is not None and getattr(prov_cls, "_ASSET_SCOPE", "crypto") == "crypto":
                     prim, _ = prov_cls.public_orderbook_depth_urls(canon_sym)
                     eur_urls.extend(prim)
             return tuple(eur_urls), ""
 
+        crypto_venues: list[str] = []
+        l2_info_venues: set[str] = set()
         primary_map: dict[str, tuple[str, ...]] = {}
         secondary_map: dict[str, tuple[str, ...]] = {}
-        for v_key in ("binance", "kraken", "hyperliquid"):
+        for v_key in cls._VENUE_PROVIDER_SPECS:
             prov_cls = cls.resolve_venue_provider_class(v_key)
-            if prov_cls is not None:
-                prim, sec = prov_cls.public_orderbook_depth_urls(canon_sym)
-                primary_map[v_key] = prim
-                secondary_map[v_key] = sec
-            else:
-                primary_map[v_key] = ()
-                secondary_map[v_key] = ()
+            if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
+                continue
+            crypto_venues.append(v_key)
+            if getattr(prov_cls, "_ORDERBOOK_L2_INFO_BOOK", False):
+                l2_info_venues.add(v_key)
+            prim, sec = prov_cls.public_orderbook_depth_urls(canon_sym)
+            primary_map[v_key] = prim
+            secondary_map[v_key] = sec
 
-        hl_urls = primary_map.get("hyperliquid", ())
-        hl_book_url = hl_urls[0] if hl_urls else ""
+        l2_info_urls = tuple(
+            u for v_k in crypto_venues if v_k in l2_info_venues for u in primary_map.get(v_k, ())
+        )
+        hl_book_url = l2_info_urls[0] if l2_info_urls else ""
+        default_venue = next(
+            (v_k for v_k in crypto_venues if primary_map.get(v_k)),
+            crypto_venues[0] if crypto_venues else "",
+        )
         v_norm = normalize_venue_name(venue)
-        eff_venue = v_norm if (v_norm in primary_map and primary_map[v_norm]) else "binance"
+        eff_venue = v_norm if (v_norm in primary_map and primary_map[v_norm]) else default_venue
         if multi_venue:
             return primary_map.get(eff_venue, ()), hl_book_url
 
         ordered: list[str] = list(primary_map.get(eff_venue, ()))
-        for peer in ("binance", "kraken"):
-            if peer != eff_venue:
+        for peer in crypto_venues:
+            if peer != eff_venue and peer not in l2_info_venues:
                 ordered.extend(primary_map.get(peer, ()))
-        ordered.extend(secondary_map.get("binance", ()))
-        if eff_venue != "hyperliquid":
-            ordered.extend(hl_urls)
+        for peer in crypto_venues:
+            ordered.extend(secondary_map.get(peer, ()))
+        if eff_venue not in l2_info_venues:
+            ordered.extend(l2_info_urls)
         return tuple(ordered), hl_book_url
 
     def fetch_historical_ohlc_points(

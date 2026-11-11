@@ -777,3 +777,95 @@ def test_replay_execution_metrics_and_config_ssot_identity():
     assert _resolve_provider_label("rtrade", "") == "Binance"
 
 
+def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
+    """Lock Open-Closed Principle: MarketDataProvider base, MarketApi facade, gateway, cache orchestrator, and external collectors contain zero venue name comparisons."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    venue_tokens = {"binance", "kraken", "hyperliquid", "t212", "trading212"}
+    guarded_files = [
+        "providers/base.py",
+        "providers/market_api.py",
+        "providers/execution_audit.py",
+        "providers/intent_execution.py",
+        "providers/intent_state.py",
+        "providers/order_ohlc_utils.py",
+        "providers/quantity.py",
+        "providers/strategy_executor.py",
+        "instrument.py",
+        "order_guard.py",
+        "order_lifecycle.py",
+        "order_retry.py",
+        "cacheManager.py",
+        "monitortrades.py",
+        *[
+            p.relative_to(root).as_posix()
+            for p in sorted((root / "intelligence" / "external" / "collectors").glob("*.py"))
+        ],
+    ]
+    violations = []
+    for rel in guarded_files:
+        src = (root / rel).read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=rel)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare):
+                for sub in [node.left, *node.comparators]:
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and sub.value.lower() in venue_tokens:
+                        violations.append(f"{rel}:{node.lineno}: {sub.value!r}")
+                    elif isinstance(sub, (ast.Tuple, ast.List, ast.Set)):
+                        for elt in sub.elts:
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str) and elt.value.lower() in venue_tokens:
+                                violations.append(f"{rel}:{node.lineno}: {elt.value!r}")
+    assert violations == [], f"Forbidden venue string branch in venue-agnostic core module: {violations}"
+
+    assert MarketDataProvider.uses_shared_registry_symbols("binance") is True
+    assert MarketDataProvider.uses_shared_registry_symbols("") is True
+    assert MarketDataProvider.uses_shared_registry_symbols("kraken") is False
+    assert MarketDataProvider.uses_shared_registry_symbols("hyperliquid") is False
+    assert MarketDataProvider.uses_shared_registry_symbols("t212") is False
+    assert MarketDataProvider.has_native_l1_derivatives("hyperliquid") is True
+    assert MarketDataProvider.has_native_l1_derivatives("binance") is False
+    assert MarketDataProvider.is_exact_telemetry_symbol_venue("hyperliquid", quote_isolated=False) is True
+    assert MarketDataProvider.is_exact_telemetry_symbol_venue("t212", quote_isolated=False) is True
+    assert MarketDataProvider.is_exact_telemetry_symbol_venue("binance", quote_isolated=True, multi_venue_base=False) is False
+    assert MarketDataProvider.is_exact_telemetry_symbol_venue("binance", quote_isolated=True, multi_venue_base=True) is True
+    assert MarketDataProvider.is_exact_telemetry_symbol_venue("kraken", quote_isolated=True, multi_venue_base=False) is True
+
+    class _CryptoPrimary(MarketDataProvider):
+        _ASSET_SCOPE = "crypto"
+        _HISTORICAL_OHLC_PRIORITY = 1
+
+        @property
+        def name(self) -> str:
+            return "PrimaryCrypto"
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def fetch_historical_ohlc_points(self, symbol: str, days: int, interval: str = "1h"):
+            return [(1.0, 100.0)]
+
+    class _CryptoSecondary(MarketDataProvider):
+        _ASSET_SCOPE = "crypto"
+        _HISTORICAL_OHLC_PRIORITY = 2
+
+        @property
+        def name(self) -> str:
+            return "SecondaryCrypto"
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return False
+
+        def fetch_historical_ohlc_points(self, symbol: str, days: int, interval: str = "1h"):
+            return [(float(i), 100.0 + i) for i in range(60)]
+
+    facade = MarketApi([_CryptoPrimary(), _CryptoSecondary()])
+    monkeypatch.setattr("botcore.is_live_network_backfill_enabled", lambda: False)
+    assert len(facade.fetch_historical_ohlc_points("BTCUSDC", 7, interval="1h")) == 1
+    monkeypatch.setattr("botcore.is_live_network_backfill_enabled", lambda: True)
+    pts = facade.fetch_historical_ohlc_points("BTCUSDC", 7, interval="1h")
+    assert len(pts) == 60
+
+
+

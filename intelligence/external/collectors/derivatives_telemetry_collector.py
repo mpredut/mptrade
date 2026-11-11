@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 from botcore import safe_nonneg_float, safe_pos_float
 from cachepaths import resolve_binance_lookup_symbol
 from instrument_registry import is_equity_symbol, venue_for_symbol
+from providers.base import MarketDataProvider
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
     _DiskBackedSymbolCollector,
@@ -169,7 +170,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
                 logger.warning("Could not fetch equity derivatives telemetry for %s: %s", symbol, eq_exc)
             return self._fallback_stale(symbol, cached)
 
-        is_hl_primary = venue_for_symbol(symbol) == "hyperliquid"
+        is_hl_primary = MarketDataProvider.has_native_l1_derivatives(venue_for_symbol(symbol))
         if is_hl_primary:
             try:
                 if (hl_tel := self._fetch_hyperliquid_derivatives(symbol, now)) is not None:

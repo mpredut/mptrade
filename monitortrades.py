@@ -32,6 +32,7 @@ import order_guard
 import order_retry
 import pricewindow as pw
 from providers.base import (
+    MarketDataProvider,
     extract_order_id,
     extract_order_price,
     extract_timestamp_s,
@@ -1605,11 +1606,11 @@ def main():
     maxage_trade_s = 4 * 24 * 3600
 
     for _inst in instruments.values():
-        if _inst.provider_label.lower() == "binance":
+        if MarketDataProvider.uses_shared_registry_symbols(_inst.provider_label):
             _sym = _inst.symbol
-            close_sell_orders = mkt.get_orders(_sym, "SELL", maxage_trade_s)
+            close_sell_orders = _inst.orders("SELL", maxage_trade_s)
             print(f"get_trade_orders ({_sym}): Found {len(close_sell_orders)} close 'SELL' orders in the last {secondsToDays(maxage_trade_s)} days.")
-            close_buy_orders = mkt.get_orders(_sym, "BUY", maxage_trade_s)
+            close_buy_orders = _inst.orders("BUY", maxage_trade_s)
             print(f"get_trade_orders ({_sym}): Found {len(close_buy_orders)} close 'BUY' orders in the last {secondsToDays(maxage_trade_s)} days.")
             print(f"close_buy_orders ({_sym}) {close_buy_orders}")
             print(f"close_sell_orders ({_sym}) {close_sell_orders}")

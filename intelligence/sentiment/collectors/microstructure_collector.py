@@ -979,7 +979,6 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
                 canonical_base_asset(symbol) or symbol,
                 rng="5d",
                 interval="5m",
-                provider_name="t212",
             )
             if is_live_network_backfill_enabled():
                 _EQ_YAHOO_CHART_MEMO[symbol] = (eff_now, chart_res)

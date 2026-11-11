@@ -119,6 +119,9 @@ class BinanceProvider(MarketDataProvider):
 
     _USES_SSOT_MARKET_CACHE: bool = False
     _DEFAULT_FEE_SPEC = ("VIP0", 10.0, 10.0, 5.0)
+    _USES_SHARED_REGISTRY_SYMBOLS = True
+    _HISTORICAL_OHLC_PRIORITY = 1
+    _QUOTE_ISOLATED_TELEMETRY_VENUE = False
     _REQUIRES_CACHE_PERMIT: bool = True
     _DEFERS_SMART_CANCELLATION: bool = True
     _SUPPORTS_BUSINESS_MINIMUM: bool = True
@@ -158,6 +161,12 @@ class BinanceProvider(MarketDataProvider):
         if split is None or split[1] != "USDC":
             return False
         return venue_for_symbol(sym_norm) == "binance"
+
+    def validate_open_order_symbol(self, symbol: str) -> None:
+        if not self.supports_symbol(symbol):
+            import instrument_registry as sym_reg
+
+            sym_reg.validate_symbols(symbol)
 
     # -- Account data, repackaged through the facade without semantic changes. --
     def free_balance(self, asset: str) -> Optional[float]:

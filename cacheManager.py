@@ -344,8 +344,9 @@ class CacheFactory:
                     if read_only is not None
                     else (cfg_read_only or (not save_state_flag and not start_periodic))
                 )
-                venue_cfg = str(extra_kwargs.get("venue") or "").strip().lower()
-                is_non_binance_venue = bool(venue_cfg and venue_cfg != "binance")
+                uses_shared_symbols = MarketDataProvider.uses_shared_registry_symbols(
+                    extra_kwargs.get("venue")
+                )
                 if symbols is None:
                     if name == "AssetValue":
                         symbols = ["TOTAL"]
@@ -357,7 +358,7 @@ class CacheFactory:
                             and _default_providers
                         ):
                             provider_names = _default_providers
-                    elif is_non_binance_venue:
+                    elif not uses_shared_symbols:
                         symbols = None
                     else:
                         symbols = sym.symbols

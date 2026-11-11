@@ -44,6 +44,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
 )
 from cacheprice import resolve_ssot_price_from_cache
+from providers.base import MarketDataProvider
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
 logger = logging.getLogger("intelligence.external.base_collector")
@@ -100,8 +101,8 @@ def _is_multi_venue_base(symbol: str) -> bool:
 
 
 def _has_hyperliquid_instrument(symbol: str) -> bool:
-    """Return True when the symbol or its base asset is configured on Hyperliquid in SSOT."""
-    if venue_for_symbol(symbol) == "hyperliquid":
+    """Return True when the symbol or its base asset is configured on a native L1 derivatives venue in SSOT."""
+    if MarketDataProvider.has_native_l1_derivatives(venue_for_symbol(symbol)):
         return True
     base = normalize_cache_base_asset(symbol)
     if not base:
@@ -110,7 +111,7 @@ def _has_hyperliquid_instrument(symbol: str) -> bool:
         specs = _cached_registry_specs()
         return any(
             str(getattr(inst, "base", "")).upper() == base
-            and str(getattr(inst, "provider", "")).strip().lower() == "hyperliquid"
+            and MarketDataProvider.has_native_l1_derivatives(getattr(inst, "provider", ""))
             for inst in specs
         )
     except Exception:
@@ -491,11 +492,11 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
     def _is_exact_venue_symbol(self, sym_clean: str) -> bool:
         venue = venue_for_symbol(sym_clean)
         return bool(
-            venue in ("hyperliquid", "t212")
-            or is_equity_symbol(sym_clean)
-            or (
-                self._QUOTE_ISOLATED
-                and (venue != "binance" or _is_multi_venue_base(sym_clean))
+            is_equity_symbol(sym_clean)
+            or MarketDataProvider.is_exact_telemetry_symbol_venue(
+                venue,
+                quote_isolated=self._QUOTE_ISOLATED,
+                multi_venue_base=_is_multi_venue_base(sym_clean),
             )
         )
 
