@@ -1586,25 +1586,12 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     assert cross.get("corr_btc_24h") is not None and cross["corr_btc_24h"] > 0.95
 
     # 2. Test synthesize_and_diagnose prompt generation with multi-horizon vs_btc, alt_btc_24h, and zero prescriptive rules
-    captured_prompts = []
-
-    def mock_query(prompt, **kwargs):
-        captured_prompts.append(prompt)
-        return json.dumps({
-            "summary": "Market rotation test",
-            "market_trading_decisions": [{"decision": "HOLD", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.9}],
-        })
-
-    auditor = MagicMock()
-    auditor.query_json.side_effect = mock_query
-
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir=cache_dir,
-        logs_dirs=[],
-        gemini_auditor=auditor,
-        mode="shadow",
-    )
+    auditor = DummyGeminiClient({
+        "summary": "Market rotation test",
+        "market_trading_decisions": [{"decision": "HOLD", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.9}],
+    })
+    captured_prompts = auditor.prompts
+    reconciler = _reconciler(workspace, cache_dir=cache_dir, logs_dirs=[], gemini_auditor=auditor, mode="shadow")
 
     sensors = TelemetrySensorSnapshot(
         prices_and_trends={
@@ -1766,7 +1753,7 @@ def test_xbt_alias_7d_archive_with_24h_present_and_cross_venue_inheritance(tmp_p
         encoding="utf-8",
     )
 
-    reconciler = AutonomousAIReconciler(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
+    reconciler = _reconciler(tmp_path, mode="shadow", notify_enabled=False)
     snap = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
     assert snap.prices_and_trends["BTCUSDC"]["price"] == 84800.0
     assert snap.prices_and_trends["XBTUSD"]["price"] == 84800.0
@@ -1925,7 +1912,7 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
 
     assert discover_kraken_cache_pairs(str(tmp_path)) == [("HYPEUSD", "HYPE", "USD")]
 
-    reconciler = AutonomousAIReconciler(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
+    reconciler = _reconciler(tmp_path, mode="shadow", notify_enabled=False)
     snap_crypto = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
     hl_cyc = snap_crypto.portfolio_summary.get("hyperliquid_cycles", {})
     assert "HYPEUSDC" in hl_cyc

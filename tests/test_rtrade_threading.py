@@ -1,4 +1,6 @@
 """Characterisation and regressions for worker management in rtrade."""
+import contextlib
+import json
 import os
 import tempfile
 import threading
@@ -8,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
+import cacheManager as cm
+import instrument as inst_mod
 import rtrade
 from providers.strategy_executor import (
     OrderReconciliationCapabilities,
@@ -16,9 +20,40 @@ from providers.strategy_executor import (
     SubmissionRefused,
 )
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
-import json
-import cacheManager as cm
 from tests.conftest import TempDirTestCase
+
+_UNSET = object()
+
+
+@contextlib.contextmanager
+def _temp_pair_store(prefix: str = "rtrade-store-"):
+    with tempfile.TemporaryDirectory(prefix=prefix) as root:
+        yield root, RTradePairStore(os.path.join(root, "pairs.json"))
+
+
+@contextlib.contextmanager
+def _binance_mkt_env(
+    executor,
+    *,
+    root: str | None = None,
+    place_return=_UNSET,
+    place_side_effect=None,
+    patch_place: bool = True,
+):
+    with contextlib.ExitStack() as stack:
+        if root is not None:
+            stack.enter_context(patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}))
+        stack.enter_context(patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"))
+        stack.enter_context(patch.object(rtrade.mkt, "provider_by_name", return_value=executor))
+        if not patch_place:
+            yield None
+            return
+        place_kwargs = {}
+        if place_side_effect is not None:
+            place_kwargs["side_effect"] = place_side_effect
+        elif place_return is not _UNSET:
+            place_kwargs["return_value"] = place_return
+        yield stack.enter_context(patch.object(rtrade.mkt, "place", **place_kwargs))
 
 
 def _bot():
@@ -55,9 +90,7 @@ def _hard_stop_venue(root, store, *, preflight_error=None, submit_error=None):
         preflight_order=preflight,
         submit_order=submit,
     )
-    with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-         patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-         patch.object(rtrade.mkt, "provider_by_name", return_value=executor):
+    with _binance_mkt_env(executor, root=root, patch_place=False):
         venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
     venue.current_price = lambda: 90.0
     return venue, executor
@@ -154,9 +187,7 @@ class _StubPairCoordinator:
 
 def _restart_merge_venue(root, store, statuses, lookups=None):
     executor = _ReconcilingBinanceExecutor(statuses=statuses, lookups=lookups)
-    with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-         patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-         patch.object(rtrade.mkt, "provider_by_name", return_value=executor):
+    with _binance_mkt_env(executor, root=root, patch_place=False):
         venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
     return venue, executor
 
@@ -325,9 +356,7 @@ class RTradeThreadingTest(unittest.TestCase):
     def test_live_pair_adapter_passes_pair_id_and_owns_retry(self):
         executor = SimpleNamespace(free_balance=lambda _asset: 1000.0)
         order = {"orderId": 7, "price": "99.36", "origQty": "0.8"}
-        with patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-             patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-             patch.object(rtrade.mkt, "place", return_value=order) as place:
+        with _binance_mkt_env(executor, place_return=order) as place:
             venue = rtrade._LivePairVenue("TAOUSDC")
             ticket = venue.place_limit("BUY", 99.36, 1.0, "pair-1")
 
@@ -344,15 +373,10 @@ class RTradeThreadingTest(unittest.TestCase):
     def test_live_pair_limit_persists_canonical_intent_and_venue_values(self):
         executor = SimpleNamespace(free_balance=lambda _asset: 1000.0)
         order = {"orderId": 7, "price": "99.25", "origQty": "0.8"}
-        with tempfile.TemporaryDirectory(prefix="rtrade-store-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                 patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-                patch.object(rtrade.mkt, "place", return_value=order):
-                venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
-                ticket = venue.place_limit("BUY", 99.36, 1.0, "pair-1")
-
+        with _temp_pair_store("rtrade-store-") as (root, store), \
+             _binance_mkt_env(executor, root=root, place_return=order):
+            venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
+            ticket = venue.place_limit("BUY", 99.36, 1.0, "pair-1")
             intent = store.active("TAOUSDC")[0]["intents"]["limit:BUY"]
         self.assertEqual(ticket.price, 99.25)
         self.assertEqual(ticket.qty, 0.8)
@@ -370,12 +394,8 @@ class RTradeThreadingTest(unittest.TestCase):
             {"orderId": 7, "price": "100.64", "origQty": "1.0"},
             {"orderId": 8, "price": "101.25", "origQty": "0.7"},
         ]
-        with tempfile.TemporaryDirectory(prefix="rtrade-revision-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                 patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-                 patch.object(rtrade.mkt, "place", side_effect=responses) as place:
+        with _temp_pair_store("rtrade-revision-") as (root, store):
+            with _binance_mkt_env(executor, root=root, place_side_effect=responses) as place:
                 venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
                 old = venue.place_limit(
                     "SELL", 100.64, 1.0, "pair-reprice", revision=0)
@@ -411,8 +431,7 @@ class RTradeThreadingTest(unittest.TestCase):
         for kind, suffix, price, qty, order_id, expected_status in cases:
             with self.subTest(kind=kind):
                 pair_id = f"pair-{kind}-crash"
-                with tempfile.TemporaryDirectory(prefix=f"rtrade-merge-{kind}-") as root:
-                    store = RTradePairStore(os.path.join(root, "pairs.json"))
+                with _temp_pair_store(f"rtrade-merge-{kind}-") as (root, store):
                     state = _old_exposed_checkpoint(pair_id)
                     client_id = rtrade_client_order_id(pair_id, "SELL", suffix)
                     store.intent(
@@ -449,8 +468,7 @@ class RTradeThreadingTest(unittest.TestCase):
 
     def test_restart_pending_intent_recovers_by_client_id_without_submit(self):
         pair_id = "pair-pending-crash"
-        with tempfile.TemporaryDirectory(prefix="rtrade-merge-pending-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
+        with _temp_pair_store("rtrade-merge-pending-") as (root, store):
             state = _old_exposed_checkpoint(pair_id)
             client_id = rtrade_client_order_id(pair_id, "SELL", "limit_1")
             store.intent(
@@ -493,15 +511,10 @@ class RTradeThreadingTest(unittest.TestCase):
                 accepted=False, reason="trend_deferred", state="refused")
             return None
 
-        with tempfile.TemporaryDirectory(prefix="rtrade-refusal-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                 patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-                 patch.object(rtrade.mkt, "place", side_effect=refuse) as place:
-                venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
-                ticket = venue.place_limit("SELL", 101.0, 1.0, "pair-1")
-
+        with _temp_pair_store("rtrade-refusal-") as (root, store), \
+             _binance_mkt_env(executor, root=root, place_side_effect=refuse) as place:
+            venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
+            ticket = venue.place_limit("SELL", 101.0, 1.0, "pair-1")
             intent = store.active("TAOUSDC")[0]["intents"]["limit:SELL"]
 
         self.assertIsNone(ticket)
@@ -521,18 +534,14 @@ class RTradeThreadingTest(unittest.TestCase):
         )
 
     def test_live_pair_recovers_lost_submit_response_without_resubmit(self):
-        with tempfile.TemporaryDirectory(prefix="rtrade-recover-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
+        with _temp_pair_store("rtrade-recover-") as (root, store):
             client_id = rtrade_client_order_id("pair-1", "BUY", "limit")
             store.intent(
                 "pair-1", "BUY", 99.36, 1.0, client_id,
                 kind="limit", symbol="TAOUSDC", start_side="BUY")
             record = store.active("TAOUSDC")[0]
             stored = record["intents"]["limit:BUY"]
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                 patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=self._recovered_open_executor()), \
-                 patch.object(rtrade.mkt, "place") as place:
+            with _binance_mkt_env(self._recovered_open_executor(), root=root) as place:
                 venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
                 ticket, snapshot = venue.recover_intent(record, stored)
 
@@ -543,12 +552,10 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertEqual(canonical["order_id"], "88")
 
     def test_place_limit_recovers_response_loss_on_later_call_without_resubmit(self):
-        with tempfile.TemporaryDirectory(prefix="rtrade-live-loss-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                 patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                patch.object(rtrade.mkt, "provider_by_name", return_value=self._recovered_open_executor()), \
-                 patch.object(rtrade.mkt, "place", return_value=None) as place:
+        with _temp_pair_store("rtrade-live-loss-") as (root, store):
+            with _binance_mkt_env(
+                self._recovered_open_executor(), root=root, place_return=None
+            ) as place:
                 venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
                 ticket = venue.place_limit("BUY", 99.36, 1.0, "pair-1")
                 self.assertIsNone(ticket)
@@ -563,12 +570,8 @@ class RTradeThreadingTest(unittest.TestCase):
     def test_place_limit_never_reuses_ambiguous_client_id_after_absence(self):
         executor = _ReconcilingBinanceExecutor()
         recovery_now = [100.0]
-        with tempfile.TemporaryDirectory(prefix="rtrade-live-retry-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                 patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-                 patch.object(rtrade.mkt, "place", return_value=None) as place:
+        with _temp_pair_store("rtrade-live-retry-") as (root, store):
+            with _binance_mkt_env(executor, root=root, place_return=None) as place:
                 venue = rtrade._LivePairVenue(
                     "TAOUSDC", pair_store=store,
                     recovery_clock=lambda: recovery_now[0])
@@ -606,18 +609,14 @@ class RTradeThreadingTest(unittest.TestCase):
             ],
         )
         recovery_now = [100.0]
-        with tempfile.TemporaryDirectory(prefix="rtrade-retry-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
+        with _temp_pair_store("rtrade-retry-") as (root, store):
             client_id = rtrade_client_order_id("pair-1", "BUY", "limit")
             store.intent(
                 "pair-1", "BUY", 99.36, 1.0, client_id,
                 kind="limit", symbol="TAOUSDC", start_side="BUY")
             record = store.active("TAOUSDC")[0]
             stored = record["intents"]["limit:BUY"]
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                 patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-                 patch.object(rtrade.mkt, "place") as place:
+            with _binance_mkt_env(executor, root=root) as place:
                 venue = rtrade._LivePairVenue(
                     "TAOUSDC", pair_store=store,
                     recovery_clock=lambda: recovery_now[0])
@@ -644,8 +643,7 @@ class RTradeThreadingTest(unittest.TestCase):
                     lookups=TimeoutError("lookup unavailable")
                 )
 
-                with tempfile.TemporaryDirectory(prefix=f"rtrade-ambiguous-{case}-") as root:
-                    store = RTradePairStore(os.path.join(root, "pairs.json"))
+                with _temp_pair_store(f"rtrade-ambiguous-{case}-") as (root, store):
                     client_id = rtrade_client_order_id("pair-1", "BUY", "limit")
                     
                     if case == "recovery":
@@ -653,10 +651,7 @@ class RTradeThreadingTest(unittest.TestCase):
                             "pair-1", "BUY", 99.36, 1.0, client_id,
                             kind="limit", symbol="TAOUSDC", start_side="BUY")
                         
-                    with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                         patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                         patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-                         patch.object(rtrade.mkt, "place", return_value=None) as place:
+                    with _binance_mkt_env(executor, root=root, place_return=None) as place:
                         venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
                         if case == "recovery":
                             record = store.active("TAOUSDC")[0]
@@ -692,9 +687,7 @@ class RTradeThreadingTest(unittest.TestCase):
             preflight_order=lambda *args, **kwargs: None,
             submit_order=lambda *args, **kwargs: "M9")
         with tempfile.TemporaryDirectory(prefix="rtrade-test-audit-") as audit_dir:
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": audit_dir}), \
-                 patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
+            with _binance_mkt_env(executor, root=audit_dir, patch_place=False), \
                  patch.object(rtrade.mkt, "get_current_price", return_value=90.0), \
                  patch.object(executor, "submit_order", wraps=executor.submit_order) as submit:
                 venue = rtrade._LivePairVenue("TAOUSDC")
@@ -718,15 +711,13 @@ class RTradeThreadingTest(unittest.TestCase):
         ]
         for phase, kwargs in cases:
             with self.subTest(phase=phase):
-                with tempfile.TemporaryDirectory(prefix=f"rtrade-{phase}-refusal-") as root:
-                    store_path = os.path.join(root, "pairs.json")
-                    store = RTradePairStore(store_path)
+                with _temp_pair_store(f"rtrade-{phase}-refusal-") as (root, store):
                     store.intent(f"pair-{phase}", "SELL", 100.0, 0.4, f"CID_{phase}", symbol="TAOUSDC", start_side="SELL")
                     venue, executor = _hard_stop_venue(root, store, **kwargs)
                     with self.assertRaisesRegex(SubmissionRefused, "cache_stale"):
                         venue.place_market_exit(
                             "SELL", 0.4, "hard_stop", pair_id=f"pair-{phase}")
-                    reopened = RTradePairStore(store_path).active("TAOUSDC")[0]
+                    reopened = RTradePairStore(store.path).active("TAOUSDC")[0]
 
                 self.assertNotIn("hard_stop:SELL", reopened["intents"])
                 if phase == "preflight":
@@ -736,9 +727,7 @@ class RTradeThreadingTest(unittest.TestCase):
 
     def test_post_cancel_hard_stop_refusal_retains_recoverable_intent(self):
         permit = object()
-        with tempfile.TemporaryDirectory(prefix="rtrade-post-cancel-refusal-") as root:
-            store_path = os.path.join(root, "pairs.json")
-            store = RTradePairStore(store_path)
+        with _temp_pair_store("rtrade-post-cancel-refusal-") as (root, store):
             store.intent("pair-11b", "SELL", 100.0, 0.4, "CID_11b", symbol="TAOUSDC", start_side="SELL")
             venue, executor = _hard_stop_venue(
                 root, store,
@@ -757,7 +746,7 @@ class RTradeThreadingTest(unittest.TestCase):
             executor.submit_order.return_value = "M11b"
             ticket = venue.place_market_exit(
                 "SELL", 0.4, "hard_stop", pair_id="pair-11b")
-            reopened = RTradePairStore(store_path).active("TAOUSDC")[0]
+            reopened = RTradePairStore(store.path).active("TAOUSDC")[0]
 
         pending = reopened["intents"]["hard_stop:SELL"]
         self.assertEqual(ticket.order_id, "M11b")
@@ -774,9 +763,7 @@ class RTradeThreadingTest(unittest.TestCase):
 
     def test_hard_stop_response_loss_reconciles_later_without_resubmit(self):
         recovery_now = [100.0]
-        with tempfile.TemporaryDirectory(prefix="rtrade-submit-unknown-") as root:
-            store_path = os.path.join(root, "pairs.json")
-            store = RTradePairStore(store_path)
+        with _temp_pair_store("rtrade-submit-unknown-") as (root, store):
             store.intent("pair-12", "SELL", 100.0, 0.4, "CID_12", symbol="TAOUSDC", start_side="SELL")
             executor = _ReconcilingBinanceExecutor(
                 statuses=OrderStatus("closed", 0.4, 36.0, 0.01),
@@ -791,11 +778,7 @@ class RTradeThreadingTest(unittest.TestCase):
             )
             executor.preflight_order = Mock(return_value=None)
             executor.submit_order = Mock(side_effect=ProviderError("response lost"))
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                 patch.object(
-                     rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(
-                     rtrade.mkt, "provider_by_name", return_value=executor):
+            with _binance_mkt_env(executor, root=root, patch_place=False):
                 venue = rtrade._LivePairVenue(
                     "TAOUSDC", pair_store=store,
                     recovery_clock=lambda: recovery_now[0])
@@ -807,7 +790,7 @@ class RTradeThreadingTest(unittest.TestCase):
             recovery_now[0] += rtrade.RTRADE_PAIR_POLL_SEC
             ticket = venue.place_market_exit(
                 "SELL", 0.4, "hard_stop", pair_id="pair-12")
-            reopened = RTradePairStore(store_path).active("TAOUSDC")[0]
+            reopened = RTradePairStore(store.path).active("TAOUSDC")[0]
 
         pending = reopened["intents"]["hard_stop:SELL"]
         self.assertEqual(ticket.order_id, "M12")
@@ -821,9 +804,7 @@ class RTradeThreadingTest(unittest.TestCase):
 
     def test_live_pair_adapter_rejects_insufficient_asset_before_submit(self):
         executor = SimpleNamespace(free_balance=lambda _asset: 0.0)
-        with patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-             patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-             patch.object(rtrade.mkt, "place") as place:
+        with _binance_mkt_env(executor) as place:
             venue = rtrade._LivePairVenue("TAOUSDC")
             buy = venue.place_limit("BUY", 100.0, 1.0, "pair-buy")
             sell = venue.place_limit("SELL", 101.0, 1.0, "pair-sell")
@@ -839,9 +820,7 @@ class RTradeThreadingTest(unittest.TestCase):
     def test_live_pair_adapter_leaves_partial_balance_clamp_to_provider(self):
         executor = SimpleNamespace(free_balance=lambda _asset: 10.0)
         adjusted = {"orderId": 8, "price": "100", "origQty": "0.099"}
-        with patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-             patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-             patch.object(rtrade.mkt, "place", return_value=adjusted) as place:
+        with _binance_mkt_env(executor, place_return=adjusted) as place:
             venue = rtrade._LivePairVenue("TAOUSDC")
             ticket = venue.place_limit("BUY", 100.0, 1.0, "pair-buy")
 
@@ -1218,9 +1197,7 @@ class RTradeThreadingTest(unittest.TestCase):
             )
             return None
 
-        with patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-             patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-             patch.object(rtrade.mkt, "place", side_effect=refuse_min):
+        with _binance_mkt_env(executor, place_side_effect=refuse_min):
             venue = rtrade._LivePairVenue("TAOUSDC")
             ticket = venue.place_limit("BUY", 100.0, 1.0, "pair-buy")
 
@@ -1322,8 +1299,6 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertEqual(mock_cancel2.call_count, 2)
 
     def test_early_abort_short_circuits_stage3_profit_guard_when_opposite_leg_already_aborted(self):
-        import instrument as inst_mod
-
         bot = _bot()
         bot._pair_precheck_pending = {"BUY", "SELL"}
         bot._pair_precheck_cond = threading.Condition(bot.lock)

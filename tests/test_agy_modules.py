@@ -13,6 +13,7 @@ from orchestratorOS.agy import (
     protobuf,
     summary_store,
     topics,
+    ui_mirror,
 )
 from orchestratorOS.agy.paths import visible_conversations_dir
 from orchestratorOS.agy.protobuf import (
@@ -24,8 +25,10 @@ from orchestratorOS.agy.protobuf import (
     summary_annotation_title,
     summary_ui_visible,
 )
+from orchestratorOS.agy.summary_store import get_thread_step_count, safe_nonneg_int
 from orchestratorOS.agy.topics import (
     TOPIC_SPECS,
+    TopicSession,
     condense_decision,
     extract_json_object,
     format_topic_turn_header,
@@ -33,17 +36,26 @@ from orchestratorOS.agy.topics import (
     load_topic_registry,
     prepare_topic_session,
     record_topic_turn,
+    safe_int,
     save_topic_registry,
     sync_all_topic_titles,
     topic_spec,
 )
 from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
 from tests.conftest import setup_isolated_agy_stores
-from intelligence.sentiment.gemini_client import GeminiClient
-from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
+from intelligence.sentiment import gemini_client as gc
+from intelligence.sentiment.gemini_client import GeminiClient, _ORIG_SUBPROCESS_RUN, _ROOT_DIR
+from orchestratorOS.admin import agy_store_fix as asf, prune_llm_threads
+from orchestratorOS.admin.prune_llm_threads import _parse_bool_flag, prune_old_cli_threads
 from unittest.mock import MagicMock, patch
 import subprocess
-from orchestratorOS.admin import agy_store_fix as asf
+
+
+def _cli_ok(cmd, response: str, cid: str | None = None) -> subprocess.CompletedProcess:
+    payload = {"response": response}
+    if cid is not None:
+        payload["conversation_id"] = cid
+    return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
 
 
 @pytest.fixture(autouse=True)
@@ -180,9 +192,6 @@ class TestTopics:
             prepare_topic_session("not_a_topic", compact_steps=6)
 
     def test_gemini_client_compacts_after_prompt_preserving_json_decision(self, tmp_path):
-        from intelligence.sentiment import gemini_client as gc
-        from orchestratorOS.agy.topics import TopicSession
-
         fake_bin = tmp_path / "agy-bot"
         fake_bin.write_text("#!/bin/sh\n")
         client = gc.GeminiClient(cli_path=str(fake_bin))
@@ -196,12 +205,7 @@ class TestTopics:
                 resp = "The system compacted the conversation history and is operating autonomously."
             else:
                 resp = '{"summary": "Nominal 5m cycle", "market_trading_decision": {"decision": "HOLD", "symbol": "TAOUSDC", "confidence": 0.91}}'
-            return subprocess.CompletedProcess(
-                cmd,
-                0,
-                stdout=f'{{"response": {json.dumps(resp)}, "conversation_id": "cid-perm-1"}}',
-                stderr="",
-            )
+            return _cli_ok(cmd, resp, "cid-perm-1")
 
         mock_run = MagicMock(side_effect=_fake_run)
         with patch.object(gc.subprocess, "run", mock_run), \
@@ -409,9 +413,7 @@ class TestMirrorTopicThreadToUi:
             calls.append((cmd, kwargs))
             if "--conversation" in cmd:
                 raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 15.0))
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout='{"response": "{\\"decision\\": \\"HOLD\\"}", "conversation_id": "detached-999"}', stderr=""
-            )
+            return _cli_ok(cmd, '{"decision": "HOLD"}', "detached-999")
 
         with patch("subprocess.run", side_effect=fake_run), \
              patch("intelligence.sentiment.gemini_client.resolve_bot_cli_base", return_value=cli_base), \
@@ -540,18 +542,12 @@ class TestMirrorTopicThreadToUi:
             m_name = cmd[model_idx]
             models_called.append(m_name)
             if m_name == "gpt-oss-120b-medium":
-                return subprocess.CompletedProcess(
+                return _cli_ok(
                     cmd,
-                    0,
-                    stdout='{"response": "**Clarification Needed** I see the latest summary, which option do you want?", "conversation_id": "cid-1"}',
-                    stderr="",
+                    "**Clarification Needed** I see the latest summary, which option do you want?",
+                    "cid-1",
                 )
-            return subprocess.CompletedProcess(
-                cmd,
-                0,
-                stdout='{"response": "{\\"decision\\": \\"HOLD\\", \\"confidence\\": 0.91}", "conversation_id": "cid-1"}',
-                stderr="",
-            )
+            return _cli_ok(cmd, '{"decision": "HOLD", "confidence": 0.91}', "cid-1")
 
         with patch("subprocess.run", side_effect=fake_run):
             client = GeminiClient(
@@ -663,8 +659,6 @@ class TestMirrorTopicThreadToUi:
     def test_execute_cli_isolates_trading_topics_from_repo_rules_and_includes_for_self_heal(
         self, tmp_path, monkeypatch
     ):
-        from intelligence.sentiment.gemini_client import _ROOT_DIR
-
         fake_bin = tmp_path / "agy-bot"
         fake_bin.write_text("#!/bin/sh\n")
         bot_cli_base = tmp_path / "bot_cli"
@@ -674,7 +668,7 @@ class TestMirrorTopicThreadToUi:
 
         def fake_run(cmd, **kwargs):
             calls.append((list(cmd), dict(kwargs)))
-            return subprocess.CompletedProcess(cmd, 0, stdout='{"response": "{}"}', stderr="")
+            return _cli_ok(cmd, "{}")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         client = GeminiClient(cli_path=str(fake_bin), project_id="autonommptrade")
@@ -715,9 +709,6 @@ class TestMirrorTopicThreadToUi:
     def test_execute_cli_restores_newly_dirtied_tracked_files_on_timeout_and_preserves_preexisting_dirty(
         self, tmp_path, monkeypatch
     ):
-        import intelligence.sentiment.gemini_client as gc_mod
-        from intelligence.sentiment.gemini_client import _ORIG_SUBPROCESS_RUN
-
         repo_dir = tmp_path / "repo"
         repo_dir.mkdir()
         _ORIG_SUBPROCESS_RUN(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True)
@@ -739,7 +730,7 @@ class TestMirrorTopicThreadToUi:
         bot_cli_base = tmp_path / "bot_cli"
         bot_cli_base.mkdir()
 
-        monkeypatch.setattr(gc_mod, "_ROOT_DIR", str(repo_dir))
+        monkeypatch.setattr(gc, "_ROOT_DIR", str(repo_dir))
 
         def rogue_timeout_run(cmd, **kwargs):
             # Simulate an LLM corrupting a clean tracked file during /compact before timing out
@@ -797,8 +788,6 @@ class TestMirrorTopicThreadToUi:
 
 def test_summary_store_safe_nonneg_int_and_topics_safe_int_iter57_s1(monkeypatch):
     """[ITER57 #1] summary_store.safe_nonneg_int and topics.safe_int."""
-    from orchestratorOS.agy.summary_store import get_thread_step_count, safe_nonneg_int
-    from orchestratorOS.agy.topics import safe_int
     # 1. summary_store.safe_nonneg_int and topics.safe_int
     assert safe_nonneg_int(True) == 0
     assert safe_nonneg_int(float("nan")) == 0
@@ -862,7 +851,6 @@ def test_topics_extract_json_object_preserves_trailing_json_outside_non_json_ite
 
 def test_orchestratoros_agy_topics_summary_store_ui_mirror_iter105_s1(tmp_path):
     """[ITER105 #1] orchestratorOS.agy.topics & summary_store & ui_mirror."""
-    from orchestratorOS.agy import ui_mirror
     # 1. orchestratorOS.agy.topics & summary_store & ui_mirror
     assert topics.canonical_topic_key(True) == ""
     assert topics.canonical_topic_key("  auto_trade_executor  ") == "auto_cryptotrade_executor"
@@ -887,14 +875,12 @@ def test_orchestratoros_agy_topics_summary_store_ui_mirror_iter105_s1(tmp_path):
 
 def test_prune_llm_threads_is_automated_thread_handles_non_string_title_preview_safely_iter120_s4():
     """[ITER120 #4] prune_llm_threads.is_automated_thread handles non-string title/preview safely."""
-    from orchestratorOS.admin import prune_llm_threads
     # 4. prune_llm_threads.is_automated_thread handles non-string title/preview safely
     assert prune_llm_threads.is_automated_thread(None, True) is False
     assert prune_llm_threads.is_automated_thread("morning reconciliation", None) is True
 
 def test_prune_llm_threads__parse_bool_flag_and_missing_db_path_with_string_flags_iter127_s1(tmp_path):
     """[ITER127 #1] prune_llm_threads._parse_bool_flag and missing db_path with string flags."""
-    from orchestratorOS.admin.prune_llm_threads import _parse_bool_flag
     # 1. prune_llm_threads._parse_bool_flag and missing db_path with string flags
     assert _parse_bool_flag("false", True) is False
     assert _parse_bool_flag("0", True) is False
