@@ -20,7 +20,7 @@ STALE_S = 600.0  # More than 10 minutes without an update is STALE (instant tren
 
 def expected_symbols():
     """Use the registry without credentials; invalid configuration must fail the check."""
-    syms = symbols_for()
+    syms = symbols_for("binance")
     for inst in select_instruments(role="mt").values():
         if not is_primary_stream_venue(inst.provider) and inst.symbol not in syms:
             syms.append(inst.symbol)

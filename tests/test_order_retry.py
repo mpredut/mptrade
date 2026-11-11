@@ -16,31 +16,19 @@ import order_retry as oq
 from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
 from types import SimpleNamespace
 import instrument as inst_mod
-import order_lifecycle as aop
 import order_lifecycle as ol
-import order_lifecycle as ool
-import order_lifecycle as orb
-import order_retry
-import order_retry as oret
 import pytest
 from order_lifecycle import extract_order_restore_params
 from providers.execution_audit import AuditedStrategyExecutor
+from tests.conftest import TempDirTestCase
 
 
-class OrderRetryStoreTest(unittest.TestCase):
+class OrderRetryStoreTest(TempDirTestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        super().setUp()
         oq.QUEUE_FILE = os.path.join(self.tmp, "order_retry_queue.jsonl")
         oq.LOCK_FILE = os.path.join(self.tmp, "order_retry_queue.lock")
-        oq.RETRY_ENABLED = True
-        oq.RETRY_INTERVAL_SEC = 300.0
-        oq.RETRY_TTL_SEC = 86400.0
-        oq.RETRY_MAX_ATTEMPTS = 0
-        oq.RETRY_PRICE_TOL = 0.002
-        oq.RETRY_DEDUP = True
-        oq.RETRY_MAX_QUEUE = 500
-        oq.RETRY_CLAIM_LEASE_SEC = 120.0
-        oq.RETRY_NOT_FOUND_MAX_AGE_SEC = 30 * 24 * 60 * 60
+        self._reset_env(rewrite=False)
 
     def _terminal_remainder(self, *, terminal_at=1400.0):
         record_id = oq.enqueue(
@@ -65,8 +53,9 @@ class OrderRetryStoreTest(unittest.TestCase):
         self.assertGreater(remainder["delivered_qty"], 0)
         return record_id, remainder
 
-    def _reset_env(self):
-        oq.rewrite([])
+    def _reset_env(self, *, rewrite=True):
+        if rewrite:
+            oq.rewrite([])
         oq.RETRY_ENABLED = True
         oq.RETRY_INTERVAL_SEC = 300.0
         oq.RETRY_TTL_SEC = 86400.0
@@ -1104,15 +1093,15 @@ def test_order_retry_update_claimed_qty_persists_applied_scale_into_place_kwargs
     # 2. order_retry.update_claimed_qty persists applied_scale into place_kwargs on disk
     q_file = tmp_path / "pending_orders.json"
     l_file = tmp_path / "pending_orders.lock"
-    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
-    monkeypatch.setattr(order_retry, "LOCK_FILE", str(l_file))
-    claim = order_retry.enqueue_claimed(
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(l_file))
+    claim = oq.enqueue_claimed(
         "BTCUSDC", "BUY", 1.0, {"smart": False},
         requested_price=100.0, ref_price=100.0,
         failure_reason="submit_pending", provider_name="binance",
     )
     assert claim is not None
-    updated = order_retry.update_claimed_qty(claim, 0.5, applied_scale=0.5)
+    updated = oq.update_claimed_qty(claim, 0.5, applied_scale=0.5)
     assert updated is not None
     assert updated["qty"] == pytest.approx(0.5)
     assert updated["place_kwargs"].get("applied_scale") == pytest.approx(0.5)
@@ -1182,7 +1171,7 @@ def test_instrument_place_persists_medium_trend_action_medium_trend_scale_from_s
             return True
 
     monkeypatch.setattr(
-        order_retry,
+        oq,
         "enqueue",
         lambda _s, _side, _q, pkw, *_a, **_k: enqueued_kwargs.append(dict(pkw)) or {"id": "r1"},
     )
@@ -1208,9 +1197,9 @@ def test_order_retry_enqueue_serializes_set_frozenset_in_place_kwargs_cleanly_it
     # 5. order_retry.enqueue serializes set/frozenset in place_kwargs cleanly
     q_file = tmp_path / "order_retry_queue.jsonl"
     l_file = tmp_path / "order_retry_queue.lock"
-    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
-    monkeypatch.setattr(order_retry, "LOCK_FILE", str(l_file))
-    rec_id = order_retry.enqueue(
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(l_file))
+    rec_id = oq.enqueue(
         "BTCUSDC",
         "BUY",
         0.1,
@@ -1220,7 +1209,7 @@ def test_order_retry_enqueue_serializes_set_frozenset_in_place_kwargs_cleanly_it
         failure_reason="trend_deferred",
     )
     assert rec_id is not None
-    loaded_q = order_retry.load_all()
+    loaded_q = oq.load_all()
     assert len(loaded_q) == 1
     assert loaded_q[0]["place_kwargs"]["bypass_guards"] == ["g_prof", "gllm1"]
 
@@ -1264,9 +1253,9 @@ def test_order_retry_enqueue_update_claimed_qty_resolve_record_ttl_reject_boolea
 def test_order_outcomes_log_sanitizes_cr_lf_and_ignores_nan_bool_iter40_s1(monkeypatch, tmp_path):
     """[ITER40 #1] order_outcomes_log sanitizes CR/LF and ignores NaN/bool strength."""
     # 1. order_outcomes_log sanitizes CR/LF and ignores NaN/bool strength
-    assert ool._sanitize_outcome_field("a|b\r\nc") == "a/b  c"
-    monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
-    ool.log_order_outcome(
+    assert ol._sanitize_outcome_field("a|b\r\nc") == "a/b  c"
+    monkeypatch.setattr(ol, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
+    ol.log_order_outcome(
         "BTCUSDC", "BUY", 60000.0, 0.1, "accepted", None, "test",
         regime_context=SimpleNamespace(regime="bull", strength=float("nan"), source="snap", fresh=True, fallback_used=False, reason="ok"),
     )
@@ -1278,7 +1267,7 @@ def test_order_outcomes_log_sanitizes_cr_lf_and_ignores_nan_bool_iter40_s1(monke
 def test_order_rollback_extract_order_restore_params_ignores_boolean_kind_and_level_iter40_s2():
     """[ITER40 #2] order_rollback.extract_order_restore_params ignores boolean kind and level."""
     # 2. order_rollback.extract_order_restore_params ignores boolean kind and level
-    p_rest = orb.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "kind": True, "level": False})
+    p_rest = ol.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "kind": True, "level": False})
     assert p_rest["kind"] == "TP"
     assert p_rest["level"] is None
 
@@ -1294,12 +1283,12 @@ def test_order_retry_valid_record_rejects_boolean_id_symbol_order_id_replaces_or
         "revision": 0,
         "lifecycle": "submit_pending",
     }
-    assert order_retry.valid_record(base_rec) is True
-    assert order_retry.valid_record({**base_rec, "id": True}) is False
-    assert order_retry.valid_record({**base_rec, "symbol": True}) is False
-    assert order_retry.valid_record({**base_rec, "lifecycle": "accepted", "order_id": True}) is False
-    assert order_retry.valid_record({**base_rec, "lifecycle": "awaiting_cancel", "replaces_order_id": True, "replaces_original_qty": 1.0}) is False
-    assert order_retry.valid_record({**base_rec, "lifecycle": "awaiting_cancel", "replaces_order_id": "123", "replaces_original_qty": True}) is False
+    assert oq.valid_record(base_rec) is True
+    assert oq.valid_record({**base_rec, "id": True}) is False
+    assert oq.valid_record({**base_rec, "symbol": True}) is False
+    assert oq.valid_record({**base_rec, "lifecycle": "accepted", "order_id": True}) is False
+    assert oq.valid_record({**base_rec, "lifecycle": "awaiting_cancel", "replaces_order_id": True, "replaces_original_qty": 1.0}) is False
+    assert oq.valid_record({**base_rec, "lifecycle": "awaiting_cancel", "replaces_order_id": "123", "replaces_original_qty": True}) is False
 
 def test_kalmanstatetracker_active_intents_iter54_s5():
     """[ITER54 #5] KalmanStateTracker & active_intents."""
@@ -1353,22 +1342,22 @@ def test_order_retry_enqueue_rejects_whitespace_only_boolean_symbols_and_iter88_
     # 4. order_retry.enqueue rejects whitespace-only/boolean symbols and normalizes short-form B/S sides
     q_file = tmp_path / "order_retry_queue.jsonl"
     l_file = tmp_path / "order_retry_queue.lock"
-    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
-    monkeypatch.setattr(order_retry, "LOCK_FILE", str(l_file))
-    monkeypatch.setattr(order_retry, "RETRY_ENABLED", True)
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(l_file))
+    monkeypatch.setattr(oq, "RETRY_ENABLED", True)
 
-    assert order_retry.enqueue("   ", "BUY", 1.0) is None
-    assert order_retry.enqueue(True, "BUY", 1.0) is None
-    assert order_retry.enqueue("BTCUSDC", True, 1.0) is None
+    assert oq.enqueue("   ", "BUY", 1.0) is None
+    assert oq.enqueue(True, "BUY", 1.0) is None
+    assert oq.enqueue("BTCUSDC", True, 1.0) is None
 
-    rec_id = order_retry.enqueue(" btcusdc ", " b ", 1.0, requested_price=65000.0)
+    rec_id = oq.enqueue(" btcusdc ", " b ", 1.0, requested_price=65000.0)
     assert rec_id is not None
-    loaded = order_retry.load_validated()
+    loaded = oq.load_validated()
     assert len(loaded) == 1
     assert loaded[0]["symbol"] == "btcusdc"
     assert loaded[0]["side"] == "BUY"
-    assert order_retry.price_gate_ok({"side": "b", "requested_price": 65000.0}, 64000.0, tol=0.0) is True
-    assert order_retry.resolve(" btcusdc ", " b ") == 1
+    assert oq.price_gate_ok({"side": "b", "requested_price": 65000.0}, 64000.0, tol=0.0) is True
+    assert oq.resolve(" btcusdc ", " b ") == 1
 
 def test_order_retry_valid_record__same_deferred_stream_claim_discard_and_trackedorderlifecycle_validation_iter97_s2():
     """[ITER97 #2] order_retry.valid_record, _same_deferred_stream, claim/discard, and TrackedOrderLifecycle validation."""
@@ -1412,13 +1401,13 @@ def test_order_retry_valid_record__same_deferred_stream_claim_discard_and_tracke
 def test_order_rollback_restore_cancelled_orders_rejects_non_list_and_bool_reason_iter106_s3():
     """[ITER106 #3] order_rollback: restore_cancelled_orders rejects non-list and bool reason."""
     # 3. order_rollback: restore_cancelled_orders rejects non-list and bool reason
-    assert orb.restore_cancelled_orders(True, lambda _p: True, reason=True) == 0
+    assert ol.restore_cancelled_orders(True, lambda _p: True, reason=True) == 0
 
 def test_order_outcomes_log_log_order_outcome_sanitizes_boolean_fields_iter107_s3(tmp_path, monkeypatch):
     """[ITER107 #3] order_outcomes_log: log_order_outcome sanitizes boolean fields."""
     # 3. order_outcomes_log: log_order_outcome sanitizes boolean fields
-    monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
-    ool.log_order_outcome(
+    monkeypatch.setattr(ol, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
+    ol.log_order_outcome(
         symbol=True,
         side=True,
         price=True,
@@ -1446,24 +1435,24 @@ def test_order_outcomes_log_log_order_outcome_sanitizes_boolean_fields_iter107_s
 
 def test_order_retry_enqueue_rejects_bool_replaces_order_id_bool_metadata_fields_iter113_s1(monkeypatch):
     """[ITER113 #1] order_retry.enqueue rejects bool replaces_order_id, bool metadata fields, and fractional attempts."""
-    monkeypatch.setattr(oret, "RETRY_ENABLED", True)
+    monkeypatch.setattr(oq, "RETRY_ENABLED", True)
     # 1. order_retry.enqueue rejects bool replaces_order_id, bool metadata fields, and fractional attempts
-    assert oret.enqueue(
+    assert oq.enqueue(
         "BTCUSDC", "BUY", 1.0,
         lifecycle="awaiting_cancel", replaces_order_id=True, replaces_original_qty=1.0,
     ) is None
-    assert oret.enqueue("BTCUSDC", "BUY", 1.0, intent_id=True) is None
-    assert oret.enqueue("BTCUSDC", "BUY", 1.0, provider_name=True) is None
-    assert oret.enqueue("BTCUSDC", "BUY", 1.0, kind=True) is None
-    assert oret.enqueue("BTCUSDC", "BUY", 1.0, failure_reason=True) is None
-    assert oret.enqueue("BTCUSDC", "BUY", 1.0, attempts=1.5) is None
+    assert oq.enqueue("BTCUSDC", "BUY", 1.0, intent_id=True) is None
+    assert oq.enqueue("BTCUSDC", "BUY", 1.0, provider_name=True) is None
+    assert oq.enqueue("BTCUSDC", "BUY", 1.0, kind=True) is None
+    assert oq.enqueue("BTCUSDC", "BUY", 1.0, failure_reason=True) is None
+    assert oq.enqueue("BTCUSDC", "BUY", 1.0, attempts=1.5) is None
 
 def test_order_retry_get_and_claim_input_validation_iter113_s2():
     """[ITER113 #2] order_retry.get and claim input validation."""
     # 2. order_retry.get and claim input validation
-    assert oret.get(True) is None
+    assert oq.get(True) is None
     with pytest.raises(ValueError):
-        oret.claim(["id1"], lease_sec="bad")
+        oq.claim(["id1"], lease_sec="bad")
 
 def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_client_order_id_iter113_s3():
     """[ITER113 #3] StrategyExecutorLifecycleApi rejects bool/None/blank order_id and client_order_id before str()."""
@@ -1505,7 +1494,7 @@ def test_state_io_discard_generation_file_safely_ignores_bool_int_iter113_s5():
 def test_order_rollback_sanitizes_nan_level_in_extract_order_restore_params_iter121_s3():
     """[ITER121 #3] order_rollback sanitizes NaN level in extract_order_restore_params."""
     # 3. order_rollback sanitizes NaN level in extract_order_restore_params
-    p = orb.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": float("nan")})
+    p = ol.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": float("nan")})
     assert p["level"] is None
 
 def test_auditedstrategyexecutor_normalizes_symbol_case_whitespace_and_order_id_across_iter123_s2(tmp_path):
@@ -1582,19 +1571,19 @@ def test_accepted_order_persistence__accepted_is_durable_normalizes_ids_rejects_
     mod_ok = DummyRetryMod(
         [{"id": "1001", "lifecycle": "accepted", "order_id": "777", "place_kwargs": {"client_order_id": "CID-1"}}],
     )
-    assert aop._accepted_is_durable(mod_ok, claim, {"orderId": 777.0}) is True
+    assert ol._accepted_is_durable(mod_ok, claim, {"orderId": 777.0}) is True
 
     mod_bad_sentinel = DummyRetryMod(
         [{"id": "1001", "lifecycle": "accepted", "order_id": "0", "place_kwargs": {"client_order_id": "CID-1"}}],
     )
-    assert aop._accepted_is_durable(mod_bad_sentinel, claim, {"orderId": "0"}) is False
+    assert ol._accepted_is_durable(mod_bad_sentinel, claim, {"orderId": "0"}) is False
 
 def test_order_outcomes_log_sanitizes_nan_inf_containers_and_none_regime_context_iter151_s1(tmp_path):
     """[ITER151 #1] order_outcomes_log sanitizes NaN/Inf/containers and None regime_context.fresh/fallback_used."""
     import glob
     # 1. order_outcomes_log sanitizes NaN/Inf/containers and None regime_context.fresh/fallback_used
-    orig_dir = ool.ORDER_OUTCOMES_LOG_DIR
-    ool.ORDER_OUTCOMES_LOG_DIR = str(tmp_path / "outcomes")
+    orig_dir = ol.ORDER_OUTCOMES_LOG_DIR
+    ol.ORDER_OUTCOMES_LOG_DIR = str(tmp_path / "outcomes")
     try:
         class DummyRegimeCtx:
             regime = "UP"
@@ -1604,7 +1593,7 @@ def test_order_outcomes_log_sanitizes_nan_inf_containers_and_none_regime_context
             fallback_used = None
             reason = "ok"
 
-        ool.log_order_outcome(
+        ol.log_order_outcome(
             "BTCUSDC",
             "BUY",
             float("nan"),
@@ -1628,7 +1617,7 @@ def test_order_outcomes_log_sanitizes_nan_inf_containers_and_none_regime_context
         assert parts[12] == ""
         assert parts[13] == ""
     finally:
-        ool.ORDER_OUTCOMES_LOG_DIR = orig_dir
+        ol.ORDER_OUTCOMES_LOG_DIR = orig_dir
 
 def test_order_retry_valid_record_enqueue_sentinel_order_id_replaces_order_id_rejection_iter156_s2(tmp_path, monkeypatch):
     """[ITER156 #2] order_retry valid_record & enqueue sentinel order_id / replaces_order_id rejection."""
@@ -1787,11 +1776,10 @@ def test_trackedorderlifecycle_retry_on_lookup_error_and_identity_order_fields_n
 
 def test_order_outcomes_log_sanitizes_regime_context_fields_and_non_numeric_price_iter160_s3(tmp_path, monkeypatch):
     """[ITER160 #3] order_outcomes_log: sanitizes regime_context fields and non-numeric price/qty strings."""
-    import order_lifecycle as olog
     # 3. order_outcomes_log: sanitizes regime_context fields and non-numeric price/qty strings
-    monkeypatch.setattr(olog, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
-    assert olog._clean_numeric_field("not-a-number") == ""
-    assert olog._clean_numeric_field("60000.5") == "60000.5"
+    monkeypatch.setattr(ol, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
+    assert ol._clean_numeric_field("not-a-number") == ""
+    assert ol._clean_numeric_field("60000.5") == "60000.5"
 
     class _RegCtx:
         regime = "BULL|STRONG"
@@ -1801,7 +1789,7 @@ def test_order_outcomes_log_sanitizes_regime_context_fields_and_non_numeric_pric
         fallback_used = 1
         reason = "nan"
 
-    olog.log_order_outcome(
+    ol.log_order_outcome(
         "BTCUSDC",
         "BUY",
         "not-a-number",
@@ -1834,10 +1822,10 @@ def test_accepted_order_persistence_complete_claim_returning_false_is_not_treate
         def load_all():
             return None
 
-    monkeypatch.setattr(aop.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(ol.time, "sleep", lambda _s: None)
     notified = []
-    monkeypatch.setattr(aop.alert, "notify", lambda **kw: notified.append(kw))
-    ok = aop.complete_accepted_claim(
+    monkeypatch.setattr(ol.alert, "notify", lambda **kw: notified.append(kw))
+    ok = ol.complete_accepted_claim(
         _FakeRetry,
         {"id": "c1", "qty": float("nan"), "requested_price": True, "place_kwargs": {"client_order_id": "cid-1"}},
         order={"orderId": 555},
@@ -1852,8 +1840,8 @@ def test_accepted_order_persistence_complete_claim_returning_false_is_not_treate
 def test_order_outcomes_log_with_dict_regime_context_and_primitive_regime_context_iter168_s5(tmp_path, monkeypatch):
     """[ITER168 #5] order_outcomes_log with dict regime_context and primitive regime_context."""
     # 5. order_outcomes_log with dict regime_context and primitive regime_context
-    monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
-    ool.log_order_outcome(
+    monkeypatch.setattr(ol, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
+    ol.log_order_outcome(
         "BTCUSDC",
         "BUY",
         65000.0,
@@ -1871,7 +1859,7 @@ def test_order_outcomes_log_with_dict_regime_context_and_primitive_regime_contex
             "reason": "strong_trend",
         },
     )
-    ool.log_order_outcome(
+    ol.log_order_outcome(
         "BTCUSDC",
         "SELL",
         66000.0,
@@ -1955,5 +1943,5 @@ def test_instrument__parse_bool_flag_side_aliases_bid_ask_decimal_free_balance_i
 def test_order_retry_price_gate_ok_supports_bid_long_and_ask_a_iter179_s4():
     """[ITER179 #4] order_retry.price_gate_ok supports BID/LONG and ASK/A/SHORT."""
     # 4. order_retry.price_gate_ok supports BID/LONG and ASK/A/SHORT
-    assert order_retry.price_gate_ok({"side": "BID", "requested_price": 100.0}, 99.0, tol=0.0) is True
-    assert order_retry.price_gate_ok({"side": "ASK", "requested_price": 100.0}, 101.0, tol=0.0) is True
+    assert oq.price_gate_ok({"side": "BID", "requested_price": 100.0}, 99.0, tol=0.0) is True
+    assert oq.price_gate_ok({"side": "ASK", "requested_price": 100.0}, 101.0, tol=0.0) is True

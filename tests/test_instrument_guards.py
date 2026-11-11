@@ -2113,13 +2113,11 @@ if __name__ == "__main__":
 # ============================================================================
 
 
-def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
-    """[ITER5 #1] Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)."""
-    # 1. Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)
+def _make_mock_binance_provider():
     provider = MagicMock()
     provider.name = "binance"
     provider.get_current_price.return_value = 100.0
-    provider.round_amount = lambda s, a: round(a, 4)
+    provider.round_amount = lambda s, a: round(float(a), 4)
     provider.min_order_qty.return_value = 0.001
     provider.min_order_notional.return_value = 5.0
     provider.order_filter_refusal.return_value = None
@@ -2127,10 +2125,21 @@ def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
     provider.policy_cap_quantity.return_value = 10.0
     provider.fee_cap_quantity.return_value = 100.0
     provider.guards_internally.return_value = False
+    provider.requires_cache_permit.return_value = False
+    provider.defers_smart_cancellation.return_value = False
+    provider.supports_business_minimum.return_value = False
+    provider.execution_enabled.return_value = True
     provider.get_orders.return_value = []
     provider.get_trades.return_value = []
     provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
     provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
+    return provider
+
+
+def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
+    """[ITER5 #1] Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)."""
+    # 1. Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)
+    provider = _make_mock_binance_provider()
 
     captured_bypasses = []
     def fake_profit_guard(prov, sym, side, px, margin, window_ref=None, regime_context=None, qty=None, **kw):
@@ -2165,25 +2174,7 @@ def test_gt_m_medium_trend_action_scale_idempotency_when_applied_scale_is_alread
     """[ITER10 #1] GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry."""
     # 1. GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry
     submitted_qtys = []
-    provider = MagicMock()
-    provider.name = "binance"
-    provider.get_current_price.return_value = 100.0
-    provider.round_amount = lambda s, a: round(float(a), 4)
-    provider.min_order_qty.return_value = 0.001
-    provider.min_order_notional.return_value = 5.0
-    provider.order_filter_refusal.return_value = None
-    provider.free_balance.return_value = 10000.0
-    provider.policy_cap_quantity.return_value = 10.0
-    provider.fee_cap_quantity.return_value = 100.0
-    provider.guards_internally.return_value = False
-    provider.requires_cache_permit.return_value = False
-    provider.defers_smart_cancellation.return_value = False
-    provider.supports_business_minimum.return_value = False
-    provider.execution_enabled.return_value = True
-    provider.get_orders.return_value = []
-    provider.get_trades.return_value = []
-    provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
-    provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
+    provider = _make_mock_binance_provider()
 
     def _fake_place_order(_sym, side, price, qty, **_kw):
         submitted_qtys.append(float(qty))

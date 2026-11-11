@@ -1479,36 +1479,17 @@ def test_venue_market_data_client_and_strategy_edge_cases(tmp_path, monkeypatch)
     assert hl_c.funding_rate("HYPE") is None
 
     # 5. 212trading.strategy.Strategy sanitizes invalid explicit fx_to_usd
-    saved_path = list(sys.path)
-    try:
-        t212_strat = load_local_module(t212_dir, "strategy.py", module_key="t212_strat_test", reload=True)
-        p_t212 = t212_strat.StratParams(
-            currency="USD",
-            entry_amount=50.0,
-            entry_discount_pct=0.2,
-            dca_amount=25.0,
-            dca_drop_pct=2.0,
-            check_minutes=5.0,
-            takeprofit_pct=1.5,
-            max_budget=200.0,
-            max_dca_buys=4,
-            validity="DAY",
-            enable_takeprofit=True,
-            order_ttl_min=60.0,
-            stop_loss_pct=8.0,
-        )
-        st_t212 = t212_strat.Strategy(
-            client=None,
-            ticker="NVDA_US_EQ",
-            params=p_t212,
-            dry_run=True,
-            replay_mode=True,
-            fx_to_usd=0.0,
-            initial_state=t212_strat._new_state(),
-        )
-        assert st_t212.fx_to_usd == 1.0
-    finally:
-        sys.path[:] = saved_path
+    t212_strat = load_local_module(t212_dir, "strategy.py", module_key="t212_strat_test", reload=True)
+    st_t212 = t212_strat.Strategy(
+        client=None,
+        ticker="NVDA_US_EQ",
+        params=t212_strat.StratParams.from_dict({}),
+        dry_run=True,
+        replay_mode=True,
+        fx_to_usd=0.0,
+        initial_state=t212_strat._new_state(),
+    )
+    assert st_t212.fx_to_usd == 1.0
 
 
 def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatch, tmp_path, capsys):

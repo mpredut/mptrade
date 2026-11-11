@@ -18,6 +18,43 @@ def _isolated_agy_stores(tmp_path, monkeypatch):
 
 
 
+def _init_summaries_db(tmp_path, rows, *, with_step_count=False, create_files=False):
+    cli_base = str(tmp_path / "cli")
+    os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+    if create_files:
+        os.makedirs(os.path.join(cli_base, "brain"), exist_ok=True)
+    db_path = os.path.join(cli_base, "conversation_summaries.db")
+    conn = sqlite3.connect(db_path)
+    extra_col = ",\n                step_count integer" if with_step_count else ""
+    conn.execute(f"""
+        CREATE TABLE conversation_summaries (
+            conversation_id text PRIMARY KEY,
+            title text,
+            preview text,
+            last_modified_time datetime,
+            project_id text{extra_col}
+        )
+    """)
+    placeholders = "?, ?, ?, ?, ?, ?" if with_step_count else "?, ?, ?, ?, ?"
+    for r in rows:
+        conn.execute(f"INSERT INTO conversation_summaries VALUES ({placeholders})", r)
+        if create_files:
+            with open(os.path.join(cli_base, "conversations", f"{r[0]}.db"), "w") as f:
+                f.write("dummy db")
+            os.makedirs(os.path.join(cli_base, "brain", r[0]), exist_ok=True)
+    conn.commit()
+    conn.close()
+    return cli_base, db_path
+
+
+def _remaining_cids(db_path) -> set[str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        return {r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()}
+    finally:
+        conn.close()
+
+
 class TestPruneCliThreads:
     """Tests for prune_old_cli_threads."""
 
@@ -42,22 +79,6 @@ class TestPruneCliThreads:
         assert is_automated_thread("Simple Echo Test", "echo 123") is False
 
     def test_prune_filters_by_age_and_project(self, tmp_path):
-        cli_base = str(tmp_path / "cli")
-        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
-        os.makedirs(os.path.join(cli_base, "brain"), exist_ok=True)
-
-        db_path = os.path.join(cli_base, "conversation_summaries.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE conversation_summaries (
-                conversation_id text PRIMARY KEY,
-                title text,
-                preview text,
-                last_modified_time datetime,
-                project_id text
-            )
-        """)
-
         now = datetime.now(timezone.utc)
         ts_old = (now - timedelta(days=5)).isoformat()
         ts_recent = (now - timedelta(hours=6)).isoformat()
@@ -77,15 +98,7 @@ class TestPruneCliThreads:
             (cid_old_manual, "My manual prompt", "User discussing python code", ts_old, "default-cli-project"),
             (cid_other_project, "Macro Risk", "You are a senior macroeconomic and geopolitical risk officer", ts_old, "other-project"),
         ]
-
-        for r in rows:
-            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", r)
-            # Create dummy .db file and brain dir
-            with open(os.path.join(cli_base, "conversations", f"{r[0]}.db"), "w") as f:
-                f.write("dummy db")
-            os.makedirs(os.path.join(cli_base, "brain", r[0]), exist_ok=True)
-        conn.commit()
-        conn.close()
+        cli_base, db_path = _init_summaries_db(tmp_path, rows, create_files=True)
 
         # Run pruner with default retention (1.0 day)
         pruned_count, bytes_freed = prune_old_cli_threads(
@@ -98,11 +111,7 @@ class TestPruneCliThreads:
         assert pruned_count == 1
         assert bytes_freed > 0
 
-        # Verify DB contents
-        conn = sqlite3.connect(db_path)
-        remaining = [r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()]
-        conn.close()
-
+        remaining = _remaining_cids(db_path)
         assert cid_old_auto not in remaining
         assert cid_recent_auto in remaining
         assert cid_old_manual in remaining
@@ -114,27 +123,13 @@ class TestPruneCliThreads:
         assert os.path.exists(os.path.join(cli_base, "conversations", f"{cid_recent_auto}.db"))
 
     def test_exclude_cids_protection(self, tmp_path):
-        cli_base = str(tmp_path / "cli")
-        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
-        db_path = os.path.join(cli_base, "conversation_summaries.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE conversation_summaries (
-                conversation_id text PRIMARY KEY,
-                title text,
-                preview text,
-                last_modified_time datetime,
-                project_id text
-            )
-        """)
         now = datetime.now(timezone.utc)
         ts_old = (now - timedelta(days=10)).isoformat()
         cid = "protected-active-cid"
-        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
-            cid, "Macro Risk", "You are a senior macroeconomic and geopolitical risk officer", ts_old, "default-cli-project"
-        ))
-        conn.commit()
-        conn.close()
+        cli_base, _ = _init_summaries_db(
+            tmp_path,
+            [(cid, "Macro Risk", "You are a senior macroeconomic and geopolitical risk officer", ts_old, "default-cli-project")],
+        )
 
         pruned, _ = prune_old_cli_threads(
             cli_base=cli_base,
@@ -145,31 +140,16 @@ class TestPruneCliThreads:
         assert pruned == 0
 
     def test_autonommptrade_project_pruning(self, tmp_path):
-        cli_base = str(tmp_path / "cli")
-        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
-        db_path = os.path.join(cli_base, "conversation_summaries.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE conversation_summaries (
-                conversation_id text PRIMARY KEY,
-                title text,
-                preview text,
-                last_modified_time datetime,
-                project_id text
-            )
-        """)
         now = datetime.now(timezone.utc)
         ts_old = (now - timedelta(days=2)).isoformat()
         ts_recent = (now - timedelta(hours=3)).isoformat()
-
-        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
-            "auto-old-1", "Query", "Automated reasoning", ts_old, "autonommptrade"
-        ))
-        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
-            "auto-recent-2", "Query", "Automated reasoning", ts_recent, "autonommptrade"
-        ))
-        conn.commit()
-        conn.close()
+        cli_base, db_path = _init_summaries_db(
+            tmp_path,
+            [
+                ("auto-old-1", "Query", "Automated reasoning", ts_old, "autonommptrade"),
+                ("auto-recent-2", "Query", "Automated reasoning", ts_recent, "autonommptrade"),
+            ],
+        )
 
         # Both default projects (default-cli-project & autonommptrade) checked
         pruned, _ = prune_old_cli_threads(
@@ -179,41 +159,21 @@ class TestPruneCliThreads:
         )
         assert pruned == 1
 
-        conn = sqlite3.connect(db_path)
-        remaining = [r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()]
-        conn.close()
+        remaining = _remaining_cids(db_path)
         assert "auto-old-1" not in remaining
         assert "auto-recent-2" in remaining
 
     def test_user_manual_projects_and_threads_protected(self, tmp_path):
-        cli_base = str(tmp_path / "cli")
-        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
-        db_path = os.path.join(cli_base, "conversation_summaries.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE conversation_summaries (
-                conversation_id text PRIMARY KEY,
-                title text,
-                preview text,
-                last_modified_time datetime,
-                project_id text
-            )
-        """)
         now = datetime.now(timezone.utc)
         ts_old = (now - timedelta(days=30)).isoformat()
-
-        # Insert user threads in mptrade and default-cli-project
-        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
-            "user-mptrade-1", "backtesting", "my custom manual discussion", ts_old, "mptrade"
-        ))
-        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
-            "user-default-2", "my ideas", "user discussion on prompt", ts_old, "default-cli-project"
-        ))
-        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
-            "bot-auto-3", "Macro Risk", "You are a senior macroeconomic and geopolitical risk officer", ts_old, "autonommptrade"
-        ))
-        conn.commit()
-        conn.close()
+        cli_base, db_path = _init_summaries_db(
+            tmp_path,
+            [
+                ("user-mptrade-1", "backtesting", "my custom manual discussion", ts_old, "mptrade"),
+                ("user-default-2", "my ideas", "user discussion on prompt", ts_old, "default-cli-project"),
+                ("bot-auto-3", "Macro Risk", "You are a senior macroeconomic and geopolitical risk officer", ts_old, "autonommptrade"),
+            ],
+        )
 
         # Default run: should ONLY prune bot-auto-3 in autonommptrade
         pruned, _ = prune_old_cli_threads(
@@ -223,10 +183,7 @@ class TestPruneCliThreads:
         )
         assert pruned == 1
 
-        conn = sqlite3.connect(db_path)
-        remaining = {r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()}
-        conn.close()
-
+        remaining = _remaining_cids(db_path)
         assert "user-mptrade-1" in remaining, "User mptrade thread must NEVER be pruned!"
         assert "user-default-2" in remaining, "User default-cli-project thread must NOT be pruned on default cycle!"
         assert "bot-auto-3" not in remaining
@@ -241,32 +198,16 @@ class TestPruneCliThreads:
         assert pruned_protected == 0
 
     def test_max_threads_cap_and_wal_cleanup(self, tmp_path):
-        cli_base = str(tmp_path / "cli")
-        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
-        db_path = os.path.join(cli_base, "conversation_summaries.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE conversation_summaries (
-                conversation_id text PRIMARY KEY,
-                title text,
-                preview text,
-                last_modified_time datetime,
-                project_id text
-            )
-        """)
         now = datetime.now(timezone.utc)
-        for i in range(5):
-            cid = f"auto-recent-{i}"
-            ts = (now - timedelta(minutes=10 - i)).isoformat()
-            conn.execute(
-                "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)",
-                (cid, "ntfy-guard", "Automated reasoning", ts, "autonommptrade"),
-            )
+        rows = [
+            (f"auto-recent-{i}", "ntfy-guard", "Automated reasoning", (now - timedelta(minutes=10 - i)).isoformat(), "autonommptrade")
+            for i in range(5)
+        ]
+        cli_base, db_path = _init_summaries_db(tmp_path, rows)
+        for cid, *_ in rows:
             for ext in (".db", ".db-shm", ".db-wal"):
                 with open(os.path.join(cli_base, "conversations", f"{cid}{ext}"), "w") as f:
                     f.write("data")
-        conn.commit()
-        conn.close()
 
         pruned, _ = prune_old_cli_threads(
             cli_base=cli_base,
@@ -276,40 +217,21 @@ class TestPruneCliThreads:
         )
         assert pruned == 3
 
-        conn = sqlite3.connect(db_path)
-        remaining = {r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()}
-        conn.close()
-        assert remaining == {"auto-recent-3", "auto-recent-4"}
+        assert _remaining_cids(db_path) == {"auto-recent-3", "auto-recent-4"}
         assert not os.path.exists(os.path.join(cli_base, "conversations", "auto-recent-0.db-wal"))
         assert not os.path.exists(os.path.join(cli_base, "conversations", "auto-recent-0.db-shm"))
 
     def test_multi_turn_step_count_protected_even_with_all(self, tmp_path):
-        cli_base = str(tmp_path / "cli")
-        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
-        db_path = os.path.join(cli_base, "conversation_summaries.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE conversation_summaries (
-                conversation_id text PRIMARY KEY,
-                title text,
-                preview text,
-                last_modified_time datetime,
-                project_id text,
-                step_count integer
-            )
-        """)
         now = datetime.now(timezone.utc)
         ts_old = (now - timedelta(days=5)).isoformat()
-        conn.execute(
-            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
-            ("multi-turn-user-1", "Implementing feature X", "Let us refactor the code", ts_old, "autonommptrade", 42),
+        cli_base, db_path = _init_summaries_db(
+            tmp_path,
+            [
+                ("multi-turn-user-1", "Implementing feature X", "Let us refactor the code", ts_old, "autonommptrade", 42),
+                ("one-shot-auto-1", "Quick check", "Single turn prompt", ts_old, "autonommptrade", 4),
+            ],
+            with_step_count=True,
         )
-        conn.execute(
-            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
-            ("one-shot-auto-1", "Quick check", "Single turn prompt", ts_old, "autonommptrade", 4),
-        )
-        conn.commit()
-        conn.close()
 
         pruned, _ = prune_old_cli_threads(
             cli_base=cli_base,
@@ -318,42 +240,20 @@ class TestPruneCliThreads:
             dry_run=False,
         )
         assert pruned == 1
-        conn = sqlite3.connect(db_path)
-        remaining = {r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()}
-        conn.close()
-        assert remaining == {"multi-turn-user-1"}
+        assert _remaining_cids(db_path) == {"multi-turn-user-1"}
 
     def test_agy_generated_titles_in_dedicated_project_are_pruned(self, tmp_path):
-        cli_base = str(tmp_path / "cli")
-        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
-        db_path = os.path.join(cli_base, "conversation_summaries.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE conversation_summaries (
-                conversation_id text PRIMARY KEY,
-                title text,
-                preview text,
-                last_modified_time datetime,
-                project_id text,
-                step_count integer
-            )
-        """)
         now = datetime.now(timezone.utc)
         ts_old = (now - timedelta(days=3)).isoformat()
-        conn.execute(
-            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
-            ("bot-synth-1", "Crypto Macro Risk Synthesis", "Crypto Macro Risk Synthesis", ts_old, AUTONOMOUS_PROJECT_UUID, 2),
+        cli_base, db_path = _init_summaries_db(
+            tmp_path,
+            [
+                ("bot-synth-1", "Crypto Macro Risk Synthesis", "Crypto Macro Risk Synthesis", ts_old, AUTONOMOUS_PROJECT_UUID, 2),
+                ("bot-shield-2", "Macroeconomic Shock Shield Evaluation", "Macroeconomic Shock Shield Evaluation", ts_old, AUTONOMOUS_PROJECT_UUID, 2),
+                ("user-interactive-3", "Custom Architecture Discussion", "Let us discuss design", ts_old, AUTONOMOUS_PROJECT_UUID, 18),
+            ],
+            with_step_count=True,
         )
-        conn.execute(
-            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
-            ("bot-shield-2", "Macroeconomic Shock Shield Evaluation", "Macroeconomic Shock Shield Evaluation", ts_old, AUTONOMOUS_PROJECT_UUID, 2),
-        )
-        conn.execute(
-            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
-            ("user-interactive-3", "Custom Architecture Discussion", "Let us discuss design", ts_old, AUTONOMOUS_PROJECT_UUID, 18),
-        )
-        conn.commit()
-        conn.close()
 
         pruned, _ = prune_old_cli_threads(
             cli_base=cli_base,
@@ -361,10 +261,7 @@ class TestPruneCliThreads:
             dry_run=False,
         )
         assert pruned == 2
-        conn = sqlite3.connect(db_path)
-        remaining = {r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()}
-        conn.close()
-        assert remaining == {"user-interactive-3"}
+        assert _remaining_cids(db_path) == {"user-interactive-3"}
 
     def test_parse_db_timestamp_handles_trailing_z_suffix(self):
         from orchestratorOS.agy.summary_store import parse_db_timestamp

@@ -3268,40 +3268,22 @@ def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_
     with open(os.path.join(cache_dir, "autonomous_trade_intents_state.json"), "w", encoding="utf-8") as f:
         json.dump(intents_state, f)
 
-    mock_btc_inst = MagicMock()
-    mock_btc_inst.symbol = "BTCUSDC"
-    mock_btc_inst.provider_name = "binance"
-    mock_btc_inst.base = "BTC"
-    mock_btc_inst.quote = "USDC"
-    mock_btc_inst.params = {}
-    mock_btc_inst._provider.get_current_price.return_value = 79300.0
-    mock_btc_inst._provider.free_balance.side_effect = lambda a: 0.025 if a == "BTC" else 1200.0
-    mock_btc_inst.open_orders.return_value = [
-        {
-            "orderId": "777888",
-            "side": "BUY",
-            "type": "LIMIT",
-            "price": "78500.0",
-            "origQty": "0.005",
-            "executedQty": "0.002",
-            "status": "PARTIALLY_FILLED",
-        }
-    ]
-
-    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
-    gateway.load_tradable_instruments.return_value = {"BTCUSDC": mock_btc_inst}
-    gateway.reconcile_intents.return_value = False
-
-    captured_prompts = []
-    auditor = GeminiClient(custom_runner=lambda p, m, t: captured_prompts.append(p) or json.dumps({"summary": "ok"}))
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="shadow",
-        notify_enabled=False,
-        intent_gateway=gateway,
+    mock_btc_inst, reconciler, captured_prompts = _make_btc_shadow_reconciler(
+        workspace,
+        price=79300.0,
+        btc_balance=0.025,
+        usdc_balance=1200.0,
+        open_orders=[
+            {
+                "orderId": "777888",
+                "side": "BUY",
+                "type": "LIMIT",
+                "price": "78500.0",
+                "origQty": "0.005",
+                "executedQty": "0.002",
+                "status": "PARTIALLY_FILLED",
+            }
+        ],
     )
     sensors = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
     ps = sensors.portfolio_summary
@@ -3347,6 +3329,35 @@ def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_
     assert "Active Open Limit Orders on Exchange — open_limit_orders: [] (none resting)" in prompt_empty_oo
     assert "SUPERVISORY AUTHORITY TO AUDIT & REPAIR / REVERSE UNWANTED BOT OR FLEET TRADES" in prompt_empty_oo
     assert "by=AI" in prompt_empty_oo
+
+
+def _make_btc_shadow_reconciler(workspace, *, price, btc_balance, usdc_balance, open_orders):
+    mock_btc_inst = MagicMock()
+    mock_btc_inst.symbol = "BTCUSDC"
+    mock_btc_inst.provider_name = "binance"
+    mock_btc_inst.base = "BTC"
+    mock_btc_inst.quote = "USDC"
+    mock_btc_inst.params = {}
+    mock_btc_inst._provider.get_current_price.return_value = price
+    mock_btc_inst._provider.free_balance.side_effect = lambda asset: btc_balance if asset == "BTC" else usdc_balance
+    mock_btc_inst.open_orders.return_value = open_orders
+
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    gateway.load_tradable_instruments.return_value = {"BTCUSDC": mock_btc_inst}
+    gateway.reconcile_intents.return_value = False
+
+    captured_prompts = []
+    auditor = GeminiClient(custom_runner=lambda p, m, t: captured_prompts.append(p) or json.dumps({"summary": "ok"}))
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        gemini_auditor=auditor,
+        mode="shadow",
+        notify_enabled=False,
+        intent_gateway=gateway,
+    )
+    return mock_btc_inst, reconciler, captured_prompts
 
 
 def test_bot_vs_ai_fill_attribution_and_reversal_prompt(temp_env):
@@ -3400,33 +3411,15 @@ def test_bot_vs_ai_fill_attribution_and_reversal_prompt(temp_env):
     with open(os.path.join(workspace, "instruments.conf"), "w") as f:
         f.write("BTCUSDC = binance:BTC/USDC\n")
 
-    mock_btc_inst = MagicMock()
-    mock_btc_inst.symbol = "BTCUSDC"
-    mock_btc_inst.provider_name = "binance"
-    mock_btc_inst.base = "BTC"
-    mock_btc_inst.quote = "USDC"
-    mock_btc_inst.params = {}
-    mock_btc_inst._provider.free_balance.side_effect = lambda asset: 0.0 if asset == "BTC" else 2000.0
-    mock_btc_inst._provider.get_current_price.return_value = 78200.0
-    mock_btc_inst.open_orders.return_value = [
-        {"orderId": "bot_rest_1", "clientOrderId": "TO_123", "side": "BUY", "price": "76000.0", "origQty": "0.005", "executedQty": "0.0"},
-        {"orderId": "ai_rest_1", "clientOrderId": "AI_123", "side": "BUY", "price": "77900.0", "origQty": "0.005", "executedQty": "0.0"},
-    ]
-
-    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
-    gateway.load_tradable_instruments.return_value = {"BTCUSDC": mock_btc_inst}
-    gateway.reconcile_intents.return_value = False
-
-    captured_prompts = []
-    auditor = GeminiClient(custom_runner=lambda p, m, t: captured_prompts.append(p) or json.dumps({"summary": "ok"}))
-    reconciler = AutonomousAIReconciler(
-        workspace_dir=workspace,
-        cache_dir="cachedb",
-        logs_dirs=["logs"],
-        gemini_auditor=auditor,
-        mode="shadow",
-        notify_enabled=False,
-        intent_gateway=gateway,
+    _mock_btc_inst, reconciler, captured_prompts = _make_btc_shadow_reconciler(
+        workspace,
+        price=78200.0,
+        btc_balance=0.0,
+        usdc_balance=2000.0,
+        open_orders=[
+            {"orderId": "bot_rest_1", "clientOrderId": "TO_123", "side": "BUY", "price": "76000.0", "origQty": "0.005", "executedQty": "0.0"},
+            {"orderId": "ai_rest_1", "clientOrderId": "AI_123", "side": "BUY", "price": "77900.0", "origQty": "0.005", "executedQty": "0.0"},
+        ],
     )
     sensors = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
     ro = sensors.portfolio_summary["recent_orders"]["BTCUSDC"]

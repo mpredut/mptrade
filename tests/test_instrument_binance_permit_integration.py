@@ -1,5 +1,6 @@
 """End-to-end regressions for Instrument's Binance submit-permit plumbing."""
 
+import contextlib
 import os
 import sys
 import tempfile
@@ -107,8 +108,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
         order_retry.RETRY_DEDUP = self.old_retry_dedup
         self.temp.cleanup()
 
-    def _place(self, side, qty, *, smart,
-               expire_permit_before_dispatch=False):
+    def _make_binance_fixture(self):
         events = []
         client = _FakeClient(events)
         fake_bapi = _FakeBapi(client, events)
@@ -123,6 +123,37 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
             order_cache_version="orders-v1",
             trade_cache_version="trades-v1",
         )
+        return events, client, fake_bapi, provider, api, instrument, status
+
+    @contextlib.contextmanager
+    def _patched_binance_env(self, *, profit_guard_fn):
+        events, client, fake_bapi, provider, api, instrument, status = self._make_binance_fixture()
+        with (
+            patch.object(market_api, "_bapi", fake_bapi),
+            patch.object(placeorder, "api", fake_bapi),
+            patch.object(placeorder, "client", client),
+            patch.object(placeorder, "require_account_cache_for_submit", return_value=status),
+            patch.object(placeorder.cfg, "is_trade_enabled", return_value=True),
+            patch.object(provider, "profit_guard_window_ref", return_value=None),
+            patch.object(
+                provider, "policy_cap_quantity",
+                side_effect=lambda _symbol, _side, _price, _qty,
+                                   available_qty, **_kwargs:
+                    min(2.0, available_qty)),
+            patch.object(
+                provider, "fee_cap_quantity",
+                side_effect=lambda _symbol, _side, _price,
+                                   available_qty: available_qty),
+            patch.object(order_guard, "daily_limit_guard", return_value=(True, None)),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
+            patch.object(order_guard, "profit_guard", side_effect=profit_guard_fn),
+            patch.object(instrument_module.order_lifecycle, "log_order_outcome"),
+        ):
+            yield client, provider, instrument
+
+    def _place(self, side, qty, *, smart,
+               expire_permit_before_dispatch=False):
+        events, client, fake_bapi, provider, _api, instrument, status = self._make_binance_fixture()
         health_calls = []
 
         def health_gate():
@@ -251,14 +282,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
         self.assertEqual(len(observed["issued"]), 1)
 
     def test_disabled_binance_gate_leaves_no_future_live_intent(self):
-        events = []
-        client = _FakeClient(events)
-        fake_bapi = _FakeBapi(client, events)
-        provider = BinanceProvider()
-        api = MarketApi([provider])
-        instrument = Instrument(
-            name="BTC", symbol="BTCUSDC", provider="Binance",
-            base="BTC", quote="USDC", api=api)
+        _events, _client, fake_bapi, provider, api, instrument, _status = self._make_binance_fixture()
 
         with (
             patch.object(market_api, "_bapi", fake_bapi),
@@ -297,20 +321,6 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
         later_submit.assert_not_called()
 
     def test_market_buy_reissues_permit_when_final_profit_check_late_scales_qty(self):
-        events = []
-        client = _FakeClient(events)
-        fake_bapi = _FakeBapi(client, events)
-        provider = BinanceProvider()
-        api = MarketApi([provider])
-        instrument = Instrument(
-            name="BTC", symbol="BTCUSDC", provider="Binance",
-            base="BTC", quote="USDC", api=api)
-        status = CacheHealthStatus(
-            ready=True, reason="ok", order_age_sec=1.0,
-            trade_age_sec=1.0,
-            order_cache_version="orders-v1",
-            trade_cache_version="trades-v1",
-        )
         ctx = {"regime": "bull"}
         pg_calls = []
 
@@ -322,27 +332,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
                     kwargs.get("regime_context"), "BUY", 0.5, "late_crowding")
             return True
 
-        with (
-            patch.object(market_api, "_bapi", fake_bapi),
-            patch.object(placeorder, "api", fake_bapi),
-            patch.object(placeorder, "client", client),
-            patch.object(placeorder, "require_account_cache_for_submit", return_value=status),
-            patch.object(placeorder.cfg, "is_trade_enabled", return_value=True),
-            patch.object(provider, "profit_guard_window_ref", return_value=None),
-            patch.object(
-                provider, "policy_cap_quantity",
-                side_effect=lambda _symbol, _side, _price, _qty,
-                                   available_qty, **_kwargs:
-                    min(2.0, available_qty)),
-            patch.object(
-                provider, "fee_cap_quantity",
-                side_effect=lambda _symbol, _side, _price,
-                                   available_qty: available_qty),
-            patch.object(order_guard, "daily_limit_guard", return_value=(True, None)),
-            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
-            patch.object(order_guard, "profit_guard", side_effect=fake_profit_guard),
-            patch.object(instrument_module.order_lifecycle, "log_order_outcome"),
-        ):
+        with self._patched_binance_env(profit_guard_fn=fake_profit_guard) as (client, _provider, instrument):
             result = instrument.place(
                 "BUY", 100.0, 1.0, market=True, smart=False,
                 wait_for_trend=False, caller_owns_retry=True,
@@ -353,20 +343,6 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
         self.assertEqual(client.calls[0][1]["quantity"], 0.5)
 
     def test_monitor_order_replace_buy_with_subtick_price_and_permit_succeeds_without_double_scaling(self):
-        events = []
-        client = _FakeClient(events)
-        fake_bapi = _FakeBapi(client, events)
-        provider = BinanceProvider()
-        api = MarketApi([provider])
-        instrument = Instrument(
-            name="BTC", symbol="BTCUSDC", provider="Binance",
-            base="BTC", quote="USDC", api=api)
-        status = CacheHealthStatus(
-            ready=True, reason="ok", order_age_sec=1.0,
-            trade_age_sec=1.0,
-            order_cache_version="orders-v1",
-            trade_cache_version="trades-v1",
-        )
         ctx = {"regime": "bear"}
 
         def fake_profit_guard(_prov, _sym, _side, _px, _margin, **kwargs):
@@ -375,27 +351,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
             return True
 
         subtick_buy_price = 98.899  # round(98.899, 2) -> 98.90 (> 98.899), floor -> 98.89
-        with (
-            patch.object(market_api, "_bapi", fake_bapi),
-            patch.object(placeorder, "api", fake_bapi),
-            patch.object(placeorder, "client", client),
-            patch.object(placeorder, "require_account_cache_for_submit", return_value=status),
-            patch.object(placeorder.cfg, "is_trade_enabled", return_value=True),
-            patch.object(provider, "profit_guard_window_ref", return_value=None),
-            patch.object(
-                provider, "policy_cap_quantity",
-                side_effect=lambda _symbol, _side, _price, _qty,
-                                   available_qty, **_kwargs:
-                    min(2.0, available_qty)),
-            patch.object(
-                provider, "fee_cap_quantity",
-                side_effect=lambda _symbol, _side, _price,
-                                   available_qty: available_qty),
-            patch.object(order_guard, "daily_limit_guard", return_value=(True, None)),
-            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
-            patch.object(order_guard, "profit_guard", side_effect=fake_profit_guard),
-            patch.object(instrument_module.order_lifecycle, "log_order_outcome"),
-        ):
+        with self._patched_binance_env(profit_guard_fn=fake_profit_guard) as (client, provider, instrument):
             permit = provider.preflight_order(
                 "BTCUSDC", "BUY", 1.5, subtick_buy_price,
                 market=False, kind="monitor_order_replace")

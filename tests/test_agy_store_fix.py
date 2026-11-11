@@ -570,15 +570,19 @@ def test_mode_pre_protects_topic_cids_and_archives_orphan_annotations(store, tmp
     assert list(backups.rglob("orphan_annotations/stale-orphan.pbtxt"))
 
 
-def test_last_store_activity_handles_oneshot_cli_logs_and_file_watcher_noise(store):
+def _prepare_pending_topic_log_dir(store):
     cli, d1, _ = store
     (d1 / "pending-topic.db").write_text("y")
     _set_rows(["pending-topic"])
     (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
     _age_store(d1, 1500)
-
     log_dir = cli / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
+def test_last_store_activity_handles_oneshot_cli_logs_and_file_watcher_noise(store):
+    log_dir = _prepare_pending_topic_log_dir(store)
     daemon_log = log_dir / "cli-20261110_202010.log"
     noise = "".join(
         f"E1110 21:06:58.{500000 + i:06d} 89 file_watcher.go:194] skipping empty or temp file:\n"
@@ -1021,14 +1025,7 @@ def test_manage_agy_defers_stuck_tunnel_and_cron_update_restarts_when_chats_acti
 
 
 def test_webchannel_reconnect_and_mid_turn_background_polls_do_not_mask_active_inference(store):
-    cli, d1, _ = store
-    (d1 / "pending-topic.db").write_text("y")
-    _set_rows(["pending-topic"])
-    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
-    _age_store(d1, 1500)
-
-    log_dir = cli / "log"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = _prepare_pending_topic_log_dir(store)
     daemon_log = log_dir / "cli-20261111_121811.log"
     now = time.time()
 

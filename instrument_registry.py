@@ -251,7 +251,7 @@ def select_instruments(provider=None, role=None, *, path=None, only_enabled=True
     }
 
 
-def symbols_for(provider, role=None, *, path=None):
+def symbols_for(provider=None, role=None, *, path=None):
     return [spec.symbol for spec in select_instruments(provider, role, path=path).values()]
 
 

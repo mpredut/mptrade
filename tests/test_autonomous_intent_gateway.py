@@ -142,15 +142,37 @@ def test_process_intent_unknown_instrument_rejected(temp_workspace):
     assert processed["status"] == "REJECTED_UNKNOWN_INSTRUMENT"
 
 
+def _make_mock_inst(
+    symbol="BTCUSDC",
+    *,
+    base="BTC",
+    quote="USDC",
+    venue="binance",
+    price=80000.0,
+    free_balance=None,
+    enabled=True,
+    place_return=None,
+):
+    inst = MagicMock()
+    inst.enabled = enabled
+    inst.symbol = symbol
+    inst.base = base
+    inst.quote = quote
+    inst.provider_name = venue
+    inst._provider.name = venue
+    inst._provider.get_current_price.return_value = price
+    if free_balance is not None:
+        inst._provider.free_balance.return_value = free_balance
+    if place_return is not None:
+        inst.place.return_value = place_return
+    return inst
+
+
 def test_process_intent_shadow_mode_observation(temp_workspace):
     ws, _ = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="shadow", max_notional_usd=2000.0)
 
-    mock_inst = MagicMock()
-    mock_inst.symbol = "BTCUSDC"
-    mock_inst.provider_name = "binance"
-    mock_inst._provider.name = "binance"
-    mock_inst._provider.get_current_price.return_value = 80000.0
+    mock_inst = _make_mock_inst()
 
     intent = {
         "intent_id": "shadow_buy_1",
@@ -180,15 +202,11 @@ def test_process_intent_symmetric_buy_and_sell_bypass_all_profit_guards(temp_wor
     ws, _ = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
 
-    mock_inst = MagicMock()
-    mock_inst.symbol = "BTCUSDC"
-    mock_inst.base = "BTC"
-    mock_inst.quote = "USDC"
-    mock_inst.provider_name = "binance"
-    mock_inst._provider.name = "binance"
-    mock_inst._provider.get_current_price.return_value = 79500.0
-    mock_inst._provider.free_balance.return_value = 2500.0 if side == "BUY" else 0.08
-    mock_inst.place.return_value = {"orderId": f"ord_{side}", "status": "FILLED"}
+    mock_inst = _make_mock_inst(
+        price=79500.0,
+        free_balance=2500.0 if side == "BUY" else 0.08,
+        place_return={"orderId": f"ord_{side}", "status": "FILLED"},
+    )
 
     intent = {
         "id": f"intent_sym_{side.lower()}",
@@ -230,15 +248,14 @@ def test_process_intent_clamps_to_available_wallet_balance_and_blocks_zero_balan
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
 
     # 1. SELL $2000 on ARBUSDC when wallet holds 600 ARB @ $0.20 ($120) -> smoothly clamps to $120
-    mock_arb = MagicMock()
-    mock_arb.symbol = "ARBUSDC"
-    mock_arb.base = "ARB"
-    mock_arb.quote = "USDC"
-    mock_arb.provider_name = "binance"
-    mock_arb._provider.name = "binance"
-    mock_arb._provider.get_current_price.return_value = 0.20
-    mock_arb._provider.free_balance.return_value = 600.0
-    mock_arb.place.return_value = {"orderId": "arb_sell_1"}
+    mock_arb = _make_mock_inst(
+        "ARBUSDC",
+        base="ARB",
+        quote="USDC",
+        price=0.20,
+        free_balance=600.0,
+        place_return={"orderId": "arb_sell_1"},
+    )
 
     sell_intent = {
         "intent_id": "clamp_sell_1",
@@ -258,14 +275,14 @@ def test_process_intent_clamps_to_available_wallet_balance_and_blocks_zero_balan
     assert res_sell["history"][-1]["notional_usd"] == pytest.approx(120.0)
 
     # 2. BUY on Kraken HYPEUSD when free USD balance is $0.00 -> blocked cleanly before placement
-    mock_krk = MagicMock()
-    mock_krk.symbol = "HYPEUSD"
-    mock_krk.base = "HYPE"
-    mock_krk.quote = "USD"
-    mock_krk.provider_name = "kraken"
-    mock_krk._provider.name = "kraken"
-    mock_krk._provider.get_current_price.return_value = 75.0
-    mock_krk._provider.free_balance.return_value = 0.0
+    mock_krk = _make_mock_inst(
+        "HYPEUSD",
+        base="HYPE",
+        quote="USD",
+        venue="kraken",
+        price=75.0,
+        free_balance=0.0,
+    )
 
     buy_zero = {
         "intent_id": "zero_usd_buy",
@@ -288,15 +305,10 @@ def test_multi_tranche_same_side_scaling_has_zero_dedup_lock_and_previous_recove
     ws, _ = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
 
-    mock_inst = MagicMock()
-    mock_inst.symbol = "BTCUSDC"
-    mock_inst.base = "BTC"
-    mock_inst.quote = "USDC"
-    mock_inst.provider_name = "binance"
-    mock_inst._provider.name = "binance"
-    mock_inst._provider.get_current_price.return_value = 80000.0
-    mock_inst._provider.free_balance.return_value = 0.09  # $7,200 USD BTC position
-    mock_inst.place.return_value = {"orderId": "tranche_ok"}
+    mock_inst = _make_mock_inst(
+        free_balance=0.09,  # $7,200 USD BTC position
+        place_return={"orderId": "tranche_ok"},
+    )
 
     sell_dec = {
         "decision": "SELL",
@@ -354,12 +366,7 @@ def test_process_all_pending_lifecycle(temp_workspace):
     ]
     gw.save_all_intents(intents)
 
-    mock_inst = MagicMock()
-    mock_inst.enabled = True
-    mock_inst.symbol = "BTCUSDC"
-    mock_inst.provider_name = "binance"
-    mock_inst._provider.name = "binance"
-    mock_inst._provider.get_current_price.return_value = 80000.0
+    mock_inst = _make_mock_inst()
 
     with patch("instrument.load_instruments", return_value={"BTC": mock_inst}), \
          patch("order_guard.daily_limit_guard", return_value=(True, None)), \
@@ -380,20 +387,9 @@ def test_resolve_instrument_strict_venue_isolation_and_disabled_filtering(temp_w
     ws, _ = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb")
 
-    mock_binance = MagicMock()
-    mock_binance.enabled = True
-    mock_binance.symbol = "BTCUSDC"
-    mock_binance.provider_name = "binance"
-
-    mock_kraken = MagicMock()
-    mock_kraken.enabled = True
-    mock_kraken.symbol = "ETHUSD"
-    mock_kraken.provider_name = "kraken"
-
-    mock_disabled = MagicMock()
-    mock_disabled.enabled = False
-    mock_disabled.symbol = "HYPEUSDC"
-    mock_disabled.provider_name = "hyperliquid"
+    mock_binance = _make_mock_inst("BTCUSDC", venue="binance")
+    mock_kraken = _make_mock_inst("ETHUSD", base="ETH", quote="USD", venue="kraken")
+    mock_disabled = _make_mock_inst("HYPEUSDC", base="HYPE", venue="hyperliquid", enabled=False)
 
     inst_map = {
         "BTC_BINANCE": mock_binance,
@@ -435,11 +431,7 @@ def test_process_intent_mode_off_rejected(temp_workspace):
     ws, _ = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="off")
 
-    mock_inst = MagicMock()
-    mock_inst.symbol = "BTCUSDC"
-    mock_inst.provider_name = "binance"
-    mock_inst._provider.name = "binance"
-    mock_inst._provider.get_current_price.return_value = 80000.0
+    mock_inst = _make_mock_inst()
 
     intent = {
         "intent_id": "mode_off_1",
@@ -494,14 +486,7 @@ def test_reconcile_failed_intent_from_execution_audit_and_capture_outcome_reason
     ws, _ = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
 
-    mock_inst = MagicMock()
-    mock_inst.symbol = "TAOUSDC"
-    mock_inst.base = "TAO"
-    mock_inst.quote = "USDC"
-    mock_inst.provider_name = "binance"
-    mock_inst._provider.name = "binance"
-    mock_inst._provider.get_current_price.return_value = 251.0
-    mock_inst._provider.free_balance.return_value = 4.70
+    mock_inst = _make_mock_inst("TAOUSDC", base="TAO", quote="USDC", price=251.0, free_balance=4.70)
 
     def place_deferred(**kwargs):
         ctx = kwargs.get("_outcome_context")
@@ -559,13 +544,7 @@ def test_resolve_instrument_and_live_price_support_cross_venue_quote_variants(te
     ws, cache_dir = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="shadow")
 
-    kraken_tao = MagicMock()
-    kraken_tao.symbol = "TAOUSD"
-    kraken_tao.base = "TAO"
-    kraken_tao.quote = "USD"
-    kraken_tao.provider_name = "kraken"
-    kraken_tao.enabled = True
-    kraken_tao._provider.get_current_price.return_value = None
+    kraken_tao = _make_mock_inst("TAOUSD", base="TAO", quote="USD", venue="kraken", price=None)
 
     instruments_map = {"KRAKEN_TAO": kraken_tao}
     assert gw.resolve_instrument("TAOUSDC", venue="kraken", instruments_map=instruments_map) is kraken_tao
