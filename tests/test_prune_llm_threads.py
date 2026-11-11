@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from orchestratorOS.admin.prune_llm_threads import is_automated_thread, prune_old_cli_threads
+from orchestratorOS.agy.summary_store import parse_db_timestamp
 from tests.conftest import setup_isolated_agy_stores
 
 AUTONOMOUS_PROJECT_UUID = "f5f9d01f-01e5-4fac-80f2-97364688afab"
@@ -264,7 +265,6 @@ class TestPruneCliThreads:
         assert _remaining_cids(db_path) == {"user-interactive-3"}
 
     def test_parse_db_timestamp_handles_trailing_z_suffix(self):
-        from orchestratorOS.agy.summary_store import parse_db_timestamp
         dt1 = parse_db_timestamp("2026-10-25T22:08:31Z")
         dt2 = parse_db_timestamp("2026-10-25T22:08:31.123Z")
         dt3 = parse_db_timestamp("2026-10-25T22:08:31.123456789Z")

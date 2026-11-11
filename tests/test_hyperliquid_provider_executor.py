@@ -1,11 +1,28 @@
 """Hyperliquid StrategyExecutor contract tests with fake SDK clients."""
+import importlib
+import json
 import os
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
-import json
+
 import pytest
-from offline.runners import fetch_hyperliquid_candles as fhc
+import requests
+
+from offline.runners import (
+    fetch_hyperliquid_candles as fhc,
+    hyperliquid_walk_forward_baseline as hl_wf,
+    t212_walk_forward_baseline as t212_wf,
+)
+from offline.runners.fetch_hyperliquid_candles import (
+    _hl_md,
+    resolve_spot_pair,
+    validate_continuity,
+)
+from offline.runners.walk_forward import canonical_venue
+from offline.runners.walk_forward_compare import _detect_venue
+import priceAnalysis as pa
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -14,17 +31,30 @@ if _HL_DIR not in sys.path:
     sys.path.insert(0, _HL_DIR)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+from botcore import load_local_module  # noqa: E402
+import hl_client as hlc_mod  # noqa: E402
+from hl_client import HLClient, _round_px  # noqa: E402
 from instrument import Instrument  # noqa: E402
 import instrument as instrument_module  # noqa: E402
 import order_guard  # noqa: E402
-from providers import hyperliquid_provider as hl_provider  # noqa: E402
-from providers.hyperliquid_provider import HyperliquidProvider  # noqa: E402
+from providers.execution_audit import (  # noqa: E402
+    AuditedStrategyExecutor,
+    ExecutionAudit,
+    clean_order_id_str,
+    intent_client_order_id,
+)
+from providers.hyperliquid_provider import (  # noqa: E402
+    HyperliquidProvider,
+    _parse_bool_flag as hl_bool,
+    _spot_symbol_alias,
+)
 from providers.market_api import MarketApi  # noqa: E402
 from providers.strategy_executor import (  # noqa: E402
-    StrategyExecutor, PairPrecision, ProviderError)
-from botcore import load_local_module
-from tests.conftest import TempDirTestCase, load_venue_modules
-from types import SimpleNamespace
+    PairPrecision,
+    ProviderError,
+    StrategyExecutor,
+)
+from tests.conftest import TempDirTestCase, load_venue_modules  # noqa: E402
 
 
 class FakeInfo:
@@ -355,7 +385,7 @@ class HLExecutorContractTest(unittest.TestCase):
         os.environ["HL_LIVE_ORDERS"] = "true"
         os.environ["HL_SECRET_KEY"] = "test-only-secret"
         raw_client_id = "OR_0123456789abcdef01234567_0"
-        expected = hl_provider.HyperliquidProvider.derive_client_order_id(raw_client_id)
+        expected = HyperliquidProvider.derive_client_order_id(raw_client_id)
         observed_lookup = []
         self.p._new_client = lambda _secret=None: self.signer
         self.p._client.info.query_order_by_cloid = lambda _addr, value: (
@@ -677,7 +707,6 @@ class HyperliquidTimeoutTest(unittest.TestCase):
         self.assertEqual(api.session.request("POST", "/info", timeout=2), 2)
 
     def test_connect_only_retries_are_mounted_for_dns_blips(self):
-        import requests
         api = _TimeoutApi(timeout=None)
         api.session = requests.Session()
         self.module._force_timeout(api, seconds=10)
@@ -778,12 +807,6 @@ class HyperliquidLongtermShadowTest(unittest.TestCase):
 
 class HyperliquidDatasetTest(unittest.TestCase):
     def test_spot_pair_normalization_and_continuity(self):
-        from offline.runners.fetch_hyperliquid_candles import (
-            _hl_md,
-            resolve_spot_pair,
-            validate_continuity,
-        )
-
         meta = {
             "tokens": [{"name": "USDC", "index": 0}, {"name": "HYPE", "index": 150}],
             "universe": [{"name": "@107", "tokens": [150, 0]}],
@@ -1008,7 +1031,6 @@ def test_t212client_get_historical_order_does_not_dilute_fillprice_when_a_iter60
 
 def test__round_px_hlclient_cancel_candles_reject_inf_bool_invalid_iter68_s4():
     """[ITER68 #4] _round_px & HLClient.cancel / candles reject inf/bool/invalid parameters."""
-    from hl_client import _round_px, HLClient
     # 4. _round_px & HLClient.cancel / candles reject inf/bool/invalid parameters
     with pytest.raises(ValueError):
         _round_px(25.0, float("inf"))
@@ -1075,10 +1097,6 @@ def test_fetch_hyperliquid_candles_resolve_spot_pair_validate_continuity_iter72_
         fhc.validate_continuity([], 0)
 
 def test_iteration76_kraken_adaptive_thresholds_and_sys_path_isolation():
-    import importlib
-    from offline.runners import hyperliquid_walk_forward_baseline as hl_wf
-    from offline.runners import t212_walk_forward_baseline as t212_wf
-
     while str(hl_wf.HL_DIR) in sys.path:
         sys.path.remove(str(hl_wf.HL_DIR))
     while str(t212_wf.T212_DIR) in sys.path:
@@ -1182,8 +1200,6 @@ def test_priceanalysis_hyperliquid_price_analysis_flat_window_and_invalid_step_h
     """[ITER94 #4] priceAnalysis & hyperliquid.price_analysis flat-window and invalid step_hours protection."""
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # 4. priceAnalysis & hyperliquid.price_analysis flat-window and invalid step_hours protection
-    import priceAnalysis as pa
-
     ts_flat = [1000.0 + i * 3600.0 for i in range(60)]
     px_flat = [100.0 for _ in range(60)]
     assert pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=8) is None
@@ -1203,7 +1219,6 @@ def test_priceanalysis_hyperliquid_price_analysis_flat_window_and_invalid_step_h
 
 def test_hyperliquidprovider_token_live_enabled_order_id_ohlc_series_validation_iter95_s3():
     """[ITER95 #3] HyperliquidProvider token/live_enabled/order_id/ohlc_series validation."""
-    from providers.hyperliquid_provider import _spot_symbol_alias
     # 3. HyperliquidProvider token/live_enabled/order_id/ohlc_series validation
     assert _spot_symbol_alias(True, "HYPE") is False
     with pytest.raises(ValueError, match="invalid Hyperliquid token"):
@@ -1223,7 +1238,7 @@ def test_hyperliquidprovider_token_live_enabled_order_id_ohlc_series_validation_
 def test_hyperliquidprovider_iter111_s2():
     """[ITER111 #2] HyperliquidProvider."""
     # 2. HyperliquidProvider
-    hl_prov = hl_provider.HyperliquidProvider.__new__(hl_provider.HyperliquidProvider)
+    hl_prov = HyperliquidProvider.__new__(HyperliquidProvider)
     hl_prov._token = "PURR"
     hl_prov._symbol = "PURR"
     hl_prov.validate_symbol = lambda _s: None
@@ -1412,8 +1427,6 @@ def test_hyperliquid_backtest_precompute_signal_validates_signal_source_and_norm
 
 def test_canonical_venue_and__detect_venue_handle_bool_provider_objects_and_iter134_s3():
     """[ITER134 #3] canonical_venue and _detect_venue handle bool, provider objects, and empty/whitespace strings."""
-    from offline.runners.walk_forward import canonical_venue
-    from offline.runners.walk_forward_compare import _detect_venue
     # 3. canonical_venue and _detect_venue handle bool, provider objects, and empty/whitespace strings
     assert canonical_venue(True) is None  # type: ignore[arg-type]
     assert canonical_venue("   ") is None
@@ -1423,14 +1436,12 @@ def test_canonical_venue_and__detect_venue_handle_bool_provider_objects_and_iter
 
 def test_intent_client_order_id_and_auditedstrategyexecutor_reject_sentinel_strings_and_containers_iter141_s1(tmp_path):
     """[ITER141 #1] intent_client_order_id and AuditedStrategyExecutor reject sentinel strings and containers."""
-    from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, intent_client_order_id
     # 1. intent_client_order_id and AuditedStrategyExecutor reject sentinel strings and containers
     for bad_intent in ("nan", "null", "none", "inf", ["abc"], {"id": 1}, True, None, ""):
         assert intent_client_order_id("binance", bad_intent) is None  # type: ignore[arg-type]
         assert intent_client_order_id("kraken", bad_intent) is None  # type: ignore[arg-type]
         assert intent_client_order_id("hyperliquid", bad_intent) is None  # type: ignore[arg-type]
 
-    from providers.execution_audit import clean_order_id_str
     assert clean_order_id_str("nan") == ""
     assert clean_order_id_str(["123"]) == ""
     assert clean_order_id_str(12345.0) == "12345"
@@ -1480,7 +1491,6 @@ def test_hyperliquid_signals__file_signal_guards_directory_bool_empty_paths_iter
 
 def test_hyperliquidprovider_execution_enabled_rejects_nan_false_containers_iter152_s1():
     """[ITER152 #1] HyperliquidProvider execution_enabled rejects NaN / 'false' / containers."""
-    from providers.hyperliquid_provider import _parse_bool_flag as hl_bool
     # 1. HyperliquidProvider execution_enabled rejects NaN / "false" / containers
     assert hl_bool("false", True) is False
     assert hl_bool(float("nan"), False) is False
@@ -1500,7 +1510,6 @@ def test_hyperliquid_shadow_longterm__fetch_with_ts_deduplicates_identical_times
             {"t": 1700014400000, "o": "12", "h": "14", "l": "11", "c": "13"},
         ]
     )
-    import hl_client as hlc_mod
     monkeypatch.setattr(hlc_mod.HLClient, "public", staticmethod(lambda: pub_client))
     rows = hl_sl._fetch_with_ts("HYPE-HL", 240)
     assert len(rows) == 1
@@ -1582,7 +1591,7 @@ def test_simulate_sys_modules_market_data_polluted_by_hyperliquid_market_data_it
 def test_hyperliquidprovider_underscore_alias_and_long_ask_side_normalization_iter169_s2(monkeypatch):
     """[ITER169 #2] HyperliquidProvider underscore alias and LONG/ASK side normalization."""
     # 2. HyperliquidProvider underscore alias and LONG/ASK side normalization
-    hl = hl_provider.HyperliquidProvider(token="HYPE", live_enabled=False)
+    hl = HyperliquidProvider(token="HYPE", live_enabled=False)
     assert hl.supports_symbol("HYPE_USDC") is True
     monkeypatch.setattr(hl, "free_balance", lambda asset: 10.0)
     with pytest.raises(ProviderError, match="insufficient USDC"):

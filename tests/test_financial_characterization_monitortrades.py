@@ -7,22 +7,53 @@ and the change must be reviewed explicitly.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+import pytest
+
+from binance_api.bapi_ws_normalize import parse_trade_execution_report
+from instrument import Instrument
 import monitortrades as mt
-from providers.base import MarketDataProvider
-from types import SimpleNamespace
-import json
+from offline.research.monitortrades_backtest import (
+    replay_trend_source as rts,
+    run_replay_backtest as rrb,
+    scheduled_pilot as sp,
+)
+from offline.research.monitortrades_backtest.run_replay_backtest import (
+    DEFAULT_WINDOW_SECONDS,
+    _series_cache_key,
+    prewarm_trend_series,
+)
+from offline.research.monitortrades_backtest.scheduled_pilot import (
+    _edge,
+    safe_float as sp_safe_f,
+)
 import order_guard
+import order_retry as oq
+import order_retry_worker as orw
+from providers.base import MarketDataProvider
+from providers.execution_audit import ExecutionAudit
 from providers.quantity import QuantityDecision
+import rtrade
+from strategies.mt_position_accounting import (
+    _infer_mt_exit_kind,
+    _update_mt_reentry_state,
+)
+from strategies.position_exit_manager import (
+    ExitAction,
+    ExitDecision,
+    PositionSnapshot,
+)
 from tests.conftest import DummySpotExecutionProvider
 
 
@@ -1859,8 +1890,6 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
             )
 
     def test_executed_trade_resolves_owner_from_execution_audit(self):
-        from providers.execution_audit import ExecutionAudit
-
         with tempfile.TemporaryDirectory() as tmpdir:
             audit_ts = 1700000100.0
             audit = ExecutionAudit(directory=tmpdir, clock=lambda: audit_ts)
@@ -1900,8 +1929,6 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
                 )
 
     def test_ws_trade_report_preserves_client_order_id(self):
-        from binance_api.bapi_ws_normalize import parse_trade_execution_report
-
         res = parse_trade_execution_report({
             "e": "executionReport",
             "x": "TRADE",
@@ -1951,7 +1978,6 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
         self.assertEqual(sig[3], 1700000005000)
 
     def test_execute_take_profit_honors_partial_sell_fraction(self):
-        from strategies.position_exit_manager import ExitAction, ExitDecision, PositionSnapshot
         snap = PositionSnapshot(
             symbol="BTCUSDC", current_price=110.0, avg_buy_price=100.0,
             sellable_qty=2.0, current_time_s=1700000000.0,
@@ -1970,8 +1996,6 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
             self.assertAlmostEqual(mock_place.call_args.args[3], 0.8, places=6)
 
     def test_update_mt_reentry_state_and_infer_exit_kind_clear_stale_stop_on_newer_sell(self):
-        from strategies.mt_position_accounting import _infer_mt_exit_kind, _update_mt_reentry_state
-
         reentry_state = {"BTCUSDC": {"sell_time": 1000.0, "trough": 78000.0}}
         last_exit_kind = {"BTCUSDC": "STOP"}
 
@@ -2096,10 +2120,6 @@ def test_monitortrades__can_pass_buy_quantity_policy_honors_g_qlimit1_bypass_ite
 
 def test_monitortrades__load_mt_state_re_anchors_clock_skewed_future_timestamps_iter22_s2(tmp_path, monkeypatch):
     """[ITER22 #2] monitortrades._load_mt_state re-anchors clock-skewed future timestamps and rejects NaN."""
-    import pytest
-    from unittest.mock import MagicMock
-    from instrument import Instrument
-    import rtrade
     pg_bypasses = []
     FakeKrakenProvider = lambda: DummySpotExecutionProvider(order_id="ord-22")
     orig_margins = dict(order_guard._load_margins())
@@ -2191,7 +2211,6 @@ def test_monitortrades__compute_spot_position__place_guarded_iter32_s4():
 
 def test_replaytrendsource_and_dynamicreplaytrendsource_reject_bool_invalid_window_seconds_and_iter73_s1():
     """[ITER73 #1] ReplayTrendSource and DynamicReplayTrendSource reject bool/invalid window_seconds and OverflowError."""
-    from offline.research.monitortrades_backtest import replay_trend_source as rts
     # 1. ReplayTrendSource and DynamicReplayTrendSource reject bool/invalid window_seconds and OverflowError
     src = rts.ReplayTrendSource(["BTCUSDC"], window_seconds=True)
     assert src.window_seconds == rts.DEFAULT_WINDOW_SECONDS
@@ -2208,14 +2227,12 @@ def test_replaytrendsource_and_dynamicreplaytrendsource_reject_bool_invalid_wind
 
 def test_run_replay_backtest_prewarm_trend_series_handles_non_finite_bool_trend_window_seconds_iter73_s2():
     """[ITER73 #2] run_replay_backtest.prewarm_trend_series handles non-finite/bool trend_window_seconds."""
-    from offline.research.monitortrades_backtest import run_replay_backtest as rrb
     # 2. run_replay_backtest.prewarm_trend_series handles non-finite/bool trend_window_seconds
     tape = rrb.prewarm_trend_series("BTCUSDC", [(1000.0, 100.0), (1005.0, 101.0)], trend_window_seconds=float("nan"))
     assert len(tape) == 2
 
 def test_scheduled_pilot__norm_params_key_distinguishes_bool_from_float_and_handles_iter73_s3():
     """[ITER73 #3] scheduled_pilot._norm_params_key distinguishes bool from float and handles NaN deterministically."""
-    from offline.research.monitortrades_backtest import scheduled_pilot as sp
     # 3. scheduled_pilot._norm_params_key distinguishes bool from float and handles NaN deterministically
     k_bool = sp._norm_params_key({"a": True})
     k_float = sp._norm_params_key({"a": 1.0})
@@ -2226,8 +2243,6 @@ def test_scheduled_pilot__norm_params_key_distinguishes_bool_from_float_and_hand
 
 def test_infer_record_owner_ignores_boolean_parent_owner_kind_and__format_record_context_handles_iter123_s4():
     """[ITER123 #4] infer_record_owner ignores boolean parent_owner/kind and _format_record_context handles non-dict place_kwargs."""
-    import order_retry as oq
-    import order_retry_worker as orw
     # 4. infer_record_owner ignores boolean parent_owner/kind and _format_record_context handles non-dict place_kwargs
     assert oq.infer_record_owner({"parent_owner": True, "kind": "STOP", "place_kwargs": 123}) == "monitortrades"
     ctx_str = orw._format_record_context({"side": "BUY", "symbol": "BTCUSDC", "qty": 0.1, "place_kwargs": 123, "id": "rec-1"})
@@ -2249,7 +2264,6 @@ def test_resolve_caller_module_ignores_boolean_module_prefix_client_order_id_and
 
 def test__series_cache_key_prewarm_trend_series_with_none_bool_nan_trend_window_seconds_iter142_s3():
     """[ITER142 #3] _series_cache_key & prewarm_trend_series with None/bool/NaN trend_window_seconds."""
-    from offline.research.monitortrades_backtest.run_replay_backtest import DEFAULT_WINDOW_SECONDS, _series_cache_key, prewarm_trend_series
     # 3. _series_cache_key & prewarm_trend_series with None/bool/NaN trend_window_seconds
     sample_series = [(1000.0, 100.0), (1010.0, 101.0), (1020.0, 102.0)]
     k_none = _series_cache_key("BTCUSDC", sample_series, None)
@@ -2263,7 +2277,6 @@ def test__series_cache_key_prewarm_trend_series_with_none_bool_nan_trend_window_
 
 def test_scheduled_pilot__edge__safe_f_iter148_s2():
     """[ITER148 #2] scheduled_pilot._edge & _safe_f."""
-    from offline.research.monitortrades_backtest.scheduled_pilot import _edge, safe_float as sp_safe_f
     # 2. scheduled_pilot._edge & _safe_f
     assert _edge({"net": 15.0, "buy_hold": 5.0}) == 10.0
     assert _edge({"net": None, "buy_hold": True}) == 0.0

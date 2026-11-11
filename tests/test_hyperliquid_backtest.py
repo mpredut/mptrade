@@ -21,10 +21,21 @@ make_hyperliquid_replay_adapter = hl_replay.make_hyperliquid_replay_adapter
 run_replay = hl_replay.run_replay
 
 from kraken.backtest_trail import simulate_trail  # noqa: E402
+import numpy as np  # noqa: E402
+from offline.backtests.evaluation import evaluate_segment  # noqa: E402
+from offline.backtests.metrics import validate_replay_metrics  # noqa: E402
+from offline.runners import (  # noqa: E402
+    binance_walk_forward_baseline as bwf,
+    hyperliquid_walk_forward_baseline as hwf,
+)
+from offline.runners.walk_forward_compare import _build_venue_evaluator  # noqa: E402
+from providers.market_api import clean_order_id  # noqa: E402
+from strategies import spot_replay as kr_replay  # noqa: E402
+from strategies.spot_engine import StratParams as KrakenStratParams  # noqa: E402
 from tests.conftest import MockHttpResponse  # noqa: E402
-import time
-from types import SimpleNamespace
-import unittest
+import time  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+import unittest  # noqa: E402
 
 
 class _FakeReconcileClient:
@@ -251,8 +262,6 @@ def test_hyperliquid_standardized_performance_metrics():
 
 
 def test_hyperliquid_walk_forward_adapter_compatibility():
-    from offline.backtests.evaluation import evaluate_segment
-
     records = [
         {"timestamp": 1000 + i * 3600, "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0}
         for i in range(10)
@@ -353,10 +362,6 @@ def test_hyperliquid_ambiguous_bars_and_execution_model():
 
 
 def test_validate_replay_metrics_across_all_venues():
-    from offline.backtests.metrics import validate_replay_metrics
-    from strategies.spot_engine import StratParams as KrakenStratParams
-    from strategies import spot_replay as kr_replay
-
     t212_mod = load_local_module(os.path.join(_ROOT, "212trading"), "replay", module_key="t212_replay_validation_test", reload=True)
 
     ohlc = [
@@ -434,11 +439,7 @@ def test_hyperliquid_market_data_fetchers():
         {"t": 1700003600000, "T": 1700007199999, "s": "HYPE", "i": "1h",
          "o": "21.0", "c": "22.5", "h": "23.0", "l": "20.5", "v": "120.0", "n": 60},
     ]
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = json.dumps(fake_candles).encode("utf-8")
-    mock_resp.__enter__.return_value = mock_resp
-
-    with patch("urllib.request.urlopen", return_value=mock_resp):
+    with patch("urllib.request.urlopen", return_value=MockHttpResponse(fake_candles)):
         records = fetch_ohlc_candles("HYPE", 60, drop_incomplete=False)
         assert len(records) == 2
         assert records[0]["timestamp"] == 1700000000
@@ -450,11 +451,7 @@ def test_hyperliquid_market_data_fetchers():
         {"coin": "HYPE", "fundingRate": "0.0001", "premium": "0.0", "time": 1700000000000},
         {"coin": "HYPE", "fundingRate": "0.00015", "premium": "0.0", "time": 1700003600000},
     ]
-    mock_funding_resp = MagicMock()
-    mock_funding_resp.read.return_value = json.dumps(fake_funding).encode("utf-8")
-    mock_funding_resp.__enter__.return_value = mock_funding_resp
-
-    with patch("urllib.request.urlopen", return_value=mock_funding_resp):
+    with patch("urllib.request.urlopen", return_value=MockHttpResponse(fake_funding)):
         funding = fetch_funding_history("HYPE", 1700000000000)
         assert len(funding) == 2
         assert funding[0] == (1700000000000, 0.0001)
@@ -462,22 +459,18 @@ def test_hyperliquid_market_data_fetchers():
 
 
 def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
-    _wf_mod = load_local_module(
-        os.path.join(_ROOT, "offline", "runners"), "hyperliquid_walk_forward_baseline", module_key="hl_wf_baseline", reload=True
-    )
-
     fake_records = [
         {"timestamp": 1700000000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
         for i in range(30)
     ]
-    with patch.object(_wf_mod, "fetch_ohlc_candles", return_value=fake_records):
+    with patch.object(hwf, "fetch_ohlc_candles", return_value=fake_records):
         with patch("sys.argv", [
             "hyperliquid_walk_forward_baseline.py",
             "--intervals", "60",
             "--coin", "HYPE",
             "--output-dir", str(tmp_path),
         ]):
-            rc = _wf_mod.main()
+            rc = hwf.main()
             assert rc == 0
             report_file = tmp_path / "HYPE_60m_baseline.json"
             assert report_file.exists()
@@ -492,15 +485,11 @@ def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
 
 
 def test_hyperliquid_walk_forward_baseline_runner_perp_engine(tmp_path):
-    _wf_mod = load_local_module(
-        os.path.join(_ROOT, "offline", "runners"), "hyperliquid_walk_forward_baseline", module_key="hl_wf_baseline", reload=True
-    )
-
     fake_records = [
         {"timestamp": 1700000000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
         for i in range(30)
     ]
-    with patch.object(_wf_mod, "fetch_ohlc_candles", return_value=fake_records):
+    with patch.object(hwf, "fetch_ohlc_candles", return_value=fake_records):
         with patch("sys.argv", [
             "hyperliquid_walk_forward_baseline.py",
             "--intervals", "60",
@@ -508,7 +497,7 @@ def test_hyperliquid_walk_forward_baseline_runner_perp_engine(tmp_path):
             "--engine", "perp",
             "--output-dir", str(tmp_path),
         ]):
-            rc = _wf_mod.main()
+            rc = hwf.main()
             assert rc == 0
             report_file = tmp_path / "HYPE_60m_baseline.json"
             assert report_file.exists()
@@ -683,14 +672,11 @@ def test_hyperliquid_price_analysis_and_signals_edge_cases(tmp_path):
     assert builtin_res["trend"] in ("up", "down", "neutral")
     assert builtin_res["source"] == "builtin"
 
-    import numpy as np
     assert price_analysis.detect_long_term_trend(np.array([True, True, True]), [100.0, 101.0, 102.0]) is None
     assert price_analysis.detect_long_term_trend([1000.0, 2000.0, 3000.0], np.array([True, False, True])) is None
 
 
 def test_walk_forward_compare_preserves_zero_fee():
-    from offline.runners.walk_forward_compare import _build_venue_evaluator
-
     _, krk_fee, _ = _build_venue_evaluator("kraken", {"fee_pct_per_leg": 0.0, "strategy_params": {}})
     assert krk_fee == 0.0
 
@@ -699,13 +685,12 @@ def test_walk_forward_compare_preserves_zero_fee():
 
 
 def test_hyperliquid_sz_decimals_spot_fallback_and_exact_sl_boundary():
-    import types
     hl_client_mod = load_local_module(_HL_DIR, "hl_client", module_key="hl_client_test_mod", reload=True)
 
     dummy = object.__new__(hl_client_mod.HLClient)
     dummy._meta_cache = {}
     dummy._sz_decimals_cache = {}
-    dummy.info = types.SimpleNamespace(
+    dummy.info = SimpleNamespace(
         meta=lambda: {"universe": [{"name": "BTC", "szDecimals": 5}]},
         spot_meta=lambda: {"tokens": [{"name": "PURR", "szDecimals": 1}]},
     )
@@ -723,7 +708,7 @@ def test_hyperliquid_sz_decimals_spot_fallback_and_exact_sl_boundary():
 
     dummy_timeout = object.__new__(hl_client_mod.HLClient)
     dummy_timeout._meta_cache = {}
-    dummy_timeout.info = types.SimpleNamespace(
+    dummy_timeout.info = SimpleNamespace(
         meta=_raise_timeout,
         spot_meta=_raise_timeout,
         coin_to_asset={"HYPE": 159, "@107": 10107},
@@ -751,9 +736,6 @@ def test_hyperliquid_sz_decimals_spot_fallback_and_exact_sl_boundary():
 
 
 def test_walk_forward_baseline_missing_dataset_and_warmup_persistence(tmp_path):
-    from offline.runners import binance_walk_forward_baseline as bwf
-    from offline.runners import hyperliquid_walk_forward_baseline as hwf
-
     # 1. Explicit missing --dataset must raise FileNotFoundError in binance_walk_forward_baseline
     missing_csv = tmp_path / "does_not_exist.csv"
     try:
@@ -793,8 +775,6 @@ def test_walk_forward_baseline_missing_dataset_and_warmup_persistence(tmp_path):
 
 
 def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
-    from providers.market_api import clean_order_id
-
     _hl_md = load_local_module(_HL_DIR, "market_data", module_key="hl_md_case_test", reload=True)
 
     fake_candles = [

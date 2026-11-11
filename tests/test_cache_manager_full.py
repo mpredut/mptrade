@@ -13,18 +13,44 @@ Coverage:
   - get_current_price_manager (singleton)
   - WebSocket health functions
 """
-import gzip, os, sys, json, time, tempfile, threading, unittest
-from unittest.mock import MagicMock, patch
 import ast
-import cacheaccount
-import cacheintegrity
 import contextlib
+import gzip
 import inspect
 import io
-import priceAnalysis as pa
-import pytest
-from cachetrend import CacheShortTrendManager
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import threading
+import time
 from types import SimpleNamespace
+import unittest
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+import cacheaccount
+import cacheintegrity
+import cachepaths as cp_paths
+from cachepaths import normalize_cache_base_asset
+import cacheprice
+from cachetrend import CacheShortTrendManager, _short_trend_symbol_variants
+from market_monitor import pricefetcher
+from orchestratorOS.livecheck import os_resources_watchdog
+import priceAnalysis as pa
+from providers.base import (
+    AsyncReconnectStreamBase,
+    MarketDataProvider,
+    PublicPriceStreamBase,
+)
+from providers.hyperliquid_provider import HyperliquidProvider
+from providers.quantity import venue_adjust_partial_sell_quantity
+from providers.t212_provider import T212Provider
+import rtrade
+from state_io import read_json_dict, save_json_state
+import tradeall
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
@@ -37,10 +63,10 @@ sys.modules.setdefault("bapi", mock_api)
 sys.modules.setdefault("bapi_trades", MagicMock())
 sys.modules.setdefault("bapi_allorders", MagicMock())
 
+from binance_api import bapi_ws, bapi_ws_bridge, bapi_ws_normalize
 import cacheManager as cm
-from tests.conftest import TempDirTestCase
-from binance_api import bapi_ws, bapi_ws_bridge
 from providers.kraken_provider import KrakenProvider
+from tests.conftest import TempDirTestCase
 
 
 class _CurrentPriceResetTestCase(TempDirTestCase):
@@ -2085,8 +2111,6 @@ class TestAtomicWrite(TempDirTestCase):
         self.assertEqual(c24.fetchtime_per_symbol, {})
 
         # bapi_ws_normalize rejects boolean IDs and falls back when l/L are NaN/Inf
-        from binance_api import bapi_ws_normalize
-
         self.assertIsNone(
             bapi_ws_normalize.parse_order_execution_report(
                 {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": True, "i": 10, "l": "1", "L": "50000", "S": "BUY"}
@@ -2143,7 +2167,6 @@ class TestAtomicWrite(TempDirTestCase):
             cacheintegrity.trade_semantic_signature(
                 {"symbol": "BTCUSDC", "id": True, "orderId": 10, "price": "50000", "qty": "0.1", "time": 1000, "isBuyer": True}
             )
-        from orchestratorOS.livecheck import os_resources_watchdog
         self.assertIsNone(
             os_resources_watchdog._usage({"ticks": 10}, {"ticks": 20}, 100, 200, 0)
         )
@@ -2152,8 +2175,6 @@ class TestAtomicWrite(TempDirTestCase):
         )
 
         # CacheAllPriceFetcherManager overwrite guard, null symbol_metadata resilience, and fetchtime cleanup
-        from market_monitor import pricefetcher
-
         pf_path = os.path.join(self.tmp, "cache_watcher_all_price.json")
         with open(pf_path, "w", encoding="utf-8") as fh:
             json.dump({"items": {"BTC": [[1000, 60000.0]]}, "fetchtime": {"BTC": 1000}, "symbol_metadata": None}, fh)
@@ -2219,8 +2240,6 @@ class TestAtomicWrite(TempDirTestCase):
         self.assertEqual(hl_mgr.get_last_opposite_fill_price("HYPEUSDC", "SELL"), 83.8)
 
         # tradeall.sanitize_pipe_field and rtrade revision/config validation
-        import tradeall
-        import rtrade
         self.assertEqual(tradeall.sanitize_pipe_field("a|b\rc\nd"), "a/b c d")
         self.assertEqual(tradeall.sanitize_pipe_field(None), "")
         with self.assertRaises(ValueError):
@@ -2254,7 +2273,6 @@ def test_cachelongtrendmanager_get_remote_items_resolves_taousd_taousdc_from_pri
 
 def test_normalize_cache_base_asset_preserves_usdcusdt_and_strips_ron_gbp_quotes_iter13_s2():
     """[ITER13 #2] normalize_cache_base_asset preserves USDCUSDT and strips RON/GBP quotes."""
-    from cachepaths import normalize_cache_base_asset
     # 2. normalize_cache_base_asset preserves USDCUSDT and strips RON/GBP quotes
     assert normalize_cache_base_asset("USDCUSDT") == "USDCUSDT"
     assert normalize_cache_base_asset("USDC/USDT") == "USDCUSDT"
@@ -2263,7 +2281,6 @@ def test_normalize_cache_base_asset_preserves_usdcusdt_and_strips_ron_gbp_quotes
 
 def test_cachetrend__short_trend_symbol_variants_preserves_usdcusdt_intact_and_strips_ron_iter14_s4():
     """[ITER14 #4] cachetrend._short_trend_symbol_variants preserves USDCUSDT intact and strips RON/GBP."""
-    from cachetrend import _short_trend_symbol_variants
     # 4. cachetrend._short_trend_symbol_variants preserves USDCUSDT intact and strips RON/GBP
     assert _short_trend_symbol_variants("USDCUSDT") == ["USDCUSDT"]
     assert "BTCUSDC" in _short_trend_symbol_variants("BTCRON")
@@ -2411,13 +2428,12 @@ def test_priceanalysis_format_duration_format_timestamp_get_trade_weight_get_wei
 
 def test_cachepaths_migrate_legacy_filename_if_needed_and_cache_path_with_pathlike_bool_none_iter110_s2(tmp_path):
     """[ITER110 #2] cachepaths: migrate_legacy_filename_if_needed and cache_path with PathLike/bool/None."""
-    import cachepaths as cp
     # 2. cachepaths: migrate_legacy_filename_if_needed and cache_path with PathLike/bool/None
-    cp.migrate_legacy_filename_if_needed(None)
-    cp.migrate_legacy_filename_if_needed(True)
-    cp.migrate_legacy_filename_if_needed(tmp_path / "cache_short_trend.json")
-    assert cp.cache_path(True) is True
-    assert cp.cache_path(123) == 123
+    cp_paths.migrate_legacy_filename_if_needed(None)
+    cp_paths.migrate_legacy_filename_if_needed(True)
+    cp_paths.migrate_legacy_filename_if_needed(tmp_path / "cache_short_trend.json")
+    assert cp_paths.cache_path(True) is True
+    assert cp_paths.cache_path(123) == 123
 
 def test_priceanalysis_detect_long_term_trend_with_int_strings_mk_alpha_string_bool_iter163_s2():
     """[ITER163 #2] priceAnalysis: detect_long_term_trend with .0 int strings, mk_alpha string/bool/NaN, and lindy_plateau='false'."""
@@ -2458,10 +2474,9 @@ def test_cachetrademanager_string_symbols_normalization_read_only_true_flag_and_
 
 def test_cacheshorttrendmanager_string_symbols_writer_false_window_seconds_as_scalar_iter165_s3(tmp_path):
     """[ITER165 #3] CacheShortTrendManager: string symbols, writer='false', window_seconds as scalar, and should_wait with ' buy '/' sell '/'b'/'s' + use_noise_gate='false'."""
-    import cachetrend as ct
     # 3. CacheShortTrendManager: string symbols, writer="false", window_seconds as scalar, and should_wait with " buy "/" sell "/"b"/"s" + use_noise_gate="false"
     st_file = str(tmp_path / "test_short_trend.json")
-    stm = ct.CacheShortTrendManager(
+    stm = CacheShortTrendManager(
         "BTCUSDC",
         filename=st_file,
         data_sync_mode="disk_reader",
@@ -2491,8 +2506,6 @@ def test_cacheshorttrendmanager_string_symbols_writer_false_window_seconds_as_sc
 
 def test_nonbinance_trade_cache_snapshot_resync_and_fetchtime_sanitization(tmp_path):
     """Verify non-Binance JSON trade caches reload external updates without .meta and strip foreign fetchtime keys."""
-    from state_io import save_json_state
-
     trd_file = str(tmp_path / "cache_trade_kraken.json")
     save_json_state(
         trd_file,
@@ -2564,8 +2577,6 @@ def test_nonbinance_trade_cache_snapshot_resync_and_fetchtime_sanitization(tmp_p
 
 def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
     """Verify cacheManager delegates account/price WS lifecycle to cacheaccount and cacheprice without direct binance_api imports."""
-    import cacheprice
-
     with open(cm.__file__, encoding="utf-8") as fh:
         tree = ast.parse(fh.read(), filename=cm.__file__)
     direct_binance_imports = [
@@ -2891,9 +2902,6 @@ def test_ast_only_producers_enable_cache_sync_or_writer():
 
 def test_venue_agnostic_trade_cache_and_t212_ssot_price_routing(tmp_path):
     """Verify CacheTradeManager delegates non-append trade fetches via MarketDataProvider and T212Provider consults SSOT caches."""
-    from providers.base import MarketDataProvider
-    from providers.t212_provider import T212Provider
-
     # 1. cacheManager no longer exposes unused apiorders
     assert not hasattr(cm, "apiorders")
 
@@ -2915,7 +2923,6 @@ def test_venue_agnostic_trade_cache_and_t212_ssot_price_routing(tmp_path):
     assert MarketDataProvider.resolve_venue_provider_class("hyperliquid").__name__ == "HyperliquidProvider"
     assert MarketDataProvider.resolve_venue_provider_class("t212").__name__ == "T212Provider"
     assert not hasattr(MarketDataProvider, "_is_binance")
-    from providers.quantity import venue_adjust_partial_sell_quantity
     adj_q, adj_m = venue_adjust_partial_sell_quantity("t212", "SELL", 0.5, 0.8, 10.0, min_notional_usd=2.0)
     assert adj_m in ("leave_min_6_remainder", "avoid_sub_6_dust")
     assert adj_q > 0
@@ -3024,8 +3031,6 @@ def test_ssot_state_io_hygiene_and_unified_cache_factory_getters():
 
 def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
     """Verify _KrakenAccountTradeBridge starts in poll mode, persists fills, and stops cleanly."""
-    from state_io import read_json_dict
-
     cache_file = str(tmp_path / "cache_trade_kraken.json")
     pulled_event = threading.Event()
 
@@ -3082,14 +3087,6 @@ def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
 
 def test_cache_modules_delegate_venue_ws_protocols_to_providers():
     """Enforce zero concrete provider or venue-transport imports and wss:// URLs in cache*.py."""
-    from pathlib import Path
-    import cacheprice as cp
-    from providers.base import (
-        AsyncReconnectStreamBase,
-        PublicPriceStreamBase,
-    )
-    from providers.hyperliquid_provider import HyperliquidProvider
-
     repo_root = Path(__file__).resolve().parent.parent
     forbidden_exact_mods = {
         "providers.binance_provider",
@@ -3122,12 +3119,12 @@ def test_cache_modules_delegate_venue_ws_protocols_to_providers():
     # Canonical SSOT WebSocket stream bases in providers.base
     assert issubclass(bapi_ws.BinanceAccountStream, AsyncReconnectStreamBase)
     assert bapi_ws.PublicPriceStreamBase is PublicPriceStreamBase
-    assert issubclass(cp._VenuePriceStreamBase, PublicPriceStreamBase)
+    assert issubclass(cacheprice._VenuePriceStreamBase, PublicPriceStreamBase)
 
     # Declarative venue price stream registry on _VenuePriceStreamBase
     registered_venues = {
         venue_key
-        for venue_key, _ws_name, _builder in cp._VenuePriceStreamBase.iter_registered_venue_streams()
+        for venue_key, _ws_name, _builder in cacheprice._VenuePriceStreamBase.iter_registered_venue_streams()
     }
     assert {"hyperliquid", "kraken"}.issubset(registered_venues)
 
