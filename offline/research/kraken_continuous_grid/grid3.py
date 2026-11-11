@@ -8,7 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import int_env
+from botcore import lru_dict_put
 from state_io import append_jsonl_record, atomic_write_jsonl
 from offline.research.kraken_continuous_grid import grid, grid2
 load, WARM, DATA, EXP = grid.load, grid.WARM, grid.DATA, grid.EXP
@@ -30,11 +30,11 @@ def task(args):
         if cached is not None:
             return {**cached, "cfg": cfg}
         out = {
-            str(fee): grid.replay(ohlc[WARM:], ohlc[:WARM], params, peak, fee=fee, initial_cash=3900.0)
+            str(fee): grid.replay(bars[WARM:], bars[:WARM], params, peak, fee=fee, initial_cash=3900.0)
             for fee in (0.26, 0.40)
         }
         res = {"asset": asset, "cfg": cfg, **out}
-        _TASK3_CACHE[cache_key] = res
+        lru_dict_put(_TASK3_CACHE, cache_key, res, max_entries=512)
         return res
     except Exception:
         return {"asset": asset, "cfg": cfg, "error": traceback.format_exc()}
@@ -55,7 +55,7 @@ if __name__ == "__main__":
             canon_todo.append((a, c))
         canon_groups[k].append(c)
     done_count = 0
-    workers = int_env("WORKERS") or (os.cpu_count() or 4)
+    workers = grid.resolve_grid_workers()
     out3_path = os.path.join(EXP, "results3.jsonl")
     atomic_write_jsonl(out3_path, ())
     with Pool(workers) as pool:

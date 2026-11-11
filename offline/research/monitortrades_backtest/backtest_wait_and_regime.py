@@ -167,7 +167,10 @@ def evaluate_regime_900s(
         return [], z, z
     # Forward 15m endpoint strictly within [t0, t0 + h_sec] without looking across archive gaps
     fwd_end = np.searchsorted(ts, ts[sample_idx] + h_sec, side="right") - 1
-    has_full_horizon = ((ts[sample_idx] + h_sec) <= ts[-1]) & (fwd_end > sample_idx)
+    if (ts[-1] - ts[0]) >= h_sec:
+        has_full_horizon = ((ts[sample_idx] + h_sec) <= ts[-1]) & (fwd_end > sample_idx)
+    else:
+        has_full_horizon = fwd_end > sample_idx
     if not np.any(has_full_horizon):
         return [], z, z
     sample_idx = sample_idx[has_full_horizon]

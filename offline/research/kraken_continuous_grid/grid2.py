@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import int_env, safe_float, safe_pos_float
+from botcore import lru_dict_put, safe_float, safe_pos_float
 from state_io import append_jsonl_record, atomic_write_jsonl, read_jsonl_dicts
 from offline.research.kraken_continuous_grid import grid
 from offline.research.kraken_continuous_grid.report import _risk_adjusted_score
@@ -34,7 +34,7 @@ FINE = {
     "ov650_t8_tp5": (ov(R(LIVE, takeprofit_pct=5.0, tp_mdhtp_enabled=False, tp_dynamic_flat=False), 650, 8), 0),
     "ov650_t8_sl25": (ov(R(LIVE, stop_loss_pct=25.0), 650, 8), 0),
     "ov650_t8_sl0": (ov(R(LIVE, stop_loss_pct=0.0), 650, 8), 0),
-    "ov650_t8_reentry4": (ov(R(LIVE, reentry_drop_pct=4.0, reentry_hybrid_enabled=False), 650, 8), 0),
+    "ov650_t8_reentry4": (ov(R(LIVE, reentry_drop_pct=4.0, reentry_ttl_hours=0.0, reentry_bear_bounce_pct=0.0, reentry_hybrid_enabled=False), 650, 8), 0),
     "ov650_t8_dca1.5": (ov(R(LIVE, dca_drop_pct=1.5), 650, 8), 0),
     "ov1000_t10_gateoff": (ov(R(LIVE, tp_regime_gate=False), 1000, 10), 0),
     "ov1000_t8_gateoff_tp5": (ov(R(LIVE, tp_regime_gate=False, takeprofit_pct=5.0, tp_mdhtp_enabled=False, tp_dynamic_flat=False), 1000, 8), 0),
@@ -68,12 +68,13 @@ def views(asset, cfg, fee_key):
         return {**cached, "cfg": cfg}
     fee = FEE[fee_key]
     res = {"kind": "views", "fee": fee_key, "asset": asset, "cfg": cfg, "bars": len(bars),
-           "full": replay(ohlc[WARM:], ohlc[:WARM], params, peak, fee), "w30": [], "w90": []}
+           "params_repr": repr(params), "peak": bool(peak),
+           "full": replay(bars[WARM:], bars[:WARM], params, peak, fee), "w30": [], "w90": []}
     for key, size in (("w30", W30), ("w90", W90)):
-        for s in range(WARM, len(ohlc) - size + 1, WSTEP):
-            r = replay(ohlc[s:s + size], ohlc[s - WARM:s], params, peak, fee)
+        for s in range(WARM, len(bars) - size + 1, WSTEP):
+            r = replay(bars[s:s + size], bars[s - WARM:s], params, peak, fee)
             res[key].append([r["ret"], r["dd"], r["bh"], r["cyc"]])
-    _VIEWS_CACHE[cache_key] = res
+    lru_dict_put(_VIEWS_CACHE, cache_key, res, max_entries=512)
     return res
 
 
@@ -82,8 +83,8 @@ def select(asset):
     steps = []
     fee_r = 0.26 / 100.0
     for t in range(WARM + TRAIN, len(bars) - TEST + 1, TEST):
-        train_slice = ohlc[t - TRAIN:t]
-        train_warm = ohlc[t - TRAIN - WARM:t - TRAIN]
+        train_slice = bars[t - TRAIN:t]
+        train_warm = bars[t - TRAIN - WARM:t - TRAIN]
         train_cache = {}
         train = {}
         for c in SELECT_SET:
@@ -94,8 +95,8 @@ def select(asset):
             train[c] = train_cache[k]
         score = {c: _risk_adjusted_score(r["ret"], r["dd"], dd_floor=5.0) for c, r in train.items()}
         best = max(score, key=score.get)
-        oos_slice = ohlc[t:t + TEST]
-        oos_warm = ohlc[t - WARM:t]
+        oos_slice = bars[t:t + TEST]
+        oos_warm = bars[t - WARM:t]
         oos_cache = {}
         oos = {}
         for c in SELECT_SET:
@@ -145,16 +146,23 @@ if __name__ == "__main__":
                     os.path.abspath(grid.DATA), r["asset"], len(bars), start_ts, end_ts,
                     repr(p), bool(pk), "std",
                 )
-                _VIEWS_CACHE[ck] = {
-                    "kind": "views",
-                    "fee": "std",
-                    "asset": r["asset"],
-                    "cfg": r["cfg"],
-                    "bars": r["bars"],
-                    "full": r["full"],
-                    "w30": r["w30"],
-                    "w90": r["w90"],
-                }
+                lru_dict_put(
+                    _VIEWS_CACHE,
+                    ck,
+                    {
+                        "kind": "views",
+                        "fee": "std",
+                        "asset": r["asset"],
+                        "cfg": r["cfg"],
+                        "bars": r["bars"],
+                        "params_repr": repr(p),
+                        "peak": bool(pk),
+                        "full": r["full"],
+                        "w30": r["w30"],
+                        "w90": r["w90"],
+                    },
+                    max_entries=512,
+                )
     assets_by_len = sorted(assets, key=lambda a: -len(grid.load_asset(a)[0]))
     todo = []
     for a in assets_by_len:
@@ -177,7 +185,7 @@ if __name__ == "__main__":
                 canon_groups[k] = []
                 canon_todo.append(item)
             canon_groups[k].append(c)
-    workers = int_env("WORKERS") or (os.cpu_count() or 4)
+    workers = grid.resolve_grid_workers()
     print(f"[grid2] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
@@ -194,6 +202,15 @@ if __name__ == "__main__":
                     append_jsonl_record(OUT, row)
                     vtag = f"{row['asset']:<5} {row['cfg']:<24} {row['fee']:<6} full {row['full']['ret']:+8.2f}% dd {row['full']['dd']:6.2f}"
                     print(f"[grid2] {done_count}/{len(todo)} {vtag} [{time.time()-t0:.0f}s]", flush=True)
+            elif tag == "error" and isinstance(r.get("args"), list) and len(r["args"]) == 4 and r["args"][0] == "views":
+                _, err_a, err_c, err_fk = r["args"]
+                p, pk = ALL[err_c]
+                aliases = canon_groups.get((err_a, repr(p), bool(pk), err_fk), [err_c])
+                for alias_cfg in aliases:
+                    done_count += 1
+                    err_row = {**r, "asset": err_a, "cfg": alias_cfg, "fee": err_fk, "args": ["views", err_a, alias_cfg, err_fk]}
+                    append_jsonl_record(OUT, err_row)
+                    print(f"[grid2] {done_count}/{len(todo)} ERROR {err_a} {alias_cfg} {err_fk} [{time.time()-t0:.0f}s]", flush=True)
             else:
                 done_count += 1
                 append_jsonl_record(OUT, r)

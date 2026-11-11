@@ -14,6 +14,7 @@ mkdir -p "$ROOT/logs" "$ROOT/cachedb/system"
 LOG_FILE="$ROOT/logs/dev_regression.log"
 STATUS_JSON="$ROOT/cachedb/system/dev_regression_status.json"
 LOCK="/tmp/dev_regression.lock"
+QUEUE_LOCK="/tmp/dev_regression_queued.lock"
 
 do_watch() {
     exec 9>"/tmp/dev_ci_watcher.lock"
@@ -44,7 +45,7 @@ do_trigger() {
     dev_remote_git_pull 2>&1 | sed 's/^/  [dev] /'
     if [ "${1:-}" = "--wait" ]; then
         echo "[trigger_dev_ci $(date '+%F %T')] Running regression on DEV (synchronous / waiting)..."
-        dev_ssh "if [[ \"$DEV_PATH\" == /* ]]; then cd \"$DEV_PATH\"; else cd \"\$HOME/$DEV_PATH\"; fi && ./offline/runners/run_dev_regression.sh run" 2>&1 | sed 's/^/  [dev] /' || rc=${PIPESTATUS[0]}
+        dev_ssh "if [[ \"$DEV_PATH\" == /* ]]; then cd \"$DEV_PATH\"; else cd \"\$HOME/$DEV_PATH\"; fi && REG_WAIT_CALLER=1 ./offline/runners/run_dev_regression.sh run" 2>&1 | sed 's/^/  [dev] /' || rc=${PIPESTATUS[0]}
         dev_sync_regression_status
         echo "[trigger_dev_ci $(date '+%F %T')] Completed (exit=$rc) and synced status to cachedb/system/dev_regression_status.json"
         exit "$rc"
@@ -95,9 +96,20 @@ do_run() {
     exec 8>"$LOCK"
     local was_queued=false
     if ! flock -n 8; then
+        if [ "${REG_WAIT_CALLER:-0}" != "1" ]; then
+            exec 6>"$QUEUE_LOCK"
+            if ! flock -n 6; then
+                echo "[dev_regression $(date '+%F %T')] Regression already running and a queued run is already waiting -- coalescing duplicate request."
+                exit 0
+            fi
+        fi
         echo "[dev_regression $(date '+%F %T')] Another regression is already running -- waiting for lock..."
         was_queued=true
         flock -w 600 8 || { echo "[dev_regression $(date '+%F %T')] ERROR: Timed out waiting for regression lock" >&2; exit 1; }
+        if [ "${REG_WAIT_CALLER:-0}" != "1" ]; then
+            flock -u 6 2>/dev/null || true
+            exec 6>&-
+        fi
     fi
 
     local sync_ok=true

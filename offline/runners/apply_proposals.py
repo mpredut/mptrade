@@ -203,6 +203,11 @@ def main(argv: list[str] | None = None):
                 if commit_ok:
                     sp._notify_change(fk, symbol, current, new_value, winner, rec)
                     applied_count += 1
+                else:
+                    try:
+                        sp._apply_config_change(section, key, new_value, current)
+                    except Exception as rb_exc:  # noqa: BLE001
+                        print(f"[apply] rollback warning for {fk}: {rb_exc}")
             sp._append_audit(rec)
 
         if not args.dry_run:

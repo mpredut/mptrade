@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Aggregate results.jsonl from grid.py into REPORT.md (plain markdown tables)."""
+import math
 import os
 import statistics as st
 import sys
@@ -8,20 +9,23 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import optional_env, safe_float
+from botcore import optional_env, safe_float, safe_nonneg_int
 from state_io import atomic_write_json, atomic_write_text, read_jsonl_dicts
 
 
 def q(xs, p):
     pf = safe_float(p, default=None)
     if pf is None:
-        return float("nan")
+        return math.nan
     pf = min(1.0, max(0.0, pf))
     clean = sorted(
         f for x in (xs or [])
         if (f := safe_float(x, default=None)) is not None
     )
-    return clean[min(len(clean) - 1, max(0, int(pf * (len(clean) - 1))))] if clean else float("nan")
+    if not clean:
+        return math.nan
+    idx = min(len(clean) - 1, max(0, safe_nonneg_int(math.floor(pf * (len(clean) - 1)), default=0)))
+    return clean[idx]
 
 
 def win_stats(r, key):
@@ -36,25 +40,25 @@ def win_stats(r, key):
             valid.append((r0, r2))
     rets = [x[0] for x in valid]
     if not rets:
-        return {"mean": float("nan"), "pos": float("nan"), "p10": float("nan"),
-                "down": float("nan"), "up": float("nan")}
+        return {"mean": math.nan, "pos": math.nan, "p10": math.nan,
+                "down": math.nan, "up": math.nan}
     down_vals = [x[0] for x in valid if x[1] < -10]
     up_vals = [x[0] for x in valid if x[1] > 10]
     return {"mean": st.fmean(rets), "pos": 100.0 * st.fmean(x > 0 for x in rets),
             "p10": q(rets, 0.10),
-            "down": st.fmean(down_vals) if down_vals else float("nan"),
-            "up": st.fmean(up_vals) if up_vals else float("nan")}
+            "down": st.fmean(down_vals) if down_vals else math.nan,
+            "up": st.fmean(up_vals) if up_vals else math.nan}
 
 
 def _fmt_num(val, spec: str | None = None) -> str:
-    if val is None:
+    if val is None or isinstance(val, bool):
         return "-"
     fv = safe_float(val, default=None)
     if fv is None:
         return "-"
     if spec is not None:
         return format(fv, spec)
-    return str(int(fv) if isinstance(val, int) else fv)
+    return str(val if isinstance(val, int) else fv)
 
 
 def _resolve_exp_dir(exp_dir: str | None = None) -> str:
@@ -84,23 +88,47 @@ def _risk_adjusted_score(ret_pct: float, dd_pct: float, dd_floor: float = 5.0) -
     return (r * d) / (dd_floor * dd_floor)
 
 
+def _is_error_row(r: dict) -> bool:
+    return "error" in r or r.get("kind") == "error"
+
+
+def _matches_known_spec(r: dict, spec_map: dict | None) -> bool:
+    if not spec_map or "params_repr" not in r:
+        return True
+    cfg_name = r.get("cfg")
+    if cfg_name not in spec_map:
+        return True
+    params, peak = spec_map[cfg_name]
+    if r.get("params_repr") != repr(params):
+        return False
+    if "peak" in r and bool(r.get("peak")) != bool(peak):
+        return False
+    return True
+
+
 def load_grid_results_partitioned(
-    results_path: str, required_str_keys: tuple[str, ...]
+    results_path: str,
+    required_str_keys: tuple[str, ...],
+    *,
+    spec_map: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Load JSONL grid rows and partition into ``(valid_rows, error_rows)``."""
     rows = read_jsonl_dicts(results_path)
-    errors = [r for r in rows if "error" in r]
+    errors = [r for r in rows if _is_error_row(r)]
     valid_rows = [
         r
         for r in rows
-        if "error" not in r
+        if not _is_error_row(r)
         and all(isinstance(r.get(k), str) and r[k].strip() for k in required_str_keys)
+        and _matches_known_spec(r, spec_map)
     ]
     return valid_rows, errors
 
 
-def _load_grid_results_by_cfg(results_path: str) -> tuple[list[dict], list[dict], dict[str, dict[str, dict]], list[str]]:
-    valid_rows, errors = load_grid_results_partitioned(results_path, ("cfg", "asset"))
+def _load_grid_results_by_cfg(
+    results_path: str, *, spec_map: dict | None = None
+) -> tuple[list[dict], list[dict], dict[str, dict[str, dict]], list[str]]:
+    valid_rows, errors = load_grid_results_partitioned(results_path, ("cfg", "asset"), spec_map=spec_map)
     by: dict[str, dict[str, dict]] = defaultdict(dict)
     for r in valid_rows:
         by[r["cfg"]][r["asset"]] = r
@@ -108,10 +136,10 @@ def _load_grid_results_by_cfg(results_path: str) -> tuple[list[dict], list[dict]
     return valid_rows, errors, by, assets
 
 
-def _rank_key(s: dict) -> tuple[bool, float, float]:
-    full_med = safe_float(s.get("full_med"), default=float("-inf"))
-    calmar_med = safe_float(s.get("calmar_med"), default=float("-inf"))
-    dd_med = safe_float(s.get("dd_med"), default=float("inf"))
+def _rank_key(s: dict, calmar_key: str = "calmar_med") -> tuple[bool, float, float]:
+    full_med = safe_float(s.get("full_med"), default=-math.inf)
+    calmar_med = safe_float(s.get(calmar_key), default=-math.inf)
+    dd_med = safe_float(s.get("dd_med"), default=math.inf)
     if full_med >= 0.0:
         return (True, calmar_med, -dd_med)
     return (False, full_med, -dd_med)

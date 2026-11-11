@@ -187,15 +187,24 @@ def _compute_causal_survival_schedule(
     schedule: List[Tuple[float, float]] = []
     prev_trend = "FLAT"
     prev_dur_sec = 0.0
+    active_start_ts: Optional[float] = None
 
     for bar in tape:
+        cur_t = safe_nonneg_float(bar.get("t"), default=None)
         cur_trend = str(bar.get("current_trend", "FLAT"))
         cur_dur_sec = safe_nonneg_float(bar.get("trend_duration_sec"), 0.0)
-        if prev_trend in ("BULL", "BEAR") and prev_dur_sec > 0.0:
-            if cur_trend != prev_trend or cur_dur_sec < prev_dur_sec:
-                completed_days.append(prev_dur_sec / 86400.0)
+        if prev_trend in ("BULL", "BEAR") and (cur_trend != prev_trend or cur_dur_sec < prev_dur_sec):
+            elapsed_sec = (
+                (cur_t - active_start_ts)
+                if (cur_t is not None and active_start_ts is not None and cur_t > active_start_ts)
+                else prev_dur_sec
+            )
+            if elapsed_sec > 0.0:
+                completed_days.append(elapsed_sec / 86400.0)
                 if len(completed_days) > 200:
                     completed_days.pop(0)
+        if cur_trend != prev_trend or cur_dur_sec < prev_dur_sec or active_start_ts is None:
+            active_start_ts = (cur_t - cur_dur_sec) if cur_t is not None else None
 
         if len(completed_days) >= min_completed_trends:
             ordered = sorted(completed_days)
@@ -335,10 +344,11 @@ def run_intelligence_backtest(
                     if pullback >= 0.010 or p >= recent_high:
                         want_buy = True
 
-            if k_event and k_event.action.value == "EXIT" and k_event.side.value == "SELL":
-                want_sell = True
-            elif mr_event and mr_event.action.value == "EXIT" and mr_event.side.value == "SELL":
-                want_sell = True
+            if asset_qty > 0:
+                if k_event and k_event.action.value == "EXIT" and k_event.side.value == "SELL":
+                    want_sell = True
+                elif mr_event and mr_event.action.value == "EXIT" and mr_event.side.value == "SELL":
+                    want_sell = True
 
             # Execution logic:
             if want_sell and asset_qty > 0:
@@ -463,6 +473,7 @@ def run_intelligence_backtest(
                         trend_direction=current_trend,
                     )
                     if not e_dec.allowed:
+                        weibull_downscales += 1
                         continue
 
                 f_dec = None
@@ -480,6 +491,7 @@ def run_intelligence_backtest(
                         )
                         f_dec = funding_guard.check(symbol, "BUY", telemetry=d_telemetry)
                         if not f_dec.allowed:
+                            funding_downscales += 1
                             continue
 
                 s_dec = None
@@ -500,6 +512,7 @@ def run_intelligence_backtest(
                     )
                     s_dec = extreme_greed_guard.check(symbol, "BUY", snapshot=fg_snap)
                     if not s_dec.allowed:
+                        sentiment_downscales += 1
                         continue
 
                 if e_dec is not None and e_dec.brake_action == BrakeAction.DOWNSCALE_QTY:

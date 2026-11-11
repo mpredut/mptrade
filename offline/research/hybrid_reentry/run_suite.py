@@ -17,7 +17,7 @@ from strategies import spot_engine as strat
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,
     evaluate_asset,
-    load_ohlc_csv,
+    load_ohlc_with_timestamps_csv,
 )
 
 DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "data")
@@ -73,6 +73,7 @@ BASE_PARAMS = strat.StratParams(
     reentry_hybrid_enabled=False,
     reentry_peak_relative=False,
     reentry_pullback_pct=1.5,
+    reentry_pullback_adaptive=False,
     reentry_ttl_hours=0.0,
     tp_mdhtp_enabled=False,
     sl_mhdsl_enabled=False,
@@ -94,7 +95,7 @@ def main():
         if not os.path.isfile(csv_file):
             print(f"Skipping {asset}: {csv_file} not found.")
             continue
-        ohlc = load_ohlc_csv(csv_file)
+        ohlc, timestamps = load_ohlc_with_timestamps_csv(csv_file)
         print(f"Running ablation on {asset} ({len(ohlc)} 4h bars)...", flush=True)
         t0 = time.time()
         res = evaluate_asset(
@@ -104,6 +105,7 @@ def main():
             fee_pct=0.26,
             bar_minutes=240.0,
             initial_cash=3900.0,
+            timestamps=timestamps,
         )
         elapsed = time.time() - t0
         errs = [r for r in res if isinstance(r, dict) and "error" in r]

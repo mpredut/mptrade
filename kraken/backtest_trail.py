@@ -52,17 +52,16 @@ _ISOLATED_COMPARISON_OVERRIDES = {
     "dca_trend_brake": False,
     "reentry_hybrid_enabled": False,
     "reentry_adaptive": False,
+    "reentry_ttl_hours": 0.0,
+    "reentry_bear_bounce_pct": 0.0,
 }
 
 
 def _resolve_reentry_drop(P: dict) -> float:
-    re_drop = P.get("reentry_drop")
-    if re_drop is None:
-        re_drop = P.get("reentry")
-    if re_drop is None:
-        return 0.0
-    val = safe_float(re_drop, default=0.0)
-    return max(0.0, val) if val is not None else 0.0
+    for key in ("reentry_fallback", "reentry_drop", "reentry"):
+        if key in P and P.get(key) is not None:
+            return require_nonneg_float(P.get(key), key)
+    return 0.0
 
 
 def _validated_fee_and_interval(P: dict) -> tuple[float, float]:

@@ -25,16 +25,18 @@ import time
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
+import order_lifecycle as _ol_mod
 import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A5) -- the model is not reimplemented.
 # 23 Jul: SimClock extracted into providers/replay_clock.py (shared with
 # monitortrades -- see UNIFIED_BACKTEST_PLAN.md sec. 7/8), passed to
 # TrendState(now_fn=...) so that fast-forward is correct (A5).
-from botcore import resolve_now_ts, safe_int, safe_nonneg_float, safe_pos_float, sanitize_pipe_field
+from botcore import lru_dict_put, resolve_now_ts, safe_int, safe_nonneg_float, safe_pos_float, sanitize_pipe_field
 from providers.base import normalize_side
 from providers.replay_provider import SimClock, backtest_isolation_context  # noqa: F401
-from state_io import append_text_line, atomic_write_json, read_json_dict, read_jsonl_dicts
+from state_io import append_text_line, atomic_write_json, iter_jsonl_dicts, read_json_dict
 from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed
 from instrument_registry import casefold_get
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
@@ -57,12 +59,14 @@ class BacktestBroker:
     order_outcomes (Step A2) -- so that tradeall_observe.py can render it identically.
     It also keeps P&L ACCOUNTING: position, average cost, realised, fees."""
     def __init__(self, out_dir, clock, trend_gate=None, trend_gate_timeout_sec=None,
-                 trend_gate_max_wait_sec=3600.0):
+                 trend_gate_max_wait_sec=3600.0, max_quote_budget=None):
         self.clock = clock
         self.path = os.path.join(out_dir, "order_outcomes.log")
         self.n_buy = self.n_sell = 0
         self.pos_qty = 0.0
         self.pos_cost = 0.0       # Total cost of the current position (excluding fees).
+        self.peak_deployed_cost = 0.0
+        self.max_quote_budget = safe_pos_float(max_quote_budget, default=None) if max_quote_budget is not None else None
         self.realized = 0.0       # realised profit/loss (excluding fees)
         self.fees = 0.0
         self.last_price = None
@@ -117,10 +121,18 @@ class BacktestBroker:
             return None
         self.last_price = exec_price
         if order_type == "BUY":
+            if self.max_quote_budget is not None:
+                rem_budget = self.max_quote_budget - self.pos_cost
+                if rem_budget <= 1e-9:
+                    return None
+                qty = min(qty, rem_budget / exec_price)
+                if qty <= 1e-12:
+                    return None
             exec_qty = qty
             self.n_buy += 1
             self.pos_qty += qty
             self.pos_cost += qty * exec_price
+            self.peak_deployed_cost = max(self.peak_deployed_cost, self.pos_cost)
             self.fees += qty * exec_price * FEE_PCT / 100
         else:
             if self.pos_qty <= 1e-12:
@@ -255,6 +267,10 @@ def _resolve_existing_cache_file(path):
     return path
 
 
+_MAX_CACHEABLE_FILE_BYTES = 16 * 1024 * 1024
+_MAX_CACHEABLE_TICKS = 250_000
+
+
 def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
     try:
         st = os.stat(path)
@@ -268,26 +284,36 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
         yield from cached
         return
 
+    sym_variants = set(cache_symbol_variants(symbol, include_original=True))
+    if sig[1] > _MAX_CACHEABLE_FILE_BYTES:
+        for rec in iter_jsonl_dicts(path):
+            if rec.get("s") not in sym_variants:
+                continue
+            parsed = _parse_tick_pair(rec.get("i"))
+            if parsed is None:
+                continue
+            ts, price = parsed
+            if (start_ts is None or ts >= start_ts) and (end_ts is None or ts <= end_ts):
+                yield ts, price
+        return
+
     full_ticks = _FILE_TICKS_CACHE.get(file_key)
     if full_ticks is None:
-        sym_variants = set(cache_symbol_variants(symbol, include_original=True))
         full_ticks = [
             parsed
-            for rec in read_jsonl_dicts(path)
+            for rec in iter_jsonl_dicts(path)
             if rec.get("s") in sym_variants and (parsed := _parse_tick_pair(rec.get("i"))) is not None
         ]
-        if len(_FILE_TICKS_CACHE) >= 4:
-            _FILE_TICKS_CACHE.clear()
-        _FILE_TICKS_CACHE[file_key] = full_ticks
+        if len(full_ticks) <= _MAX_CACHEABLE_TICKS:
+            lru_dict_put(_FILE_TICKS_CACHE, file_key, full_ticks, max_entries=4)
 
     ticks = [
         (ts, price)
         for ts, price in full_ticks
         if (start_ts is None or ts >= start_ts) and (end_ts is None or ts <= end_ts)
     ]
-    if len(_TICK_SLICE_CACHE) >= 8:
-        _TICK_SLICE_CACHE.clear()
-    _TICK_SLICE_CACHE[cache_key] = ticks
+    if len(ticks) <= _MAX_CACHEABLE_TICKS:
+        lru_dict_put(_TICK_SLICE_CACHE, cache_key, ticks, max_entries=8)
     yield from ticks
 
 
@@ -389,7 +415,6 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         if isinstance(getattr(ta, "_SYMBOL_TICK_SIZE_CACHE", None), dict)
         else None
     )
-    import order_lifecycle as _ol_mod
     orig_ol_tick_cache = (
         dict(_ol_mod._SYMBOL_TICK_SIZE_CACHE)
         if isinstance(getattr(_ol_mod, "_SYMBOL_TICK_SIZE_CACHE", None), dict)
@@ -548,8 +573,15 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                                     o for o in broker.pending
                                     if not (o.get("symbol") == symbol and o.get("side") == "SELL")
                                 ]
-                                broker.place_order_smart("BUY", symbol, price, BACKTEST_NOTIONAL_USD / price,
-                                                          motivation="kalman_up")
+                                has_pending_buy = any(
+                                    o.get("symbol") == symbol and o.get("side") == "BUY"
+                                    for o in broker.pending
+                                )
+                                if broker.pos_qty <= 1e-12 and not has_pending_buy:
+                                    broker.place_order_smart(
+                                        "BUY", symbol, price, BACKTEST_NOTIONAL_USD / price,
+                                        motivation="kalman_up",
+                                    )
                             elif ktrend == -1:
                                 broker.sell_all(symbol, price, motivation="kalman_down")
                             prev_ktrend = ktrend

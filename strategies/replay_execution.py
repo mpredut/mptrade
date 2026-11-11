@@ -141,6 +141,8 @@ def split_order_fill(
 ) -> tuple[dict, float, bool]:
     """Take one tranche and keep the remainder on the original order."""
     ratio = _req_pos_float(ratio, "ratio must be positive and finite")
+    if ratio > 1.0:
+        raise ValueError("ratio must be within (0, 1]")
     raw_rem = order.get(quantity_key) if isinstance(order, dict) else None
     remaining = _req_pos_float(raw_rem, "the order has no quantity left to execute")
     original_key = f"_replay_original_{quantity_key}"

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Aggregate results2.jsonl (wave 2) into REPORT2.md."""
+import math
 import os
 import statistics as st
 import sys
@@ -10,9 +11,13 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
 from state_io import atomic_write_text, read_jsonl_dicts
+from offline.research.kraken_continuous_grid import grid2
 from offline.research.kraken_continuous_grid.report import (
     _fmt_num,
     _format_errors_section,
+    _is_error_row,
+    _matches_known_spec,
+    _rank_key,
     _resolve_exp_dir,
 )
 
@@ -23,7 +28,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     rows = read_jsonl_dicts(results2_path)
     results_path = os.path.join(exp, "results.jsonl")
     wave1 = read_jsonl_dicts(results_path)
-    errors = [r for r in rows if r.get("kind") == "error"]
+    errors = [r for r in rows if _is_error_row(r)]
     L = ["# Overnight wave 2: selection, fine overlay grid, fee stress\n"]
 
     # ---------------------------------------------------------------- selection
@@ -86,15 +91,18 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     views = [
         r for r in rows
         if r.get("kind") == "views"
+        and not _is_error_row(r)
         and isinstance(r.get("cfg"), str) and r["cfg"].strip()
         and isinstance(r.get("fee"), str) and r["fee"].strip()
         and isinstance(r.get("asset"), str) and r["asset"].strip()
+        and _matches_known_spec(r, grid2.ALL)
     ]
     wave1_valid = [
         r for r in wave1
-        if "error" not in r
+        if not _is_error_row(r)
         and isinstance(r.get("cfg"), str) and r["cfg"].strip()
         and isinstance(r.get("asset"), str) and r["asset"].strip()
+        and _matches_known_spec(r, grid2.ALL)
     ]
     by = defaultdict(dict)
     for r in views:
@@ -108,8 +116,8 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         if not assets or not all(a in d and isinstance(d[a].get("full"), dict) for a in assets):
             return None
         live = by.get(("live", "std"), {})
-        full = [safe_float(d[a]["full"].get("ret"), float("nan")) for a in assets]
-        dd = [safe_float(d[a]["full"].get("dd"), float("nan")) for a in assets]
+        full = [safe_float(d[a]["full"].get("ret"), math.nan) for a in assets]
+        dd = [safe_float(d[a]["full"].get("dd"), math.nan) for a in assets]
         if not all(safe_float(x, default=None) is not None for x in full + dd):
             return None
         w90_means = []
@@ -152,17 +160,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
 
     fine = [s for s in (summ(k) for k in by if k[1] == "std") if s]
     table(
-        sorted(
-            fine,
-            key=lambda s: (
-                safe_float(s.get("full_med"), default=float("-inf")) >= 0.0,
-                safe_float(s.get("calmar"), default=float("-inf"))
-                if safe_float(s.get("full_med"), default=float("-inf")) >= 0.0
-                else safe_float(s.get("full_med"), default=float("-inf")),
-                -safe_float(s.get("dd_med"), default=float("inf")),
-            ),
-            reverse=True,
-        )[:40],
+        sorted(fine, key=lambda s: _rank_key(s, calmar_key="calmar"), reverse=True)[:40],
         "Fine grid + wave-1 configs, top 40 by median return/DD",
     )
     fee = []

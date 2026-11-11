@@ -379,7 +379,7 @@ def run_single_simulation(
         )
 
         want_buy = bar["entry_signal"] or (asset_qty == 0 and bar["pullback_signal"])
-        want_sell = bar["exit_signal"]
+        want_sell = bool(bar["exit_signal"]) and asset_qty > 0
 
         # Take Profit & Stop Loss
         if asset_qty > 0 and entry_price > 0:
@@ -510,15 +510,16 @@ def run_chop_benchmark(
 
     all_results: Dict[str, List[ChopBacktestStats]] = {}
 
-    # Load BTC series for proxy reference
+    # Load BTC series for proxy reference only when needed
+    need_btc_ref = any(canonical_base_asset(s) != "BTC" for s in symbols)
     btc_path = cache_path("cache_sparse_price_BTCUSDC.jsonl")
-    raw_btc = load_price_series(btc_path, "BTCUSDC")
-    sampled_btc = _downsample_price_series(raw_btc, step_seconds)
+    raw_btc = load_price_series(btc_path, "BTCUSDC") if (need_btc_ref or "BTCUSDC" in symbols) else []
+    sampled_btc = _downsample_price_series(raw_btc, step_seconds) if need_btc_ref else []
 
     for sym in symbols:
         cache_path_sym = cache_path(f"cache_sparse_price_{sym}.jsonl")
         logger.info("Loading price series for %s from %s ...", sym, cache_path_sym)
-        raw_series = load_price_series(cache_path_sym, sym)
+        raw_series = raw_btc if (sym == "BTCUSDC" and raw_btc) else load_price_series(cache_path_sym, sym)
         if not raw_series:
             logger.warning("No price data found for %s, skipping.", sym)
             continue

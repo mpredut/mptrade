@@ -23,6 +23,7 @@ if _ROOT not in sys.path:
 from botcore import (  # noqa: E402
     _parse_bool_flag,
     ensure_local_module_priority,
+    require_nonneg_float,
     require_pos_float,
     safe_float,
     safe_nonneg_float,
@@ -30,7 +31,12 @@ from botcore import (  # noqa: E402
 )
 ensure_local_module_priority(_HERE, "strategy")
 from strategies.spot_engine import StratParams as SpotStratParams  # noqa: E402
-from strategies.spot_replay import build_replay_summary, make_spot_replay_adapter  # noqa: E402
+from strategies.spot_replay import (  # noqa: E402
+    align_spot_interval_params,
+    build_replay_summary,
+    make_spot_replay_adapter,
+    scale_subbar_timeout_params,
+)
 from strategy import Strategy, StratParams, HL_FEE_PCT  # noqa: E402
 from strategies.replay_execution import (  # noqa: E402
     ExecutionModel,
@@ -130,6 +136,8 @@ def run_replay(
         raise ValueError(f"bar_minutes must be finite and positive, got {bar_minutes!r}")
     if ts is not None and len(ts) != len(ohlc):
         raise ValueError(f"ts length ({len(ts)}) must match ohlc length ({len(ohlc)})")
+    if fund and ts is None and ohlc:
+        raise ValueError("ts is required when fund is provided")
     if sig is not None and len(sig) != len(ohlc):
         raise ValueError(f"sig length ({len(sig)}) must match ohlc length ({len(ohlc)})")
 
@@ -382,16 +390,23 @@ def _run_once(
             )
             # If a held position breaches stop-loss or bankruptcy before reaching a deeper DCA limit, abort DCA.
             if open_eligible and strategy.s["qty"] > dust_eps:
+                liq_open_bar = _bankruptcy_price_if_breached(o)
                 liq_pre = _bankruptcy_price_if_breached(l if strategy.sign > 0 else h)
-                if liq_pre is not None and strategy.sign * (liq_pre - open_order["px"]) >= 0:
+                if liq_open_bar is not None or (
+                    liq_pre is not None and strategy.sign * (liq_pre - open_order["px"]) >= 0
+                ):
                     open_eligible = False
                 elif strategy.p.stop_loss_pct > 0:
                     avg_now = strategy._avg()
                     if avg_now:
                         sl_level_pre = avg_now * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
+                        open_loss_pct = -strategy.sign * (o - avg_now) / avg_now * 100.0
                         worst_px_pre = l if strategy.sign > 0 else h
                         loss_pre = -strategy.sign * (worst_px_pre - avg_now) / avg_now * 100.0
-                        if loss_pre >= strategy.p.stop_loss_pct - 1e-9 and strategy.sign * (sl_level_pre - open_order["px"]) >= 0:
+                        if open_loss_pct >= strategy.p.stop_loss_pct - 1e-9 or (
+                            loss_pre >= strategy.p.stop_loss_pct - 1e-9
+                            and strategy.sign * (sl_level_pre - open_order["px"]) >= 0
+                        ):
                             open_eligible = False
 
         close_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "close"), None)
@@ -406,7 +421,7 @@ def _run_once(
 
         for side in exec_model.side_order():
             if side == open_side and open_eligible and open_order in strategy.s["orders"]:
-                px = open_order["px"]
+                px = min(open_order["px"], o) if strategy.sign > 0 else max(open_order["px"], o)
                 fill_order, sz, complete = _quantize_partial_fill(open_order, is_open=True)
                 open_kind = fill_order.get("kind")
                 if open_kind == "ENTRY":
@@ -424,7 +439,7 @@ def _run_once(
                 fills += 1
 
             if side == close_side and close_eligible and close_order in strategy.s["orders"] and strategy.s["qty"] > dust_eps:
-                px = close_order["px"]
+                px = max(close_order["px"], o) if strategy.sign > 0 else min(close_order["px"], o)
                 fill_order, sz, complete = _quantize_partial_fill(close_order, is_open=False)
                 held_now = strategy.s["qty"]
                 if sz >= held_now - dust_eps:
@@ -629,17 +644,22 @@ def make_hyperliquid_replay_adapter(
         raise ValueError(f"Unsupported Hyperliquid replay engine: {engine!r}")
     if engine_norm == "spot":
         spot_params = _to_spot_params(params, direction)
-        eff_fee = (
-            fee_pct
-            if fee_pct is not None
-            else (
-                params.fee_pct
-                if isinstance(params, StratParams)
-                else safe_nonneg_float(params.get("fee", params.get("fee_pct")), default=HL_FEE_PCT)
-                if isinstance(params, dict)
-                else HL_FEE_PCT
+        if bar_minutes is not None:
+            bm = require_pos_float(bar_minutes, "bar_minutes")
+            spot_params = scale_subbar_timeout_params(
+                align_spot_interval_params(spot_params, bm), bm
             )
-        )
+        if fee_pct is not None:
+            eff_fee = require_nonneg_float(fee_pct, "fee_pct")
+        elif isinstance(params, StratParams):
+            eff_fee = params.fee_pct
+        elif isinstance(params, dict) and (params.get("fee") is not None or params.get("fee_pct") is not None):
+            raw_f = params.get("fee") if params.get("fee") is not None else params.get("fee_pct")
+            eff_fee = require_nonneg_float(raw_f, "fee")
+        else:
+            eff_fee = HL_FEE_PCT
+        if eff_fee >= 100.0:
+            raise ValueError(f"fee_pct must be < 100, got {eff_fee!r}")
         return make_spot_replay_adapter(
             params=spot_params,
             fee_pct=eff_fee,

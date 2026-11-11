@@ -139,9 +139,12 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
             report["scenarios"][scenario.name] = {
                 "assumptions": scenario.as_dict(), "windows": windows,
                 "aggregate": aggregate_financial_windows(windows, initial_capital=cash),
-                "continuous": adapter(to_ohlc(records[folds[0].test.start:folds[-1].test.stop]),
-                                      to_ohlc(records[max(0, folds[0].test.start - 40):folds[0].test.start]),
-                                      None),
+                "continuous": adapter(
+                    to_ohlc(records[folds[0].test.start:folds[-1].test.stop]),
+                    to_ohlc(records[max(0, folds[0].test.start - 40):folds[0].test.start]),
+                    [r.timestamp for r in records[folds[0].test.start:folds[-1].test.stop]],
+                    warmup_timestamps=[r.timestamp for r in records[max(0, folds[0].test.start - 40):folds[0].test.start]],
+                ),
             }
         reports[name] = report
     return {"baseline_config": baseline, "candidate_config": candidate,
@@ -166,7 +169,7 @@ def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", required=True)
     parser.add_argument("--candidate", required=True)
-    parser.add_argument("--cash", type=float, required=True)
+    parser.add_argument("--cash", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:

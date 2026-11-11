@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--quote", default="USDC")
     parser.add_argument("--intervals", type=_parse_intervals, default=[60, 240, 1440])
     parser.add_argument(
-        "--lookback-days", type=int,
+        "--lookback-days",
         help="limit every interval to the same period; defaults to the API maximum",
     )
     parser.add_argument(
@@ -113,8 +113,12 @@ def main(argv: list[str] | None = None) -> int:
         default=ROOT / "offline/results/hyperliquid_proxy/datasets",
     )
     args = parser.parse_args(argv)
-    if args.lookback_days is not None and exact_pos_int(args.lookback_days, default=None) is None:
-        parser.error("--lookback-days must be positive")
+    lookback_days = None
+    if args.lookback_days is not None:
+        lookback_days = exact_pos_int(args.lookback_days, default=None)
+        if lookback_days is None:
+            parser.error("--lookback-days must be positive")
+    args.lookback_days = lookback_days
     for label, tok in (("--token", args.token), ("--quote", args.quote)):
         if not isinstance(tok, str) or not tok.strip() or "/" in tok or "\\" in tok or ".." in tok:
             parser.error(f"invalid {label}: {tok!r}")

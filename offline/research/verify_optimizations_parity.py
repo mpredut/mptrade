@@ -20,6 +20,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+os.environ.setdefault("BACKTEST_MODE", "1")
+os.environ.setdefault("REPLAY_MODE", "1")
+os.environ.setdefault("DISABLE_EXTERNAL_NOTIFICATIONS", "1")
+
+__test__ = False
 
 import pricewindow as pw
 import priceAnalysis as pa
@@ -118,9 +123,9 @@ def test_detect_long_term_trend_real_data() -> None:
         c_path = cache_path(f"cache_sparse_price_{sym}.jsonl")
         if not os.path.exists(c_path):
             continue
-        series = load_price_series(c_path, sym)
+        series = load_price_series(c_path, sym, max_samples=2000)
         if series and len(series) >= 1000:
-            datasets.append((sym, [s[0] for s in series[-2000:]], [s[1] for s in series[-2000:]]))
+            datasets.append((sym, [s[0] for s in series], [s[1] for s in series]))
 
     if not datasets:
         rng = np.random.default_rng(4242)

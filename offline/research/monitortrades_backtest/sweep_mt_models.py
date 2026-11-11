@@ -10,6 +10,7 @@ monitortrades instruments (BTCUSDC, TAOUSDC, ARBUSDC, HYPEUSD) on:
 """
 from __future__ import annotations
 
+import gc
 import os
 import sys
 import time
@@ -304,6 +305,8 @@ def run_mt_model_sweep_table(
     print("-" * len(hdr))
 
     saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
+    saved_diag = dict(rrb._LAST_RUN_DIAGNOSTICS)
+    saved_htp = dict(rrb._LAST_HARD_TP_TOUCHED)
     bh_Wait = {}
     try:
         for m_name, tape_fn in models:
@@ -326,6 +329,10 @@ def run_mt_model_sweep_table(
     finally:
         rrb._TREND_TAPE_CACHE.clear()
         rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
+        rrb._LAST_RUN_DIAGNOSTICS.clear()
+        rrb._LAST_RUN_DIAGNOSTICS.update(saved_diag)
+        rrb._LAST_HARD_TP_TOUCHED.clear()
+        rrb._LAST_HARD_TP_TOUCHED.update(saved_htp)
 
     if include_buy_hold:
         bh_tot = sum(bh_Wait.values())
@@ -340,24 +347,6 @@ def evaluate_dataset(use_365: bool = False):
     print(f"  PORTFOLIO REPLAY BACKTEST: {label}")
     print(f"{'=' * 105}")
 
-    all_symbols = list(rrb.SYMBOLS._SECTIONS.keys())
-    symbols = []
-    series_map = {}
-    sig_map = {}
-
-    for sym in all_symbols:
-        t0 = time.time()
-        series = load_archive_series(sym, use_365=use_365)
-        if not series:
-            continue
-        symbols.append(sym)
-        series_map[sym] = series
-        sig_map[sym] = compute_all_signals(series, symbol=sym)
-        dt = time.time() - t0
-        med_m = safe_int(np.median(sig_map[sym]["m"]).item(), 0)
-        print(f"  [loaded & vectorized] {sym:<8} (p={pw.step_wols_power_for_symbol(sym):.1f}): "
-              f"{len(series):>9,} ticks in {dt:.2f}s (median m={med_m} steps)")
-
     models = [
         ("1. LEGACY (sf+gr)/2 (no NG)",       lambda s: make_tape(s["legacy"], s["eps"], k_eps=0.0)),
         ("2. LEGACY + NG k=0.25",             lambda s: make_tape(s["legacy"], s["eps"], k_eps=0.25)),
@@ -368,15 +357,64 @@ def evaluate_dataset(use_365: bool = False):
         ("7. DIFFERENTIATED (BTC p3/ALT p2)", lambda s: make_tape(s["diff"], s["eps"], k_eps=0.25, scale_inv=s["scale_inv"])),
     ]
 
-    run_mt_model_sweep_table(
-        models,
-        symbols,
-        series_map,
-        sig_map,
-        title_col="Model Architecture",
-        col_width=34,
-        include_buy_hold=True,
-    )
+    all_symbols = list(rrb.SYMBOLS._SECTIONS.keys())
+    symbols: list[str] = []
+    per_model_cells: dict[str, dict[str, str]] = {m_name: {} for m_name, _ in models}
+    per_model_net: dict[str, float] = {m_name: 0.0 for m_name, _ in models}
+    bh_by_sym: dict[str, float] = {}
+
+    saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
+    saved_diag = dict(rrb._LAST_RUN_DIAGNOSTICS)
+    saved_htp = dict(rrb._LAST_HARD_TP_TOUCHED)
+    try:
+        for sym in all_symbols:
+            t0 = time.time()
+            series = load_archive_series(sym, use_365=use_365)
+            if not series:
+                continue
+            symbols.append(sym)
+            sig = compute_all_signals(series, symbol=sym)
+            dt = time.time() - t0
+            med_m = safe_int(np.median(sig["m"]).item(), 0)
+            print(f"  [loaded & vectorized] {sym:<8} (p={pw.step_wols_power_for_symbol(sym):.1f}): "
+                  f"{len(series):>9,} ticks in {dt:.2f}s (median m={med_m} steps)")
+            key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
+            cfg = rrb.SYMBOLS[sym]
+            for m_name, tape_fn in models:
+                rrb._TREND_TAPE_CACHE.clear()
+                rrb._TREND_TAPE_CACHE[key] = tuple(
+                    tape_fn(sig, sym) if tape_fn.__code__.co_argcount >= 2 else tape_fn(sig)
+                )
+                res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
+                net = safe_float(res.get("net"), 0.0)
+                bh_by_sym[sym] = safe_float(res.get("buy_hold"), 0.0)
+                per_model_net[m_name] += net
+                per_model_cells[m_name][sym] = (
+                    f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)"
+                )
+            rrb._TREND_TAPE_CACHE.clear()
+            del sig
+            del series
+            gc.collect()
+    finally:
+        rrb._TREND_TAPE_CACHE.clear()
+        rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
+        rrb._LAST_RUN_DIAGNOSTICS.clear()
+        rrb._LAST_RUN_DIAGNOSTICS.update(saved_diag)
+        rrb._LAST_HARD_TP_TOUCHED.clear()
+        rrb._LAST_HARD_TP_TOUCHED.update(saved_htp)
+
+    col_width = 34
+    hdr = f"{'Model Architecture':<{col_width}} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
+    print("\n" + hdr)
+    print("-" * len(hdr))
+    for m_name, _ in models:
+        cells = [per_model_cells[m_name].get(sym, "") for sym in symbols]
+        print(f"{m_name:<{col_width}} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {per_model_net[m_name]:>+14.2f}")
+    bh_tot = sum(bh_by_sym.get(sym, 0.0) for sym in symbols)
+    bh_cells = [f"{bh_by_sym.get(sym, 0.0):>+14.2f}" for sym in symbols]
+    print("-" * len(hdr))
+    print(f"{'Buy & Hold Benchmark':<{col_width}} | " + " | ".join(bh_cells) + f" | {bh_tot:>+14.2f}")
 
 
 if __name__ == "__main__":

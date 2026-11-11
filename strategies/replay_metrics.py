@@ -115,14 +115,15 @@ def calculate_performance_metrics(
 
         mean_return = statistics.fmean(periodic_returns)
         if len(periodic_returns) > 1:
+            noise_floor = max(1e-12, abs(mean_return) * 1e-12)
             volatility = statistics.stdev(periodic_returns, xbar=mean_return)
-            if volatility > 0:
+            if volatility > noise_floor:
                 sharpe = safe_float(mean_return / volatility * math.sqrt(periods_per_year), default=None)
 
             downside_deviation = math.sqrt(
                 statistics.fmean(min(value, 0.0) ** 2 for value in periodic_returns)
             )
-            if downside_deviation > 0:
+            if downside_deviation > noise_floor:
                 sortino = safe_float(mean_return / downside_deviation * math.sqrt(periods_per_year), default=None)
         if annualized_return is not None and max_drawdown_pct > 0:
             calmar = safe_float(annualized_return / max_drawdown_pct, default=None)
@@ -316,6 +317,7 @@ def run_tp_drop_sl_sweep(
     b_val = safe_pos_float(budget, default=None)
     if b_val is None:
         raise ValueError("budget must be positive")
+    limit_n = safe_nonneg_int(top_n, default=8)
     rows: list[tuple] = []
     if sl_values is None:
         for tp_val in tp_values:
@@ -328,8 +330,8 @@ def run_tp_drop_sl_sweep(
                 wr = 100.0 * wins / cyc if cyc else 0.0
                 rows.append((tot, tp_val, drop_val, cyc, wr, safe_float(m.get("maxdd"), 0.0)))
         rows.sort(key=lambda r: (r[0], -r[5], r[4], r[3], r[1], r[2]), reverse=True)
-        emit(f"  top {top_n} combinations (net% | tp | drop | cycles | win% | maxDD$):")
-        for net, tp_v, drop_v, cyc, wr, dd in rows[:top_n]:
+        emit(f"  top {limit_n} combinations (net% | tp | drop | cycles | win% | maxDD$):")
+        for net, tp_v, drop_v, cyc, wr, dd in rows[:limit_n]:
             emit(f"    {net:+7.2f}%  tp={tp_v:<4} drop={drop_v:<4} cyc={cyc:<3} win={wr:.0f}% dd=${dd:.0f}")
         return rows
 
@@ -341,8 +343,8 @@ def run_tp_drop_sl_sweep(
                 tot = safe_float(m.get("total"), 0.0) / b_val * 100.0
                 rows.append((tot, tp_val, drop_val, sl_val, safe_nonneg_int(m.get("cycles"), default=0), safe_float(m.get("maxdd"), 0.0)))
     rows.sort(key=lambda r: (r[0], -r[5], r[4], r[1], r[2], r[3]), reverse=True)
-    emit(f"  top {top_n} (total% | tp | drop | sl | cycles | maxDD$):")
-    for tot, tp_v, drop_v, sl_v, cyc, dd in rows[:top_n]:
+    emit(f"  top {limit_n} (total% | tp | drop | sl | cycles | maxDD$):")
+    for tot, tp_v, drop_v, sl_v, cyc, dd in rows[:limit_n]:
         emit(f"    {tot:+7.2f}%  tp={tp_v:<4} drop={drop_v:<4} sl={sl_v:<4} cyc={cyc:<3} dd=${dd:.0f}")
     return rows
 
@@ -383,6 +385,7 @@ def validate_replay_metrics(result: dict) -> None:
 
 
 __all__ = [
+    "add_common_backtest_cli_args",
     "buy_hold_pct",
     "calculate_performance_metrics",
     "format_performance_summary",

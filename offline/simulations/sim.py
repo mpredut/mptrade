@@ -46,23 +46,21 @@ class PriceWindow:
 
     def normalize_indices(self):
         """Normalise the indices when max_index is reached."""
-        window_start = self.current_index - len(self.prices)
+        window_start = max(0, self.current_index - len(self.prices))
         self._evict_before(self.min_deque, window_start)
         self._evict_before(self.max_deque, window_start)
-        min_index = min(
-            (d[0][0] for d in (self.min_deque, self.max_deque) if d),
-            default=self.current_index,
-        )
-        self.min_deque = deque([(index - min_index, price) for index, price in self.min_deque])
-        self.max_deque = deque([(index - min_index, price) for index, price in self.max_deque])
-        self.current_index -= min_index  # Adjust the current index.
+        if window_start <= 0:
+            return
+        self.min_deque = deque([(index - window_start, price) for index, price in self.min_deque])
+        self.max_deque = deque([(index - window_start, price) for index, price in self.max_deque])
+        self.current_index -= window_start  # Adjust the current index.
 
     def process_price(self, price):
         px = safe_float(price, default=None)
         if px is None:
             return
 
-        if self.current_index >= self.max_index:
+        if self.current_index >= max(self.max_index, self.window_size + 1):
             self.normalize_indices()
 
         # Add the new price to the price list.

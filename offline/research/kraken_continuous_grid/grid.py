@@ -26,6 +26,7 @@ if ROOT not in sys.path:
 from botcore import (
     int_env,
     load_local_module,
+    lru_dict_put,
     optional_env,
     safe_float,
     safe_nonneg_float,
@@ -88,14 +89,14 @@ CONFIGS = {
     "ov1000_t8_gateoff": (ov(R(LIVE, tp_regime_gate=False), 1000, 8), 0),
     "ov650_t8_brake": (R(ov(LIVE, 650, 8), dca_trend_brake=True, dca_brake_min_pct=1.5), 0),
     # D. re-entry
-    "reentry0": (R(LIVE, reentry_drop_pct=0.0, reentry_hybrid_enabled=False), 0),
-    "reentry1": (R(LIVE, reentry_drop_pct=1.0, reentry_hybrid_enabled=False), 0),
-    "reentry4": (R(LIVE, reentry_drop_pct=4.0, reentry_hybrid_enabled=False), 0),
-    "reentry_adaptive": (R(LIVE, reentry_adaptive=True, reentry_hybrid_enabled=False), 0),
-    "peak2.2": (R(LIVE, reentry_drop_pct=2.2, reentry_ttl_hours=0.0, reentry_hybrid_enabled=False), 1),
-    "peak4": (R(LIVE, reentry_drop_pct=4.0, reentry_ttl_hours=0.0, reentry_hybrid_enabled=False), 1),
+    "reentry0": (R(LIVE, reentry_drop_pct=0.0, reentry_ttl_hours=0.0, reentry_bear_bounce_pct=0.0, reentry_hybrid_enabled=False), 0),
+    "reentry1": (R(LIVE, reentry_drop_pct=1.0, reentry_ttl_hours=0.0, reentry_bear_bounce_pct=0.0, reentry_hybrid_enabled=False), 0),
+    "reentry4": (R(LIVE, reentry_drop_pct=4.0, reentry_ttl_hours=0.0, reentry_bear_bounce_pct=0.0, reentry_hybrid_enabled=False), 0),
+    "reentry_adaptive": (R(LIVE, reentry_adaptive=True, reentry_ttl_hours=0.0, reentry_bear_bounce_pct=0.0, reentry_hybrid_enabled=False), 0),
+    "peak2.2": (R(LIVE, reentry_drop_pct=2.2, reentry_ttl_hours=0.0, reentry_bear_bounce_pct=0.0, reentry_hybrid_enabled=False), 1),
+    "peak4": (R(LIVE, reentry_drop_pct=4.0, reentry_ttl_hours=0.0, reentry_bear_bounce_pct=0.0, reentry_hybrid_enabled=False), 1),
     "peak2.2_oldlive": (OLD, 1),
-    "ov650_t8_peak4": (ov(R(LIVE, reentry_drop_pct=4.0, reentry_ttl_hours=0.0, reentry_hybrid_enabled=False), 650, 8), 1),
+    "ov650_t8_peak4": (ov(R(LIVE, reentry_drop_pct=4.0, reentry_ttl_hours=0.0, reentry_bear_bounce_pct=0.0, reentry_hybrid_enabled=False), 650, 8), 1),
     # E. stop loss
     "sl0": (R(LIVE, stop_loss_pct=0.0), 0), "sl8": (R(LIVE, stop_loss_pct=8.0), 0),
     "sl25": (R(LIVE, stop_loss_pct=25.0), 0),
@@ -134,7 +135,7 @@ def load(path):
     if cached is not None:
         return cached
     rows = load_ohlc_tuples_csv(path, strict=True)
-    _LOAD_CACHE[(key, mtime_ns)] = rows
+    lru_dict_put(_LOAD_CACHE, (key, mtime_ns), rows, max_entries=64)
     return rows
 
 
@@ -155,8 +156,15 @@ def load_asset(asset):
         if len(idx) >= 360 and idx[0] >= WARM:
             year_slices.append((str(y), idx[0], idx[-1] + 1))
     res = (bars, ohlc, year_slices)
-    _ASSET_CACHE[asset_key] = res
+    lru_dict_put(_ASSET_CACHE, asset_key, res, max_entries=64)
     return res
+
+
+def resolve_grid_workers() -> int:
+    raw_w = int_env("WORKERS")
+    if raw_w is not None and raw_w > 0:
+        return raw_w
+    return min(4, os.cpu_count() or 2)
 
 
 def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
@@ -165,16 +173,23 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
     FLAGS["peak"] = bool(peak)
     strat.Strategy.step = _step if peak else _orig_step
     try:
-        ohlc = [b[1:] for b in bars] if (bars and len(bars[0]) == 5) else bars
-        w_ohlc = [b[1:] for b in warm] if (warm and len(warm[0]) == 5) else warm
+        has_ts = bool(bars and len(bars[0]) == 5)
+        has_w_ts = bool(warm and len(warm[0]) == 5)
+        ohlc = [b[1:] for b in bars] if has_ts else bars
+        w_ohlc = [b[1:] for b in warm] if has_w_ts else warm
+        ts = [b[0] for b in bars] if has_ts else None
+        w_ts = [b[0] for b in warm] if has_w_ts else None
         if not ohlc:
             if initial_cash is not None:
                 return {"ret": 0.0, "dd": 0.0, "cyc": 0, "refused": 0, "min_cash": safe_nonneg_float(initial_cash, 0.0)}
             return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "bh": 0.0}
         fee_val = safe_nonneg_float(fee, 0.0)
-        interval_params = rp.align_spot_interval_params(params, 240)
-        m = rp.run_replay(ohlc, interval_params, fee_pct=fee_val, bar_minutes=240,
-                          warmup_ohlc=w_ohlc, initial_cash=initial_cash)
+        interval_params = rp.scale_subbar_timeout_params(rp.align_spot_interval_params(params, 240), 240)
+        m = rp.run_replay(
+            ohlc, interval_params, fee_pct=fee_val, bar_minutes=240,
+            warmup_ohlc=w_ohlc, initial_cash=initial_cash,
+            timestamps=ts, warmup_timestamps=w_ts,
+        )
         tot = safe_float(m.get("total"), 0.0)
         if initial_cash is not None:
             ic = safe_pos_float(initial_cash, 0.0)
@@ -214,15 +229,15 @@ def task(args):
         end_ts = bars[-1][0] if bars else 0
         res = {"asset": asset, "cfg": cfg, "bars": len(bars),
                "start_ts": start_ts, "end_ts": end_ts, "params_repr": repr(params), "peak": bool(peak),
-               "full": replay(ohlc[WARM:], ohlc[:WARM], params, peak), "year": {}, "w30": [], "w90": []}
+               "full": replay(bars[WARM:], bars[:WARM], params, peak), "year": {}, "w30": [], "w90": []}
         for y_str, s_idx, e_idx in year_slices:
-            res["year"][y_str] = replay(ohlc[s_idx:e_idx], ohlc[s_idx - WARM:s_idx], params, peak)
+            res["year"][y_str] = replay(bars[s_idx:e_idx], bars[s_idx - WARM:s_idx], params, peak)
         for key, size in (("w30", W30), ("w90", W90)):
-            for s in range(WARM, len(ohlc) - size + 1, WSTEP):
-                r = replay(ohlc[s:s + size], ohlc[s - WARM:s], params, peak)
+            for s in range(WARM, len(bars) - size + 1, WSTEP):
+                r = replay(bars[s:s + size], bars[s - WARM:s], params, peak)
                 res[key].append([r["ret"], r["dd"], r["bh"], r["cyc"]])
         res["secs"] = round(time.time() - t0, 1)
-        _TASK_CACHE[cache_key] = res
+        lru_dict_put(_TASK_CACHE, cache_key, res, max_entries=512)
         return res
     except Exception:
         return {"asset": asset, "cfg": cfg, "error": traceback.format_exc()}
@@ -279,7 +294,7 @@ if __name__ == "__main__":
             canon_groups[k] = []
             canon_todo.append((a, c))
         canon_groups[k].append(c)
-    workers = int_env("WORKERS") or (os.cpu_count() or 4)
+    workers = resolve_grid_workers()
     print(f"[grid] {len(assets)} assets x {len(CONFIGS)} configs, {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0

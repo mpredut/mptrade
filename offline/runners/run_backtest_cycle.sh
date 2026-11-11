@@ -14,7 +14,9 @@ if [ "${1:-local}" = "remote" ] || [ "${1:-}" = "trigger" ]; then
     "$REPO_ROOT/offline/runners/sync_cache_to.sh" dev
     echo "[trigger $(date '+%F %T')] 2/3 running the backtest cycle on dev"
     rc_dev=0
-    DEV_SSH_TIMEOUT=10 dev_ssh "PILOT_ONLY='${PILOT_ONLY:-}' ~/$DEV_PATH/offline/runners/run_backtest_cycle.sh local" || rc_dev=$?
+    rpath="$(dev_remote_path_expr)"
+    pilot_q="$(printf '%q' "${PILOT_ONLY:-}")"
+    DEV_SSH_TIMEOUT=10 dev_ssh "PILOT_ONLY=$pilot_q \"$rpath/offline/runners/run_backtest_cycle.sh\" local" || rc_dev=$?
     if [ "$rc_dev" -eq 75 ]; then
         echo "[trigger $(date '+%F %T')] DEV cycle already in progress (rc=75) -- skipping apply_proposals on PROD."
         exit 0

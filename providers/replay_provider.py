@@ -31,7 +31,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import canonical_base_asset, legacy_filenames_for
-from state_io import read_jsonl_dicts
+from state_io import iter_jsonl_dicts
 from .base import MarketDataProvider
 from .quantity import resolve_assets
 from .strategy_executor import PairPrecision, ProviderError, SubmissionRefused
@@ -50,15 +50,17 @@ _BT_ENV_KEYS = (
 )
 
 
+def _noop_print(*_args, **_kwargs) -> None:
+    pass
+
+
 @contextlib.contextmanager
 def backtest_isolation_context(quiet: bool = False):
     """Temporarily set backtest/replay isolation env flags and optional print suppression."""
     quiet_b = _parse_bool_flag(quiet, default=False)
     prev_print = builtins.print
     if quiet_b:
-        with contextlib.suppress(Exception):
-            import log
-            log.disable_print()
+        builtins.print = _noop_print
     orig_env = {k: os.environ.get(k) for k in _BT_ENV_KEYS}
     for k in _BT_ENV_KEYS:
         os.environ[k] = "1"
@@ -96,10 +98,15 @@ class SimClock:
         return self.ts
 
 
-def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
+def load_price_series(
+    path: str, symbol: str, *, max_samples: Optional[int] = None
+) -> List[Tuple[float, float]]:
     """Read a symbol JSONL cache into ascending (timestamp_seconds, price) pairs."""
     out: List[Tuple[float, float]] = []
     if not isinstance(path, str) or not path.strip() or not isinstance(symbol, str) or not symbol.strip():
+        return out
+    max_n = exact_pos_int(max_samples, default=None) if max_samples is not None else None
+    if max_samples is not None and max_n is None:
         return out
     if not os.path.isfile(path):
         with contextlib.suppress(Exception):
@@ -108,7 +115,7 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
                     path = legacy_path
                     break
     sym_cf = symbol.strip().casefold()
-    for rec in read_jsonl_dicts(path):
+    for rec in iter_jsonl_dicts(path):
         rec_s = rec.get("s")
         if not isinstance(rec_s, str) or rec_s.strip().casefold() != sym_cf:
             continue
@@ -121,7 +128,7 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
         if ts_ms_f is not None and px_val is not None:
             out.append((ts_ms_f / 1000.0, px_val))
     out.sort(key=lambda x: x[0])
-    return out
+    return out[-max_n:] if max_n is not None else out
 
 
 class _OrderList(list):

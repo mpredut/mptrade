@@ -44,6 +44,8 @@ def run_comparison(csv_path=None):
     warmup_bars = 40 if len(bars) > 60 else 0
     eval_bars = bars[warmup_bars:]
     warmup_ohlc = bars[:warmup_bars]
+    eval_ts = [r.timestamp for r in records[warmup_bars:]]
+    warmup_ts = [r.timestamp for r in records[:warmup_bars]]
     sl_levels = [6.0, 8.0, 10.0, 12.0]
     results = []
 
@@ -51,7 +53,8 @@ def run_comparison(csv_path=None):
         common_reentry = dict(
             adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=2.0, reentry_tolerance_pct=0.05,
             reentry_adaptive=False, reentry_sl_bounce_pct=1.5, tp_tranches=[],
-            reentry_hybrid_enabled=True, reentry_pullback_pct=2.0, reentry_ttl_hours=48.0,
+            reentry_hybrid_enabled=True, reentry_pullback_pct=2.0,
+            reentry_pullback_adaptive=False, reentry_ttl_hours=48.0,
         )
         p_base = align_spot_interval_params(strat.StratParams(
             currency="USD", entry_amount=350.0, entry_discount_pct=0.2, dca_amount=100.0,
@@ -78,8 +81,14 @@ def run_comparison(csv_path=None):
         if sl == sl_levels[0] and warmup_bars > 0 and len(bars) > warmup_bars:
             prewarm_trend_series(bars, warmup=warmup_bars, params=p_base, bar_minutes=bar_minutes)
 
-        res_base = run_replay(eval_bars, p_base, fee_pct=0.26, bar_minutes=240, warmup_ohlc=warmup_ohlc)
-        res_prop = run_replay(eval_bars, p_prop, fee_pct=0.26, bar_minutes=240, warmup_ohlc=warmup_ohlc)
+        res_base = run_replay(
+            eval_bars, p_base, fee_pct=0.26, bar_minutes=240,
+            warmup_ohlc=warmup_ohlc, timestamps=eval_ts, warmup_timestamps=warmup_ts,
+        )
+        res_prop = run_replay(
+            eval_bars, p_prop, fee_pct=0.26, bar_minutes=240,
+            warmup_ohlc=warmup_ohlc, timestamps=eval_ts, warmup_timestamps=warmup_ts,
+        )
         results.append((sl, res_base, res_prop))
 
     print("\n" + "=" * 107)
