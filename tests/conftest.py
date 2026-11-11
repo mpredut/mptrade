@@ -493,6 +493,34 @@ class DummyTrailingAdapter:
         pass
 
 
+class DummyGeminiClient:
+    """Reusable deterministic ``GeminiClient`` test stub recording calls and prompts."""
+
+    _custom_runner = True
+
+    def __init__(self, response_dict=None, *, raises_timeout: bool = False):
+        self.response_dict = response_dict
+        self.raises_timeout = raises_timeout
+        self.last_prompt = None
+        self.calls = []
+        self.call_count = 0
+
+    def query_json(self, prompt: str = "", timeout_sec: float = 25.0, thread_title=None, **kwargs):
+        self.call_count += 1
+        self.last_prompt = prompt
+        self.calls.append((prompt, {"timeout_sec": timeout_sec, "thread_title": thread_title, **kwargs}))
+        if self.raises_timeout:
+            return None
+        if callable(self.response_dict):
+            return self.response_dict(prompt, timeout_sec=timeout_sec, thread_title=thread_title, **kwargs)
+        return self.response_dict
+
+    def query_topic_json(self, topic_key: str, prompt: str, *, subtitle: str | None = None, **kwargs):
+        from intelligence.sentiment.gemini_client import query_topic_json
+
+        return query_topic_json(self, topic_key, prompt, subtitle=subtitle, **kwargs)
+
+
 class _TempDirPath(str):
     """Temporary directory path string that also exposes ``.name`` and ``.cleanup()`` like ``TemporaryDirectory``."""
 

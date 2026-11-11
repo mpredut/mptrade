@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import order_guard
 from market_regime import MarketRegimeDecision, MarketRegimeContext
 from providers.quantity import decide_quantity
-from tests.conftest import make_test_regime_context
+from tests.conftest import DummyGeminiClient, make_test_regime_context
+from types import SimpleNamespace
 from instrument import Instrument
 from intelligence.internal.guards.guard_decision import GuardDecision
 from providers.hyperliquid_provider import HyperliquidProvider
@@ -385,12 +386,10 @@ class TestCase5HistoryFailClosed:
             hp.get_orders("PURR/USDC", "BUY", 86400)
 
     def test_order_guard_daily_limit_and_weight_limit_fail_closed_on_history_error(self):
-        class BrokenHistoryProvider:
-            name = "mock"
-            def get_orders(self, symbol, side, since_s):
-                raise ProviderError("Network error fetching trade history")
-
-        p = BrokenHistoryProvider()
+        p = SimpleNamespace(
+            name="mock",
+            get_orders=lambda *_a, **_k: (_ for _ in ()).throw(ProviderError("Network error fetching trade history")),
+        )
         ok, reason = order_guard.daily_limit_guard(p, "BTCUSDC", "BUY")
         assert ok is False
         assert reason == "history_unavailable"
@@ -426,12 +425,10 @@ class TestCase5HistoryFailClosed:
             p.last_opposite_fill("BTCUSDC", "BUY")
 
     def test_profit_guard_dynamic_window_fails_closed_on_unavailable_history(self, monkeypatch):
-        class FailingHistoryProvider:
-            name = "binance"
-            def get_orders(self, symbol, side, since_s):
-                raise ProviderError("history fetch network error")
-
-        p = FailingHistoryProvider()
+        p = SimpleNamespace(
+            name="binance",
+            get_orders=lambda *_a, **_k: (_ for _ in ()).throw(ProviderError("history fetch network error")),
+        )
         monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "dynamic")
         monkeypatch.setattr(order_guard, "get_dynamic_window_sec_cfg", lambda *a, **k: 3600.0)
 
@@ -1363,15 +1360,9 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
     def test_batch7_high_stake_guard_symmetric_buy_sell_prompt_and_telemetry(self):
         """HighStakeGuard prompt and telemetry must be symmetric for BUY and SELL."""
-
-        prompts = []
-        class FakeGeminiClient:
-            def query_json(self, prompt, timeout_sec=None, thread_title=None, **kwargs):
-                prompts.append((thread_title, prompt))
-                return {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"}
-
+        client = DummyGeminiClient({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"})
         guard = HighStakeGuard(
-            gemini_client=FakeGeminiClient(),
+            gemini_client=client,
             min_notional_eur=1000.0,
             timeout_sec=1.0,
             fallback_action="allow",
@@ -1380,9 +1371,9 @@ class TestBatch6IntelligenceAndRoutingFixes:
         guard.check("BTCUSDC", "BUY", 85000.0, 0.05, notional_eur=4250.0, telemetry={"Orderbook Ask Wall Ahead": "$2.5M"})
         guard.check("BTCUSDC", "SELL", 85000.0, 0.05, notional_eur=4250.0, telemetry={"Orderbook Bid Wall Ahead": "$3.1M"})
 
-        assert len(prompts) == 2
-        buy_prompt = prompts[0][1]
-        sell_prompt = prompts[1][1]
+        assert len(client.calls) == 2
+        buy_prompt = client.calls[0][0]
+        sell_prompt = client.calls[1][0]
 
         assert "HIGH-VALUE BUY order" in buy_prompt
         assert "below 0.80 in a FLAT or BEAR market" in buy_prompt

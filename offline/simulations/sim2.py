@@ -8,8 +8,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from offline.simulations.sim import run_interactive_simulation
+from offline.simulations.sim import PriceWindow, run_interactive_simulation
 import matplotlib.pyplot as plt  # noqa: E402
+
+__all__ = ["PriceWindow", "main", "plot_graphs", "run_interactive_simulation"]
 
 
 def plot_graphs(price_window, full_prices):

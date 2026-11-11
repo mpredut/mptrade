@@ -87,6 +87,10 @@ class _ReconcilingBinanceExecutor:
 
     def order_by_client_id(self, symbol, client_order_id):
         self.lookup_calls.append((symbol, client_order_id))
+        if isinstance(self._lookups, Exception):
+            raise self._lookups
+        if callable(self._lookups):
+            return self._lookups(symbol, client_order_id)
         if isinstance(self._lookups, list):
             return self._lookups.pop(0)
         return dict(self._lookups or {}).get(client_order_id)
@@ -501,10 +505,9 @@ class RTradeThreadingTest(unittest.TestCase):
             [ticket["order_id"] for ticket in merged["tickets"]])
 
     def test_live_pair_guard_refusal_does_not_run_response_loss_recovery(self):
-        class Executor(_ReconcilingBinanceExecutor):
-            @staticmethod
-            def order_by_client_id(*_args, **_kwargs):
-                raise AssertionError("pre-submit refusal must not query venue")
+        executor = _ReconcilingBinanceExecutor(
+            lookups=AssertionError("pre-submit refusal must not query venue")
+        )
 
         def refuse(*_args, **kwargs):
             kwargs["_outcome_context"].update(
@@ -515,7 +518,7 @@ class RTradeThreadingTest(unittest.TestCase):
             store = RTradePairStore(os.path.join(root, "pairs.json"))
             with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
                  patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=Executor()), \
+                 patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
                  patch.object(rtrade.mkt, "place", side_effect=refuse) as place:
                 venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
                 ticket = venue.place_limit("SELL", 101.0, 1.0, "pair-1")
@@ -531,15 +534,12 @@ class RTradeThreadingTest(unittest.TestCase):
 
     @staticmethod
     def _recovered_open_executor():
-        class Executor(_ReconcilingBinanceExecutor):
-            @staticmethod
-            def order_by_client_id(_symbol, _client_id):
-                return {
-                    "orderId": "88", "status": "NEW",
-                    "price": "99.25", "origQty": "0.8",
-                }
-
-        return Executor()
+        return _ReconcilingBinanceExecutor(
+            lookups=lambda _symbol, _client_id: {
+                "orderId": "88", "status": "NEW",
+                "price": "99.25", "origQty": "0.8",
+            }
+        )
 
     def test_live_pair_recovers_lost_submit_response_without_resubmit(self):
         with tempfile.TemporaryDirectory(prefix="rtrade-recover-") as root:
@@ -582,15 +582,7 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertFalse(venue.recovery_blocked)
 
     def test_place_limit_never_reuses_ambiguous_client_id_after_absence(self):
-        class Executor(_ReconcilingBinanceExecutor):
-            def __init__(self):
-                self.lookup_calls = 0
-
-            def order_by_client_id(self, _symbol, _client_id):
-                self.lookup_calls += 1
-                return None
-
-        executor = Executor()
+        executor = _ReconcilingBinanceExecutor()
         recovery_now = [100.0]
         with tempfile.TemporaryDirectory(prefix="rtrade-live-retry-") as root:
             store = RTradePairStore(os.path.join(root, "pairs.json"))
@@ -608,7 +600,7 @@ class RTradeThreadingTest(unittest.TestCase):
                 # The same coordinator tick cannot count as another absence.
                 self.assertIsNone(
                     venue.place_limit("BUY", 99.36, 1.0, "pair-1"))
-                self.assertEqual(executor.lookup_calls, 1)
+                self.assertEqual(len(executor.lookup_calls), 1)
                 recovery_now[0] += rtrade.RTRADE_PAIR_POLL_SEC
                 self.assertIsNone(
                     venue.place_limit("BUY", 99.36, 1.0, "pair-1"))
@@ -618,7 +610,7 @@ class RTradeThreadingTest(unittest.TestCase):
 
             canonical = store.active("TAOUSDC")[0]["intents"]["limit:BUY"]
         place.assert_called_once()
-        self.assertEqual(executor.lookup_calls, 2)
+        self.assertEqual(len(executor.lookup_calls), 2)
         self.assertEqual(
             canonical["recovery_state"], "absence_confirmed_no_reuse")
         self.assertEqual(canonical["lookup_misses"], 2)
@@ -669,10 +661,9 @@ class RTradeThreadingTest(unittest.TestCase):
         cases = ["recovery", "new_round"]
         for case in cases:
             with self.subTest(case=case):
-                class Executor(_ReconcilingBinanceExecutor):
-                    @staticmethod
-                    def order_by_client_id(_symbol, _client_id):
-                        raise TimeoutError("lookup unavailable")
+                executor = _ReconcilingBinanceExecutor(
+                    lookups=TimeoutError("lookup unavailable")
+                )
 
                 with tempfile.TemporaryDirectory(prefix=f"rtrade-ambiguous-{case}-") as root:
                     store = RTradePairStore(os.path.join(root, "pairs.json"))
@@ -685,7 +676,7 @@ class RTradeThreadingTest(unittest.TestCase):
                         
                     with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
                          patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                         patch.object(rtrade.mkt, "provider_by_name", return_value=Executor()), \
+                         patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
                          patch.object(rtrade.mkt, "place", return_value=None) as place:
                         venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
                         if case == "recovery":

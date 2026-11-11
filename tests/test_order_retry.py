@@ -1435,35 +1435,44 @@ def test_order_rollback_sanitizes_nan_level_in_extract_order_restore_params_iter
     p = ol.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": float("nan")})
     assert p["level"] is None
 
+class _DummyLifecycleExec:
+    def __init__(self, name="kraken", *, echo_args=False):
+        self.name = name
+        self._echo_args = echo_args
+
+    def reconciliation_capabilities(self):
+        return OrderReconciliationCapabilities(
+            lookup_by_client_order_id=True,
+            status_by_order_id=True,
+            cancel_by_order_id=True,
+            not_found_reliable_for_seconds=3600.0,
+        )
+
+    def submit_order(self, symbol, side, qty, price=None, **kw):
+        return "  OID-777  "
+
+    def order_status(self, symbol, order_id):
+        if self._echo_args:
+            return {"symbol": symbol, "oid": order_id}
+        return OrderStatus("open", filled_qty=0.0, cost=0.0, fee=0.0)
+
+    def cancel_order(self, symbol, order_id):
+        if self._echo_args:
+            return {"symbol": symbol, "oid": order_id}
+        return None
+
+    def order_by_client_id(self, symbol, client_order_id):
+        if self._echo_args:
+            return {"symbol": symbol, "cid": client_order_id}
+        return {"order_id": "OID-777", "status": "open"}
+
+
 def test_auditedstrategyexecutor_normalizes_symbol_case_whitespace_and_order_id_across_iter123_s2(tmp_path):
     """[ITER123 #2] AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status & StrategyExecutorLifecycleApi rejects NaN/'nan'/'null' and normalizes integer float IDs."""
     from providers.execution_audit import ExecutionAudit
     # 2. AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status
-    class _DummyExec:
-        name = "kraken"
-
-        def reconciliation_capabilities(self):
-            return OrderReconciliationCapabilities(
-                lookup_by_client_order_id=True,
-                status_by_order_id=True,
-                cancel_by_order_id=True,
-                not_found_reliable_for_seconds=3600.0,
-            )
-
-        def submit_order(self, symbol, side, qty, price=None, **kw):
-            return "  OID-777  "
-
-        def order_status(self, symbol, order_id):
-            return OrderStatus("open", filled_qty=0.0, cost=0.0, fee=0.0)
-
-        def cancel_order(self, symbol, order_id):
-            return None
-
-        def order_by_client_id(self, symbol, client_order_id):
-            return {"order_id": "OID-777", "status": "open"}
-
     audit = ExecutionAudit(directory=str(tmp_path / "audit"))
-    wrapped = AuditedStrategyExecutor(_DummyExec(), audit=audit, venue="kraken")
+    wrapped = AuditedStrategyExecutor(_DummyLifecycleExec("kraken"), audit=audit, venue="kraken")
     oid = wrapped.submit_order_with_intent("intent-abc", " xbtusd ", "buy", 0.01, 50000.0)
     assert oid == "OID-777"
     assert wrapped._intent("XBTUSD", "OID-777") == "intent-abc"
@@ -1626,27 +1635,7 @@ def test_trackedorderresult_order_known_rejects_nan_none_iter157_s1():
 def test_strategyexecutorlifecycleapi_rejects_and_normalizes_iter157_s2():
     """[ITER157 #2] StrategyExecutorLifecycleApi rejects '0' and normalizes .0."""
     # 2. StrategyExecutorLifecycleApi rejects "0" and normalizes .0
-
-    class _DummyExec:
-        name = "binance"
-
-        def reconciliation_capabilities(self):
-            return OrderReconciliationCapabilities(
-                lookup_by_client_order_id=True,
-                status_by_order_id=True,
-                cancel_by_order_id=True,
-            )
-
-        def order_by_client_id(self, symbol, cid):
-            return {"symbol": symbol, "cid": cid}
-
-        def order_status(self, symbol, oid):
-            return {"symbol": symbol, "oid": oid}
-
-        def cancel_order(self, symbol, oid):
-            return {"symbol": symbol, "oid": oid}
-
-    adapter = ol.StrategyExecutorLifecycleApi(_DummyExec())
+    adapter = ol.StrategyExecutorLifecycleApi(_DummyLifecycleExec("binance", echo_args=True))
     with pytest.raises(ProviderError):
         adapter.order_by_client_id("BTCUSDC", "0")
     with pytest.raises(ProviderError):

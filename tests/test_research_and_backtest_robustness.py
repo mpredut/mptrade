@@ -57,7 +57,7 @@ from strategies.position_exit_manager import (
     ReentrySnapshot,
 )
 from strategies.spot_engine import StratParams
-from tests.conftest import MockHttpResponse, MockHttpResponse as _DummyBytesResp
+from tests.conftest import DummyGeminiClient, MockHttpResponse, MockHttpResponse as _DummyBytesResp
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import active_intents
@@ -5426,11 +5426,10 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
     assert fills["last_buy"]["price"] == 100.0
     assert fills["last_sell"]["price"] == 110.0
 
-    class _DummyGemini:
-        def query_json(self, *args, **kwargs):
-            return {"decision": "DOWNSCALE", "suggested_scale": 0.4, "reason": "test_downscale"}
-
-    hsg = HighStakeGuard(gemini_client=_DummyGemini(), min_notional_eur=500.0, cache_ttl_sec=0.0)  # type: ignore[arg-type]
+    dummy_gemini = DummyGeminiClient(
+        {"decision": "DOWNSCALE", "suggested_scale": 0.4, "reason": "test_downscale"}
+    )
+    hsg = HighStakeGuard(gemini_client=dummy_gemini, min_notional_eur=500.0, cache_ttl_sec=0.0)  # type: ignore[arg-type]
     dec_hsg = hsg.check("BTCUSDC", "BUY", price=100.0, qty=10.0, notional_eur=0.0, telemetry={"k": "v"})
     assert dec_hsg.suggested_scale == 0.4
 
@@ -5439,7 +5438,7 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
     assert _parse_bool_flag("0.0", default=True) is False
     assert _parse_bool_flag("1.0", default=False) is True
     assert _parse_bool_flag("unknown_token", default=False) is False
-    ps_guard = get_post_stop_reentry_guard(margins={"post_stop_reentry_mode": "off"}, gemini_client=_DummyGemini())  # type: ignore[arg-type]
+    ps_guard = get_post_stop_reentry_guard(margins={"post_stop_reentry_mode": "off"}, gemini_client=dummy_gemini)  # type: ignore[arg-type]
     assert ps_guard.mode == "off"
 
 

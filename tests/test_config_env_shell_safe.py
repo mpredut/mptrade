@@ -26,7 +26,7 @@ from intelligence.sentiment.collectors.market_breadth_collector import MarketBre
 from market_monitor import pricefetcher as pf
 from market_monitor.pricechecker import PriceChecker
 from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairPolicy
-from tests.conftest import DummyTrailingAdapter, make_spot_test_params
+from tests.conftest import DummyGeminiClient, DummyTrailingAdapter, SingleProviderApi, make_spot_test_params
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -792,15 +792,8 @@ def test_intelligence_cli_macro_analyzer_and_instrument_hardening(tmp_path):
         def min_order_qty(self, sym):
             return self.raw_min
 
-    class _DummyApi:
-        def __init__(self, p):
-            self._p = p
-
-        def provider_by_name(self, name):
-            return self._p
-
     prov = _DummyProvider()
-    inst = Instrument("test", "BTCUSDC", "dummy", api=_DummyApi(prov))
+    inst = Instrument("test", "BTCUSDC", "dummy", api=SingleProviderApi(prov))
     assert inst.min_qty() == 0.0
     prov.raw_min = True
     assert inst.min_qty() == 0.0
@@ -877,15 +870,13 @@ def test_geopolitical_sentiment_advisor_and_high_stake_hardening(tmp_path):
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, collect_pretrade_telemetry
     from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
 
-    class _DummyGemini:
-        _custom_runner = True
-
-        def query_json(self, *args, **kwargs):
-            return {"market_bias": "NEUTRAL", "risk_level": "LOW", "confidence": 0.8, "summary": "ok"}
+    dummy_gemini = DummyGeminiClient(
+        {"market_bias": "NEUTRAL", "risk_level": "LOW", "confidence": 0.8, "summary": "ok"}
+    )
 
     # 1. GeopoliticalThreatAnalyzer sanitizes non-finite TTLs
     ga = GeopoliticalThreatAnalyzer(
-        gemini_client=_DummyGemini(),
+        gemini_client=dummy_gemini,
         cache_ttl_sec=float("nan"),
         fallback_retry_ttl_sec=True,
         state_file=str(tmp_path / "geo.json"),
@@ -895,7 +886,7 @@ def test_geopolitical_sentiment_advisor_and_high_stake_hardening(tmp_path):
 
     # 2. SentimentAdvisor.review handles float/None trend_7d_change and advance_ratio without ValueError/TypeError
     sa = SentimentAdvisor(
-        gemini_client=_DummyGemini(),
+        gemini_client=dummy_gemini,
         cache_ttl_sec=float("nan"),
         cache_file=str(tmp_path / "adv.json"),
     )
@@ -907,10 +898,10 @@ def test_geopolitical_sentiment_advisor_and_high_stake_hardening(tmp_path):
     # 3. collect_pretrade_telemetry and HighStakeGuard/PostStopReentryGuard handle non-finite/bool params
     tel = collect_pretrade_telemetry("BTCUSDC", dur_sec=float("inf"), cachedb_dir=str(tmp_path))
     assert "Trend Duration" not in tel
-    hsg = HighStakeGuard(gemini_client=_DummyGemini(), min_notional_eur=float("nan"), timeout_sec=True)
+    hsg = HighStakeGuard(gemini_client=dummy_gemini, min_notional_eur=float("nan"), timeout_sec=True)
     assert math.isfinite(hsg.min_notional_eur) and hsg.min_notional_eur > 0
     assert hsg.timeout_sec == 120.0
-    psg = PostStopReentryGuard(gemini_client=_DummyGemini(), timeout_sec=float("nan"), cache_ttl_sec=float("inf"))
+    psg = PostStopReentryGuard(gemini_client=dummy_gemini, timeout_sec=float("nan"), cache_ttl_sec=float("inf"))
     assert psg.timeout_sec == 120.0 and psg.cache_ttl_sec == 0.0
 
 

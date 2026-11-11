@@ -26,22 +26,7 @@ from intelligence.sentiment.guards.post_stop_reentry_guard import (
 )
 from providers.quantity import QuantityDecision
 from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
-
-
-class FakeGeminiClient(GeminiClient):
-    """Mock GeminiClient returning deterministic JSON responses."""
-
-    def __init__(self, response_dict=None, raises_timeout=False):
-        super().__init__()
-        self.response_dict = response_dict
-        self.raises_timeout = raises_timeout
-        self.last_prompt = None
-
-    def query_json(self, prompt: str, timeout_sec: float = 25.0, thread_title=None, **kwargs):
-        self.last_prompt = prompt
-        if self.raises_timeout:
-            return None
-        return self.response_dict
+from tests.conftest import DummyGeminiClient as FakeGeminiClient
 
 
 def test_disabled_mode_allows():
@@ -285,15 +270,7 @@ def test_decision_caching_and_notify_cooldown():
     and suppress duplicate ntfy alerts within cache_ttl_sec."""
 
     clear_post_stop_reentry_cache()
-    call_count = 0
-
-    class CountingGeminiClient(FakeGeminiClient):
-        def query_json(self, prompt: str, timeout_sec: float = 25.0, thread_title=None, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            return super().query_json(prompt, timeout_sec=timeout_sec, thread_title=thread_title, **kwargs)
-
-    client = CountingGeminiClient(response_dict={
+    client = FakeGeminiClient(response_dict={
         "decision": "APPROVED",
         "suggested_scale": 1.0,
         "reason": "Whale accumulation confirmed",
@@ -326,7 +303,7 @@ def test_decision_caching_and_notify_cooldown():
         )
         assert dec1.allowed is True
         assert dec2.allowed is True
-        assert call_count == 1, "Gemini LLM must only be queried once within cache_ttl_sec"
+        assert client.call_count == 1, "Gemini LLM must only be queried once within cache_ttl_sec"
         assert mock_notify.call_count == 1, "Notification must only be sent once within cache_ttl_sec"
 
         # After cache_ttl_sec expires (e.g. +605s), a fresh query is allowed
@@ -340,7 +317,7 @@ def test_decision_caching_and_notify_cooldown():
             now=1700000705.0,
         )
         assert dec3.allowed is True
-        assert call_count == 2
+        assert client.call_count == 2
         assert mock_notify.call_count == 2
     clear_post_stop_reentry_cache()
 

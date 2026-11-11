@@ -15,13 +15,33 @@ import pytest
 
 
 class _OhlcClosesProvider:
-    def __init__(self, name="Binance"):
+    def __init__(self, name="Binance", *, closes=None, fail_first=False, error=None):
         self.name = name
         self.calls = []
+        self._closes = closes
+        self._fail_first = fail_first
+        self._error = error
 
-    def ohlc_closes(self, _symbol, interval):
+    def ohlc_closes(self, symbol, interval):
         self.calls.append(interval)
-        return [100, 101, 102, 103, 104, 105]
+        if self._error is not None:
+            raise self._error
+        if self._fail_first and len(self.calls) == 1:
+            raise RuntimeError("temporary")
+        if callable(self._closes):
+            return self._closes(symbol, interval)
+        return list(self._closes or [100, 101, 102, 103, 104, 105])
+
+
+class _OhlcSeriesProvider:
+    def __init__(self, name, series_fn):
+        self.name = name
+        self.calls = []
+        self._series_fn = series_fn
+
+    def ohlc_series(self, symbol, interval):
+        self.calls.append((symbol, interval))
+        return self._series_fn(symbol, interval)
 
 
 class MarketRegimeEvaluatorTest(unittest.TestCase):
@@ -182,19 +202,16 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertTrue(resolution.primary.usable)
 
     def test_interval_specific_age_limits_select_fresh_fallback(self):
-        class Provider:
-            name = "Kraken"
-
-            def ohlc_series(self, _symbol, interval):
-                observed_at = 900 if interval == 1 else 980
-                return ClosedPriceSeries(
-                    (100, 101, 102, 103, 104, 105),
-                    interval,
-                    observed_at,
-                )
-
+        provider = _OhlcSeriesProvider(
+            "Kraken",
+            lambda _symbol, interval: ClosedPriceSeries(
+                (100, 101, 102, 103, 104, 105),
+                interval,
+                900 if interval == 1 else 980,
+            ),
+        )
         resolution = MarketRegimeService().resolve_with_evidence(
-            Provider(),
+            provider,
             "HYPEUSD",
             horizon="short",
             ohlc_max_age_seconds={1: 30, 5: 60},
@@ -213,21 +230,18 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         )
 
     def test_gap_outside_consumed_window_does_not_invalidate_series(self):
-        class Provider:
-            name = "Kraken"
-
-            def ohlc_series(self, _symbol, interval):
-                timestamps = [100 + index * 60 for index in range(20)]
-                timestamps[2] += 30
-                return ClosedPriceSeries(
-                    tuple(range(100, 120)),
-                    interval,
-                    timestamps[-1],
-                    tuple(timestamps),
-                )
+        def _series(_symbol, interval):
+            timestamps = [100 + index * 60 for index in range(20)]
+            timestamps[2] += 30
+            return ClosedPriceSeries(
+                tuple(range(100, 120)),
+                interval,
+                timestamps[-1],
+                tuple(timestamps),
+            )
 
         resolution = MarketRegimeService().resolve_with_evidence(
-            Provider(),
+            _OhlcSeriesProvider("Kraken", _series),
             "HYPEUSD",
             allow_fallback=False,
             ohlc_max_age_seconds={1: 30},
@@ -263,19 +277,17 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         )
 
     def test_timestamped_closed_series_propagates_verified_freshness(self):
-        class Provider:
-            name = "Hyperliquid"
-
-            def ohlc_series(self, _symbol, interval):
-                return ClosedPriceSeries(
-                    (100, 101, 102, 103, 104, 105),
-                    interval,
-                    980,
-                    (680, 740, 800, 860, 920, 980),
-                )
-
+        provider = _OhlcSeriesProvider(
+            "Hyperliquid",
+            lambda _symbol, interval: ClosedPriceSeries(
+                (100, 101, 102, 103, 104, 105),
+                interval,
+                980,
+                (680, 740, 800, 860, 920, 980),
+            ),
+        )
         resolution = MarketRegimeService().resolve_with_evidence(
-            Provider(),
+            provider,
             "HYPE",
             now=1000,
             ohlc_max_age_seconds=30,
@@ -286,19 +298,17 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertTrue(resolution.primary.closed_candles)
 
     def test_candle_gap_is_retained_but_not_selected(self):
-        class Provider:
-            name = "Gap"
-
-            def ohlc_series(self, _symbol, interval):
-                return ClosedPriceSeries(
-                    (100, 101, 102),
-                    interval,
-                    980,
-                    (800, 860, 980),
-                )
-
+        provider = _OhlcSeriesProvider(
+            "Gap",
+            lambda _symbol, interval: ClosedPriceSeries(
+                (100, 101, 102),
+                interval,
+                980,
+                (800, 860, 980),
+            ),
+        )
         resolution = MarketRegimeService().resolve_with_evidence(
-            Provider(),
+            provider,
             "ABCUSD",
             allow_fallback=False,
             ohlc_max_age_seconds={1: 60},
@@ -311,19 +321,7 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertFalse(resolution.evidence[0].continuous_candles)
 
     def test_unknown_provider_result_uses_short_backoff_then_recovers(self):
-        class Provider:
-            name = "Recovering"
-
-            def __init__(self):
-                self.calls = 0
-
-            def ohlc_closes(self, _symbol, _interval):
-                self.calls += 1
-                if self.calls == 1:
-                    raise RuntimeError("temporary")
-                return [100, 101, 102, 103, 104, 105]
-
-        provider = Provider()
+        provider = _OhlcClosesProvider("Recovering", fail_first=True)
         current = [0.0]
         service = MarketRegimeService(
             cache_ttl_sec=60,
@@ -338,20 +336,13 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertEqual(first.regime, "unknown")
         self.assertEqual(backed_off.regime, "unknown")
         self.assertEqual(recovered.regime, "bull")
-        self.assertEqual(provider.calls, 2)
+        self.assertEqual(len(provider.calls), 2)
 
     def test_common_service_derives_regime_from_provider_ohlc(self):
-        class Provider:
-            def __init__(self, name):
-                self.name = name
-
-            def ohlc_closes(self, _symbol, _interval):
-                return [100, 101, 102, 103, 104, 105]
-
         service = MarketRegimeService(2.0, cache_ttl_sec=30)
         decisions = [
             service._evaluate_provider_source(
-                Provider(name), "HYPEUSD", interval_min=1, window_seconds=360,
+                _OhlcClosesProvider(name), "HYPEUSD", interval_min=1, window_seconds=360,
             )[0]
             for name in ("Kraken", "Hyperliquid")
         ]
@@ -374,39 +365,33 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         )
 
     def test_common_service_is_bounded_and_unknown_on_provider_error(self):
-        class Provider:
-            name = "Hyperliquid"
-            def ohlc_closes(self, _symbol, _interval):
-                raise RuntimeError("offline")
-
         service = MarketRegimeService(cache_max=1)
-        decision = service._evaluate_provider_source(Provider(), "HYPE", interval_min=1)[0]
+        decision = service._evaluate_provider_source(
+            _OhlcClosesProvider("Hyperliquid", error=RuntimeError("offline")), "HYPE", interval_min=1
+        )[0]
         self.assertEqual(decision.regime, "unknown")
         self.assertEqual(decision.reason, "source_error:RuntimeError")
 
     def test_ohlc_fallback_behavior_for_horizons(self):
         with self.subTest(msg="short_falls_back_from_snapshot_to_same_provider_ohlc"):
-            class Provider1:
-                name = "Binance"
-                def ohlc_closes(self, _symbol, interval):
-                    return [100, 101, 102, 103] if interval == 1 else []
-
+            provider1 = _OhlcClosesProvider(
+                "Binance",
+                closes=lambda _symbol, interval: [100, 101, 102, 103] if interval == 1 else [],
+            )
             decision = MarketRegimeService().resolve(
-                Provider1(), "TAOUSDC", horizon="short", snapshot={})
+                provider1, "TAOUSDC", horizon="short", snapshot={})
             self.assertEqual((decision.regime, decision.horizon, decision.source),
                              ("bull", "short", "ohlc:1m"))
             self.assertTrue(decision.fallback_used)
 
         with self.subTest(msg="long_uses_daily_fallback_when_four_hour_source_fails"):
-            class Provider2:
-                name = "Kraken"
-                def ohlc_closes(self, _symbol, interval):
-                    if interval == 240:
-                        raise RuntimeError("4h unavailable")
-                    return list(range(100, 130))
+            def _closes(_symbol, interval):
+                if interval == 240:
+                    raise RuntimeError("4h unavailable")
+                return list(range(100, 130))
 
             decision = MarketRegimeService().resolve(
-                Provider2(), "HYPEUSD", horizon="long")
+                _OhlcClosesProvider("Kraken", closes=_closes), "HYPEUSD", horizon="long")
             self.assertEqual((decision.regime, decision.horizon, decision.source),
                              ("bull", "long", "ohlc:1440m"))
             self.assertTrue(decision.fallback_used)
@@ -436,27 +421,22 @@ def test_marketregimeservice__evaluate_provider_source_clock_skew_iter27_s3():
     """[ITER27 #3] MarketRegimeService._evaluate_provider_source clock skew."""
     # 3. MarketRegimeService._evaluate_provider_source clock skew
     svc = MarketRegimeService(clock=lambda: 1000.0, cache_ttl_sec=60.0)
-
-    calls = []
-    class DummyRegimeProv:
-        name = "kraken"
-        def ohlc_series(self, sym, interval_min):
-            calls.append(sym)
-            return ClosedPriceSeries(
-                closes=tuple(100.0 + i for i in range(30)),
-                interval_min=interval_min,
-                last_closed_at=1000.0,
-                timestamps=tuple(1000.0 - (29 - i) * 60.0 for i in range(30)),
-            )
-
-    prov = DummyRegimeProv()
+    prov = _OhlcSeriesProvider(
+        "kraken",
+        lambda _sym, interval_min: ClosedPriceSeries(
+            closes=tuple(100.0 + i for i in range(30)),
+            interval_min=interval_min,
+            last_closed_at=1000.0,
+            timestamps=tuple(1000.0 - (29 - i) * 60.0 for i in range(30)),
+        ),
+    )
     svc._evaluate_provider_source(prov, "TAOUSD", interval_min=1, window_seconds=900.0)
-    assert len(calls) == 1
+    assert len(prov.calls) == 1
     # Inject future timestamp into cache (clock skew: cached_at = 2000.0 > clock = 1000.0)
     cache_key = ("kraken", "TAOUSD", 1, 900.0)
     svc._cache[cache_key] = (2000.0,) + svc._cache[cache_key][1:]
     svc._evaluate_provider_source(prov, "TAOUSD", interval_min=1, window_seconds=900.0)
-    assert len(calls) == 2
+    assert len(prov.calls) == 2
 
 def test_market_regime_marketregimedecision_marketregimecontext_marketregimeevidence_marketregimeevaluator_marketregimeservice_iter47_s2():
     """[ITER47 #2] market_regime: MarketRegimeDecision, MarketRegimeContext, MarketRegimeEvidence, MarketRegimeEvaluator, MarketRegimeService."""

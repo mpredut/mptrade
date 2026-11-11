@@ -121,6 +121,7 @@ from intelligence.macro_sentiment_ssot import extract_high_severity_headlines_an
 from intelligence.sentiment.guards import high_stake_guard as hsg_mod
 from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
 from market_regime import MarketRegimeContext, MarketRegimeDecision
+from tests.conftest import DummyGeminiClient
 
 
 class TestFearGreedCollector:
@@ -1354,18 +1355,11 @@ def test_unified_ai_agent_base_classes_and_query_topic_json():
     assert issubclass(GeopoliticalThreatAnalyzer, CachedTopicAssessmentAgent)
     assert issubclass(SentimentAdvisor, CachedTopicAssessmentAgent)
 
-    recorded_calls = []
-
-    class _SpyClient(GeminiClient):
-        def query_json(self, prompt, **kwargs):
-            recorded_calls.append((prompt, kwargs))
-            return {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"}
-
-    spy = _SpyClient()
+    spy = DummyGeminiClient({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"})
     res = spy.query_topic_json("guard_high_stake", "Evaluate BUY", subtitle="BUY BTCUSDC €1,000.00")
     assert res == {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"}
-    assert len(recorded_calls) == 1
-    _, kw = recorded_calls[0]
+    assert len(spy.calls) == 1
+    _, kw = spy.calls[0]
     assert kw["topic_key"] == "guard_high_stake"
     assert "BUY BTCUSDC €1,000.00" in kw["thread_title"]
     assert kw["timeout_sec"] == 120.0
@@ -1379,19 +1373,11 @@ def test_pretrade_guard_cross_mode_cache_isolation_and_high_stake_mode():
     psg_mod._POST_STOP_DECISION_CACHE.clear()
     hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
 
-    class _VetoClient(GeminiClient):
-        def __init__(self):
-            self.calls = 0
-
-        def query_json(self, prompt, **kwargs):
-            self.calls += 1
-            return {
-                "decision": "REJECTED",
-                "suggested_scale": 0.0,
-                "reason": "Momentum downward",
-            }
-
-    client = _VetoClient()
+    client = DummyGeminiClient({
+        "decision": "REJECTED",
+        "suggested_scale": 0.0,
+        "reason": "Momentum downward",
+    })
     sell_ts = time.time() - 60.0
 
     # 1. Enforce guard caches VETO; subsequent shadow guard on same stop must NOT block
@@ -1408,7 +1394,7 @@ def test_pretrade_guard_cross_mode_cache_isolation_and_high_stake_mode():
         telemetry={},
     )
     assert d_enf.allowed is False
-    assert client.calls == 1
+    assert client.call_count == 1
 
     g_shadow = PostStopReentryGuard(gemini_client=client, mode="shadow", notify_enabled=False, cache_ttl_sec=60.0)
     d_shd = g_shadow.check(
@@ -1422,7 +1408,7 @@ def test_pretrade_guard_cross_mode_cache_isolation_and_high_stake_mode():
         last_sell_time_s=sell_ts,
         telemetry={},
     )
-    assert client.calls == 1  # Served from cache
+    assert client.call_count == 1  # Served from cache
     assert d_shd.allowed is True
     assert d_shd.reason.startswith("shadow_mode")
     assert d_shd.shadow_decision is not None
@@ -1434,7 +1420,7 @@ def test_pretrade_guard_cross_mode_cache_isolation_and_high_stake_mode():
         min_notional_eur=500.0, gemini_client=client, mode="shadow", notify_enabled=False, cache_ttl_sec=60.0
     )
     hs_d_shd = hs_shadow.check("BTCUSDC", "BUY", 85000.0, 0.02, notional_eur=1200.0, telemetry={})
-    assert client.calls == 2
+    assert client.call_count == 2
     assert hs_d_shd.allowed is True
     assert hs_d_shd.shadow_decision is not None and hs_d_shd.shadow_decision.allowed is False
 
@@ -1442,7 +1428,7 @@ def test_pretrade_guard_cross_mode_cache_isolation_and_high_stake_mode():
         min_notional_eur=500.0, gemini_client=client, mode="enforce", notify_enabled=False, cache_ttl_sec=60.0
     )
     hs_d_enf = hs_enforce.check("BTCUSDC", "BUY", 85000.0, 0.02, notional_eur=1200.0, telemetry={})
-    assert client.calls == 2  # Served from cache
+    assert client.call_count == 2  # Served from cache
     assert hs_d_enf.allowed is False
     assert "Momentum downward" in hs_d_enf.reason
 
@@ -1451,7 +1437,7 @@ def test_pretrade_guard_cross_mode_cache_isolation_and_high_stake_mode():
     hs_d_off = hs_off.check("BTCUSDC", "BUY", 85000.0, 0.02, notional_eur=1200.0, telemetry={})
     assert hs_d_off.allowed is True
     assert hs_d_off.reason == "high_stake_guard_disabled"
-    assert client.calls == 2
+    assert client.call_count == 2
 
 
 def test_macro_analyzer_and_daemon_apply_retry_backoff_on_llm_failure(monkeypatch, tmp_path):
@@ -3059,27 +3045,21 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         json.dumps({"items": {"BTCUSDC": btc_pts}}),
         encoding="utf-8",
     )
-    captured_prompts = []
-
-    class _DummyGemini:
-        def query_json(self, prompt, **kw):
-            captured_prompts.append(prompt)
-            return {
-                "market_bias": "NEUTRAL",
-                "risk_level": "MODERATE",
-                "confidence": 0.7,
-                "summary": "Balanced market.",
-                "key_risks": ["Macro"],
-                "recommended_action": "HOLD",
-            }
-
+    dummy_gemini = DummyGeminiClient({
+        "market_bias": "NEUTRAL",
+        "risk_level": "MODERATE",
+        "confidence": 0.7,
+        "summary": "Balanced market.",
+        "key_risks": ["Macro"],
+        "recommended_action": "HOLD",
+    })
     adv = SentimentAdvisor(
-        gemini_client=_DummyGemini(),
+        gemini_client=dummy_gemini,
         cache_file=str(c_root / "macro" / "sentiment_eval.json"),
     )
     assert adv._effective_cache_dir() == str(c_root)
     adv.review(force_refresh=True, now_ts=1_793_751_600.0)
-    assert captured_prompts and "- BTC Intraday Structure:" in captured_prompts[0]
+    assert dummy_gemini.last_prompt and "- BTC Intraday Structure:" in dummy_gemini.last_prompt
 
     # 2. Bug 9: enrich_sentiment_advisor_live_flow_divergence runs before equities scope clears microstructure
     sa_dict = {
