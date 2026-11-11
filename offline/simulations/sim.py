@@ -115,25 +115,28 @@ class PriceWindow:
         """Return the current high in the window and its relative position."""
         return self._deque_front(self.max_deque)
 
-    def plot_window(self):
+    def plot_window(self, *, label: str = 'Prices', clear_and_pause: bool = True, plt_mod=None):
         """Plot the values in the window and mark the low and the high."""
+        p = plt_mod or plt
         prices = list(self.prices)
         min_price, min_pos = self.get_min()
         max_price, max_pos = self.get_max()
 
-        plt.clf()  # Clear the current figure to prepare the new chart.
-        plt.plot(prices, marker='o', linestyle='-', label='Prices')
+        if clear_and_pause:
+            p.clf()  # Clear the current figure to prepare the new chart.
+        p.plot(prices, marker='o', linestyle='-', label=label)
         if min_price is not None:
-            plt.plot(min_pos, min_price, 'ro', label=f'Min: {min_price:.2f}')
+            p.plot(min_pos, min_price, 'ro', label=f'Min: {min_price:.2f}')
         if max_price is not None:
-            plt.plot(max_pos, max_price, 'go', label=f'Max: {max_price:.2f}')
+            p.plot(max_pos, max_price, 'go', label=f'Max: {max_price:.2f}')
 
-        plt.title('Price Window with Min and Max')
-        plt.xlabel('Relative Position in Window')
-        plt.ylabel('Price')
-        plt.legend()
-        plt.grid(True)
-        plt.pause(0.1)  # A short pause so the chart updates.
+        p.title('Price Window with Min and Max')
+        p.xlabel('Relative Position in Window')
+        p.ylabel('Price')
+        p.legend()
+        p.grid(True)
+        if clear_and_pause:
+            p.pause(0.1)  # A short pause so the chart updates.
 
 
 def main():

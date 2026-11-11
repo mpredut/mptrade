@@ -230,6 +230,19 @@ def buy_hold_pct(ohlc_or_closes: Sequence) -> float:
     return (c1 - c0) / c0 * 100.0
 
 
+def add_common_backtest_cli_args(
+    ap: Any,
+    *,
+    defaults: Mapping[str, Any] | None = None,
+) -> None:
+    """Register the shared --entry/--dca/--disc/--drop/--tp/--maxdca/--budget/--fee/--sl CLI flags."""
+    d = defaults or {}
+    for flag in ("entry", "dca", "disc", "drop", "tp", "budget", "fee"):
+        ap.add_argument(f"--{flag}", type=float, default=d.get(flag))
+    ap.add_argument("--maxdca", type=int, default=d.get("maxdca"))
+    ap.add_argument("--sl", type=float, default=d.get("sl"), help="stop-loss %% (0=disabled)")
+
+
 def print_single_backtest_report(
     header: str,
     params_line: str,

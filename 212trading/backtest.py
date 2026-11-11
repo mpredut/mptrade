@@ -23,6 +23,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from strategies.replay_metrics import (
+    add_common_backtest_cli_args,
     buy_hold_pct,
     print_single_backtest_report,
     run_tp_drop_sl_sweep,
@@ -179,11 +180,7 @@ def main() -> int:
     ap.add_argument("--sym", default="NVDA")
     ap.add_argument("--range", default="1y", help="ex: 1mo,3mo,6mo,1y,2y")
     ap.add_argument("--interval", default="1d", help="ex: 1h,1d")
-    ap.add_argument("--entry", type=float, default=None); ap.add_argument("--dca", type=float, default=None)
-    ap.add_argument("--disc", type=float, default=None); ap.add_argument("--drop", type=float, default=None)
-    ap.add_argument("--tp", type=float, default=None); ap.add_argument("--maxdca", type=int, default=None)
-    ap.add_argument("--budget", type=float, default=None); ap.add_argument("--fee", type=float, default=None)
-    ap.add_argument("--sl", type=float, default=None, help="stop-loss %% (0=stopped)")
+    add_common_backtest_cli_args(ap)
     ap.add_argument("--mhdsl", action=argparse.BooleanOptionalAction, default=None, help="enable/disable MHDSL stop loss")
     ap.add_argument("--mdhtp", action=argparse.BooleanOptionalAction, default=None, help="enable/disable MDHTP take profit")
     ap.add_argument("--trail", type=float, default=None, help="trailing percent")

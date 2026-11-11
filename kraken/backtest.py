@@ -24,6 +24,7 @@ if _ROOT not in sys.path:
 import dataclasses
 from strategies.spot_engine import StratParams
 from strategies.replay_metrics import (
+    add_common_backtest_cli_args,
     buy_hold_pct,
     print_single_backtest_report,
     run_tp_drop_sl_sweep,
@@ -133,11 +134,13 @@ def main() -> int:
     ap.add_argument("--mode", choices=["single", "sweep"], default="single")
     ap.add_argument("--pair", default="HYPEUSD")
     ap.add_argument("--interval", type=int, default=60, help="minutes: 60=1h, 240=4h, 1440=1d")
-    ap.add_argument("--entry", type=float, default=100); ap.add_argument("--dca", type=float, default=50)
-    ap.add_argument("--disc", type=float, default=0.2); ap.add_argument("--drop", type=float, default=2.0)
-    ap.add_argument("--tp", type=float, default=1.9); ap.add_argument("--maxdca", type=int, default=10)
-    ap.add_argument("--budget", type=float, default=1000); ap.add_argument("--fee", type=float, default=0.25)
-    ap.add_argument("--sl", type=float, default=10.0, help="stop-loss %% (0=stopped)")
+    add_common_backtest_cli_args(
+        ap,
+        defaults={
+            "entry": 100, "dca": 50, "disc": 0.2, "drop": 2.0,
+            "tp": 1.9, "maxdca": 10, "budget": 1000, "fee": 0.25, "sl": 10.0,
+        },
+    )
     ap.add_argument("--fast", action="store_true",
                     help="deprecated; faithful live engine rp.run_replay is always used")
     args = ap.parse_args()

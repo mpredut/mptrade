@@ -45,6 +45,7 @@ from botcore import (
     safe_pos_float,
 )
 from strategies.replay_metrics import (
+    add_common_backtest_cli_args,
     buy_hold_pct,
     print_single_backtest_report,
     run_tp_drop_sl_sweep,
@@ -115,11 +116,7 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=45)
     ap.add_argument("--direction", choices=["long", "short"], default=None)
     ap.add_argument("--signal", choices=["off", "builtin", "analysis"], default="off")
-    ap.add_argument("--entry", type=float, default=None); ap.add_argument("--dca", type=float, default=None)
-    ap.add_argument("--disc", type=float, default=None); ap.add_argument("--drop", type=float, default=None)
-    ap.add_argument("--tp", type=float, default=None); ap.add_argument("--maxdca", type=int, default=None)
-    ap.add_argument("--budget", type=float, default=None); ap.add_argument("--fee", type=float, default=None)
-    ap.add_argument("--sl", type=float, default=None, help="stop-loss %% (0=disabled)")
+    add_common_backtest_cli_args(ap)
     ap.add_argument("--fast", type=int, default=None); ap.add_argument("--slow", type=int, default=None)
     ap.add_argument("--band", type=float, default=None); ap.add_argument("--win", type=int, default=None)
     ap.add_argument("--step", type=int, default=None)

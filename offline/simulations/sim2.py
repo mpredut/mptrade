@@ -30,23 +30,7 @@ def plot_graphs(price_window, full_prices):
 
     # Plot sliding window chart.
     plt.subplot(2, 1, 2)
-    prices = list(price_window.prices)
-    min_price, min_pos = price_window.get_min()
-    max_price, max_pos = price_window.get_max()
-
-    plt.plot(prices, marker='o', linestyle='-', label='Window Prices')
-
-    if min_price is not None:
-        plt.plot(min_pos, min_price, 'ro', label=f'Min: {min_price:.2f}')
-
-    if max_price is not None:
-        plt.plot(max_pos, max_price, 'go', label=f'Max: {max_price:.2f}')
-
-    plt.title('Price Window with Min and Max')
-    plt.xlabel('Relative Position in Window')
-    plt.ylabel('Price')
-    plt.legend()
-    plt.grid(True)
+    price_window.plot_window(label='Window Prices', clear_and_pause=False, plt_mod=plt)
 
     # Update charts.
     plt.tight_layout()
