@@ -51,13 +51,8 @@ _orig_step = strat.Strategy.step
 
 
 def _step(self, price, *args, **kwargs):
-    s = self.s
-    if safe_float(s.get("qty"), 0.0) <= 1e-12:
-        if FLAGS["peak"] and s.get("last_exit_kind") == "TP" and s.get("last_sell_price"):
-            p_f = safe_pos_float(price, 0.0)
-            lsp_f = safe_pos_float(s.get("last_sell_price"), 0.0)
-            if p_f > 0.0 and lsp_f > 0.0:
-                s["last_sell_price"] = max(lsp_f, p_f)
+    if FLAGS["peak"]:
+        rp.ratchet_post_exit_peak_sell_price(self.s, price, qty_eps=1e-12, require_tp_kind=True)
     return _orig_step(self, price, *args, **kwargs)
 
 

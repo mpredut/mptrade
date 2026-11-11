@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from orchestratorOS.admin.prune_llm_threads import is_automated_thread, prune_old_cli_threads
+from tests.conftest import setup_isolated_agy_stores
 
 AUTONOMOUS_PROJECT_UUID = "f5f9d01f-01e5-4fac-80f2-97364688afab"
 
@@ -13,15 +14,7 @@ AUTONOMOUS_PROJECT_UUID = "f5f9d01f-01e5-4fac-80f2-97364688afab"
 @pytest.fixture(autouse=True)
 def _isolated_agy_stores(tmp_path, monkeypatch):
     """Never let topic mirroring touch the real Web UI store or topic registry."""
-    ui_base = tmp_path / "ui_home" / ".gemini" / "antigravity-cli"
-    (ui_base / "conversations").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("AGY_UI_CLI_BASE", str(ui_base))
-    monkeypatch.setenv("LLM_TOPIC_REGISTRY_PATH", str(tmp_path / "llm_topic_threads.json"))
-    projects = tmp_path / "ui_home" / ".gemini" / "config" / "projects"
-    projects.mkdir(parents=True, exist_ok=True)
-    (projects / "autonom.json").write_text(
-        f'{{"id": "{AUTONOMOUS_PROJECT_UUID}", "name": "autonommptrade"}}', encoding="utf-8")
-    (projects / "mptrade.json").write_text('{"id": "3ed4aa5d-mptrade", "name": "mptrade"}', encoding="utf-8")
+    setup_isolated_agy_stores(tmp_path, monkeypatch, autonomous_project_uuid=AUTONOMOUS_PROJECT_UUID)
 
 
 

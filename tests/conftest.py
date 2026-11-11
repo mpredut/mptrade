@@ -129,6 +129,21 @@ def temp_cache_dir(tmp_path):
     return str(cache_dir)
 
 
+def setup_isolated_agy_stores(tmp_path, monkeypatch, *, autonomous_project_uuid: str | None = None) -> None:
+    """Isolate Antigravity Web UI conversation store and topic registry inside ``tmp_path``."""
+    ui_base = tmp_path / "ui_home" / ".gemini" / "antigravity-cli"
+    (ui_base / "conversations").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AGY_UI_CLI_BASE", str(ui_base))
+    monkeypatch.setenv("LLM_TOPIC_REGISTRY_PATH", str(tmp_path / "llm_topic_threads.json"))
+    if autonomous_project_uuid is not None:
+        projects = tmp_path / "ui_home" / ".gemini" / "config" / "projects"
+        projects.mkdir(parents=True, exist_ok=True)
+        (projects / "autonom.json").write_text(
+            f'{{"id": "{autonomous_project_uuid}", "name": "autonommptrade"}}', encoding="utf-8",
+        )
+        (projects / "mptrade.json").write_text('{"id": "3ed4aa5d-mptrade", "name": "mptrade"}', encoding="utf-8")
+
+
 T212_TEST_BASE_ENV: dict[str, str] = {
     "STRAT_CURRENCY": "USD",
     "YAHOO_SYMBOL": "TEST",

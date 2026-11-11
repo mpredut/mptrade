@@ -13,64 +13,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 import rtrade
 
 
-class TrendFilterTest(unittest.TestCase):
-    def setUp(self):
-        self._en = rtrade.RTRADE_TREND_FILTER_ENABLED
-        self._k = rtrade.RTRADE_TREND_FILTER_K
-        self._cm = sys.modules.get("cacheManager")
-        self._rtrade_cm = rtrade.cm
-        rtrade.RTRADE_TREND_FILTER_ENABLED = True
-        rtrade.RTRADE_TREND_FILTER_K = 2.0
-
-    def tearDown(self):
-        rtrade.RTRADE_TREND_FILTER_ENABLED = self._en
-        rtrade.RTRADE_TREND_FILTER_K = self._k
-        rtrade.cm = self._rtrade_cm
-        if self._cm is not None:
-            sys.modules["cacheManager"] = self._cm
-        else:
-            sys.modules.pop("cacheManager", None)
-
-    def _fake_cm(self, dyn):
-        m = types.ModuleType("cacheManager")
-
-        class Mgr:
-            def get_short_trend_for_window(self, sym, w):
-                return dyn
-        m.get_short_trend_manager = lambda: Mgr()
-        sys.modules["cacheManager"] = m
-        rtrade.cm = m
-
-    def test_disabled_returns_false(self):
-        rtrade.RTRADE_TREND_FILTER_ENABLED = False
-        self._fake_cm({"gradient_recent": 100.0, "epsilon": 0.001})   # ar fi trend f. clar
-        self.assertFalse(rtrade._trend_too_strong("TAOUSDC"))
-
-    def test_snapshot_strength_cases(self):
-        cases = (
-            ("strong", {"gradient_recent": 0.5, "epsilon": 0.1}, True),
-            ("weak", {"gradient_recent": 0.15, "epsilon": 0.1}, False),
-            ("unavailable", None, True),   # no data -> stand aside (fail-closed)
-            ("flat", {"gradient_recent": 0.0, "epsilon": 0.0}, False),
-        )
-        for label, snapshot, expected in cases:
-            with self.subTest(case=label):
-                self._fake_cm(snapshot)
-                self.assertEqual(rtrade._trend_too_strong("TAOUSDC"), expected)
-
-    def test_exception_fails_closed(self):
-        m = types.ModuleType("cacheManager")
-
-        def boom():
-            raise RuntimeError("cm down")
-        m.get_short_trend_manager = boom
-        sys.modules["cacheManager"] = m
-        rtrade.cm = m
-        self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))          # An error -> stand aside (fail-closed).
-
-class FollowupForceTest(unittest.TestCase):
-    """Follow-up (flip after a fill): force=market ONLY if the trend is not adverse. Adverse:
-    A SELL into a decline / a BUY into a rise -> False (a patient limit, it does not dump into the market)."""
+class _RTradeTrendBase(unittest.TestCase):
     def setUp(self):
         self._en = rtrade.RTRADE_TREND_FILTER_ENABLED
         self._k = rtrade.RTRADE_TREND_FILTER_K
@@ -95,12 +38,45 @@ class FollowupForceTest(unittest.TestCase):
         m = types.ModuleType("cacheManager")
 
         class Mgr:
-            def get_short_trend_for_window(self, sym, w):
+            def get_short_trend_for_window(self, _sym, _window):
                 return dyn
         m.get_short_trend_manager = lambda: Mgr()
         sys.modules["cacheManager"] = m
         rtrade.cm = m
 
+
+class TrendFilterTest(_RTradeTrendBase):
+    def test_disabled_returns_false(self):
+        rtrade.RTRADE_TREND_FILTER_ENABLED = False
+        self._fake_cm({"gradient_recent": 100.0, "epsilon": 0.001})   # would be a very clear trend
+        self.assertFalse(rtrade._trend_too_strong("TAOUSDC"))
+
+    def test_snapshot_strength_cases(self):
+        cases = (
+            ("strong", {"gradient_recent": 0.5, "epsilon": 0.1}, True),
+            ("weak", {"gradient_recent": 0.15, "epsilon": 0.1}, False),
+            ("unavailable", None, True),   # no data -> stand aside (fail-closed)
+            ("flat", {"gradient_recent": 0.0, "epsilon": 0.0}, False),
+        )
+        for label, snapshot, expected in cases:
+            with self.subTest(case=label):
+                self._fake_cm(snapshot)
+                self.assertEqual(rtrade._trend_too_strong("TAOUSDC"), expected)
+
+    def test_exception_fails_closed(self):
+        m = types.ModuleType("cacheManager")
+
+        def boom():
+            raise RuntimeError("cm down")
+        m.get_short_trend_manager = boom
+        sys.modules["cacheManager"] = m
+        rtrade.cm = m
+        self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))          # An error -> stand aside (fail-closed).
+
+
+class FollowupForceTest(_RTradeTrendBase):
+    """Follow-up (flip after a fill): force=market ONLY if the trend is not adverse. Adverse:
+    A SELL into a decline / a BUY into a rise -> False (a patient limit, it does not dump into the market)."""
     def test_directional_force_policy(self):
         cases = (
             ("sell-down", "SELL", -0.5, False),
@@ -131,36 +107,7 @@ class FollowupForceTest(unittest.TestCase):
         self.assertFalse(rtrade._followup_force("TAOUSDC", "BUY"))
 
 
-class MarketRegimeTest(unittest.TestCase):
-    def setUp(self):
-        self._en = rtrade.RTRADE_TREND_FILTER_ENABLED
-        self._k = rtrade.RTRADE_TREND_FILTER_K
-        self._flip = getattr(rtrade, "RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED", False)
-        self._cm = sys.modules.get("cacheManager")
-        self._rtrade_cm = rtrade.cm
-        rtrade.RTRADE_TREND_FILTER_ENABLED = True
-        rtrade.RTRADE_TREND_FILTER_K = 2.0
-        rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = True
-
-    def tearDown(self):
-        rtrade.RTRADE_TREND_FILTER_ENABLED = self._en
-        rtrade.RTRADE_TREND_FILTER_K = self._k
-        rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = self._flip
-        rtrade.cm = self._rtrade_cm
-        if self._cm is not None:
-            sys.modules["cacheManager"] = self._cm
-        else:
-            sys.modules.pop("cacheManager", None)
-
-    def _fake_cm(self, dyn):
-        m = types.ModuleType("cacheManager")
-        class Mgr:
-            def get_short_trend_for_window(self, _sym, _window):
-                return dyn
-        m.get_short_trend_manager = lambda: Mgr()
-        sys.modules["cacheManager"] = m
-        rtrade.cm = m
-
+class MarketRegimeTest(_RTradeTrendBase):
     def test_regimes_use_signed_gradient_and_adaptive_noise(self):
         for gradient, expected in ((0.5, "bull"), (-0.5, "bear"),
                                    (0.15, "sideways")):

@@ -599,3 +599,23 @@ def prewarm_trend_series(
             )
         finally:
             _LAST_REPLAY_DIAG = saved_diag
+
+
+def ratchet_post_exit_peak_sell_price(
+    state: dict,
+    price,
+    *,
+    qty_eps: float = 1e-9,
+    require_tp_kind: bool = False,
+) -> None:
+    """Ratchet ``state["last_sell_price"]`` up to the highest close since a post-TP flat state."""
+    if not isinstance(state, dict) or safe_float(state.get("qty"), 0.0) > qty_eps:
+        return
+    if not state.get("last_sell_price") or state.get("sl_rebuy"):
+        return
+    if require_tp_kind and state.get("last_exit_kind") != "TP":
+        return
+    p_f = safe_pos_float(price, 0.0)
+    lsp_f = safe_pos_float(state.get("last_sell_price"), 0.0)
+    if p_f > 0.0 and lsp_f > 0.0:
+        state["last_sell_price"] = max(lsp_f, p_f)

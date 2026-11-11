@@ -31,15 +31,13 @@ from orchestratorOS.agy.topics import (
     topic_spec,
 )
 from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
+from tests.conftest import setup_isolated_agy_stores
 
 
 @pytest.fixture(autouse=True)
 def _isolated_agy_stores(tmp_path, monkeypatch):
     """Never let topic mirroring touch the real Web UI store or topic registry."""
-    ui_base = tmp_path / "ui_home" / ".gemini" / "antigravity-cli"
-    (ui_base / "conversations").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("AGY_UI_CLI_BASE", str(ui_base))
-    monkeypatch.setenv("LLM_TOPIC_REGISTRY_PATH", str(tmp_path / "llm_topic_threads.json"))
+    setup_isolated_agy_stores(tmp_path, monkeypatch)
 
 
 class TestPaths:

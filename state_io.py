@@ -1104,3 +1104,18 @@ def read_json_dict_cached(
         cache_store[resolved] = (sig, res)
         return res
     return None
+
+
+def parse_proc_stat_fields(stat_text: str, *, min_fields: int = 20) -> tuple[str, list[str]]:
+    """Parse ``(comm, fields_after_rparen)`` from ``/proc/<pid>/stat`` safely around parenthesized ``comm``."""
+    if not isinstance(stat_text, str):
+        raise ValueError("malformed /proc/stat line")
+    lparen = stat_text.find("(")
+    rparen = stat_text.rfind(")")
+    if lparen < 0 or rparen <= lparen:
+        raise ValueError("malformed /proc/stat line")
+    comm = stat_text[lparen + 1:rparen]
+    after = stat_text[rparen + 1:].split()
+    if len(after) < min_fields:
+        raise ValueError("malformed /proc/stat line")
+    return comm, after

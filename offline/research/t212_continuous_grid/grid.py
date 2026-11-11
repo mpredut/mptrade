@@ -24,7 +24,7 @@ from botcore import int_env, parse_dotenv, safe_float, safe_nonneg_int, safe_pos
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_venue_module  # noqa: E402
 from state_io import append_jsonl_record, atomic_write_jsonl  # noqa: E402
-from strategies.spot_replay import align_spot_interval_params  # noqa: E402
+from strategies.spot_replay import align_spot_interval_params, ratchet_post_exit_peak_sell_price  # noqa: E402
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 rp = load_venue_module("212trading", "replay.py", "t212_replay_grid")
@@ -35,13 +35,8 @@ _orig_step = strat.Strategy.step
 
 
 def _step(self, price, *args, **kwargs):
-    s = self.s
-    if (FLAGS["peak"] and safe_float(s.get("qty"), 0.0) <= 1e-9 and s.get("last_sell_price")
-            and not s.get("sl_rebuy")):
-        p_f = safe_pos_float(price, 0.0)
-        lsp_f = safe_pos_float(s.get("last_sell_price"), 0.0)
-        if p_f > 0.0 and lsp_f > 0.0:
-            s["last_sell_price"] = max(lsp_f, p_f)
+    if FLAGS["peak"]:
+        ratchet_post_exit_peak_sell_price(self.s, price, qty_eps=1e-9, require_tp_kind=False)
     return _orig_step(self, price, *args, **kwargs)
 
 

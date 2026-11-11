@@ -284,20 +284,18 @@ REQUIRED_KEYS = sorted(
 ) + ["STRATEGY_MODE", "SHADOW_K_REENTRY"]
 
 
+from tests.conftest import make_spot_test_params
+
+
 class _Executor:
     def pair_precision(self, _symbol):
         return PairPrecision(2, 4, 0.01, "ASSET")
 
 
 def _params():
-    return spot_engine.StratParams(
-        currency="USD", entry_amount=100.0, entry_discount_pct=0.2,
-        dca_amount=50.0, dca_drop_pct=2.0, check_minutes=2.0,
+    return make_spot_test_params(
         takeprofit_pct=5.0, max_budget=1000.0, max_dca_buys=10,
-        enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=12.5,
-        adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=2.2,
-        reentry_tolerance_pct=0.0, reentry_adaptive=False,
-        reentry_sl_bounce_pct=1.5, tp_tranches=[],
+        reentry_drop_pct=2.2, reentry_tolerance_pct=0.0,
     )
 
 

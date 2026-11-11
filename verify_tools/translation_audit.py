@@ -71,7 +71,12 @@ copiaza completeaza notificari bani reali forteaza levier lichidare sigur etiche
 contractul auditului raporteaza ambele picioare picior orfan iesire inteligenta infrastructura
 lacatul previne dublarea ordinelor succesul reseteaza contorul filtreaza ilichid negativ
 claseaza corect limiteaza proaspat logica pozitia existenta ramane neatinsa plafonul
-aditionali conversatiei functioneaza istoricul
+aditionali conversatiei functioneaza istoricul clar clara clare inapoi acolo cati ceea
+totusi asadar potrivit datorita secunde saptamani urmatoarea anterioara adevarat
+inactiva pornita deschis deschisa blocata permisa interzis interzisa ignorat ignorata
+stearsa adaugata modificat modificata actualizat actualizata salvata incarcata trimisa
+primita asteptat asteptata calculata verificata testat testata executata anulata
+respins respinsa acceptat acceptata aprobat aprobata refuzata
 """.split())
 
 DOC_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)

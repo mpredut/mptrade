@@ -52,6 +52,7 @@ from state_io import (  # noqa: E402
     atomic_write_bytes,
     discard_generation_file,
     durable_replace_file,
+    parse_proc_stat_fields,
     read_bytes_file,
     read_json_dict,
     read_tail_jsonl_dicts,
@@ -550,17 +551,14 @@ _BENIGN_DAEMON_CMD_MARKERS = (
 
 
 def _parse_proc_stat(proc_root: str, pid: int) -> tuple[str, int, int] | None:
-    raw = read_text_file(os.path.join(proc_root, str(pid), "stat"), default="", errors="ignore")
-    rparen = raw.rfind(")")
-    if rparen < 0:
+    try:
+        _, fields = parse_proc_stat_fields(
+            read_text_file(os.path.join(proc_root, str(pid), "stat"), default="", errors="ignore"),
+            min_fields=20,
+        )
+    except ValueError:
         return None
-    fields = raw[rparen + 2:].split()
-    if len(fields) < 20:
-        return None
-    state = fields[0]
-    ppid = safe_nonneg_int(fields[1], default=0) or 0
-    start_ticks = safe_nonneg_int(fields[19], default=0) or 0
-    return state, ppid, start_ticks
+    return fields[0], safe_nonneg_int(fields[1], default=0) or 0, safe_nonneg_int(fields[19], default=0) or 0
 
 
 def _daemon_has_active_child_tasks(

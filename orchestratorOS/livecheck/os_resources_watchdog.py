@@ -20,7 +20,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_int,
 )
-from state_io import read_bytes_file, read_text_file
+from state_io import parse_proc_stat_fields, read_bytes_file, read_text_file
 from technical_repair_ssot import fleet_script_basenames
 
 ROOT = wc.ROOT
@@ -106,25 +106,9 @@ def _restart_managed(proc, state, now):
 
 
 def _parse_proc_stat(stat_text: str) -> tuple[str, int, int, int]:
-    """Parse (comm, start_time, total_ticks, rss_pages) from /proc/<pid>/stat safely.
-
-    The comm field is enclosed in parentheses and may contain spaces or nested
-    parentheses. Splitting after the last ')' keeps all numeric field indices fixed:
-    after[0] is state (field 3), after[11] is utime (field 14), after[12] is stime
-    (field 15), after[19] is starttime (field 22), and after[21] is rss (field 24).
-    """
-    lparen = stat_text.find("(")
-    rparen = stat_text.rfind(")")
-    if lparen < 0 or rparen <= lparen:
-        raise ValueError("malformed /proc/stat line")
-    comm = stat_text[lparen + 1:rparen]
-    after = stat_text[rparen + 1:].split()
-    if len(after) <= 21:
-        raise ValueError("malformed /proc/stat line")
-    start_time = int(after[19])
-    ticks = int(after[11]) + int(after[12])
-    rss_pages = int(after[21])
-    return comm, start_time, ticks, rss_pages
+    """Parse (comm, start_time, total_ticks, rss_pages) from /proc/<pid>/stat safely."""
+    comm, after = parse_proc_stat_fields(stat_text, min_fields=22)
+    return comm, int(after[19]), int(after[11]) + int(after[12]), int(after[21])
 
 
 def _usage(previous, current, previous_total, current_total, cpu_count):
