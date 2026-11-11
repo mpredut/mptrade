@@ -10,6 +10,7 @@ Unifies:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from functools import partial
 import importlib
 import logging
 import os
@@ -20,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import urllib.parse
 
 from botcore import (
+    LazyPluginRegistryFactory,
     _parse_bool_flag,
     exact_int,
     fetch_json_post,
@@ -273,48 +275,30 @@ class TelemetryCacheCollectorInterface(SyncModeMixin, ABC):
         return self.collect(cachedb_dir, symbol, **call_kwargs)
 
 
-class TelemetryCollectorFactory:
+class TelemetryCollectorFactory(LazyPluginRegistryFactory):
     """Singleton registry and factory for price-series, microstructure, external, portfolio, and macro collectors (modeled on ``CacheFactory``)."""
 
     _instances: Dict[str, TelemetryCacheCollectorInterface] = {}
     _registry: Dict[str, type[TelemetryCacheCollectorInterface]] = {}
     _defaults_loaded: bool = False
-
-    @classmethod
-    def register(
-        cls,
-        collector_id: str,
-        collector_cls: type[TelemetryCacheCollectorInterface],
-    ) -> None:
-        cls._registry[str(collector_id)] = collector_cls
+    _unknown_id_label: str = "telemetry collector"
+    _default_modules: tuple[str, ...] = (
+        "intelligence.external.collectors.orderbook_depth_collector",
+        "intelligence.external.collectors.derivatives_telemetry_collector",
+        "intelligence.external.collectors.whale_positioning_collector",
+        "intelligence.external.collectors.bybit_liquidations_collector",
+        "intelligence.macro.news_feed_collector",
+        "intelligence.sentiment.collectors.microstructure_collector",
+        "intelligence.sentiment.collectors.fear_greed_collector",
+        "intelligence.sentiment.collectors.market_breadth_collector",
+        "intelligence.sentiment.collectors.portfolio_collector",
+        "intelligence.sentiment.collectors.macro_telemetry_collector",
+        "intelligence.sentiment.collectors.pretrade_telemetry_collector",
+    )
 
     @classmethod
     def create(cls, collector_id: str, *, start_sync: bool = False, **kwargs: Any) -> Any:
-        key = str(collector_id)
-        collector_cls = cls._registry.get(key)
-        if collector_cls is None:
-            if not cls._defaults_loaded:
-                cls._defaults_loaded = True
-                for mod_name in (
-                    "intelligence.external.collectors.orderbook_depth_collector",
-                    "intelligence.external.collectors.derivatives_telemetry_collector",
-                    "intelligence.external.collectors.whale_positioning_collector",
-                    "intelligence.external.collectors.bybit_liquidations_collector",
-                    "intelligence.macro.news_feed_collector",
-                    "intelligence.sentiment.collectors.microstructure_collector",
-                    "intelligence.sentiment.collectors.fear_greed_collector",
-                    "intelligence.sentiment.collectors.market_breadth_collector",
-                    "intelligence.sentiment.collectors.portfolio_collector",
-                    "intelligence.sentiment.collectors.macro_telemetry_collector",
-                    "intelligence.sentiment.collectors.pretrade_telemetry_collector",
-                ):
-                    try:
-                        __import__(mod_name)
-                    except Exception:
-                        pass
-            collector_cls = cls._registry.get(key)
-        if collector_cls is None:
-            raise KeyError(f"Unknown telemetry collector id: {key}")
+        collector_cls = cls._resolve_registered_class(collector_id)
         if kwargs:
             sync_flag = _parse_bool_flag(start_sync, default=False)
             try:
@@ -344,17 +328,9 @@ class TelemetryCollectorFactory:
             cls._instances[key] = inst
         return inst
 
-    @classmethod
-    def get_price_series_loader(cls, *, start_sync: bool = False) -> Any:
-        return cls.create("price_series_loader", start_sync=start_sync)
-
-    @classmethod
-    def get_fleet_enricher(cls, *, start_sync: bool = False) -> Any:
-        return cls.create("fleet_24h_and_microstructure", start_sync=start_sync)
-
-    @classmethod
-    def get_yahoo_chart_collector(cls, *, start_sync: bool = False) -> Any:
-        return cls.create("equity_yahoo_5d_chart", start_sync=start_sync)
+    get_price_series_loader = LazyPluginRegistryFactory.bind_creator("price_series_loader")
+    get_fleet_enricher = LazyPluginRegistryFactory.bind_creator("fleet_24h_and_microstructure")
+    get_yahoo_chart_collector = LazyPluginRegistryFactory.bind_creator("equity_yahoo_5d_chart")
 
 
 class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
@@ -1108,34 +1084,27 @@ def _resolve_readonly_collector(
     return cur
 
 
-def get_whale_collector() -> Any:
-    """Lazily load singleton whale positioning collector (read-only consumer, start_sync=False)."""
-    return _resolve_readonly_collector(
-        "get_whale_collector",
-        "_whale_collector",
-        "intelligence.external.collectors.whale_positioning_collector",
-        "WhalePositioningCollector",
-    )
-
-
-def get_orderbook_collector() -> Any:
-    """Lazily load singleton orderbook depth collector (read-only consumer, start_sync=False)."""
-    return _resolve_readonly_collector(
-        "get_orderbook_collector",
-        "_orderbook_collector",
-        "intelligence.external.collectors.orderbook_depth_collector",
-        "OrderbookDepthCollector",
-    )
-
-
-def get_derivatives_collector() -> Any:
-    """Lazily load singleton derivatives telemetry collector (read-only consumer, start_sync=False)."""
-    return _resolve_readonly_collector(
-        "get_derivatives_collector",
-        "_derivatives_collector",
-        "intelligence.external.collectors.derivatives_telemetry_collector",
-        "DerivativesTelemetryCollector",
-    )
+get_whale_collector = partial(
+    _resolve_readonly_collector,
+    "get_whale_collector",
+    "_whale_collector",
+    "intelligence.external.collectors.whale_positioning_collector",
+    "WhalePositioningCollector",
+)
+get_orderbook_collector = partial(
+    _resolve_readonly_collector,
+    "get_orderbook_collector",
+    "_orderbook_collector",
+    "intelligence.external.collectors.orderbook_depth_collector",
+    "OrderbookDepthCollector",
+)
+get_derivatives_collector = partial(
+    _resolve_readonly_collector,
+    "get_derivatives_collector",
+    "_derivatives_collector",
+    "intelligence.external.collectors.derivatives_telemetry_collector",
+    "DerivativesTelemetryCollector",
+)
 
 
 _ORIG_COLLECTOR_GETTERS.update({

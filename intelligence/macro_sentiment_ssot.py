@@ -13,6 +13,7 @@ boilerplate across ``intelligence/`` and ``llm_order_guard.py`` by:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 import configparser
 import importlib
 import logging
@@ -575,12 +576,8 @@ DEFAULT_NEWS_ROLLING_WINDOW_SEC: float = _INIT_DERIVED_INTERVALS["default_news_r
 DEFAULT_FALLBACK_RETRY_TTL_SEC: float = _INIT_DERIVED_INTERVALS["default_fallback_retry_ttl_sec"]
 
 
-def get_fear_greed_endpoint_url() -> str:
-    return _cfg_str("feeds", "fear_greed_endpoint_url")
-
-
-def get_market_breadth_endpoint_url() -> str:
-    return _cfg_str("feeds", "market_breadth_endpoint_url")
+get_fear_greed_endpoint_url = partial(_cfg_str, "feeds", "fear_greed_endpoint_url")
+get_market_breadth_endpoint_url = partial(_cfg_str, "feeds", "market_breadth_endpoint_url")
 
 
 def _require_feed_str(key: str) -> str:
@@ -652,20 +649,18 @@ def _normalize_taxonomy(
     return cleaned if cleaned in allowed else _parse_kv_map(_cfg_str("taxonomies", alias_cfg_key)).get(cleaned, fallback)
 
 
-def normalize_market_bias(value: Any, default: Optional[str] = None) -> str:
-    return _normalize_taxonomy(value, "market_biases", "bias_aliases", 1, "NEUTRAL", default)
+def _bind_taxonomy_normalizer(
+    tax_key: str, alias_cfg_key: str, default_idx: int, fallback_str: str
+):
+    return lambda value, default=None, _t=tax_key, _a=alias_cfg_key, _i=default_idx, _f=fallback_str: (
+        _normalize_taxonomy(value, _t, _a, _i, _f, default)
+    )
 
 
-def normalize_risk_level(value: Any, default: Optional[str] = None) -> str:
-    return _normalize_taxonomy(value, "risk_levels", "risk_aliases", 1, "MODERATE", default)
-
-
-def normalize_recommended_action(value: Any, default: Optional[str] = None) -> str:
-    return _normalize_taxonomy(value, "recommended_actions", "action_aliases", 1, "HOLD", default)
-
-
-def normalize_threat_level(value: Any, default: Optional[str] = None) -> str:
-    return _normalize_taxonomy(value, "threat_levels", "threat_aliases", 0, "NORMAL", default)
+normalize_market_bias = _bind_taxonomy_normalizer("market_biases", "bias_aliases", 1, "NEUTRAL")
+normalize_risk_level = _bind_taxonomy_normalizer("risk_levels", "risk_aliases", 1, "MODERATE")
+normalize_recommended_action = _bind_taxonomy_normalizer("recommended_actions", "action_aliases", 1, "HOLD")
+normalize_threat_level = _bind_taxonomy_normalizer("threat_levels", "threat_aliases", 0, "NORMAL")
 
 
 def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) -> str:

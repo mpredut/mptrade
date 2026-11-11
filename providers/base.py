@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+from functools import partialmethod
 import importlib
 import inspect
 import logging
@@ -592,34 +593,22 @@ class MarketDataProvider(ABC):
             )
         )
 
-    @classmethod
-    def has_native_l1_derivatives(cls, venue: Any) -> bool:
-        """Return whether ``venue`` exposes native L1 perpetual funding/OI telemetry."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        return bool(getattr(prov_cls, "_HAS_NATIVE_L1_DERIVATIVES", False))
+    @staticmethod
+    def _bind_venue_bool_capability(attr: str):
+        return classmethod(
+            lambda cls, venue, _attr=attr: bool(getattr(cls.resolve_venue_provider_class(venue), _attr, False))
+        )
+
+    has_native_l1_derivatives = _bind_venue_bool_capability("_HAS_NATIVE_L1_DERIVATIVES")
 
     @classmethod
     def canonical_venues(cls) -> tuple[str, ...]:
         """Return all registered canonical venue identifiers in deterministic order."""
         return tuple(cls._VENUE_PROVIDER_SPECS.keys())
 
-    @classmethod
-    def merges_audit_terminal_orders(cls, venue: Any) -> bool:
-        """Return whether ``venue`` merges ``execution_audit`` terminal fills into order history."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        return bool(getattr(prov_cls, "_MERGES_AUDIT_TERMINAL_ORDERS", False))
-
-    @classmethod
-    def uses_bare_base_order_symbols(cls, venue: Any) -> bool:
-        """Return whether ``venue`` keys order/fill records by bare base asset (e.g. ``HYPE`` vs ``HYPEUSDC``)."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        return bool(getattr(prov_cls, "_USES_BARE_BASE_ORDER_SYMBOLS", False))
-
-    @classmethod
-    def uses_shared_trailing_map(cls, venue: Any) -> bool:
-        """Return whether ``venue`` falls back to the shared ``trailing_state.json`` peaks map."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        return bool(getattr(prov_cls, "_USES_SHARED_TRAILING_MAP", False))
+    merges_audit_terminal_orders = _bind_venue_bool_capability("_MERGES_AUDIT_TERMINAL_ORDERS")
+    uses_bare_base_order_symbols = _bind_venue_bool_capability("_USES_BARE_BASE_ORDER_SYMBOLS")
+    uses_shared_trailing_map = _bind_venue_bool_capability("_USES_SHARED_TRAILING_MAP")
 
     @classmethod
     def resolve_venue_default_quote(cls, venue: Any, fallback: str = "USD") -> str:
@@ -1227,25 +1216,14 @@ class MarketDataProvider(ABC):
         val = MarketDataProvider._resolve_provider_attr(self, "_DEFAULT_QUOTE_ASSET", None)
         return str(val).strip().upper() if isinstance(val, str) and val.strip() else None
 
-    def requires_cache_permit(self) -> bool:
-        """Return whether this provider enforces account-cache submit permits."""
-        return bool(MarketDataProvider._resolve_provider_attr(self, "_REQUIRES_CACHE_PERMIT", False))
+    def _provider_bool_attr(self, attr: str) -> bool:
+        return bool(MarketDataProvider._resolve_provider_attr(self, attr, False))
 
-    def defers_smart_cancellation(self) -> bool:
-        """Return whether opposing order cancellation is deferred until dispatch."""
-        return bool(MarketDataProvider._resolve_provider_attr(self, "_DEFERS_SMART_CANCELLATION", False))
-
-    def supports_business_minimum(self) -> bool:
-        """Return whether this provider enforces venue business minimum rules."""
-        return bool(MarketDataProvider._resolve_provider_attr(self, "_SUPPORTS_BUSINESS_MINIMUM", False))
-
-    def supports_order_validity(self) -> bool:
-        """Return whether this provider accepts explicit ``order_validity`` instrument parameters."""
-        return bool(MarketDataProvider._resolve_provider_attr(self, "_SUPPORTS_ORDER_VALIDITY", False))
-
-    def defers_preflight_quantity(self) -> bool:
-        """Return whether pre-sizing ``preflight_order`` omits raw quantity until ``quantity_decision``."""
-        return bool(MarketDataProvider._resolve_provider_attr(self, "_DEFERS_PREFLIGHT_QUANTITY", False))
+    requires_cache_permit = partialmethod(_provider_bool_attr, "_REQUIRES_CACHE_PERMIT")
+    defers_smart_cancellation = partialmethod(_provider_bool_attr, "_DEFERS_SMART_CANCELLATION")
+    supports_business_minimum = partialmethod(_provider_bool_attr, "_SUPPORTS_BUSINESS_MINIMUM")
+    supports_order_validity = partialmethod(_provider_bool_attr, "_SUPPORTS_ORDER_VALIDITY")
+    defers_preflight_quantity = partialmethod(_provider_bool_attr, "_DEFERS_PREFLIGHT_QUANTITY")
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         """Return normalized pair precision and limits, or None if unavailable."""

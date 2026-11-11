@@ -36,6 +36,7 @@ import argparse
 import contextlib
 import dataclasses
 import difflib
+from functools import partial
 import io
 import os
 import re
@@ -163,18 +164,18 @@ def _safe_pair(pair: str) -> str:
     return cleaned or "UNKNOWN"
 
 
-def _history_path(pair: str, interval: int) -> str:
-    return os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.ohlc.json")
+def _pair_state_path(pair: str, interval: int, suffix: str) -> str:
+    return os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.{suffix}")
 
 
-def _warmup_path(pair: str, interval: int) -> str:
-    return os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.warmup.json")
+_history_path = partial(_pair_state_path, suffix="ohlc.json")
+_warmup_path = partial(_pair_state_path, suffix="warmup.json")
 
 
 def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     """On first run, anchor at the latest closed bar to begin forward testing now.
     Subsequent runs reuse it, so the window grows instead of sliding."""
-    path = os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.anchor")
+    path = _pair_state_path(pair, interval, "anchor")
     vi = exact_pos_int(read_text_file(path, default="").strip(), default=None)
     if vi is not None:
         return vi

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import fcntl
+from functools import partial
 import glob
 import gzip
 import json
@@ -768,19 +769,13 @@ def prune_rotated_archives(base_filename: str, keep_count: int) -> list[str]:
 # Transactional multi-file generation API (<file> + <file>.previous + <file>.meta)
 # ---------------------------------------------------------------------------
 
-def previous_generation_path(path: str) -> str:
-    """Return the canonical ``.previous`` staging path for ``path``."""
-    return f"{os.fspath(path)}.previous"
+def _sidecar_path(path: str, suffix: str) -> str:
+    return f"{os.fspath(path)}.{suffix}"
 
 
-def meta_file_path(path: str) -> str:
-    """Return the canonical ``.meta`` manifest path for ``path``."""
-    return f"{os.fspath(path)}.meta"
-
-
-def generation_lock_path(path: str) -> str:
-    """Return the canonical cross-process generation lock path for ``path``."""
-    return f"{os.fspath(path)}.generation.lock"
+previous_generation_path = partial(_sidecar_path, suffix="previous")
+meta_file_path = partial(_sidecar_path, suffix="meta")
+generation_lock_path = partial(_sidecar_path, suffix="generation.lock")
 
 
 def discard_generation_file(

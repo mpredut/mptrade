@@ -1138,21 +1138,22 @@ def _coerce_int(val: object, default: int | None, *, exact: bool) -> int | None:
         return default
 
 
+def _bind_bounded_int(name: str, min_val: int, default_val: int, *, exact: bool):
+    def _coercer(val: object, default: int | None = default_val) -> int | None:
+        i = _coerce_int(val, None, exact=exact)
+        return i if (i is not None and i >= min_val) else default
+
+    _coercer.__name__ = _coercer.__qualname__ = name
+    return _coercer
+
+
 def safe_int(val: object, default: int | None = 0) -> int | None:
     """Safely coerce ``val`` to an integer, rejecting booleans, None, non-finite values, and non-numeric objects."""
     return _coerce_int(val, default, exact=False)
 
 
-def safe_pos_int(val: object, default: int | None = 1) -> int | None:
-    """Safely coerce ``val`` to a strictly positive integer (>= 1), otherwise return ``default``."""
-    i = safe_int(val, default=None)
-    return i if (i is not None and i >= 1) else default
-
-
-def safe_nonneg_int(val: object, default: int | None = 0) -> int | None:
-    """Safely coerce ``val`` to a non-negative integer (>= 0), otherwise return ``default``."""
-    i = safe_int(val, default=None)
-    return i if (i is not None and i >= 0) else default
+safe_pos_int = _bind_bounded_int("safe_pos_int", 1, 1, exact=False)
+safe_nonneg_int = _bind_bounded_int("safe_nonneg_int", 0, 0, exact=False)
 
 
 def exact_int(val: object, default: int | None = 0) -> int | None:
@@ -1160,16 +1161,8 @@ def exact_int(val: object, default: int | None = 0) -> int | None:
     return _coerce_int(val, default, exact=True)
 
 
-def exact_pos_int(val: object, default: int | None = 1) -> int | None:
-    """Safely coerce ``val`` to a strictly positive exact integer (>= 1), otherwise return ``default``."""
-    i = exact_int(val, default=None)
-    return i if (i is not None and i >= 1) else default
-
-
-def exact_nonneg_int(val: object, default: int | None = 0) -> int | None:
-    """Safely coerce ``val`` to a non-negative exact integer (>= 0), otherwise return ``default``."""
-    i = exact_int(val, default=None)
-    return i if (i is not None and i >= 0) else default
+exact_pos_int = _bind_bounded_int("exact_pos_int", 1, 1, exact=True)
+exact_nonneg_int = _bind_bounded_int("exact_nonneg_int", 0, 0, exact=True)
 
 
 def _parse_bool_flag(val, default: bool | None = False):

@@ -1,5 +1,6 @@
 """Binance MarketDataProvider adapter for market data, account reads, and order mechanics."""
 
+from functools import partial
 import importlib
 import math
 from typing import Any, List, Optional
@@ -105,8 +106,7 @@ def _get_allorders():
     return _default_get_allorders()
 
 
-def _get_placeorder():
-    return importlib.import_module("binance_api.bapi_placeorder")
+_get_placeorder = partial(importlib.import_module, "binance_api.bapi_placeorder")
 
 
 def _parse_nonneg_order_field(raw: Any) -> Optional[float]:
@@ -685,20 +685,9 @@ class BinanceProvider(MarketDataProvider):
         oid = require_int_order_id(order_id, f"cancel_order({order_id})")
         self._execute_confirmed_cancel(order_id, lambda: _get_bapi().cancel_order(symbol, oid))
 
-    @classmethod
-    def resolve_default_api_client(cls):
-        """Return the Binance REST client facade (`binance_api.bapi`) without caching test sys.modules mocks."""
-        return importlib.import_module("binance_api.bapi")
-
-    @classmethod
-    def resolve_allorders_module(cls):
-        """Return the Binance order/trade pagination module (`binance_api.bapi_allorders`)."""
-        return importlib.import_module("binance_api.bapi_allorders")
-
-    @classmethod
-    def resolve_ws_bridge_module(cls):
-        """Return the Binance user-data WebSocket bridge module (`binance_api.bapi_ws_bridge`)."""
-        return importlib.import_module("binance_api.bapi_ws_bridge")
+    resolve_default_api_client = staticmethod(partial(importlib.import_module, "binance_api.bapi"))
+    resolve_allorders_module = staticmethod(partial(importlib.import_module, "binance_api.bapi_allorders"))
+    resolve_ws_bridge_module = staticmethod(partial(importlib.import_module, "binance_api.bapi_ws_bridge"))
 
     @classmethod
     def get_default_price_ws_manager(cls):

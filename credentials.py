@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
 
-from botcore import load_dotenv, secret_env
+from botcore import clean_non_bool_str as _clean_cred_val, load_dotenv, secret_env
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
@@ -39,10 +39,6 @@ class CredentialPair:
     key: str
     secret: str
     profile: str
-
-
-def _clean_cred_val(raw: object) -> str:
-    return "" if (raw is None or isinstance(raw, bool)) else str(raw).strip()
 
 
 def resolve_credential_pair(

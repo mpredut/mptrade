@@ -14,6 +14,7 @@ Returns True when placement is allowed and False when blocked.
 
 The profit threshold is configured per venue in versioned, non-sensitive
 `order_guard.conf`. A missing file or required key aborts startup immediately."""
+from functools import partial
 import math
 import statistics
 from botcore import (
@@ -340,14 +341,12 @@ def get_margin_cfg(provider_name):
     return _venue_cfg(provider_name)
 
 
-def _is_favorable_trend(side: str, trend: str) -> bool:
-    """Return True when the market trend aligns favorably with the order side."""
-    return (side == "BUY" and trend == "bull") or (side == "SELL" and trend == "bear")
+def _trend_matches_sides(side: str, trend: Any, buy_trend: str, sell_trend: str) -> bool:
+    return (side == "BUY" and trend == buy_trend) or (side == "SELL" and trend == sell_trend)
 
 
-def is_adverse_trend(side: str, trend: Any) -> bool:
-    """Return True when the market trend opposes the order side (BUY in bear / SELL in bull)."""
-    return (side == "BUY" and trend == "bear") or (side == "SELL" and trend == "bull")
+_is_favorable_trend = partial(_trend_matches_sides, buy_trend="bull", sell_trend="bear")
+is_adverse_trend = partial(_trend_matches_sides, buy_trend="bear", sell_trend="bull")
 
 
 def get_dynamic_window_sec_cfg(

@@ -113,6 +113,13 @@ def is_trackable_symbol(symbol: str, name: str = "", slug: str = "") -> bool:
 
 class NewCoinsSource(ABC):
     SOURCE_NAME: str = ""
+    BASE_URL: str = ""
+
+    def __init__(self):
+        self.base_url = self.BASE_URL
+        self._cache: List[Dict] = []
+        self._last_refresh = 0
+        self.refresh()
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -205,13 +212,8 @@ class CoinMarketCapSource(NewCoinsSource):
 
 class CoinGeckoSource(NewCoinsSource):
     SOURCE_NAME = "CoinGecko"
+    BASE_URL = "https://api.coingecko.com/api/v3"
 
-    def __init__(self):
-        self.base_url = "https://api.coingecko.com/api/v3"
-        self._cache: List[Dict] = []
-        self._last_refresh = 0
-        self.refresh()
-    
     def refresh(self):
         try:
             time.sleep(1.2)
@@ -308,13 +310,8 @@ class BinanceNewListingsSource(NewCoinsSource):
 
 class DexScreenerSource(NewCoinsSource):
     SOURCE_NAME = "DexScreener"
+    BASE_URL = "https://api.dexscreener.com/latest/dex"
 
-    def __init__(self):
-        self.base_url = "https://api.dexscreener.com/latest/dex"
-        self._cache: List[Dict] = []
-        self._last_refresh = 0
-        self.refresh()
-    
     def refresh(self):
         try:
             response = requests.get(f"{self.base_url}/token-profiles", timeout=15)

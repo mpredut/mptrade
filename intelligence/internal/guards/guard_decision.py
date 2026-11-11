@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from botcore import StringEnum, clean_scale, normalize_side, safe_float
+from botcore import LazyPluginRegistryFactory, StringEnum, clean_scale, normalize_side, safe_float
 from cachepaths import canonical_symbol_key
 
 
@@ -222,11 +222,14 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
             )
         return side_norm, None
 
-    def _evaluate_buy_sell_side(
-        self, symbol: str, side_norm: str, *args: Any, **kwargs: Any
-    ) -> GuardDecision:
-        """Subclass hook evaluating a validated ``BUY``/``SELL`` side."""
-        raise NotImplementedError(f"{type(self).__name__} must implement _evaluate_buy_sell_side()")
+    @staticmethod
+    def _bind_unimplemented_hook(hook_name: str):
+        def _hook(self, *_args: Any, **_kwargs: Any) -> GuardDecision:
+            raise NotImplementedError(f"{type(self).__name__} must implement {hook_name}()")
+
+        return _hook
+
+    _evaluate_buy_sell_side = _bind_unimplemented_hook("_evaluate_buy_sell_side")
 
     def _check_buy_sell_side(
         self,
@@ -272,13 +275,7 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
             )
         return side_norm, snapshot, None
 
-    def _evaluate_external_snapshot(
-        self,
-        side_norm: str,
-        snapshot: Any,
-    ) -> GuardDecision:
-        """Subclass hook evaluating a resolved non-None external snapshot for ``BUY``/``SELL``."""
-        raise NotImplementedError(f"{type(self).__name__} must implement _evaluate_external_snapshot()")
+    _evaluate_external_snapshot = _bind_unimplemented_hook("_evaluate_external_snapshot")
 
     def _check_external_snapshot(
         self,
@@ -298,7 +295,7 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
         return self._evaluate_external_snapshot(side_norm, resolved_snapshot)
 
 
-class OrderGuardEvaluatorFactory:
+class OrderGuardEvaluatorFactory(LazyPluginRegistryFactory):
     """Singleton registry and factory for ``OrderGuardEvaluatorInterface`` implementations across all 4 pillars."""
 
     _instances: Dict[str, Any] = {}
@@ -327,34 +324,11 @@ class OrderGuardEvaluatorFactory:
         "order_guard",
     )
 
-    @classmethod
-    def register(
-        cls,
-        guard_id: str,
-        evaluator_cls: type[Any],
-    ) -> None:
-        cls._registry[str(guard_id)] = evaluator_cls
-
-    @classmethod
-    def _ensure_default_evaluators_registered(cls) -> None:
-        if cls._defaults_loaded:
-            return
-        cls._defaults_loaded = True
-        for mod_name in cls._default_evaluator_modules:
-            try:
-                __import__(mod_name)
-            except Exception:
-                pass
+    _ensure_default_evaluators_registered = LazyPluginRegistryFactory._ensure_defaults_registered
 
     @classmethod
     def create(cls, guard_id: str, **kwargs: Any) -> Any:
-        key = str(guard_id)
-        evaluator_cls = cls._registry.get(key)
-        if evaluator_cls is None:
-            cls._ensure_default_evaluators_registered()
-            evaluator_cls = cls._registry.get(key)
-        if evaluator_cls is None:
-            raise KeyError(f"Unknown {cls._unknown_id_label} id: {key}")
+        evaluator_cls = cls._resolve_registered_class(guard_id)
         if kwargs:
             return evaluator_cls(**kwargs)
         return cls.get_evaluator(evaluator_cls)

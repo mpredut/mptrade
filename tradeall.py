@@ -1,3 +1,4 @@
+from functools import partial, partialmethod
 import os
 import signal as _signal
 import time
@@ -396,9 +397,7 @@ class TrendState:
         self._last_attempt_up_ts = None
         self._last_attempt_down_ts = None
 
-    @staticmethod
-    def _norm_ts(ts):
-        return normalize_epoch_sec(ts, default=None, allow_zero=True)
+    _norm_ts = staticmethod(partial(normalize_epoch_sec, default=None, allow_zero=True))
 
     def _now_sec(self):
         return resolve_now_ts(self._now(), allow_zero=True)
@@ -516,11 +515,8 @@ class TrendState:
             return self.confirm_count if target_state == "HOLD" else 0
         return self.confirm_count if self.state == target_state else 0
 
-    def is_trend_up(self):
-        return self._confirm_count_for("UP")
-
-    def is_trend_down(self):
-        return self._confirm_count_for("DOWN")
+    is_trend_up = partialmethod(_confirm_count_for, "UP")
+    is_trend_down = partialmethod(_confirm_count_for, "DOWN")
   
 
 

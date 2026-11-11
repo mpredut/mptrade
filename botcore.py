@@ -200,6 +200,11 @@ def require_int(
     return parsed
 
 
+def clean_non_bool_str(val: object) -> str:
+    """Return ``str(val).strip()`` unless ``val`` is ``None`` or a ``bool``, in which case return ``''``."""
+    return "" if (val is None or isinstance(val, bool)) else str(val).strip()
+
+
 def clean_nonempty_str(val: object) -> str | None:
     """Return ``val.strip()`` when ``val`` is a non-empty string, else ``None``."""
     return s if isinstance(val, str) and (s := val.strip()) else None
@@ -593,6 +598,34 @@ def load_isolated_venue_cfg(
     )
 
 
+def bind_isolated_venue_cfg_loader(
+    default_dir: str | os.PathLike[str],
+    override_prefixes: tuple[str, ...] | list[str] = (),
+    fallback_prefixes: tuple[str, ...] | list[str] = (),
+):
+    """Return a venue-specific isolated config loader bound to ``default_dir`` and ``override_prefixes``."""
+    ov_tuple = tuple(override_prefixes)
+    fb_tuple = tuple(fallback_prefixes)
+
+    def _loader(
+        venue_dir: str | os.PathLike[str] = default_dir,
+        *,
+        config_path: str | os.PathLike[str] | None = None,
+        env_path: str | os.PathLike[str] | None = None,
+        **dir_kw: str | os.PathLike[str],
+    ) -> dict[str, str]:
+        eff_dir = next(iter(dir_kw.values()), venue_dir)
+        return load_isolated_venue_cfg(
+            eff_dir,
+            config_path=config_path,
+            env_path=env_path,
+            override_prefixes=ov_tuple,
+            fallback_prefixes=fb_tuple,
+        )
+
+    return _loader
+
+
 # ── 2.2. INI (.conf) Parsing, Mtime Caching & Override Resolution ────────────
 
 _INI_CONFIG_CACHE: dict[str, tuple[tuple[int, int, bool], configparser.ConfigParser]] = (
@@ -948,7 +981,7 @@ def create_env_cli_parser(description: str, env_file: str) -> argparse.ArgumentP
 
 
 def add_store_true_cli_args(
-    parser: object, *specs: Any
+    parser: object, *specs: object
 ) -> object:
     """Register one or more ``action='store_true'`` CLI flags (``flag``, ``(flag, help_text)``, or ``((flag, alias), help_text)``) on ``parser`` and return it."""
     add_arg = getattr(parser, "add_argument", None)
@@ -1684,12 +1717,12 @@ def timeToHMS(timestamp_sec) -> str:
         return "N/A"
 
 
-def secondsToDays(max_age_seconds) -> float:
-    return safe_nonneg_float(max_age_seconds, default=0.0) / 86400.0
+def _bind_seconds_converter(divisor: float):
+    return lambda max_age_seconds, _div=divisor: safe_nonneg_float(max_age_seconds, default=0.0) / _div
 
 
-def secondsToHours(max_age_seconds) -> float:
-    return safe_nonneg_float(max_age_seconds, default=0.0) / 3600.0
+secondsToDays = _bind_seconds_converter(86400.0)
+secondsToHours = _bind_seconds_converter(3600.0)
 
 
 def gaussian_weights_from_idx(T, idx: int):
@@ -1759,6 +1792,48 @@ class StringEnum(str, Enum):
 
     def __str__(self) -> str:
         return str(self.value)
+
+
+class LazyPluginRegistryFactory:
+    """Shared lazy-loading plugin class registry and singleton factory base."""
+
+    _instances: dict[str, object] = {}
+    _registry: dict[str, type] = {}
+    _defaults_loaded: bool = False
+    _unknown_id_label: str = "plugin"
+    _default_modules: tuple[str, ...] = ()
+
+    @classmethod
+    def register(cls, plugin_id: str, plugin_cls: type) -> None:
+        cls._registry[str(plugin_id)] = plugin_cls
+
+    @classmethod
+    def _ensure_defaults_registered(cls) -> None:
+        if cls._defaults_loaded:
+            return
+        cls._defaults_loaded = True
+        for mod_name in getattr(cls, "_default_evaluator_modules", None) or cls._default_modules:
+            try:
+                __import__(mod_name)
+            except Exception:
+                pass
+
+    @classmethod
+    def _resolve_registered_class(cls, plugin_id: str) -> type:
+        key = str(plugin_id)
+        plugin_cls = cls._registry.get(key)
+        if plugin_cls is None:
+            cls._ensure_defaults_registered()
+            plugin_cls = cls._registry.get(key)
+        if plugin_cls is None:
+            raise KeyError(f"Unknown {cls._unknown_id_label} id: {key}")
+        return plugin_cls
+
+    @staticmethod
+    def bind_creator(plugin_id: str):
+        return classmethod(
+            lambda sub_cls, *, start_sync=False, _id=plugin_id: sub_cls.create(_id, start_sync=start_sync)
+        )
 
 
 def obj_attr_first(obj: object, *names: str, default: object = None) -> object:

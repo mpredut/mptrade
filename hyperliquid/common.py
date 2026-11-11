@@ -18,26 +18,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # repository root
-from botcore import load_isolated_venue_cfg, load_layered_env_config  # noqa: E402
+from botcore import bind_isolated_venue_cfg_loader, load_layered_env_config  # noqa: E402
 from notify_engine.alertnotifiers import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "HL_COIN"), "HL")
-
-
-def load_isolated_hl_cfg(
-    hl_dir: str | os.PathLike[str] = _HERE,
-    *,
-    config_path: str | os.PathLike[str] | None = None,
-    env_path: str | os.PathLike[str] | None = None,
-) -> dict[str, str]:
-    """Load Hyperliquid config.env + .env into an isolated dict without mutating os.environ."""
-    return load_isolated_venue_cfg(
-        hl_dir,
-        config_path=config_path,
-        env_path=env_path,
-        override_prefixes=("HL_",),
-        fallback_prefixes=(),
-    )
+load_isolated_hl_cfg = bind_isolated_venue_cfg_loader(_HERE, ("HL_",))
 
 
 def load_hl_default_env(hl_dir: str | os.PathLike[str] = _HERE) -> dict[str, str]:

@@ -15,6 +15,7 @@ See the self-test at the end of the file, validated against Kraken's documentati
 from __future__ import annotations
 
 import base64
+from functools import partialmethod
 import hashlib
 import hmac
 import os
@@ -245,17 +246,14 @@ class KrakenClient:
         res = self._public(method, {"pair": pair.strip().upper()})
         return next((v for v in res.values() if isinstance(v, dict)), None) if res else None
 
-    def pair_info(self, pair: str) -> dict | None:
-        """Return pair price/volume precision and minimum order, or None if absent."""
-        return self._public_first_dict("AssetPairs", pair)
+    pair_info = partialmethod(_public_first_dict, "AssetPairs")
 
     def cached_pair_info(self, candidates) -> dict | None:
         """Return in-memory cached pair metadata for ``candidates`` without network I/O."""
         own_cache = getattr(self, "_CACHE", None)
         return get_cached_pair_info(candidates, own_cache if isinstance(own_cache, dict) else None)
 
-    def ticker(self, pair: str) -> dict | None:
-        return self._public_first_dict("Ticker", pair)
+    ticker = partialmethod(_public_first_dict, "Ticker")
 
     def ohlc_closes_with_timestamps(
         self, pair: str, interval: int,
@@ -322,10 +320,7 @@ class KrakenClient:
         return self._private("Balance")
 
     balance._is_default_kraken_balance = True  # type: ignore[attr-defined]
-
-    def balance_ex(self) -> dict:
-        """Return extended asset balances as {asset: {'balance': str, 'hold_trade': str, ...}}."""
-        return self._private("BalanceEx")
+    balance_ex = partialmethod(_private, "BalanceEx")
 
     def price_decimals(self, pair: str) -> int:
         """Return Kraken's allowed PRICE decimals for the pair from AssetPairs,
@@ -398,14 +393,12 @@ class KrakenClient:
         """Return order status by txid, including closed orders without T212-style 404s."""
         return self._private("QueryOrders", {"txid": self._clean_txid(txids)})
 
-    def open_orders(self) -> dict:
-        raw = self._private("OpenOrders").get("open")
+    def _private_dict_field(self, method: str, field: str) -> dict:
+        raw = self._private(method).get(field)
         return raw if isinstance(raw, dict) else {}
 
-    def closed_orders(self) -> dict:
-        """Return recent closed orders for deterministic client-ID recovery."""
-        raw = self._private("ClosedOrders").get("closed")
-        return raw if isinstance(raw, dict) else {}
+    open_orders = partialmethod(_private_dict_field, "OpenOrders", "open")
+    closed_orders = partialmethod(_private_dict_field, "ClosedOrders", "closed")
 
 
 # ---------------------------------------------------------------------------

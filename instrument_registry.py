@@ -660,9 +660,7 @@ class _InstrumentRegistryModule(_types.ModuleType):
 if __name__ in sys.modules and not isinstance(sys.modules[__name__], _InstrumentRegistryModule):
     sys.modules[__name__].__class__ = _InstrumentRegistryModule
 
-
-def __getattr__(name: str):
-    return _resolve_dynamic_symbol_attr(name)
+__getattr__ = _resolve_dynamic_symbol_attr
 
 
 def _normalize_ordertype(order_type):

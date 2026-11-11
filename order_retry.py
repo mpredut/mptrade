@@ -16,6 +16,7 @@ from typing import Iterable, Optional
 
 from botcore import (
     FileLock,
+    clean_non_bool_str as _clean_str,
     exact_int,
     exact_nonneg_int,
     exact_pos_int,
@@ -757,10 +758,6 @@ def get_accepted_order_ttl_map() -> dict:
             for k in _record_order_and_client_ids(r):
                 res[k] = ttl_val
     return res
-
-
-def _clean_str(val) -> str:
-    return "" if val is None or isinstance(val, bool) else str(val).strip()
 
 
 def _is_concrete_owner(owner: str) -> bool:

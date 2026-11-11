@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+from functools import partialmethod
 import hashlib
 import os
 import sys
@@ -724,21 +725,8 @@ class T212Client:
                 self._write_shared_cache(attr, data)
                 return data
 
-    def get_portfolio(self) -> list[dict] | None:
-        """Return open account positions, the reconciliation source of truth.
-
-        A brief shared TTL coalesces all asset-thread requests into one call.
-        """
-        return self._read_cached_dict_list("_pf_cache", "/equity/portfolio", "portfolio")
-
-    def list_active_orders(self) -> list[dict] | None:
-        """Return pending orders; executed orders disappear into the portfolio.
-
-        Share the portfolio TTL across threads and invalidate on placement/cancel so
-        reconciliation immediately sees new orders instead of incorrectly dropping
-        them or marking a take-profit tranche as sold.
-        """
-        return self._read_cached_dict_list("_ord_cache", "/equity/orders", "active orders")
+    get_portfolio = partialmethod(_read_cached_dict_list, "_pf_cache", "/equity/portfolio", "portfolio")
+    list_active_orders = partialmethod(_read_cached_dict_list, "_ord_cache", "/equity/orders", "active orders")
 
     def get_cash(self) -> dict | None:
         """Return account cash breakdown (free, invested, blocked, total) in account base currency."""

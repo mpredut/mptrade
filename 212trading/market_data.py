@@ -5,6 +5,7 @@ market_data.py -- Yahoo Finance market data: prices, FX rates, and real-trading 
 
 from __future__ import annotations
 
+from functools import partial
 import math
 import os
 import re
@@ -285,14 +286,8 @@ def _fx_rate(pair: str, label: str, min_rate: float, fallback: float) -> float:
     return fallback
 
 
-def get_usd_ron() -> float:
-    """Return current USD/RON, falling back to 4.65 when the feed is unavailable."""
-    return _fx_rate("USDRON=X", "USD/RON", 1.0, 4.65)
-
-
-def get_eur_usd() -> float:
-    """Return current EUR->USD (USD per EUR), falling back to 1.08."""
-    return _fx_rate("EURUSD=X", "EUR/USD", 0.5, 1.08)
+get_usd_ron = partial(_fx_rate, "USDRON=X", "USD/RON", 1.0, 4.65)
+get_eur_usd = partial(_fx_rate, "EURUSD=X", "EUR/USD", 0.5, 1.08)
 
 
 def check_market(sym: str) -> dict | None:

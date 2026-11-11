@@ -1,6 +1,7 @@
 """Specialized Multi-Source Feeds & Dynamic Crisis Lexicon Discovery (SSOT sub-module)."""
 from __future__ import annotations
 
+from functools import partial
 import logging
 import math
 import os
@@ -161,24 +162,18 @@ _STEM_EXACT_PREFIX_WHITELIST: Dict[str, frozenset[str]] = {
 _SEED_SETS_CACHE: Dict[str, Tuple[Any, Set[str]]] = {}
 
 
-def _get_stopwords_set() -> Set[str]:
-    raw = _cfg_str("lexicon_seed", "stopwords")
-    cached = _SEED_SETS_CACHE.get("stopwords")
+def _get_cached_seed_set(cache_key: str, option: str) -> Set[str]:
+    raw = _cfg_str("lexicon_seed", option)
+    cached = _SEED_SETS_CACHE.get(cache_key)
     if cached is not None and cached[0] == raw:
         return cached[1]
     res = set(split_csv(raw, lower=True))
-    _SEED_SETS_CACHE["stopwords"] = (raw, res)
+    _SEED_SETS_CACHE[cache_key] = (raw, res)
     return res
 
 
-def _get_crisis_stems_set() -> Set[str]:
-    raw = _cfg_str("lexicon_seed", "crisis_context_stems")
-    cached = _SEED_SETS_CACHE.get("crisis_stems")
-    if cached is not None and cached[0] == raw:
-        return cached[1]
-    res = set(split_csv(raw, lower=True))
-    _SEED_SETS_CACHE["crisis_stems"] = (raw, res)
-    return res
+_get_stopwords_set = partial(_get_cached_seed_set, "stopwords", "stopwords")
+_get_crisis_stems_set = partial(_get_cached_seed_set, "crisis_stems", "crisis_context_stems")
 
 
 def _get_seed_terms_set() -> Set[str]:
@@ -905,16 +900,16 @@ def demote_dynamic_acute_terms(
     return changed
 
 
-def get_active_severity_keywords(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
-    seed = split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True)
-    dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("high_severity_terms", ())
+def _get_active_lexicon_terms(
+    option: str, cache_dir: Optional[str] = None, now_ts: Optional[float] = None
+) -> Tuple[str, ...]:
+    seed = split_csv(_cfg_str("lexicon_seed", option), lower=True)
+    dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get(option, ())
     return tuple(dict.fromkeys((*seed, *dyn)))
 
 
-def get_active_acute_shock_phrases(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
-    seed = split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
-    dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("acute_shock_phrases", ())
-    return tuple(dict.fromkeys((*seed, *dyn)))
+get_active_severity_keywords = partial(_get_active_lexicon_terms, "high_severity_terms")
+get_active_acute_shock_phrases = partial(_get_active_lexicon_terms, "acute_shock_phrases")
 
 
 def discover_dynamic_terms_from_headlines(

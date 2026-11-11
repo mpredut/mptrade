@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 import math
 import re
 import statistics
@@ -18,9 +19,7 @@ from botcore import (
 from cachepaths import normalize_venue_name
 from providers.base import normalize_side
 
-
-def _opt_ts_sec(val: object) -> float | None:
-    return normalize_epoch_sec(val, default=None, allow_zero=True)
+_opt_ts_sec = partial(normalize_epoch_sec, default=None, allow_zero=True)
 
 
 def _ts_sort_key(val: object) -> tuple[bool, float]:
