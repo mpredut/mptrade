@@ -17,8 +17,6 @@ from instrument_registry import casefold_get
 from pricewindow import (
     K_DCA_DEFAULT,
     K_REENTRY_DEFAULT,
-    _VOL_MEMO_MAX_ENTRIES,
-    _std_to_vol1h_pct,
     _vol_memo_cache,
     adaptive_thresholds,
     calculate_volatility_1h,

@@ -9546,14 +9546,14 @@ def test_survival_verdict_accepts_string_keys_as_persisted_in_iter98_s3():
     assert verdict({"1": 0.8, "10": 0.5}, float("nan")) == "insufficient_data"
 
 def test_kalman_trigger_pos_float_env_strips_inline_comments_and_requires_triggerevent_iter122_s4(monkeypatch):
-    """[ITER122 #4] kalman_trigger.pos_float_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action."""
+    """[ITER122 #4] botcore.pos_float_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action."""
+    from botcore import pos_float_env
     from intelligence.internal.triggers.trigger_event import TriggerEvent
-    from intelligence.internal.triggers import kalman_trigger as kt
-    # 4. kalman_trigger.pos_float_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action
+    # 4. botcore.pos_float_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action
     monkeypatch.setenv("TEST_KALMAN_ENV", "0.0025 # comment")
-    assert kt.pos_float_env("TEST_KALMAN_ENV", 0.0005) == 0.0025
+    assert pos_float_env("TEST_KALMAN_ENV", 0.0005) == 0.0025
     monkeypatch.setenv("TEST_KALMAN_ENV", "-1.0")
-    assert kt.pos_float_env("TEST_KALMAN_ENV", 0.0005) == 0.0005
+    assert pos_float_env("TEST_KALMAN_ENV", 0.0005) == 0.0005
 
     ev = TriggerEvent(action="entry", side="buy", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
     assert ev.is_executable() is True

@@ -157,9 +157,7 @@ _EQ_YAHOO_CHART_MEMO: Dict[str, Tuple[float, Any]] = {}
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
 
-
-def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
-    return resolve_read_json_cached(read_json_fn, local_fn=read_json_cached)
+_resolve_read_json_cached = resolve_read_json_cached
 
 
 def _filter_ohlc_closes_since(

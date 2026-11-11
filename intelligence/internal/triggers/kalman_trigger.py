@@ -3,15 +3,11 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
-from botcore import normalize_epoch_sec, pos_float_env, safe_pos_float
+from botcore import normalize_epoch_sec, safe_pos_float
 from intelligence.internal.triggers.trigger_event import TriggerEvent
 from pricewindow import (
-    CONF_ENTER,
-    CONF_EXIT,
-    DT_MIN,
     GAP_RESET_SEC,
     KALMAN_QR,
-    MIN_VEL_PCT_MIN,
     KalmanTrend,
 )
 

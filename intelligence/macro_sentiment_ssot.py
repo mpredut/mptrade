@@ -99,7 +99,6 @@ from cachepaths import (
 )
 from instrument_registry import casefold_get
 from intelligence.macro.lexicon_ssot import (
-    DEFAULT_MACRO_CONFIG_PATH,
     _cfg_float,
     _cfg_int,
     _cfg_ratio,
@@ -112,12 +111,10 @@ from intelligence.macro.lexicon_ssot import (
     filter_valid_severity_keywords,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
-    load_macro_intelligence_config,
 )
 from state_io import (
     atomic_write_json,
     discard_generation_file,
-    read_json_dict,
     read_json_dict_recovering as _default_read_json_dict_recovering,
     read_json_file,
     read_json_recovering as _default_read_json_recovering,

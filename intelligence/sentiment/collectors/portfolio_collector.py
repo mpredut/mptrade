@@ -86,9 +86,7 @@ save_json_state = _default_save_json_state
 
 logger = logging.getLogger("intelligence.sentiment.portfolio_collector")
 
-
-def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
-    return resolve_read_json_cached(read_json_fn, local_fn=read_json_cached)
+_resolve_read_json_cached = resolve_read_json_cached
 
 
 def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
