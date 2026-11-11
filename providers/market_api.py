@@ -244,21 +244,17 @@ class MarketApi:
             candidates.append((timestamp, price))
         return max(candidates)[1] if candidates else None
 
-    @staticmethod
-    def _reconciliation_capabilities(provider) -> OrderReconciliationCapabilities:
-        return reconciliation_capabilities_of(provider)
-
     def reconciliation_capabilities(
             self, symbol: str, *, provider_name=None
     ) -> OrderReconciliationCapabilities:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
-        return self._reconciliation_capabilities(provider)
+        return reconciliation_capabilities_of(provider)
 
     def _require_reconciliation_method(
         self, symbol: str, provider_name, cap_attr: str, method_name: str,
     ):
         provider = self._provider_explicit_or_routed(symbol, provider_name)
-        if not getattr(self._reconciliation_capabilities(provider), cap_attr, False):
+        if not getattr(reconciliation_capabilities_of(provider), cap_attr, False):
             raise ProviderError(f"{provider.name}: {method_name} is unsupported")
         method = getattr(provider, method_name, None)
         if not callable(method):

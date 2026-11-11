@@ -20,7 +20,7 @@ from botcore import (
     load_ini_config,
     lru_dict_put,
     normalize_side,
-    parse_env_file,
+    parse_dotenv,
     register_module_aliases,
     safe_float,
     safe_int,
@@ -387,8 +387,8 @@ def binance_symbols(path=None):
 
 def discover_kraken_cache_pairs(workspace_dir: str) -> list[tuple[str, str, str]]:
     """Read KRAKEN_TRADABLE_PAIRS (or fallback KRAKEN_CACHE_PAIRS / instruments.conf), excluding read-only xStocks."""
-    kv = parse_env_file(os.path.join(workspace_dir, "kraken", "config.env"))
-    raw_pairs = kv.get("KRAKEN_TRADABLE_PAIRS") or kv.get("KRAKEN_CACHE_PAIRS") or ""
+    kv = parse_dotenv(os.path.join(workspace_dir, "kraken", "config.env"), upper_keys=True)
+    raw_pairs = str(kv.get("KRAKEN_TRADABLE_PAIRS") or kv.get("KRAKEN_CACHE_PAIRS") or "")
     if not raw_pairs.strip():
         ws_inst_conf = os.path.join(workspace_dir, "instruments.conf")
         if os.path.exists(ws_inst_conf):
@@ -414,10 +414,10 @@ def discover_hyperliquid_spot(workspace_dir: str) -> list[tuple[str, str, str]]:
     cfg_path = os.path.join(workspace_dir, "hyperliquid", "config.env")
     if not os.path.exists(cfg_path):
         return []
-    kv = parse_env_file(cfg_path)
+    kv = parse_dotenv(cfg_path, upper_keys=True)
     if not _parse_bool_flag(kv.get("HL_LIVE_ORDERS"), False):
         return []
-    token = (kv.get("HL_SPOT_TOKEN") or "HYPE").strip().upper()
+    token = str(kv.get("HL_SPOT_TOKEN") or "HYPE").strip().upper()
     return [(f"{token}USDC", token, "USDC")] if token else []
 
 
@@ -429,8 +429,8 @@ def discover_t212_equities(workspace_dir: str) -> list[tuple[str, str, str, str]
     out: list[tuple[str, str, str, str]] = []
     seen: set[str] = set()
     for cfg_path in sorted(glob.glob(os.path.join(glob.escape(t212_dir), "config.*.env"))):
-        kv = parse_env_file(cfg_path)
-        ticker = (kv.get("T212_TICKER") or kv.get("STRAT_PAIR") or "").upper()
+        kv = parse_dotenv(cfg_path, upper_keys=True)
+        ticker = str(kv.get("T212_TICKER") or kv.get("STRAT_PAIR") or "").upper()
         if ticker and ticker not in seen:
             seen.add(ticker)
             out.append((f"T212_{ticker.split('_', 1)[0]}", ticker, ticker, "USD"))

@@ -57,29 +57,21 @@ class ExitDecision:
 class PriceGeometrySnapshot:
     """Base mixin providing unified, fuzzy-tolerant price geometry primitives."""
 
-    @staticmethod
-    def _finite_pos_float(val: Any) -> Optional[float]:
-        return safe_pos_float(val, default=None)
-
-    @staticmethod
-    def _finite_nonneg_float(val: Any) -> Optional[float]:
-        return safe_nonneg_float(val, default=None)
-
     @property
     def is_valid_price(self) -> bool:
         """Verify whether current market price is valid and strictly positive."""
-        return self._finite_pos_float(getattr(self, "current_price", None)) is not None
+        return safe_pos_float(getattr(self, "current_price", None), default=None) is not None
 
     def bounce_ratio(self, trough_price: float) -> float:
         """Calculate recovery bounce ratio above trough: (current - trough) / trough."""
-        cp, tp = self._finite_pos_float(getattr(self, "current_price", None)), self._finite_pos_float(trough_price)
+        cp, tp = safe_pos_float(getattr(self, "current_price", None), default=None), safe_pos_float(trough_price, default=None)
         if cp is None or tp is None:
             return 0.0
         return (cp - tp) / tp if cp > tp else 0.0
 
     def pullback_ratio(self, peak_price: float) -> float:
         """Normalized pullback ratio from peak: (peak - current) / peak."""
-        cp, pp = self._finite_pos_float(getattr(self, "current_price", None)), self._finite_pos_float(peak_price)
+        cp, pp = safe_pos_float(getattr(self, "current_price", None), default=None), safe_pos_float(peak_price, default=None)
         if cp is None or pp is None:
             return 0.0
         return (pp - cp) / pp if pp > cp else 0.0
@@ -87,26 +79,26 @@ class PriceGeometrySnapshot:
     def has_bounced(self, trough_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has bounced above trough honoring fuzzy tolerance."""
         cp, tp, th = (
-            self._finite_pos_float(getattr(self, "current_price", None)),
-            self._finite_pos_float(trough_price),
-            self._finite_pos_float(threshold),
+            safe_pos_float(getattr(self, "current_price", None), default=None),
+            safe_pos_float(trough_price, default=None),
+            safe_pos_float(threshold, default=None),
         )
         if cp is None or tp is None or th is None:
             return False
-        tol = self._finite_nonneg_float(tol_pct) or 0.0
+        tol = safe_nonneg_float(tol_pct, default=None) or 0.0
         return self.bounce_ratio(tp) >= th or (tol > 0 and are_close(cp, tp * (1.0 + th), tol))
 
     def has_dropped(self, reference_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
         cp, rp, th = (
-            self._finite_pos_float(getattr(self, "current_price", None)),
-            self._finite_pos_float(reference_price),
+            safe_pos_float(getattr(self, "current_price", None), default=None),
+            safe_pos_float(reference_price, default=None),
             safe_float(threshold, default=None),
         )
         if cp is None or rp is None or th is None:
             return False
         target = rp * (1.0 - th)
-        tol = self._finite_nonneg_float(tol_pct) or 0.0
+        tol = safe_nonneg_float(tol_pct, default=None) or 0.0
         return cp <= target or (tol > 0 and are_close(cp, target, tol))
 
 
@@ -145,7 +137,7 @@ class PositionSnapshot(PriceGeometrySnapshot):
     @property
     def price_change_ratio(self) -> float:
         """Normalized price change relative to cost: (current - buy) / buy."""
-        bp, cp = self._finite_pos_float(getattr(self, "avg_buy_price", None)), self._finite_pos_float(getattr(self, "current_price", None))
+        bp, cp = safe_pos_float(getattr(self, "avg_buy_price", None), default=None), safe_pos_float(getattr(self, "current_price", None), default=None)
         return (cp - bp) / bp if (bp is not None and cp is not None) else 0.0
 
     @property
@@ -166,15 +158,15 @@ class PositionSnapshot(PriceGeometrySnapshot):
 
     @property
     def is_valid_price(self) -> bool:
-        return self._finite_pos_float(self.avg_buy_price) is not None and self._finite_pos_float(self.current_price) is not None
+        return safe_pos_float(self.avg_buy_price, default=None) is not None and safe_pos_float(self.current_price, default=None) is not None
 
     def _ratio_reaches_threshold(self, ratio: float, threshold: float, tol_pct: float = 0.0) -> bool:
-        th = self._finite_pos_float(threshold)
+        th = safe_pos_float(threshold, default=None)
         if th is None:
             return False
         if ratio >= th:
             return True
-        tol = self._finite_nonneg_float(tol_pct) or 0.0
+        tol = safe_nonneg_float(tol_pct, default=None) or 0.0
         return (ratio > 0.0 or tol >= 200.0) and tol > 0 and are_close(ratio, th, tol)
 
     def in_sl_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
@@ -236,7 +228,7 @@ class ReentrySnapshot(PriceGeometrySnapshot):
 
     @property
     def sale_drop_ratio(self) -> float:
-        cp, rp = self._finite_pos_float(getattr(self, "current_price", None)), self._finite_pos_float(self.last_sell_price)
+        cp, rp = safe_pos_float(getattr(self, "current_price", None), default=None), safe_pos_float(self.last_sell_price, default=None)
         return (rp - cp) / rp if (cp is not None and rp is not None) else 0.0
 
     @property
@@ -922,7 +914,7 @@ class PositionExitManager:
         if not snapshot.is_valid_price:
             return self._reentry_wait("invalid_current_price")
 
-        last_sell_f = snapshot._finite_pos_float(snapshot.last_sell_price)
+        last_sell_f = safe_pos_float(snapshot.last_sell_price, default=None)
         if last_sell_f is None:
             self.reentry_state.pop(symbol, None)
             return ReentryDecision(ReentryAction.ENTER, True, "no_last_sale_barrier")
@@ -1027,11 +1019,11 @@ class PositionExitManager:
             pullback_required = self.config.reentry_pullback_pct
             pullback_ratio = snapshot.pullback_ratio(peak)
             cp, pp, th = (
-                snapshot._finite_pos_float(getattr(snapshot, "current_price", None)),
-                snapshot._finite_pos_float(peak),
-                snapshot._finite_pos_float(pullback_required),
+                safe_pos_float(getattr(snapshot, "current_price", None), default=None),
+                safe_pos_float(peak, default=None),
+                safe_pos_float(pullback_required, default=None),
             )
-            tol = snapshot._finite_nonneg_float(self.config.reentry_tolerance_pct) or 0.0
+            tol = safe_nonneg_float(self.config.reentry_tolerance_pct, default=None) or 0.0
             pulled_back = (
                 cp is not None
                 and pp is not None

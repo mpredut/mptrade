@@ -93,10 +93,10 @@ class ReplayEngineTest(unittest.TestCase):
                   "calmar", "cvar_95_pct", "exposure_pct", "profit_factor",
                   "expectancy", "turnover_pct", "fills"):
             self.assertIn(k, res)
-        self.assertEqual(res["cycles"], 2)          # motorul inchide 2 cicluri pe seria asta
+        self.assertEqual(res["cycles"], 2)          # the engine closes 2 cycles on this series
         self.assertEqual(res["wins"], 1)
-        self.assertEqual(res["open_qty"], 0.0)      # pozitie inchisa la final
-        self.assertLess(res["net"], res["realized"]) # net = brut - fee-uri
+        self.assertEqual(res["open_qty"], 0.0)      # position closed at the end
+        self.assertLess(res["net"], res["realized"]) # net = gross - fees
         self.assertGreaterEqual(res["fees"], 0.0)
         self.assertGreaterEqual(res["maxdd"], 0.0)
         self.assertAlmostEqual(res["net_pnl"], res["total"])
@@ -171,7 +171,7 @@ class ReplayEngineTest(unittest.TestCase):
     def test_market_stop_fills_at_next_open_even_below_reference_price(self):
         bars = [
             (100.0, 101.0, 99.0, 100.0),  # places the entry
-            (100.0, 101.0, 99.0, 100.0),  # umple intrarea
+            (100.0, 101.0, 99.0, 100.0),  # fills the entry
             (80.0, 82.0, 78.0, 80.0),     # triggers STOP MARKET
             (70.0, 71.0, 69.0, 70.0),     # gap down: fills at open, does not wait for the limit
         ]
@@ -515,16 +515,16 @@ class BaseV2GoldenTest(unittest.TestCase):
                          "the number of orders placed changed -> a behaviour regression")
         digest = hashlib.sha256(repr(trace).encode()).hexdigest()[:16]
         self.assertEqual(digest, GOLDEN_TRACE_HASH,
-                         "urma exacta de decizii s-a schimbat -> refactorul a alterat base v2")
+                         "the exact decision trace changed -> the refactor altered base v2")
 
     def test_final_metrics_match_golden(self):
         _, m = self._run_with_trace()
         for key, expected in GOLDEN_METRICS.items():
             got = m.get(key)
             if isinstance(expected, float):
-                self.assertAlmostEqual(got, expected, places=6, msg=f"metrica '{key}' difera")
+                self.assertAlmostEqual(got, expected, places=6, msg=f"metric '{key}' differs")
             else:
-                self.assertEqual(got, expected, f"metrica '{key}' difera")
+                self.assertEqual(got, expected, f"metric '{key}' differs")
 
     def test_sell_first_ambiguous_bar_closes_cycle_without_orphan_dca_market_dump(self):
         bars = [

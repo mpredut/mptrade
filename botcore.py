@@ -524,14 +524,9 @@ def parse_dotenv(
     return out
 
 
-def parse_env_file(env_path: str | os.PathLike) -> dict[str, str]:
-    """Parse a key=value env/conf file into an uppercase-keyed dictionary without mutating os.environ."""
-    return parse_dotenv(env_path, upper_keys=True)  # type: ignore[return-value]
-
-
 def load_env_file_defaults(env_path: str | os.PathLike) -> dict[str, str]:
     """Parse an env file and set non-STRAT_* keys in os.environ via setdefault."""
-    parsed = parse_env_file(env_path)
+    parsed: dict[str, str] = parse_dotenv(env_path, upper_keys=True)  # type: ignore[assignment]
     for key_u, val in parsed.items():
         if not key_u.startswith("STRAT_"):
             os.environ.setdefault(key_u, val)

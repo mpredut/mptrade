@@ -16,10 +16,10 @@ from offline.simulations.sim import PriceWindow
 
 def plot_graphs(price_window, full_prices):
     """Plot the charts with every price and the current window."""
-    # Curatam graficele anterioare
+    # Clear previous charts.
     plt.clf()
 
-    # Plotam graficul complet
+    # Plot full chart.
     plt.subplot(2, 1, 1)
     plt.plot(full_prices, marker='o', linestyle='-', label='All Prices')
     plt.title('All Prices (Last 500)')
@@ -27,9 +27,9 @@ def plot_graphs(price_window, full_prices):
     plt.ylabel('Price')
     plt.grid(True)
 
-    # Plotam graficul ferestrei glisante
+    # Plot sliding window chart.
     plt.subplot(2, 1, 2)
-    prices = price_window.get_prices()
+    prices = list(price_window.prices)
     min_price, min_pos = price_window.get_min()
     max_price, max_pos = price_window.get_max()
 
@@ -46,7 +46,7 @@ def plot_graphs(price_window, full_prices):
     plt.ylabel('Price')
     plt.grid(True)
     
-    # Actualizam graficele
+    # Update charts.
     plt.tight_layout()
     plt.pause(0.1)
 
@@ -67,7 +67,7 @@ def main():
             plot_graphs(price_window, full_prices)
             time.sleep(1.2)  # A small delay to simulate real time.
     except KeyboardInterrupt:
-        print("Simulare oprita manual.")
+        print("Simulation stopped manually.")
 
 
 if __name__ == "__main__":

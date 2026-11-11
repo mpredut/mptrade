@@ -73,9 +73,6 @@ class ExecutionModel:
         object.__setattr__(self, "market_slippage_bps", slip_f)
         object.__setattr__(self, "partial_fill_ratio", pfr_f)
 
-    def with_policy(self, policy: str) -> "ExecutionModel":
-        return replace(self, intrabar_policy=policy)
-
     def side_order(self) -> tuple[str, str]:
         return ("sell", "buy") if self.intrabar_policy == "sell_first" else ("buy", "sell")
 
@@ -164,7 +161,7 @@ def choose_intrabar_scenario(
     if model.intrabar_policy != "worst_case":
         return run_once(model)
 
-    scenarios = {policy: run_once(model.with_policy(policy)) for policy in ("buy_first", "sell_first")}
+    scenarios = {policy: run_once(replace(model, intrabar_policy=policy)) for policy in ("buy_first", "sell_first")}
     selected_policy, selected = min(scenarios.items(), key=lambda item: safe_float(item[1].get("return_pct"), 0.0))
     result = dict(selected)
     result["intrabar_policy_selected"] = selected_policy

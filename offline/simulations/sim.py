@@ -27,8 +27,8 @@ class PriceWindow:
             raise ValueError("epsilon must be a non-negative finite number")
         self.window_size = ws
         self.prices = deque()  # Keeps every price in the window.
-        self.min_deque = deque()  # Gestionarea minimului
-        self.max_deque = deque()  # Gestionarea maximului
+        self.min_deque = deque()  # Minimum tracking.
+        self.max_deque = deque()  # Maximum tracking.
         self.current_index = 0  # An internal counter tracking the index.
         self.max_index = mi  # The threshold at which normalisation happens.
         self.epsilon = eps  # The tolerance for approximately equal lows.
@@ -46,7 +46,7 @@ class PriceWindow:
         )
         self.min_deque = deque([(index - min_index, price) for index, price in self.min_deque])
         self.max_deque = deque([(index - min_index, price) for index, price in self.max_deque])
-        self.current_index -= min_index  # Ajustam indexul curent
+        self.current_index -= min_index  # Adjust the current index.
 
     def process_price(self, price):
         px = safe_float(price, default=None)
@@ -69,7 +69,7 @@ class PriceWindow:
         self._manage_minimum(px)
         self._manage_maximum(px)
 
-        # Incrementam indexul intern
+        # Increment the internal index.
         self.current_index += 1
 
     def _manage_minimum(self, price):
@@ -113,13 +113,9 @@ class PriceWindow:
         """Return the current high in the window and its relative position."""
         return self._deque_front(self.max_deque)
 
-    def get_prices(self):
-        """Return every current price in the window."""
-        return list(self.prices)
-
     def plot_window(self):
         """Plot the values in the window and mark the low and the high."""
-        prices = self.get_prices()
+        prices = list(self.prices)
         min_price, min_pos = self.get_min()
         max_price, max_pos = self.get_max()
         
@@ -148,7 +144,7 @@ def main():
             price_window.plot_window()
             time.sleep(7.5)  # A small delay to simulate real time.
     except KeyboardInterrupt:
-        print("Simulare oprita manual.")
+        print("Simulation stopped manually.")
 
 
 if __name__ == "__main__":

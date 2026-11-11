@@ -272,9 +272,9 @@ def run_tp_drop_sl_sweep(
                 wr = 100.0 * wins / cyc if cyc else 0.0
                 rows.append((tot, tp_val, drop_val, cyc, wr, safe_float(m.get("maxdd"), 0.0)))
         rows.sort(reverse=True)
-        emit(f"  top {top_n} combinatii (net% | tp | drop | cicluri | win% | maxDD$):")
+        emit(f"  top {top_n} combinations (net% | tp | drop | cycles | win% | maxDD$):")
         for net, tp_v, drop_v, cyc, wr, dd in rows[:top_n]:
-            emit(f"    {net:+7.2f}%  tp={tp_v:<4} drop={drop_v:<4} cic={cyc:<3} win={wr:.0f}% dd=${dd:.0f}")
+            emit(f"    {net:+7.2f}%  tp={tp_v:<4} drop={drop_v:<4} cyc={cyc:<3} win={wr:.0f}% dd=${dd:.0f}")
         return rows
 
     for tp_val in tp_values:

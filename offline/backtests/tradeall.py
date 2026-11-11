@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 offline.backtests.tradeall — replays the price history already saved
-(cachedb/cache_price_{symbol}.jsonl, ~11 months) through EXACTLY the same model of
-decizie ca tradeall.py (PriceWindow / WindowAnalyzer / TrendState / logic /
+(cachedb/cache_price_{symbol}.jsonl, ~11 months) through EXACTLY the same decision
+model as tradeall.py (PriceWindow / WindowAnalyzer / TrendState / logic /
 logic_small), with place_order_smart replaced by a stub that simulates
 execution instead of hitting the Binance network. It writes ONLY into a separate
 logger/backtest/<run_id>/ — NEVER in the live logs used by
-tradeall.py real (vezi plan A5).
+live tradeall.py (see plan A5).
 
-Rulare:
+Usage:
     python3 -m offline.backtests.tradeall --symbol BTCUSDC --start 2026-06-01 --speed fast
     python3 -m offline.backtests.tradeall --symbol BTCUSDC --start 2026-06-01 --end 2026-06-08 --speed real
 
@@ -41,8 +41,8 @@ from offline.research.monitortrades_backtest.replay_trend_source import (  # noq
 import shadow_signals
 
 
-FEE_PCT = 0.1   # comision spot Binance ~0.1% per leg (taker)
-# marime standard de pozitie pt simulare (kalman-primary + benchmark buy&hold) —
+FEE_PCT = 0.1   # Binance spot fee ~0.1% per leg (taker)
+# Standard position size for simulation (kalman-primary + buy&hold benchmark) —
 # 21 Jul: replaces ta.api.quantities[symbol] (removed from bapi.py, it was only
 # a placeholder always trimmed by the weight limit in live, but here we really do need
 # a REAL, fixed NUMBER, so that variants can be compared honestly on the same volume.

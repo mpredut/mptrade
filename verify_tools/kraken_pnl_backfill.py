@@ -107,7 +107,7 @@ def main():
         realized = sv - avg_buy * sq - fee
         grand += realized
         print(f'  {sym:<12} realized={realized:+9.2f} USD  (net_qty={bq-sq:+.4f}, {len(tr)} trades)')
-    print(f'[kraken_pnl] TOTAL realized (istoric complet) = {grand:+.2f} USD')
+    print(f'[kraken_pnl] TOTAL realized (full history) = {grand:+.2f} USD')
 
 
 if __name__ == '__main__':

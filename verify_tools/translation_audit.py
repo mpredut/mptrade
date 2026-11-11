@@ -63,6 +63,9 @@ permite permis refuza refuzat esuat esuata esec reusit gasit gasita lipsa lipses
 astept asteapta asteptare gol goala plina mort moarte viu curat coada
 fara catre dintre despre prin asupra impotriva orice oricare nimic nimeni
 motiv motive cauza scop rand randuri linie linii pas pasi etapa etape exemplu exemple
+decizie decizii rulare comision marime pozitie pozitii simulare oprita istoric
+inchide inchis inchisa cicluri motorul combinatii difera intrarea umple
+graficul graficele ferestrei glisante minimului maximului ajustam incrementam curatam plotam actualizam
 """.split())
 
 DOC_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
