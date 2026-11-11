@@ -544,3 +544,89 @@ def test_dust_protected_sell_sizing_and_ohlc_client_id_border_cases():
         resolve_ohlc_time_window_ms(lookback_days=1e308)
     with pytest.raises(ValueError, match="lookback_hours"):
         resolve_ohlc_time_window_ms(lookback_hours=1e308)
+
+
+def test_account_cache_and_legacy_jsonl_border_cases(tmp_path: Path):
+    """Verify CacheAccountManagerBase cursor/fetchtime sanitization and legacy JSONL strict ID / tail handling."""
+    import binance_cache_health as account_cache_health
+    import cacheintegrity
+    import cachepaths
+
+    assert not hasattr(cachepaths, "_is_eq_suffix")
+
+    snap_file = tmp_path / "cache_trade_kraken.json"
+    snap_file.write_text(
+        json.dumps(
+            {
+                "items": {"XBTUSD": []},
+                "fetchtime": {
+                    "XBTUSD": 1_700_000_005_000.0,
+                    "BAD_NAN": 0.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    mgr = CacheTradeManager(
+        venue="kraken",
+        filename=str(snap_file),
+        data_sync_mode="disk_reader",
+    )
+    mgr._persisted_data_version = "v_test"
+    mgr._rest_sync_cursor_per_symbol = {
+        "BOOL_SYM": True,
+        "INF_SYM": float("inf"),
+        "NAN_SYM": float("nan"),
+        "VALID_SYM": 1_700_000_001_234,
+    }
+    ver, sync_ms = mgr.get_persisted_sync_state()
+    assert ver == "v_test"
+    assert sync_ms == 1_700_000_001_234
+
+    # Injecting non-finite fetchtime values into the JSON snapshot must not poison _persisted_max_ts
+    snap_file.write_text(
+        '{"items": {}, "fetchtime": {"XBTUSD": 1700000005000, "INF": 1e309}}',
+        encoding="utf-8",
+    )
+    assert mgr._persisted_max_ts() == pytest.approx(1_700_000_005_000.0)
+
+    # read_legacy_trade_jsonl_strict recovers trailing partial JSON line when counts match,
+    # and rejects bool/float IDs strictly
+    valid_row = {
+        "symbol": "BTCUSDC",
+        "id": 101,
+        "orderId": 202,
+        "price": "50000.0",
+        "qty": "0.01",
+        "quoteQty": "500.0",
+        "commission": "0.1",
+        "commissionAsset": "USDC",
+        "time": 1_700_000_000_000,
+        "isBuyer": True,
+        "isMaker": False,
+    }
+    legacy_jsonl = tmp_path / "legacy_trade.jsonl"
+    legacy_jsonl.write_text(
+        json.dumps({"s": "BTCUSDC", "i": valid_row}) + "\n" + '{"s": "BTCUSDC", "i": {',
+        encoding="utf-8",
+    )
+    recovered = cacheintegrity.read_legacy_trade_jsonl_strict(
+        str(legacy_jsonl),
+        {"counts": {"BTCUSDC": 1}},
+        is_valid_item_fn=CacheTradeManager._is_valid_item,
+        reader_reason="test_legacy",
+    )
+    assert len(recovered["BTCUSDC"]) == 1
+
+    bad_id_row = dict(valid_row, id=True)
+    legacy_jsonl.write_text(
+        json.dumps({"s": "BTCUSDC", "i": bad_id_row}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(account_cache_health.AccountCacheNotReady):
+        cacheintegrity.read_legacy_trade_jsonl_strict(
+            str(legacy_jsonl),
+            {"counts": {"BTCUSDC": 1}},
+            is_valid_item_fn=lambda _r: True,
+            reader_reason="test_legacy_bool_id",
+        )

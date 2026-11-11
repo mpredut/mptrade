@@ -43,7 +43,9 @@ from botcore import (
     resolve_now_ms,
     resolve_now_ts,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
+    safe_pos_int,
     strict_ascii_int,
 )
 from cacheInterface import (
@@ -189,9 +191,9 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         sync_ms = (
             min(
                 (
-                    int(v)
+                    vi
                     for v in cursors.values()
-                    if isinstance(v, (int, float)) and v > 0
+                    if (vi := safe_pos_int(v, default=None)) is not None
                 ),
                 default=0,
             )
@@ -221,10 +223,10 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
     ) -> None:
         if self._is_account_cache():
             with self.lock:
-                cursor_ms = max(0, request_high_water - 1)
+                cursor_ms = max(0, (safe_nonneg_int(request_high_water, default=0) or 0) - 1)
                 self._rest_sync_cursor_per_symbol[symbol] = cursor_ms
                 self.fetchtime_per_symbol[symbol] = max(
-                    int(self.fetchtime_per_symbol.get(symbol, 0) or 0),
+                    safe_nonneg_int(self.fetchtime_per_symbol.get(symbol, 0), default=0) or 0,
                     cursor_ms,
                 )
                 self._mark_account_cache_dirty_locked()
@@ -291,8 +293,8 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         version = str(metadata["data_version"])
         self._persisted_data_version = version
         self._persisted_stream_id = str(metadata.get("stream_id") or "")
-        self._persisted_revision = int(metadata.get("revision") or 0)
-        self._persisted_committed_bytes = int(metadata.get("committed_bytes") or 0)
+        self._persisted_revision = safe_nonneg_int(metadata.get("revision"), default=0) or 0
+        self._persisted_committed_bytes = safe_nonneg_int(metadata.get("committed_bytes"), default=0) or 0
         self._persisted_content_digest = str(metadata.get("content_digest") or "")
         self._loaded_data_version = version
         self._loaded_stream_id = self._persisted_stream_id
@@ -945,9 +947,9 @@ class CacheTradeManager(CacheAccountManagerBase):
             ft = data.get("fetchtime") if isinstance(data, dict) else None
             if isinstance(ft, dict) and ft:
                 vals = [
-                    float(v)
+                    fv
                     for v in ft.values()
-                    if not isinstance(v, bool) and isinstance(v, (int, float))
+                    if (fv := safe_nonneg_float(v, default=None)) is not None
                 ]
                 if vals:
                     return max(meta_ts, max(vals))

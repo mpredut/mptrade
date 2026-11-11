@@ -515,9 +515,6 @@ def has_equity_suffix(symbol: object) -> bool:
     return symbol.strip().upper().endswith(("_EQ", "_US_EQ"))
 
 
-_is_eq_suffix = has_equity_suffix
-
-
 def _is_false_tusd_or_busd_match(token: str, quote: str) -> bool:
     """Return True if a symbol ending in TUSD or BUSD is actually a USD quote pair
     whose base ends in 'T' (e.g. XBTUSD, XAUTUSD, SPCXx.TUSD, DOTUSD, BATUSD, HOTUSD, NOTUSD, ACTUSD, USDTUSD, XXBTUSD)

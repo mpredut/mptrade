@@ -61,7 +61,6 @@ from cachepaths import (
     CACHE_365_PRICE_PREFIX,
     CACHE_CURRENT_PRICE_FILENAME,
     CACHE_SPARSE_PRICE_PREFIX,
-    _is_eq_suffix,
     cache_24_price_filename,
     cache_path,
     cache_symbol_variants,
@@ -69,7 +68,9 @@ from cachepaths import (
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
+    filter_candidates_by_asset_class,
     get_cachedb_dir,
+    has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
     normalize_venue_name,
@@ -1618,12 +1619,7 @@ def resolve_cached_symbol_price(
                 ):
                     if cand not in candidates:
                         candidates.append(cand)
-            if inst_is_eq:
-                candidates = [
-                    c for c in candidates if _is_eq_suffix(c) or split_symbol_assets(c) is None
-                ]
-            else:
-                candidates = [c for c in candidates if not _is_eq_suffix(c)]
+            candidates = filter_candidates_by_asset_class(candidates, is_equity=inst_is_eq)
 
             for cand in candidates:
                 px_f = extract_current_price_item(casefold_get(items, cand))
@@ -1633,9 +1629,7 @@ def resolve_cached_symbol_price(
                 base_u = canonical_base_asset(str(inst_base))
                 for k, v in items.items():
                     k_str = str(k).strip().upper()
-                    if _is_eq_suffix(k_str) != inst_is_eq:
-                        continue
-                    if inst_is_eq and split_symbol_assets(k_str) is not None and not _is_eq_suffix(k_str):
+                    if has_equity_suffix(k_str) != inst_is_eq:
                         continue
                     if compatible_quote_suffixes(k_str, default_usd=allowed_quotes if is_usd_quote else ("USD",)) != allowed_quotes:
                         continue
@@ -1646,14 +1640,13 @@ def resolve_cached_symbol_price(
     except Exception:
         pass
 
-    lookup_sym = f"{sym_u}_US_EQ" if inst_is_eq and not _is_eq_suffix(sym_u) else sym_u
-    series_cands = [
-        c
-        for c in cache_symbol_variants(
+    lookup_sym = f"{sym_u}_US_EQ" if inst_is_eq and not has_equity_suffix(sym_u) else sym_u
+    series_cands = filter_candidates_by_asset_class(
+        cache_symbol_variants(
             lookup_sym, include_original=True, include_base=False, quotes=allowed_quotes
-        )
-        if (_is_eq_suffix(c) or split_symbol_assets(c) is None) == inst_is_eq
-    ]
+        ),
+        is_equity=inst_is_eq,
+    )
     cands_upper = {c.strip().upper() for c in series_cands if c.strip()}
     try:
         for cand in series_cands:
@@ -1690,7 +1683,7 @@ def resolve_cached_symbol_price(
                 for c in cache_symbol_variants(
                     lookup_sym, include_original=True, include_base=True, quotes=allowed_quotes
                 )
-                if _is_eq_suffix(c.upper()) == inst_is_eq
+                if has_equity_suffix(c) == inst_is_eq
                 and compatible_quote_suffixes(c, default_usd=_DEFAULT_USD_QUOTES) == allowed_quotes
             ]
             for cand in ob_cands:

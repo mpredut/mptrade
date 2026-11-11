@@ -10,7 +10,7 @@ from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
 from botcore import safe_pos_int, strict_ascii_int
-from state_io import format_jsonl_bucket_line, read_json_dict
+from state_io import format_jsonl_bucket_line, parse_json_payload, read_json_dict, read_text_file
 
 CACHE_META_SCHEMA_VERSION = 2
 
@@ -301,7 +301,7 @@ def read_trade_records_range_strict(
         for line in raw.splitlines():
             if not line.strip():
                 continue
-            record = json.loads(line.decode("utf-8"))
+            record = parse_json_payload(line.decode("utf-8"))
             if (
                 not isinstance(record, dict)
                 or not isinstance(record.get("s"), str)
@@ -410,49 +410,49 @@ def read_legacy_trade_jsonl_strict(
     seen_trade_items: defaultdict[str, dict[str, tuple[Any, ...]]] = defaultdict(dict)
     if not os.path.exists(path):
         return cache
-    with open(path, "r", encoding="utf-8") as handle:
-        for line in handle:
-            raw = line.strip()
-            if not raw:
+    lines = read_text_file(path, encoding="utf-8", errors="strict").splitlines()
+    for idx, line in enumerate(lines):
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            rec = parse_json_payload(raw)
+            if (
+                not isinstance(rec, dict)
+                or not isinstance(rec.get("s"), str)
+                or not isinstance(rec.get("i"), dict)
+                or not is_valid_item_fn(rec["i"])
+                or str(rec["i"]["symbol"]).upper() != str(rec["s"]).upper()
+            ):
+                raise ValueError("invalid legacy Trade row")
+            trade_id = str(_strict_int_field(rec["i"]["id"]))
+            signature = trade_semantic_signature(rec["i"])
+            symbol_items = seen_trade_items[str(rec["s"]).upper()]
+            if trade_id in symbol_items:
+                if symbol_items[trade_id] != signature:
+                    raise ValueError(f"conflicting legacy Trade rows for immutable ID {trade_id}")
                 continue
-            try:
-                rec = json.loads(raw)
-                if (
-                    not isinstance(rec, dict)
-                    or not isinstance(rec.get("s"), str)
-                    or not isinstance(rec.get("i"), dict)
-                    or not is_valid_item_fn(rec["i"])
-                    or str(rec["i"]["symbol"]).upper() != str(rec["s"]).upper()
-                ):
-                    raise ValueError("invalid legacy Trade row")
-                trade_id = str(int(rec["i"]["id"]))
-                signature = trade_semantic_signature(rec["i"])
-                symbol_items = seen_trade_items[str(rec["s"]).upper()]
-                if trade_id in symbol_items:
-                    if symbol_items[trade_id] != signature:
-                        raise ValueError(f"conflicting legacy Trade rows for immutable ID {trade_id}")
-                    continue
-                symbol_items[trade_id] = signature
-                cache.setdefault(rec["s"], []).append(rec["i"])
-            except Exception as exc:
-                expected_counts = legacy_metadata.get("counts")
-                actual_counts = {symbol: len(items) for symbol, items in cache.items()}
-                recoverable_tail = (
-                    isinstance(exc, json.JSONDecodeError)
-                    and not any(value.strip() for value in handle)
-                    and isinstance(expected_counts, dict)
-                    and all(
-                        isinstance(symbol, str)
-                        and not isinstance(count, bool)
-                        and isinstance(count, int)
-                        and count >= 0
-                        for symbol, count in expected_counts.items()
-                    )
-                    and nonzero_counts(expected_counts) == actual_counts
+            symbol_items[trade_id] = signature
+            cache.setdefault(rec["s"], []).append(rec["i"])
+        except Exception as exc:
+            expected_counts = legacy_metadata.get("counts")
+            actual_counts = {symbol: len(items) for symbol, items in cache.items()}
+            recoverable_tail = (
+                isinstance(exc, json.JSONDecodeError)
+                and not any(value.strip() for value in lines[idx + 1 :])
+                and isinstance(expected_counts, dict)
+                and all(
+                    isinstance(symbol, str)
+                    and not isinstance(count, bool)
+                    and isinstance(count, int)
+                    and count >= 0
+                    for symbol, count in expected_counts.items()
                 )
-                if recoverable_tail:
-                    break
-                raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
+                and nonzero_counts(expected_counts) == actual_counts
+            )
+            if recoverable_tail:
+                break
+            raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
     return cache
 
 
