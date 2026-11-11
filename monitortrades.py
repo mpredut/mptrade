@@ -877,10 +877,12 @@ def _execute_take_profit(
     prev_tp_state: dict, gain_threshold: float, pending_tp: Optional[dict] = None,
 ) -> bool:
     """Execute Take-Profit exit order with state persistence and rollback."""
-    symbol = snapshot.symbol
-    current_price = snapshot.current_price
-    sellable_qty = snapshot.sellable_qty
-    current_time_s = snapshot.current_time_s
+    symbol, current_price, sellable_qty, current_time_s = (
+        snapshot.symbol,
+        snapshot.current_price,
+        snapshot.sellable_qty,
+        snapshot.current_time_s,
+    )
     if not _state_matches_buy_price(prev_tp_state, snapshot.avg_buy_price):
         prev_tp_state = {}
 
@@ -976,10 +978,12 @@ def _execute_stop_loss(
     lost_threshold: float, prev_sl_state: dict, pending_stop: Optional[dict] = None,
 ) -> bool:
     """Execute Stop-Loss exit order, cancelling resting orders and managing rollback."""
-    symbol = snapshot.symbol
-    current_price = snapshot.current_price
-    current_time_s = snapshot.current_time_s
-    sl_reason = sl_decision.reason
+    symbol, current_price, current_time_s, sl_reason = (
+        snapshot.symbol,
+        snapshot.current_price,
+        snapshot.current_time_s,
+        sl_decision.reason,
+    )
 
     if sl_decision.forced and sl_decision.metadata.get("priority") == 1:
         print(f"🛑 [{symbol}] MHDSL DISASTER CIRCUIT BREAKER: {sl_reason} — bypassing bounce deferral!")

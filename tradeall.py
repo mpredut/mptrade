@@ -398,6 +398,9 @@ class TrendState:
         # FIRE_MAX_PER_TREND until a new trend. _last_attempt_* records the last
         # accepted or rejected attempt, and every retry must wait at least
         # FIRE_MIN_RETRY_INTERVAL_SEC.
+        self._reset_fire_counters()
+
+    def _reset_fire_counters(self) -> None:
         self._confirmed_count_up = 0
         self._confirmed_count_down = 0
         self._last_attempt_up_ts = None
@@ -419,10 +422,7 @@ class TrendState:
         self.confirm_count = 1
         self.end_time = None
         self.expired = False
-        self._confirmed_count_up = 0
-        self._confirmed_count_down = 0
-        self._last_attempt_up_ts = None
-        self._last_attempt_down_ts = None
+        self._reset_fire_counters()
         print(f"Start of {self.state} trend at {timeToHMS(self.start_time)}")
         return self.old_state
 

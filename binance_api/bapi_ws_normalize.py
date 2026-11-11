@@ -87,8 +87,7 @@ def parse_order_execution_report(
     Returns ``None`` when the report is not a fill (e.g. ``NEW`` or ``CANCELED``
     without execution) or when required fields are malformed.
     """
-    symbol = _extract_ws_symbol(event)
-    if not symbol:
+    if not (symbol := _extract_ws_symbol(event)):
         return None
 
     # Cache only executed orders, matching get_filled_orders. NEW or terminal orders
@@ -158,10 +157,7 @@ def parse_trade_execution_report(
     Returns ``None`` when the report is not a trade fill or when required fields
     are invalid.
     """
-    if not isinstance(event, dict) or event.get("x") != "TRADE":
-        return None
-    symbol = _extract_ws_symbol(event)
-    if not symbol:
+    if not isinstance(event, dict) or event.get("x") != "TRADE" or not (symbol := _extract_ws_symbol(event)):
         return None
 
     side = extract_order_side(event)

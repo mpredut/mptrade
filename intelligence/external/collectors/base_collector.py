@@ -87,8 +87,7 @@ def _cached_registry_specs() -> Tuple[Any, ...]:
 
 def _is_multi_venue_base(symbol: str) -> bool:
     """Return True when the symbol's base asset is tracked across multiple venues/quotes."""
-    base = normalize_cache_base_asset(symbol)
-    if not base:
+    if not (base := normalize_cache_base_asset(symbol)):
         return False
     try:
         specs = _cached_registry_specs()
@@ -108,8 +107,7 @@ def _has_hyperliquid_instrument(symbol: str) -> bool:
     """Return True when the symbol or its base asset is configured on a native L1 derivatives venue in SSOT."""
     if MarketDataProvider.has_native_l1_derivatives(venue_for_symbol(symbol)):
         return True
-    base = normalize_cache_base_asset(symbol)
-    if not base:
+    if not (base := normalize_cache_base_asset(symbol)):
         return False
     try:
         specs = _cached_registry_specs()
@@ -268,10 +266,7 @@ class TelemetryCacheCollectorInterface(SyncModeMixin, ABC):
 
     def read_snapshot(self, cachedb_dir: str = "cachedb", symbol: str = "", **kwargs: Any) -> Any:
         """Read-only consumer entrypoint: read cached state without live network backfill or disk persistence."""
-        call_kwargs = dict(kwargs)
-        call_kwargs.setdefault("allow_network", False)
-        call_kwargs.setdefault("persist", False)
-        call_kwargs.setdefault("ensure_fresh", False)
+        call_kwargs = {"allow_network": False, "persist": False, "ensure_fresh": False, **kwargs}
         return self.collect(cachedb_dir, symbol, **call_kwargs)
 
 

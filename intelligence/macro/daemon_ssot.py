@@ -848,8 +848,7 @@ class CachedTopicAssessmentAgent(SyncModeMixin):
         return cachedb_root_for_file(os.path.abspath(self._effective_state_file()))
 
     def _load_from_disk(self) -> None:
-        path = self._effective_state_file()
-        if not path:
+        if not (path := self._effective_state_file()):
             return
         try:
             _read_fn = _resolve_daemon_helper(
@@ -868,8 +867,7 @@ class CachedTopicAssessmentAgent(SyncModeMixin):
             self._logger.debug("Could not load cached %s state %s: %s", self.AGENT_LABEL, path, e)
 
     def _save_to_disk(self, assessment: Any) -> None:
-        path = self._effective_state_file()
-        if not path:
+        if not (path := self._effective_state_file()):
             return
         try:
             _save_fn = _resolve_daemon_helper(

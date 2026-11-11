@@ -977,8 +977,7 @@ def _clean_id_set(ids) -> set:
 
 def claim(ids, now=None, lease_sec=None):
     """Lease entries without removing them, making crash recovery deterministic."""
-    ids = _clean_id_set(ids)
-    if not ids:
+    if not (ids := _clean_id_set(ids)):
         return []
     now = resolve_now_ts(now)
     lease_f = safe_pos_float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec, default=None)
@@ -1320,8 +1319,7 @@ def discard_expired(snapshots, now=None):
 
 def discard(ids):
     """Atomically remove records by ID without submitting them (expiry/give-up)."""
-    ids = _clean_id_set(ids)
-    if not ids:
+    if not (ids := _clean_id_set(ids)):
         return []
     return _remove_matching_locked(lambda rec: rec.get("id") in ids)
 

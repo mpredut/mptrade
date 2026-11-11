@@ -101,11 +101,15 @@ class _PersistentQuarantineSet(set):
         self.sync_from_disk()
         return super().__contains__(element)
 
+    def _mark_loaded_path(self) -> str:
+        path = self._path()
+        self._loaded_path = path
+        return path
+
     def add(self, element) -> None:
         self.sync_from_disk()
         super().add(element)
-        path = self._path()
-        self._loaded_path = path
+        path = self._mark_loaded_path()
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             loaded = load_json_state(path, default_factory=dict, fail_closed=False, label="quarantine alerts")
@@ -123,8 +127,7 @@ class _PersistentQuarantineSet(set):
 
     def clear(self) -> None:
         super().clear()
-        path = self._path()
-        self._loaded_path = path
+        path = self._mark_loaded_path()
         if os.path.exists(path) or os.path.exists(previous_generation_path(path)):
             try:
                 loaded = load_json_state(path, default_factory=dict, fail_closed=False, label="quarantine alerts")

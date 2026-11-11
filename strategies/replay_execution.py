@@ -16,18 +16,18 @@ from providers.order_ohlc_utils import validate_ohlc_bars
 _POLICIES = {"buy_first", "sell_first", "worst_case"}
 
 
-def _req_pos_float(val: Any, msg: str) -> float:
-    res = safe_pos_float(val, default=None)
-    if res is None:
-        raise ValueError(msg)
-    return res
+def _bind_req_float(coercer):
+    def _req(val: Any, msg: str) -> float:
+        res = coercer(val, default=None)
+        if res is None:
+            raise ValueError(msg)
+        return res
+
+    return _req
 
 
-def _req_nonneg_float(val: Any, msg: str) -> float:
-    res = safe_nonneg_float(val, default=None)
-    if res is None:
-        raise ValueError(msg)
-    return res
+_req_pos_float = _bind_req_float(safe_pos_float)
+_req_nonneg_float = _bind_req_float(safe_nonneg_float)
 
 
 @dataclass(frozen=True)

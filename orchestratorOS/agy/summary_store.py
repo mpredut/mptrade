@@ -182,8 +182,7 @@ def _clean_cid_and_title(cid: Any, title: Any) -> Optional[tuple[str, str]]:
 
 def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
     """Set ``title`` in annotations/<cid>.pbtxt, preserving the other annotation lines."""
-    cleaned = _clean_cid_and_title(cid, title)
-    if cleaned is None:
+    if (cleaned := _clean_cid_and_title(cid, title)) is None:
         return
     clean_cid, title_str = cleaned
     annot_dir = os.path.join(cli_base, "annotations")
@@ -231,10 +230,7 @@ def _replace_pb_summary_entries(cli_base: str, cid: str, raw_summary: Any) -> No
 
 def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     """Insert/replace a summary row with the CLI source cleared and ``title`` applied (column + proto)."""
-    if not isinstance(row, dict):
-        return
-    cleaned = _clean_cid_and_title(row.get("conversation_id"), title)
-    if cleaned is None:
+    if not isinstance(row, dict) or (cleaned := _clean_cid_and_title(row.get("conversation_id"), title)) is None:
         return
     clean_cid, title_str = cleaned
     row = dict(row, conversation_id=clean_cid, title=title_str, source="", status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
