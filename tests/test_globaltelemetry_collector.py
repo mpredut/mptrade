@@ -17,13 +17,6 @@ from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnap
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
 
-@pytest.fixture
-def temp_cache_dir(tmp_path):
-    cache_dir = tmp_path / "cachedb"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return str(cache_dir)
-
-
 def test_collector_initialization(temp_cache_dir):
     collector = GlobalTelemetryCollector(
         symbols=["BTCUSDC", "TAOUSDC"],

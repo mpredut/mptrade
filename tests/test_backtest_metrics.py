@@ -221,13 +221,6 @@ class TestBacktestAnnotations(unittest.TestCase):
         self.assertTrue(seen_any, "no # BACKTEST annotation found — is scan or config broken?")
 
 
-@pytest.fixture(autouse=True)
-def restore_strategy_step():
-    orig = spot_engine.Strategy.step
-    yield
-    spot_engine.Strategy.step = orig
-
-
 def test_win_stats_empty():
     res = report.win_stats({"w90": []}, "w90")
     assert math.isnan(res["mean"])

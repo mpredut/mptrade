@@ -21,7 +21,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import botcore
-import utils as u
 import tradeall as ta
 import monitortrades as mt
 import rtrade as rt

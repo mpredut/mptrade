@@ -968,22 +968,11 @@ def test__ledger_to_fills_tolerates_non_dict_ledger_or_non_dict_iter68_s3():
 
 def test_kraken_xstock_watch_check_pairs_tolerates_non_dict_entries_and_missing_iter70_s3():
     """[ITER70 #3] kraken_xstock_watch.check_pairs tolerates non-dict entries and missing alerted_pair in state dict."""
-    import importlib.util
     import os
-    import sys
     from types import SimpleNamespace
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    kraken_dir = os.path.join(repo_root, "kraken")
-    def _load_mod(name: str, path: str, mod_dir: str):
-        if mod_dir in sys.path:
-            sys.path.remove(mod_dir)
-        sys.path.insert(0, mod_dir)
-        spec = importlib.util.spec_from_file_location(name, path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-    k_watch = _load_mod("_k_watch_70", os.path.join(kraken_dir, "kraken_xstock_watch.py"), kraken_dir)
+    from botcore import load_local_module
+    kraken_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
+    k_watch = load_local_module(kraken_dir, "kraken_xstock_watch.py", module_key="_k_watch_70", reload=True)
     # 3. kraken_xstock_watch.check_pairs tolerates non-dict entries and missing alerted_pair in state dict
     k_watch.notify = lambda **kw: None
     dummy_k = SimpleNamespace(

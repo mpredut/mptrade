@@ -996,22 +996,11 @@ if __name__ == "__main__":
 
 def test_212trading_replay__fx_rates_accepts_scalar_numeric_strings_without_iter70_s1():
     """[ITER70 #1] 212trading.replay._fx_rates accepts scalar numeric strings without iterating character-by-character."""
-    import importlib.util
     import os
-    import sys
     import pytest
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    t212_dir = os.path.join(repo_root, "212trading")
-    def _load_mod(name: str, path: str, mod_dir: str):
-        if mod_dir in sys.path:
-            sys.path.remove(mod_dir)
-        sys.path.insert(0, mod_dir)
-        spec = importlib.util.spec_from_file_location(name, path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-    t212_rep = _load_mod("_t212_replay_70", os.path.join(t212_dir, "replay.py"), t212_dir)
+    from botcore import load_local_module
+    t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
+    t212_rep = load_local_module(t212_dir, "replay.py", module_key="_t212_replay_70", reload=True)
     # 1. 212trading.replay._fx_rates accepts scalar numeric strings without iterating character-by-character
     assert t212_rep._fx_rates("1.08", 3) == [1.08, 1.08, 1.08]
     with pytest.raises(ValueError):

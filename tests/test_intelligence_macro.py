@@ -372,13 +372,6 @@ class TestCompositeWithGeopolitical:
         assert evaluation.metrics["geopolitical_threat"] == "CRITICAL_SHOCK"
 
 
-@pytest.fixture
-def temp_cache_dir(tmp_path):
-    cache_dir = tmp_path / "cachedb"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return str(cache_dir)
-
-
 def test_macro_analyzer_initialization(temp_cache_dir):
     analyzer = MacroAnalyzer(
         cache_dir=temp_cache_dir,

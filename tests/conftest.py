@@ -121,6 +121,24 @@ def _isolate_order_outcomes_journal(tmp_path, monkeypatch):
         order_outcomes_log, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path / "order_outcomes"))
 
 
+@pytest.fixture
+def temp_cache_dir(tmp_path):
+    """Shared temporary cachedb directory fixture."""
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return str(cache_dir)
+
+
+@pytest.fixture(autouse=True)
+def restore_strategy_step():
+    """Ensure spot_engine.Strategy.step is restored if a test monkeypatches it directly."""
+    from strategies import spot_engine
+
+    orig = spot_engine.Strategy.step
+    yield
+    spot_engine.Strategy.step = orig
+
+
 @pytest.fixture(autouse=True)
 def _isolate_monitortrades_state(tmp_path, monkeypatch):
     """Keep every test away from the shared monitortrades state file (cachedb/mt_state.json)."""

@@ -1081,25 +1081,12 @@ def test_t212provider_free_balance_eur_converts_ron_using_usd_ron_eur_usd_iter61
 
 def test_212trading_market_data_212trading_strategy_generate_tp_ladder_iter69_s4():
     """[ITER69 #4] 212trading.market_data & 212trading.strategy.generate_tp_ladder."""
-    import importlib.util
     import os
-    import sys
     import pytest
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    t212_dir = os.path.join(repo_root, "212trading")
-    def _load_mod(name: str, path: str, mod_dir: str):
-        if mod_dir in sys.path:
-            sys.path.remove(mod_dir)
-        sys.path.insert(0, mod_dir)
-        for m in ("market_data", "common", "ipo_common", "ipo_notify", "t212_client", "order_rollback"):
-            sys.modules.pop(m, None)
-        spec = importlib.util.spec_from_file_location(name, path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-    t212_md = _load_mod("_t212_market_data_69", os.path.join(t212_dir, "market_data.py"), t212_dir)
-    t212_strat = _load_mod("_t212_strategy_69", os.path.join(t212_dir, "strategy.py"), t212_dir)
+    from botcore import load_local_module
+    t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
+    t212_md = load_local_module(t212_dir, "market_data.py", module_key="_t212_market_data_69", reload=True)
+    t212_strat = load_local_module(t212_dir, "strategy.py", module_key="_t212_strategy_69", reload=True)
     # 4. 212trading.market_data & 212trading.strategy.generate_tp_ladder
     from cachepaths import canonical_base_asset
     with pytest.raises(ValueError):
@@ -1112,22 +1099,11 @@ def test_212trading_market_data_212trading_strategy_generate_tp_ladder_iter69_s4
 
 def test_212trading_t212_bot_verify_instrument_isin_tolerates_non_dict_items_in_iter70_s2():
     """[ITER70 #2] 212trading.t212_bot.verify_instrument_isin tolerates non-dict items in instruments list."""
-    import importlib.util
     import os
-    import sys
     from types import SimpleNamespace
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    t212_dir = os.path.join(repo_root, "212trading")
-    def _load_mod(name: str, path: str, mod_dir: str):
-        if mod_dir in sys.path:
-            sys.path.remove(mod_dir)
-        sys.path.insert(0, mod_dir)
-        spec = importlib.util.spec_from_file_location(name, path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-    t212_bot = _load_mod("_t212_bot_70", os.path.join(t212_dir, "t212_bot.py"), t212_dir)
+    from botcore import load_local_module
+    t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
+    t212_bot = load_local_module(t212_dir, "t212_bot.py", module_key="_t212_bot_70", reload=True)
     # 2. 212trading.t212_bot.verify_instrument_isin tolerates non-dict items in instruments list
     dummy_t212 = SimpleNamespace(list_instruments=lambda: ["bad-item", {"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
     assert t212_bot.verify_instrument_isin(dummy_t212, "NVDA_US_EQ", "US67066G1040") is True

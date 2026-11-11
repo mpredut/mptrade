@@ -323,17 +323,9 @@ def test_212trading_order_manager_waiting_with_sentinel_order_id_returns_false_i
     import json
     import os
     from types import SimpleNamespace
+    from botcore import load_local_module
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    def _load_mod(name, rel):
-        from botcore import load_local_module
-        p = os.path.join(root, rel)
-        return load_local_module(
-            os.path.dirname(p),
-            os.path.splitext(os.path.basename(p))[0],
-            module_key=name,
-            reload=True,
-        )
-    om = _load_mod("t212_order_manager_it153", "212trading/order_manager.py")
+    om = load_local_module(os.path.join(root, "212trading"), "order_manager.py", module_key="t212_order_manager_it153", reload=True)
     # 1. 212trading/order_manager: waiting with sentinel order_id="0" returns False, not True
     monkeypatch.setattr(om, "_marker_path", lambda ticker, test=False: str(tmp_path / f"marker_{ticker}.json"))
     monkeypatch.setattr(om, "get_price_usd", lambda sym: 100.0)

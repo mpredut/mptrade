@@ -426,13 +426,6 @@ class TestIntelligenceBacktest(unittest.TestCase):
         self.assertEqual(stats.funding_downscales, 1)
 
 
-@pytest.fixture
-def temp_cache_dir(tmp_path):
-    cache_dir = tmp_path / "cachedb"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return str(cache_dir)
-
-
 def test_daemon_initialization(temp_cache_dir):
     daemon = IntelligenceTelemetryDaemon(
         symbols=["BTCUSDC", "TAOUSDC"],

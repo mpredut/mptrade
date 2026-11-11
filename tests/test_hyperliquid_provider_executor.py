@@ -1249,24 +1249,11 @@ def test__round_px_hlclient_cancel_candles_reject_inf_bool_invalid_iter68_s4():
 
 def test_hyperliquid_market_data_normalize_closed_candles_float_string_timestamps_fetch_ohlc_candles_interval_iter69_s1():
     """[ITER69 #1] hyperliquid.market_data: normalize_closed_candles float-string timestamps & fetch_ohlc_candles interval/lookback checks."""
-    import importlib.util
     import os
-    import sys
     import pytest
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hl_dir = os.path.join(repo_root, "hyperliquid")
-    def _load_mod(name: str, path: str, mod_dir: str):
-        if mod_dir in sys.path:
-            sys.path.remove(mod_dir)
-        sys.path.insert(0, mod_dir)
-        for m in ("market_data", "common", "ipo_common", "ipo_notify", "t212_client", "order_rollback"):
-            sys.modules.pop(m, None)
-        spec = importlib.util.spec_from_file_location(name, path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-    hl_md = _load_mod("_hl_market_data_69", os.path.join(hl_dir, "market_data.py"), hl_dir)
+    from botcore import load_local_module
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    hl_md = load_local_module(hl_dir, "market_data.py", module_key="_hl_market_data_69", reload=True)
     # 1. hyperliquid.market_data: normalize_closed_candles float-string timestamps & fetch_ohlc_candles interval/lookback checks
     rows = [{"t": "1700000000000.0", "T": "1700003599000.0", "o": "10", "h": "12", "l": "9", "c": "11"}]
     norm = hl_md.normalize_closed_candles(rows, now_ms=1700005000000)
@@ -1280,24 +1267,11 @@ def test_hyperliquid_market_data_normalize_closed_candles_float_string_timestamp
 
 def test_hyperliquid_signals__file_signal_catches_overflowerror_on_huge_ts_iter69_s2(tmp_path):
     """[ITER69 #2] hyperliquid.signals._file_signal: catches OverflowError on huge ts/confidence."""
-    import importlib.util
     import json
     import os
-    import sys
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hl_dir = os.path.join(repo_root, "hyperliquid")
-    def _load_mod(name: str, path: str, mod_dir: str):
-        if mod_dir in sys.path:
-            sys.path.remove(mod_dir)
-        sys.path.insert(0, mod_dir)
-        for m in ("market_data", "common", "ipo_common", "ipo_notify", "t212_client", "order_rollback"):
-            sys.modules.pop(m, None)
-        spec = importlib.util.spec_from_file_location(name, path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-    hl_sig = _load_mod("_hl_signals_69", os.path.join(hl_dir, "signals.py"), hl_dir)
+    from botcore import load_local_module
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    hl_sig = load_local_module(hl_dir, "signals.py", module_key="_hl_signals_69", reload=True)
     # 2. hyperliquid.signals._file_signal: catches OverflowError on huge ts/confidence
     sig_file = tmp_path / "signal.json"
     sig_file.write_text(json.dumps({"trend": "up", "confidence": 10**400, "ts": 10**400}), encoding="utf-8")
@@ -1307,24 +1281,11 @@ def test_hyperliquid_signals__file_signal_catches_overflowerror_on_huge_ts_iter6
 
 def test_hyperliquid_strategy_stratparams_from_dict_strategy__place_validation_iter69_s3():
     """[ITER69 #3] hyperliquid.strategy.StratParams.from_dict & Strategy._place validation."""
-    import importlib.util
     import os
-    import sys
     import pytest
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hl_dir = os.path.join(repo_root, "hyperliquid")
-    def _load_mod(name: str, path: str, mod_dir: str):
-        if mod_dir in sys.path:
-            sys.path.remove(mod_dir)
-        sys.path.insert(0, mod_dir)
-        for m in ("market_data", "common", "ipo_common", "ipo_notify", "t212_client", "order_rollback"):
-            sys.modules.pop(m, None)
-        spec = importlib.util.spec_from_file_location(name, path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-    hl_strat = _load_mod("_hl_strategy_69", os.path.join(hl_dir, "strategy.py"), hl_dir)
+    from botcore import load_local_module
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    hl_strat = load_local_module(hl_dir, "strategy.py", module_key="_hl_strategy_69", reload=True)
     # 3. hyperliquid.strategy.StratParams.from_dict & Strategy._place validation
     with pytest.raises(ValueError):
         hl_strat.StratParams.from_dict({"entry": True})
@@ -2124,17 +2085,9 @@ def test_hyperliquidprovider_execution_enabled_rejects_nan_false_containers_iter
 def test_hyperliquid_shadow_longterm__fetch_with_ts_deduplicates_identical_timestamps_iter153_s2(monkeypatch):
     """[ITER153 #2] hyperliquid/shadow_longterm._fetch_with_ts deduplicates identical timestamps."""
     import os
+    from botcore import load_local_module
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    def _load_mod(name, rel):
-        from botcore import load_local_module
-        p = os.path.join(root, rel)
-        return load_local_module(
-            os.path.dirname(p),
-            os.path.splitext(os.path.basename(p))[0],
-            module_key=name,
-            reload=True,
-        )
-    hl_sl = _load_mod("hl_shadow_longterm_it153", "hyperliquid/shadow_longterm.py")
+    hl_sl = load_local_module(os.path.join(root, "hyperliquid"), "shadow_longterm.py", module_key="hl_shadow_longterm_it153", reload=True)
     # 2. hyperliquid/shadow_longterm._fetch_with_ts deduplicates identical timestamps
     class DummyPubClient:
         def candles(self, token, interval, lookback_hours=0):
@@ -2154,17 +2107,14 @@ def test_hyperliquid_archive_delta_neutral_funding_scan_py_rank__spot_tokens_saf
     """[ITER153 #3] hyperliquid/archive/delta_neutral/funding_scan.py rank & _spot_tokens safety."""
     import os
     from types import SimpleNamespace
+    from botcore import load_local_module
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    def _load_mod(name, rel):
-        from botcore import load_local_module
-        p = os.path.join(root, rel)
-        return load_local_module(
-            os.path.dirname(p),
-            os.path.splitext(os.path.basename(p))[0],
-            module_key=name,
-            reload=True,
-        )
-    f_scan = _load_mod("hl_funding_scan_it153", "archive/hyperliquid/delta_neutral/funding_scan.py")
+    f_scan = load_local_module(
+        os.path.join(root, "archive/hyperliquid/delta_neutral"),
+        "funding_scan.py",
+        module_key="hl_funding_scan_it153",
+        reload=True,
+    )
     # 3. hyperliquid/archive/delta_neutral/funding_scan.py rank & _spot_tokens safety
     ranked = f_scan.rank(
         [None, {"name": "BAD_BOOL"}, {"name": "NAN_F"}, {"name": "HYPE"}],
@@ -2186,17 +2136,14 @@ def test_hyperliquid_archive_delta_neutral_delta_neutral_py_state_path_for__load
     import json
     import os
     from types import SimpleNamespace
+    from botcore import load_local_module
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    def _load_mod(name, rel):
-        from botcore import load_local_module
-        p = os.path.join(root, rel)
-        return load_local_module(
-            os.path.dirname(p),
-            os.path.splitext(os.path.basename(p))[0],
-            module_key=name,
-            reload=True,
-        )
-    dn_mod = _load_mod("hl_delta_neutral_it153", "archive/hyperliquid/delta_neutral/delta_neutral.py")
+    dn_mod = load_local_module(
+        os.path.join(root, "archive/hyperliquid/delta_neutral"),
+        "delta_neutral.py",
+        module_key="hl_delta_neutral_it153",
+        reload=True,
+    )
     # 4. hyperliquid/archive/delta_neutral/delta_neutral.py state_path_for & _load sanitization
     assert dn_mod.state_path_for("").endswith(".state_dn_UNKNOWN.json")
     assert dn_mod.state_path_for(True).endswith(".state_dn_UNKNOWN.json")  # type: ignore[arg-type]
@@ -2229,21 +2176,14 @@ def test_hyperliquid_archive_delta_neutral_delta_neutral_py_state_path_for__load
 
 def test_simulate_sys_modules_market_data_polluted_by_hyperliquid_market_data_iter154_s1(monkeypatch):
     """[ITER154 #1] Simulate sys.modules['market_data'] polluted by hyperliquid/market_data.py."""
-    import importlib.util
     import os
     import sys
+    from botcore import load_local_module
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    def _load_mod(name, rel):
-        p = os.path.join(root, rel)
-        spec = importlib.util.spec_from_file_location(name, p)
-        m = importlib.util.module_from_spec(spec)
-        sys.modules[name] = m
-        spec.loader.exec_module(m)
-        return m
     # 1. Simulate sys.modules["market_data"] polluted by hyperliquid/market_data.py
-    hl_md = _load_mod("hl_market_data_polluter", "hyperliquid/market_data.py")
+    hl_md = load_local_module(os.path.join(root, "hyperliquid"), "market_data.py", module_key="hl_market_data_polluter", reload=True)
     monkeypatch.setitem(sys.modules, "market_data", hl_md)
-    om_mod = _load_mod("t212_om_it154", "212trading/order_manager.py")
+    om_mod = load_local_module(os.path.join(root, "212trading"), "order_manager.py", module_key="t212_om_it154", reload=True)
     assert callable(getattr(om_mod, "get_usd_ron", None))
 
 def test_hyperliquidprovider_underscore_alias_and_long_ask_side_normalization_iter169_s2(monkeypatch):
