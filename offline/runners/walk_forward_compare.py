@@ -45,6 +45,7 @@ from offline.backtests.evaluation import (
     evaluate_segment,
     evaluate_spot_segment,
     load_venue_module,
+    load_venue_replay_module,
 )
 from offline.backtests.execution import ExecutionModel
 from offline.backtests.hype_candidates import (
@@ -67,6 +68,18 @@ DEFAULT_FEE_STRESS = {
 }
 
 
+_PURPOSE_VENUE_TOKENS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("binance",), "binance"),
+    (("hyperliquid",), "hyperliquid"),
+    (("trading212", "trading 212", "t212"), "trading212"),
+)
+
+_SPOT_DEFAULT_FEE_PCT: dict[str, float] = {
+    "kraken": 0.26,
+    "binance": 0.10,
+}
+
+
 def _detect_venue(report: dict, cli_venue: str | None = None) -> str:
     for raw in (
         cli_venue if not isinstance(cli_venue, bool) else None,
@@ -78,12 +91,9 @@ def _detect_venue(report: dict, cli_venue: str | None = None) -> str:
                 norm = normalize_venue_name(v_str) or v_str
                 return "trading212" if norm == "t212" else norm
     purpose = str((report.get("purpose") if isinstance(report, dict) else None) or "").lower()
-    if "binance" in purpose:
-        return "binance"
-    if "hyperliquid" in purpose:
-        return "hyperliquid"
-    if "trading212" in purpose or "trading 212" in purpose or "t212" in purpose:
-        return "trading212"
+    for tokens, mapped_venue in _PURPOSE_VENUE_TOKENS:
+        if any(tok in purpose for tok in tokens):
+            return mapped_venue
     runtime = report.get("runtime") if isinstance(report, dict) else None
     if not isinstance(runtime, dict):
         runtime = {}
@@ -186,99 +196,115 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
     return datasets
 
 
-def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path | None = None):
-    """Return (base_params, base_fee, evaluate_segment_fn)."""
-    raw_v = str(venue or "").strip().lower()
-    norm_venue = normalize_venue_name(raw_v) or raw_v
-    raw_sp = source_report.get("strategy_params") if isinstance(source_report, dict) else None
-    raw_params = raw_sp if isinstance(raw_sp, dict) else {}
+def _build_spot_venue_evaluator(norm_venue: str, source_report: dict, raw_params: dict, baseline_dir: Path | None):
+    base_params = StratParams.from_dict(raw_params)
+    raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
+    base_fee = safe_nonneg_float(raw_fee, default=_SPOT_DEFAULT_FEE_PCT[norm_venue])
+    return base_params, base_fee, evaluate_spot_segment
 
-    if norm_venue in ("kraken", "binance"):
+
+def _build_hyperliquid_venue_evaluator(
+    norm_venue: str, source_report: dict, raw_params: dict, baseline_dir: Path | None
+):
+    hl_replay = load_venue_replay_module("hyperliquid", "hl_wf_replay")
+    raw_rt = source_report.get("runtime") if isinstance(source_report, dict) else None
+    runtime_cfg = raw_rt if isinstance(raw_rt, dict) else {}
+    engine = str(runtime_cfg.get("engine") or raw_params.get("engine") or "perp").lower()
+    raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
+    if raw_fee is None:
+        raw_fee = raw_params.get("fee_pct")
+    base_fee = safe_nonneg_float(raw_fee, default=0.035)
+
+    if engine == "spot":
         base_params = StratParams.from_dict(raw_params)
-        raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
-        base_fee = safe_nonneg_float(raw_fee, default=0.26 if norm_venue == "kraken" else 0.10)
-        return base_params, base_fee, evaluate_spot_segment
-
-    if norm_venue == "hyperliquid":
-        hl_replay = load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
-        raw_rt = source_report.get("runtime") if isinstance(source_report, dict) else None
-        runtime_cfg = raw_rt if isinstance(raw_rt, dict) else {}
-        engine = str(runtime_cfg.get("engine") or raw_params.get("engine") or "perp").lower()
-        raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
-        if raw_fee is None:
-            raw_fee = raw_params.get("fee_pct")
-        base_fee = safe_nonneg_float(raw_fee, default=0.035)
-
-        if engine == "spot":
-            base_params = StratParams.from_dict(raw_params)
-
-            def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
-                adapter = hl_replay.make_hyperliquid_replay_adapter(
-                    align_spot_interval_params(params, interval),
-                    bar_minutes=safe_pos_float(interval, default=60.0),
-                    execution=execution,
-                    fee_pct=fee_pct,
-                    engine="spot",
-                )
-                return evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
-
-            return base_params, base_fee, segment_fn
-        else:
-            direction = str(runtime_cfg.get("direction") or raw_params.get("direction", "long"))
-            coin = str(runtime_cfg.get("coin") or "HYPE")
-            base_params = hl_replay.StratParams.from_dict(raw_params, direction=direction)
-
-            def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
-                adapter = hl_replay.make_hyperliquid_replay_adapter(
-                    params,
-                    direction=params.direction,
-                    coin=coin,
-                    bar_minutes=safe_pos_float(interval, default=60.0),
-                    execution=execution,
-                    fee_pct=fee_pct,
-                    engine="perp",
-                )
-                return evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
-
-            return base_params, base_fee, segment_fn
-
-    if norm_venue in ("trading212", "t212"):
-        t212_replay = load_venue_module("212trading", "replay.py", "t212_wf_replay")
-        base_params = t212_replay._strat.StratParams.from_dict(raw_params)
-        exec_meta = source_report.get("execution_model") if isinstance(source_report.get("execution_model"), dict) else {}
-        raw_fee = source_report.get("fee_pct_per_leg")
-        if raw_fee is None:
-            raw_fee = raw_params.get("fx_fee_pct")
-        if raw_fee is None:
-            raw_fee = exec_meta.get("fx_fee_pct_per_leg")
-        base_fee = safe_nonneg_float(raw_fee, default=0.0)
-        fx_model = source_report.get("fx_model") if isinstance(source_report.get("fx_model"), dict) else {}
-        raw_fx_unit = safe_pos_float(fx_model.get("usd_per_unit"), default=1.0)
-        fx_fixed = raw_fx_unit if raw_fx_unit > 0.0 else 1.0
-        fx_invert = _parse_bool_flag(fx_model.get("invert", False), False)
-        fx_records = None
-        if fx_model.get("mode") == "historical_asof" and fx_model.get("frozen_file"):
-            fx_path = _resolve_frozen_file(str(fx_model["frozen_file"]), baseline_dir)
-            fx_records = load_dataset(fx_path)
-        periods_yr = safe_pos_float(exec_meta.get("calendar_periods_per_year"), default=None)
 
         def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
-            if hasattr(params, "fx_fee_pct") and fee_pct is not None and params.fx_fee_pct != fee_pct:
-                params = dataclasses.replace(params, fx_fee_pct=fee_pct)
-            adapter = t212_replay.make_t212_replay_adapter(
-                params,
+            adapter = hl_replay.make_hyperliquid_replay_adapter(
+                align_spot_interval_params(params, interval),
                 bar_minutes=safe_pos_float(interval, default=60.0),
-                fx_to_usd=fx_fixed,
-                fx_records=fx_records,
-                fx_invert=fx_invert,
-                periods_per_year=periods_yr,
                 execution=execution,
+                fee_pct=fee_pct,
+                engine="spot",
             )
             return evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
 
         return base_params, base_fee, segment_fn
 
-    raise ValueError(f"Unsupported venue: {venue}")
+    direction = str(runtime_cfg.get("direction") or raw_params.get("direction", "long"))
+    coin = str(runtime_cfg.get("coin") or "HYPE")
+    base_params = hl_replay.StratParams.from_dict(raw_params, direction=direction)
+
+    def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
+        adapter = hl_replay.make_hyperliquid_replay_adapter(
+            params,
+            direction=params.direction,
+            coin=coin,
+            bar_minutes=safe_pos_float(interval, default=60.0),
+            execution=execution,
+            fee_pct=fee_pct,
+            engine="perp",
+        )
+        return evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+
+    return base_params, base_fee, segment_fn
+
+
+def _build_t212_venue_evaluator(norm_venue: str, source_report: dict, raw_params: dict, baseline_dir: Path | None):
+    t212_replay = load_venue_replay_module("t212", "t212_wf_replay")
+    base_params = t212_replay._strat.StratParams.from_dict(raw_params)
+    exec_meta = source_report.get("execution_model") if isinstance(source_report.get("execution_model"), dict) else {}
+    raw_fee = source_report.get("fee_pct_per_leg")
+    if raw_fee is None:
+        raw_fee = raw_params.get("fx_fee_pct")
+    if raw_fee is None:
+        raw_fee = exec_meta.get("fx_fee_pct_per_leg")
+    base_fee = safe_nonneg_float(raw_fee, default=0.0)
+    fx_model = source_report.get("fx_model") if isinstance(source_report.get("fx_model"), dict) else {}
+    raw_fx_unit = safe_pos_float(fx_model.get("usd_per_unit"), default=1.0)
+    fx_fixed = raw_fx_unit if raw_fx_unit > 0.0 else 1.0
+    fx_invert = _parse_bool_flag(fx_model.get("invert", False), False)
+    fx_records = None
+    if fx_model.get("mode") == "historical_asof" and fx_model.get("frozen_file"):
+        fx_path = _resolve_frozen_file(str(fx_model["frozen_file"]), baseline_dir)
+        fx_records = load_dataset(fx_path)
+    periods_yr = safe_pos_float(exec_meta.get("calendar_periods_per_year"), default=None)
+
+    def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
+        if hasattr(params, "fx_fee_pct") and fee_pct is not None and params.fx_fee_pct != fee_pct:
+            params = dataclasses.replace(params, fx_fee_pct=fee_pct)
+        adapter = t212_replay.make_t212_replay_adapter(
+            params,
+            bar_minutes=safe_pos_float(interval, default=60.0),
+            fx_to_usd=fx_fixed,
+            fx_records=fx_records,
+            fx_invert=fx_invert,
+            periods_per_year=periods_yr,
+            execution=execution,
+        )
+        return evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+
+    return base_params, base_fee, segment_fn
+
+
+VENUE_EVALUATOR_BUILDERS = {
+    "kraken": _build_spot_venue_evaluator,
+    "binance": _build_spot_venue_evaluator,
+    "hyperliquid": _build_hyperliquid_venue_evaluator,
+    "t212": _build_t212_venue_evaluator,
+}
+
+
+def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path | None = None):
+    """Return (base_params, base_fee, evaluate_segment_fn)."""
+    raw_v = str(venue or "").strip().lower()
+    norm_venue = normalize_venue_name(raw_v) or raw_v
+    builder = VENUE_EVALUATOR_BUILDERS.get(norm_venue)
+    if builder is None:
+        raise ValueError(f"Unsupported venue: {venue}")
+    src_dict = source_report if isinstance(source_report, dict) else {}
+    raw_sp = src_dict.get("strategy_params")
+    raw_params = raw_sp if isinstance(raw_sp, dict) else {}
+    return builder(norm_venue, src_dict, raw_params, baseline_dir)
 
 
 def _candidate_windows(

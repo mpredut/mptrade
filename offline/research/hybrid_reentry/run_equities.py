@@ -10,7 +10,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import parse_dotenv, safe_pos_float
-from offline.backtests.evaluation import load_venue_module
+from offline.backtests.evaluation import load_venue_replay_module
 from offline.research.hybrid_reentry.harness import (
     evaluate_asset,
     load_ohlc_with_timestamps_csv,
@@ -70,7 +70,7 @@ BASE_CONFIG = {
 
 
 def _import_t212():
-    rp = load_venue_module("212trading", "replay.py", "t212_replay_equities")
+    rp = load_venue_replay_module("t212", "t212_replay_equities")
     return rp._strat, rp
 
 

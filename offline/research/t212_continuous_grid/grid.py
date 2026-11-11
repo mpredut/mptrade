@@ -22,12 +22,12 @@ if REPO not in sys.path:
     sys.path.insert(0, REPO)
 from botcore import int_env, parse_dotenv, safe_float, safe_nonneg_int, safe_pos_float  # noqa: E402
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
-from offline.backtests.evaluation import load_venue_module  # noqa: E402
+from offline.backtests.evaluation import load_venue_replay_module  # noqa: E402
 from state_io import append_jsonl_record, atomic_write_jsonl  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params, ratchet_post_exit_peak_sell_price  # noqa: E402
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-rp = load_venue_module("212trading", "replay.py", "t212_replay_grid")
+rp = load_venue_replay_module("t212", "t212_replay_grid")
 strat = rp._strat
 
 FLAGS = {"peak": False}

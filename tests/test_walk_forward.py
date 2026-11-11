@@ -1161,3 +1161,27 @@ def test_wave2_cross_venue_candidate_resolution_and_unmasked_trailing_variants(t
         fix_params = spy_replay.call_args.args[1]
         assert fix_params.tp_trend_hold is False
         assert fix_params.tp_mdhtp_enabled is False
+
+
+def test_declarative_venue_replay_and_benchmark_registries():
+    import pytest
+    from offline.backtests.evaluation import VENUE_REPLAY_DIRS, load_venue_replay_module
+    from offline.backtests.financial_benchmark import VENUE_BENCHMARK_SCENARIOS, default_scenarios
+    from offline.runners.walk_forward_compare import VENUE_EVALUATOR_BUILDERS, _build_venue_evaluator
+
+    assert set(VENUE_REPLAY_DIRS) == {"hyperliquid", "t212"}
+    assert set(VENUE_EVALUATOR_BUILDERS) == {"kraken", "binance", "hyperliquid", "t212"}
+    assert set(VENUE_BENCHMARK_SCENARIOS) == {"kraken", "binance", "hyperliquid", "t212"}
+
+    hl_rp = load_venue_replay_module("hyperliquid", "test_reg_hl_rp")
+    t212_rp = load_venue_replay_module("trading212", "test_reg_t212_rp")
+    assert hasattr(hl_rp, "make_hyperliquid_replay_adapter")
+    assert hasattr(t212_rp, "make_t212_replay_adapter")
+    with pytest.raises(ValueError, match="Unsupported replay venue"):
+        load_venue_replay_module("unknown_venue")
+
+    assert default_scenarios("trading212") == VENUE_BENCHMARK_SCENARIOS["t212"]
+    assert default_scenarios("unknown_venue") == VENUE_BENCHMARK_SCENARIOS["kraken"]
+    _, t212_fee, _ = _build_venue_evaluator("trading212", {"strategy_params": {"fx_fee_pct": 0.15}})
+    assert t212_fee == pytest.approx(0.15)
+

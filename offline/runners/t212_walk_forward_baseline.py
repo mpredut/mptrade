@@ -33,11 +33,11 @@ from offline.backtests.evaluation import (  # noqa: E402
     assess_decision_evidence,
     build_execution_model_from_args,
     evaluate_walk_forward,
-    load_venue_module,
+    load_venue_replay_module,
     resolve_window_sizes,
 )
 
-t212_replay = load_venue_module("212trading", "replay.py", "t212_wf_replay")
+t212_replay = load_venue_replay_module("t212", "t212_wf_replay")
 StratParams = t212_replay._strat.StratParams
 _t212_md = t212_replay._md
 fetch_yahoo_candles = _t212_md.fetch_yahoo_candles

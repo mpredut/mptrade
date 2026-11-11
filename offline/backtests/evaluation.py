@@ -18,6 +18,7 @@ from pathlib import Path
 from statistics import fmean
 from typing import Any
 
+from cachepaths import normalize_venue_name
 from offline.backtests.execution import ExecutionModel
 from offline.backtests.metrics import validate_replay_metrics
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
@@ -298,6 +299,12 @@ def extract_cfg_int(cfg: Any, key: str, default: int) -> int:
     return int(val)
 
 
+VENUE_REPLAY_DIRS: dict[str, str] = {
+    "hyperliquid": "hyperliquid",
+    "t212": "212trading",
+}
+
+
 def load_venue_module(
     subdir: str,
     filename: str = "replay.py",
@@ -313,6 +320,25 @@ def load_venue_module(
         str(venue_dir),
         stem,
         module_key=module_name or f"{subdir}_{stem}",
+        reload=reload,
+    )
+
+
+def load_venue_replay_module(
+    venue: str,
+    module_name: str | None = None,
+    *,
+    reload: bool = False,
+):
+    """Load the registered ``replay.py`` adapter module for ``venue`` via ``VENUE_REPLAY_DIRS``."""
+    v_norm = normalize_venue_name(venue) or str(venue or "").strip().lower()
+    subdir = VENUE_REPLAY_DIRS.get(v_norm)
+    if not subdir:
+        raise ValueError(f"Unsupported replay venue: {venue!r}")
+    return load_venue_module(
+        subdir,
+        "replay.py",
+        module_name or f"{v_norm}_wf_replay",
         reload=reload,
     )
 

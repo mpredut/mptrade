@@ -32,7 +32,7 @@ from offline.backtests.evaluation import (
     build_and_save_interval_baseline_report,
     build_execution_model_from_args,
     load_layered_env_config,
-    load_venue_module,
+    load_venue_replay_module,
     parse_dataset_specs,
     parse_intervals,
 )
@@ -44,7 +44,7 @@ def fetch_ohlc_candles(symbol: str, interval: int | str = 60, **kwargs) -> list[
     return mkt.fetch_ohlc_candles(symbol, interval, provider_name="hyperliquid", **kwargs)
 
 
-_hl_replay = load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
+_hl_replay = load_venue_replay_module("hyperliquid", "hl_wf_replay")
 make_hyperliquid_replay_adapter = _hl_replay.make_hyperliquid_replay_adapter
 StratParams = _hl_replay.StratParams
 

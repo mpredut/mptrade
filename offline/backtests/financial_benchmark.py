@@ -39,86 +39,80 @@ class BenchmarkScenario:
         }
 
 
-def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, BenchmarkScenario]:
-    """A provisional central case plus stress for a given venue (defaults to Kraken)."""
-    venue_raw = "" if isinstance(venue, bool) else str(getattr(venue, "name", venue) or "")
-    venue_norm = normalize_venue_name(venue_raw) or "kraken"
-    if venue_norm == "binance":
-        return (
-            BenchmarkScenario(
-                name="central",
-                description="Binance spot: 0.10% taker / 0.075% maker, moderate spread/slippage",
-                fees=FeeModel(limit_fee_pct=0.075, market_fee_pct=0.10),
-                execution=ExecutionModel(
-                    spread_bps=5.0,
-                    market_slippage_bps=10.0,
-                    partial_fill_ratio=0.80,
-                    intrabar_policy="worst_case",
-                ),
+VENUE_BENCHMARK_SCENARIOS: dict[str, tuple[BenchmarkScenario, BenchmarkScenario]] = {
+    "binance": (
+        BenchmarkScenario(
+            name="central",
+            description="Binance spot: 0.10% taker / 0.075% maker, moderate spread/slippage",
+            fees=FeeModel(limit_fee_pct=0.075, market_fee_pct=0.10),
+            execution=ExecutionModel(
+                spread_bps=5.0,
+                market_slippage_bps=10.0,
+                partial_fill_ratio=0.80,
+                intrabar_policy="worst_case",
             ),
-            BenchmarkScenario(
-                name="stress",
-                description="Binance spot stress: 0.10% maker / 0.15% taker, adverse slippage",
-                fees=FeeModel(limit_fee_pct=0.10, market_fee_pct=0.15),
-                execution=ExecutionModel(
-                    spread_bps=15.0,
-                    market_slippage_bps=20.0,
-                    partial_fill_ratio=0.50,
-                    intrabar_policy="worst_case",
-                ),
+        ),
+        BenchmarkScenario(
+            name="stress",
+            description="Binance spot stress: 0.10% maker / 0.15% taker, adverse slippage",
+            fees=FeeModel(limit_fee_pct=0.10, market_fee_pct=0.15),
+            execution=ExecutionModel(
+                spread_bps=15.0,
+                market_slippage_bps=20.0,
+                partial_fill_ratio=0.50,
+                intrabar_policy="worst_case",
             ),
-        )
-    if venue_norm == "hyperliquid":
-        return (
-            BenchmarkScenario(
-                name="central",
-                description="Hyperliquid perps: 0.015% maker / 0.045% taker, tight spread",
-                fees=FeeModel(limit_fee_pct=0.015, market_fee_pct=0.045),
-                execution=ExecutionModel(
-                    spread_bps=3.0,
-                    market_slippage_bps=5.0,
-                    partial_fill_ratio=0.85,
-                    intrabar_policy="worst_case",
-                ),
+        ),
+    ),
+    "hyperliquid": (
+        BenchmarkScenario(
+            name="central",
+            description="Hyperliquid perps: 0.015% maker / 0.045% taker, tight spread",
+            fees=FeeModel(limit_fee_pct=0.015, market_fee_pct=0.045),
+            execution=ExecutionModel(
+                spread_bps=3.0,
+                market_slippage_bps=5.0,
+                partial_fill_ratio=0.85,
+                intrabar_policy="worst_case",
             ),
-            BenchmarkScenario(
-                name="stress",
-                description="Hyperliquid perps stress: 0.03% maker / 0.07% taker, adverse slippage",
-                fees=FeeModel(limit_fee_pct=0.030, market_fee_pct=0.070),
-                execution=ExecutionModel(
-                    spread_bps=10.0,
-                    market_slippage_bps=15.0,
-                    partial_fill_ratio=0.50,
-                    intrabar_policy="worst_case",
-                ),
+        ),
+        BenchmarkScenario(
+            name="stress",
+            description="Hyperliquid perps stress: 0.03% maker / 0.07% taker, adverse slippage",
+            fees=FeeModel(limit_fee_pct=0.030, market_fee_pct=0.070),
+            execution=ExecutionModel(
+                spread_bps=10.0,
+                market_slippage_bps=15.0,
+                partial_fill_ratio=0.50,
+                intrabar_policy="worst_case",
             ),
-        )
-    if venue_norm == "t212":
-        return (
-            BenchmarkScenario(
-                name="central",
-                description="Trading 212: 0% commission + 0.15% FX conversion, moderate spread",
-                fees=FeeModel(limit_fee_pct=0.15, market_fee_pct=0.15),
-                execution=ExecutionModel(
-                    spread_bps=5.0,
-                    market_slippage_bps=10.0,
-                    partial_fill_ratio=0.75,
-                    intrabar_policy="worst_case",
-                ),
+        ),
+    ),
+    "t212": (
+        BenchmarkScenario(
+            name="central",
+            description="Trading 212: 0% commission + 0.15% FX conversion, moderate spread",
+            fees=FeeModel(limit_fee_pct=0.15, market_fee_pct=0.15),
+            execution=ExecutionModel(
+                spread_bps=5.0,
+                market_slippage_bps=10.0,
+                partial_fill_ratio=0.75,
+                intrabar_policy="worst_case",
             ),
-            BenchmarkScenario(
-                name="stress",
-                description="Trading 212 stress: 0.30% FX/slippage, adverse market conditions",
-                fees=FeeModel(limit_fee_pct=0.30, market_fee_pct=0.30),
-                execution=ExecutionModel(
-                    spread_bps=15.0,
-                    market_slippage_bps=20.0,
-                    partial_fill_ratio=0.50,
-                    intrabar_policy="worst_case",
-                ),
+        ),
+        BenchmarkScenario(
+            name="stress",
+            description="Trading 212 stress: 0.30% FX/slippage, adverse market conditions",
+            fees=FeeModel(limit_fee_pct=0.30, market_fee_pct=0.30),
+            execution=ExecutionModel(
+                spread_bps=15.0,
+                market_slippage_bps=20.0,
+                partial_fill_ratio=0.50,
+                intrabar_policy="worst_case",
             ),
-        )
-    return (
+        ),
+    ),
+    "kraken": (
         BenchmarkScenario(
             name="central",
             description=(
@@ -145,7 +139,15 @@ def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, Benchma
                 intrabar_policy="worst_case",
             ),
         ),
-    )
+    ),
+}
+
+
+def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, BenchmarkScenario]:
+    """A provisional central case plus stress for a given venue (defaults to Kraken)."""
+    venue_raw = "" if isinstance(venue, bool) else str(getattr(venue, "name", venue) or "")
+    venue_norm = normalize_venue_name(venue_raw) or "kraken"
+    return VENUE_BENCHMARK_SCENARIOS.get(venue_norm, VENUE_BENCHMARK_SCENARIOS["kraken"])
 
 
 def _mean(values: Iterable[float | int | None]) -> float | None:
