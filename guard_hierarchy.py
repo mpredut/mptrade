@@ -15,6 +15,7 @@ Guards are opt-out: any guard not explicitly bypassed executes with its default 
 from __future__ import annotations
 
 from abc import ABC
+from collections.abc import Mapping
 import os
 import sys
 import time
@@ -22,6 +23,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from botcore import (
     bool_env,
+    normalize_side,
     parse_dotenv,
     safe_float,
     safe_nonneg_float,
@@ -638,9 +640,45 @@ def validate_guard_mode_cfg(val: Any, key_name: str = "guard_mode") -> str:
 
 def is_intelligence_master_off(margins: Dict[str, Any], *, require_key: bool = False) -> bool:
     """Return True when intelligence_guards_mode is set to 'off'."""
+    if not isinstance(margins, Mapping):
+        if require_key:
+            raise KeyError("intelligence_guards_mode")
+        return False
     if not require_key and "intelligence_guards_mode" not in margins:
         return False
     return validate_guard_mode_cfg(margins["intelligence_guards_mode"], "intelligence_guards_mode") == "off"
+
+
+def preflight_intelligence_guard_entry(
+    side: Any,
+    *,
+    margins: Optional[Dict[str, Any]] = None,
+    load_margins_fn: Any = None,
+    bypass_guards: Any = None,
+    guard_code: Optional[str] = None,
+    guard_bypass_reason: str = "stop_loss_exempt",
+    allowed_sides: Tuple[str, ...] = ("BUY", "SELL"),
+    unsupported_side_reason: str = "not_supported_side",
+    require_master_key: bool = False,
+) -> Tuple[Optional[Tuple[bool, str, float]], str, Dict[str, Any], set[str]]:
+    """Run shared preflight for intelligence guard entrypoints.
+
+    Returns ``(early_result, order_side, margins_dict, bypassed_set)`` where ``early_result``
+    is ``(True, reason, 1.0)`` when bypassed, side-exempt, or master-disabled, else ``None``.
+    """
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
+    if is_master_bypass(bypassed):
+        return (True, "stop_loss_exempt", 1.0), "", {}, bypassed
+    if guard_code and GUARD_REGISTRY[guard_code].is_bypassed(bypassed):
+        return (True, guard_bypass_reason, 1.0), "", {}, bypassed
+    order_side = normalize_side(side)
+    if order_side not in allowed_sides:
+        return (True, unsupported_side_reason, 1.0), order_side, {}, bypassed
+    loader = load_margins_fn if callable(load_margins_fn) else _load_margins
+    m = loader() if margins is None else margins
+    if is_intelligence_master_off(m, require_key=require_master_key):
+        return (True, "intelligence_guards_off", 1.0), order_side, m, bypassed
+    return None, order_side, m, bypassed
 
 
 def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:

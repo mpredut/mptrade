@@ -55,7 +55,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
     VenueTrailingMapsCollector,
-    _load_cached_ai_intents_list,
+    _resolve_ai_intents_and_known_order_ids,
     harvest_bot_runtime_states,
     harvest_kraken_xstocks,
     harvest_recent_orders_and_enrich_positions,
@@ -980,9 +980,10 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 intents_data = loaded if isinstance(loaded, list) else None
             except Exception:
                 intents_data = None
-        if intents_data is None:
-            intents_data = _load_cached_ai_intents_list(cache_dir, _rj_any) or None
-        known_ai_oids = collect_known_ai_order_ids(intents_data)
+        intents_data, raw_known_oids = _resolve_ai_intents_and_known_order_ids(
+            cache_dir, ai_intents=intents_data, read_json_fn=_rj_any
+        )
+        known_ai_oids = raw_known_oids if raw_known_oids is not None else collect_known_ai_order_ids(intents_data)
         gw_max_usd = safe_pos_float(getattr(intent_gateway, "max_notional_usd", None), default=2000.0) or 2000.0
 
         tradable_positions: List[Dict[str, Any]] = []

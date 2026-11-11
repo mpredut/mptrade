@@ -10,7 +10,8 @@ from intelligence.macro_sentiment_ssot import (
     fetch_public_json,
     get_fear_greed_endpoint_url,
     resolve_now_ts,
-    safe_float,
+    safe_int,
+    safe_nonneg_float,
 )
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
@@ -46,17 +47,17 @@ class FearGreedCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInterfa
             return None
 
         current = data[0]
-        val_f = safe_float(current.get("value"), default=None)
+        val_f = safe_nonneg_float(current.get("value"), default=None)
         if val_f is None:
             return None
-        val = max(0, min(100, int(round(val_f))))
+        val = min(100, safe_int(round(val_f), default=0))
         raw_cls = current.get("value_classification")
         classification = raw_cls.strip() if isinstance(raw_cls, str) and raw_cls.strip() else "Neutral"
         ts = extract_timestamp_s(current) or resolve_now_ts(now_ts)
         history = [
-            max(0, min(100, int(round(v_f))))
+            min(100, safe_int(round(v_f), default=0))
             for item in data
-            if isinstance(item, dict) and (v_f := safe_float(item.get("value"), default=None)) is not None
+            if isinstance(item, dict) and (v_f := safe_nonneg_float(item.get("value"), default=None)) is not None
         ]
         trend_7d = (history[0] - history[6]) if len(history) >= 7 else ((history[0] - history[-1]) if len(history) > 1 else 0)
 

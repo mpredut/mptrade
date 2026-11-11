@@ -1743,6 +1743,138 @@ def test_expired_orders_sync_mode_trailing_status_and_runtime_flag_border_cases(
         botcore.configure_runtime_services(allow_unmocked_llm_queries=saved_unmocked)
 
 
+def test_stop_loss_avg_archive_seed_replay_summary_fg_and_guard_preflight_border_cases(
+    tmp_path, monkeypatch
+):
+    """Regression suite for stop-loss zero-price guard, 365d seed bounds, replay summary, F&G clamping, and guard/collector SSOT."""
+    import functools
+    import external_order_guard
+    from cacheprice import Cache365PriceManager
+    from guard_hierarchy import preflight_intelligence_guard_entry
+    from intelligence.macro_sentiment_ssot import FearGreedSnapshot
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+    from intelligence.sentiment.collectors.portfolio_collector import _resolve_ai_intents_and_known_order_ids
+    from offline.backtests.evaluation import parse_intervals
+    from offline.research.monitortrades_backtest.sweep_mt_models import _accepts_two_positional_args
+    from providers.base import MarketDataProvider
+    from state_io import read_jsonl_dicts
+    from strategies.base_spot_mixin import BaseSpotMixin
+    from strategies.spot_replay import summarize_grid_replay_metrics
+
+    # 1. BaseSpotMixin._resolve_stop_loss_avg_and_loss_pct never triggers +100% SL on 0/None/bool/NaN price
+    dummy = object.__new__(BaseSpotMixin)
+    dummy.p = SimpleNamespace(stop_loss_pct=10.0)
+    dummy._avg = lambda: 100.0  # type: ignore[method-assign]
+    for bad_px in (0.0, -5.0, None, False, True, float("nan"), float("inf")):
+        assert dummy._resolve_stop_loss_avg_and_loss_pct(bad_px) is None  # type: ignore[arg-type]
+    avg_long, loss_long = dummy._resolve_stop_loss_avg_and_loss_pct(92.0, sign=1) or (0.0, 0.0)
+    assert avg_long == pytest.approx(100.0) and loss_long == pytest.approx(8.0)
+    avg_short, loss_short = dummy._resolve_stop_loss_avg_and_loss_pct(108.0, sign=-1) or (0.0, 0.0)
+    assert avg_short == pytest.approx(100.0) and loss_short == pytest.approx(8.0)
+    dummy.p = SimpleNamespace(stop_loss_pct=True)
+    assert dummy._resolve_stop_loss_avg_and_loss_pct(92.0) is None
+
+    # 2. Cache365PriceManager.seed_initial_archive_if_missing filters malformed points and normalizes timestamps
+    seed_target = str(tmp_path / "cache_365_price_BTCUSDC.jsonl")
+    assert Cache365PriceManager.seed_initial_archive_if_missing(seed_target, "BTCUSDC", 123) is False  # type: ignore[arg-type]
+    assert (
+        Cache365PriceManager.seed_initial_archive_if_missing(
+            seed_target,
+            "BTCUSDC",
+            [
+                [None, 100.0],
+                [True, 100.0],
+                [float("nan"), 100.0],
+                [1700000000000, -1.0],
+                [1700000000000, float("nan")],
+                [1700000000.0, 42123.5],
+            ],
+        )
+        is True
+    )
+    seeded_rows = read_jsonl_dicts(seed_target)
+    assert seeded_rows == [{"s": "BTCUSDC", "i": [1700000000000, 42123.5]}]
+
+    # 3. summarize_grid_replay_metrics handles None metrics, bool bh_digits, string include_fills, and negative p1
+    grid_sum = summarize_grid_replay_metrics(
+        None,  # type: ignore[arg-type]
+        budget=1000.0,
+        p0=100.0,
+        p1=112.3456,
+        bh_digits=True,  # type: ignore[arg-type]
+        include_fills="false",  # type: ignore[arg-type]
+    )
+    assert "fills" not in grid_sum and grid_sum["bh"] == pytest.approx(12.346)
+    grid_neg_p1 = summarize_grid_replay_metrics(
+        {"total": 25.0, "fills": 4},
+        budget=1000.0,
+        p0=100.0,
+        p1=-10.0,
+        include_fills="true",  # type: ignore[arg-type]
+    )
+    assert grid_neg_p1["bh"] == 0.0 and grid_neg_p1["fills"] == 4
+
+    # 4. FearGreedSnapshot.extract_value_and_label & FearGreedCollector.parse_payload reject -1 sentinel & clamp >100
+    assert FearGreedSnapshot.extract_value_and_label({"value": -1, "classification": "Error"}) is None
+    assert FearGreedSnapshot.extract_value_and_label(
+        {"value": 105.4, "classification": "Euphoria"}, preserve_float="false"  # type: ignore[arg-type]
+    ) == (100, "Euphoria")
+    assert FearGreedCollector.parse_payload({"data": [{"value": "-1"}]}) is None
+    fg_clamped = FearGreedCollector.parse_payload({"data": [{"value": "104", "value_classification": "Extreme Greed"}]})
+    assert fg_clamped is not None and fg_clamped.value == 100 and fg_clamped.is_extreme_greed is True
+
+    # 5. MarketDataProvider._resolve_live_order_flag, parse_intervals, _accepts_two_positional_args, guard/collector SSOT
+    class _DummyProv:
+        execution_enabled = lambda self: True
+        _resolve_live_order_flag = MarketDataProvider._resolve_live_order_flag
+
+    assert _DummyProv()._resolve_live_order_flag(None) is True  # type: ignore[arg-type]
+    assert _DummyProv()._resolve_live_order_flag({"live_enabled": "false"}) is False
+    assert parse_intervals(" 5 , 15 , 60 ") == [5, 15, 60]
+
+    class _BoundModel:
+        def one_arg(self, sig):
+            return sig
+
+        def two_args(self, sig, sym):
+            return (sig, sym)
+
+    bm = _BoundModel()
+    assert _accepts_two_positional_args(bm.one_arg) is False
+    assert _accepts_two_positional_args(bm.two_args) is True
+    assert _accepts_two_positional_args(functools.partial(bm.two_args, "prebound")) is False
+
+    early_res, norm_side, _, _ = preflight_intelligence_guard_entry(
+        "SELL",
+        guard_code="GLLM3",
+        guard_bypass_reason="ok",
+        allowed_sides=("BUY",),
+        unsupported_side_reason="not_buy_side",
+    )
+    assert early_res == (True, "not_buy_side", 1.0) and norm_side == "SELL"
+    monkeypatch.setattr(external_order_guard, "_load_margins", lambda: {"intelligence_guards_mode": "off"})
+    assert external_order_guard.check_external_order_guards("BTCUSDC", "BUY", 85000.0) == (
+        True,
+        "intelligence_guards_off",
+        1.0,
+    )
+
+    read_calls: list[str] = []
+    intents_out, oids_out = _resolve_ai_intents_and_known_order_ids(
+        str(tmp_path),
+        known_ai_order_ids={"ai-1"},
+        read_json_fn=lambda p: (read_calls.append(p), {})[1],
+    )
+    assert intents_out is None and oids_out == {"ai-1"} and read_calls == []
+    intents_empty, oids_empty = _resolve_ai_intents_and_known_order_ids(
+        str(tmp_path),
+        ai_intents=[],
+        read_json_fn=lambda p: (read_calls.append(p), {})[1],
+        need_intents=True,
+    )
+    assert intents_empty == [] and oids_empty == set() and read_calls == []
+
+
 
 
 

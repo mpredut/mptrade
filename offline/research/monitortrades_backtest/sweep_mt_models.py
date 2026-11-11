@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import inspect
 import os
 import sys
 import time
@@ -23,7 +24,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import safe_float, safe_int, safe_pos_float
+from botcore import exact_pos_int, safe_float, safe_int, safe_pos_float
 import pricewindow as pw
 from cachepaths import cache_path
 from providers.replay_provider import load_price_series
@@ -290,6 +291,23 @@ def load_archive_series(sym: str, use_365: bool = False) -> list[tuple[float, fl
     return load_price_series(path, sym)
 
 
+def _accepts_two_positional_args(fn) -> bool:
+    """Return True when ``fn`` accepts at least two positional arguments (or ``*args``)."""
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        code_obj = getattr(fn, "__code__", None)
+        return bool(code_obj is not None and getattr(code_obj, "co_argcount", 0) >= 2)
+    if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
+        return True
+    pos_count = sum(
+        1
+        for p in params
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    )
+    return pos_count >= 2
+
+
 def evaluate_mt_model_symbol_cell(
     sym: str,
     series: list,
@@ -300,7 +318,7 @@ def evaluate_mt_model_symbol_cell(
     key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
     rrb._TREND_TAPE_CACHE.clear()
     rrb._TREND_TAPE_CACHE[key] = tuple(
-        tape_fn(sig_input, sym) if tape_fn.__code__.co_argcount >= 2 else tape_fn(sig_input)
+        tape_fn(sig_input, sym) if _accepts_two_positional_args(tape_fn) else tape_fn(sig_input)
     )
     cfg = rrb.SYMBOLS[sym]
     res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
@@ -311,7 +329,8 @@ def evaluate_mt_model_symbol_cell(
 
 
 def print_mt_sweep_header(title_col: str, symbols: list[str], *, col_width: int = 34) -> str:
-    hdr = f"{title_col:<{col_width}} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
+    width = exact_pos_int(col_width, default=34) or 34
+    hdr = f"{title_col:<{width}} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
     print("\n" + hdr)
     print("-" * len(hdr))
     return hdr
@@ -335,7 +354,9 @@ def preserve_replay_backtest_caches():
 
 
 def print_mt_sweep_row(name: str, cells: list[str], total_net: float, *, col_width: int = 34) -> None:
-    print(f"{name:<{col_width}} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {total_net:>+14.2f}")
+    width = exact_pos_int(col_width, default=34) or 34
+    tot = safe_float(total_net, 0.0)
+    print(f"{name:<{width}} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot:>+14.2f}")
 
 
 def print_mt_buy_hold_footer(

@@ -200,6 +200,26 @@ def _load_cached_ai_intents_list(cache_dir: Optional[str], read_json_fn: Any = N
     return [it for it in (int_list or ()) if isinstance(it, dict)]
 
 
+def _resolve_ai_intents_and_known_order_ids(
+    cache_dir: Optional[str],
+    *,
+    ai_intents: Optional[List[Dict[str, Any]]] = None,
+    known_ai_order_ids: Optional[set[str]] = None,
+    read_json_fn: Any = None,
+    need_intents: bool = False,
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[set[str]]]:
+    """Resolve cached AI trade intents and ``known_ai_order_ids`` without redundant disk reads."""
+    if ai_intents is None and (need_intents or known_ai_order_ids is None) and cache_dir:
+        cached_intents = _load_cached_ai_intents_list(cache_dir, read_json_fn)
+        if cached_intents:
+            ai_intents = cached_intents
+        if known_ai_order_ids is None:
+            known_ai_order_ids = collect_known_ai_order_ids(ai_intents or cached_intents)
+    if known_ai_order_ids is None and ai_intents is not None:
+        known_ai_order_ids = collect_known_ai_order_ids(ai_intents)
+    return ai_intents, known_ai_order_ids
+
+
 def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str, Any]) -> Dict[str, float]:
     """Build order_id / client_order_id -> created_ts (epoch seconds) lookup for resting open orders."""
     out: Dict[str, float] = {}
@@ -768,8 +788,9 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         now_ts_oo = _time.time()
         order_ts_map = _load_open_order_timestamps(cache_dir, cached_bals)
         audit_origin_map = _load_recent_audit_origins(cache_dir) if cache_dir else {}
-        if known_ai_order_ids is None and cache_dir:
-            known_ai_order_ids = collect_known_ai_order_ids(_load_cached_ai_intents_list(cache_dir, _rj_bals))
+        _, known_ai_order_ids = _resolve_ai_intents_and_known_order_ids(
+            cache_dir, known_ai_order_ids=known_ai_order_ids, read_json_fn=_rj_bals
+        )
 
         def _query_free_bal(inst_obj: Any, asset: str) -> Optional[float]:
             if not asset:
@@ -1335,12 +1356,13 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
         t212_cycles = t212_cycles if isinstance(t212_cycles, dict) else {}
 
         _rj = _resolve_read_json_cached(read_json_fn)
-        if (known_ai_order_ids is None or ai_intents is None) and cache_dir:
-            cached_intents = _load_cached_ai_intents_list(cache_dir, _rj)
-            if ai_intents is None and cached_intents:
-                ai_intents = cached_intents
-            if known_ai_order_ids is None:
-                known_ai_order_ids = collect_known_ai_order_ids(ai_intents or cached_intents)
+        ai_intents, known_ai_order_ids = _resolve_ai_intents_and_known_order_ids(
+            cache_dir,
+            ai_intents=ai_intents,
+            known_ai_order_ids=known_ai_order_ids,
+            read_json_fn=_rj,
+            need_intents=True,
+        )
         audit_origin_map = _load_recent_audit_origins(cache_dir)
         recent_orders: Dict[str, Any] = {}
         venue_recent_orders: Dict[str, Dict[str, Any]] = {v: {} for v in MarketDataProvider.canonical_venues()}

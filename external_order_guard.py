@@ -27,10 +27,8 @@ from cachepaths import clean_symbol_key
 from guard_hierarchy import (
     GUARD_REGISTRY,
     _load_margins,
-    is_intelligence_master_off,
-    is_master_bypass,
     merge_guard_scale,
-    normalize_bypassed_guards,
+    preflight_intelligence_guard_entry,
     resolve_effective_bypass_guards,
     validate_guard_mode_cfg,
 )
@@ -72,19 +70,13 @@ def check_external_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
-    if is_master_bypass(bypassed):
-        return True, "stop_loss_exempt", 1.0
-
-    order_side = normalize_side(side)
-    if order_side not in ("BUY", "SELL"):
-        return True, "not_supported_side", 1.0
+    early, order_side, m, bypassed = preflight_intelligence_guard_entry(
+        side, margins=margins, load_margins_fn=_load_margins, bypass_guards=bypass_guards
+    )
+    if early is not None:
+        return early
 
     sym_norm = clean_symbol_key(symbol)
-    m = _load_margins() if margins is None else margins
-
-    if is_intelligence_master_off(m):
-        return True, "intelligence_guards_off", 1.0
 
     ext_mode = "enforce"
     if "external_guard_mode" in m:

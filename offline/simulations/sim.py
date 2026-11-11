@@ -10,7 +10,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import exact_pos_int, safe_float, safe_nonneg_float  # noqa: E402
+from botcore import _parse_bool_flag, exact_pos_int, safe_float, safe_nonneg_float  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 
 
@@ -116,11 +116,12 @@ class PriceWindow:
     def plot_window(self, *, label: str = 'Prices', clear_and_pause: bool = True, plt_mod=None):
         """Plot the values in the window and mark the low and the high."""
         p = plt_mod or plt
+        do_clear_pause = _parse_bool_flag(clear_and_pause, True)
         prices = list(self.prices)
         min_price, min_pos = self.get_min()
         max_price, max_pos = self.get_max()
 
-        if clear_and_pause:
+        if do_clear_pause:
             p.clf()  # Clear the current figure to prepare the new chart.
         p.plot(prices, marker='o', linestyle='-', label=label)
         if min_price is not None:
@@ -133,7 +134,7 @@ class PriceWindow:
         p.ylabel('Price')
         p.legend()
         p.grid(True)
-        if clear_and_pause:
+        if do_clear_pause:
             p.pause(0.1)  # A short pause so the chart updates.
 
 
@@ -144,6 +145,9 @@ def run_interactive_simulation(
     on_tick_fn=None,
 ) -> None:
     price_window = PriceWindow(window_size)
+    sleep_s = safe_nonneg_float(sleep_sec, default=7.5)
+    if sleep_s is None:
+        sleep_s = 7.5
     random.seed(42)
 
     plt.ion()  # Enable interactive mode so the charts can be watched in real time.
@@ -155,7 +159,7 @@ def run_interactive_simulation(
                 on_tick_fn(price_window, price)
             else:
                 price_window.plot_window()
-            time.sleep(sleep_sec)  # A small delay to simulate real time.
+            time.sleep(sleep_s)  # A small delay to simulate real time.
     except KeyboardInterrupt:
         print("Simulation stopped manually.")
 

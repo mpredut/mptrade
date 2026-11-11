@@ -1095,7 +1095,7 @@ class MarketDataProvider(ABC):
 
     def _resolve_live_order_flag(self, kwargs: dict) -> bool:
         """Pop optional ``live_enabled`` override from ``kwargs`` or fall back to ``self.execution_enabled()``."""
-        live_override = kwargs.pop("live_enabled", None)
+        live_override = kwargs.pop("live_enabled", None) if isinstance(kwargs, dict) else None
         return (
             self.execution_enabled()
             if live_override is None

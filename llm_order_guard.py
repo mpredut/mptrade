@@ -38,10 +38,9 @@ from guard_hierarchy import (
     _is_valid_regime_context,
     _load_margins,
     is_intelligence_master_off,
-    is_master_bypass,
     make_intel_cache_key,
     merge_guard_scale,
-    normalize_bypassed_guards,
+    preflight_intelligence_guard_entry,
     resolve_high_stake_min_notional_usd,
     validate_guard_mode_cfg,
 )
@@ -242,18 +241,18 @@ def check_geopolitical_order_guards(
     bypass_guards: Optional[set[str]] = None,
 ) -> Tuple[bool, str, float]:
     """Evaluate pre-trade orders against published geopolitical threat assessment (GLLM3)."""
-    if bypass_guards:
-        bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-        if GUARD_REGISTRY["GLLM3"].is_bypassed(bypassed):
-            return True, "stop_loss_exempt" if is_master_bypass(bypassed) else "ok", 1.0
-    order_side = normalize_side(side)
-    if order_side != "BUY":
-        return True, "not_buy_side", 1.0
-
-    m = _load_margins() if margins is None else margins
-
-    if is_intelligence_master_off(m):
-        return True, "intelligence_guards_off", 1.0
+    early, order_side, m, _bypassed = preflight_intelligence_guard_entry(
+        side,
+        margins=margins,
+        load_margins_fn=_load_margins,
+        bypass_guards=bypass_guards,
+        guard_code="GLLM3",
+        guard_bypass_reason="ok",
+        allowed_sides=("BUY",),
+        unsupported_side_reason="not_buy_side",
+    )
+    if early is not None:
+        return early
 
     geo_mode = validate_guard_mode_cfg(m["geopolitical_guard_mode"], "geopolitical_guard_mode")
     if geo_mode == "off":
@@ -377,18 +376,11 @@ def check_llm_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-    if is_master_bypass(bypassed):
-        return True, "stop_loss_exempt", 1.0
-
-    side = normalize_side(order_type)
-    if side not in ("BUY", "SELL"):
-        return True, "not_supported_side", 1.0
-
-    m = _load_margins() if margins is None else margins
-
-    if is_intelligence_master_off(m):
-        return True, "intelligence_guards_off", 1.0
+    early, side, m, bypassed = preflight_intelligence_guard_entry(
+        order_type, margins=margins, load_margins_fn=_load_margins, bypass_guards=bypass_guards
+    )
+    if early is not None:
+        return early
 
     effective_scale = 1.0
     active_reason = "ok"

@@ -693,23 +693,27 @@ def summarize_grid_replay_metrics(
     include_fills: bool = False,
 ) -> dict:
     """Summarize continuous-grid replay metrics and round-trip buy-and-hold return."""
-    tot = safe_float(metrics.get("total"), 0.0)
+    m_dict = metrics if isinstance(metrics, dict) else {}
+    tot = safe_float(m_dict.get("total"), 0.0)
     budget_f = safe_pos_float(budget, 0.0)
     p0_f = safe_pos_float(p0, 0.0)
-    p1_f = safe_float(p1, 0.0)
+    p1_f = safe_nonneg_float(p1, default=None)
+    digits = exact_nonneg_int(bh_digits, default=3)
+    if digits is None:
+        digits = 3
     fee_r = min(0.9999, max(0.0, safe_float(fee_pct, 0.0) / 100.0))
     bh_pct = (
         (((p1_f * (1.0 - fee_r)) / (p0_f * (1.0 + fee_r))) - 1.0) * 100.0
-        if p0_f > 0.0 and (1.0 + fee_r) > 0.0
+        if p0_f > 0.0 and p1_f is not None and (1.0 + fee_r) > 0.0
         else 0.0
     )
     out = {
         "ret": round(tot / budget_f * 100.0, 3) if budget_f > 0.0 else 0.0,
-        "dd": round(safe_float(metrics.get("max_drawdown_pct"), 0.0), 3),
-        "cyc": safe_nonneg_int(metrics.get("cycles"), default=0),
-        "expo": round(safe_float(metrics.get("exposure_pct"), 0.0), 1),
-        "bh": round(bh_pct, bh_digits),
+        "dd": round(safe_float(m_dict.get("max_drawdown_pct"), 0.0), 3),
+        "cyc": safe_nonneg_int(m_dict.get("cycles"), default=0),
+        "expo": round(safe_float(m_dict.get("exposure_pct"), 0.0), 1),
+        "bh": round(bh_pct, digits),
     }
-    if include_fills:
-        out["fills"] = safe_nonneg_int(metrics.get("fills"), default=0)
+    if _parse_bool_flag(include_fills, False):
+        out["fills"] = safe_nonneg_int(m_dict.get("fills"), default=0)
     return out

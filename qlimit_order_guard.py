@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
     clean_scale,
-    normalize_side,
     obj_attr,
     resolve_patched_attr,
     safe_nonneg_float,
@@ -27,9 +26,7 @@ from botcore import (
 from guard_hierarchy import (
     GUARD_REGISTRY,
     _load_margins,
-    is_intelligence_master_off,
-    is_master_bypass,
-    normalize_bypassed_guards,
+    preflight_intelligence_guard_entry,
     resolve_qlimit2_sub_bypasses,
     validate_guard_mode_cfg,
 )
@@ -87,21 +84,15 @@ def check_qlimit2_order_guards(
         (allowed: bool, reason: str, suggested_scale: float)
     """
     raw_bypass_tokens, parabolic_only_bypass, weibull_only_bypass = resolve_qlimit2_sub_bypasses(bypass_guards)
-    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
-    if (
-        is_master_bypass(bypassed)
-        or (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass)
-    ):
-        return True, "stop_loss_exempt", 1.0
-
-    order_side = normalize_side(side)
-    if order_side not in ("BUY", "SELL"):
-        return True, "not_supported_side", 1.0
-
-    m = _load_margins() if margins is None else margins
-
-    if is_intelligence_master_off(m):
-        return True, "intelligence_guards_off", 1.0
+    early, order_side, m, bypassed = preflight_intelligence_guard_entry(
+        side,
+        margins=margins,
+        load_margins_fn=_load_margins,
+        bypass_guards=bypass_guards,
+        guard_code="G_QLIMIT2" if not (parabolic_only_bypass or weibull_only_bypass) else None,
+    )
+    if early is not None:
+        return early
     mode = validate_guard_mode_cfg(m["internal_guard_mode"], "internal_guard_mode")
     if mode == "off":
         return True, "intelligence_guards_off", 1.0

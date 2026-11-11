@@ -1164,13 +1164,14 @@ class BaseSpotMixin:
     def _resolve_stop_loss_avg_and_loss_pct(
         self, price: float, *, sign: int = 1
     ) -> tuple[float, float] | None:
-        """Return ``(avg_entry_price, unrealized_loss_pct)`` when stop-loss is enabled and position average is valid."""
-        if self.p.stop_loss_pct <= 0:
+        """Return ``(avg_entry_price, unrealized_loss_pct)`` when stop-loss is enabled and position/price are valid."""
+        sl_pct = safe_pos_float(getattr(self.p, "stop_loss_pct", None), default=None)
+        px_f = safe_pos_float(price, default=None)
+        avg_f = safe_pos_float(self._avg(), default=None)
+        if sl_pct is None or px_f is None or avg_f is None:
             return None
-        avg = self._avg()
-        if not avg:
-            return None
-        return avg, (-sign * (price - avg) / avg * 100.0)
+        eff_sign = -1 if sign == -1 else 1
+        return avg_f, (-eff_sign * (px_f - avg_f) / avg_f * 100.0)
 
     def _run_strategy_loop(
         self,

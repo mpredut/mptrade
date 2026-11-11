@@ -35,6 +35,7 @@ from botcore import (
     require_pos_float,
     safe_float,
     safe_int,
+    split_csv,
 )
 from providers.order_ohlc_utils import normalize_record
 
@@ -292,7 +293,7 @@ def parse_intervals(value: str) -> list[int]:
     """Parse comma-separated positive integer interval minutes."""
     if not isinstance(value, str):
         raise argparse.ArgumentTypeError("intervals must be positive minutes")
-    parts = [part.strip() for part in value.split(",") if part.strip()]
+    parts = split_csv(value)
     if not parts:
         raise argparse.ArgumentTypeError("intervals must be positive minutes")
     intervals = []

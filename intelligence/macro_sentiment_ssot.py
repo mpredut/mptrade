@@ -56,13 +56,16 @@ class FearGreedSnapshot:
         """Extract ``(value, classification_label)`` from a ``FearGreedSnapshot`` or dict-like mapping."""
         if snapshot is None:
             return None
-        val_f = safe_float(obj_attr(snapshot, "value", None), default=None)
+        val_f = safe_nonneg_float(obj_attr(snapshot, "value", None), default=None)
         if val_f is None:
             return None
+        val_f = min(100.0, val_f)
+        keep_float = _parse_bool_flag(preserve_float, False)
+        rounded_i = safe_int(round(val_f), default=0)
         val: int | float = (
-            (int(round(val_f)) if float(val_f).is_integer() else val_f)
-            if preserve_float
-            else int(round(val_f))
+            (rounded_i if val_f == rounded_i else val_f)
+            if keep_float
+            else rounded_i
         )
         raw_cls = obj_attr(snapshot, "classification", None) or obj_attr(
             snapshot, "sentiment", None
@@ -116,6 +119,7 @@ from botcore import (
     resolve_patched_attr,
     safe_float,
     safe_int,
+    safe_nonneg_float,
     safe_pos_float,
     split_csv,
 )

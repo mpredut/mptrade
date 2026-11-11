@@ -696,12 +696,15 @@ class Cache365PriceManager(Cache24PriceManager):
     @classmethod
     def seed_initial_archive_if_missing(cls, target_path: str, symbol: str, points: list) -> bool:
         """Bootstrap ``cache_365_price_<SYM>.jsonl`` once when missing on disk without overwriting an existing archive."""
-        if not target_path or os.path.exists(target_path) or not points:
+        if not target_path or os.path.exists(target_path) or not isinstance(points, (list, tuple)) or not points:
             return False
         rows = [
-            {"s": symbol, "i": [int(pt[0]), pt[1]]}
+            {"s": symbol, "i": [ts_i, px_f]}
             for pt in points
-            if isinstance(pt, (list, tuple)) and len(pt) >= 2
+            if isinstance(pt, (list, tuple))
+            and len(pt) >= 2
+            and (ts_i := normalize_timestamp_ms(pt[0], default=None)) is not None
+            and (px_f := safe_pos_float(pt[1], default=None)) is not None
         ]
         if not rows:
             return False
