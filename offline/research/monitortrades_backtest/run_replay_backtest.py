@@ -184,6 +184,15 @@ def prewarm_trend_series(
     return res
 
 
+def resolve_archive_jsonl_path(symbol: str, use_365: bool = False) -> str:
+    """Resolve `cache_365_price_{symbol}.jsonl` with fallback to `cache_sparse_price_{symbol}.jsonl`."""
+    fname = f"cache_365_price_{symbol}.jsonl" if use_365 else f"cache_sparse_price_{symbol}.jsonl"
+    path = cache_path(fname)
+    if use_365 and not os.path.exists(path):
+        path = cache_path(f"cache_sparse_price_{symbol}.jsonl")
+    return path
+
+
 def run_symbol(
     symbol,
     params,
@@ -195,10 +204,7 @@ def run_symbol(
     from_disk = series is None
     if from_disk:
         use_365 = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), False)
-        fname = f"cache_365_price_{symbol}.jsonl" if use_365 else f"cache_sparse_price_{symbol}.jsonl"
-        path = cache_path(fname)
-        if use_365 and not os.path.exists(path):
-            path = cache_path(f"cache_sparse_price_{symbol}.jsonl")
+        path = resolve_archive_jsonl_path(symbol, use_365=use_365)
         series = load_price_series(path, symbol)
         if not series:
             sys.stderr.write(f"[{symbol}] no history at {path}\n")

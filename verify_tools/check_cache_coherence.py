@@ -9,7 +9,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import extract_current_price_item, safe_pos_float  # noqa: E402
+from botcore import extract_current_price_item, normalize_epoch_sec, safe_pos_float  # noqa: E402
 from cachepaths import cache_symbol_variants  # noqa: E402
 from instrument_registry import casefold_get, select_instruments, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
@@ -112,8 +112,7 @@ def main() -> int:
             print(f"   {s:10} IS INVALID")
             continue
 
-        ts_ms_val = safe_pos_float(ts_raw, default=0.0)
-        ts_sec_val = (ts_ms_val / 1000.0 if ts_ms_val > 1e11 else ts_ms_val) if ts_ms_val > 0 else 0.0
+        ts_sec_val = normalize_epoch_sec(ts_raw, default=0.0) or 0.0
         age = (now - ts_sec_val) if ts_sec_val > 0 else 1e9
         ok = -5.0 <= age < STALE_S and px_val > 0
         if not ok:

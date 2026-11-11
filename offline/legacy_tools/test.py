@@ -12,6 +12,21 @@ if _ROOT not in sys.path:
 
 from botcore import safe_nonneg_float, safe_pos_float
 
+KLINE_COLUMNS = [
+    'timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time',
+    'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume',
+    'taker_buy_quote_asset_volume', 'ignore',
+]
+
+
+def _klines_to_df(data):
+    df = pd.DataFrame(data, columns=KLINE_COLUMNS)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df.set_index('timestamp', inplace=True)
+    df['close'] = df['close'].astype(float)
+    return df
+
+
 def fetch_data():
     # The API for the historical data (for example: the Binance API).
     end_time = int(datetime.datetime.now().timestamp() * 1000)
@@ -22,12 +37,9 @@ def fetch_data():
     data = response.json()
 
     # Create a DataFrame
-    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+    df = _klines_to_df(data)
     print(df.head())
     print(f"Total intervals (should be close to 43200 for 30 days of minute data): {len(df)}")
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-    df['close'] = df['close'].astype(float)
     return df
 
 def analyze_drops(df):

@@ -40,19 +40,9 @@ def task(args):
 
 
 if __name__ == "__main__":
-    assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
-    for a in assets:
-        grid.load_asset(a)
+    assets = grid.discover_and_preload_assets(DATA)
     todo = [(a, c) for a in assets for c in CFGS]
-    canon_groups: dict = {}
-    canon_todo = []
-    for a, c in todo:
-        p, pk = grid2.ALL[c]
-        k = (a, repr(p), bool(pk))
-        if k not in canon_groups:
-            canon_groups[k] = []
-            canon_todo.append((a, c))
-        canon_groups[k].append(c)
+    canon_groups, canon_todo = grid.group_canonical_tasks(todo, grid2.ALL)
     done_count = 0
     workers = int_env("WORKERS") or (os.cpu_count() or 4)
     with Pool(workers) as pool, open(os.path.join(EXP, "results3.jsonl"), "w") as fh:

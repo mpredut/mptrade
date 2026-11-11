@@ -18,7 +18,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import is_live_network_backfill_enabled, safe_float
+from botcore import extract_current_price_item, is_live_network_backfill_enabled, safe_float
 from cachepaths import CACHE_BINANCE_ORDER_FILENAME, cache_path
 from providers.base import (
     extract_order_id,
@@ -164,12 +164,8 @@ def inspect_fleet(json_output: bool = False):
     for sym in ("BTCUSDC", "TAOUSDC", "HYPEUSDC"):
         ob = ssh_cat(cache_path(f"telemetry/orderbook_depth_{sym}.json"))
         whale = ssh_cat(cache_path(f"telemetry/whale_snapshot_{sym}.json"))
-        px_entry = prices_data.get(sym)
-        px_val = None
-        if isinstance(px_entry, list) and px_entry and isinstance(px_entry[-1], (list, tuple)) and len(px_entry[-1]) >= 2:
-            px_val = safe_float(px_entry[-1][1], None)
-        elif isinstance(px_entry, (int, float)):
-            px_val = float(px_entry)
+        _, px_raw = extract_current_price_item(prices_data.get(sym))
+        px_val = safe_float(px_raw, None) if px_raw > 0.0 else None
 
         entry_dict = {}
         if px_val is not None:

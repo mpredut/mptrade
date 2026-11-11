@@ -135,7 +135,7 @@ def main() -> int:
             print(f"# {s}: insufficient data / not found on CoinGecko")
             continue
         print(f"{r['symbol']:<8} = {r['up']} / {r['down']}    "
-              f"# {r['name']} | tipic zilnic +{r['up_median']}/-{r['down_median']}% ({r['points']} puncte)")
+              f"# {r['name']} | typical daily +{r['up_median']}/-{r['down_median']}% ({r['points']} points)")
     return 0
 
 

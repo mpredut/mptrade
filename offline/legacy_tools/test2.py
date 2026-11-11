@@ -12,6 +12,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import safe_nonneg_float, safe_pos_float
+from offline.legacy_tools.test import _klines_to_df
 
 def fetch_data():
     # The API for the historical data (for example: the Binance API).
@@ -28,10 +29,7 @@ def fetch_data():
         if not data:
             break
         
-        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        df['close'] = df['close'].astype(float)
+        df = _klines_to_df(data)
         
         df_list.append(df)
         

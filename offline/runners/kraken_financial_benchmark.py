@@ -150,7 +150,7 @@ def build_report(
     expected = manifest_info["expected"]
     if digest != expected.get("sha256"):
         raise ValueError(
-            f"hash dataset diferit: {digest} != {expected.get('sha256')}"
+            f"different dataset hash: {digest} != {expected.get('sha256')}"
         )
     expected_bars = safe_int(expected.get("bars"), default=-1)
     if len(records) != expected_bars:
@@ -363,7 +363,7 @@ def main() -> int:
         if _projection(expected) != _projection(report):
             print("VERIFY FAILED: the benchmark differs from the versioned artefact", file=sys.stderr)
             return 1
-        print("VERIFY OK: benchmark reproductibil")
+        print("VERIFY OK: reproducible benchmark")
     if "promotion_gate" in report:
         print(f"Promotion: {'PASS' if report['promotion_gate']['promote'] else 'FAIL'}")
     return 0

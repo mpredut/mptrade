@@ -1,5 +1,5 @@
 """
-backtest_ranges.py — parseaza rangurile de test scrise ca text SIMPLU,
+backtest_ranges.py — parses test ranges written as PLAIN text,
 DIRECTLY above a parameter in any config file (23 Jul,
 offline/research/UNIFIED_BACKTEST_PLAN.md, a user decision: plain text, NOT YAML/JSON).
 

@@ -266,10 +266,7 @@ def load_archive_series(sym: str, use_365: bool = False) -> list[tuple[float, fl
     if use_365 and os.path.exists(npz_path):
         with np.load(npz_path) as z:
             return list(zip(z["ts"].tolist(), z["px"].tolist()))
-    fname = f"cache_365_price_{sym}.jsonl" if use_365 else f"cache_sparse_price_{sym}.jsonl"
-    path = cache_path(fname)
-    if not os.path.exists(path):
-        path = cache_path(f"cache_sparse_price_{sym}.jsonl")
+    path = rrb.resolve_archive_jsonl_path(sym, use_365=use_365)
     if not os.path.exists(path):
         return []
     return load_price_series(path, sym)

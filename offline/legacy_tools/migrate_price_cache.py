@@ -24,20 +24,15 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from botcore import safe_pos_float
 from cachepaths import get_cachedb_dir
+from providers.base import extract_timestamp_ms
 from state_io import atomic_write_json, atomic_write_text, durable_replace_file, read_json_dict, read_jsonl_dicts
 
 CACHE_DIR = get_cachedb_dir()
 
 
 def _entry_ts(item):
-    # An item is [ts, price] (a list) — we use the first element as the timestamp.
-    raw = 0
-    if isinstance(item, (list, tuple)) and item:
-        raw = item[0]
-    elif isinstance(item, dict):
-        raw = item.get("time") if item.get("time") is not None else item.get("timestamp")
-    val = safe_pos_float(raw, default=None)
-    return int(val) if val is not None else 0
+    # An item is [ts, price] (a list) or dict — delegate to extract_timestamp_ms SSOT.
+    return int(extract_timestamp_ms(item, default=0) or 0)
 
 
 def migrate_file(json_path, dry_run=False):

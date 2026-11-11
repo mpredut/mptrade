@@ -46,9 +46,15 @@ def win_stats(r, key):
             "up": st.fmean(up_vals) if up_vals else float("nan")}
 
 
-def _fmt_num(val, spec: str) -> str:
+def _fmt_num(val, spec: str | None = None) -> str:
+    if val is None:
+        return "-"
     fv = safe_float(val, default=None)
-    return format(fv, spec) if fv is not None else "-"
+    if fv is None:
+        return "-"
+    if spec is not None:
+        return format(fv, spec)
+    return str(int(fv) if isinstance(val, int) else fv)
 
 
 def _resolve_exp_dir(exp_dir: str | None = None) -> str:
@@ -57,11 +63,11 @@ def _resolve_exp_dir(exp_dir: str | None = None) -> str:
     return exp
 
 
-def _format_errors_section(errors: list[dict], *, label_fn=None) -> list[str]:
+def _format_errors_section(errors: list[dict], *, label_fn=None, limit: int = 20) -> list[str]:
     if not errors:
         return []
     lines = ["\n## Errors\n"]
-    for e in errors[:20]:
+    for e in errors[:limit]:
         err_lines = str(e.get("error") or "").strip().splitlines()
         last_err = err_lines[-1] if err_lines else "unknown"
         label = label_fn(e) if label_fn is not None else f"{e.get('asset', '?')} {e.get('cfg', '?')}"

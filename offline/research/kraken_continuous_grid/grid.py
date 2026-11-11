@@ -220,10 +220,28 @@ def task(args):
         return {"asset": asset, "cfg": cfg, "error": traceback.format_exc()}
 
 
-if __name__ == "__main__":
-    assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
+def discover_and_preload_assets(data_dir: str = DATA) -> list[str]:
+    assets = sorted(f[:-9] for f in os.listdir(data_dir) if f.endswith("_240m.csv"))
     for a in assets:
         load_asset(a)
+    return assets
+
+
+def group_canonical_tasks(todo: list[tuple[str, str]], config_map: dict):
+    canon_groups: dict = {}
+    canon_todo: list[tuple[str, str]] = []
+    for a, c in todo:
+        p, pk = config_map[c]
+        k = (a, repr(p), bool(pk))
+        if k not in canon_groups:
+            canon_groups[k] = []
+            canon_todo.append((a, c))
+        canon_groups[k].append(c)
+    return canon_groups, canon_todo
+
+
+if __name__ == "__main__":
+    assets = discover_and_preload_assets(DATA)
     done = {
         (r["asset"], r["cfg"])
         for r in read_jsonl_dicts(OUT)
@@ -234,15 +252,7 @@ if __name__ == "__main__":
              "peak2.2", "reentry0", "ov650_t8_sl12.5", "ov650_t8_oldlive", "sl0", "tp_classic"]
     order = first + [c for c in CONFIGS if c not in first]
     todo = [(a, c) for a in assets for c in order if (a, c) not in done]
-    canon_groups: dict = {}
-    canon_todo = []
-    for a, c in todo:
-        p, pk = CONFIGS[c]
-        k = (a, repr(p), bool(pk))
-        if k not in canon_groups:
-            canon_groups[k] = []
-            canon_todo.append((a, c))
-        canon_groups[k].append(c)
+    canon_groups, canon_todo = group_canonical_tasks(todo, CONFIGS)
     workers = int_env("WORKERS") or (os.cpu_count() or 4)
     print(f"[grid] {len(assets)} assets x {len(CONFIGS)} configs, {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()

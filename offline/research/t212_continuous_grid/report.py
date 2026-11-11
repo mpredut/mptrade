@@ -9,16 +9,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
+from offline.research.kraken_continuous_grid.report import (
+    _fmt_num as _fmt_cell,
+    _format_errors_section,
+)
 from state_io import atomic_write_text, read_jsonl_dicts
 
 EXP = os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "t212_continuous_grid")
 HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}
-
-
-def _fmt_cell(val, spec: str | None = None) -> str:
-    if val is None:
-        return "-"
-    return format(val, spec) if spec is not None else str(val)
 
 
 def g(r, itv, k):
@@ -125,12 +123,13 @@ def generate_report(exp_dir=None):
         ):
             L.append(f"| {v} | {bl1}/{n} | {pos1}/{n} | {med:+.1f} | {dd1:.1f} | {bl2}/{n2} | {pos2}/{n2} | {med2:+.1f} | {dd2:.1f} |")
 
-    if errors:
-        L.append("\n## Errors\n")
-        for e in errors[:15]:
-            err_line = str(e.get("error") or "").strip().splitlines()
-            last_err = err_line[-1] if err_line else "unknown"
-            L.append(f"- {e.get('profile')} {e.get('variant')} {e.get('asset')}: `{last_err}`")
+    L.extend(
+        _format_errors_section(
+            errors,
+            limit=15,
+            label_fn=lambda e: f"{e.get('profile')} {e.get('variant')} {e.get('asset')}",
+        )
+    )
 
     report_content = "\n".join(L) + "\n"
     atomic_write_text(os.path.join(exp, "REPORT.md"), report_content)

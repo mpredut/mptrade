@@ -254,14 +254,8 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
             for rec in read_tail_jsonl_dicts(path, limit=None, max_bytes=max_bytes)
             if rec.get("s") in sym_variants and "i" in rec
         ]
-    items = read_json_dict(path, default={}, recover_previous=True).get("items")
-    if not isinstance(items, dict):
-        return []
-    for cand in cache_symbol_variants(symbol, include_original=True):
-        cand_val = casefold_get(items, cand)
-        if isinstance(cand_val, list):
-            return cand_val
-    return []
+    data = read_json_dict(path, default={}, recover_previous=True)
+    return lookup_symbol_cache_items(data, symbol, allow_base_fallback=False, require_list=True, unwrap_items=True) or []
 
 
 def _ingest_cachedb_points(points: dict, entries) -> None:

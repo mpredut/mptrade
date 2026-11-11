@@ -32,7 +32,7 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 from botcore import safe_nonneg_float, safe_pos_float, sanitize_pipe_field
 from providers.base import normalize_side
 from providers.replay_provider import SimClock, backtest_isolation_context  # noqa: F401
-from state_io import atomic_write_json, read_json_dict, read_jsonl_dicts
+from state_io import atomic_write_json, lookup_symbol_cache_items, read_json_dict, read_jsonl_dicts
 from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed
 from instrument_registry import casefold_get
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
@@ -292,14 +292,7 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
     if not os.path.exists(path) and not os.path.exists(f"{path}.previous"):
         raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
     data = read_json_dict(path, default={}, recover_previous=True)
-    items_map = data.get("items") if isinstance(data, dict) else None
-    entries = []
-    if isinstance(items_map, dict):
-        for cand in cache_symbol_variants(symbol, include_original=True):
-            cand_val = casefold_get(items_map, cand)
-            if isinstance(cand_val, list) and cand_val:
-                entries = cand_val
-                break
+    entries = lookup_symbol_cache_items(data, symbol, allow_base_fallback=False, require_list=True, unwrap_items=True) or []
     for entry in entries:
         parsed = _parse_tick_pair(entry)
         if parsed is None:

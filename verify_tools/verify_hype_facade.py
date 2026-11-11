@@ -27,7 +27,7 @@ from providers.base import (
     extract_order_price,
     extract_timestamp_ms,
 )
-from providers.order_ohlc_utils import extract_order_qty
+from providers.order_ohlc_utils import extract_order_qty, summarize_order_position
 from providers.market_api import api as mkt          # noqa: E402  (singleton facade)
 
 HYPE = "HYPEUSDC"
@@ -108,30 +108,19 @@ def main():
             print(f"    {o.get('side')} px={o.get('price')} qty={o.get('qty')} ts={o.get('timestamp')}")
 
     print("\n==== POSITION (get_position_stats logic) ====")
-    valid_buys = [
-        o for o in buys
-        if isinstance(o, dict) and extract_order_qty(o) > 0.0 and extract_order_price(o) > 0.0
-    ]
-    valid_sells = [
-        o for o in sells
-        if isinstance(o, dict) and extract_order_qty(o) > 0.0
-    ]
-    tbq = sum(extract_order_qty(o) for o in valid_buys)
-    tbv = sum(extract_order_price(o) * extract_order_qty(o) for o in valid_buys)
-    tsq = sum(extract_order_qty(o) for o in valid_sells)
-    avg_buy = tbv / tbq if tbq else 0.0
-    net = tbq - tsq
+    pos_stats = summarize_order_position(buys, sells)
+    tbq = pos_stats["buy_qty"]
+    tsq = pos_stats["sell_qty"]
+    avg_buy = pos_stats["avg_buy"]
+    net = pos_stats["net_qty"]
     print(f"  buy_qty={tbq:.6f} sell_qty={tsq:.6f} net_qty={net:.6f} avg_buy={avg_buy:.4f}")
     check("avg_buy is plausible (0 or positive and within price range)",
           avg_buy == 0.0 or (price_f > 0.0 and 0.2 * price_f <= avg_buy <= 5 * price_f),
           f"avg_buy={avg_buy} price={price}")
 
     print("\n==== A simulated DECISION (like monitor_price_and_trade, WITHOUT placing) ====")
-    if valid_buys and price_f > 0.0:
-        last_buy = safe_float(
-            extract_order_price(sorted(valid_buys, key=lambda x: safe_float(extract_timestamp_ms(x, default=0), 0.0), reverse=True)[0]),
-            0.0,
-        )
+    if tbq > 0.0 and price_f > 0.0:
+        last_buy = safe_float(pos_stats["last_buy_px"], 0.0)
         if last_buy > 0:
             inc = (price_f - last_buy) / last_buy
             print(f"  last buy={last_buy}  price={price}  change={inc*100:+.2f}%")

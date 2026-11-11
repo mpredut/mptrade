@@ -22,7 +22,7 @@ from botcore import (
     safe_nonneg_ts,
     safe_pos_float,
 )
-from cachepaths import cache_path, resolve_cachedb_filepath
+from cachepaths import cache_path, cachedb_root_for_file, resolve_cachedb_filepath
 from state_io import read_json_file, save_json_state
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_NEWS_ROLLING_WINDOW_SEC,
@@ -112,21 +112,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         self._load_history()
 
     def _cache_dir(self) -> str:
-        cdir = os.path.dirname(os.path.abspath(self._effective_history_file()))
-        if os.path.basename(cdir) in (
-            "macro",
-            "sentiment",
-            "telemetry",
-            "external",
-            "system",
-            "trends",
-            "prices",
-            "orders",
-            "state",
-            "heartbeat",
-        ):
-            return os.path.dirname(cdir)
-        return cdir
+        return cachedb_root_for_file(os.path.abspath(self._effective_history_file()))
 
     def get_active_feed_urls(self) -> Tuple[str, ...]:
         """Resolve specialized editorial RSS feeds + dynamic crisis search URL."""

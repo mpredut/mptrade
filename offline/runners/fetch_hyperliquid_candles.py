@@ -157,7 +157,7 @@ def main() -> int:
             "file": str(path),
             **meta,
         }
-        print(f"{interval}m: {len(records)} bare -> {path}")
+        print(f"{interval}m: {len(records)} bars -> {path}")
 
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
     manifest_path = output_dir.parent / f"manifest_{stamp}.json"

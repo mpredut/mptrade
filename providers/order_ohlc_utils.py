@@ -801,3 +801,40 @@ class ClosedPriceSeries:
             timestamps,
             volumes,
         )
+
+
+def summarize_order_position(buy_orders: Any, sell_orders: Any) -> dict[str, Any]:
+    """Aggregate BUY/SELL order lists into position statistics (SSOT for verify/watch tools)."""
+    valid_buys = [
+        (o, q, p)
+        for o in (buy_orders or [])
+        if isinstance(o, dict)
+        and (q := extract_order_qty(o)) > 0.0
+        and (p := extract_order_price(o)) > 0.0
+    ]
+    valid_sells = [
+        (o, q)
+        for o in (sell_orders or [])
+        if isinstance(o, dict)
+        and (q := extract_order_qty(o)) > 0.0
+    ]
+    buy_qty = sum(q for _, q, _ in valid_buys)
+    buy_val = sum(q * p for _, q, p in valid_buys)
+    sell_qty = sum(q for _, q in valid_sells)
+    avg_buy = (buy_val / buy_qty) if buy_qty > 0.0 else 0.0
+    last_buy_px = (
+        extract_order_price(
+            max((o for o, _, _ in valid_buys), key=lambda o: float(extract_timestamp_ms(o, default=0) or 0))
+        )
+        if valid_buys
+        else 0.0
+    )
+    return {
+        "buy_qty": buy_qty,
+        "buy_val": buy_val,
+        "sell_qty": sell_qty,
+        "net_qty": buy_qty - sell_qty,
+        "avg_buy": avg_buy,
+        "sell_count": len(valid_sells),
+        "last_buy_px": last_buy_px,
+    }

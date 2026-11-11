@@ -30,6 +30,7 @@ from providers.base import (
 from providers.order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
+    summarize_order_position,
 )
 from providers.market_api import api as mkt                     # noqa: E402  (singleton facade)
 from providers.quantity import resolve_assets                   # noqa: E402
@@ -53,24 +54,8 @@ def free_direct(base):
 
 def position_from(buy_orders, sell_orders):
     """The get_position_stats logic: avg_buy + net_qty derived from order lists."""
-    buy_pairs = [
-        (q, p)
-        for o in (buy_orders or [])
-        if isinstance(o, dict)
-        and (q := extract_order_qty(o)) > 0.0
-        and (p := extract_order_price(o)) > 0.0
-    ]
-    sells_q = [
-        q
-        for o in (sell_orders or [])
-        if isinstance(o, dict)
-        and (q := extract_order_qty(o)) > 0.0
-    ]
-    tq = sum(q for q, _ in buy_pairs)
-    tv = sum(q * p for q, p in buy_pairs)
-    sq = sum(sells_q)
-    avg = tv / tq if tq > 0 else 0.0
-    return avg, tq - sq
+    stats = summarize_order_position(buy_orders, sell_orders)
+    return stats["avg_buy"], stats["net_qty"]
 
 
 def order_key(o):

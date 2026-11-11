@@ -10,7 +10,6 @@ the process manifest with existing gates/configuration and flags only two active
 from __future__ import annotations
 
 import argparse
-import configparser
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
@@ -245,8 +244,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
     )
     instruments_path = root / "instruments.conf"
     if instruments_path.exists():
-        parser = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
-        parser.read(instruments_path, encoding="utf-8")
+        parser = load_ini_config(instruments_path, must_exist=False, inline_comments=True)
         venue_envs = {
             "binance": root_env,
             "kraken": kraken_env,

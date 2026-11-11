@@ -119,9 +119,7 @@ def task(args):
 
 
 if __name__ == "__main__":
-    assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
-    for a in assets:
-        grid.load_asset(a)
+    assets = grid.discover_and_preload_assets(DATA)
     for r in read_jsonl_dicts(grid.OUT):
         if "error" not in r and r.get("cfg") in ALL and r.get("asset") in assets:
             bars, _, _ = grid.load_asset(r["asset"])

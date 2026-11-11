@@ -87,8 +87,8 @@ MIN_EDGE_MARGIN_USD = _env_float("PILOT_MIN_EDGE_MARGIN_USD", 1.0)
 # mt.* in instruments.conf, so run_replay_backtest already fires them through params
 # (verified: is_trend_up neutralised, maxage->since_s, hardtp->inst.param).
 #   #4-5  gain/lost   (DONE 23 Jul: TAO mt.lost 4.9->5.25 applied)
-#   #16   maxage_days (28 iul)
-#   #15   hardtp / hardtp_fraction (28 iul; per-instrument, monitortrades.py:447)
+#   #16   maxage_days (28 Jul)
+#   #15   hardtp / hardtp_fraction (28 Jul; per-instrument, monitortrades.py:447)
 def _build_pilot_keys(conf_path=INSTRUMENTS_CONF):
     """Derive pilot keys dynamically from instruments.conf (SSOT role.mt=yes)."""
     keys = {}
@@ -381,7 +381,7 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
                             f"— the parameter may be inert on this history")
         return entry
 
-    # Mod DEV (--propose): castigatorul a trecut de guardrail-uri (confirmat pe 2
+    # DEV mode (--propose): the winner passed the guardrails (confirmed on 2
     # windows plus beating the current value by a margin). We do NOT apply or rate-limit here —
     # we propose the RAW winning value; PROD decides at application time (averaging with
     # ITS live value, a rate limit, an audit). See UNIFIED_BACKTEST_PLAN.md §9.
@@ -411,8 +411,8 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
 
 def _apply_config_change(section, key, old_value, new_value):
     """Replace ONLY the numeric value on the `key = ...` line in
-    sectiunea `section`, pastrand tot restul fisierului (comentarii,
-    formatare, alte sectiuni) neatins."""
+    section `section`, keeping the rest of the file (comments,
+    formatting, other sections) untouched."""
     lines = read_text_lines(INSTRUMENTS_CONF, keepends=True)
     in_section = False
     key_re = re.compile(rf'^(\s*{re.escape(key)}\s*=\s*)([^\s#;]+)(.*)$')

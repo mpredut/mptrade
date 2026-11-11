@@ -34,39 +34,21 @@ import pricewindow as pw  # noqa: E402
 SYMBOLS = symbols_for("binance") or ["TAOUSDC", "BTCUSDC"]
 
 
+from providers.order_ohlc_utils import summarize_order_position  # noqa: E402
 from providers.quantity import resolve_assets  # noqa: E402
+from verify_tools.verify_account_facade import free_direct  # noqa: E402
 
 
 def free_qty(symbol):
-    base_up = str(resolve_assets(symbol)[0] or "").strip().upper()
-    for b in (api.get_account_assets_balances() or []):
-        if isinstance(b, dict) and str(b.get("asset") or "").strip().upper() == base_up:
-            return safe_float(b.get("free", 0), default=0.0)
-    return 0.0
+    return free_direct(resolve_assets(symbol)[0])
 
 
 def position(symbol, maxage=17 * 24 * 3600):
-    buys = [
-        (o, q, p)
-        for o in (apiorders.get_trade_orders("BUY", symbol, maxage) or [])
-        if isinstance(o, dict)
-        and (q := extract_order_qty(o)) > 0.0
-        and (p := extract_order_price(o)) > 0.0
-    ]
-    sells_q = [
-        q
-        for o in (apiorders.get_trade_orders("SELL", symbol, maxage) or [])
-        if isinstance(o, dict)
-        and (q := extract_order_qty(o)) > 0.0
-    ]
-    tq = sum(q for _, q, _ in buys)
-    tv = sum(q * p for _, q, p in buys)
-    sq = sum(sells_q)
-    last_buy = (
-        extract_order_price(max((o for o, _, _ in buys), key=lambda o: extract_timestamp_ms(o, default=0) or 0))
-        if buys else 0.0
-    )   # same as get_relevant_trade (the bot reference)
-    return (tv / tq if tq else 0.0), tq - sq, len(sells_q), last_buy
+    stats = summarize_order_position(
+        apiorders.get_trade_orders("BUY", symbol, maxage),
+        apiorders.get_trade_orders("SELL", symbol, maxage),
+    )
+    return stats["avg_buy"], stats["net_qty"], stats["sell_count"], stats["last_buy_px"]
 
 
 def main():

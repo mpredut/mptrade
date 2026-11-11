@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         help="fixed FX override; by default the historical series is downloaded for non-USD",
     )
     parser.add_argument("--fx-dataset", type=Path, help="a frozen FX OHLC CSV")
-    parser.add_argument("--fx-symbol", help="override simbol Yahoo FX, ex. EURUSD=X")
+    parser.add_argument("--fx-symbol", help="Yahoo FX symbol override, e.g. EURUSD=X")
     parser.add_argument("--fx-invert", action="store_true", help="invert the FX close")
     add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=None)
     parser.add_argument(
@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     interval_minutes = parse_interval_minutes(args.interval)
     config_path = T212_DIR / f"config.{args.profile}.env"
     if not config_path.exists():
-        parser.error(f"profil inexistent: {config_path}")
+        parser.error(f"nonexistent profile: {config_path}")
     config = parse_dotenv(str(config_path))
     params = StratParams.from_env(config)
     symbol = str(config.get("YAHOO_SYMBOL") or params.yahoo_sym or "").strip().upper()
