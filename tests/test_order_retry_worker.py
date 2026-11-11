@@ -131,20 +131,6 @@ class ProcessOnceTest(unittest.TestCase):
                 mkt.status_calls,
                 [("ABCUSD", "1", "Second")])
 
-    class _AllowedSlot:
-        allowed = True
-        info = {}
-
-        def commit(self, order_id=None):
-            return None
-
-    class _SlotContext:
-        def __enter__(self):
-            return self._AllowedSlot()
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
     def test_market_retry_price_and_protective_minimum_policies(self):
         with self.subTest("market_retry_rechecks_price_after_worker_gate_before_submit"):
             oq.rewrite([])

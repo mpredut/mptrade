@@ -42,22 +42,25 @@ def fetch_data():
     print(f"Total intervals (should be close to 43200 for 30 days of minute data): {len(df)}")
     return df
 
-def analyze_drops(df):
-    count_drops = 0
-    total_intervals = max(0, len(df) - 20)  # 20-minute intervals
+def _compute_interval_drops(df, lag_bars: int) -> tuple[int, list[float]]:
+    total_intervals = max(0, len(df) - lag_bars)
     if total_intervals == 0:
-        return 0, 0, 0.0
-
+        return 0, []
+    drops = []
     for i in range(total_intervals):
         start_price = safe_pos_float(df['close'].iloc[i], default=None)
-        end_price = safe_nonneg_float(df['close'].iloc[i + 20], default=None)
+        end_price = safe_nonneg_float(df['close'].iloc[i + lag_bars], default=None)
         if start_price is None or end_price is None:
             continue
-        drop_percent = (start_price - end_price) / start_price * 100
+        drops.append((start_price - end_price) / start_price * 100)
+    return total_intervals, drops
 
-        if drop_percent >= 5:
-            count_drops += 1
 
+def analyze_drops(df):
+    total_intervals, drops = _compute_interval_drops(df, 20)
+    if total_intervals == 0:
+        return 0, 0, 0.0
+    count_drops = sum(1 for drop in drops if drop >= 5)
     probability = count_drops / total_intervals * 100
     return count_drops, total_intervals, probability
 

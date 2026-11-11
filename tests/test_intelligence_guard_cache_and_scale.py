@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import order_guard
 from market_regime import MarketRegimeDecision, MarketRegimeContext
 from providers.quantity import decide_quantity
+from tests.conftest import make_test_regime_context
 
 
 _BASE_MARGINS = dict(order_guard._load_margins())
@@ -36,12 +37,7 @@ def _margins(**overrides):
     }
 
 
-def _build_test_context(symbol="BTCUSDC", provider="binance"):
-    decision = MarketRegimeDecision(
-        regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
-        fresh=True, reason="signal", source="mock",
-    )
-    return MarketRegimeContext.from_decision(decision, symbol=symbol, provider=provider)
+_build_test_context = make_test_regime_context
 
 
 class TestIntelligenceGuardDynamicEvaluation:

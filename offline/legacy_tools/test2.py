@@ -12,7 +12,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import safe_nonneg_float, safe_pos_float
-from offline.legacy_tools.test import _klines_to_df
+from offline.legacy_tools.test import _compute_interval_drops, _klines_to_df
 
 def fetch_data():
     # The API for the historical data (for example: the Binance API).
@@ -40,18 +40,9 @@ def fetch_data():
 
 
 def analyze_drops_with_distribution(df, show_plot: bool = False):
-    drops = []
-    total_intervals = max(0, len(df) - 2 * 60)  # 2*60-minute intervals
+    total_intervals, drops = _compute_interval_drops(df, 2 * 60)
     if total_intervals == 0:
         return 0, 0.0, 0, 0.0, 0, 0.0
-
-    for i in range(total_intervals):
-        start_price = safe_pos_float(df['close'].iloc[i], default=None)
-        end_price = safe_nonneg_float(df['close'].iloc[i + 2 * 60], default=None)
-        if start_price is None or end_price is None:
-            continue
-        drop_percent = (start_price - end_price) / start_price * 100
-        drops.append(drop_percent)
 
     if show_plot and drops:
         # Plot the drop distribution

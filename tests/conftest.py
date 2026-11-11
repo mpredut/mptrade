@@ -216,6 +216,17 @@ def make_spot_test_params(**overrides):
     return strat.StratParams(**values)
 
 
+def make_test_regime_context(symbol: str = "BTCUSDC", provider: str = "binance", *, regime: str = "bull"):
+    """Build a fresh mock ``MarketRegimeContext`` for guard and instrument tests."""
+    from market_regime import MarketRegimeContext, MarketRegimeDecision
+
+    decision = MarketRegimeDecision(
+        regime=regime, gradient=0.5, epsilon=0.1, strength=5.0,
+        fresh=True, reason="signal", source="mock",
+    )
+    return MarketRegimeContext.from_decision(decision, symbol=symbol, provider=provider)
+
+
 def make_cache24_test_manager(symbol: str, entries: list, tmp_dir: str, *, api_client=None):
     """Create a ``Cache24PriceManager`` pre-populated with ``entries = [[ts_ms, price], ...]``."""
     import cacheManager as cm

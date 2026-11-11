@@ -2307,13 +2307,7 @@ def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter2
     import pytest
     from unittest.mock import MagicMock
     import order_guard
-    from market_regime import MarketRegimeDecision, MarketRegimeContext
-    def _build_test_context(symbol='BTCUSDC', provider='binance'):
-        decision = MarketRegimeDecision(
-            regime='bull', gradient=0.5, epsilon=0.1, strength=5.0,
-            fresh=True, reason='signal', source='mock',
-        )
-        return MarketRegimeContext.from_decision(decision, symbol=symbol, provider=provider)
+    from tests.conftest import make_test_regime_context as _build_test_context
     from instrument import Instrument
     from providers.quantity import QuantityDecision
     # 2. Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,

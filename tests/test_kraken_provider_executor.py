@@ -101,24 +101,6 @@ class KrakenExecutorContractTest(unittest.TestCase):
         else:
             os.environ["KRAKEN_LIVE_ORDERS"] = self.previous_live
 
-    @staticmethod
-    def _slot_context():
-        class AllowedSlot:
-            allowed = True
-            info = {}
-
-            def commit(self, _order_id=None):
-                return None
-
-        class SlotContext:
-            def __enter__(self):
-                return AllowedSlot()
-
-            def __exit__(self, *_args):
-                return False
-
-        return SlotContext()
-
     def _instrument_place(self, *, force=False, client_order_id=None, outcome_context=None):
         os.environ["KRAKEN_LIVE_ORDERS"] = "true"
         instrument = Instrument(

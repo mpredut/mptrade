@@ -362,20 +362,6 @@ class HLExecutorContractTest(unittest.TestCase):
             "HYPE", "HYPE", "Hyperliquid", base="HYPE", quote="USDC",
             api=MarketApi([self.p]))
 
-        class AllowedSlot:
-            allowed = True
-            info = {}
-
-            def commit(self, _order_id=None):
-                return None
-
-        class SlotContext:
-            def __enter__(self):
-                return AllowedSlot()
-
-            def __exit__(self, *_args):
-                return False
-
         with (
             patch.object(order_guard, "daily_limit_guard",
                          return_value=(True, None)),
