@@ -700,6 +700,18 @@ class CacheTradeManager(CacheAccountManagerBase):
                 )
         return best_rows
 
+    @staticmethod
+    def _prepare_venue_cache_dict(
+        cache_obj: dict, now_ms=None
+    ) -> Optional[tuple[dict, dict, int]]:
+        if not isinstance(cache_obj, dict):
+            return None
+        return (
+            cache_obj.setdefault("items", {}),
+            cache_obj.setdefault("fetchtime", {}),
+            resolve_now_ms(now_ms),
+        )
+
     @classmethod
     def merge_venue_fills_into_dict(
         cls,
@@ -711,11 +723,10 @@ class CacheTradeManager(CacheAccountManagerBase):
         touch_symbols=None,
     ) -> bool:
         """Venue-agnostic in-memory merger of ``{symbol: [fill_dict, ...]}`` into ``cache_obj`` (`items` + `fetchtime`)."""
-        if not isinstance(cache_obj, dict):
+        prep = cls._prepare_venue_cache_dict(cache_obj, now_ms)
+        if prep is None:
             return False
-        items = cache_obj.setdefault("items", {})
-        ft = cache_obj.setdefault("fetchtime", {})
-        eff_now_ms = resolve_now_ms(now_ms)
+        items, ft, eff_now_ms = prep
         changed = False
         for sym_raw, new_rows in (fills_by_symbol or {}).items():
             if not sym_raw or isinstance(sym_raw, bool) or not isinstance(new_rows, list):
@@ -815,8 +826,9 @@ class CacheTradeManager(CacheAccountManagerBase):
         except Exception:
             return False
 
-    @staticmethod
+    @classmethod
     def touch_venue_ws_fetchtimes_in_dict(
+        cls,
         cache_obj: dict,
         now_ms=None,
         *,
@@ -824,11 +836,10 @@ class CacheTradeManager(CacheAccountManagerBase):
         create_missing: bool = False,
     ) -> bool:
         """Refresh ``fetchtime`` in ``cache_obj`` across active WS symbols."""
-        if not isinstance(cache_obj, dict):
+        prep = cls._prepare_venue_cache_dict(cache_obj, now_ms)
+        if prep is None:
             return False
-        items = cache_obj.setdefault("items", {})
-        ft = cache_obj.setdefault("fetchtime", {})
-        resolved_ms = resolve_now_ms(now_ms)
+        items, ft, resolved_ms = prep
         changed = False
         for s_sym in (symbols or ()):
             if not s_sym or s_sym == "*":
@@ -2344,6 +2355,13 @@ def attach_hyperliquid_user_fills_bridge(
         )
 
 
+def _require_kraken_provider_cls():
+    kr_prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
+    if kr_prov_cls is None:
+        raise RuntimeError("Kraken provider class is not registered")
+    return kr_prov_cls
+
+
 def run_kraken_trade_poll_loop(
     client,
     *,
@@ -2357,9 +2375,7 @@ def run_kraken_trade_poll_loop(
     stop_event: Optional[threading.Event] = None,
 ) -> None:
     """Run the REST Ledgers polling loop for Kraken trade cache persistence."""
-    kr_prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
-    if kr_prov_cls is None:
-        raise RuntimeError("Kraken provider class is not registered")
+    kr_prov_cls = _require_kraken_provider_cls()
 
     cache = CacheTradeManager.load_sanitized_trade_snapshot(
         cache_file, venue="kraken"
@@ -2418,9 +2434,7 @@ def run_kraken_trade_ws_loop(
     ws_holder: Optional[list] = None,
 ) -> None:
     """Run the real-time Kraken ``ownTrades`` WebSocket bridge with periodic REST Ledgers reconciliation."""
-    kr_prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
-    if kr_prov_cls is None:
-        raise RuntimeError("Kraken provider class is not registered")
+    kr_prov_cls = _require_kraken_provider_cls()
     resolved_ws_url = ws_url or kr_prov_cls.PRIVATE_WS_URL
 
     try:

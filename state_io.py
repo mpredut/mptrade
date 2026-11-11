@@ -180,13 +180,19 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
         return default_factory()
 
 
+def _prepare_target_and_dir(path: str) -> tuple[str, str]:
+    destination = _resolve_target_path(path, abspath=True)
+    directory = os.path.dirname(destination)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    return destination, directory
+
+
 @contextlib.contextmanager
 def _atomic_stream_writer(
     path: str, mode: str, *, preserve_mode: bool = False, **open_kwargs: Any,
 ) -> Iterator[Any]:
-    destination = _resolve_target_path(path, abspath=True)
-    directory = os.path.dirname(destination)
-    os.makedirs(directory, exist_ok=True)
+    destination, directory = _prepare_target_and_dir(path)
     prefix = f".{os.path.basename(destination)}."
     fd, temporary = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=".tmp")
     handle = os.fdopen(fd, mode, **open_kwargs)
@@ -301,10 +307,7 @@ def append_text_line(
     path: str, line: str, *, encoding: str = "utf-8", flock: bool = False,
 ) -> None:
     """Append a single newline-terminated text line to ``path``, creating parent directories."""
-    destination = _resolve_target_path(path, abspath=True)
-    directory = os.path.dirname(destination)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
+    destination, _ = _prepare_target_and_dir(path)
     text = str(line)
     if not text.endswith("\n"):
         text += "\n"
@@ -339,9 +342,7 @@ def atomic_file_path(
     path: str, *, prefix: str | None = None, suffix: str = ".tmp",
 ) -> Iterator[str]:
     """Yield a temporary sibling path and durably publish it onto ``path`` on exit."""
-    destination = _resolve_target_path(path, abspath=True)
-    directory = os.path.dirname(destination)
-    os.makedirs(directory, exist_ok=True)
+    destination, directory = _prepare_target_and_dir(path)
     eff_prefix = prefix if prefix is not None else f".{os.path.basename(destination)}."
     fd, temporary = tempfile.mkstemp(dir=directory, prefix=eff_prefix, suffix=suffix)
     os.close(fd)

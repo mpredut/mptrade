@@ -242,38 +242,44 @@ class RTradePairStore:
                 self._write(self._validate(data))
             return result
 
+    def _normalize_intent_scope(
+        self, pair_id, side, kind, *, default_kind: str = "limit"
+    ) -> tuple[str, str, str, str]:
+        side_u = normalize_side(side)
+        kind_s = str(kind or default_kind).strip()
+        return self._clean_pair_id(pair_id), side_u, kind_s, f"{kind_s}:{side_u}"
+
+    @staticmethod
+    def _upsert_rec_intent(rec: dict, key: str, value: dict, now: float) -> bool:
+        intents = rec.setdefault("intents", {})
+        if intents.get(key) == value:
+            return False
+        intents[key] = value
+        rec["updated_ts"] = now
+        return True
+
     def intent(self, pair_id, side, price, qty, client_order_id, kind="limit", symbol=None, start_side=None):
         qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
         price_f = None if price is None else self._finite_positive(price, f"pair {pair_id!r} price")
         coid = clean_order_id_str(client_order_id)
         if not coid:
             raise ValueError(f"invalid rtrade intent client ID for {pair_id!r}")
-        side_u = normalize_side(side)
-        kind_s = str(kind or "limit").strip()
-        pid_clean = self._clean_pair_id(pair_id)
+        pid_clean, side_u, kind_s, key = self._normalize_intent_scope(pair_id, side, kind, default_kind="limit")
 
         def op(pairs):
             now = time.time()
             rec = self._get_or_create_pair_record(pairs, pid_clean, symbol, start_side or side_u, qty_f, now)
-            key = f"{kind_s}:{side_u}"
             value = {
                 "side": side_u, "price": price_f, "qty": qty_f,
                 "client_order_id": coid, "kind": kind_s, "order_id": None,
             }
-            if rec["intents"].get(key) == value:
-                return False
-            rec["intents"][key] = value
-            rec["updated_ts"] = now
-            return True
+            return self._upsert_rec_intent(rec, key, value, now)
 
         self.mutate(op)
 
     def persist_intent(self, pair_id, side, kind, pending, *, symbol=None, start_side=None, qty=None):
         """Durably replace one canonical tracked intent, or remove it."""
-        side = normalize_side(side)
-        kind = str(kind or "").strip()
-        pid_clean = self._clean_pair_id(pair_id)
-        key = f"{kind}:{side}"
+        pid_clean, side, kind, key = self._normalize_intent_scope(pair_id, side, kind, default_kind="")
 
         def op(pairs):
             now = time.time()
@@ -307,11 +313,7 @@ class RTradePairStore:
                 qty=requested_qty,
                 price=requested_price,
             )
-            if rec.setdefault("intents", {}).get(key) == value:
-                return False
-            rec["intents"][key] = value
-            rec["updated_ts"] = now
-            return True
+            return self._upsert_rec_intent(rec, key, value, now)
 
         self.mutate(op)
 
@@ -319,12 +321,10 @@ class RTradePairStore:
         clean_oid = clean_order_id_str(order_id)
         if not clean_oid:
             raise ValueError(f"invalid rtrade accepted order_id: {order_id!r}")
-        side_u = normalize_side(side)
-        kind_s = str(kind or "limit").strip()
-        pid_clean = self._clean_pair_id(pair_id)
+        pid_clean, _side_u, _kind_s, key = self._normalize_intent_scope(pair_id, side, kind, default_kind="limit")
 
         def op(pairs):
-            pairs[pid_clean]["intents"][f"{kind_s}:{side_u}"]["order_id"] = clean_oid
+            pairs[pid_clean]["intents"][key]["order_id"] = clean_oid
             pairs[pid_clean]["updated_ts"] = time.time()
 
         self.mutate(op)

@@ -676,12 +676,19 @@ def _clean_env_str(val: object) -> str:
     return _strip_env_value_quotes_and_comment(str(val))
 
 
+def _raw_env_val(key: str, env: object = None) -> object:
+    return (os.environ if env is None else env).get(key)  # type: ignore[union-attr]
+
+
+def _raw_env_str(key: str, env: object = None) -> str:
+    return _clean_env_str(_raw_env_val(key, env))
+
+
 def _bind_coerced_env(name: str, coercer: object):
     def _fn(key: str, env: object = None, default: object = None):
         if env is not None and not hasattr(env, "get"):
             default, env = env, None
-        src = os.environ if env is None else env
-        raw = _clean_env_str(src.get(key))  # type: ignore[union-attr]
+        raw = _raw_env_str(key, env)
         return coercer(raw, default=default) if raw else default  # type: ignore[operator]
 
     _fn.__name__ = _fn.__qualname__ = name
@@ -701,8 +708,7 @@ int_env = _bind_coerced_env("int_env", exact_int)
 
 def required_env(key: str, env: dict | None = None) -> str:
     """Return a mandatory setting, rejecting missing, empty, or comment-only values."""
-    src = os.environ if env is None else env
-    val = src.get(key)
+    val = _raw_env_val(key, env)
     if isinstance(val, bool):
         raise ValueError(f"Invalid mandatory setting: {key}={val!r}")
     raw = _clean_env_str(val)
@@ -724,9 +730,9 @@ def defined_env(key: str, env: dict | None = None) -> str:
 
 def required_float_env(key: str, env: dict | None = None) -> float:
     """Return a mandatory finite floating-point setting."""
-    src = os.environ if env is None else env
-    if isinstance(src.get(key), bool):
-        raise ValueError(f"Invalid numeric setting: {key}={src.get(key)!r}")
+    raw_val = _raw_env_val(key, env)
+    if isinstance(raw_val, bool):
+        raise ValueError(f"Invalid numeric setting: {key}={raw_val!r}")
     raw = required_env(key, env)
     try:
         value = float(raw)
@@ -739,8 +745,7 @@ def required_float_env(key: str, env: dict | None = None) -> float:
 
 def required_int_env(key: str, env: dict | None = None) -> int:
     """Return a mandatory integer setting without silently truncating fractions."""
-    src = os.environ if env is None else env
-    raw_val = src.get(key)
+    raw_val = _raw_env_val(key, env)
     if isinstance(raw_val, bool):
         raise ValueError(f"Invalid numeric setting: {key}={raw_val!r}")
     if isinstance(raw_val, int):
@@ -755,8 +760,7 @@ def required_int_env(key: str, env: dict | None = None) -> int:
 
 def required_bool_env(key: str, env: dict | None = None) -> bool:
     """Return a mandatory strict boolean setting."""
-    src = os.environ if env is None else env
-    raw_val = src.get(key)
+    raw_val = _raw_env_val(key, env)
     if isinstance(raw_val, bool):
         return raw_val
     raw = required_env(key, env).lower()
@@ -770,8 +774,7 @@ def optional_env(key: str, default: str | dict | None = "", env: dict | None = N
     if isinstance(default, dict) and env is None:
         env, default = default, ""
     default_str = "" if default is None else str(default)
-    src = os.environ if env is None else env
-    raw = _clean_env_str(src.get(key))
+    raw = _raw_env_str(key, env)
     return raw if raw else default_str
 
 

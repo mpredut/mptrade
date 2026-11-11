@@ -399,6 +399,15 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
         return payload
 
 
+def _resolve_macro_collect_inputs(
+    now_ts: Optional[float], read_json_fn: Optional[Callable]
+) -> tuple[float, Callable, Callable]:
+    eff_now = resolve_now_ts(now_ts)
+    rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
+    rj_any = read_json_recovering if rj is _default_read_json_cached else rj
+    return eff_now, rj, rj_any
+
+
 class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
     """Concrete collector (Level 3) harvesting Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, and Breaking News."""
 
@@ -418,9 +427,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
         **kwargs: Any,
     ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
         cache_dir = cachedb_dir
-        now_ts = resolve_now_ts(now_ts)
-        _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
-        _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
+        now_ts, _rj, _rj_any = _resolve_macro_collect_inputs(now_ts, read_json_fn)
 
         def _with_age_min(payload: Dict[str, Any], fpath: str, *, is_fear_greed: bool = False) -> Dict[str, Any]:
             enriched = dict(payload)
@@ -932,9 +939,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             snapshot = TelemetrySensorSnapshot()
         if not workspace_dir and cache_dir:
             workspace_dir = os.path.dirname(os.path.abspath(str(cache_dir).rstrip("/\\")))
-        now_ts = resolve_now_ts(now_ts)
-        _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
-        _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
+        now_ts, _rj, _rj_any = _resolve_macro_collect_inputs(now_ts, read_json_fn)
         try:
             macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(
                 cache_dir, now_ts, _rj, scope=scope, allow_network=allow_network, persist=persist

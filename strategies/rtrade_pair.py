@@ -629,14 +629,17 @@ class PairCoordinator:
         self.phase, self.reason = "stopping", reason
         return True
 
+    def _refresh_and_totals(self) -> tuple[float, float, float, float, float, float]:
+        self._refresh()
+        return self._totals()
+
     def _try_complete_flat_exposure(self) -> tuple[bool, float, float, float, float, float]:
         cancel_ambiguous = False
         for ticket in self.tickets:
             if ticket.active:
                 _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
                 cancel_ambiguous = cancel_ambiguous or cancel_reason is not None
-        self._refresh()
-        bq, bc, _bf, sq, sc, _sf = self._totals()
+        bq, bc, _bf, sq, sc, _sf = self._refresh_and_totals()
         net = bq - sq
         if abs(net) <= 1e-8:
             if cancel_ambiguous or any(ticket.active for ticket in self.tickets):
@@ -654,8 +657,7 @@ class PairCoordinator:
         now = safe_float(self.clock() if now is None else now, default=None)
         if now is None:
             raise ValueError("the rtrade clock must be finite")
-        self._refresh()
-        bq, bc, _bf, sq, sc, _sf = self._totals()
+        bq, bc, _bf, sq, sc, _sf = self._refresh_and_totals()
         if self.phase != "startup_recovery":
             self._record_first_fill(now, bq, sq)
         net = bq - sq

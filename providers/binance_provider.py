@@ -70,14 +70,21 @@ _allorders = None
 _BINANCE_NOT_FOUND_RELIABLE_FOR_SECONDS = 90 * 24 * 60 * 60
 
 
-def _default_get_bapi():
-    global _bapi
-    patched_mod = resolve_patched_attr("_bapi", None, modules=("providers.market_api", "providers.binance_provider"))
+def _resolve_or_import_bapi_submodule(attr_name: str, import_path: str):
+    patched_mod = resolve_patched_attr(
+        attr_name, None, modules=("providers.market_api", "providers.binance_provider")
+    )
     if patched_mod is not None:
         return patched_mod
-    if _bapi is None:
-        _bapi = importlib.import_module("binance_api.bapi")
-    return _bapi
+    cur = globals().get(attr_name)
+    if cur is None:
+        cur = importlib.import_module(import_path)
+        globals()[attr_name] = cur
+    return cur
+
+
+def _default_get_bapi():
+    return _resolve_or_import_bapi_submodule("_bapi", "binance_api.bapi")
 
 
 def _get_bapi():
@@ -88,15 +95,7 @@ def _get_bapi():
 
 
 def _default_get_allorders():
-    global _allorders
-    patched_mod = resolve_patched_attr(
-        "_allorders", None, modules=("providers.market_api", "providers.binance_provider")
-    )
-    if patched_mod is not None:
-        return patched_mod
-    if _allorders is None:
-        _allorders = importlib.import_module("binance_api.bapi_allorders")
-    return _allorders
+    return _resolve_or_import_bapi_submodule("_allorders", "binance_api.bapi_allorders")
 
 
 def _get_allorders():

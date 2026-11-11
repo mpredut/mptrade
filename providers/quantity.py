@@ -201,6 +201,13 @@ def resolve_base_asset(symbol: str) -> str:
     return resolve_assets(symbol)[0]
 
 
+def _require_buy_sell_side(side: str) -> str:
+    norm = normalize_side(side)
+    if norm not in {"BUY", "SELL"}:
+        raise ValueError("side must be BUY or SELL")
+    return norm
+
+
 def balance_cap_quantity(
     free_balance: Callable[[str], Optional[float]],
     symbol: str,
@@ -211,9 +218,7 @@ def balance_cap_quantity(
     quote: Optional[str] = None,
 ) -> tuple[Optional[float], Optional[str]]:
     base, quote = resolve_assets(symbol, base, quote)
-    side = normalize_side(side)
-    if side not in {"BUY", "SELL"}:
-        raise ValueError("side must be BUY or SELL")
+    side = _require_buy_sell_side(side)
     asset = base if side == "SELL" else quote
     if not asset:
         return None, asset
@@ -240,6 +245,12 @@ def _floor_qty_decimals(val: float, qty_decimals: int) -> float:
     return math.floor(val * scale + 1e-9) / scale
 
 
+def _resolve_pos_price_and_rem_min(
+    price: float, min_remainder_notional: float
+) -> tuple[Optional[float], Optional[float]]:
+    return safe_pos_float(price, default=None), safe_pos_float(min_remainder_notional, default=None)
+
+
 def dust_protected_sell_balance_cap(
     balance: float,
     price: float,
@@ -252,8 +263,7 @@ def dust_protected_sell_balance_cap(
     if bal_f <= 0.0:
         return 0.0
     q_floor = _floor_qty_decimals(bal_f, qty_decimals)
-    px_f = safe_pos_float(price, default=None)
-    rem_min = safe_pos_float(min_remainder_notional, default=None)
+    px_f, rem_min = _resolve_pos_price_and_rem_min(price, min_remainder_notional)
     if px_f is None or rem_min is None:
         return q_floor
     dust = max(0.0, bal_f - q_floor)
@@ -275,8 +285,7 @@ def dust_protected_partial_sell_qty(
     """Adjust a partial SELL quantity if it would leave an unsellable remainder below ``min_remainder_notional``."""
     req_f = safe_pos_float(requested_qty, default=0.0) or 0.0
     bal_f = safe_pos_float(balance, default=0.0) or 0.0
-    px_f = safe_pos_float(price, default=None)
-    rem_min = safe_pos_float(min_remainder_notional, default=None)
+    px_f, rem_min = _resolve_pos_price_and_rem_min(price, min_remainder_notional)
     if req_f <= 0.0 or bal_f <= 0.0 or px_f is None or rem_min is None:
         return req_f, None
     if 0.0 < (bal_f - req_f) * px_f < rem_min:
@@ -541,9 +550,7 @@ def decide_quantity(
     known_balance: Optional[float] = None,
     **kwargs,
 ) -> QuantityDecision:
-    side = normalize_side(side)
-    if side not in {"BUY", "SELL"}:
-        raise ValueError("side must be BUY or SELL")
+    side = _require_buy_sell_side(side)
     if requested_qty is None:
         requested = float("inf")
     else:

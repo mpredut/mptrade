@@ -535,14 +535,17 @@ class MarketDataProvider(ABC):
         return getattr(prov_cls, "_DEFAULT_FEE_SPEC", cls._DEFAULT_FEE_SPEC)
 
     @classmethod
+    def _resolve_venue_target_cls(cls, venue: Any) -> type["MarketDataProvider"]:
+        return cls.resolve_venue_provider_class(venue) or cls
+
+    @classmethod
     def resolve_venue_default_fee_and_precision(
         cls,
         venue: Any,
         price: float = 0.0,
     ) -> tuple[str, float, float, float, float, float, bool]:
         """Return ``(fee_tier, maker_bps, taker_bps, min_notional, default_step, default_tick, prefer_static_tick)``."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        target_cls = prov_cls if prov_cls is not None else cls
+        target_cls = cls._resolve_venue_target_cls(venue)
         fee_tier, maker_bps, taker_bps, min_notional = getattr(
             target_cls, "_DEFAULT_FEE_SPEC", cls._DEFAULT_FEE_SPEC
         )
@@ -561,9 +564,7 @@ class MarketDataProvider(ABC):
     @classmethod
     def resolve_venue_tca_price_decimals(cls, venue: Any, limit_price: float = 0.0) -> int:
         """Return venue-specific TCA limit-price rounding decimals."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        target_cls = prov_cls if prov_cls is not None else cls
-        return int(target_cls.tca_price_decimals(limit_price))
+        return int(cls._resolve_venue_target_cls(venue).tca_price_decimals(limit_price))
 
     @classmethod
     def uses_shared_registry_symbols(cls, venue: Any) -> bool:
@@ -583,8 +584,7 @@ class MarketDataProvider(ABC):
         multi_venue_base: bool = False,
     ) -> bool:
         """Return whether external telemetry disk caching requires exact symbol isolation for ``venue``."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        target_cls = prov_cls if prov_cls is not None else cls
+        target_cls = cls._resolve_venue_target_cls(venue)
         if getattr(target_cls, "_EXACT_TELEMETRY_CACHE_SYMBOL", False):
             return True
         return bool(
@@ -622,9 +622,7 @@ class MarketDataProvider(ABC):
     @classmethod
     def resolve_venue_position_price_decimals(cls, venue: Any) -> int:
         """Return mark/position price rounding decimals for ``venue``."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        target_cls = prov_cls if prov_cls is not None else cls
-        return int(getattr(target_cls, "_POSITION_PRICE_DECIMALS", 6))
+        return int(getattr(cls._resolve_venue_target_cls(venue), "_POSITION_PRICE_DECIMALS", 6))
 
     @classmethod
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:

@@ -557,16 +557,24 @@ class _LivePairVenue:
             self._set_pair_recovery_blocked(record["pair_id"], False)
         return merged
 
+    def _check_reconciled_existing_intent(self, pair_id, side: str, store_kind: str, *, require_pair_id: bool = False):
+        self._last_place_failures.pop(side, None)
+        if require_pair_id and not pair_id:
+            return False, None
+        existing_state, existing_ticket, _snapshot = self._reconcile_existing_intent(pair_id, side, store_kind)
+        if existing_state == "recovered":
+            return True, existing_ticket
+        if existing_state == "pending":
+            self._last_place_failures[side] = f"{side.lower()}_recovery_pending"
+            return True, None
+        return False, None
+
     def place_limit(self, side, price, qty, pair_id, *, cache_permit=None, revision=0):
         side = side.upper()
         store_kind = self._kind_for_revision("limit", revision, label="limit")
-        self._last_place_failures.pop(side, None)
-        existing_state, existing_ticket, _snapshot = self._reconcile_existing_intent(pair_id, side, store_kind)
-        if existing_state == "recovered":
+        handled, existing_ticket = self._check_reconciled_existing_intent(pair_id, side, store_kind)
+        if handled:
             return existing_ticket
-        if existing_state == "pending":
-            self._last_place_failures[side] = f"{side.lower()}_recovery_pending"
-            return None
         available_qty, required_asset = balance_cap_quantity(self.executor.free_balance, self.symbol, side, price)
         if required_asset and available_qty is not None and float(available_qty) <= 1e-12:
             self._last_place_failures[side] = f"{side.lower()}_insufficient_funds:{required_asset}"
@@ -624,14 +632,11 @@ class _LivePairVenue:
         side = side.upper()
         store_kind = self._kind_for_revision("hard_stop", revision, label="hard-stop")
         revision = int(store_kind.removeprefix("hard_stop_")) if store_kind != "hard_stop" else 0
-        self._last_place_failures.pop(side, None)
-        if pair_id:
-            existing_state, existing_ticket, _snapshot = self._reconcile_existing_intent(pair_id, side, store_kind)
-            if existing_state == "recovered":
-                return existing_ticket
-            if existing_state == "pending":
-                self._last_place_failures[side] = f"{side.lower()}_recovery_pending"
-                return None
+        handled, existing_ticket = self._check_reconciled_existing_intent(
+            pair_id, side, store_kind, require_pair_id=True
+        )
+        if handled:
+            return existing_ticket
         price = safe_pos_float(self.current_price(), 0.0)
         if price <= 0:
             print(f"[{self.symbol}] {side} hard-stop BLOCKED: price unavailable")

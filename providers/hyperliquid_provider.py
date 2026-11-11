@@ -310,11 +310,15 @@ class HyperliquidProvider(MarketDataProvider):
                 }
         return None
 
-    def _fetch_current_price(self, symbol: str) -> Optional[float]:
+    def _hl_client_and_pair_or_none(self) -> Optional[tuple[Any, str]]:
         c = self._hl()
         pair = self._pair()
-        if c is None or pair is None:
+        return (c, pair) if c is not None and pair is not None else None
+
+    def _fetch_current_price(self, symbol: str) -> Optional[float]:
+        if (cp := self._hl_client_and_pair_or_none()) is None:
             return None
+        c, pair = cp
         try:
             return c.spot_mid(pair)
         except Exception as e:  # noqa: BLE001
@@ -359,10 +363,9 @@ class HyperliquidProvider(MarketDataProvider):
         """Fetch ascending granular spot closes over the last ``lookback_h`` hours from Hyperliquid."""
         if (lookback_f := safe_pos_float(lookback_h, default=None)) is None:
             return None
-        c = self._hl()
-        pair = self._pair()
-        if c is None or pair is None:
+        if (cp := self._hl_client_and_pair_or_none()) is None:
             return None
+        c, pair = cp
         try:
             _, start, end, _ = resolve_ohlc_time_window_ms(lookback_hours=lookback_f)
             interval = "1m" if lookback_f <= 24.0 else "15m"
