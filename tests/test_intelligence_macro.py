@@ -1014,16 +1014,13 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         )
         assert "iran war" in get_active_acute_shock_phrases(cache_dir=str(tmp_path), now_ts=1_700_000_010.0)
 
-        def normal_llm_runner(prompt, model, timeout):
-            return json.dumps({
+        analyzer = GeopoliticalThreatAnalyzer(
+            gemini_client=DummyGeminiClient({
                 "threat_level": "NORMAL",
                 "risk_score": 0.25,
                 "summary": "Ongoing rhetoric without fresh systemic escalation.",
                 "recommended_brake": "NONE",
-            })
-
-        analyzer = GeopoliticalThreatAnalyzer(
-            gemini_client=GeminiClient(custom_runner=normal_llm_runner),
+            }),
             cache_ttl_sec=16200.0,
             state_file=str(tmp_path / "geopolitical_eval.json"),
         )
@@ -1664,31 +1661,26 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         assert "Options_Surface(" in sec_txt
 
     # SentimentAdvisor.review injects Cross-Asset Macro & Options Surface into the LLM prompt
-    captured_sa_prompts = []
-
-    def _sa_runner(prompt, model, timeout):
-        captured_sa_prompts.append(prompt)
-        return json.dumps(
-            {
-                "market_bias": "BULLISH",
-                "risk_level": "MODERATE",
-                "confidence": 0.82,
-                "summary": "Institutional US spot accumulation decoupling from equity pullback.",
-                "key_risks": ["Equity index volatility"],
-                "recommended_action": "ACCUMULATE",
-            }
-        )
-
+    sa_client = DummyGeminiClient(
+        {
+            "market_bias": "BULLISH",
+            "risk_level": "MODERATE",
+            "confidence": 0.82,
+            "summary": "Institutional US spot accumulation decoupling from equity pullback.",
+            "key_risks": ["Equity index volatility"],
+            "recommended_action": "ACCUMULATE",
+        }
+    )
     sa = SentimentAdvisor(
-        gemini_client=GeminiClient(custom_runner=_sa_runner),
+        gemini_client=sa_client,
         cache_file=str(cdir / "sentiment_eval.json"),
         cache_ttl_sec=300.0,
     )
     sa_res = sa.review(force_refresh=True, now_ts=1_793_860_000.0)
     assert sa_res is not None and sa_res.market_bias == "BULLISH"
-    assert len(captured_sa_prompts) == 1
-    assert "- Cross-Asset Macro & Options Surface:" in captured_sa_prompts[0]
-    assert "CB_Premium=+9.4bps" in captured_sa_prompts[0]
+    assert len(sa_client.prompts) == 1
+    assert "- Cross-Asset Macro & Options Surface:" in sa_client.last_prompt
+    assert "CB_Premium=+9.4bps" in sa_client.last_prompt
 
     # 5. Dynamic Sentiment Interval & Stale SentimentAdvisor Live Institutional Divergence (BUY & SELL symmetry)
     from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
@@ -1784,7 +1776,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert "live_flow_divergence" not in sa_already_cited
 
     # 6. Pre-Trade Guards (HighStakeGuard BUY/SELL & PostStopReentryGuard) & Executor Prompt Policy Symmetry
-    hsg = HighStakeGuard(gemini_client=GeminiClient(custom_runner=_sa_runner))
+    hsg = HighStakeGuard(gemini_client=sa_client)
     hsg_buy_prompt = hsg._build_high_stake_prompt("BUY", 1200.0, f"- Equity & Macro Regime: {eq_macro_line}")
     hsg_sell_prompt = hsg._build_high_stake_prompt("SELL", 1200.0, f"- Equity & Macro Regime: {eq_macro_line}")
     psg_prompt = PostStopReentryGuard._build_post_stop_prompt("BTCUSDC", f"- Equity & Macro Regime: {eq_macro_line}")
@@ -1865,11 +1857,11 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     ]
     (cdir / "cache_24_price_ETHUSDC.json").write_text(json.dumps(eth_24h_pts), encoding="utf-8")
     sa.review(force_refresh=True, now_ts=1_793_865_000.0)
-    assert "CB_Premium=-2.0bps" in captured_sa_prompts[-1]
-    assert "- BTC Intraday Structure:" in captured_sa_prompts[-1]
-    assert "- ETH Intraday Structure:" in captured_sa_prompts[-1]
-    assert "Futures_Lead" in captured_sa_prompts[-1]
-    assert "ETH_Options" in captured_sa_prompts[-1]
+    assert "CB_Premium=-2.0bps" in sa_client.last_prompt
+    assert "- BTC Intraday Structure:" in sa_client.last_prompt
+    assert "- ETH Intraday Structure:" in sa_client.last_prompt
+    assert "Futures_Lead" in sa_client.last_prompt
+    assert "ETH_Options" in sa_client.last_prompt
 
     # 8. Generalized Deribit Options Surface (BTC & ETH) and Pre-Market Futures Lead (NQ=F vs QQQ, ES=F vs SPY)
     from intelligence.macro_sentiment_ssot import get_deribit_options_currencies
@@ -1982,27 +1974,22 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert loaded_mb is not None
     assert loaded_mb["cross_asset_regime"] == "EQUITY_BULLISH_DECOUPLING"
 
-    captured_geo_prompts: list[str] = []
-
-    def _geo_runner(prompt: str, model: str, timeout: float) -> str:
-        captured_geo_prompts.append(prompt)
-        return json.dumps({
-            "threat_level": "ELEVATED",
-            "risk_score": 0.45,
-            "summary": "Markets calm despite ongoing headlines.",
-            "recommended_brake": "DOWNSCALE_50",
-        })
-
+    geo_client = DummyGeminiClient({
+        "threat_level": "ELEVATED",
+        "risk_score": 0.45,
+        "summary": "Markets calm despite ongoing headlines.",
+        "recommended_brake": "DOWNSCALE_50",
+    })
     geo_agent = GeopoliticalThreatAnalyzer(
-        gemini_client=GeminiClient(custom_runner=_geo_runner),
+        gemini_client=geo_client,
         state_file=str(cdir / "geopolitical_eval.json"),
     )
     war_snap = NewsFeedCollector.parse_rss_xml(SAMPLE_RSS_XML_WAR)
     geo_res = geo_agent.assess(war_snap, force_refresh=True, now_ts=1_793_865_000.0)
     assert geo_res.threat_level == "ELEVATED"
-    assert captured_geo_prompts
-    assert "Live Cross-Asset Market Reaction:" in captured_geo_prompts[-1]
-    assert "CB_Premium=-2.0bps" in captured_geo_prompts[-1]
+    assert geo_client.prompts
+    assert "Live Cross-Asset Market Reaction:" in geo_client.last_prompt
+    assert "CB_Premium=-2.0bps" in geo_client.last_prompt
 
 
     live_rth_selloff_mb = {
@@ -2263,21 +2250,16 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
 
     # Verify GeopoliticalThreatAnalyzer formats UTC timestamp + age and retains older context alongside fresh headline
 
-    captured_prompts = []
-
-    def _fake_generate(prompt, *args, **kwargs):
-        captured_prompts.append(prompt)
-        return json.dumps(
-            {
-                "threat_level": "ELEVATED",
-                "risk_score": 0.55,
-                "summary": "Fresh Hormuz shipping warning alongside prior strike context.",
-                "recommended_brake": "DOWNSCALE_50",
-            }
-        )
-
+    geo_client = DummyGeminiClient(
+        {
+            "threat_level": "ELEVATED",
+            "risk_score": 0.55,
+            "summary": "Fresh Hormuz shipping warning alongside prior strike context.",
+            "recommended_brake": "DOWNSCALE_50",
+        }
+    )
     analyzer = GeopoliticalThreatAnalyzer(
-        gemini_client=GeminiClient(custom_runner=_fake_generate),
+        gemini_client=geo_client,
         state_file=str(state_file),
         cache_ttl_sec=16200.0,
     )
@@ -2305,10 +2287,10 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
     }
     res = analyzer.assess(snap, now_ts=now)
     assert res.threat_level == "ELEVATED"
-    assert len(captured_prompts) == 1
-    assert "UTC, age=10m)" in captured_prompts[0]
-    assert "UTC, age=180m)" in captured_prompts[0]
-    assert "Earlier: Iran says tankers struck in Hormuz three hours ago" in captured_prompts[0]
+    assert len(geo_client.prompts) == 1
+    assert "UTC, age=10m)" in geo_client.last_prompt
+    assert "UTC, age=180m)" in geo_client.last_prompt
+    assert "Earlier: Iran says tankers struck in Hormuz three hours ago" in geo_client.last_prompt
     assert is_excluded_reference_news_item("Is Nvidia Still a Millionaire-Maker Stock?") is True
     assert is_excluded_reference_news_item(
         "IonQ Wants to Be the Nvidia of Quantum. Its Latest Numbers Back Up the Swagger."

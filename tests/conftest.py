@@ -546,12 +546,14 @@ class DummyGeminiClient:
         self.response_dict = response_dict
         self.raises_timeout = raises_timeout
         self.last_prompt = None
+        self.prompts = []
         self.calls = []
         self.call_count = 0
 
     def query_json(self, prompt: str = "", timeout_sec: float = 25.0, thread_title=None, **kwargs):
         self.call_count += 1
         self.last_prompt = prompt
+        self.prompts.append(prompt)
         self.calls.append((prompt, {"timeout_sec": timeout_sec, "thread_title": thread_title, **kwargs}))
         if self.raises_timeout:
             return None

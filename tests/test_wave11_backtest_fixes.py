@@ -17,9 +17,8 @@ from offline.backtests import comparison, promotion
 from offline.backtests.datasets import save_dataset
 from offline.backtests.hype_candidates import Candidate
 from offline.research.hybrid_reentry import report as hr_report
-from offline.research.kraken_continuous_grid import grid as kcg_grid, report as kcg_report
+from offline.research.kraken_continuous_grid import grid as kcg_grid
 from offline.research.t212_continuous_grid import (
-    fetch as t212_fetch,
     grid as t212_grid,
     report as t212_report,
 )

@@ -15,7 +15,6 @@ import order_retry_worker as worker
 from providers.strategy_executor import (
     OrderReconciliationCapabilities, OrderStatus,
 )
-from providers.base import MarketDataProvider
 from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi
 import pytest

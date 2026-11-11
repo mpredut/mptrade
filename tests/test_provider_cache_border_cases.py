@@ -2011,7 +2011,6 @@ def test_coerce_dict_maps_cli_env_path_replay_metrics_peak_scope_and_hl_status_b
     _first_exchange_status = hl_client_mod._first_exchange_status
     _parse_order_response = hl_client_mod._parse_order_response
     from providers.strategy_executor import ProviderError
-    from providers.t212_provider import T212Provider
     from strategies.replay_metrics import print_single_backtest_report, run_cli_single_or_sweep_backtest
     from strategies.spot_replay import post_exit_peak_step_scope
 

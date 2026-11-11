@@ -271,7 +271,6 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
         PriceSeriesCacheCollectorBase,
         SymbolMicrostructureSnapshotCollector,
     )
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import PretradeEvaluationContext, PretradePillarCollectorBase
     from intelligence.sentiment.evaluators.price_series_evaluator import AssetSessionPolicy, Crypto24x7SessionPolicy, EquityRthSessionPolicy
 
     for abstract_cls in (

@@ -228,7 +228,7 @@ def test_only_trade_executor_topic_reaches_gateway_bounded_by_supervisor_mode(te
     plan = {"summary": "s", "venue_actions": [],
             "code_remediation": {"has_fix": True, "target_file": "x.py", "search_block": "a", "replace_block": "b"},
             "market_trading_decision": {"decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.95}}
-    auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(plan))
+    auditor = DummyGeminiClient(plan)
     gateway = MagicMock()
     gateway.min_confidence, gateway.max_notional_usd = 0.85, 2000.0
     gateway.submit.return_value = {"status": "OBSERVED_SHADOW"}
@@ -292,7 +292,7 @@ def test_synthesize_and_diagnose_mocked(temp_env):
         },
     }
 
-    auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(mock_resp))
+    auditor = DummyGeminiClient(mock_resp)
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -386,7 +386,7 @@ def test_full_run_cycle_and_artifacts(temp_env):
         "code_remediation": {"has_fix": False},
     }
 
-    auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(mock_resp))
+    auditor = DummyGeminiClient(mock_resp)
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -541,7 +541,7 @@ def test_none_venue_actions_and_routine_hold_do_not_trigger_executed_or_notify_s
         "venue_actions": [{"action": "NONE", "venue": "binance", "symbol": "TAOUSDC", "reason": "aligned"}],
         "market_trading_decision": {"decision": "HOLD", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.6},
     }
-    auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(plan))
+    auditor = DummyGeminiClient(plan)
     gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0)
     gateway.submit.return_value = None
     reconciler = AutonomousAIReconciler(
@@ -574,7 +574,7 @@ def test_intent_gateway_inherits_workspace_dir_and_null_plan_fields_are_safe(tem
         "code_remediation": None,
         "market_trading_decision": None,
     }
-    auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(null_plan))
+    auditor = DummyGeminiClient(null_plan)
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -657,20 +657,18 @@ def test_intent_gateway_and_advisors_reject_nan_bool_and_null_json_fields(temp_e
         )
         assert res["status"] == "REJECTED_LOW_CONFIDENCE"
 
-    null_resp_client = GeminiClient(
-        custom_runner=lambda p, m, t: json.dumps(
-            {
-                "threat_level": None,
-                "risk_score": None,
-                "summary": None,
-                "recommended_brake": None,
-                "market_bias": None,
-                "risk_level": None,
-                "confidence": True,
-                "key_risks": None,
-                "recommended_action": None,
-            }
-        )
+    null_resp_client = DummyGeminiClient(
+        {
+            "threat_level": None,
+            "risk_score": None,
+            "summary": None,
+            "recommended_brake": None,
+            "market_bias": None,
+            "risk_level": None,
+            "confidence": True,
+            "key_risks": None,
+            "recommended_action": None,
+        }
     )
     geo = GeopoliticalThreatAnalyzer(
         gemini_client=null_resp_client,
@@ -952,7 +950,6 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
             "expires_at_ts": time.time() + 3600.0,
         }) + "\n")
 
-    captured_prompts = []
     plan = {
         "summary": "Multi-coin protective de-risking on BTCUSDC and HYPEUSD.",
         "diagnosed_issues": [],
@@ -977,11 +974,8 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
         ],
     }
 
-    def _runner(prompt, model, timeout):
-        captured_prompts.append(prompt)
-        return json.dumps(plan)
-
-    auditor = GeminiClient(custom_runner=_runner)
+    auditor = DummyGeminiClient(plan)
+    captured_prompts = auditor.prompts
     gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
     gateway.submit.side_effect = [
         {"intent_id": "i_btc", "symbol": "BTCUSDC", "status": "EXECUTED"},
@@ -1136,7 +1130,7 @@ def test_auto_trade_executor_never_dispatches_sre_notifications_or_executes_venu
             {"decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.92, "suggested_notional_usd": 400.0}
         ],
     }
-    auditor = GeminiClient(custom_runner=lambda p, m, t: json.dumps(plan))
+    auditor = DummyGeminiClient(plan)
     gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0, notify_enabled=True)
     gateway.submit.return_value = {"intent_id": "i_tao", "symbol": "TAOUSDC", "status": "EXECUTED"}
     reconciler = AutonomousAIReconciler(
@@ -1242,8 +1236,8 @@ def test_harvest_and_synthesize_surfaces_active_avg_buy_tranches_and_open_orders
     gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
     gateway.load_tradable_instruments.return_value = {"TAOUSDC": mock_inst}
 
-    captured_prompts = []
-    auditor = GeminiClient(custom_runner=lambda p, m, t: captured_prompts.append(p) or json.dumps({"summary": "ok"}))
+    auditor = DummyGeminiClient({"summary": "ok"})
+    captured_prompts = auditor.prompts
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -1407,8 +1401,8 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
         "T212_SPCX": t212_inst,
     }
 
-    captured_prompts = []
-    auditor = GeminiClient(custom_runner=lambda p, m, t: captured_prompts.append(p) or json.dumps({"summary": "ok"}))
+    auditor = DummyGeminiClient({"summary": "ok"})
+    captured_prompts = auditor.prompts
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -2057,14 +2051,9 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert "cross_asset_correlations_24h" not in cmc_eq
 
     # Verify prompt deduplicates HYPEUSDC + HYPEUSD in Sections 3 and 3B while showing sibling venue price & raw cross-market context
-    captured_prompt = {}
-    reconciler.gemini_auditor = GeminiClient(
-        custom_runner=lambda prompt, model, timeout: (
-            captured_prompt.update({"u": prompt}) or '{"summary":"ok","trade_intents":[]}'
-        )
-    )
+    reconciler.gemini_auditor = DummyGeminiClient({"summary": "ok", "trade_intents": []})
     reconciler.synthesize_and_diagnose(snap_crypto, LogEventSummary(0, 0, 0), topic_key="auto_cryptotrade_executor")
-    u_prompt = captured_prompt["u"]
+    u_prompt = reconciler.gemini_auditor.last_prompt
     assert "* HYPEUSDC (sibling venue: HYPEUSD=$62.00 [-0.10%]): Price=$62.06" in u_prompt
     assert "\n  * HYPEUSD: Price=" not in u_prompt
     assert "* HYPEUSDC (HYPEUSD): ob_imbalance=0.61" in u_prompt
@@ -2076,7 +2065,7 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert "Hyperliquid Bot Signal Telemetry" not in u_prompt
 
     reconciler.synthesize_and_diagnose(snap_eq, LogEventSummary(0, 0, 0), topic_key="auto_sharetrade_executor")
-    eq_prompt = captured_prompt["u"]
+    eq_prompt = reconciler.gemini_auditor.last_prompt
     assert "Cross-Market Live Crypto Telemetry (Raw 24/7 Prices, Multi-Horizon Deltas & Microstructure)" in eq_prompt
     assert "TAO decentralized AI proxy" not in eq_prompt
 
@@ -2617,13 +2606,8 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
     mock_gw.load_tradable_instruments.return_value = {"ARBUSDC": arb_inst}
 
-    captured = []
-    auditor = GeminiClient(
-        custom_runner=lambda prompt, model, timeout: (
-            captured.append(prompt)
-            or json.dumps({"summary": "ok", "market_trading_decisions": []})
-        )
-    )
+    auditor = DummyGeminiClient({"summary": "ok", "market_trading_decisions": []})
+    captured = auditor.prompts
     reconciler = AutonomousAIReconciler(
         workspace_dir=str(tmp_path),
         cache_dir="cachedb",
@@ -2787,13 +2771,8 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
     mock_gw.load_tradable_instruments.return_value = {"HL_HYPE": hl_hype, "HL_TAO": hl_tao}
 
-    captured_prompts = []
-    auditor = GeminiClient(
-        custom_runner=lambda prompt, model, timeout: (
-            captured_prompts.append(prompt)
-            or json.dumps({"summary": "ok", "market_trading_decisions": []})
-        )
-    )
+    auditor = DummyGeminiClient({"summary": "ok", "market_trading_decisions": []})
+    captured_prompts = auditor.prompts
     reconciler = AutonomousAIReconciler(
         workspace_dir=str(tmp_path),
         cache_dir="cachedb",
@@ -2987,19 +2966,17 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
     mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
     mock_gw.load_tradable_instruments.return_value = {"BIN_BTC": btc_inst}
 
-    prompts: list[str] = []
+    auditor = DummyGeminiClient({"summary": "ok", "market_trading_decisions": []})
     reconciler = AutonomousAIReconciler(
         workspace_dir=str(tmp_path),
         cache_dir="cachedb",
         mode="shadow",
         notify_enabled=False,
-        gemini_auditor=GeminiClient(
-            custom_runner=lambda p, m, t: prompts.append(p) or json.dumps({"summary": "ok", "market_trading_decisions": []})
-        ),
+        gemini_auditor=auditor,
         intent_gateway=mock_gw,
     )
     reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
-    full_prompt = prompts[-1]
+    full_prompt = auditor.last_prompt
     assert "vol_profile(POC=" in full_prompt
     assert "liq_clusters(long_liq=$" in full_prompt
     assert "short_liq=$" in full_prompt
@@ -3353,8 +3330,7 @@ def _make_btc_shadow_reconciler(workspace, *, price, btc_balance, usdc_balance, 
     gateway.load_tradable_instruments.return_value = {"BTCUSDC": mock_btc_inst}
     gateway.reconcile_intents.return_value = False
 
-    captured_prompts = []
-    auditor = GeminiClient(custom_runner=lambda p, m, t: captured_prompts.append(p) or json.dumps({"summary": "ok"}))
+    auditor = DummyGeminiClient({"summary": "ok"})
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -3364,7 +3340,7 @@ def _make_btc_shadow_reconciler(workspace, *, price, btc_balance, usdc_balance, 
         notify_enabled=False,
         intent_gateway=gateway,
     )
-    return mock_btc_inst, reconciler, captured_prompts
+    return mock_btc_inst, reconciler, auditor.prompts
 
 
 def test_bot_vs_ai_fill_attribution_and_reversal_prompt(temp_env):

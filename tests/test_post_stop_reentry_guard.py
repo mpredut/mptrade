@@ -17,7 +17,6 @@ from unittest.mock import MagicMock, patch
 
 import monitortrades as mt
 from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
-from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.post_stop_reentry_guard import (
     _POST_STOP_DECISION_CACHE,
     PostStopReentryGuard,
@@ -716,7 +715,7 @@ def test_poststopreentryguard_mode_false_sets_mode_off_instead_of_iter125_s6():
             "post_stop_reentry_notify": False,
             "post_stop_reentry_cache_ttl_sec": 60.0,
         },
-        gemini_client=type("G", (), {"_custom_runner": True})(),
+        gemini_client=FakeGeminiClient(),
     )
     assert psr_fac.mode == "off"
 
@@ -725,7 +724,7 @@ def test_get_post_stop_reentry_guard_tolerates_partial_margins_dict_without_post
     # 1. get_post_stop_reentry_guard tolerates partial margins dict without 'post_stop_reentry_mode'
     ps_guard = get_post_stop_reentry_guard(
         margins={"llm_guard_mode": "shadow"},
-        gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "APPROVED", "reason": "ok"}'),
+        gemini_client=FakeGeminiClient({"decision": "APPROVED", "reason": "ok"}),
     )
     assert ps_guard.mode == "shadow"
 
@@ -734,7 +733,7 @@ def test_poststopreentryguard_highstakeguard_tolerate_none_bool_cache_timestamps
     from intelligence.sentiment.guards.high_stake_guard import _HIGH_STAKE_DECISION_CACHE
     # 2. PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps
     ps_enforced = PostStopReentryGuard(
-        gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "REJECTED", "reason": "trap"}'),
+        gemini_client=FakeGeminiClient({"decision": "REJECTED", "reason": "trap"}),
         cache_ttl_sec=60.0,
         notify_enabled=False,
     )
@@ -743,7 +742,7 @@ def test_poststopreentryguard_highstakeguard_tolerate_none_bool_cache_timestamps
     assert ps_dec.allowed is False
 
     hs_guard = HighStakeGuard(
-        gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "REJECTED", "reason": "risk"}'),
+        gemini_client=FakeGeminiClient({"decision": "REJECTED", "reason": "risk"}),
         cache_ttl_sec=60.0,
     )
     _HIGH_STAKE_DECISION_CACHE[("BTCUSDC", "BUY")] = (True, None)

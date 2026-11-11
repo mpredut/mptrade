@@ -813,12 +813,7 @@ class TestEnrichedPretradeTelemetry:
 
     def test_high_stake_prompt_includes_multi_pillar_telemetry(self, monkeypatch):
 
-        captured_prompt = []
-        def capturing_runner(prompt, model, timeout):
-            captured_prompt.append(prompt)
-            return json.dumps({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Telemetry looks solid"})
-
-        client = GeminiClient(custom_runner=capturing_runner)
+        client = DummyGeminiClient({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Telemetry looks solid"})
         guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         explicit_telemetry = {
@@ -830,8 +825,8 @@ class TestEnrichedPretradeTelemetry:
 
         dec = guard.check("BTCUSDT", "BUY", price=60000.0, qty=0.025, notional_eur=1500.0, telemetry=explicit_telemetry)
         assert dec.allowed is True
-        assert len(captured_prompt) == 1
-        prompt = captured_prompt[0]
+        assert len(client.prompts) == 1
+        prompt = client.last_prompt
 
         assert "Orderbook Depth Imbalance: 0.85 (85% bids vs 15% asks)" in prompt
         assert "Perpetual Funding Rate: +0.0001% (8h)" in prompt

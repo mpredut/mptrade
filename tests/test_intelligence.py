@@ -4396,7 +4396,7 @@ def test_iter79_rtrade_pair_recovery_and_assetguardian_cancel(tmp_path, monkeypa
 
 
 def test_iter80_pricefetcher_refresh_and_kraken_trailing_unlock(monkeypatch, tmp_path):
-    from market_monitor.pricefetcher import PricePlatformInterface, CacheAllPriceFetcherManager
+    from market_monitor.pricefetcher import CacheAllPriceFetcherManager
     from kraken.trailing_stop import KrakenTrailing
     import kraken.trailing_stop as kts_mod
 
