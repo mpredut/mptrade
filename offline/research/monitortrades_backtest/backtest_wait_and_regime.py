@@ -58,7 +58,6 @@ def compute_exact_time_window_signals(
     res = compute_window_signals_from_bounds(
         px, a, sr, symbol=symbol, recent_win_sec=w_sec, min_valid_n=3
     )
-    res["legacy"] = res["legacy_raw"]
     return res
 
 
@@ -98,16 +97,16 @@ def simulate_should_wait(
             continue
         deadline = t0 + max_wait_sec
 
-        # BUY: wait while wait_buy_mask[j] is True and ts[j] < deadline
+        # BUY: wait while wait_buy_mask[j] is True and next sample stays within deadline
         j = idx
-        while j + 1 < N and ts[j] < deadline and wait_buy_mask[j]:
+        while j + 1 < N and ts[j + 1] <= deadline and wait_buy_mask[j]:
             j += 1
         buy_bps[k] = ((p0 - px[j]) / p0) * 10000.0
         buy_waited_s[k] = ts[j] - t0
 
-        # SELL: wait while wait_sell_mask[j] is True and ts[j] < deadline
+        # SELL: wait while wait_sell_mask[j] is True and next sample stays within deadline
         j = idx
-        while j + 1 < N and ts[j] < deadline and wait_sell_mask[j]:
+        while j + 1 < N and ts[j + 1] <= deadline and wait_sell_mask[j]:
             j += 1
         sell_bps[k] = ((px[j] - p0) / p0) * 10000.0
         sell_waited_s[k] = ts[j] - t0
@@ -181,18 +180,13 @@ def evaluate_regime_900s(
     ]
     for name, is_sideways in configs:
         sw_pct = float(np.mean(is_sideways) * 100.0)
-        if np.any(is_sideways) and np.any(~is_sideways):
-            move_sw = float(np.mean(fwd_abs_move_pct[is_sideways]))
-            move_tr = float(np.mean(fwd_abs_move_pct[~is_sideways]))
-            adv_sw = float(np.mean(fwd_max_adverse_pct[is_sideways]))
-            adv_tr = float(np.mean(fwd_max_adverse_pct[~is_sideways]))
-            fill_sw = float(np.mean(both_sides_filled[is_sideways]) * 100.0)
-        else:
-            move_sw = float(np.mean(fwd_abs_move_pct))
-            move_tr = 0.0
-            adv_sw = float(np.mean(fwd_max_adverse_pct))
-            adv_tr = 0.0
-            fill_sw = float(np.mean(both_sides_filled) * 100.0)
+        has_sw = bool(np.any(is_sideways))
+        has_tr = bool(np.any(~is_sideways))
+        move_sw = float(np.mean(fwd_abs_move_pct[is_sideways])) if has_sw else 0.0
+        move_tr = float(np.mean(fwd_abs_move_pct[~is_sideways])) if has_tr else 0.0
+        adv_sw = float(np.mean(fwd_max_adverse_pct[is_sideways])) if has_sw else 0.0
+        adv_tr = float(np.mean(fwd_max_adverse_pct[~is_sideways])) if has_tr else 0.0
+        fill_sw = float(np.mean(both_sides_filled[is_sideways]) * 100.0) if has_sw else 0.0
         results.append((name, sw_pct, move_sw, move_tr, adv_sw, adv_tr, fill_sw))
     return results, raw_strength, scaled_strength
 

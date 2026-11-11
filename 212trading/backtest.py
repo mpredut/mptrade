@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-backtest.py — Trading 212 stock DCA and take-profit backtester using Yahoo data.
+backtest.py -- Trading 212 stock DCA and take-profit backtester using Yahoo data.
 
 Replay the strategy bar by bar with discounted entry, DCA on declines, take profit,
 and STOP-LOSS, including a 0.15% FX fee per leg (~0.30% round trip). The report's
@@ -123,7 +123,9 @@ def simulate(ohlc, P):
         "STRAT_ENTRY_DISCOUNT_PCT": str(_p_val(("disc", "entry_discount_pct"), 0.3)),
         "STRAT_DCA_DROP_PCT": str(_p_val(("drop", "dca_drop_pct"), 2.0)),
         "STRAT_TAKEPROFIT_PCT": str(_p_val(("tp", "takeprofit_pct"), 1.5)),
-        "STRAT_MAX_DCA_BUYS": str(_p_val(("maxdca", "max_dca_buys"), 10)),
+        "STRAT_MAX_DCA_BUYS": str(
+            _p_val(("maxdca", "max_dca_buys"), os.environ.get("STRAT_MAX_DCA_BUYS") or "auto")
+        ),
         "STRAT_MAX_BUDGET": str(budget),
     })
     for alias, env_key in _SIMULATE_ALIAS_MAP:
@@ -223,6 +225,11 @@ def main() -> int:
                 sym=sym, bar_minutes=interval_minutes(args.interval),
                 sl_mhdsl_enabled=sl_mhdsl, tp_mdhtp_enabled=tp_mdhtp,
                 trail_pct=trail_pct, trail_min_profit=trail_min_profit)
+    if args.tp is not None or args.mode == "sweep":
+        base["tp_ladder"] = ""
+        if args.mdhtp is None:
+            base["tp_mdhtp_enabled"] = False
+            tp_mdhtp = False
 
     if args.mode == "single":
         m = simulate(ohlc, base)

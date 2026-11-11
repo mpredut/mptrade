@@ -83,6 +83,7 @@ def run_replay(
     warmup_ohlc=(),
     timestamps: Sequence[int] = (),
     execution: ExecutionModel | None = None,
+    initial_cash: float | None = None,
 ) -> dict:
     """Run the live T212 strategy over ``(open, high, low, close)`` bars."""
     if not isinstance(ohlc, (list, tuple)) or not ohlc:
@@ -95,6 +96,10 @@ def run_replay(
         periods_per_year = safe_pos_float(periods_per_year, default=None)
         if periods_per_year is None:
             raise ValueError("periods_per_year must be a finite positive number")
+    if initial_cash is not None:
+        initial_cash = safe_pos_float(initial_cash, default=None)
+        if initial_cash is None:
+            raise ValueError("initial_cash must be a finite positive number")
     validate_ohlc_bars(ohlc, exact_len_4=True, check_envelope=True)
     if params.dca_trend_gate_pct > 0 and bar_minutes != 5:
         raise ValueError("dca_trend_gate_pct requires 5-minute bars, the same cadence as the live Yahoo signal")
@@ -117,6 +122,7 @@ def run_replay(
             warmup_ohlc=warmup_ohlc,
             timestamps=timestamps,
             execution=scenario,
+            initial_cash=initial_cash,
         ),
     )
 
@@ -135,6 +141,7 @@ def _run_once(
     warmup_ohlc,
     timestamps: Sequence[int],
     execution: ExecutionModel,
+    initial_cash: float | None = None,
 ) -> dict:
     client = _ReplayClient()
     clock = SimClock(0.0)
@@ -164,7 +171,37 @@ def _run_once(
         )
         engine._shadow_prices.extend(warmup_shadow)
         engine._save = lambda: None
-        initial_capital = float(params.max_budget)
+        cash = float(initial_cash) if initial_cash is not None else None
+        min_cash = cash
+        cash_refusals = 0
+        original_place_buy = engine._place_buy
+
+        def _free_account_cash(cur_rate: float) -> float:
+            reserved = sum(
+                (o["qty"] * o["limit"] / cur_rate) * (1.0 + params.fx_fee_pct / 100.0)
+                for o in engine.s["orders"]
+                if str(o.get("side") or "").lower() == "buy"
+            )
+            return max(0.0, (cash or 0.0) - reserved)
+
+        def _guarded_place_buy(amount: float, limit: float, kind: str = "ENTRY") -> bool:
+            nonlocal cash_refusals
+            lim_f = safe_pos_float(limit, default=None)
+            amt_f = safe_pos_float(amount, default=None)
+            fx_f = safe_pos_float(engine.fx_to_usd, default=None)
+            if lim_f is not None and amt_f is not None and round(lim_f, 2) > 0 and fx_f is not None:
+                qty_est = round((amt_f * fx_f) / lim_f, 2)
+                if qty_est > 0:
+                    required = (qty_est * round(lim_f, 2) / fx_f) * (1.0 + params.fx_fee_pct / 100.0)
+                    if required > _free_account_cash(fx_f) + 1e-9:
+                        cash_refusals += 1
+                        return False
+            return original_place_buy(amount, limit, kind)
+
+        if cash is not None:
+            engine._place_buy = _guarded_place_buy
+
+        initial_capital = float(params.max_budget if cash is None else cash)
         equity_curve = [initial_capital]
         exposure = []
         trade_pnls = []
@@ -209,8 +246,12 @@ def _run_once(
                             price = execution.market_price(side, open_) if market else float(order["limit"])
                             if side == "buy":
                                 buy_notional_account = quantity * price / rate
+                                buy_fee_account = (params.fx_fee_pct / 100.0) * buy_notional_account
                                 open_cost_account += buy_notional_account
-                                open_buy_fee_account += (params.fx_fee_pct / 100.0) * buy_notional_account
+                                open_buy_fee_account += buy_fee_account
+                                if cash is not None:
+                                    cash -= buy_notional_account + buy_fee_account
+                                    min_cash = min(min_cash, cash)
                             else:
                                 held_before = engine.s["qty"]
                                 quantity = min(quantity, held_before)
@@ -225,6 +266,9 @@ def _run_once(
                                 open_buy_fee_account = max(0.0, open_buy_fee_account - released_buy_fee_account)
                                 sell_notional_account = quantity * price / rate
                                 sell_fee_account = (params.fx_fee_pct / 100.0) * sell_notional_account
+                                if cash is not None:
+                                    cash += sell_notional_account - sell_fee_account
+                                    min_cash = min(min_cash, cash)
                                 gross_acc = sell_notional_account - released_cost_account
                                 fee_acc = released_buy_fee_account + sell_fee_account
                                 net_acc = gross_acc - fee_acc
@@ -238,6 +282,9 @@ def _run_once(
                             if side == "sell":
                                 if engine.s["qty"] <= 1e-9 and (open_cost_account > 0.0 or open_buy_fee_account > 0.0):
                                     dust_val_acc = dust_before * price / rate
+                                    if cash is not None and dust_val_acc > 0.0:
+                                        cash += dust_val_acc
+                                        min_cash = min(min_cash, cash)
                                     dust_gross = dust_val_acc - open_cost_account
                                     realized_gross_account += dust_gross
                                     fees_account += open_buy_fee_account
@@ -280,6 +327,10 @@ def _run_once(
         if periods_per_year is not None
         else (equity_periods_per_year(bar_minutes) if bar_minutes is not None else None)
     )
+    extra_fields: dict[str, object] = {"open_buy_fee": round_metric(final_open_buy_fee_account)}
+    if cash is not None:
+        extra_fields["min_cash"] = round_metric(min_cash)
+        extra_fields["cash_refusals"] = cash_refusals
     return build_replay_summary(
         realized=realized_gross_account,
         net=realized_net_account,
@@ -299,7 +350,7 @@ def _run_once(
         turnover_notional=turnover_account,
         bar_minutes=bar_minutes,
         periods_per_year=eff_periods_per_year,
-        extra_fields={"open_buy_fee": round_metric(final_open_buy_fee_account)},
+        extra_fields=extra_fields,
     )
 
 
@@ -311,6 +362,7 @@ def make_t212_replay_adapter(
     fx_invert: bool = False,
     periods_per_year: float | None = None,
     execution: ExecutionModel | None = None,
+    initial_cash: float | None = None,
 ):
     """Return a generic ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
     def _adapter(ohlc, warmup_ohlc, context=None):
@@ -329,5 +381,6 @@ def make_t212_replay_adapter(
             warmup_ohlc=warmup_ohlc,
             timestamps=ts,
             execution=execution,
+            initial_cash=initial_cash,
         )
     return _adapter

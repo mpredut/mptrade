@@ -97,7 +97,7 @@ def assess_decision_evidence(
 
 
 def automatic_window_sizes(sample_count: int) -> tuple[int, int, int, int]:
-    """Trei fold-uri aproximative: 45% train, 10% validation, 15% test."""
+    """Approximate three folds: 45% train, 10% validation, 15% test."""
     if isinstance(sample_count, bool) or not isinstance(sample_count, int) or sample_count < 20:
         raise ValueError("at least 20 bars are required for automatic windows")
     train = max(1, int(sample_count * 0.45))
@@ -130,7 +130,7 @@ def evaluate_segment(
     validate_contract: bool = False,
 ) -> dict:
     if not records:
-        raise ValueError("segmentul de evaluare cannot be empty")
+        raise ValueError("evaluation segment cannot be empty")
     metrics = replay(
         to_ohlc(records),
         to_ohlc(warmup_records),
@@ -224,6 +224,10 @@ def evaluate_walk_forward(
         })
 
     summary = summarize_test_windows(test_windows)
+    has_overlap = any(
+        folds[i].test.stop > folds[i + 1].test.start
+        for i in range(len(folds) - 1)
+    )
     compounded = 100.0
     for window in test_windows:
         compounded *= 1.0 + safe_float(window.get("return_pct"), 0.0) / 100.0
@@ -240,7 +244,7 @@ def evaluate_walk_forward(
             "mean_return_pct": summary["mean_return_pct"],
             "median_return_pct": summary["median_return_pct"],
             "worst_return_pct": summary["worst_return_pct"],
-            "compounded_reset_return_pct": compounded - 100.0,
+            "compounded_reset_return_pct": None if has_overlap else (compounded - 100.0),
             "worst_max_drawdown_pct": summary["worst_max_drawdown_pct"],
             "worst_sortino": _optional_min(
                 [fold["test"]["metrics"].get("sortino") for fold in fold_results]

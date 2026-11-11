@@ -73,10 +73,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-file", default=str(KRAKEN_DIR / "config.env"))
     parser.add_argument("--pair", help="defaults to KRAKEN_PAIR from the live configuration")
     parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
-    parser.add_argument("--fee", type=float, default=0.26, help="fee per leg, procente")
+    parser.add_argument("--fee", type=float, default=0.26, help="fee per leg, percent")
     add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
     parser.add_argument(
-        "--dataset", action="append", default=[], metavar="INTERVAL=CALE",
+        "--dataset", action="append", default=[], metavar="INTERVAL=PATH",
         help="use a frozen CSV instead of the API; repeatable for every interval",
     )
     parser.add_argument(

@@ -521,17 +521,19 @@ def main():
     baseline = next((r for r in results if r["id"] == "BASELINE_SURGE_OFF"), None)
     if baseline is None:
         raise RuntimeError("Incomplete sweep; refusing to rank results against a missing control (BASELINE_SURGE_OFF)")
-    if len(results) != total_cands:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] WARNING: {total_cands - len(results)} candidates failed; proceeding with {len(results)} successful candidates.", flush=True)
+    failed_cands = max(0, total_cands - len(results))
+    if failed_cands > 0:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] WARNING: {failed_cands} candidates failed; proceeding with {len(results)} successful candidates.", flush=True)
     base_pnl = baseline["total_profit_usd"]
     base_h1 = baseline["h1_profit_usd"]
     base_h2 = baseline["h2_profit_usd"]
 
     # Descriptive split comparison, not out-of-sample selection.
     for r in results:
-        r["beats_baseline_total"] = r["total_profit_usd"] >= base_pnl
-        r["beats_baseline_h1"] = r["h1_profit_usd"] >= base_h1
-        r["beats_baseline_h2"] = r["h2_profit_usd"] >= base_h2
+        is_ctrl = r["id"] == "BASELINE_SURGE_OFF"
+        r["beats_baseline_total"] = (not is_ctrl) and (r["total_profit_usd"] > base_pnl)
+        r["beats_baseline_h1"] = (not is_ctrl) and (r["h1_profit_usd"] > base_h1)
+        r["beats_baseline_h2"] = (not is_ctrl) and (r["h2_profit_usd"] > base_h2)
         # Both halves participated in comparison; do not interpret this as validation.
         r["beats_baseline_both_halves"] = r["beats_baseline_h1"] and r["beats_baseline_h2"]
         r["edge_usd"] = round(r["total_profit_usd"] - base_pnl, 2)
@@ -557,6 +559,7 @@ def main():
                 "The replay fee is an explicit assumption, not a verified live venue fee.",
             ],
             "total_candidates": len(results),
+            "failed_candidates": failed_cands,
             "duration_seconds": round(total_time, 1),
             "baseline": baseline,
             "top_10": results[:10],
@@ -568,13 +571,16 @@ def main():
 
     # Generate Markdown Report
     top15 = results[:15]
-    top_verified = [r for r in results if r.get("beats_baseline_both_halves")][:15]
+    top_verified = [
+        r for r in results
+        if r["id"] != "BASELINE_SURGE_OFF" and r.get("beats_baseline_both_halves")
+    ][:15]
 
     lines = [
         "# Deep Parabolic Surge Guard & Re-entry Optimization Report",
         "",
         f"- **Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"- **Candidates Evaluated:** {len(results):,}",
+        f"- **Candidates Evaluated:** {len(results):,} (failed: {failed_cands})",
         f"- **Total Time:** {total_time/60:.1f} minutes",
         f"- **Profile:** {args.config.resolve()}",
         f"- **Cash per asset:** {initial_cash} {base_params.currency}; per-leg fee: {args.fee_pct}%",
@@ -591,17 +597,18 @@ def main():
 
     for idx, r in enumerate(top15, 1):
         v_tag = "YES" if r["beats_baseline_both_halves"] else "No"
+        edge_str = f"{'+' if r['edge_usd'] >= 0 else '-'}${abs(r['edge_usd']):,.2f}"
         lines.append(
             f"| {idx} | `{r['id']}` | {r['category']} | **${r['total_profit_usd']:,.2f}** | "
-            f"+${r['edge_usd']:,.2f} | {r['worst_maxdd_pct']:.2f}% | {r['pnl_per_drawdown_point']:.2f} | {v_tag} | {r['desc']} |"
+            f"{edge_str} | {r['worst_maxdd_pct']:.2f}% | {r['pnl_per_drawdown_point']:.2f} | {v_tag} | {r['desc']} |"
         )
 
     lines.extend([
         "",
-        "## 2. Candidates Matching or Beating Both Halves (Descriptive Comparison)",
+        "## 2. Candidates Strictly Beating Control on Both Halves (Descriptive Comparison)",
         "",
         "> [!IMPORTANT]",
-        "> These candidates match or beat the control on both halves. This is an in-sample comparison, not proof against overfitting.",
+        "> These candidates strictly beat the control on both halves. This is an in-sample comparison, not proof against overfitting.",
         "",
         "| Rank | Candidate ID | Category | Total PnL ($) | H1 ($) | H2 ($) | MaxDD % | PnL/DD point | Description |",
         "| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |",
@@ -645,6 +652,20 @@ def main():
         lines.append(f"# Research Candidate: {top_cand['id']}")
         lines.append(f"# Total PnL: ${top_cand['total_profit_usd']} vs Baseline ${base_pnl}")
         lines.append(f"# Description: {top_cand['desc']}")
+        sp = top_cand.get("strategy_params")
+        if isinstance(sp, dict):
+            lines.append(f"STRAT_SURGE_GUARD={'true' if sp.get('surge_guard') else 'false'}")
+            lines.append(f"STRAT_SURGE_DYNAMIC={'true' if sp.get('surge_dynamic') else 'false'}")
+            lines.append(f"STRAT_SURGE_GAIN_PCT={sp.get('surge_gain_pct')}")
+            lines.append(f"STRAT_SURGE_MOVE_PCT={sp.get('surge_move_pct')}")
+            lines.append(f"STRAT_SURGE_EXIT_PULLBACK_PCT={sp.get('surge_exit_pullback_pct')}")
+            lines.append(f"STRAT_SURGE_WINDOW_HOURS={sp.get('surge_window_hours')}")
+            if sp.get("surge_dynamic"):
+                lines.append(f"STRAT_SURGE_MIN_GAIN_PCT={sp.get('surge_min_gain_pct')}")
+                lines.append(f"STRAT_SURGE_MAX_GAIN_PCT={sp.get('surge_max_gain_pct')}")
+                lines.append(f"STRAT_SURGE_VOL_MULTIPLIER={sp.get('surge_vol_multiplier')}")
+            if sp.get("reentry_bear_bounce_pct") is not None:
+                lines.append(f"STRAT_REENTRY_BEAR_BOUNCE_PCT={sp.get('reentry_bear_bounce_pct')}")
     lines.append("```\n")
 
     atomic_write_text(md_path, "\n".join(lines))

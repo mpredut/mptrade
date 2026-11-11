@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compare MHDSL Structural Break PROPOSED vs BASELINE on historical replay."""
+from multiprocessing import Pool
 import os
 import sys
 
@@ -18,39 +19,83 @@ from offline.research.monitortrades_backtest.run_replay_backtest import (
 )
 from offline.research.monitortrades_backtest.sweep_mt_models import load_archive_series
 
+_MIN_DENSE_SPAN_SEC = 30.0 * 86400.0
+_WORKER_SERIES: dict[str, list[tuple[float, float]]] = {}
+
+
+def _series_span_sec(series: list[tuple[float, float]]) -> float:
+    if len(series) < 2:
+        return 0.0
+    return max(0.0, float(series[-1][0]) - float(series[0][0]))
+
+
+def _load_best_series(sym: str, use_365: bool) -> list[tuple[float, float]]:
+    series = load_archive_series(sym, use_365=use_365)
+    if use_365 and _series_span_sec(series) < _MIN_DENSE_SPAN_SEC:
+        sparse = load_archive_series(sym, use_365=False)
+        if _series_span_sec(sparse) > _series_span_sec(series):
+            return sparse
+    return series
+
+
+def _run_variant_symbol(task_args):
+    label, enabled, sym, params, base = task_args
+    orig_break_enabled = getattr(mt, "MT_SL_STRUCTURAL_BREAK_ENABLED", True)
+    try:
+        mt.MT_SL_STRUCTURAL_BREAK_ENABLED = enabled
+        mt._CACHED_EXIT_MGR = None
+        mt._CACHED_EXIT_MGR_KEY = None
+        res = run_symbol(sym, params, base, quiet=True, series=_WORKER_SERIES.get(sym))
+        return label, sym, res
+    finally:
+        mt.MT_SL_STRUCTURAL_BREAK_ENABLED = orig_break_enabled
+        mt._CACHED_EXIT_MGR = None
+        mt._CACHED_EXIT_MGR_KEY = None
+
 
 def main():
-    results = {}
     variants = [
         ("PROPOSED (structural break ON)", True),
         ("BASELINE (structural break OFF)", False),
     ]
+    results = {label: {} for label, _ in variants}
     use_365 = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), True)
-    series_map = {sym: load_archive_series(sym, use_365=use_365) for sym in SYMBOLS._SECTIONS}
+    series_map = {sym: _load_best_series(sym, use_365=use_365) for sym in SYMBOLS._SECTIONS}
     for sym, series in series_map.items():
         if series:
             prewarm_trend_series(sym, series)
-    orig_break_enabled = getattr(mt, "MT_SL_STRUCTURAL_BREAK_ENABLED", True)
-    try:
-        for label, enabled in variants:
-            print("\n=======================================================")
-            print(f"  RUNNING {label}")
-            print("=======================================================")
-            mt.MT_SL_STRUCTURAL_BREAK_ENABLED = enabled
-            results[label] = {}
+    _WORKER_SERIES.clear()
+    _WORKER_SERIES.update(series_map)
 
-            for sym in SYMBOLS._SECTIONS:
-                cfg = SYMBOLS[sym]
-                print(f"Starting {sym}...")
-                res = run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series_map.get(sym))
-                results[label][sym] = res
-                if res:
-                    net_val = safe_float(res.get("net"), 0.0)
-                    print(f"[{sym}] Net PnL: {net_val:.2f} USD | Sells: {res.get('sells') or 0} | Buys: {res.get('buys') or 0}")
-                else:
-                    print(f"[{sym}] No results or no data.")
+    tasks = [
+        (label, enabled, sym, SYMBOLS[sym]["params"], SYMBOLS[sym]["base"])
+        for label, enabled in variants
+        for sym in SYMBOLS._SECTIONS
+    ]
+    n_workers = min(len(tasks), 4, os.cpu_count() or 1)
+    try:
+        if n_workers > 1:
+            with Pool(processes=n_workers) as pool:
+                task_outputs = pool.map(_run_variant_symbol, tasks)
+        else:
+            task_outputs = [_run_variant_symbol(t) for t in tasks]
     finally:
-        mt.MT_SL_STRUCTURAL_BREAK_ENABLED = orig_break_enabled
+        _WORKER_SERIES.clear()
+
+    for label, sym, res in task_outputs:
+        results[label][sym] = res
+
+    for label, _ in variants:
+        print("\n=======================================================")
+        print(f"  RUNNING {label}")
+        print("=======================================================")
+        for sym in SYMBOLS._SECTIONS:
+            res = results[label].get(sym)
+            if res:
+                net_val = safe_float(res.get("net"), 0.0)
+                print(f"[{sym}] Net PnL: {net_val:.2f} USD | Sells: {res.get('sells') or 0} | Buys: {res.get('buys') or 0}")
+            else:
+                print(f"[{sym}] No results or no data.")
 
     print("\n\n" + "=" * 60)
     print("           BACKTEST COMPARISON SUMMARY")

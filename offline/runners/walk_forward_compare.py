@@ -106,26 +106,27 @@ def _load_report(path: Path) -> dict:
     return report
 
 
+def _resolve_frozen_file(raw_path: str | Path, baseline_dir: Path | None = None) -> Path:
+    p = Path(raw_path).expanduser()
+    if p.exists():
+        return p
+    if baseline_dir:
+        if (baseline_dir / p.name).exists():
+            return baseline_dir / p.name
+        if (baseline_dir / "datasets" / p.name).exists():
+            return baseline_dir / "datasets" / p.name
+    if (ROOT / p).exists():
+        return ROOT / p
+    return p
+
+
 def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, tuple[list[dict], dict, int]]:
     datasets = {}
     wf_cfg = report.get("walk_forward") if isinstance(report.get("walk_forward"), dict) else {}
     warmup_bars = safe_nonneg_int(wf_cfg.get("signal_warmup_bars"), default=0)
 
-    def _resolve_frozen_file(raw_path: str | Path) -> Path:
-        p = Path(raw_path).expanduser()
-        if p.exists():
-            return p
-        if baseline_dir:
-            if (baseline_dir / p.name).exists():
-                return baseline_dir / p.name
-            if (baseline_dir / "datasets" / p.name).exists():
-                return baseline_dir / "datasets" / p.name
-        if (ROOT / p).exists():
-            return ROOT / p
-        return p
-
     def _load_and_verify_frozen(raw_path: str | Path, expected_hash: object, interval: int) -> list[dict]:
-        path = _resolve_frozen_file(raw_path)
+        path = _resolve_frozen_file(raw_path, baseline_dir)
         records = load_dataset(path)
         actual_hash = dataset_sha256(records)
         if actual_hash != expected_hash:
@@ -254,13 +255,8 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         fx_invert = _parse_bool_flag(fx_model.get("invert", False), False)
         fx_records = None
         if fx_model.get("mode") == "historical_asof" and fx_model.get("frozen_file"):
-            fx_path = Path(fx_model["frozen_file"])
-            if not fx_path.exists() and baseline_dir is not None:
-                alt = baseline_dir / "datasets" / fx_path.name
-                if alt.exists():
-                    fx_path = alt
-            if fx_path.exists():
-                fx_records = load_dataset(fx_path)
+            fx_path = _resolve_frozen_file(str(fx_model["frozen_file"]), baseline_dir)
+            fx_records = load_dataset(fx_path)
         exec_meta = source_report.get("execution_model") if isinstance(source_report.get("execution_model"), dict) else {}
         periods_yr = safe_pos_float(exec_meta.get("calendar_periods_per_year"), default=None)
 
@@ -390,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--fee-stress", default=None,
-        help="fee-uri per leg, procente (defaults to venue standard stress schedule)",
+        help="per-leg fees in percent (defaults to venue standard stress schedule)",
     )
     parser.add_argument(
         "--candidate-set", choices=("standard", "hype-240"), default="standard",

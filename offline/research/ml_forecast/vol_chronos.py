@@ -55,6 +55,12 @@ def _load_pipeline():
     return ChronosPipeline.from_pretrained(MODEL_NAME, device_map="cpu", torch_dtype=torch.float32)
 
 
+def _clean_tail(seg: np.ndarray) -> np.ndarray:
+    """Return the contiguous finite suffix of `seg` without stitching across NaN gaps."""
+    bad = np.flatnonzero(~np.isfinite(seg))
+    return seg[bad[-1] + 1:] if len(bad) else seg
+
+
 def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
     """For each test hour i sampled by stride, give the model rv[:i+1] capped at
     MAX_CONTEXT and request a +horizon-hour prediction. Compare against persistence
@@ -68,7 +74,7 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
         i for i in range(warmup, n - horizon, stride)
         if np.isfinite(rv[i])
         and np.isfinite(rv[i + horizon])
-        and np.any(np.isfinite(rv[max(0, i + 1 - MAX_CONTEXT):i + 1]))
+        and len(_clean_tail(rv[max(0, i + 1 - MAX_CONTEXT):i + 1])) > 0
     ]
     if not idxs:
         return {
@@ -86,12 +92,12 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
         chunk = idxs[b:b + BATCH]
         contexts = []
         for i in chunk:
-            seg = rv[max(0, i + 1 - MAX_CONTEXT):i + 1]
-            contexts.append(torch.tensor(seg[np.isfinite(seg)], dtype=torch.float32))
+            seg = _clean_tail(rv[max(0, i + 1 - MAX_CONTEXT):i + 1])
+            contexts.append(torch.tensor(seg, dtype=torch.float32))
         forecast = pipe.predict(contexts, prediction_length=horizon)
         for k, i in enumerate(chunk):
             path = forecast[k].numpy()
-            point = float(np.median(np.median(path, axis=0)))
+            point = float(np.median(path[..., -1])) if path.size else float("nan")
             preds.append(point)
             bases.append(float(rv[i]))
             actuals.append(float(rv[i + horizon]))

@@ -33,6 +33,7 @@ from botcore import (  # noqa: E402
     require_shadow_interval,
     required_env,
 )
+from offline.backtests.evaluation import load_layered_env_config  # noqa: E402
 from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE, KRAKEN_DIR)
@@ -45,8 +46,13 @@ LOG_DIR = os.path.join(ROOT, "logs", "hyperliquid_shadow")
 def _variants(interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm")
     load_shadow_environment(os.path.join(HERE, ".env"))
+    cfg = load_layered_env_config(
+        os.path.join(HERE, "config.env"),
+        os.path.join(HERE, ".env"),
+        override_prefixes=("HL_",),
+    )
 
-    base = StratParams.from_env()
+    base = StratParams.from_env(cfg)
     variants = {
         "current": base,
         "tp_regime_gate": dataclasses.replace(
@@ -115,10 +121,18 @@ def _fetch_with_ts(_pair: str, interval: int):
 
 
 def snapshot(*, quiet: bool = False):
+    prev_log_dir = shadow.LOG_DIR
+    prev_variants = shadow._variants
+    prev_fetch = shadow._fetch_with_ts
     shadow.LOG_DIR = LOG_DIR
     shadow._variants = _variants
     shadow._fetch_with_ts = _fetch_with_ts
-    return shadow.snapshot("HYPE-HL", 240, 0.07, quiet=quiet)
+    try:
+        return shadow.snapshot("HYPE-HL", 240, 0.07, quiet=quiet)
+    finally:
+        shadow.LOG_DIR = prev_log_dir
+        shadow._variants = prev_variants
+        shadow._fetch_with_ts = prev_fetch
 
 
 def main() -> int:

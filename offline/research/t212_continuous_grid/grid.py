@@ -11,7 +11,7 @@ US stocks/ETFs, to separate what is specific to one chart from what generalises.
 Harness-only variant FLAGS["peak"]: after a take-profit, ratchet last_sell_price up to the
 highest close since the sale, so re-entry waits for a pullback from the post-sale peak.
 """
-import json, os, sys, time, traceback
+import os, sys, time, traceback
 from multiprocessing import Pool
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -23,6 +23,7 @@ if REPO not in sys.path:
 from botcore import int_env, parse_dotenv, safe_float, safe_nonneg_int, safe_pos_float  # noqa: E402
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_venue_module  # noqa: E402
+from state_io import append_jsonl_record, atomic_write_jsonl  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params  # noqa: E402
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
@@ -226,7 +227,8 @@ if __name__ == "__main__":
     print(f"[t212grid] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
-    with Pool(workers) as pool, open(OUT, "w") as fh:
+    atomic_write_jsonl(OUT, ())
+    with Pool(workers) as pool:
         for r in pool.imap(task, canon_todo):
             p, pk = params_for(r["profile"], r["variant"])
             aliases = canon_groups.get((r["asset"], repr(p), bool(pk)), [(r["profile"], r["variant"])])
@@ -235,9 +237,8 @@ if __name__ == "__main__":
                 row = r if idx == 0 and (al_prof, al_var) == (r["profile"], r["variant"]) else {
                     **r, "profile": al_prof, "variant": al_var, "secs": 0.0
                 }
-                fh.write(json.dumps(row) + "\n")
+                append_jsonl_record(OUT, row)
                 err_lines = str(row.get("error") or "").strip().splitlines()
                 tag = ("ERROR " + (err_lines[-1] if err_lines else "unknown")) if "error" in row else \
                     f"1h {row.get('1h', {}).get('ret')} 1d {row.get('1d', {}).get('ret')} ({row.get('secs')}s)"
                 print(f"[t212grid] {done_count}/{len(todo)} {row['profile']} {row['variant']:<16} {row['asset']:<6} {tag} [{time.time()-t0:.0f}s]", flush=True)
-            fh.flush()

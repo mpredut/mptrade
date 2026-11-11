@@ -29,15 +29,19 @@ from botcore import safe_float, safe_nonneg_int, safe_pos_float
 from state_io import read_text_lines
 
 
-def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
-    """Load OHLC rows as (open, high, low, close) tuples."""
+def load_ohlc_with_timestamps_csv(
+    csv_path: str,
+) -> tuple[list[tuple[float, float, float, float]], list[int]]:
+    """Load OHLC rows as (open, high, low, close) tuples alongside integer timestamps when present."""
     rows: list[tuple[float, float, float, float]] = []
+    timestamps: list[int] = []
     reader = csv.reader(read_text_lines(csv_path))
     first = next(reader, None)
     if not first:
-        return rows
+        return rows, timestamps
     col_map = {col.strip().lower(): idx for idx, col in enumerate(first)}
     has_header = any(k in col_map for k in ("open", "high", "low", "close", "timestamp", "time", "date"))
+    ts_idx = col_map.get("timestamp", 0) if has_header else 0
     o_idx = col_map.get("open", 1) if has_header else 1
     h_idx = col_map.get("high", 2) if has_header else 2
     l_idx = col_map.get("low", 3) if has_header else 3
@@ -57,6 +61,17 @@ def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
             and l <= min(o, h, c)
         ):
             rows.append((o, h, l, c))
+            ts_val = safe_pos_float(line[ts_idx], default=None) if ts_idx < len(line) else None
+            if ts_val is not None:
+                timestamps.append(int(ts_val))
+    if len(timestamps) != len(rows):
+        timestamps = []
+    return rows, timestamps
+
+
+def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
+    """Load OHLC rows as (open, high, low, close) tuples."""
+    rows, _ = load_ohlc_with_timestamps_csv(csv_path)
     return rows
 
 
@@ -160,6 +175,7 @@ def evaluate_asset(
     bar_minutes: float = 240.0,
     initial_cash: float | None = 3900.0,
     replay_fn: Any = None,
+    timestamps: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Run all ablation tests on an asset and return structured metrics."""
     if not ohlc:
@@ -171,6 +187,7 @@ def evaluate_asset(
     warmup_n = min(30, len(ohlc) // 5)
     warmup_ohlc = ohlc[:warmup_n]
     run_ohlc = ohlc[warmup_n:]
+    run_timestamps = timestamps[warmup_n:] if timestamps and len(timestamps) == len(ohlc) else None
     if not run_ohlc:
         return []
 
@@ -189,6 +206,8 @@ def evaluate_asset(
                 replay_kw["fee_pct"] = fee_pct
             if initial_cash is not None:
                 replay_kw["initial_cash"] = initial_cash
+            if run_timestamps is not None:
+                replay_kw["timestamps"] = run_timestamps
             res = runner(**replay_kw)
             capital = (
                 initial_cash

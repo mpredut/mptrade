@@ -10,11 +10,12 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import hashlib
+import io
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
-from botcore import exact_int, safe_float, safe_pos_float
-from state_io import atomic_write_bytes, read_csv_dicts
+from botcore import exact_int, require_finite_float, safe_float, safe_pos_float
+from state_io import atomic_write_bytes, read_csv_dicts, read_text_file
 
 
 REQUIRED_FIELDS = ("timestamp", "open", "high", "low", "close")
@@ -34,10 +35,10 @@ def normalize_record(record: Mapping) -> dict:
     if timestamp is None:
         raise ValueError(f"invalid timestamp: {raw_ts!r}")
     try:
-        open_f = float(record["open"])
-        high_f = float(record["high"])
-        low_f = float(record["low"])
-        close_f = float(record["close"])
+        open_f = require_finite_float(record["open"], name="open")
+        high_f = require_finite_float(record["high"], name="high")
+        low_f = require_finite_float(record["low"], name="low")
+        close_f = require_finite_float(record["close"], name="close")
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid OHLC numeric value in record: {record!r}") from exc
     return {
@@ -69,15 +70,17 @@ def save_dataset(records: Iterable[Mapping], destination: Path) -> None:
     atomic_write_bytes(destination, canonical_bytes(records))
 
 
-def load_dataset(source: Path) -> list[dict]:
-    with source.open("r", encoding="ascii", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if tuple(reader.fieldnames or ()) != REQUIRED_FIELDS:
-            raise ValueError(
-                f"invalid OHLC header in {source}: {reader.fieldnames}; "
-                f"expected {list(REQUIRED_FIELDS)}"
-            )
-        return [normalize_record(row) for row in reader]
+def load_dataset(source: str | Path) -> list[dict]:
+    path = Path(source)
+    content = read_text_file(path)
+    reader = csv.DictReader(io.StringIO(content))
+    if tuple(reader.fieldnames or ()) != REQUIRED_FIELDS:
+        raise ValueError(
+            f"invalid OHLC header in {path}: {reader.fieldnames}; "
+            f"expected {list(REQUIRED_FIELDS)}"
+        )
+    rows = [normalize_record(row) for row in reader]
+    return validate_dataset(rows) if rows else []
 
 
 def load_ohlc_tuples_csv(
@@ -123,7 +126,7 @@ def validate_dataset(records: Iterable[Mapping], *, interval_minutes: int | None
     """Validate ordering, cadence and OHLC invariants; return the normalised form."""
     rows = [normalize_record(record) for record in records]
     if not rows:
-        raise ValueError("dataset-ul OHLC cannot be empty")
+        raise ValueError("OHLC dataset cannot be empty")
     if interval_minutes is not None and (isinstance(interval_minutes, bool) or interval_minutes <= 0):
         raise ValueError("interval_minutes must be positive")
 
@@ -134,7 +137,7 @@ def validate_dataset(records: Iterable[Mapping], *, interval_minutes: int | None
         if previous_timestamp is not None:
             delta = timestamp - previous_timestamp
             if delta <= 0:
-                raise ValueError(f"timestamp neordonat/duplicat la linia {index}: {timestamp}")
+                raise ValueError(f"unordered or duplicate timestamp at line {index}: {timestamp}")
             if expected_delta is not None and delta != expected_delta:
                 raise ValueError(
                     f"invalid cadence at line {index}: {delta}s, expected {expected_delta}s"

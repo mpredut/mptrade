@@ -15,6 +15,12 @@ EXP = os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "t2
 HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}
 
 
+def _fmt_cell(val, spec: str | None = None) -> str:
+    if val is None:
+        return "-"
+    return format(val, spec) if spec is not None else str(val)
+
+
 def g(r, itv, k):
     sub = r.get(itv) if isinstance(r, dict) else None
     if not isinstance(sub, dict):
@@ -70,9 +76,10 @@ def generate_report(exp_dir=None):
             items.append((sort_key, v, r, wm, wp))
         for _, v, r, wm, wp in sorted(items, key=lambda x: -x[0]):
             L.append(
-                f"| {v} | {g(r,'1h','ret')} | {g(r,'1h','dd')} | {g(r,'1h','expo')} | {g(r,'1h','cyc')} | "
-                f"{g(r,'1d','ret')} | {g(r,'1d','dd')} | "
-                f"{'' if wm is None else f'{wm:+.2f}'} | {'' if wp is None else f'{wp:.0f}'} |"
+                f"| {v} | {_fmt_cell(g(r,'1h','ret'))} | {_fmt_cell(g(r,'1h','dd'))} | "
+                f"{_fmt_cell(g(r,'1h','expo'))} | {_fmt_cell(g(r,'1h','cyc'))} | "
+                f"{_fmt_cell(g(r,'1d','ret'))} | {_fmt_cell(g(r,'1d','dd'))} | "
+                f"{_fmt_cell(wm, '+.2f')} | {_fmt_cell(wp, '.0f')} |"
             )
 
         L.append(f"\n## Profile `{profile}` on the other assets (generalisation)\n")

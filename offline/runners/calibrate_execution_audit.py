@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 import sys
 
@@ -13,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from cachepaths import normalize_venue_name  # noqa: E402
-from state_io import atomic_write_json, atomic_write_text, read_text_file  # noqa: E402
+from state_io import atomic_write_json, atomic_write_text, parse_json_payload, read_text_file  # noqa: E402
 from offline.backtests.comparison import format_number  # noqa: E402
 from offline.backtests.execution_calibration import (  # noqa: E402
     calibrate_execution_events,
@@ -45,12 +44,9 @@ def _load(paths: list[Path], venue: str | None) -> list[dict]:
         for line_number, raw in enumerate(read_text_file(path).splitlines(), start=1):
             if not raw.strip():
                 continue
-            try:
-                event = json.loads(raw)
-            except json.JSONDecodeError as error:
-                raise ValueError(f"{path}:{line_number}: JSON invalid") from error
+            event = parse_json_payload(raw, default=None)
             if not isinstance(event, dict):
-                raise ValueError(f"{path}:{line_number}: JSON invalid")
+                raise ValueError(f"{path}:{line_number}: invalid JSON")
             if norm_venue and _norm_audit_venue(event.get("venue")) != norm_venue:
                 continue
             events.append(event)
@@ -61,7 +57,7 @@ def markdown_report(report: dict, paths: list[Path]) -> str:
     lines = [
         "# Execution audit calibration", "",
         f"Files: {len(paths)}", "",
-        "| Tip | Orders | Filled | Partial | Fee p50 bps | Fee p95 bps | "
+        "| Type | Orders | Filled | Partial | Fee p50 bps | Fee p95 bps | "
         "Latency p50 s | Fill ratio p50 | Shortfall p50 bps |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
@@ -82,14 +78,14 @@ def markdown_report(report: dict, paths: list[Path]) -> str:
         f"Filled orders: {ready['filled_orders']}/{ready['minimum_filled_orders']} minimum.",
         "", "MARKET shortfall: available after deploy, once the audit carries "
         "`reference_price`; it is not pure slippage.",
-        "", "Market slippage separat: indisponibil — "
+        "", "Separate market slippage: unavailable -- "
         + ready["market_slippage_blocker"] + ".",
-        "", "Spread: indisponibil — " + ready["spread_blocker"] + ".", "",
+        "", "Spread: unavailable -- " + ready["spread_blocker"] + ".", "",
         "The report is observational and does not automatically change the backtest scenarios.", "",
         "## Client order ID", "",
         f"Orders accepted on venues with support: "
         f"{client_ids['supported_accepted_orders']}; "
-        f"ID prezent: {client_ids['with_client_order_id']}; "
+        f"ID present: {client_ids['with_client_order_id']}; "
         f"valid: {client_ids['valid_client_order_ids']}; "
         f"invalid: {client_ids['invalid_client_order_ids']}; "
         f"missing: {client_ids['missing_client_order_ids']}.", "",

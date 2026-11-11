@@ -1,8 +1,8 @@
 """OHLC execution model shared by the replay adapters.
 
 The strategies decide the orders; this module describes only how they can be executed:
-spread, market slippage, intrabar ordering and asynchronous tranches. The values
-implicite reproduc comportamentul istoric al backtesterelor.
+spread, market slippage, intrabar ordering and asynchronous tranches. The default
+values reproduce the historical behavior of the backtesters.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, require_finite_float, safe_float, safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
 
 _POLICIES = {"buy_first", "sell_first", "worst_case"}
@@ -194,13 +194,14 @@ def validate_ohlc_bars(
             raise ValueError(f"invalid OHLC bar at index {idx}")
         if any(isinstance(row[i], bool) for i in range(4)):
             raise ValueError(f"OHLC bar at index {idx} contains bool")
-        try:
-            o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
+        vals = [safe_pos_float(row[i], default=None) for i in range(4)]
+        if any(v is None for v in vals):
+            if any(not isinstance(row[i], (int, float)) and safe_float(row[i], default=None) is None for i in range(4)):
+                raise ValueError(f"OHLC bar at index {idx} has non-numeric prices")
+            raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
+        o_f, h_f, l_f, c_f = vals[0], vals[1], vals[2], vals[3]
         if (
-            any(safe_pos_float(v, default=None) is None for v in (o_f, h_f, l_f, c_f))
-            or h_f < l_f
+            h_f < l_f
             or (check_envelope and (h_f < max(o_f, c_f) or l_f > min(o_f, c_f)))
         ):
             raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")

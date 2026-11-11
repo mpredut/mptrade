@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""kraken/shadow_live.py — LIVE SHADOW TEST (read-only, ZERO real orders, bot-isolated).
+"""kraken/shadow_live.py -- LIVE SHADOW TEST (read-only, ZERO real orders, bot-isolated).
 
 Run configurations through the faithful engine: replay.run_replay makes the same
 decisions as live Strategy.step over the SAME live OHLC downloaded from Kraken, and log
@@ -57,6 +57,7 @@ from botcore import (  # noqa: E402
     safe_int,
     safe_pos_float,
 )
+from offline.backtests.evaluation import load_layered_env_config  # noqa: E402
 from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies import spot_engine as strat  # noqa: E402
 from strategies import spot_replay as rp  # noqa: E402
@@ -74,10 +75,17 @@ def _load_runtime_config(env_path: str | None = None,
     load_shadow_environment(env_path, config_path)
 
 
-def _variants(interval: int):
+def _load_isolated_strat_params() -> strat.StratParams:
     _load_runtime_config()
+    env_path = os.environ.get("ENV_FILE", DEFAULT_ENV)
+    config_path = os.path.join(os.path.dirname(env_path) or ".", "config.env")
+    cfg = load_layered_env_config(config_path, env_path, override_prefixes=("KRAKEN_",))
+    return strat.StratParams.from_env(cfg)
+
+
+def _variants(interval: int):
     replace = dataclasses.replace
-    base = strat.StratParams.from_env()
+    base = _load_isolated_strat_params()
     variants = {
         "current": base,
         "pre0923": replace(
@@ -120,12 +128,20 @@ def _variants(interval: int):
 
 def _replay_interval_error(interval: int) -> str | None:
     """Return why the live configuration cannot be replayed at this bar size, if it can't."""
-    _load_runtime_config()
-    base = strat.StratParams.from_env()
+    base = _load_isolated_strat_params()
+    surge_window_enabled = (
+        getattr(base, "surge_guard", False)
+        and getattr(base, "surge_window_hours", 0) > 0
+        and getattr(base, "surge_move_pct", 0) > 0
+    )
     required = {int(base.trend_interval)} if (
-        base.trend_overlay or base.dca_trend_brake
-        or getattr(base, "tp_dynamic_flat", False)) else set()
-    if base.tp_trail_adaptive:
+        base.trend_overlay
+        or base.dca_trend_brake
+        or getattr(base, "reentry_hybrid_enabled", False)
+        or surge_window_enabled
+        or getattr(base, "tp_dynamic_flat", False)
+    ) else set()
+    if base.tp_trail_adaptive or (getattr(base, "surge_guard", False) and getattr(base, "surge_dynamic", False)):
         required.add(int(base.tp_trail_vol_interval))
     if base.dca_vol_scale_k:
         required.add(int(base.dca_vol_interval))
@@ -219,10 +235,11 @@ def _merge_forward_history(pair: str, interval: int, anchor: int, fetched):
     return merged
 
 
-def _run_one(ohlc, params, interval, fee_pct, *, include_decision_trace=False):
+def _run_one(ohlc, params, interval, fee_pct, *, include_decision_trace=False, warmup_ohlc=()):
     with contextlib.redirect_stdout(io.StringIO()):
         m = rp.run_replay(
             ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
+            warmup_ohlc=warmup_ohlc,
             include_decision_trace=include_decision_trace,
         )
     return m
@@ -245,21 +262,24 @@ def _decision_distance(reference: list[dict], candidate: list[dict]) -> int:
     )
 
 
-def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False):
+def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False, warmup_ohlc=()):
     """Run every variant over OHLC, returning None when fewer than two bars exist."""
     if len(ohlc4) < 2:
         return None
     variants = _variants(interval)
     cur_params = variants.get("current")
+    warmup_list = list(warmup_ohlc or ())
     if hasattr(rp, "prewarm_trend_series") and hasattr(cur_params, "surge_guard"):
-        rp.prewarm_trend_series(ohlc4, warmup=0, params=cur_params, bar_minutes=interval)
+        rp.prewarm_trend_series(
+            warmup_list + list(ohlc4), warmup=len(warmup_list), params=cur_params, bar_minutes=interval
+        )
     rows = {}
     for name, params in variants.items():
         budget = safe_float(params.allocated_budget(), 0.0)
-        m = _run_one(
-            ohlc4, params, interval, fee_pct,
-            include_decision_trace=include_decision_trace,
-        )
+        run_kw = {"include_decision_trace": include_decision_trace}
+        if warmup_list:
+            run_kw["warmup_ohlc"] = warmup_list
+        m = _run_one(ohlc4, params, interval, fee_pct, **run_kw)
         net_val = safe_float(m.get("net"), 0.0)
         tot_val = safe_float(m.get("total"), 0.0)
         rows[name] = {
@@ -289,6 +309,8 @@ def snapshot(pair: str, interval: int, fee_pct: float, quiet: bool = False) -> d
     full4 = [(o, h, l, c) for (_t, o, h, l, c) in bars]
     fwd_bars = _merge_forward_history(pair, interval, anchor, bars)
     fwd4 = [(o, h, l, c) for (_t, o, h, l, c) in fwd_bars]
+    fwd_first_ts = fwd_bars[0][0] if fwd_bars else anchor
+    fwd_warmup = [(o, h, l, c) for (t, o, h, l, c) in bars if t < fwd_first_ts][-40:]
 
     def _bh(seg):
         return round((seg[-1][3] / seg[0][3] - 1.0) * 100.0, 4) if len(seg) >= 2 and seg[0][3] > 0 else None
@@ -304,6 +326,7 @@ def snapshot(pair: str, interval: int, fee_pct: float, quiet: bool = False) -> d
         "forward": {"bars": len(fwd4), "buyhold_pct": _bh(fwd4),
                     "configs": _eval_block(
                         fwd4, interval, fee_pct, include_decision_trace=True,
+                        warmup_ohlc=fwd_warmup,
                     )},
     }
     if not quiet:
@@ -318,11 +341,11 @@ def _print_block(title: str, blk: dict) -> None:
     bh_s = f"{bh:+.2f}%" if bh is not None else "n/a"
     print(f"  [{title}] {blk['bars']} bars  buy&hold {bh_s}")
     if not r:
-        print("    (not enough bars — they are accumulating)")
+        print("    (not enough bars -- they are accumulating)")
         return
     cur = r.get("current", {}).get("total_pct", 0.0)
     print(f"    {'config':<20} {'net%':>8} {'total%':>8} {'maxDD%':>8} "
-          f"{'cycles':>8} {'Δdec':>6}  vs current total")
+          f"{'cycles':>8} {'d_dec':>6}  vs current total")
     for name, x in r.items():
         diff = "" if name == "current" else f"{x['total_pct'] - cur:+.2f}pp"
         divergences = x.get("decision_divergences")

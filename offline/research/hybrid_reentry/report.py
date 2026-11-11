@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate comprehensive comparative report for Hybrid Re-Entry Ablation Suite."""
 
+from datetime import datetime, timezone
 import os
 import sys
 
@@ -34,11 +35,13 @@ def generate_markdown_report() -> str:
     summary = read_json_dict(SUMMARY_JSON, default={}) if os.path.isfile(SUMMARY_JSON) else {}
 
     raw_eq = read_json_file(EQUITIES_JSON, default=[]) if os.path.isfile(EQUITIES_JSON) else []
-    equities_data = [eq for eq in raw_eq if isinstance(eq, dict)] if isinstance(raw_eq, list) else []
+    equities_data = [
+        eq for eq in raw_eq if isinstance(eq, dict) and "error" not in eq
+    ] if isinstance(raw_eq, list) else []
 
     md = []
     md.append("# Hybrid Re-Entry Architecture: Ablation Benchmark & Research Report")
-    md.append("\n**Date:** September 24, 2026")
+    md.append(f"\n**Date:** {datetime.now(timezone.utc).strftime('%B %d, %Y')}")
     md.append("**Evaluation Scope:** 11 Crypto Assets (4h bars, Binance 2018-2026 + Hyperliquid HYPE) & US Equities (NVDA, RGNT).")
     md.append("**Accounting Model:** Strict Finite Cash Account ($3,900 USD crypto, $500 USD equities), realistic taker/FX fees (0.26% crypto, 0.15% equity), no magical refills.")
     md.append("\n---\n")

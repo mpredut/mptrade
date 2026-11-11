@@ -46,6 +46,11 @@ def win_stats(r, key):
             "up": st.fmean(up_vals) if up_vals else float("nan")}
 
 
+def _fmt_num(val, spec: str) -> str:
+    fv = safe_float(val, default=None)
+    return format(fv, spec) if fv is not None else "-"
+
+
 def _resolve_exp_dir(exp_dir: str | None = None) -> str:
     exp = exp_dir or os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
     os.makedirs(exp, exist_ok=True)
@@ -85,11 +90,11 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         dd = [safe_float(by[c][a]["full"].get("dd"), 0.0) for a in assets]
         expo = [safe_float(by[c][a]["full"].get("expo"), 0.0) for a in assets]
         beat_full = sum(
-            safe_float(by[c][a]["full"].get("ret"), 0.0)
-            > safe_float(
-                (live.get(a, {}).get("full") if isinstance(live.get(a, {}).get("full"), dict) else {}).get("ret"),
-                float("-inf"),
-            ) + 1e-9
+            (c_ret > live_ret + 1e-9)
+            if (c_ret := safe_float(by[c][a]["full"].get("ret"), default=None)) is not None
+            and isinstance(live.get(a, {}).get("full"), dict)
+            and (live_ret := safe_float(live[a]["full"].get("ret"), default=None)) is not None
+            else False
             for a in assets
         )
         w90 = [win_stats(by[c][a], "w90") for a in assets]
@@ -121,15 +126,15 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             "dd_med": st.median(dd) if dd else 0.0,
             "dd_max": max(dd) if dd else 0.0,
             "expo_med": st.median(expo) if expo else 0.0,
-            "w90_mean": st.mean(w90_means) if w90_means else float("nan"),
-            "w90_pos": st.mean(w90_pos) if w90_pos else float("nan"),
-            "w90_p10": st.mean(w90_p10) if w90_p10 else float("nan"),
-            "w90_down": st.mean(w90_down) if w90_down else float("nan"),
-            "w30_mean": st.mean(w30_means) if w30_means else float("nan"),
-            "w30_pos": st.mean(w30_pos) if w30_pos else float("nan"),
-            "yr_pos": (100.0 * st.fmean(y > 0 for y in years)) if years else float("nan"),
-            "yr_worst": min(years) if years else float("nan"),
-            "yr_med": st.median(years) if years else float("nan"),
+            "w90_mean": st.mean(w90_means) if w90_means else None,
+            "w90_pos": st.mean(w90_pos) if w90_pos else None,
+            "w90_p10": st.mean(w90_p10) if w90_p10 else None,
+            "w90_down": st.mean(w90_down) if w90_down else None,
+            "w30_mean": st.mean(w30_means) if w30_means else None,
+            "w30_pos": st.mean(w30_pos) if w30_pos else None,
+            "yr_pos": (100.0 * st.fmean(y > 0 for y in years)) if years else None,
+            "yr_worst": min(years) if years else None,
+            "yr_med": st.median(years) if years else None,
             "calmar_med": st.median(f / max(d, 1.0) for f, d in zip(full, dd)) if full else 0.0,
         })
 
@@ -149,11 +154,16 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                  "year pos% | worst year | year med |")
         L.append("|" + "---|" * 17)
         for s in items:
-            L.append(f"| {s['cfg']} | {s['beat_full']}/{len(assets)} | {s['beat_w90']}/{len(assets)} | "
-                     f"{s['full_med']:+.1f} | {s['full_min']:+.1f} | {s['dd_med']:.1f} | {s['dd_max']:.1f} | "
-                     f"{s['expo_med']:.0f} | {s['calmar_med']:+.2f} | {s['w90_mean']:+.2f} | {s['w90_pos']:.0f} | "
-                     f"{s['w90_p10']:+.2f} | {s['w90_down']:+.2f} | {s['w30_mean']:+.2f} | "
-                     f"{s['yr_pos']:.0f} | {s['yr_worst']:+.1f} | {s['yr_med']:+.1f} |")
+            L.append(
+                f"| {s['cfg']} | {s['beat_full']}/{len(assets)} | {s['beat_w90']}/{len(assets)} | "
+                f"{_fmt_num(s['full_med'], '+.1f')} | {_fmt_num(s['full_min'], '+.1f')} | "
+                f"{_fmt_num(s['dd_med'], '.1f')} | {_fmt_num(s['dd_max'], '.1f')} | "
+                f"{_fmt_num(s['expo_med'], '.0f')} | {_fmt_num(s['calmar_med'], '+.2f')} | "
+                f"{_fmt_num(s['w90_mean'], '+.2f')} | {_fmt_num(s['w90_pos'], '.0f')} | "
+                f"{_fmt_num(s['w90_p10'], '+.2f')} | {_fmt_num(s['w90_down'], '+.2f')} | "
+                f"{_fmt_num(s['w30_mean'], '+.2f')} | {_fmt_num(s['yr_pos'], '.0f')} | "
+                f"{_fmt_num(s['yr_worst'], '+.1f')} | {_fmt_num(s['yr_med'], '+.1f')} |"
+            )
 
     table(sorted(summary, key=lambda s: -safe_float(s.get("calmar_med"), default=float("-inf"))), "All configs, ranked by median full-run return/drawdown")
     table([s for s in summary if s["cfg"] in ("live", "old_live_pre0923") or s["cfg"].startswith("abl_")],
@@ -203,7 +213,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     L.extend(_format_errors_section(errors))
 
     atomic_write_text(os.path.join(exp, "REPORT.md"), "\n".join(L) + "\n")
-    atomic_write_json(os.path.join(exp, "summary.json"), summary, indent=1, allow_nan=True)
+    atomic_write_json(os.path.join(exp, "summary.json"), summary, indent=1)
     return L
 
 

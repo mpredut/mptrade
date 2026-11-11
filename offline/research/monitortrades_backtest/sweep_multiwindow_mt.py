@@ -44,10 +44,10 @@ def run_multiwindow_sweep(use_365: bool = False):
         symbols.append(sym)
         series_map[sym] = series
         sigs[sym] = {
-            60:  compute_all_signals(series, win_sec=60.0, symbol=sym),
-            90:  compute_all_signals(series, win_sec=90.0, symbol=sym),
-            222: compute_all_signals(series, win_sec=222.0, symbol=sym),
-            900: compute_all_signals(series, win_sec=900.0, symbol=sym),
+            60:  compute_all_signals(series, win_sec=60.0, symbol=sym, use_symbol_fast_window=False),
+            90:  compute_all_signals(series, win_sec=90.0, symbol=sym, use_symbol_fast_window=False),
+            222: compute_all_signals(series, win_sec=222.0, symbol=sym, use_symbol_fast_window=False),
+            900: compute_all_signals(series, win_sec=900.0, symbol=sym, use_symbol_fast_window=False),
         }
 
     def _up_arr(s_win):

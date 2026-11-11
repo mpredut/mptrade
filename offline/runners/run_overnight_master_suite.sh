@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_overnight_master_suite.sh — Autonomous Overnight Master Backtest & Research Runner on DEV.
+# run_overnight_master_suite.sh -- Autonomous Overnight Master Backtest & Research Runner on DEV.
 set -uo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,7 +12,7 @@ mkdir -p "$LOG_DIR" "$RESULTS_DIR"
 
 LOCK_FILE="/tmp/mptrade_overnight_master_suite.lock"
 exec 9>"$LOCK_FILE"
-flock -n 9 || { echo "[overnight_master_suite] Another instance is already running (lock: $LOCK_FILE) — exiting." >&2; exit 0; }
+flock -n 9 || { echo "[overnight_master_suite] Another instance is already running (lock: $LOCK_FILE) -- exiting." >&2; exit 0; }
 
 MASTER_LOG="$LOG_DIR/master_suite_$(date '+%Y%m%d_%H%M%S').log"
 REPORT_MD="$RESULTS_DIR/OVERNIGHT_MASTER_REPORT.md"
@@ -44,8 +44,14 @@ run_step() {  # $1=id $2=name $3=cmd
 }
 
 run_wf_pair() {  # $1=base_id $2=comp_id $3=label $4=out_subdir $5=filename_glob $6=wf_args [$7=cmp_args]
-    local out="$RESULTS_DIR/$4" report=""
+    local out="$RESULTS_DIR/$4" report="" prev_failed="$FAILED_STEPS"
     run_step "$1" "$3 Walk-Forward Baseline" "$PYTHON_BIN offline/runners/walk_forward.py $6 --output-dir $out"
+    if [ "$FAILED_STEPS" -gt "$prev_failed" ]; then
+        FAILED_STEPS=$((FAILED_STEPS + 1))
+        STEP_REPORT_LINES+="| \`$2\` | $3 Candidate Comparison | **FAIL (baseline failed)** | 0s |"$'\n'
+        echo "[WARN] Skipping step $2 because baseline step $1 failed"
+        return
+    fi
     report="$(find "$out" -maxdepth 2 -name "$5" -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2-)"
     run_step "$2" "$3 Candidate Comparison" "[ -n \"$report\" ] && $PYTHON_BIN offline/runners/walk_forward.py --mode compare \"$report\" ${7:-}"
 }
@@ -97,3 +103,4 @@ ${STEP_REPORT_LINES}
 - Walk-Forward & Proposals: \`offline/results/kraken_wf_240/\`, \`backtest_proposals.json\` (\`backtest-proposals\`)
 EOF
 echo "Master report generated at: $REPORT_MD"
+[ "$FAILED_STEPS" -eq 0 ]

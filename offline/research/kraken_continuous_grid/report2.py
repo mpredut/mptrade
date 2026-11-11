@@ -11,6 +11,7 @@ if ROOT not in sys.path:
 from botcore import safe_float
 from state_io import atomic_write_text, read_jsonl_dicts
 from offline.research.kraken_continuous_grid.report import (
+    _fmt_num,
     _format_errors_section,
     _resolve_exp_dir,
 )
@@ -66,8 +67,11 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         top = ", ".join(f"{k}:{v}" for k, v in sorted(picks.items(), key=lambda kv: -kv[1])[:3])
         live_sum = sums.get("live", 0.0)
         beat_cnt = sum(
-            safe_float(x.get("pick_ret"), 0.0)
-            > safe_float((x.get("oos") if isinstance(x.get("oos"), dict) else {}).get("live"), float("-inf"))
+            (pick_r > live_r + 1e-9)
+            if (pick_r := safe_float(x.get("pick_ret"), default=None)) is not None
+            and isinstance(x.get("oos"), dict)
+            and (live_r := safe_float(x["oos"].get("live"), default=None)) is not None
+            else False
             for x in s
         )
         L.append(f"| {r['asset']} | {len(s)} | {sel_sum:+.1f} | {live_sum:+.1f} | {best} ({best_sum:+.1f}) | "
@@ -109,8 +113,11 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 w90_means.append(st.mean(w90_valid))
                 w90pos_vals.append(100.0 * sum(v > 0 for v in w90_valid) / len(w90_valid))
         beat_live = sum(
-            safe_float(d[a]["full"].get("ret"), float("-inf"))
-            > safe_float((live.get(a, {}).get("full") or {}).get("ret") if isinstance(live.get(a, {}).get("full"), dict) else None, float("-inf"))
+            (c_ret > live_ret + 1e-9)
+            if (c_ret := safe_float(d[a]["full"].get("ret"), default=None)) is not None
+            and isinstance(live.get(a, {}).get("full"), dict)
+            and (live_ret := safe_float(live[a]["full"].get("ret"), default=None)) is not None
+            else False
             for a in assets
         )
         return {"cfg": key[0], "fee": key[1],
@@ -118,16 +125,20 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 "full_med": st.median(full) if full else 0.0, "full_min": min(full) if full else 0.0,
                 "dd_med": st.median(dd) if dd else 0.0, "dd_max": max(dd) if dd else 0.0,
                 "calmar": st.median(f / max(x, 1.0) for f, x in zip(full, dd)) if full else 0.0,
-                "w90": st.mean(w90_means) if w90_means else float("nan"),
-                "w90pos": st.mean(w90pos_vals) if w90pos_vals else float("nan")}
+                "w90": st.mean(w90_means) if w90_means else None,
+                "w90pos": st.mean(w90pos_vals) if w90pos_vals else None}
 
     def table(items, title):
         L.append(f"\n## {title}\n")
         L.append("| config | fee | beat live (full) | full med % | full min % | DD med | DD max | calmar med | w90 mean | w90 pos% |")
         L.append("|---|---|---|---|---|---|---|---|---|---|")
         for s in items:
-            L.append(f"| {s['cfg']} | {s['fee']} | {s['beat']}/{len(assets)} | {s['full_med']:+.1f} | {s['full_min']:+.1f} | "
-                     f"{s['dd_med']:.1f} | {s['dd_max']:.1f} | {s['calmar']:+.2f} | {s['w90']:+.2f} | {s['w90pos']:.0f} |")
+            L.append(
+                f"| {s['cfg']} | {s['fee']} | {s['beat']}/{len(assets)} | "
+                f"{_fmt_num(s['full_med'], '+.1f')} | {_fmt_num(s['full_min'], '+.1f')} | "
+                f"{_fmt_num(s['dd_med'], '.1f')} | {_fmt_num(s['dd_max'], '.1f')} | "
+                f"{_fmt_num(s['calmar'], '+.2f')} | {_fmt_num(s['w90'], '+.2f')} | {_fmt_num(s['w90pos'], '.0f')} |"
+            )
 
     fine = [s for s in (summ(k) for k in by if k[1] == "std") if s]
     table(sorted(fine, key=lambda s: -(safe_float(s.get("calmar"), default=float("-inf"))))[:40], "Fine grid + wave-1 configs, top 40 by median return/DD")

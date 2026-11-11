@@ -42,11 +42,11 @@ def main() -> int:
         print(
             f"{name}: return={'PASS' if scenario['passed'] else 'FAIL'} "
             f"defensive={'PASS' if risk['passed'] else 'FAIL'} "
-            f"meanΔ={scenario['mean_return_delta_pp']:+.3f}pp "
-            f"worstΔ={scenario['worst_return_delta_pp']:+.3f}pp "
-            f"ddΔ={scenario['worst_drawdown_delta_pp']:+.3f}pp "
+            f"mean_d={scenario['mean_return_delta_pp']:+.3f}pp "
+            f"worst_d={scenario['worst_return_delta_pp']:+.3f}pp "
+            f"dd_d={scenario['worst_drawdown_delta_pp']:+.3f}pp "
             f"returnW/T/L={deltas['wins']}/{deltas['ties']}/{deltas['losses']} "
-            f"calmarΔ={calmar_text}"
+            f"calmar_d={calmar_text}"
         )
         print(f"  ddW/T/L={dd['wins']}/{dd['ties']}/{dd['losses']}")
     if args.output:

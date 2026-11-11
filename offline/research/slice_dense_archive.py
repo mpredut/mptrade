@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""slice_dense_archive.py — extrage ultimele N zile dintr-o arhiva DENSA
-(cachedb/cache_365_price_{symbol}.jsonl) into a small file, for FAST sweeps
-on parameters with SHORT time constants (fire-retry/cooldown), where
-istoricul lung/sparse ar produce artefacte (vezi offline/research/tradeall_trigger_gate/
-README.md, Exp 6/7) AND the complete dense archive has grown too large to be
-rulata intreaga (14 iul->azi: ~1M puncte/simbol, ~8h/rulare la rata observata).
+"""slice_dense_archive.py -- extract the last N days from a dense archive
+(cachedb/cache_365_price_{symbol}.jsonl) into a compact file for fast sweeps
+on parameters with short time constants (fire-retry/cooldown), where long
+sparse history produces sampling artifacts (see
+offline/research/tradeall_trigger_gate/README.md, Exp 6/7) and the full dense
+archive has grown too large for iterative sweeps (~1M points/symbol).
 
 Usage: slice_dense_archive.py <symbol> <days> [out_path]
 """
@@ -54,7 +54,7 @@ def main():
 
     rows = [rec for rec in read_jsonl_records(src) if ts_of(rec) > 0]
     if not rows:
-        print(f"[slice] {src} gol/missing", file=sys.stderr)
+        print(f"[slice] {src} empty/missing", file=sys.stderr)
         sys.exit(1)
 
     rows.sort(key=ts_of)
@@ -65,7 +65,7 @@ def main():
 
     atomic_write_jsonl(out, sliced)
 
-    print(f"[slice] {symbol}: {len(rows)} -> {len(sliced)} puncte (ultimele {days}z) -> {out}")
+    print(f"[slice] {symbol}: {len(rows)} -> {len(sliced)} points (last {days}d) -> {out}")
 
 
 if __name__ == "__main__":

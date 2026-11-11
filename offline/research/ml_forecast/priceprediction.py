@@ -51,21 +51,28 @@ class PricePrediction:
         epochs: int = 30,
     ) -> None:
         self.window_size = max(2, safe_int(window_size, default=10))
-        safe_hidden = max(1, safe_int(hidden_size, default=32))
-        safe_lr = safe_pos_float(lr, default=0.01)
+        self._hidden_size = max(1, safe_int(hidden_size, default=32))
+        self._lr = safe_pos_float(lr, default=0.01)
         self.prices: list[float] = []
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         self._fallback_weights: np.ndarray | None = None
+        self.model = None
+        self.optimizer = None
+        self.criterion = None
+        self._reset_model()
+        self.trained = False
+        self.epochs = max(1, safe_int(epochs, default=30))
+
+    def _reset_model(self) -> None:
+        """Reinitialize model weights and optimizer state to avoid cross-series leakage."""
         if torch is not None and _LSTMNet is not None:
-            self.model = _LSTMNet(input_size=1, hidden_size=safe_hidden)
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=safe_lr)
+            self.model = _LSTMNet(input_size=1, hidden_size=self._hidden_size)
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self._lr)
             self.criterion = nn.MSELoss()
         else:
             self.model = None
             self.optimizer = None
             self.criterion = None
-        self.trained = False
-        self.epochs = max(1, safe_int(epochs, default=30))
 
     def process_price(self, price: float) -> None:
         """Append price and trigger periodic model retraining."""
@@ -87,6 +94,7 @@ class PricePrediction:
                 self.prices = []
         self.trained = False
         self._fallback_weights = None
+        self._reset_model()
         if len(self.prices) >= self.window_size * 2:
             self.train_lstm_model()
 
@@ -96,7 +104,7 @@ class PricePrediction:
             return np.empty((0, self.window_size, 1), dtype=np.float32), np.empty((0, 1), dtype=np.float32)
 
         prices_array = np.array(self.prices, dtype=np.float32).reshape(-1, 1)
-        self.scaler.fit(prices_array)
+        self.scaler.fit(prices_array[:-1])
         scaled = self.scaler.transform(prices_array)
 
         X, y = [], []

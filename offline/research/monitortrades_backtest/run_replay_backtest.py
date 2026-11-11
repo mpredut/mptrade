@@ -252,15 +252,15 @@ def run_symbol(
             if quiet:
                 return None, 0, True
             return orig_get_relevant_trade(trade_orders, trade_type, symbol)
-        if len(trade_orders) > 1 and not getattr(trade_orders, "_sorted_desc", False):
-            trade_orders.sort(key=lambda x: x["timestamp"], reverse=True)
-            if hasattr(trade_orders, "_sorted_desc"):
-                trade_orders._sorted_desc = True
-                trade_orders._summary = None
         if not quiet:
-            return orig_get_relevant_trade(trade_orders, trade_type, symbol)
-        first = trade_orders[0]
-        return float(first["price"]), float(first["timestamp"]) / 1000.0, True
+            return orig_get_relevant_trade(list(trade_orders), trade_type, symbol)
+        if getattr(trade_orders, "_sorted_desc", False):
+            latest = trade_orders[0]
+        elif hasattr(trade_orders, "_sorted_desc"):
+            latest = trade_orders[-1]
+        else:
+            latest = max(trade_orders, key=lambda x: x["timestamp"])
+        return float(latest["price"]), float(latest["timestamp"]) / 1000.0, True
 
     def _fast_summarize_orders(orders):
         if not orders:

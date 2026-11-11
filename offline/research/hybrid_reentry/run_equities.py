@@ -9,11 +9,11 @@ T212_DIR = os.path.join(ROOT, "212trading")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import parse_dotenv
+from botcore import parse_dotenv, safe_pos_float
 from offline.backtests.evaluation import load_venue_module
 from offline.research.hybrid_reentry.harness import (
     evaluate_asset,
-    load_ohlc_csv,
+    load_ohlc_with_timestamps_csv,
 )
 from state_io import atomic_write_json
 from strategies.spot_replay import align_spot_interval_params
@@ -86,24 +86,35 @@ def main():
         if not os.path.isfile(csv_path):
             print(f"Skipping {symbol}: not found at {csv_path}")
             continue
-        ohlc = load_ohlc_csv(csv_path)
+        ohlc, timestamps = load_ohlc_with_timestamps_csv(csv_path)
         if not ohlc:
             print(f"Skipping {symbol}: empty OHLC data.")
             continue
         print(f"Evaluating {symbol} ({len(ohlc)} daily bars)...", flush=True)
-        
+
         profile_path = os.path.join(T212_DIR, f"config.{symbol.lower()}.env")
-        cfg = parse_dotenv(profile_path) if os.path.isfile(profile_path) else {}
-        cfg.update(BASE_CONFIG)
+        if not os.path.isfile(profile_path):
+            raise FileNotFoundError(f"Missing T212 profile configuration for {symbol}: {profile_path}")
+        cfg = dict(BASE_CONFIG)
+        cfg.update(parse_dotenv(profile_path))
         cfg["YAHOO_SYMBOL"] = symbol
+        cfg["STRAT_MAX_BUDGET"] = "500"
+        cfg["STRAT_REENTRY_HYBRID_ENABLED"] = "false"
+        cfg["STRAT_REENTRY_PEAK_RELATIVE"] = "false"
+        cfg["STRAT_REENTRY_PULLBACK_ADAPTIVE"] = "false"
+        cfg["STRAT_REENTRY_PULLBACK_PCT"] = "1.5"
+        cfg["STRAT_REENTRY_TTL_HOURS"] = "0.0"
+        if safe_pos_float(cfg.get("STRAT_REENTRY_DROP_PCT"), default=None) is None:
+            cfg["STRAT_REENTRY_DROP_PCT"] = "2.0"
         base_params = align_spot_interval_params(_strat.StratParams.from_env(cfg), 1440.0)
         asset_rows = evaluate_asset(
             asset_name=symbol,
             ohlc=ohlc,
             base_params=base_params,
             bar_minutes=1440.0,
-            initial_cash=None,
+            initial_cash=500.0,
             replay_fn=rp.run_replay,
+            timestamps=timestamps or None,
         )
         if not asset_rows:
             print(f"Skipping {symbol}: insufficient bars after warmup.")

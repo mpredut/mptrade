@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-backtest.py — DCA + take-profit backtester for Kraken spot using Kraken OHLC data.
+backtest.py -- DCA + take-profit backtester for Kraken spot using Kraken OHLC data.
 
 It replays the strategy bar by bar (market-discount entry, DCA on declines,
 take-profit, and stop-loss), with Kraken fees (~0.25% per taker leg). The report
@@ -23,12 +23,13 @@ if _ROOT not in sys.path:
 
 import dataclasses
 from strategies.spot_engine import StratParams
+from offline.backtests.evaluation import load_layered_env_config
 from offline.backtests.metrics import (
     buy_hold_pct,
     print_single_backtest_report,
     run_tp_drop_sl_sweep,
 )
-from botcore import exact_nonneg_int, load_dotenv, parse_dotenv, safe_float, safe_pos_float
+from botcore import exact_nonneg_int, load_dotenv, safe_float, safe_pos_float
 from strategies import spot_replay as rp
 from kraken.market_data import fetch_ohlc_candles
 
@@ -42,9 +43,12 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
     """
     if not isinstance(base, dict):
         raise ValueError("_bt_params requires a dict for base")
-    cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env")
-    env = dict(parse_dotenv(cfg_path))
-    env.update(os.environ)
+    here_dir = os.path.dirname(os.path.abspath(__file__))
+    env = load_layered_env_config(
+        os.path.join(here_dir, "config.env"),
+        os.path.join(here_dir, ".env"),
+        override_prefixes=("KRAKEN_",),
+    )
     p = StratParams.from_env(env=env)
 
     def _pick(keys: tuple[str, ...], default):
@@ -85,7 +89,7 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
             tp_dynamic_flat=False,
         )
     if float(interval) != float(p.tp_trail_vol_interval):
-        fields.update(tp_trail_adaptive=False)
+        fields.update(tp_trail_adaptive=False, surge_dynamic=False)
     if float(interval) != float(p.dca_vol_interval):
         fields.update(dca_vol_scale_k=0.0)
     if over:

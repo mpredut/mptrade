@@ -110,14 +110,17 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
     while i < n:
         j = min(i + refit_every, n)
         sl = slice(i, j)
-        y_train = y_dir[:i]
+        tr_end = i - HORIZON_H if i > HORIZON_H else i
+        X_tr = X[:tr_end]
+        y_train = y_dir[:tr_end]
+        y_mag_tr = y_mag[:tr_end]
         unique_classes = np.unique(y_train)
-        reg = HistGradientBoostingRegressor(max_iter=200, random_state=0).fit(X[:i], y_mag[:i])
+        reg = HistGradientBoostingRegressor(max_iter=200, random_state=0).fit(X_tr, y_mag_tr)
         acc["lindy"] += list((X[sl, 3] > 0).astype(int) == y_dir[sl])
         if len(unique_classes) >= 2:
-            clf = HistGradientBoostingClassifier(max_iter=200, random_state=0).fit(X[:i], y_train)
+            clf = HistGradientBoostingClassifier(max_iter=200, random_state=0).fit(X_tr, y_train)
             logit = make_pipeline(StandardScaler(),
-                                  LogisticRegression(max_iter=1000)).fit(X[:i], y_train)
+                                  LogisticRegression(max_iter=1000)).fit(X_tr, y_train)
             acc["logit"] += list(logit.predict(X[sl]) == y_dir[sl])
             acc["boost"] += list(clf.predict(X[sl]) == y_dir[sl])
         else:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_all.sh — runs the full Kraken continuous multi-asset grid (waves 1..3 + reports) on DEV.
+# run_all.sh -- runs the full Kraken continuous multi-asset grid (waves 1..3 + reports) on DEV.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../../orchestratorOS/lib/env_common.sh
@@ -7,7 +7,7 @@ source "$HERE/../../../orchestratorOS/lib/env_common.sh"
 
 OUT="${GRID_OUT:-$ROOT/offline/results/kraken_continuous_grid}"
 mkdir -p "$OUT" && cd "$ROOT"
-rm -f "$OUT/results.jsonl"
+rm -f "$OUT/results.jsonl" "$OUT/results2.jsonl" "$OUT/results3.jsonl"
 export WORKERS="${WORKERS:-$(nproc 2>/dev/null || echo 4)}"
 
 "$PYTHON_BIN" "$HERE/fetch_data.py" > "$OUT/fetch.log" 2>&1

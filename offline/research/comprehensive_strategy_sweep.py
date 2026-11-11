@@ -46,15 +46,15 @@ SHADOW_OHLC_JSON = ROOT / "logs" / "shadow_live" / "HYPEUSD_240m.ohlc.json"
 
 
 def define_candidate_grid() -> dict[str, dict]:
-    """Define focused, intelligent candidate variations."""
+    """Define focused, unmasked, non-duplicate candidate variations."""
     return {
-        # Baseline
+        # Baseline (live config: TP=6.0, tp_dynamic_flat=True, tp_mdhtp_enabled=True, brake=1.5%, overlay=650t8, SL=25%)
         "00_LIVE_CURRENT": {},
 
-        # --- Take Profit Variations ---
-        "01_tp4": {"takeprofit_pct": 4.0},
-        "02_tp45": {"takeprofit_pct": 4.5},
-        "03_tp6": {"takeprofit_pct": 6.0},
+        # --- Fixed Take Profit Variations (unmasked: disable tp_dynamic_flat and tp_mdhtp_enabled) ---
+        "01_tp4": {"takeprofit_pct": 4.0, "tp_dynamic_flat": False, "tp_mdhtp_enabled": False},
+        "02_tp5": {"takeprofit_pct": 5.0, "tp_dynamic_flat": False, "tp_mdhtp_enabled": False},
+        "03_tp7": {"takeprofit_pct": 7.0, "tp_dynamic_flat": False, "tp_mdhtp_enabled": False},
 
         # --- Adaptive Trailing Variations (Combined with Live tp_regime_gate) ---
         "04_adaptive_trail_k15": {
@@ -91,16 +91,14 @@ def define_candidate_grid() -> dict[str, dict]:
         "10_dca_drop_150": {"dca_drop_pct": 1.50},
         "11_dca_drop_175": {"dca_drop_pct": 1.75},
 
-        # --- DCA Downtrend Brake (Avoids Catching Falling Knives) ---
+        # --- DCA Downtrend Brake (Live already uses 1.5%; test 1.0%, OFF, and 2.0%) ---
         "12_dca_trend_brake_10": {
             "dca_trend_brake": True,
             "dca_brake_min_pct": 1.0,
             "trend_interval": 240,
         },
-        "13_dca_trend_brake_15": {
-            "dca_trend_brake": True,
-            "dca_brake_min_pct": 1.5,
-            "trend_interval": 240,
+        "13_dca_trend_brake_off": {
+            "dca_trend_brake": False,
         },
         "14_dca_trend_brake_20": {
             "dca_trend_brake": True,
@@ -108,23 +106,20 @@ def define_candidate_grid() -> dict[str, dict]:
             "trend_interval": 240,
         },
 
-        # --- Re-entry Pullback After Take Profit ---
-        "15_reentry_pullback_15": {"reentry_drop_pct": 1.5},
-        "16_reentry_pullback_25": {"reentry_drop_pct": 2.5},
-        "17_reentry_pullback_40": {"reentry_drop_pct": 4.0},
+        # --- Classic Re-entry Drop Variations (unmasked: disable reentry_hybrid_enabled) ---
+        "15_reentry_pullback_15": {"reentry_hybrid_enabled": False, "reentry_drop_pct": 1.5},
+        "16_reentry_pullback_30": {"reentry_hybrid_enabled": False, "reentry_drop_pct": 3.0},
+        "17_reentry_pullback_40": {"reentry_hybrid_enabled": False, "reentry_drop_pct": 4.0},
 
-        # --- Trend Overlay Variations ---
+        # --- Trend Overlay Variations (Live already uses 650t8; test 350t6, OFF, and 650t8_exitbreak) ---
         "18_overlay_350t6": {
             "trend_overlay": True,
             "trend_topup": 350.0,
             "trend_trail_pct": 6.0,
             "trend_interval": 240,
         },
-        "19_overlay_650t8": {
-            "trend_overlay": True,
-            "trend_topup": 650.0,
-            "trend_trail_pct": 8.0,
-            "trend_interval": 240,
+        "19_overlay_off": {
+            "trend_overlay": False,
         },
         "20_overlay_650t8_exitbreak": {
             "trend_overlay": True,
@@ -134,16 +129,17 @@ def define_candidate_grid() -> dict[str, dict]:
             "trend_interval": 240,
         },
 
-        # --- Stop Loss Optimization ---
+        # --- Stop Loss Optimization (Live uses 25.0%; test 12, 15, 20, OFF) ---
         "21_sl_15": {"stop_loss_pct": 15.0},
         "22_sl_20": {"stop_loss_pct": 20.0},
-        "23_sl_25": {"stop_loss_pct": 25.0},
+        "23_sl_12": {"stop_loss_pct": 12.0},
         "24_sl_off": {"stop_loss_pct": 0.0},
 
         # --- SMART COMBINATIONS (High Return & Low Drawdown Synergies) ---
         "25_COMBO_smart_flow": {
             # TP 4% + Adaptive Trail + Progressive DCA 0.25
             "takeprofit_pct": 4.0,
+            "tp_dynamic_flat": False,
             "tp_mdhtp_enabled": False,
             "tp_trail_adaptive": True,
             "tp_trail_k": 2.0,
@@ -155,6 +151,8 @@ def define_candidate_grid() -> dict[str, dict]:
         "26_COMBO_defensive_alpha": {
             # TP 4% + DCA Brake 1.5% + Progressive DCA 0.35 + Reentry 1.5%
             "takeprofit_pct": 4.0,
+            "tp_dynamic_flat": False,
+            "tp_mdhtp_enabled": False,
             "dca_trend_brake": True,
             "dca_brake_min_pct": 1.5,
             "dca_spacing_growth_pct": 0.35,
@@ -164,6 +162,7 @@ def define_candidate_grid() -> dict[str, dict]:
         "27_COMBO_high_calmar_runner": {
             # TP 4% + Adaptive Trail + DCA Brake 1.5% + Progressive DCA 0.25 + Reentry 1.5%
             "takeprofit_pct": 4.0,
+            "tp_dynamic_flat": False,
             "tp_mdhtp_enabled": False,
             "tp_trail_adaptive": True,
             "tp_trail_k": 2.0,
@@ -182,12 +181,15 @@ def define_candidate_grid() -> dict[str, dict]:
             "trend_topup": 350.0,
             "trend_trail_pct": 6.0,
             "takeprofit_pct": 4.0,
+            "tp_dynamic_flat": False,
+            "tp_mdhtp_enabled": False,
             "dca_spacing_growth_pct": 0.25,
             "trend_interval": 240,
         },
         "29_COMBO_ultimate_balanced": {
             # TP 4.5% + Adaptive Trail k=1.8 + DCA 1.35% with 0.25 growth + Brake 1.5% + Reentry 1.5%
             "takeprofit_pct": 4.5,
+            "tp_dynamic_flat": False,
             "tp_mdhtp_enabled": False,
             "tp_trail_adaptive": True,
             "tp_trail_k": 1.8,
@@ -211,7 +213,8 @@ def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:
     net_pct = (safe_float(m_dict.get("net"), 0.0) / safe_budget) * 100.0
     total_pct = (safe_float(m_dict.get("total"), 0.0) / safe_budget) * 100.0
     max_dd = safe_float(m_dict.get("max_drawdown_pct"), 0.0)
-    calmar = (total_pct / max_dd) if max_dd > 0 else 0.0
+    raw_calmar = safe_float(m_dict.get("calmar"), default=None)
+    calmar = raw_calmar if raw_calmar is not None else ((total_pct / max_dd) if max_dd > 0 else 0.0)
     raw_sharpe = m_dict.get("sharpe") if m_dict.get("sharpe") is not None else m_dict.get("sharpe_ratio")
     sharpe = safe_float(raw_sharpe, 0.0)
     return {
@@ -332,9 +335,12 @@ def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict])
     return results
 
 
-def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
-    """Run replay over the forward live shadow data (from Kraken anchor)."""
-    print(">>> Running Live Shadow Evaluation (Forward ~34 days & Full 120-day window)...")
+def run_live_forward_shadow(
+    candidates: dict[str, dict],
+    records: list[dict] | None = None,
+) -> dict[str, dict]:
+    """Run replay over the forward live shadow data (from Kraken anchor) and trailing 720-bar window."""
+    print(">>> Running Live Shadow Evaluation (Forward from anchor & 720-bar window)...")
     if not SHADOW_OHLC_JSON.exists():
         print(f"Shadow OHLC not found at {SHADOW_OHLC_JSON}")
         return {}
@@ -370,7 +376,38 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
             valid_bars.append((ts_f, o_f, h_f, l_f, c_f))
     pre_bars = [b for b in valid_bars if b[0] < anchor_ts]
     fwd_bars = [b for b in valid_bars if b[0] >= anchor_ts]
-    full_ohlc = [(b[1], b[2], b[3], b[4]) for b in valid_bars]
+
+    # shadow_live.py persists only post-anchor bars (>= anchor_ts) in SHADOW_OHLC_JSON;
+    # backfill pre-anchor context from historical records when provided so fwd_warmup and
+    # the trailing 720-bar (~120d) window are distinct from fwd_bars.
+    if not pre_bars and records:
+        first_fwd_ts = fwd_bars[0][0] if fwd_bars else float(anchor_ts)
+        for r in records:
+            if not isinstance(r, dict):
+                continue
+            r_ts = safe_nonneg_float(r.get("timestamp"), default=None)
+            r_o = safe_pos_float(r.get("open"), default=None)
+            r_h = safe_pos_float(r.get("high"), default=None)
+            r_l = safe_pos_float(r.get("low"), default=None)
+            r_c = safe_pos_float(r.get("close"), default=None)
+            if (
+                r_ts is not None
+                and r_ts < first_fwd_ts
+                and None not in (r_o, r_h, r_l, r_c)
+                and r_h >= max(r_o, r_l, r_c)
+                and r_l <= min(r_o, r_h, r_c)
+            ):
+                pre_bars.append((r_ts, r_o, r_h, r_l, r_c))
+        pre_bars.sort(key=lambda item: item[0])
+
+    by_ts = {b[0]: b for b in pre_bars}
+    by_ts.update({b[0]: b for b in fwd_bars})
+    combined = [by_ts[k] for k in sorted(by_ts)]
+    win_bars = combined[-720:] if len(combined) > 720 else combined
+    win_warmup_bars = combined[max(0, len(combined) - 760):max(0, len(combined) - len(win_bars))]
+
+    full_ohlc = [(b[1], b[2], b[3], b[4]) for b in win_bars]
+    full_warmup = [(b[1], b[2], b[3], b[4]) for b in win_warmup_bars]
     fwd_ohlc = [(b[1], b[2], b[3], b[4]) for b in fwd_bars]
     fwd_warmup = [(b[1], b[2], b[3], b[4]) for b in pre_bars[-40:]]
 
@@ -381,12 +418,14 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
     results = {}
     fee_pct = 0.26
     interval = 240
-    if len(fwd_ohlc) > 40:
+    if len(fwd_ohlc) + len(fwd_warmup) > 40:
         kraken_replay.prewarm_trend_series(
             fwd_warmup + fwd_ohlc, warmup=len(fwd_warmup), params=LIVE_PARAMS, bar_minutes=interval,
         )
-    if len(full_ohlc) > 40:
-        kraken_replay.prewarm_trend_series(full_ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
+    if len(full_ohlc) + len(full_warmup) > 40:
+        kraken_replay.prewarm_trend_series(
+            full_warmup + full_ohlc, warmup=len(full_warmup), params=LIVE_PARAMS, bar_minutes=interval,
+        )
 
     for name, overrides in candidates.items():
         params = align_spot_interval_params(
@@ -402,9 +441,10 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
         )
         s_fwd = _summarize_replay(m_fwd, budget)
 
-        # Full 720 bars
+        # Trailing 720 bars (~120d)
         m_full = kraken_replay.run_replay(
             full_ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
+            warmup_ohlc=full_warmup,
             execution=ExecutionModel(),
         )
         s_full = _summarize_replay(m_full, budget)
@@ -414,10 +454,12 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
             "fwd_total": s_fwd["total_pct"],
             "fwd_dd": s_fwd["max_dd"],
             "fwd_cycles": s_fwd["cycles"],
+            "fwd_bars": len(fwd_ohlc),
             "full_net": s_full["net_pct"],
             "full_total": s_full["total_pct"],
             "full_dd": s_full["max_dd"],
             "full_cycles": s_full["cycles"],
+            "full_bars": len(full_ohlc),
         }
     return results
 
@@ -431,7 +473,7 @@ def main():
 
     wf_results = run_walk_forward_evaluation(candidates, records)
     cont_results = run_continuous_628d_replay(candidates, records)
-    shadow_results = run_live_forward_shadow(candidates)
+    shadow_results = run_live_forward_shadow(candidates, records=records)
 
     # Combine into unified master dictionary
     master = []
@@ -448,14 +490,20 @@ def main():
     atomic_write_json(json_path, master, indent=2)
     print(f"\nSaved raw JSON to {json_path}")
 
+    sample_shadow = next(iter(shadow_results.values()), {}) if shadow_results else {}
+    fwd_bars_cnt = safe_nonneg_int(sample_shadow.get("fwd_bars"), default=0)
+    full_bars_cnt = safe_nonneg_int(sample_shadow.get("full_bars"), default=0)
+    fwd_days = round(fwd_bars_cnt * 4.0 / 24.0, 1)
+    full_days = round(full_bars_cnt * 4.0 / 24.0, 1)
+
     # Generate Markdown Summary Report
     md_path = out_dir / "SWEEP_REPORT.md"
     lines = [
         "# Strategy Sweep: High Profit & Low Drawdown (628 Days + Live Shadow)\n\n",
         "Evaluation across:\n",
-        "1. **Walk-Forward (WF)**: 31 Out-of-Sample folds (~628 days, HYPE 240m)\n",
-        "2. **Continuous 628d**: Unbroken compounding replay across all 3,772 bars\n",
-        "3. **Kraken Shadow**: 206 forward bars (last 34 days) & 720-bar Kraken window (~120 days)\n\n",
+        f"1. **Walk-Forward (WF)**: 31 Out-of-Sample folds (~628 days, HYPE 240m)\n",
+        f"2. **Continuous 628d**: Unbroken fixed-allocation replay across all {len(records):,} bars\n",
+        f"3. **Kraken Shadow**: {fwd_bars_cnt} forward bars (~{fwd_days}d) & {full_bars_cnt}-bar window (~{full_days}d)\n\n",
         "## 1. Walk-Forward Out-Of-Sample Performance (31 Folds)\n\n",
         "| Rank | Candidate | WF Mean % | WF Median % | WF Worst % | WF Worst DD % | Pos Folds | W/T/L vs Live |\n",
         "|---:|---|---:|---:|---:|---:|---:|---:|\n",
@@ -468,7 +516,7 @@ def main():
             f"{r.get('wf_pos_count', 0)}/{r.get('wf_total_folds', 31)} | {r.get('vs_live_WTL', '-')} |\n"
         )
 
-    lines.append("\n## 2. Continuous 628-Day Compounding Replay (~3,772 bars)\n\n")
+    lines.append(f"\n## 2. Continuous 628-Day Replay ({len(records):,} bars)\n\n")
     lines.append("| Rank | Candidate | Net % | Total % | MaxDD % | Calmar Ratio | Cycles | Win Rate |\n")
     lines.append("|---:|---|---:|---:|---:|---:|---:|\n")
     sorted_cont = sorted(master, key=lambda x: x.get("cont_calmar", 0), reverse=True)
@@ -481,7 +529,7 @@ def main():
             f"{r.get('cont_max_dd', 0):.2f}% | **{r.get('cont_calmar', 0):.2f}** | {cycles} | {win_rate:.1f}% |\n"
         )
 
-    lines.append("\n## 3. Kraken Live Shadow Performance (Forward 34d & Window 120d)\n\n")
+    lines.append(f"\n## 3. Kraken Live Shadow Performance (Forward ~{fwd_days}d & Window ~{full_days}d)\n\n")
     if not shadow_results:
         lines.append("*Live shadow evaluation skipped: insufficient forward bars recorded in `logs/shadow_live/` (minimum 2 bars required).* \n")
     else:
