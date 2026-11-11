@@ -5,6 +5,7 @@ calls from place, reconcile, and cancel without accessing the network.
 """
 import os
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -26,13 +27,14 @@ from tests.conftest import make_spot_test_params  # noqa: E402
 
 class FakeExecutor:
     """Implement the StrategyExecutor contract and record every call."""
-    def __init__(self):
+    def __init__(self, *, record_intent_submits: bool = False):
         self.calls = []
         self.next_status = OrderStatus("open", 0.0, 0.0, 0.0)
         self._seq = 0
         self.preflight_error = None
         self.client_orders = {}
         self.on_submit = None
+        self.record_intent_submits = record_intent_submits
 
     def get_current_price(self, symbol):
         return 60.0
@@ -50,6 +52,22 @@ class FakeExecutor:
         if self.on_submit:
             self.on_submit(client_order_id)
         return f"OID-{self._seq}"
+
+    def submit_order_with_intent(
+        self, intent_id, symbol, side, qty, price=None, *, market=False,
+        kind=None, reference_price=None, client_order_id=None,
+    ):
+        if self.record_intent_submits:
+            self._seq += 1
+            self.calls.append((
+                "submit_with_intent", symbol, side, qty, price, market, kind,
+                reference_price, client_order_id,
+            ))
+            return f"OID-{self._seq}"
+        return self.submit_order(
+            symbol, side, qty, price=price, market=market, kind=kind,
+            client_order_id=client_order_id,
+        )
 
     def order_by_client_id(self, symbol, client_order_id):
         self.calls.append(("order_by_client_id", symbol, client_order_id))
@@ -124,21 +142,17 @@ class ProviderLivePathTest(unittest.TestCase):
             self.assertIsNone(self.s.s["pending_intent"])
 
     def test_spot_dca_provider_path_releases_intent_when_live_gate_is_off(self):
-        class KrakenClient:
-            def __init__(self):
-                self.calls = []
-
-            def pair_info(self, _pair):
-                return {
-                    "pair_decimals": 2, "lot_decimals": 8,
-                    "ordermin": "0.01", "base": "HYPE",
-                }
-
-            def add_order(self, *args, **kwargs):
-                self.calls.append((args, kwargs))
-                return {"txid": ["unexpected-live-order"]}
-
-        client = KrakenClient()
+        calls = []
+        client = SimpleNamespace(
+            calls=calls,
+            pair_info=lambda _pair: {
+                "pair_decimals": 2,
+                "lot_decimals": 8,
+                "ordermin": "0.01",
+                "base": "HYPE",
+            },
+            add_order=lambda *args, **kwargs: (calls.append((args, kwargs)) or {"txid": ["unexpected-live-order"]}),
+        )
         provider = KrakenProvider(client=client)
         with patch.dict(os.environ, {"KRAKEN_LIVE_ORDERS": "false"}):
             strategy = _strategy(provider)
@@ -204,19 +218,7 @@ class ProviderLivePathTest(unittest.TestCase):
             self.assertTrue(self.s.s["ledger_reconcile_required"])
 
     def test_audited_market_submit_receives_observational_reference_price(self):
-        class IntentExecutor(FakeExecutor):
-            def submit_order_with_intent(
-                self, intent_id, symbol, side, qty, price=None, *, market=False,
-                kind=None, reference_price=None, client_order_id=None,
-            ):
-                self._seq += 1
-                self.calls.append((
-                    "submit_with_intent", symbol, side, qty, price, market, kind,
-                    reference_price, client_order_id,
-                ))
-                return f"OID-{self._seq}"
-
-        executor = IntentExecutor()
+        executor = FakeExecutor(record_intent_submits=True)
         strategy = _strategy(executor)
         strategy._place("sell", 5.0, 59.0, kind="STOP", market=True)
 

@@ -66,15 +66,23 @@ def _hard_stop_venue(root, store, *, preflight_error=None, submit_error=None):
 class _ReconcilingBinanceExecutor:
     name = "Binance"
 
-    def __init__(self, *, statuses=None, lookups=None):
+    def __init__(self, *, statuses=None, lookups=None, free_bal=1000.0):
         self._statuses = statuses
         self._lookups = lookups
+        self._free_bal = free_bal
         self.status_calls = []
         self.lookup_calls = []
 
+    def free_balance(self, _asset):
+        return self._free_bal
+
     @staticmethod
-    def free_balance(_asset):
-        return 1000.0
+    def fee_cap_quantity(*_args):
+        return 1.0
+
+    @staticmethod
+    def pair_precision(_symbol):
+        return None
 
     @staticmethod
     def reconciliation_capabilities():
@@ -102,6 +110,46 @@ class _ReconcilingBinanceExecutor:
         if isinstance(self._statuses, OrderStatus):
             return self._statuses
         return OrderStatus("open", 0.0, 0.0, 0.0)
+
+
+class _StubPairCoordinator:
+    def __init__(self, *_args, registry=None, starts=None, fail_start=False, **kwargs):
+        self.pair_id = f"pair-{(len(registry) if registry is not None else 0) + 1}"
+        self.start_side = kwargs.get("start_side")
+        self.steps = []
+        self._starts = starts
+        self._fail_start = fail_start
+        if registry is not None:
+            registry.append(self)
+
+    def start(self, _price, pair_id=None):
+        self.pair_id = pair_id or self.pair_id
+        if self._starts is not None:
+            self._starts.append(self.start_side)
+        if self._fail_start:
+            idx = len(self._starts) if self._starts is not None else 1
+            return SimpleNamespace(
+                terminal=True,
+                pair_id=f"pair-{idx}",
+                phase="failed",
+                reason=f"{self.start_side.lower()}_place_failed",
+            )
+        return SimpleNamespace(
+            terminal=False, pair_id=self.pair_id, phase="quoting", reason=None
+        )
+
+    def step(self, now=None):
+        self.steps.append(now)
+        return SimpleNamespace(terminal=False)
+
+    def export_state(self):
+        return {
+            "pair_id": self.pair_id,
+            "qty": 1.0,
+            "start_side": self.start_side,
+            "phase": "quoting",
+            "tickets": [],
+        }
 
 
 def _restart_merge_venue(root, store, statuses, lookups=None):
@@ -187,29 +235,11 @@ class RTradeThreadingTest(unittest.TestCase):
     def test_coordinator_starts_multiple_independent_rounds_on_same_symbol(self):
         bot = _bot()
         coordinators = []
-
-        class FakeCoordinator:
-            def __init__(self, *_args, **kwargs):
-                self.pair_id = f"pair-{len(coordinators) + 1}"
-                self.start_side = kwargs.get("start_side")
-                self.steps = []
-                coordinators.append(self)
-
-            def start(self, _price, pair_id=None):
-                self.pair_id = pair_id or self.pair_id
-                return SimpleNamespace(
-                    terminal=False, pair_id=self.pair_id, phase="quoting",
-                    reason=None)
-
-            def step(self, now=None):
-                self.steps.append(now)
-                return SimpleNamespace(terminal=False)
-
         venue = SimpleNamespace(
             current_price=lambda: 100.0,
             executor=SimpleNamespace(open_orders=lambda _symbol: []))
         with patch.object(rtrade, "_LivePairVenue", return_value=venue), \
-             patch.object(rtrade, "PairCoordinator", FakeCoordinator), \
+             patch.object(rtrade, "PairCoordinator", lambda *a, **kw: _StubPairCoordinator(*a, registry=coordinators, **kw)), \
              patch.object(rtrade, "RTRADE_PAIR_MAX_ACTIVE_ROUNDS", 2), \
              patch.object(rtrade, "RTRADE_PAIR_START_INTERVAL_SEC", 8), \
              patch.object(rtrade, "RTRADE_PAIR_DIRECTIONS", ("BUY", "SELL")), \
@@ -232,54 +262,18 @@ class RTradeThreadingTest(unittest.TestCase):
         bot = _bot()
         coordinators = []
         checkpoint_batches = []
-
-        class FailingCheckpointStore:
-            @staticmethod
-            def active(_symbol):
-                return []
-
-            @staticmethod
-            def checkpoint(*_args, **_kwargs):
-                raise OSError("checkpoint fsync failed")
-
-            @staticmethod
-            def checkpoint_many(checkpoints):
-                checkpoint_batches.append(len(list(checkpoints)))
-
-        class AcceptedCoordinator:
-            def __init__(self, *_args, **kwargs):
-                self.pair_id = ""
-                self.start_side = kwargs["start_side"]
-                self.steps = 0
-                coordinators.append(self)
-
-            def start(self, _price, pair_id=None):
-                self.pair_id = pair_id
-                return SimpleNamespace(
-                    terminal=False, pair_id=pair_id,
-                    phase="quoting", reason=None)
-
-            def step(self, now=None):
-                self.steps += 1
-                return SimpleNamespace(terminal=False)
-
-            def export_state(self):
-                return {
-                    "pair_id": self.pair_id,
-                    "qty": 1.0,
-                    "start_side": self.start_side,
-                    "phase": "quoting",
-                    "tickets": [],
-                }
-
-        bot.pair_store = FailingCheckpointStore()
+        bot.pair_store = SimpleNamespace(
+            active=lambda _symbol: [],
+            checkpoint=lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("checkpoint fsync failed")),
+            checkpoint_many=lambda checkpoints: checkpoint_batches.append(len(list(checkpoints))),
+        )
         venue = SimpleNamespace(
             current_price=lambda: 100.0,
             recovery_blocked=False,
             executor=SimpleNamespace(open_orders=lambda _symbol: []))
         monotonic_vals = [0.0, 0.0, 0.0, 1.0]
         with patch.object(rtrade, "_LivePairVenue", return_value=venue), \
-             patch.object(rtrade, "PairCoordinator", AcceptedCoordinator), \
+             patch.object(rtrade, "PairCoordinator", lambda *a, **kw: _StubPairCoordinator(*a, registry=coordinators, **kw)), \
              patch.object(rtrade, "_trend_too_strong", return_value=False), \
              patch.object(rtrade.time, "monotonic", side_effect=lambda: monotonic_vals.pop(0) if monotonic_vals else 1.0), \
              patch.object(
@@ -289,32 +283,17 @@ class RTradeThreadingTest(unittest.TestCase):
                 bot._run_coordinator_forever()
 
         self.assertEqual(len(coordinators), 1)
-        self.assertEqual(coordinators[0].steps, 1)
+        self.assertEqual(len(coordinators[0].steps), 1)
         self.assertEqual(checkpoint_batches, [0, 1])
 
     def test_coordinator_backs_off_each_side_after_generic_place_failure(self):
         bot = _bot()
         starts = []
-
-        class FailingCoordinator:
-            def __init__(self, *_args, **kwargs):
-                self.start_side = kwargs["start_side"]
-
-            def start(self, _price, pair_id=None):
-                self.pair_id = pair_id or f"pair-{len(starts) + 1}"
-                starts.append(self.start_side)
-                return SimpleNamespace(
-                    terminal=True,
-                    pair_id=f"pair-{len(starts)}",
-                    phase="failed",
-                    reason=f"{self.start_side.lower()}_place_failed",
-                )
-
         venue = SimpleNamespace(
             current_price=lambda: 100.0,
             executor=SimpleNamespace(open_orders=lambda _symbol: []))
         with patch.object(rtrade, "_LivePairVenue", return_value=venue), \
-             patch.object(rtrade, "PairCoordinator", FailingCoordinator), \
+             patch.object(rtrade, "PairCoordinator", lambda *a, **kw: _StubPairCoordinator(*a, starts=starts, fail_start=True, **kw)), \
              patch.object(rtrade, "RTRADE_PAIR_MAX_ACTIVE_ROUNDS", 2), \
              patch.object(rtrade, "RTRADE_PAIR_START_INTERVAL_SEC", 8), \
              patch.object(rtrade, "RTRADE_PAIR_DIRECTIONS", ("BUY", "SELL")), \
@@ -794,44 +773,24 @@ class RTradeThreadingTest(unittest.TestCase):
             permit)
 
     def test_hard_stop_response_loss_reconciles_later_without_resubmit(self):
-        class Executor(_ReconcilingBinanceExecutor):
-            def __init__(self):
-                self.preflight_order = Mock(return_value=None)
-                self.submit_order = Mock(
-                    side_effect=ProviderError("response lost"))
-                self.lookup_results = [
-                    None,
-                    {
-                        "orderId": "M12", "status": "FILLED",
-                        "price": "90", "origQty": "0.4",
-                    },
-                ]
-
-            @staticmethod
-            def free_balance(_asset):
-                return 1.0
-
-            @staticmethod
-            def fee_cap_quantity(*_args):
-                return 1.0
-
-            @staticmethod
-            def pair_precision(_symbol):
-                return None
-
-            def order_by_client_id(self, _symbol, _client_id):
-                return self.lookup_results.pop(0)
-
-            @staticmethod
-            def order_status(_symbol, _order_id):
-                return OrderStatus("closed", 0.4, 36.0, 0.01)
-
         recovery_now = [100.0]
         with tempfile.TemporaryDirectory(prefix="rtrade-submit-unknown-") as root:
             store_path = os.path.join(root, "pairs.json")
             store = RTradePairStore(store_path)
             store.intent("pair-12", "SELL", 100.0, 0.4, "CID_12", symbol="TAOUSDC", start_side="SELL")
-            executor = Executor()
+            executor = _ReconcilingBinanceExecutor(
+                statuses=OrderStatus("closed", 0.4, 36.0, 0.01),
+                lookups=[
+                    None,
+                    {
+                        "orderId": "M12", "status": "FILLED",
+                        "price": "90", "origQty": "0.4",
+                    },
+                ],
+                free_bal=1.0,
+            )
+            executor.preflight_order = Mock(return_value=None)
+            executor.submit_order = Mock(side_effect=ProviderError("response lost"))
             with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
                  patch.object(
                      rtrade.mkt, "provider_name_for", return_value="Binance"), \

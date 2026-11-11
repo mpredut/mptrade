@@ -41,11 +41,9 @@ class _RTradeTrendBase(unittest.TestCase):
 
     def _fake_cm(self, dyn):
         m = types.ModuleType("cacheManager")
-
-        class Mgr:
-            def get_short_trend_for_window(self, _sym, _window):
-                return dyn
-        m.get_short_trend_manager = lambda: Mgr()
+        m.get_short_trend_manager = lambda: types.SimpleNamespace(
+            get_short_trend_for_window=lambda _sym, _window: dyn
+        )
         sys.modules["cacheManager"] = m
         rtrade.cm = m
 
@@ -205,22 +203,20 @@ class ReaderProcessTrendTest(TempDirTestCase):
 
     def _publish(self, step, *, age_sec=0.0):
         """Let a writer compute the window from ticks and publish it for the reader."""
-
-        class FakeCache24:
-            def __init__(self, entries):
-                self.entries = entries
-
-            def get_recent_entries(self, _symbol, last_seconds):
-                cutoff = (time.time() - last_seconds) * 1000
-                return [e for e in self.entries if e[0] >= cutoff]
-
         now_ms = int(time.time() * 1000)
         # One tick per second over the window; a small alternating wiggle is the noise.
         entries = [[now_ms - (899 - i) * 1000, 300.0 + step * i + (0.05 if i % 2 else -0.05)]
                    for i in range(900)]
         writer = self.cm.CacheShortTrendManager(
             ["TAOUSDC"], os.path.join(self.tmp.name, "trend_writer.json"), data_sync_mode="producer")
-        writer._cache24_managers = {"TAOUSDC": FakeCache24(entries)}
+        writer._cache24_managers = {
+            "TAOUSDC": types.SimpleNamespace(
+                entries=entries,
+                get_recent_entries=lambda _symbol, last_seconds: [
+                    e for e in entries if e[0] >= (time.time() - last_seconds) * 1000
+                ],
+            )
+        }
         published = writer._published_dynamic_windows("TAOUSDC")
         for dyn in published.values():
             dyn["ts"] -= age_sec

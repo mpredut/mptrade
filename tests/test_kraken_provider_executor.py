@@ -984,11 +984,10 @@ def test_kraken_market_data_fetch_ohlc_candles_check_pair_listing_pair_precision
     with pytest.raises(ValueError, match="invalid pair"):
         kmd.fetch_ohlc_candles(True, 5)
 
-    class _DummyKrakenClient:
-        def pair_info(self, pair):
-            return {"status": None, "pair_decimals": 3.5, "lot_decimals": -2, "ordermin": "0.1"}
-
-    info, unlisted = kmd.check_pair_listing(_DummyKrakenClient(), "HYPEUSD")
+    info, unlisted = kmd.check_pair_listing(
+        SimpleNamespace(pair_info=lambda pair: {"status": None, "pair_decimals": 3.5, "lot_decimals": -2, "ordermin": "0.1"}),
+        "HYPEUSD",
+    )
     assert info is not None and unlisted is False
     p_dec, v_dec, omin = kmd.pair_precision(info)
     assert (p_dec, v_dec, omin) == (2, 8, 0.1)
@@ -1396,20 +1395,21 @@ def test_krakenprovider__fills_from_api_none_and_cancel_order_with_count_iter164
 def test_krakenprovider_open_orders_side_aliases_preflight_order_ask_alias_and_iter169_s3(monkeypatch):
     """[ITER169 #3] KrakenProvider open_orders side aliases, preflight_order ASK alias, and positional force."""
     # 3. KrakenProvider open_orders side aliases, preflight_order ASK alias, and positional force
-    class _FakeKrakenClient:
-        def open_orders(self):
-            return {
-                "OID1": {
-                    "descr": {"pair": "HYPEUSD", "type": " b ", "price": "20.0"},
-                    "vol": "1.5",
-                    "vol_exec": "0.5",
-                }
+    fake_cli = SimpleNamespace(
+        open_orders=lambda: {
+            "OID1": {
+                "descr": {"pair": "HYPEUSD", "type": " b ", "price": "20.0"},
+                "vol": "1.5",
+                "vol_exec": "0.5",
             }
-
-        def add_order(self, symbol, side, qty, price, **kw):
-            return {"txid": ["OID2"], "ordertype": kw.get("ordertype"), "validate": kw.get("validate")}
-
-    kr = kraken_provider.KrakenProvider(client=_FakeKrakenClient())
+        },
+        add_order=lambda symbol, side, qty, price, **kw: {
+            "txid": ["OID2"],
+            "ordertype": kw.get("ordertype"),
+            "validate": kw.get("validate"),
+        },
+    )
+    kr = kraken_provider.KrakenProvider(client=fake_cli)
     monkeypatch.setattr(kr, "execution_enabled", lambda: False)
     monkeypatch.setattr(kr, "round_quantity", lambda sym, q: float(q))
     monkeypatch.setattr(

@@ -685,19 +685,20 @@ class HyperliquidTimeoutTest(unittest.TestCase):
         self.assertEqual((retries.connect, retries.read, retries.status), (3, 0, 0))
 
     def test_info_requests_retry_transient_500_without_retrying_exchange(self):
+        def _make_flaky_session(statuses):
+            q = list(statuses)
+            sess = SimpleNamespace(calls=0)
 
-        class _FlakySession:
-            def __init__(self, statuses):
-                self.statuses = list(statuses)
-                self.calls = 0
-
-            def request(self, *_args, **_kwargs):
-                self.calls += 1
-                code = self.statuses.pop(0) if self.statuses else 200
+            def _req(*_args, **_kwargs):
+                sess.calls += 1
+                code = q.pop(0) if q else 200
                 return SimpleNamespace(status_code=code)
 
-        info_api = SimpleNamespace(timeout=10, session=_FlakySession([500, 200]))
-        exch_api = SimpleNamespace(timeout=30, session=_FlakySession([500, 200]))
+            sess.request = _req
+            return sess
+
+        info_api = SimpleNamespace(timeout=10, session=_make_flaky_session([500, 200]))
+        exch_api = SimpleNamespace(timeout=30, session=_make_flaky_session([500, 200]))
         with patch.object(self.module.time, "sleep", return_value=None):
             self.module._force_timeout(info_api, seconds=10)
             self.module._force_timeout(exch_api, seconds=30)
@@ -1127,21 +1128,18 @@ def test_hyperliquid_strategy_stratparams_from_dict_bool_validation__check_stop_
     with pytest.raises(ValueError, match="invalid numeric boolean"):
         hl_strat_mod.StratParams.from_dict({"enable_takeprofit": 2})
 
-    class _CloseFailCancelClient:
-        exchange = None
-        placed = 0
+    cli = SimpleNamespace(
+        exchange=None,
+        placed=0,
+        sz_decimals=lambda _coin: 2,
+        cancel=lambda _coin, _oid: False,
+    )
 
-        def sz_decimals(self, _coin):
-            return 2
+    def _place_limit(_coin, _is_buy, _sz, _px, reduce_only=False):
+        cli.placed += 1
+        return True, f"SL-{cli.placed}", "ok"
 
-        def cancel(self, _coin, _oid):
-            return False
-
-        def place_limit(self, _coin, _is_buy, _sz, _px, reduce_only=False):
-            self.placed += 1
-            return True, f"SL-{self.placed}", "ok"
-
-    cli = _CloseFailCancelClient()
+    cli.place_limit = _place_limit
     strat = hl_strat_mod.Strategy(
         client=cli,
         coin="HYPE",
@@ -1495,16 +1493,15 @@ def test_hyperliquid_shadow_longterm__fetch_with_ts_deduplicates_identical_times
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     hl_sl = load_local_module(os.path.join(root, "hyperliquid"), "shadow_longterm.py", module_key="hl_shadow_longterm_it153", reload=True)
     # 2. hyperliquid/shadow_longterm._fetch_with_ts deduplicates identical timestamps
-    class DummyPubClient:
-        def candles(self, token, interval, lookback_hours=0):
-            return [
-                {"t": 1700000000000, "o": "10", "h": "12", "l": "9", "c": "11"},
-                {"t": 1700000000000, "o": "10", "h": "13", "l": "9", "c": "12"},
-                {"t": 1700014400000, "o": "12", "h": "14", "l": "11", "c": "13"},
-            ]
-
+    pub_client = SimpleNamespace(
+        candles=lambda token, interval, lookback_hours=0: [
+            {"t": 1700000000000, "o": "10", "h": "12", "l": "9", "c": "11"},
+            {"t": 1700000000000, "o": "10", "h": "13", "l": "9", "c": "12"},
+            {"t": 1700014400000, "o": "12", "h": "14", "l": "11", "c": "13"},
+        ]
+    )
     import hl_client as hlc_mod
-    monkeypatch.setattr(hlc_mod.HLClient, "public", staticmethod(lambda: DummyPubClient()))
+    monkeypatch.setattr(hlc_mod.HLClient, "public", staticmethod(lambda: pub_client))
     rows = hl_sl._fetch_with_ts("HYPE-HL", 240)
     assert len(rows) == 1
     assert rows[0] == (1700000000, 10.0, 13.0, 9.0, 12.0)

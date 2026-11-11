@@ -314,12 +314,11 @@ def test_alertnotifiers_and_hl_hardening(tmp_path, monkeypatch):
 
     monkeypatch.setenv("ANALYSIS_WINDOW_H", "2")
     monkeypatch.setenv("ANALYSIS_STEP_H", "1")
-    class _DummyClient:
-        def candles(self, coin, interval, lookback_hours):
-            return [{"t": "bad", "c": "10.0"}, {"t": 1000, "c": float("nan")}]
-        def mid(self, coin):
-            return float("nan")
-    assert hl_pa.analyze(_DummyClient(), "HYPE") is None
+    dummy_client = SimpleNamespace(
+        candles=lambda coin, interval, lookback_hours: [{"t": "bad", "c": "10.0"}, {"t": 1000, "c": float("nan")}],
+        mid=lambda coin: float("nan"),
+    )
+    assert hl_pa.analyze(dummy_client, "HYPE") is None
 
 
 def test_trailing_and_shadow_hardening(tmp_path, monkeypatch):
@@ -464,13 +463,9 @@ def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
     assert loaded_reg.get("macro_sentiment", {}).get("conversation_id") == "c1"
     assert len(condense_decision("A very long decision string here", max_len=2)) == 4
 
-    class _DummyRetry:
-        @staticmethod
-        def load_all():
-            return ["not_a_dict", {"id": "c1", "place_kwargs": "bad"}]
-
-    assert aop._accepted_is_durable(_DummyRetry, "not_a_dict", {"orderId": "ord1"}) is False
-    assert aop._accepted_is_durable(_DummyRetry, {"id": "c1", "place_kwargs": "bad"}, {"orderId": "ord1"}) is False
+    dummy_retry = SimpleNamespace(load_all=lambda: ["not_a_dict", {"id": "c1", "place_kwargs": "bad"}])
+    assert aop._accepted_is_durable(dummy_retry, "not_a_dict", {"orderId": "ord1"}) is False
+    assert aop._accepted_is_durable(dummy_retry, {"id": "c1", "place_kwargs": "bad"}, {"orderId": "ord1"}) is False
 
 
 def test_order_id_context_and_pricefetcher_hardening(tmp_path):
@@ -782,17 +777,8 @@ def test_intelligence_cli_macro_analyzer_and_instrument_hardening(tmp_path):
     assert math.isfinite(now_bool) and now_bool > 1000.0
 
     # 3. Instrument.min_qty handles bool/NaN/negative safely
-    class _DummyProvider:
-        name = "dummy"
-        raw_min = float("nan")
-
-        def validate_symbol(self, sym):
-            pass
-
-        def min_order_qty(self, sym):
-            return self.raw_min
-
-    prov = _DummyProvider()
+    prov = SimpleNamespace(name="dummy", raw_min=float("nan"), validate_symbol=lambda sym: None)
+    prov.min_order_qty = lambda sym: prov.raw_min
     inst = Instrument("test", "BTCUSDC", "dummy", api=SingleProviderApi(prov))
     assert inst.min_qty() == 0.0
     prov.raw_min = True
@@ -1036,16 +1022,15 @@ def test_news_feed_history_macro_analyzer_and_pricechecker_hardening(tmp_path):
     assert dec_g.suggested_scale == 0.50 and dec_g.metadata["risk_score"] == 0.0
 
     # 3. PriceChecker handles bool/NaN hours, current_price, and interval_seconds
-    class _DummyCache:
-        original_symbols = ["BTC"]
-
-        def get_latest_price(self, _sym):
-            return True
-
-        def get_price_history(self, _sym, limit=1000):
-            return [{"timestamp": True, "price": 100.0}, {"timestamp": now_ts * 1000, "price": True}]
-
-    pc = PriceChecker(_DummyCache())
+    dummy_cache = SimpleNamespace(
+        original_symbols=["BTC"],
+        get_latest_price=lambda _sym: True,
+        get_price_history=lambda _sym, limit=1000: [
+            {"timestamp": True, "price": 100.0},
+            {"timestamp": now_ts * 1000, "price": True},
+        ],
+    )
+    pc = PriceChecker(dummy_cache)
     assert pc._get_price_history_last_hours("BTC", float("nan")) == []
     assert pc._get_price_history_last_hours("BTC", True) == []
     assert pc._get_price_history_last_hours("BTC", 24.0) == []

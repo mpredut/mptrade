@@ -47,6 +47,30 @@ class _StubKrakenPairClient:
         return self._info
 
 
+class _TestMarketProvider(MarketDataProvider):
+    _USES_SSOT_MARKET_CACHE = False
+
+    def __init__(self, prov_name: str = "probe", *, price_fn=None, fills_fn=None, cli=None):
+        self._prov_name = prov_name
+        self._price_fn = price_fn
+        self._fills_fn = fills_fn
+        if cli is not None:
+            self._cli = cli
+
+    @property
+    def name(self) -> str:
+        return self._prov_name
+
+    def supports_symbol(self, symbol: str) -> bool:
+        return True
+
+    def _fetch_current_price(self, symbol: str):
+        return self._price_fn(symbol) if self._price_fn is not None else None
+
+    def _fills_from_api(self, symbol: str, *, publish_cache: bool = False):
+        return self._fills_fn(symbol, publish_cache=publish_cache) if self._fills_fn is not None else []
+
+
 def test_freshness_parameters_fail_closed_on_nonpositive_bool_and_nan(tmp_path: Path):
     """Verify freshness thresholds reject 0, negative, bool, NaN, and inf across SSOT caches."""
     now_s = time.time()
@@ -241,32 +265,14 @@ def test_merge_venue_fills_handles_mixed_string_int_timestamps_and_bool_now_ms()
 
 def test_provider_base_border_cases_live_quote_falsy_client_and_fills_typeerror(monkeypatch):
     """Verify MarketDataProvider live quote sanitization, falsy mock client detection, and _invoke_fills_from_api."""
-
-    class _ZeroLenMockClient(dict):
-        pass
-
     monkeypatch.setattr(botcore._RUNTIME_SERVICES, "allow_shared_disk_cache", True)
-    # A falsy injected mock client (empty dict subclass) must still disable shared disk SSOT cache!
-    kr_with_falsy_mock = KrakenProvider(client=_ZeroLenMockClient())
+    # A falsy injected mock client (empty dict) must still disable shared disk SSOT cache!
+    kr_with_falsy_mock = KrakenProvider(client={})
     assert bool(kr_with_falsy_mock._cli) is False
     assert kr_with_falsy_mock._allow_ssot_price_cache() is False
 
     bad_quotes = iter([0.0, -5.0, float("nan"), float("inf"), True, False, 42.5])
-
-    class _ProbeProvider(MarketDataProvider):
-        _USES_SSOT_MARKET_CACHE = False
-
-        @property
-        def name(self) -> str:
-            return "probe"
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return True
-
-        def _fetch_current_price(self, symbol: str):
-            return next(bad_quotes)
-
-    probe = _ProbeProvider()
+    probe = _TestMarketProvider(price_fn=lambda _sym: next(bad_quotes))
     for _ in range(6):
         assert probe.get_current_price("BTCUSDC") is None
     assert probe.get_current_price("BTCUSDC") == pytest.approx(42.5)
@@ -274,26 +280,23 @@ def test_provider_base_border_cases_live_quote_falsy_client_and_fills_typeerror(
     # Internal TypeError inside _fills_from_api(symbol, publish_cache=...) must NOT trigger a duplicate API call
     calls = []
 
-    class _BuggyFillsProvider(_ProbeProvider):
-        def _fills_from_api(self, symbol: str, *, publish_cache: bool = False):
-            calls.append((symbol, publish_cache))
-            raise TypeError("internal bug inside _fills_from_api")
+    def _buggy_fills(symbol: str, *, publish_cache: bool = False):
+        calls.append((symbol, publish_cache))
+        raise TypeError("internal bug inside _fills_from_api")
 
-    buggy = _BuggyFillsProvider()
+    buggy = _TestMarketProvider(fills_fn=_buggy_fills)
     with pytest.raises(TypeError, match="internal bug"):
         buggy.fetch_remote_trades("BTCUSDC", 0)
     assert len(calls) == 1
 
     # Valid fills provider filters non-dict entries and rejects invalid start_time_ms
-    class _FillsProvider(_ProbeProvider):
-        def _fills_from_api(self, symbol: str, *, publish_cache: bool = False):
-            return [
-                "not_a_dict",
-                {"orderId": "1", "time": 1_000, "price": 10.0, "qty": 1.0},
-                {"orderId": "2", "time": 5_000, "price": 11.0, "qty": 1.0},
-            ]
-
-    fp = _FillsProvider()
+    fp = _TestMarketProvider(
+        fills_fn=lambda _sym, *, publish_cache=False: [
+            "not_a_dict",
+            {"orderId": "1", "time": 1_000, "price": 10.0, "qty": 1.0},
+            {"orderId": "2", "time": 5_000, "price": 11.0, "qty": 1.0},
+        ]
+    )
     assert fp.fetch_remote_trades("BTCUSDC", 0) == [
         {"orderId": "1", "time": 1_000, "price": 10.0, "qty": 1.0},
         {"orderId": "2", "time": 5_000, "price": 11.0, "qty": 1.0},
@@ -310,24 +313,18 @@ def test_fee_and_limits_resolution_symmetry_and_no_double_trailing_rest_call(tmp
     from kraken.trailing_stop import KrakenTrailing
 
     # 1. Custom MarketDataProvider subclass named 'kraken' resolves Kraken fee/limits via base class
-    class _KrakenSubStub(MarketDataProvider):
-        name = "kraken"
-
-        def __init__(self):
-            self._cli = _StubKrakenPairClient(
-                {
-                    "ordermin": "0.0001",
-                    "pair_decimals": 1,
-                    "lot_decimals": 8,
-                    "fees_maker": [[0, 0.16]],
-                    "fees": [[0, 0.26]],
-                }
-            )
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return True
-
-    stub = _KrakenSubStub()
+    stub = _TestMarketProvider(
+        "kraken",
+        cli=_StubKrakenPairClient(
+            {
+                "ordermin": "0.0001",
+                "pair_decimals": 1,
+                "lot_decimals": 8,
+                "fees_maker": [[0, 0.16]],
+                "fees": [[0, 0.26]],
+            }
+        ),
+    )
     meta = stub.resolve_cached_fee_and_limits("XBTUSD", price=80000.0)
     assert meta["maker_fee_bps"] == pytest.approx(16.0)
     assert meta["tick_size"] == pytest.approx(0.1)
@@ -1824,25 +1821,19 @@ def test_stop_loss_avg_archive_seed_replay_summary_fg_and_guard_preflight_border
     assert fg_clamped is not None and fg_clamped.value == 100 and fg_clamped.is_extreme_greed is True
 
     # 5. MarketDataProvider._resolve_live_order_flag, parse_intervals, _accepts_two_positional_args, guard/collector SSOT
-    class _DummyProv:
-        execution_enabled = lambda self: True
-        _resolve_live_order_flag = MarketDataProvider._resolve_live_order_flag
-
-    assert _DummyProv()._resolve_live_order_flag(None) is True  # type: ignore[arg-type]
-    assert _DummyProv()._resolve_live_order_flag({"live_enabled": "false"}) is False
+    dummy_prov = SimpleNamespace(execution_enabled=lambda: True)
+    assert MarketDataProvider._resolve_live_order_flag(dummy_prov, None) is True  # type: ignore[arg-type]
+    assert MarketDataProvider._resolve_live_order_flag(dummy_prov, {"live_enabled": "false"}) is False  # type: ignore[arg-type]
     assert parse_intervals(" 5 , 15 , 60 ") == [5, 15, 60]
 
-    class _BoundModel:
-        def one_arg(self, sig):
-            return sig
+    from types import MethodType
 
-        def two_args(self, sig, sym):
-            return (sig, sym)
-
-    bm = _BoundModel()
-    assert _accepts_two_positional_args(bm.one_arg) is False
-    assert _accepts_two_positional_args(bm.two_args) is True
-    assert _accepts_two_positional_args(functools.partial(bm.two_args, "prebound")) is False
+    bm = SimpleNamespace()
+    one_arg = MethodType(lambda self, sig: sig, bm)
+    two_args = MethodType(lambda self, sig, sym: (sig, sym), bm)
+    assert _accepts_two_positional_args(one_arg) is False
+    assert _accepts_two_positional_args(two_args) is True
+    assert _accepts_two_positional_args(functools.partial(two_args, "prebound")) is False
 
     early_res, norm_side, _, _ = preflight_intelligence_guard_entry(
         "SELL",

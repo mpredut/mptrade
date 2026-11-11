@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -162,12 +163,8 @@ def test_live_windows_share_one_loaded_snapshot(monkeypatch, tmp_path):
 def test_atomic_figure_publish_replaces_complete_file_and_cleans_temp(tmp_path):
     target = tmp_path / "chart.png"
     target.write_bytes(b"old")
-
-    class Figure:
-        def savefig(self, path, **_kwargs):
-            Path(path).write_bytes(b"complete-png")
-
-    observe._save_figure_atomic(Figure(), target, dpi=110)
+    fig = SimpleNamespace(savefig=lambda path, **_kwargs: Path(path).write_bytes(b"complete-png"))
+    observe._save_figure_atomic(fig, target, dpi=110)
 
     assert target.read_bytes() == b"complete-png"
     assert list(tmp_path.glob(".tradeall_observe_*.png")) == []
@@ -177,13 +174,12 @@ def test_atomic_figure_publish_preserves_previous_file_on_failure(tmp_path):
     target = tmp_path / "chart.png"
     target.write_bytes(b"old")
 
-    class BrokenFigure:
-        def savefig(self, path, **_kwargs):
-            Path(path).write_bytes(b"partial")
-            raise RuntimeError("render failed")
+    def _broken_savefig(path, **_kwargs):
+        Path(path).write_bytes(b"partial")
+        raise RuntimeError("render failed")
 
     with pytest.raises(RuntimeError, match="render failed"):
-        observe._save_figure_atomic(BrokenFigure(), target)
+        observe._save_figure_atomic(SimpleNamespace(savefig=_broken_savefig), target)
 
     assert target.read_bytes() == b"old"
     assert list(tmp_path.glob(".tradeall_observe_*.png")) == []

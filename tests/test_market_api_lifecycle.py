@@ -23,11 +23,36 @@ import botcore
 class FakeProvider(MarketDataProvider):
     name = "Fake"
 
-    def supports_symbol(self, symbol):
-        return symbol == "ABCUSD"
+    def __init__(
+        self,
+        prov_name: str = "Fake",
+        *,
+        supports="ABCUSD",
+        price: float = 10.0,
+        trades=None,
+        place_fn=None,
+        priority: int | None = None,
+        ohlc_points=None,
+        asset_scope: str | None = None,
+    ):
+        self.name = prov_name
+        self._supports = supports
+        self._price = price
+        self._trades = trades
+        self._place_fn = place_fn
+        self._ohlc_points = ohlc_points
+        if priority is not None:
+            self._HISTORICAL_OHLC_PRIORITY = priority
+        if asset_scope is not None:
+            self._ASSET_SCOPE = asset_scope
 
-    def get_current_price(self, symbol):
-        return 10.0
+    def supports_symbol(self, symbol):
+        if isinstance(self._supports, bool):
+            return self._supports
+        return symbol == self._supports
+
+    def _fetch_current_price(self, symbol):
+        return self._price
 
     def reconciliation_capabilities(self):
         return OrderReconciliationCapabilities(
@@ -53,11 +78,21 @@ class FakeProvider(MarketDataProvider):
         return getattr(self, "filter_reason", None)
 
     def get_trades(self, symbol, since_s):
+        if self._trades is not None:
+            return list(self._trades)
         return [
             {"side": "BUY", "price": 9, "qty": 2, "timestamp": 1},
             {"side": "SELL", "price": 11, "qty": 2,
              "timestamp": time.time() * 1000},
         ]
+
+    def place_order(self, symbol, side, price, qty, force=False, **kwargs):
+        if self._place_fn is not None:
+            return self._place_fn(symbol, side, price, qty, force=force, **kwargs)
+        return {"orderId": "ORD-777", "symbol": symbol, "side": side, "price": price, "qty": qty, "force": force}
+
+    def fetch_historical_ohlc_points(self, symbol: str, days: int, interval: str = "1h"):
+        return self._ohlc_points
 
     def ohlc_closes(self, symbol, interval_min):
         return list(range(10, 50))
@@ -345,25 +380,19 @@ def test_marketapi_latest_fill_price_with_bid_ask_aliases_and_marketapi_iter170_
     # 2. MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force
     captured = {}
 
-    class _DummyProvider(ma.MarketDataProvider):
-        @property
-        def name(self):
-            return "Dummy"
+    def _place(symbol, side, price, qty, force=False, **kwargs):
+        captured["force"] = force
+        return {"orderId": "111", "force": force}
 
-        def get_current_price(self, symbol):
-            return 100.0
-
-        def supports_symbol(self, symbol):
-            return True
-
-        def get_trades(self, symbol, since_s):
-            return [{"side": "BUY", "price": 105.0, "qty": 1.0, "timestamp": int(time.time() * 1000)}]
-
-        def place_order(self, symbol, side, price, qty, force=False, **kwargs):
-            captured["force"] = force
-            return {"orderId": "111", "force": force}
-
-    facade = ma.MarketApi([_DummyProvider()])
+    facade = ma.MarketApi([
+        FakeProvider(
+            "Dummy",
+            supports=True,
+            price=100.0,
+            trades=[{"side": "BUY", "price": 105.0, "qty": 1.0, "timestamp": int(time.time() * 1000)}],
+            place_fn=_place,
+        )
+    ])
     assert facade.latest_fill_price("BTCUSDC", "BID", 3600) == pytest.approx(105.0)
     res = facade.place_order("BTCUSDC", "BUY", 100.0, 1.0, True)
     assert res["force"] is True and captured["force"] is True
@@ -707,21 +736,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     assert resolve_intent_topic_tag({}, "t212") == "[auto_sharetrade_executor]"
     assert resolve_intent_topic_tag({}, "kraken") == "[auto_cryptotrade_executor]"
 
-    class _BaseSubmitDummy(MarketDataProvider):
-        @property
-        def name(self) -> str:
-            return "DummyExec"
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return symbol == "TESTUSDC"
-
-        def _fetch_current_price(self, symbol: str):
-            return 50.0
-
-        def place_order(self, symbol: str, side: str, price: float, qty: float, force: bool = False, **kwargs):
-            return {"orderId": "ORD-777", "symbol": symbol, "side": side, "price": price, "qty": qty, "force": force}
-
-    dummy = _BaseSubmitDummy()
+    dummy = FakeProvider("DummyExec", supports="TESTUSDC", price=50.0)
     facade = MarketApi([dummy])
     assert isinstance(dummy, StrategyExecutor)
     assert isinstance(facade, StrategyExecutor)
@@ -939,28 +954,15 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
         assert "fetch_ohlc_candles" not in cls.__dict__
         assert isinstance(cls._OHLC_MARKET_DATA_SPEC, tuple) and len(cls._OHLC_MARKET_DATA_SPEC) == 3
 
-    class _CryptoOhlcProvider(MarketDataProvider):
-        _ASSET_SCOPE = "crypto"
-
-        def __init__(self, prov_name: str, priority: int, supports: bool, points):
-            self._prov_name = prov_name
-            self._HISTORICAL_OHLC_PRIORITY = priority
-            self._supports = supports
-            self._points = points
-
-        @property
-        def name(self) -> str:
-            return self._prov_name
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return self._supports
-
-        def fetch_historical_ohlc_points(self, symbol: str, days: int, interval: str = "1h"):
-            return self._points
-
     facade = MarketApi([
-        _CryptoOhlcProvider("PrimaryCrypto", 1, True, [(1.0, 100.0)]),
-        _CryptoOhlcProvider("SecondaryCrypto", 2, False, [(float(i), 100.0 + i) for i in range(60)]),
+        FakeProvider("PrimaryCrypto", priority=1, supports=True, ohlc_points=[(1.0, 100.0)], asset_scope="crypto"),
+        FakeProvider(
+            "SecondaryCrypto",
+            priority=2,
+            supports=False,
+            ohlc_points=[(float(i), 100.0 + i) for i in range(60)],
+            asset_scope="crypto",
+        ),
     ])
     monkeypatch.setattr("botcore.is_live_network_backfill_enabled", lambda: False)
     assert len(facade.fetch_historical_ohlc_points("BTCUSDC", 7, interval="1h")) == 1

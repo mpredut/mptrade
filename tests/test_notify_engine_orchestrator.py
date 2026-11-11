@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+from types import SimpleNamespace
 from unittest import mock
 
 from notify_engine.alertnotifiers import (
@@ -1796,11 +1797,8 @@ def test_pricechecker__get_thresholds_for_symbol_handles_partial_or_invalid_per_
     """[ITER78 #1] PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts."""
     from market_monitor.pricechecker import PRICE_ALERT_CONFIG
     # 1. PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts
-    class _DummyCache:
-        symbol_added_time = {}
-
     checker = PriceChecker(
-        _DummyCache(),
+        SimpleNamespace(symbol_added_time={}),
         config={
             "per_coin": {
                 "BTC": {"up_percent": 2.5},  # missing down_percent
@@ -1925,11 +1923,9 @@ def test_notificationserver__send_ntfy_strips_cr_lf_from_headers_and_iter122_s2(
     monkeypatch.setenv("REPLAY_MODE", "0")
     monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(tmp_path / "notif_state.json"))
     sent_calls = []
-    class _OkResp:
-        status_code = 200
-        def raise_for_status(self):
-            pass
-    monkeypatch.setattr("notify_engine.server.requests.post", lambda url, data=None, headers=None, timeout=5: (sent_calls.append((url, headers)), _OkResp())[1])
+    ok_resp = MockHttpResponse()
+    ok_resp.status_code = 200
+    monkeypatch.setattr("notify_engine.server.requests.post", lambda url, data=None, headers=None, timeout=5: (sent_calls.append((url, headers)), ok_resp)[1])
     srv = NotificationServer()
     assert srv._send_ntfy("Line1\r\nLine2", "Body", "urgent\n", "https://ntfy.sh/custom-topic", is_retry=True, skip_email=True) is True
     assert sent_calls[0][0] == "https://ntfy.sh/custom-topic"

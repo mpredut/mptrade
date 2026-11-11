@@ -9,6 +9,7 @@ Supports p=1 (Linear), p=2 (Quadratic), p=3 (Cubic), and arbitrary powers p >= 0
 import math
 import os
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -224,19 +225,17 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertIn(90.0, cachetrend.CM_PUBLISHED_TREND_WINDOWS_SEC)
 
         queried = []
-
-        class _FakeMgr:
-            @staticmethod
-            def get_short_trend_for_window(sym, win_sec, now=None):
+        fake_mgr = SimpleNamespace(
+            get_short_trend_for_window=lambda sym, win_sec, now=None: (
                 queried.append((sym, win_sec))
-                return {"growth_coefficient": 0.5, "epsilon": 0.1, "n_samples": 11}
+                or {"growth_coefficient": 0.5, "epsilon": 0.1, "n_samples": 11}
+            ),
+            is_trend_up=lambda sym, window_seconds=None, now=None: (
+                queried.append(("fallback", sym, window_seconds)) or False
+            ),
+        )
 
-            @staticmethod
-            def is_trend_up(sym, window_seconds=None, now=None):
-                queried.append(("fallback", sym, window_seconds))
-                return False
-
-        with patch.object(cm, "get_short_trend_manager", return_value=_FakeMgr()):
+        with patch.object(cm, "get_short_trend_manager", return_value=fake_mgr):
             self.assertTrue(mt.is_trend_up("TAOUSDC"))
             self.assertEqual(queried, [("TAOUSDC", 90.0)])
             queried.clear()
@@ -314,12 +313,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
     def test_market_api_regime_service_for_reuses_and_caches_services(self):
         from providers.market_api import MarketApi
 
-        class DummyProvider:
-            name = "dummy"
-            def supports_symbol(self, s):
-                return True
-
-        api_inst = MarketApi([DummyProvider()])
+        api_inst = MarketApi([SimpleNamespace(name="dummy", supports_symbol=lambda s: True)])
         s_default = api_inst._regime_service_for(None)
         s_same = api_inst._regime_service_for(s_default.evaluator.strength_threshold)
         self.assertIs(s_same, s_default)

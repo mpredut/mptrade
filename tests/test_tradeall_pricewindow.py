@@ -14,6 +14,7 @@ Coverage:
   - CacheCurrentPriceManager: get_sample_rate / get_update_frequency
 """
 import os, sys, json, time, tempfile, threading, unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import order_retry
 import pricewindow as pw_mod
@@ -139,13 +140,11 @@ class TestTradeallOrderBoundary(unittest.TestCase):
 
     def test_kalman_gate_behaviors(self):
         with self.subTest("fails closed for blind buy but allows sell"):
-            class _AbsentShadow:
-                def current_trend(self, _sym):
-                    return None, 0.0
-            class _StaleShadow:
-                def current_trend(self, _sym):
-                    return 1, ta.GATE_STALE_SEC + 1.0
-            for shadow in (_AbsentShadow(), _StaleShadow()):
+            shadows = (
+                SimpleNamespace(current_trend=lambda _sym: (None, 0.0)),
+                SimpleNamespace(current_trend=lambda _sym: (1, ta.GATE_STALE_SEC + 1.0)),
+            )
+            for shadow in shadows:
                 with (patch.object(ta, "_kalman_ref", shadow),
                       patch.dict(ta.KALMAN_MODES, {"TAOUSDC": "strict"})):
                     self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
