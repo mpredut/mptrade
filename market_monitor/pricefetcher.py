@@ -492,18 +492,23 @@ class PricePlatformFactory:
         cached_platform = None
         supported = False
         platform_name = casefold_get(self._symbol_platform_cache, sym_norm)
+        def _try_platform(platform) -> Optional[Dict]:
+            price = platform.get_price(symbol)
+            if price is not None:
+                self._symbol_platform_cache[sym_norm] = platform.platform_name
+                return {
+                    "symbol": symbol, "price": price,
+                    "platform": platform.platform_name, "timestamp": math.trunc(time.time())
+                }
+            return None
+
         if platform_name:
             for platform in self._platforms:
                 if platform.platform_name == platform_name:
                     cached_platform = platform
                     supported = True
-                    price = platform.get_price(symbol)
-                    if price is not None:
-                        self._symbol_platform_cache[sym_norm] = platform.platform_name
-                        return {
-                            "symbol": symbol, "price": price,
-                            "platform": platform.platform_name, "timestamp": math.trunc(time.time())
-                        }
+                    if (res := _try_platform(platform)) is not None:
+                        return res
                     self._symbol_platform_cache.pop(sym_norm, None)
                     break
         for platform in self._platforms:
@@ -511,13 +516,8 @@ class PricePlatformFactory:
                 continue
             if platform.supports_symbol(symbol):
                 supported = True
-                price = platform.get_price(symbol)
-                if price is not None:
-                    self._symbol_platform_cache[sym_norm] = platform.platform_name
-                    return {
-                        "symbol": symbol, "price": price,
-                        "platform": platform.platform_name, "timestamp": math.trunc(time.time())
-                    }
+                if (res := _try_platform(platform)) is not None:
+                    return res
         if not supported:
             raise ValueError(f"Symbol '{symbol}' is not supported by any platform")
         raise RuntimeError(f"Unable to fetch price for '{symbol}' from any supported platform")

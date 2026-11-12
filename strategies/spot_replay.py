@@ -29,8 +29,10 @@ from strategies.replay_execution import (
     ExecutionModel,
     FeeModel,
     choose_intrabar_scenario,
+    require_optional_pos_float,
     select_eligible_intrabar_orders,
     split_order_fill,
+    unpack_ohlc_bar,
     validate_ohlc_bars,
 )
 from strategies.replay_metrics import calculate_performance_metrics, round_metric
@@ -196,10 +198,7 @@ def run_replay(
         bar_minutes = safe_pos_float(bar_minutes, default=None)
     include_decision_trace = _strat._parse_bool_flag(include_decision_trace, False)
     intrabar_high = _strat._parse_bool_flag(intrabar_high, False)
-    if initial_cash is not None:
-        initial_cash = safe_pos_float(initial_cash, default=None)
-        if initial_cash is None:
-            raise ValueError("initial_cash must be finite and positive")
+    initial_cash = require_optional_pos_float(initial_cash, "initial_cash must be finite and positive")
     ts_tuple: tuple[float, ...] | None = None
     if timestamps is not None:
         ts_raw = list(timestamps)
@@ -376,10 +375,7 @@ def _run_once(
                 cycle_net_start = strategy.s["realized_net"]
 
         for bar_index, row in enumerate(ohlc):
-            open_ = require_pos_float(row[0], "open")
-            high = require_pos_float(row[1], "high")
-            low = require_pos_float(row[2], "low")
-            close = require_pos_float(row[3], "close")
+            open_, high, low, close = unpack_ohlc_bar(row)
             current_bar = bar_index
             replay_time = timestamps[bar_index] if timestamps else bar_index * bar_step_sec
             strategy.set_simulated_time(replay_time)

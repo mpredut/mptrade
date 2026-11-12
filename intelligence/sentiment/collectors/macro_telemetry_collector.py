@@ -745,48 +745,41 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
             newest_news_ts = max((safe_pos_float(n.get("first_seen_ts"), default=0.0) or 0.0 for n in valid_news), default=0.0)
             has_fresh_calm_news = newest_news_ts > 0.0 and 0.0 <= (now_ts - newest_news_ts) <= 3600.0
             gt_age_min = safe_float(gt_cur.get("age_min"), 0.0) or 0.0
+            def _reset_and_persist_normal_geopolitical_eval(summary_txt: str, digest_txt: str) -> None:
+                gt_cur["threat_level"] = "NORMAL"
+                gt_cur["risk_score"] = 0.1
+                gt_cur["recommended_brake"] = "NONE"
+                gt_cur["summary"] = summary_txt
+                gt_cur["headlines_digest"] = digest_txt
+                gt_cur["headlines_analyzed"] = len(valid_news)
+                gt_cur["ts"] = now_ts
+                gt_cur["age_min"] = 0.0
+                if persist and allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
+                    try:
+                        _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
+                        geo_save_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "geopolitical_eval.json")))
+                        _save_fn(geo_save_path, {k: v for k, v in gt_cur.items() if k != "age_min"}, indent=2)
+                    except Exception:
+                        pass
+
             if gt_digest_invalid or (
                 str(gt_cur.get("threat_level") or "NORMAL").upper() == "NORMAL"
                 and not gt_digest
                 and has_fresh_calm_news
                 and gt_age_min >= 60.0
             ):
-                gt_cur["threat_level"] = "NORMAL"
-                gt_cur["risk_score"] = 0.1
-                gt_cur["recommended_brake"] = "NONE"
-                gt_cur["summary"] = "Calm geopolitical and energy climate. No systemic shock detected."
-                gt_cur["headlines_digest"] = ""
-                gt_cur["headlines_analyzed"] = len(valid_news)
-                gt_cur["ts"] = now_ts
-                gt_cur["age_min"] = 0.0
-                if persist and allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
-                    try:
-                        _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
-                        geo_save_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "geopolitical_eval.json")))
-                        _save_fn(geo_save_path, {k: v for k, v in gt_cur.items() if k != "age_min"}, indent=2)
-                    except Exception:
-                        pass
+                _reset_and_persist_normal_geopolitical_eval(
+                    "Calm geopolitical and energy climate. No systemic shock detected.",
+                    "",
+                )
             elif (
                 all_valid_digest_aged_90m
                 and str(gt_cur.get("threat_level") or "").upper() in ("ELEVATED", "CRITICAL_SHOCK")
             ):
-                gt_cur["threat_level"] = "NORMAL"
-                gt_cur["risk_score"] = 0.1
-                gt_cur["recommended_brake"] = "NONE"
-                gt_cur["summary"] = (
-                    "Geopolitical threat de-escalated to NORMAL: no fresh high-severity macro headlines in the last 90 minutes."
+                _reset_and_persist_normal_geopolitical_eval(
+                    "Geopolitical threat de-escalated to NORMAL: no fresh high-severity macro headlines in the last 90 minutes.",
+                    " | ".join(valid_digest_titles[:12]),
                 )
-                gt_cur["headlines_digest"] = " | ".join(valid_digest_titles[:12])
-                gt_cur["headlines_analyzed"] = len(valid_news)
-                gt_cur["ts"] = now_ts
-                gt_cur["age_min"] = 0.0
-                if persist and allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
-                    try:
-                        _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
-                        geo_save_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "geopolitical_eval.json")))
-                        _save_fn(geo_save_path, {k: v for k, v in gt_cur.items() if k != "age_min"}, indent=2)
-                    except Exception:
-                        pass
         if (
             isinstance(gt_cur, dict)
             and str(gt_cur.get("threat_level") or "").upper() in ("ELEVATED", "CRITICAL_SHOCK")

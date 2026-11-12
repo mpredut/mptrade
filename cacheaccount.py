@@ -1487,11 +1487,18 @@ class CacheTradeManager(CacheAccountManagerBase):
         if not new_items:
             return
         new_items = self._coerce_item_list(new_items)
+
+        def _validate_and_sign(item: Any, err_msg: str) -> tuple[str, tuple[Any, ...]]:
+            if not self._is_valid_item(item) or str(item["symbol"]).upper() != str(symbol).upper():
+                raise RuntimeError(err_msg)
+            return str(int(item["id"])), _cache_integrity.trade_semantic_signature(item)
+
         with self.lock:
             bucket = self.cache.setdefault(symbol, [])
             persisted_count = self._persisted_counts.get(symbol, 0)
             existing = {}
             for idx, item in enumerate(bucket):
+<<<<<<< Updated upstream
                 if (
                     not self._is_valid_item(item)
                     or str(item["symbol"]).upper() != str(symbol).upper()
@@ -1499,6 +1506,9 @@ class CacheTradeManager(CacheAccountManagerBase):
                     raise RuntimeError("invalid Trade row already in memory")
                 trade_id = str(strict_ascii_int(item["id"], default=0))
                 signature = _cache_integrity.trade_semantic_signature(item)
+=======
+                trade_id, signature = _validate_and_sign(item, "invalid Trade row already in memory")
+>>>>>>> Stashed changes
                 if trade_id in existing:
                     raise RuntimeError("duplicate immutable Trade ID in memory")
                 existing[trade_id] = (signature, idx, item)
@@ -1506,6 +1516,7 @@ class CacheTradeManager(CacheAccountManagerBase):
             unique = []
             enriched_unpersisted = False
             for item in new_items:
+<<<<<<< Updated upstream
                 if (
                     not self._is_valid_item(item)
                     or str(item["symbol"]).upper() != str(symbol).upper()
@@ -1513,6 +1524,9 @@ class CacheTradeManager(CacheAccountManagerBase):
                     raise RuntimeError("invalid incoming Trade row")
                 trade_id = str(strict_ascii_int(item["id"], default=0))
                 signature = _cache_integrity.trade_semantic_signature(item)
+=======
+                trade_id, signature = _validate_and_sign(item, "invalid incoming Trade row")
+>>>>>>> Stashed changes
                 if trade_id in existing:
                     prev_sig, prev_idx, prev_item = existing[trade_id]
                     if prev_sig != signature:

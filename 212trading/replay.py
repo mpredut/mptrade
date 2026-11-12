@@ -37,8 +37,10 @@ from providers.replay_provider import SimClock
 from strategies.replay_execution import (
     ExecutionModel,
     choose_intrabar_scenario,
+    require_optional_pos_float,
     select_eligible_intrabar_orders,
     split_order_fill,
+    unpack_ohlc_bar,
     validate_ohlc_bars,
 )
 from strategies.replay_metrics import round_metric
@@ -94,18 +96,9 @@ def run_replay(
     """Run the live T212 strategy over ``(open, high, low, close)`` bars."""
     if not isinstance(ohlc, (list, tuple)) or not ohlc:
         raise ValueError("ohlc cannot be empty")
-    if bar_minutes is not None:
-        bar_minutes = safe_pos_float(bar_minutes, default=None)
-        if bar_minutes is None:
-            raise ValueError("bar_minutes must be a finite positive number")
-    if periods_per_year is not None:
-        periods_per_year = safe_pos_float(periods_per_year, default=None)
-        if periods_per_year is None:
-            raise ValueError("periods_per_year must be a finite positive number")
-    if initial_cash is not None:
-        initial_cash = safe_pos_float(initial_cash, default=None)
-        if initial_cash is None:
-            raise ValueError("initial_cash must be a finite positive number")
+    bar_minutes = require_optional_pos_float(bar_minutes, "bar_minutes must be a finite positive number")
+    periods_per_year = require_optional_pos_float(periods_per_year, "periods_per_year must be a finite positive number")
+    initial_cash = require_optional_pos_float(initial_cash, "initial_cash must be a finite positive number")
     validate_ohlc_bars(ohlc, exact_len_4=True, check_envelope=True)
     if warmup_ohlc:
         validate_ohlc_bars(warmup_ohlc, exact_len_4=True, check_envelope=False)
@@ -236,11 +229,69 @@ def _run_once(
         cycle_net_start = 0.0
         side_order = execution.side_order()
 
+        def _execute_sell_fill(
+            order: dict,
+            fill_order: dict,
+            quantity: float,
+            price: float,
+            rate: float,
+            *,
+            held_before: float,
+            mark_tp_level: bool,
+            remove_before_apply: bool,
+        ) -> None:
+            nonlocal cash, min_cash, open_cost_account, open_buy_fee_account
+            nonlocal realized_gross_account, fees_account, realized_net_account
+            nonlocal turnover_account, fills, wins, prev_cycle, cycle_net_start
+            fill_order["qty"] = quantity
+            frac = min(1.0, quantity / held_before) if held_before > 1e-12 else 1.0
+            released_cost_account = open_cost_account * frac
+            released_buy_fee_account = open_buy_fee_account * frac
+            open_cost_account = max(0.0, open_cost_account - released_cost_account)
+            open_buy_fee_account = max(0.0, open_buy_fee_account - released_buy_fee_account)
+            sell_notional_account = quantity * price / rate
+            sell_fee_account = (params.fx_fee_pct / 100.0) * sell_notional_account
+            if cash is not None:
+                cash += sell_notional_account - sell_fee_account
+                min_cash = min(min_cash, cash)
+            gross_acc = sell_notional_account - released_cost_account
+            fee_acc = released_buy_fee_account + sell_fee_account
+            if mark_tp_level and fill_order.get("level") is not None:
+                engine._record_tp_sold_level(fill_order["level"])
+            realized_gross_account += gross_acc
+            fees_account += fee_acc
+            realized_net_account += gross_acc - fee_acc
+            dust_before = max(0.0, held_before - quantity)
+            if remove_before_apply:
+                engine._remove(order)
+            engine._apply_fill(fill_order, quantity, price)
+            if engine.s["qty"] <= 1e-9 and (open_cost_account > 0.0 or open_buy_fee_account > 0.0):
+                dust_val_acc = dust_before * price / rate
+                dust_sell_fee = (params.fx_fee_pct / 100.0) * dust_val_acc
+                if cash is not None and dust_val_acc > 0.0:
+                    cash += dust_val_acc - dust_sell_fee
+                    min_cash = min(min_cash, cash)
+                dust_gross = dust_val_acc - open_cost_account
+                dust_fee_total = open_buy_fee_account + dust_sell_fee
+                realized_gross_account += dust_gross
+                fees_account += dust_fee_total
+                realized_net_account += dust_gross - dust_fee_total
+                turnover_account += dust_val_acc
+                open_cost_account = 0.0
+                open_buy_fee_account = 0.0
+            cur_cycle = engine.s.get("cycle", 1)
+            if cur_cycle > prev_cycle:
+                cycle_pnl = realized_net_account - cycle_net_start
+                trade_pnls.append(cycle_pnl)
+                if cycle_pnl > 0.0:
+                    wins += 1
+                cycle_net_start = realized_net_account
+                prev_cycle = cur_cycle
+            fills += 1
+            turnover_account += sell_notional_account
+
         for bar_index, row in enumerate(ohlc):
-            open_ = require_pos_float(row[0], "open")
-            high = require_pos_float(row[1], "high")
-            low = require_pos_float(row[2], "low")
-            close = require_pos_float(row[3], "close")
+            open_, high, low, close = unpack_ohlc_bar(row)
             rate = fx_rates[bar_index]
             engine.fx_to_usd = rate
             clock.value = (
@@ -300,58 +351,25 @@ def _run_once(
                                 if cash is not None:
                                     cash = max(0.0, cash - (buy_notional_account + buy_fee_account))
                                     min_cash = min(min_cash, cash)
+                                engine._apply_fill(fill_order, quantity, price)
+                                fills += 1
+                                turnover_account += buy_notional_account
                             else:
                                 held_before = engine.s["qty"]
                                 quantity = min(quantity, held_before)
                                 if quantity <= 1e-12:
                                     engine._remove(order)
                                     continue
-                                fill_order["qty"] = quantity
-                                frac = min(1.0, quantity / held_before) if held_before > 1e-12 else 1.0
-                                released_cost_account = open_cost_account * frac
-                                released_buy_fee_account = open_buy_fee_account * frac
-                                open_cost_account = max(0.0, open_cost_account - released_cost_account)
-                                open_buy_fee_account = max(0.0, open_buy_fee_account - released_buy_fee_account)
-                                sell_notional_account = quantity * price / rate
-                                sell_fee_account = (params.fx_fee_pct / 100.0) * sell_notional_account
-                                if cash is not None:
-                                    cash += sell_notional_account - sell_fee_account
-                                    min_cash = min(min_cash, cash)
-                                gross_acc = sell_notional_account - released_cost_account
-                                fee_acc = released_buy_fee_account + sell_fee_account
-                                net_acc = gross_acc - fee_acc
-                                if complete and fill_order.get("level") is not None:
-                                    engine._record_tp_sold_level(fill_order["level"])
-                                realized_gross_account += gross_acc
-                                fees_account += fee_acc
-                                realized_net_account += net_acc
-                            dust_before = max(0.0, engine.s["qty"] - quantity) if side == "sell" else 0.0
-                            engine._apply_fill(fill_order, quantity, price)
-                            if side == "sell":
-                                if engine.s["qty"] <= 1e-9 and (open_cost_account > 0.0 or open_buy_fee_account > 0.0):
-                                    dust_val_acc = dust_before * price / rate
-                                    dust_sell_fee = (params.fx_fee_pct / 100.0) * dust_val_acc
-                                    if cash is not None and dust_val_acc > 0.0:
-                                        cash += dust_val_acc - dust_sell_fee
-                                        min_cash = min(min_cash, cash)
-                                    dust_gross = dust_val_acc - open_cost_account
-                                    dust_fee_total = open_buy_fee_account + dust_sell_fee
-                                    realized_gross_account += dust_gross
-                                    fees_account += dust_fee_total
-                                    realized_net_account += dust_gross - dust_fee_total
-                                    turnover_account += dust_val_acc
-                                    open_cost_account = 0.0
-                                    open_buy_fee_account = 0.0
-                                cur_cycle = engine.s.get("cycle", 1)
-                                if cur_cycle > prev_cycle:
-                                    cycle_pnl = realized_net_account - cycle_net_start
-                                    trade_pnls.append(cycle_pnl)
-                                    if cycle_pnl > 0.0:
-                                        wins += 1
-                                    cycle_net_start = realized_net_account
-                                    prev_cycle = cur_cycle
-                            fills += 1
-                            turnover_account += quantity * price / rate
+                                _execute_sell_fill(
+                                    order,
+                                    fill_order,
+                                    quantity,
+                                    price,
+                                    rate,
+                                    held_before=held_before,
+                                    mark_tp_level=complete,
+                                    remove_before_apply=False,
+                                )
 
                 if engine.s["orders"]:
                     for order in list(engine.s["orders"]):
@@ -377,51 +395,16 @@ def _run_once(
                     engine._remove(order)
                     continue
                 price = execution.market_price("sell", last_close)
-                fill_order = dict(order, qty=quantity)
-                frac = min(1.0, quantity / held_before) if held_before > 1e-12 else 1.0
-                released_cost_account = open_cost_account * frac
-                released_buy_fee_account = open_buy_fee_account * frac
-                open_cost_account = max(0.0, open_cost_account - released_cost_account)
-                open_buy_fee_account = max(0.0, open_buy_fee_account - released_buy_fee_account)
-                sell_notional_account = quantity * price / final_rate
-                sell_fee_account = (params.fx_fee_pct / 100.0) * sell_notional_account
-                if cash is not None:
-                    cash += sell_notional_account - sell_fee_account
-                    min_cash = min(min_cash, cash)
-                gross_acc = sell_notional_account - released_cost_account
-                fee_acc = released_buy_fee_account + sell_fee_account
-                if fill_order.get("level") is not None:
-                    engine._record_tp_sold_level(fill_order["level"])
-                realized_gross_account += gross_acc
-                fees_account += fee_acc
-                realized_net_account += gross_acc - fee_acc
-                dust_before = max(0.0, held_before - quantity)
-                engine._remove(order)
-                engine._apply_fill(fill_order, quantity, price)
-                if engine.s["qty"] <= 1e-9 and (open_cost_account > 0.0 or open_buy_fee_account > 0.0):
-                    dust_val_acc = dust_before * price / final_rate
-                    dust_sell_fee = (params.fx_fee_pct / 100.0) * dust_val_acc
-                    if cash is not None and dust_val_acc > 0.0:
-                        cash += dust_val_acc - dust_sell_fee
-                        min_cash = min(min_cash, cash)
-                    dust_gross = dust_val_acc - open_cost_account
-                    dust_fee_total = open_buy_fee_account + dust_sell_fee
-                    realized_gross_account += dust_gross
-                    fees_account += dust_fee_total
-                    realized_net_account += dust_gross - dust_fee_total
-                    turnover_account += dust_val_acc
-                    open_cost_account = 0.0
-                    open_buy_fee_account = 0.0
-                cur_cycle = engine.s.get("cycle", 1)
-                if cur_cycle > prev_cycle:
-                    cycle_pnl = realized_net_account - cycle_net_start
-                    trade_pnls.append(cycle_pnl)
-                    if cycle_pnl > 0.0:
-                        wins += 1
-                    cycle_net_start = realized_net_account
-                    prev_cycle = cur_cycle
-                fills += 1
-                turnover_account += sell_notional_account
+                _execute_sell_fill(
+                    order,
+                    dict(order, qty=quantity),
+                    quantity,
+                    price,
+                    final_rate,
+                    held_before=held_before,
+                    mark_tp_level=True,
+                    remove_before_apply=True,
+                )
                 settled_end_exit = True
         if settled_end_exit:
             rem_qty = engine.s["qty"]

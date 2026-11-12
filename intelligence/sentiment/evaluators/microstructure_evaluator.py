@@ -42,6 +42,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     _prices_diverged,
     apply_short_trend_item,
     compute_7d_range_metrics,
+    is_unseeded_kalman_state,
     pct_delta,
     recalculate_live_price_geometry,
 )
@@ -935,17 +936,25 @@ def update_microstructure_cycle_deltas(
     return mhist
 
 
-def is_unseeded_kalman_state(
-    mapping: Any, *, treat_none_as_unseeded: bool = False
+_SIBLING_VP_KEYS: frozenset[str] = frozenset({
+    "sec_poc_px", "hvn2_px", "lvn_px", "profile_shape",
+    "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct",
+    "val_dist_pct", "va_pos_pct", "va_regime", "vp_source",
+})
+_SIBLING_BOTTOM_KEYS: frozenset[str] = frozenset({
+    "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px",
+    "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",
+})
+
+
+def should_skip_sibling_telemetry_key(
+    key: str,
+    *,
+    has_own_vp: bool,
+    has_own_bottom: bool,
 ) -> bool:
-    """Return True when a Kalman state dictionary is unseeded or cold-initialized."""
-    if not isinstance(mapping, dict):
-        return treat_none_as_unseeded
-    vel = safe_float(mapping.get("kalman_vel"), default=None)
-    if vel is None:
-        return treat_none_as_unseeded
-    std = safe_float(mapping.get("kalman_vel_std"), default=None)
-    return abs(vel) < 1e-9 or (abs(vel) < 1e-12 and (std is None or std >= 5.99))
+    """Return True when ``key`` belongs to volume-profile or 6h-bottom structure already present on the primary symbol."""
+    return (has_own_vp and key in _SIBLING_VP_KEYS) or (has_own_bottom and key in _SIBLING_BOTTOM_KEYS)
 
 
 def enrich_cross_venue_trends(
@@ -1252,9 +1261,7 @@ def sync_sibling_symbol_telemetry(
                 for k, v in sib_pinfo.items():
                     if v is None or k == "price" or (px_diverged and k in range_bound_keys):
                         continue
-                    if has_own_vp and k in ("sec_poc_px", "hvn2_px", "lvn_px", "profile_shape", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "vp_source"):
-                        continue
-                    if has_own_bottom and k in ("bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct"):
+                    if should_skip_sibling_telemetry_key(k, has_own_vp=has_own_vp, has_own_bottom=has_own_bottom):
                         continue
                     if k not in pinfo or pinfo.get(k) is None:
                         pinfo[k] = v

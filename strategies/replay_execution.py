@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from botcore import _parse_bool_flag, require_finite_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, require_finite_float, require_pos_float, safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
 from providers.order_ohlc_utils import validate_ohlc_bars
 
@@ -28,6 +28,23 @@ def _bind_req_float(coercer):
 
 _req_pos_float = _bind_req_float(safe_pos_float)
 _req_nonneg_float = _bind_req_float(safe_nonneg_float)
+
+
+def require_optional_pos_float(val: Any, msg: str) -> float | None:
+    """Return ``None`` when ``val`` is ``None``, else require a finite positive float."""
+    if val is None:
+        return None
+    return _req_pos_float(val, msg)
+
+
+def unpack_ohlc_bar(row: Any) -> tuple[float, float, float, float]:
+    """Unpack and validate positive ``(open, high, low, close)`` floats from one OHLC bar."""
+    return (
+        require_pos_float(row[0], "open"),
+        require_pos_float(row[1], "high"),
+        require_pos_float(row[2], "low"),
+        require_pos_float(row[3], "close"),
+    )
 
 
 @dataclass(frozen=True)
@@ -203,7 +220,9 @@ __all__ = [
     "ExecutionModel",
     "FeeModel",
     "choose_intrabar_scenario",
+    "require_optional_pos_float",
     "select_eligible_intrabar_orders",
     "split_order_fill",
+    "unpack_ohlc_bar",
     "validate_ohlc_bars",
 ]

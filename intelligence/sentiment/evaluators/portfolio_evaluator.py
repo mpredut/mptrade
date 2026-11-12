@@ -650,12 +650,18 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
         if any(o.get(k) is not None for o in valid for k in ("orderId", "order_id", "ordertxid", "oid")):
             valid = aggregate_fills_by_order_id(valid) or valid
 
+        def _lookup_cached_origin(o: Dict[str, Any]) -> Optional[tuple[str, Optional[str], Optional[str]]]:
+            oid_k = str(extract_order_id(o, default="") or "")
+            side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
+            return origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k)
+
+        def _is_untagged_bot_origin(o: Dict[str, Any]) -> bool:
+            cur_act, cur_mod, cur_rule = _lookup_cached_origin(o) or ("BOT", None, None)
+            return bool(cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")))
+
         if parsed_ai_intents:
             for o in valid:
-                oid_k = str(extract_order_id(o, default="") or "")
-                side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
-                cur_act, cur_mod, cur_rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or ("BOT", None, None)
-                if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")) and _matches_ai_intent(o):
+                if _is_untagged_bot_origin(o) and _matches_ai_intent(o):
                     _mark_ai_origin(o)
             for i_sym, i_side, i_ts_s, i_qty, _ in parsed_ai_intents:
                 if i_qty <= 0.0:
@@ -670,10 +676,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                     o_sym = str(o.get("symbol") or o.get("pair") or fallback_sym).strip().upper()
                     if i_sym and o_sym and not _same_asset_scope_and_quote(i_sym, o_sym):
                         continue
-                    oid_k = str(extract_order_id(o, default="") or "")
-                    side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
-                    cur_act, cur_mod, cur_rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or ("BOT", None, None)
-                    if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")):
+                    if _is_untagged_bot_origin(o):
                         if (o_q := extract_executed_qty(o, default=0.0) or 0.0) > 0.0:
                             cands.append((o, o_q))
                 if len(cands) > 1 and abs(sum(q for _, q in cands) - i_qty) <= max(1e-5, i_qty * 0.01):
@@ -683,9 +686,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
         def _fill_origin(o: Optional[Dict[str, Any]]) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
             if not isinstance(o, dict):
                 return None, None, None, None
-            oid_k = str(extract_order_id(o, default="") or "")
-            side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
-            act, mod, rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or resolve_order_origin(o, ai_oids, audit_origin_map)
+            act, mod, rule = _lookup_cached_origin(o) or resolve_order_origin(o, ai_oids, audit_origin_map)
             return ("AI", None, None, "AI") if act == "AI" else ("BOT", mod, rule, format_actor_tag("BOT", mod, rule))
 
         chron = [o for _, o in sorted(enumerate(valid), key=lambda item: (extract_timestamp_ms(item[1], default=0) or 0, item[0]))]
@@ -844,31 +845,25 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                     active_swing_lots = [newest_lot]
                 if sold_after_newest and len(active_swing_lots) >= len(open_lots):
                     active_swing_lots = []
-            sw_cost = sum(
-                (safe_pos_float(x.get("qty"), default=0.0) or 0.0)
-                * (safe_pos_float(x.get("entry_px"), default=0.0) or 0.0)
-                for x in active_swing_lots
-            )
-            sw_qty = sum(safe_pos_float(x.get("qty"), default=0.0) or 0.0 for x in active_swing_lots)
-            if sw_qty > 1e-12 and sw_cost > 0.0:
-                swing_subcycle_avg_px = round(sw_cost / sw_qty, 6)
-                swing_subcycle_qty = round(sw_qty, 6)
+            sw_lots, sw_px_key = active_swing_lots, "entry_px"
         elif buys_fmt:
-            rec_b = [
+            sw_lots, sw_px_key = [
                 b for b in buys_fmt[-4:]
                 if (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
                 and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
-            ]
-            if rec_b:
-                sw_cost = sum(
-                    (safe_pos_float(b.get("qty"), default=0.0) or 0.0)
-                    * (safe_pos_float(b.get("price"), default=0.0) or 0.0)
-                    for b in rec_b
-                )
-                sw_qty = sum(safe_pos_float(b.get("qty"), default=0.0) or 0.0 for b in rec_b)
-                if sw_qty > 1e-12:
-                    swing_subcycle_avg_px = round(sw_cost / sw_qty, 6)
-                    swing_subcycle_qty = round(sw_qty, 6)
+            ], "price"
+        else:
+            sw_lots, sw_px_key = [], "price"
+        if sw_lots:
+            sw_cost = sum(
+                (safe_pos_float(x.get("qty"), default=0.0) or 0.0)
+                * (safe_pos_float(x.get(sw_px_key), default=0.0) or 0.0)
+                for x in sw_lots
+            )
+            sw_qty = sum(safe_pos_float(x.get("qty"), default=0.0) or 0.0 for x in sw_lots)
+            if sw_qty > 1e-12 and sw_cost > 0.0:
+                swing_subcycle_avg_px = round(sw_cost / sw_qty, 6)
+                swing_subcycle_qty = round(sw_qty, 6)
 
         last_act, last_mod, last_rule, last_tag = _fill_origin(last_any)
         active_avg_r = round(active_avg, 6) if active_avg > 0 else None
@@ -1017,11 +1012,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                 )
                 rem_q_ro = safe_pos_float(ro_c.get("active_cycle_rem_qty"), default=0.0) or 0.0
                 live_held = live_held_by_venue_sym.get((c_venue, str(c_sym).upper()))
-                if post_sell_new_cycle and (
-                    live_held is None
-                    or live_held <= 1e-6
-                    or abs(buys_after_qty - live_held) <= max(1e-4, live_held * 0.02)
-                ):
+                def _reset_post_sell_ro_cycle() -> None:
                     ro_c["lifo_realized_pnl_usd"] = 0.0
                     ro_c["recent_buys"] = buys_after[-4:]
                     if isinstance(ro_c.get("open_lots"), list):
@@ -1029,6 +1020,13 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                             lt for lt in ro_c["open_lots"]
                             if isinstance(lt, dict) and (safe_pos_float(lt.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
                         ]
+
+                if post_sell_new_cycle and (
+                    live_held is None
+                    or live_held <= 1e-6
+                    or abs(buys_after_qty - live_held) <= max(1e-4, live_held * 0.02)
+                ):
+                    _reset_post_sell_ro_cycle()
                 has_pre_sell_rem = (
                     buys_after_qty > 0.0
                     and (cyc_qty_cur - buys_after_qty) > 1e-6
@@ -1148,13 +1146,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                             },
                         )
                         if eff_rem_wallet <= 1e-6 or abs(new_qty - eff_rem_wallet) <= max(1e-4, eff_rem_wallet * 0.02):
-                            ro_c["lifo_realized_pnl_usd"] = 0.0
-                            ro_c["recent_buys"] = buys_after[-4:]
-                            if isinstance(ro_c.get("open_lots"), list):
-                                ro_c["open_lots"] = [
-                                    lt for lt in ro_c["open_lots"]
-                                    if isinstance(lt, dict) and (safe_pos_float(lt.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
-                                ]
+                            _reset_post_sell_ro_cycle()
                     elif has_non_dust_wallet:
                         eff_avg_w = (
                             safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)

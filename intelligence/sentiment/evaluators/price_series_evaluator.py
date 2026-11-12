@@ -645,6 +645,40 @@ _WINDOW_TREND_SPECS: Tuple[Tuple[str, str, str, str], ...] = (
 )
 
 
+def _is_unseeded_single_sample_window(w_dict: Dict[str, Any]) -> bool:
+    """Return True when a 24trend window has fewer than 2 samples and zero slope/growth."""
+    return (
+        (safe_pos_float(w_dict.get("n_samples"), default=2.0) or 2.0) < 2.0
+        and abs(safe_float(w_dict.get("slope_full"), 0.0)) < 1e-12
+        and abs(safe_float(w_dict.get("growth_coefficient"), 0.0)) < 1e-12
+    )
+
+
+def _resolve_window_metric_with_fallbacks(primary: Any, *fallbacks: Any) -> Any:
+    """Return ``primary`` unless it is near-zero (``< 5e-8``), in which case return the first non-near-zero fallback."""
+    val = primary
+    if val is not None and abs(safe_float(val, 0.0)) < 5e-8:
+        for fb in fallbacks:
+            if fb is not None and abs(safe_float(fb, 0.0)) >= 5e-8:
+                return fb
+    return val
+
+
+def is_unseeded_kalman_state(
+    mapping: Any,
+    *,
+    treat_none_as_unseeded: bool = False,
+) -> bool:
+    """Return True when a Kalman state dictionary is unseeded or cold-initialized."""
+    if not isinstance(mapping, dict):
+        return treat_none_as_unseeded
+    vel = safe_float(mapping.get("kalman_vel"), default=None)
+    if vel is None:
+        return treat_none_as_unseeded
+    std = safe_float(mapping.get("kalman_vel_std"), default=None)
+    return abs(vel) < 1e-9 or (abs(vel) < 1e-12 and (std is None or std >= 5.99))
+
+
 def apply_short_trend_item(
     entry: Dict[str, Any],
     tinfo: Dict[str, Any],
@@ -701,33 +735,20 @@ def apply_short_trend_item(
     for wk, s_key, t_key, g_key in _WINDOW_TREND_SPECS:
         w_dict = wins[wk]
         is_90 = wk == "90"
-        is_unseeded_1smp = (
-            not require_any_slope
-            and (safe_pos_float(w_dict.get("n_samples"), default=2.0) or 2.0) < 2.0
-            and abs(safe_float(w_dict.get("slope_full"), 0.0)) < 1e-12
-            and abs(safe_float(w_dict.get("growth_coefficient"), 0.0)) < 1e-12
-        )
-        if is_unseeded_1smp:
+        if not require_any_slope and _is_unseeded_single_sample_window(w_dict):
             if wk == "222" and abs(safe_float(entry.get("gradient_recent_fast"), 0.0)) < 1e-12:
                 entry["gradient_recent_fast"] = None
             continue
         if w_dict.get("slope_full") is not None or (require_any_slope and not is_90):
-            s_val = w_dict.get("slope_full", 0.0) if (require_any_slope and not is_90) else w_dict.get("slope_full")
-            if s_val is not None and abs(safe_float(s_val, 0.0)) < 5e-8:
-                for fb_s in (w_dict.get("gradient_recent"), w_dict.get("growth_coefficient")):
-                    if fb_s is not None and abs(safe_float(fb_s, 0.0)) >= 5e-8:
-                        s_val = fb_s
-                        break
-            entry[s_key] = s_val
+            s_raw = w_dict.get("slope_full", 0.0) if (require_any_slope and not is_90) else w_dict.get("slope_full")
+            entry[s_key] = _resolve_window_metric_with_fallbacks(
+                s_raw, w_dict.get("gradient_recent"), w_dict.get("growth_coefficient"),
+            )
             entry[t_key] = w_dict.get("final_trend", trend)
         if w_dict.get("growth_coefficient") is not None:
-            g_val = w_dict.get("growth_coefficient")
-            if abs(safe_float(g_val, 0.0)) < 5e-8:
-                for fb_g in (w_dict.get("slope_full"), w_dict.get("gradient_recent")):
-                    if fb_g is not None and abs(safe_float(fb_g, 0.0)) >= 5e-8:
-                        g_val = fb_g
-                        break
-            entry[g_key] = g_val
+            entry[g_key] = _resolve_window_metric_with_fallbacks(
+                w_dict.get("growth_coefficient"), w_dict.get("slope_full"), w_dict.get("gradient_recent"),
+            )
     return True
 
 
@@ -767,20 +788,12 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
                 break
     for wk, s_key, t_key, g_key in _WINDOW_TREND_SPECS:
         w_dict = wins[wk]
-        if not w_dict:
+        if not w_dict or _is_unseeded_single_sample_window(w_dict):
             continue
-        if (
-            (safe_pos_float(w_dict.get("n_samples"), default=2.0) or 2.0) < 2.0
-            and abs(safe_float(w_dict.get("slope_full"), 0.0)) < 1e-12
-            and abs(safe_float(w_dict.get("growth_coefficient"), 0.0)) < 1e-12
-        ):
-            continue
-        s_val = w_dict.get("slope_full", entry.get(s_key, 0.0)) if wk != "90" else w_dict.get("slope_full")
-        if s_val is not None and abs(safe_float(s_val, 0.0)) < 5e-8:
-            for fb_s in (w_dict.get("gradient_recent"), w_dict.get("growth_coefficient")):
-                if fb_s is not None and abs(safe_float(fb_s, 0.0)) >= 5e-8:
-                    s_val = fb_s
-                    break
+        s_raw = w_dict.get("slope_full", entry.get(s_key, 0.0)) if wk != "90" else w_dict.get("slope_full")
+        s_val = _resolve_window_metric_with_fallbacks(
+            s_raw, w_dict.get("gradient_recent"), w_dict.get("growth_coefficient"),
+        )
         if wk != "90":
             entry[s_key] = s_val
             entry[t_key] = w_dict.get("final_trend", entry.get(t_key, 0))
@@ -790,13 +803,9 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
             if w_dict.get("final_trend") is not None:
                 entry[t_key] = w_dict.get("final_trend")
         if w_dict.get("growth_coefficient") is not None:
-            g_val = w_dict.get("growth_coefficient")
-            if abs(safe_float(g_val, 0.0)) < 5e-8:
-                for fb_g in (w_dict.get("slope_full"), w_dict.get("gradient_recent")):
-                    if fb_g is not None and abs(safe_float(fb_g, 0.0)) >= 5e-8:
-                        g_val = fb_g
-                        break
-            entry[g_key] = g_val
+            entry[g_key] = _resolve_window_metric_with_fallbacks(
+                w_dict.get("growth_coefficient"), w_dict.get("slope_full"), w_dict.get("gradient_recent"),
+            )
 
 
 def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any]]:
@@ -1228,11 +1237,7 @@ def _apply_24h_series_enrichment(
                 entry[ck] = cross_btc[ck]
     k_cur_vel = safe_float(entry.get("kalman_vel"), default=None)
     k_cur_std = safe_float(entry.get("kalman_vel_std"), default=None)
-    unseeded_kalman = (
-        k_cur_vel is None
-        or abs(k_cur_vel) < 1e-9
-        or (abs(k_cur_vel) < 1e-12 and (k_cur_std is None or k_cur_std >= 5.99))
-    )
+    unseeded_kalman = is_unseeded_kalman_state(entry, treat_none_as_unseeded=True)
     if (unseeded_kalman or k_cur_std is None) and series_24h and isinstance(k_fb := _compute_kalman_from_series(series_24h), dict):
         if k_cur_vel is None or k_cur_std is None or k_cur_std >= 5.99 or abs(safe_float(k_fb.get("kalman_vel"), 0.0)) >= 1e-5:
             for kk, kv in k_fb.items():

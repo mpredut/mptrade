@@ -33,6 +33,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
     reconcile_sibling_flow_and_liq_regimes,
+    should_skip_sibling_telemetry_key,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     clip_open_lots_to_held_qty,
@@ -544,18 +545,11 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             for sib_sym, sib_info in sym_group[1:]:
                 s_px = safe_float(sib_info.get("price"), 0.0)
                 if px_f <= 0 or s_px <= 0 or abs(px_f - s_px) / max(px_f, s_px) <= 0.10:
-                    has_own_vp = pinfo.get("poc_px") is not None
-                    has_own_bottom = pinfo.get("bottom_structure_6h") is not None
                     for sk, sv in sib_info.items():
-                        if has_own_vp and sk in (
-                            "sec_poc_px", "hvn2_px", "lvn_px", "profile_shape",
-                            "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct",
-                            "val_dist_pct", "va_pos_pct", "va_regime", "vp_source",
-                        ):
-                            continue
-                        if has_own_bottom and sk in (
-                            "prior_6h_low_px", "recent_1h_low_px",
-                            "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",
+                        if should_skip_sibling_telemetry_key(
+                            sk,
+                            has_own_vp=pinfo.get("poc_px") is not None,
+                            has_own_bottom=pinfo.get("bottom_structure_6h") is not None,
                         ):
                             continue
                         if pinfo.get(sk) is None and sv is not None:
