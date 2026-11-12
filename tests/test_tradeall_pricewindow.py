@@ -1596,3 +1596,92 @@ def test_multivenue_provider_routing_and_closed_rth_skip(monkeypatch, tmp_path):
     assert coord.evaluate("NVDA_US_EQ") is None
     assert coord._dirty["NVDA_US_EQ"] is False
     get_price_mock.assert_not_called()
+
+
+def test_trend_coordinator_memoizes_market_regime_context_within_1s(monkeypatch):
+    """TrendCoordinator memoizes non-None market_regime_context for 1.0s across sub-second tick bursts."""
+    fake_mono = [100.0]
+    monkeypatch.setattr(ta.time, "monotonic", lambda: fake_mono[0])
+
+    calls = []
+    ctx_v1 = SimpleNamespace(regime="bull", fresh=True, version=1)
+    ctx_v2 = SimpleNamespace(regime="bear", fresh=True, version=2)
+    responses = [None, ctx_v1, ctx_v2]
+
+    def _fake_regime(symbol, **kw):
+        calls.append((symbol, kw, fake_mono[0]))
+        return responses[min(len(calls) - 1, len(responses) - 1)]
+
+    monkeypatch.setattr(ta.mkt, "market_regime_context", _fake_regime)
+
+    bare_coord = object.__new__(ta.TrendCoordinator)
+    # None responses are not cached, so immediate retry resolves ctx_v1.
+    assert bare_coord._resolve_regime_context("TAOUSDC") is None
+    assert len(calls) == 1
+    assert bare_coord._resolve_regime_context("TAOUSDC") is ctx_v1
+    assert len(calls) == 2
+
+    # 10 rapid sub-second ticks (< 1.0s) reuse ctx_v1 without re-calling market_regime_context.
+    for step in range(1, 11):
+        fake_mono[0] = 100.0 + step * 0.08
+        assert bare_coord._resolve_regime_context("TAOUSDC") is ctx_v1
+    assert len(calls) == 2
+
+    # Advancing >= 1.0s refreshes the memoized regime context.
+    fake_mono[0] = 101.05
+    assert bare_coord._resolve_regime_context("TAOUSDC") is ctx_v2
+    assert len(calls) == 3
+
+
+def test_af_unix_price_tick_subscriber_o1_lookup_and_dynamic_symbols_refresh(tmp_path):
+    """PriceTickSubscriber O(1) lookup resolves exact and cleaned keys, drops unconfigured symbols, and refreshes on symbol mutation."""
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="mptr_o1_") as sock_dir:
+        sock_path = os.path.join(sock_dir, "current_price_ticks.sock")
+        producer = cm.CacheCurrentPriceManager(
+            sync_ts=9999,
+            symbols=["BTCUSDC", "BTC/USDC", "DOGEUSDC", "TAOUSDC"],
+            filename=str(tmp_path / "prod_o1.json"),
+            ws_manager=None,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        consumer = cm.CacheCurrentPriceManager(
+            sync_ts=9999,
+            symbols=["BTCUSDC", "NVDA_US_EQ"],
+            filename=str(tmp_path / "cons_o1.json"),
+            ws_manager=None,
+            read_only=True,
+            data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
+        )
+        try:
+            assert producer.start_tick_fanout_server(sock_path) == sock_path
+            rec = _RecordingSubscriber()
+            consumer.subscribe_price(rec)
+            consumer.start_local_tick_stream(sock_path)
+
+            # Wait for AF_UNIX client registration on producer.
+            deadline = time.monotonic() + 1.0
+            while not producer._tick_ipc_clients and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert producer._tick_ipc_clients
+
+            now_ms = int(time.time() * 1000)
+            producer._broadcast_tick_ipc("BTC/USDC", now_ms, 95123.0)
+            producer._broadcast_tick_ipc("DOGEUSDC", now_ms, 0.19)
+
+            deadline = time.monotonic() + 0.5
+            while ("BTCUSDC", 95123.0) not in rec.events and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert ("BTCUSDC", 95123.0) in rec.events
+            assert all(sym != "DOGEUSDC" for sym, _ in rec.events)
+
+            # Mutating consumer.symbols invalidates sym_lookup_key and accepts TAOUSDC immediately.
+            consumer.symbols = [*consumer.symbols, "TAOUSDC"]
+            producer._broadcast_tick_ipc("TAOUSDC", int(time.time() * 1000), 289.5)
+            deadline = time.monotonic() + 0.5
+            while ("TAOUSDC", 289.5) not in rec.events and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert ("TAOUSDC", 289.5) in rec.events
+        finally:
+            consumer.shutdown(timeout=1.0)
+            producer.shutdown(timeout=1.0)

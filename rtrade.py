@@ -10,6 +10,7 @@ from decimal import Decimal, ROUND_DOWN
 # Effective configuration remains in config.env.
 
 import cachetrend as cm
+from cacheprice import get_current_price_manager
 import external_order_guard as eog
 from botcore import (
     _parse_bool_flag,
@@ -1616,8 +1617,19 @@ class TradingBot:
 DEFAULT_ADJUSTMENT_PERCENT = required_float_env("RTRADE_DEFAULT_ADJUSTMENT_PCT")
 print(f"[INFO] DEFAULT_ADJUSTMENT_PERCENT = {DEFAULT_ADJUSTMENT_PERCENT}")
 
+
+def _init_live_price_tick_stream(symbol: str):
+    """Subscribe this process's SSOT current-price reader to the local AF_UNIX tick stream."""
+    cpm = get_current_price_manager(data_sync_mode="live_reader")
+    if symbol and symbol not in cpm.symbols:
+        cpm.symbols = [*cpm.symbols, symbol]
+    cpm.start_local_tick_stream()
+    return cpm
+
+
 if __name__ == "__main__":
     symbol = single_symbol_for("binance", "rtrade")
+    _rtrade_cpm = _init_live_price_tick_stream(symbol)
 
     initial_price = 0.0
     for attempt in range(1, 13):

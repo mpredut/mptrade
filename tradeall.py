@@ -886,6 +886,28 @@ class TrendCoordinator:
                     wait_sec = rem_min
         return wait_sec
 
+    REGIME_CTX_MEMO_TTL_SEC = 1.0
+
+    def _resolve_regime_context(self, symbol: str):
+        memo = getattr(self, "_regime_ctx_memo", None)
+        if memo is None:
+            memo = {}
+            self._regime_ctx_memo = memo
+        now_mono = time.monotonic()
+        cached = memo.get(symbol)
+        if cached is not None:
+            cached_mono, cached_ctx = cached
+            if 0.0 <= (now_mono - cached_mono) < self.REGIME_CTX_MEMO_TTL_SEC:
+                return cached_ctx
+        try:
+            regime_ctx = mkt.market_regime_context(symbol, **_provider_kw(symbol))
+        except Exception as e:
+            print(f"[TrendCoordinator] Error resolving regime context for {symbol}: {e}")
+            return None
+        if regime_ctx is not None:
+            memo[symbol] = (now_mono, regime_ctx)
+        return regime_ctx
+
     def evaluate(self, symbol):
         symbol = self._resolve_symbol(symbol)
         if symbol not in self.trend_states:
@@ -924,11 +946,7 @@ class TrendCoordinator:
         current_price = safe_pos_float(current_price, default=None)
         if current_price is None:
             return None
-        try:
-            regime_ctx = mkt.market_regime_context(symbol, **_provider_kw(symbol))
-        except Exception as e:
-            print(f"[TrendCoordinator] Error resolving regime context for {symbol}: {e}")
-            regime_ctx = None
+        regime_ctx = self._resolve_regime_context(symbol)
 
         win = self.instant_mgr.get_window(symbol)
         win_big = self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec)

@@ -458,6 +458,97 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertIs(_runtime_market_regime_snapshot("TAOUSDC", now=1001.0), w90)
             self.assertIs(_runtime_market_regime_snapshot("BTCUSDC", now=1001.0), snap)
 
+    def test_live_reader_fast_window_stays_fresh_past_120s_without_ohlc_fallback(self):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            now_s = 1_780_000_500.0
+            now_ms = int(now_s * 1000)
+            trend_file = os.path.join(tmp_dir, "cache_short_trend.json")
+            # Seed disk with a startup dynamic 90s snapshot that is 250s old (> 120s max age) and bearish.
+            with open(trend_file, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "TAOUSDC": {
+                            "growth_coefficient": -0.40,
+                            "gradient_recent": -0.40,
+                            "epsilon": 0.02,
+                            "window_seconds": 222.0,
+                            "ts": now_s - 250.0,
+                            "dynamic": {
+                                "90": {
+                                    "growth_coefficient": -0.40,
+                                    "gradient_recent": -0.40,
+                                    "epsilon": 0.02,
+                                    "window_seconds": 90.0,
+                                    "ts": now_s - 250.0,
+                                }
+                            },
+                        }
+                    },
+                    fh,
+                )
+
+            # Live Cache24 ticks in the last 90s show a clear bullish climb.
+            entries = [
+                [now_ms - (109 - i) * 1000, 250.0 + 0.30 * i + (0.01 if i % 2 else -0.01)]
+                for i in range(110)
+            ]
+            c24 = cm.Cache24PriceManager(
+                sync_ts=9999,
+                filename=os.path.join(tmp_dir, "cache_24_price_TAOUSDC.json"),
+                symbols=["TAOUSDC"],
+                read_only=True,
+                data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
+            )
+            c24.cache["TAOUSDC"] = entries
+            cpm = cm.CacheCurrentPriceManager(
+                sync_ts=9999,
+                symbols=["TAOUSDC"],
+                filename=os.path.join(tmp_dir, "cp.json"),
+                ws_manager=None,
+                read_only=True,
+                data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
+            )
+            cpm.on_items_update("TAOUSDC", [[now_ms, entries[-1][1]]])
+
+            instant_mgr = CacheShortTrendManager(
+                ["TAOUSDC"],
+                trend_file,
+                data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
+            )
+            instant_mgr.start_computation({"TAOUSDC": c24}, cpm, run_full_eval=False)
+            # Simulate TrendCoordinator.evaluate() updating only top-level 222s fields at now_s.
+            instant_mgr.update_snapshot(
+                "TAOUSDC",
+                final_trend=1,
+                growth_coefficient=0.30,
+                gradient_recent=0.30,
+                epsilon=0.02,
+                current_price=entries[-1][1],
+                ts=now_s,
+            )
+
+            def _fail_ohlc(symbol: str, interval_min: int):
+                raise AssertionError("live_reader fast window must not fall back to OHLC REST")
+
+            prov = SimpleNamespace(
+                name="FakeBinance",
+                supports_symbol=lambda _sym: True,
+                ohlc_series=_fail_ohlc,
+            )
+            facade = MarketApi([prov], regime_snapshot_resolver=_runtime_market_regime_snapshot)
+            try:
+                with patch.object(cm, "get_short_trend_manager", return_value=instant_mgr):
+                    ctx = facade.market_regime_context("TAOUSDC", now=now_s)
+                self.assertTrue(ctx.fresh)
+                self.assertEqual(ctx.source, "snapshot")
+                self.assertEqual(ctx.regime, "bull")
+            finally:
+                instant_mgr.shutdown(timeout=0.5)
+                cpm.shutdown(timeout=0.5)
+
     def test_kalman_grad_std_and_adaptive_thresholds_in_update(self):
 
         fed = [100.0, 101.2, 100.8, 102.5, 103.1, 102.9, 104.0]

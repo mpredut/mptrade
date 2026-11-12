@@ -1708,6 +1708,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                         with self._tick_ipc_lock:
                             self._tick_sub_sock = sock
                         buf = b""
+                        sym_lookup_key: Optional[tuple] = None
+                        exact_lookup: dict[str, str] = {}
+                        clean_lookup: dict[str, str] = {}
                         while not self._stop_event.is_set() and not self._tick_ipc_stop.is_set():
                             try:
                                 chunk = sock.recv(4096)
@@ -1729,19 +1732,26 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                                 if not sym_u:
                                     continue
                                 configured = self.symbols
-                                canon_sym = (
-                                    next(
-                                        (
-                                            s
-                                            for s in configured
-                                            if (s_u := str(s).strip().upper()) == sym_u
-                                            or (sym_clean and clean_symbol_key(s_u) == sym_clean)
-                                        ),
-                                        None,
+                                if configured:
+                                    cfg_key = tuple(configured)
+                                    if cfg_key != sym_lookup_key:
+                                        rebuilt_exact: dict[str, str] = {}
+                                        rebuilt_clean: dict[str, str] = {}
+                                        for s in configured:
+                                            s_u = str(s).strip().upper()
+                                            if s_u:
+                                                rebuilt_exact.setdefault(s_u, s)
+                                                s_clean = clean_symbol_key(s_u)
+                                                if s_clean:
+                                                    rebuilt_clean.setdefault(s_clean, s)
+                                        exact_lookup = rebuilt_exact
+                                        clean_lookup = rebuilt_clean
+                                        sym_lookup_key = cfg_key
+                                    canon_sym = exact_lookup.get(sym_u) or (
+                                        clean_lookup.get(sym_clean) if sym_clean else None
                                     )
-                                    if configured
-                                    else sym_raw.strip()
-                                )
+                                else:
+                                    canon_sym = sym_raw.strip()
                                 if not canon_sym:
                                     continue
                                 ts_i = safe_pos_int(ts_s, default=None)
@@ -1833,6 +1843,13 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 if memory_manager is not None
                 else cls.resolve_active_instance("CurrentPrice", reader_fn=reader_fn)
             )
+            if cpm is None:
+                ro_cpm = _READONLY_PRICE_READERS.get("CurrentPrice")
+                if getattr(ro_cpm, "data_sync_mode", None) in (
+                    cls.MODE_LIVE_READER,
+                    cls.MODE_PRODUCER,
+                ):
+                    cpm = ro_cpm
             cpm_file = getattr(cpm, "filename", None) if cpm is not None else None
             cpm_matches_path = (
                 not isinstance(cpm_file, str)
@@ -2163,6 +2180,10 @@ def get_current_price_manager(
             and not save_state_flag
             and not start_periodic
         ):
+            if resolved_mode == CacheManagerInterface.MODE_LIVE_READER:
+                inst.data_sync_mode = resolved_mode
+            elif getattr(inst, "data_sync_mode", None) == CacheManagerInterface.MODE_DISK_READER:
+                CacheManagerInterface._resync_readonly_reader(inst)
             return inst
         default_symbols, _, default_providers = tracked_price_instruments()
         eff_symbols = (
@@ -2185,7 +2206,10 @@ def get_current_price_manager(
             read_only=eff_read_only,
             data_sync_mode=resolved_mode,
         )
-        if symbols is None and not provider_names and ws_manager is None:
+        if ws_manager is None and (
+            (symbols is None and not provider_names)
+            or resolved_mode == CacheManagerInterface.MODE_LIVE_READER
+        ):
             _READONLY_PRICE_READERS["CurrentPrice"] = inst
         return inst
 

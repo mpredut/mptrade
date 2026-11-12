@@ -262,3 +262,101 @@ class ReaderProcessTrendTest(TempDirTestCase):
         dyn = self.reader.get_short_trend_for_window("TAOUSDC", self.WINDOW)
         self.assertIsNotNone(dyn)
         self.assertFalse(rtrade._trend_too_strong("TAOUSDC"))
+
+
+class RTradeLiveTickStreamTest(TempDirTestCase):
+    """Verify rtrade._init_live_price_tick_stream serves sub-millisecond RAM ticks via AF_UNIX and falls back to disk when RAM ages out."""
+
+    def test_rtrade_live_tick_stream_prefers_ram_and_falls_back_to_disk(self):
+        import tempfile
+        import cacheprice as cp_mod
+
+        disk_cp_path = os.path.join(self.tmp, "cache_current_price.json")
+        now_ms = int(time.time() * 1000)
+        with open(disk_cp_path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "items": {"TAOUSDC": [[now_ms, 250.0]]},
+                    "fetchtime": {"TAOUSDC": now_ms / 1000.0},
+                },
+                fh,
+            )
+
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="mptr_rt_") as sock_dir:
+            sock_path = os.path.join(sock_dir, "current_price_ticks.sock")
+            producer = cm.CacheCurrentPriceManager(
+                sync_ts=9999,
+                symbols=["TAOUSDC"],
+                filename=os.path.join(self.tmp, "prod_cp.json"),
+                ws_manager=None,
+                read_only=False,
+                data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+            )
+            reader = cm.CacheCurrentPriceManager(
+                sync_ts=9999,
+                symbols=["TAOUSDC"],
+                filename=disk_cp_path,
+                ws_manager=None,
+                read_only=True,
+                data_sync_mode=cm.CacheManagerInterface.MODE_DISK_READER,
+            )
+            try:
+                self.assertEqual(producer.start_tick_fanout_server(sock_path), sock_path)
+                live_ts_ms = int(time.time() * 1000)
+                producer.push_price("TAOUSDC", 288.75, ts_ms=live_ts_ms)
+
+                def _fake_get_cpm(**kw):
+                    if kw.get("data_sync_mode") == "live_reader":
+                        reader.data_sync_mode = cm.CacheManagerInterface.MODE_LIVE_READER
+                    return reader
+
+                orig_start = reader.start_local_tick_stream
+                with (
+                    patch.object(rtrade, "get_current_price_manager", side_effect=_fake_get_cpm),
+                    patch.object(reader, "start_local_tick_stream", side_effect=lambda p=None: orig_start(sock_path)),
+                ):
+                    started = rtrade._init_live_price_tick_stream("TAOUSDC")
+                self.assertIs(started, reader)
+                self.assertEqual(reader.data_sync_mode, cm.CacheManagerInterface.MODE_LIVE_READER)
+
+                deadline = time.monotonic() + 1.0
+                while (
+                    (obs := reader.get_cached_price_observation("TAOUSDC", 3.0)) is None
+                    or abs(obs[1] - 288.75) > 1e-6
+                ) and time.monotonic() < deadline:
+                    time.sleep(0.005)
+
+                # RAM tick (288.75) wins over disk file (250.0).
+                px_ram = cp_mod.CacheCurrentPriceManager.read_ssot_current_price_candidates(
+                    ("TAOUSDC",),
+                    disk_cp_path,
+                    max_age_sec=3.0,
+                    use_memory_manager=True,
+                    memory_manager=reader,
+                )
+                self.assertAlmostEqual(px_ram, 288.75, places=6)
+
+                # Once 10s elapse with no new AF_UNIX ticks (> 3.0s max_age_sec), fallback reads fresh disk price (277.50).
+                future_s = time.time() + 10.0
+                fresh_disk_ms = int((future_s - 0.5) * 1000)
+                with open(disk_cp_path, "w", encoding="utf-8") as fh:
+                    json.dump(
+                        {
+                            "items": {"TAOUSDC": [[fresh_disk_ms, 277.50]]},
+                            "fetchtime": {"TAOUSDC": fresh_disk_ms / 1000.0},
+                        },
+                        fh,
+                    )
+                with patch.object(cp_mod, "_now_time", return_value=future_s):
+                    px_disk = cp_mod.CacheCurrentPriceManager.read_ssot_current_price_candidates(
+                        ("TAOUSDC",),
+                        disk_cp_path,
+                        max_age_sec=3.0,
+                        now_s=future_s,
+                        use_memory_manager=True,
+                        memory_manager=reader,
+                    )
+                self.assertAlmostEqual(px_disk, 277.50, places=6)
+            finally:
+                reader.shutdown(timeout=1.0)
+                producer.shutdown(timeout=1.0)
