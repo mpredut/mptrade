@@ -1399,3 +1399,40 @@ def test_krakenprovider_open_orders_side_aliases_preflight_order_ask_alias_and_i
         kr.preflight_order("HYPEUSD", "ASK", 2.0)
     res_kr = kr.place_order("HYPEUSD", "BID", 20.0, 1.0, True)
     assert res_kr["ordertype"] == "market" and res_kr["validate"] is True
+
+
+def test_kraken_post_only_oflags_and_passive_step_back_retry(monkeypatch):
+    """Verify KrakenClient.add_order sends oflags='post' for limit orders and KrakenProvider retries passively on crossing rejection."""
+    kcli = KrakenClient("k", "c2VjcmV0")
+    priv_payloads = []
+    monkeypatch.setattr(kcli, "_private", lambda ep, data: (priv_payloads.append(dict(data)), {"txid": ["O-KRK-POST-1"]})[1])
+    kcli.add_order("HYPEUSD", "buy", 1.5, 25.0, ordertype="limit")
+    assert priv_payloads[-1].get("oflags") == "post"
+
+    kcli.add_order("HYPEUSD", "buy", 1.5, 25.0, ordertype="limit", post_only=False)
+    assert "oflags" not in priv_payloads[-1]
+
+    calls = []
+
+    def _flaky_add_order(symbol, side, volume, price=None, *, post_only=True, **kw):
+        calls.append((symbol, side, volume, price, {"post_only": post_only, **kw}))
+        if len(calls) == 1:
+            raise KrakenError(["EOrder:Post only order"])
+        return {"txid": ["O-KRK-MAKER-2"]}
+
+    kp = KrakenProvider(client=SimpleNamespace(add_order=_flaky_add_order), live_enabled=True)
+    monkeypatch.setattr(kp, "get_current_price", lambda _sym: 25.0)
+    monkeypatch.setattr(
+        kp,
+        "pair_precision",
+        lambda _sym: PairPrecision(price_decimals=3, volume_decimals=2, order_min=0.1, base_asset="HYPE"),
+    )
+    monkeypatch.setattr(kp, "preflight_order", lambda *a, **kw: None)
+
+    oid = kp.submit_order("HYPEUSD", "BUY", 1.0, price=25.0, market=False)
+    assert oid == "O-KRK-MAKER-2"
+    assert len(calls) == 2
+    assert calls[0][3] == 25.0
+    assert calls[0][4].get("post_only") is True
+    assert calls[1][3] < 25.0
+

@@ -4,7 +4,7 @@ import time
 import threading
 
 from binance.client import Client
-from botcore import exact_pos_int, safe_nonneg_float
+from botcore import _parse_bool_flag, exact_pos_int, safe_nonneg_float
 import credentials as _credentials
 from providers.ws_stream import mount_connect_retry
 
@@ -103,6 +103,24 @@ def _install_recvwindow_retry(cl):
     cl._recvwindow_retry_installed = True
 
 
+def _install_post_only_limit_maker(cl):
+    """Route limit orders on ``cl`` through ``ORDER_TYPE_LIMIT_MAKER`` (Post-Only) by default."""
+    if getattr(cl, "_post_only_limit_installed", False) or not callable(getattr(cl, "create_order", None)):
+        return
+
+    def _order_limit_maker(timeInForce=Client.TIME_IN_FORCE_GTC, **params):
+        post_only = _parse_bool_flag(params.pop("post_only", True), True)
+        if post_only and not params.get("icebergQty"):
+            params["type"] = getattr(cl, "ORDER_TYPE_LIMIT_MAKER", "LIMIT_MAKER")
+            params.pop("timeInForce", None)
+        else:
+            params.update({"type": getattr(cl, "ORDER_TYPE_LIMIT", "LIMIT"), "timeInForce": timeInForce})
+        return cl.create_order(**params)
+
+    cl.order_limit = _order_limit_maker
+    cl._post_only_limit_installed = True
+
+
 def _start_periodic_resync():
     """Periodically resynchronize from a daemon thread to compensate for WSL drift."""
     global _resync_thread
@@ -171,6 +189,7 @@ def getClient():
                                        raise_on_status=True):
                 print("[bapi_client] _install_retry: adapter mount failed (timeout still guards)")
             _install_recvwindow_retry(cl)  # Re-sync and re-sign once on -1021 recvWindow rejection.
+            _install_post_only_limit_maker(cl)  # Default limit orders to LIMIT_MAKER (Post-Only).
             _client = cl
             sync_time()                    # Initial server-time alignment.
             _start_periodic_resync()       # Maintain alignment over time.

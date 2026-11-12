@@ -123,6 +123,7 @@ class _PlaceContext:
     requires_permit: bool = False
     defers_smart_cancel: bool = False
     supports_biz_min: bool = False
+    supports_post_only: bool = False
     execution_enabled: Any = None
     safeback_override: Any = None
     smart: bool = True
@@ -449,6 +450,9 @@ class Instrument:
         )
         ctx.supports_biz_min = bool(
             _parse_bool_flag(getattr(self._provider, "supports_business_minimum", lambda: False)(), False)
+        )
+        ctx.supports_post_only = bool(
+            _parse_bool_flag(getattr(self._provider, "supports_post_only", lambda: False)(), False)
         )
         if ctx.cache_permit is not None and not ctx.requires_permit:
             return None, _refuse_early(
@@ -1278,6 +1282,8 @@ class Instrument:
                 provider_kwargs["known_balance"] = ctx.known_balance
             if ctx.supports_biz_min:
                 provider_kwargs["enforce_business_minimum"] = ctx.enforce_business_minimum
+            if ctx.supports_post_only and "post_only" not in provider_kwargs:
+                provider_kwargs["post_only"] = not ctx.is_market
             if ctx.cache_permit is not None:
                 provider_kwargs["permit_requested_price"] = ctx.permit_requested_price
                 provider_kwargs["cache_permit"] = ctx.cache_permit

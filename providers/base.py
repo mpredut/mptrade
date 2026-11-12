@@ -538,6 +538,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
     defers_smart_cancellation = bind_attr_call("_provider_bool_attr", "_DEFERS_SMART_CANCELLATION")
     supports_business_minimum = bind_attr_call("_provider_bool_attr", "_SUPPORTS_BUSINESS_MINIMUM")
     supports_order_validity = bind_attr_call("_provider_bool_attr", "_SUPPORTS_ORDER_VALIDITY")
+    supports_post_only = bind_attr_call("_provider_bool_attr", "_SUPPORTS_POST_ONLY")
     defers_preflight_quantity = bind_attr_call("_provider_bool_attr", "_DEFERS_PREFLIGHT_QUANTITY")
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
@@ -686,6 +687,14 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
             return list(closes) if closes is not None else []
         return []
 
+    _POST_ONLY_CROSS_TOKENS = (
+        "would immediately match",
+        "would have immediately matched",
+        "post only order",
+        "post-only order",
+        "alo order",
+    )
+
     _DEFINITIVE_REFUSAL_TOKENS = (
         "insufficient",
         "minimum value",
@@ -701,13 +710,57 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         "could not immediately match",
         "price must be",
         "too far from",
+        *_POST_ONLY_CROSS_TOKENS,
     )
+
+    @classmethod
+    def _is_post_only_cross_refusal(cls, error: object) -> bool:
+        """Return True when a venue error indicates a post-only order would cross the book."""
+        text = str(error or "").lower()
+        return any(token in text for token in cls._POST_ONLY_CROSS_TOKENS)
 
     @classmethod
     def _is_definitive_refusal(cls, error: object) -> bool:
         """Return True when a venue error message indicates a permanent order rejection."""
         text = str(error or "").lower()
         return any(token in text for token in cls._DEFINITIVE_REFUSAL_TOKENS)
+
+    def step_post_only_maker_price(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        current_price: Optional[float] = None,
+    ) -> float:
+        """Step ``price`` onto the passive Maker side of the spread after a post-only cross rejection."""
+        px_f = safe_pos_float(price, default=None)
+        s_norm = normalize_side(side)
+        if px_f is None or s_norm not in ("BUY", "SELL"):
+            return safe_pos_float(price, default=0.0) or 0.0
+        cur_px = safe_pos_float(current_price, default=None)
+        if cur_px is None:
+            try:
+                cur_px = safe_pos_float(self.get_current_price(symbol), default=None)
+            except Exception:
+                cur_px = None
+        anchor = (min(px_f, cur_px) if s_norm == "BUY" else max(px_f, cur_px)) if cur_px else px_f
+        tick = safe_pos_float(self.price_tick_size(symbol, reference_price=anchor), default=0.0) or 0.0
+        cushion = max(tick, anchor * 0.0005)
+        raw_stepped = (anchor - cushion) if s_norm == "BUY" else (anchor + cushion)
+        if raw_stepped <= 0.0:
+            return px_f
+        rounded = safe_pos_float(self.round_price(symbol, raw_stepped), default=raw_stepped) or raw_stepped
+        if s_norm == "BUY" and rounded >= anchor:
+            delta = tick if tick > 0.0 else anchor * 0.0005
+            rounded = safe_pos_float(self.round_price(symbol, anchor - delta), default=anchor - delta) or (anchor - delta)
+            if rounded >= anchor:
+                rounded = anchor - delta
+        elif s_norm == "SELL" and rounded <= anchor:
+            delta = tick if tick > 0.0 else anchor * 0.0005
+            rounded = safe_pos_float(self.round_price(symbol, anchor + delta), default=anchor + delta) or (anchor + delta)
+            if rounded <= anchor:
+                rounded = anchor + delta
+        return rounded if rounded > 0.0 else px_f
 
     def fetch_historical_ohlc_points(
         self,

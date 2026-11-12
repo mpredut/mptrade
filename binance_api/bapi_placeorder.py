@@ -292,12 +292,40 @@ def _consume_account_cache_submit_permit(
             raise SubmissionRefused("account_cache_not_fresh")
 
 
+def _step_binance_post_only_price(side: str, price_f: float, symbol: str, target_client, cache_permit=None) -> float:
+    """Step ``price_f`` onto the passive Maker side after a ``LIMIT_MAKER`` crossing rejection."""
+    tick_size = 0.0
+    if isinstance(cache_permit, _AccountCacheSubmitPermit):
+        tick_size = safe_pos_float(getattr(cache_permit._scope, "price_tick_size", 0.0), default=0.0) or 0.0
+    if tick_size <= 0.0:
+        try:
+            info = target_client.get_symbol_info(symbol)
+            tick_size = safe_pos_float(BinanceOrderRules.from_symbol_info(info).tick_size, default=0.0) or 0.0
+        except Exception:
+            tick_size = 0.0
+    cushion = max(tick_size, price_f * 0.0005)
+    raw_px = (price_f - cushion) if side == "BUY" else (price_f + cushion)
+    if raw_px <= 0.0:
+        return price_f
+    dec = min(decimal_places(tick_size), 18) if tick_size > 0.0 else 8
+    rounded = round(raw_px, dec)
+    if side == "BUY" and rounded >= price_f:
+        delta = tick_size if tick_size > 0.0 else price_f * 0.0005
+        rounded = round(price_f - delta, dec)
+    elif side == "SELL" and rounded <= price_f:
+        delta = tick_size if tick_size > 0.0 else price_f * 0.0005
+        rounded = round(price_f + delta, dec)
+    return rounded if rounded > 0.0 else price_f
+
+
 def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
                           client_order_id=None, api_client=None,
                           cache_permit=None, permit_requested_price=None,
-                          kind=None, cancel_opposite_requested_price=None):
+                          kind=None, cancel_opposite_requested_price=None,
+                          post_only=True):
     """Single low-level dispatch after common filter normalization."""
     market = _parse_bool_flag(market, False)
+    post_only_flag = not market and _parse_bool_flag(post_only, True)
     side = "" if order_type is None or isinstance(order_type, bool) else str(_normalize_side(order_type))
     qty_f = safe_pos_float(qty, default=None)
     price_f = None if market else safe_pos_float(price, default=None)
@@ -319,6 +347,8 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
     else:
         method = target_client.order_limit_buy if side == "BUY" else target_client.order_limit_sell
         submit_kwargs = {"symbol": symbol, "quantity": qty, "price": str(price)}
+        if not post_only_flag and getattr(target_client, "_post_only_limit_installed", False):
+            submit_kwargs["post_only"] = False
     if cache_permit is None:
         if side not in {"BUY", "SELL"} or not cfg.is_trade_enabled():
             return None
@@ -335,15 +365,32 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
         cancel_opposite_orders(side, symbol, cancel_price)
     try:
         order = method(**submit_kwargs, newClientOrderId=client_order_id)
-        if order:
-            oid_label = extract_order_id(order, default=None) or (
-                order.get("orderId") if isinstance(order, dict) else order
-            )
-            print(f"{side} order placed successfully: {oid_label} clientId {client_order_id}")
-        return order
     except BinanceAPIException as exc:
-        print(f"Binance {side} submission failed: {exc}")
-        return None
+        if post_only_flag and price_f is not None and MarketDataProvider._is_post_only_cross_refusal(exc):
+            retry_px = _step_binance_post_only_price(side, price_f, symbol, target_client, cache_permit=cache_permit)
+            if retry_px > 0.0 and retry_px != price_f:
+                print(
+                    f"[Binance] Post-only LIMIT_MAKER crossed book ({exc}); "
+                    f"stepping {side} {symbol} price {price} -> {retry_px}"
+                )
+                submit_kwargs["price"] = str(retry_px)
+                try:
+                    order = method(**submit_kwargs, newClientOrderId=client_order_id)
+                except BinanceAPIException as retry_exc:
+                    print(f"Binance {side} submission failed after post-only step-back: {retry_exc}")
+                    return None
+            else:
+                print(f"Binance {side} submission failed: {exc}")
+                return None
+        else:
+            print(f"Binance {side} submission failed: {exc}")
+            return None
+    if order:
+        oid_label = extract_order_id(order, default=None) or (
+            order.get("orderId") if isinstance(order, dict) else order
+        )
+        print(f"{side} order placed successfully: {oid_label} clientId {client_order_id}")
+    return order
 
 
 def _last_opposite_fill_price_api(symbol, order_type):
@@ -488,12 +535,18 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
         print(f"Trying to place {order_type} {symbol} qty {qty:.8f} at "
               f"{'market price' if is_market else f'price {price}'}")
         if order_type in {"BUY", "SELL"}:
-            return _submit_binance_order(
-                order_type, symbol, qty, price=None if is_market else price,
-                market=is_market, client_order_id=client_order_id,
-                cache_permit=cache_permit, permit_requested_price=permit_requested_price,
-                kind=kind, cancel_opposite_requested_price=cancel_opposite_requested_price,
-            )
+            submit_kw = {
+                "price": None if is_market else price,
+                "market": is_market,
+                "client_order_id": client_order_id,
+                "cache_permit": cache_permit,
+                "permit_requested_price": permit_requested_price,
+                "kind": kind,
+                "cancel_opposite_requested_price": cancel_opposite_requested_price,
+            }
+            if "post_only" in kwargs:
+                submit_kw["post_only"] = kwargs["post_only"]
+            return _submit_binance_order(order_type, symbol, qty, **submit_kw)
         print(f"Invalid order type: {order_type}")
         return None
     except BinanceAPIException as e:

@@ -386,7 +386,7 @@ class BinanceProvider(MarketDataProvider):
         }
         if "market" in kwargs:
             mechanics_kwargs["market"] = is_market
-        for opt_k in ("client_order_id", "_balance_verified", "caller_owns_retry", "known_balance"):
+        for opt_k in ("client_order_id", "_balance_verified", "caller_owns_retry", "known_balance", "post_only"):
             if kwargs.get(opt_k) is not None:
                 mechanics_kwargs[opt_k] = kwargs[opt_k]
         if kwargs.get("_cancel_opposite_requested_price") is not None:
@@ -553,6 +553,7 @@ class BinanceProvider(MarketDataProvider):
         kind: Optional[str] = None,
         client_order_id: Optional[str] = None,
         cache_permit=None,
+        post_only: Optional[bool] = None,
     ) -> str:
         order_type = normalize_side(side)
         if not order_type:
@@ -589,6 +590,9 @@ class BinanceProvider(MarketDataProvider):
                     kind=kind,
                 )
             else:
+                place_kw = {}
+                if post_only is not None:
+                    place_kw["post_only"] = _parse_bool_flag(post_only, True)
                 res = self.place_order(
                     symbol,
                     order_type,
@@ -599,6 +603,7 @@ class BinanceProvider(MarketDataProvider):
                     cache_permit=cache_permit,
                     permit_requested_price=permit_requested_price,
                     kind=kind,
+                    **place_kw,
                 )
         except SubmissionRefused:
             raise

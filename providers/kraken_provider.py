@@ -947,6 +947,7 @@ class KrakenProvider(MarketDataProvider):
         ordertype: str,
         cl_ord_id: Optional[str] = None,
         include_none_cl_ord_id: bool = False,
+        post_only: bool = True,
     ):
         if s_norm == "BUY" and split_kraken_pair(symbol)[1] == "USD":
             try:
@@ -974,16 +975,36 @@ class KrakenProvider(MarketDataProvider):
                                 cli.add_order("USDCUSD", "sell", shortfall, None, ordertype="market", validate=False)
             except Exception as e:  # noqa: BLE001
                 print(f"[Kraken] USDC->USD funding conversion before {symbol} BUY failed: {e}")
+        cli = self._client()
+        post_only_flag = ordertype == "limit" and _parse_bool_flag(post_only, True)
         order_kwargs: dict[str, Any] = {"ordertype": ordertype, "validate": False}
         if cl_ord_id is not None or include_none_cl_ord_id:
             order_kwargs["cl_ord_id"] = cl_ord_id
-        return self._client().add_order(symbol, s, qty, submit_price, **order_kwargs)
+        if ordertype == "limit" and not post_only_flag:
+            try:
+                if "post_only" in inspect.signature(cli.add_order).parameters:
+                    order_kwargs["post_only"] = False
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            return cli.add_order(symbol, s, qty, submit_price, **order_kwargs)
+        except Exception as exc:
+            if post_only_flag and submit_price is not None and self._is_post_only_cross_refusal(exc):
+                retry_px = self.step_post_only_maker_price(symbol, s_norm, submit_price)
+                if retry_px > 0.0 and retry_px != submit_price:
+                    print(
+                        f"[Kraken] Post-only limit order crossed book ({exc}); "
+                        f"stepping {s_norm} {symbol} price {submit_price} -> {retry_px}"
+                    )
+                    return cli.add_order(symbol, s, qty, retry_px, **order_kwargs)
+            raise
 
     # -- Placement remains dry until KRAKEN_LIVE_ORDERS=true. ------------------
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):
         live = self.execution_enabled()
         market = resolve_market_flag(force=force, **kwargs)
+        post_only = not market and _parse_bool_flag(kwargs.get("post_only"), True)
         try:
             s_norm, s, qty, submit_price, ordertype = self._prepare_kraken_order(
                 symbol, side, qty, price, is_market=market, caller="place_order"
@@ -1013,6 +1034,7 @@ class KrakenProvider(MarketDataProvider):
                 ordertype=ordertype,
                 cl_ord_id=cl_ord_id,
                 include_none_cl_ord_id=True,
+                post_only=post_only,
             )
             if res:
                 self._invalidate_fills_cache(symbol)
@@ -1032,8 +1054,10 @@ class KrakenProvider(MarketDataProvider):
     def submit_order(self, symbol: str, side: str, qty: float,
                      price: Optional[float] = None, *, market: bool = False,
                      kind: Optional[str] = None,
-                     client_order_id: Optional[str] = None) -> str:
+                     client_order_id: Optional[str] = None,
+                     post_only: bool = True) -> str:
         is_market = _parse_bool_flag(market, False) or price is None
+        post_only_flag = not is_market and _parse_bool_flag(post_only, True)
         s_norm, s, qty, px_f, ordertype = self._prepare_kraken_order(
             symbol, side, qty, price, is_market=is_market, caller="submit_order"
         )
@@ -1058,6 +1082,7 @@ class KrakenProvider(MarketDataProvider):
                 ordertype=ordertype,
                 cl_ord_id=cl_ord_id,
                 include_none_cl_ord_id=False,
+                post_only=post_only_flag,
             ) or {}
         except SubmissionRefused:
             raise

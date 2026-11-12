@@ -1545,3 +1545,53 @@ def test_market_data_fetch_ohlc_candles_discards_candles_with_inverted_timestamp
     assert len(candles) == 1
     assert candles[0]["timestamp"] == 2
     assert candles[0]["close"] == 17.0
+
+
+def test_binance_post_only_limit_maker_and_step_back_retry(monkeypatch):
+    """Verify Binance order_limit defaults to LIMIT_MAKER and retries passively on -2010 crossing rejection."""
+    create_calls = []
+    fake_cl = SimpleNamespace(
+        ORDER_TYPE_LIMIT_MAKER="LIMIT_MAKER",
+        ORDER_TYPE_LIMIT="LIMIT",
+        create_order=lambda **params: (create_calls.append(dict(params)), {"orderId": 7001, "status": "NEW"})[1],
+        order_limit=lambda **params: params,
+    )
+    bapi_client._install_post_only_limit_maker(fake_cl)
+
+    fake_cl.order_limit(symbol="BTCUSDC", side="BUY", quantity=0.01, price="60000.00")
+    assert create_calls[-1]["type"] == "LIMIT_MAKER"
+    assert "timeInForce" not in create_calls[-1]
+
+    fake_cl.order_limit(symbol="BTCUSDC", side="BUY", quantity=0.01, price="60000.00", post_only=False)
+    assert len(create_calls) == 2
+    assert create_calls[-1]["type"] == "LIMIT"
+    assert create_calls[-1]["timeInForce"] == "GTC"
+
+    # Verify _submit_binance_order steps price onto passive maker side on -2010 crossing rejection
+    submitted_prices = []
+
+    def _flaky_order_limit_buy(**kw):
+        submitted_prices.append(kw.get("price"))
+        if len(submitted_prices) == 1:
+            exc = bapi_placeorder.BinanceAPIException.__new__(bapi_placeorder.BinanceAPIException)
+            exc.code = -2010
+            exc.message = "Order would immediately match and take."
+            raise exc
+        return {"orderId": 9901, "status": "NEW", "price": str(kw.get("price"))}
+
+    retry_cl = SimpleNamespace(
+        order_limit_buy=_flaky_order_limit_buy,
+        get_symbol_info=lambda _sym: None,
+    )
+    monkeypatch.setattr(bapi_placeorder.cfg, "is_trade_enabled", lambda: True)
+    monkeypatch.setattr(bapi_placeorder, "require_account_cache_for_submit", lambda: None)
+
+    order = bapi_placeorder._submit_binance_order(
+        "BUY", "TAOUSDC", 1.0, price=100.0, market=False,
+        client_order_id="CID-POST-1", api_client=retry_cl, post_only=True,
+    )
+    assert isinstance(order, dict) and order["orderId"] == 9901
+    assert len(submitted_prices) == 2
+    assert float(submitted_prices[0]) == 100.0
+    assert float(submitted_prices[1]) < 100.0
+

@@ -18,6 +18,7 @@ HL fees are small enough for a tight take profit. HL_LEVERAGE=1 approximates spo
 
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 import time
@@ -368,7 +369,14 @@ class Strategy(BaseSpotMixin):
         if self.client is None:
             log("  ! [STRAT] missing HLClient in live mode -- skipping order placement")
             return
-        ok, oid, msg = self.client.place_limit(self.coin, side == "buy", sz, px, reduce_only=reduce_only)
+        place_kwargs: dict[str, object] = {"reduce_only": reduce_only}
+        if kind == "STOP":
+            try:
+                if "post_only" in inspect.signature(self.client.place_limit).parameters:
+                    place_kwargs["post_only"] = False
+            except Exception:
+                pass
+        ok, oid, msg = self.client.place_limit(self.coin, side == "buy", sz, px, **place_kwargs)
         stored_oid = normalize_scalar_order_id(oid)
         if ok and stored_oid is not None:
             log(f"  [STRAT] {role.upper()}({side}) {kind} placed oid={stored_oid} {sz} @ {px:.4f} ({msg})")

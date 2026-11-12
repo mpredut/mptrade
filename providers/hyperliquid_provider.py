@@ -142,6 +142,7 @@ class HyperliquidProvider(MarketDataProvider):
     _CLIENT_CLASS_NAME = "HLClient"
     _DEFAULT_QUOTE_ASSET = "USDC"
     _DEFERS_PREFLIGHT_QUANTITY = True
+    _SUPPORTS_POST_ONLY = True
     _DEFAULT_FEE_SPEC = ("SPOT_TIER0", 4.0, 7.0, 10.0)
     _PREFER_STATIC_TICK_SIZE = True
     _ORDERBOOK_L2_INFO_BOOK = True
@@ -689,11 +690,12 @@ class HyperliquidProvider(MarketDataProvider):
         price: Optional[float],
         *,
         is_market: bool,
+        post_only: bool = False,
         slippage: Optional[float] = None,
         allow_price_fallback: bool = False,
         caller: str = "submit_order",
     ) -> tuple[float, str]:
-        """Resolve rounded aggressive-IOC or passive-GTC price and TIF, raising ``ProviderError`` on invalid inputs."""
+        """Resolve rounded aggressive-IOC or passive-ALO/GTC price and TIF, raising ``ProviderError`` on invalid inputs."""
         if is_market:
             curr_px = safe_pos_float(self.get_current_price(symbol), default=0.0) or 0.0
             fb_px = (safe_pos_float(price, default=0.0) or 0.0) if allow_price_fallback else 0.0
@@ -714,7 +716,7 @@ class HyperliquidProvider(MarketDataProvider):
             raw_px = safe_pos_float(price, default=None) if caller == "submit_order" else price
             if raw_px is None:
                 raise ProviderError(f"{caller}({symbol}): invalid price={price!r}")
-            order_tif = "Gtc"
+            order_tif = "Alo" if _parse_bool_flag(post_only, False) else "Gtc"
         submit_px = self.round_price(symbol, raw_px)
         if submit_px <= 0:
             raise ProviderError(f"{caller}({symbol}): non-positive price={price!r}")
@@ -742,18 +744,41 @@ class HyperliquidProvider(MarketDataProvider):
         )
         signer = self._signer()
         sz_dec = signer.sz_decimals(self._token)
+        qty_f = safe_pos_float(qty, default=0.0) or 0.0
+        px_f = safe_pos_float(submit_px, default=0.0) or 0.0
         ok, oid, msg = self._invoke_spot_order(
             signer,
             pair,
             is_buy,
-            safe_pos_float(qty, default=0.0) or 0.0,
-            safe_pos_float(submit_px, default=0.0) or 0.0,
+            qty_f,
+            px_f,
             sz_decimals=sz_dec,
             is_market=is_market,
             tif=order_tif,
             cloid=cloid,
             include_none_cloid=include_none_cloid,
         )
+        if not ok and not is_market and order_tif == "Alo" and self._is_post_only_cross_refusal(msg):
+            retry_px = self.step_post_only_maker_price(
+                symbol, "BUY" if is_buy else "SELL", px_f
+            )
+            if retry_px > 0.0 and retry_px != px_f:
+                print(
+                    f"[HL] post-only {symbol} {'BUY' if is_buy else 'SELL'} rejected at {px_f}; "
+                    f"stepping passive maker price to {retry_px}"
+                )
+                ok, oid, msg = self._invoke_spot_order(
+                    signer,
+                    pair,
+                    is_buy,
+                    qty_f,
+                    retry_px,
+                    sz_decimals=sz_dec,
+                    is_market=is_market,
+                    tif=order_tif,
+                    cloid=cloid,
+                    include_none_cloid=include_none_cloid,
+                )
         clean_oid = extract_order_id(oid, default=None)
         if ok and clean_oid:
             self._invalidate_fills_cache(symbol)
@@ -776,12 +801,14 @@ class HyperliquidProvider(MarketDataProvider):
         side = s_norm
         live = self._resolve_live_order_flag(kwargs)
         is_market = resolve_market_flag(force=force, **kwargs)
+        post_only = not is_market and _parse_bool_flag(kwargs.get("post_only"), False)
         try:
             submit_px, order_tif = self._resolve_spot_order_price_and_tif(
                 symbol,
                 is_buy,
                 price,
                 is_market=is_market,
+                post_only=post_only,
                 slippage=kwargs.get("slippage"),
                 allow_price_fallback=True,
                 caller="place_order",
@@ -967,7 +994,8 @@ class HyperliquidProvider(MarketDataProvider):
     def submit_order(self, symbol: str, side: str, qty: float,
                      price: Optional[float] = None, *, market: bool = False,
                      kind: Optional[str] = None,
-                     client_order_id: Optional[str] = None) -> str:
+                     client_order_id: Optional[str] = None,
+                     post_only: bool = True) -> str:
         s_norm = self._validate_submit_order_side(symbol, side)
         side, is_buy = s_norm, s_norm == "BUY"
         # Safety: real orders require HL_LIVE_ORDERS due to spot/DN co-mingling.
@@ -983,6 +1011,7 @@ class HyperliquidProvider(MarketDataProvider):
             is_buy,
             price,
             is_market=eff_market,
+            post_only=not eff_market and _parse_bool_flag(post_only, True),
             caller="submit_order",
         )
         qty = self._round_required_qty(symbol, qty, "submit_order")

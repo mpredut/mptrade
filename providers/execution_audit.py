@@ -228,11 +228,12 @@ class AuditedStrategyExecutor:
                                  kind: Optional[str] = None,
                                  reference_price: Optional[float] = None,
                                  client_order_id: Optional[str] = None,
-                                 cache_permit=None) -> str:
+                                 cache_permit=None,
+                                 post_only: Optional[bool] = None) -> str:
         outcome = self.submit_outcome_with_intent(
             intent_id, symbol, side, qty, price, market=market, kind=kind,
             reference_price=reference_price, client_order_id=client_order_id,
-            cache_permit=cache_permit,
+            cache_permit=cache_permit, post_only=post_only,
         )
         if outcome.state == "refused":
             raise SubmissionRefused(outcome.reason)
@@ -246,6 +247,7 @@ class AuditedStrategyExecutor:
             kind: Optional[str] = None, reference_price: Optional[float] = None,
             client_order_id: Optional[str] = None,
             cache_permit=None,
+            post_only: Optional[bool] = None,
             _requested_recorded: bool = False) -> SubmissionOutcome:
         """Submit once and retain refusal versus response-loss ambiguity."""
         clean_cid = clean_order_id_str(client_order_id) or None
@@ -265,6 +267,8 @@ class AuditedStrategyExecutor:
             submit_kwargs["client_order_id"] = client_order_id
         if cache_permit is not None:
             submit_kwargs["cache_permit"] = cache_permit
+        if post_only is not None:
+            submit_kwargs["post_only"] = _parse_bool_flag(post_only, True)
         outcome = capture_submission(
             lambda: self._executor.submit_order(
                 symbol, side, qty, price, **submit_kwargs))
@@ -285,11 +289,12 @@ class AuditedStrategyExecutor:
                      price: Optional[float] = None, *, market: bool = False,
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None,
-                     cache_permit=None) -> str:
+                     cache_permit=None,
+                     post_only: Optional[bool] = None) -> str:
         return self.submit_order_with_intent(
             new_intent_id(self.name, symbol, kind), symbol, side, qty, price,
             market=market, kind=kind, client_order_id=client_order_id,
-            cache_permit=cache_permit,
+            cache_permit=cache_permit, post_only=post_only,
         )
 
     def _call_executor_or_record(

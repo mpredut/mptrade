@@ -100,6 +100,11 @@ _DEFINITIVE_REFUSAL_TOKENS = (
     "invalid arguments",
     "positions limit exceeded",
     "tick size check failed",
+    "would immediately match",
+    "would have immediately matched",
+    "post only order",
+    "post-only order",
+    "alo order",
 )
 
 

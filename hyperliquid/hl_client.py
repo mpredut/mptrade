@@ -496,13 +496,13 @@ class HLClient:
             log(f"  ! set_leverage failed: {e}")
 
     def place_limit(self, coin: str, is_buy: bool, sz: float, px: float,
-                    reduce_only: bool = False) -> tuple[bool, int | None, str]:
-        """Place a GTC LIMIT order and return (ok, oid, message)."""
+                    reduce_only: bool = False, *, post_only: bool = True) -> tuple[bool, int | None, str]:
+        """Place an ALO (Post-Only) or GTC LIMIT order and return (ok, oid, message)."""
         if not self.exchange:
             raise HLError("No agent wallet (HL_SECRET_KEY) -- orders cannot be placed")
         if (coin := clean_nonempty_str(coin)) is None:
             return False, None, "invalid coin"
-        if not isinstance(is_buy, bool) or not isinstance(reduce_only, bool):
+        if not isinstance(is_buy, bool) or not isinstance(reduce_only, bool) or not isinstance(post_only, bool):
             return False, None, "invalid non-boolean is_buy or reduce_only"
         if isinstance(sz, bool) or isinstance(px, bool):
             return False, None, "invalid boolean order parameter"
@@ -515,12 +515,35 @@ class HLClient:
         )
         if err is not None:
             return False, None, err
+        order_tif = "Alo" if post_only else "Gtc"
         try:
             res = self.exchange.order(coin, is_buy, sz, px,
-                                      {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)
+                                      {"limit": {"tif": order_tif}}, reduce_only=reduce_only)
         except Exception as e:  # noqa: BLE001
             return False, None, str(e)
-        return _parse_order_response(res, include_avg_px=True)
+        ok, oid, msg = _parse_order_response(res, include_avg_px=True)
+        if not ok and post_only and any(
+            tok in str(msg or "").lower()
+            for tok in ("would immediately match", "would have immediately matched", "post only order", "post-only order", "alo order")
+        ):
+            retry_px = px * (0.9995 if is_buy else 1.0005)
+            sz_r, px_r, err_r = _validate_and_round_order_params(
+                sz, retry_px, self.sz_decimals(coin), is_perp=True
+            )
+            if err_r is None and px_r != px:
+                log(
+                    f"  [HL] post-only {coin} {'BUY' if is_buy else 'SELL'} rejected at {px}; "
+                    f"stepping passive maker price to {px_r}"
+                )
+                try:
+                    res = self.exchange.order(
+                        coin, is_buy, sz_r, px_r,
+                        {"limit": {"tif": "Alo"}}, reduce_only=reduce_only
+                    )
+                    return _parse_order_response(res, include_avg_px=True)
+                except Exception as e_retry:  # noqa: BLE001
+                    return False, None, str(e_retry)
+        return ok, oid, msg
 
     def cancel(self, coin: str, oid: int) -> bool:
         if (

@@ -327,7 +327,7 @@ class KrakenClient:
 
     def add_order(self, pair: str, side: str, volume: float, price: float | None = None,
                   ordertype: str = "limit", validate: bool = False,
-                  cl_ord_id: str | None = None) -> dict:
+                  cl_ord_id: str | None = None, *, post_only: bool = True) -> dict:
         """Place an order with side='buy'|'sell'; validate=True validates without placing.
         Round price to the pair's actual pair_decimals precision. This centralizes
         mechanical protection for every Kraken caller (trailing/bot/xstock), analogous
@@ -361,6 +361,8 @@ class KrakenClient:
                 raise ValueError(f"invalid Kraken rounded limit price: {price!r}")
             px_s = f"{price}"
             data["price"] = (f"{price:.18f}".rstrip("0").rstrip(".") or "0") if "e" in px_s.lower() else px_s
+            if _parse_bool_flag(post_only, default=True):
+                data["oflags"] = "post"
         if cl_ord_id is not None:
             if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
                 raise ValueError("a Kraken cl_ord_id must be a 128-bit hex UUID")

@@ -1544,3 +1544,33 @@ def test_hyperliquidprovider_underscore_alias_and_long_ask_side_normalization_it
     monkeypatch.setattr(hl, "free_balance", lambda asset: 10.0)
     with pytest.raises(ProviderError, match="insufficient USDC"):
         hl.preflight_order("HYPE_USDC", "LONG", 2.0, price=25.0)
+
+
+def test_hyperliquid_post_only_alo_and_passive_step_back_retry(monkeypatch):
+    """Verify HyperliquidProvider and HLClient use tif='Alo' for post-only limit orders and retry passively on crossing rejection."""
+    hl = HyperliquidProvider(token="HYPE", live_enabled=True)
+    spot_calls = []
+
+    def _flaky_spot_order(pair, is_buy, sz, px, **kw):
+        spot_calls.append((pair, is_buy, sz, px, dict(kw)))
+        if len(spot_calls) == 1:
+            return False, None, "Order would have immediately matched"
+        return True, 55501, "resting"
+
+    fake_signer = SimpleNamespace(
+        sz_decimals=lambda _tok: 2,
+        spot_order=_flaky_spot_order,
+    )
+    monkeypatch.setattr(hl, "_signer", lambda: fake_signer)
+    monkeypatch.setattr(hl, "_pair", lambda: "@107")
+    monkeypatch.setattr(hl, "get_current_price", lambda _sym: 25.0)
+    monkeypatch.setattr(hl, "preflight_order", lambda *a, **kw: None)
+
+    oid = hl.submit_order("HYPEUSDC", "BUY", 1.0, price=25.0, market=False)
+    assert oid == "55501"
+    assert len(spot_calls) == 2
+    assert spot_calls[0][4].get("tif") == "Alo"
+    assert spot_calls[0][3] == 25.0
+    assert spot_calls[1][4].get("tif") == "Alo"
+    assert spot_calls[1][3] < 25.0
+
