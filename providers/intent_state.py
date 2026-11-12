@@ -24,6 +24,7 @@ from botcore import (
 from cachepaths import (
     canonical_base_asset,
     compatible_quote_suffixes,
+    is_equity_venue,
     is_equity_venue_or_suffix,
     normalize_venue_name,
     resolve_cachedb_filepath,
@@ -157,24 +158,24 @@ def _resolve_clamped_intent_notional(
     data: dict[str, Any],
     min_notional_usd: float,
     max_notional_usd: float,
-) -> float:
-    """Resolve and clamp suggested notional USD; explicit non-positive numeric values clamp to min_notional_usd."""
-    min_usd = safe_nonneg_float(min_notional_usd, default=0.0) or 0.0
-    max_usd = safe_nonneg_float(max_notional_usd, default=min_usd) or min_usd
-    pos = extract_intent_notional(data, None)
-    if pos is not None:
-        return max(min_usd, min(pos, max_usd))
-    if isinstance(data, dict):
-        for nk in _NOTIONAL_KEYS:
-            raw = data.get(nk)
-            if raw is None or isinstance(raw, bool):
-                continue
-            if isinstance(raw, str):
-                raw = _CURRENCY_STRIP_RE.sub("", raw).strip()
-            num = safe_float(raw, None)
-            if num is not None and num <= 0.0:
-                return min_usd
-    return max(min_usd, max_usd)
+) -> Optional[float]:
+    """Resolve and clamp an explicit positive suggested notional USD, or return None if missing/non-positive."""
+    if not isinstance(data, dict):
+        return None
+    for nk in _NOTIONAL_KEYS:
+        raw = data.get(nk)
+        if raw is None or isinstance(raw, bool):
+            continue
+        cleaned = _CURRENCY_STRIP_RE.sub("", raw).strip() if isinstance(raw, str) else raw
+        if cleaned == "":
+            continue
+        num = safe_float(cleaned, None)
+        if num is None or num <= 0.0:
+            return None
+        min_usd = safe_nonneg_float(min_notional_usd, default=0.0) or 0.0
+        max_usd = safe_nonneg_float(max_notional_usd, default=min_usd) or min_usd
+        return max(min_usd, min(num, max_usd))
+    return None
 
 
 def extract_intent_limit_price(data: dict[str, Any], default: Any = None) -> Any:
@@ -336,6 +337,8 @@ def validate_and_build_intent_dict(
     max_notional_usd: float,
     existing_intents: list[dict[str, Any]],
     now_ts: float,
+    resolve_instrument_fn: Optional[Callable[[str, str], Any]] = None,
+    max_mode: Optional[str] = None,
     log: Optional[Any] = None,
 ) -> Optional[dict[str, Any]]:
     """Validate an LLM trading decision and build a canonical TradeIntentRecord dict, or return None if non-actionable."""
@@ -367,6 +370,30 @@ def validate_and_build_intent_dict(
             )
         return None
     notional = _resolve_clamped_intent_notional(decision, min_notional_usd, max_notional_usd)
+    if notional is None:
+        if log:
+            log.warning(
+                "[INTENT GATEWAY] %s %s %s missing or non-positive notional USD (no intent).",
+                source, side, symbol,
+            )
+        return None
+    if callable(resolve_instrument_fn):
+        inst = resolve_instrument_fn(symbol, venue)
+        inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
+        inst_quote_u = str(getattr(inst, "quote", "") or "").strip().upper()
+        inst_prov = getattr(inst, "provider_name", None) or getattr(inst, "provider", "")
+        if not inst or (
+            not is_equity_venue(inst_prov)
+            and ((len(inst_sym_u) > 3 and inst_sym_u.endswith("BTC")) or inst_quote_u == "BTC")
+        ):
+            if log:
+                log.warning(
+                    "[INTENT GATEWAY] %s %s %s on %s unknown, ambiguous, or non-fiat instrument (no intent).",
+                    source, side, symbol, venue,
+                )
+            return None
+        if inst_sym_u:
+            symbol = inst_sym_u
     intent_id = generate_unique_intent_id(now_ts, side, symbol, existing_intents)
     raw_urg = decision.get("urgency", "NORMAL")
     urgency = (
@@ -398,6 +425,8 @@ def validate_and_build_intent_dict(
         "created_by": str(source or "").strip(),
         "history": [],
     }
+    if max_mode is not None:
+        rec["max_mode"] = str(max_mode)
     if cancel_bot_open:
         rec["cancel_bot_open_orders"] = True
     return rec

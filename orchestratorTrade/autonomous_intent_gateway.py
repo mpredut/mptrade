@@ -45,6 +45,7 @@ from instrument import (
     resolve_instrument_live_price,
     resolve_tradable_instrument,
 )
+from instrument_registry import discover_tradable_specs, resolve_instrument_spec
 import notify_engine.alertnotifiers as _alertnotifiers
 from providers.execution_audit import (
     reconcile_intents_from_execution_audit,
@@ -54,6 +55,7 @@ from providers.intent_execution import (
     execute_enforce_intent_order,
     find_duplicate_ai_open_limit_order,
     preflight_intent_and_resolve_price,
+    reconcile_open_intent_by_client_id,
     record_shadow_intent_observation,
     resolve_intent_topic_tag,
 )
@@ -85,6 +87,11 @@ AUTONOMOUS_BYPASS_GUARDS: frozenset[str] = frozenset({
 
 
 MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
+
+
+def _normalize_max_mode(max_mode: Any) -> str:
+    norm = "off" if isinstance(max_mode, bool) else str(max_mode or "shadow").strip().lower()
+    return norm if norm in MODE_RANK else "off"
 
 
 class AutonomousIntentGateway:
@@ -214,12 +221,16 @@ class AutonomousIntentGateway:
         """Validates and processes a single intent according to ``mode`` (default: the gateway mode)."""
         if not isinstance(intent, dict):
             return {}
+        resume_reconcile_cid = bool(intent.pop("_resume_reconcile_cid", False))
+        raw_cap = intent.get("max_mode")
         if isinstance(mode, str) and mode.strip():
             mode = mode.strip().lower()
         elif mode is None or mode == "":
             mode = self.mode
         else:
             mode = str(mode)
+        if raw_cap is not None and mode in MODE_RANK:
+            mode = min(mode, _normalize_max_mode(raw_cap), key=lambda m: MODE_RANK.get(m, 0))
         now = time.time()
         (
             ok,
@@ -244,6 +255,8 @@ class AutonomousIntentGateway:
             log=logger,
         )
         if not ok:
+            return intent
+        if resume_reconcile_cid and mode == "enforce" and reconcile_open_intent_by_client_id(inst, intent, now, log=logger):
             return intent
 
         replace_open = _parse_bool_flag(intent.get("replace_open_orders"), default=False)
@@ -397,6 +410,18 @@ class AutonomousIntentGateway:
         """Single linear entry point for autonomous LLM trade decisions."""
         now = time.time()
         intents = self.load_all_intents()
+        norm_max_mode = _normalize_max_mode(max_mode)
+
+        def _resolve_submit_spec(sym: str, ven: str) -> Any:
+            if "resolve_instrument" in self.__dict__:
+                return self.resolve_instrument(sym, venue=ven, instruments_map=instruments_map)
+            spec_map = (
+                instruments_map
+                if instruments_map is not None
+                else discover_tradable_specs(self.workspace_dir, include_closed_rth=True, now_ts=now)
+            )
+            return resolve_instrument_spec(sym, venue=ven, instruments_map=spec_map, workspace_dir=self.workspace_dir)
+
         intent = validate_and_build_intent_dict(
             decision,
             source=source,
@@ -405,18 +430,15 @@ class AutonomousIntentGateway:
             max_notional_usd=self.max_notional_usd,
             existing_intents=intents,
             now_ts=now,
+            resolve_instrument_fn=_resolve_submit_spec,
+            max_mode=norm_max_mode,
             log=logger,
         )
         if intent is None:
             return None
-        upsert_durable_intent(self.intents_file, intent, reconcile_fn=self.reconcile_intents, log=logger)
-        norm_max_mode = (
-            "off"
-            if isinstance(max_mode, bool)
-            else str(max_mode or "shadow").strip().lower()
-        )
-        if norm_max_mode not in MODE_RANK:
-            norm_max_mode = "off"
+        intent["status"] = "PENDING_EXECUTION"
+        if not upsert_durable_intent(self.intents_file, intent, reconcile_fn=self.reconcile_intents, log=logger):
+            return None
         mode = min(self.mode, norm_max_mode, key=lambda m: MODE_RANK.get(m, 0))
         processed = self.process_intent(intent, instruments_map=instruments_map, mode=mode)
         upsert_durable_intent(self.intents_file, processed, reconcile_fn=self.reconcile_intents, log=logger)
@@ -427,7 +449,7 @@ class AutonomousIntentGateway:
         intents = self.load_all_intents()
         pending_indices = [
             idx for idx, item in enumerate(intents)
-            if str(item.get("status") or "").strip().upper() == "PENDING"
+            if str(item.get("status") or "").strip().upper() in ("PENDING", "PENDING_EXECUTION")
         ]
         if not pending_indices:
             logger.info("No intents found in queue." if not intents else "No pending trade intents to process.")
@@ -440,7 +462,20 @@ class AutonomousIntentGateway:
 
         processed: List[Dict[str, Any]] = []
         for idx in pending_indices:
-            updated = self.process_intent(intents[idx], instruments_map=instruments_map)
+            item = intents[idx]
+            prev_st = str(item.get("status") or "").strip().upper()
+            item["status"] = "PENDING_EXECUTION"
+            if not upsert_durable_intent(self.intents_file, item, reconcile_fn=self.reconcile_intents, log=logger):
+                continue
+            if prev_st == "PENDING_EXECUTION":
+                item["_resume_reconcile_cid"] = True
+            raw_cap = item.get("max_mode")
+            item_mode = (
+                min(self.mode, _normalize_max_mode(raw_cap), key=lambda m: MODE_RANK.get(m, 0))
+                if raw_cap is not None
+                else self.mode
+            )
+            updated = self.process_intent(item, instruments_map=instruments_map, mode=item_mode)
             intents[idx] = updated
             processed.append(updated)
             upsert_durable_intent(self.intents_file, updated, reconcile_fn=self.reconcile_intents, log=logger)
@@ -475,7 +510,7 @@ def main() -> None:
         intents = gateway.load_all_intents()
         cleared_cnt = 0
         for item in intents:
-            if str(item.get("status") or "").strip().upper() == "PENDING":
+            if str(item.get("status") or "").strip().upper() in ("PENDING", "PENDING_EXECUTION"):
                 item["status"] = "CANCELLED"
                 cleared_cnt += 1
         gateway.save_all_intents(intents)

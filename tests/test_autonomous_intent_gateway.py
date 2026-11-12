@@ -2053,3 +2053,129 @@ def test_autonomousintentgateway_resolve_instrument_rejects_empty_boolean_symbol
         mode=" SHADOW ",
     )
     assert out["status"] == "OBSERVED_SHADOW"
+
+
+def test_execution_contract_persistence_shadow_cap_client_id_and_strict_identity_notional(temp_workspace, monkeypatch):
+    """Verify gateway execution contract: fail-closed initial save, persisted shadow ceiling on resume,
+    client_order_id reconciliation before resubmit, explicit positive notional, and zero prefix collisions."""
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce", notify_enabled=False)
+
+    ethfi_inst = _make_mock_inst("ETHFIUSDC", base="ETHFI", quote="USDC", venue="binance", price=2.50, free_balance=1000.0)
+    btc_inst = _make_mock_inst(
+        "BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        venue="binance",
+        price=80000.0,
+        free_balance=1000.0,
+        place_return={"orderId": "ord_btc_1", "status": "FILLED"},
+    )
+    inst_map = {"BINANCE_ETHFI": ethfi_inst, "BINANCE_BTC": btc_inst}
+
+    # 1. Prefix collision blocked: 'ETH' never resolves to 'ETHFIUSDC', and no executable intent is created
+    assert gw.resolve_instrument("ETH", venue="binance", instruments_map=inst_map) is None
+    assert (
+        gw.submit(
+            {"decision": "BUY", "symbol": "ETH", "venue": "binance", "confidence": 0.95, "suggested_notional_usd": 100.0},
+            source="auto_cryptotrade_executor",
+            max_mode="enforce",
+            instruments_map=inst_map,
+        )
+        is None
+    )
+    ethfi_inst.place.assert_not_called()
+    assert gw.load_all_intents() == []
+
+    # Ambiguous multi-candidate base match is also rejected rather than picking first
+    btc_dup = _make_mock_inst("BTCUSDT", base="BTC", quote="USDT", venue="binance", price=80000.0, free_balance=1000.0)
+    assert gw.resolve_instrument("BTC", venue="binance", instruments_map={"B1": btc_inst, "B2": btc_dup}) is None
+
+    # 2. Missing, invalid, zero, or negative notional USD is rejected (never defaults to $2,000 or $10)
+    for bad_dec in (
+        {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.95},
+        {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.95, "suggested_notional_usd": "invalid"},
+        {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.95, "suggested_notional_usd": 0},
+        {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.95, "suggested_notional_usd": -50.0},
+    ):
+        assert gw.submit(bad_dec, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map=inst_map) is None
+    assert gw.load_all_intents() == []
+
+    bad_preflight = gw.process_intent(
+        {"intent_id": "missing_notional_1", "decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.95},
+        instruments_map=inst_map,
+    )
+    assert bad_preflight["status"] == "REJECTED_INVALID_NOTIONAL"
+    btc_inst.place.assert_not_called()
+
+    # 3. Initial save returning False aborts before process_intent / venue submission
+    with patch("orchestratorTrade.autonomous_intent_gateway.upsert_durable_intent", return_value=False):
+        aborted = gw.submit(
+            {"decision": "BUY", "symbol": "BTC", "venue": "binance", "confidence": 0.95, "suggested_notional_usd": 150.0},
+            source="auto_cryptotrade_executor",
+            max_mode="enforce",
+            instruments_map=inst_map,
+        )
+    assert aborted is None
+    btc_inst.place.assert_not_called()
+
+    # 4. Interruption between initial save and processing preserves max_mode='shadow' when resumed in an enforce gateway
+    def _boom(*_a, **_kw):
+        raise RuntimeError("simulated interruption before execution")
+
+    with patch.object(gw, "process_intent", side_effect=_boom):
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            gw.submit(
+                {"decision": "BUY", "symbol": "BTC", "venue": "binance", "confidence": 0.95, "suggested_notional_usd": 150.0},
+                source="auto_cryptotrade_executor",
+                max_mode="shadow",
+                instruments_map=inst_map,
+            )
+
+    queued = gw.load_all_intents()
+    assert len(queued) == 1
+    assert queued[0]["symbol"] == "BTCUSDC"
+    assert queued[0]["max_mode"] == "shadow"
+    assert queued[0]["status"] == "PENDING_EXECUTION"
+
+    gw_enforce_resume = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce", notify_enabled=False)
+    monkeypatch.setattr(gw_enforce_resume, "load_tradable_instruments", lambda **_kw: inst_map)
+    resumed_shadow = gw_enforce_resume.process_all_pending()
+    assert len(resumed_shadow) == 1
+    assert resumed_shadow[0]["status"] == "OBSERVED_SHADOW"
+    btc_inst.place.assert_not_called()
+
+    # 5. Resuming a claimed enforce intent reconciles an open order carrying AI_<intent_id> without resubmitting
+    claimed_id = "intent_1794000001_buy_btcusdc"
+    gw.save_all_intents([
+        {
+            "intent_id": claimed_id,
+            "timestamp": 1794000001.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "confidence": 0.95,
+            "suggested_notional_usd": 160.0,
+            "order_type": "LIMIT",
+            "limit_price": 79000.0,
+            "max_mode": "enforce",
+            "status": "PENDING_EXECUTION",
+            "history": [],
+        }
+    ])
+    btc_inst.open_orders.return_value = [
+        {
+            "orderId": "99887766",
+            "clientOrderId": f"AI_{claimed_id}",
+            "side": "BUY",
+            "price": "79000.0",
+            "origQty": "0.00202",
+            "status": "NEW",
+        }
+    ]
+    resumed_enforce = gw_enforce_resume.process_all_pending()
+    assert len(resumed_enforce) == 1
+    assert resumed_enforce[0]["status"] == "EXECUTED"
+    assert resumed_enforce[0]["execution_payload"]["orderId"] == "99887766"
+    assert resumed_enforce[0]["history"][-1]["action"] == "RECONCILED_CLIENT_ORDER_ID"
+    btc_inst.place.assert_not_called()

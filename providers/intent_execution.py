@@ -26,6 +26,7 @@ from .intent_state import (
     collect_known_ai_order_ids,
     extract_intent_limit_price,
     extract_intent_order_type,
+    intent_venue_client_order_ids,
     normalize_intent_fields,
 )
 from .order_ohlc_utils import (
@@ -573,6 +574,11 @@ def preflight_intent_and_resolve_price(
         return False, intent_id, decision, symbol, venue, confidence, None, 0.0, 0.0, False
 
     effective_usd = _resolve_clamped_intent_notional(intent, min_notional_usd, max_notional_usd)
+    if effective_usd is None:
+        if log:
+            log.warning("[INTENT GATEWAY] Intent %s rejected: missing or non-positive notional USD", intent_id)
+        _record_intent_state(intent, "REJECTED_INVALID_NOTIONAL", now_ts)
+        return False, intent_id, decision, symbol, venue, confidence, inst, 0.0, 0.0, False
 
     live_price = safe_pos_float(get_live_price_fn(inst), default=None)
     if live_price is None:
@@ -598,11 +604,55 @@ def preflight_intent_and_resolve_price(
     return True, intent_id, decision, symbol, venue, confidence, inst, effective_usd, price, is_limit
 
 
+def reconcile_open_intent_by_client_id(
+    inst: Any,
+    intent: dict[str, Any],
+    now_ts: float,
+    *,
+    log: Optional[Any] = None,
+) -> bool:
+    """Adopt an existing venue open order matching this intent's client_order_id before resubmitting on recovery."""
+    expected_cids = intent_venue_client_order_ids(intent)
+    open_fn = getattr(inst, "open_orders", None)
+    if not expected_cids or not callable(open_fn):
+        return False
+    try:
+        raw_open = open_fn()
+    except Exception:
+        return False
+    if not isinstance(raw_open, list):
+        return False
+    for oo in raw_open:
+        if not isinstance(oo, dict):
+            continue
+        cid = (extract_client_order_id(oo, default="") or "").strip().lower()
+        if cid and cid in expected_cids:
+            oid_str = extract_order_id(oo, default="")
+            intent["execution_payload"] = oo
+            extra = {"order_id": oid_str} if oid_str else {}
+            _record_intent_state(
+                intent,
+                "EXECUTED",
+                now_ts,
+                action="RECONCILED_CLIENT_ORDER_ID",
+                payload=oo,
+                **extra,
+            )
+            if log:
+                log.info(
+                    "[INTENT GATEWAY] Reconciled resumed intent on %s via client_order_id %s (order_id=%s).",
+                    getattr(inst, "symbol", ""), cid, oid_str or "N/A",
+                )
+            return True
+    return False
+
+
 __all__ = [
     "cancel_existing_ai_open_orders",
     "execute_enforce_intent_order",
     "find_duplicate_ai_open_limit_order",
     "preflight_intent_and_resolve_price",
+    "reconcile_open_intent_by_client_id",
     "record_shadow_intent_observation",
     "resolve_intent_execution_price",
     "resolve_intent_topic_tag",

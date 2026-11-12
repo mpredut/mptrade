@@ -1865,22 +1865,37 @@ def test_iter52_repair_ssot_monkeypatch_portfolio_scope_and_trailing_pct_lookup(
     assert kts.trail_pct_for("hype") == pytest.approx(2.25)
     assert kts.trail_pct_for("BAD") == pytest.approx(3.5)
 
-    # 4. Intent field extractors fall through empty/non-positive primary keys to valid aliases,
-    #    and validate_and_build_intent_dict clamps explicit <= 0 notional to min_notional_usd
+    # 4. Intent field extractors fall through empty primary keys to valid aliases,
+    #    and validate_and_build_intent_dict rejects missing, invalid, zero, or negative notional USD
     assert extract_intent_side({"decision": "", "side": "buy"}) == "BUY"
     assert extract_intent_notional({"suggested_notional_usd": "", "notional_usd": "$350"}) == pytest.approx(350.0)
     assert extract_intent_limit_price({"order_type": "LIMIT", "limit_price": "", "price": "79,500"}) == pytest.approx(79500.0)
 
-    rec_zero = validate_and_build_intent_dict(
-        {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.90, "suggested_notional_usd": 0},
-        source="test",
-        min_confidence=0.85,
-        min_notional_usd=10.0,
-        max_notional_usd=2000.0,
-        existing_intents=[],
-        now_ts=1700000000.0,
+    for bad_notional in (0, -25.0, None, "invalid", float("nan"), True):
+        assert (
+            validate_and_build_intent_dict(
+                {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.90, "suggested_notional_usd": bad_notional},
+                source="test",
+                min_confidence=0.85,
+                min_notional_usd=10.0,
+                max_notional_usd=2000.0,
+                existing_intents=[],
+                now_ts=1700000000.0,
+            )
+            is None
+        )
+    assert (
+        validate_and_build_intent_dict(
+            {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.90},
+            source="test",
+            min_confidence=0.85,
+            min_notional_usd=10.0,
+            max_notional_usd=2000.0,
+            existing_intents=[],
+            now_ts=1700000000.0,
+        )
+        is None
     )
-    assert rec_zero is not None and rec_zero["suggested_notional_usd"] == pytest.approx(10.0)
 
 
 def test_iter53_runtime_states_callable_arg_collector_monkeypatch_and_evaluator_guards(monkeypatch, tmp_path):

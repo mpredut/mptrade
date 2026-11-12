@@ -603,22 +603,25 @@ def resolve_instrument_spec(
         and compatible_quote_suffixes(_candidate_symbol_u(item), _str_attr(item, "quote") or None, default_usd=_DEFAULT_USD_QUOTES) == req_quotes
     ]
 
-    for item in candidates:
-        if clean_symbol_key(item.symbol) == sym_norm:
-            return item
-    for item in candidates:
-        if clean_symbol_key(item.symbol) in variant_norms:
-            return item
+    exact_matches = [item for item in candidates if clean_symbol_key(item.symbol) == sym_norm]
+    if exact_matches:
+        return exact_matches[0] if len(exact_matches) == 1 else None
+    variant_matches = [item for item in candidates if clean_symbol_key(item.symbol) in variant_norms]
+    if variant_matches:
+        return variant_matches[0] if len(variant_matches) == 1 else None
     if req_base:
-        for item in candidates:
-            raw_b = getattr(item, "base", None)
-            b_str = raw_b if isinstance(raw_b, str) and raw_b.strip() else _candidate_symbol_u(item)
-            if canonical_base_asset(b_str) == req_base:
-                return item
-    for item in candidates:
-        inst_sym_n = clean_symbol_key(item.symbol)
-        if inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n):
-            return item
+        base_matches = [
+            item
+            for item in candidates
+            if canonical_base_asset(
+                raw_b
+                if isinstance((raw_b := getattr(item, "base", None)), str) and raw_b.strip()
+                else _candidate_symbol_u(item)
+            )
+            == req_base
+        ]
+        if len(base_matches) == 1:
+            return base_matches[0]
     return None
 
 
