@@ -12,11 +12,8 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import safe_pos_float
-from intelligence.macro_sentiment_ssot import (
-    clean_scale,
-    fetch_public_json,
-)
+from botcore import clean_scale, safe_pos_float
+from intelligence.macro_sentiment_ssot import fetch_public_json
 from cachepaths import (
     canonical_symbol_key,
     resolve_binance_lookup_symbol,

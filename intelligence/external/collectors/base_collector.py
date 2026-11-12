@@ -29,6 +29,7 @@ from botcore import (
     is_env_defined,
     is_rth_gate_enabled,
     normalize_epoch_sec,
+    resolve_now_ts,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
@@ -48,7 +49,6 @@ from intelligence.macro_sentiment_ssot import (
     _require_feed_str,
     fetch_public_json,
     resolve_derived_telemetry_intervals,
-    resolve_now_ts,
 )
 from cacheprice import resolve_ssot_price_from_cache
 from providers.base import MarketDataProvider

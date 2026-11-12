@@ -1071,6 +1071,15 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     json_owners = {"state_io.py", "botcore.py", "cacheintegrity.py"}
     text_owners = {"state_io.py", "botcore.py"}
     env_owners = {"botcore.py", "cachepaths.py", "credentials.py"}
+    open_owners = {"state_io.py", "botcore.py", "log.py"}
+    coercion_owners = {"botcore.py", "cachepaths.py", "orchestratorOS/agy/protobuf.py"}
+    mss_tree = ast.parse((root / "intelligence" / "macro_sentiment_ssot.py").read_text(encoding="utf-8"))
+    mss_reexports = {
+        a.asname or a.name
+        for n in mss_tree.body
+        if isinstance(n, ast.ImportFrom) and n.module in ("botcore", "cachepaths", "state_io")
+        for a in n.names
+    }
     order_ohlc_reexports = {
         "ClosedPriceSeries",
         "OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES",
@@ -1140,13 +1149,33 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
             bad_cp = [a.name for a in node.names if a.name in cacheprice_poller_reexports]
             if bad_cp:
                 ssot_violations.append(f"{rel_s}:{lineno}: non-canonical poller re-export import from cacheprice: {bad_cp}")
+        elif rel_s != "intelligence/macro_sentiment_ssot.py" and (
+            node.module == "intelligence.macro_sentiment_ssot"
+            or (rel_s.startswith("intelligence/") and node.module and node.module.endswith("macro_sentiment_ssot"))
+        ):
+            bad_mss = [a.name for a in node.names if a.name in mss_reexports]
+            if bad_mss:
+                ssot_violations.append(
+                    f"{rel_s}:{lineno}: non-canonical botcore/cachepaths/state_io re-export import from macro_sentiment_ssot: {bad_mss}"
+                )
 
     for rel_s, path_obj in prod_files:
         tree = ast.parse(path_obj.read_text(encoding="utf-8"), filename=rel_s)
+        seen_top_import_from: set[tuple[int, str]] = set()
+        for top_node in tree.body:
+            if isinstance(top_node, ast.ImportFrom) and top_node.module:
+                imp_key = (top_node.level, top_node.module)
+                if imp_key in seen_top_import_from:
+                    ssot_violations.append(f"{rel_s}:{top_node.lineno}: duplicate top-level ImportFrom {top_node.module}")
+                seen_top_import_from.add(imp_key)
         for node in ast.walk(tree):
             lineno = getattr(node, "lineno", 0)
             if isinstance(node, ast.Call):
                 fn = node.func
+                if rel_s not in open_owners and isinstance(fn, ast.Name) and fn.id == "open":
+                    ssot_violations.append(f"{rel_s}:{lineno}: raw open()")
+                if rel_s not in coercion_owners and isinstance(fn, ast.Name) and fn.id in ("float", "int"):
+                    ssot_violations.append(f"{rel_s}:{lineno}: raw {fn.id}()")
                 if (
                     rel_s not in json_owners
                     and isinstance(fn, ast.Attribute)

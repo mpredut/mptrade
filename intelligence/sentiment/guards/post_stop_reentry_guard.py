@@ -20,10 +20,14 @@ from typing import Any, Dict, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
+    clean_scale,
     format_price_log,
+    resolve_now_ts,
     resolve_order_notional,
+    safe_float,
     safe_nonneg_float,
     safe_nonneg_ts,
+    safe_pos_float,
     topic_spec,
 )
 from guard_hierarchy import _load_margins
@@ -34,13 +38,7 @@ from intelligence.internal.guards.guard_decision import (
     resolve_hierarchical_guard_mode,
     unpack_guard_decision,
 )
-from intelligence.macro_sentiment_ssot import (
-    clean_scale,
-    clean_symbol_key,
-    resolve_now_ts,
-    safe_float,
-    safe_pos_float,
-)
+from cachepaths import clean_symbol_key
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.guards.high_stake_guard import (
     DEFAULT_LLM_GUARD_CACHE_TTL_SEC,

@@ -8,11 +8,7 @@ from intelligence.internal.guards.guard_decision import (
     OrderGuardEvaluatorBase,
     OrderGuardEvaluatorFactory,
 )
-from botcore import (
-    normalize_side,
-    safe_thresh,
-)
-from intelligence.macro_sentiment_ssot import clean_scale
+from botcore import clean_scale, normalize_side, safe_thresh
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
 

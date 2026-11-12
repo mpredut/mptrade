@@ -26,6 +26,7 @@ from botcore import (
     load_dotenv,
     obj_attr,
     obj_float,
+    parse_symbol_list,
     required_float_env,
     safe_nonneg_int,
     safe_pos_float,
@@ -45,7 +46,6 @@ from intelligence.macro.daemon_ssot import (
 )
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
 from intelligence.macro.news_feed_collector import NewsFeedCollector
-from intelligence.macro_sentiment_ssot import parse_symbol_list
 
 load_dotenv()
 

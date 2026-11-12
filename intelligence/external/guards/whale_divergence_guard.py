@@ -9,7 +9,15 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from botcore import _parse_bool_flag, obj_attr, obj_attr_first, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    clean_scale,
+    obj_attr,
+    obj_attr_first,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -19,7 +27,6 @@ from intelligence.external.collectors.whale_positioning_collector import (
     WhalePositioningCollector,
     WhalePositioningSnapshot,
 )
-from intelligence.macro_sentiment_ssot import clean_scale
 
 
 class WhaleDivergenceGuard(OrderGuardEvaluatorBase):

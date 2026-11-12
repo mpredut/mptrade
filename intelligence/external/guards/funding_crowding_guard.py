@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import obj_attr, safe_float, safe_pos_float
+from botcore import (
+    clean_scale,
+    obj_attr,
+    safe_float,
+    safe_pos_float,
+)
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -19,7 +24,6 @@ from intelligence.external.collectors.derivatives_telemetry_collector import (
     DerivativesTelemetry,
     DerivativesTelemetryCollector,
 )
-from intelligence.macro_sentiment_ssot import clean_scale
 
 
 class FundingCrowdingGuard(OrderGuardEvaluatorBase):

@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import obj_attr_first, safe_nonneg_float, safe_pos_float
+from botcore import (
+    clean_scale,
+    obj_attr_first,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -18,7 +23,6 @@ from intelligence.external.collectors.orderbook_depth_collector import (
     OrderbookDepthCollector,
     OrderbookSnapshot,
 )
-from intelligence.macro_sentiment_ssot import clean_scale
 
 
 class OrderbookWallGuard(OrderGuardEvaluatorBase):

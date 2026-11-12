@@ -4,12 +4,12 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from intelligence.internal.triggers.trigger_event import TriggerEvent
-from botcore import safe_thresh
-from intelligence.macro_sentiment_ssot import (
+from botcore import (
     obj_attr,
     resolve_now_ts,
     safe_float,
     safe_pos_float,
+    safe_thresh,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 

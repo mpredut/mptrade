@@ -9,13 +9,18 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import clean_scale, obj_attr, safe_float, safe_pos_float
+from botcore import (
+    clean_scale,
+    obj_attr,
+    resolve_now_ts,
+    safe_float,
+    safe_pos_float,
+)
 from intelligence.internal.triggers.trigger_event import TriggerEvent
 from intelligence.external.collectors.bybit_liquidations_collector import (
     BybitLiquidationCollector,
     LiquidationSummary,
 )
-from intelligence.macro_sentiment_ssot import resolve_now_ts
 
 
 class LiquidationCapitulationTrigger:

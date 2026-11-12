@@ -13,7 +13,14 @@ import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
-from botcore import clean_scale, obj_attr, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    clean_scale,
+    obj_attr,
+    resolve_now_ts,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cachepaths import (
     cache_symbol_variants,
     normalize_cache_base_asset,
@@ -30,11 +37,7 @@ from intelligence.external.collectors.base_collector import (
     is_cache_fresh,
     read_json_dict,  # noqa: F401
 )
-from intelligence.macro_sentiment_ssot import (
-    _extract_sorted_ts_px,
-    fetch_public_json,
-    resolve_now_ts,
-)
+from intelligence.macro_sentiment_ssot import _extract_sorted_ts_px, fetch_public_json
 
 logger = logging.getLogger("intelligence.external.whale_positioning")
 

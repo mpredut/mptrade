@@ -27,8 +27,13 @@ from botcore import (
     _parse_bool_flag,
     bool_env,
     load_dotenv,
+    parse_symbol_list,
     pos_float_env,
+    resolve_now_ts,
+    safe_float,
     safe_nonneg_ts,
+    safe_pos_float,
+    safe_pos_int,
 )
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
@@ -52,13 +57,7 @@ from intelligence.macro.daemon_ssot import (
     write_daemon_heartbeat,
 )
 from intelligence.macro.news_feed_collector import NewsFeedCollector
-from intelligence.macro_sentiment_ssot import (
-    parse_symbol_list,
-    resolve_derived_telemetry_intervals,
-    resolve_now_ts,
-    safe_float,
-    safe_pos_float,
-)
+from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
 from instrument_registry import has_workspace_instrument_sources, is_equity_symbol
 from providers.market_api import MarketDataProvider
@@ -465,7 +464,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 indent=2,
             )
             exec_timeout_sec = str(
-                max(30, int(round(safe_pos_float(getattr(self, "ai_impulse_exec_timeout_sec", None), 240.0))))
+                max(30, safe_pos_int(round(safe_pos_float(getattr(self, "ai_impulse_exec_timeout_sec", None), 240.0)), default=240))
             )
             log_path = os.path.join(workspace_dir, "logs", "auto_trade_executor.log")
             out_fh = open_append_text_file(log_path)
