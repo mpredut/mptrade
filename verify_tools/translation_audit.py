@@ -36,11 +36,63 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import parse_nonneg_cli_int, safe_nonneg_int
-from state_io import read_text_file
+from state_io import atomic_write_text, read_text_file
 
 # Detection dictionary. Diacritics are conclusive on their own; the word list holds
 # Romanian tokens that are unlikely to appear in English prose or in identifiers.
-RO_DIACRITICS = set("ăâîșțĂÂÎȘȚşţŞŢ")
+_RO_DIACRITIC_SRC = "\u0103\u00e2\u00ee\u0219\u021b\u0102\u00c2\u00ce\u0218\u021a\u015f\u0163\u015e\u0162"
+_RO_DIACRITIC_DST = "aaistAAISTstST"
+RO_DIACRITICS = set(_RO_DIACRITIC_SRC)
+RO_DIACRITIC_TRANS = str.maketrans(_RO_DIACRITIC_SRC, _RO_DIACRITIC_DST)
+
+DIACRITIC_EXEMPT_PATHS = frozenset({
+    "orchestratorOS/admin/prune_llm_threads.py",
+    "orchestratorOS/supervisor/prompt_formatters.py",
+    "tests/test_autonomous_ai_reconciler.py",
+    "tests/test_prune_llm_threads.py",
+    "verify_tools/translation_audit.py",
+})
+
+
+def strip_romanian_diacritics(text: str) -> str:
+    """Replace Romanian diacritics with their ASCII equivalents."""
+    return text.translate(RO_DIACRITIC_TRANS)
+
+
+def is_diacritic_exempt(path: str) -> bool:
+    """Return True when ``path`` is an intentional bilingual matcher/test file."""
+    rel = os.path.relpath(os.path.abspath(path), _ROOT).replace(os.sep, "/")
+    return rel in DIACRITIC_EXEMPT_PATHS or path.replace(os.sep, "/") in DIACRITIC_EXEMPT_PATHS
+
+
+def sanitize_file_diacritics(path: str) -> bool:
+    """Strip Romanian diacritics in-place for non-exempt text files; return True if modified."""
+    if is_diacritic_exempt(path):
+        return False
+    source = read_text_file(path, default=None, newline="")
+    if source is None:
+        return False
+    cleaned = strip_romanian_diacritics(source)
+    if cleaned == source:
+        return False
+    atomic_write_text(path, cleaned, newline="", preserve_mode=True)
+    return True
+
+
+def ensure_git_hooks_configured(repo_root: str = _ROOT) -> bool:
+    """Idempotently set ``core.hooksPath = .githooks`` when missing in ``.git/config``."""
+    git_cfg = os.path.join(repo_root, ".git", "config")
+    hooks_dir = os.path.join(repo_root, ".githooks")
+    if not os.path.isfile(git_cfg) or not os.path.isdir(hooks_dir):
+        return False
+    cfg_text = read_text_file(git_cfg, default="")
+    if "hooksPath = .githooks" in cfg_text:
+        return True
+    proc = subprocess.run(
+        ["git", "-C", repo_root, "config", "core.hooksPath", ".githooks"],
+        capture_output=True, check=False,
+    )
+    return proc.returncode == 0
 
 # The list below was widened deliberately after the narrow version reported the
 # migration finished three times while Romanian lines were still in the tree. It
@@ -262,6 +314,75 @@ def cmd_verify(args) -> int:
     return 1 if failures else 0
 
 
+# -- git hooks (pre-commit / commit-msg) ---------------------------------------
+
+def _staged_scannable_files(explicit_files: List[str] | None = None) -> List[str]:
+    if explicit_files is not None:
+        candidates = explicit_files
+    else:
+        proc = subprocess.run(
+            ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
+            cwd=_ROOT, capture_output=True, text=True, check=False,
+        )
+        candidates = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    selected: List[str] = []
+    for rel in candidates:
+        parts = set(rel.replace("\\", "/").split("/"))
+        if parts & SKIP_DIRS or os.path.basename(rel) == ".env":
+            continue
+        if not rel.endswith(SCAN_EXTS):
+            continue
+        full = rel if os.path.isabs(rel) else os.path.join(_ROOT, rel)
+        if os.path.isfile(full):
+            selected.append(full)
+    return selected
+
+
+def cmd_pre_commit(args) -> int:
+    files = _staged_scannable_files(args.files if args.files else None)
+    total_hits = 0
+    for path in files:
+        rel = os.path.relpath(path, _ROOT) if os.path.isabs(path) else path
+        if sanitize_file_diacritics(path):
+            print(f"[pre-commit] Auto-replaced Romanian diacritics with ASCII: {rel}")
+            if not args.files:
+                subprocess.run(["git", "add", "--", path], cwd=_ROOT, check=False)
+        if is_diacritic_exempt(path):
+            continue
+        hits, _ = scan_file(path, args.min_score)
+        if not hits:
+            continue
+        total_hits += len(hits)
+        print(f"\n=== {rel} ({len(hits)} Romanian block(s)) ===")
+        for line, kind, score, text in hits:
+            print(f"  L{line:<5} {kind:<9} score={score:<3} {text[:100]}")
+    if total_hits:
+        print(f"\n[pre-commit] Blocked: {total_hits} Romanian block(s) detected. "
+              "Write comments, docstrings, and docs in English.")
+        return 1
+    return 0
+
+
+def cmd_commit_msg(args) -> int:
+    source = read_text_file(args.msg_file, default=None, newline="")
+    if source is None:
+        return 0
+    cleaned = strip_romanian_diacritics(source)
+    if cleaned != source:
+        atomic_write_text(args.msg_file, cleaned, newline="")
+        print("[commit-msg] Auto-replaced Romanian diacritics with ASCII in commit message.")
+    prose = "\n".join(
+        line for line in cleaned.splitlines() if not line.lstrip().startswith("#")
+    )
+    score = romanian_score(prose)
+    if score >= args.min_score:
+        matched = [w for w in _TOKEN_RE.findall(prose.lower()) if w in RO_WORDS]
+        print(f"[commit-msg] Blocked: Romanian words detected in commit message "
+              f"{matched} (score={score}). Write commit message in English.")
+        return 1
+    return 0
+
+
 # -- entry point ---------------------------------------------------------------
 
 def main() -> int:
@@ -282,6 +403,18 @@ def main() -> int:
     verify.add_argument("paths", nargs="+", help="edited files")
     verify.add_argument("--rev", default="HEAD", help="revision to compare against")
     verify.set_defaults(func=cmd_verify)
+
+    pre_commit = sub.add_parser("pre-commit", help="auto-strip diacritics and check staged files")
+    pre_commit.add_argument("files", nargs="*", help="optional explicit file paths")
+    pre_commit.add_argument("--min-score", type=parse_nonneg_cli_int, default=2,
+                            help="report a block at or above this score (default: 2)")
+    pre_commit.set_defaults(func=cmd_pre_commit)
+
+    commit_msg = sub.add_parser("commit-msg", help="auto-strip diacritics and check commit message")
+    commit_msg.add_argument("msg_file", help="path to git commit message file")
+    commit_msg.add_argument("--min-score", type=parse_nonneg_cli_int, default=2,
+                            help="block commit message at or above this score (default: 2)")
+    commit_msg.set_defaults(func=cmd_commit_msg)
 
     args = parser.parse_args()
     return args.func(args)

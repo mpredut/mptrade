@@ -1,5 +1,5 @@
 # Repository Rules & Execution Scope
-- **Strict English & ASCII Hygiene:** Write all code, comments, docstrings, logs, commits, and docs in English without Romanian diacritics (except intentional bilingual safety/audit matchers).
+- **English & ASCII Hygiene (`.githooks/`):** Write code, comments, logs, docs, and commits in ASCII English (enforced by `.githooks/` via `verify_tools/translation_audit.py`).
 - **Auto-Push & Targeted Testing:** Automatically push verified commits to `origin/main`. Run only targeted `pytest` suites locally; full regressions run on DEV (`./offline/runners/trigger_dev_regression.sh`, status via `./offline/runners/check_dev_regression.sh` or `cachedb/dev_regression_status.json`).
 - **Topology:** Local WSL `/home/mariusp/mptrade` | PROD `mptrade-prod` (`192.168.0.144`, `/home/predut/mptrade`) | DEV `mptrade-dev` (`192.168.0.138`, `/home/predut/mptrade`).
 

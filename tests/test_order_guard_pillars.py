@@ -1490,6 +1490,25 @@ def test_batch51_verify_tools_hardening(tmp_path, monkeypatch):
     # 1. translation_audit.scan_file handles missing/unreadable files cleanly without raising
     hits, is_rt = ta_mod.scan_file(str(tmp_path / "nonexistent.py"), 2)
     assert hits == [] and is_rt is False
+    assert ta_mod.strip_romanian_diacritics("t\u0103r\u0219\u021b") == "tarst"
+    assert ta_mod.is_diacritic_exempt("verify_tools/translation_audit.py") is True
+
+    sample_py = tmp_path / "sample.py"
+    sample_py.write_text("# English comment with diacritic \u0103\u0219\n", encoding="utf-8")
+    assert ta_mod.cmd_pre_commit(SimpleNamespace(files=[str(sample_py)], min_score=2)) == 0
+    assert sample_py.read_text(encoding="utf-8") == "# English comment with diacritic as\n"
+
+    ro_py = tmp_path / "ro_sample.py"
+    ro_py.write_text("# verifica pretul pentru ordinul activ\n", encoding="utf-8")
+    assert ta_mod.cmd_pre_commit(SimpleNamespace(files=[str(ro_py)], min_score=2)) == 1
+
+    msg_file = tmp_path / "COMMIT_EDITMSG"
+    msg_file.write_text("Fix order guard threshold \u0219i-like typo\n", encoding="utf-8")
+    assert ta_mod.cmd_commit_msg(SimpleNamespace(msg_file=str(msg_file), min_score=2)) == 0
+    assert msg_file.read_text(encoding="utf-8") == "Fix order guard threshold si-like typo\n"
+
+    msg_file.write_text("repara eroarea pentru ordinul de cumparare\n", encoding="utf-8")
+    assert ta_mod.cmd_commit_msg(SimpleNamespace(msg_file=str(msg_file), min_score=2)) == 1
 
     # 2. watch_trade_decisions.main handles specs where spec.number("mt.gain") returns None (e.g. ARBUSDC)
     monkeypatch.setattr(wtd_mod, "SYMBOLS", ["ARBUSDC"])

@@ -215,9 +215,13 @@ def _atomic_stream_writer(
 
 
 def atomic_text_writer(path: str, *, encoding: str = "utf-8",
-                       newline: str | None = None) -> contextlib.AbstractContextManager[Any]:
+                       newline: str | None = None,
+                       preserve_mode: bool = False) -> contextlib.AbstractContextManager[Any]:
     """Yield a text handle and atomically publish it only after a successful write."""
-    return _atomic_stream_writer(path, "w", encoding=encoding, newline=newline)
+    return _atomic_stream_writer(
+        path, "w", preserve_mode=_parse_bool_flag(preserve_mode, False),
+        encoding=encoding, newline=newline,
+    )
 
 
 def open_append_text_file(
@@ -237,9 +241,9 @@ def open_binary_read_file(path: str | os.PathLike[str]) -> Any:
 
 
 def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8",
-                      newline: str | None = None) -> None:
+                      newline: str | None = None, preserve_mode: bool = False) -> None:
     """Write text ``content`` to ``path`` atomically through ``atomic_text_writer``."""
-    with atomic_text_writer(path, encoding=encoding, newline=newline) as handle:
+    with atomic_text_writer(path, encoding=encoding, newline=newline, preserve_mode=preserve_mode) as handle:
         handle.write(str(content))
 
 

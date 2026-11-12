@@ -27,6 +27,9 @@ for _bt_env_var in ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_GEMINI_LLM"):
 
 import botcore as _botcore_init  # noqa: E402
 import log as _log_init  # noqa: E402
+from verify_tools.translation_audit import ensure_git_hooks_configured as _ensure_git_hooks  # noqa: E402
+
+_ensure_git_hooks()
 
 _botcore_init.configure_runtime_services(
     stale_cache_retry_delay_sec=0.25,

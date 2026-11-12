@@ -17,6 +17,11 @@ if [ -z "${REPO_ROOT:-}" ]; then
 fi
 export ROOT="${ROOT:-$REPO_ROOT}"
 
+# Auto-activate versioned git hooks (.githooks) across all clones (WSL, DEV, PROD)
+if [ -d "$ROOT/.git" ] && [ -d "$ROOT/.githooks" ] && ! grep -q "hooksPath = .githooks" "$ROOT/.git/config" 2>/dev/null; then
+  git -C "$ROOT" config core.hooksPath .githooks 2>/dev/null || true
+fi
+
 # Resolve virtual environment folder (.venv or myenv)
 if [ -z "${VENV:-}" ]; then
   for _candidate in .venv myenv; do
