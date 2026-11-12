@@ -62,13 +62,6 @@ _RECONCILE_NOT_FOUND = "not_found"
 _RECONCILE_UNAVAILABLE = "unavailable"
 
 
-def _queue_sibling_state_path(filename: str) -> str:
-    return os.path.join(
-        os.path.dirname(os.path.abspath(str(oq.resolve_cachedb_filepath(oq.QUEUE_FILE)))),
-        filename,
-    )
-
-
 class _PersistentQuarantineSet(set):
     """In-memory set backed by a JSON state file next to oq.QUEUE_FILE so quarantine
     alerts are deduplicated across worker process restarts."""
@@ -79,7 +72,10 @@ class _PersistentQuarantineSet(set):
         self._loaded_path: str | None = None
 
     def _path(self) -> str:
-        return _queue_sibling_state_path("order_retry_quarantine_alerts.json")
+        return os.path.join(
+            os.path.dirname(os.path.abspath(str(oq.resolve_cachedb_filepath(oq.QUEUE_FILE)))),
+            "order_retry_quarantine_alerts.json",
+        )
 
     def sync_from_disk(self) -> None:
         path = self._path()
@@ -279,17 +275,10 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
     age_progress = min(1.0, max(0.0, age_sec / total_ttl))
     side_u = normalize_side(r.get("side")) or str(r.get("side") or "").upper()
 
-    def _enable_profit_math_bypass():
-        bypasses = _normalize_bypass_set(kwargs.get("bypass_guards"))
-        bypasses.update({"G_PROF", "math_reference"})
-        kwargs["bypass_guards"] = sorted(bypasses)
-        if side_u == "SELL":
-            kwargs["allow_math_reference_sell"] = True
-
     retry_stage = "standard"
     eff_kind = str(r.get("kind") or kwargs.get("kind") or "").strip()
-    if "monitor_order_replace" in eff_kind:
-        _enable_profit_math_bypass()
+    is_replace = "monitor_order_replace" in eff_kind
+    if is_replace:
         kwargs["wait_for_trend"] = _parse_bool_flag(kwargs.get("wait_for_trend"), True)
     else:
         is_stop_expired_timer = (
@@ -300,10 +289,12 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
         cur_pm_f = safe_float(kwargs.get("profit_margin"), default=None)
         if age_progress >= 0.50:
             retry_stage = "salvage" if age_progress >= 0.75 else "breakeven"
-            if retry_stage == "salvage" and side_u == "SELL":
-                _enable_profit_math_bypass()
             if cur_pm_f is None or cur_pm_f > 0.15:
                 kwargs["profit_margin"] = 0.15
+    if is_replace or (retry_stage == "salvage" and side_u == "SELL"):
+        kwargs["bypass_guards"] = sorted(_normalize_bypass_set(kwargs.get("bypass_guards")) | {"G_PROF", "math_reference"})
+        if side_u == "SELL":
+            kwargs["allow_math_reference_sell"] = True
     return side_u, age_sec, age_progress, retry_stage
 
 
@@ -996,7 +987,10 @@ def _alert_giveups(records, now):
                 "ttl_sec": oq.resolve_record_ttl(rec),
             })
         digest = IncidentDigest(
-            _queue_sibling_state_path("order_retry_giveup_alerts.json"),
+            os.path.join(
+                os.path.dirname(os.path.abspath(str(oq.resolve_cachedb_filepath(oq.QUEUE_FILE)))),
+                "order_retry_giveup_alerts.json",
+            ),
             GIVEUP_SUMMARY_SEC,
         )
         for report in digest.collect(events, now=now):

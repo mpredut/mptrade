@@ -988,14 +988,9 @@ def last_store_activity() -> float:
     return newest
 
 
-def _require_idle_sec(idle_sec: object) -> float:
+def mode_active_check(idle_sec: float) -> int:
     if (idle_sec_f := safe_pos_float(idle_sec, default=None)) is None:
         raise ValueError(f"--idle-sec must be > 0, got {idle_sec}")
-    return idle_sec_f
-
-
-def mode_active_check(idle_sec: float) -> int:
-    idle_sec_f = _require_idle_sec(idle_sec)
     last_act = last_store_activity()
     now = time.time()
     idle_for = max(0.0, now - last_act)
@@ -1006,7 +1001,8 @@ def mode_active_check(idle_sec: float) -> int:
 
 
 def mode_ui_sync_check(idle_sec: int, min_interval_sec: float = 0.0) -> int:
-    idle_sec_f = _require_idle_sec(idle_sec)
+    if (idle_sec_f := safe_pos_float(idle_sec, default=None)) is None:
+        raise ValueError(f"--idle-sec must be > 0, got {idle_sec}")
     if not (os.path.exists(PB) and os.path.exists(DB)):
         log.warning("ui-sync-check: summary store not initialised (%s / %s); skipping", PB, DB)
         return UI_SYNC_NOTHING

@@ -61,12 +61,6 @@ def _age_sfx(d: Dict[str, Any], parens: bool = False) -> str:
     return f" ({inner})" if parens else f", {inner}"
 
 
-def _format_quote_breakdown(bd: Any, primary_asset: Any) -> str:
-    if isinstance(bd, dict) and (len(bd) > 1 or any(k != primary_asset for k in bd)):
-        return f" ({', '.join(f'{bk}=${safe_float(bv, 0.0):,.2f}' for bk, bv in bd.items())})"
-    return ""
-
-
 def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     """Format a normalized venue cycle anchor entry for Section 3C of the AI prompt."""
     extra_parts: List[str] = []
@@ -1220,7 +1214,13 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     fq_val = pos.get("free_quote")
     base_lbl = pos.get("base") or canonical_base_asset(str(pos.get("symbol") or "")) or "BASE"
     quote_lbl = pos.get("quote") or "USD"
-    fq_str = f"${fq_val}{_format_quote_breakdown(pos.get('free_quote_breakdown'), quote_lbl)}" if fq_val is not None else "N/A"
+    fq_bd = pos.get("free_quote_breakdown")
+    fq_bd_s = (
+        f" ({', '.join(f'{bk}=${safe_float(bv, 0.0):,.2f}' for bk, bv in fq_bd.items())})"
+        if isinstance(fq_bd, dict) and (len(fq_bd) > 1 or any(k != quote_lbl for k in fq_bd))
+        else ""
+    )
+    fq_str = f"${fq_val}{fq_bd_s}" if fq_val is not None else "N/A"
     if (lq_u := safe_float(eff_pos.get("locked_quote_usd"), None)) is not None and lq_u > 0.0:
         fq_str += f", locked_quote_usd=${lq_u:.2f}"
     return (
@@ -1371,10 +1371,13 @@ def _format_portfolio_section(
         for v in ps["venue_quote_cash"].values():
             if not isinstance(v, dict):
                 continue
-            part = (
-                f"{v.get('venue')} {v.get('asset')}=${safe_float(v.get('free'), 0.0):,.2f}"
-                f"{_format_quote_breakdown(v.get('breakdown'), v.get('asset'))}"
+            v_bd = v.get("breakdown")
+            v_bd_s = (
+                f" ({', '.join(f'{bk}=${safe_float(bv, 0.0):,.2f}' for bk, bv in v_bd.items())})"
+                if isinstance(v_bd, dict) and (len(v_bd) > 1 or any(k != v.get("asset") for k in v_bd))
+                else ""
             )
+            part = f"{v.get('venue')} {v.get('asset')}=${safe_float(v.get('free'), 0.0):,.2f}{v_bd_s}"
             if (lq_v := safe_float(v.get("locked_quote_usd"), 0.0)) > 0.0:
                 part += f" [locked_quote_usd=${lq_v:,.2f}]"
             cash_parts.append(part)

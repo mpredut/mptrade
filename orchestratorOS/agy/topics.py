@@ -222,14 +222,6 @@ def _load_topic_entry(
     return resolved, reg, entry if isinstance(entry, dict) else None
 
 
-def _resolve_topic_context(
-    topic_key: str,
-    cli_base: Optional[str] = None,
-) -> tuple[Dict[str, str], str, str]:
-    spec = topic_spec(topic_key)
-    return spec, canonical_topic_key(topic_key), resolve_bot_cli_base(cli_base)
-
-
 def format_topic_history_prefix(
     topic_key: str,
     registry_path: Optional[str] = None,
@@ -277,7 +269,8 @@ def prepare_topic_session(
     max_steps: Optional[int] = None,
 ) -> TopicSession:
     """Resolve the permanent conversation of a topic and whether this turn must compact or rotate it."""
-    _, resolved, base = _resolve_topic_context(topic_key, cli_base)
+    topic_spec(topic_key)
+    resolved, base = canonical_topic_key(topic_key), resolve_bot_cli_base(cli_base)
     if compact_steps is None:
         compact_steps = required_int_env("LLM_TOPIC_COMPACT_STEPS")
     compact_steps_i = exact_pos_int(compact_steps, default=None)
@@ -333,12 +326,6 @@ _SHORT_SUMMARY_KEYS = (
 _PROSE_SUMMARY_KEYS = ("summary", "reason")
 
 
-def _fmt_trade_decision_item(d: Dict[str, Any]) -> str:
-    if str(d.get("order_type") or "").upper() == "LIMIT" and d.get("limit_price") is not None:
-        return f"{d.get('decision', 'HOLD')}(LIMIT@{d.get('limit_price')}):{d.get('symbol', '')}@{d.get('confidence', 0)}"
-    return f"{d.get('decision', 'HOLD')}:{d.get('symbol', '')}@{d.get('confidence', 0)}"
-
-
 def condense_decision(response_text: Any, max_len: int = 360) -> str:
     """Single-line summary of an LLM JSON decision (falls back to the whitespace-collapsed text)."""
     if not isinstance(response_text, str):
@@ -348,14 +335,19 @@ def condense_decision(response_text: Any, max_len: int = 360) -> str:
     if isinstance(parsed, dict):
         parts = [f"{k}={parsed[k]}" for k in _SHORT_SUMMARY_KEYS if parsed.get(k) not in (None, "")]
         mtds = parsed.get("market_trading_decisions")
-        if isinstance(mtds, list) and mtds:
-            t_items = [_fmt_trade_decision_item(d) for d in mtds if isinstance(d, dict)]
-            if t_items:
-                parts.append(f"trade={','.join(t_items)}")
-        else:
-            mtd = parsed.get("market_trading_decision")
-            if isinstance(mtd, dict):
-                parts.append(f"trade={_fmt_trade_decision_item(mtd)}")
+        mtd = parsed.get("market_trading_decision")
+        raw_trades = mtds if isinstance(mtds, list) and mtds else ([mtd] if isinstance(mtd, dict) else [])
+        t_items = [
+            (
+                f"{d.get('decision', 'HOLD')}(LIMIT@{d.get('limit_price')}):{d.get('symbol', '')}@{d.get('confidence', 0)}"
+                if str(d.get("order_type") or "").upper() == "LIMIT" and d.get("limit_price") is not None
+                else f"{d.get('decision', 'HOLD')}:{d.get('symbol', '')}@{d.get('confidence', 0)}"
+            )
+            for d in raw_trades
+            if isinstance(d, dict)
+        ]
+        if t_items:
+            parts.append(f"trade={','.join(t_items)}")
         parts.extend(f"{k}={parsed[k]}" for k in _PROSE_SUMMARY_KEYS if parsed.get(k) not in (None, ""))
         if parts:
             condensed = "; ".join(parts)
@@ -379,7 +371,8 @@ def record_topic_turn(
     via ``replace_conversation=True``; ``compacted`` marks a turn that compacted the thread in-place
     with `/compact` so the next compaction is scheduled from the current step count.
     """
-    spec, resolved, base = _resolve_topic_context(topic_key, cli_base)
+    spec = topic_spec(topic_key)
+    resolved, base = canonical_topic_key(topic_key), resolve_bot_cli_base(cli_base)
     compacted = _parse_bool_flag(compacted, default=False)
     replace_conv = _parse_bool_flag(replace_conversation, default=False)
     max_history_entries = safe_nonneg_int(max_history_entries, default=None)

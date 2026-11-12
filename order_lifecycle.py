@@ -342,14 +342,10 @@ class TrackedOrderLifecycle:
         order_id = extract_order_id(response)
         return {"order_id": str(order_id)} if order_id is not None else {}
 
-    def _copy_and_validate_identity(self, intent: dict) -> dict:
-        pending = dict(intent)
-        self._validate_identity(pending)
-        return pending
-
     def submit(self, intent: dict, *, persist: PersistPending, submit: SubmitIntent) -> TrackedOrderResult:
         """Persist and submit exactly once; reconcile status from a later tick."""
-        pending = self._copy_and_validate_identity(intent)
+        pending = dict(intent)
+        self._validate_identity(pending)
         persist(dict(pending))
         refusal_key = (
             str(pending.get("intent_id") or ""),
@@ -407,12 +403,6 @@ class TrackedOrderLifecycle:
             filled_qty=status.filled_qty, cost=status.cost, fee=status.fee,
         )
 
-    def _persist_terminal(self, pending: dict, status: OrderStatus, persist: PersistPending) -> TrackedOrderResult:
-        pending = dict(pending)
-        pending["terminal_status"] = _terminal_payload(status, self._now())
-        self._record_status_and_persist(pending, status, persist, "order_terminal")
-        return TrackedOrderResult("terminal", pending, status)
-
     def _record_lifecycle_error(
         self,
         pending: dict,
@@ -429,7 +419,8 @@ class TrackedOrderLifecycle:
 
     def reconcile(self, intent: dict, *, persist: PersistPending) -> TrackedOrderResult:
         """Reconcile one pending intent against venue truth; never submit here."""
-        pending = self._copy_and_validate_identity(intent)
+        pending = dict(intent)
+        self._validate_identity(pending)
 
         cached_terminal = _status_from_terminal_payload(pending.get("terminal_status"))
         if cached_terminal is not None:
@@ -488,7 +479,9 @@ class TrackedOrderLifecycle:
 
         pending.pop("status_error", None)
         if status.terminal:
-            return self._persist_terminal(pending, status, persist)
+            pending = dict(pending, terminal_status=_terminal_payload(status, self._now()))
+            self._record_status_and_persist(pending, status, persist, "order_terminal")
+            return TrackedOrderResult("terminal", pending, status)
 
         self._record_status_and_persist(pending, status, persist, "order_status")
 
@@ -523,7 +516,9 @@ class TrackedOrderLifecycle:
                 pending, persist, "status_error", "post_cancel_status_error", exc, status
             )
         if post_cancel.terminal:
-            return self._persist_terminal(pending, post_cancel, persist)
+            pending = dict(pending, terminal_status=_terminal_payload(post_cancel, self._now()))
+            self._record_status_and_persist(pending, post_cancel, persist, "order_terminal")
+            return TrackedOrderResult("terminal", pending, post_cancel)
         pending["last_status"] = post_cancel.status
         pending["filled_qty"] = post_cancel.filled_qty
         persist(dict(pending))
@@ -671,13 +666,6 @@ def _clean_numeric_field(value):
     return s if s.lower() not in INVALID_SCALAR_STRINGS else ""
 
 
-def _clean_bool_field(value) -> str:
-    if value is None or isinstance(value, (dict, list, tuple, set, frozenset)):
-        return ""
-    parsed = _parse_bool_flag(value, default=None)
-    return str(parsed) if parsed is not None else ""
-
-
 def log_order_outcome(
     symbol,
     side,
@@ -728,8 +716,14 @@ def log_order_outcome(
                 _clean_regime_str(obj_attr(regime_context, "regime", "")),
                 strength_str,
                 _clean_regime_str(obj_attr(regime_context, "source", "")),
-                _clean_bool_field(obj_attr(regime_context, "fresh", None)),
-                _clean_bool_field(obj_attr(regime_context, "fallback_used", None)),
+                *(
+                    str(b)
+                    if (v := obj_attr(regime_context, k, None)) is not None
+                    and not isinstance(v, (dict, list, tuple, set, frozenset))
+                    and (b := _parse_bool_flag(v, default=None)) is not None
+                    else ""
+                    for k in ("fresh", "fallback_used")
+                ),
                 _clean_regime_str(obj_attr(regime_context, "reason", "")),
             ])
         append_text_line(path, "|".join(sanitize_pipe_field(c) for c in cols))
