@@ -72,10 +72,10 @@ from .binance_provider import (  # noqa: F401
 )
 
 
-def _runtime_market_regime_snapshot(symbol: str, now=None):
-    """Read the optional short-trend snapshot at the application boundary."""
+def resolve_runtime_market_regime_snapshot(symbol: str, now=None, mgr=None):
+    """Read the optional short-trend snapshot from ``mgr`` or the process SSOT short-trend manager."""
     try:
-        mgr = MarketDataProvider.get_ssot_short_trend_manager()
+        mgr = MarketDataProvider.get_ssot_short_trend_manager() if mgr is None else mgr
         if mgr is None:
             return None
         fw = safe_pos_float(pw.fast_trend_window_for_symbol(symbol), default=None)
@@ -122,6 +122,9 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
         return resolved
     except Exception:
         return None
+
+
+_runtime_market_regime_snapshot = resolve_runtime_market_regime_snapshot
 
 
 class MarketApi:

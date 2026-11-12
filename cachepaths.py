@@ -32,6 +32,7 @@ ORDER_RETRY_QUEUE_FILENAME = "order_retry_queue.jsonl"
 ASSETGUARDIAN_STATE_FILENAME = "assetguardian_state.json"
 RTRADE_PAIRS_STATE_FILENAME = "rtrade_pairs_state.json"
 TRAILING_STATE_FILENAME = "trailing_state.json"
+KINEMATIC_IMPULSE_SIGNAL_FILENAME = "kinematic_impulse_signal.json"
 
 CACHE_ORDERBOOK_DEPTH_PREFIX = "orderbook_depth_"
 CACHE_DERIVATIVES_TELEMETRY_PREFIX = "derivatives_telemetry_"
@@ -153,10 +154,12 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "exact": (
             "fleet_health_status.json", "dev_regression_status.json",
             "llm_topic_threads.json", "llm_quota_status.json", "notify_queue.json",
+            KINEMATIC_IMPULSE_SIGNAL_FILENAME,
         ),
         "prefixes": (
             "auto_", "fleet_health_status.", "dev_regression_status.",
             "llm_topic_threads.", "llm_quota_status.", "notify_queue.",
+            "kinematic_impulse_signal.",
         ),
         "suffixes": ("_eval.json",),
     },

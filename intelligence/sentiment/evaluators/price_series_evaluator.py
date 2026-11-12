@@ -21,11 +21,13 @@ from instrument_registry import is_equity_symbol, is_symbol_market_open
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
 from intelligence.macro_sentiment_ssot import (
+    SHORT_KINEMATIC_METRIC_KEYS,
     _extract_sorted_ts_px,
     _parse_ts_px_row,
     _prices_diverged,
     _series_memo_key,
     normalize_epoch_sec,
+    resolve_kalman_vel_z,
     safe_float,
     safe_pos_float,
 )
@@ -700,7 +702,7 @@ def apply_short_trend_item(
     for k in ("gradient_recent_fast", "epsilon", "vol_1h_pct"):
         if not require_any_slope or tinfo.get(k) is not None:
             entry[k] = tinfo.get(k)
-    for kk_kin in ("vel_90s_pct_min", "accel_90s_pct_min2", "vel_5m_pct_min", "accel_5m_pct_min2"):
+    for kk_kin in SHORT_KINEMATIC_METRIC_KEYS:
         kv_kin = safe_float(tinfo.get(kk_kin), default=None)
         if kv_kin is None:
             for w_k in (wins["222"], wins["90"], wins["900"]):
@@ -822,7 +824,7 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
             entry[g_key] = _resolve_window_metric_with_fallbacks(
                 w_dict.get("growth_coefficient"), w_dict.get("slope_full"), w_dict.get("gradient_recent"),
             )
-    for kk_kin in ("vel_90s_pct_min", "accel_90s_pct_min2", "vel_5m_pct_min", "accel_5m_pct_min2"):
+    for kk_kin in SHORT_KINEMATIC_METRIC_KEYS:
         for w_src in (w222, w90, w900, lt_win):
             if isinstance(w_src, dict) and (kv_live := safe_float(w_src.get(kk_kin), default=None)) is not None:
                 entry[kk_kin] = round(kv_live, 5)
@@ -1349,13 +1351,8 @@ def _apply_24h_series_enrichment(
             for kk, kv in k_fb.items():
                 if kv is not None and (entry.get(kk) is None or unseeded_kalman):
                     entry[kk] = kv
-    if (
-        (kv_fin := safe_float(entry.get("kalman_vel"), default=None)) is not None
-        and abs(kv_fin) >= 1e-6
-        and (ks_fin := safe_pos_float(entry.get("kalman_vel_std"), default=None)) is not None
-        and 1e-6 < ks_fin < 5.99
-    ):
-        entry["kalman_vel_z"] = round(kv_fin / ks_fin, 2)
+    if (kz_fin := resolve_kalman_vel_z(entry.get("kalman_vel"), entry.get("kalman_vel_std"))) is not None:
+        entry["kalman_vel_z"] = kz_fin
     st_ts_e = safe_pos_float(entry.pop("_short_trend_ts", None), default=None)
     if series_24h:
         pts_s24_sorted = _extract_sorted_ts_px(series_24h)
@@ -1380,10 +1377,7 @@ def _apply_24h_series_enrichment(
                 "trend_2_5h",
                 "gradient_recent_fast",
                 "gradient_recent",
-                "vel_90s_pct_min",
-                "accel_90s_pct_min2",
-                "vel_5m_pct_min",
-                "accel_5m_pct_min2",
+                *SHORT_KINEMATIC_METRIC_KEYS,
             ):
                 entry.pop(k_st_clr, None)
         s_2_5h = safe_float(entry.get("slope_2_5h"), default=None)

@@ -33,6 +33,7 @@ from botcore import (
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
     CACHE_SHORT_TREND_FILENAME,
+    KINEMATIC_IMPULSE_SIGNAL_FILENAME,
     canonical_base_asset,
     clean_symbol_key,
     has_crypto_quote_suffix,
@@ -158,6 +159,12 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     ) -> None:
         self.cache_dir = cache_dir
         derived = resolve_derived_telemetry_intervals()
+        self.crypto_executor_interval_sec = derived["crypto_executor_interval_sec"]
+        self.ai_impulse_cooldown_sec = derived["ai_impulse_cooldown_sec"]
+        self.ai_impulse_post_cron_guard_sec = derived["ai_impulse_post_cron_guard_sec"]
+        self.ai_impulse_pre_cron_guard_sec = derived["ai_impulse_pre_cron_guard_sec"]
+        self.ai_impulse_min_eval_gap_sec = derived["ai_impulse_min_eval_gap_sec"]
+        self.ai_impulse_exec_timeout_sec = derived["ai_impulse_exec_timeout_sec"]
         default_news_itv = (
             derived["news_interval_sec"]
             if derived["crypto_executor_interval_sec"] != 360.0
@@ -397,11 +404,17 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             if not bool_env("AI_IMPULSE_TRIGGER_ENABLED", True):
                 return None
             eff_now = resolve_now_ts(self._resolve_step_now(now))
-            cooldown_sec = pos_float_env("AI_IMPULSE_COOLDOWN_SEC", 150.0)
+            cycle_sec = safe_pos_float(getattr(self, "crypto_executor_interval_sec", None), 360.0)
+            cooldown_sec = pos_float_env(
+                "AI_IMPULSE_COOLDOWN_SEC",
+                safe_pos_float(getattr(self, "ai_impulse_cooldown_sec", None), 150.0),
+            )
             if self._last_ai_impulse_ts > 0.0 and 0.0 <= (eff_now - self._last_ai_impulse_ts) < cooldown_sec:
                 return None
-            cycle_offset = eff_now % 360.0
-            if cycle_offset < 20.0 or (360.0 - cycle_offset) < 45.0:
+            post_cron_guard_sec = safe_pos_float(getattr(self, "ai_impulse_post_cron_guard_sec", None), 20.0)
+            pre_cron_guard_sec = safe_pos_float(getattr(self, "ai_impulse_pre_cron_guard_sec", None), 45.0)
+            cycle_offset = eff_now % cycle_sec
+            if cycle_offset < post_cron_guard_sec or (cycle_sec - cycle_offset) < pre_cron_guard_sec:
                 return None
             eval_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "auto_cryptotrade_executor_eval.json")))
             last_eval_ts = 0.0
@@ -417,7 +430,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                     doc_ts = safe_nonneg_ts(eval_doc.get("ts"), 0.0)
                     if doc_ts <= eff_now + 5.0:
                         last_eval_ts = max(last_eval_ts, doc_ts)
-            if last_eval_ts > 0.0 and 0.0 <= (eff_now - last_eval_ts) < 65.0:
+            min_eval_gap_sec = safe_pos_float(getattr(self, "ai_impulse_min_eval_gap_sec", None), 65.0)
+            if last_eval_ts > 0.0 and 0.0 <= (eff_now - last_eval_ts) < min_eval_gap_sec:
                 return None
             st_doc = read_json_dict_recovering(
                 str(resolve_cachedb_filepath(os.path.join(self.cache_dir, CACHE_SHORT_TREND_FILENAME)))
@@ -446,9 +460,12 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 return None
             focus_csv = ",".join(shocked)
             save_json_state(
-                os.path.join(self.cache_dir, "kinematic_impulse_signal.json"),
+                str(resolve_cachedb_filepath(os.path.join(self.cache_dir, KINEMATIC_IMPULSE_SIGNAL_FILENAME))),
                 {"ts": eff_now, "symbols": shocked},
                 indent=2,
+            )
+            exec_timeout_sec = str(
+                max(30, int(round(safe_pos_float(getattr(self, "ai_impulse_exec_timeout_sec", None), 240.0))))
             )
             log_path = os.path.join(workspace_dir, "logs", "auto_trade_executor.log")
             out_fh = open_append_text_file(log_path)
@@ -459,7 +476,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         "-n",
                         "logs/.auto_cryptotrade_executor.lock",
                         timeout_bin,
-                        "240",
+                        exec_timeout_sec,
                         "./orchestratorOS/run_python.sh",
                         "orchestratorOS/supervisor/autonomous_ai_reconciler.py",
                         "--topic-key",

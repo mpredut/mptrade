@@ -29,6 +29,7 @@ from typing import (
     Callable,
     Dict,
     List,
+    Mapping,
     Optional,
     Sequence,
     Set,
@@ -562,7 +563,45 @@ def resolve_derived_telemetry_intervals(
         "default_news_rolling_window_sec": _sec("default_news_rolling_window_mult", 40.0, "default_news_rolling_window_sec"),
         "default_fallback_retry_ttl_sec": _sec("default_fallback_retry_ttl_mult", 1.0 / 3.0, "default_fallback_retry_ttl_sec"),
         "dynamic_lexicon_ttl_sec": _sec("dynamic_lexicon_ttl_mult", 720.0, "dynamic_lexicon_ttl_sec"),
+        "ai_impulse_cooldown_sec": _sec("ai_impulse_cooldown_mult", 5.0 / 12.0),
+        "ai_impulse_post_cron_guard_sec": _sec("ai_impulse_post_cron_guard_mult", 1.0 / 18.0),
+        "ai_impulse_pre_cron_guard_sec": _sec("ai_impulse_pre_cron_guard_mult", 1.0 / 8.0),
+        "ai_impulse_min_eval_gap_sec": _sec("ai_impulse_min_eval_gap_mult", 13.0 / 72.0),
+        "ai_impulse_exec_timeout_sec": _sec("ai_impulse_exec_timeout_mult", 2.0 / 3.0),
     }
+
+
+KINEMATIC_HORIZON_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("90s", "vel_90s_pct_min", "accel_90s_pct_min2"),
+    ("5m", "vel_5m_pct_min", "accel_5m_pct_min2"),
+    ("15m", "vel_15m_pct_min", "accel_15m_pct_min2"),
+)
+SHORT_KINEMATIC_METRIC_KEYS: Tuple[str, ...] = (
+    "vel_90s_pct_min",
+    "accel_90s_pct_min2",
+    "vel_5m_pct_min",
+    "accel_5m_pct_min2",
+)
+ALL_KINEMATIC_METRIC_KEYS: Tuple[str, ...] = (
+    *SHORT_KINEMATIC_METRIC_KEYS,
+    "vel_15m_pct_min",
+    "accel_15m_pct_min2",
+)
+
+
+def resolve_kalman_vel_z(entry_or_vel: Any, vel_std: Any = None) -> Optional[float]:
+    """Resolve standardized Kalman velocity z-score from a telemetry mapping or `(vel, vel_std)` pair."""
+    if isinstance(entry_or_vel, Mapping):
+        if (existing := safe_float(entry_or_vel.get("kalman_vel_z"), default=None)) is not None:
+            return existing
+        kv = safe_float(entry_or_vel.get("kalman_vel"), default=None)
+        ks = safe_pos_float(entry_or_vel.get("kalman_vel_std"), default=None)
+    else:
+        kv = safe_float(entry_or_vel, default=None)
+        ks = safe_pos_float(vel_std, default=None)
+    if kv is not None and ks is not None and abs(kv) >= 1e-6 and 1e-6 < ks < 5.99:
+        return round(kv / ks, 2)
+    return None
 
 
 def _tax_tuple(key: str, *, lower: bool = False) -> Tuple[str, ...]:

@@ -10241,9 +10241,13 @@ def test_kinematic_velocity_acceleration_and_impulse_wakeup(tmp_path, monkeypatc
     assert len(spawned_calls) == 0
 
     # Valid mid-cycle offset (120s into 360s cycle) -> spawns detached flock wakeup
+    from cachepaths import resolve_cache_subdomain, resolve_cachedb_filepath
+
+    assert resolve_cache_subdomain("kinematic_impulse_signal.json") == "system"
     mid_ts = 1_794_500_000.0 - (1_794_500_000.0 % 360.0) + 120.0
     fired = gtc.maybe_trigger_kinematic_ai_wakeup(now=mid_ts)
     assert fired == ["BTCUSDC"]
+    assert os.path.isfile(str(resolve_cachedb_filepath(str(c_dir / "kinematic_impulse_signal.json"))))
     assert len(spawned_calls) == 1
     assert "--focus-symbols" in spawned_calls[0][0]
     assert "BTCUSDC" in spawned_calls[0][0]

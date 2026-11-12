@@ -30,11 +30,15 @@ from cachepaths import (
 )
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
+    ALL_KINEMATIC_METRIC_KEYS,
+    KINEMATIC_HORIZON_SPECS,
+    SHORT_KINEMATIC_METRIC_KEYS,
     clean_scale,
     enrich_macro_benchmarks_live_state,
     normalize_epoch_sec,
     obj_attr,
     read_first_cached_dict,
+    resolve_kalman_vel_z,
     resolve_now_ts,
     resolve_read_json_cached,
     safe_float,
@@ -1382,8 +1386,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                                     for k90 in (
                                         "slope_90s", "growth_90s", "trend_90s",
                                         "gradient_recent", "gradient_recent_fast",
-                                        "vel_90s_pct_min", "accel_90s_pct_min2",
-                                        "vel_5m_pct_min", "accel_5m_pct_min2",
+                                        *SHORT_KINEMATIC_METRIC_KEYS,
                                     ):
                                         if k90 == "trend_90s":
                                             if t_entry.get(k90) in (None, 0) and sib_t.get(k90) not in (None, 0):
@@ -1430,9 +1433,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                     "slope_15m", "growth_15m", "trend_15m",
                     "slope_2_5h", "growth_2_5h", "trend_2_5h",
                     "gradient_recent_fast", "gradient_recent",
-                    "vel_90s_pct_min", "accel_90s_pct_min2",
-                    "vel_5m_pct_min", "accel_5m_pct_min2",
-                    "vel_15m_pct_min", "accel_15m_pct_min2",
+                    *ALL_KINEMATIC_METRIC_KEYS,
                     "vol_1h_pct",
                 ):
                     t_entry.pop(k_ov, None)
@@ -1460,14 +1461,11 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                     "slope_90s", "growth_90s", "trend_90s",
                     "slope_3_7m", "growth_3_7m", "trend_3_7m",
                     "gradient_recent_fast",
-                    "vel_90s_pct_min", "accel_90s_pct_min2",
-                    "vel_5m_pct_min", "accel_5m_pct_min2",
+                    *SHORT_KINEMATIC_METRIC_KEYS,
                 ):
                     t_entry.pop(k_stale_s, None)
-            kv_z_base = safe_float(t_entry.get("kalman_vel"), default=None)
-            ks_z_base = safe_pos_float(t_entry.get("kalman_vel_std"), default=None)
-            if kv_z_base is not None and ks_z_base is not None and abs(kv_z_base) >= 1e-6 and 1e-6 < ks_z_base < 5.99:
-                t_entry["kalman_vel_z"] = round(kv_z_base / ks_z_base, 2)
+            if (kz_base := resolve_kalman_vel_z(t_entry.get("kalman_vel"), t_entry.get("kalman_vel_std"))) is not None:
+                t_entry["kalman_vel_z"] = kz_base
             if alt_series_24h and len(alt_series_24h) >= 3:
                 allow_90_kin = not is_eq_sym or eq_px_diverged_05pct or any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct"))
                 allow_5m_kin = not is_eq_sym or eq_px_diverged_05pct or (rth_fresh_eq and any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")))
@@ -1782,17 +1780,13 @@ class PretradeDynamicSlopesFormatStage(PretradePillarCollectorBase):
             else ", ".join(slope_parts)
         )
         kin_seg: List[str] = []
-        for k_lbl, vk_name, ak_name in (
-            ("90s", "vel_90s_pct_min", "accel_90s_pct_min2"),
-            ("5m", "vel_5m_pct_min", "accel_5m_pct_min2"),
-            ("15m", "vel_15m_pct_min", "accel_15m_pct_min2"),
-        ):
+        for k_lbl, vk_name, ak_name in KINEMATIC_HORIZON_SPECS:
             vk_f = safe_float(t_entry.get(vk_name), default=None)
             ak_f = safe_float(t_entry.get(ak_name), default=None)
             if vk_f is not None and ak_f is not None and (abs(vk_f) >= 1e-6 or abs(ak_f) >= 1e-6):
                 kin_seg.append(f"{k_lbl}: vel={vk_f:+.4f}%/m, acc={ak_f:+.4f}%/m^2")
         if kin_seg:
-            if (kz_f := safe_float(t_entry.get("kalman_vel_z"), default=None)) is not None and abs(kz_f) >= 0.01:
+            if (kz_f := resolve_kalman_vel_z(t_entry)) is not None and abs(kz_f) >= 0.01:
                 kin_seg.append(f"kalman_z={kz_f:+.2f}")
             ctx.telemetry["Kinematic Velocity & Acceleration"] = " | ".join(kin_seg)
 

@@ -20,7 +20,10 @@ from instrument_registry import (
 )
 import order_lifecycle
 from cachepaths import clean_symbol_key, is_primary_stream_venue, split_symbol_assets
-from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
+from providers.market_api import (
+    api as mkt,  # Single guarded proxy (Instrument.place).
+    resolve_runtime_market_regime_snapshot,
+)
 api = mkt
 import shadow_signals
 from state_io import append_text_line, read_json_dict_cached
@@ -909,8 +912,14 @@ class TrendCoordinator:
             cached_mono, cached_ctx = cached
             if 0.0 <= (now_mono - cached_mono) < ttl:
                 return cached_ctx
+        kw = _provider_kw(sym_key)
+        inst_mgr = getattr(self, "instant_mgr", None)
+        if inst_mgr is not None:
+            local_snap = resolve_runtime_market_regime_snapshot(sym_key, mgr=inst_mgr)
+            if local_snap is not None:
+                kw = {**kw, "snapshot": local_snap}
         try:
-            regime_ctx = mkt.market_regime_context(sym_key, **_provider_kw(sym_key))
+            regime_ctx = mkt.market_regime_context(sym_key, **kw)
         except Exception as e:
             print(f"[TrendCoordinator] Error resolving regime context for {sym_key}: {e}")
             return None
