@@ -1528,3 +1528,44 @@ def test_ohlc_utils_and_ssot_ohlc_24h_bridge_helpers(tmp_path):
     ) == [150.5, 152.0]
 
 
+def test_venue_ws_protocols_three_tier_soc_and_provider_inheritance():
+    from pathlib import Path
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.venue_ws_protocols import (
+        HyperliquidWsMixin,
+        KrakenWsLedgerMixin,
+        VenueWsProtocolInterface,
+    )
+
+    root = Path(__file__).resolve().parent.parent
+    vwp_tree = ast.parse((root / "providers" / "venue_ws_protocols.py").read_text(encoding="utf-8"))
+    vwp_imports = {
+        node.module
+        for node in ast.walk(vwp_tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert "base" not in vwp_imports
+    assert "providers.base" not in vwp_imports
+    assert "kraken_provider" not in vwp_imports
+    assert "hyperliquid_provider" not in vwp_imports
+
+    assert issubclass(KrakenWsLedgerMixin, VenueWsProtocolInterface)
+    assert issubclass(HyperliquidWsMixin, VenueWsProtocolInterface)
+    assert issubclass(KrakenProvider, KrakenWsLedgerMixin)
+    assert issubclass(HyperliquidProvider, HyperliquidWsMixin)
+
+    assert KrakenProvider.ledger_to_fills.__qualname__ == "KrakenWsLedgerMixin.ledger_to_fills"
+    assert KrakenProvider.extract_ws_own_trades.__qualname__ == "KrakenWsLedgerMixin.extract_ws_own_trades"
+    assert HyperliquidProvider.extract_ws_all_mids_prices.__qualname__ == "HyperliquidWsMixin.extract_ws_all_mids_prices"
+    assert HyperliquidProvider.extract_ws_user_fills.__qualname__ == "HyperliquidWsMixin.extract_ws_user_fills"
+
+    assert '"name":"ticker"' in KrakenProvider.build_ws_ticker_subscription(["XBT/USD"]).replace(" ", "")
+    assert '"type":"allMids"' in HyperliquidProvider.build_ws_all_mids_subscription().replace(" ", "")
+    assert HyperliquidProvider.extract_ws_all_mids_prices(
+        {"channel": "allMids", "data": {"mids": {"@107": "35.25"}}},
+        ["HYPEUSDC"],
+    ) == {"HYPEUSDC": 35.25}
+
+
+

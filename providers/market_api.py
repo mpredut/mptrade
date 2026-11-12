@@ -166,12 +166,31 @@ class MarketApi:
             raise ValueError(f"Unknown provider: {provider_name!r}")
         return provider
 
-    def _provider_explicit_or_routed(self, symbol: str, provider_name=None):
-        provider = self._resolve_routed_or_named_provider(symbol, provider_name)
+    @staticmethod
+    def _validate_provider_symbol(provider: Any, symbol: str) -> Any:
         validate_fn = getattr(provider, "validate_symbol", None)
         if callable(validate_fn):
             validate_fn(symbol)
         return provider
+
+    def _provider_explicit_or_routed(self, symbol: str, provider_name=None):
+        return self._validate_provider_symbol(
+            self._resolve_routed_or_named_provider(symbol, provider_name),
+            symbol,
+        )
+
+    def _call_optional_provider_method(
+        self,
+        symbol: str,
+        provider_name: Any,
+        method_name: str,
+        *args: Any,
+        default: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
+        fn = getattr(provider, method_name, None)
+        return fn(*args, **kwargs) if callable(fn) else default
 
     def _provider_for(self, symbol: str) -> MarketDataProvider:
         if isinstance(symbol, bool) or not isinstance(symbol, str):
@@ -208,8 +227,9 @@ class MarketApi:
     def ohlc_closes(
         self, symbol: str, interval_min: int, *, provider_name=None,
     ) -> list[float]:
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        return provider.ohlc_closes(symbol, interval_min) if hasattr(provider, "ohlc_closes") else []
+        return self._call_optional_provider_method(
+            symbol, provider_name, "ohlc_closes", symbol, interval_min, default=[]
+        )
 
     def fetch_ohlc_candles(
         self,
@@ -240,10 +260,8 @@ class MarketApi:
         if provider_name is not None or self.supports_symbol(symbol):
             provider = self._provider_explicit_or_routed(symbol, provider_name)
         else:
-            provider = next((c for c in self._providers if getattr(c, "_ASSET_SCOPE", "crypto") == "equities"), None) or self._provider_for(symbol)
-            validate_fn = getattr(provider, "validate_symbol", None)
-            if callable(validate_fn):
-                validate_fn(symbol)
+            eq_prov = next((c for c in self._providers if getattr(c, "_ASSET_SCOPE", "crypto") == "equities"), None)
+            provider = self._validate_provider_symbol(eq_prov or self._provider_for(symbol), symbol)
         return provider.fetch_intraday_chart(
             symbol,
             rng=rng,
@@ -760,32 +778,28 @@ class MarketApi:
         )
 
     def pair_precision(self, symbol: str, provider_name=None) -> Optional[PairPrecision]:
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        return provider.pair_precision(symbol) if hasattr(provider, "pair_precision") else None
+        return self._call_optional_provider_method(symbol, provider_name, "pair_precision", symbol, default=None)
 
     def min_order_qty(self, symbol: str, provider_name=None) -> float:
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        return provider.min_order_qty(symbol) if hasattr(provider, "min_order_qty") else 0.0
+        return self._call_optional_provider_method(symbol, provider_name, "min_order_qty", symbol, default=0.0)
 
     def round_quantity(self, symbol: str, qty: float, provider_name=None) -> float:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
-        if hasattr(provider, "round_quantity"):
-            return provider.round_quantity(symbol, qty)
-        if hasattr(provider, "round_amount"):
-            return provider.round_amount(symbol, qty)
-        return safe_pos_float(qty, default=0.0)
+        fn = getattr(provider, "round_quantity", None) or getattr(provider, "round_amount", None)
+        return fn(symbol, qty) if callable(fn) else safe_pos_float(qty, default=0.0)
 
     round_amount = round_quantity
 
     def round_price(self, symbol: str, price: float, provider_name=None) -> float:
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        return provider.round_price(symbol, price) if hasattr(provider, "round_price") else safe_pos_float(price, default=0.0)
+        return self._call_optional_provider_method(
+            symbol, provider_name, "round_price", symbol, price, default=safe_pos_float(price, default=0.0)
+        )
 
     def price_tick_size(self, symbol: str, reference_price: Optional[float] = None, provider_name=None) -> float:
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        if hasattr(provider, "price_tick_size"):
-            return safe_nonneg_float(provider.price_tick_size(symbol, reference_price=reference_price), default=0.0)
-        return 0.0
+        raw = self._call_optional_provider_method(
+            symbol, provider_name, "price_tick_size", symbol, reference_price=reference_price, default=0.0
+        )
+        return safe_nonneg_float(raw, default=0.0)
 
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):

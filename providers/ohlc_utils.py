@@ -111,7 +111,7 @@ def extract_kraken_ohlc_rows(result_map: Any, *, drop_incomplete: bool = True) -
     if not key:
         return []
     raw = result_map.get(key)
-    if not isinstance(raw, list):
+    if not isinstance(raw, (list, tuple)):
         return []
     return list(raw[:-1]) if _parse_bool_flag(drop_incomplete, True) else list(raw)
 
