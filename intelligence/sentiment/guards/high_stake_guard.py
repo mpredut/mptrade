@@ -20,7 +20,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import clean_symbol_key, has_equity_suffix
+from cachepaths import clean_symbol_key, has_equity_suffix, is_eur_pair, is_usdc_pair
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -518,14 +518,13 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         self.min_notional_usd = self.min_notional_eur = resolved_min
 
     def _resolve_currency_display(self, symbol: str) -> tuple[str, str]:
-        sym_u = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
-        if sym_u.endswith("EUR"):
+        if is_eur_pair(symbol):
             return "€", "EUR"
         if has_equity_suffix(symbol, include_compact=True):
             return "$", "USD"
         if self._legacy_eur_unit:
             return "€", "EUR"
-        if sym_u.endswith("USDC"):
+        if is_usdc_pair(symbol):
             return "$", "USDC"
         return "$", "USD"
 

@@ -867,6 +867,50 @@ def is_usd_stablecoin_pair(symbol: object) -> bool:
     return parts is not None and parts[1] in _USD_STABLECOIN_QUOTES
 
 
+def is_usdc_pair(symbol: object) -> bool:
+    """Return True if ``symbol`` is a non-equity pair explicitly quoted in ``USDC``."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return False
+    return not has_equity_suffix(symbol, include_compact=True) and symbol_quote_asset(symbol) == "USDC"
+
+
+def is_eur_pair(symbol: object) -> bool:
+    """Return True if ``symbol`` is a non-equity pair explicitly quoted in ``EUR``."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return False
+    return not has_equity_suffix(symbol, include_compact=True) and symbol_quote_asset(symbol) == "EUR"
+
+
+def is_fiat_quote_pair(symbol: object) -> bool:
+    """Return True if ``symbol`` is a non-equity crypto pair quoted in fiat ``USD`` or ``EUR``."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return False
+    return not has_equity_suffix(symbol, include_compact=True) and symbol_quote_asset(symbol) in ("USD", "EUR")
+
+
+def is_usd_compatible_pair(symbol: object) -> bool:
+    """Return True if ``symbol`` carries a USD-compatible quote family (``USD``, ``USDC``, ``USDT``, etc.)."""
+    return "USD" in compatible_quote_suffixes(symbol)
+
+
+def ensure_quote_suffix(symbol: object, default_quote: str = "USDC") -> str:
+    """Append ``default_quote`` when ``symbol`` is a bare uppercase token lacking that quote suffix."""
+    sym = clean_symbol_key(symbol)
+    q = clean_symbol_key(default_quote) or "USDC"
+    if not sym:
+        return ""
+    return sym if symbol_quote_asset(sym) == q else f"{sym}{q}"
+
+
+def crypto_quote_priority_rank(
+    symbol: object,
+    quote_order: tuple[str, ...] = ("USDC", "USDT", "USD", "EUR"),
+) -> int:
+    """Return 0-based priority rank of ``symbol``'s resolved quote asset within ``quote_order``."""
+    q = symbol_quote_asset(symbol)
+    return quote_order.index(q) if q in quote_order else len(quote_order)
+
+
 def canonical_symbol_key(symbol: object) -> str:
     """Return a delimiter-stripped uppercase symbol key with canonical base asset aliases
     (e.g. ``XBT/USDC`` -> ``BTCUSDC``, ``XXBTZUSD`` -> ``BTCUSD``, ``XDG-USD`` -> ``DOGEUSD``,

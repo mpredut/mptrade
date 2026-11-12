@@ -41,6 +41,7 @@ from cachepaths import (
     KINEMATIC_IMPULSE_SIGNAL_FILENAME,
     canonical_base_asset,
     clean_symbol_key,
+    crypto_quote_priority_rank,
     has_crypto_quote_suffix,
     resolve_cachedb_filepath,
     resolve_workspace_dir_from_cachedb,
@@ -95,7 +96,6 @@ def evaluate_kinematic_impulse_symbols(
         for s in (candidate_symbols or ())
         if s and not is_equity_symbol(s)
     }
-    quote_rank = ("USDC", "USDT", "USD", "EUR")
     best_by_base: Dict[str, tuple[int, str]] = {}
     for raw_sym, pinfo in prices_and_trends.items():
         if not isinstance(pinfo, dict):
@@ -132,7 +132,7 @@ def evaluate_kinematic_impulse_symbols(
         )
         if not shock:
             continue
-        q_idx = next((idx for idx, q in enumerate(quote_rank) if sym.endswith(q)), len(quote_rank))
+        q_idx = crypto_quote_priority_rank(sym)
         prev = best_by_base.get(base)
         if prev is None or q_idx < prev[0]:
             best_by_base[base] = (q_idx, sym)

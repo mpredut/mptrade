@@ -22,8 +22,9 @@ from cachepaths import (
     compatible_quote_suffixes,
     filter_asset_class_variants,
     has_equity_suffix,
-    normalize_venue_name,
-    split_symbol_assets,
+    is_fiat_usd_pair,
+    is_usd_compatible_pair,
+    is_usdc_pair,
 )
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.internal.state import survival as _surv_mod
@@ -47,7 +48,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     recalculate_live_price_geometry,
 )
 from instrument_registry import casefold_get
-from providers.base import MarketDataProvider
+from providers.market_api import MarketDataProvider, api as mkt_api
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_evaluator")
 
@@ -607,29 +608,12 @@ def compute_liquidation_clusters(
 
 
 def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[str, float, float, float]:
-    """Infer canonical venue name, maker/taker fee bps, and half-spread bps via ``MarketDataProvider``."""
-    sym_u = str(sym or "").strip().upper()
-    explicit_v = normalize_venue_name((m_dict or {}).get("venue")) if isinstance(m_dict, dict) else ""
-    sym_parts = split_symbol_assets(sym_u) if sym_u and not has_equity_suffix(sym_u) else None
-    sym_quote = sym_parts[1] if sym_parts is not None else ""
-    if explicit_v and MarketDataProvider.resolve_venue_provider_class(explicit_v) is not None:
-        venue = explicit_v
-    elif (
-        ":" in sym_u
-        and (pref_v := normalize_venue_name(sym_u.split(":", 1)[0]))
-        and MarketDataProvider.resolve_venue_provider_class(pref_v) is not None
-    ):
-        venue = pref_v
-    elif has_equity_suffix(sym_u):
-        venue = "t212"
-    elif canonical_base_asset(sym_u) == "HYPE" and (sym_quote == "USDC" or sym_u.endswith("USDC")):
-        venue = "hyperliquid"
-    elif sym_quote in ("USDC", "USDT", "FDUSD", "TUSD", "BUSD") or sym_u.endswith(("USDC", "USDT", "FDUSD")):
-        venue = "binance"
-    elif sym_quote in ("USD", "EUR") or sym_u.endswith(("USD", "EUR")) or sym_u.startswith(("XX", "XZ")):
-        venue = "kraken"
-    else:
-        venue = "t212"
+    """Infer canonical venue name, maker/taker fee bps, and half-spread bps via ``MarketApi`` & ``MarketDataProvider``."""
+    venue = mkt_api.infer_symbol_venue(
+        sym,
+        explicit_venue=(m_dict or {}).get("venue") if isinstance(m_dict, dict) else None,
+        fallback_venue="t212",
+    )
     _, maker_bps, taker_bps, _ = MarketDataProvider.resolve_venue_default_fee_spec(
         venue, fallback_venue="t212"
     )
@@ -648,9 +632,8 @@ def compute_cross_venue_arb_metrics(
     if not isinstance(minfo, dict) or not isinstance(microstructure, dict):
         return
     prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
-    msym_quotes = compatible_quote_suffixes(msym)
     own_px = safe_pos_float(minfo.get("ob_mid_price"), default=None) or safe_pos_float((p_match or {}).get("price") if isinstance(p_match, dict) else None, default=None)
-    if not (own_px and own_px > 0.0 and "USD" in msym_quotes):
+    if not (own_px and own_px > 0.0 and is_usd_compatible_pair(msym)):
         return
     mbase = canonical_base_asset(msym)
     msym_is_eq = has_equity_suffix(msym)
@@ -662,10 +645,10 @@ def compute_cross_venue_arb_metrics(
         and isinstance(peer_m, dict)
         and has_equity_suffix(peer_sym) == msym_is_eq
         and canonical_base_asset(peer_sym) == mbase
-        and "USD" in compatible_quote_suffixes(peer_sym)
+        and is_usd_compatible_pair(peer_sym)
     ]
     peer_candidates.sort(
-        key=lambda kv: (0 if str(kv[0]).upper().endswith(("USDC", "USD")) else 1, str(kv[0]).upper())
+        key=lambda kv: (0 if (is_usdc_pair(kv[0]) or is_fiat_usd_pair(kv[0])) else 1, str(kv[0]).upper())
     )
     for peer_sym, peer_m in peer_candidates:
         peer_v, _, peer_taker, peer_hsp = _infer_symbol_venue_and_fees_bps(peer_sym, peer_m)
@@ -885,13 +868,13 @@ def evaluate_microstructure_cycle_deltas(
             mhist_dirty = True
     usd_delta_groups: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
     for msym, minfo in microstructure.items():
-        if isinstance(minfo, dict) and isinstance(minfo.get("cycle_delta"), dict) and "USD" in compatible_quote_suffixes(msym):
+        if isinstance(minfo, dict) and isinstance(minfo.get("cycle_delta"), dict) and is_usd_compatible_pair(msym):
             grp_k = f"EQ:{canonical_base_asset(msym)}" if has_equity_suffix(msym) else canonical_base_asset(msym)
             usd_delta_groups.setdefault(grp_k, []).append((msym, minfo))
     for grp_items in usd_delta_groups.values():
         if len(grp_items) < 2:
             continue
-        grp_items.sort(key=lambda kv: (0 if str(kv[0]).upper().endswith("USDC") else 1, str(kv[0]).upper()))
+        grp_items.sort(key=lambda kv: (0 if is_usdc_pair(kv[0]) else 1, str(kv[0]).upper()))
         _, prim_m_d = grp_items[0]
         prim_cd = prim_m_d.get("cycle_delta")
         if not isinstance(prim_cd, dict):
@@ -1369,7 +1352,7 @@ def reconcile_sibling_flow_and_liq_regimes(
             continue
         grp.sort(
             key=lambda kv: (
-                0 if str(kv[0]).upper().endswith("USDC") else 1,
+                0 if is_usdc_pair(kv[0]) else 1,
                 -((safe_nonneg_float(kv[1].get("bid_depth_usd"), 0.0) or 0.0) + (safe_nonneg_float(kv[1].get("ask_depth_usd"), 0.0) or 0.0)),
                 str(kv[0]).upper(),
             )

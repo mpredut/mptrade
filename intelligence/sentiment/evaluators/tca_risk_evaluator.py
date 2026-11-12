@@ -14,6 +14,8 @@ from cachepaths import (
     has_crypto_quote_suffix,
     has_equity_suffix,
     is_equity_venue_or_suffix,
+    is_usd_compatible_pair,
+    is_usdc_pair,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -525,8 +527,8 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
             ):
                 prev = by_base.get(b_canon)
                 if prev is None or (
-                    ("USD" in compatible_quote_suffixes(sym), sym.endswith("USDC"), len(pinfo))
-                    > ("USD" in compatible_quote_suffixes(prev[0]), prev[0].endswith("USDC"), len(prev[1]))
+                    (is_usd_compatible_pair(sym), is_usdc_pair(sym), len(pinfo))
+                    > (is_usd_compatible_pair(prev[0]), is_usdc_pair(prev[0]), len(prev[1]))
                 ):
                     by_base[b_canon] = (sym, pinfo)
 

@@ -32,6 +32,8 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    has_equity_suffix,
+    is_fiat_quote_pair,
     is_fiat_usd_pair,
     is_primary_stream_venue,
     is_usd_stablecoin_pair,
@@ -874,7 +876,7 @@ class MarketApi:
                 continue
         if is_usd_stablecoin_pair(sym_u):
             return next((p for p in crypto_provs if is_primary_stream_venue(p.name)), None)
-        if is_fiat_usd_pair(sym_u):
+        if is_fiat_usd_pair(sym_u) or is_fiat_quote_pair(sym_u) or sym_u.startswith(("XX", "XZ")):
             return next(
                 (
                     p
@@ -885,6 +887,35 @@ class MarketApi:
                 None,
             )
         return None
+
+    def infer_symbol_venue(
+        self,
+        symbol: object,
+        *,
+        explicit_venue: object = None,
+        fallback_venue: str = "t212",
+    ) -> str:
+        """Infer canonical lowercase venue name for ``symbol`` via registered provider capabilities."""
+        explicit_v = normalize_venue_name(explicit_venue)
+        if explicit_v and MarketDataProvider.resolve_venue_provider_class(explicit_v) is not None:
+            return explicit_v
+        sym_u = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
+        if (
+            ":" in sym_u
+            and (pref_v := normalize_venue_name(sym_u.split(":", 1)[0]))
+            and MarketDataProvider.resolve_venue_provider_class(pref_v) is not None
+        ):
+            return pref_v
+        fb_v = normalize_venue_name(fallback_venue) or "t212"
+        if not sym_u:
+            return fb_v
+        if has_equity_suffix(sym_u) or is_equity_symbol(sym_u):
+            eq_prov = next((p for p in self._providers if getattr(p, "_ASSET_SCOPE", "crypto") == "equities"), None)
+            return normalize_venue_name(eq_prov.name) if eq_prov is not None else fb_v
+        crypto_prov = self.resolve_crypto_ohlc_provider(sym_u)
+        if crypto_prov is not None:
+            return normalize_venue_name(crypto_prov.name) or fb_v
+        return fb_v
 
     def provider_name_for(self, symbol: str) -> str:
         """Return the provider that would serve the symbol for logs and debugging."""

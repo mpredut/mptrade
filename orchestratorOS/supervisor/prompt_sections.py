@@ -21,6 +21,8 @@ from cachepaths import (
     canonical_base_asset,
     compatible_quote_suffixes,
     has_equity_suffix,
+    is_usd_compatible_pair,
+    is_usdc_pair,
     normalize_venue_name,
 )
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
@@ -534,14 +536,14 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             if isinstance(entry, dict) and not has_equity_suffix(k) and canonical_base_asset(k) == "BTC"
         ),
         key=lambda kv: (
-            0 if kv[0].endswith("USDC") else (1 if "USD" in compatible_quote_suffixes(kv[0]) else 2),
+            0 if is_usdc_pair(kv[0]) else (1 if is_usd_compatible_pair(kv[0]) else 2),
             -len(kv[1]),
             kv[0],
         ),
     )
     btc_entry: Optional[Dict[str, Any]] = None
     if btc_candidates:
-        usd_btc_cands = [(k, e) for k, e in btc_candidates if "USD" in compatible_quote_suffixes(k)] or btc_candidates
+        usd_btc_cands = [(k, e) for k, e in btc_candidates if is_usd_compatible_pair(k)] or btc_candidates
         btc_entry = dict(usd_btc_cands[0][1])
         for _, sib_b in usd_btc_cands[1:]:
             for bk, bv in sib_b.items():
@@ -558,7 +560,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
     for _, sym_group in sorted(grouped_3a.items(), key=lambda kv: kv[1][0][0]):
         sym_group.sort(
             key=lambda item: (
-                0 if item[0].endswith("USDC") or has_equity_suffix(item[0]) else 1,
+                0 if is_usdc_pair(item[0]) or has_equity_suffix(item[0]) else 1,
                 -len(item[1]),
                 item[0],
             )
@@ -824,7 +826,7 @@ def _format_microstructure_section(
     sorted_3b = sorted(
         microstructure.items(),
         key=lambda kv: (
-            0 if kv[0].endswith("USDC") else (1 if "USD" in compatible_quote_suffixes(kv[0]) else 2),
+            0 if is_usdc_pair(kv[0]) else (1 if is_usd_compatible_pair(kv[0]) else 2),
             kv[0],
         ),
     )
@@ -1060,7 +1062,7 @@ def _format_microstructure_section(
         )
         tr_sig = (minfo.get("taker_buy_sell_ratio"), minfo.get("oi_usd"))
         prev_perp = rendered_3b_perp_by_base.get(b_canon_3b)
-        if prev_perp is not None and not sym.endswith("USDC") and prev_perp[1:] == tr_sig and tr_sig[0] is not None:
+        if prev_perp is not None and not is_usdc_pair(sym) and prev_perp[1:] == tr_sig and tr_sig[0] is not None:
             arb_only_parts = [p for p in basis_parts if p.startswith(("arb_vs_", "net_buy_edge="))]
             arb_sfx = f", {', '.join(arb_only_parts)}" if arb_only_parts else ""
             lines.append(
@@ -1071,7 +1073,7 @@ def _format_microstructure_section(
                 f"{arb_sfx}{spread_sfx}{cd_sfx}, perp_whale_flow=shared_with_{prev_perp[0]}"
             )
             continue
-        if sym.endswith("USDC") and b_canon_3b not in rendered_3b_perp_by_base:
+        if is_usdc_pair(sym) and b_canon_3b not in rendered_3b_perp_by_base:
             rendered_3b_perp_by_base[b_canon_3b] = (sym, tr_sig[0], tr_sig[1])
         eq_zero_fund_3b = sym_is_eq_3b
         deriv_oi_sfx = (

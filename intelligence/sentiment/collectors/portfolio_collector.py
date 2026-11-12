@@ -31,6 +31,7 @@ from cachepaths import (
     clean_symbol_key,
     compatible_quote_suffixes,
     ensure_equity_suffix,
+    ensure_quote_suffix,
     filter_asset_class_variants,
     has_equity_suffix,
     is_equity_venue,
@@ -41,6 +42,7 @@ from cachepaths import (
     resolve_venue_trailing_state_path,
     resolve_workspace_dir_from_cachedb,
     split_symbol_assets,
+    symbol_quote_asset,
 )
 from intelligence.macro_sentiment_ssot import resolve_read_json_cached, resolve_save_json_state
 from intelligence.external.collectors.base_collector import (
@@ -657,7 +659,7 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
         kraken_cycles: Dict[str, Any] = {}
         for st_path in iter_venue_cycle_state_files("kraken", workspace_dir=eff_workspace):
             pair_name = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
-            if pair_name.isalnum() and pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
+            if pair_name.isalnum() and symbol_quote_asset(pair_name) in ("USD", "EUR", "USDC", "USDT"):
                 _record_cyc(kraken_cycles, st_path, pair_name, 6)
 
         hyperliquid_cycles: Dict[str, Any] = {}
@@ -670,7 +672,7 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
                     raw_tok = raw_tok[: -len(sfx)]
                     break
             if raw_tok.isalnum():
-                _record_cyc(hyperliquid_cycles, st_path, raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC", 6)
+                _record_cyc(hyperliquid_cycles, st_path, ensure_quote_suffix(raw_tok, "USDC"), 6)
 
         all_t212_cycles: Dict[str, Any] = {}
         for st_path, ticker in _iter_t212_state_files(eff_workspace):

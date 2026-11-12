@@ -8,12 +8,18 @@ import time
 import unittest
 from cachepaths import (
     cache_relpath,
+    crypto_quote_priority_rank,
+    ensure_quote_suffix,
     has_crypto_quote_suffix,
     is_cachedb_relpath,
+    is_eur_pair,
+    is_fiat_quote_pair,
     is_fiat_usd_pair,
     is_primary_stream_venue,
     is_readonly_xstock_symbol,
+    is_usd_compatible_pair,
     is_usd_stablecoin_pair,
+    is_usdc_pair,
     matches_asset_scope,
     resolve_kraken_lookup_symbol,
     same_canonical_base_asset,
@@ -1073,6 +1079,12 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     env_owners = {"botcore.py", "cachepaths.py", "credentials.py"}
     open_owners = {"state_io.py", "botcore.py", "log.py"}
     coercion_owners = {"botcore.py", "cachepaths.py", "orchestratorOS/agy/protobuf.py"}
+    quote_endswith_owners = {
+        "cachepaths.py",
+        "instrument_registry.py",
+        "intelligence/sentiment/collectors/market_breadth_collector.py",
+    }
+    quote_suffix_tokens = {"USDC", "USDT", "USD", "EUR", "FDUSD", "TUSD", "BUSD"}
     mss_tree = ast.parse((root / "intelligence" / "macro_sentiment_ssot.py").read_text(encoding="utf-8"))
     mss_reexports = {
         a.asname or a.name
@@ -1209,6 +1221,24 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                     and fn.attr in ("get", "post", "put", "delete", "request")
                 ):
                     ssot_violations.append(f"{rel_s}:{lineno}: raw requests.{fn.attr}")
+                if (
+                    rel_s not in quote_endswith_owners
+                    and isinstance(fn, ast.Attribute)
+                    and fn.attr == "endswith"
+                    and node.args
+                ):
+                    ew_arg = node.args[0]
+                    ew_vals: list[str] = []
+                    if isinstance(ew_arg, ast.Constant) and isinstance(ew_arg.value, str):
+                        ew_vals.append(ew_arg.value)
+                    elif isinstance(ew_arg, (ast.Tuple, ast.List)):
+                        ew_vals.extend(
+                            elt.value
+                            for elt in ew_arg.elts
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                        )
+                    if any(v in quote_suffix_tokens for v in ew_vals):
+                        ssot_violations.append(f"{rel_s}:{lineno}: manual quote .endswith({ew_vals})")
             elif (
                 rel_s not in env_owners
                 and isinstance(node, ast.Attribute)
@@ -1263,14 +1293,50 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     assert is_cachedb_relpath("cachedb/trailing_state.json") is True
     assert is_cachedb_relpath("kraken/trailing_state.json") is False
 
-    # Declarative MarketApi crypto OHLC provider routing
+    # Declarative MarketApi crypto OHLC provider routing & venue inference
     assert api.resolve_crypto_ohlc_provider("HYPEUSDC").name == "Hyperliquid"
     assert api.resolve_crypto_ohlc_provider("TAOUSDC").name == "Binance"
     assert api.resolve_crypto_ohlc_provider("BTCTUSD").name == "Binance"
     assert api.resolve_crypto_ohlc_provider("XBTUSD").name == "Kraken"
     assert api.resolve_crypto_ohlc_provider("DOTUSD").name == "Kraken"
     assert api.resolve_crypto_ohlc_provider("ARBUSD").name == "Kraken"
+    assert api.resolve_crypto_ohlc_provider("XBTEUR").name == "Kraken"
+    assert api.resolve_crypto_ohlc_provider("XXBTZUSD").name == "Kraken"
     assert api.resolve_crypto_ohlc_provider("SPCX_US_EQ") is None
+
+    assert api.infer_symbol_venue("HYPEUSDC") == "hyperliquid"
+    assert api.infer_symbol_venue("BTCUSDC") == "binance"
+    assert api.infer_symbol_venue("BTCTUSD") == "binance"
+    assert api.infer_symbol_venue("XBTUSD") == "kraken"
+    assert api.infer_symbol_venue("XBTEUR") == "kraken"
+    assert api.infer_symbol_venue("XXBTZUSD") == "kraken"
+    assert api.infer_symbol_venue("NVDA_US_EQ") == "t212"
+    assert api.infer_symbol_venue("kraken:SOLUSDC") == "kraken"
+    assert api.infer_symbol_venue("SOLUSDC", explicit_venue="kraken") == "kraken"
+
+    assert is_usdc_pair("BTCUSDC") is True
+    assert is_usdc_pair("SOL/USDC") is True
+    assert is_usdc_pair("BTCUSDT") is False
+    assert is_usdc_pair("NVDA_US_EQ") is False
+    assert is_eur_pair("XBTEUR") is True
+    assert is_eur_pair("BTCEUR") is True
+    assert is_eur_pair("EURUSD") is False
+    assert is_eur_pair("SAP_DE_EQ") is False
+    assert is_fiat_quote_pair("XBTUSD") is True
+    assert is_fiat_quote_pair("XBTEUR") is True
+    assert is_fiat_quote_pair("BTCTUSD") is False
+    assert is_fiat_quote_pair("BTCUSDC") is False
+    assert is_usd_compatible_pair("BTCUSDC") is True
+    assert is_usd_compatible_pair("XBTUSD") is True
+    assert is_usd_compatible_pair("XBTEUR") is False
+    assert ensure_quote_suffix("BTC", "USDC") == "BTCUSDC"
+    assert ensure_quote_suffix("BTCUSDC", "USDC") == "BTCUSDC"
+    assert ensure_quote_suffix("sol/usdc", "USDC") == "SOLUSDC"
+    assert crypto_quote_priority_rank("BTCUSDC") == 0
+    assert crypto_quote_priority_rank("BTCUSDT") == 1
+    assert crypto_quote_priority_rank("XBTUSD") == 2
+    assert crypto_quote_priority_rank("XBTEUR") == 3
+    assert crypto_quote_priority_rank("ETHBTC") == 4
 
     # New botcore & trailing_core SSOT helpers
     cp = botcore.empty_ini_config(inline_comments=True)

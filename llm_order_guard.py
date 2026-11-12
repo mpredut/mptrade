@@ -200,7 +200,7 @@ def evaluate_high_stake_order_guard(
             except Exception:
                 pass
 
-        ccy_sym = "€" if str(symbol or "").strip().upper().endswith("EUR") else "$"
+        ccy_sym = "\u20ac" if _cachepaths.is_eur_pair(symbol) else "$"
         do_notify = _parse_bool_flag(notify_on_eval, True) if not isinstance(notify_on_eval, bool) else notify_on_eval
         if not is_cache_hit and (do_notify or not g_allowed_bool or g_brake == BrakeAction.DOWNSCALE_QTY):
             prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"

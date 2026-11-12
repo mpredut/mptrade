@@ -32,6 +32,7 @@ from cachepaths import (
     compatible_quote_suffixes,
     get_cachedb_dir,
     has_crypto_quote_suffix,
+    is_fiat_usd_pair,
     resolve_cachedb_filepath,
 )
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
@@ -940,7 +941,7 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
                 cur_m_info.pop(k_strip, None)
         elif (
             is_usd_sym
-            and str(symbol).strip().upper().endswith("USD")
+            and is_fiat_usd_pair(symbol)
             and cur_px_est > 0.0
             and (ob_mid_m := safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)) is not None
             and abs(cur_px_est - ob_mid_m) / max(cur_px_est, ob_mid_m) > 0.01
