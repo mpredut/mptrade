@@ -481,12 +481,6 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
         return ts1 if (ts1 > ts0 and ts1 <= upper_ts + 300.0) else ts0
 
     pending_unstamped: List[str] = []
-    def _commit_parsed_dt(dt: datetime) -> float:
-        nonlocal day, prev_ts
-        day = dt.date()
-        prev_ts = _resolve_fold_ts(dt, prev_ts)
-        return prev_ts
-
     for line in reversed(lines):
         if not isinstance(line, str):
             continue
@@ -496,7 +490,8 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
             has_stamp_token = True
             try:
                 dt = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}", "%Y-%m-%d %H:%M:%S")
-                ts = _commit_parsed_dt(dt)
+                day = dt.date()
+                ts = prev_ts = _resolve_fold_ts(dt, prev_ts)
             except ValueError:
                 pass
         elif g := _GLOG_TS_RE.match(line):
@@ -506,7 +501,8 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
                 dt = datetime(ref.year, mm, dd, hh, mi, ss)
                 if (dt - ref).total_seconds() > 86400:
                     dt = datetime(ref.year - 1, mm, dd, hh, mi, ss)
-                ts = _commit_parsed_dt(dt)
+                day = dt.date()
+                ts = prev_ts = _resolve_fold_ts(dt, prev_ts)
             except ValueError:
                 pass
         elif (
@@ -1011,16 +1007,6 @@ def select_patch_pytest_targets(real_target: str, workspace_dir: str) -> List[st
     return [f"tests/{fname}" for fname in ("test_runtime_configuration_policy.py", "test_config_env_shell_safe.py") if fname in test_files] or ["tests/"]
 
 
-def _rollback_patched_file(real_target: str, content: Optional[str], workspace_dir: str) -> None:
-    if content is not None:
-        try:
-            atomic_write_text(real_target, content)
-            return
-        except OSError:
-            pass
-    subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
-
-
 def apply_code_patch_safely(
     target_file: str,
     search_block: str,
@@ -1071,7 +1057,15 @@ def apply_code_patch_safely(
     except Exception as e:
         if log:
             log.error("Error during safe code patching: %s. Performing rollback.", e)
-    _rollback_patched_file(real_target, content, workspace_dir)
+    rolled_back = False
+    if content is not None:
+        try:
+            atomic_write_text(real_target, content)
+            rolled_back = True
+        except OSError:
+            pass
+    if not rolled_back:
+        subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
     return False
 
 

@@ -378,12 +378,6 @@ def _patched_stderr_write(message: str) -> int:
     return ret
 
 
-def _patched_stderr_writelines(lines) -> None:
-    """Mirror stderr.writelines() to the log file."""
-    for line in lines:
-        _patched_stderr_write(line)
-
-
 # -- One-time patch (double-import safe) ---------------------------------------
 
 _patch_lock = threading.Lock()
@@ -392,5 +386,5 @@ with _patch_lock:
     if not getattr(builtins, "_logger_patched", False):
         builtins.print            = _patched_print              # type: ignore[attr-defined]
         sys.stderr.write          = _patched_stderr_write       # type: ignore[method-assign]
-        sys.stderr.writelines     = _patched_stderr_writelines  # type: ignore[method-assign]
+        sys.stderr.writelines     = lambda lines: [_patched_stderr_write(line) for line in lines]  # type: ignore[method-assign]
         builtins._logger_patched  = True                        # type: ignore[attr-defined]

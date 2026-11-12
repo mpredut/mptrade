@@ -824,16 +824,6 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
     return True, state
 
 
-def _clear_inactive_trend_defer(symbol, kind, state):
-    """Reset the trend_defer clock when its tier signal is no longer crossed."""
-    if not isinstance(state, dict) or "trend_defer" not in state:
-        return state
-    updated = dict(state)
-    updated.pop("trend_defer", None)
-    _save_symbol_campaign(symbol, kind, updated)
-    return updated
-
-
 def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
                    p3b_assessment=None):
     """Select one crossed, incomplete BUY tier for one symbol campaign."""
@@ -1101,15 +1091,6 @@ def _campaign_pending_persistor(symbol, kind, state):
     return box, persist
 
 
-def _set_tier_attempt(state: dict, key: str, attempt: int) -> dict:
-    raw_attempts = state.get("attempts_by_tier")
-    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
-    attempts[key] = attempt
-    out = dict(state)
-    out["attempts_by_tier"] = attempts
-    return out
-
-
 def _reuse_unaccepted_attempt(symbol, kind, state, pending):
     """Release one unverified submit without consuming its deterministic ID.
 
@@ -1122,7 +1103,10 @@ def _reuse_unaccepted_attempt(symbol, kind, state, pending):
     if threshold is None or attempt <= 0:
         print(f"[{symbol}] Cannot reuse corrupt {kind.upper()} attempt; preserve counters.")
         return state
-    state = _set_tier_attempt(state, _tier_key(threshold), max(0, attempt - 1))
+    raw_attempts = state.get("attempts_by_tier")
+    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
+    attempts[_tier_key(threshold)] = max(0, attempt - 1)
+    state = {**state, "attempts_by_tier": attempts}
     refusal_reason = pending.get("refusal_reason")
     if isinstance(refusal_reason, str) and refusal_reason.strip() and pending.get("intent_id"):
         state["last_refusal"] = {
@@ -1394,7 +1378,10 @@ def _submit_campaign_tier(
     key = _tier_key(threshold)
     attempt = _safe_tier_attempt(state.get("attempts_by_tier"), key)
     client_order_id = _ag_client_order_id(kind, symbol, state, threshold, attempt)
-    state = _set_tier_attempt(state, key, attempt)
+    raw_attempts = state.get("attempts_by_tier")
+    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
+    attempts[key] = attempt
+    state = {**state, "attempts_by_tier": attempts}
     last_ref = state.get("last_refusal")
     if isinstance(last_ref, dict) and last_ref.get("intent_id") == client_order_id and last_ref.get("reason"):
         ref_map = getattr(ORDER_LIFECYCLE, "_last_refusal_by_intent", None)
@@ -1550,8 +1537,10 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         symbol, current_price, minimum_row, free_base_qty, provider,
         portfolio_growth_pct=portfolio_growth_pct, p3b_assessment=p3b_assessment,
     )
-    if sell_tier is None:
-        sell_state = _clear_inactive_trend_defer(symbol, "sell", sell_state)
+    if sell_tier is None and isinstance(sell_state, dict) and "trend_defer" in sell_state:
+        sell_state = dict(sell_state)
+        sell_state.pop("trend_defer", None)
+        _save_symbol_campaign(symbol, "sell", sell_state)
     evaluation["growth"] = rolling_growth_percent if effective_growth is None else effective_growth
     frozen_trough = _finite_float(sell_state.get("trough_price"), positive=True)
     pg_str = f"{portfolio_growth_pct:.4f}%" if portfolio_growth_pct is not None else "n/a"
@@ -1591,7 +1580,11 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
 
     first_buy_trigger = _trigger_threshold_for_buy_tier(BUY_TIERS[0][0], buy_mult, volatility_mult=vol_mult)
     if drawdown_percent > -first_buy_trigger:
-        _clear_inactive_trend_defer(symbol, "buy", _symbol_campaign(symbol, "buy"))
+        buy_st = _symbol_campaign(symbol, "buy")
+        if isinstance(buy_st, dict) and "trend_defer" in buy_st:
+            buy_st = dict(buy_st)
+            buy_st.pop("trend_defer", None)
+            _save_symbol_campaign(symbol, "buy", buy_st)
         return False
     print(f"[{symbol}] Drawdown threshold reached ({drawdown_percent:.4f}% <= -{first_buy_trigger:.4f}%). Checking staged BUY...")
     _, quote_asset = resolve_assets(symbol)
