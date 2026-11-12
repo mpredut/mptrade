@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import csv
 import dataclasses
-from datetime import datetime, timezone
 import inspect
 import os
 import sys
@@ -35,23 +34,6 @@ from strategies import spot_engine as strat
 from botcore import normalize_epoch_sec, safe_float, safe_nonneg_int, safe_pos_float
 from state_io import atomic_write_json, read_text_lines
 
-
-def _parse_csv_timestamp_sec(raw: object) -> int | None:
-    ts_sec = normalize_epoch_sec(raw, default=None, allow_zero=True)
-    if ts_sec is None and isinstance(raw, str) and not isinstance(raw, bool):
-        clean = raw.strip()
-        if clean:
-            try:
-                iso_str = f"{clean[:-1]}+00:00" if clean.endswith(("Z", "z")) else clean
-                parsed_dt = datetime.fromisoformat(iso_str)
-                if parsed_dt.tzinfo is None:
-                    parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
-                ts_sec = parsed_dt.timestamp()
-            except ValueError:
-                ts_sec = None
-    if ts_sec is not None and ts_sec >= 0.0:
-        return safe_nonneg_int(round(ts_sec), default=None)
-    return None
 
 
 def load_ohlc_with_timestamps_csv(
@@ -91,11 +73,8 @@ def load_ohlc_with_timestamps_csv(
             and h >= max(o, l, c)
             and l <= min(o, h, c)
         ):
-            ts_int = (
-                _parse_csv_timestamp_sec(line[ts_idx])
-                if ts_idx is not None and ts_idx < len(line)
-                else None
-            )
+            ts_sec = normalize_epoch_sec(line[ts_idx], default=None, allow_zero=True, allow_iso=True) if ts_idx is not None and ts_idx < len(line) else None
+            ts_int = safe_nonneg_int(round(ts_sec), default=None) if ts_sec is not None else None
             paired.append(((o, h, l, c), ts_int))
     if any(ts_val is not None for _row, ts_val in paired):
         by_ts: dict[int, tuple[float, float, float, float]] = {}

@@ -27,6 +27,7 @@ from botcore import (  # noqa: E402
     is_live_network_backfill_enabled,
     optional_env,
     parse_dotenv,
+    parse_iso_datetime_utc,
     required_float_env,
     safe_float,
 )
@@ -175,15 +176,9 @@ def run_alerts(kr: list[dict]) -> list[str]:
         prev_dd = safe_float(prev.get("dd"), 0.0)
         prev_ts = prev.get("ts")
         stale = True
-        if prev_ts and not isinstance(prev_ts, bool):
-            try:
-                parsed_ts = datetime.fromisoformat(str(prev_ts))
-                if parsed_ts.tzinfo is None:
-                    parsed_ts = parsed_ts.replace(tzinfo=timezone.utc)
-                elapsed_s = (now - parsed_ts).total_seconds()
-                stale = elapsed_s < 0 or elapsed_s > realert_hours * 3600
-            except (TypeError, ValueError):
-                stale = True
+        if prev_ts and not isinstance(prev_ts, bool) and (parsed_ts := parse_iso_datetime_utc(str(prev_ts))) is not None:
+            elapsed_s = (now - parsed_ts).total_seconds()
+            stale = elapsed_s < 0 or elapsed_s > realert_hours * 3600
         if stale or dd <= prev_dd - worsen_pct:
             unreal = safe_float(r.get("unrealized"), 0.0)
             cost = safe_float(r.get("cost"), 0.0)

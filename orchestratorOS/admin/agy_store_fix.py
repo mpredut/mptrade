@@ -55,6 +55,7 @@ from botcore import (
     exact_nonneg_int,
     is_env_defined,
     optional_env,
+    parse_iso_datetime_utc,
     safe_nonneg_int,
     safe_pos_float,
 )
@@ -845,11 +846,8 @@ def last_store_activity() -> float:
 
             def _record_ts(record: dict) -> float:
                 raw_ts = str(record.get("created_at") or "").strip()
-                if raw_ts:
-                    try:
-                        return datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp()
-                    except Exception:
-                        pass
+                if raw_ts and (dt := parse_iso_datetime_utc(raw_ts)) is not None:
+                    return dt.timestamp()
                 return st.st_mtime
 
             for rec in records:

@@ -58,6 +58,7 @@ from botcore import (
     float_env,
     load_env_stack,
     load_ini_config,
+    parse_iso_datetime_utc,
     resolve_mem_bounded_worker_cap,
     safe_float,
     safe_pos_float,
@@ -148,14 +149,8 @@ def _last_change_for(full_key):
     """The most recent journal entry with action='applied' and a valid timestamp for full_key."""
     for entry in reversed(read_jsonl_dicts(AUDIT_LOG)):
         if entry.get("full_key") == full_key and entry.get("action") == "applied":
-            ts_raw = entry.get("ts")
-            if not ts_raw:
-                continue
-            try:
-                datetime.fromisoformat(str(ts_raw))
+            if (ts_raw := entry.get("ts")) and parse_iso_datetime_utc(str(ts_raw)) is not None:
                 return entry
-            except (TypeError, ValueError):
-                continue
     return None
 
 
@@ -164,6 +159,11 @@ def is_rate_limited(full_key: str) -> tuple[bool, str | None]:
     last_change = _last_change_for(full_key)
     if not last_change or not isinstance(last_change, dict) or not last_change.get("ts"):
         return False, None
+    ts_str = str(last_change["ts"])
+    if (last_dt := parse_iso_datetime_utc(ts_str)) is not None:
+        if datetime.now(timezone.utc) - last_dt.astimezone(timezone.utc) < timedelta(days=MIN_DAYS_BETWEEN_CHANGES):
+            return True, ts_str
+    return False, None
     ts_str = str(last_change["ts"])
     try:
         last_ts = datetime.fromisoformat(ts_str)

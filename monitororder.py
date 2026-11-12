@@ -71,9 +71,6 @@ MODULE_ORDER_TTLS = {
 }
 
 
-def _format_duration_hm(seconds: float) -> str:
-    return f"{seconds / 3600:.1f}h" if seconds >= 3600 else f"{seconds / 60:.1f}m"
-
 
 def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_ttl_map=None) -> float:
     """Resolve the effective TTL for an open order.
@@ -328,8 +325,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         if order_ts > 0:
             age_sec = max(0.0, time.time() - order_ts)
             if age_sec >= MAX_GLOBAL_ORDER_TTL_SEC or age_sec >= effective_ttl:
-                age_str = _format_duration_hm(age_sec)
-                ttl_str = _format_duration_hm(effective_ttl)
+                age_str = f"{age_sec / 3600:.1f}h" if age_sec >= 3600 else f"{age_sec / 60:.1f}m"
+                ttl_str = f"{effective_ttl / 3600:.1f}h" if effective_ttl >= 3600 else f"{effective_ttl / 60:.1f}m"
                 print(
                     f"[MONITORORDER] ⏰ Order {order_id} ({owner}, cid='{cid}') EXPIRED: "
                     f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
