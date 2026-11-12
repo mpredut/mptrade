@@ -128,12 +128,6 @@ def collect_known_ai_order_ids(
     return ai_oids
 
 
-def _parse_currency_pos_float(raw: Any, default: Any = None) -> Any:
-    if isinstance(raw, str):
-        raw = _CURRENCY_STRIP_RE.sub("", raw).strip()
-    return safe_pos_float(raw, default)
-
-
 def extract_intent_side(data: dict[str, Any]) -> str:
     """Extract normalized BUY/SELL/HOLD side from an intent dictionary."""
     if not isinstance(data, dict):
@@ -152,7 +146,8 @@ def extract_intent_notional(data: dict[str, Any], default: Any = None) -> Any:
         return default
     for nk in _NOTIONAL_KEYS:
         if data.get(nk) is not None:
-            val = _parse_currency_pos_float(data.get(nk), None)
+            raw_nk = data.get(nk)
+            val = safe_pos_float(_CURRENCY_STRIP_RE.sub("", raw_nk).strip() if isinstance(raw_nk, str) else raw_nk, None)
             if val is not None:
                 return val
     return default
@@ -191,7 +186,8 @@ def extract_intent_limit_price(data: dict[str, Any], default: Any = None) -> Any
         keys = (*keys, "price")
     for pk in keys:
         if data.get(pk) is not None:
-            val = _parse_currency_pos_float(data.get(pk), None)
+            raw_pk = data.get(pk)
+            val = safe_pos_float(_CURRENCY_STRIP_RE.sub("", raw_pk).strip() if isinstance(raw_pk, str) else raw_pk, None)
             if val is not None:
                 return val
     return default

@@ -315,18 +315,14 @@ class ReplayMarketDataProvider(MarketDataProvider):
         finite_vals = [vf for v in self._last_ts.values() if (vf := safe_float(v, default=None)) is not None]
         return max(finite_vals, default=0.0)
 
-    def _active_series_idx(self, symbol: str) -> Tuple[Optional[List[Tuple[float, float]]], int]:
-        _sym, series, idx = self._resolve_series_and_cursor(symbol)
-        return (series, idx) if (series and idx > 0) else (None, 0)
-
     # -- Market data ----------------------------------------------------------
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
-        series, idx = self._active_series_idx(symbol)
-        return series[idx - 1][1] if series else None
+        _sym, series, idx = self._resolve_series_and_cursor(symbol)
+        return series[idx - 1][1] if (series and idx > 0) else None
 
     def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
-        series, idx = self._active_series_idx(symbol)
-        if not series:
+        _sym, series, idx = self._resolve_series_and_cursor(symbol)
+        if not series or idx <= 0:
             return None
         lb_val = safe_nonneg_float(lookback_h, default=None)
         if lb_val is None:

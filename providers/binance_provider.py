@@ -429,13 +429,9 @@ class BinanceProvider(MarketDataProvider):
         return fee_cap_quantity(available_qty, _po.PLACE_ORDER_FEE_PCT)
 
     # -- StrategyExecutor contract. --------------------------------------------
-    @staticmethod
-    def _fetch_symbol_order_rules(symbol: str) -> BinanceOrderRules:
-        return BinanceOrderRules.from_symbol_info(_get_bapi().client.get_symbol_info(symbol))
-
     def pair_precision(self, symbol: str):
         try:
-            rules = self._fetch_symbol_order_rules(symbol)
+            rules = BinanceOrderRules.from_symbol_info(_get_bapi().client.get_symbol_info(symbol))
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(f"pair_precision({symbol}): {exc}") from exc
         return PairPrecision(
@@ -461,7 +457,7 @@ class BinanceProvider(MarketDataProvider):
         is_market = _parse_bool_flag(market, False)
         enforce_min = _parse_bool_flag(enforce_business_minimum, True)
         try:
-            rules = self._fetch_symbol_order_rules(symbol)
+            rules = BinanceOrderRules.from_symbol_info(_get_bapi().client.get_symbol_info(symbol))
             current_price = price if is_market else _get_bapi().get_current_price(symbol)
             candidate_price = _po.order_candidate_price(side, price, current_price, market=is_market)
         except Exception as exc:  # noqa: BLE001

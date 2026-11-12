@@ -440,10 +440,6 @@ class HyperliquidProvider(MarketDataProvider):
                 raise ProviderError(f"{ctx}: HL_ACCOUNT_ADDRESS missing")
         return c, pair, addr
 
-    def _validate_symbol_and_oid(self, symbol: str, order_id: str, caller: str) -> int:
-        self.validate_symbol(symbol)
-        return require_int_order_id(order_id, f"{caller}({order_id})")
-
     def _fills_from_api(self, symbol: str) -> List[dict]:
         """Authoritatively fetch Hyperliquid user_fills for this spot pair."""
         c, pair, addr = self._require_hl_client_and_pair(
@@ -1101,7 +1097,8 @@ class HyperliquidProvider(MarketDataProvider):
                 f"order_by_client_id({symbol},{client_order_id}): {e}") from e
 
     def order_status(self, symbol: str, order_id: str):
-        oid = self._validate_symbol_and_oid(symbol, order_id, "order_status")
+        self.validate_symbol(symbol)
+        oid = require_int_order_id(order_id, f"order_status({order_id})")
         c, _pair, addr = self._require_hl_client_and_pair(
             f"order_status({order_id})", require_addr=True
         )
@@ -1233,7 +1230,8 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(f"order_status({order_id}): {e}") from e
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
-        oid = self._validate_symbol_and_oid(symbol, order_id, "cancel_order")
+        self.validate_symbol(symbol)
+        oid = require_int_order_id(order_id, f"cancel_order({order_id})")
         pair = self._pair()
         if pair is None:
             raise ProviderError(
