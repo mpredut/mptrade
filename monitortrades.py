@@ -973,14 +973,11 @@ def _execute_stop_loss(
     bounce_started_at = (prev_sl_state or {}).get("started_at") or episode_started_at
     cand_bs = safe_pos_float(bounce_started_at, default=None)
     bounce_started_f = min(cand_bs, current_time_s * 1.0) if cand_bs is not None else None
+    if prev_sl_state and bounce_started_f is not None and prev_sl_state.get("started_at") != bounce_started_f:
+        prev_sl_state = {**prev_sl_state, "started_at": bounce_started_f}
     if _is_trend_gate_deferred(symbol, inst):
         print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
-        if prev_sl_state:
-            if bounce_started_f is not None and prev_sl_state.get("started_at") != bounce_started_f:
-                prev_sl_state = {**prev_sl_state, "started_at": bounce_started_f}
-            _SL_BOUNCE_STATE[symbol] = prev_sl_state
-        else:
-            _SL_BOUNCE_STATE[symbol] = _build_sl_bounce_state(snapshot, bounce_started_f)
+        _SL_BOUNCE_STATE[symbol] = prev_sl_state or _build_sl_bounce_state(snapshot, bounce_started_f)
         _save_mt_state()
         return False
 
@@ -1027,8 +1024,6 @@ def _execute_stop_loss(
         if _is_terminal_dust_refusal(outcome_ctx.get("reason")):
             _SL_BOUNCE_STATE.pop(symbol, None)
         else:
-            if bounce_started_f is not None and prev_sl_state.get("started_at") != bounce_started_f:
-                prev_sl_state = {**prev_sl_state, "started_at": bounce_started_f}
             _SL_BOUNCE_STATE[symbol] = prev_sl_state
         _save_mt_state()
     elif outcome_ctx.get("reason") == "trend_deferred":

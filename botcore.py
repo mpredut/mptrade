@@ -126,33 +126,31 @@ class FileLock:
             os.makedirs(parent, exist_ok=True)
         self._fd = open(self.path, "a+")
         self.acquired = False
-        if not _HAVE_FCNTL:
-            self.acquired = True
-            return self
-        try:
-            if self._timeout is None:
-                fcntl.flock(self._fd, fcntl.LOCK_EX)
-                self.acquired = True
-                return self
-            deadline = _time.monotonic() + self._timeout
-            while True:
-                try:
-                    fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    self.acquired = True
-                    return self
-                except (BlockingIOError, OSError):
-                    if _time.monotonic() >= deadline:
-                        self._fd, fd = None, self._fd
-                        fd.close()
-                        if self._raise_on_timeout:
-                            raise TimeoutError(f"timed out acquiring FileLock on {self.path}")
-                        return self
-                    _time.sleep(self._poll_interval)
-        except BaseException:
-            if self._fd is not None:
-                self._fd.close()
-                self._fd = None
-            raise
+        if _HAVE_FCNTL:
+            try:
+                if self._timeout is None:
+                    fcntl.flock(self._fd, fcntl.LOCK_EX)
+                else:
+                    deadline = _time.monotonic() + self._timeout
+                    while True:
+                        try:
+                            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except (BlockingIOError, OSError):
+                            if _time.monotonic() >= deadline:
+                                self._fd, fd = None, self._fd
+                                fd.close()
+                                if self._raise_on_timeout:
+                                    raise TimeoutError(f"timed out acquiring FileLock on {self.path}")
+                                return self
+                            _time.sleep(self._poll_interval)
+            except BaseException:
+                if self._fd is not None:
+                    self._fd.close()
+                    self._fd = None
+                raise
+        self.acquired = True
+        return self
 
     def __exit__(self, *exc):
         if self._fd is None:

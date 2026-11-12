@@ -333,8 +333,8 @@ def _run_once(
                                     unit_cost = (cand_price / rate) * fee_mult
                                     max_qty = round((cash / unit_cost) - 0.004999, 2) if unit_cost > 0 else 0.0
                                     if max_qty < 0.01:
-                                        cash_refusals += 1
                                         engine._remove(order)
+                                        cash_refusals += 1
                                         continue
                                     order["qty"] = min(rem_qty, max_qty)
                                     order["_replay_original_qty"] = order["qty"]
@@ -365,17 +365,17 @@ def _run_once(
                                 quantity = min(quantity, held_before)
                                 if quantity <= 1e-12:
                                     engine._remove(order)
-                                    continue
-                                _execute_sell_fill(
-                                    order,
-                                    fill_order,
-                                    quantity,
-                                    price,
-                                    rate,
-                                    held_before=held_before,
-                                    mark_tp_level=complete,
-                                    remove_before_apply=False,
-                                )
+                                else:
+                                    _execute_sell_fill(
+                                        order,
+                                        fill_order,
+                                        quantity,
+                                        price,
+                                        rate,
+                                        held_before=held_before,
+                                        mark_tp_level=complete,
+                                        remove_before_apply=False,
+                                    )
 
                 if engine.s["orders"]:
                     for order in list(engine.s["orders"]):

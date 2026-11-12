@@ -1087,9 +1087,12 @@ def complete_claim(
                 for key in _TERMINAL_RESET_KEYS:
                     rec.pop(key, None)
                 placement = dict(rec.get("place_kwargs") or {})
-                pfx = rec.get("prefix") or placement.get("prefix") or "OR"
-                placement["client_order_id"] = _client_order_id(rec.get("id", ""), revision, prefix=pfx)
-                rec["place_kwargs"] = placement
+                rec["place_kwargs"] = {
+                    **placement,
+                    "client_order_id": _client_order_id(
+                        rec.get("id", ""), revision, prefix=rec.get("prefix") or placement.get("prefix") or "OR"
+                    ),
+                }
             elif outcome == "failure":
                 prev_attempts = max(
                     max(0, exact_int(rec.get("attempts"), 0)),

@@ -345,9 +345,7 @@ def run_intelligence_backtest(
                 pnl = sell_val - entry_cost
                 usd += sell_val
                 trades.append({"entry_price": entry_price, "exit_price": p, "pnl": pnl, "is_win": pnl > 0})
-                asset_qty = 0.0
-                entry_price = 0.0
-                entry_cost = 0.0
+                asset_qty = entry_price = entry_cost = 0.0
                 last_exit_ts = t
 
             elif want_buy and not want_sell and asset_qty == 0 and usd > 50.0:

@@ -824,8 +824,12 @@ class Cache365PriceManager(Cache24PriceManager):
                 delta[symbol] = extra
         return delta
 
-    def _merge_live_delta_locked(self, delta_by_sym: dict[str, list]) -> None:
+    def _merge_live_delta_locked(
+        self, delta_by_sym: dict[str, list], *, restore_state=None
+    ) -> None:
         """Re-apply live ticks that arrived while an unlocked disk pass was running."""
+        if restore_state is not None:
+            self._restore_memory_state_locked(restore_state)
         for symbol, extra_items in delta_by_sym.items():
             if not extra_items:
                 continue
@@ -947,8 +951,7 @@ class Cache365PriceManager(Cache24PriceManager):
                 )
                 if changed:
                     if not self._write_meta(self._build_basic_meta_locked(self._persisted_counts)):
-                        self._restore_memory_state_locked(original_state)
-                        self._merge_live_delta_locked(post_delta)
+                        self._merge_live_delta_locked(post_delta, restore_state=original_state)
                         self._restore_previous_generation(backup_path)
                         backup_path = None
                         return False
@@ -964,9 +967,10 @@ class Cache365PriceManager(Cache24PriceManager):
             return True
         except OSError as exc:
             with self.lock:
-                post_delta = self._collect_live_delta_locked(snap_item_ids)
-                self._restore_memory_state_locked(original_state)
-                self._merge_live_delta_locked(post_delta)
+                self._merge_live_delta_locked(
+                    self._collect_live_delta_locked(snap_item_ids),
+                    restore_state=original_state,
+                )
                 if backup_path is not None and os.path.exists(backup_path):
                     try:
                         self._restore_previous_generation(backup_path)
@@ -1013,9 +1017,10 @@ class Cache365PriceManager(Cache24PriceManager):
             meta_ok = False
         if not meta_ok:
             with self.lock:
-                post_delta = self._collect_live_delta_locked(snap_item_ids)
-                self._restore_memory_state_locked(original_state)
-                self._merge_live_delta_locked(post_delta)
+                self._merge_live_delta_locked(
+                    self._collect_live_delta_locked(snap_item_ids),
+                    restore_state=original_state,
+                )
                 return self._restore_archive_after_failed_rotation_locked(archive)
         self._compress_and_prune_archive(archive)
         return True
@@ -1365,9 +1370,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 return None
             self._persist_items(target_sym, new)
             self.save_state_to_file_if_enabled()
-            with self.lock:
-                cached_price, last_ts = self.extract_price_and_ts(self.cache.get(target_sym))
-                entry = [last_ts, cached_price] if cached_price is not None else None
+            _, entry, _ = self._resolve_and_load_cached_entry(target_sym, now_ms)
         return entry
 
     def get_price_value(self, symbol: str) -> float:
@@ -2152,11 +2155,8 @@ def _start_nonbinance_trend_poller(
                 )
                 now_ts = time.time()
                 if rth_gate_active and not is_symbol_market_open(s, now_ts):
-                    if s in rth_seeded:
-                        _mark_symbol_ws_ts(s, now_ts)
-                        continue
                     last_empty = empty_backoff_ts.get(s, 0.0)
-                    if last_empty > 0.0 and (now_ts - last_empty) < 300.0:
+                    if s in rth_seeded or (last_empty > 0.0 and (now_ts - last_empty) < 300.0):
                         _mark_symbol_ws_ts(s, now_ts)
                         continue
                 elif rth_gate_active:

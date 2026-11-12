@@ -143,14 +143,13 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def update_fear_greed(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch Crypto Fear & Greed Index and persist snapshot to cachedb/."""
         try:
-            eff_now = self._resolve_step_now(now)
-            now_val = resolve_now_ts(eff_now)
             snap = self._call_collector_fetch(
                 self.fear_greed_collector,
                 force_refresh=_parse_bool_flag(force, False),
-                now_ts=eff_now,
+                now_ts=(eff_now := self._resolve_step_now(now)),
             )
             if snap:
+                now_val = resolve_now_ts(eff_now)
                 idx_ts = safe_nonneg_ts(getattr(snap, "timestamp", None), now_val) or now_val
                 save_json_state(
                     os.path.join(self.cache_dir, "fear_greed_collect.json"),
@@ -177,13 +176,13 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         """Fetch Binance 24h market breadth and persist snapshot to cachedb/."""
         try:
             eff_now = self._resolve_step_now(now)
-            now_val = resolve_now_ts(eff_now)
             breadth = self._call_collector_fetch(
                 self.breadth_collector,
                 force_refresh=_parse_bool_flag(force, False),
                 now_ts=eff_now,
             )
             if breadth:
+                now_val = resolve_now_ts(eff_now)
                 raw_gainers = getattr(breadth, "top_gainers", None) or ()
                 raw_losers = getattr(breadth, "top_losers", None) or ()
                 tot = getattr(breadth, "total_count", 0)

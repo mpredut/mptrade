@@ -729,10 +729,11 @@ class Strategy(BaseSpotMixin):
             while True:
                 try:
                     price = get_price(self.client, self.coin)
-                    if price is None:
-                        log("  [STRAT] price unavailable"); time.sleep(sleep_sec); continue
-                    if self.reconcile(price) is False:
-                        time.sleep(sleep_sec); continue
+                    if price is None or self.reconcile(price) is False:
+                        if price is None:
+                            log("  [STRAT] price unavailable")
+                        time.sleep(sleep_sec)
+                        continue
                     self._step_and_save(price)
                     avg = self._avg()
                     pos = f"qty={self.s['qty']:.6f} avg={avg:.4f}" if avg else "qty=0 (waiting for an entry)"

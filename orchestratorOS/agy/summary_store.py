@@ -176,8 +176,10 @@ def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
     """Set ``title`` in annotations/<cid>.pbtxt, preserving the other annotation lines."""
     if not (clean_cids := _clean_cid_set([cid])):
         return
-    clean_cid = next(iter(clean_cids))
-    title_str = ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
+    clean_cid, title_str = (
+        next(iter(clean_cids)),
+        ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip(),
+    )
     annot_dir = os.path.join(cli_base, "annotations")
     os.makedirs(annot_dir, exist_ok=True)
     path = os.path.join(annot_dir, f"{clean_cid}.pbtxt")
@@ -191,7 +193,7 @@ def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
     atomic_write_bytes(path, content)
 
 
-def upsert_summary_row_dict(cli_base: str, row_dict: dict) -> None:
+def upsert_summary_row_dict(cli_base: str, row_dict: dict, *, sync_pb: bool = False) -> None:
     """Insert or replace a conversation_summaries row matching the table's existing columns."""
     if not isinstance(row_dict, dict):
         return
@@ -208,6 +210,13 @@ def upsert_summary_row_dict(cli_base: str, row_dict: dict) -> None:
             conn.commit()
     finally:
         conn.close()
+    if sync_pb and (raw_summary := row_dict.get("raw_summary")) and (clean_cid := str(row_dict.get("conversation_id") or "").strip()):
+        for name in SUMMARIES_PB_FILES:
+            pb_path = os.path.join(cli_base, name)
+            if os.path.exists(pb_path):
+                buf, updated = replace_summary_entry(read_bytes_file(pb_path, default=b""), clean_cid, raw_summary)
+                if updated:
+                    atomic_write_bytes(pb_path, buf)
 
 
 def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
@@ -219,14 +228,7 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     row = dict(row, conversation_id=clean_cid, title=title_str, source="", status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
     if row.get("raw_summary"):
         row["raw_summary"] = summary_ui_visible(row["raw_summary"], title_str)
-    upsert_summary_row_dict(cli_base, row)
-    if raw_summary := row.get("raw_summary"):
-        for name in SUMMARIES_PB_FILES:
-            pb_path = os.path.join(cli_base, name)
-            if os.path.exists(pb_path):
-                buf, updated = replace_summary_entry(read_bytes_file(pb_path, default=b""), clean_cid, raw_summary)
-                if updated:
-                    atomic_write_bytes(pb_path, buf)
+    upsert_summary_row_dict(cli_base, row, sync_pb=True)
     write_annotation_title(cli_base, clean_cid, title_str)
 
 
@@ -355,14 +357,7 @@ def restore_conversation_state(cli_base: str, cid: str, snapshot: Optional[dict]
     summary_row = snapshot.get("summary_row")
     if isinstance(summary_row, dict):
         try:
-            upsert_summary_row_dict(cli_base, summary_row)
-            if raw_summary := summary_row.get("raw_summary"):
-                for name in SUMMARIES_PB_FILES:
-                    pb_path = os.path.join(cli_base, name)
-                    if os.path.exists(pb_path):
-                        buf, updated = replace_summary_entry(read_bytes_file(pb_path, default=b""), clean_cid, raw_summary)
-                        if updated:
-                            atomic_write_bytes(pb_path, buf)
+            upsert_summary_row_dict(cli_base, dict(summary_row, conversation_id=clean_cid), sync_pb=True)
         except (sqlite3.Error, OSError):
             pass
     return True

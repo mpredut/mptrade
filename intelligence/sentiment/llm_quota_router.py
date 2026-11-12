@@ -456,14 +456,11 @@ class GeminiQuotaRouterMixin:
             return
 
         if claude_rem <= warn_threshold and free_rem <= warn_threshold:
-            alert_tier = "all_exhausted"
-            severity_rank = 3
+            alert_tier, severity_rank = "all_exhausted", 3
         elif claude_rem <= warn_threshold:
-            alert_tier = "all_paid_low"
-            severity_rank = 2
+            alert_tier, severity_rank = "all_paid_low", 2
         else:
-            alert_tier = "argon_low"
-            severity_rank = 1
+            alert_tier, severity_rank = "argon_low", 1
 
         rank_map = {"ok": 0, "argon_low": 1, "all_paid_low": 2, "all_exhausted": 3}
         prev_tier = str(snapshot.get("last_alert_tier") or "ok")

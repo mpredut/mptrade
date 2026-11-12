@@ -375,13 +375,19 @@ class _LivePairVenue:
                 return val_f
 
             r_started = _pending_ts("recovery_started_at", "recovery timing")
-            if pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}:
+            terminal_state = pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}
+            horizon_exhausted = (
+                not terminal_state
+                and r_started is not None
+                and max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC
+            )
+            if terminal_state or horizon_exhausted:
+                if horizon_exhausted:
+                    pending.update(recovery_state="horizon_exhausted", recovery_horizon_exhausted_at=now)
                 persist_raw(pending)
-                raise _IntentRecoveryPending(f"{kind}:{side} requires manual reconciliation")
-            if r_started is not None and max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC:
-                pending.update(recovery_state="horizon_exhausted", recovery_horizon_exhausted_at=now)
-                persist_raw(pending)
-                raise _IntentRecoveryPending(f"{kind}:{side} recovery horizon is exhausted")
+                raise _IntentRecoveryPending(
+                    f"{kind}:{side} {'recovery horizon is exhausted' if horizon_exhausted else 'requires manual reconciliation'}"
+                )
             n_rec = _pending_ts("next_recovery_at", "next recovery time")
             if n_rec is not None and now < n_rec:
                 raise _IntentRecoveryPending(f"{kind}:{side} reconciliation is not due yet")
@@ -1569,35 +1575,30 @@ class TradingBot:
                     current_price = safe_pos_float(api.get_current_price(self.symbol), 0.0)
                     if current_price <= 0:
                         print(f"[{self.symbol}] Failed to fetch current price. Retrying in {WAIT_FOR_ORDER} seconds...")
-                        time.sleep(WAIT_FOR_ORDER)
-                        continue
-                    print(f"[{self.symbol}] Current price: {format_price_log(current_price)}")
-
-                    if _trend_too_strong(self.symbol):
-                        self._cancel_all_rtrade_open_orders()
-                        time.sleep(WAIT_FOR_ORDER)
-                        continue
-
-                    buy_result, sell_result = self._run_pair(executor, current_price)
-                    if not buy_result or not sell_result:
-                        with self.lock:
-                            self.buy_filled = self.sell_filled = False
-                        if getattr(self, "_round_placed_order", True):
+                    else:
+                        print(f"[{self.symbol}] Current price: {format_price_log(current_price)}")
+                        if _trend_too_strong(self.symbol):
                             self._cancel_all_rtrade_open_orders()
-                        time.sleep(WAIT_FOR_ORDER)
-                        continue
-
-                    filled_buy_price = buy_result + RTRADE_ZERO_EPSILON
-                    filled_sell_price = sell_result
-                    print(
-                        f"[{self.symbol}] Transaction complete: Bought at {format_price_log(filled_buy_price)}, "
-                        f"Sold at {format_price_log(filled_sell_price)}"
-                    )
-                    ratio_label = "PROFIT: Profit ratio" if filled_buy_price < filled_sell_price else "LOSS: Loss ratio"
-                    print(f"[{self.symbol}] {ratio_label} {filled_sell_price / filled_buy_price:.2f}")
-                    time.sleep(1)
-                    with self.lock:
-                        self.buy_filled = self.sell_filled = False
+                        else:
+                            buy_result, sell_result = self._run_pair(executor, current_price)
+                            pair_ok = bool(buy_result and sell_result)
+                            if pair_ok:
+                                filled_buy_price = buy_result + RTRADE_ZERO_EPSILON
+                                filled_sell_price = sell_result
+                                print(
+                                    f"[{self.symbol}] Transaction complete: Bought at {format_price_log(filled_buy_price)}, "
+                                    f"Sold at {format_price_log(filled_sell_price)}"
+                                )
+                                ratio_label = "PROFIT: Profit ratio" if filled_buy_price < filled_sell_price else "LOSS: Loss ratio"
+                                print(f"[{self.symbol}] {ratio_label} {filled_sell_price / filled_buy_price:.2f}")
+                                time.sleep(1)
+                            with self.lock:
+                                self.buy_filled = self.sell_filled = False
+                            if pair_ok:
+                                continue
+                            if getattr(self, "_round_placed_order", True):
+                                self._cancel_all_rtrade_open_orders()
+                    time.sleep(WAIT_FOR_ORDER)
                 except Exception as e:
                     print(f"[{self.symbol}] Unexpected error: {e}")
                     with self.lock:

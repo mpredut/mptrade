@@ -364,11 +364,7 @@ class TrailingCore:
         low_f = safe_pos_float(rb.get("low"), default=None)
         rb["low"] = price if low_f is None else min(low_f, price)
         qty_f = safe_pos_float(rb.get("qty"), default=None)
-        if qty_f is None:
-            st.pop("rebuy", None)
-            return
-        qty = round(qty_f, 8)                        # one tranche equals the full quantity sold
-        if qty <= 0:
+        if qty_f is None or (qty := round(qty_f, 8)) <= 0:  # one tranche equals the full quantity sold
             st.pop("rebuy", None)
             return
         if price < rb["low"] * (1 + self.rebuy_bounce_pct / 100.0):

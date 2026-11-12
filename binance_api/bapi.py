@@ -68,7 +68,7 @@ def update_price(symbol):
         if price is None:
             raise ValueError(f"invalid ticker price: {raw_px!r}")
     except Exception as e:
-        print("update_price: An unexpected error occurred:", e)
+        print("update_price: An unexpected error occurred: " + str(e))
         return None
 
     # Publish value and success time together only after complete validation.

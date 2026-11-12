@@ -497,8 +497,8 @@ def _run_once(
                                 if needed > cash + 1e-8:
                                     max_vol = max(0.0, cash / (price * fee_mult)) if price * fee_mult > 0 else 0.0
                                     if max_vol <= 1e-12:
-                                        cash_refusals += 1
                                         strategy._remove(order)
+                                        cash_refusals += 1
                                         continue
                                     orig_vol = volume
                                     volume = min(volume, max_vol)

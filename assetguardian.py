@@ -1215,25 +1215,22 @@ def _resolve_blocking_sell_orders(symbol, open_sells):
     remaining = []
     for order in open_sells:
         oid = extract_order_id(order, default=None)
-        if not oid:
-            remaining.append(order)
-            continue
-        try:
-            if mkt.cancel_order(symbol, oid, provider_name="binance") is False:
-                print(f"[{symbol}] Preemptive cancel of blocking rtrade SELL order {oid} returned False.")
-                remaining.append(order)
-                continue
-            print(
-                f"[{symbol}] Preemptively canceled blocking rtrade SELL order {oid} "
-                f"(cid={extract_client_order_id(order, default='')}) after {elapsed:.1f}s."
-            )
+        if oid:
             try:
-                resolve_accepted_order(symbol, oid)
-            except Exception:
-                pass
-        except Exception as exc:
-            print(f"[{symbol}] Failed to cancel blocking rtrade SELL order {oid}: {exc}")
-            remaining.append(order)
+                if mkt.cancel_order(symbol, oid, provider_name="binance") is not False:
+                    print(
+                        f"[{symbol}] Preemptively canceled blocking rtrade SELL order {oid} "
+                        f"(cid={extract_client_order_id(order, default='')}) after {elapsed:.1f}s."
+                    )
+                    try:
+                        resolve_accepted_order(symbol, oid)
+                    except Exception:
+                        pass
+                    continue
+                print(f"[{symbol}] Preemptive cancel of blocking rtrade SELL order {oid} returned False.")
+            except Exception as exc:
+                print(f"[{symbol}] Failed to cancel blocking rtrade SELL order {oid}: {exc}")
+        remaining.append(order)
     if not remaining:
         _rtrade_sell_block_since.pop(symbol, None)
     return remaining

@@ -1415,8 +1415,10 @@ class CacheTradeManager(CacheAccountManagerBase):
             if not published and original_state is not None:
                 with self.lock:
                     self._restore_memory_state_locked(original_state)
-                    self._account_cache_dirty = original_dirty
-                    self._legacy_jsonl_needs_rewrite = original_needs_rewrite
+                    self._account_cache_dirty, self._legacy_jsonl_needs_rewrite = (
+                        original_dirty,
+                        original_needs_rewrite,
+                    )
             if not published and archive is not None:
                 discard_generation_file(archive)
             return self._log_tagged_false("maintain", f"Trade rotation failed: {exc}")
@@ -1829,10 +1831,11 @@ class CacheOrderManager(CacheAccountManagerBase):
             ):
                 raise ValueError("Order manifest changed during reload")
             with self.lock:
-                self.cache = items
-                self.fetchtime_per_symbol = dict(fetchtime)
-                self._rest_sync_cursor_per_symbol = dict(metadata["rest_sync_cursor"])
-                self._persisted_counts = dict(actual_counts)
+                self.cache, self.fetchtime_per_symbol = items, dict(fetchtime)
+                self._rest_sync_cursor_per_symbol, self._persisted_counts = (
+                    dict(metadata["rest_sync_cursor"]),
+                    dict(actual_counts),
+                )
                 self._persisted_data_version = required_version
                 self._loaded_data_version = required_version
                 self._loaded_counts = dict(actual_counts)
@@ -2458,6 +2461,7 @@ def run_kraken_trade_ws_loop(
         now_ms = resolve_now_ms()
 
         fills_by_sym = kr_prov_cls.extract_ws_own_trades(data, pairs=pairs)
+        should_flush = should_hb = False
         if fills_by_sym is None:
             kind, err_msg = kr_prov_cls.classify_ws_control_event(data)
             if kind == "error":
@@ -2480,22 +2484,19 @@ def run_kraken_trade_ws_loop(
                         log(
                             f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc}"
                         )
-                if last_rest_sync_ms[0] > 0:
-                    CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms=now_ms, symbols=pairs, create_missing=True)
-                    save_json_state(cache_file, cache, indent=1)
-                    last_flush_ms[0] = now_ms
-                if callable(heartbeat_fn):
-                    heartbeat_fn()
-            return
-        changed = CacheTradeManager.merge_venue_fills_into_dict(
-            cache, fills_by_sym, now_ms=now_ms, is_snapshot=False
-        )
-        if changed or (now_ms - last_flush_ms[0]) >= 15_000:
+                should_flush = last_rest_sync_ms[0] > 0
+                should_hb = True
+        else:
+            changed = CacheTradeManager.merge_venue_fills_into_dict(
+                cache, fills_by_sym, now_ms=now_ms, is_snapshot=False
+            )
+            should_flush = should_hb = changed or (now_ms - last_flush_ms[0]) >= 15_000
+        if should_flush:
             CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms=now_ms, symbols=pairs, create_missing=True)
             save_json_state(cache_file, cache, indent=1)
             last_flush_ms[0] = now_ms
-            if callable(heartbeat_fn):
-                heartbeat_fn()
+        if should_hb and callable(heartbeat_fn):
+            heartbeat_fn()
 
     def on_error(_ws, err) -> None:
         log(f"[kraken_cache][ws] error: {err}")
