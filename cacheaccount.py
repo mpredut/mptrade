@@ -2548,19 +2548,20 @@ class _KrakenAccountTradeBridge:
 
     def start(self) -> bool:
         kr_prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
-        if kr_prov_cls is None:
-            log("[kraken_cache] skipped (Kraken provider not registered)")
-            return False
         try:
+            if kr_prov_cls is None:
+                raise RuntimeError("Kraken provider not registered")
             cfg = kr_prov_cls.resolve_cache_daemon_config()
             client, profile = kr_prov_cls.build_cache_client()
         except Exception as exc:
-            prefix = (
-                "skipped (no Kraken cache credentials)"
+            msg = (
+                "skipped (Kraken provider not registered)"
+                if kr_prov_cls is None
+                else f"skipped (no Kraken cache credentials): {exc}"
                 if isinstance(exc, CredentialConfigurationError)
-                else "failed to initialize daemon config"
+                else f"failed to initialize daemon config: {exc}"
             )
-            log(f"[kraken_cache] {prefix}: {exc}")
+            log(f"[kraken_cache] {msg}")
             return False
 
         self._stop_event.clear()

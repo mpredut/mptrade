@@ -105,18 +105,17 @@ def main() -> int:
     observe_only = required_bool_env("KRAKEN_BOT_OBSERVE_ONLY")
     interval    = max(args.interval, 15)
 
-    if args.test_strategy:
-        test_pair = args.test_strategy.strip().upper()
-        log(
-            f"[TEST] strategy for {test_pair}  "
-            f"{'OBSERVE ONLY' if observe_only else ('PAPER' if strat_dry else '⚠ REAL')}")
-        Strategy(AuditedStrategyExecutor(KrakenProvider(client=client), venue="Kraken"), test_pair, StratParams.from_env(),
-                 dry_run=strat_dry, desktop=args.desktop, observe_only=observe_only).run()
-        return 0
-
-    if not pair:
-        log("! KRAKEN_PAIR missing from .env (or --pair). Nothing to trade.")
-        return 1
+    if args.test_strategy or not pair:
+        if not args.test_strategy:
+            log("! KRAKEN_PAIR missing from .env (or --pair). Nothing to trade.")
+        else:
+            test_pair = args.test_strategy.strip().upper()
+            log(
+                f"[TEST] strategy for {test_pair}  "
+                f"{'OBSERVE ONLY' if observe_only else ('PAPER' if strat_dry else '⚠ REAL')}")
+            Strategy(AuditedStrategyExecutor(KrakenProvider(client=client), venue="Kraken"), test_pair, StratParams.from_env(),
+                     dry_run=strat_dry, desktop=args.desktop, observe_only=observe_only).run()
+        return 0 if args.test_strategy else 1
 
     log("=== Kraken bot ===")
     log(f"    pair         : {label}  ({pair})")
@@ -138,7 +137,7 @@ def main() -> int:
         return 0
     except KeyboardInterrupt:
         log("Stopped manually.")
-        return 130
+    return 130
 
 
 def _wait_for_listing(client, pair, label, interval, desktop) -> bool:
@@ -175,23 +174,20 @@ def _wait_for_listing(client, pair, label, interval, desktop) -> bool:
             log(f"ping - waiting for the listing {pair}...")
     except KeyboardInterrupt:
         log("Stopped manually.")
-        return False
+    return False
 
 
 def _cmd_find_pair(client: KrakenClient, term: str) -> int:
-    if not term or isinstance(term, bool) or not str(term).strip():
-        log("! invalid search term")
-        return 1
-    term = str(term).strip()
+    clean_term = "" if isinstance(term, bool) else str(term or "").strip()
     try:
-        pairs = client.asset_pairs()
+        pairs = client.asset_pairs() if clean_term else None
     except KrakenError as e:
         log(f"! {e}")
         return 1
-    if not isinstance(pairs, dict):
-        log("! invalid asset_pairs response")
+    if not clean_term or not isinstance(pairs, dict):
+        log("! invalid search term" if not clean_term else "! invalid asset_pairs response")
         return 1
-    t = term.upper()
+    t = clean_term.upper()
     hits = [(k, v) for k, v in pairs.items()
             if isinstance(v, dict) and t in (k + str(v.get("altname")) + str(v.get("wsname")) + str(v.get("base"))).upper()]
     log(f"[FIND] '{term}' — {len(hits)} results:")

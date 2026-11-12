@@ -158,19 +158,18 @@ def _cleanup_loop() -> None:
                     _original_print("[LOGGER] WARNING: could not reduce log folder size, aborting cleanup")
                     break
 
-            if min_free_percent > 0.0:
+            free_pct = _get_disk_free_percent(folder) if min_free_percent > 0.0 else None
+            while free_pct is not None and free_pct < min_free_percent:
+                _original_print(
+                    f"[LOGGER] WARNING: disk free space {free_pct:.1f}% "
+                    f"< threshold {min_free_percent:.1f}% -> deleting oldest log"
+                )
+                before_pct = free_pct
+                _delete_oldest_log(folder)
                 free_pct = _get_disk_free_percent(folder)
-                while free_pct is not None and free_pct < min_free_percent:
-                    _original_print(
-                        f"[LOGGER] WARNING: disk free space {free_pct:.1f}% "
-                        f"< threshold {min_free_percent:.1f}% -> deleting oldest log"
-                    )
-                    before_pct = free_pct
-                    _delete_oldest_log(folder)
-                    free_pct = _get_disk_free_percent(folder)
-                    if free_pct is None or free_pct <= before_pct:
-                        _original_print("[LOGGER] WARNING: could not recover disk space, aborting cleanup")
-                        break
+                if free_pct is None or free_pct <= before_pct:
+                    _original_print("[LOGGER] WARNING: could not recover disk space, aborting cleanup")
+                    free_pct = None
         except Exception as exc:
             _original_print(f"[LOGGER] cleanup error: {exc}")
 

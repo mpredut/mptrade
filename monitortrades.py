@@ -702,7 +702,7 @@ def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
     return inst.place(side, price_f, qty_f, **kwargs) is not None
 
 
-def _restore_pending_exit_state(symbol: str, pending_stop: dict):
+def _restore_pending_exit_state(symbol: str, pending_stop: dict, *, clear_pending: bool = False):
     """Restore TP trend-ride, SL bounce, or Hard-TP cooldown state saved before an ambiguous exit submission."""
     prev_tp = pending_stop.get("prev_tp_state")
     if prev_tp and symbol not in _TP_RIDE_STATE:
@@ -716,6 +716,9 @@ def _restore_pending_exit_state(symbol: str, pending_stop: dict):
             _hard_tp_last[symbol] = prev_htp
         else:
             _hard_tp_last.pop(symbol, None)
+    if clear_pending:
+        _PENDING_STOP_EXIT.pop(symbol, None)
+        _save_mt_state()
 
 
 def _is_pending_exit_active(
@@ -745,9 +748,7 @@ def _is_pending_exit_active(
                     active_sell_exists = True
                 elif st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
                     print(f"[{symbol}] Pending exit {p_cid} terminal on venue ({st}) — clearing stale intent for fresh retry.")
-                    _restore_pending_exit_state(symbol, pending_stop)
-                    _PENDING_STOP_EXIT.pop(symbol, None)
-                    _save_mt_state()
+                    _restore_pending_exit_state(symbol, pending_stop, clear_pending=True)
                     return False
         except Exception:
             pass
@@ -1020,14 +1021,11 @@ def _execute_stop_loss(
         return True
 
     _PENDING_STOP_EXIT.pop(symbol, None)
-    if prev_sl_state:
-        if _is_terminal_dust_refusal(outcome_ctx.get("reason")):
+    if prev_sl_state or outcome_ctx.get("reason") == "trend_deferred":
+        if prev_sl_state and _is_terminal_dust_refusal(outcome_ctx.get("reason")):
             _SL_BOUNCE_STATE.pop(symbol, None)
         else:
-            _SL_BOUNCE_STATE[symbol] = prev_sl_state
-        _save_mt_state()
-    elif outcome_ctx.get("reason") == "trend_deferred":
-        _SL_BOUNCE_STATE[symbol] = _build_sl_bounce_state(snapshot, bounce_started_f)
+            _SL_BOUNCE_STATE[symbol] = prev_sl_state or _build_sl_bounce_state(snapshot, bounce_started_f)
         _save_mt_state()
     if cancelled_tp_orders:
         _restore_resting_tp_orders(inst, symbol, cancelled_tp_orders, sellable_qty, sl_state)

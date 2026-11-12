@@ -376,12 +376,18 @@ def _run_once(
             vol_f = safe_pos_float(vol, default=None)
             px_f = safe_pos_float(price, default=None)
             if cash is not None and side_norm == "BUY":
-                if vol_f is None or px_f is None:
-                    return False
-                required = round(vol_f, strategy.vol_dec) * round(px_f, strategy.price_dec)
-                required *= 1 + fee_model.rate_pct(market=market) / 100
-                if required > free_balance_for_asset(params.currency) + 1e-9:
-                    cash_refusals += 1
+                insufficient = (
+                    vol_f is not None
+                    and px_f is not None
+                    and (
+                        round(vol_f, strategy.vol_dec)
+                        * round(px_f, strategy.price_dec)
+                        * (1 + fee_model.rate_pct(market=market) / 100)
+                        > free_balance_for_asset(params.currency) + 1e-9
+                    )
+                )
+                if vol_f is None or px_f is None or insufficient:
+                    cash_refusals += 1 if insufficient else 0
                     return False
             accepted = original_place(side, vol, price, kind, amount=amount, market=market, **place_kw)
             if accepted and include_decision_trace and px_f is not None and vol_f is not None:

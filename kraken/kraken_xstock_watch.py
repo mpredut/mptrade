@@ -437,10 +437,9 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
             check_pairs(client, st, asset, desktop, quote)           # 2. listed pair
             verdict["pair found"] = bool(st["pair"])
             trial_pair = st["pair"]
-            alloc = client.last_price(st["pair"]) if st["pair"] else None
-            if not alloc:
+            if not (alloc := client.last_price(trial_pair) if trial_pair else None):
                 log("  ! no price for the pair -- probe failed")
-                return 1
+                return 1 if not alloc else 0
             def _start_and_check_bot(verdict_key: str) -> int | None:
                 maybe_start_bot(st, alloc, desktop)
                 pid = st.get("bot_pid")

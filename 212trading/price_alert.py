@@ -69,18 +69,21 @@ def main() -> int:
     load_t212_environment(args.env_file)
     # PRICE alerts use the dedicated NTFY_TOPIC_PRICE.
     topic = str(args.topic or optional_env("NTFY_TOPIC_PRICE") or "").strip()
-    if not topic:
-        log("! no ntfy topic (--topic / NTFY_TOPIC_PRICE in .env)"); return 1
-    if args.below is None and args.above is None:
-        log("! give at least --below or --above"); return 1
-    if args.below is not None and safe_pos_float(args.below, default=None) is None:
-        log("! --below must be a finite positive price"); return 1
-    if args.above is not None and safe_pos_float(args.above, default=None) is None:
-        log("! --above must be a finite positive price"); return 1
-
-    price = safe_pos_float(get_price_usd(args.symbol), default=None)
-    if price is None:
-        log(f"  [{args.symbol}] price unavailable — skipping"); return 0
+    err_msg = (
+        "! no ntfy topic (--topic / NTFY_TOPIC_PRICE in .env)"
+        if not topic
+        else "! give at least --below or --above"
+        if args.below is None and args.above is None
+        else "! --below must be a finite positive price"
+        if args.below is not None and safe_pos_float(args.below, default=None) is None
+        else "! --above must be a finite positive price"
+        if args.above is not None and safe_pos_float(args.above, default=None) is None
+        else None
+    )
+    price = None if err_msg is not None else safe_pos_float(get_price_usd(args.symbol), default=None)
+    if err_msg is not None or price is None:
+        log(err_msg or f"  [{args.symbol}] price unavailable — skipping")
+        return 1 if err_msg is not None else 0
 
     safe_sym = safe_state_token(args.symbol, "unknown", allow_equals=True)
     state_path = args.state or os.path.join(_HERE, f".alert_{safe_sym}.json")

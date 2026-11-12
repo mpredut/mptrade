@@ -540,22 +540,24 @@ class Strategy(BaseSpotMixin):
             log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} -- skipping")
             return False
         vol, price = round(vol_f, self.vol_dec), round(price_f, self.price_dec)
-        if price <= 0:
-            log(f"  ! [STRAT] price {price} <= 0 -- skipping")
+        _avg = self._avg() if (not market and str(side).lower() == "sell" and str(kind).upper() != "STOP") else None
+        remaining = self._placement_backoff_remaining(side, kind) if not market else 0.0
+        reject_msg = (
+            f"price {price} <= 0 -- skipping"
+            if price <= 0
+            else f"volume {vol} < minimum order {self.ordermin} -- skipping"
+            if vol <= 0 or (self.ordermin and vol < self.ordermin)
+            else f"[GUARD] {kind} sell rejected: price {price} < avg {_avg:.6f} (profit-floor; STOP/MARKET excepted)"
+            if _avg is not None and price < _avg
+            else f"{side} {kind} in cooldown after insufficient funds ({remaining:.0f}s remaining)"
+            if remaining > 0
+            else "an unreconciled pre-submit intent exists -- not duplicating"
+            if not self.dry_run and self.s.get("pending_intent")
+            else None
+        )
+        if reject_msg is not None:
+            log(f"  ! [STRAT] {reject_msg}")
             return False
-        if vol <= 0 or (self.ordermin and vol < self.ordermin):
-            log(f"  ! [STRAT] volume {vol} < minimum order {self.ordermin} -- skipping")
-            return False
-        if not market and str(side).lower() == "sell" and str(kind).upper() != "STOP":
-            _avg = self._avg()
-            if _avg is not None and price < _avg:
-                log(f"  ! [STRAT] [GUARD] {kind} sell rejected: price {price} < avg {_avg:.6f} (profit-floor; STOP/MARKET excepted)")
-                return False
-        if not market:
-            remaining = self._placement_backoff_remaining(side, kind)
-            if remaining > 0:
-                log(f"  ! [STRAT] {side} {kind} in cooldown after insufficient funds ({remaining:.0f}s remaining)")
-                return False
         if self.dry_run:
             txid = self._next_paper_order_id()
             log(f"  [STRAT] [PAPER] {side.upper()} {kind}{' MKT' if market else ''} {vol} @ {price} {self.ccy}")
@@ -567,9 +569,6 @@ class Strategy(BaseSpotMixin):
                 paper_order["tranche_idx"] = clean_tranche
             self.s["orders"].append(paper_order)
             return True
-        if self.s.get("pending_intent"):
-            log("  ! [STRAT] an unreconciled pre-submit intent exists -- not duplicating")
-            return False
         try:
             preflight = getattr(type(self.client), "preflight_order", None)
             if callable(preflight):
@@ -696,31 +695,34 @@ class Strategy(BaseSpotMixin):
         self._save()
         if self._state_write_failed:
             return False
-        if not self._cancel_orders() or self.s["orders"]:
-            log("  [STRAT] exit pending: waiting for terminal cancellation and fill reconciliation")
-            return False
-        if self.s["qty"] <= 1e-12:
+        exit_defer_msg = (
+            "  [STRAT] exit pending: waiting for terminal cancellation and fill reconciliation"
+            if not self._cancel_orders() or self.s["orders"]
+            else None
+        )
+        if exit_defer_msg is None and self.s["qty"] <= 1e-12:
             if "fill_price" in pending:
                 self._finalize_cycle_if_flat(pending, pending["fill_price"])
             return False
         kind = str(pending.get("kind") or "TP")
         reference = round(price * (0.995 if kind == "STOP" else 0.999), self.price_dec)
-        if "min_profit_pct" in pending and kind != "STOP":
+        if exit_defer_msg is None and "min_profit_pct" in pending and kind != "STOP":
             min_profit_pct = safe_nonneg_float(pending["min_profit_pct"], default=None)
             avg = safe_pos_float(self._avg(), default=None)
             if min_profit_pct is None or avg is None:
-                log("  [STRAT] profit exit pending: invalid stored floor or cost basis")
-                return False
-            floor = safe_float(sr.tp_price(avg, min_profit_pct), default=None)
-            ref_f = safe_pos_float(reference, default=None)
-            if floor is None or ref_f is None or ref_f < floor:
-                log("  [STRAT] profit exit pending: current reference does not satisfy the stored floor")
-                return False
-        if _parse_bool_flag(pending.get("soft_floor"), False) and kind != "STOP":
+                exit_defer_msg = "  [STRAT] profit exit pending: invalid stored floor or cost basis"
+            else:
+                floor = safe_float(sr.tp_price(avg, min_profit_pct), default=None)
+                ref_f = safe_pos_float(reference, default=None)
+                if floor is None or ref_f is None or ref_f < floor:
+                    exit_defer_msg = "  [STRAT] profit exit pending: current reference does not satisfy the stored floor"
+        if exit_defer_msg is None and _parse_bool_flag(pending.get("soft_floor"), False) and kind != "STOP":
             floor = self._trail_profit_floor_price(self._avg() or 0.0)
             if floor is not None and reference < floor:
-                log("  [STRAT] soft exit pending: current reference is below the configured floor")
-                return False
+                exit_defer_msg = "  [STRAT] soft exit pending: current reference is below the configured floor"
+        if exit_defer_msg is not None:
+            log(exit_defer_msg)
+            return False
         placed = self._place("sell", self._dust_safe_qty(self.s["qty"]), reference, kind=kind, market=True)
         if placed and kind == "STOP":
             self._emit(
@@ -1325,11 +1327,10 @@ class Strategy(BaseSpotMixin):
             (o for o in self.s["orders"] if o["side"] == "buy" and o.get("kind") == "TREND_ENTRY"), None
         )
         if pending_trend_entry:
-            if up:
-                return True
-            self._cancel_open("buy")
-            log("  [STRAT] TREND ENTER cancelled: the signal vanished before the fill")
-            return False
+            if not up:
+                self._cancel_open("buy")
+                log("  [STRAT] TREND ENTER cancelled: the signal vanished before the fill")
+            return bool(up)
         if up and self.s["spent"] + self.p.trend_topup <= self.p.allocated_budget():
             if self.s["qty"] <= 1e-12:
                 allowed, reason = self._evaluate_reentry_gate(price, regime, tick_time)

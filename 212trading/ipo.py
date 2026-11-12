@@ -143,16 +143,21 @@ def main() -> int:
     # --- one-shot commands ---
     if args.find_ticker:
         return _cmd_find_ticker(client, args.find_ticker)
-    if args.test_notify:
-        ts = now_str()
-        if args.test_notify in ("market", "all"):
-            notify(title=f"[TEST] {label} started trading!",
-                   body=f"{label} IS TRADING.\nLast price: 99.99 USD\n{ts}",
-                   source="market", price=99.99, desktop=args.desktop)
-        if args.test_notify in ("trade", "all"):
-            notify(title=f"[TEST] Order {label} placed on T212!",
-                   body=f"LIMIT qty=0.5 @ 99 USD\n{ts}", source="trade", desktop=args.desktop)
-        log("[TEST] Done.")
+    if args.test_notify or args.test_strategy:
+        if args.test_notify:
+            ts = now_str()
+            if args.test_notify in ("market", "all"):
+                notify(title=f"[TEST] {label} started trading!",
+                       body=f"{label} IS TRADING.\nLast price: 99.99 USD\n{ts}",
+                       source="market", price=99.99, desktop=args.desktop)
+            if args.test_notify in ("trade", "all"):
+                notify(title=f"[TEST] Order {label} placed on T212!",
+                       body=f"LIMIT qty=0.5 @ 99 USD\n{ts}", source="trade", desktop=args.desktop)
+            log("[TEST] Done.")
+        else:
+            log(f"[TEST STRATEGY] {args.test_strategy}  {'PAPER' if strat_dry else '⚠ REAL'}")
+            Strategy(client, args.test_strategy, StratParams.from_env(),
+                     dry_run=strat_dry, desktop=args.desktop).run()
         return 0
     def _submit_resolved_order(
         ticker: str, px_f: float, invalid_msg: str, *, write_marker: bool = True
@@ -167,25 +172,27 @@ def main() -> int:
         )
         return 0 if ok else 1
 
-    if args.test_order:
+    if args.test_order or not t212_ticker:
         px_f = safe_pos_float(order_price, default=None)
-        if px_f is None:
-            log("! ORDER_PRICE missing in .env")
-            return 1
-        if safe_pos_float(order_qty, default=None) is None and safe_pos_float(order_budget_ron, default=None) is None:
-            log("! ORDER_QTY or ORDER_BUDGET_RON missing from .env")
+        has_sizing = (
+            safe_pos_float(order_qty, default=None) is not None
+            or safe_pos_float(order_budget_ron, default=None) is not None
+        )
+        err_msg = (
+            "! T212_TICKER missing from .env (or use --symbol). Nothing to trade."
+            if not args.test_order
+            else "! ORDER_PRICE missing in .env"
+            if px_f is None
+            else "! ORDER_QTY or ORDER_BUDGET_RON missing from .env"
+            if not has_sizing
+            else None
+        )
+        if err_msg is not None:
+            log(err_msg)
             return 1
         return _submit_resolved_order(args.test_order, px_f, "! invalid quantity", write_marker=False)
-    if args.test_strategy:
-        log(f"[TEST STRATEGY] {args.test_strategy}  {'PAPER' if strat_dry else '⚠ REAL'}")
-        Strategy(client, args.test_strategy, StratParams.from_env(),
-                 dry_run=strat_dry, desktop=args.desktop).run()
-        return 0
 
     # --- banner ---
-    if not t212_ticker:
-        log("! T212_TICKER missing from .env (or use --symbol). Nothing to trade.")
-        return 1
     log("=== Watcher T212 ===")
     log(f"    instrument   : {label}  ({t212_ticker}, price through {yahoo_symbol})")
     log(f"    T212 env     : {t212_env.upper()}")
@@ -239,27 +246,27 @@ def main() -> int:
             return _submit_resolved_order(
                 t212_ticker, px_f, "  ! invalid qty/budget — the order was NOT SENT"
             )
-        log("  ! neither STRAT_ENABLED nor ORDER_PRICE — nothing to trade.")
-        return 1
+        exit_msg, exit_code = "  ! neither STRAT_ENABLED nor ORDER_PRICE — nothing to trade.", 1
     except KeyboardInterrupt:
-        log("Stopped manually.")
-        return 130
+        exit_msg, exit_code = "Stopped manually.", 130
+    log(exit_msg)
+    return exit_code
 
 
 # ---------------------------------------------------------------------------
 # One-shot commands
 # ---------------------------------------------------------------------------
 def _cmd_find_ticker(client: T212Client, query: str) -> int:
-    if not query or isinstance(query, bool) or not str(query).strip():
-        log("! invalid search query")
+    clean_q = "" if isinstance(query, bool) else str(query or "").strip()
+    if clean_q:
+        log(f"[FIND] Searching for '{clean_q}' in T212 instruments...")
+        instruments = client.list_instruments()
+    else:
+        instruments = None
+    if not clean_q or not isinstance(instruments, list):
+        log("! invalid search query" if not clean_q else "! cannot list the instruments (auth/network)")
         return 1
-    query = str(query).strip()
-    log(f"[FIND] Searching for '{query}' in T212 instruments...")
-    instruments = client.list_instruments()
-    if not isinstance(instruments, list):
-        log("! cannot list the instruments (auth/network)")
-        return 1
-    q = query.lower()
+    q = clean_q.lower()
     hits = [i for i in instruments
             if isinstance(i, dict) and (
                 q in str(i.get("ticker", "")).lower()
