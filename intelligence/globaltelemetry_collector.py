@@ -43,6 +43,7 @@ from cachepaths import (
     clean_symbol_key,
     has_crypto_quote_suffix,
     resolve_cachedb_filepath,
+    resolve_workspace_dir_from_cachedb,
 )
 from intelligence.macro.daemon_ssot import (
     ExternalTelemetryMixin,
@@ -345,12 +346,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         """Producer refresh of multi-venue spot balances, resting open orders (`venue_balances_state.json`), and cycle deltas."""
         try:
             eff_now = resolve_now_ts(self._resolve_step_now(now))
-            abs_cache_dir = os.path.abspath(str(self.cache_dir).rstrip("/\\"))
-            workspace_dir = (
-                os.path.dirname(abs_cache_dir)
-                if os.path.basename(abs_cache_dir).lower() == "cachedb"
-                else abs_cache_dir
-            )
+            workspace_dir = resolve_workspace_dir_from_cachedb(self.cache_dir)
             has_inst_source = has_workspace_instrument_sources(workspace_dir, asset_scope="all")
             inst_map: Dict[str, Any] = {}
             if has_inst_source:
@@ -446,12 +442,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             shocked = evaluate_kinematic_impulse_symbols(prices_and_trends, candidate_symbols=self.symbols or None)
             if not shocked:
                 return None
-            abs_cache_dir = os.path.abspath(str(self.cache_dir).rstrip("/\\"))
-            workspace_dir = (
-                os.path.dirname(abs_cache_dir)
-                if os.path.basename(abs_cache_dir).lower() == "cachedb"
-                else abs_cache_dir
-            )
+            workspace_dir = resolve_workspace_dir_from_cachedb(self.cache_dir)
             runner_sh = os.path.join(workspace_dir, "orchestratorOS", "run_python.sh")
             flock_bin = "/usr/bin/flock"
             timeout_bin = "/usr/bin/timeout"

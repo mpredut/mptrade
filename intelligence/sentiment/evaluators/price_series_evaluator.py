@@ -25,6 +25,7 @@ from instrument_registry import is_equity_symbol, is_symbol_market_open
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
 from intelligence.macro_sentiment_ssot import (
+    KINEMATIC_HORIZON_SPECS,
     SHORT_KINEMATIC_METRIC_KEYS,
     _extract_sorted_ts_px,
     _parse_ts_px_row,
@@ -702,15 +703,7 @@ def apply_short_trend_item(
     for k in ("gradient_recent_fast", "epsilon", "vol_1h_pct"):
         if not require_any_slope or tinfo.get(k) is not None:
             entry[k] = tinfo.get(k)
-    for kk_kin in SHORT_KINEMATIC_METRIC_KEYS:
-        kv_kin = safe_float(tinfo.get(kk_kin), default=None)
-        if kv_kin is None:
-            for w_k in (wins["222"], wins["90"], wins["900"]):
-                if (kv_fb := safe_float(w_k.get(kk_kin), default=None)) is not None:
-                    kv_kin = kv_fb
-                    break
-        if kv_kin is not None:
-            entry[kk_kin] = round(kv_kin, 5)
+    _backfill_kinematic_keys(entry, (tinfo, wins["222"], wins["90"], wins["900"]))
     t_kv = safe_float(tinfo.get("kalman_vel"), default=None)
     t_ks = safe_pos_float(tinfo.get("kalman_vel_std"), default=None)
     if t_kv is not None and not (abs(t_kv) < 1e-12 and (t_ks is None or t_ks >= 5.99)):
@@ -824,11 +817,7 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
             entry[g_key] = _resolve_window_metric_with_fallbacks(
                 w_dict.get("growth_coefficient"), w_dict.get("slope_full"), w_dict.get("gradient_recent"),
             )
-    for kk_kin in SHORT_KINEMATIC_METRIC_KEYS:
-        for w_src in (w222, w90, w900, lt_win):
-            if isinstance(w_src, dict) and (kv_live := safe_float(w_src.get(kk_kin), default=None)) is not None:
-                entry[kk_kin] = round(kv_live, 5)
-                break
+    _backfill_kinematic_keys(entry, (w222, w90, w900, lt_win))
 
 
 def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any]]:
@@ -984,6 +973,70 @@ def _fit_quadratic_kinematics(
     return round(vel, 5), round(acc, 5)
 
 
+def _backfill_kinematic_keys(entry: Dict[str, Any], sources: Tuple[Any, ...]) -> None:
+    for kk_kin in SHORT_KINEMATIC_METRIC_KEYS:
+        for w_src in sources:
+            if isinstance(w_src, dict) and (kv_kin := safe_float(w_src.get(kk_kin), default=None)) is not None:
+                entry[kk_kin] = round(kv_kin, 5)
+                break
+
+
+def format_slope_val(val: Any, decimals: int = 5, *, signed: bool = True) -> str:
+    """Format a polynomial slope or growth value with scientific notation for small magnitudes."""
+    vf = safe_float(val, 0.0)
+    if abs(vf) < 5e-8:
+        vf = 0.0
+    elif 0.0 < abs(vf) < 1e-4:
+        return f"{vf:+.2e}" if signed else f"{vf:.2e}"
+    return f"{vf:+.{decimals}f}" if signed else f"{vf:.{decimals}f}"
+
+
+def format_multi_window_slopes_core(entry: Any, *, fallback_full: bool = False) -> str:
+    """Format multi-horizon slopes ``(90s, 3.7m, 15m, 2.5h)`` from ``entry``."""
+    if not isinstance(entry, dict):
+        return ""
+    s90_v = safe_float(entry.get("slope_90s"), default=None)
+    s90_pfx = f"90s={format_slope_val(s90_v, 5)}, " if s90_v is not None else ""
+    slope_parts = [
+        f"{s_lbl}={format_slope_val(s_val, 5)}"
+        for s_lbl, s_key in (
+            ("90s", "slope_90s"),
+            ("3.7m", "slope_3_7m"),
+            ("15m", "slope_15m"),
+            ("2.5h", "slope_2_5h"),
+        )
+        if (s_val := safe_float(entry.get(s_key), default=None)) is not None
+    ]
+    if (fallback_full and not slope_parts) or (
+        "slope_15m" in entry and ("slope_3_7m" in entry or "slope_2_5h" not in entry)
+    ):
+        return (
+            f"{s90_pfx}"
+            f"3.7m={format_slope_val(entry.get('slope_3_7m'), 5)}, "
+            f"15m={format_slope_val(entry.get('slope_15m'), 5)}, "
+            f"2.5h={format_slope_val(entry.get('slope_2_5h'), 5)}"
+        )
+    return ", ".join(slope_parts)
+
+
+def format_kinematic_parts(entry: Any, *, compact: bool = False) -> List[str]:
+    """Format active ``(90s, 5m, 15m)`` velocity/acceleration and ``kalman_z`` segments from ``entry``."""
+    if not isinstance(entry, dict):
+        return []
+    parts: List[str] = []
+    for k_lbl, v_key, a_key in KINEMATIC_HORIZON_SPECS:
+        vk_v = safe_float(entry.get(v_key), default=None)
+        ak_v = safe_float(entry.get(a_key), default=None)
+        if vk_v is not None and ak_v is not None and (abs(vk_v) >= 1e-6 or abs(ak_v) >= 1e-6):
+            if compact:
+                parts.extend((f"vel_{k_lbl}={vk_v:+.4f}%/m", f"acc_{k_lbl}={ak_v:+.4f}%/m^2"))
+            else:
+                parts.append(f"{k_lbl}: vel={vk_v:+.4f}%/m, acc={ak_v:+.4f}%/m^2")
+    if parts and (kz_v := resolve_kalman_vel_z(entry)) is not None and abs(kz_v) >= 0.01:
+        parts.append(f"kalman_z={kz_v:+.2f}")
+    return parts
+
+
 def compute_series_kinematics(series_24h: List[Any]) -> Dict[str, float]:
     """Compute instantaneous velocity (%/min) and acceleration (%/min^2) across short horizons from a 24h series."""
     pts = [pt for pt in _extract_sorted_ts_px(series_24h) if pt[1] > 0.0]
@@ -991,16 +1044,15 @@ def compute_series_kinematics(series_24h: List[Any]) -> Dict[str, float]:
         return {}
     now_ms = pts[-1][0]
     out: Dict[str, float] = {}
-    pts_90s = [pt for pt in pts if pt[0] >= now_ms - 180000.0]
-    if (fit_90 := _fit_quadratic_kinematics(pts_90s, min_span_ms=45000.0)) is not None:
-        out["vel_90s_pct_min"], out["accel_90s_pct_min2"] = fit_90
-    pts_5m = [pt for pt in pts if pt[0] >= now_ms - 360000.0]
-    if (fit_5m := _fit_quadratic_kinematics(pts_5m, min_span_ms=120000.0)) is not None:
-        out["vel_5m_pct_min"], out["accel_5m_pct_min2"] = fit_5m
-    if not out:
-        pts_15m = [pt for pt in pts if pt[0] >= now_ms - 1080000.0]
-        if (fit_15m := _fit_quadratic_kinematics(pts_15m, min_span_ms=480000.0)) is not None:
-            out["vel_15m_pct_min"], out["accel_15m_pct_min2"] = fit_15m
+    for lookback_ms, min_span_ms, v_key, a_key, fallback_only in (
+        (180000.0, 45000.0, "vel_90s_pct_min", "accel_90s_pct_min2", False),
+        (360000.0, 120000.0, "vel_5m_pct_min", "accel_5m_pct_min2", False),
+        (1080000.0, 480000.0, "vel_15m_pct_min", "accel_15m_pct_min2", True),
+    ):
+        if fallback_only and out:
+            break
+        if (fit := _fit_quadratic_kinematics([pt for pt in pts if pt[0] >= now_ms - lookback_ms], min_span_ms=min_span_ms)) is not None:
+            out[v_key], out[a_key] = fit
     return out
 
 
@@ -1351,8 +1403,7 @@ def _apply_24h_series_enrichment(
             for kk, kv in k_fb.items():
                 if kv is not None and (entry.get(kk) is None or unseeded_kalman):
                     entry[kk] = kv
-    if (kz_fin := resolve_kalman_vel_z(entry.get("kalman_vel"), entry.get("kalman_vel_std"))) is not None:
-        entry["kalman_vel_z"] = kz_fin
+    resolve_kalman_vel_z(entry, populate=True)
     st_ts_e = safe_pos_float(entry.pop("_short_trend_ts", None), default=None)
     if series_24h:
         pts_s24_sorted = _extract_sorted_ts_px(series_24h)

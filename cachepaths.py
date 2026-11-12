@@ -477,6 +477,15 @@ def get_cachedb_dir() -> str:
     return os.path.join(_ROOT, "cachedb")
 
 
+def resolve_workspace_dir_from_cachedb(cache_dir: object) -> str:
+    """Resolve the workspace root directory corresponding to ``cache_dir``."""
+    raw = _clean_path_str(cache_dir)
+    if not raw:
+        return ""
+    abs_dir = os.path.normpath(os.path.abspath(raw.rstrip("/\\") or raw))
+    return os.path.dirname(abs_dir) if os.path.basename(abs_dir).lower() == "cachedb" else abs_dir
+
+
 _CACHE_PATH_TLS = threading.local()
 
 

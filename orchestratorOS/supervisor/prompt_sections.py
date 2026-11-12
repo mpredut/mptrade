@@ -24,11 +24,7 @@ from cachepaths import (
     normalize_venue_name,
 )
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
-from intelligence.macro_sentiment_ssot import (
-    KINEMATIC_HORIZON_SPECS,
-    SHORT_KINEMATIC_METRIC_KEYS,
-    resolve_kalman_vel_z,
-)
+from intelligence.macro_sentiment_ssot import SHORT_KINEMATIC_METRIC_KEYS
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
     format_equity_macro_regime_line,
@@ -44,10 +40,16 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     clip_open_lots_to_held_qty,
     compute_open_lots_vwap,
+    format_recent_fill_subcycle_parts,
+    is_last_buy_lot_harvested,
+    same_anchor_px as _same_anchor_px,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     _build_vp_position_dict,
     _compute_horizon_range_dict,
+    format_kinematic_parts,
+    format_multi_window_slopes_core,
+    format_slope_val as _fmt_slope_val,
     recalculate_live_price_geometry,
     round_opt_px,
 )
@@ -66,10 +68,31 @@ def _age_sfx(d: Dict[str, Any], parens: bool = False) -> str:
     return f" ({inner})" if parens else f", {inner}"
 
 
-def _format_lifo_pnl_sfx(spot_px: Optional[float], lifo_px: float) -> str:
-    if spot_px is not None and spot_px > 0.0 and lifo_px > 0.0:
-        return f" (pnl_vs_lifo={round(((spot_px - lifo_px) / lifo_px) * 100.0, 2) + 0.0:+.2f}%)"
-    return ""
+def _format_lifo_rem_avg_tag(
+    lots: Any,
+    held_qty: float,
+    ref_avg_px: Optional[float],
+    spot_px: Optional[float],
+    *,
+    label: str = "lifo_rem_avg_px",
+) -> str:
+    vwap, _, _ = compute_open_lots_vwap(
+        lots,
+        held_qty=held_qty,
+        clip_to_held=True,
+        min_lot_notional=1.0,
+        ref_avg_px=ref_avg_px,
+        min_rel_diff=0.0025,
+        min_coverage_ratio=0.95,
+    )
+    if vwap is None:
+        return ""
+    sfx = (
+        f" (pnl_vs_lifo={round(((spot_px - vwap) / vwap) * 100.0, 2) + 0.0:+.2f}%)"
+        if spot_px is not None and spot_px > 0.0 and vwap > 0.0
+        else ""
+    )
+    return f"{label}={vwap}{sfx}"
 
 
 def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
@@ -89,18 +112,14 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
         and avg_c_f is not None
         and avg_c_f > 0.0
     ):
-        cyc_q = safe_float(cyc.get("qty"), 0.0) or 0.0
-        lifo_c_vwap, _, _ = compute_open_lots_vwap(
+        if lifo_c_tag := _format_lifo_rem_avg_tag(
             open_lots_c_init,
-            held_qty=cyc_q,
-            clip_to_held=True,
-            min_lot_notional=1.0,
-            ref_avg_px=avg_c_f,
-            min_rel_diff=0.0025,
-            min_coverage_ratio=0.95,
-        )
-        if lifo_c_vwap is not None:
-            extra_parts.append(f"lifo_rem_avg={lifo_c_vwap}{_format_lifo_pnl_sfx(spot_px_f, lifo_c_vwap)}")
+            safe_float(cyc.get("qty"), 0.0) or 0.0,
+            avg_c_f,
+            spot_px_f,
+            label="lifo_rem_avg",
+        ):
+            extra_parts.append(lifo_c_tag)
     if cyc.get("realized_pnl_usd") is not None:
         extra_parts.append(f"realized_pnl=${cyc.get('realized_pnl_usd')}")
     for lbl, k in (("tp_sold", "tp_sold_levels"), ("resting_orders", "resting_orders")):
@@ -202,15 +221,6 @@ def _fmt_px(px_f: float, raw_px: Any = None) -> str:
     if raw_px is not None and not isinstance(raw_px, bool):
         return f"${raw_px}"
     return "N/A"
-
-
-def _fmt_slope_val(val: Any, decimals: int = 5, *, signed: bool = True) -> str:
-    vf = safe_float(val, 0.0)
-    if abs(vf) < 5e-8:
-        vf = 0.0
-    elif 0.0 < abs(vf) < 1e-4:
-        return f"{vf:+.2e}" if signed else f"{vf:.2e}"
-    return f"{vf:+.{decimals}f}" if signed else f"{vf:.{decimals}f}"
 
 
 def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> List[str]:
@@ -736,8 +746,6 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 f"rally_low={sw_ral:+.2f}%, pullback_high={sw_pb:+.2f}%{maj_sfx}){hist_sfx}"
             )
         if any(k in pinfo for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
-            s90_v = safe_float(pinfo.get("slope_90s"), None)
-            s90_pfx = f"90s={_fmt_slope_val(s90_v, 5)}, " if s90_v is not None else ""
             gr_v = safe_float(pinfo.get("gradient_recent"), None)
             grad_rec_sfx = f", grad_rec={_fmt_slope_val(gr_v, 4)}" if gr_v is not None and abs(gr_v) > 1e-9 else ""
             gf_v = safe_float(pinfo.get("gradient_recent_fast"), None)
@@ -752,19 +760,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 for g_lbl, g_k in (("90s", "growth_90s"), ("3.7m", "growth_3_7m"), ("15m", "growth_15m"), ("2.5h", "growth_2_5h"))
                 if (gv := safe_float(pinfo.get(g_k), None)) is not None
             ]
-            s_parts = [
-                f"{s_lbl}={_fmt_slope_val(sv, 5)}"
-                for s_lbl, s_k in (("90s", "slope_90s"), ("3.7m", "slope_3_7m"), ("15m", "slope_15m"), ("2.5h", "slope_2_5h"))
-                if (sv := safe_float(pinfo.get(s_k), None)) is not None
-            ]
-            s_core = (
-                f"{s90_pfx}3.7m={_fmt_slope_val(pinfo.get('slope_3_7m'), 5)}, "
-                f"15m={_fmt_slope_val(pinfo.get('slope_15m'), 5)}, "
-                f"2.5h={_fmt_slope_val(pinfo.get('slope_2_5h'), 5)}"
-                if ("slope_15m" in pinfo and ("slope_3_7m" in pinfo or "slope_2_5h" not in pinfo))
-                else ", ".join(s_parts)
-            )
-            if s_core:
+            if s_core := format_multi_window_slopes_core(pinfo, fallback_full=False):
                 extras.append(f"slopes({s_core}{grad_rec_sfx}{fast_sfx})")
             elif g_parts:
                 extras.append(f"g_coeff({', '.join(g_parts)})")
@@ -772,17 +768,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%")
         if (kv := safe_float(pinfo.get("kalman_vel"), None)) is not None and abs(kv) >= 1e-9:
             extras.append(f"kalman_vel={_fmt_slope_val(kv, 5)}")
-        kin_parts: List[str] = []
-        for k_lbl, v_key, a_key in KINEMATIC_HORIZON_SPECS:
-            vk_v = safe_float(pinfo.get(v_key), None)
-            ak_v = safe_float(pinfo.get(a_key), None)
-            if vk_v is not None and ak_v is not None and (abs(vk_v) >= 1e-6 or abs(ak_v) >= 1e-6):
-                kin_parts.append(f"vel_{k_lbl}={vk_v:+.4f}%/m")
-                kin_parts.append(f"acc_{k_lbl}={ak_v:+.4f}%/m^2")
-        kz_v = resolve_kalman_vel_z(pinfo)
-        if kz_v is not None and abs(kz_v) >= 0.01 and kin_parts:
-            kin_parts.append(f"kalman_z={kz_v:+.2f}")
-        if kin_parts:
+        if kin_parts := format_kinematic_parts(pinfo, compact=True):
             extras.append(f"kinematics({', '.join(kin_parts)})")
         if pinfo.get("long_trend_dir"):
             lt_str = f"long_trend={str(pinfo.get('long_trend_dir')).upper()}({pinfo.get('long_trend_hours')}h"
@@ -1113,13 +1099,6 @@ def _format_microstructure_section(
     return lines
 
 
-def _same_anchor_px(a: Any, b: Any) -> bool:
-    if a is None or b is None:
-        return False
-    af, bf = safe_float(a, None), safe_float(b, None)
-    return abs(af - bf) <= max(1e-6, max(abs(af), abs(bf)) * 1e-5) if (af is not None and bf is not None) else (a == b)
-
-
 def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0) -> str:
     """Format a single tradable position line for Section 3C."""
     t_extra = ""
@@ -1229,17 +1208,13 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
                 and (px_f <= 0.0 or rem_core_q * px_f >= 5.0)
             ):
                 t_extra += f", older_core_qty={round(rem_core_q, 6):g}_{base_lbl}"
-        lifo_rem_vwap, _, _ = compute_open_lots_vwap(
+        if lifo_pos_tag := _format_lifo_rem_avg_tag(
             open_lots,
-            held_qty=held_pos_q,
-            clip_to_held=True,
-            min_lot_notional=1.0,
-            ref_avg_px=avg_buy_f,
-            min_rel_diff=0.0025,
-            min_coverage_ratio=0.95,
-        )
-        if lifo_rem_vwap is not None:
-            t_extra += f", lifo_rem_avg_px={lifo_rem_vwap}{_format_lifo_pnl_sfx(px_f if px_f > 0.0 else None, lifo_rem_vwap)}"
+            held_pos_q,
+            avg_buy_f,
+            px_f if px_f > 0.0 else None,
+        ):
+            t_extra += f", {lifo_pos_tag}"
     if (lifo_p := safe_float(pos.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_p) >= 0.01:
         t_extra += f", lifo_realized_pnl=${lifo_p:+.2f}"
     fee_tier = eff_pos.get("fee_tier") or "STANDARD"
@@ -1310,55 +1285,28 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         meta_parts = ([f"age={age_h}h"] if age_h is not None else []) + ([f"by={tag}"] if tag else [])
         other_entry = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
         other_ts = normalize_timestamp_ms(other_entry.get("ts_ms"), default=0) or 0
-        if (
-            key == "last_buy"
-            and len(open_lots_ro) > 0
-            and not (ts > 0 and other_ts > 0 and ts > other_ts)
-            and not any(isinstance(lt, dict) and _same_anchor_px(px, lt.get("entry_px")) for lt in open_lots_ro)
+        if key == "last_buy" and is_last_buy_lot_harvested(
+            px,
+            open_lots_ro,
+            last_buy_ts_ms=ts * 1.0,
+            last_sell_ts_ms=other_ts * 1.0,
         ):
             meta_parts.append("lot_harvested")
         meta_sfx = f" ({', '.join(meta_parts)})" if meta_parts else ""
         return f"{qty_pfx}{px}{meta_sfx}"
 
     last_b_px = round_opt_px((oinfo.get("last_buy") or {}).get("price") if isinstance(oinfo.get("last_buy"), dict) else None, 6)
-    avg_b_px = round_opt_px(oinfo.get("active_avg_buy_px"), 6)
-    avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
-    if avg_b_px and avg_b_px > 0.0 and open_lots_ro:
-        ro_lifo_avg, _, _ = compute_open_lots_vwap(open_lots_ro, ref_avg_px=avg_b_px, min_rel_diff=0.0025)
-        if ro_lifo_avg is not None:
-            avg_b_str += f" | Remaining LIFO Avg BUY={ro_lifo_avg}"
-    tac_b_px = round_opt_px(oinfo.get("tactical_avg_buy_px"), 6)
-    tac_b_str = (
-        f" | Tactical Sub-Cycle Avg BUY={tac_b_px}"
-        if tac_b_px
-        and (not avg_b_px or tac_b_px < avg_b_px)
-        and not _same_anchor_px(tac_b_px, avg_b_px)
-        and not _same_anchor_px(tac_b_px, last_b_px)
-        else ""
+    subcycle_sfx = "".join(
+        f" | {part}"
+        for part in format_recent_fill_subcycle_parts(
+            oinfo,
+            last_buy_px=last_b_px,
+            open_lots=open_lots_ro,
+            round_anchors=True,
+            include_open_lots=False,
+            include_markout=True,
+        )
     )
-    sw_b_px = round_opt_px(oinfo.get("swing_subcycle_avg_px"), 6)
-    sw_b_str = (
-        f" | Swing Sub-Cycle Avg BUY={sw_b_px}"
-        if sw_b_px
-        and (not avg_b_px or sw_b_px < avg_b_px)
-        and not _same_anchor_px(sw_b_px, avg_b_px)
-        and (not avg_b_px or abs(sw_b_px - avg_b_px) / max(avg_b_px, 1e-9) >= 0.002)
-        and not _same_anchor_px(sw_b_px, tac_b_px)
-        and not _same_anchor_px(sw_b_px, last_b_px)
-        else ""
-    )
-    lifo_v = safe_float(oinfo.get("lifo_realized_pnl_usd"), None)
-    lifo_str = f" | Sub-Cycle LIFO Realized PnL=${lifo_v:+.2f}" if lifo_v is not None and abs(lifo_v) >= 0.01 else ""
-    markout_parts: List[str] = []
-    if (bm_v := safe_float(oinfo.get("buy_markout_bps"), None)) is not None:
-        markout_parts.append(f"buy={bm_v:+.0f}bps")
-    if (sm_v := safe_float(oinfo.get("sell_markout_bps"), None)) is not None:
-        markout_parts.append(f"sell={sm_v:+.0f}bps")
-    markout_str = f" | Post-Trade Markout({', '.join(markout_parts)})" if markout_parts else ""
-    r_buys = [f"{b.get('qty')}@{round_opt_px(b.get('price'), 6)}" for b in (oinfo.get("recent_buys") or []) if isinstance(b, dict)]
-    tranches_str = f" | Recent BUY Tranches=[{', '.join(r_buys)}]" if len(r_buys) > 1 else ""
-    r_sells = [f"{s.get('qty')}@{round_opt_px(s.get('price'), 6)}" for s in (oinfo.get("recent_sells") or []) if isinstance(s, dict) and s.get("qty") is not None]
-    sell_tranches_str = f" | Recent SELL Tranches=[{', '.join(r_sells)}]" if len(r_sells) > 1 else ""
     last_act_tag = oinfo.get("last_action_actor_tag") or format_actor_tag(
         oinfo.get("last_action_actor"),
         oinfo.get("last_action_module"),
@@ -1369,7 +1317,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         f"  * {sym} Last Action={oinfo.get('last_action_side')}{last_act_sfx}: "
         f"Last BUY={_side_summary('last_buy')} | "
         f"Last SELL={_side_summary('last_sell')}"
-        f"{avg_b_str}{tac_b_str}{sw_b_str}{lifo_str}{markout_str}{tranches_str}{sell_tranches_str}"
+        f"{subcycle_sfx}"
     )
 
 

@@ -328,6 +328,102 @@ def compute_open_lots_vwap(
     return vwap_px, tot_q, tot_cost
 
 
+def same_anchor_px(a: Any, b: Any) -> bool:
+    """Return True when two anchor prices match within ``max(1e-6, max(|a|, |b|) * 1e-5)``."""
+    if a is None or b is None:
+        return False
+    af, bf = safe_float(a, None), safe_float(b, None)
+    return abs(af - bf) <= max(1e-6, max(abs(af), abs(bf)) * 1e-5) if (af is not None and bf is not None) else (a == b)
+
+
+def is_last_buy_lot_harvested(
+    last_buy_px: Any,
+    open_lots: Any,
+    *,
+    last_buy_ts_ms: float = 0.0,
+    last_sell_ts_ms: float = 0.0,
+) -> bool:
+    """Return True when ``last_buy_px`` is no longer present among remaining LIFO ``open_lots``."""
+    px_f = safe_pos_float(last_buy_px, None)
+    lots_seq = open_lots if isinstance(open_lots, list) else []
+    return (
+        px_f is not None
+        and len(lots_seq) > 0
+        and not (last_buy_ts_ms > 0.0 and last_sell_ts_ms > 0.0 and last_buy_ts_ms > last_sell_ts_ms)
+        and not any(isinstance(lt, dict) and same_anchor_px(px_f, lt.get("entry_px")) for lt in lots_seq)
+    )
+
+
+def format_recent_fill_subcycle_parts(
+    fills: Any,
+    *,
+    last_buy_px: Any = None,
+    open_lots: Any = None,
+    round_anchors: bool = False,
+    include_open_lots: bool = False,
+    include_markout: bool = False,
+) -> List[str]:
+    """Format sub-cycle BUY anchors, LIFO realized PnL, optional markout/open-lots, and recent tranches."""
+    if not isinstance(fills, dict):
+        return []
+    parts: List[str] = []
+    lots_seq = open_lots if isinstance(open_lots, list) else (fills.get("open_lots") if isinstance(fills.get("open_lots"), list) else [])
+    _anch = (lambda v: round_opt_px(v, 6)) if round_anchors else (lambda v: safe_pos_float(v, default=None))
+    lb_px = _anch(last_buy_px)
+    act_avg = _anch(fills.get("active_avg_buy_px"))
+    if act_avg is not None and act_avg > 0.0:
+        parts.append(f"Active Cycle Avg BUY={act_avg}")
+        if lots_seq:
+            lifo_avg, _, _ = compute_open_lots_vwap(lots_seq, ref_avg_px=act_avg, min_rel_diff=0.0025)
+            if lifo_avg is not None:
+                parts.append(f"Remaining LIFO Avg BUY={lifo_avg}")
+    tac_avg = _anch(fills.get("tactical_avg_buy_px"))
+    if (
+        tac_avg is not None
+        and (act_avg is None or tac_avg < act_avg)
+        and not same_anchor_px(tac_avg, act_avg)
+        and not same_anchor_px(tac_avg, lb_px)
+    ):
+        parts.append(f"Tactical Sub-Cycle Avg BUY={tac_avg}")
+    sw_avg = _anch(fills.get("swing_subcycle_avg_px"))
+    if (
+        sw_avg is not None
+        and (act_avg is None or sw_avg < act_avg)
+        and not same_anchor_px(sw_avg, act_avg)
+        and (act_avg is None or abs(sw_avg - act_avg) / max(act_avg, 1e-12) >= 0.002)
+        and not same_anchor_px(sw_avg, tac_avg)
+        and not same_anchor_px(sw_avg, lb_px)
+    ):
+        parts.append(f"Swing Sub-Cycle Avg BUY={sw_avg}")
+    if (lifo_pnl := safe_float(fills.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_pnl) >= 0.01:
+        parts.append(f"Sub-Cycle LIFO Realized PnL=${lifo_pnl:+.2f}")
+    if include_open_lots:
+        o_lots = [
+            f"{round_opt_px(lt.get('qty'), 6)}@{round_opt_px(lt.get('entry_px'), 6)}"
+            for lt in lots_seq[-4:]
+            if isinstance(lt, dict) and lt.get("qty") is not None and lt.get("entry_px") is not None
+        ]
+        if o_lots:
+            parts.append(f"Open LIFO Lots=[{', '.join(o_lots)}]")
+    if include_markout:
+        m_parts: List[str] = []
+        if (bm_v := safe_float(fills.get("buy_markout_bps"), None)) is not None:
+            m_parts.append(f"buy={bm_v:+.0f}bps")
+        if (sm_v := safe_float(fills.get("sell_markout_bps"), None)) is not None:
+            m_parts.append(f"sell={sm_v:+.0f}bps")
+        if m_parts:
+            parts.append(f"Post-Trade Markout({', '.join(m_parts)})")
+    for key_tr, lbl_tr in (("recent_buys", "Recent BUY Tranches"), ("recent_sells", "Recent SELL Tranches")):
+        tr_list = [
+            f"{item.get('qty')}@{round_opt_px(item.get('price'), 6)}"
+            for item in (fills.get(key_tr) or ())
+            if isinstance(item, dict) and item.get("qty") is not None and item.get("price") is not None
+        ]
+        if len(tr_list) > 1:
+            parts.append(f"{lbl_tr}=[{', '.join(tr_list)}]")
+    return parts
+
+
 def reconcile_fresh_lots_vwap(
     fills_or_ro: Dict[str, Any],
     open_lots: Any,
@@ -346,9 +442,7 @@ def reconcile_fresh_lots_vwap(
             if fresh_vwap is not None:
                 fills_or_ro["active_avg_buy_px"] = fresh_vwap
                 fills_or_ro["active_cycle_rem_qty"] = round(vwap_q, 6)
-                if (tac_cur := safe_pos_float(fills_or_ro.get("tactical_avg_buy_px"), default=None)) is not None and abs(
-                    tac_cur - fresh_vwap
-                ) <= max(1e-6, fresh_vwap * 1e-5):
+                if same_anchor_px(fills_or_ro.get("tactical_avg_buy_px"), fresh_vwap):
                     fills_or_ro.pop("tactical_avg_buy_px", None)
                 return fresh_vwap, fresh_q
     return None, fresh_q

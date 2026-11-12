@@ -39,6 +39,7 @@ from cachepaths import (
     iter_venue_cycle_state_files,
     normalize_venue_name,
     resolve_venue_trailing_state_path,
+    resolve_workspace_dir_from_cachedb,
     split_symbol_assets,
 )
 from intelligence.macro_sentiment_ssot import resolve_read_json_cached, resolve_save_json_state
@@ -1256,8 +1257,7 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                     cand_fills.setdefault("venue", cache_venue)
                     fills, best_venue, best_fill_key = cand_fills, cache_venue, cand_key
         if fills is None or fills.get("last_buy") is None or fills.get("last_sell") is None or is_equity_venue(best_venue):
-            norm_cdir = os.path.normpath(os.path.abspath(cachedb_dir)) if cachedb_dir else ""
-            ws_dir = os.path.dirname(norm_cdir) if os.path.basename(norm_cdir).lower() == "cachedb" else norm_cdir
+            ws_dir = resolve_workspace_dir_from_cachedb(cachedb_dir)
             if ws_dir and os.path.isdir(ws_dir):
                 k_cycs, hl_cycs, t212_cycs = harvest_venue_cycles(ws_dir, {}, {}, read_json_fn=_rj)
                 cyc_maps = [

@@ -589,7 +589,7 @@ ALL_KINEMATIC_METRIC_KEYS: Tuple[str, ...] = (
 )
 
 
-def resolve_kalman_vel_z(entry_or_vel: Any, vel_std: Any = None) -> Optional[float]:
+def resolve_kalman_vel_z(entry_or_vel: Any, vel_std: Any = None, *, populate: bool = False) -> Optional[float]:
     """Resolve standardized Kalman velocity z-score from a telemetry mapping or `(vel, vel_std)` pair."""
     if isinstance(entry_or_vel, Mapping):
         if (existing := safe_float(entry_or_vel.get("kalman_vel_z"), default=None)) is not None:
@@ -600,7 +600,10 @@ def resolve_kalman_vel_z(entry_or_vel: Any, vel_std: Any = None) -> Optional[flo
         kv = safe_float(entry_or_vel, default=None)
         ks = safe_pos_float(vel_std, default=None)
     if kv is not None and ks is not None and abs(kv) >= 1e-6 and 1e-6 < ks < 5.99:
-        return round(kv / ks, 2)
+        kz = round(kv / ks, 2)
+        if populate and isinstance(entry_or_vel, dict):
+            entry_or_vel["kalman_vel_z"] = kz
+        return kz
     return None
 
 

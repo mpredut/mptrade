@@ -37,7 +37,6 @@ from cachepaths import (
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
-    KINEMATIC_HORIZON_SPECS,
     SHORT_KINEMATIC_METRIC_KEYS,
     enrich_macro_benchmarks_live_state,
     read_first_cached_dict,
@@ -84,7 +83,10 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     reconcile_sibling_flow_and_liq_regimes,
     rescale_orderbook_walls_to_price,
 )
-from intelligence.sentiment.evaluators.portfolio_evaluator import compute_open_lots_vwap
+from intelligence.sentiment.evaluators.portfolio_evaluator import (
+    format_recent_fill_subcycle_parts,
+    is_last_buy_lot_harvested,
+)
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     _RTH_VP_ANCHOR_KEYS,
     _STALE_SHORT_24H_KEYS,
@@ -101,6 +103,8 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
     compute_series_kinematics,
+    format_kinematic_parts,
+    format_multi_window_slopes_core,
     pct_delta,
     recalculate_live_price_geometry,
     round_opt_px,
@@ -1464,8 +1468,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                     *SHORT_KINEMATIC_METRIC_KEYS,
                 ):
                     t_entry.pop(k_stale_s, None)
-            if (kz_base := resolve_kalman_vel_z(t_entry.get("kalman_vel"), t_entry.get("kalman_vel_std"))) is not None:
-                t_entry["kalman_vel_z"] = kz_base
+            resolve_kalman_vel_z(t_entry, populate=True)
             if alt_series_24h and len(alt_series_24h) >= 3:
                 allow_90_kin = not is_eq_sym or eq_px_diverged_05pct or any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct"))
                 allow_5m_kin = not is_eq_sym or eq_px_diverged_05pct or (rth_fresh_eq and any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")))
@@ -1755,39 +1758,8 @@ class PretradeDynamicSlopesFormatStage(PretradePillarCollectorBase):
         t_entry = ctx.t_entry
         if not (ctx.has_st_tinfo or any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h"))):
             return
-        _fmt_s = lambda v: "+0.00000" if abs(v) < 5e-8 else (f"{v:+.2e}" if 0.0 < abs(v) < 1e-4 else f"{v:+.5f}")
-        s90_v = safe_float(t_entry.get("slope_90s"), default=None)
-        s90_pfx = f"90s={_fmt_s(s90_v)}, " if s90_v is not None else ""
-        slope_parts = [
-            f"{s_lbl}={_fmt_s(s_val)}"
-            for s_lbl, s_key in (
-                ("90s", "slope_90s"),
-                ("3.7m", "slope_3_7m"),
-                ("15m", "slope_15m"),
-                ("2.5h", "slope_2_5h"),
-            )
-            if (s_val := safe_float(t_entry.get(s_key), default=None)) is not None
-        ]
-        ctx.telemetry["Dynamic Multi-Window Slopes"] = (
-            f"{s90_pfx}"
-            f"3.7m={_fmt_s(safe_float(t_entry.get('slope_3_7m'), 0.0))}, "
-            f"15m={_fmt_s(safe_float(t_entry.get('slope_15m'), 0.0))}, "
-            f"2.5h={_fmt_s(safe_float(t_entry.get('slope_2_5h'), 0.0))}"
-            if (
-                not slope_parts
-                or ("slope_15m" in t_entry and ("slope_3_7m" in t_entry or "slope_2_5h" not in t_entry))
-            )
-            else ", ".join(slope_parts)
-        )
-        kin_seg: List[str] = []
-        for k_lbl, vk_name, ak_name in KINEMATIC_HORIZON_SPECS:
-            vk_f = safe_float(t_entry.get(vk_name), default=None)
-            ak_f = safe_float(t_entry.get(ak_name), default=None)
-            if vk_f is not None and ak_f is not None and (abs(vk_f) >= 1e-6 or abs(ak_f) >= 1e-6):
-                kin_seg.append(f"{k_lbl}: vel={vk_f:+.4f}%/m, acc={ak_f:+.4f}%/m^2")
-        if kin_seg:
-            if (kz_f := resolve_kalman_vel_z(t_entry)) is not None and abs(kz_f) >= 0.01:
-                kin_seg.append(f"kalman_z={kz_f:+.2f}")
+        ctx.telemetry["Dynamic Multi-Window Slopes"] = format_multi_window_slopes_core(t_entry, fallback_full=True)
+        if kin_seg := format_kinematic_parts(t_entry, compact=False):
             ctx.telemetry["Kinematic Velocity & Acceleration"] = " | ".join(kin_seg)
 
 
@@ -1825,18 +1797,12 @@ class RecentFillsExecutionStage(PretradePillarCollectorBase):
             if fills := load_symbol_best_recent_fills(ctx.cachedb_dir, ctx.symbol, ctx.quote_variants, ctx.rj):
                 lb, ls = fills.get("last_buy") or {}, fills.get("last_sell") or {}
                 lb_px = safe_pos_float(lb.get("price"), default=None)
-                _same_px = lambda a, b: a is not None and b is not None and abs(a - b) <= max(1e-6, max(abs(a), abs(b)) * 1e-5)
                 open_lots_f = fills.get("open_lots") if isinstance(fills.get("open_lots"), list) else []
-                lb_ts_f = safe_pos_float(lb.get("ts_ms"), default=0.0) or 0.0
-                ls_ts_f = safe_pos_float(ls.get("ts_ms"), default=0.0) or 0.0
-                is_lb_harvested = (
-                    lb_px is not None
-                    and len(open_lots_f) > 0
-                    and not (lb_ts_f > 0.0 and ls_ts_f > 0.0 and lb_ts_f > ls_ts_f)
-                    and not any(
-                        isinstance(lt, dict) and _same_px(lb_px, safe_pos_float(lt.get("entry_px"), default=None))
-                        for lt in open_lots_f
-                    )
+                is_lb_harvested = is_last_buy_lot_harvested(
+                    lb_px,
+                    open_lots_f,
+                    last_buy_ts_ms=safe_pos_float(lb.get("ts_ms"), default=0.0) or 0.0,
+                    last_sell_ts_ms=safe_pos_float(ls.get("ts_ms"), default=0.0) or 0.0,
                 )
                 lb_meta = [f"by={lb.get('actor_tag') or lb.get('actor')}"] if (lb.get("actor_tag") or lb.get("actor")) else []
                 if is_lb_harvested:
@@ -1860,51 +1826,16 @@ class RecentFillsExecutionStage(PretradePillarCollectorBase):
                         diff_ms = now_ms_f - s_ts
                         if 0.0 <= diff_ms <= 365.0 * 86400.0 * 1000.0:
                             sub_parts.append(f"{side_lbl}={round(diff_ms / 3_600_000.0, 1)}h")
-                if (act_avg := safe_pos_float(fills.get("active_avg_buy_px"), default=None)) is not None:
-                    sub_parts.append(f"Active Cycle Avg BUY={act_avg}")
-                    if open_lots_f:
-                        rf_lifo_avg, _, _ = compute_open_lots_vwap(open_lots_f, ref_avg_px=act_avg, min_rel_diff=0.0025)
-                        if rf_lifo_avg is not None:
-                            sub_parts.append(f"Remaining LIFO Avg BUY={rf_lifo_avg}")
-                if (
-                    (tac_avg := safe_pos_float(fills.get("tactical_avg_buy_px"), default=None)) is not None
-                    and (act_avg is None or tac_avg < act_avg)
-                    and not _same_px(tac_avg, act_avg)
-                    and not _same_px(tac_avg, lb_px)
-                ):
-                    sub_parts.append(f"Tactical Sub-Cycle Avg BUY={tac_avg}")
-                if (
-                    (sw_avg := safe_pos_float(fills.get("swing_subcycle_avg_px"), default=None)) is not None
-                    and (act_avg is None or sw_avg < act_avg)
-                    and (act_avg is None or abs(sw_avg - act_avg) / max(act_avg, 1e-12) >= 0.002)
-                    and not _same_px(sw_avg, tac_avg)
-                    and not _same_px(sw_avg, lb_px)
-                ):
-                    sub_parts.append(f"Swing Sub-Cycle Avg BUY={sw_avg}")
-                if abs(lifo_pnl := safe_float(fills.get("lifo_realized_pnl_usd"), 0.0)) >= 0.01:
-                    sub_parts.append(f"Sub-Cycle LIFO Realized PnL=${lifo_pnl:+.2f}")
-                if is_lb_harvested or len(open_lots_f) > 1:
-                    o_lots = [
-                        f"{round_opt_px(lt.get('qty'), 6)}@{round_opt_px(lt.get('entry_px'), 6)}"
-                        for lt in open_lots_f[-4:]
-                        if isinstance(lt, dict) and lt.get("qty") is not None and lt.get("entry_px") is not None
-                    ]
-                    if o_lots:
-                        sub_parts.append(f"Open LIFO Lots=[{', '.join(o_lots)}]")
-                r_buys = [
-                    f"{b.get('qty')}@{round_opt_px(b.get('price'), 6)}"
-                    for b in (fills.get("recent_buys") or ())
-                    if isinstance(b, dict) and b.get("qty") is not None and b.get("price") is not None
-                ]
-                if len(r_buys) > 1:
-                    sub_parts.append(f"Recent BUY Tranches=[{', '.join(r_buys)}]")
-                r_sells = [
-                    f"{s.get('qty')}@{round_opt_px(s.get('price'), 6)}"
-                    for s in (fills.get("recent_sells") or ())
-                    if isinstance(s, dict) and s.get("qty") is not None and s.get("price") is not None
-                ]
-                if len(r_sells) > 1:
-                    sub_parts.append(f"Recent SELL Tranches=[{', '.join(r_sells)}]")
+                sub_parts.extend(
+                    format_recent_fill_subcycle_parts(
+                        fills,
+                        last_buy_px=lb_px,
+                        open_lots=open_lots_f,
+                        round_anchors=False,
+                        include_open_lots=bool(is_lb_harvested or len(open_lots_f) > 1),
+                        include_markout=False,
+                    )
+                )
                 sub_sfx = f", {', '.join(sub_parts)}" if sub_parts else ""
                 ctx.telemetry["Recent Venue Fills"] = (
                     f"Last Action={fills.get('last_action_side')}, "
