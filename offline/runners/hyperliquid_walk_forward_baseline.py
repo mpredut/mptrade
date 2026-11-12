@@ -21,7 +21,6 @@ from botcore import (
     load_local_module,
     required_env,
     required_float_env,
-    safe_nonneg_float,
     safe_pos_float,
 )
 from strategies.spot_engine import StratParams as SpotStratParams

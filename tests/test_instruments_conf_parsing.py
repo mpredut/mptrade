@@ -58,7 +58,7 @@ def section(name="BINANCE_TEST", **overrides):
 class TestInstrumentRegistry(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        self.registry = Path(self._temp_dir.name) / "instruments.conf"
+        self.registry = self.tmp / "instruments.conf"
 
     def _write(self, content):
         self.registry.write_text(content, encoding="utf-8")
@@ -78,7 +78,7 @@ market_hours = 24x7
 """
 
     def test_missing_registry_fails_closed(self):
-        missing = str(Path(self._temp_dir.name) / "missing.conf")
+        missing = str(self.tmp / "missing.conf")
         with self.assertRaises(FileNotFoundError):
             load_instruments(missing, api=_Api())
 

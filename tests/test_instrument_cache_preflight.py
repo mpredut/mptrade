@@ -135,7 +135,7 @@ class _WeightedBinanceProvider(_BinancePermitProvider):
 class InstrumentCachePreflightTest(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        root = self._temp_dir.name
+        root = str(self.tmp)
 
         self._old_outcome_dir = order_outcomes_log.ORDER_OUTCOMES_LOG_DIR
         order_outcomes_log.ORDER_OUTCOMES_LOG_DIR = os.path.join(root, "outcomes")

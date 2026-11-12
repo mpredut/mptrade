@@ -24,9 +24,9 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         self._old_retry_enabled = monitororder.order_retry.RETRY_ENABLED
         self._old_retry_dedup = monitororder.order_retry.RETRY_DEDUP
         monitororder.order_retry.QUEUE_FILE = os.path.join(
-            self._temp_dir.name, "order_retry_queue.jsonl")
+            self.tmp, "order_retry_queue.jsonl")
         monitororder.order_retry.LOCK_FILE = os.path.join(
-            self._temp_dir.name, "order_retry_queue.lock")
+            self.tmp, "order_retry_queue.lock")
         monitororder.order_retry.RETRY_ENABLED = True
         monitororder.order_retry.RETRY_DEDUP = False
         self._filter_patcher = mock.patch.object(

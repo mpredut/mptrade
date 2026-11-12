@@ -27,7 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import normalize_epoch_sec, parse_epoch_price_pair, parse_symbol_list, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import parse_epoch_price_pair, parse_symbol_list, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_path, canonical_base_asset
 from instrument_registry import symbols_for
 from intelligence.internal.state.survival import get_trade_weight

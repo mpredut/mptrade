@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock
@@ -622,6 +623,9 @@ class _TempDirPath(str):
     def name(self) -> str:
         return str(self)
 
+    def __truediv__(self, other: str) -> Path:
+        return Path(str(self)) / other
+
     def cleanup(self) -> None:
         shutil.rmtree(str(self), ignore_errors=True)
 
@@ -631,10 +635,6 @@ class TempDirTestCase(unittest.TestCase):
 
     def setUp(self):
         self.tmp = _TempDirPath(tempfile.mkdtemp())
-        self._temp_dir = self.tmp
-        self._tmp = self.tmp
-        self.temp = self.tmp
-        self.tempdir = self.tmp
 
     def tearDown(self):
         self.tmp.cleanup()

@@ -47,7 +47,6 @@ from offline.backtests.datasets import (
 from offline.backtests.evaluation import (
     evaluate_segment,
     evaluate_spot_segment,
-    load_venue_module,
     load_venue_replay_module,
 )
 from offline.backtests.execution import ExecutionModel

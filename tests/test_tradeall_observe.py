@@ -4,7 +4,6 @@ import json
 import os
 import pytest
 import tradeall
-import unittest
 from matplotlib import pyplot as plt
 from pathlib import Path
 from state_io import read_tail_lines

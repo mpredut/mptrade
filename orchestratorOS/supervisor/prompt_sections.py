@@ -545,11 +545,13 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             for sib_sym, sib_info in sym_group[1:]:
                 s_px = safe_float(sib_info.get("price"), 0.0)
                 if px_f <= 0 or s_px <= 0 or abs(px_f - s_px) / max(px_f, s_px) <= 0.10:
+                    has_own_vp = pinfo.get("poc_px") is not None
+                    has_own_bottom = pinfo.get("bottom_structure_6h") is not None
                     for sk, sv in sib_info.items():
                         if should_skip_sibling_telemetry_key(
                             sk,
-                            has_own_vp=pinfo.get("poc_px") is not None,
-                            has_own_bottom=pinfo.get("bottom_structure_6h") is not None,
+                            has_own_vp=has_own_vp,
+                            has_own_bottom=has_own_bottom,
                         ):
                             continue
                         if pinfo.get(sk) is None and sv is not None:

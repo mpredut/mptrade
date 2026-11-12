@@ -83,7 +83,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 class TestNotifyEngineOrchestrator(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        self.state_file = os.path.join(self._temp_dir.name, "delivery_state.json")
+        self.state_file = os.path.join(self.tmp, "delivery_state.json")
         self.patcher = mock.patch.dict(os.environ, {
             "NOTIFICATION_STATE_FILE": self.state_file,
             "NTFY_TOPIC_TRADES": "ntfy-trades-test",
@@ -443,7 +443,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
     def test_flush_queue_preserves_concurrent_appends_and_deduplicates_delayed_prefix(self):
         """Verify flush_queue_loop preserves concurrently appended queue lines and avoids duplicate [DELAYED] prefix."""
 
-        queue_file = os.path.join(self._temp_dir.name, "queue.jsonl")
+        queue_file = os.path.join(self.tmp, "queue.jsonl")
         self.server.queue_file = queue_file
         initial_line = json.dumps({
             "__orchestrator_intent__": "email",
@@ -817,7 +817,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         self.assertEqual(saved_item["retry_count"], 1)
 
         # 4. watchdog_common.load_state recovers from .previous
-        prev_file = os.path.join(self._temp_dir.name, "wd_state.json")
+        prev_file = os.path.join(self.tmp, "wd_state.json")
         with open(prev_file + ".previous", "w", encoding="utf-8") as f:
             json.dump({"ok": 1}, f)
         self.assertEqual(watchdog_common.load_state(prev_file), {"ok": 1})
@@ -836,23 +836,23 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         self.assertEqual(res_lines, ["2026-10-27 00:00:00 [ERROR] test error"])
 
         # 2. AutonomousAIReconciler & AutonomousIntentGateway: notify_enabled='false', mode=True rejection, non-dict submit/process_intent
-        rec = AutonomousAIReconciler(workspace_dir=self._temp_dir.name, mode="shadow", notify_enabled="false")  # type: ignore[arg-type]
+        rec = AutonomousAIReconciler(workspace_dir=str(self.tmp), mode="shadow", notify_enabled="false")  # type: ignore[arg-type]
         self.assertFalse(rec.notify_enabled)
         with self.assertRaises(ValueError):
-            AutonomousIntentGateway(workspace_dir=self._temp_dir.name, mode=True)  # type: ignore[arg-type]
-        gw = AutonomousIntentGateway(workspace_dir=self._temp_dir.name, mode="shadow", notify_enabled="false")  # type: ignore[arg-type]
+            AutonomousIntentGateway(workspace_dir=str(self.tmp), mode=True)  # type: ignore[arg-type]
+        gw = AutonomousIntentGateway(workspace_dir=str(self.tmp), mode="shadow", notify_enabled="false")  # type: ignore[arg-type]
         self.assertFalse(gw.notify_enabled)
         self.assertEqual(gw.process_intent(None), {})  # type: ignore[arg-type]
         self.assertIsNone(gw.submit(None, source="test", max_mode="shadow"))  # type: ignore[arg-type]
 
         # 3. FleetHealthMonitor.gather_sensor_status: recovers from .previous when primary is missing or corrupt
-        cachedb = os.path.join(self._temp_dir.name, "cachedb")
+        cachedb = os.path.join(self.tmp, "cachedb")
         os.makedirs(cachedb, exist_ok=True)
         with open(os.path.join(cachedb, "geopolitical_eval.json"), "w", encoding="utf-8") as f:
             f.write("{corrupt")
         with open(os.path.join(cachedb, "geopolitical_eval.json.previous"), "w", encoding="utf-8") as f:
             json.dump({"threat_level": "ELEVATED", "risk_score": 0.65, "summary": "recovered"}, f)
-        mon = FleetHealthMonitor(workspace_dir=self._temp_dir.name)
+        mon = FleetHealthMonitor(workspace_dir=str(self.tmp))
         sensors = mon.gather_sensor_status()
         self.assertEqual(sensors["geopolitical_threat"]["threat_level"], "ELEVATED")
         self.assertEqual(sensors["geopolitical_threat"]["risk_score"], 0.65)
@@ -1363,14 +1363,14 @@ class EmailMirrorTest(TempDirTestCase):
             "SMTP_PASSWORD": "abcd efgh ijkl mnop",
             "ALERT_TO_EMAIL": "owner@example.com",
             "SMTP_SERVER": "smtp.gmail.com",
-            "NOTIFICATION_STATE_FILE": os.path.join(self._tmp.name, "state.json"),
+            "NOTIFICATION_STATE_FILE": os.path.join(self.tmp, "state.json"),
         }, clear=False)
         self._env.start()
         self.sent = []
         self._smtp = mock.patch.object(mailer, "_smtp_send", lambda msg, cfg: self.sent.append((msg, cfg)))
         self._smtp.start()
         self.server = NotificationServer()
-        self.server.queue_file = os.path.join(self._tmp.name, "queue.jsonl")
+        self.server.queue_file = os.path.join(self.tmp, "queue.jsonl")
 
     def tearDown(self):
         self._smtp.stop()
