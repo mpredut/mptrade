@@ -274,13 +274,6 @@ parse_bt_cli_int = _bind_bt_cli_parser(
 )
 
 
-def _require_positive_budget(budget: float) -> float:
-    b_val = safe_pos_float(budget, default=None)
-    if b_val is None:
-        raise ValueError("budget must be positive")
-    return b_val
-
-
 def _extract_cycle_win_stats(md: Any, b_val: float) -> tuple[float, int, int, float, float]:
     md_map = md if isinstance(md, Mapping) else {}
     tot = safe_float(md_map.get("total"), 0.0) / b_val * 100.0
@@ -323,7 +316,9 @@ def print_single_backtest_report(
     emit=print,
 ) -> None:
     """Emit standardized single-run CLI backtest report across Kraken, Hyperliquid, and T212."""
-    b_val = _require_positive_budget(budget)
+    b_val = safe_pos_float(budget, default=None)
+    if b_val is None:
+        raise ValueError("budget must be positive")
     md = m if isinstance(m, Mapping) else {}
     bh_f = safe_float(bh, 0.0)
     inc_fund = _parse_bool_flag(include_funding, default=False)
@@ -375,7 +370,9 @@ def run_tp_drop_sl_sweep(
     emit=print,
 ) -> list[tuple]:
     """Run a TP x DROP (x SL) parameter sweep and print the top N configurations."""
-    b_val = _require_positive_budget(budget)
+    b_val = safe_pos_float(budget, default=None)
+    if b_val is None:
+        raise ValueError("budget must be positive")
     limit_n = safe_nonneg_int(top_n, default=8)
     rows: list[tuple] = []
     if sl_values is None:

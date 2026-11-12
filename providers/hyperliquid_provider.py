@@ -1046,13 +1046,6 @@ class HyperliquidProvider(MarketDataProvider):
                 f"({avail_f:.8f} < {required:.8f}) — the order was not sent"
             )
 
-    @staticmethod
-    def _require_hl_info_method(c, attr_name: str, err_msg: str):
-        query = getattr(c.info, attr_name, None)
-        if not callable(query):
-            raise ProviderError(err_msg)
-        return query
-
     def order_by_client_id(self, symbol: str, client_order_id: str):
         """Recover a Hyperliquid spot order by CLOID when supported by the SDK."""
         self.validate_symbol(symbol)
@@ -1062,9 +1055,9 @@ class HyperliquidProvider(MarketDataProvider):
                 "order_by_client_id: client/pair/address unavailable")
         try:
             cloid = self.derive_client_order_id(client_order_id)
-            query = self._require_hl_info_method(
-                c, "query_order_by_cloid", "The Hyperliquid SDK lacks authoritative CLOID lookup"
-            )
+            query = getattr(c.info, "query_order_by_cloid", None)
+            if not callable(query):
+                raise ProviderError("The Hyperliquid SDK lacks authoritative CLOID lookup")
             from hyperliquid.utils.types import Cloid
             raw = _call_hl_info_read(query, addr, Cloid.from_str(cloid)) or {}
             if not isinstance(raw, dict):
@@ -1103,11 +1096,9 @@ class HyperliquidProvider(MarketDataProvider):
             f"order_status({order_id})", require_addr=True
         )
         try:
-            query = self._require_hl_info_method(
-                c,
-                "query_order_by_oid",
-                "The Hyperliquid SDK is too old: query_order_by_oid is missing",
-            )
+            query = getattr(c.info, "query_order_by_oid", None)
+            if not callable(query):
+                raise ProviderError("The Hyperliquid SDK is too old: query_order_by_oid is missing")
             raw_status = _call_hl_info_read(query, addr, oid) or {}
             if not isinstance(raw_status, dict) or raw_status.get("status") != "order":
                 raise ProviderError(

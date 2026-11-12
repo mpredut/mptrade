@@ -330,13 +330,6 @@ _TRADEALL_KIND_PREFIXES = (
 )
 
 
-def _sanitize_place_kwargs(place_kwargs) -> dict:
-    return {
-        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
-        for k, v in dict(place_kwargs or {}).items()
-    }
-
-
 def _set_safe_to_discard(rec, eligible):
     """Persist explicit pre-submit discard eligibility, or fail closed."""
     if eligible and not _has_prior_venue_evidence(rec):
@@ -428,7 +421,10 @@ def enqueue(
         return None
     attempts, last_attempt_ts = attempts_i, last_attempt_f
     record_id = uuid.uuid4().hex
-    placement = _sanitize_place_kwargs(place_kwargs)
+    placement = {
+        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
+        for k, v in dict(place_kwargs or {}).items()
+    }
     prefix = placement.get("prefix") or (
         f"{placement.get('owner')}_OR" if placement.get("owner") else None
     )
@@ -529,7 +525,10 @@ def enqueue(
                     e["ref_price"] = ref_price
                     _set_record_qty(e, qty)
                     revision = safe_nonneg_int(e.get("revision"), default=0) + 1
-                    refreshed_kwargs = _sanitize_place_kwargs(place_kwargs)
+                    refreshed_kwargs = {
+                        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
+                        for k, v in dict(place_kwargs or {}).items()
+                    }
                     pfx = e.get("prefix") or refreshed_kwargs.get("prefix") or prefix or "OR"
                     refreshed_kwargs.setdefault(
                         "client_order_id", _client_order_id(e.get("id", record_id), revision, prefix=pfx)
@@ -725,12 +724,6 @@ def _safe_load_all() -> list:
         return []
 
 
-def _record_order_and_client_ids(r: dict) -> list:
-    oid = extract_order_id(r.get("order_id"))
-    cid = extract_order_id(_record_client_order_id(r))
-    return [x for x in (oid, cid) if x]
-
-
 def get_accepted_order_ttl_map() -> dict:
     """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
     return {
@@ -739,7 +732,8 @@ def get_accepted_order_ttl_map() -> dict:
         if (lc := str(r.get("lifecycle") or "").lower()) == "accepted"
         or (lc == "submit_pending" and r.get("order_id") is None)
         if (ttl_val := safe_pos_float(r.get("ttl_sec"), default=None)) is not None
-        for k in _record_order_and_client_ids(r)
+        for k in (extract_order_id(r.get("order_id")), extract_order_id(_record_client_order_id(r)))
+        if k
     }
 
 
@@ -818,8 +812,9 @@ def get_accepted_order_owner_map() -> dict:
         inferred = infer_concrete_record_owner(r)
         if not inferred:
             continue
-        for k in _record_order_and_client_ids(r):
-            res[k] = inferred
+        for k in (extract_order_id(r.get("order_id")), extract_order_id(_record_client_order_id(r))):
+            if k:
+                res[k] = inferred
     return res
 
 
@@ -953,12 +948,6 @@ def _append_order_history(rec, *, observed_at, status=None):
     rec["order_history"] = history[-20:]
 
 
-def _clean_id_set(ids) -> set:
-    if ids is None or isinstance(ids, (str, bytes, bool)):
-        return set()
-    return {i for i in ids if not isinstance(i, bool) and i}
-
-
 def _assign_revision_client_order_id(rec: dict, revision: int, *, overwrite: bool) -> None:
     placement = dict(rec.get("place_kwargs") or {})
     pfx = rec.get("prefix") or placement.get("prefix") or "OR"
@@ -972,7 +961,7 @@ def _assign_revision_client_order_id(rec: dict, revision: int, *, overwrite: boo
 
 def claim(ids, now=None, lease_sec=None):
     """Lease entries without removing them, making crash recovery deterministic."""
-    if not (ids := _clean_id_set(ids)):
+    if ids is None or isinstance(ids, (str, bytes, bool)) or not (ids := {i for i in ids if not isinstance(i, bool) and i}):
         return []
     now = resolve_now_ts(now)
     lease_f = safe_pos_float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec, default=None)
@@ -1313,7 +1302,7 @@ def discard_expired(snapshots, now=None):
 
 def discard(ids):
     """Atomically remove records by ID without submitting them (expiry/give-up)."""
-    if not (ids := _clean_id_set(ids)):
+    if ids is None or isinstance(ids, (str, bytes, bool)) or not (ids := {i for i in ids if not isinstance(i, bool) and i}):
         return []
     return _remove_matching_locked(lambda rec: rec.get("id") in ids)
 

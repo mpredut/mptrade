@@ -157,17 +157,11 @@ def _parse_tranches(spec: str) -> list:
     return out
 
 
-
-def _require_strategy_mode(env: dict | None) -> str:
+def load_common_core_strat_env(env: dict | None, *, include_entry_dca: bool = True) -> dict[str, Any]:
+    """Load shared core strategy settings across spot, T212, and Hyperliquid engines."""
     mode = required_env("STRATEGY_MODE", env).strip().lower()
     if mode not in {"avg_tp", "dca_only"}:
         raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
-    return mode
-
-
-def load_common_core_strat_env(env: dict | None, *, include_entry_dca: bool = True) -> dict[str, Any]:
-    """Load shared core strategy settings across spot, T212, and Hyperliquid engines."""
-    mode = _require_strategy_mode(env)
     f = required_float_env
     cfg: dict[str, Any] = {
         "currency": required_env("STRAT_CURRENCY", env).strip().upper(),
@@ -192,7 +186,9 @@ def load_common_core_strat_env(env: dict | None, *, include_entry_dca: bool = Tr
 
 def parse_tp_ladder_env(env: dict | None, generate_ladder_fn: Callable) -> list[tuple[float, float]]:
     """Parse ``STRAT_TP_LADDER`` or ``STRAT_TP_LADDER_MIN/MAX/STEPS`` via shared botcore env API."""
-    _require_strategy_mode(env)
+    mode = required_env("STRATEGY_MODE", env).strip().lower()
+    if mode not in {"avg_tp", "dca_only"}:
+        raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
     raw_ladder = optional_env("STRAT_TP_LADDER", env=env)
     ladder_curve = optional_env("STRAT_TP_LADDER_CURVE", "linear", env=env).lower()
     if raw_ladder:
@@ -908,13 +904,6 @@ class BaseSpotMixin:
     def _reentry_pullback_labels(self, sp_len: int) -> tuple[str, str]:
         return f"fixed (fallback, warm-up {sp_len}/20)", "vol_1h"
 
-    def _resolve_reentry_vol_1h_pct(self) -> float | None:
-        """Resolve 1-hour volatility (%) from shadow ticks with non-replay cache fallback."""
-        vol = self._raw_reentry_shadow_vol_pct()
-        if vol is None and not self.replay_mode:
-            vol = self._mod_global("resolve_cached_volatility_1h_pct", resolve_cached_volatility_1h_pct)(self._symbol_id)
-        return vol
-
     def _vol_1h_ratio(self) -> tuple[float, str]:
         """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
         for fn, src in self._local_vol_1h_sources():
@@ -936,7 +925,11 @@ class BaseSpotMixin:
             return self.p.reentry_drop_pct, "fix"
         k_re = self.p.shadow_k_reentry
         try:
-            vol = self._resolve_reentry_vol_1h_pct()
+            vol = self._raw_reentry_shadow_vol_pct()
+            if vol is None and not self.replay_mode:
+                vol = self._mod_global("resolve_cached_volatility_1h_pct", resolve_cached_volatility_1h_pct)(
+                    self._symbol_id
+                )
         except Exception as e:  # noqa: BLE001 -- observational failure must not stop trading.
             self._log_msg(f"  [REENTRY-ADAPTIVE] calculation error ({e}) -- fallback to fixed")
             return self.p.reentry_drop_pct, "fix (fallback, error)"
@@ -945,20 +938,19 @@ class BaseSpotMixin:
         adapt_drop, _ = adaptive_thresholds(vol, k_reentry=k_re)
         return (adapt_drop if adapt_drop is not None else k_re * vol), f"adaptive (vol_1h {vol:.2f}% x k={k_re})"
 
-    def _safe_call_vol_fn(self, vol_fn: Any, warn_prefix: str) -> float | None:
-        try:
-            return vol_fn()
-        except Exception as e:  # noqa: BLE001 -- observational failure must not stop trading.
-            self._log_msg(f"  {warn_prefix} ({e}) -- fallback to fixed")
-            return None
-
     def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
         """Return the dynamic volatility-scaled or fixed pullback threshold from peak."""
         if not self.p.reentry_pullback_adaptive:
             return self.p.reentry_pullback_pct, "fixed"
-        vol = self._safe_call_vol_fn(
-            self._resolve_reentry_vol_1h_pct, "[REENTRY-PULLBACK-ADAPTIVE] calculation error"
-        )
+        try:
+            vol = self._raw_reentry_shadow_vol_pct()
+            if vol is None and not self.replay_mode:
+                vol = self._mod_global("resolve_cached_volatility_1h_pct", resolve_cached_volatility_1h_pct)(
+                    self._symbol_id
+                )
+        except Exception as e:  # noqa: BLE001 -- observational failure must not stop trading.
+            self._log_msg(f"  [REENTRY-PULLBACK-ADAPTIVE] calculation error ({e}) -- fallback to fixed")
+            vol = None
         sp_len = len(getattr(self, "_shadow_prices", None) or ())
         fallback_reason, vol_label = self._reentry_pullback_labels(sp_len)
         return compute_adaptive_reentry_pullback_pct(
@@ -972,9 +964,11 @@ class BaseSpotMixin:
         """Return the clamped volatility-adaptive or fixed trailing pullback."""
         if not getattr(self.p, "tp_trail_adaptive", False):
             return self.p.tp_trail_pct
-        vol = self._safe_call_vol_fn(
-            self._trail_vol_1h, "[STRAT] adaptive trailing: OHLC unavailable"
-        )
+        try:
+            vol = self._trail_vol_1h()
+        except Exception as e:  # noqa: BLE001 -- observational failure must not stop trading.
+            self._log_msg(f"  [STRAT] adaptive trailing: OHLC unavailable ({e}) -- fallback to fixed")
+            vol = None
         if vol is None:
             return self.p.tp_trail_pct
         return max(self.p.tp_trail_min, min(self.p.tp_trail_max, self.p.tp_trail_k * vol))

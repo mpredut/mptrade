@@ -245,12 +245,6 @@ def _floor_qty_decimals(val: float, qty_decimals: int) -> float:
     return math.floor(val * scale + 1e-9) / scale
 
 
-def _resolve_pos_price_and_rem_min(
-    price: float, min_remainder_notional: float
-) -> tuple[Optional[float], Optional[float]]:
-    return safe_pos_float(price, default=None), safe_pos_float(min_remainder_notional, default=None)
-
-
 def dust_protected_sell_balance_cap(
     balance: float,
     price: float,
@@ -263,7 +257,7 @@ def dust_protected_sell_balance_cap(
     if bal_f <= 0.0:
         return 0.0
     q_floor = _floor_qty_decimals(bal_f, qty_decimals)
-    px_f, rem_min = _resolve_pos_price_and_rem_min(price, min_remainder_notional)
+    px_f, rem_min = safe_pos_float(price, default=None), safe_pos_float(min_remainder_notional, default=None)
     if px_f is None or rem_min is None:
         return q_floor
     dust = max(0.0, bal_f - q_floor)
@@ -285,7 +279,7 @@ def dust_protected_partial_sell_qty(
     """Adjust a partial SELL quantity if it would leave an unsellable remainder below ``min_remainder_notional``."""
     req_f = safe_pos_float(requested_qty, default=0.0) or 0.0
     bal_f = safe_pos_float(balance, default=0.0) or 0.0
-    px_f, rem_min = _resolve_pos_price_and_rem_min(price, min_remainder_notional)
+    px_f, rem_min = safe_pos_float(price, default=None), safe_pos_float(min_remainder_notional, default=None)
     if req_f <= 0.0 or bal_f <= 0.0 or px_f is None or rem_min is None:
         return req_f, None
     if 0.0 < (bal_f - req_f) * px_f < rem_min:
@@ -710,12 +704,6 @@ def _decimal(value, *, name: str, allow_zero: bool = True) -> Decimal:
     return parsed
 
 
-def _floor_step(value: Decimal, step: Decimal) -> Decimal:
-    if step <= 0:
-        raise BinanceFilterError("filter step must be positive")
-    return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
-
-
 @dataclass(frozen=True)
 class BinanceOrderRules:
     tick_size: Decimal
@@ -807,13 +795,19 @@ class BinanceOrderRules:
         step = self.market_step if market else self.lot_step
         minimum = self.market_min if market else self.lot_min
         maximum = self.market_max if market else self.lot_max
-        qty = _floor_step(qty, step)
+        if step <= 0:
+            raise BinanceFilterError("filter step must be positive")
+        qty = (qty / step).to_integral_value(rounding=ROUND_DOWN) * step
         if qty <= 0 or qty < minimum or (maximum > 0 and qty > maximum):
             raise BinanceFilterError(f"quantity {qty} violates [{minimum}, {maximum or 'unbounded'}]")
 
         normalized_price = None
         if not market:
-            normalized_price = _floor_step(_decimal(price, name="price", allow_zero=False), self.tick_size)
+            if self.tick_size <= 0:
+                raise BinanceFilterError("filter step must be positive")
+            normalized_price = (
+                _decimal(price, name="price", allow_zero=False) / self.tick_size
+            ).to_integral_value(rounding=ROUND_DOWN) * self.tick_size
             if normalized_price <= 0 or normalized_price < self.min_price or (self.max_price > 0 and normalized_price > self.max_price):
                 raise BinanceFilterError(
                     f"price {normalized_price} violates [{self.min_price}, {self.max_price or 'unbounded'}]"

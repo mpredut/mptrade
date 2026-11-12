@@ -491,14 +491,11 @@ class IncrementalTrendBuffer:
         self.base_pk2 = 0.0
         self.y_ref = None
 
-    def _series_lists(self) -> tuple[list, ...]:
-        return (
+    def clear(self):
+        for seq in (
             self.timestamps, self.prices, self.p0, self.p1, self.p2,
             self.pk2, self.pg2, self.plr2, self.nonpos,
-        )
-
-    def clear(self):
-        for seq in self._series_lists():
+        ):
             seq.clear()
         self.offset = 0
         self.base_p0 = self.base_p1 = self.base_p2 = self.base_pk2 = 0.0
@@ -603,7 +600,10 @@ class IncrementalTrendBuffer:
         self.base_p1 = self.p1[idx - 1]
         self.base_p2 = self.p2[idx - 1]
         self.base_pk2 = self.pk2[idx - 1]
-        for seq in self._series_lists():
+        for seq in (
+            self.timestamps, self.prices, self.p0, self.p1, self.p2,
+            self.pk2, self.pg2, self.plr2, self.nonpos,
+        ):
             del seq[:idx]
         self.offset += idx
         if not self.prices:
