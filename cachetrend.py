@@ -1607,12 +1607,6 @@ _KALMAN_KEYS = ("kalman_vel", "kalman_vel_std", "kalman_trend")
 _ENVELOPE_KEYS = frozenset({"items", "ts", "updated_ts"})
 
 
-def _unwrap_state_items(payload: dict) -> dict:
-    if isinstance(payload.get("items"), dict) and set(payload.keys()) <= _ENVELOPE_KEYS:
-        return dict(payload["items"])
-    return payload
-
-
 def _has_seq_min_len(seq: object, min_len: int) -> bool:
     return (
         seq is not None
@@ -1686,7 +1680,7 @@ class KalmanStateTracker:
                             break
                 loaded = read_json_dict(self.state_path, default=None, recover_previous=True)
                 if isinstance(loaded, dict):
-                    self._state = _unwrap_state_items(loaded)
+                    self._state = dict(loaded["items"]) if isinstance(loaded.get("items"), dict) and set(loaded.keys()) <= _ENVELOPE_KEYS else loaded
             except Exception as e:  # noqa: BLE001
                 print(f"[shadow_signals] error loading initial kalman state: {e}")
         self._last_state_write = 0.0
@@ -1708,7 +1702,8 @@ class KalmanStateTracker:
             if os.path.exists(self.state_path):
                 existing = read_json_dict(self.state_path, default=None, recover_previous=True)
                 if isinstance(existing, dict):
-                    for k, v in _unwrap_state_items(existing).items():
+                    unwrapped = dict(existing["items"]) if isinstance(existing.get("items"), dict) and set(existing.keys()) <= _ENVELOPE_KEYS else existing
+                    for k, v in unwrapped.items():
                         if not isinstance(v, dict):
                             continue
                         cur_v = merged.get(k)

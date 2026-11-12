@@ -1484,22 +1484,20 @@ class Strategy(BaseSpotMixin):
             log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({pending_exit.get('reason')}) — intent retained for retry")
             return True
 
-        def _reset_trail_peak_and_sells() -> bool:
-            self.s["trail_peak"] = None
-            self._cancel_non_market_sells()
-            return False
-
-        if decision is not None and decision.reason == "not_in_tp_territory":
-            return _reset_trail_peak_and_sells()
-        if decision is not None and decision.action == ExitAction.HOLD:
-            if self.ticker in self.exit_manager.tp_ride_state:
+        if decision is not None and (decision.reason == "not_in_tp_territory" or decision.action == ExitAction.HOLD):
+            if (
+                decision.reason != "not_in_tp_territory"
+                and decision.action == ExitAction.HOLD
+                and self.ticker in self.exit_manager.tp_ride_state
+            ):
                 ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
                 peak_px = safe_pos_float(ride_state.get("peak_price")) or price
                 self.s["trail_peak"] = peak_px
                 self._cancel_non_market_sells()
                 log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.2f})")
                 return True
-            return _reset_trail_peak_and_sells()
+            self.s["trail_peak"] = None
+            self._cancel_non_market_sells()
         return False
 
     def _dispatch_take_profit(self, price: float, avg: float | None, held: float) -> bool:

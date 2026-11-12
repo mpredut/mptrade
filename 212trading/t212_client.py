@@ -367,12 +367,6 @@ class T212Client:
                 self._invalidate_order_caches_locked()
         return status, data
 
-    @staticmethod
-    def _clean_ticker(ticker: str) -> str:
-        if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
-            raise ValueError(f"invalid T212 ticker: {ticker!r}")
-        return str(ticker).strip()
-
     def place_limit_order(
         self,
         ticker: str,
@@ -381,7 +375,9 @@ class T212Client:
         validity: str = "DAY",
     ) -> tuple[int, dict]:
         """Place a limit order and return HTTP status with response payload."""
-        clean_ticker = self._clean_ticker(ticker)
+        if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
+            raise ValueError(f"invalid T212 ticker: {ticker!r}")
+        clean_ticker = str(ticker).strip()
         if isinstance(quantity, bool) or isinstance(limit_price, bool):
             raise ValueError("place_limit_order quantity and limit_price cannot be bool")
         val_u = str(validity or "").strip().upper() if not isinstance(validity, bool) else ""
@@ -409,7 +405,9 @@ class T212Client:
         extended_hours: bool = False,
     ) -> tuple[int, dict]:
         """Place a market order, using quantity sign for direction as with limits."""
-        clean_ticker = self._clean_ticker(ticker)
+        if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
+            raise ValueError(f"invalid T212 ticker: {ticker!r}")
+        clean_ticker = str(ticker).strip()
         if isinstance(quantity, bool):
             raise ValueError("place_market_order quantity cannot be bool")
         qty_f = safe_float(quantity, default=None)

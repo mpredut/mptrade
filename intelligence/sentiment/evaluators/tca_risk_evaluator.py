@@ -539,10 +539,6 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
             "slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel",
         )
         _round_slope_keys = {"slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel"}
-
-        def _round_slope_sig(val: float) -> float:
-            return ((safe_float(f"{val:.2e}", default=0.0) or 0.0) if 0.0 < abs(val) < 1e-4 else round(val, 6)) + 0.0
-
         crypto_bellwethers: Dict[str, Any] = {}
         for b_canon, (sym, pinfo) in sorted(by_base.items()):
             if has_equity_suffix(sym) or (px_f := safe_float(pinfo.get("price"), 0.0) or 0.0) <= 0:
@@ -555,7 +551,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
             cb_entry: Dict[str, Any] = {
                 "symbol": sym, "price": round(px_f, 6),
                 **{
-                    k: (_round_slope_sig(sf_v) if k in _round_slope_keys else pinfo[k])
+                    k: (((safe_float(f"{sf_v:.2e}", default=0.0) or 0.0) if 0.0 < abs(sf_v) < 1e-4 else round(sf_v, 6)) + 0.0 if k in _round_slope_keys else pinfo[k])
                     for k in raw_horizon_keys
                     if pinfo.get(k) is not None
                     and not (k == "chg_7d_pct" and is_sub24h_dup_7d)
@@ -628,7 +624,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                 "symbol": eq_sym,
                 **({"price": round(eq_px_f, 6)} if eq_px_f is not None else {}),
                 **{
-                    k: (_round_slope_sig(sf_v) if k in _round_slope_keys else pinfo[k])
+                    k: (((safe_float(f"{sf_v:.2e}", default=0.0) or 0.0) if 0.0 < abs(sf_v) < 1e-4 else round(sf_v, 6)) + 0.0 if k in _round_slope_keys else pinfo[k])
                     for k in raw_horizon_keys
                     if pinfo.get(k) is not None
                     and not (k == "chg_7d_pct" and is_sub24h_dup_7d)

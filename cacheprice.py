@@ -2131,10 +2131,6 @@ def _start_nonbinance_trend_poller(
         if isinstance(ws_ts_map, dict):
             ws_ts_map[sym_key] = ts_val
 
-    def _is_ws_healthy(sym_key: str) -> bool:
-        fn = getattr(cpm, "is_real_ws_healthy", None)
-        return bool(fn(sym_key)) if callable(fn) else False
-
     def run():
         rth_seeded: set[str] = set()
         empty_backoff_ts: dict[str, float] = {}
@@ -2150,14 +2146,16 @@ def _start_nonbinance_trend_poller(
                     pass
         if ws_streams:
             for _ in range(20):
-                if stop_event.is_set() or all(_is_ws_healthy(s) for s in symbols):
+                ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
+                if stop_event.is_set() or (callable(ws_health_fn) and all(bool(ws_health_fn(s)) for s in symbols)):
                     break
                 stop_event.wait(0.1)
         while not stop_event.is_set():
             for s in symbols:
                 if stop_event.is_set():
                     break
-                if _is_ws_healthy(s):
+                ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
+                if callable(ws_health_fn) and bool(ws_health_fn(s)):
                     continue
                 rth_gate_active = is_rth_gate_enabled(
                     getattr(cpm, "_enforce_rth_gate", None), rth_fn=is_us_rth_open

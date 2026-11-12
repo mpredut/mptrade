@@ -223,11 +223,6 @@ def _positive_int_env(name: str, default: int) -> int:
     return val if (val is not None and val >= 0) else default
 
 
-def _delivery_state_path() -> Path:
-    configured = optional_env("NOTIFICATION_STATE_FILE")
-    return Path(configured).expanduser() if configured else BASE_DIR / "logs/notification_delivery_state.json"
-
-
 def _load_delivery_state(path: Path, today: str) -> dict:
     state = read_json_dict(path, default={}, recover_previous=True)
     if not isinstance(state, dict) or not isinstance(state.get("channels"), dict):
@@ -410,11 +405,6 @@ def _topic_category_label(topic: str) -> str:
     return next((label for key, label, _ in _TOPIC_CATEGORY_SPECS if key in tl), "")
 
 
-def _topic_tier(topic: str) -> int:
-    tl = str(topic or "").lower()
-    return next((tier for key, _, tier in _TOPIC_CATEGORY_SPECS if key in tl), 0)
-
-
 def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str]:
     """Synthesize and concatenate multiple distinct notifications into a single bulk message."""
     if not items:
@@ -423,14 +413,10 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
         (str(it.get("priority") or "default") for it in items),
         key=lambda p: _PRIO_RANK.get(p, 1),
     )
-    best_topic = str(items[0].get("topic") or "")
-    best_tier = _topic_tier(best_topic)
-    for it in items[1:]:
-        t = str(it.get("topic") or "")
-        tier = _topic_tier(t)
-        if tier > best_tier:
-            best_topic = t
-            best_tier = tier
+    best_topic = max(
+        (str(it.get("topic") or "") for it in items),
+        key=lambda t: next((tier for key, _, tier in _TOPIC_CATEGORY_SPECS if key in t.lower()), 0),
+    )
 
     if len(items) == 1:
         it = items[0]
@@ -682,7 +668,8 @@ def _resolve_gate_context(
     nf = safe_pos_float(now, default=None)
     now_ts = nf if (nf is not None and nf < 32503680000.0) else time.time()
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
-    return now_ts, _parse_bool_flag(flag, False), today, _delivery_state_path()
+    cfg_path = optional_env("NOTIFICATION_STATE_FILE")
+    return now_ts, _parse_bool_flag(flag, False), today, (Path(cfg_path).expanduser() if cfg_path else BASE_DIR / "logs/notification_delivery_state.json")
 
 
 def pass_common_gate(
@@ -913,7 +900,8 @@ def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) ->
     now = time.time()
     cd_sec = safe_pos_float(cooldown_seconds, default=900.0)
     today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
-    path = _delivery_state_path()
+    cfg_path = optional_env("NOTIFICATION_STATE_FILE")
+    path = Path(cfg_path).expanduser() if cfg_path else BASE_DIR / "logs/notification_delivery_state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(path.with_suffix(path.suffix + ".lock")):
         state = _load_delivery_state(path, today)
