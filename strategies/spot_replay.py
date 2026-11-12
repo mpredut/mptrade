@@ -374,6 +374,38 @@ def _run_once(
                     wins += 1
                 cycle_net_start = strategy.s["realized_net"]
 
+        def _settle_order_fill(
+            order_to_remove: dict | None,
+            fill_order: dict,
+            side: str,
+            volume: float,
+            price: float,
+            *,
+            market: bool,
+            final: bool,
+        ) -> None:
+            nonlocal cash, min_cash, fill_count, turnover_notional
+            if order_to_remove is not None:
+                strategy._remove(order_to_remove)
+            fee = fee_model.rate_pct(market=market) / 100.0 * volume * price
+            if cash is not None:
+                cash += (-1 if side == "buy" else 1) * volume * price - fee
+                if cash < -1e-8:
+                    raise ValueError("cash account overdrawn by simulated execution")
+                if cash < 0.0:
+                    cash = 0.0
+                min_cash = min(min_cash, cash)
+            strategy._apply_fill(fill_order, volume, price, fee=fee, final=final)
+            fill_count += 1
+            turnover_notional += volume * price
+            if side == "sell":
+                _record_sell_outcome()
+
+        def _current_equity_and_exposure(px: float) -> tuple[float, bool]:
+            q = strategy.s["qty"]
+            upnl = (px - strategy.s["cost"] / q) * q if q > 1e-12 else 0.0
+            return initial_capital + strategy.s["realized_net"] + upnl, q > 1e-12
+
         for bar_index, row in enumerate(ohlc):
             open_, high, low, close = unpack_ohlc_bar(row)
             current_bar = bar_index
@@ -447,31 +479,24 @@ def _run_once(
                                     if "amount" in order:
                                         order["amount"] = 0.0
                                     complete = True
-                            if complete:
-                                strategy._remove(order)
-                            fee = fee_model.rate_pct(market=market) / 100.0 * volume * price
-                            if cash is not None:
-                                cash += (-1 if side == "buy" else 1) * volume * price - fee
-                                if cash < -1e-8:
-                                    raise ValueError("cash account overdrawn by simulated execution")
-                                if cash < 0.0:
-                                    cash = 0.0
-                                min_cash = min(min_cash, cash)
-                            strategy._apply_fill(fill_order, volume, price, fee=fee, final=complete)
-                            fill_count += 1
-                            turnover_notional += volume * price
-                            if side == "sell":
-                                _record_sell_outcome()
+                            _settle_order_fill(
+                                order if complete else None,
+                                fill_order,
+                                side,
+                                volume,
+                                price,
+                                market=market,
+                                final=complete,
+                            )
 
                 if check_ttl and strategy.s["orders"]:
                     for order in list(strategy.s["orders"]):
                         if order["side"] == "buy" and not order.get("market") and close > order["price"] * 1.003:
                             strategy._remove(order)
             strategy.step(close, timestamp=replay_time, high=high if intrabar_high else None)
-            qty = strategy.s["qty"]
-            unrealized = (close - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
-            equity_curve.append(initial_capital + strategy.s["realized_net"] + unrealized)
-            exposure.append(qty > 1e-12)
+            eq_val, exp_val = _current_equity_and_exposure(close)
+            equity_curve.append(eq_val)
+            exposure.append(exp_val)
 
         last_close = require_pos_float(ohlc[-1][3], "last_close")
         settled_end_exit = False
@@ -479,27 +504,16 @@ def _run_once(
             if order.get("market") and order["side"] == "sell" and strategy.s["qty"] > 1e-12:
                 volume = min(require_pos_float(order["vol"], "order_vol"), strategy.s["qty"])
                 price = execution.market_price("sell", last_close)
-                fee = fee_model.rate_pct(market=True) / 100.0 * volume * price
-                if cash is not None:
-                    cash += volume * price - fee
-                    if cash < -1e-8:
-                        raise ValueError("cash account overdrawn by simulated execution")
-                    if cash < 0.0:
-                        cash = 0.0
-                    min_cash = min(min_cash, cash)
-                strategy._remove(order)
-                strategy._apply_fill(order, volume, price, fee=fee, final=True)
-                fill_count += 1
-                turnover_notional += volume * price
-                _record_sell_outcome()
+                _settle_order_fill(
+                    order, order, "sell", volume, price, market=True, final=True
+                )
                 settled_end_exit = True
         if settled_end_exit:
-            rem_qty = strategy.s["qty"]
-            rem_upnl = (last_close - strategy.s["cost"] / rem_qty) * rem_qty if rem_qty > 1e-12 else 0.0
+            eq_val, exp_val = _current_equity_and_exposure(last_close)
             if equity_curve:
-                equity_curve[-1] = initial_capital + strategy.s["realized_net"] + rem_upnl
+                equity_curve[-1] = eq_val
             if exposure:
-                exposure[-1] = rem_qty > 1e-12
+                exposure[-1] = exp_val
     finally:
         _strat.notify, _strat.log = original_notify, original_log
 

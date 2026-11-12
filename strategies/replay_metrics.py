@@ -31,6 +31,30 @@ def round_metric(value: object, decimals: int = 10) -> object:
     return round(vf, decimals) if vf is not None else value
 
 
+def _coerce_finite_number_list(
+    values, name: str, *, allow_none: bool, non_empty: bool
+) -> list[float]:
+    if values is None:
+        if not allow_none:
+            raise ValueError(f"{name} cannot be empty")
+        return []
+    if isinstance(values, (str, bytes, bool)):
+        raise ValueError(
+            f"{name} cannot be empty" if not allow_none else f"{name} must be an iterable of finite numbers"
+        )
+    out: list[float] = []
+    for value in values:
+        if isinstance(value, bool) or value is None:
+            raise ValueError(f"{name} cannot contain booleans")
+        fval = safe_float(value, default=None)
+        if fval is None:
+            raise ValueError(f"{name} must contain finite numbers")
+        out.append(fval)
+    if non_empty and not out:
+        raise ValueError(f"{name} cannot be empty")
+    return out
+
+
 def calculate_performance_metrics(
     equity_curve: Sequence[float],
     *,
@@ -57,18 +81,7 @@ def calculate_performance_metrics(
     if turnover_notional is None:
         raise ValueError("turnover_notional must be non-negative")
 
-    curve: list[float] = []
-    if equity_curve is None or isinstance(equity_curve, (str, bytes, bool)):
-        raise ValueError("equity_curve cannot be empty")
-    for value in equity_curve:
-        if isinstance(value, bool) or value is None:
-            raise ValueError("equity_curve cannot contain booleans")
-        fval = safe_float(value, default=None)
-        if fval is None:
-            raise ValueError("equity_curve must contain finite numbers")
-        curve.append(fval)
-    if not curve:
-        raise ValueError("equity_curve cannot be empty")
+    curve = _coerce_finite_number_list(equity_curve, "equity_curve", allow_none=False, non_empty=True)
     if not math.isclose(curve[0], initial_capital, rel_tol=1e-9, abs_tol=1e-9):
         raise ValueError("the first point of equity_curve must be initial_capital")
 
@@ -166,16 +179,7 @@ def calculate_performance_metrics(
         if exposure_flags else 0.0
     )
 
-    if trade_pnls is not None and isinstance(trade_pnls, (str, bytes, bool)):
-        raise ValueError("trade_pnls must be an iterable of finite numbers")
-    pnls: list[float] = []
-    for value in ([] if trade_pnls is None else trade_pnls):
-        if isinstance(value, bool):
-            raise ValueError("trade_pnls cannot contain booleans")
-        fval = safe_float(value, default=None)
-        if fval is None:
-            raise ValueError("trade_pnls must contain finite numbers")
-        pnls.append(fval)
+    pnls = _coerce_finite_number_list(trade_pnls, "trade_pnls", allow_none=True, non_empty=False)
     gross_profit = sum(value for value in pnls if value > 0)
     gross_loss = -sum(value for value in pnls if value < 0)
     winning_trades = sum(value > 0 for value in pnls)

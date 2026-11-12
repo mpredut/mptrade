@@ -365,26 +365,29 @@ class _LivePairVenue:
         if now is None:
             raise ValueError("rtrade recovery clock returned invalid time")
         if not pending.get("order_id"):
-            recovery_started_at = pending.get("recovery_started_at")
-            if recovery_started_at is not None:
-                r_started = safe_float(recovery_started_at, default=None)
-                if r_started is None:
-                    raise ValueError(f"{kind}:{side} has invalid recovery timing")
-                if max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC:
-                    pending["recovery_state"] = "horizon_exhausted"
-                    pending["recovery_horizon_exhausted_at"] = now
-                    persist_raw(pending)
-                    raise _IntentRecoveryPending(f"{kind}:{side} recovery horizon is exhausted")
-            if pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}:
+            def _pending_ts(field: str, err_label: str) -> float | None:
+                raw_v = pending.get(field)
+                if raw_v is None:
+                    return None
+                val_f = safe_float(raw_v, default=None)
+                if val_f is None:
+                    raise ValueError(f"{kind}:{side} has invalid {err_label}")
+                return val_f
+
+            def _persist_and_raise_recovery_pending(msg: str) -> None:
                 persist_raw(pending)
-                raise _IntentRecoveryPending(f"{kind}:{side} requires manual reconciliation")
-            next_recovery_at = pending.get("next_recovery_at")
-            if next_recovery_at is not None:
-                n_rec = safe_float(next_recovery_at, default=None)
-                if n_rec is None:
-                    raise ValueError(f"{kind}:{side} has invalid next recovery time")
-                if now < n_rec:
-                    raise _IntentRecoveryPending(f"{kind}:{side} reconciliation is not due yet")
+                raise _IntentRecoveryPending(f"{kind}:{side} {msg}")
+
+            r_started = _pending_ts("recovery_started_at", "recovery timing")
+            if r_started is not None and max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC:
+                pending["recovery_state"] = "horizon_exhausted"
+                pending["recovery_horizon_exhausted_at"] = now
+                _persist_and_raise_recovery_pending("recovery horizon is exhausted")
+            if pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}:
+                _persist_and_raise_recovery_pending("requires manual reconciliation")
+            n_rec = _pending_ts("next_recovery_at", "next recovery time")
+            if n_rec is not None and now < n_rec:
+                raise _IntentRecoveryPending(f"{kind}:{side} reconciliation is not due yet")
 
         retained = dict(pending)
 
@@ -637,18 +640,21 @@ class _LivePairVenue:
         )
         if handled:
             return existing_ticket
+
+        def _hard_stop_abort(msg: str):
+            print(f"[{self.symbol}] {side} hard-stop {msg}")
+            return None
+
         price = safe_pos_float(self.current_price(), 0.0)
         if price <= 0:
-            print(f"[{self.symbol}] {side} hard-stop BLOCKED: price unavailable")
-            return None
+            return _hard_stop_abort("BLOCKED: price unavailable")
         decision = decide_quantity(
             self.executor, self.symbol, side, price, qty,
             apply_policy=False, market=True, enforce_business_minimum=False,
         )
         final_qty = safe_pos_float(decision.final_qty, default=0.0) or 0.0
         if final_qty <= 0:
-            print(f"[{self.symbol}] {side} hard-stop BLOCKED: {decision.refuse_reason} asset={decision.balance_asset}")
-            return None
+            return _hard_stop_abort(f"BLOCKED: {decision.refuse_reason} asset={decision.balance_asset}")
         precision = self.audited_executor.pair_precision(self.symbol)
         if precision is not None:
             vol_dec = safe_nonneg_int(getattr(precision, "volume_decimals", None), default=None)
@@ -657,8 +663,7 @@ class _LivePairVenue:
                 final_qty = safe_nonneg_float(Decimal(str(final_qty)).quantize(quantum, rounding=ROUND_DOWN), 0.0)
             min_qty = safe_nonneg_float(getattr(precision, "order_min", None), default=0.0) or 0.0
             if final_qty <= 0 or final_qty < min_qty:
-                print(f"[{self.symbol}] {side} hard-stop BLOCKED: qty {final_qty} below the minimum {precision.order_min}")
-                return None
+                return _hard_stop_abort(f"BLOCKED: qty {final_qty} below the minimum {precision.order_min}")
         kind = f"rtrade:{reason}:{pair_id or 'unknown-pair'}:revision:{revision}"
         intent_id = f"rtrade-{pair_id or 'unknown'}-{reason}-{side.lower()}-r{revision}"
         client_id = rtrade_client_order_id(pair_id or "unknown", side, store_kind)
@@ -693,8 +698,7 @@ class _LivePairVenue:
                     submit_error=f"{exc.__class__.__name__}: {exc}",
                 )
                 self._mark_recovery_pending(pair_id, side)
-            print(f"[{self.symbol}] {side} hard-stop response is ambiguous; the persisted client ID must be reconciled")
-            return None
+            return _hard_stop_abort("response is ambiguous; the persisted client ID must be reconciled")
         clean_oid = extract_order_id(order_id, default=None)
         if not clean_oid:
             if self.pair_store is not None and pair_id:

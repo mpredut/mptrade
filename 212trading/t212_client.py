@@ -497,6 +497,15 @@ class T212Client:
         result.pop("_timestamp_ms", None)
         return result
 
+    def _record_read_fail(self, what: str, status: int, attr: str) -> None:
+        self._log_read_fail(what, status)
+        with self._lock:
+            self._fetch_fail[attr] = time.monotonic()
+
+    def _fresh_hist_cache(self, ttl: float, *, require_list: bool = False) -> list | None:
+        with self._lock:
+            return self._fresh_hist_cache_locked(ttl, require_list=require_list)
+
     def _fetch_order_history_locked(self) -> list | None:
         """Fetch latest 50 order history entries under ``_fetch_lock`` and persist caches."""
         status, body = http_get(
@@ -506,16 +515,12 @@ class T212Client:
         if status == 429:
             self.notify_rate_limit(max(5.0, self._pf_ttl))
         if status != 200 or not body:
-            self._log_read_fail("order history", status)
-            with self._lock:
-                self._fetch_fail["_hist_cache"] = time.monotonic()
+            self._record_read_fail("order history", status, "_hist_cache")
             return None
         try:
             payload = parse_json_payload(body)
         except ValueError:
-            self._log_read_fail("order history (invalid JSON)", status)
-            with self._lock:
-                self._fetch_fail["_hist_cache"] = time.monotonic()
+            self._record_read_fail("order history (invalid JSON)", status, "_hist_cache")
             return None
         items = payload.get("items", []) if isinstance(payload, dict) else payload
         if isinstance(items, list):
@@ -527,16 +532,12 @@ class T212Client:
     def refresh_order_history(self, *, max_age_sec: float | None = None) -> list | None:
         """Return recent order history items, refreshing from T212 and syncing trade cache when stale."""
         ttl = max(1.0, safe_nonneg_float(max_age_sec, default=self._pf_ttl))
-        with self._lock:
-            cached = self._fresh_hist_cache_locked(ttl, require_list=True)
-            if cached is not None:
-                return cached
+        if (cached := self._fresh_hist_cache(ttl, require_list=True)) is not None:
+            return cached
         with self._fetch_lock:
             with self._shared_cache_file_lock():
-                with self._lock:
-                    cached = self._fresh_hist_cache_locked(ttl, require_list=True)
-                    if cached is not None:
-                        return cached
+                if (cached := self._fresh_hist_cache(ttl, require_list=True)) is not None:
+                    return cached
                 s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", ttl)
                 if s_hit and isinstance(s_val, list):
                     self._store_shared_hist_cache(s_age, s_val)
@@ -657,6 +658,10 @@ class T212Client:
             return True, (c[1] if (c and (now - c[0]) < stale_limit) else None)
         return False, None
 
+    def _peek_cached(self, attr: str, ttl: float) -> tuple[bool, list | dict | None]:
+        with self._lock:
+            return self._peek_cached_locked(attr, ttl)
+
     def _read_cached(
         self,
         attr: str,
@@ -673,16 +678,14 @@ class T212Client:
         """
         eff_ttl = max(self._pf_ttl, self._pf_ttl * safe_pos_float(ttl_mult, default=1.0))
         stale_limit = max(600.0, eff_ttl * 100.0)
-        with self._lock:
-            hit, val = self._peek_cached_locked(attr, eff_ttl)
-            if hit:
-                return val
+        hit, val = self._peek_cached(attr, eff_ttl)
+        if hit:
+            return val
         with self._fetch_lock:
             with self._shared_cache_file_lock():
-                with self._lock:   # Another thread may have refilled while this one waited.
-                    hit, val = self._peek_cached_locked(attr, eff_ttl)
-                    if hit:
-                        return val
+                hit, val = self._peek_cached(attr, eff_ttl)
+                if hit:
+                    return val
                 s_hit, s_val, s_age = self._read_shared_cache(attr, eff_ttl)
                 if s_hit and isinstance(s_val, expect_type):
                     with self._lock:
@@ -700,9 +703,8 @@ class T212Client:
                         return s_fb_val
                     if status == 429:
                         self.notify_rate_limit(max(5.0, self._pf_ttl))
-                    self._log_read_fail(what, status)
+                    self._record_read_fail(what, status, attr)
                     with self._lock:
-                        self._fetch_fail[attr] = time.monotonic()
                         c = getattr(self, attr, None)
                         if c and (time.monotonic() - c[0]) < stale_limit:
                             return c[1]
@@ -710,9 +712,7 @@ class T212Client:
                 try:
                     data = parse_json_payload(body)
                 except ValueError:
-                    self._log_read_fail(f"{what} (invalid JSON)", status)
-                    with self._lock:
-                        self._fetch_fail[attr] = time.monotonic()
+                    self._record_read_fail(f"{what} (invalid JSON)", status, attr)
                     return None
                 if not isinstance(data, expect_type):
                     return None

@@ -633,18 +633,19 @@ class MarketRegimeService:
 
         configured = _HORIZON_SOURCES[parsed]
         if interval_min is not None or window_seconds is not None:
-            if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
+            if isinstance(window_seconds, bool):
                 raise ValueError("the regime interval and window must be positive")
-            if interval_min is not None:
-                im_i = exact_pos_int(interval_min, default=None)
-                if im_i is None:
-                    raise ValueError("the regime interval and window must be positive")
+            im_i = (
+                configured[0][0]
+                if interval_min is None
+                else self._validate_positive_interval(interval_min, "the regime interval and window must be positive")
+            )
             if window_seconds is not None:
                 ws_f = safe_pos_float(window_seconds, default=None)
                 if ws_f is None:
                     raise ValueError("the regime interval and window must be positive")
             primary = (
-                configured[0][0] if interval_min is None else im_i,
+                im_i,
                 configured[0][1] if window_seconds is None else ws_f,
             )
             configured = (primary,) + tuple(
@@ -741,11 +742,22 @@ class MarketRegimeService:
     def _ttl_for(self, decision) -> float:
         return self.cache_ttl_sec if getattr(decision, "fresh", False) else self.negative_cache_ttl_sec
 
+    @staticmethod
+    def _validate_positive_interval(interval_min, err_msg: str) -> int:
+        im_i = None if isinstance(interval_min, bool) else exact_pos_int(interval_min, default=None)
+        if im_i is None:
+            raise ValueError(err_msg)
+        return im_i
+
+    @staticmethod
+    def _horizon_window_needed_samples(window_seconds: float, interval_min: int) -> int:
+        return max(3, safe_pos_int(math.ceil(window_seconds / (interval_min * 60.0)), default=3) or 3)
+
     def _evaluate_provider_source(self, provider, symbol: str, *,
                                   interval_min=1, window_seconds=900.0):
-        im_i = exact_pos_int(interval_min, default=None)
+        im_i = self._validate_positive_interval(interval_min, "the regime interval and window must be positive")
         win_f = safe_pos_float(window_seconds, default=None)
-        if im_i is None or win_f is None:
+        if win_f is None:
             raise ValueError("the regime interval and window must be positive")
         interval_min, window_seconds = im_i, win_f
         key = (
@@ -770,7 +782,7 @@ class MarketRegimeService:
             series = self._closed_series(provider, symbol, interval_min)
             raw_closes = tuple(series.closes)
             raw_timestamps = tuple(series.timestamps or ())
-            needed = max(3, safe_pos_int(math.ceil(window_seconds / (interval_min * 60.0)), default=3) or 3)
+            needed = self._horizon_window_needed_samples(window_seconds, interval_min)
             closes = raw_closes[-needed:]
             if not raw_timestamps:
                 observed_at = (
@@ -809,19 +821,13 @@ class MarketRegimeService:
                 )
         return decision, observed_at, continuous
 
-    @staticmethod
-    def _resolve_horizon_window(horizon="short", interval_min=None):
-        if isinstance(interval_min, bool):
-            raise ValueError("the regime interval must be positive")
+    @classmethod
+    def _resolve_horizon_window(cls, horizon="short", interval_min=None):
+        if interval_min is not None:
+            interval_min = cls._validate_positive_interval(interval_min, "the regime interval must be positive")
         parsed = MarketRegimeHorizon.parse(horizon)
         configured_interval, window_seconds = _HORIZON_SOURCES[parsed][0]
-        if interval_min is None:
-            interval = configured_interval
-        else:
-            im_i = exact_pos_int(interval_min, default=None)
-            if im_i is None:
-                raise ValueError("the regime interval must be positive")
-            interval = im_i
+        interval = configured_interval if interval_min is None else interval_min
         return parsed, interval, window_seconds
 
     @classmethod
@@ -830,7 +836,7 @@ class MarketRegimeService:
         _parsed, interval, window_seconds = cls._resolve_horizon_window(
             horizon, interval_min=interval_min
         )
-        return max(3, safe_pos_int(math.ceil(window_seconds / (interval * 60.0)), default=3) or 3)
+        return cls._horizon_window_needed_samples(window_seconds, interval)
 
     _EVAL_CLOSES_CACHE: OrderedDict = OrderedDict()
     _EVAL_CLOSES_LOCK: threading.Lock = threading.Lock()
