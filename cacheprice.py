@@ -808,21 +808,6 @@ class Cache365PriceManager(Cache24PriceManager):
                 safe_nonneg_int(val, default=0),
             )
 
-    def _reload_and_merge_timestamps_locked(
-        self, original_fetchtimes, original_rest_cursors
-    ):
-        live_fetchtimes = {
-            k: safe_nonneg_int(v, default=0) for k, v in dict(original_fetchtimes).items()
-        }
-        self._merge_max_nonneg_int_map(live_fetchtimes, self.fetchtime_per_symbol)
-        live_rest_cursors = {
-            k: safe_nonneg_int(v, default=0) for k, v in dict(original_rest_cursors).items()
-        }
-        self._merge_max_nonneg_int_map(live_rest_cursors, self._rest_sync_cursor_per_symbol)
-        self._load_jsonl()
-        self._merge_max_nonneg_int_map(self.fetchtime_per_symbol, live_fetchtimes)
-        self._merge_max_nonneg_int_map(self._rest_sync_cursor_per_symbol, live_rest_cursors)
-
     def _collect_live_delta_locked(
         self, snap_item_ids: set[int], *, min_ts_ms: int = 0
     ) -> dict[str, list]:
@@ -881,7 +866,17 @@ class Cache365PriceManager(Cache24PriceManager):
             if min_ts_ms is None
             else self._collect_live_delta_locked(snap_item_ids, min_ts_ms=min_ts_ms)
         )
-        self._reload_and_merge_timestamps_locked(original_fetchtimes, original_rest_cursors)
+        live_fetchtimes = {
+            k: safe_nonneg_int(v, default=0) for k, v in dict(original_fetchtimes).items()
+        }
+        self._merge_max_nonneg_int_map(live_fetchtimes, self.fetchtime_per_symbol)
+        live_rest_cursors = {
+            k: safe_nonneg_int(v, default=0) for k, v in dict(original_rest_cursors).items()
+        }
+        self._merge_max_nonneg_int_map(live_rest_cursors, self._rest_sync_cursor_per_symbol)
+        self._load_jsonl()
+        self._merge_max_nonneg_int_map(self.fetchtime_per_symbol, live_fetchtimes)
+        self._merge_max_nonneg_int_map(self._rest_sync_cursor_per_symbol, live_rest_cursors)
         self._merge_live_delta_locked(post_delta)
         return post_delta
 
@@ -1319,22 +1314,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return None
         return observed_at, price
 
-    def _resolve_target_symbol_locked(self, symbol: str) -> str:
-        sym_u, sym_clean = _norm_symbol_keys(symbol)
-        for cand in (symbol, sym_u, sym_clean):
-            if cand in self.cache:
-                return cand
-        for k in self.cache:
-            if isinstance(k, str) and k.upper() in (sym_u, sym_clean):
-                return k
-        configured = getattr(self, "symbols", ())
-        if sym_clean in configured:
-            return sym_clean
-        for s in configured:
-            if isinstance(s, str) and s.upper() in (sym_u, sym_clean):
-                return s
-        return symbol
-
     def _cached_entry_for_symbol_locked(self, target_sym: str):
         cached_price, last_ts = self.extract_price_and_ts(self.cache.get(target_sym))
         return (
@@ -1344,7 +1323,20 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
 
     def _resolve_and_load_cached_entry(self, symbol: str, now_ms: int):
         with self.lock:
-            target_sym = self._resolve_target_symbol_locked(symbol)
+            sym_u, sym_clean = _norm_symbol_keys(symbol)
+            configured = getattr(self, "symbols", ())
+            target_sym = next(
+                (
+                    cand
+                    for cand in (
+                        *(c for c in (symbol, sym_u, sym_clean) if c in self.cache),
+                        *(k for k in self.cache if isinstance(k, str) and k.upper() in (sym_u, sym_clean)),
+                        *((sym_clean,) if sym_clean in configured else ()),
+                        *(s for s in configured if isinstance(s, str) and s.upper() in (sym_u, sym_clean)),
+                    )
+                ),
+                symbol,
+            )
             entry, last_ts = self._cached_entry_for_symbol_locked(target_sym)
         return target_sym, entry, ((now_ms - last_ts) if last_ts else None)
 

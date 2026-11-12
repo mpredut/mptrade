@@ -854,20 +854,6 @@ class CacheManagerInterface(ABC):
             self.save_state_to_file_if_enabled()
 
     # -- JSONL append persistence for append-only caches ----------------------
-    def _resolve_legacy_json_for_jsonl_locked(self) -> Optional[str]:
-        if os.path.exists(self.filename) or not self.filename.endswith(".jsonl"):
-            return None
-        legacy = self.filename[:-1]
-        if os.path.exists(legacy):
-            return legacy
-        dirname, basename = os.path.split(self.filename)
-        for leg_jsonl in EXACT_LEGACY_FILENAMES.get(basename, ()):
-            if leg_jsonl.endswith(".jsonl"):
-                cand_json = os.path.join(dirname, leg_jsonl[:-1])
-                if os.path.exists(cand_json):
-                    return cand_json
-        return None
-
     def _migrate_legacy_json_with_compactor(
         self,
         compact_fn,
@@ -876,9 +862,22 @@ class CacheManagerInterface(ABC):
         skip_if_read_only: bool = True,
         read_json_fn=None,
     ):
-        legacy = self._resolve_legacy_json_for_jsonl_locked()
-        if not legacy:
+        if os.path.exists(self.filename) or not self.filename.endswith(".jsonl"):
             return
+        legacy = self.filename[:-1]
+        if not os.path.exists(legacy):
+            dirname, basename = os.path.split(self.filename)
+            legacy = next(
+                (
+                    cand_json
+                    for leg_jsonl in EXACT_LEGACY_FILENAMES.get(basename, ())
+                    if leg_jsonl.endswith(".jsonl")
+                    and os.path.exists(cand_json := os.path.join(dirname, leg_jsonl[:-1]))
+                ),
+                None,
+            )
+            if not legacy:
+                return
         reader = read_json_fn if callable(read_json_fn) else read_json_dict
         try:
             payload = reader(legacy)

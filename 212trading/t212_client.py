@@ -646,21 +646,18 @@ class T212Client:
         else:
             log(f"  ! T212 {what}: HTTP {status}")
 
-    def _peek_cached_locked(self, attr: str, eff_ttl: float | None = None) -> tuple[bool, list | dict | None]:
-        c = getattr(self, attr, None)
-        now = time.monotonic()
-        ttl = self._pf_ttl if eff_ttl is None else eff_ttl
-        if c and (now - c[0]) < ttl:
-            return True, c[1]
-        fail_ts = self._fetch_fail.get(attr, 0.0)
-        if (now - fail_ts) < self._pf_ttl:
-            stale_limit = max(600.0, ttl * 100.0)
-            return True, (c[1] if (c and (now - c[0]) < stale_limit) else None)
-        return False, None
-
     def _peek_cached(self, attr: str, ttl: float) -> tuple[bool, list | dict | None]:
         with self._lock:
-            return self._peek_cached_locked(attr, ttl)
+            c = getattr(self, attr, None)
+            now = time.monotonic()
+            eff_ttl = self._pf_ttl if ttl is None else ttl
+            if c and (now - c[0]) < eff_ttl:
+                return True, c[1]
+            fail_ts = self._fetch_fail.get(attr, 0.0)
+            if (now - fail_ts) < self._pf_ttl:
+                stale_limit = max(600.0, eff_ttl * 100.0)
+                return True, (c[1] if (c and (now - c[0]) < stale_limit) else None)
+            return False, None
 
     def _read_cached(
         self,

@@ -434,23 +434,6 @@ class _LivePairVenue:
         )
         return ticket, snapshot
 
-    def _reconcile_existing_intent(self, pair_id, side, kind):
-        """Return state, ticket, and snapshot for one persisted submit slot."""
-        record = self._pair_record(pair_id) if self.pair_store is not None else None
-        stored = record.get("intents", {}).get(f"{kind}:{side}") if record else None
-        if stored is None:
-            return "none", None, None
-        if self._pre_submit_refusal(stored):
-            self.pair_store.persist_intent(pair_id, side, kind, None, symbol=self.symbol)
-            return "safe_refusal", None, None
-        try:
-            ticket, snapshot = self.recover_intent(record, stored)
-        except _IntentRecoveryPending:
-            self._set_pair_recovery_blocked(pair_id)
-            return "pending", None, None
-        self._set_pair_recovery_blocked(pair_id, False)
-        return "recovered", ticket, snapshot
-
     def _discard_if_pre_submit_refusal(self, pair_id, pending: dict) -> bool:
         if self._pre_submit_refusal(pending):
             self.pair_store.persist_intent(
@@ -570,13 +553,21 @@ class _LivePairVenue:
         self._last_place_failures.pop(side, None)
         if require_pair_id and not pair_id:
             return False, None
-        existing_state, existing_ticket, _snapshot = self._reconcile_existing_intent(pair_id, side, store_kind)
-        if existing_state == "recovered":
-            return True, existing_ticket
-        if existing_state == "pending":
+        record = self._pair_record(pair_id) if self.pair_store is not None else None
+        stored = record.get("intents", {}).get(f"{store_kind}:{side}") if record else None
+        if stored is None:
+            return False, None
+        if self._pre_submit_refusal(stored):
+            self.pair_store.persist_intent(pair_id, side, store_kind, None, symbol=self.symbol)
+            return False, None
+        try:
+            ticket, _snapshot = self.recover_intent(record, stored)
+        except _IntentRecoveryPending:
+            self._set_pair_recovery_blocked(pair_id)
             self._last_place_failures[side] = f"{side.lower()}_recovery_pending"
             return True, None
-        return False, None
+        self._set_pair_recovery_blocked(pair_id, False)
+        return True, ticket
 
     def place_limit(self, side, price, qty, pair_id, *, cache_permit=None, revision=0):
         side = side.upper()

@@ -246,32 +246,24 @@ def format_topic_history_prefix(
     return "\n".join(lines) + "\n\n"
 
 
-def _delete_topic_thread_everywhere(base: str, cid: str) -> None:
-    """Remove a retired topic conversation from both the isolated bot store and the Web UI store."""
-    if not cid or not isinstance(cid, str):
-        return
-    clean_cid = cid.strip()
-    if not clean_cid:
-        return
-    try:
-        delete_threads({clean_cid}, base)
-    except Exception:
-        pass
-    try:
-        ui_base = resolve_ui_cli_base()
-        if ui_base and os.path.abspath(ui_base) != os.path.abspath(base):
-            delete_threads({clean_cid}, ui_base, defer_active_ui_files=True)
-    except Exception:
-        pass
-
-
 def _rotate_topic_conversation(
     base: str,
     entry: Dict[str, Any],
     old_cid: str,
     new_cid: Optional[str],
 ) -> None:
-    _delete_topic_thread_everywhere(base, old_cid)
+    clean_cid = old_cid.strip() if isinstance(old_cid, str) else ""
+    if clean_cid:
+        try:
+            delete_threads({clean_cid}, base)
+        except Exception:
+            pass
+        try:
+            ui_base = resolve_ui_cli_base()
+            if ui_base and os.path.abspath(ui_base) != os.path.abspath(base):
+                delete_threads({clean_cid}, ui_base, defer_active_ui_files=True)
+        except Exception:
+            pass
     entry["conversation_id"] = new_cid
     entry["compacted_at_step"] = 0
     entry["rotation_count"] = safe_nonneg_int(entry.get("rotation_count"), 0) + 1

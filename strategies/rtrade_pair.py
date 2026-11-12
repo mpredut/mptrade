@@ -680,21 +680,6 @@ class PairCoordinator:
             return None
         return rem_qty
 
-    def _try_complete_flat_exposure(self) -> tuple[bool, float, float, float, float, float]:
-        cancel_ambiguous = False
-        for ticket in self.tickets:
-            if ticket.active:
-                _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
-                cancel_ambiguous = cancel_ambiguous or cancel_reason is not None
-        bq, bc, sq, sc, net = self._totals_and_net(refresh=True)
-        if abs(net) <= 1e-8:
-            if cancel_ambiguous or any(ticket.active for ticket in self.tickets):
-                self.phase, self.reason = "closing", "balanced_cancel_pending"
-            else:
-                self.phase, self.reason = "complete", None
-            return True, bq, bc, sq, sc, net
-        return False, bq, bc, sq, sc, net
-
     def step(self, now: Optional[float] = None) -> PairOutcome:
         if self.phase in _TERMINAL_PHASES:
             return self.outcome()
@@ -763,8 +748,17 @@ class PairCoordinator:
                 if abs(net) <= 1e-8:
                     if closing_phase:
                         self.phase = "closing"
-                    settled, bq, bc, sq, sc, net = self._try_complete_flat_exposure()
-                    if settled:
+                    cancel_ambiguous = False
+                    for ticket in self.tickets:
+                        if ticket.active:
+                            _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
+                            cancel_ambiguous = cancel_ambiguous or cancel_reason is not None
+                    bq, bc, sq, sc, net = self._totals_and_net(refresh=True)
+                    if abs(net) <= 1e-8:
+                        if cancel_ambiguous or any(ticket.active for ticket in self.tickets):
+                            self.phase, self.reason = "closing", "balanced_cancel_pending"
+                        else:
+                            self.phase, self.reason = "complete", None
                         return self.outcome()
                 if closing_phase:
                     break
