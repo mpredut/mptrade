@@ -18,11 +18,13 @@ sys.path.insert(0, ROOT_DIR)
 import botcore
 from botcore import evaluate_heartbeat_files_freshness, parse_procs_manifest
 botcore.load_root_config()
+import cachepaths as _cp
 from cachepaths import organize_cachedb_subdomains, resolve_cachedb_filepath
 import notify_engine.alertnotifiers as _an
 import notify_engine.mailer as _mailer
 import notify_engine.server as _ns
 from notify_engine.server import NotificationServer
+import state_io as _sio
 from state_io import open_append_text_file, read_bytes_file
 
 
@@ -322,9 +324,15 @@ class BotManager:
         return head_str
 
     async def _reload_runtime_modules_and_manifest(self) -> None:
-        global evaluate_heartbeat_files_freshness, parse_procs_manifest, NotificationServer
+        global evaluate_heartbeat_files_freshness, parse_procs_manifest, NotificationServer, organize_cachedb_subdomains, resolve_cachedb_filepath, open_append_text_file, read_bytes_file
         try:
+            importlib.reload(_cp)
+            importlib.reload(_sio)
             importlib.reload(botcore)
+            organize_cachedb_subdomains = _cp.organize_cachedb_subdomains
+            resolve_cachedb_filepath = _cp.resolve_cachedb_filepath
+            open_append_text_file = _sio.open_append_text_file
+            read_bytes_file = _sio.read_bytes_file
             cfg_path = os.path.join(ROOT_DIR, "config.env")
             if os.path.exists(cfg_path):
                 botcore.load_dotenv(cfg_path, override=True)
