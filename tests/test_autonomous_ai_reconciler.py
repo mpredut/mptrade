@@ -249,6 +249,7 @@ def _publish_venue_balances_for_test(reconciler, *, symbols=None):
                         30,
                         [sym_item],
                         p24_target,
+                        current_price_getter=lambda *_a, **_kw: None,
                         data_sync_mode="producer",
                     )
                     if eq_mgr.refresh_equity_ohlc_series(force=True):
