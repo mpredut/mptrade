@@ -95,17 +95,19 @@ def main():
         profile_path = os.path.join(T212_DIR, f"config.{symbol.lower()}.env")
         if not os.path.isfile(profile_path):
             raise FileNotFoundError(f"Missing T212 profile configuration for {symbol}: {profile_path}")
-        cfg = dict(BASE_CONFIG)
-        cfg.update(parse_dotenv(profile_path))
-        cfg["YAHOO_SYMBOL"] = symbol
-        cfg["STRAT_CURRENCY"] = "USD"
-        cfg["STRAT_DCA_TREND_GATE_PCT"] = "0"
-        cfg["STRAT_MAX_BUDGET"] = "500"
-        cfg["STRAT_REENTRY_HYBRID_ENABLED"] = "false"
-        cfg["STRAT_REENTRY_PEAK_RELATIVE"] = "false"
-        cfg["STRAT_REENTRY_PULLBACK_ADAPTIVE"] = "false"
-        cfg["STRAT_REENTRY_PULLBACK_PCT"] = "1.5"
-        cfg["STRAT_REENTRY_TTL_HOURS"] = "0.0"
+        cfg = {
+            **BASE_CONFIG,
+            **parse_dotenv(profile_path),
+            "YAHOO_SYMBOL": symbol,
+            "STRAT_CURRENCY": "USD",
+            "STRAT_DCA_TREND_GATE_PCT": "0",
+            "STRAT_MAX_BUDGET": "500",
+            "STRAT_REENTRY_HYBRID_ENABLED": "false",
+            "STRAT_REENTRY_PEAK_RELATIVE": "false",
+            "STRAT_REENTRY_PULLBACK_ADAPTIVE": "false",
+            "STRAT_REENTRY_PULLBACK_PCT": "1.5",
+            "STRAT_REENTRY_TTL_HOURS": "0.0",
+        }
         if safe_pos_float(cfg.get("STRAT_REENTRY_DROP_PCT"), default=None) is None:
             cfg["STRAT_REENTRY_DROP_PCT"] = "2.0"
         base_params = prepare_spot_interval_params(_strat.StratParams.from_env(cfg), 1440.0)
@@ -120,7 +122,6 @@ def main():
         )
         if not asset_rows:
             print(f"Skipping {symbol}: insufficient bars after warmup.")
-            continue
         for row in asset_rows:
             results.append(row)
             if "error" in row:

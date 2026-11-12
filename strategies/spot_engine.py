@@ -613,6 +613,10 @@ class Strategy(BaseSpotMixin):
                     market=market, kind=kind, client_order_id=client_order_id,
                 )
 
+            def _log_place_failure(detail: str) -> bool:
+                log(f"  ! [STRAT] {side} {kind} {detail}")
+                return False
+
             tracked = self._order_lifecycle.submit(intent, persist=self._persist_pending_intent, submit=submit)
             if not tracked.order_known:
                 submit_error = tracked.intent.get("submit_error")
@@ -622,17 +626,14 @@ class Strategy(BaseSpotMixin):
                     if self._insufficient_funds_error(refusal):
                         self.s["ledger_reconcile_required"] = True
                         self._record_placement_backoff(side, kind, refusal)
-                    log(f"  ! [STRAT] {side} {kind} rejected definitively; the intent was released for safe reevaluation")
-                    return False
+                    return _log_place_failure("rejected definitively; the intent was released for safe reevaluation")
                 if self._insufficient_funds_error(submit_error):
                     self.s["ledger_reconcile_required"] = True
                     if not market:
                         self._record_placement_backoff(side, kind, submit_error)
                     self._persist_pending_intent(None)
-                    log(f"  ! [STRAT] {side} {kind} rejected due to insufficient funds; the intent was released for safe reevaluation")
-                    return False
-                log(f"  ! [STRAT] {side} {kind} ambiguous submit; the intent stays persisted for reconciliation")
-                return False
+                    return _log_place_failure("rejected due to insufficient funds; the intent was released for safe reevaluation")
+                return _log_place_failure("ambiguous submit; the intent stays persisted for reconciliation")
             txid = str(tracked.intent["order_id"])
             log(f"  [STRAT] {side.upper()} {kind} placed txid={txid} {vol} @ {price}")
             self._clear_placement_backoff(side, kind)

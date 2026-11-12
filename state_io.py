@@ -183,6 +183,11 @@ def _prepare_target_and_dir(path: str) -> tuple[str, str]:
     return destination, directory
 
 
+def _flush_and_fsync(handle: Any) -> None:
+    handle.flush()
+    os.fsync(handle.fileno())
+
+
 @contextlib.contextmanager
 def _atomic_stream_writer(
     path: str, mode: str, *, preserve_mode: bool = False, **open_kwargs: Any,
@@ -193,8 +198,7 @@ def _atomic_stream_writer(
     handle = os.fdopen(fd, mode, **open_kwargs)
     try:
         yield handle
-        handle.flush()
-        os.fsync(handle.fileno())
+        _flush_and_fsync(handle)
         handle.close()
         if preserve_mode and os.path.exists(destination):
             shutil.copymode(destination, temporary)
@@ -471,8 +475,7 @@ def truncate_file_bytes(path: str, size: int) -> None:
         raise ValueError("size must be a non-negative integer")
     with open(_resolve_target_path(path), "r+b") as handle:
         handle.truncate(size_i)
-        handle.flush()
-        os.fsync(handle.fileno())
+        _flush_and_fsync(handle)
 
 
 def format_jsonl_bucket_line(symbol: str, item: Any) -> str:
@@ -640,8 +643,7 @@ def append_bytes_at_boundary(
                 initial_size = actual_size
             handle.seek(initial_size)
             result = write_chunks_fn(handle.write)
-            handle.flush()
-            os.fsync(handle.fileno())
+            _flush_and_fsync(handle)
             committed_bytes = handle.tell()
         return initial_size, committed_bytes, result
     except BaseException:
@@ -671,8 +673,7 @@ def append_jsonl_bucket_delta(
                 for item in items[start:]:
                     handle.write(format_jsonl_bucket_line(symbol, item))
                 candidate_counts[symbol] = len(items)
-            handle.flush()
-            os.fsync(handle.fileno())
+            _flush_and_fsync(handle)
         return candidate_counts
     except BaseException:
         if initial_size is not None:

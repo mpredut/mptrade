@@ -241,6 +241,11 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
     return pts
 
 
+def _log_symbol_none(symbol: object, message: str) -> None:
+    print(f"[{symbol}] {message}")
+    return None
+
+
 def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int = 8,
                            min_consecutive_blocks: int = 3,
                            noise_tolerance: int = 2,  # Allow two noise blocks.
@@ -313,8 +318,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
         cutoff_timestamp = time.time() - (lookback_days * 86400)
         norm_data = [(ts, p) for ts, p in norm_data if ts > cutoff_timestamp]
         if len(norm_data) < 2:
-            print(f"[{symbol}] Not enough data in the last {lookback_days} days")
-            return None
+            return _log_symbol_none(symbol, f"Not enough data in the last {lookback_days} days")
     raw_ts, raw_px = zip(*norm_data)
     timestamps = np.array(raw_ts, dtype=float)
     prices = np.array(raw_px, dtype=float)
@@ -327,8 +331,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
         detection_lag_hours=detection_lag_hours, mk_alpha=mk_alpha)
 
     if res is None:
-        print(f"[{symbol}] Trend undecidable (not enough data, a gap, or MK-insignificant).")
-        return None
+        return _log_symbol_none(symbol, "Trend undecidable (not enough data, a gap, or MK-insignificant).")
 
     # Hurst regime is informational: persistence favors trend following, while
     # mean reversion suggests trends decay quickly.

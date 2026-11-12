@@ -1397,6 +1397,11 @@ class CacheTradeManager(CacheAccountManagerBase):
         original_dirty = False
         original_needs_rewrite = False
         published = False
+        def _restore_pre_rotation_state_locked() -> None:
+            self._restore_memory_state_locked(original_state)
+            self._account_cache_dirty = original_dirty
+            self._legacy_jsonl_needs_rewrite = original_needs_rewrite
+
         try:
             with self._generation_lock():
                 with self.lock:
@@ -1410,9 +1415,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     self._trim_cache_to_keep_fraction_locked()
                     self._mark_account_cache_dirty_locked()
                     if not self._compact_account_trade_jsonl_generation_locked():
-                        self._restore_memory_state_locked(original_state)
-                        self._account_cache_dirty = original_dirty
-                        self._legacy_jsonl_needs_rewrite = original_needs_rewrite
+                        _restore_pre_rotation_state_locked()
                         discard_generation_file(archive)
                         return self._log_tagged_false(
                             "maintain",
@@ -1423,9 +1426,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         except Exception as exc:
             if not published and original_state is not None:
                 with self.lock:
-                    self._restore_memory_state_locked(original_state)
-                    self._account_cache_dirty = original_dirty
-                    self._legacy_jsonl_needs_rewrite = original_needs_rewrite
+                    _restore_pre_rotation_state_locked()
             if not published and archive is not None:
                 discard_generation_file(archive)
             return self._log_tagged_false("maintain", f"Trade rotation failed: {exc}")
@@ -1680,6 +1681,14 @@ class CacheOrderManager(CacheAccountManagerBase):
         if not loaded and not self.read_only:
             self._log_missing_and_seed_remote()
 
+    def _apply_loaded_order_state_locked(
+        self, items: dict, fetchtime: dict, rest_sync_cursor: dict, counts: dict
+    ) -> None:
+        self.cache = items
+        self.fetchtime_per_symbol = dict(fetchtime)
+        self._rest_sync_cursor_per_symbol = dict(rest_sync_cursor)
+        self._persisted_counts = dict(counts)
+
     def _load_order_state_generation_locked(self):
         meta_path = meta_file_path(self.filename)
         backup_path = self._previous_generation_path()
@@ -1716,10 +1725,9 @@ class CacheOrderManager(CacheAccountManagerBase):
                 )
             )
             with self.lock:
-                self.cache = items
-                self.fetchtime_per_symbol = dict(fetchtime)
-                self._rest_sync_cursor_per_symbol = dict(rest_sync_cursor)
-                self._persisted_counts = dict(counts)
+                self._apply_loaded_order_state_locked(
+                    items, fetchtime, rest_sync_cursor, counts
+                )
             return True
         except account_cache_health.AccountCacheNotReady:
             raise
@@ -1838,10 +1846,9 @@ class CacheOrderManager(CacheAccountManagerBase):
             ):
                 raise ValueError("Order manifest changed during reload")
             with self.lock:
-                self.cache = items
-                self.fetchtime_per_symbol = dict(fetchtime)
-                self._rest_sync_cursor_per_symbol = dict(metadata["rest_sync_cursor"])
-                self._persisted_counts = dict(actual_counts)
+                self._apply_loaded_order_state_locked(
+                    items, fetchtime, metadata["rest_sync_cursor"], actual_counts
+                )
                 self._persisted_data_version = required_version
                 self._loaded_data_version = required_version
                 self._loaded_counts = dict(actual_counts)
@@ -2479,6 +2486,12 @@ def run_kraken_trade_ws_loop(
         if data is None:
             return
         now_ms = resolve_now_ms()
+
+        def _flush_ws_cache(ts_ms: int) -> None:
+            _touch_fetchtimes(ts_ms)
+            save_json_state(cache_file, cache, indent=1)
+            last_flush_ms[0] = ts_ms
+
         fills_by_sym = kr_prov_cls.extract_ws_own_trades(data, pairs=pairs)
         if fills_by_sym is None:
             kind, err_msg = kr_prov_cls.classify_ws_control_event(data)
@@ -2503,9 +2516,7 @@ def run_kraken_trade_ws_loop(
                             f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc}"
                         )
                 if last_rest_sync_ms[0] > 0:
-                    _touch_fetchtimes(now_ms)
-                    save_json_state(cache_file, cache, indent=1)
-                    last_flush_ms[0] = now_ms
+                    _flush_ws_cache(now_ms)
                 if callable(heartbeat_fn):
                     heartbeat_fn()
             return
@@ -2513,9 +2524,7 @@ def run_kraken_trade_ws_loop(
             cache, fills_by_sym, now_ms=now_ms, is_snapshot=False
         )
         if changed or (now_ms - last_flush_ms[0]) >= 15_000:
-            _touch_fetchtimes(now_ms)
-            save_json_state(cache_file, cache, indent=1)
-            last_flush_ms[0] = now_ms
+            _flush_ws_cache(now_ms)
             if callable(heartbeat_fn):
                 heartbeat_fn()
 

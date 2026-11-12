@@ -427,12 +427,16 @@ def _log_dotenv_loaded_once(path: str, *, override: bool = False) -> None:
         log(f"  .env loaded from {path}")
 
 
+def _discard_root_config_key(key: str) -> None:
+    _ROOT_CONFIG_KEYS.discard(key)
+    _ROOT_CONFIG_VALUES.pop(key, None)
+
+
 def _is_unmodified_root_key(key: str) -> bool:
     if key not in _ROOT_CONFIG_KEYS:
         return False
     if key not in os.environ or os.environ.get(key) != _ROOT_CONFIG_VALUES.get(key):
-        _ROOT_CONFIG_KEYS.discard(key)
-        _ROOT_CONFIG_VALUES.pop(key, None)
+        _discard_root_config_key(key)
         return False
     return True
 
@@ -443,8 +447,7 @@ def _set_dotenv_env_key(key: str, value: str, *, is_root: bool) -> None:
         _ROOT_CONFIG_KEYS.add(key)
         _ROOT_CONFIG_VALUES[key] = value
     else:
-        _ROOT_CONFIG_KEYS.discard(key)
-        _ROOT_CONFIG_VALUES.pop(key, None)
+        _discard_root_config_key(key)
 
 
 def load_dotenv(path: str | os.PathLike | None = None, override: bool = False) -> None:

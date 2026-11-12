@@ -486,10 +486,10 @@ def enqueue(
         rec["submission_state"] = "producer_claimed"
         rec["producer_pid"] = producer_pid
         rec["producer_process_start_id"] = producer_process_start_id
+    provider_key = normalize_venue_name(provider_name)
+    sym_key = _canonical_queue_symbol(symbol)
     with _locked_queue() as existing:
         if lifecycle == "awaiting_cancel":
-            provider_key = normalize_venue_name(provider_name)
-            sym_key = _canonical_queue_symbol(symbol)
             for item in existing:
                 if (
                     str(item.get("lifecycle") or "").lower() == "awaiting_cancel"
@@ -519,8 +519,6 @@ def enqueue(
                     f"deferred ({failure_reason}) {side_u} {symbol} record(s) into the latest intent"
                 )
         if RETRY_DEDUP and lifecycle == "submit_pending" and _producer_lease_sec is None:
-            provider_key = normalize_venue_name(provider_name)
-            sym_key = _canonical_queue_symbol(symbol)
             for e in existing:
                 if not _safe_to_evict_for_capacity(e):
                     continue

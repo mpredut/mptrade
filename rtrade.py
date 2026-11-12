@@ -859,23 +859,31 @@ def _followup_exit_price(symbol, side, fill_ref_price):
     raise ValueError(f"Invalid side: {side}")
 
 
+def _log_followup_patient_limit(symbol, su: str, detail: str) -> bool:
+    print(f"[{symbol}] follow-up {su}: {detail}")
+    return False
+
+
 def _followup_force(symbol, side):
     """Choose MARKET force for a post-fill flip only when trend is not adverse."""
     su = (side or "").upper()
     if not RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED:
-        print(f"[{symbol}] follow-up {su}: market flip disabled -> use a patient limit, NOT a market order")
-        return False
+        return _log_followup_patient_limit(
+            symbol, su, "market flip disabled -> use a patient limit, NOT a market order"
+        )
     if not RTRADE_TREND_FILTER_ENABLED:
         return True
     decision = _market_regime_decision(symbol)
     if decision.regime == "unknown":
-        print(f"[{symbol}] follow-up {su}: trend data unavailable -> patient limit, NOT a market order")
-        return False
+        return _log_followup_patient_limit(
+            symbol, su, "trend data unavailable -> patient limit, NOT a market order"
+        )
     if not decision.directional:
         return True
     if decision.adverse_to("LONG" if su == "SELL" else "SOLD"):
-        print(f"[{symbol}] follow-up {su}: adverse {decision.regime} regime -> use a patient limit, NOT a market order")
-        return False
+        return _log_followup_patient_limit(
+            symbol, su, f"adverse {decision.regime} regime -> use a patient limit, NOT a market order"
+        )
     return True
 
 
