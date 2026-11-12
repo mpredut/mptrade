@@ -402,3 +402,45 @@ class OrchestratorZombieDetectionTest(TempDirTestCase, IsolatedAsyncioTestCase):
             self.assertEqual([h[1] for h in hist], [124.0, 123.62])
             alerts = checker.check_symbol("SPCX")
             self.assertEqual(alerts, [])
+
+    async def test_concurrent_shutdown_awaits_inflight_reverse_order_shutdown(self):
+        import asyncio
+
+        stop_order = []
+        gate = asyncio.Event()
+        first_entered = asyncio.Event()
+
+        async def _slow_stop(name, sig=None):
+            if not first_entered.is_set():
+                first_entered.set()
+                await gate.wait()
+            stop_order.append(name)
+
+        self.manager.bots = [
+            {"name": "cacheManager"},
+            {"name": "tradeall"},
+            {"name": "rtrade"},
+        ]
+        for bname in ("cacheManager", "tradeall", "rtrade"):
+            self.manager.processes[bname] = MagicMock()
+        self.manager.stop_bot = _slow_stop
+
+        sig_task = asyncio.create_task(self.manager.shutdown())
+        await first_entered.wait()
+
+        second_done = False
+
+        async def _finally_caller():
+            nonlocal second_done
+            await self.manager.shutdown()
+            second_done = True
+
+        fin_task = asyncio.create_task(_finally_caller())
+        await asyncio.sleep(0.02)
+        self.assertFalse(second_done)
+
+        gate.set()
+        await asyncio.gather(sig_task, fin_task)
+        self.assertTrue(second_done)
+        self.assertEqual(stop_order, ["rtrade", "tradeall", "cacheManager"])
+        self.assertEqual(self.manager.processes, {})

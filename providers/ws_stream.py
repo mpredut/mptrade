@@ -147,9 +147,12 @@ class AsyncReconnectStreamBase(ABC):
 
     is_running = property(is_worker_thread_alive)
 
+    async def _main(self) -> None:
+        await self._run_with_reconnect(self._connect_and_run)
+
     def _thread_worker(self) -> None:
         try:
-            run_ws_event_loop(self._run_with_reconnect(self._connect_and_run))
+            run_ws_event_loop(self._main())
         except (asyncio.CancelledError, Exception) as exc:
             if not isinstance(exc, asyncio.CancelledError) and not self._is_shutdown_error(exc):
                 _ws_logger.exception("WS thread crashed: %s", exc)

@@ -1355,6 +1355,12 @@ class CacheManagerInterface(ABC):
                     try:
                         sync_complete = False
                         if self._should_poll():
+                            if (
+                                getattr(self, "_flush_before_poll", False)
+                                and self.save_state
+                                and self._mem_max_ts() > self._persisted_max_ts()
+                            ):
+                                self.save_state_to_file_if_enabled()
                             sync_complete = self.query_remote_and_update_cache()
                         else:
                             self._ensure_fetchtimes_initialized(sync_rest_cursor=True)

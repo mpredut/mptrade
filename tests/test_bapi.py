@@ -1622,3 +1622,50 @@ def test_ws_event_loop_uvloop_and_orjson_fast_path():
     assert bucket_line == '{"s":"BTCUSDC","i":[1700000000000,88000.5]}\n'
 
 
+def test_thread_worker_invokes_subclass_main_initializing_cmd_queue_and_account_availability(monkeypatch):
+    """Verify AsyncReconnectStreamBase._thread_worker invokes _main() on subclasses so _cmd_queue and _available are initialized."""
+    import asyncio
+
+    ps = BinancePriceStream(symbols=["BTCUSDC"])
+    seen = {}
+
+    class _FakeWS:
+        async def recv(self):
+            await asyncio.sleep(0.02)
+            ps.request_stop()
+            raise asyncio.TimeoutError
+
+        async def send(self, payload):
+            seen.setdefault("sent", []).append(payload)
+
+    async def _fake_price_connect():
+        seen["cmd_queue_type"] = type(ps._cmd_queue).__name__
+        ps.add_symbol("ETHUSDC")
+        await ps._session(_FakeWS())
+
+    monkeypatch.setattr(ps, "_connect_and_run", _fake_price_connect)
+    ps.start(daemon=True)
+    assert ps._thread is not None
+    ps._thread.join(timeout=2.0)
+    assert ps.stop(timeout=0.5) is True
+    assert seen.get("cmd_queue_type") == "Queue"
+    assert any("ethusdc@ticker" in s for s in seen.get("sent", []))
+
+    avail_events = []
+    acc = BinanceAccountStream(
+        on_event=lambda _p: None,
+        on_available=avail_events.append,
+    )
+    acc._signing_key = object()
+    monkeypatch.setattr(bapi_ws, "api_key_ws", "dummy_ws_key")
+
+    async def _fake_acc_connect():
+        acc.request_stop()
+
+    monkeypatch.setattr(acc, "_connect_and_run", _fake_acc_connect)
+    acc.start(daemon=True)
+    assert acc.stop(timeout=1.0) is True
+    assert avail_events == [True]
+
+
+

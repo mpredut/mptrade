@@ -3482,6 +3482,40 @@ def test_equity_rth_cadence_and_future_tick_hygiene(tmp_path, monkeypatch):
             cons.shutdown(timeout=1.0)
             prod.shutdown(timeout=1.0)
 
+    # Producer flushes fresh in-memory WS ticks to disk before blocking on fallback HTTP poll.
+    cp_flush_file = tmp_path / "cp_flush_before_poll.json"
+    flush_seen_during_poll = []
+
+    class _SlowApi:
+        def get_current_price(self, symbol=None, provider_name=None):
+            if cp_flush_file.exists():
+                doc = json.loads(cp_flush_file.read_text(encoding="utf-8"))
+                flush_seen_during_poll.append(doc.get("items", {}).get("BTCUSDC"))
+            return 0.1505
+
+    cpm_prod = cacheprice.CacheCurrentPriceManager(
+        sync_ts=0.02,
+        symbols=["BTCUSDC", "ARBUSDC"],
+        filename=str(cp_flush_file),
+        ws_manager=None,
+        market_api=_SlowApi(),
+        read_only=False,
+        data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+    )
+    cpm_prod._first_sleep = False
+    now_ms_live = int(time.time() * 1000)
+    cpm_prod.on_items_update("BTCUSDC", [[now_ms_live, 71550.0]])
+    cpm_prod._ws_last_event_ts_per_symbol["ARBUSDC"] = 0.0
+    try:
+        cpm_prod.periodic_sync(0.02, save_state=True)
+        deadline = time.monotonic() + 1.0
+        while not flush_seen_during_poll and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert flush_seen_during_poll
+        assert flush_seen_during_poll[0][-1][1] == pytest.approx(71550.0)
+    finally:
+        cpm_prod.shutdown(timeout=1.0)
+
 
 
 

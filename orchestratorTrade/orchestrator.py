@@ -69,6 +69,7 @@ class BotManager:
         if self.zombie_cooldown_sec < 0:
             raise ValueError(f"Invalid ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC: {self.zombie_cooldown_sec!r}")
         self._shutting_down = False
+        self._shutdown_task = None
         self._reloading = False
 
     def parse_procs_conf(self) -> List[Dict[str, Any]]:
@@ -295,8 +296,12 @@ class BotManager:
 
     async def shutdown(self):
         if getattr(self, "_shutting_down", False):
+            task = getattr(self, "_shutdown_task", None)
+            if task is not None and task is not asyncio.current_task():
+                await task
             return
         self._shutting_down = True
+        self._shutdown_task = asyncio.current_task()
         logging.info("Shutting down all bots gracefully...")
         self.running = False
         for name in self._ordered_process_names_reversed():

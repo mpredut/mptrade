@@ -1196,6 +1196,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     STALE_THRESHOLD_MS = PRICE_FRESHNESS_MAX_AGE_MS
     FREQ_WINDOW_SEC = 60
     DEFAULT_FILENAME = CACHE_CURRENT_PRICE_FILENAME
+    _flush_before_poll = True
 
     def __init__(
         self,

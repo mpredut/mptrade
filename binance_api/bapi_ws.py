@@ -153,6 +153,8 @@ class BinancePriceStream(PublicPriceStreamBase):
                 continue
 
     async def _cmd_loop(self, ws) -> None:
+        if self._cmd_queue is None:
+            self._cmd_queue = asyncio.Queue()
         while not self._stop_event.is_set():
             try:
                 cmd = await asyncio.wait_for(self._cmd_queue.get(), timeout=WS_RECV_TIMEOUT)

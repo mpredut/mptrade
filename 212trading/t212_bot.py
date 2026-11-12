@@ -173,8 +173,9 @@ def main() -> int:
     except KeyboardInterrupt:
         log("Shutdown requested (Ctrl+C)...")
         STOP.set()
+    join_deadline = time.monotonic() + 2.5
     for t in threads:
-        t.join(timeout=5.0)
+        t.join(timeout=max(0.05, join_deadline - time.monotonic()))
     return 0
 
 

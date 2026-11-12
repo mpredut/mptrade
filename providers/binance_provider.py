@@ -733,7 +733,9 @@ class BinanceProvider(MarketDataProvider):
             except Exception:
                 pass
         try:
-            importlib.import_module("binance_api.bapi_client").stop_periodic_resync()
+            importlib.import_module("binance_api.bapi_client").stop_periodic_resync(
+                timeout=timeout
+            )
         except Exception:
             pass
 
