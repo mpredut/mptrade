@@ -206,7 +206,7 @@ def _cmd_balance(client: KrakenClient) -> int:
     try:
         bal = client.balance()
     except KrakenError as e:
-        log(f"! balance: {e}")
+        log("! balance: " + str(e))
         return 1
     log("=== Kraken balances ===")
     if isinstance(bal, dict):

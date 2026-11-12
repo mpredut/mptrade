@@ -186,8 +186,7 @@ def load_common_core_strat_env(env: dict | None, *, include_entry_dca: bool = Tr
 
 def parse_tp_ladder_env(env: dict | None, generate_ladder_fn: Callable) -> list[tuple[float, float]]:
     """Parse ``STRAT_TP_LADDER`` or ``STRAT_TP_LADDER_MIN/MAX/STEPS`` via shared botcore env API."""
-    mode = required_env("STRATEGY_MODE", env).strip().lower()
-    if mode not in {"avg_tp", "dca_only"}:
+    if (mode := required_env("STRATEGY_MODE", env).strip().lower()) not in {"avg_tp", "dca_only"}:
         raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
     raw_ladder = optional_env("STRAT_TP_LADDER", env=env)
     ladder_curve = optional_env("STRAT_TP_LADDER_CURVE", "linear", env=env).lower()
@@ -943,8 +942,7 @@ class BaseSpotMixin:
         if not self.p.reentry_pullback_adaptive:
             return self.p.reentry_pullback_pct, "fixed"
         try:
-            vol = self._raw_reentry_shadow_vol_pct()
-            if vol is None and not self.replay_mode:
+            if (vol := self._raw_reentry_shadow_vol_pct()) is None and not self.replay_mode:
                 vol = self._mod_global("resolve_cached_volatility_1h_pct", resolve_cached_volatility_1h_pct)(
                     self._symbol_id
                 )
@@ -968,7 +966,7 @@ class BaseSpotMixin:
             vol = self._trail_vol_1h()
         except Exception as e:  # noqa: BLE001 -- observational failure must not stop trading.
             self._log_msg(f"  [STRAT] adaptive trailing: OHLC unavailable ({e}) -- fallback to fixed")
-            vol = None
+            return self.p.tp_trail_pct
         if vol is None:
             return self.p.tp_trail_pct
         return max(self.p.tp_trail_min, min(self.p.tp_trail_max, self.p.tp_trail_k * vol))

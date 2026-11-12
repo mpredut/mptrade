@@ -43,14 +43,15 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
     plus one until a short page arrives.
     """
     strict = _parse_bool_flag(strict, False)
-    if (symbol := clean_upper_token(symbol)) is None:
-        if strict:
-            raise ValueError("symbol must be a non-empty string")
-        return []
-    start_i = safe_nonneg_int(start_time_ms, default=None)
+    symbol = clean_upper_token(symbol)
+    start_i = safe_nonneg_int(start_time_ms, default=None) if symbol is not None else None
     if start_i is None:
         if strict:
-            raise ValueError("start_time_ms must be a finite non-negative timestamp")
+            raise ValueError(
+                "symbol must be a non-empty string"
+                if symbol is None
+                else "start_time_ms must be a finite non-negative timestamp"
+            )
         return []
     start_time_ms = start_i
     limit = min(1000, max(1, safe_pos_int(limit, default=1000)))

@@ -43,17 +43,15 @@ def is_garbage(order):
 
 def main():
     dry = "--dry" in sys.argv
-    if not os.path.exists(ORDER_FILE):
-        print(f"{ORDER_FILE} does not exist -- nothing to do.")
-        return
-
-    data = read_json_dict(ORDER_FILE, default=None)
-    if not isinstance(data, dict):
-        print(f"{ORDER_FILE} does not contain a JSON object -- nothing to do.")
-        return
-    items = data.get("items", {})
+    data = read_json_dict(ORDER_FILE, default=None) if os.path.exists(ORDER_FILE) else None
+    items = data.get("items", {}) if isinstance(data, dict) else None
     if not isinstance(items, dict):
-        print(f"{ORDER_FILE} items is not a dict -- nothing to do.")
+        reason = (
+            "does not exist"
+            if not os.path.exists(ORDER_FILE)
+            else ("does not contain a JSON object" if not isinstance(data, dict) else "items is not a dict")
+        )
+        print(f"{ORDER_FILE} {reason} -- nothing to do.")
         return
 
     total = removed = 0

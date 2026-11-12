@@ -379,7 +379,7 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
             proc = subprocess.Popen(cmd, cwd=_HERE, env=env, stdout=logf,
                                     stderr=subprocess.STDOUT, start_new_session=True)
     except OSError as e:
-        log(f"  ! cannot start the bot: {e}")
+        log("  ! cannot start the bot: " + str(e))
         return
     st["bot_pid"] = proc.pid
     verb = "RESTARTED (was down)" if relaunch else "AUTO-STARTED"

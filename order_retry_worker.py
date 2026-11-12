@@ -532,6 +532,7 @@ def process_once(mkt, now=None):
                     )
                 continue
 
+        price = None
         try:
             if provider_name is not None and hasattr(mkt, "get_current_price"):
                 try:
@@ -542,10 +543,7 @@ def process_once(mkt, now=None):
                 price = mkt.get_current_price(symbol)
         except Exception as exc:
             print(f"[order_retry] price unavailable {symbol} ({exc}); skipping, it stays queued")
-            oq.complete_claim(r, "release", now)
-            continue
-        price_f = safe_pos_float(price, default=None)
-        if price_f is None:
+        if (price_f := safe_pos_float(price, default=None)) is None:
             oq.complete_claim(r, "release", now)
             continue
         if not oq.price_gate_ok(r, price_f):

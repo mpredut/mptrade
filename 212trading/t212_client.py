@@ -165,14 +165,6 @@ class T212Client:
             return f"{base_path[:-5]}_instruments.json"
         return f"{base_path}.instruments"
 
-    @staticmethod
-    def _cleanup_stale_tmp_files(target_path: str, max_age_sec: float = STALE_STAGING_MAX_AGE_SEC) -> None:
-        if target_path:
-            abs_p = os.path.abspath(target_path)
-            cleanup_stale_staging_siblings(
-                os.path.dirname(abs_p), f".{os.path.basename(abs_p)}.", suffix=".tmp", max_age_sec=max_age_sec
-            )
-
     def _read_shared_cache(self, attr: str, max_age_sec: float) -> tuple[bool, list | dict | None, float]:
         if not self._shared_cache_enabled() or max_age_sec <= 0.0:
             return False, None, 0.0
@@ -232,11 +224,15 @@ class T212Client:
         try:
             if attr == "_instr_cache":
                 instr_path = self._instr_shared_cache_path() or self._shared_cache_path
-                self._cleanup_stale_tmp_files(instr_path)
+                if instr_path:
+                    abs_p = os.path.abspath(instr_path)
+                    cleanup_stale_staging_siblings(os.path.dirname(abs_p), f".{os.path.basename(abs_p)}.", suffix=".tmp")
                 atomic_write_json(instr_path, {"_instr_cache": {"ts": now_ts, "data": data}})
                 return
             with self._shared_cache_file_lock():
-                self._cleanup_stale_tmp_files(self._shared_cache_path)
+                if self._shared_cache_path:
+                    abs_p = os.path.abspath(self._shared_cache_path)
+                    cleanup_stale_staging_siblings(os.path.dirname(abs_p), f".{os.path.basename(abs_p)}.", suffix=".tmp")
                 payload = read_json_dict(self._shared_cache_path, default={})
                 if not isinstance(payload, dict):
                     payload = {}
@@ -585,16 +581,13 @@ class T212Client:
         if status == 429:
             self.notify_rate_limit(max(5.0, self._pf_ttl))
         if status != 200:
-            self._log_read_fail("order status", status)
-            return None
+            return self._log_read_fail("order status", status)
         try:
             parsed = parse_json_payload(body)
         except (TypeError, ValueError):
-            self._log_read_fail("order status (invalid JSON)", status)
-            return None
+            return self._log_read_fail("order status (invalid JSON)", status)
         if not isinstance(parsed, dict):
-            self._log_read_fail("order status (non-dict JSON)", status)
-            return None
+            return self._log_read_fail("order status (non-dict JSON)", status)
         return parsed
 
     def cancel_order(self, order_id) -> bool:

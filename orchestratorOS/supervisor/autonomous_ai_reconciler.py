@@ -304,7 +304,7 @@ class AutonomousAIReconciler:
             log=logger,
         )
 
-    def write_audit_artifact(self, report: SupervisorAuditReport) -> None:
+    def write_audit_artifact(self, report: SupervisorAuditReport) -> SupervisorAuditReport:
         """Persists the full audit report and heartbeat to disk in cachedb/."""
         persist_supervisor_audit_artifact(
             asdict(report),
@@ -313,6 +313,7 @@ class AutonomousAIReconciler:
             self.heartbeat_file,
             log=logger,
         )
+        return report
 
     def run_cycle(
         self,
@@ -330,9 +331,9 @@ class AutonomousAIReconciler:
         self.heartbeat_file = os.path.join(self.cache_dir, f"{topic_key}.heartbeat")
 
         if self.mode == "off":
-            report = SupervisorAuditReport(ts=now, mode="off", summary="Supervisor mode is off; cycle skipped.")
-            self.write_audit_artifact(report)
-            return report
+            return self.write_audit_artifact(
+                SupervisorAuditReport(ts=now, mode="off", summary="Supervisor mode is off; cycle skipped.")
+            )
 
         scope = getattr(spec, "asset_scope", "all")
         if (
@@ -343,9 +344,7 @@ class AutonomousAIReconciler:
         ):
             msg = "US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) closed; cycle skipped."
             logger.info("[SHARE EXECUTOR] %s", msg)
-            report = SupervisorAuditReport(ts=now, mode=self.mode, summary=msg)
-            self.write_audit_artifact(report)
-            return report
+            return self.write_audit_artifact(SupervisorAuditReport(ts=now, mode=self.mode, summary=msg))
 
         try:
             sensors = self.harvest_sensors_telemetry(

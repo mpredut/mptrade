@@ -370,8 +370,7 @@ def run_tp_drop_sl_sweep(
     emit=print,
 ) -> list[tuple]:
     """Run a TP x DROP (x SL) parameter sweep and print the top N configurations."""
-    b_val = safe_pos_float(budget, default=None)
-    if b_val is None:
+    if (b_val := safe_pos_float(budget, default=None)) is None:
         raise ValueError("budget must be positive")
     limit_n = safe_nonneg_int(top_n, default=8)
     rows: list[tuple] = []

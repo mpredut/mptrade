@@ -464,15 +464,13 @@ class Strategy(BaseSpotMixin):
 
         misses = safe_nonneg_int(pending.get("lookup_misses"), default=0) + 1
         pending["lookup_misses"] = misses
-        if misses < 2:
-            self._persist_pending_submit(pending)
-            return "waiting"
-        log(
-            f"  [STRAT] T212 submit absent in 2 snapshots and no portfolio delta "
-            f"({side} {self.ticker}) — releasing it for re-evaluation/retry"
-        )
-        self._persist_pending_submit(None)
-        return "retryable"
+        if misses >= 2:
+            log(
+                f"  [STRAT] T212 submit absent in 2 snapshots and no portfolio delta "
+                f"({side} {self.ticker}) — releasing it for re-evaluation/retry"
+            )
+        self._persist_pending_submit(pending if misses < 2 else None)
+        return "waiting" if misses < 2 else "retryable"
 
     def _sync_real_position_cost(
         self, real_qty: float, avg_price: float, *, sync_spent_only_when_held: bool = False
@@ -1287,12 +1285,6 @@ class Strategy(BaseSpotMixin):
             source="T212", price=price, desktop=self.desktop,
         )
 
-    def _reset_stop_loss_state(self) -> bool:
-        self.s["sl_alerted"] = False
-        self.s["sl_pending"] = False
-        self.s.pop("sl_fail_until", None)
-        return False
-
     def _check_stop_loss(self, price: float) -> bool:
         """Close the entire position when unrealized loss exceeds the threshold."""
         if self.p.stop_loss_pct <= 0:
@@ -1306,7 +1298,9 @@ class Strategy(BaseSpotMixin):
 
         if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
             if not self._in_mhdsl_territory(loss_pct):
-                return self._reset_stop_loss_state()
+                self.s["sl_alerted"] = self.s["sl_pending"] = False
+                self.s.pop("sl_fail_until", None)
+                return False
 
             snapshot = self._create_position_snapshot(price, avg, self.s.get("qty", 0.0))
             sell_qty = snapshot.sellable_qty
@@ -1335,7 +1329,9 @@ class Strategy(BaseSpotMixin):
             return False
 
         if loss_pct < self.p.stop_loss_pct:
-            return self._reset_stop_loss_state()
+            self.s["sl_alerted"] = self.s["sl_pending"] = False
+            self.s.pop("sl_fail_until", None)
+            return False
         if self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0):
             return False
         if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):

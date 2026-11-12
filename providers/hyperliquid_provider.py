@@ -1096,8 +1096,7 @@ class HyperliquidProvider(MarketDataProvider):
             f"order_status({order_id})", require_addr=True
         )
         try:
-            query = getattr(c.info, "query_order_by_oid", None)
-            if not callable(query):
+            if not callable(query := getattr(c.info, "query_order_by_oid", None)):
                 raise ProviderError("The Hyperliquid SDK is too old: query_order_by_oid is missing")
             raw_status = _call_hl_info_read(query, addr, oid) or {}
             if not isinstance(raw_status, dict) or raw_status.get("status") != "order":

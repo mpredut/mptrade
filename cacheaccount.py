@@ -2566,11 +2566,13 @@ class _KrakenAccountTradeBridge:
         try:
             cfg = kr_prov_cls.resolve_cache_daemon_config()
             client, profile = kr_prov_cls.build_cache_client()
-        except CredentialConfigurationError as exc:
-            log(f"[kraken_cache] skipped (no Kraken cache credentials): {exc}")
-            return False
         except Exception as exc:
-            log(f"[kraken_cache] failed to initialize daemon config: {exc}")
+            prefix = (
+                "skipped (no Kraken cache credentials)"
+                if isinstance(exc, CredentialConfigurationError)
+                else "failed to initialize daemon config"
+            )
+            log(f"[kraken_cache] {prefix}: {exc}")
             return False
 
         self._stop_event.clear()

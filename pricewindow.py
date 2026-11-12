@@ -395,7 +395,7 @@ class PriceTrendAnalyzer:
         dev_y = y - mean_y
         ss_y = safe_float(np.dot(dev_y, dev_y), default=0.0) or 0.0
         if ss_y == 0.0:
-            print("Linear regression: prices are constant, the trend cannot be determined.")
+            print("Linear regression:", "prices are constant, the trend cannot be determined.")
             return None, None, None
 
         mean_x = (n - 1) / 2.0

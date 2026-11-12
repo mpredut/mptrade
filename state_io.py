@@ -493,10 +493,10 @@ def parse_json_payload(raw: str | bytes, *, default: Any = _MISSING) -> Any:
     try:
         text = raw.decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray, memoryview)) else raw
         return json.loads(text)
-    except Exception:
-        if default is not _MISSING:
-            return default
-        raise
+    except Exception as exc:
+        if default is _MISSING:
+            raise exc
+        return default
 
 
 def extract_json_object(text: Any) -> dict[str, Any] | None:
@@ -1018,15 +1018,6 @@ def read_recovering_previous(
     default: Any = _MISSING,
 ) -> T:
     """Read and validate ``path`` via ``read_fn``, recovering ``.previous`` if needed."""
-    try:
-        target_path = _resolve_target_path(path)
-        target_backup = (
-            _resolve_target_path(backup_path) if backup_path else previous_generation_path(target_path)
-        )
-    except Exception:
-        if default is not _MISSING:
-            return default
-        raise
     if read_fn is json.loads:
         def _invoke(candidate_path: str) -> Any:
             with open(candidate_path, "r", encoding="utf-8") as handle:
@@ -1035,7 +1026,12 @@ def read_recovering_previous(
         _invoke = _read_json_dict_strict
     else:
         _invoke = read_fn
+    target_backup: str | None = None
     try:
+        target_path = _resolve_target_path(path)
+        target_backup = (
+            _resolve_target_path(backup_path) if backup_path else previous_generation_path(target_path)
+        )
         result = _invoke(target_path)
         if os.path.exists(target_backup):
             try:
@@ -1046,10 +1042,10 @@ def read_recovering_previous(
                 discard_generation_file(target_backup)
         return result
     except Exception as primary_exc:
-        if not os.path.exists(target_backup):
-            if default is not _MISSING:
-                return default
-            raise
+        if not target_backup or not os.path.exists(target_backup):
+            if default is _MISSING:
+                raise
+            return default
         try:
             _invoke(target_backup)
             restore_previous_generation(target_path, backup_path=target_backup)
