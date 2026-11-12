@@ -1087,27 +1087,22 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 self._flush_live_symbol_file(symbol)
 
     def _flush_live_symbol_file(self, symbol: str) -> None:
-        self._write_live_symbol_file(symbol)
-        self._dirty_live_symbols.discard(symbol)
-
-    def _write_live_symbol_file(self, symbol: str):
-        """Persist cachedb/24trend/live_<SYMBOL>.json with clean window-keyed entries only."""
+        """Persist cachedb/24trend/live_<SYMBOL>.json with clean window-keyed entries and clear dirty flag."""
         try:
-            sym_live = self._live_windows.get(symbol)
-            if not sym_live:
-                return
-            clean = {
-                wk: self._strip_internal_fields(wv)
-                for wk, wv in sym_live.items()
-                if isinstance(wv, dict)
-            }
-            save_json_state(
-                self._live_trend_file(symbol),
-                clean,
-                write_fn=_cm_attr("atomic_write_json", atomic_write_json),
-            )
+            if sym_live := self._live_windows.get(symbol):
+                clean = {
+                    wk: self._strip_internal_fields(wv)
+                    for wk, wv in sym_live.items()
+                    if isinstance(wv, dict)
+                }
+                save_json_state(
+                    self._live_trend_file(symbol),
+                    clean,
+                    write_fn=_cm_attr("atomic_write_json", atomic_write_json),
+                )
         except Exception as e:
             print(f"[{self.cls_name}] live write failure for {symbol}: {e}")
+        self._dirty_live_symbols.discard(symbol)
 
     def _published_window(self, symbol, window_seconds, now=None):
         """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""

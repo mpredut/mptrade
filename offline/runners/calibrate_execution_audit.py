@@ -20,19 +20,6 @@ from offline.backtests.execution_calibration import (  # noqa: E402
 )
 
 
-def _paths(inputs: list[Path]) -> list[Path]:
-    paths = []
-    for path in inputs:
-        resolved = path.expanduser().resolve()
-        if not resolved.exists():
-            raise FileNotFoundError(f"input path does not exist: {resolved}")
-        if resolved.is_dir():
-            paths.extend(sorted(resolved.glob("execution_audit_*.jsonl")))
-        else:
-            paths.append(resolved)
-    return sorted(set(paths))
-
-
 def _norm_audit_venue(val: object) -> str:
     if isinstance(val, bool) or val is None:
         return ""
@@ -138,7 +125,16 @@ def main(argv: list[str] | None = None) -> int:
     add_report_output_cli_args(parser)
     args = parser.parse_args(argv)
     try:
-        paths = _paths(args.inputs)
+        raw_paths: list[Path] = []
+        for in_path in args.inputs:
+            resolved = in_path.expanduser().resolve()
+            if not resolved.exists():
+                raise FileNotFoundError(f"input path does not exist: {resolved}")
+            if resolved.is_dir():
+                raw_paths.extend(sorted(resolved.glob("execution_audit_*.jsonl")))
+            else:
+                raw_paths.append(resolved)
+        paths = sorted(set(raw_paths))
         if not paths:
             parser.error("no execution_audit files found")
         events = _load(paths, args.venue)

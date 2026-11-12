@@ -168,11 +168,6 @@ def _minimum(values: Iterable[float | int | None]) -> float | None:
     return min(present) if present else None
 
 
-def _maximum(values: Iterable[float | int | None]) -> float | None:
-    present = clean_finite_floats(values)
-    return max(present) if present else None
-
-
 def _regime(buy_hold_return_pct: float | None, threshold_pct: float) -> str:
     val = safe_float(buy_hold_return_pct, default=None)
     if val is None:
@@ -324,8 +319,9 @@ def aggregate_financial_windows(
         "mean_max_drawdown_abs_usd": _mean(
             item.get("max_drawdown_abs") for item in metrics
         ),
-        "worst_max_drawdown_abs_usd": _maximum(
-            item.get("max_drawdown_abs") for item in metrics
+        "worst_max_drawdown_abs_usd": max(
+            clean_finite_floats(item.get("max_drawdown_abs") for item in metrics),
+            default=None,
         ),
         "median_sortino": _median(item.get("sortino") for item in metrics),
         "median_calmar": _median(item.get("calmar") for item in metrics),

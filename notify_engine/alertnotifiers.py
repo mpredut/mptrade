@@ -337,15 +337,6 @@ def _config_notification_int(key: str, default: int) -> int:
     return cfg_val if (cfg_val is not None and cfg_val >= 0) else default
 
 
-def _topic_bulk_seconds() -> int:
-    """Return the per-topic batching/bulk interval in seconds (default 300s = 5 min)."""
-    if has_explicit_nonroot_env("NOTIFICATION_TOPIC_BULK_SECONDS"):
-        return _positive_int_env("NOTIFICATION_TOPIC_BULK_SECONDS", 300)
-    if has_explicit_nonroot_env("NOTIFICATION_GATE_SECONDS"):
-        return min(300, _positive_int_env("NOTIFICATION_GATE_SECONDS", 300))
-    return _config_notification_int("NOTIFICATION_TOPIC_BULK_SECONDS", 300)
-
-
 def _queue_max_items() -> int:
     """Maximum total notifications buffered across all topics and retry queues."""
     return max(1, _positive_int_env("NOTIFICATION_QUEUE_MAX_ITEMS", 50))
@@ -855,7 +846,13 @@ def _claim_budget_warning(channel_state: dict[str, Any]) -> bool:
 
 
 def _gate_and_topic_bulk_seconds() -> tuple[int, int]:
-    return _config_notification_int("NOTIFICATION_GATE_SECONDS", 180), _topic_bulk_seconds()
+    if has_explicit_nonroot_env("NOTIFICATION_TOPIC_BULK_SECONDS"):
+        topic_bulk = _positive_int_env("NOTIFICATION_TOPIC_BULK_SECONDS", 300)
+    elif has_explicit_nonroot_env("NOTIFICATION_GATE_SECONDS"):
+        topic_bulk = min(300, _positive_int_env("NOTIFICATION_GATE_SECONDS", 300))
+    else:
+        topic_bulk = _config_notification_int("NOTIFICATION_TOPIC_BULK_SECONDS", 300)
+    return _config_notification_int("NOTIFICATION_GATE_SECONDS", 180), topic_bulk
 
 
 def pop_due_bulk_batch(

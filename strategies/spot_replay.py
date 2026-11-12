@@ -406,13 +406,6 @@ def _run_once(
         bar_step_sec = bar_minutes * 60 if bar_minutes else 1
         side_order = execution.side_order()
 
-        def _record_sell_outcome() -> None:
-            nonlocal wins, cycle_net_start
-            if strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
-                cycle_net_start, wins = record_closed_cycle_pnl(
-                    strategy.s["realized_net"], cycle_net_start, trade_pnls, wins
-                )
-
         def _settle_order_fill(
             order_to_remove: dict | None,
             fill_order: dict,
@@ -423,7 +416,7 @@ def _run_once(
             market: bool,
             final: bool,
         ) -> None:
-            nonlocal cash, min_cash, fill_count, turnover_notional
+            nonlocal cash, min_cash, fill_count, turnover_notional, wins, cycle_net_start
             if order_to_remove is not None:
                 strategy._remove(order_to_remove)
             fee = fee_model.rate_pct(market=market) / 100.0 * volume * price
@@ -437,8 +430,10 @@ def _run_once(
             strategy._apply_fill(fill_order, volume, price, fee=fee, final=final)
             fill_count += 1
             turnover_notional += volume * price
-            if side == "sell":
-                _record_sell_outcome()
+            if side == "sell" and strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
+                cycle_net_start, wins = record_closed_cycle_pnl(
+                    strategy.s["realized_net"], cycle_net_start, trade_pnls, wins
+                )
 
         def _current_equity_and_exposure(px: float) -> tuple[float, bool]:
             q = strategy.s["qty"]

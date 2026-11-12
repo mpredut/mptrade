@@ -36,10 +36,6 @@ class RiskAdjustedThresholds:
     require_more_drawdown_wins_than_losses: bool = True
 
 
-def _id_val(val: object) -> object:
-    return ("__bool__", val) if isinstance(val, bool) else val
-
-
 def _window_sort_key(key: object) -> tuple[int, int | str]:
     if isinstance(key, int) and not isinstance(key, bool):
         return (0, key)
@@ -54,7 +50,7 @@ def _identity(report: dict) -> tuple:
     raw_wf = report.get("walk_forward")
     walk = raw_wf if isinstance(raw_wf, dict) else {}
     return tuple(
-        _id_val(v)
+        ("__bool__", v) if isinstance(v, bool) else v
         for v in (
             dataset.get("sha256"), dataset.get("bars"),
             report.get("initial_capital_usd"), walk.get("interval_minutes"),
