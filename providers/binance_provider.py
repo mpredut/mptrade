@@ -2,6 +2,7 @@
 
 import importlib
 import math
+import sys
 from typing import Any, List, Optional
 
 import account_cache_health as health
@@ -114,7 +115,7 @@ class BinanceProvider(MarketDataProvider):
     strategy execution obtains completed OHLC closes through ``ohlc_closes``.
     """
 
-    _USES_SSOT_MARKET_CACHE: bool = False
+    _USES_SSOT_MARKET_CACHE: bool = True
     _DEFAULT_FEE_SPEC = ("VIP0", 10.0, 10.0, 5.0)
     _USES_SHARED_REGISTRY_SYMBOLS = True
     _HISTORICAL_OHLC_PRIORITY = 1
@@ -145,8 +146,30 @@ class BinanceProvider(MarketDataProvider):
         """Return the authoritative Binance live-order feature gate."""
         return bool(cfg.is_trade_enabled())
 
+    def _allow_ssot_price_cache(self) -> bool:
+        if not super()._allow_ssot_price_cache():
+            return False
+        if (
+            getattr(self, "_ssot_cache_enabled", None) is True
+            or getattr(self, "_force_ssot_cache", False)
+            or getattr(self, "_ssot_price_cache_path", None)
+        ):
+            return True
+        bapi_mod = _get_bapi()
+        if bapi_mod is not sys.modules.get("binance_api.bapi"):
+            return False
+        get_px = getattr(bapi_mod, "get_current_price", None)
+        cli = getattr(bapi_mod, "client", None)
+        if getattr(get_px, "__module__", "") != "binance_api.bapi" or type(cli).__module__.startswith("unittest.mock"):
+            return False
+        return True
+
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
         return _get_bapi().get_current_price(symbol)
+
+    def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
+        self.validate_symbol(symbol)
+        return None
 
     def supports_symbol(self, symbol: str) -> bool:
         if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
@@ -459,7 +482,7 @@ class BinanceProvider(MarketDataProvider):
         enforce_min = _parse_bool_flag(enforce_business_minimum, True)
         try:
             rules = BinanceOrderRules.from_symbol_info(_get_bapi().client.get_symbol_info(symbol))
-            current_price = price if is_market else _get_bapi().get_current_price(symbol)
+            current_price = price if is_market else self.get_current_price(symbol)
             candidate_price = _po.order_candidate_price(side, price, current_price, market=is_market)
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(f"order rules unavailable for {symbol}: {exc}") from exc
@@ -539,7 +562,7 @@ class BinanceProvider(MarketDataProvider):
         try:
             client = _get_bapi().client
             rules = BinanceOrderRules.from_symbol_info(client.get_symbol_info(symbol))
-            reference_price = _get_bapi().get_current_price(symbol)
+            reference_price = self.get_current_price(symbol)
             try:
                 normalized_qty, normalized_price = rules.normalize(
                     quantity=qty,

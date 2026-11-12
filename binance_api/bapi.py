@@ -10,8 +10,6 @@ from botcore import (
     clean_upper_token,
     load_dotenv,
     normalize_scalar_order_id,
-    required_float_env,
-    safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
@@ -21,19 +19,12 @@ from .bapi_client import client
 from . import bapi_ws
 from providers import order_id_context as rc
 from providers.base import MarketDataProvider
-from providers.ssot_bridge import is_in_live_price_fetch
 from providers.order_ohlc_utils import (
     filter_and_normalize_open_orders,
     iter_expired_open_order_ids,
 )
 
 load_dotenv()
-BINANCE_REST_PRICE_CACHE_TTL_SEC = required_float_env(
-    "CM_BINANCE_REST_PRICE_CACHE_TTL_SEC"
-)
-if BINANCE_REST_PRICE_CACHE_TTL_SEC <= 0:
-    raise ValueError(
-        "CM_BINANCE_REST_PRICE_CACHE_TTL_SEC must be finite and positive")
 
 stop = False
 
@@ -52,14 +43,11 @@ try:
 except (ValueError, AttributeError):
     pass
 
-cprice = {}
-cprice_time = {}
-
 _normalize_side = sym._normalize_ordertype
 
 
 def update_price(symbol):
-    """Refresh one REST quote without making an older value look fresh."""
+    """Fetch one live REST quote directly from Binance, failing closed on error."""
     if (symbol := clean_upper_token(symbol)) is None:
         return None
     try:
@@ -68,30 +56,16 @@ def update_price(symbol):
         price = safe_pos_float(raw_px, default=None)
         if price is None:
             raise ValueError(f"invalid ticker price: {raw_px!r}")
+        return price
     except Exception as e:
         print("update_price: An unexpected error occurred: " + str(e))
         return None
 
-    # Publish value and success time together only after complete validation.
-    cprice[symbol] = price
-    cprice_time[symbol] = time.time()
-    return price
 
 def get_current_price(symbol):
-    """Return a bounded-age REST quote, failing closed after refresh failure."""
+    """Return a live REST quote without any hidden in-memory cache."""
     if (symbol := clean_upper_token(symbol)) is None:
         return None
-    if not is_in_live_price_fetch():
-        now = time.time()
-        cached_at_f = safe_float(cprice_time.get(symbol), default=None)
-        cached_f = safe_pos_float(cprice.get(symbol), default=None)
-        if cached_at_f is not None and cached_f is not None:
-            age = safe_nonneg_float(now - cached_at_f, default=None)
-            if age is not None and age < BINANCE_REST_PRICE_CACHE_TTL_SEC:
-                return cached_f
-
-    # A failed refresh returns None. It deliberately does not extend the timestamp
-    # of an older quote, so repeated outages cannot keep stale data apparently fresh.
     return update_price(symbol)
 
 

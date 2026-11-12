@@ -205,60 +205,33 @@ class BapiTradesReaderTest(unittest.TestCase):
             self.assertEqual(result[0]["price"], 100.5)
 
 
-# --- REST Price Cache -------------------------------------------------------
+# --- Pure Live REST Price Transport (No Hidden RAM Cache) -------------------
 
-class BinanceRestPriceCacheTest(unittest.TestCase):
-    def setUp(self):
-        bapi.cprice.clear()
-        bapi.cprice_time.clear()
-
-    def tearDown(self):
-        bapi.cprice.clear()
-        bapi.cprice_time.clear()
-
-    def test_failed_refresh_does_not_keep_an_old_price_fresh(self):
-        ttl = bapi.BINANCE_REST_PRICE_CACHE_TTL_SEC
+class BinanceRestPriceTransportTest(unittest.TestCase):
+    def test_every_call_hits_live_rest_and_fails_closed_on_outage(self):
         client = Mock()
         client.get_symbol_ticker.return_value = {"price": "100.25"}
-        with (
-            patch.object(bapi, "client", client),
-            patch.object(bapi.time, "time", side_effect=[10.0, 10.0]),
-        ):
+        with patch.object(bapi, "client", client):
             self.assertEqual(100.25, bapi.get_current_price(SYMBOL))
-        self.assertEqual(10.0, bapi.cprice_time[SYMBOL])
+            client.get_symbol_ticker.return_value = {"price": "101.50"}
+            self.assertEqual(101.50, bapi.get_current_price(SYMBOL))
 
-        client.get_symbol_ticker.side_effect = ConnectionError("ticker unavailable")
-        with (
-            patch.object(bapi, "client", client),
-            patch.object(bapi.time, "time", side_effect=lambda: 10.0 + ttl + 1),
-        ):
+            client.get_symbol_ticker.side_effect = ConnectionError("ticker unavailable")
             self.assertIsNone(bapi.get_current_price(SYMBOL))
             self.assertIsNone(bapi.get_current_price(SYMBOL))
 
-        self.assertEqual(3, client.get_symbol_ticker.call_count)
-        self.assertEqual(10.0, bapi.cprice_time[SYMBOL])
-        self.assertEqual(100.25, bapi.cprice[SYMBOL])
+        self.assertEqual(4, client.get_symbol_ticker.call_count)
+        self.assertFalse(hasattr(bapi, "cprice"))
+        self.assertFalse(hasattr(bapi, "cprice_time"))
 
-    def test_invalid_ticker_is_never_cached(self):
+    def test_invalid_ticker_fails_closed(self):
         for invalid in ("0", "-1", "nan", "inf"):
             with self.subTest(price=invalid):
                 client = Mock()
                 client.get_symbol_ticker.return_value = {"price": invalid}
                 with patch.object(bapi, "client", client):
                     self.assertIsNone(bapi.update_price(SYMBOL))
-                self.assertNotIn(SYMBOL, bapi.cprice)
-                self.assertNotIn(SYMBOL, bapi.cprice_time)
-
-    def test_clock_rollback_forces_a_refresh(self):
-        bapi.cprice[SYMBOL] = 100.0
-        bapi.cprice_time[SYMBOL] = 20.0
-        client = Mock()
-        client.get_symbol_ticker.return_value = {"price": "101"}
-        with (
-            patch.object(bapi, "client", client),
-            patch.object(bapi.time, "time", side_effect=[10.0, 10.0]),
-        ):
-            self.assertEqual(101.0, bapi.get_current_price(SYMBOL))
+                    self.assertIsNone(bapi.get_current_price(SYMBOL))
 
 
 # --- AllOrders & Trade Pagination -------------------------------------------
@@ -794,12 +767,10 @@ def test_binanceprovider_position_cost_basis_order_status_cancel_order_reject_bo
         bp_prov.cancel_order("BTCUSDC", True)
 
 def test_bapi_get_current_price_ignores_nan_bool_cached_values_and_iter41_s2(monkeypatch):
-    """[ITER41 #2] bapi.get_current_price ignores NaN/bool cached values and cancel_order rejects bool order_id."""
-    # 2. bapi.get_current_price ignores NaN/bool cached values and cancel_order rejects bool order_id
-    monkeypatch.setitem(bapi.cprice, "BTCUSDC", float("nan"))
-    monkeypatch.setitem(bapi.cprice_time, "BTCUSDC", time.time())
+    """[ITER41 #2] bapi.get_current_price delegates directly to update_price and cancel_order rejects bool order_id."""
     monkeypatch.setattr(bapi, "update_price", lambda sym: 61234.5)
     assert bapi.get_current_price("BTCUSDC") == pytest.approx(61234.5)
+    assert bapi.get_current_price(True) is None
     assert bapi.cancel_order("BTCUSDC", True) is False
     assert bapi._convert_to_usdc("USDC", True) == 0.0
 
@@ -1370,12 +1341,16 @@ def test_bapi_ws_normalize_rejects_sentinel_strings_nan_null_and_containers_iter
         is None
     )
 
-def test_bapi_get_current_price_normalizes_symbol_casing_whitespace_to_hit_iter133_s1():
-    """[ITER133 #1] bapi.get_current_price normalizes symbol casing/whitespace to hit cprice cache."""
-    # 1. bapi.get_current_price normalizes symbol casing/whitespace to hit cprice cache
-    bapi.cprice["BTCUSDC"] = 64000.0
-    bapi.cprice_time["BTCUSDC"] = bapi.time.time()
+def test_bapi_get_current_price_normalizes_symbol_casing_whitespace_to_hit_iter133_s1(monkeypatch):
+    """[ITER133 #1] bapi.get_current_price normalizes symbol casing/whitespace before REST ticker lookup."""
+    seen = []
+    monkeypatch.setattr(
+        bapi,
+        "client",
+        SimpleNamespace(get_symbol_ticker=lambda symbol: seen.append(symbol) or {"price": "64000.0"}),
+    )
     assert bapi.get_current_price(" btcusdc ") == pytest.approx(64000.0)
+    assert seen == ["BTCUSDC"]
 
 def test_bapi_get_open_orders_rejects_sentinel_container_orderid_and_normalizes_iter133_s2(monkeypatch):
     """[ITER133 #2] bapi.get_open_orders rejects sentinel/container orderId and normalizes integer float orderId."""

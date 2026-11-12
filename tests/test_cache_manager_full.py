@@ -3230,21 +3230,29 @@ def test_ws_drop_triggers_subsecond_http_fallback_and_bypasses_bapi_ttl(tmp_path
     assert cacheprice.CacheCurrentPriceManager.WS_TIMEOUT_SEC == pytest.approx(botcore.PRICE_WS_TIMEOUT_SEC)
     assert cacheprice.CacheCurrentPriceManager.STALE_THRESHOLD_MS == botcore.PRICE_FRESHNESS_MAX_AGE_MS
 
-    # Verify bapi.get_current_price bypasses in-memory TTL cache inside live_price_fetch_context.
-    bapi.cprice["BTCUSDC"] = 50000.0
-    bapi.cprice_time["BTCUSDC"] = time.time()
+    # Verify bapi has no hidden RAM cache and BinanceProvider consults <3.0s SSOT cache
+    # except inside live_price_fetch_context or when stale (>3.0s).
+    assert not hasattr(bapi, "cprice")
     fake_client = MagicMock()
     fake_client.get_symbol_ticker.return_value = {"price": "96500.0"}
     monkeypatch.setattr(bapi, "client", fake_client)
-    try:
-        assert bapi.get_current_price("BTCUSDC") == pytest.approx(50000.0)
-        fake_client.get_symbol_ticker.assert_not_called()
-        with live_price_fetch_context():
-            assert bapi.get_current_price("BTCUSDC") == pytest.approx(96500.0)
-        fake_client.get_symbol_ticker.assert_called_once_with(symbol="BTCUSDC")
-    finally:
-        bapi.cprice.clear()
-        bapi.cprice_time.clear()
+    ssot_file = tmp_path / "ssot_cp.json"
+    now_ms = int(time.time() * 1000)
+    ssot_file.write_text(
+        json.dumps({"fetchtime": {"BTCUSDC": time.time()}, "items": {"BTCUSDC": [[now_ms, 95123.0]]}}),
+        encoding="utf-8",
+    )
+    from providers.binance_provider import BinanceProvider
+
+    bp = BinanceProvider()
+    bp._ssot_cache_enabled = True
+    bp._ssot_price_cache_path = str(ssot_file)
+    assert bp.get_current_price("BTCUSDC") == pytest.approx(95123.0)
+    assert bp.get_price_history("BTCUSDC", 1.0) is None
+    fake_client.get_symbol_ticker.assert_not_called()
+    with live_price_fetch_context():
+        assert bp.get_current_price("BTCUSDC") == pytest.approx(96500.0)
+    fake_client.get_symbol_ticker.assert_called_once_with(symbol="BTCUSDC")
 
     # Verify WS drop beyond WS_TIMEOUT_SEC (1.5s) flips _should_poll() -> True and refreshes <3.0s via HTTP.
     api_mock = MagicMock()
