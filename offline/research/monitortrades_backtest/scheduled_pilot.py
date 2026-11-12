@@ -131,16 +131,6 @@ def _build_pilot_keys(conf_path=INSTRUMENTS_CONF):
 PILOT_KEYS = _build_pilot_keys()
 
 
-def _git_head_short():
-    """The (short) commit of the code that produced the proposal -- so that prod knows
-    exactly which engine/config version produced it. '?' if git does not answer."""
-    try:
-        return subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"],
-                              capture_output=True, text=True, timeout=5).stdout.strip() or "?"
-    except Exception:  # noqa: BLE001
-        return "?"
-
-
 def _append_audit(entry):
     append_jsonl_record(AUDIT_LOG, dict(entry, ts=datetime.now(timezone.utc).isoformat(timespec="seconds")))
 
@@ -711,13 +701,20 @@ def main():
                              + encode_json_payload({k: v for k, v in entry.items() if k != "results"},
                                                    indent=2, default=str) + "\n")
             if args.propose and entry.get("action") == "proposed":
+                try:
+                    dev_commit = subprocess.run(
+                        ["git", "-C", ROOT, "rev-parse", "--short", "HEAD"],
+                        capture_output=True, text=True, timeout=5,
+                    ).stdout.strip() or "?"
+                except Exception:  # noqa: BLE001
+                    dev_commit = "?"
                 proposals.append({
                     "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "full_key": full_key,
                     "section": full_key.split(".", 1)[0], "key": key, "symbol": symbol,
                     "current_on_dev": entry["current_value"],
                     "winner_value": entry["winner_value"],
                     "margin_vs_current": entry.get("margin_vs_current"),
-                    "dev_commit": _git_head_short(),
+                    "dev_commit": dev_commit,
                 })
 
         log.enable_print()

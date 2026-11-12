@@ -71,33 +71,17 @@ class PriceWindow:
             self.prices.popleft()
 
         # Handling of the current low and high.
-        self._manage_minimum(px)
-        self._manage_maximum(px)
+        self._evict_expired(self.min_deque)
+        while self.min_deque and self.min_deque[-1][1] > px:
+            self.min_deque.pop()
+        self.min_deque.append((self.current_index, px))
+        self._evict_expired(self.max_deque)
+        while self.max_deque and self.max_deque[-1][1] <= px:
+            self.max_deque.pop()
+        self.max_deque.append((self.current_index, px))
 
         # Increment the internal index.
         self.current_index += 1
-
-    def _manage_minimum(self, price):
-        """Handling of the current low in the window."""
-        self._evict_expired(self.min_deque)
-
-        # Pop strictly larger trailing values to maintain a monotonically non-decreasing deque,
-        # while appending equal lows behind earlier lows so expiry of the old low promotes the newer one.
-        while self.min_deque and self.min_deque[-1][1] > price:
-            self.min_deque.pop()
-
-        self.min_deque.append((self.current_index, price))
-
-    def _manage_maximum(self, price):
-        """Handling of the current high in the window."""
-        self._evict_expired(self.max_deque)
-
-        # Remove the trailing elements that are smaller than the current price (to keep the latest high).
-        while self.max_deque and self.max_deque[-1][1] <= price:
-            self.max_deque.pop()
-
-        # Add the current price.
-        self.max_deque.append((self.current_index, price))
 
     def _deque_front(self, dq: deque):
         if not dq:

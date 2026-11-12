@@ -89,13 +89,6 @@ def _historical_schema_defaults() -> dict[str, str]:
     return base_env
 
 
-def _git_head_or_unknown() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip()
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
-
-
 def revision_params(spec: str) -> StratParams:
     if not isinstance(spec, str) or not spec.strip() or spec.strip().startswith("-"):
         raise ValueError(f"Invalid git revision spec: {spec!r}")
@@ -198,8 +191,12 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
                 ),
             }
         reports[name] = report
+    try:
+        git_head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip()
+    except (OSError, subprocess.SubprocessError):
+        git_head = "unknown"
     return {"baseline_config": baseline, "candidate_config": candidate,
-            "code": _git_head_or_unknown(),
+            "code": git_head,
             "source_sha256": {name: hashlib.sha256(read_bytes_file(ROOT / name)).hexdigest()
                               for name in ("strategies/spot_engine.py", "strategies/spot_replay.py", "offline/runners/spot_profile_review.py")},
             "cash_scenario": cash, "profiles": reports,

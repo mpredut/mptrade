@@ -56,22 +56,6 @@ def _display_path(path: Path) -> str:
         return str(path.resolve())
 
 
-def _git_state() -> dict:
-    try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
-            capture_output=True, text=True,
-        ).stdout.strip()
-        status = subprocess.run(
-            ["git", "status", "--porcelain"], cwd=ROOT, check=True,
-            capture_output=True, text=True,
-        ).stdout
-        dirty = bool(status.strip())
-        return {"commit": commit, "worktree_dirty": dirty}
-    except (OSError, subprocess.SubprocessError):
-        return {"commit": None, "worktree_dirty": None}
-
-
 def _load_expected_dataset(manifest_path: Path, interval: int) -> dict:
     manifest = read_json_file(manifest_path)
     if not isinstance(manifest, dict):
@@ -177,12 +161,24 @@ def build_report(
             "windows": windows,
         }
 
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=ROOT, check=True,
+            capture_output=True, text=True,
+        ).stdout
+        git_state = {"commit": commit, "worktree_dirty": bool(status.strip())}
+    except (OSError, subprocess.SubprocessError):
+        git_state = {"commit": None, "worktree_dirty": None}
     report = {
         "schema_version": 1,
         "benchmark": "HYPE base-v2 financial OOS",
         "candidate_name": candidate_name or getattr(args, "name", "base_v2_live"),
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "code": _git_state(),
+        "code": git_state,
         "strategy_params": dataclasses.asdict(params),
         "initial_capital_usd": params.allocated_budget(),
         "dataset": {
