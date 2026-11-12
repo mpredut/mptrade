@@ -88,10 +88,6 @@ class BacktestBroker:
         self._next_oid = 0
         self._outcome_buf: list[str] | None = None
 
-    def _alloc_order_id(self) -> int:
-        self._next_oid += 1
-        return self._next_oid
-
     def flush_outcomes(self) -> None:
         if self._outcome_buf:
             append_text_line(self.path, "".join(self._outcome_buf))
@@ -152,7 +148,8 @@ class BacktestBroker:
                 self.pos_qty = 0.0
                 self.pos_cost = 0.0
             self.n_sell += 1
-        oid = self._alloc_order_id()
+        self._next_oid += 1
+        oid = self._next_oid
         cols = [self.clock(), symbol, order_type, exec_price, exec_qty, "executed", "", "backtest", motivation]
         self.write_outcome_row(cols)
         return {"orderId": oid, "backtest": True}   # Positive int orderId for live track_and_place_order parity.
@@ -170,7 +167,8 @@ class BacktestBroker:
         # exactly as after a wait_for_favorable_entry that ends in a placement.
         if (self.trend_gate is not None
                 and self.trend_gate.should_wait(symbol, order_type, self.trend_gate_timeout_sec)):
-            oid = self._alloc_order_id()
+            self._next_oid += 1
+            oid = self._next_oid
             self.pending.append({
                 "order_id": oid, "side": order_type, "symbol": symbol, "qty_arg": qty,
                 "motivation": motivation, "deadline": self.clock() + self.trend_gate_max_wait_sec})

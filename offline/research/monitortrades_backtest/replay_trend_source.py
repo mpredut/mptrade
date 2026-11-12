@@ -65,6 +65,17 @@ def parse_optional_window_seconds(
     return True, ws_f, same
 
 
+def _slice_since_cutoff(buf, window_sec: float) -> List[Tuple[float, float]]:
+    cutoff = buf[-1][0] - window_sec
+    pts: List[Tuple[float, float]] = []
+    for t, p in reversed(buf):
+        if t < cutoff:
+            break
+        pts.append((t, p))
+    pts.reverse()
+    return pts
+
+
 class ReplayTrendSource:
     """One PriceWindow per symbol, fed directly from replay ticks --
     entirely isolated (it never touches cache_short_trend.json). Instantiate it
@@ -118,15 +129,9 @@ class ReplayTrendSource:
         raw_q = self._raw_ticks.get(symbol)
         if not raw_q or len(raw_q) < 2:
             return None
-        cutoff = raw_q[-1][0] - ws_f
-        pts: List[Tuple[float, float]] = []
-        for t, p in reversed(raw_q):
-            if t < cutoff:
-                break
-            pts.append((t, p))
+        pts = _slice_since_cutoff(raw_q, ws_f)
         if len(pts) < 2:
             return None
-        pts.reverse()
         gaps = [pts[i + 1][0] - pts[i][0] for i in range(len(pts) - 1) if pts[i + 1][0] > pts[i][0]]
         sr = safe_pos_float(np.median(gaps), default=pw.DEFAULT_SAMPLE_RATE_SEC) if gaps else pw.DEFAULT_SAMPLE_RATE_SEC
         prices = [p for _, p in pts]
@@ -177,7 +182,7 @@ class ReplayTrendSource:
         now: Optional[float] = None,
     ) -> bool:
         """Replicate CacheShortTrendManager.should_wait against the replay PriceWindow."""
-        if (side_str := _normalize_buy_sell_side(side)) is None or (win := self._windows.get(symbol)) is None:
+        if (side_str := normalize_side(side)) not in ("BUY", "SELL") or (win := self._windows.get(symbol)) is None:
             return False
         valid_ws, ws_f, same_win = parse_optional_window_seconds(
             window_seconds, win.window_seconds
@@ -226,11 +231,6 @@ def _parse_advance_tick(ts: float, price: float) -> Optional[Tuple[float, float]
     ts_f = normalize_epoch_sec(ts, default=None, allow_zero=True)
     px_f = safe_pos_float(price, default=None)
     return (ts_f, px_f) if ts_f is not None and px_f is not None else None
-
-
-def _normalize_buy_sell_side(side: str) -> Optional[str]:
-    side_str = normalize_side(side)
-    return side_str if side_str in ("BUY", "SELL") else None
 
 
 def _should_wait_for_gradient(
@@ -305,14 +305,7 @@ class DynamicReplayTrendSource:
         t_sec = safe_pos_float(timeout_sec, default=None)
         if not buf or t_sec is None:
             return []
-        cutoff = buf[-1][0] - t_sec
-        pts: List[Tuple[float, float]] = []
-        for t, p in reversed(buf):
-            if t < cutoff:
-                break
-            pts.append((t, p))
-        pts.reverse()
-        return pts
+        return _slice_since_cutoff(buf, t_sec)
 
     def _prices_and_rate(self, symbol: str, timeout_sec: float) -> Tuple[List[float], float]:
         pts = self._slice(symbol, timeout_sec)
@@ -355,7 +348,7 @@ class DynamicReplayTrendSource:
         noise-gated variant for comparison."""
         if (
             symbol not in self._buf
-            or (side_str := _normalize_buy_sell_side(side)) is None
+            or (side_str := normalize_side(side)) not in ("BUY", "SELL")
             or safe_pos_float(timeout_sec, default=None) is None
         ):
             return False

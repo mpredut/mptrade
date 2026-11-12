@@ -232,11 +232,6 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     return "BOT"
 
 
-def _first_nonempty_str(mapping: dict, keys: tuple[str, ...], *, lower: bool = False) -> Optional[str]:
-    val = _first_mapped(mapping, keys, lambda v: str(v).strip() or None)
-    return val.lower() if (val and lower) else val
-
-
 def resolve_order_origin(
     order: Any,
     known_ai_order_ids: Optional[set[str]] = None,
@@ -247,8 +242,9 @@ def resolve_order_origin(
     if actor == "AI" or not isinstance(order, dict):
         return actor, None, None
 
-    mod = _first_nonempty_str(order, ("module", "origin_module", "bot", "caller"), lower=True)
-    rule = _first_nonempty_str(order, ("rule", "decision_rule", "trigger_rule", "kind", "role", "motivation"))
+    raw_mod = _first_mapped(order, ("module", "origin_module", "bot", "caller"), lambda v: str(v).strip() or None)
+    mod = raw_mod.lower() if raw_mod else None
+    rule = _first_mapped(order, ("rule", "decision_rule", "trigger_rule", "kind", "role", "motivation"), lambda v: str(v).strip() or None)
     oid = extract_order_id(order, default="")
     raw_cid = extract_client_order_id(order, default="") or ""
 

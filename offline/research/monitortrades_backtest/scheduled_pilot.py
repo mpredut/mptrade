@@ -86,19 +86,14 @@ except Exception:  # noqa: BLE001
     pass
 
 
-def _env_float(name: str, default: float) -> float:
-    val = float_env(name)
-    return default if val is None else val
-
-
 INSTRUMENTS_CONF = os.path.join(ROOT, "instruments.conf")
 AUDIT_LOG = os.path.join(ROOT, "logger", "backtest_pilot_audit.jsonl")
-MIN_DAYS_BETWEEN_CHANGES = _env_float("PILOT_MIN_DAYS_BETWEEN_CHANGES", 7.0)
+MIN_DAYS_BETWEEN_CHANGES = float_env("PILOT_MIN_DAYS_BETWEEN_CHANGES", default=7.0)
 # The winner must beat the CURRENT value by at least this much (net-buy_hold,
 # USD) on BOTH windows. Otherwise the change is below the noise, or the parameter is inert on
 # this history (e.g. found 28 Jul: hard-TP never fires -> every value gives
 # identical results, and max() on a tie falsely "applies" the first element of the grid).
-MIN_EDGE_MARGIN_USD = _env_float("PILOT_MIN_EDGE_MARGIN_USD", 1.0)
+MIN_EDGE_MARGIN_USD = float_env("PILOT_MIN_EDGE_MARGIN_USD", default=1.0)
 
 # The keys in the pilot's scope (BTC/TAO, monitortrades) -- the rest of the annotations in
 # instruments.conf are NOT touched without explicitly extending this list (a user
@@ -251,11 +246,6 @@ def _cache_and_trend_keys(symbol, params, series):
     )
 
 
-def _apply_run_diagnostics(tk, diag: dict) -> None:
-    rb._LAST_RUN_DIAGNOSTICS[tk] = diag
-    rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
-
-
 def _run_one(symbol, base, params, series):
     """Run the canonical replay backtest (run_replay_backtest.run_symbol) over a
     pre-sliced in-memory series without writing pnl.json."""
@@ -265,7 +255,9 @@ def _run_one(symbol, base, params, series):
     if ck in _RUN_ONE_CACHE:
         cached = _RUN_ONE_CACHE[ck]
         if ck in _RUN_ONE_DIAG_CACHE:
-            _apply_run_diagnostics(tk, dict(_RUN_ONE_DIAG_CACHE[ck]))
+            cached_diag = dict(_RUN_ONE_DIAG_CACHE[ck])
+            rb._LAST_RUN_DIAGNOSTICS[tk] = cached_diag
+            rb._LAST_HARD_TP_TOUCHED[tk] = cached_diag.get("hard_tp_touched", True)
         return dict(cached) if cached is not None else None
     res = rb.run_symbol(symbol, params, base, quiet=True, series=series)
     net_v = safe_float(res.get("net"), default=None) if isinstance(res, dict) else None
@@ -663,7 +655,8 @@ def main():
                     h_series = _split_series(sym)[half_idx]
                     _seed_cached_half(sym, p, h_series, res, diag)
                     tk = rb._series_cache_key(sym, h_series, rb.DEFAULT_WINDOW_SECONDS)
-                    _apply_run_diagnostics(tk, diag)
+                    rb._LAST_RUN_DIAGNOSTICS[tk] = diag
+                    rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
 
         entries = {}
         for fk, (sym, base, key) in keys.items():

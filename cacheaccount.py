@@ -2174,15 +2174,10 @@ def bind_account_cache_getter(getter_fn) -> None:
     _account_cache_getter = getter_fn
 
 
-def _resolve_account_cache_getter():
-    default_getter = _account_cache_getter or _bapi_ws_bridge._default_cache_getter
-    return _cm_override("get_cache_manager", default_getter)
-
-
 def ensure_account_cache_readers(status):
     """Synchronize this process with both versions in a fresh health marker."""
     ach = _cm_override("account_cache_health", account_cache_health)
-    getter = _resolve_account_cache_getter()
+    getter = _cm_override("get_cache_manager", _account_cache_getter or _bapi_ws_bridge._default_cache_getter)
     try:
         order_version = status.order_cache_version
         trade_version = status.trade_cache_version
@@ -2203,7 +2198,7 @@ def start_account_cache_daemon(
 ) -> None:
     """Enable the account-cache health writer, seed recent sync state, and start the user-stream WS bridge."""
     ach = _cm_override("account_cache_health", account_cache_health)
-    getter = cache_getter or _resolve_account_cache_getter()
+    getter = cache_getter or _cm_override("get_cache_manager", _account_cache_getter or _bapi_ws_bridge._default_cache_getter)
     ach.enable_writer()
     now_ms = math.trunc(_now_time() * 1000)
     max_age_ms = math.trunc(ach.MAX_AGE_SEC * 1000)
