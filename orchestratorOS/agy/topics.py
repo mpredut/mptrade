@@ -265,6 +265,18 @@ def _delete_topic_thread_everywhere(base: str, cid: str) -> None:
         pass
 
 
+def _rotate_topic_conversation(
+    base: str,
+    entry: Dict[str, Any],
+    old_cid: str,
+    new_cid: Optional[str],
+) -> None:
+    _delete_topic_thread_everywhere(base, old_cid)
+    entry["conversation_id"] = new_cid
+    entry["compacted_at_step"] = 0
+    entry["rotation_count"] = safe_nonneg_int(entry.get("rotation_count"), 0) + 1
+
+
 def prepare_topic_session(
     topic_key: str,
     cli_base: Optional[str] = None,
@@ -300,10 +312,7 @@ def prepare_topic_session(
                     step_count,
                     max_steps_i,
                 )
-                _delete_topic_thread_everywhere(base, cid)
-                entry["conversation_id"] = None
-                entry["compacted_at_step"] = 0
-                entry["rotation_count"] = safe_nonneg_int(entry.get("rotation_count"), 0) + 1
+                _rotate_topic_conversation(base, entry, cid, None)
                 reg[resolved] = entry
                 save_topic_registry(reg, registry_path)
                 return TopicSession(None, format_topic_history_prefix(resolved, registry_path), False)
@@ -398,10 +407,7 @@ def record_topic_turn(
     if clean_cid and existing_cid and clean_cid != existing_cid and (
         replace_conv or (not get_thread_step_count(existing_cid, base)[0] and get_thread_step_count(clean_cid, base)[0])
     ):
-        _delete_topic_thread_everywhere(base, existing_cid)
-        entry["conversation_id"] = clean_cid
-        entry["compacted_at_step"] = 0
-        entry["rotation_count"] = safe_nonneg_int(entry.get("rotation_count"), 0) + 1
+        _rotate_topic_conversation(base, entry, existing_cid, clean_cid)
         existing_cid = clean_cid
     elif not existing_cid and clean_cid:
         entry["conversation_id"] = clean_cid

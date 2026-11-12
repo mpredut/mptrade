@@ -105,13 +105,16 @@ class MarketApi:
         self._regime_snapshot_resolver = regime_snapshot_resolver
         self.stop: bool = False
 
-    def _provider_explicit_or_routed(self, symbol: str, provider_name=None):
+    def _resolve_routed_or_named_provider(self, symbol_or_asset: str, provider_name=None):
         if provider_name is None:
-            provider = self._provider_for(symbol)
-        else:
-            provider = self.provider_by_name(provider_name)
-            if provider is None:
-                raise ValueError(f"Unknown provider: {provider_name!r}")
+            return self._provider_for(symbol_or_asset)
+        provider = self.provider_by_name(provider_name)
+        if provider is None:
+            raise ValueError(f"Unknown provider: {provider_name!r}")
+        return provider
+
+    def _provider_explicit_or_routed(self, symbol: str, provider_name=None):
+        provider = self._resolve_routed_or_named_provider(symbol, provider_name)
         validate_fn = getattr(provider, "validate_symbol", None)
         if callable(validate_fn):
             validate_fn(symbol)
@@ -237,13 +240,7 @@ class MarketApi:
     # -- Account routing by symbol/asset, normalized by provider. ---------------
     def free_balance(self, asset: str, *, provider_name=None) -> Optional[float]:
         """Return free balance for asset from its routed or explicitly named provider."""
-        if provider_name is None:
-            provider = self._provider_for(asset)
-        else:
-            provider = self.provider_by_name(provider_name)
-            if provider is None:
-                raise ValueError(f"Unknown provider: {provider_name!r}")
-        return provider.free_balance(asset)
+        return self._resolve_routed_or_named_provider(asset, provider_name).free_balance(asset)
 
     def get_orders(
         self,

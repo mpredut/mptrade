@@ -581,14 +581,22 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
         else:
             trend_state.start_trend(direction)
 
+    def _advance_and_fire_small_window(is_up: bool, reason: str, log_prefix: str, log_detail: str):
+        direction, action = _dir_action(is_up)
+        print(f"[SMALL-WINDOW] {log_prefix} {action} {'surge' if is_up else 'plunge'}: {log_detail}")
+        _advance_small_trend(direction)
+        return _fire_trend_order(
+            enable, symbol, trend_state, direction, action, current_price,
+            reason, regime_ctx=regime_ctx,
+        )
+
     if (gradient > 0 and slope > SMALL_SLOPE_THRESHOLD) or (gradient < 0 and slope < -SMALL_SLOPE_THRESHOLD):
         is_up = gradient > 0
-        direction, action = _dir_action(is_up)
         cmp_str = f"> {SMALL_SLOPE_THRESHOLD}" if is_up else f"< -{SMALL_SLOPE_THRESHOLD}"
         reason = "small_window_surge_up" if is_up else "small_window_plunge_down"
-        print(f"[SMALL-WINDOW] Momentum {action} {'surge' if is_up else 'plunge'}: gradient={gradient}, slope={slope} {cmp_str}")
-        _advance_small_trend(direction)
-        return _fire_trend_order(enable, symbol, trend_state, direction, action, current_price, reason, regime_ctx=regime_ctx)
+        return _advance_and_fire_small_window(
+            is_up, reason, "Momentum", f"gradient={gradient}, slope={slope} {cmp_str}",
+        )
 
     if ACCEL_ENABLED and price_window is not None and (
         (gradient > 0 and slope >= PRICE_CHANGE_THRESHOLD_EUR)
@@ -604,16 +612,15 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
                 and sign * acc_short >= ACCEL_MIN_ACC_SHORT
                 and sign * vel_med >= ACCEL_MIN_VEL_MED
             ):
-                direction, action = _dir_action(is_up)
                 reason = "accel_surge_up" if is_up else "accel_plunge_down"
-                print(
-                    f"[SMALL-WINDOW] Acceleration {action} {'surge' if is_up else 'plunge'}: gradient={gradient}, slope={slope:.3f}, "
-                    f"vel_90s={vel_short:.3f}%/m, acc_90s={acc_short:.3f}%/m^2, vel_180s={vel_med:.3f}%/m"
-                )
-                _advance_small_trend(direction)
-                return _fire_trend_order(
-                    enable, symbol, trend_state, direction, action, current_price,
-                    reason, regime_ctx=regime_ctx,
+                return _advance_and_fire_small_window(
+                    is_up,
+                    reason,
+                    "Acceleration",
+                    (
+                        f"gradient={gradient}, slope={slope:.3f}, "
+                        f"vel_90s={vel_short:.3f}%/m, acc_90s={acc_short:.3f}%/m^2, vel_180s={vel_med:.3f}%/m"
+                    ),
                 )
         except Exception as e:
             print(f"[SMALL-WINDOW] Acceleration calculation error for {symbol}: {e}")

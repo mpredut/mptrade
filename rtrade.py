@@ -451,6 +451,14 @@ class _LivePairVenue:
         self._set_pair_recovery_blocked(pair_id, False)
         return "recovered", ticket, snapshot
 
+    def _discard_if_pre_submit_refusal(self, pair_id, pending: dict) -> bool:
+        if self._pre_submit_refusal(pending):
+            self.pair_store.persist_intent(
+                pair_id, pending["side"], pending["kind"], None, symbol=self.symbol
+            )
+            return True
+        return False
+
     def recover_pair_intents(self, pair_id):
         """Reconcile every persisted intent for one active coordinator tick."""
         record = self._pair_record(pair_id)
@@ -461,9 +469,7 @@ class _LivePairVenue:
         pending_recovery = False
         for stored in list(dict(record.get("intents") or {}).values()):
             pending = self._canonical_intent(record, stored)
-            side, kind = pending["side"], pending["kind"]
-            if self._pre_submit_refusal(pending):
-                self.pair_store.persist_intent(pair_id, side, kind, None, symbol=self.symbol)
+            if self._discard_if_pre_submit_refusal(pair_id, pending):
                 continue
             try:
                 item = self.recover_intent(record, pending)
@@ -472,7 +478,7 @@ class _LivePairVenue:
                 continue
             if item is not None:
                 ticket, snapshot = item
-                recovered.append((ticket, snapshot, kind))
+                recovered.append((ticket, snapshot, pending["kind"]))
         self._set_pair_recovery_blocked(pair_id, pending_recovery)
         return recovered
 
@@ -506,8 +512,7 @@ class _LivePairVenue:
                 limit_revisions[side] = max(limit_revisions[side], limit_revision)
             if stop_revision is not None:
                 hard_stop_revision = max(hard_stop_revision, stop_revision)
-            if self._pre_submit_refusal(pending):
-                self.pair_store.persist_intent(record["pair_id"], side, kind, None, symbol=self.symbol)
+            if self._discard_if_pre_submit_refusal(record["pair_id"], pending):
                 continue
 
             order_id = pending.get("order_id")

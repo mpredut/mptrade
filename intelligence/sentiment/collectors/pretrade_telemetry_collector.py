@@ -909,6 +909,18 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             return
         now_ts_s = _time.time()
         ob_ts_est = safe_pos_float(cur_m_info.pop("_ob_ts", None), default=0.0) or 0.0
+        def _refresh_wall_telemetry(use_sub_ten_decimals: bool = False) -> None:
+            for side_lbl, usd_k, px_k in (("Ask", "ask_wall_usd", "ask_wall_px"), ("Bid", "bid_wall_usd", "bid_wall_px")):
+                w_px_rc = safe_pos_float(cur_m_info.get(px_k), 0.0)
+                w_usd_rc = safe_pos_float(cur_m_info.get(usd_k), 0.0)
+                if w_px_rc > 0.0 and w_usd_rc > 0.0 and str(telemetry.get(f"Orderbook {side_lbl} Wall Ahead") or "").startswith("$"):
+                    w_px_fmt = (
+                        f"{w_px_rc:.4f}".rstrip("0").rstrip(".")
+                        if use_sub_ten_decimals and 1.0 <= w_px_rc < 10.0 and abs(w_px_rc - round(w_px_rc, 2)) >= 1e-4
+                        else (f"{w_px_rc:,.2f}" if w_px_rc >= 1.0 else f"{w_px_rc:.6f}".rstrip("0").rstrip("."))
+                    )
+                    telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
+
         is_exact_ob_sym = clean_symbol_key(cur_m_info.get("_source_cand") or symbol) == clean_symbol_key(symbol)
         if not is_usd_sym and (not cur_px_est or cur_px_est <= 0.0 or _prices_diverged(cur_px_est, cur_m_info.get("ob_mid_price"))):
             for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
@@ -927,23 +939,9 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             cur_px_est = rescale_orderbook_walls_to_price(cur_m_info, cur_px_est, ob_mid_m)
             if m24:
                 recalculate_live_price_geometry(m24, cur_px_est)
-            for side_lbl, usd_k, px_k in (("Ask", "ask_wall_usd", "ask_wall_px"), ("Bid", "bid_wall_usd", "bid_wall_px")):
-                w_px_rc = safe_pos_float(cur_m_info.get(px_k), 0.0)
-                w_usd_rc = safe_pos_float(cur_m_info.get(usd_k), 0.0)
-                if w_px_rc > 0.0 and w_usd_rc > 0.0 and str(telemetry.get(f"Orderbook {side_lbl} Wall Ahead") or "").startswith("$"):
-                    w_px_fmt = f"{w_px_rc:,.2f}" if w_px_rc >= 1.0 else f"{w_px_rc:.6f}".rstrip("0").rstrip(".")
-                    telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
+            _refresh_wall_telemetry()
         elif is_eq_sym and align_equity_orderbook_to_spot(cur_m_info, cur_px_est):
-            for side_lbl, usd_k, px_k in (("Ask", "ask_wall_usd", "ask_wall_px"), ("Bid", "bid_wall_usd", "bid_wall_px")):
-                w_px_rc = safe_pos_float(cur_m_info.get(px_k), 0.0)
-                w_usd_rc = safe_pos_float(cur_m_info.get(usd_k), 0.0)
-                if w_px_rc > 0.0 and w_usd_rc > 0.0 and str(telemetry.get(f"Orderbook {side_lbl} Wall Ahead") or "").startswith("$"):
-                    w_px_fmt = (
-                        f"{w_px_rc:.4f}".rstrip("0").rstrip(".")
-                        if 1.0 <= w_px_rc < 10.0 and abs(w_px_rc - round(w_px_rc, 2)) >= 1e-4
-                        else (f"{w_px_rc:,.2f}" if w_px_rc >= 1.0 else f"{w_px_rc:.6f}".rstrip("0").rstrip("."))
-                    )
-                    telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
+            _refresh_wall_telemetry(use_sub_ten_decimals=True)
 
         ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
         if (

@@ -496,18 +496,11 @@ class NotificationServer:
                 )
                 if clean_stripped == "":
                     return
-                elif is_indented or is_chain_header:
-                    self.traceback_buffers[bot_name].append(clean_stripped)
-                    if len(self.traceback_buffers[bot_name]) >= 40:
-                        line = self._collapse_traceback(self.traceback_buffers[bot_name])
-                        self.traceback_buffers[bot_name] = []
-                    else:
-                        return
-                else:
-                    # Terminal exception line reached!
-                    self.traceback_buffers[bot_name].append(clean_stripped)
-                    line = self._collapse_traceback(self.traceback_buffers[bot_name])
-                    self.traceback_buffers[bot_name] = []
+                self.traceback_buffers[bot_name].append(clean_stripped)
+                if (is_indented or is_chain_header) and len(self.traceback_buffers[bot_name]) < 40:
+                    return
+                line = self._collapse_traceback(self.traceback_buffers[bot_name])
+                self.traceback_buffers[bot_name] = []
         elif "\n" not in clean_stripped and "Traceback (most recent call last):" in clean_stripped:
             self.traceback_buffers[bot_name] = [clean_stripped]
             return

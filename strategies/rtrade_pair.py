@@ -761,26 +761,25 @@ class PairCoordinator:
             return self.outcome()
 
         if bq > 0 or sq > 0:
-            if abs(net) <= 1e-8:
-                settled, bq, bc, sq, sc, net = self._try_complete_flat_exposure()
-                if settled:
-                    return self.outcome()
-
-            exposure_side = "LONG" if net > 0 else "SOLD"
-            self.phase = "exposed"
-            entry_side = "BUY" if exposure_side == "LONG" else "SELL"
-            for ticket in self.tickets:
-                if ticket.side.upper() == entry_side and ticket.active:
-                    _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
-                    if cancel_reason is not None:
-                        self.reason = "entry_cancel_failed" if cancel_reason == "cancel_failed" else "entry_cancel_ambiguous"
+            for closing_phase in (False, True):
+                if abs(net) <= 1e-8:
+                    if closing_phase:
+                        self.phase = "closing"
+                    settled, bq, bc, sq, sc, net = self._try_complete_flat_exposure()
+                    if settled:
                         return self.outcome()
-            bq, bc, sq, sc, net = self._totals_and_net(refresh=True)
-            if abs(net) <= 1e-8:
-                self.phase = "closing"
-                settled, bq, bc, sq, sc, net = self._try_complete_flat_exposure()
-                if settled:
-                    return self.outcome()
+                if closing_phase:
+                    break
+                exposure_side = "LONG" if net > 0 else "SOLD"
+                self.phase = "exposed"
+                entry_side = "BUY" if exposure_side == "LONG" else "SELL"
+                for ticket in self.tickets:
+                    if ticket.side.upper() == entry_side and ticket.active:
+                        _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
+                        if cancel_reason is not None:
+                            self.reason = "entry_cancel_failed" if cancel_reason == "cancel_failed" else "entry_cancel_ambiguous"
+                            return self.outcome()
+                bq, bc, sq, sc, net = self._totals_and_net(refresh=True)
             exposure_side = "LONG" if net > 0 else "SOLD"
             entry_avg = (bc / bq) if exposure_side == "LONG" else (sc / sq)
             current = safe_pos_float(self.venue.current_price(), default=0.0)

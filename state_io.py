@@ -155,15 +155,6 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
                     label: str, root_type: type = dict):
     """Load JSON state with an explicit live-versus-observational failure policy."""
     fail_closed = _parse_bool_flag(fail_closed, True)
-    try:
-        target_path = _resolve_target_path(path)
-    except (TypeError, ValueError) as exc:
-        if fail_closed:
-            raise StateReadError(f"invalid {label} state in {path}: {exc}") from exc
-        return default_factory()
-    backup_path = previous_generation_path(target_path)
-    if not os.path.exists(target_path) and not os.path.exists(backup_path):
-        return default_factory()
 
     def _read_and_validate(candidate_path: str):
         with open(candidate_path, "r", encoding="utf-8") as handle:
@@ -173,6 +164,10 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
         return value
 
     try:
+        target_path = _resolve_target_path(path)
+        backup_path = previous_generation_path(target_path)
+        if not os.path.exists(target_path) and not os.path.exists(backup_path):
+            return default_factory()
         return read_recovering_previous(target_path, _read_and_validate, backup_path=backup_path)
     except (OSError, TypeError, ValueError) as exc:
         if fail_closed:

@@ -310,6 +310,13 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
     return results
 
 
+def _candidate_params_and_budget(overrides: dict, interval: int):
+    params = prepare_spot_interval_params(
+        dataclasses.replace(LIVE_PARAMS, **overrides), interval
+    )
+    return params, params.allocated_budget()
+
+
 def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict]) -> dict[str, dict]:
     """Run full unbroken continuous replay over the entire 628-day dataset."""
     print(">>> Running Continuous 628-Day Replay (~3,772 bars)...")
@@ -323,10 +330,7 @@ def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict])
         kraken_replay.prewarm_trend_series(ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
 
     for name, overrides in candidates.items():
-        params = prepare_spot_interval_params(
-            dataclasses.replace(LIVE_PARAMS, **overrides), interval
-        )
-        budget = params.allocated_budget()
+        params, budget = _candidate_params_and_budget(overrides, interval)
         m = kraken_replay.run_replay(
             ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             timestamps=timestamps,
@@ -446,10 +450,7 @@ def run_live_forward_shadow(
         )
 
     for name, overrides in candidates.items():
-        params = prepare_spot_interval_params(
-            dataclasses.replace(LIVE_PARAMS, **overrides), interval
-        )
-        budget = params.allocated_budget()
+        params, budget = _candidate_params_and_budget(overrides, interval)
 
         # Forward bars
         m_fwd = kraken_replay.run_replay(

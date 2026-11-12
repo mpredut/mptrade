@@ -579,36 +579,29 @@ class IncrementalTrendBuffer:
             with np.errstate(over="ignore", invalid="ignore"):
                 w = np.arange(1, m + 1, dtype=np.float64) ** pwr if pwr != 1.0 else np.arange(1, m + 1, dtype=np.float64)
                 val = safe_float(np.dot(w, np.diff(f)) / np.sum(w), default=None)
-        elif pwr == 1.0:
-            # O(1) Linear Abel summation:
-            # sum_{k=1..m} k (y_{a+k} - y_{a+k-1}) = m * dy_b - sum_{r=0..m-1} dy_{a+r}
-            y_ref = self.y_ref if self.y_ref is not None else 0.0
-            a0, _, _ = self._raw_moment_range(a, b - 1)
-            total = m_f * (ref_last - y_ref) - a0
-            s1 = 0.5 * m_f * (m_f + 1.0)
-            val = safe_float(total / s1, default=None)
-        elif pwr == 2.0:
-            # O(1) Quadratic Abel summation:
-            # sum_{k=1..m} k^2 (y_{a+k} - y_{a+k-1}) = m^2 dy_b - sum_{r=0..m-1} (2r + 1) dy_{a+r}
-            y_ref = self.y_ref if self.y_ref is not None else 0.0
-            c = (self.offset + a) * 1.0
-            a0, a1, _ = self._raw_moment_range(a, b - 1)
-            sum_2r1 = 2.0 * a1 - (2.0 * c - 1.0) * a0
-            m2 = m_f ** 2
-            total = m2 * (ref_last - y_ref) - sum_2r1
-            s2 = (m_f * (m_f + 1.0) * (2.0 * m_f + 1.0)) / 6.0
-            val = safe_float(total / s2, default=None)
         else:
-            # O(1) Cubic Abel summation (p=3):
             y_ref = self.y_ref if self.y_ref is not None else 0.0
-            c = (self.offset + a) * 1.0
+            dy_last = ref_last - y_ref
             a0, a1, a2 = self._raw_moment_range(a, b - 1)
-            sum_r2 = a2 - 2.0 * c * a1 + c * c * a0
-            sum_r1 = a1 - c * a0
-            m3 = m_f ** 3
-            total = m3 * (ref_last - y_ref) - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
-            s3 = (0.5 * m_f * (m_f + 1.0)) ** 2
-            val = safe_float(total / s3, default=None)
+            if pwr == 1.0:
+                # O(1) Linear Abel summation:
+                # sum_{k=1..m} k (y_{a+k} - y_{a+k-1}) = m * dy_b - sum_{r=0..m-1} dy_{a+r}
+                total = m_f * dy_last - a0
+                denom = 0.5 * m_f * (m_f + 1.0)
+            elif pwr == 2.0:
+                # O(1) Quadratic Abel summation:
+                # sum_{k=1..m} k^2 (y_{a+k} - y_{a+k-1}) = m^2 dy_b - sum_{r=0..m-1} (2r + 1) dy_{a+r}
+                c = (self.offset + a) * 1.0
+                total = (m_f ** 2) * dy_last - (2.0 * a1 - (2.0 * c - 1.0) * a0)
+                denom = (m_f * (m_f + 1.0) * (2.0 * m_f + 1.0)) / 6.0
+            else:
+                # O(1) Cubic Abel summation (p=3):
+                c = (self.offset + a) * 1.0
+                sum_r2 = a2 - 2.0 * c * a1 + c * c * a0
+                sum_r1 = a1 - c * a0
+                total = (m_f ** 3) * dy_last - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
+                denom = (0.5 * m_f * (m_f + 1.0)) ** 2
+            val = safe_float(total / denom, default=None)
 
         tol = 1e-10 * max(1.0, abs(ref_last))
         return 0.0 if (val is None or abs(val) <= tol) else val

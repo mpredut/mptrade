@@ -164,7 +164,6 @@ class BinancePricePlatform(PricePlatformInterface):
                 self._supported_symbols = supported_symbols
                 self._symbol_mapping = symbol_mapping
                 print(f"[BinancePlatform] USDC: {len(self._usdc_pairs)} pairs")
-            self._last_refresh = time.time()
 
         except Exception as e:
             print(f"[BinancePlatform] Warning loading symbols: {e}")
@@ -180,6 +179,7 @@ class BinancePricePlatform(PricePlatformInterface):
                     "XRP": "XRPUSDC", "TAO": "TAOUSDC", "ARB": "ARBUSDC",
                     **{pair: pair for pair in self._usdc_pairs},
                 }
+        finally:
             self._last_refresh = time.time()
 
     def _resolve_trading_pair(self, symbol: str) -> Optional[str]:
@@ -248,11 +248,11 @@ class HyperliquidPricePlatform(PricePlatformInterface):
             self._all_mids = mids
             self._supported_symbols = set(self._all_mids.keys())
             print(f"[HyperliquidPlatform] Loaded {len(self._supported_symbols)} symbols")
-            self._last_refresh = time.time()
         except Exception as e:
             print(f"[HyperliquidPlatform] Warning loading symbols: {e}")
             if not self._supported_symbols:
                 self._supported_symbols = {"HYPE", "PURR", "BTC", "ETH", "SOL", "USDC", "TAO", "ARB", "DOGE"}
+        finally:
             self._last_refresh = time.time()
 
     def get_price(self, symbol: str) -> Optional[float]:
@@ -352,7 +352,6 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
                         'slug': crypto.get('slug')
                     }
             print(f"[CMCPlatform] Loaded {len(self._supported_symbols)} symbols")
-            self._last_refresh = time.time()
             try:
                 os.makedirs(os.path.dirname(self._cache_file), exist_ok=True)
                 save_json_state(self._cache_file, self._all_listings)
@@ -362,6 +361,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             if not self._supported_symbols:
                 self._load_symbols_from_disk_cache(max_age_s=None)
             print(f"[CMCPlatform] Warning loading symbols: {e}")
+        finally:
             self._last_refresh = time.time()  # Do not retest immediately; honour _refresh_interval.
 
     def _extract_usd_price(self, symbol: str, data: Dict) -> Optional[float]:
