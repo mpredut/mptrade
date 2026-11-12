@@ -1107,7 +1107,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertTrue(bapi_ws_bridge._bridge_is_usable(type("_LiveBridge", (), {"is_running": True})()))
 
         seen_sync_flags = []
-        with unittest.mock.patch.object(
+        with patch.object(
             cm,
             "get_cache_manager",
             side_effect=lambda name, *args, **kwargs: (
@@ -1136,7 +1136,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(c24_mgr._persisted_counts, {"BTCUSDT": 1})
         c24_mgr.cache["BTCUSDT"].append([1700000001000, 60100.0])
         c24_mgr.fetchtime_per_symbol["BTCUSDT"] = 1700000001000
-        with unittest.mock.patch.object(c24_mgr, "_write_meta", return_value=False):
+        with patch.object(c24_mgr, "_write_meta", return_value=False):
             self.assertFalse(c24_mgr._save_jsonl_append())
         self.assertEqual(c24_mgr._persisted_counts, {"BTCUSDT": 2})
         self.assertTrue(c24_mgr._save_jsonl_append())
@@ -1357,7 +1357,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
             return [{"id": "99"}]
 
         mock_client.get_my_trades = _get_my_trades
-        with unittest.mock.patch.object(bapi_allorders.time, "sleep"):
+        with patch.object(bapi_allorders.time, "sleep"):
             pages = bapi_allorders.paginate_my_trades(mock_client, "BTCUSDT", 1000, limit=2)
         self.assertEqual(len(pages), 4)
         self.assertEqual(mock_client.calls, 2)
@@ -1407,7 +1407,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(sp.cache, {"BTCUSDT": [[now_ms, 62000.0]]})
 
         # 3. CacheCurrentPriceManager.get_price forces HTTP refresh on invalid cached price or future-skewed timestamp
-        mock_market = unittest.mock.MagicMock()
+        mock_market = MagicMock()
         mock_market.get_current_price.return_value = 64000.0
         cpm = cm.CacheCurrentPriceManager(
             60,
@@ -1486,7 +1486,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(status.reason, "account_cache_writer_not_running")
 
         # 4. bapi_allorders.get_trade_orders and bapi_trades.get_trade_orders guard invalid max_age_seconds and ts_ms <= 0
-        fake_order_mgr = unittest.mock.MagicMock()
+        fake_order_mgr = MagicMock()
         fake_order_mgr.lock = threading.Lock()
         fake_order_mgr.cache = {
             "BTCUSDT": [
@@ -1495,9 +1495,9 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
             ]
         }
         with (
-            unittest.mock.patch("cacheManager.get_cache_manager", return_value=fake_order_mgr),
-            unittest.mock.patch.object(bapi_allorders.sym, "validate_ordertype"),
-            unittest.mock.patch.object(bapi_allorders.sym, "validate_symbols"),
+            patch("cacheManager.get_cache_manager", return_value=fake_order_mgr),
+            patch.object(bapi_allorders.sym, "validate_ordertype"),
+            patch.object(bapi_allorders.sym, "validate_symbols"),
         ):
             self.assertEqual(bapi_allorders.get_trade_orders("BUY", "BTCUSDT", True), [])
             self.assertEqual(bapi_allorders.get_trade_orders("BUY", "BTCUSDT", -1), [])
@@ -1542,8 +1542,8 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
 
         # 5. bapi.cancel_expired_orders does not cancel orders with missing/zero timestamp
         with (
-            unittest.mock.patch.object(bapi.sym, "validate_params"),
-            unittest.mock.patch.object(
+            patch.object(bapi.sym, "validate_params"),
+            patch.object(
                 bapi,
                 "get_open_orders",
                 return_value={
@@ -1555,7 +1555,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
                     },
                 },
             ),
-            unittest.mock.patch.object(bapi, "cancel_order", return_value=True) as mock_cancel,
+            patch.object(bapi, "cancel_order", return_value=True) as mock_cancel,
         ):
             bapi.cancel_expired_orders("BUY", "BTCUSDC", 3600)
             mock_cancel.assert_called_once_with("BTCUSDC", 11)
@@ -1636,7 +1636,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
                 },
                 fh,
             )
-        with unittest.mock.patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}):
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}):
             self.assertEqual(order_guard._resolve_trend_duration("BTCUSDC"), 0.0)
             self.assertIsNone(order_guard._resolve_trend_direction("BTCUSDC"))
 
@@ -1658,14 +1658,14 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
                 },
                 fh,
             )
-        with unittest.mock.patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}):
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}):
             hist = order_guard._read_cached_price_history("BTCUSDC", window_seconds=3600.0)
         self.assertIsNotNone(hist)
         self.assertEqual(len(hist), 1)
         self.assertEqual(hist[0][1], 61000.0)
 
         # 3. CacheAllPriceFetcherManager.get_latest_price and get_price_history skip malformed/corrupt rows
-        with unittest.mock.patch.object(pf, "PricePlatformFactory"):
+        with patch.object(pf, "PricePlatformFactory"):
             pf_mgr = pf.CacheAllPriceFetcherManager(
                 60, ["BTC"], os.path.join(self.tmp, "pf_audit42.json"), read_only=True
             )
@@ -1728,7 +1728,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
             },
             filename=pa_file,
         )
-        with unittest.mock.patch("priceAnalysis.atomic_write_json", side_effect=OSError("disk full")):
+        with patch("priceAnalysis.atomic_write_json", side_effect=OSError("disk full")):
             pa.write_all_trends({"BTCUSDT": None}, filename=pa_file)
         with open(pa_file, "r", encoding="utf-8") as fh:
             persisted_pa = json.load(fh)
@@ -1979,6 +1979,6 @@ class TestWsBridgeIntegration(TempDirTestCase):
 
     def test_hyperliquid_price_stream_resolve_env_user_address(self):
 
-        with unittest.mock.patch.dict(os.environ, {"HL_ACCOUNT_ADDRESS": "0xabc123"}):
+        with patch.dict(os.environ, {"HL_ACCOUNT_ADDRESS": "0xabc123"}):
             hl_ws = HyperliquidPriceStream(symbols=["HYPE"], resolve_env_user_address=True)
         self.assertEqual(hl_ws._user_address, "0xabc123")

@@ -58,8 +58,7 @@ from providers.replay_provider import ReplayMarketDataProvider
 from providers.strategy_executor import ProviderError, SubmissionRefused
 from tests.conftest import DummySpotExecutionProvider, MockHttpResponse
 from types import SimpleNamespace
-from unittest import mock
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 
@@ -169,10 +168,10 @@ class BapiTradesReaderTest(unittest.TestCase):
     def test_bapi_trades_reader_behaviors(self):
         with self.subTest(msg="lazy manager is created without private synchronization"):
             manager = types.SimpleNamespace()
-            get_cache_manager = mock.Mock(return_value=manager)
+            get_cache_manager = Mock(return_value=manager)
             cache_module = types.SimpleNamespace(get_cache_manager=get_cache_manager)
 
-            with mock.patch.dict(sys.modules, {"cacheManager": cache_module}):
+            with patch.dict(sys.modules, {"cacheManager": cache_module}):
                 actual = bapi_trades.init_cache_trade_manager()
 
             self.assertIs(actual, manager)
@@ -192,10 +191,10 @@ class BapiTradesReaderTest(unittest.TestCase):
             manager.lock = _SnapshotLock(manager)
 
             with (
-                mock.patch.object(bapi_trades, "init_cache_trade_manager", return_value=manager),
-                mock.patch.object(bapi_trades.apiorders.sym, "validate_ordertype"),
-                mock.patch.object(bapi_trades.apiorders.sym, "validate_symbols"),
-                mock.patch.object(bapi_trades.time, "time", return_value=2_001.0),
+                patch.object(bapi_trades, "init_cache_trade_manager", return_value=manager),
+                patch.object(bapi_trades.apiorders.sym, "validate_ordertype"),
+                patch.object(bapi_trades.apiorders.sym, "validate_symbols"),
+                patch.object(bapi_trades.time, "time", return_value=2_001.0),
             ):
                 result = bapi_trades.get_trade_orders("BUY", SYMBOL, 10)
 
@@ -219,19 +218,19 @@ class BinanceRestPriceCacheTest(unittest.TestCase):
 
     def test_failed_refresh_does_not_keep_an_old_price_fresh(self):
         ttl = bapi.BINANCE_REST_PRICE_CACHE_TTL_SEC
-        client = mock.Mock()
+        client = Mock()
         client.get_symbol_ticker.return_value = {"price": "100.25"}
         with (
-            mock.patch.object(bapi, "client", client),
-            mock.patch.object(bapi.time, "time", side_effect=[10.0, 10.0]),
+            patch.object(bapi, "client", client),
+            patch.object(bapi.time, "time", side_effect=[10.0, 10.0]),
         ):
             self.assertEqual(100.25, bapi.get_current_price(SYMBOL))
         self.assertEqual(10.0, bapi.cprice_time[SYMBOL])
 
         client.get_symbol_ticker.side_effect = ConnectionError("ticker unavailable")
         with (
-            mock.patch.object(bapi, "client", client),
-            mock.patch.object(bapi.time, "time", side_effect=lambda: 10.0 + ttl + 1),
+            patch.object(bapi, "client", client),
+            patch.object(bapi.time, "time", side_effect=lambda: 10.0 + ttl + 1),
         ):
             self.assertIsNone(bapi.get_current_price(SYMBOL))
             self.assertIsNone(bapi.get_current_price(SYMBOL))
@@ -243,9 +242,9 @@ class BinanceRestPriceCacheTest(unittest.TestCase):
     def test_invalid_ticker_is_never_cached(self):
         for invalid in ("0", "-1", "nan", "inf"):
             with self.subTest(price=invalid):
-                client = mock.Mock()
+                client = Mock()
                 client.get_symbol_ticker.return_value = {"price": invalid}
-                with mock.patch.object(bapi, "client", client):
+                with patch.object(bapi, "client", client):
                     self.assertIsNone(bapi.update_price(SYMBOL))
                 self.assertNotIn(SYMBOL, bapi.cprice)
                 self.assertNotIn(SYMBOL, bapi.cprice_time)
@@ -253,11 +252,11 @@ class BinanceRestPriceCacheTest(unittest.TestCase):
     def test_clock_rollback_forces_a_refresh(self):
         bapi.cprice[SYMBOL] = 100.0
         bapi.cprice_time[SYMBOL] = 20.0
-        client = mock.Mock()
+        client = Mock()
         client.get_symbol_ticker.return_value = {"price": "101"}
         with (
-            mock.patch.object(bapi, "client", client),
-            mock.patch.object(bapi.time, "time", side_effect=[10.0, 10.0]),
+            patch.object(bapi, "client", client),
+            patch.object(bapi.time, "time", side_effect=[10.0, 10.0]),
         ):
             self.assertEqual(101.0, bapi.get_current_price(SYMBOL))
 
@@ -431,7 +430,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
                 {"orderId": 77, "symbol": SYMBOL, "side": "BUY", "price": "105.0", "executedQty": "1.5", "updateTime": now_ms - 5000}
             ]},
         )
-        with mock.patch.object(cm, "get_cache_manager", return_value=fake_order_mgr):
+        with patch.object(cm, "get_cache_manager", return_value=fake_order_mgr):
             all_orders_res = bapi_allorders.get_trade_orders("BUY", SYMBOL, 60)
         self.assertEqual(len(all_orders_res), 1)
         self.assertEqual(all_orders_res[0]["time"], now_ms - 5000)
@@ -446,7 +445,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
                 {"orderId": 88, "symbol": SYMBOL, "side": "SELL", "price": "110.0", "quantity": "2.5", "timestamp": now_ms - 5000}
             ]},
         )
-        with mock.patch.object(bapi_trades, "init_cache_trade_manager", return_value=fake_trade_mgr):
+        with patch.object(bapi_trades, "init_cache_trade_manager", return_value=fake_trade_mgr):
             tr_orders_res = bapi_trades.get_trade_orders("SELL", SYMBOL, 60)
         self.assertEqual(len(tr_orders_res), 1)
         self.assertEqual(tr_orders_res[0]["time"], now_ms - 5000)
@@ -463,8 +462,8 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             2: {"orderId": 2, "symbol": SYMBOL, "time": fresh_ms},
         }
         with (
-            mock.patch.object(bapi, "get_open_orders", return_value=open_orders_map),
-            mock.patch.object(bapi, "cancel_order", return_value=True) as mock_cancel,
+            patch.object(bapi, "get_open_orders", return_value=open_orders_map),
+            patch.object(bapi, "cancel_order", return_value=True) as mock_cancel,
         ):
             bapi.cancel_expired_orders("BUY", SYMBOL, 3600)
             mock_cancel.assert_called_once_with(SYMBOL, 1)
@@ -542,7 +541,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             calls.append(req.full_url)
             return MockHttpResponse(page1 if len(calls) == 1 else page2)
 
-        with mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             candles = b_md.fetch_ohlc_candles(
                 "BTCUSDC",
                 1,
@@ -558,7 +557,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         fake_client = MagicMock()
         fake_client.get_symbol_ticker.return_value = {"price": True}
         fake_client.get_asset_balance.return_value = {"free": True}
-        with mock.patch.object(bapi, "client", fake_client):
+        with patch.object(bapi, "client", fake_client):
             self.assertIsNone(bapi.update_price(SYMBOL))
             self.assertIsNone(bapi.get_free_balance("USDC"))
             fake_client.get_asset_balance.return_value = {"free": "-5.0"}
@@ -599,14 +598,14 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
                 sym_mod.validate_params("BUY", SYMBOL, price=100.0, qty=bad_val)
 
         fake_client.get_account.return_value = {"balances": [{"asset": "BTC", "free": True, "locked": "0.0"}]}
-        with mock.patch.object(bapi, "client", fake_client):
+        with patch.object(bapi, "client", fake_client):
             self.assertEqual(bapi.get_account_assets_balances(), [])
             fake_client.get_account.return_value = {"balances": [{"asset": "BTC", "free": "nan", "locked": "0.0"}]}
             self.assertEqual(bapi.get_account_assets_balances(), [])
             fake_client.get_account.return_value = {"balances": [{"asset": "BTC", "free": "-1.0", "locked": "0.0"}]}
             self.assertEqual(bapi.get_account_assets_balances(), [])
 
-        with mock.patch.object(bapi_placeorder.api, "get_current_price", return_value=float("inf")):
+        with patch.object(bapi_placeorder.api, "get_current_price", return_value=float("inf")):
             self.assertEqual(
                 bapi_placeorder.adjust_price_and_cancel_opposite("SELL", SYMBOL, 100.0, cancel_opposite=False),
                 100.0,
@@ -617,7 +616,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             )
 
         # 18. _convert_to_usdc supports inverse USDCUSDT quote and stablecoin peg fallback
-        with mock.patch.object(bapi, "_get_symbol_price_safe", side_effect=lambda s: 1.001 if s == "USDCUSDT" else None):
+        with patch.object(bapi, "_get_symbol_price_safe", side_effect=lambda s: 1.001 if s == "USDCUSDT" else None):
             self.assertAlmostEqual(bapi._convert_to_usdc("USDT", 100.1), 100.0, places=4)
             self.assertEqual(bapi._convert_to_usdc("FDUSD", 50.0), 50.0)
             self.assertEqual(bapi._convert_to_usdc("USD", 25.0), 25.0)

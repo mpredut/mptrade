@@ -6,8 +6,7 @@ import sys
 import time
 from types import SimpleNamespace
 import unittest
-from unittest import mock
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -128,7 +127,7 @@ class T212ExecutorContractTest(unittest.TestCase):
         # 2. Position NOT held in portfolio: fallback to get_price_usd via t212_to_yahoo
         self.fake.portfolio_result = []
         md = importlib.import_module("212trading.market_data")
-        with mock.patch.object(md, "get_price_usd", return_value=125.50) as mock_feed:
+        with patch.object(md, "get_price_usd", return_value=125.50) as mock_feed:
             price = self.provider.get_current_price("NVDA_US_EQ")
             self.assertEqual(price, 125.50)
             mock_feed.assert_called_once_with("NVDA")
@@ -339,7 +338,7 @@ class T212ExecutorContractTest(unittest.TestCase):
         # Instrument integration verification: definitive rejection marks state as 'refused'
         inst = Instrument("RGNT", "RGNT_US_EQ", "t212", api=MarketApi([self.provider]))
         outcome = {}
-        with mock.patch.object(order_guard, "daily_limit_guard", return_value=(True, None)):
+        with patch.object(order_guard, "daily_limit_guard", return_value=(True, None)):
             placed = inst.place(
                 "SELL", 1.38, 72.46, smart=False, wait_for_trend=False,
                 caller_owns_retry=True, _outcome_context=outcome,
@@ -353,7 +352,7 @@ class T212ExecutorContractTest(unittest.TestCase):
             (400, {"type": "/api-errors/insufficient-free-for-stocks-buy", "detail": "Insufficient funds"}),
             (200, {"id": 9901, "status": "NEW"}),
         ]
-        with mock.patch.object(self.fake, "place_market_order", side_effect=responses) as mock_mkt:
+        with patch.object(self.fake, "place_market_order", side_effect=responses) as mock_mkt:
             res = self.provider.place_order("NVDA_US_EQ", "BUY", 201.73, 0.44, market=True)
         self.assertIsNotNone(res)
         self.assertEqual(res.get("orderId"), "9901")
@@ -370,7 +369,7 @@ class T212ClientTransportTest(TempDirTestCase):
         )
         client._min_gap = 0.0
         client._pf_cache = (time.monotonic(), [{"ticker": "NVDA_US_EQ", "quantity": 1.0}])
-        with mock.patch.object(
+        with patch.object(
             t212_client, "http_post_json", return_value=(200, b'{"id": 55}')
         ) as post:
             status, data = client.place_market_order("NVDA_US_EQ", -0.25)
@@ -388,7 +387,7 @@ class T212ClientTransportTest(TempDirTestCase):
             b'"walletImpact":{"taxes":[{"name":"CURRENCY_CONVERSION_FEE",'
             b'"quantity":0.045}]}}}]}'
         )
-        with mock.patch.object(
+        with patch.object(
             t212_client, "http_get", side_effect=[(404, b""), (200, history)]
         ):
             order = client.get_order_status(55)
@@ -405,7 +404,7 @@ class T212ClientTransportTest(TempDirTestCase):
         client._min_gap = 0.0
 
         # Step 1: Successful initial fetch populates cache
-        with mock.patch.object(
+        with patch.object(
             t212_client, "http_get", return_value=(200, b'[{"ticker":"SPCX_US_EQ","quantity":2.92}]')
         ) as get_mock:
             pf = client.get_portfolio()
@@ -414,7 +413,7 @@ class T212ClientTransportTest(TempDirTestCase):
 
         # Step 2: Simulate TTL expiry and 429 rate limit
         client._pf_cache = (time.monotonic() - 2.0, pf)  # Expire TTL
-        with mock.patch.object(
+        with patch.object(
             t212_client, "http_get", return_value=(429, b"Too Many Requests")
         ) as get_mock:
             pf_stale = client.get_portfolio()
@@ -441,8 +440,8 @@ class T212ClientTransportTest(TempDirTestCase):
         client._ord_cache = (time.monotonic(), cached_orders)
 
         sleep_calls = []
-        with mock.patch("time.sleep", side_effect=sleep_calls.append), \
-             mock.patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 100}')):
+        with patch("time.sleep", side_effect=sleep_calls.append), \
+             patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 100}')):
             # First order: no sleep needed
             status, _ = client.place_limit_order("SPCX_US_EQ", 0.5, 100.0)
             self.assertEqual(status, 200)
@@ -461,8 +460,8 @@ class T212ClientTransportTest(TempDirTestCase):
 
         # Test 429 preserving cache
         client._ord_cache = (time.monotonic(), cached_orders)
-        with mock.patch("time.sleep"), \
-             mock.patch.object(t212_client, "http_post_json", return_value=(429, b'{"code": "BusinessException"}')):
+        with patch("time.sleep"), \
+             patch.object(t212_client, "http_post_json", return_value=(429, b'{"code": "BusinessException"}')):
             status, _ = client.place_limit_order("SPCX_US_EQ", 0.5, 110.0)
             self.assertEqual(status, 429)
             # On 429, the cache is preserved to avoid immediate cascading 429 on active orders lookup
@@ -474,8 +473,8 @@ class T212ClientTransportTest(TempDirTestCase):
             fh.write("T212_LIVE_ORDERS=true\nT212_ORDER_VALIDITY=DAY\n")
         fake = FakeT212Client()
         prov = T212Provider(client=fake)
-        with mock.patch.object(t212_prov_mod, "_T212_DIR", self.tmp), \
-             mock.patch.dict(os.environ, {}, clear=False):
+        with patch.object(t212_prov_mod, "_T212_DIR", self.tmp), \
+             patch.dict(os.environ, {}, clear=False):
             os.environ.pop("T212_LIVE_ORDERS", None)
             os.environ.pop("T212_ORDER_VALIDITY", None)
             self.assertTrue(prov.execution_enabled())
@@ -488,9 +487,9 @@ class T212ClientTransportTest(TempDirTestCase):
             portfolio_ttl_sec=6.0, order_min_gap_sec=2.1,
         )
         sleep_calls = []
-        with mock.patch("time.sleep", side_effect=sleep_calls.append), \
-             mock.patch.object(t212_client, "http_get", return_value=(200, b'{"free": 500.0}')), \
-             mock.patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 101}')):
+        with patch("time.sleep", side_effect=sleep_calls.append), \
+             patch.object(t212_client, "http_get", return_value=(200, b'{"free": 500.0}')), \
+             patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 101}')):
             self.assertEqual(client.get_cash(), {"free": 500.0})
             self.assertEqual(len(sleep_calls), 0)
             client.place_market_order("RGNT_US_EQ", 10.0)
@@ -510,8 +509,8 @@ class T212ClientTransportTest(TempDirTestCase):
             b'{"order":{"id":202,"ticker":"SPCX_US_EQ","status":"FILLED"},"fill":{"quantity":0.71,"price":140.51}}'
             b']}'
         )
-        with mock.patch("time.sleep"), \
-             mock.patch.object(
+        with patch("time.sleep"), \
+             patch.object(
                  t212_client,
                  "http_get",
                  side_effect=[(404, b""), (200, history_payload), (404, b"")],
@@ -532,9 +531,9 @@ class T212ClientTransportTest(TempDirTestCase):
             portfolio_ttl_sec=6.0, order_min_gap_sec=2.1,
         )
         both_sleeps = []
-        with mock.patch("time.sleep", side_effect=both_sleeps.append), \
-             mock.patch.object(t212_client, "http_get", return_value=(200, b'{"free": 500.0}')), \
-             mock.patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 101}')):
+        with patch("time.sleep", side_effect=both_sleeps.append), \
+             patch.object(t212_client, "http_get", return_value=(200, b'{"free": 500.0}')), \
+             patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 101}')):
             self.assertEqual(client_both_gaps.get_cash(), {"free": 500.0})
             self.assertEqual(len(both_sleeps), 0)
             client_both_gaps.place_market_order("RGNT_US_EQ", 10.0)
@@ -561,8 +560,8 @@ class T212ClientTransportTest(TempDirTestCase):
             calls.append(url)
             return 200, b'[{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}]'
 
-        with mock.patch.object(t212_client, "http_get", side_effect=fake_get), \
-             mock.patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 99}')):
+        with patch.object(t212_client, "http_get", side_effect=fake_get), \
+             patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 99}')):
             res1 = c1.list_instruments()
             self.assertEqual(res1, [{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
             self.assertEqual(len(calls), 1)
@@ -579,7 +578,7 @@ class T212ClientTransportTest(TempDirTestCase):
         )
         c2._shared_cache_path = shared_path
         c2._enable_shared_disk_cache = True
-        with mock.patch.object(t212_client, "http_get", side_effect=AssertionError("should use shared disk cache")):
+        with patch.object(t212_client, "http_get", side_effect=AssertionError("should use shared disk cache")):
             res2 = c2.list_instruments()
             self.assertEqual(res2, [{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
 
@@ -599,7 +598,7 @@ class T212ClientTransportTest(TempDirTestCase):
             calls_429.append(url)
             return 429, b'{"error": "rate limit"}'
 
-        with mock.patch.object(t212_client, "http_get", side_effect=fake_429):
+        with patch.object(t212_client, "http_get", side_effect=fake_429):
             self.assertIsNone(c3.list_instruments())
             self.assertIsNone(c3.list_instruments())
             self.assertEqual(len(calls_429), 1)
@@ -623,7 +622,7 @@ class T212ClientTransportTest(TempDirTestCase):
             b'{"order":{"id":778,"ticker":"SPCX_US_EQ","status":"CANCELLED","orderedQuantity":-1.0,"limitPrice":180.0}}'
             b']}'
         )
-        with mock.patch.object(t212_client, "http_get", side_effect=[(404, b""), (200, hist_body)]):
+        with patch.object(t212_client, "http_get", side_effect=[(404, b""), (200, hist_body)]):
             ord_res = c1.get_order_status(777)
         self.assertEqual(ord_res["status"], "FILLED")
         self.assertFalse(os.path.exists(stale_tmp))
@@ -728,7 +727,7 @@ class T212ClientTransportTest(TempDirTestCase):
             p1_calls.append(url)
             return 429, b'{"error": "rate limit"}'
 
-        with mock.patch.object(t212_client, "http_get", side_effect=fake_429_orders):
+        with patch.object(t212_client, "http_get", side_effect=fake_429_orders):
             ords_p1 = c_p1.list_active_orders()
             self.assertEqual(len(ords_p1), 1)
             self.assertEqual(ords_p1[0]["id"], 501)

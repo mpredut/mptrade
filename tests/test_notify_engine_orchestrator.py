@@ -63,8 +63,7 @@ from orchestratorOS.supervisor.autonomous_ai_reconciler import (
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 from tests.conftest import MockHttpResponse, TempDirTestCase
 from types import SimpleNamespace
-from unittest import mock
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from verify_tools import (
     gen_alert_thresholds,
     portfolio_snapshot as ps,
@@ -82,7 +81,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
     def setUp(self):
         super().setUp()
         self.state_file = os.path.join(self.tmp, "delivery_state.json")
-        self.patcher = mock.patch.dict(os.environ, {
+        self.patcher = patch.dict(os.environ, {
             "NOTIFICATION_STATE_FILE": self.state_file,
             "NTFY_TOPIC_TRADES": "ntfy-trades-test",
             "NTFY_TOPIC_GUARD": "ntfy-guard-test",
@@ -220,8 +219,8 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
     def test_server_topic_requires_canonical_key(self):
         """Verify resolve_topic('SERVER') requires NTFY_TOPIC_SERVER and does not fall back to aliases."""
         with (
-            mock.patch.dict(os.environ, {"NTFY_TOPIC_SERVER": "", "NTFY_TOPIC_DEADMAN": "fallback-deadman"}),
-            mock.patch.object(server, "load_env_stack", lambda: None),
+            patch.dict(os.environ, {"NTFY_TOPIC_SERVER": "", "NTFY_TOPIC_DEADMAN": "fallback-deadman"}),
+            patch.object(server, "load_env_stack", lambda: None),
         ):
             with self.assertRaisesRegex(ValueError, "NTFY_TOPIC_SERVER"):
                 server.resolve_topic("SERVER")
@@ -318,15 +317,15 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
     def test_disable_external_notifications_kill_switch(self):
         """Verify DISABLE_EXTERNAL_NOTIFICATIONS=1 blocks all external HTTP dispatch."""
-        with mock.patch.dict(os.environ, {"DISABLE_EXTERNAL_NOTIFICATIONS": "1"}):
+        with patch.dict(os.environ, {"DISABLE_EXTERNAL_NOTIFICATIONS": "1"}):
             real_server = NotificationServer()
-            with mock.patch("requests.post") as mock_post:
+            with patch("requests.post") as mock_post:
                 ok = real_server._send_ntfy("Live Title", "Live Message", "high", "live-topic")
                 self.assertTrue(ok)
                 mock_post.assert_not_called()
 
             # notify() wrapper isolation
-            with mock.patch("sys.stdout.write") as mock_stdout:
+            with patch("sys.stdout.write") as mock_stdout:
                 notify(title="Test", body="body", source="live", symbol="BTC")
                 mock_stdout.assert_not_called()
 
@@ -341,7 +340,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             sys.stdout = old_stdout
         self.assertTrue(buf.getvalue().startswith('{"__orchestrator_intent__"'))
 
-        with mock.patch.dict(os.environ, {"MPTRADE_ORCHESTRATED": "1"}):
+        with patch.dict(os.environ, {"MPTRADE_ORCHESTRATED": "1"}):
             buf2 = io.StringIO()
             sys.stdout = buf2
             try:
@@ -383,7 +382,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
     def test_guard_alert_deduplication_and_stable_fingerprint(self):
         """Verify that guard veto alerts containing BUY/SELL are deduplicated across cycles."""
-        with mock.patch.dict(os.environ, {"NOTIFICATION_GUARD_DEDUP_SECONDS": "1800"}):
+        with patch.dict(os.environ, {"NOTIFICATION_GUARD_DEDUP_SECONDS": "1800"}):
             alert1 = {
                 "type": "bot_event",
                 "name": "🛡 [VETO] Would Block BUY TAOUSDC",
@@ -477,7 +476,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             if calls > 1:
                 raise asyncio.CancelledError()
 
-        with mock.patch("asyncio.sleep", side_effect=fake_sleep):
+        with patch("asyncio.sleep", side_effect=fake_sleep):
             with self.assertRaises(asyncio.CancelledError):
                 asyncio.run(self.server.flush_queue_loop())
 
@@ -489,7 +488,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
     def test_error_and_ops_alerts_deduplicate_despite_buy_sell_and_dynamic_body(self):
         """Verify error/expired/rejected/guard alerts with BUY/SELL and varying bodies or prices are deduplicated."""
-        with mock.patch.dict(os.environ, {
+        with patch.dict(os.environ, {
             "NOTIFICATION_ERROR_DEDUP_SECONDS": "1800",
             "NOTIFICATION_URGENT_DEDUP_SECONDS": "1800",
             "NOTIFICATION_GUARD_DEDUP_SECONDS": "1800",
@@ -558,7 +557,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
     def test_process_line_rules_and_ntfy_tag_respect_pause_gate_and_ignore_transport_errors(self):
         """Verify [NTFY] tags and regex rules use persistent _reserve_delivery and ignore internal notify errors."""
-        with mock.patch.dict(os.environ, {
+        with patch.dict(os.environ, {
             "NOTIFICATION_ERROR_DEDUP_SECONDS": "1800",
             "NOTIFICATION_URGENT_DEDUP_SECONDS": "1800",
         }):
@@ -593,7 +592,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         3. Buffers distinct notifications arriving within the 5-minute window and
            synthesizes/concatenates them into a single bulk message once 5 minutes elapse.
         """
-        with mock.patch.dict(os.environ, {
+        with patch.dict(os.environ, {
             "NOTIFICATION_GATE_SECONDS": "300",
             "NOTIFICATION_ERROR_DEDUP_SECONDS": "1800",
             "NOTIFICATION_GUARD_DEDUP_SECONDS": "1800",
@@ -601,7 +600,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             self.dispatched.clear()
             t0 = 1_700_000_000.0
 
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0):
                 # 1. First alert opens and immediately closes the 5-minute gate
                 hung_1 = {
                     "type": "bot_event",
@@ -620,7 +619,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
             # 2. 15 seconds later: structurally similar hung alert (different PID, stale seconds, and logs)
             # Must be ELIMINATED completely (neither sent nor buffered as a new bulk item)
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 15):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 15):
                 hung_2 = {
                     "type": "bot_event",
                     "name": "Alert",
@@ -636,7 +635,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1, "Similar hung message must be eliminated")
 
             # 3. 30 seconds later: DIFFERENT alert #1 arrives while 5-min gate is closed -> buffered
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 30):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 30):
                 diff_1 = {
                     "type": "bot_event",
                     "name": "⏰ Order Expired & Canceled: BUY TAOUSDC @ 284.50 [rtrade]",
@@ -649,7 +648,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
             # 4. 45 seconds later: SIMILAR repeat of buffered alert #1 (different price & order ID)
             # Must be eliminated and increment repeat count (x2) on buffered item #1
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 45):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 45):
                 diff_1_repeat = {
                     "type": "bot_event",
                     "name": "⏰ Order Expired & Canceled: BUY TAOUSDC @ 285.10 [rtrade]",
@@ -661,7 +660,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1)
 
             # 5. 60 seconds later: DIFFERENT alert #2 arrives -> buffered
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 60):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 60):
                 diff_2 = {
                     "type": "bot_event",
                     "name": "🛡 [VETO] Would Block BUY ETHUSDC",
@@ -673,7 +672,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1)
 
             # 6. 90 seconds later: DIFFERENT alert #3 on same topic as diff_1 (ntfy-trades-test) + alert #4 on ntfy-error-test
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 90):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 90):
                 diff_3_trade = {
                     "type": "bot_event",
                     "name": "🎉 Order Executed: SELL BTCUSDC @ $68000.00",
@@ -738,12 +737,12 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         }]))
 
         t0 = 1_700_100_000.0
-        with mock.patch.dict(os.environ, {
+        with patch.dict(os.environ, {
             "NOTIFICATION_DEDUP_SECONDS": "900",
             "NOTIFICATION_GATE_SECONDS": "180",
             "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
         }):
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "📝 SELL ARBUSDC @ 0.169 [assetguardian]",
@@ -753,7 +752,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 }], bot_name="monitororder")
                 self.assertEqual(len(self.dispatched), 1)
 
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 60):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 60):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🎉 SELL ARBUSDC @ 0.169 [assetguardian]",
@@ -762,7 +761,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                     "symbol": "ARBUSDC",
                 }], bot_name="monitortrades")
 
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 120):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 120):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🎉 SELL ARBUSDC @ 0.1686 [assetguardian]",
@@ -799,9 +798,9 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             f.write(json.dumps({"__orchestrator_intent__": "ntfy_webhook", "title": "FailAlert", "message": "m", "topic": "t"}) + "\n")
 
         async def _run_one_flush():
-            with mock.patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError()]), \
-                 mock.patch.object(self.server, "flush_pending_bulk", return_value=False), \
-                 mock.patch.object(self.server, "_send_ntfy", return_value=False):
+            with patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError()]), \
+                 patch.object(self.server, "flush_pending_bulk", return_value=False), \
+                 patch.object(self.server, "_send_ntfy", return_value=False):
                 try:
                     await self.server.flush_queue_loop()
                 except asyncio.CancelledError:
@@ -960,13 +959,13 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         self.assertEqual(b_topic, "ntfy-error-1978")
 
         # Verify 5-min per-topic batching + 10-min central single-gate dispatcher isolation
-        with mock.patch.dict(os.environ, {
+        with patch.dict(os.environ, {
             "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
             "NOTIFICATION_GATE_SECONDS": "600",
         }):
             self.dispatched.clear()
             t0 = 1_750_000_000.0
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🔴 [auto_macro_sentiment] DEFENSIVE (BEARISH)",
@@ -978,7 +977,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(self.dispatched[0]["topic"], "ntfy-macro-test")
 
             # At t0 + 120s (within 5m topic window AND within 10m central gate): 2nd macro alert arrives -> batched on macro topic
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 120):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 120):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🌍 [auto_macro_geopolitical] DOWNSCALE_50 (ELEVATED)",
@@ -989,7 +988,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1)
 
             # At t0 + 180s: server alert arrives -> queued separately under ntfy-server-test
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 180):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 180):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🛠 [auto_technical_repair] Issues: 1 | Actions: 0",
@@ -1019,13 +1018,13 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         # Verify that when central gate is open (NOTIFICATION_GATE_SECONDS=0) and Topic A is still inside its
         # 5-min per-topic window, an alert on Topic B (whose topic window IS open) dispatches immediately
         # without being blocked by Topic A's non-due pending_bulk entry.
-        with mock.patch.dict(os.environ, {
+        with patch.dict(os.environ, {
             "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
             "NOTIFICATION_GATE_SECONDS": "0",
         }):
             self.dispatched.clear()
             t1 = 1_760_000_000.0
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t1):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t1):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🔴 [auto_macro_sentiment] DEFENSIVE (BEARISH)",
@@ -1034,7 +1033,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                     "symbol": "GLOBAL",
                 }])
                 self.assertEqual(len(self.dispatched), 1)
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t1 + 60):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t1 + 60):
                 # Buffered in pending_bulk because ntfy-macro-test topic window (300s) is still closed
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
@@ -1056,7 +1055,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(self.dispatched[1]["topic"], "ntfy-server-test")
 
         # Verify bounded Producer-Consumer queue caps per-topic and total items (dropping overflow / evicting lower priority)
-        with mock.patch.dict(os.environ, {
+        with patch.dict(os.environ, {
             "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
             "NOTIFICATION_GATE_SECONDS": "600",
             "NOTIFICATION_TOPIC_BULK_MAX_ITEMS": "2",
@@ -1113,8 +1112,8 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
             # Verify mailer.send_email treats bounded-queue overflow drops as policy-handled (True)
             # so NotificationServer._send_email does not re-enqueue dropped overflow emails into notify_queue.json
-            with mock.patch.object(mailer, "_config", return_value={"server": "smtp.test", "port": 587, "username": "u", "password": "p", "to": "t@test"}), \
-                 mock.patch.object(mailer, "pass_common_gate", return_value=(False, "queue_full_dropped", False, None)):
+            with patch.object(mailer, "_config", return_value={"server": "smtp.test", "port": 587, "username": "u", "password": "p", "to": "t@test"}), \
+                 patch.object(mailer, "pass_common_gate", return_value=(False, "queue_full_dropped", False, None)):
                 if os.path.exists(self.server.queue_file):
                     os.remove(self.server.queue_file)
                 self.assertTrue(self.server._send_email("Overflow Email", "body"))
@@ -1131,7 +1130,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
     def test_gated_ntfy_accepted_status_email_mirror_and_blocked_pop(self):
 
-        with mock.patch.dict(os.environ, {
+        with patch.dict(os.environ, {
             "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
             "NOTIFICATION_GATE_SECONDS": "600",
             "NOTIFICATION_ERROR_DEDUP_SECONDS": "1800",
@@ -1141,7 +1140,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             self.server._send_email = lambda subj, body, is_retry=False, dedup=True: mirrored_emails.append((subj, body, is_retry, dedup)) or True
             t0 = 1_780_000_000.0
 
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0):
                 # 1. First trade alert opens and closes the 10-minute central gate
                 ok1 = self.server.dispatch_alerts([{
                     "type": "bot_event",
@@ -1154,7 +1153,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1)
                 self.assertEqual(mirrored_emails, [])
 
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 30):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 30):
                 # 2. ERROR alert arrives while ntfy central gate is closed -> buffered for bulk on ntfy,
                 #    returns True (accepted by gate so callers/flush_queue_loop do not treat as transport failure),
                 #    and immediately mirrors to email!
@@ -1182,7 +1181,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(mirrored_emails), 1)
 
             # 4. If ntfy hits provider_daily_limit while pending_bulk has items, pop_due_bulk_batch must not pop and lose the batch
-            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 605):
+            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 605):
                 _mark_provider_daily_limit("ntfy", cooldown_seconds=300.0)
                 self.assertIsNone(pop_due_bulk_batch("ntfy", now=t0 + 605))
 
@@ -1190,8 +1189,8 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             #    to ntfy WITHOUT double-mirroring it to email
             real_send_ntfy = NotificationServer._send_ntfy.__get__(self.server, NotificationServer)
             self.server._send_ntfy = real_send_ntfy
-            with mock.patch("requests.post") as mock_post:
-                mock_resp = mock.MagicMock(status_code=200, text="", headers={})
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock(status_code=200, text="", headers={})
                 mock_post.return_value = mock_resp
                 self.assertTrue(self.server.flush_pending_bulk(now=t0 + 910))
                 self.assertEqual(mock_post.call_count, 1)
@@ -1214,11 +1213,11 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 #    _send_email receives only the single new error (not the synthesized 'Bulk')
                 mirrored_emails.clear()
                 t_err = midnight_after + 1000.0
-                with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t_err):
+                with patch("notify_engine.alertnotifiers.time.time", return_value=t_err):
                     self.server._gate_and_send_ntfy("Error One", "detail alpha", "urgent", "ntfy-error-test", urgent=True)
-                with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t_err + 30):
+                with patch("notify_engine.alertnotifiers.time.time", return_value=t_err + 30):
                     self.server._gate_and_send_ntfy("Error Two", "detail beta", "urgent", "ntfy-error-test", urgent=True)
-                with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t_err + 610):
+                with patch("notify_engine.alertnotifiers.time.time", return_value=t_err + 610):
                     self.server._gate_and_send_ntfy("Error Three", "detail gamma", "urgent", "ntfy-error-test", urgent=True)
                 self.assertEqual([e[0] for e in mirrored_emails], ["Error One", "Error Two", "Error Three"])
 
@@ -1236,7 +1235,7 @@ class _WatchdogResp:
 class SendNtfyRetryTest(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        self._env = mock.patch.dict(os.environ, {
+        self._env = patch.dict(os.environ, {
             "NTFY_TOPIC_ERROR": "testtopic",
             "NTFY_DAILY_BUDGET": "100",
             "NTFY_URGENT_RESERVE": "20",
@@ -1252,7 +1251,7 @@ class SendNtfyRetryTest(TempDirTestCase):
         super().tearDown()
 
     def test_retry_on_429_then_success(self):
-        with mock.patch("requests.post") as mpost, mock.patch("time.sleep") as msleep:
+        with patch("requests.post") as mpost, patch("time.sleep") as msleep:
             mpost.side_effect = [_WatchdogResp(429, {"Retry-After": "1"}), _WatchdogResp(200)]
             ok = watchdog_common.send_ntfy("title", "message")
         self.assertTrue(ok)
@@ -1260,7 +1259,7 @@ class SendNtfyRetryTest(TempDirTestCase):
         msleep.assert_called_once()
 
     def test_daily_429_does_not_retry_and_blocks_following_attempts(self):
-        with mock.patch("requests.post") as mpost, mock.patch("time.sleep"):
+        with patch("requests.post") as mpost, patch("time.sleep"):
             mpost.return_value = _WatchdogResp(429, text='{"code":42908,"error":"daily limit reached"}')
             ok = watchdog_common.send_ntfy("title", "message")
             blocked = watchdog_common.send_ntfy("second title", "second message")
@@ -1269,7 +1268,7 @@ class SendNtfyRetryTest(TempDirTestCase):
         self.assertEqual(mpost.call_count, 1)
 
     def test_success_first_try_no_sleep(self):
-        with mock.patch("requests.post") as mpost, mock.patch("time.sleep") as msleep:
+        with patch("requests.post") as mpost, patch("time.sleep") as msleep:
             mpost.side_effect = [_WatchdogResp(200)]
             ok = watchdog_common.send_ntfy("title", "message")
         self.assertTrue(ok)
@@ -1282,8 +1281,8 @@ def _wd_proc(pid=10, ticks=100, rss=100, command="worker.py"):
 
 
 def test_alerts_only_after_sustained_cpu_use(tmp_path):
-    with mock.patch.object(wd, "STATE_FILE", str(tmp_path / "state")), \
-            mock.patch.object(wd, "CONSECUTIVE", 3), mock.patch.object(wd.wc, "send_ntfy") as alert:
+    with patch.object(wd, "STATE_FILE", str(tmp_path / "state")), \
+            patch.object(wd, "CONSECUTIVE", 3), patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(ticks=100), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_wd_proc(ticks=160), cpu_count=1)
         wd.check_once(now=240, total_ticks=1200, processes=_wd_proc(ticks=220), cpu_count=1)
@@ -1293,19 +1292,19 @@ def test_alerts_only_after_sustained_cpu_use(tmp_path):
 
 
 def test_short_memory_spike_does_not_alert(tmp_path):
-    with mock.patch.object(wd, "STATE_FILE", str(tmp_path / "state")), \
-            mock.patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
-            mock.patch.object(wd, "CONSECUTIVE", 3), mock.patch.object(wd.wc, "send_ntfy") as alert:
+    with patch.object(wd, "STATE_FILE", str(tmp_path / "state")), \
+            patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
+            patch.object(wd, "CONSECUTIVE", 3), patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(rss=800), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_wd_proc(ticks=101, rss=100), cpu_count=1)
         alert.assert_not_called()
 
 
 def test_sustained_memory_use_alerts_and_then_recovers(tmp_path):
-    with mock.patch.object(wd, "STATE_FILE", str(tmp_path / "state")), \
-            mock.patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
-            mock.patch.object(wd, "CONSECUTIVE", 2), mock.patch.object(wd, "RECOVERY_CHECKS", 2), \
-            mock.patch.object(wd.wc, "send_ntfy") as alert:
+    with patch.object(wd, "STATE_FILE", str(tmp_path / "state")), \
+            patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
+            patch.object(wd, "CONSECUTIVE", 2), patch.object(wd, "RECOVERY_CHECKS", 2), \
+            patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(rss=800), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_wd_proc(ticks=101, rss=800), cpu_count=1)
         wd.check_once(now=240, total_ticks=1200, processes=_wd_proc(ticks=102, rss=100), cpu_count=1)
@@ -1316,10 +1315,10 @@ def test_sustained_memory_use_alerts_and_then_recovers(tmp_path):
 def test_managed_process_is_restarted_after_sustained_breach():
     proc = next(iter(_wd_proc(rss=800, command="python worker.py").values()))
     state = {}
-    with mock.patch.object(wd, "AUTO_RESTART", True), \
-            mock.patch.object(wd, "_managed_script", return_value="worker.py"), \
-            mock.patch.object(wd, "_restart_allowed", return_value=True), \
-            mock.patch.object(wd.os, "kill") as kill:
+    with patch.object(wd, "AUTO_RESTART", True), \
+            patch.object(wd, "_managed_script", return_value="worker.py"), \
+            patch.object(wd, "_restart_allowed", return_value=True), \
+            patch.object(wd.os, "kill") as kill:
         assert wd._restart_managed(proc, state, 1000) is True
         kill.assert_called_once_with(10, wd.signal.SIGTERM)
         assert state["restart_history"]["worker.py"] == [1000]
@@ -1327,8 +1326,8 @@ def test_managed_process_is_restarted_after_sustained_breach():
 
 def test_unmanaged_process_is_never_restarted():
     proc = next(iter(_wd_proc(rss=800, command="foreign").values()))
-    with mock.patch.object(wd, "_managed_script", return_value=None), \
-            mock.patch.object(wd.os, "kill") as kill:
+    with patch.object(wd, "_managed_script", return_value=None), \
+            patch.object(wd.os, "kill") as kill:
         assert wd._restart_managed(proc, {}, 1000) is None
         kill.assert_not_called()
 
@@ -1351,7 +1350,7 @@ def test_parse_proc_stat_handles_spaces_and_parens_in_comm():
 class EmailMirrorTest(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        self._env = mock.patch.dict(os.environ, {
+        self._env = patch.dict(os.environ, {
             "DISABLE_EXTERNAL_NOTIFICATIONS": "0",
             "MPTRADE_ORCHESTRATED": "",
             "NTFY_TOPIC_ERROR": "t-error",
@@ -1365,7 +1364,7 @@ class EmailMirrorTest(TempDirTestCase):
         }, clear=False)
         self._env.start()
         self.sent = []
-        self._smtp = mock.patch.object(mailer, "_smtp_send", lambda msg, cfg: self.sent.append((msg, cfg)))
+        self._smtp = patch.object(mailer, "_smtp_send", lambda msg, cfg: self.sent.append((msg, cfg)))
         self._smtp.start()
         self.server = NotificationServer()
         self.server.queue_file = os.path.join(self.tmp, "queue.jsonl")
@@ -1376,7 +1375,7 @@ class EmailMirrorTest(TempDirTestCase):
         super().tearDown()
 
     def test_error_topic_push_is_mirrored_to_email(self):
-        with mock.patch("requests.post", return_value=_WatchdogResp()):
+        with patch("requests.post", return_value=_WatchdogResp()):
             self.assertTrue(self.server._send_ntfy("[bot] Order FAILED", "detail", "high", "t-error"))
         self.assertEqual(len(self.sent), 1)
         msg, cfg = self.sent[0]
@@ -1385,27 +1384,27 @@ class EmailMirrorTest(TempDirTestCase):
         self.assertEqual(cfg["password"], "abcdefghijklmnop")
 
     def test_deadman_topic_is_mirrored(self):
-        with mock.patch("requests.post", return_value=_WatchdogResp()):
+        with patch("requests.post", return_value=_WatchdogResp()):
             self.server._send_ntfy("SERVER DOWN", "x", "urgent", "t-deadman")
         self.assertEqual(len(self.sent), 1)
 
     def test_deadman_skip_email_suppresses_mirroring(self):
-        with mock.patch("requests.post", return_value=_WatchdogResp()):
+        with patch("requests.post", return_value=_WatchdogResp()):
             self.server._send_ntfy("Config Reloaded", "Reloaded", "high", "t-deadman", skip_email=True)
         self.assertEqual(self.sent, [])
 
     def test_email_survives_ntfy_outage(self):
-        with mock.patch("requests.post", side_effect=OSError("network down")):
+        with patch("requests.post", side_effect=OSError("network down")):
             self.assertFalse(self.server._send_ntfy("ERROR x", "y", "high", "t-error"))
         self.assertEqual(len(self.sent), 1)
 
     def test_other_topics_are_push_only(self):
-        with mock.patch("requests.post", return_value=_WatchdogResp()):
+        with patch("requests.post", return_value=_WatchdogResp()):
             self.server._send_ntfy("BUY filled", "x", "high", "t-trades")
         self.assertEqual(self.sent, [])
 
     def test_ntfy_retry_does_not_re_email(self):
-        with mock.patch("requests.post", return_value=_WatchdogResp()):
+        with patch("requests.post", return_value=_WatchdogResp()):
             self.server._send_ntfy("ERROR x", "y", "high", "t-error", is_retry=True)
         self.assertEqual(self.sent, [])
 
@@ -1416,14 +1415,14 @@ class EmailMirrorTest(TempDirTestCase):
         self.assertEqual(len(self.sent), 2)
 
     def test_failed_email_is_queued_for_retry(self):
-        with mock.patch.object(mailer, "_smtp_send", side_effect=OSError("smtp down")):
+        with patch.object(mailer, "_smtp_send", side_effect=OSError("smtp down")):
             self.assertFalse(self.server._send_email("S", "B"))
         with open(self.server.queue_file, encoding="utf-8") as fh:
             payload = json.loads(fh.readline())
         self.assertEqual(payload, {"__orchestrator_intent__": "email", "subject": "S", "message": "B"})
 
     def test_auth_rejected_email_is_not_queued_for_retry(self):
-        with mock.patch.object(
+        with patch.object(
             mailer, "_smtp_send", side_effect=smtplib.SMTPAuthenticationError(535, b"BadCredentials")
         ):
             self.assertFalse(self.server._send_email("S", "B"))
@@ -1524,7 +1523,7 @@ class EmailMirrorTest(TempDirTestCase):
 
     def test_distinct_trades_within_topic_bulk_window_are_batched_not_eliminated(self):
 
-        with mock.patch.dict(os.environ, {
+        with patch.dict(os.environ, {
             "NOTIFICATION_GATE_SECONDS": "180",
             "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
         }):
@@ -1636,7 +1635,7 @@ send_os_ntfy "DEV CI Regression RECOVERED" "Commit eeeeeee passed all tests" "de
             ("SELL TAOUSDC@224.20 [binance:tradeall]", "PLACED ~1612.72 USDC (qty: 7.1932, order: 721977719)"),
         )
         self.assertEqual(strip_owner_tags("BUY TAOUSDC@212.50 [binance:assetguardian]").strip(), "BUY TAOUSDC@212.50")
-        with mock.patch.object(self.server, "_send_ntfy", return_value=True) as mock_send_ntfy:
+        with patch.object(self.server, "_send_ntfy", return_value=True) as mock_send_ntfy:
             self.server.dispatch_alerts([{
                 "type": "bot_event",
                 "name": "BUY TAOUSDC@212.50 [binance:assetguardian]",
@@ -1659,7 +1658,7 @@ send_os_ntfy "DEV CI Regression RECOVERED" "Commit eeeeeee passed all tests" "de
         collapsed = NotificationServer._collapse_traceback(tb_lines)
         self.assertIn("...", collapsed)
         self.assertTrue(collapsed.startswith("line_0\n  ...\nline_5"))
-        with mock.patch.dict(os.environ, {"NOTIFICATION_MACRO_DEDUP_SECONDS": "3600", "NOTIFICATION_GUARD_DEDUP_SECONDS": "1800"}):
+        with patch.dict(os.environ, {"NOTIFICATION_MACRO_DEDUP_SECONDS": "3600", "NOTIFICATION_GUARD_DEDUP_SECONDS": "1800"}):
             macro_alert = [{"name": "🧭 [auto_macro_sentiment] HOLD (CAUTION)", "source": "macro_shadow"}]
             self.assertEqual(_dedup_seconds(macro_alert, False), 3600)
             guard_alert = [{"name": "🛡 [VETO] Would Block BUY TAOUSDC", "source": "macro_shadow"}]

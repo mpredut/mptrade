@@ -6,8 +6,7 @@ import os
 import time as _time
 from types import SimpleNamespace
 import unittest
-from unittest import mock
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -537,7 +536,7 @@ class AddOrderRoundingTest(unittest.TestCase):
     def test_price_decimals_fallback(self):
         for label, pair_info in (
             ("missing", lambda pair: None),
-            ("exception", mock.Mock(side_effect=RuntimeError("API down"))),
+            ("exception", Mock(side_effect=RuntimeError("API down"))),
         ):
             with self.subTest(case=label):
                 c = KrakenClient.__new__(KrakenClient)
@@ -571,7 +570,7 @@ class PublicCacheTest(unittest.TestCase):
         kc._CACHE.clear()
 
     def test_empty_not_cached_refetches_then_caches_full(self):
-        with mock.patch.object(kc, "http_get") as mget:
+        with patch.object(kc, "http_get") as mget:
             mget.side_effect = [_KRAKEN_EMPTY, _KRAKEN_FULL]
             client = kc.KrakenClient()
             r1 = client._public("AssetPairs", {"pair": "HYPEUSD"})
@@ -584,7 +583,7 @@ class PublicCacheTest(unittest.TestCase):
             self.assertEqual(mget.call_count, 2)
 
     def test_pair_info_none_on_empty_then_recovers(self):
-        with mock.patch.object(kc, "http_get") as mget:
+        with patch.object(kc, "http_get") as mget:
             mget.side_effect = [_KRAKEN_EMPTY, _KRAKEN_FULL]
             client = kc.KrakenClient()
             self.assertIsNone(client.pair_info("HYPEUSD"))
@@ -601,7 +600,7 @@ class PublicCacheTest(unittest.TestCase):
             "last": 28801,
         }
         client = kc.KrakenClient()
-        with mock.patch.object(client, "_public", return_value=response):
+        with patch.object(client, "_public", return_value=response):
             closes, last_closed_at = client.ohlc_closes_with_timestamp("HYPEUSD", 240)
             all_closes, timestamps = client.ohlc_closes_with_timestamps("HYPEUSD", 240)
 
@@ -616,8 +615,8 @@ class PublicCacheTest(unittest.TestCase):
         self.assertEqual(kc._read_ttl("OHLC", {"interval": 240}), 900.0)
 
     def test_cache_prunes_expired_and_enforces_hard_cap(self):
-        with mock.patch.object(kc, "_CACHE_MAX", 2), \
-             mock.patch.object(kc.time, "time", return_value=100.0):
+        with patch.object(kc, "_CACHE_MAX", 2), \
+             patch.object(kc.time, "time", return_value=100.0):
             kc._CACHE[("Ticker", (("pair", "OLD"),))] = (99.0, {"old": 1})
             kc._cache_put("Ticker", {"pair": "A"}, 3.0, {"a": 1})
             kc._cache_put("Ticker", {"pair": "B"}, 4.0, {"b": 1})
@@ -629,8 +628,8 @@ class PublicCacheTest(unittest.TestCase):
         client = kc.KrakenClient(api_key="key", api_secret=base64.b64encode(b"secret").decode())
         fail_nonce = (200, b'{"error":["EAPI:Invalid nonce"],"result":{}}')
         success_bal = (200, b'{"error":[],"result":{"HYPE":"7.54"}}')
-        with mock.patch.object(kc, "http_post_form") as mpost, \
-             mock.patch.object(kc.time, "sleep") as msleep:
+        with patch.object(kc, "http_post_form") as mpost, \
+             patch.object(kc.time, "sleep") as msleep:
             mpost.side_effect = [fail_nonce, success_bal]
             res = client._private("Balance")
             self.assertEqual(res, {"HYPE": "7.54"})
@@ -640,7 +639,7 @@ class PublicCacheTest(unittest.TestCase):
     def test_private_write_does_not_retry_on_invalid_nonce(self):
         client = kc.KrakenClient(api_key="key", api_secret=base64.b64encode(b"secret").decode())
         fail_nonce = (200, b'{"error":["EAPI:Invalid nonce"],"result":{}}')
-        with mock.patch.object(kc, "http_post_form") as mpost:
+        with patch.object(kc, "http_post_form") as mpost:
             mpost.return_value = fail_nonce
             with self.assertRaises(kc.KrakenError) as ctx:
                 client._private("AddOrder", {"pair": "HYPEUSD"})
@@ -656,9 +655,9 @@ class PublicCacheTest(unittest.TestCase):
 
     def test_wait_for_listing_suppresses_alert_on_transient_network_recovery(self):
         client = kc.KrakenClient()
-        with mock.patch.object(kc, "http_get", side_effect=[(0, b""), _KRAKEN_FULL]), \
-             mock.patch.object(kb.time, "sleep"), \
-             mock.patch.object(kb, "notify") as mnotify:
+        with patch.object(kc, "http_get", side_effect=[(0, b""), _KRAKEN_FULL]), \
+             patch.object(kb.time, "sleep"), \
+             patch.object(kb, "notify") as mnotify:
             ok = kb._wait_for_listing(client, "HYPEUSD", "Kraken", 15, False)
             self.assertTrue(ok)
             mnotify.assert_not_called()
@@ -666,9 +665,9 @@ class PublicCacheTest(unittest.TestCase):
         kc._CACHE.clear()
         unknown_pair = (200, b'{"error":["EQuery:Unknown asset pair"],"result":{}}')
         ticker_ok = (200, b'{"error":[],"result":{"HYPEUSD":{"c":["42.5","1.0"]}}}')
-        with mock.patch.object(kc, "http_get", side_effect=[unknown_pair, _KRAKEN_FULL, ticker_ok]), \
-             mock.patch.object(kb.time, "sleep"), \
-             mock.patch.object(kb, "notify") as mnotify:
+        with patch.object(kc, "http_get", side_effect=[unknown_pair, _KRAKEN_FULL, ticker_ok]), \
+             patch.object(kb.time, "sleep"), \
+             patch.object(kb, "notify") as mnotify:
             ok = kb._wait_for_listing(client, "HYPEUSD", "Kraken", 15, False)
             self.assertTrue(ok)
             mnotify.assert_called_once()

@@ -9,8 +9,7 @@ from pathlib import Path
 from state_io import read_tail_lines
 from tests.conftest import TempDirTestCase
 from types import SimpleNamespace
-from unittest import mock
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from visuals import tradeall_observe as observe
 
 
@@ -326,8 +325,8 @@ class TestArchiverLifecycle(TempDirTestCase):
         manager.KEEP_HOURS = 1
         manager.cache = {"BTCUSDC": [[1, 10.0]]}
         manager._last_long_trim = 100.0
-        with mock.patch("cacheManager.time.monotonic", side_effect=[101.0, 100.0 + 86401]), \
-                mock.patch.object(manager, "compact_jsonl") as compact:
+        with patch("cacheManager.time.monotonic", side_effect=[101.0, 100.0 + 86401]), \
+                patch.object(manager, "compact_jsonl") as compact:
             manager._trim_old_data("BTCUSDC")
             compact.assert_not_called()
             manager._trim_old_data("BTCUSDC")
@@ -383,7 +382,7 @@ class TestArchiverLifecycle(TempDirTestCase):
         manager.save_state = True
         manager.MAX_FILE_BYTES = 1
         manager.ROTATE_KEEP_FRACTION = 0.25
-        with mock.patch.object(manager, "_write_meta", return_value=False):
+        with patch.object(manager, "_write_meta", return_value=False):
             self.assertFalse(manager.maintain_append_persist())
         self.assertTrue(os.path.exists(target_jsonl))
         with open(target_jsonl, encoding="utf-8") as handle:
@@ -474,7 +473,7 @@ class TestArchiverLifecycle(TempDirTestCase):
             t.start()
             t.join(timeout=2.0)
 
-        with mock.patch("cacheManager.atomic_snapshot_file", side_effect=_snapshot_with_concurrent_ws):
+        with patch("cacheManager.atomic_snapshot_file", side_effect=_snapshot_with_concurrent_ws):
             self.assertTrue(manager.maintain_append_persist())
 
         self.assertEqual(ws_lock_acquired, [True])

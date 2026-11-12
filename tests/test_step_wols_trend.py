@@ -33,7 +33,7 @@ from offline.research.monitortrades_backtest.replay_trend_source import (
 from providers.market_api import MarketApi, _runtime_market_regime_snapshot
 from shadow_signals import KalmanStateTracker
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from visuals.drawprices import forecast_linear
 
 
@@ -310,9 +310,9 @@ class TestStepWolsGeneralization(unittest.TestCase):
             queried.append((side, symbol, window_seconds, use_noise_gate))
             return False
 
-        with unittest.mock.patch.object(cm, "get_short_trend_manager", return_value=mgr), \
-             unittest.mock.patch.object(mgr, "get_short_trend_for_window", side_effect=fake_get_for_win), \
-             unittest.mock.patch.object(mgr, "should_wait", side_effect=fake_should_wait):
+        with patch.object(cm, "get_short_trend_manager", return_value=mgr), \
+             patch.object(mgr, "get_short_trend_for_window", side_effect=fake_get_for_win), \
+             patch.object(mgr, "should_wait", side_effect=fake_should_wait):
             self.assertFalse(mt._is_trend_gate_deferred("TAOUSDC", side="SELL"))
             self.assertEqual(queried, [("SELL", "TAOUSDC", 90.0, False)])
 
@@ -383,8 +383,8 @@ class TestStepWolsGeneralization(unittest.TestCase):
             },
         )
         # In-memory _mem dynamic["90"] is negative -> BUY should defer on 90s window even though 222s top-level is positive
-        with unittest.mock.patch.object(cm, "get_short_trend_manager", return_value=mgr), \
-             unittest.mock.patch.object(ag, "_save_symbol_campaign"):
+        with patch.object(cm, "get_short_trend_manager", return_value=mgr), \
+             patch.object(ag, "_save_symbol_campaign"):
             ready, new_state = ag._trend_defer_ready("TAOUSDC", "buy", "BUY", 5.0, {})
             self.assertFalse(ready)
             self.assertIn("trend_defer", new_state)
@@ -417,14 +417,14 @@ class TestStepWolsGeneralization(unittest.TestCase):
             },
         }
         ts_obj = TrailingStop.__new__(TrailingStop)
-        fake_mgr = unittest.mock.MagicMock()
+        fake_mgr = MagicMock()
         fake_mgr.get_fresh_snapshot.side_effect = lambda s: snap_tao if "TAO" in s else snap_btc
-        with unittest.mock.patch.object(cm, "get_short_trend_manager", return_value=fake_mgr):
+        with patch.object(cm, "get_short_trend_manager", return_value=fake_mgr):
             self.assertAlmostEqual(ts_obj.trend("TAOUSDC"), -0.11, places=6)
             self.assertAlmostEqual(ts_obj.trend("BTCUSDC"), 0.04, places=6)
 
         kt_obj = kt_mod.KrakenTrailing.__new__(kt_mod.KrakenTrailing)
-        with unittest.mock.patch("state_io.read_recovering_previous", return_value={"TAOUSD": snap_tao, "XBTUSD": snap_btc}):
+        with patch("state_io.read_recovering_previous", return_value={"TAOUSD": snap_tao, "XBTUSD": snap_btc}):
             self.assertAlmostEqual(kt_obj.trend("TAOUSD"), -0.11, places=6)
             self.assertAlmostEqual(kt_obj.trend("XBTUSD"), 0.04, places=6)
 
@@ -459,9 +459,9 @@ class TestStepWolsGeneralization(unittest.TestCase):
             "ts": 1000.0,
             "dynamic": {"90": w90},
         }
-        fake_mgr = unittest.mock.MagicMock()
+        fake_mgr = MagicMock()
         fake_mgr.get_fresh_snapshot.return_value = snap
-        with unittest.mock.patch.object(cm, "get_short_trend_manager", return_value=fake_mgr):
+        with patch.object(cm, "get_short_trend_manager", return_value=fake_mgr):
             self.assertIs(_runtime_market_regime_snapshot("TAOUSDC", now=1001.0), w90)
             self.assertIs(_runtime_market_regime_snapshot("BTCUSDC", now=1001.0), snap)
 

@@ -12,7 +12,6 @@ import time
 import types
 import unittest
 from tests.conftest import TempDirTestCase
-from unittest import mock
 from unittest.mock import patch
 
 
@@ -186,11 +185,11 @@ class ReaderProcessTrendTest(TempDirTestCase):
         self.reader = cm.CacheShortTrendManager(
             ["TAOUSDC"], os.path.join(self.tmp, "trend_reader.json"))
         self._patches = [
-            mock.patch.object(rtrade, "RTRADE_TREND_FILTER_ENABLED", True),
-            mock.patch.object(rtrade, "RTRADE_TREND_FILTER_K", 2.0),
-            mock.patch.object(rtrade, "RTRADE_TREND_WINDOW_SEC", self.WINDOW),
-            mock.patch.object(cm, "CM_PUBLISHED_TREND_WINDOWS_SEC", [self.WINDOW]),
-            mock.patch.object(cm, "get_short_trend_manager", return_value=self.reader),
+            patch.object(rtrade, "RTRADE_TREND_FILTER_ENABLED", True),
+            patch.object(rtrade, "RTRADE_TREND_FILTER_K", 2.0),
+            patch.object(rtrade, "RTRADE_TREND_WINDOW_SEC", self.WINDOW),
+            patch.object(cm, "CM_PUBLISHED_TREND_WINDOWS_SEC", [self.WINDOW]),
+            patch.object(cm, "get_short_trend_manager", return_value=self.reader),
         ]
         for patcher in self._patches:
             patcher.start()

@@ -53,7 +53,7 @@ from providers.t212_provider import T212Provider
 from state_io import read_json_dict, save_json_state
 from tests.conftest import TempDirTestCase
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 
 
@@ -861,14 +861,14 @@ class TestCacheLongTrendManager(TempDirTestCase):
         with self.subTest("get_remote_items_symbol_not_in_data"):
             mgr = self._make()
             fake_data = {"ETH": {"trend": "up"}}
-            with patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(fake_data))):
+            with patch("builtins.open", mock_open(read_data=json.dumps(fake_data))):
                 with patch("os.path.exists", return_value=True):
                     result = mgr.get_remote_items("BTC", 0)
             self.assertEqual(result, [])
 
         with self.subTest("explicit_neutral_trend_clears_the_snapshot"):
             mgr = self._make()
-            with patch("builtins.open", unittest.mock.mock_open(
+            with patch("builtins.open", mock_open(
                     read_data=json.dumps({"BTC": None}))):
                 with patch("os.path.exists", return_value=True):
                     self.assertEqual(mgr.get_remote_items("BTC", 0), [None])
@@ -897,7 +897,7 @@ class TestCacheLongTrendManager(TempDirTestCase):
         with self.subTest("get_remote_items_returns_symbol_data"):
             mgr = self._make()
             fake_data = {"BTC": {"trend": "up", "score": 0.9}}
-            with patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(fake_data))):
+            with patch("builtins.open", mock_open(read_data=json.dumps(fake_data))):
                 with patch("os.path.exists", return_value=True):
                     result = mgr.get_remote_items("BTC", 0)
             self.assertEqual(result, [{"trend": "up", "score": 0.9}])
