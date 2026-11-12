@@ -159,7 +159,7 @@ def _wait_for_listing(client, pair, label, interval, desktop) -> bool:
                 saw_unlisted = True
             if info:
                 if not saw_unlisted:
-                    log(f"  [verify] {pair} is LISTED and tradable after API recovery — starting.")
+                    log("  [verify] " + f"{pair} is LISTED and tradable after API recovery — starting.")
                     return True
                 p = get_price(client, pair)
                 clean_lbl = label.strip() if isinstance(label, str) else ""

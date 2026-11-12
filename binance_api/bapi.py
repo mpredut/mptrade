@@ -298,7 +298,7 @@ def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CA
         for balance in get_account_assets_balances(raise_errors=True):
             total_value += _convert_to_usdc(balance["asset"], balance["total"])
     except Exception as e:
-        print(f"Error: get_total_assets_value_usdc: Error calculating portfolio value: {e}")
+        print("Error: get_total_assets_value_usdc: Error calculating portfolio value:", e)
         if raise_errors:
             raise
         return None

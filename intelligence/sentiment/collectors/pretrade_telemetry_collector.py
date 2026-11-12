@@ -186,9 +186,11 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         max_age_sec: Optional[float] = None,
     ) -> "PretradeTelemetrySnapshot":
         eff_now, eff_max_age = cls._resolve_now_and_max_age(now_ts, max_age_sec)
-        sym_raw = str(symbol or "").strip()
-        canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
-        scope = "EQUITY" if is_equity_symbol(sym_raw) else "CRYPTO"
+        sym_raw, canon_sym, scope = (
+            (s := str(symbol or "").strip()),
+            clean_symbol_key(s) or s.upper(),
+            "EQUITY" if is_equity_symbol(s) else "CRYPTO",
+        )
         return cls(
             symbol=sym_raw,
             canonical_symbol=canon_sym,

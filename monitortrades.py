@@ -1395,9 +1395,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
     if trade_orders_buy and trade_orders_sell and buy_time > sell_time:
         if symbol in _REENTRY_STATE or symbol in _LAST_EXIT_KIND or symbol in _REENTRY_DONE_SELL_TIME:
-            _REENTRY_STATE.pop(symbol, None)
-            _LAST_EXIT_KIND.pop(symbol, None)
-            _REENTRY_DONE_SELL_TIME.pop(symbol, None)
+            for st_map in (_REENTRY_STATE, _LAST_EXIT_KIND, _REENTRY_DONE_SELL_TIME):
+                st_map.pop(symbol, None)
             _save_mt_state()
 
     if symbol in _PENDING_STOP_EXIT and _is_untradable_dust(inst, symbol, sellable_qty, current_price, min_qty):

@@ -826,15 +826,16 @@ class Instrument:
                     return None
 
             # Stage 0 & Stage 1: Authoritative Balance/Price & Mathematical Reference Check (G_PROF).
+            ctx.quantity_price = ctx.price
             if isinstance(ctx.price, bool) or (
                 ctx.price is not None and (ctx.side_u == "BUY" or not ctx.is_market)
             ):
                 price_f = safe_pos_float(ctx.price, default=None)
                 if price_f is None:
                     print(f"[{self.symbol}] {ctx.side_u} preflight refused: price invalid {ctx.price!r}")
-                    ctx.quantity_price, ctx.reason = ctx.price, "invalid_price"
+                    ctx.reason = "invalid_price"
                     return None
-                ctx.price = price_f
+                ctx.price = ctx.quantity_price = price_f
 
             ctx.base_asset, ctx.quote_asset = resolve_assets(self.symbol, self.base, self.quote)
             target_asset = ctx.quote_asset if ctx.side_u == "BUY" else ctx.base_asset
@@ -850,13 +851,12 @@ class Instrument:
                     if kb_f is not None:
                         if kb_f <= 0:
                             print(f"[{self.symbol}] {ctx.side_u} preflight refused: balance_unavailable asset={target_asset}")
-                            ctx.quantity_price, ctx.reason = ctx.price, "balance_unavailable"
+                            ctx.reason = "balance_unavailable"
                             return None
                         ctx.known_balance = kb_f
                 except Exception:
                     ctx.known_balance = None
 
-            ctx.quantity_price = ctx.price
             if ctx.is_market:
                 ctx.quantity_price = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
                 if ctx.quantity_price is None:
@@ -1197,7 +1197,7 @@ class Instrument:
             if ctx.is_market and (final_profit_check or ctx.retry_constraint_supplied):
                 final_market_price = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
                 if final_market_price is None:
-                    print(f"[{self.symbol}] {ctx.side_u} MARKET BLOCKED at dispatch: current price unavailable")
+                    print(f"[{self.symbol}] {ctx.side_u}", "MARKET BLOCKED at dispatch: current price unavailable")
                     ctx.reason = "market_price_unavailable"
                     return None
                 if ctx.retry_constraint_supplied and not order_retry.is_retry_price_favorable(

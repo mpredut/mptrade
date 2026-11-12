@@ -468,10 +468,10 @@ class TrackedOrderLifecycle:
                     "order_missing", pending, missing_confirmation=misses,
                     missing_confirmations_required=self.missing_confirmations,
                 )
-                if misses < self.missing_confirmations:
-                    return TrackedOrderResult("active", pending)
-                persist(None)
-                return TrackedOrderResult("absent", pending)
+                done = misses >= self.missing_confirmations
+                if done:
+                    persist(None)
+                return TrackedOrderResult("absent" if done else "active", pending)
             pending.update(fields)
             pending["lookup_misses"] = 0
             pending.pop("lookup_error", None)

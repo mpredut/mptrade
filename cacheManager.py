@@ -219,8 +219,7 @@ class CacheFactory:
                 if hasattr(manager, "become_writer"):
                     manager.become_writer()
                 else:
-                    manager.save_state = True
-                    manager.read_only = False
+                    manager.save_state, manager.read_only = True, False
                     manager.data_sync_mode = CacheManagerInterface.MODE_PRODUCER
             elif (
                 resolved_mode == CacheManagerInterface.MODE_LIVE_READER

@@ -635,8 +635,8 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 ):
                     seen_bases.add(base_symbol)
                     self.active_symbols.add(symbol)
-                    self.symbols.append(symbol)
-                    self.original_symbols.append(symbol)
+                    for sym_list in (self.symbols, self.original_symbols):
+                        sym_list.append(symbol)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             print(f"[Pricefetcher] Metadata cache ignored: {exc}")
 
@@ -899,7 +899,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 self._persisted_counts = counts
                 return self._log_cache_saved_ok()
         except Exception as e:
-            print(f"[{self.cls_name}][Warn] Saving cache file {self.filename}: {e}")
+            print(f"[{self.cls_name}][Warn] Saving cache file {self.filename}:", e)
             return False
 
     def save_state_to_file_if_enabled(self):

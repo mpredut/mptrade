@@ -386,9 +386,11 @@ class GeminiQuotaRouterMixin:
             return
         now = time.time()
         exp_until = now + max(15.0, safe_float(ttl_sec, default=120.0) or 120.0)
-        state_path = cls._get_quota_state_path()
-        _read_json_dict = _gc_attr("read_json_dict", read_json_dict)
-        _save_json_state = _gc_attr("save_json_state", save_json_state)
+        state_path, _read_json_dict, _save_json_state = (
+            cls._get_quota_state_path(),
+            _gc_attr("read_json_dict", read_json_dict),
+            _gc_attr("save_json_state", save_json_state),
+        )
         snapshot: Optional[Dict[str, Any]] = None
         with cls._QUOTA_LOCK:
             data = _read_json_dict(state_path, default={})

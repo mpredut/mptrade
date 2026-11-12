@@ -919,17 +919,11 @@ class PriceWindow:
 
     def get_min(self):
         with self._lock:
-            sp = self.sorted_prices
-            if not sp:
-                return None
-            return self._average_extreme_cluster(sp[0], sp[1:])
+            return self._average_extreme_cluster(sp[0], sp[1:]) if (sp := self.sorted_prices) else None
 
     def get_max(self):
         with self._lock:
-            sp = self.sorted_prices
-            if not sp:
-                return None
-            return self._average_extreme_cluster(sp[-1], reversed(sp[:-1]))
+            return self._average_extreme_cluster(sp[-1], reversed(sp[:-1])) if (sp := self.sorted_prices) else None
 
     def _centroid_index_for(self, target_price):
         if target_price is not None and target_price > 0:

@@ -151,13 +151,10 @@ class PricePrediction:
             X_aug = np.hstack([X_flat, np.ones((len(X_flat), 1), dtype=np.float64)])
             w, _, _, _ = np.linalg.lstsq(X_aug, y.astype(np.float64), rcond=None)
             w_f32 = w.astype(np.float32)
-            if not np.all(np.isfinite(w_f32)):
-                self._fallback_weights = None
-                self.trained = False
-                return False
-            self._fallback_weights = w_f32
-            self.trained = True
-            return True
+            finite = bool(np.all(np.isfinite(w_f32)))
+            self._fallback_weights = w_f32 if finite else None
+            self.trained = finite
+            return finite
 
         X_t = torch.tensor(X, dtype=torch.float32)
         y_t = torch.tensor(y, dtype=torch.float32)
@@ -180,11 +177,8 @@ class PricePrediction:
         if not params_finite:
             self._reset_model()
             self._fallback_weights = None
-            self.trained = False
-            return False
-
-        self.trained = True
-        return True
+        self.trained = params_finite
+        return params_finite
 
     def predict_next_price(self) -> float | None:
         """Predict the next price step based on the most recent sequence."""

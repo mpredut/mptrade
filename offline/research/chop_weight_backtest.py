@@ -417,9 +417,7 @@ def run_single_simulation(
                 "regime": entry_regime,
                 "is_win": pnl > 0,
             })
-            asset_qty = 0.0
-            entry_price = 0.0
-            entry_cost = 0.0
+            asset_qty = entry_price = entry_cost = 0.0
 
         # Execute BUY
         elif want_buy and not want_sell and asset_qty == 0 and usd > 50.0:
@@ -468,13 +466,11 @@ def run_single_simulation(
     # Close remaining open position at end
     if asset_qty > 0 and (tape or sampled):
         last_p = safe_pos_float(tape[-1]["p"], default=0.0) if tape else safe_pos_float(sampled[-1][1], default=0.0)
-        proceeds = asset_qty * last_p * (1.0 - fee_pct)
-        pnl = proceeds - entry_cost
-        usd += proceeds
+        usd += (proceeds := asset_qty * last_p * (1.0 - fee_pct))
         trades.append({
             "entry_price": entry_price,
             "exit_price": last_p,
-            "pnl": pnl,
+            "pnl": (pnl := proceeds - entry_cost),
             "regime": entry_regime,
             "is_win": pnl > 0,
         })

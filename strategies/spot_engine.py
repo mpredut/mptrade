@@ -1371,19 +1371,22 @@ class Strategy(BaseSpotMixin):
             return result
 
         held = self.s["qty"]
+        unavail_reason: str | None = None
+        ledger_qty: float | None = None
         try:
             precision = self.client.pair_precision(self.pair)
             base = precision.base_asset if precision else ""
             ledger_val = self.client.free_balance(base)
             if ledger_val is None:
-                log("  ! [STRAT] ledger reconciliation unavailable (balance query returned None); decisions blocked")
-                return True
-            ledger_qty = safe_nonneg_float(ledger_val, None)
-            if ledger_qty is None:
-                log("  ! [STRAT] ledger reconciliation unavailable (invalid balance); decisions blocked")
-                return True
+                unavail_reason = "balance query returned None"
+            else:
+                ledger_qty = safe_nonneg_float(ledger_val, None)
+                if ledger_qty is None:
+                    unavail_reason = "invalid balance"
         except (ProviderError, TypeError, ValueError, OverflowError) as exc:
-            log(f"  ! [STRAT] ledger reconciliation unavailable ({exc}); decisions blocked")
+            unavail_reason = str(exc)
+        if unavail_reason is not None or ledger_qty is None:
+            log("  ! [STRAT] ledger reconciliation unavailable (" + str(unavail_reason) + "); decisions blocked")
             return True
         tolerance = max(2 * 10.0 ** -max(self.vol_dec, 1), 1e-12)
         free_ledger_qty = ledger_qty

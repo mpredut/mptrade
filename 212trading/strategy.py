@@ -1205,11 +1205,13 @@ class Strategy(BaseSpotMixin):
                 log(f"  ! [STRAT] {label} deferred: at least one order could not be cancelled")
                 return False
             pending_orders = [o for o in self.s["orders"] if o.get("kind") != kind]
-            if pending_orders:
-                log(f"  [STRAT] {label} deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
-                return False
-            if self.s.get("pending_submit"):
-                log(f"  [STRAT] {label} deferred: waiting for pending submit to reconcile")
+            if pending_orders or self.s.get("pending_submit"):
+                wait_reason = (
+                    f"{len(pending_orders)} existing order(s) to reconcile cancellation"
+                    if pending_orders
+                    else "pending submit to reconcile"
+                )
+                log(f"  [STRAT] {label} deferred: waiting for {wait_reason}")
                 return False
             target_qty = sell_qty if sell_qty is not None else self._sellable_qty(self.s["qty"], price)
             if not self._place_sell(target_qty, round(price, 2), kind=kind, market=True):

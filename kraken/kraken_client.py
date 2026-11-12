@@ -163,34 +163,31 @@ class KrakenClient:
                 "API-Sign": self._signature(urlpath, data, self.api_secret),
             }
             status, body = http_post_form(API_URL + urlpath, data, headers=headers)
-            if status == 0 or not body:
-                if method not in _WRITE_METHODS and attempt < max_attempts - 1:
-                    time.sleep(0.15 * (attempt + 1))
-                    continue
-                raise KrakenError(f"network error/empty response in {method} (HTTP {status})")
-            try:
-                result = self._parse(status, body)
-                break
-            except KrakenError as e:
-                err_s = str(e)
-                if (
-                    any(
-                        tok in err_s
-                        for tok in (
-                            "Invalid nonce",
-                            "Rate limit",
-                            "Temporary lockout",
-                            "Service:Unavailable",
-                            "Service:Busy",
-                            "EService:",
+            if status and body:
+                try:
+                    result = self._parse(status, body)
+                    break
+                except KrakenError as e:
+                    err_s = str(e)
+                    if not (
+                        any(
+                            tok in err_s
+                            for tok in (
+                                "Invalid nonce",
+                                "Rate limit",
+                                "Temporary lockout",
+                                "Service:Unavailable",
+                                "Service:Busy",
+                                "EService:",
+                            )
                         )
-                    )
-                    and (method not in _WRITE_METHODS or "Invalid nonce" in err_s)
-                    and attempt < max_attempts - 1
-                ):
-                    time.sleep(0.15 * (attempt + 1))
-                    continue
-                raise
+                        and (method not in _WRITE_METHODS or "Invalid nonce" in err_s)
+                        and attempt < max_attempts - 1
+                    ):
+                        raise
+            elif method in _WRITE_METHODS or attempt >= max_attempts - 1:
+                raise KrakenError(f"network error/empty response in {method} (HTTP {status})")
+            time.sleep(0.15 * (attempt + 1))
         if ttl and result:
             _cache_put(method, data, ttl, result)
         if method in _WRITE_METHODS:                # AddOrder/CancelOrder changed account state

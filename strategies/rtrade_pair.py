@@ -727,8 +727,7 @@ class PairCoordinator:
                 self.reason = self.hard_stop_reason or "inventory_hard_stop"
                 return self.outcome()
             if self.stop_ticket is None:
-                self.reason = "hard_stop_recovery_missing_order"
-                return self.outcome()
+                return self.outcome(reason="hard_stop_recovery_missing_order")
             self.phase = "stopping"
 
         if self.phase == "stopping":
@@ -776,8 +775,7 @@ class PairCoordinator:
             entry_avg = (bc / bq) if exposure_side == "LONG" else (sc / sq)
             current = safe_pos_float(self.venue.current_price(), default=0.0)
             if current <= 0:
-                self.reason = "current_price_unavailable"
-                return self.outcome()
+                return self.outcome(reason="current_price_unavailable")
             self.reason = None
             stop_fraction = self.policy.shock_hard_stop_fraction if self.shock else self.policy.hard_stop_fraction
             breached = (
@@ -869,8 +867,7 @@ class PairCoordinator:
             elif latest_exit is not None:
                 latest_snapshot = self.snapshots.get(latest_exit.order_id, OrderSnapshot())
                 if latest_snapshot.status not in _TERMINAL_ORDER_STATUSES:
-                    self.reason = "exit_status_unconfirmed"
-                    return self.outcome()
+                    return self.outcome(reason="exit_status_unconfirmed")
                 latest_rev = exact_nonneg_int(latest_exit.revision, default=0) or 0
                 current_revision = max(self.limit_revisions[exit_side], latest_rev)
                 self.limit_revisions[exit_side] = current_revision
@@ -910,8 +907,7 @@ class PairCoordinator:
             if bq > 0 or sq > 0:
                 return self.step(now=now)
             if any(ticket.active for ticket in self.tickets):
-                self.reason = "quote_cancel_pending"
-                return self.outcome()
+                return self.outcome(reason="quote_cancel_pending")
             self.phase, self.reason = "expired", "quote_ttl"
         return self.outcome()
 
@@ -922,7 +918,11 @@ class PairCoordinator:
             outcome = self.step()
         return outcome
 
-    def outcome(self) -> PairOutcome:
+    def outcome(self, *, phase: Optional[str] = None, reason: Optional[str] = None) -> PairOutcome:
+        if phase is not None:
+            self.phase = phase
+        if reason is not None:
+            self.reason = reason
         bq, bc, bf, sq, sc, sf = self._totals()
         matched_q = min(bq, sq)
         realized_gross_pnl = matched_q * ((sc / sq) - (bc / bq)) if (matched_q > 0 and bq > 0 and sq > 0) else 0.0
