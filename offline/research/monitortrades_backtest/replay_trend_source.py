@@ -94,13 +94,9 @@ class ReplayTrendSource:
         """Feed the symbol's window with ONE new replay tick. It must be
         called for EVERY tick, BEFORE reading is_trend_up() for the same moment
         -- otherwise the signal sees prices from the replay's future (look-ahead)."""
-        win = self._windows.get(symbol)
-        if win is None:
+        if (win := self._windows.get(symbol)) is None or (parsed := _parse_advance_tick(ts, price)) is None:
             return
-        ts_f = normalize_epoch_sec(ts, default=None, allow_zero=True)
-        px_f = safe_pos_float(price, default=None)
-        if ts_f is None or px_f is None:
-            return
+        ts_f, px_f = parsed
         prev = self._prev_ts.get(symbol)
         if prev is not None and ts_f < prev:
             return
@@ -183,11 +179,7 @@ class ReplayTrendSource:
         now: Optional[float] = None,
     ) -> bool:
         """Replicate CacheShortTrendManager.should_wait against the replay PriceWindow."""
-        side_str = normalize_side(side)
-        if side_str not in ("BUY", "SELL"):
-            return False
-        win = self._windows.get(symbol)
-        if win is None:
+        if (side_str := _normalize_buy_sell_side(side)) is None or (win := self._windows.get(symbol)) is None:
             return False
         valid_ws, ws_f, same_win = parse_optional_window_seconds(
             window_seconds, win.window_seconds
@@ -205,16 +197,13 @@ class ReplayTrendSource:
             _ft, gc, _sf, gr = win.get_short_trend()
             base_eps = win.get_noise_epsilon(k=1.0) if use_noise_gate else 0.0
             n_p = len(win.prices)
-        g = gr if fast else gc
-        if use_noise_gate:
-            m_steps = n_p - 1
-            scale = math.sqrt(10.0 / m_steps) if m_steps > 10 else 1.0
-            eps = scale * base_eps
-            if abs(g) <= eps:
-                return True
-        if side_str == "BUY":
-            return g < 0
-        return g > 0
+        return _should_wait_for_gradient(
+            side_str,
+            gr if fast else gc,
+            base_eps=base_eps,
+            n_samples=n_p,
+            use_noise_gate=use_noise_gate,
+        )
 
 
 # ------------------------------------------------------------------------------
@@ -233,9 +222,35 @@ class ReplayTrendSource:
 # ------------------------------------------------------------------------------
 
 SMALL_TIMEOUT_RANGE_SEC = (14.0, 11 * 60.0)   # 14s - 11 min (29 Jul)
-
-
 UPWARD_EPSILON_K = 0.25
+
+
+def _parse_advance_tick(ts: float, price: float) -> Optional[Tuple[float, float]]:
+    ts_f = normalize_epoch_sec(ts, default=None, allow_zero=True)
+    px_f = safe_pos_float(price, default=None)
+    return (ts_f, px_f) if ts_f is not None and px_f is not None else None
+
+
+def _normalize_buy_sell_side(side: str) -> Optional[str]:
+    side_str = normalize_side(side)
+    return side_str if side_str in ("BUY", "SELL") else None
+
+
+def _should_wait_for_gradient(
+    side_str: str,
+    g: float,
+    *,
+    base_eps: float = 0.0,
+    n_samples: int = 0,
+    use_noise_gate: bool = False,
+) -> bool:
+    if use_noise_gate:
+        m_steps = n_samples - 1
+        scale = math.sqrt(10.0 / m_steps) if m_steps > 10 else 1.0
+        eps = safe_float(scale * base_eps, 0.0)
+        if abs(g) <= eps:
+            return True
+    return g < 0 if side_str == "BUY" else g > 0
 
 
 def resolve_upward_eps_k() -> float:
@@ -278,13 +293,9 @@ class DynamicReplayTrendSource:
         self._buf: Dict[str, deque] = {s: deque() for s in symbols}   # [(ts, price), ...] ascending
 
     def advance(self, symbol: str, ts: float, price: float) -> None:
-        buf = self._buf.get(symbol)
-        if buf is None:
+        if (buf := self._buf.get(symbol)) is None or (parsed := _parse_advance_tick(ts, price)) is None:
             return
-        ts_f = normalize_epoch_sec(ts, default=None, allow_zero=True)
-        px_f = safe_pos_float(price, default=None)
-        if ts_f is None or px_f is None:
-            return
+        ts_f, px_f = parsed
         if buf and ts_f < buf[-1][0]:
             return
         buf.append((ts_f, px_f))
@@ -345,12 +356,11 @@ class DynamicReplayTrendSource:
         confirmed, so requiring |g| > eps kept execution waiting longer when the
         short-scale signal was marginal. Setting use_noise_gate=True retains the
         noise-gated variant for comparison."""
-        if symbol not in self._buf:
-            return False
-        side_str = normalize_side(side)
-        if side_str not in ("BUY", "SELL"):
-            return False
-        if safe_pos_float(timeout_sec, default=None) is None:
+        if (
+            symbol not in self._buf
+            or (side_str := _normalize_buy_sell_side(side)) is None
+            or safe_pos_float(timeout_sec, default=None) is None
+        ):
             return False
         prices, _sample_rate = self._prices_and_rate(symbol, timeout_sec)
         if len(prices) < 3:
@@ -360,15 +370,13 @@ class DynamicReplayTrendSource:
                 prices, _sample_rate, window_seconds=timeout_sec, symbol=symbol
             )
         )
-        g = growth_coefficient
-        if use_noise_gate:
-            cand_ek = safe_nonneg_float(epsilon_k, default=None)
-            ek = cand_ek if cand_ek is not None else 1.0
-            m_steps = len(prices) - 1
-            scale = math.sqrt(10.0 / m_steps) if m_steps > 10 else 1.0
-            eps = safe_float(ek * scale * pw.PriceWindow._std_of_gradient(prices), 0.0)
-            if abs(g) <= eps:
-                return True
-        if side_str == "BUY":
-            return g < 0
-        return g > 0
+        cand_ek = safe_nonneg_float(epsilon_k, default=None) if use_noise_gate else None
+        ek = cand_ek if cand_ek is not None else 1.0
+        base_eps = ek * pw.PriceWindow._std_of_gradient(prices) if use_noise_gate else 0.0
+        return _should_wait_for_gradient(
+            side_str,
+            growth_coefficient,
+            base_eps=base_eps,
+            n_samples=len(prices),
+            use_noise_gate=use_noise_gate,
+        )

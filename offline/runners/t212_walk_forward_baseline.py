@@ -73,9 +73,12 @@ def fx_quote(currency: str) -> tuple[str, bool]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", default="nvda", help="config.<profile>.env")
-    parser.add_argument("--range", default="2y", help="range Yahoo: 60d, 1y, 2y etc.")
-    parser.add_argument("--interval", default="1d", help="interval Yahoo: 5m, 1h, 1d")
+    for flag, default_val, help_text in (
+        ("--profile", "nvda", "config.<profile>.env"),
+        ("--range", "2y", "range Yahoo: 60d, 1y, 2y etc."),
+        ("--interval", "1d", "interval Yahoo: 5m, 1h, 1d"),
+    ):
+        parser.add_argument(flag, default=default_val, help=help_text)
     parser.add_argument("--dataset", type=Path, help="a frozen CSV instead of Yahoo")
     parser.add_argument(
         "--seed-dataset", type=Path,

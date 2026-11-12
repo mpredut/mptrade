@@ -106,13 +106,16 @@ class BacktestBroker:
         else:
             append_text_line(self.path, line)
 
+    @staticmethod
+    def _normalize_buy_sell(order_type) -> str | None:
+        side = normalize_side(order_type)
+        return side if side in ("BUY", "SELL") else None
+
     def _execute(self, order_type, symbol, price, qty=None, motivation=None):
         """The real P&L accounting (no gate) -- used directly or after waiting."""
-        order_type = normalize_side(order_type)
-        if order_type not in ("BUY", "SELL"):
-            return None
-        req_price = safe_pos_float(price, default=None)
-        if req_price is None:
+        if (order_type := self._normalize_buy_sell(order_type)) is None or (
+            req_price := safe_pos_float(price, default=None)
+        ) is None:
             return None
         exec_price = safe_pos_float(self.current_tick_price, default=None) or req_price
         if qty is None:
@@ -155,10 +158,9 @@ class BacktestBroker:
         return {"orderId": oid, "backtest": True}   # Positive int orderId for live track_and_place_order parity.
 
     def place_order_smart(self, order_type, symbol, price, qty=None, motivation=None, **kwargs):
-        order_type = normalize_side(order_type)
-        if order_type not in ("BUY", "SELL"):
-            return None
-        if order_type != "BUY" and self.pos_qty <= 1e-12:
+        if (order_type := self._normalize_buy_sell(order_type)) is None or (
+            order_type != "BUY" and self.pos_qty <= 1e-12
+        ):
             return None
         # The gate applies UNCONDITIONALLY (force=True included) -- user (29 Jul, "the
         # is always welcome"), consistent with live. If the direction is NOT favourable yet,
@@ -675,17 +677,28 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--symbol", required=True)
     p.add_argument("--start", required=True, help="YYYY-MM-DD -- simulation start date")
-    p.add_argument("--end", default=None, help="YYYY-MM-DD (default: up to the end of saved data)")
-    p.add_argument("--speed", choices=["real", "fast"], default="fast",
-                   help="real = honour the historical intervals; fast = no waiting (the default)")
-    p.add_argument("--run-id", default=None, help="default: <symbol>_<start>_<timestamp>")
-    p.add_argument("--source", choices=["history", "cache24"], default="history",
-                   help="history = cache_sparse_price_*.jsonl (~11 months, but SPARSE, see the caveat in the plan); "
-                        "cache24 = cache_24_price_*.json or cache_365_price_*.jsonl, DENSE resolution (~1s) "
-                        "persisted by cacheManager.py")
-    p.add_argument("--cache24-file", default=None,
-                   help="an explicit path to a cache24 file (e.g. cache_365_price_BTCUSDC.jsonl); "
-                        "default: cachedb/cache_24_price_<symbol>.json")
+    for flag, help_text in (
+        ("--end", "YYYY-MM-DD (default: up to the end of saved data)"),
+        ("--run-id", "default: <symbol>_<start>_<timestamp>"),
+        (
+            "--cache24-file",
+            "an explicit path to a cache24 file (e.g. cache_365_price_BTCUSDC.jsonl); "
+            "default: cachedb/cache_24_price_<symbol>.json",
+        ),
+    ):
+        p.add_argument(flag, default=None, help=help_text)
+    for flag, choices, default_val, help_text in (
+        ("--speed", ["real", "fast"], "fast", "real = honour the historical intervals; fast = no waiting (the default)"),
+        (
+            "--source",
+            ["history", "cache24"],
+            "history",
+            "history = cache_sparse_price_*.jsonl (~11 months, but SPARSE, see the caveat in the plan); "
+            "cache24 = cache_24_price_*.json or cache_365_price_*.jsonl, DENSE resolution (~1s) "
+            "persisted by cacheManager.py",
+        ),
+    ):
+        p.add_argument(flag, choices=choices, default=default_val, help=help_text)
     p.add_argument("--quiet", action="store_true",
                    help="suppress noisy print() calls from tradeall.logic() (much faster on "
                         "dense/long data); own progress messages remain visible")

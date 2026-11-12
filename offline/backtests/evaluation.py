@@ -413,18 +413,24 @@ def add_walk_forward_cli_args(
         parser.add_argument("--intervals", type=parse_intervals, default=list(default_intervals))
     if default_fee is not None:
         parser.add_argument("--fee", type=parse_cli_float, default=default_fee, help=fee_help)
-    parser.add_argument("--spread-bps", type=parse_cli_float, default=0.0)
-    parser.add_argument("--market-slippage-bps", type=parse_cli_float, default=0.0)
-    parser.add_argument("--partial-fill-ratio", type=parse_cli_float, default=1.0)
+    for flag, default_val in (
+        ("--spread-bps", 0.0),
+        ("--market-slippage-bps", 0.0),
+        ("--partial-fill-ratio", 1.0),
+    ):
+        parser.add_argument(flag, type=parse_cli_float, default=default_val)
     parser.add_argument(
         "--intrabar-policy",
         choices=("buy_first", "sell_first", "worst_case"),
         default="buy_first",
     )
-    parser.add_argument("--train", type=parse_cli_int, help="training bars; automatic by default")
-    parser.add_argument("--validation", type=parse_cli_int, help="validation bars; automatic by default")
-    parser.add_argument("--test", type=parse_cli_int, help="test bars; automatic by default")
-    parser.add_argument("--step", type=parse_cli_int, help="step size in bars; defaults to test size")
+    for flag, help_text in (
+        ("--train", "training bars; automatic by default"),
+        ("--validation", "validation bars; automatic by default"),
+        ("--test", "test bars; automatic by default"),
+        ("--step", "step size in bars; defaults to test size"),
+    ):
+        parser.add_argument(flag, type=parse_cli_int, help=help_text)
     if include_warmup:
         parser.add_argument(
             "--warmup",

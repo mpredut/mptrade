@@ -86,14 +86,22 @@ def generate_markdown_report() -> str:
                 f"{safe_nonneg_int(s.get('total_wins'), default=0)} |"
             )
 
-    md.append("\n---\n")
-    md.append("## 2. Asset-by-Asset Comparative Performance")
-    md.append("\nDetailed breakdown of net return and drawdown across all benchmark assets:\n")
-    
+    md.extend(
+        [
+            "\n---\n",
+            "## 2. Asset-by-Asset Comparative Performance",
+            "\nDetailed breakdown of net return and drawdown across all benchmark assets:\n",
+        ]
+    )
+
     # Group by asset
     assets = sorted(list(set(r["asset"] for r in crypto_data)))
-    md.append("| Asset | Metric | Test 0 (Baseline) | Test 1 (Peak-Relative) | Test 2 (Trend Bypass) | Test 3 (Hybrid) | Test 4 (Hybrid + TTL) |")
-    md.append("|---|---|---|---|---|---|---|")
+    md.extend(
+        [
+            "| Asset | Metric | Test 0 (Baseline) | Test 1 (Peak-Relative) | Test 2 (Trend Bypass) | Test 3 (Hybrid) | Test 4 (Hybrid + TTL) |",
+            "|---|---|---|---|---|---|---|",
+        ]
+    )
 
     for a in assets:
         a_runs = {r["test_id"]: r for r in crypto_data if r["asset"] == a and "error" not in r}
@@ -115,9 +123,13 @@ def generate_markdown_report() -> str:
         md.append("| " + " | ".join(exp_row) + " |")
 
     if equities_data:
-        md.append("\n### US Equities Performance (Trading 212 Engine)")
-        md.append("\n| Equity | Test ID | Variant Name | Return (%) | Max DD (%) | Time in Market (%) | Cycles | Win Rate (%) |")
-        md.append("|---|---|---|---|---|---|---|---|")
+        md.extend(
+            [
+                "\n### US Equities Performance (Trading 212 Engine)",
+                "\n| Equity | Test ID | Variant Name | Return (%) | Max DD (%) | Time in Market (%) | Cycles | Win Rate (%) |",
+                "|---|---|---|---|---|---|---|---|",
+            ]
+        )
         for eq in equities_data:
             r_str = _fmt_pct(eq.get("total_return_pct"), decimals=2, signed=True, bold=True)
             dd_str = _fmt_pct(eq.get("max_drawdown_pct"), decimals=2)
@@ -126,9 +138,11 @@ def generate_markdown_report() -> str:
             cycles_int = safe_nonneg_int(eq.get("cycles"), default=0)
             md.append(f"| **{eq.get('asset')}** | {eq.get('test_id')} | {eq.get('variant')} | {r_str} | {dd_str} | {exp_str} | {cycles_int} | {win_str} |")
 
-    md.append("\n---\n")
-    md.append("## 3. Key Mathematical Findings & Hypotheses Verification")
-    md.append("""
+    md.extend(
+        [
+            "\n---\n",
+            "## 3. Key Mathematical Findings & Hypotheses Verification",
+            """
 1. **Separation of Trend Filter and Execution Trigger:**
    - **Test 2 (Trend Bypass)** proves that simply allowing entry whenever `is_bull` is true without a tactical pullback trigger suffers from top-chasing on overextended bars.
    - **Test 3 (Hybrid)** achieves superior risk-adjusted return and lower drawdown by enforcing a micro pullback relative to the post-sale peak before execution.
@@ -142,11 +156,10 @@ def generate_markdown_report() -> str:
 
 4. **TTL Barrier Decay (Test 4):**
    - The 14-day TTL decay prevents perpetual lockout caused by stale sale anchors from months or years past without forcing premature market entries.
-""")
-
-    md.append("\n---\n")
-    md.append("## 4. Production Recommendations & Next Steps")
-    md.append("""
+""",
+            "\n---\n",
+            "## 4. Production Recommendations & Next Steps",
+            """
 1. **Recommended Default Profile:**
    - Enable `STRAT_REENTRY_HYBRID_ENABLED=true`
    - Set `STRAT_REENTRY_PULLBACK_PCT=1.5`
@@ -157,7 +170,9 @@ def generate_markdown_report() -> str:
 2. **Live Deployment Verification:**
    - Verify on live paper and real trading instances that `post_sell_peak` and `last_sell_ts` are correctly written to state files.
    - Monitor the first live cycle restart to verify pullback detection in real-time.
-""")
+""",
+        ]
+    )
     return "\n".join(md)
 
 

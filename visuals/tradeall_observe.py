@@ -309,6 +309,11 @@ def load_price_series_live(symbol, days_back, include_history=True):
     return ts_sorted, [points[t] for t in ts_sorted]
 
 
+def _sort_events_by_ts(events: list[dict]) -> list[dict]:
+    events.sort(key=lambda e: e["ts"])
+    return events
+
+
 def _parse_trend_start_rows(rows, symbol):
     events = []
     for row in rows:
@@ -321,8 +326,7 @@ def _parse_trend_start_rows(rows, symbol):
             continue
         events.append({"ts": t_val, "state": state, "old_state": old_state,
                         "price": p_val, "prev_confirm_count": prev_confirm})
-    events.sort(key=lambda e: e["ts"])
-    return events
+    return _sort_events_by_ts(events)
 
 
 def load_trend_starts(symbol, days_back):
@@ -354,8 +358,7 @@ def _parse_order_event_rows(rows, symbol, *, filter_caller: bool = True):
             "ts": t_val, "side": normalize_side(side) or side, "price": p_val,
             "outcome": outcome, "reason": motivation or refuse_reason,
         })
-    events.sort(key=lambda e: e["ts"])
-    return events
+    return _sort_events_by_ts(events)
 
 
 def load_order_events(symbol, days_back):
@@ -379,8 +382,7 @@ def _parse_shadow_rows(rows, symbol):
         events.append({"ts": t_val, "signal": signal, "state": st_val,
                         "old_state": ost_val, "price": p_val,
                         "vel": vel, "vel_std": vel_std})
-    events.sort(key=lambda e: e["ts"])
-    return events
+    return _sort_events_by_ts(events)
 
 
 def load_shadow_events(symbol, days_back):
@@ -839,27 +841,37 @@ def main():
 
     parser.add_argument("--symbols", default=None,
                          help="explicit override; otherwise all enabled Binance instruments")
-    parser.add_argument("--interval", type=float, default=2.0,
-                         help="seconds between cycles (live plus the analysis state; default 2)")
-    parser.add_argument("--live-minutes", type=float, default=60.0,
-                         help="the Live tab's window, in minutes (default 60; TAO moves rarely "
-                              "— at 30 min the window shows more emptiness than signal)")
-    parser.add_argument("--day-refresh", type=float, default=30.0,
-                         help="how often, in seconds, the DAY chart is redrawn (default 30)")
-    parser.add_argument("--week-refresh", type=float, default=300.0,
-                         help="how often, in seconds, the WEEK chart is redrawn (default 300)")
+    for flag, default_val, help_text in (
+        ("--interval", 2.0, "seconds between cycles (live plus the analysis state; default 2)"),
+        (
+            "--live-minutes",
+            60.0,
+            "the Live tab's window, in minutes (default 60; TAO moves rarely "
+            "— at 30 min the window shows more emptiness than signal)",
+        ),
+        ("--day-refresh", 30.0, "how often, in seconds, the DAY chart is redrawn (default 30)"),
+        ("--week-refresh", 300.0, "how often, in seconds, the WEEK chart is redrawn (default 300)"),
+    ):
+        parser.add_argument(flag, type=float, default=default_val, help=help_text)
     parser.add_argument("--backtest-dir", default=None,
                          help="if given: BACKTEST mode — it renders the folder of an "
                               "offline/backtests/tradeall.py run instead of running live")
-    parser.add_argument("--frame-hours", type=float, default=None,
-                         help="with --backtest-dir: instead of ONE dense chart covering the whole interval, "
-                              "generate a SERIES of STATIC frames (images), one per N hours. "
-                              "Generate once and exit (does not loop).")
-    parser.add_argument("--window-hours", type=float, default=None,
-                         help="with --backtest-dir (without --frame-hours): a SLIDING window of N hours, "
-                              "anchored to the current simulated clock — it runs in a loop (like live), "
-                              "sliding as offline/backtests/tradeall.py writes new data in parallel; "
-                              "the events appear on the frame exactly when the backtester reaches them)")
+    for flag, help_text in (
+        (
+            "--frame-hours",
+            "with --backtest-dir: instead of ONE dense chart covering the whole interval, "
+            "generate a SERIES of STATIC frames (images), one per N hours. "
+            "Generate once and exit (does not loop).",
+        ),
+        (
+            "--window-hours",
+            "with --backtest-dir (without --frame-hours): a SLIDING window of N hours, "
+            "anchored to the current simulated clock — it runs in a loop (like live), "
+            "sliding as offline/backtests/tradeall.py writes new data in parallel; "
+            "the events appear on the frame exactly when the backtester reaches them)",
+        ),
+    ):
+        parser.add_argument(flag, type=float, default=None, help=help_text)
     args = parser.parse_args()
     interval_sec = require_pos_float(args.interval, name="--interval")
     live_minutes = require_pos_float(args.live_minutes, name="--live-minutes")

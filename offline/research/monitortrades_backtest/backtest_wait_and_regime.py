@@ -68,6 +68,17 @@ def compute_exact_time_window_signals(
     return res
 
 
+def _build_strided_sample_idx(ts: np.ndarray, stride: int, trim: int) -> tuple[int, int, np.ndarray]:
+    n = len(ts)
+    stride_i = safe_pos_int(stride, default=1)
+    sample_idx = (
+        np.arange(trim, n - trim, stride_i, dtype=np.int64)
+        if n > 2 * trim
+        else np.arange(0, n, stride_i, dtype=np.int64)
+    )
+    return n, stride_i, sample_idx
+
+
 def simulate_should_wait(
     ts: np.ndarray,
     px: np.ndarray,
@@ -77,13 +88,8 @@ def simulate_should_wait(
     stride: int = 300,
 ):
     """Evaluate average execution improvement (in bps) over sampled intent arrival points."""
-    N = len(ts)
-    stride = safe_pos_int(stride, default=1)
+    N, stride, sample_idx = _build_strided_sample_idx(ts, stride, 1000)
     wait_cap = safe_nonneg_float(max_wait_sec, default=30.0)
-    if N > 2000:
-        sample_idx = np.arange(1000, N - 1000, stride, dtype=np.int64)
-    else:
-        sample_idx = np.arange(0, N, stride, dtype=np.int64)
     if len(sample_idx) == 0:
         return {
             "buy_bps": 0.0,
@@ -155,13 +161,8 @@ def evaluate_regime_900s(
     stride: int = 300,
 ):
     """Evaluate 900s regime filter for rtrade: sideways % vs forward 15m adverse excursion & spread fill."""
-    N = len(ts)
-    stride = safe_pos_int(stride, default=1)
+    N, stride, sample_idx = _build_strided_sample_idx(ts, stride, 2000)
     h_sec = safe_nonneg_float(horizon_sec, default=900.0)
-    if N > 4000:
-        sample_idx = np.arange(2000, N - 2000, stride, dtype=np.int64)
-    else:
-        sample_idx = np.arange(0, N, stride, dtype=np.int64)
     z = np.zeros(1, dtype=np.float64)
     if len(sample_idx) == 0 or N < 2:
         return [], z, z

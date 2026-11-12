@@ -1054,11 +1054,9 @@ def _evaluate_intelligence_guards_raw(
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
-    early, side, m, bypassed, parabolic_only_bypass, weibull_only_bypass = _preflight_intelligence_guards_with_qlimit2(
-        order_type, bypass_guards
-    )
-    if early is not None:
+    if (early := (pre := _preflight_intelligence_guards_with_qlimit2(order_type, bypass_guards))[0]) is not None:
         return early
+    _, side, m, bypassed, parabolic_only_bypass, weibull_only_bypass = pre
 
     if any(fake in (symbol or "").upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE")):
         return True, "test_symbol_exempt", 1.0

@@ -218,9 +218,8 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
 
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline", required=True)
-    parser.add_argument("--candidate", required=True)
-    parser.add_argument("--cash", required=True)
+    for flag in ("--baseline", "--candidate", "--cash"):
+        parser.add_argument(flag, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:

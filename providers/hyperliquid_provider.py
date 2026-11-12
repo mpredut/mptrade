@@ -423,10 +423,9 @@ class HyperliquidProvider(MarketDataProvider):
         require_addr: bool = False,
         pass_client_to_addr: bool = False,
     ) -> tuple[Any, str, Optional[str]]:
-        c = self._hl()
-        pair = self._pair()
-        if c is None or pair is None:
+        if (cp := self._hl_client_and_pair_or_none()) is None:
             raise ProviderError(f"{ctx}: Hyperliquid client or pair unavailable")
+        c, pair = cp
         addr = None
         if require_addr:
             addr = (

@@ -259,13 +259,19 @@ def _split_series(symbol):
     return res
 
 
+def _cache_and_trend_keys(symbol, params, series):
+    return (
+        _run_one_cache_key(symbol, params, series),
+        rb._series_cache_key(symbol, series, rb.DEFAULT_WINDOW_SECONDS),
+    )
+
+
 def _run_one(symbol, base, params, series):
     """Run the canonical replay backtest (run_replay_backtest.run_symbol) over a
     pre-sliced in-memory series without writing pnl.json."""
     if not series:
         return None
-    ck = _run_one_cache_key(symbol, params, series)
-    tk = rb._series_cache_key(symbol, series, rb.DEFAULT_WINDOW_SECONDS)
+    ck, tk = _cache_and_trend_keys(symbol, params, series)
     if ck in _RUN_ONE_CACHE:
         cached = _RUN_ONE_CACHE[ck]
         if ck in _RUN_ONE_DIAG_CACHE:
@@ -293,8 +299,7 @@ def _eval_one_half(task: tuple[str, str, dict, int]):
     if len(series) < 100:
         return symbol, params, half_idx, None, {}
     res = _run_one(symbol, base, params, series)
-    ck = _run_one_cache_key(symbol, params, series)
-    tk = rb._series_cache_key(symbol, series, rb.DEFAULT_WINDOW_SECONDS)
+    ck, tk = _cache_and_trend_keys(symbol, params, series)
     diag = dict(
         _RUN_ONE_DIAG_CACHE.get(ck)
         or rb._LAST_RUN_DIAGNOSTICS.get(tk)

@@ -245,13 +245,15 @@ def inspect_fleet(json_output: bool = False):
     print("\n=== TOTAL ESTIMATED PORTFOLIO VALUE ===")
     print(f"  Unified Value (Assets + Cash): ${total_unified_val:,.2f} USD")
 
-    print("\n=== TOPIC ROTATION STATE ===")
-    print(f"  Topic: auto_cryptotrade_executor")
-    print(f"  Rotation Count: #{auto_topic.get('rotation_count')}")
-    print(f"  Step Count: {auto_topic.get('step_count')} / 240")
-    print(f"  Turn Count: {auto_topic.get('turn_count')}")
-    print(f"  Compaction Count: {auto_topic.get('compaction_count')}")
-    print(f"  Active Conversation ID: {auto_topic.get('conversation_id')}")
+    print(
+        "\n=== TOPIC ROTATION STATE ===\n"
+        "  Topic: auto_cryptotrade_executor\n"
+        f"  Rotation Count: #{auto_topic.get('rotation_count')}\n"
+        f"  Step Count: {auto_topic.get('step_count')} / 240\n"
+        f"  Turn Count: {auto_topic.get('turn_count')}\n"
+        f"  Compaction Count: {auto_topic.get('compaction_count')}\n"
+        f"  Active Conversation ID: {auto_topic.get('conversation_id')}"
+    )
 
     print("\n=== ASSET POSITIONS ===")
     for k, v in positions.items():

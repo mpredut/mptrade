@@ -35,12 +35,17 @@ from cachepaths import cache_path
 from providers.replay_provider import load_price_series
 
 
+def _init_parity_test(banner: str, seed: int) -> np.random.Generator:
+    print(banner)
+    return np.random.default_rng(seed)
+
+
 def test_pricewindow_regression_parity(iterations: int = 10_000) -> None:
-    print(f"[TEST 1/5] Testing pricewindow.py linear regression vs scipy.stats.linregress ({iterations:,} trials)...")
-    rng = np.random.default_rng(42)
-    max_diff_slope = 0.0
-    max_diff_intercept = 0.0
-    max_diff_r = 0.0
+    rng = _init_parity_test(
+        f"[TEST 1/5] Testing pricewindow.py linear regression vs scipy.stats.linregress ({iterations:,} trials)...",
+        42,
+    )
+    max_diff_slope = max_diff_intercept = max_diff_r = 0.0
 
     for i in range(iterations):
         n = rng.integers(2, 500).item()
@@ -77,10 +82,11 @@ def test_pricewindow_regression_parity(iterations: int = 10_000) -> None:
 
 
 def test_priceanalysis_ols_parity(iterations: int = 10_000) -> None:
-    print(f"[TEST 2/5] Testing priceAnalysis.py _fast_linear_regression_1d vs np.polyfit ({iterations:,} trials)...")
-    rng = np.random.default_rng(123)
-    max_diff_slope = 0.0
-    max_diff_intercept = 0.0
+    rng = _init_parity_test(
+        f"[TEST 2/5] Testing priceAnalysis.py _fast_linear_regression_1d vs np.polyfit ({iterations:,} trials)...",
+        123,
+    )
+    max_diff_slope = max_diff_intercept = 0.0
 
     for i in range(iterations):
         n = rng.integers(4, 200).item()
@@ -217,8 +223,10 @@ def test_monitortrades_position_stats_parity() -> None:
 
 
 def test_volatility_parity(iterations: int = 10_000) -> None:
-    print(f"[TEST 5/5] Testing volatility.py log-ratio vs np.diff(np.log(p)) ({iterations:,} trials)...")
-    rng = np.random.default_rng(999)
+    rng = _init_parity_test(
+        f"[TEST 5/5] Testing volatility.py log-ratio vs np.diff(np.log(p)) ({iterations:,} trials)...",
+        999,
+    )
     max_diff_vol = 0.0
 
     saved_vol_cache = dict(vol._vol_memo_cache)

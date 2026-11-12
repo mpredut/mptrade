@@ -173,9 +173,12 @@ def walk_forward_vol(
 
 def main(argv: list[str] | None = None) -> int:
     ap = create_ml_forecast_parser("Chronos zero-shot volatility forecast benchmark.")
-    ap.add_argument("--win", type=parse_cli_int, default=24, help="the window (hours) for the realized volatility")
-    ap.add_argument("--horizon", type=parse_cli_int, default=24, help="how many hours ahead we predict")
-    ap.add_argument("--stride", type=parse_cli_int, default=6, help="the step between test windows (hours)")
+    for flag, default_val, help_text in (
+        ("--win", 24, "the window (hours) for the realized volatility"),
+        ("--horizon", 24, "how many hours ahead we predict"),
+        ("--stride", 6, "the step between test windows (hours)"),
+    ):
+        ap.add_argument(flag, type=parse_cli_int, default=default_val, help=help_text)
     ap.add_argument("--eval", action="store_true")
     args, symbol = parse_and_validate_forecast_args(ap, argv)
     days, win, horizon, stride = (

@@ -328,13 +328,16 @@ def _projection(report: dict) -> dict:
 
 
 def add_financial_benchmark_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--train", type=parse_cli_int, default=720)
-    parser.add_argument("--validation", type=parse_cli_int, default=180)
-    parser.add_argument("--test", type=parse_cli_int, default=90)
-    parser.add_argument("--step", type=parse_cli_int, default=90)
-    parser.add_argument("--warmup", type=parse_cli_int, default=40)
+    for flag, default_path in (("--dataset", DEFAULT_DATASET), ("--manifest", DEFAULT_MANIFEST)):
+        parser.add_argument(flag, type=Path, default=default_path)
+    for flag, default_int in (
+        ("--train", 720),
+        ("--validation", 180),
+        ("--test", 90),
+        ("--step", 90),
+        ("--warmup", 40),
+    ):
+        parser.add_argument(flag, type=parse_cli_int, default=default_int)
     parser.add_argument("--regime-threshold", type=parse_cli_float, default=3.0)
     add_report_output_cli_args(parser)
 

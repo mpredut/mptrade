@@ -118,11 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--direction", choices=["long", "short"], default=None)
     ap.add_argument("--signal", choices=["off", "builtin", "analysis"], default="off")
     add_common_backtest_cli_args(ap)
-    ap.add_argument("--fast", default=None)
-    ap.add_argument("--slow", default=None)
-    ap.add_argument("--band", default=None)
-    ap.add_argument("--win", default=None)
-    ap.add_argument("--step", default=None)
+    for flag in ("--fast", "--slow", "--band", "--win", "--step"):
+        ap.add_argument(flag, default=None)
     args = ap.parse_args(argv)
     days_i = exact_pos_int(args.days, default=None)
     if days_i is None:
