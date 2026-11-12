@@ -55,11 +55,40 @@ from .order_ohlc_utils import (
 )
 
 
+def _classify_audit_fill_state(
+    ev: str,
+    v_stat: str,
+    l_stat: str,
+) -> tuple[str, bool]:
+    """Return ``(norm_venue_status, is_terminal)`` for an audit record where ``is_fill`` is True."""
+    is_full_fill = v_stat in ("FILLED", "CLOSED") or l_stat in ("closed", "filled")
+    is_cancel_or_expire = (
+        v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
+        or l_stat in ("canceled", "cancelled", "expired", "rejected")
+    )
+    is_partial = (
+        v_stat == "PARTIALLY_FILLED"
+        or l_stat == "partially_filled"
+        or (not is_full_fill and (ev in ("order_status", "order_terminal_retry") or is_cancel_or_expire))
+    )
+    norm_st = "PARTIALLY_FILLED" if is_partial else "FILLED"
+    is_term = norm_st == "FILLED" or (ev == "order_terminal" and is_cancel_or_expire)
+    return norm_st, is_term
+
+
+def _is_terminal_fill_record(rec: dict[str, Any]) -> bool:
+    v_stat, l_stat, *_, is_fill = _extract_audit_fill_metrics(rec)
+    if not is_fill:
+        return False
+    _, is_term = _classify_audit_fill_state(str(rec.get("event") or ""), v_stat, l_stat)
+    return is_term
+
+
 def reconcile_intents_from_execution_audit(
     intents: list[dict[str, Any]],
     audit_dir: str,
 ) -> bool:
-    """Reconcile FAILED/PENDING_EXECUTION intents and enrich incomplete EXECUTED intents from execution_audit_*.jsonl."""
+    """Reconcile FAILED/PENDING/PENDING_EXECUTION/SUBMIT_UNKNOWN intents and enrich incomplete EXECUTED intents from execution_audit_*.jsonl."""
     canceled_prior_oids: dict[str, float] = {}
     for item in intents:
         if isinstance(item, dict) and isinstance(item.get("canceled_prior_open_orders"), list):
@@ -77,7 +106,7 @@ def reconcile_intents_from_execution_audit(
         if not clean_id:
             continue
         st_up = str(item.get("status") or "").strip().upper()
-        if st_up in ("FAILED", "PENDING_EXECUTION"):
+        if st_up in ("FAILED", "PENDING", "PENDING_EXECUTION", "SUBMIT_UNKNOWN"):
             failed_by_id[clean_id] = item
         elif st_up == "EXECUTED":
             exec_pay = item.get("execution_payload") if isinstance(item.get("execution_payload"), dict) else {}
@@ -141,6 +170,11 @@ def reconcile_intents_from_execution_audit(
     )
     matched_records: dict[str, dict[str, Any]] = {}
     matched_exec_records: dict[str, dict[str, Any]] = {}
+    submitted_qty_by_id: dict[str, Any] = {}
+    active_exec_oids: dict[str, Any] = {
+        iid_e: extract_order_id(it_e.get("execution_payload"), default=None)
+        for iid_e, it_e in executed_incomplete_by_id.items()
+    }
     for audit_path in sorted(glob.glob(os.path.join(glob.escape(audit_dir), "execution_audit_*.jsonl"))):
         file_day = os.path.basename(audit_path)[len("execution_audit_"):-len(".jsonl")]
         if min_day and _AUDIT_DAY_RE.fullmatch(file_day) and file_day < min_day:
@@ -150,35 +184,66 @@ def reconcile_intents_from_execution_audit(
             if not iid:
                 continue
             ev = str(rec.get("event") or "")
+            if ev in ("submit_accepted", "submit_unknown", "order_recovered") and rec.get("qty") is not None:
+                submitted_qty_by_id[iid] = rec.get("qty")
             if iid in failed_by_id:
-                if ev == "submit_accepted":
-                    matched_records.setdefault(iid, rec)
-                elif ev in ("order_terminal", "order_terminal_retry"):
+                prev = matched_records.get(iid)
+                prev_is_fill = _extract_audit_fill_metrics(prev)[-1] if prev is not None else False
+                if ev == "submit_unknown":
+                    if prev is None or str(prev.get("event") or "") == "submit_unknown":
+                        matched_records[iid] = rec
+                elif ev in ("submit_accepted", "order_recovered"):
+                    if not prev_is_fill:
+                        matched_records[iid] = rec
+                elif ev == "order_status":
                     *_, is_fill = _extract_audit_fill_metrics(rec)
                     if is_fill:
+                        if prev is None or not _is_terminal_fill_record(prev):
+                            matched_records[iid] = rec
+                    elif prev is None or str(prev.get("event") or "") == "submit_unknown":
                         matched_records[iid] = rec
-                    elif matched_records.get(iid, {}).get("event") == "submit_accepted":
-                        prev_oid = matched_records[iid].get("order_id")
+                elif ev in ("order_terminal", "order_terminal_retry"):
+                    v_stat, l_stat, *_, is_fill = _extract_audit_fill_metrics(rec)
+                    if is_fill:
+                        if prev is None or not _is_terminal_fill_record(prev) or _is_terminal_fill_record(rec):
+                            matched_records[iid] = rec
+                    elif not prev_is_fill and (
+                        v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
+                        or l_stat in ("canceled", "cancelled", "expired", "rejected")
+                    ):
+                        prev_oid = prev.get("order_id") if prev is not None else None
                         cur_oid = rec.get("order_id")
                         if not prev_oid or not cur_oid or str(prev_oid) == str(cur_oid):
-                            matched_records.pop(iid, None)
-            elif iid in executed_incomplete_by_id and ev in ("order_terminal", "order_terminal_retry"):
-                intent_obj = executed_incomplete_by_id[iid]
-                intent_oid = extract_order_id(intent_obj.get("execution_payload"), default=None)
+                            matched_records[iid] = rec
+            elif iid in executed_incomplete_by_id:
                 rec_oid = extract_order_id(rec.get("order_id"), default=None)
-                if intent_oid is not None and rec_oid is not None and str(intent_oid) != str(rec_oid):
-                    continue
-                v_stat, l_stat, *_, is_fill = _extract_audit_fill_metrics(rec)
-                if is_fill:
-                    matched_exec_records[iid] = rec
-                elif (
-                    iid not in matched_exec_records
-                    or not _extract_audit_fill_metrics(matched_exec_records[iid])[-1]
-                ) and (
-                    v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
-                    or l_stat in ("canceled", "cancelled", "expired", "rejected")
-                ):
-                    matched_exec_records[iid] = rec
+                prev_exec = matched_exec_records.get(iid)
+                prev_exec_is_fill = _extract_audit_fill_metrics(prev_exec)[-1] if prev_exec is not None else False
+                if ev in ("submit_accepted", "order_recovered"):
+                    if rec_oid is not None:
+                        orig_oid = extract_order_id(
+                            executed_incomplete_by_id[iid].get("execution_payload"), default=None
+                        )
+                        active_exec_oids[iid] = rec_oid
+                        if not prev_exec_is_fill and (orig_oid is None or str(orig_oid) != str(rec_oid)):
+                            matched_exec_records[iid] = rec
+                elif ev in ("order_status", "order_terminal", "order_terminal_retry"):
+                    cur_oid = active_exec_oids.get(iid)
+                    if cur_oid is not None and rec_oid is not None and str(cur_oid) != str(rec_oid):
+                        continue
+                    v_stat, l_stat, *_, is_fill = _extract_audit_fill_metrics(rec)
+                    if is_fill:
+                        if prev_exec is None or not _is_terminal_fill_record(prev_exec) or _is_terminal_fill_record(rec):
+                            matched_exec_records[iid] = rec
+                    elif (
+                        ev in ("order_terminal", "order_terminal_retry")
+                        and not prev_exec_is_fill
+                        and (
+                            v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
+                            or l_stat in ("canceled", "cancelled", "expired", "rejected")
+                        )
+                    ):
+                        matched_exec_records[iid] = rec
 
     for iid_chk, item_chk in executed_incomplete_by_id.items():
         if iid_chk not in matched_exec_records:
@@ -191,42 +256,128 @@ def reconcile_intents_from_execution_audit(
 
     for iid, rec in matched_records.items():
         intent = failed_by_id[iid]
-        v_stat, _, filled_qty, _, raw_cost, _, f_px, _ = _extract_audit_fill_metrics(
+        st_up = str(intent.get("status") or "").strip().upper()
+        ev = str(rec.get("event") or "")
+        v_stat, l_stat, filled_qty, _, raw_cost, _, f_px, is_fill = _extract_audit_fill_metrics(
             rec, fallback_ref_price=True
         )
-        default_v_status = (
-            "NEW"
-            if (
-                str(rec.get("event") or "") == "submit_accepted"
-                and extract_intent_order_type(intent) == "LIMIT"
-                and (safe_pos_float(rec.get("filled_qty"), default=0.0) or 0.0) <= 0.0
-            )
-            else "FILLED"
-        )
-        raw_v_status = v_stat or default_v_status
-        if raw_v_status == "CLOSED":
-            raw_v_status = "FILLED"
-        exec_payload: dict[str, Any] = {
-            "orderId": rec.get("order_id"),
-            "symbol": rec.get("symbol") or intent.get("symbol"),
-            "side": str(rec.get("side") or intent.get("decision") or "").upper(),
-            "executedQty": str(filled_qty) if filled_qty is not None else "",
-            "cummulativeQuoteQty": str(raw_cost) if raw_cost is not None else "",
-            "status": raw_v_status,
-            "reconciled_from_audit": True,
-        }
-        if f_px is not None:
-            exec_payload["price"] = f_px
         rec_ts_f = safe_pos_float(rec.get("ts"), default=None)
-        if rec_ts_f is not None and raw_v_status == "FILLED":
-            exec_payload["filled_at"] = rec_ts_f
-            exec_payload["terminal_ts"] = rec_ts_f
+        eff_ts = rec_ts_f if rec_ts_f is not None else time.time()
+        orig_q = rec.get("qty") if rec.get("qty") is not None else submitted_qty_by_id.get(iid)
+        side_u = str(rec.get("side") or intent.get("decision") or "").upper()
+        sym_val = rec.get("symbol") or intent.get("symbol")
+
+        if ev == "submit_unknown":
+            if st_up == "SUBMIT_UNKNOWN":
+                continue
+            exec_payload: dict[str, Any] = {
+                "symbol": sym_val,
+                "side": side_u,
+                "executedQty": "",
+                "cummulativeQuoteQty": "",
+                "status": "UNKNOWN",
+                "submission_state": "unknown",
+                "reconciled_from_audit": True,
+            }
+            if orig_q is not None:
+                exec_payload["origQty"] = str(orig_q)
+            if rec.get("client_order_id"):
+                exec_payload["clientOrderId"] = rec.get("client_order_id")
+            if reason_unk := (rec.get("reason") or rec.get("failure_reason")):
+                exec_payload["reason"] = reason_unk
+            intent["execution_payload"] = exec_payload
+            _record_intent_state(
+                intent,
+                "SUBMIT_UNKNOWN",
+                eff_ts,
+                action="RECONCILED_UNKNOWN",
+                payload=exec_payload,
+            )
+            updated = True
+            continue
+
+        if not is_fill and ev in ("order_terminal", "order_terminal_retry") and (
+            v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
+            or l_stat in ("canceled", "cancelled", "expired", "rejected")
+        ):
+            if st_up == "FAILED":
+                continue
+            norm_cancel = v_stat if v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED") else l_stat.upper()
+            exec_payload = {
+                "orderId": rec.get("order_id"),
+                "symbol": sym_val,
+                "side": side_u,
+                "executedQty": "0",
+                "cummulativeQuoteQty": "",
+                "status": norm_cancel,
+                "reconciled_from_audit": True,
+            }
+            if orig_q is not None:
+                exec_payload["origQty"] = str(orig_q)
+            if ev == "order_terminal":
+                if rec_ts_f is not None:
+                    exec_payload["terminal_ts"] = rec_ts_f
+                exec_payload["reconciled_terminal"] = True
+            intent["execution_payload"] = exec_payload
+            _record_intent_state(
+                intent,
+                "FAILED",
+                eff_ts,
+                action="RECONCILED_TERMINAL",
+                reason=norm_cancel,
+                order_id=rec.get("order_id"),
+                payload=exec_payload,
+            )
+            updated = True
+            continue
+
+        if is_fill:
+            raw_v_status, is_term = _classify_audit_fill_state(ev, v_stat, l_stat)
+            action_lbl = "RECONCILED_PARTIAL" if raw_v_status == "PARTIALLY_FILLED" else "RECONCILED_EXECUTED"
+            exec_payload = {
+                "orderId": rec.get("order_id"),
+                "symbol": sym_val,
+                "side": side_u,
+                "executedQty": str(filled_qty) if filled_qty is not None else "",
+                "cummulativeQuoteQty": str(raw_cost) if raw_cost is not None else "",
+                "status": raw_v_status,
+                "reconciled_from_audit": True,
+            }
+            if orig_q is not None:
+                exec_payload["origQty"] = str(orig_q)
+            if f_px is not None:
+                exec_payload["price"] = f_px
+            if rec_ts_f is not None:
+                exec_payload["filled_at"] = rec_ts_f
+                if is_term:
+                    exec_payload["terminal_ts"] = rec_ts_f
+            if is_term:
+                exec_payload["reconciled_terminal"] = True
+        else:
+            raw_v_status = v_stat if v_stat in ("NEW", "OPEN", "RESTING", "PENDING", "WORKING") else "NEW"
+            action_lbl = "RECONCILED_ACCEPTED"
+            exec_payload = {
+                "orderId": rec.get("order_id"),
+                "symbol": sym_val,
+                "side": side_u,
+                "executedQty": "",
+                "cummulativeQuoteQty": "",
+                "status": raw_v_status,
+                "reconciled_from_audit": True,
+            }
+            if orig_q is not None:
+                exec_payload["origQty"] = str(orig_q)
+            if f_px is not None:
+                exec_payload["price"] = f_px
+            if rec_ts_f is not None:
+                exec_payload["accepted_at"] = rec_ts_f
+
         intent["execution_payload"] = exec_payload
         _record_intent_state(
             intent,
             "EXECUTED",
-            rec_ts_f if rec_ts_f is not None else time.time(),
-            action="RECONCILED_EXECUTED",
+            eff_ts,
+            action=action_lbl,
             order_id=rec.get("order_id"),
             payload=exec_payload,
         )
@@ -235,12 +386,13 @@ def reconcile_intents_from_execution_audit(
     for iid, rec in matched_exec_records.items():
         intent = executed_incomplete_by_id[iid]
         exec_pay = dict(intent.get("execution_payload")) if isinstance(intent.get("execution_payload"), dict) else {}
+        ev = str(rec.get("event") or "")
         v_stat, l_stat, filled_qty, f_q, raw_cost, cost_f, f_px, is_fill = _extract_audit_fill_metrics(rec)
         rec_ts = safe_pos_float(rec.get("ts"), default=None)
         cur_st = str(exec_pay.get("status") or "").strip().upper()
         if is_fill:
-            norm_st = "PARTIALLY_FILLED" if (v_stat == "PARTIALLY_FILLED" or l_stat == "partially_filled") else "FILLED"
-            if rec.get("order_id") is not None and not extract_order_id(exec_pay, default=None):
+            norm_st, is_term = _classify_audit_fill_state(ev, v_stat, l_stat)
+            if rec.get("order_id") is not None:
                 exec_pay["orderId"] = rec.get("order_id")
             exec_pay["status"] = norm_st
             if f_q is not None and f_q > 0:
@@ -254,9 +406,18 @@ def reconcile_intents_from_execution_audit(
                 exec_pay["price"] = f_px
             if rec_ts is not None:
                 exec_pay["filled_at"] = rec_ts
-                exec_pay["terminal_ts"] = rec_ts
-            if norm_st != "PARTIALLY_FILLED":
+                if is_term:
+                    exec_pay["terminal_ts"] = rec_ts
+            if is_term:
                 exec_pay["reconciled_terminal"] = True
+        elif ev in ("submit_accepted", "order_recovered"):
+            if rec.get("order_id") is not None:
+                exec_pay["orderId"] = rec.get("order_id")
+            exec_pay["status"] = v_stat if v_stat in ("NEW", "OPEN", "RESTING", "PENDING", "WORKING") else "NEW"
+            if rec_ts is not None:
+                exec_pay["accepted_at"] = rec_ts
+            exec_pay.pop("terminal_ts", None)
+            exec_pay.pop("reconciled_terminal", None)
         elif cur_st in _OPEN_WORKING_STATUSES or (
             _parse_bool_flag(exec_pay.get("reconciled_terminal"), False)
             and "terminal_ts" not in exec_pay
@@ -264,9 +425,10 @@ def reconcile_intents_from_execution_audit(
         ):
             norm_cancel = v_stat if v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED") else "CANCELED"
             exec_pay["status"] = norm_cancel
-            if rec_ts is not None:
-                exec_pay["terminal_ts"] = rec_ts
-            exec_pay["reconciled_terminal"] = True
+            if ev == "order_terminal":
+                if rec_ts is not None:
+                    exec_pay["terminal_ts"] = rec_ts
+                exec_pay["reconciled_terminal"] = True
         else:
             continue
         if str(exec_pay.get("msg") or "").strip().lower() == "resting":
@@ -339,7 +501,13 @@ def _resolve_intent_execution_details(
     is_eq_intent = is_equity_venue_or_suffix(symbol, venue)
     matched_open = None
     expected_cids: Optional[set[str]] = None
-    if isinstance(open_orders, list) and raw_intent_st in ("EXECUTED", "FAILED", "PENDING_EXECUTION"):
+    if isinstance(open_orders, list) and raw_intent_st in (
+        "EXECUTED",
+        "FAILED",
+        "PENDING",
+        "PENDING_EXECUTION",
+        "SUBMIT_UNKNOWN",
+    ):
         for oo in open_orders:
             if not isinstance(oo, dict):
                 continue
@@ -468,6 +636,12 @@ def _resolve_intent_execution_details(
         and (venue_st in _UNFILLED_ORDER_STATUSES or not venue_st)
         and filled_qty <= 0
     )
+    is_unfilled_accepted_market = (
+        order_type != "LIMIT"
+        and _parse_bool_flag(exec_pay.get("reconciled_from_audit"), False)
+        and (venue_st in _UNFILLED_ORDER_STATUSES or not venue_st)
+        and filled_qty <= 0
+    )
     venue_open_verified = (
         verified_open_venues is None
         or (bool(venue) and normalize_venue_name(venue) in verified_open_venues)
@@ -482,7 +656,12 @@ def _resolve_intent_execution_details(
         cancel_grace_sec = MarketDataProvider.resolve_unfilled_order_cancel_grace_sec()
         if (now_ts - ts_val) > cancel_grace_sec:
             venue_st = "CANCELED_OR_EXPIRED"
-    if fill_px is None and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW") and not is_unfilled_resting_limit:
+    if (
+        fill_px is None
+        and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW")
+        and not is_unfilled_resting_limit
+        and not is_unfilled_accepted_market
+    ):
         fill_px = first_pos_float(
             last_hist.get("price"),
             i.get("requested_price"),
@@ -499,6 +678,8 @@ def _resolve_intent_execution_details(
             exec_status = venue_st
         elif is_unfilled_resting_limit:
             exec_status = "OPEN_RESTING"
+        elif is_unfilled_accepted_market:
+            exec_status = "ACCEPTED"
         elif venue_st == "PARTIALLY_FILLED":
             exec_status = "PARTIALLY_FILLED"
         else:
@@ -517,7 +698,7 @@ def _resolve_intent_execution_details(
         last_hist.get("price"),
         fill_px,
     )
-    if exec_status in ("OPEN_RESTING", *_TERMINAL_CANCEL_STATUSES) and filled_qty <= 0:
+    if exec_status in ("OPEN_RESTING", "ACCEPTED", *_TERMINAL_CANCEL_STATUSES) and filled_qty <= 0:
         fill_px = None
     slippage_bps: Optional[float] = None
     if (
@@ -568,14 +749,17 @@ def _resolve_intent_execution_details(
         _mf_s = _ts_ms_to_s(safe_pos_float(matched_fill_ts_ms, default=0.0) or 0.0)
         if _mf_s > fill_ts_val:
             fill_ts_val = _mf_s
-    if is_fill_exec and fill_ts_val <= ts_val and str(last_hist.get("action") or "") == "RECONCILED_EXECUTED":
+    if is_fill_exec and fill_ts_val <= ts_val and str(last_hist.get("action") or "") in (
+        "RECONCILED_EXECUTED",
+        "RECONCILED_PARTIAL",
+    ):
         _lh_parsed = _parse_epoch_or_iso_s(last_hist.get("ts"))
         if _lh_parsed is not None and _lh_parsed > 0.0:
             _lh_s = _ts_ms_to_s(_lh_parsed)
             if _lh_s > fill_ts_val:
                 fill_ts_val = _lh_s
     fail_reason: Optional[str] = None
-    if exec_status not in ("FILLED", "PARTIALLY_FILLED", "OPEN_RESTING", "SHADOW_SIMULATED"):
+    if exec_status not in ("FILLED", "PARTIALLY_FILLED", "OPEN_RESTING", "ACCEPTED", "SHADOW_SIMULATED"):
         raw_fail_reason = (
             last_hist.get("reason")
             or last_hist.get("guard_reason")

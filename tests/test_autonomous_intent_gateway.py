@@ -789,10 +789,11 @@ def test_notional_confidence_t212_floor_and_account_cache_retry_hardening(temp_w
     assert res_retry["clamped_notional_usd"] == pytest.approx(100.0)
     assert res_retry["confidence"] == pytest.approx(0.92)
 
-    # 5. reconcile_intents computes fallback cummulativeQuoteQty from qty * price on submit_accepted
+    # 5. reconcile_intents records submit_accepted without fabricating fill, then computes fallback cummulativeQuoteQty on order_terminal
     audit_dir = os.path.join(ws, "logger", "execution_audit")
     os.makedirs(audit_dir, exist_ok=True)
-    with open(os.path.join(audit_dir, "execution_audit_2026-10-29.jsonl"), "w", encoding="utf-8") as f:
+    audit_path = os.path.join(audit_dir, "execution_audit_2026-10-29.jsonl")
+    with open(audit_path, "w", encoding="utf-8") as f:
         f.write(json.dumps({
             "event": "submit_accepted",
             "intent_id": "id_calc_cost",
@@ -806,7 +807,30 @@ def test_notional_confidence_t212_floor_and_account_cache_retry_hardening(temp_w
     pending_list = [{"intent_id": "id_calc_cost", "symbol": "TAOUSDC", "decision": "SELL", "status": "PENDING_EXECUTION"}]
     assert gw.reconcile_intents(pending_list) is True
     assert pending_list[0]["status"] == "EXECUTED"
+    assert pending_list[0]["execution_payload"]["status"] == "NEW"
+    assert pending_list[0]["execution_payload"]["origQty"] == "2.0"
+    assert pending_list[0]["execution_payload"]["executedQty"] == ""
+    assert pending_list[0]["execution_payload"]["cummulativeQuoteQty"] == ""
+    assert "terminal_ts" not in pending_list[0]["execution_payload"]
+
+    with open(audit_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "event": "order_terminal",
+            "intent_id": "id_calc_cost",
+            "order_id": "ord_909",
+            "symbol": "TAOUSDC",
+            "side": "sell",
+            "filled_qty": 2.0,
+            "price": 250.5,
+            "venue_status": "FILLED",
+            "status": "closed",
+            "ts": 1793100005.0,
+        }) + "\n")
+    assert gw.reconcile_intents(pending_list) is True
+    assert pending_list[0]["execution_payload"]["status"] == "FILLED"
+    assert pending_list[0]["execution_payload"]["executedQty"] == "2.0"
     assert pending_list[0]["execution_payload"]["cummulativeQuoteQty"] == "501.0"
+    assert pending_list[0]["execution_payload"]["terminal_ts"] == pytest.approx(1793100005.0)
 
 
 def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_workspace):
@@ -2179,3 +2203,155 @@ def test_execution_contract_persistence_shadow_cap_client_id_and_strict_identity
     assert resumed_enforce[0]["execution_payload"]["orderId"] == "99887766"
     assert resumed_enforce[0]["history"][-1]["action"] == "RECONCILED_CLIENT_ORDER_ID"
     btc_inst.place.assert_not_called()
+
+
+def test_audit_reconciliation_explicit_accepted_unknown_partial_terminal_and_pending_recovery(temp_workspace):
+    import json
+    from providers.intent_reconciliation import _resolve_intent_execution_details, reconcile_intents_from_execution_audit
+    from providers.intent_state import extract_intent_notional
+
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+    audit_dir = os.path.join(ws, "logger", "execution_audit")
+    os.makedirs(audit_dir, exist_ok=True)
+    audit_file = os.path.join(audit_dir, "execution_audit_2026-11-12.jsonl")
+
+    # 1. submit_accepted on MARKET order recovers both FAILED and PENDING as accepted (NEW, empty executedQty, no terminal_ts)
+    with open(audit_file, "w", encoding="utf-8") as f:
+        for iid, oid in (("mkt_failed", "ord_f1"), ("mkt_pending", "ord_p1")):
+            f.write(json.dumps({
+                "event": "submit_accepted",
+                "intent_id": iid,
+                "order_id": oid,
+                "symbol": "BTCUSDC",
+                "venue": "binance",
+                "side": "buy",
+                "qty": 0.01,
+                "price": 80000.0,
+                "market": True,
+                "ts": 1794500001.0,
+            }) + "\n")
+        f.write(json.dumps({
+            "event": "submit_unknown",
+            "intent_id": "mkt_unknown",
+            "symbol": "ETHUSDC",
+            "venue": "binance",
+            "side": "buy",
+            "qty": 0.5,
+            "client_order_id": "AI_mkt_unknown",
+            "failure_reason": "timeout",
+            "ts": 1794500002.0,
+        }) + "\n")
+
+    intents = [
+        {"intent_id": "mkt_failed", "symbol": "BTCUSDC", "venue": "binance", "decision": "BUY", "order_type": "MARKET", "status": "FAILED"},
+        {"intent_id": "mkt_pending", "symbol": "BTCUSDC", "venue": "binance", "decision": "BUY", "order_type": "MARKET", "status": "PENDING"},
+        {"intent_id": "mkt_unknown", "symbol": "ETHUSDC", "venue": "binance", "decision": "BUY", "order_type": "MARKET", "status": "PENDING"},
+    ]
+    assert reconcile_intents_from_execution_audit(intents, audit_dir) is True
+    # Idempotence when no new audit records arrive
+    assert reconcile_intents_from_execution_audit(intents, audit_dir) is False
+
+    for rec_item in (intents[0], intents[1]):
+        assert rec_item["status"] == "EXECUTED"
+        assert rec_item["history"][-1]["action"] == "RECONCILED_ACCEPTED"
+        ep = rec_item["execution_payload"]
+        assert ep["status"] == "NEW"
+        assert ep["origQty"] == "0.01"
+        assert ep["executedQty"] == ""
+        assert ep["cummulativeQuoteQty"] == ""
+        assert ep["accepted_at"] == pytest.approx(1794500001.0)
+        assert "filled_at" not in ep
+        assert "terminal_ts" not in ep
+        assert "reconciled_terminal" not in ep
+        det = _resolve_intent_execution_details(rec_item, 1794500010.0, extract_intent_notional)
+        assert det["exec_status"] == "ACCEPTED"
+        assert det["filled_qty"] is None
+        assert det["fill_px"] is None
+
+    # Unknown submission prevents PENDING re-execution and models UNKNOWN explicitly
+    assert intents[2]["status"] == "SUBMIT_UNKNOWN"
+    assert intents[2]["history"][-1]["action"] == "RECONCILED_UNKNOWN"
+    assert intents[2]["execution_payload"]["status"] == "UNKNOWN"
+    assert intents[2]["execution_payload"]["submission_state"] == "unknown"
+    det_unk = _resolve_intent_execution_details(intents[2], 1794500010.0, extract_intent_notional)
+    assert det_unk["exec_status"] == "SUBMIT_UNKNOWN"
+
+    gw.save_all_intents(intents)
+    mock_btc = _make_mock_inst("BTCUSDC", base="BTC", quote="USDC", price=80000.0, free_balance=5000.0)
+    with patch.object(gw, "load_tradable_instruments", return_value={"BTCUSDC": mock_btc}):
+        assert gw.process_all_pending() == []
+    mock_btc.place.assert_not_called()
+
+    # 2. Partial fill (order_status) advances mkt_failed without setting terminal_ts; mkt_unknown resolves via order_recovered + terminal EXPIRED
+    with open(audit_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "event": "order_status",
+            "intent_id": "mkt_failed",
+            "order_id": "ord_f1",
+            "symbol": "BTCUSDC",
+            "venue_status": "PARTIALLY_FILLED",
+            "status": "partially_filled",
+            "filled_qty": 0.004,
+            "cost": 320.0,
+            "ts": 1794500004.0,
+        }) + "\n")
+        f.write(json.dumps({
+            "event": "order_recovered",
+            "intent_id": "mkt_unknown",
+            "order_id": "ord_u1",
+            "symbol": "ETHUSDC",
+            "ts": 1794500005.0,
+        }) + "\n")
+        f.write(json.dumps({
+            "event": "order_terminal",
+            "intent_id": "mkt_unknown",
+            "order_id": "ord_u1",
+            "symbol": "ETHUSDC",
+            "venue_status": "EXPIRED",
+            "status": "expired",
+            "filled_qty": 0.0,
+            "ts": 1794500006.0,
+        }) + "\n")
+
+    assert reconcile_intents_from_execution_audit(intents, audit_dir) is True
+    ep_part = intents[0]["execution_payload"]
+    assert ep_part["status"] == "PARTIALLY_FILLED"
+    assert ep_part["executedQty"] == "0.004"
+    assert ep_part["cummulativeQuoteQty"] == "320.0"
+    assert "terminal_ts" not in ep_part
+    assert "reconciled_terminal" not in ep_part
+
+    assert intents[2]["status"] == "FAILED"
+    assert intents[2]["history"][-1]["action"] == "RECONCILED_TERMINAL"
+    assert intents[2]["execution_payload"]["status"] == "EXPIRED"
+    assert intents[2]["execution_payload"]["terminal_ts"] == pytest.approx(1794500006.0)
+    assert intents[2]["execution_payload"]["reconciled_terminal"] is True
+
+    # 3. Terminal FILLED completes mkt_failed with terminal_ts and reconciled_terminal=True
+    with open(audit_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "event": "order_terminal",
+            "intent_id": "mkt_failed",
+            "order_id": "ord_f1",
+            "symbol": "BTCUSDC",
+            "venue_status": "FILLED",
+            "status": "closed",
+            "filled_qty": 0.01,
+            "cost": 800.5,
+            "ts": 1794500008.0,
+        }) + "\n")
+
+    assert reconcile_intents_from_execution_audit(intents, audit_dir) is True
+    ep_done = intents[0]["execution_payload"]
+    assert ep_done["status"] == "FILLED"
+    assert ep_done["executedQty"] == "0.01"
+    assert ep_done["cummulativeQuoteQty"] == "800.5"
+    assert ep_done["filled_at"] == pytest.approx(1794500008.0)
+    assert ep_done["terminal_ts"] == pytest.approx(1794500008.0)
+    assert ep_done["reconciled_terminal"] is True
+    det_done = _resolve_intent_execution_details(intents[0], 1794500015.0, extract_intent_notional)
+    assert det_done["exec_status"] == "FILLED"
+    assert det_done["filled_qty"] == pytest.approx(0.01)
+    assert det_done["fill_px"] == pytest.approx(80050.0)
+

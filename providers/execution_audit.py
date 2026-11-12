@@ -447,11 +447,17 @@ def _extract_audit_fill_metrics(
     fallback_ref_price: bool = False,
 ) -> tuple[str, str, Any, Optional[float], Any, Optional[float], Optional[float], bool]:
     """Extract normalized venue/local status, filled qty, cost, price, and fill flag from an audit record."""
-    v_stat = str(rec.get("venue_status") or "").upper()
-    l_stat = str(rec.get("status") or "").lower()
-    filled_qty = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
+    ev = str(rec.get("event") or "").strip().lower()
+    v_stat = str(rec.get("venue_status") or "").strip().upper()
+    l_stat = str(rec.get("status") or "").strip().lower()
+    term_filled = v_stat in ("FILLED", "CLOSED") or l_stat in ("closed", "filled")
+    filled_qty = (
+        rec.get("filled_qty")
+        if rec.get("filled_qty") is not None
+        else (rec.get("qty") if (term_filled and ev not in ("submit_accepted", "submit_unknown", "order_recovered")) else None)
+    )
     f_q = safe_pos_float(filled_qty, default=None)
-    raw_cost = rec.get("cost")
+    raw_cost = rec.get("cost") if (f_q is not None or term_filled or v_stat == "PARTIALLY_FILLED" or l_stat == "partially_filled") else None
     cost_f = safe_pos_float(raw_cost, default=None)
     f_px = safe_pos_float(rec.get("price"), default=None)
     if f_px is None and cost_f is not None and f_q is not None and f_q > 0:
@@ -462,15 +468,24 @@ def _extract_audit_fill_metrics(
         raw_cost = round(f_q * f_px, 8)
         cost_f = safe_pos_float(raw_cost, default=None)
     is_fill = (
-        v_stat in ("FILLED", "CLOSED", "PARTIALLY_FILLED")
-        or l_stat in ("closed", "filled", "partially_filled")
+        term_filled
+        or v_stat == "PARTIALLY_FILLED"
+        or l_stat in ("partially_filled",)
         or (f_q is not None and f_q > 0.0)
     )
     return v_stat, l_stat, filled_qty, f_q, raw_cost, cost_f, f_px, is_fill
 
 
 _AUDIT_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_AUDIT_RECONCILE_EVENTS = frozenset({"submit_accepted", "order_terminal", "order_terminal_retry"})
+_AUDIT_OWNER_EVENTS = frozenset({"submit_accepted", "order_terminal", "order_terminal_retry"})
+_AUDIT_RECONCILE_EVENTS = frozenset({
+    "submit_accepted",
+    "submit_unknown",
+    "order_recovered",
+    "order_status",
+    "order_terminal",
+    "order_terminal_retry",
+})
 _AUDIT_FILE_RECORDS_CACHE: dict[str, tuple[tuple[float, int], list[dict[str, Any]]]] = {}
 
 
@@ -525,6 +540,8 @@ def find_order_audit_record(
         if min_day and _AUDIT_DAY_RE.fullmatch(file_day) and (file_day < min_day or file_day > max_day):
             continue
         for rec in reversed(_read_audit_intent_records(audit_path)):
+            if str(rec.get("event") or "") not in _AUDIT_OWNER_EVENTS:
+                continue
             rec_oid = clean_order_id(rec.get("order_id"))
             rec_cid = clean_order_id(rec.get("client_order_id"))
             if not ((target_oid and rec_oid == target_oid) or (target_cid and rec_cid == target_cid)):
