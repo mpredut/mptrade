@@ -944,9 +944,11 @@ setInterval(function() {{
             while True:
                 for symbol in symbols:
                     try:
-                        price_ts, price_vals = load_backtest_price_samples(directory, symbol)
-                        trend_events = load_backtest_trend_starts(directory, symbol)
-                        order_events = load_backtest_order_events(directory, symbol)
+                        (price_ts, price_vals), trend_events, order_events = (
+                            load_backtest_price_samples(directory, symbol),
+                            load_backtest_trend_starts(directory, symbol),
+                            load_backtest_order_events(directory, symbol),
+                        )
                         all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
                         if not all_ts:
                             window_start, window_end = time.time() - DAY_SECONDS, time.time()

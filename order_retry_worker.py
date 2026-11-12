@@ -361,8 +361,7 @@ def process_once(mkt, now=None):
             if _complete_reconciled_order(
                 mkt, r, existing_order, now, provider_name=provider_name, live_producer=True
             ):
-                succeeded += 1
-                reconciled += 1
+                succeeded, reconciled = succeeded + 1, reconciled + 1
             continue
         quarantine_reason = (
             "live_owner_not_found"

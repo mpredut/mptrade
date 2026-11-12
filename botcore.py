@@ -377,19 +377,20 @@ def parse_dotenv_line(raw: str, *, strict: bool = False) -> tuple[str, str] | No
     line = raw.strip()
     if not line or line.startswith("#"):
         return None
-    eq_idx = line.find("=")
-    hash_idx = line.find("#")
+    eq_idx, hash_idx = line.find("="), line.find("#")
+    err_msg: str | None = None
     if eq_idx == -1 or (hash_idx != -1 and hash_idx < eq_idx):
+        err_msg = f"Malformed configuration line missing '=': {raw.rstrip()!r}"
+    else:
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if key.startswith("export") and (len(key) == 6 or key[6].isspace()):
+            key = key[6:].strip()
+        if not key:
+            err_msg = f"Empty configuration key in line: {raw.rstrip()!r}"
+    if err_msg is not None:
         if strict:
-            raise ValueError(f"Malformed configuration line missing '=': {raw.rstrip()!r}")
-        return None
-    key, _, val = line.partition("=")
-    key = key.strip()
-    if key.startswith("export") and (len(key) == 6 or key[6].isspace()):
-        key = key[6:].strip()
-    if not key:
-        if strict:
-            raise ValueError(f"Empty configuration key in line: {raw.rstrip()!r}")
+            raise ValueError(err_msg)
         return None
     return key, _strip_env_value_quotes_and_comment(val)
 

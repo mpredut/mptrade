@@ -404,7 +404,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
                 try:
                     event = parse_json_payload(raw)
                 except (TypeError, ValueError, JSONDecodeError) as e:
-                    logger.warning("[WS] Invalid JSON on account stream: %s", e)
+                    logger.warning(f"[WS] Invalid JSON on account stream: {e}")
                     continue
                 if not isinstance(event, dict):
                     logger.warning("[WS] Ignoring non-object account frame: %r", event)

@@ -221,8 +221,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
     ``qty=None`` uses the QuantityDecision maximum under Binance policy, clamped
     to the real balance.
     """
-    action = normalize_side(action) or str(action or "").upper()
-    symbol = _resolve_tradeall_symbol(symbol)
+    action, symbol = normalize_side(action) or str(action or "").upper(), _resolve_tradeall_symbol(symbol)
     price_f = safe_pos_float(price, default=None)
     if price_f is None:
         print(f"[TRADEALL] order refused: price invalid {price!r}")
@@ -267,8 +266,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     cancels expired orders on the venue, applies side-specific strategic pricing,
     and records newly placed order IDs.
     """
-    action = normalize_side(action) or str(action or "").upper()
-    symbol = _resolve_tradeall_symbol(symbol)
+    action, symbol = normalize_side(action) or str(action or "").upper(), _resolve_tradeall_symbol(symbol)
     print(f"Iteration {count} generated price {proposed_price} versus {current_price}")
 
     if order_ids is None:
@@ -393,8 +391,7 @@ class TrendState:
         # FIRE_MAX_PER_TREND until a new trend. _last_attempt_* records the last
         # accepted or rejected attempt, and every retry must wait at least
         # FIRE_MIN_RETRY_INTERVAL_SEC.
-        self._confirmed_count_up = self._confirmed_count_down = 0
-        self._last_attempt_up_ts = self._last_attempt_down_ts = None
+        (self._confirmed_count_up, self._confirmed_count_down, self._last_attempt_up_ts, self._last_attempt_down_ts) = (0, 0, None, None)
 
     @staticmethod
     def _norm_ts(ts):
@@ -412,8 +409,7 @@ class TrendState:
         self.confirm_count = 1
         self.end_time = None
         self.expired = False
-        self._confirmed_count_up = self._confirmed_count_down = 0
-        self._last_attempt_up_ts = self._last_attempt_down_ts = None
+        (self._confirmed_count_up, self._confirmed_count_down, self._last_attempt_up_ts, self._last_attempt_down_ts) = (0, 0, None, None)
         print(f"Start of {self.state} trend at {timeToHMS(self.start_time)}")
         return self.old_state
 

@@ -1379,9 +1379,7 @@ def _submit_campaign_tier(
     attempt = _safe_tier_attempt(state.get("attempts_by_tier"), key)
     client_order_id = _ag_client_order_id(kind, symbol, state, threshold, attempt)
     raw_attempts = state.get("attempts_by_tier")
-    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
-    attempts[key] = attempt
-    state = {**state, "attempts_by_tier": attempts}
+    state = {**state, "attempts_by_tier": {**(raw_attempts if isinstance(raw_attempts, dict) else {}), key: attempt}}
     last_ref = state.get("last_refusal")
     if isinstance(last_ref, dict) and last_ref.get("intent_id") == client_order_id and last_ref.get("reason"):
         ref_map = getattr(ORDER_LIFECYCLE, "_last_refusal_by_intent", None)

@@ -381,7 +381,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
             or fetch_json_post is not _ORIG_FETCH_JSON_POST
         )
         if not allow_unmocked and not cli_mocked and not rest_mocked:
-            logger.debug("Gemini LLM external query suppressed by runtime policy.")
+            logger.debug("%s", "Gemini LLM external query suppressed by runtime policy.")
             return None
 
         # 2. Local authenticated CLI runner (subscription mode)

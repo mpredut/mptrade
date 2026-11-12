@@ -424,16 +424,12 @@ class AutonomousIntentGateway:
     def process_all_pending(self) -> List[Dict[str, Any]]:
         """Processes all pending trade intents from the durable queue."""
         intents = self.load_all_intents()
-        if not intents:
-            logger.info("No intents found in queue.")
-            return []
-
         pending_indices = [
             idx for idx, item in enumerate(intents)
             if str(item.get("status") or "").strip().upper() == "PENDING"
         ]
         if not pending_indices:
-            logger.info("No pending trade intents to process.")
+            logger.info("No intents found in queue." if not intents else "No pending trade intents to process.")
             return []
 
         logger.info("Processing %d pending autonomous trade intent(s) (mode=%s)...",

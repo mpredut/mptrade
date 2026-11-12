@@ -141,7 +141,7 @@ def mode_pre(force: bool = False) -> int:
         except Exception:
             active = False
         if active:
-            log.error("daemon is active; refusing to run 'pre' (use --force to override)")
+            log.error("%s", "daemon is active; refusing to run 'pre' (use --force to override)")
             return 2
     os.makedirs(D1, exist_ok=True)
     os.makedirs(D2, exist_ok=True)
@@ -879,12 +879,8 @@ def last_store_activity() -> float:
                                 active_subagents[sub_cid] = sub_ts
                 if step_type == "SYSTEM_MESSAGE":
                     if "stopped due to server restart" in content:
-                        oneshot_until = 0.0
-                        cron_active = False
-                        cron_max_iter = 0
-                        latest_sched_ts = 0.0
-                        sched_task_id = ""
-                        sched_calls = 0
+                        oneshot_until, cron_active, cron_max_iter = 0.0, False, 0
+                        latest_sched_ts, sched_task_id, sched_calls = 0.0, "", 0
                         active_bg_tasks.clear()
                         active_subagents.clear()
                     elif m_iter := re.search(r"\(iteration\s+(\d+)\)", content):
@@ -909,8 +905,7 @@ def last_store_activity() -> float:
                             oneshot_until = 0.0
                             sched_task_id = ""
                 elif step_type == "USER_INPUT" and sched_cond == "any":
-                    oneshot_until = 0.0
-                    sched_task_id = ""
+                    oneshot_until, sched_task_id = 0.0, ""
                 for tc in rec.get("tool_calls") or []:
                     if not isinstance(tc, dict):
                         continue
@@ -924,12 +919,9 @@ def last_store_activity() -> float:
                             for tid in [k for k in active_bg_tasks if k == kill_tid or k.endswith(f"/{kill_tid}")]:
                                 active_bg_tasks.pop(tid, None)
                         if not kill_tid or not sched_task_id or kill_tid == sched_task_id or sched_task_id.endswith(f"/{kill_tid}"):
-                            oneshot_until = 0.0
-                            cron_active = False
-                            cron_max_iter = 0
-                            latest_sched_ts = 0.0
-                            sched_task_id = ""
-                            sched_calls = 0
+                            oneshot_until, cron_active, cron_max_iter, latest_sched_ts, sched_task_id, sched_calls = (
+                                0.0, False, 0, 0.0, "", 0,
+                            )
                     elif name == "manage_subagents":
                         sub_action = str(args.get("Action") or "").strip().strip('"')
                         if sub_action == "kill_all":
@@ -951,16 +943,13 @@ def last_store_activity() -> float:
                         cron_raw = str(args.get("CronExpression") or "").strip().strip('"')
                         cond_raw = str(args.get("TimerCondition") or "never").strip().strip('"').lower()
                         dur_s = safe_pos_float(dur_raw, default=None)
-                        if dur_s is not None:
-                            oneshot_until = max(oneshot_until, sched_ts + dur_s + 120.0)
-                            sched_cond = cond_raw or "never"
-                            sched_task_id = ""
-                            awaiting_sched_task_id = True
-                        elif cron_raw:
-                            cron_active = True
-                            cron_max_iter = 0
-                            sched_task_id = ""
-                            awaiting_sched_task_id = True
+                        if dur_s is not None or cron_raw:
+                            if dur_s is not None:
+                                oneshot_until = max(oneshot_until, sched_ts + dur_s + 120.0)
+                                sched_cond = cond_raw or "never"
+                            else:
+                                cron_active, cron_max_iter = True, 0
+                            sched_task_id, awaiting_sched_task_id = "", True
             if any(
                 (now_ts - started_ts) < _ACTIVE_BG_TASK_MAX_AGE_SEC
                 and (daemon_started_ts <= 0.0 or started_ts >= daemon_started_ts)

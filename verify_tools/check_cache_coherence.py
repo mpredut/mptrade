@@ -52,7 +52,7 @@ def main() -> int:
                 e = cand_entry
                 break
         if not isinstance(e, dict) or not e:
-            _record_symbol_status("short_trend", s, "MISSING")
+            _record_symbol_status("short_trend", s, status="MISSING")
             continue
         ts_val = safe_pos_float(e.get("ts"), default=0.0)
         age = now - ts_val if ts_val > 0 else 1e9
@@ -89,12 +89,13 @@ def main() -> int:
         ts_raw = None
         ft_matched = casefold_get(fetchtime_map, matched_key)
         ft_sym = casefold_get(fetchtime_map, s)
+        invalid_list = False
         if isinstance(entries, list):
             last_entry = entries[-1] if entries else None
             if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:
-                _record_symbol_status("currentprice", s, "INVALID")
-                continue
-            ts_raw = last_entry[0]
+                invalid_list = True
+            else:
+                ts_raw = last_entry[0]
         elif isinstance(entries, dict):
             ts_raw = (
                 entries.get("ts")
@@ -106,8 +107,8 @@ def main() -> int:
         else:
             ts_raw = ft_matched or ft_sym
 
-        if px_val <= 0:
-            _record_symbol_status("currentprice", s, "INVALID")
+        if invalid_list or px_val <= 0:
+            _record_symbol_status("currentprice", sym=s, status="INVALID")
             continue
 
         ts_sec_val = normalize_epoch_sec(ts_raw, default=0.0) or 0.0

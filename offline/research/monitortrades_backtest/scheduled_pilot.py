@@ -405,8 +405,7 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     # we propose the RAW winning value; PROD decides at application time (averaging with
     # ITS live value, a rate limit, an audit). See UNIFIED_BACKTEST_PLAN.md sec. 9.
     if propose:
-        entry["winner_value"] = winner_val
-        entry["action"] = "proposed"
+        entry.update(winner_value=winner_val, action="proposed")
         return entry
 
     limited, last_ts_str = is_rate_limited(full_key)

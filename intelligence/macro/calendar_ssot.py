@@ -525,8 +525,7 @@ def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Opti
                 continue
             rank = next((r for pat, r in _TAKER_CTX_RANKS if pat.search(eff_sub_ctx)), 2)
             if rank > best_rank:
-                best_rank = rank
-                best_val = val
+                best_rank, best_val = rank, val
     return best_val
 
 

@@ -174,9 +174,7 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
                         extends_extreme = (p >= surge_extreme_px) if side_u == "BUY" else (p <= surge_extreme_px)
                         if extends_extreme:
                             best_move_pct = max(best_move_pct, move_pct)
-                            surge_extreme_px = p
-                            surge_extreme_ts = t
-                            post_surge_anchor = None
+                            surge_extreme_px, surge_extreme_ts, post_surge_anchor = p, t, None
                             continue
                         retrace_pct = (
                             (surge_extreme_px - p) / surge_extreme_px * 100.0
@@ -197,20 +195,14 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
                                 else (post_surge_anchor - p) / post_surge_anchor * 100.0
                             )
                             if re_move_pct >= threshold:
-                                running_anchor = post_surge_anchor
-                                best_move_pct = re_move_pct
-                                surge_start_px = post_surge_anchor
-                                surge_extreme_px = p
-                                surge_extreme_ts = t
-                                post_surge_anchor = None
-                                rearmed_after_pullback = True
+                                running_anchor = surge_start_px = post_surge_anchor
+                                best_move_pct, surge_extreme_px, surge_extreme_ts = re_move_pct, p, t
+                                post_surge_anchor, rearmed_after_pullback = None, True
                                 continue
 
                     if move_pct >= best_move_pct:
-                        best_move_pct = move_pct
-                        surge_start_px = running_anchor
-                        surge_extreme_px = p
-                        surge_extreme_ts = t
+                        best_move_pct, surge_start_px = move_pct, running_anchor
+                        surge_extreme_px, surge_extreme_ts = p, t
                 if best_move_pct >= threshold:
                     st["surge_active"] = True
                     st["surge_start_px"] = surge_start_px

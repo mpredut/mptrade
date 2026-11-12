@@ -116,8 +116,7 @@ def enable_writer(*, path: Optional[str] = None, pid: Optional[int] = None, now_
         writer_pid = exact_pos_int(pid, default=None) or os.getpid()
         process_started_at_ms = _pid_started_at_ms(writer_pid)
         if _PROCESS_IDENTITY_REQUIRED and process_started_at_ms is None:
-            _writer_enabled = False
-            _writer_state = {}
+            _writer_enabled, _writer_state = False, {}
             raise AccountCacheNotReady("account_cache_writer_identity_unavailable")
         _writer_state = {
             "schema_version": SCHEMA_VERSION,

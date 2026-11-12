@@ -1565,8 +1565,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             if not _can_pass_buy_quantity_policy(
                 inst, symbol, current_price, _initial_buy_qty, min_qty=min_qty, sell_price=sell_price
             ):
-                _restore_reentry_state(symbol, prev_reentry_state)
-                return
+                return _restore_reentry_state(symbol, prev_reentry_state)
             print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
             allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
                 symbol, current_price, sell_price, sell_time, reentry_snap,
@@ -1574,8 +1573,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             )
             _reentry_applied_scale = clean_scale(_POST_STOP_AI_APPLIED_SCALE.pop(symbol, 1.0), 1.0)
             if not allowed:
-                _restore_reentry_state(symbol, prev_reentry_state)
-                return
+                return _restore_reentry_state(symbol, prev_reentry_state)
         else:
             print(f"Price decreased with {reentry_snap.sale_drop_ratio * 100}% by more than {gain_threshold * 100}% versus sell price: Placing buy order")
 

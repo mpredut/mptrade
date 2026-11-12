@@ -490,8 +490,7 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
             has_stamp_token = True
             try:
                 dt = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}", "%Y-%m-%d %H:%M:%S")
-                day = dt.date()
-                ts = prev_ts = _resolve_fold_ts(dt, prev_ts)
+                day, ts = dt.date(), (prev_ts := _resolve_fold_ts(dt, prev_ts))
             except ValueError:
                 pass
         elif g := _GLOG_TS_RE.match(line):
@@ -501,8 +500,7 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
                 dt = datetime(ref.year, mm, dd, hh, mi, ss)
                 if (dt - ref).total_seconds() > 86400:
                     dt = datetime(ref.year - 1, mm, dd, hh, mi, ss)
-                day = dt.date()
-                ts = prev_ts = _resolve_fold_ts(dt, prev_ts)
+                day, ts = dt.date(), (prev_ts := _resolve_fold_ts(dt, prev_ts))
             except ValueError:
                 pass
         elif (

@@ -534,13 +534,9 @@ def run_chop_benchmark(
         cache_path_sym = cache_path(f"cache_sparse_price_{sym}.jsonl")
         logger.info("Loading price series for %s from %s ...", sym, cache_path_sym)
         raw_series = raw_btc if (sym == "BTCUSDC" and raw_btc) else load_price_series(cache_path_sym, sym)
-        if not raw_series:
-            logger.warning("No price data found for %s, skipping.", sym)
-            continue
-
-        sampled = _downsample_price_series(raw_series, step_seconds)
+        sampled = _downsample_price_series(raw_series, step_seconds) if raw_series else []
         if not sampled:
-            logger.warning("No sampled bars for %s, skipping.", sym)
+            logger.warning("No %s for %s, skipping.", "price data found" if not raw_series else "sampled bars", sym)
             continue
 
         logger.info("Symbol %s: %d ticks -> %d %ds bars (%.1f days)", sym, len(raw_series), len(sampled), step_seconds, (sampled[-1][0] - sampled[0][0]) / 86400.0)

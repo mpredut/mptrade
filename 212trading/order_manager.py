@@ -482,11 +482,8 @@ def place_order_with_retry(
             "lifecycle": lifecycle, "order": data,
         })
         if venue_status == "REJECTED":
-            raw_hist = record.get("venue_order_ids")
-            history = list(raw_hist) if isinstance(raw_hist, (list, tuple)) else []
-            if str(oid) not in history:
-                history.append(str(oid))
-            record["venue_order_ids"] = history
+            history = list(raw_hist) if isinstance(raw_hist := record.get("venue_order_ids"), (list, tuple)) else []
+            record["venue_order_ids"] = history if str(oid) in history else [*history, str(oid)]
         _persist_marker(record, marker_path)
         log(f"  [ORDER] submit response: id={oid}  status={venue_status or 'UNKNOWN'}")
         if lifecycle in {"canceled", "expired"}:
