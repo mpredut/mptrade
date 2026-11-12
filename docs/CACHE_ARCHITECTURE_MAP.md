@@ -50,3 +50,21 @@ All domain cache managers follow the 3-tier hierarchy with **one canonical name 
 | [`CacheAllPriceFetcherManager`](file:///home/predut/mptrade/market_monitor/pricefetcher.py#L583) | `market_monitor/pricefetcher.py` | `CachePriceManagerBase` | `"PriceMulti"` | `CacheFactory.get("PriceMulti")` | `cache_watcher_all_price.json` | `.meta`, `.previous` | Multi-provider JSON snapshot (`items`, `fetchtime`, `rest_sync_cursor`, `symbol_metadata`) |
 | [`CacheLongTrendManager`](file:///home/predut/mptrade/cachetrend.py#L152) | `cachetrend.py` | `CacheTrendManagerBase` | `"LongTrend"` | `get_long_trend_manager()` | `cache_long_trend.json` | `.meta`, `.previous` | JSON snapshot (`items`, `fetchtime`, `rest_sync_cursor`) sourced from `priceanalysis.json` |
 | [`CacheShortTrendManager`](file:///home/predut/mptrade/cachetrend.py#L209) | `cachetrend.py` | `CacheTrendManagerBase` | `"ShortTrend"` | `get_short_trend_manager()` | `cache_short_trend.json` + `24trend/live_<SYM>.json` + `24trend/hist_<SYM>.json` | `.meta`, `.previous` | JSON snapshot (`{symbol: snap_dict}`) + dynamic windows in `24trend/` |
+
+---
+
+## 3. Data Sync Modes, Sub-3s Price Freshness SSOT & Tick Fanout
+
+### 3.1 `data_sync_mode` & Passive `.previous` Reader Contract
+- **`MODE_PRODUCER`** (`cacheManager.py` daemon, pinned in `sys.modules["cacheManager"]` when launched as `__main__`): sole writer of `cache_current_price.json`, `cache_short_trend.json`, and `24trend/live_<SYM>.json`, and sole owner of `repair_files=True` `.previous` sidecar promotion/cleanup under `.generation.lock`.
+- **`MODE_LIVE_READER`** / **`MODE_DISK_READER`** (bots, pre-trade guards, health checks, supervisor): never persist snapshots and always call `read_recovering_previous(..., repair_files=False)` / `read_json_dict_recovering(..., repair_files=False)` so reading a corrupted primary file falls back to `.previous` in memory without mutating or deleting files on disk.
+
+### 3.2 Unified `< 3.0s` Price Freshness SSOT & Zero Hidden REST Cache
+- Versioned in `config.env` and derived in `botcore.py`: `CM_CURRENT_PRICE_POLL_SEC=0.8`, `CM_PRICE_FRESHNESS_MAX_AGE_SEC=3.0`, `PRICE_WS_SILENCE_FALLBACK_SEC=1.5`.
+- Public WebSockets (`Binance`, `Kraken`, `Hyperliquid`) feed `CacheCurrentPriceManager` directly; `0.8s` HTTP fallback polling activates only after `>= 1.5s` of WebSocket silence.
+- Both `orchestratorOS/lib/technical_repair_ssot.py` and `verify_tools/check_cache_coherence.py` evaluate open-market symbol freshness (`is_symbol_market_open`) via `botcore.evaluate_open_market_price_freshness()` against the `< 3.0s` SSOT ceiling.
+- `BinanceProvider` sets `_USES_SSOT_MARKET_CACHE = True` with zero private REST RAM quote cache (`bapi.cprice` removed).
+
+### 3.3 Non-Blocking `AF_UNIX` Tick Fanout
+- `CacheCurrentPriceManager` (`MODE_PRODUCER`) broadcasts compact JSON datagrams (`{"sym", "px", "ts_ms"}`) over `cachedb/prices/current_price_ticks.sock` (`AF_UNIX`, `SOCK_DGRAM`, non-blocking) on every accepted quote update so tick-driven consumers (`tradeall.py`) wake in `< 1ms` without running duplicate venue WebSockets.
+

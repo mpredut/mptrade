@@ -1,20 +1,34 @@
 # Tradeall policy and operational boundaries
 
-`tradeall.py` consumes timestamped price snapshots and two trend windows. The
-`TrendCoordinator` evaluates a symbol only when it is dirty and the minimum interval has
-passed, or on the heartbeat ceiling. Duplicate configured symbols are collapsed so one
-tick cannot subscribe or evaluate the same market twice.
+`tradeall.py` consumes timestamped price ticks across configured venues (`binance`,
+`kraken`, `hyperliquid`, `t212`) and evaluates two trend windows at sub-100ms latency.
+`TrendCoordinator` subscribes to `CacheCurrentPriceManager` (`MODE_LIVE_READER`) and
+listens on the non-blocking `AF_UNIX` datagram fanout (`cachedb/prices/current_price_ticks.sock`)
+emitted by `cacheManager`, without opening duplicate venue WebSockets. It evaluates a
+symbol as soon as it is dirty and `min_eval_interval_sec` (`0.05s` default via
+`TRADEALL_MIN_EVAL_INTERVAL_SEC`) has elapsed, scheduling exact wakeup timeouts so ticks
+arriving inside the debounce window are never delayed until the heartbeat ceiling.
+Duplicate configured symbols are collapsed so one tick cannot subscribe or evaluate the
+same market twice.
 
 ## Decision pipeline
 
-1. `CacheCurrentPriceManager` supplies a timestamped price. A stale, future, missing,
-   non-finite or non-positive price cannot reach signal evaluation or execution.
-2. `handle_symbol` calculates short/big-window slope, gradient and position fields.
+1. `CacheCurrentPriceManager` + `current_price_ticks.sock` supply a timestamped quote.
+   Closed-session markets (`not is_symbol_market_open`, e.g. US equities outside RTH) and
+   stale, future, missing, non-finite or non-positive prices cannot reach signal evaluation
+   or execution.
+2. `handle_symbol` calculates short/big-window slope, gradient and position fields, reading
+   `vol_1h_pct` from `24trend/live_<SYM>.json` via `(mtime_ns, size)` stat memoization so
+   unchanged disk files are not re-parsed on every tick.
 3. `logic` maintains an UP/DOWN `TrendState`, confirmation count, freshness and uniformity.
+   Confirmation increments are paced by `confirm_interval_sec` (`0.8s`) so configured
+   `confirm_count` thresholds preserve wall-clock confirmation duration under high-frequency
+   tick bursts.
 4. The Kalman signal gates normal orders and may initiate configured primary transitions.
    Missing/stale Kalman data preserves the existing fail-open business policy.
-5. `_fire_order` validates side and price, then submits only through `MarketApi.place` and
-   the common `Instrument.place` guard pipeline.
+5. `_fire_order` validates side and price, resolves the symbol's venue via
+   `resolve_symbol_venue`, and submits only through `MarketApi.place` and the common
+   `Instrument.place` guard pipeline.
 
 ## Retry and submission semantics
 

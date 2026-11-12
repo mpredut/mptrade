@@ -563,3 +563,54 @@ def test_pyproject_python_version_and_active_packages_aligned():
         )
 
 
+def test_cache_ownership_and_passive_reader_invariants():
+    import ast
+    import inspect
+    import state_io
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
+    from providers.binance_provider import BinanceProvider
+
+    # 1. Passive .previous readers never mutate files unless repair_files=True is passed by a producer.
+    for fn in (
+        state_io.read_json_file,
+        state_io.read_json_dict,
+        state_io.read_json_recovering,
+        state_io.read_json_dict_recovering,
+        state_io.read_text_file,
+        state_io.read_bytes_file,
+    ):
+        assert inspect.signature(fn).parameters["repair_files"].default is False
+
+    # 2. BinanceProvider uses SSOT market cache with zero private bapi.cprice RAM cache.
+    assert BinanceProvider._USES_SSOT_MARKET_CACHE is True
+    assert not (ROOT / "binance_api/bapi_price_cache.py").exists()
+    cfg_text = (ROOT / "config.env").read_text(encoding="utf-8")
+    assert "CM_BINANCE_REST_PRICE_CACHE_TTL_SEC" not in cfg_text
+
+    # 3. Supervisor defaults to passive read_snapshot (allow_network=False, persist=False).
+    sup_sig = inspect.signature(AutonomousAIReconciler.harvest_sensors_telemetry)
+    assert sup_sig.parameters["allow_network"].default is False
+    assert sup_sig.parameters["persist"].default is False
+
+    # 4. GlobalTelemetryCollector preserves strict acyclic layering (never imports orchestratorTrade/orchestratorOS).
+    gtc_tree = ast.parse((ROOT / "intelligence/globaltelemetry_collector.py").read_text(encoding="utf-8"))
+    imported_roots = set()
+    for node in ast.walk(gtc_tree):
+        if isinstance(node, ast.Import):
+            imported_roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_roots.add(node.module.split(".")[0])
+    assert not (imported_roots & {"orchestratorTrade", "orchestratorOS"})
+
+    # 5. Canonical docs record the cache/tick/ownership invariants.
+    cache_doc = (ROOT / "docs/CACHE_ARCHITECTURE_MAP.md").read_text(encoding="utf-8")
+    tradeall_doc = (ROOT / "docs/TRADEALL.md").read_text(encoding="utf-8")
+    ownership_doc = (ROOT / "docs/STATE_OWNERSHIP.md").read_text(encoding="utf-8")
+    assert "current_price_ticks.sock" in cache_doc
+    assert "repair_files=False" in cache_doc
+    assert "current_price_ticks.sock" in tradeall_doc
+    assert "confirm_interval_sec" in tradeall_doc
+    assert "read_snapshot(allow_network=False, persist=False)" in ownership_doc
+
+
+
