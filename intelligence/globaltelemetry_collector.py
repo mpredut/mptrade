@@ -42,13 +42,13 @@ from intelligence.macro.daemon_ssot import (
 )
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
-    MarketDataProvider,
     parse_symbol_list,
     resolve_derived_telemetry_intervals,
     resolve_now_ts,
     safe_pos_float,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+from providers.market_api import MarketDataProvider
 
 load_tradable_instruments = MarketDataProvider.load_tradable_instruments
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
