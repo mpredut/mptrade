@@ -47,23 +47,14 @@ def _configured_branch(default: str = "") -> str:
     ).strip()
 
 
-def _validate_branch_name(raw: object) -> str:
-    clean = raw.strip() if isinstance(raw, str) and not isinstance(raw, bool) else ""
-    if not clean or clean.startswith("-") or ".." in clean or any(ch.isspace() for ch in clean):
-        raise RuntimeError(f"Invalid BACKTEST_PROPOSALS_BRANCH: {raw!r}")
-    return clean
-
-
-def _resolve_branch() -> str:
-    raw = _configured_branch()
-    if not raw:
-        raise RuntimeError("Missing BACKTEST_PROPOSALS_BRANCH in dev_backtest.env")
-    return _validate_branch_name(raw)
-
-
 def _read_proposals(branch: str | None = None):
     """Read backtest_proposals.json from fetched tip WITHOUT a checkout (git show)."""
-    target_branch = _resolve_branch() if branch is None else _validate_branch_name(branch)
+    raw = _configured_branch() if branch is None else branch
+    if branch is None and not raw:
+        raise RuntimeError("Missing BACKTEST_PROPOSALS_BRANCH in dev_backtest.env")
+    target_branch = raw.strip() if isinstance(raw, str) and not isinstance(raw, bool) else ""
+    if not target_branch or target_branch.startswith("-") or ".." in target_branch or any(ch.isspace() for ch in target_branch):
+        raise RuntimeError(f"Invalid BACKTEST_PROPOSALS_BRANCH: {raw!r}")
     try:
         fetch_res = subprocess.run(
             ["git", "-C", ROOT, "fetch", "-q", "origin", target_branch],

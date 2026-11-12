@@ -175,12 +175,6 @@ class MarketApi:
             **kwargs,
         )
 
-    def _default_provider_for_scope(self, scope: str, symbol: str) -> MarketDataProvider:
-        for candidate in self._providers:
-            if getattr(candidate, "_ASSET_SCOPE", "crypto") == scope:
-                return candidate
-        return self._provider_for(symbol)
-
     def fetch_intraday_chart(
         self,
         symbol: str,
@@ -193,7 +187,7 @@ class MarketApi:
         if provider_name is not None or self.supports_symbol(symbol):
             provider = self._provider_explicit_or_routed(symbol, provider_name)
         else:
-            provider = self._default_provider_for_scope("equities", symbol)
+            provider = next((c for c in self._providers if getattr(c, "_ASSET_SCOPE", "crypto") == "equities"), None) or self._provider_for(symbol)
             validate_fn = getattr(provider, "validate_symbol", None)
             if callable(validate_fn):
                 validate_fn(symbol)

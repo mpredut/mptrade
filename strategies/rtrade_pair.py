@@ -638,12 +638,10 @@ class PairCoordinator:
         self.phase, self.reason = "stopping", reason
         return True
 
-    def _refresh_and_totals(self) -> tuple[float, float, float, float, float, float]:
-        self._refresh()
-        return self._totals()
-
     def _totals_and_net(self, *, refresh: bool = False) -> tuple[float, float, float, float, float]:
-        bq, bc, _bf, sq, sc, _sf = self._refresh_and_totals() if refresh else self._totals()
+        if refresh:
+            self._refresh()
+        bq, bc, _bf, sq, sc, _sf = self._totals()
         return bq, bc, sq, sc, bq - sq
 
     def _bump_limit_revision(self, exit_side: str) -> bool:

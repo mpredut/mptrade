@@ -22,10 +22,6 @@ from providers.base import normalize_side
 _opt_ts_sec = partial(normalize_epoch_sec, default=None, allow_zero=True)
 
 
-def _ts_sort_key(val: object) -> tuple[bool, float]:
-    ts = _opt_ts_sec(val)
-    return (ts is None, ts if ts is not None else 0.0)
-
 
 def _has_cid(order: dict) -> bool:
     cid = order.get("client_order_id")
@@ -298,7 +294,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
     seen_venues_norm: set[str] = set()
     for order in sorted(
         supported_client_ids,
-        key=lambda item: _ts_sort_key(item.get("accepted_ts")),
+        key=lambda item: ((ts := _opt_ts_sec(item.get("accepted_ts"))) is None, ts if ts is not None else 0.0),
     ):
         raw_venue = order.get("venue")
         venue = "" if isinstance(raw_venue, bool) else str(raw_venue or "").strip()

@@ -422,16 +422,12 @@ class PriceTrendAnalyzer:
         return gradient, avg_gradient
 
 
-def _safe_recent_n(recent_sec: float, sample_rate_sec) -> int:
+def _effective_recent_n(window_seconds, sample_rate_sec) -> int:
     sr = safe_pos_float(sample_rate_sec, default=None)
-    rs = safe_float(recent_sec, default=None)
+    rs = safe_float(effective_recent_gradient_seconds(window_seconds), default=None)
     if sr is None or rs is None:
         return 2
     return max(2, safe_int(rs / sr, default=2))
-
-
-def _effective_recent_n(window_seconds, sample_rate_sec) -> int:
-    return _safe_recent_n(effective_recent_gradient_seconds(window_seconds), sample_rate_sec)
 
 
 def instant_trend_from_prices(
