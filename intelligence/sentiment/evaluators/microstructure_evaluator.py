@@ -974,12 +974,8 @@ def should_skip_sibling_telemetry_key(
     *,
     has_own_vp: bool = False,
     has_own_bottom: bool = False,
-    pinfo: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Return True when ``key`` belongs to volume-profile or 6h-bottom structure already present on the primary symbol."""
-    if isinstance(pinfo, dict):
-        has_own_vp = pinfo.get("poc_px") is not None
-        has_own_bottom = pinfo.get("bottom_structure_6h") is not None
     return (has_own_vp and key in _SIBLING_VP_KEYS) or (has_own_bottom and key in _SIBLING_BOTTOM_KEYS)
 
 

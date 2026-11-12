@@ -89,17 +89,6 @@ def strat_params_from_dict(values: dict) -> StratParams:
     return StratParams.from_dict(raw, defaults={"sl_mhdsl_enabled": False}, warn_dropped=False)
 
 
-def _load_params(args) -> StratParams:
-    if args.params_report:
-        payload = read_json_file(args.params_report)
-        values = payload.get("strategy_params", payload) if isinstance(payload, dict) else None
-        if not isinstance(values, dict):
-            raise ValueError("--params-report must contain strategy_params or an object")
-        return strat_params_from_dict(values)
-    cfg = load_layered_env_config(args.config_file, args.env_file, fallback_prefixes=())
-    return StratParams.from_env(cfg)
-
-
 def _scenario_windows(records: list[dict], params: StratParams, scenario, *,
                       interval: int, train: int, validation: int, test: int,
                       step: int, warmup: int) -> list[dict]:
@@ -150,7 +139,16 @@ def build_report(
     candidate_name: str | None = None,
 ) -> dict:
     interval = 240
-    params = params or _load_params(args)
+    if params is None:
+        if args.params_report:
+            payload = read_json_file(args.params_report)
+            values = payload.get("strategy_params", payload) if isinstance(payload, dict) else None
+            if not isinstance(values, dict):
+                raise ValueError("--params-report must contain strategy_params or an object")
+            params = strat_params_from_dict(values)
+        else:
+            cfg = load_layered_env_config(args.config_file, args.env_file, fallback_prefixes=())
+            params = StratParams.from_env(cfg)
     records = validate_dataset(load_dataset(args.dataset), interval_minutes=interval)
     digest = dataset_sha256(records)
     manifest_info = _load_expected_dataset(args.manifest, interval)

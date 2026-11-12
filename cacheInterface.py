@@ -422,9 +422,25 @@ class CacheManagerInterface(ABC):
 
     def rebuild_fetchtimes(self):
         """Allow subclasses to provide custom fetch-time reconstruction."""
-        if self._DICT_SEC_FETCHTIMES:
-            return self._rebuild_dict_sec_fetchtimes()
-        return None
+        if not self._DICT_SEC_FETCHTIMES:
+            return None
+        if not isinstance(self.cache, dict) or not self.cache:
+            return {}
+        last_times = {}
+        for symbol, items in self.cache.items():
+            if not isinstance(items, (list, tuple)) or not items:
+                continue
+            max_ts_sec = max(
+                (
+                    extract_timestamp_s(item, default=0.0) or 0.0
+                    for item in items
+                    if isinstance(item, dict)
+                ),
+                default=0.0,
+            )
+            if max_ts_sec > 0:
+                last_times[symbol] = max(0, round(max_ts_sec * 1000.0) - 60_000)
+        return last_times
 
     def _rebuild_symbol_entry_fetchtimes(
         self, *, entry_lookup_fn=None
@@ -445,26 +461,6 @@ class CacheManagerInterface(ABC):
                 )
                 if max_ts > 0:
                     last_times[symbol] = max_ts
-        return last_times
-
-    def _rebuild_dict_sec_fetchtimes(self) -> dict:
-        """Reconstruct per-symbol fetchtimes (ms minus 60s safety margin) from dict items with second timestamps."""
-        if not isinstance(self.cache, dict) or not self.cache:
-            return {}
-        last_times = {}
-        for symbol, items in self.cache.items():
-            if not isinstance(items, (list, tuple)) or not items:
-                continue
-            max_ts_sec = max(
-                (
-                    extract_timestamp_s(item, default=0.0) or 0.0
-                    for item in items
-                    if isinstance(item, dict)
-                ),
-                default=0.0,
-            )
-            if max_ts_sec > 0:
-                last_times[symbol] = max(0, round(max_ts_sec * 1000.0) - 60_000)
         return last_times
 
     def _rebuild_fetchtimes(self):

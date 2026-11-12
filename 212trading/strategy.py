@@ -273,13 +273,6 @@ def _sanitize_t212_state(st: dict) -> dict:
     return st
 
 
-def _sell_pnl(avg: float, price: float, qty: float, fee_pct: float = FX_FEE_PCT) -> tuple[float, float, float]:
-    """Return gross, round-trip FX fee, and net for selling quantity at price."""
-    gross = (price - avg) * qty
-    fee = (fee_pct / 100.0) * (avg * qty + price * qty)
-    return gross, fee, gross - fee
-
-
 class Strategy(BaseSpotMixin):
     venue_label = "T212"
     _cost_state_key = "cost_usd"
@@ -516,7 +509,9 @@ class Strategy(BaseSpotMixin):
 
     # -- Fill Application ------------------------------------------------------
     def _record_realized_sell_pnl(self, avg_px: float, sell_px: float, qty: float) -> tuple[float, float, float]:
-        gross, fee, net = _sell_pnl(avg_px, sell_px, qty, self.p.fx_fee_pct)
+        gross = (sell_px - avg_px) * qty
+        fee = (self.p.fx_fee_pct / 100.0) * (avg_px * qty + sell_px * qty)
+        net = gross - fee
         for state_k, delta in (("realized_pnl_usd", gross), ("realized_net_usd", net), ("fees_usd", fee)):
             self.s[state_k] += delta
         return gross, fee, net

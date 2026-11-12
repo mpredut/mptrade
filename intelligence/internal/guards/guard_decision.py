@@ -205,9 +205,10 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
                 )
             )
             now = args[3] if len(args) > 3 else kwargs.get("now")
-            return self._check_external_snapshot(
+            side_norm, resolved_snapshot, early = self._prepare_external_guard_check(
                 symbol, side, snap, now=now, empty_reason=self._EMPTY_SNAPSHOT_REASON
             )
+            return early if early is not None else self._evaluate_external_snapshot(side_norm, resolved_snapshot)
         raise NotImplementedError(f"{type(self).__name__} must implement check() or evaluate()")
 
     def _require_buy_sell_side(
@@ -276,23 +277,6 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
         return side_norm, snapshot, None
 
     _evaluate_external_snapshot = _bind_unimplemented_hook("_evaluate_external_snapshot")
-
-    def _check_external_snapshot(
-        self,
-        symbol: str,
-        side: str,
-        snapshot: Any = None,
-        *,
-        now: Optional[float] = None,
-        empty_reason: str = "no_snapshot",
-    ) -> GuardDecision:
-        """Validate ``side``, resolve ``snapshot`` (or return early allow), and delegate to ``_evaluate_external_snapshot``."""
-        side_norm, resolved_snapshot, early = self._prepare_external_guard_check(
-            symbol, side, snapshot, now=now, empty_reason=empty_reason,
-        )
-        if early is not None:
-            return early
-        return self._evaluate_external_snapshot(side_norm, resolved_snapshot)
 
 
 class OrderGuardEvaluatorFactory(LazyPluginRegistryFactory):

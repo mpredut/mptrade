@@ -522,22 +522,6 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         sym_clean = symbol.strip().upper() if isinstance(symbol, str) else ""
         return self._load_from_disk(symbol, 0.0, ignore_ttl=True, exact_only=self._is_exact_venue_symbol(sym_clean))
 
-    def _fetch_equity_or_fallback(
-        self,
-        symbol: str,
-        now: float,
-        cached: Any,
-        fetch_fn: Callable[[str, float], Optional[Any]],
-        label: str,
-        logger_inst: logging.Logger,
-    ) -> Optional[Any]:
-        try:
-            if (eq_snap := fetch_fn(symbol, now)) is not None:
-                return eq_snap
-        except Exception as eq_exc:
-            return self._warn_and_fallback_stale(logger_inst, label, symbol, eq_exc, cached)
-        return self._fallback_stale(symbol, cached)
-
     def _warn_and_fallback_stale(
         self,
         logger_inst: logging.Logger,
@@ -562,9 +546,13 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         if not should_fetch or sym_clean is None:
             return None, now_f, cached, ready, False
         if is_equity_symbol(sym_clean):
-            eq_res = self._fetch_equity_or_fallback(
-                sym_clean, now_f, cached, lambda s, n: equity_fetch_fn(s, n, cached), label, logger_inst
-            )
+            try:
+                eq_res = equity_fetch_fn(sym_clean, now_f, cached)
+            except Exception as eq_exc:
+                eq_res = self._warn_and_fallback_stale(logger_inst, label, sym_clean, eq_exc, cached)
+            else:
+                if eq_res is None:
+                    eq_res = self._fallback_stale(sym_clean, cached)
             return None, now_f, cached, eq_res, False
         return sym_clean, now_f, cached, None, True
 

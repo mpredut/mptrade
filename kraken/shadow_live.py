@@ -86,16 +86,13 @@ def _load_runtime_config(env_path: str | None = None,
     load_shadow_environment(resolved_env, resolved_cfg)
 
 
-def _load_isolated_strat_params() -> strat.StratParams:
-    env_path, config_path = _resolve_runtime_paths()
-    _load_runtime_config(env_path, config_path)
-    cfg = load_isolated_kraken_cfg(HERE, config_path=config_path, env_path=env_path)
-    return strat.StratParams.from_env(cfg)
-
-
 def _variants(interval: int):
     replace = dataclasses.replace
-    base = _load_isolated_strat_params()
+    env_path, config_path = _resolve_runtime_paths()
+    _load_runtime_config(env_path, config_path)
+    base = strat.StratParams.from_env(
+        load_isolated_kraken_cfg(HERE, config_path=config_path, env_path=env_path)
+    )
     variants = {
         "current": base,
         "pre0923": replace(

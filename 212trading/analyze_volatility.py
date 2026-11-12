@@ -151,17 +151,6 @@ def pullbacks(closes, *, include_ongoing: bool = False):
     return dips
 
 
-def _load_t212_cfg(profile: str | None = None) -> dict[str, str]:
-    prof_name = profile if profile else "nvda"
-    prof_path = os.path.join(_HERE, f"config.{prof_name}.env")
-    if not os.path.exists(prof_path):
-        prof_path = os.path.join(_HERE, "config.env")
-    return _load_isolated_t212_cfg(
-        os.path.join(_HERE, ".env"),
-        profile_file=prof_path if os.path.exists(prof_path) else None,
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Analyze Yahoo OHLC volatility to calibrate t212_bot parameters.")
     ap.add_argument("symbol", nargs="?", default=None, help="Yahoo Finance ticker symbol (e.g. NVDA, RGNT)")
@@ -170,7 +159,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.profile and (not args.profile.replace("-", "").replace("_", "").isalnum()):
         ap.error(f"invalid profile name: {args.profile!r}")
 
-    cfg = _load_t212_cfg(args.profile)
+    prof_name = args.profile if args.profile else "nvda"
+    prof_path = os.path.join(_HERE, f"config.{prof_name}.env")
+    if not os.path.exists(prof_path):
+        prof_path = os.path.join(_HERE, "config.env")
+    cfg = _load_isolated_t212_cfg(
+        os.path.join(_HERE, ".env"),
+        profile_file=prof_path if os.path.exists(prof_path) else None,
+    )
     sym = (
         args.symbol
         or cfg.get("YAHOO_SYMBOL")
