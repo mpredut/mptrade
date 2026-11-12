@@ -349,16 +349,12 @@ class Strategy(BaseSpotMixin):
     def _place(self, role: str, sz: float, px: float, kind: str, amount: float = 0.0) -> None:
         sz_f = safe_pos_float(sz, default=None)
         px_f = safe_pos_float(px, default=None)
-        if sz_f is None or px_f is None:
+        sz = round(sz_f, self.sz_dec) if sz_f is not None else 0.0
+        if sz <= 0 or px_f is None:
             if not self.replay_mode:
-                log("  ! [STRAT] invalid sz/px -- skipping")
+                log("  ! [STRAT] " + ("invalid sz/px -- skipping" if (sz_f is None or px_f is None) else "sz 0 -- skipping"))
             return
-        sz = round(sz_f, self.sz_dec)
         px = px_f
-        if sz <= 0:
-            if not self.replay_mode:
-                log("  ! [STRAT] sz 0 -- skipping")
-            return
         side = self.open_side if role == "open" else self.close_side
         reduce_only = (role == "close")
         now_ts = self._now()

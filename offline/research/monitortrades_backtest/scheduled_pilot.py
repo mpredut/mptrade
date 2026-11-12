@@ -273,8 +273,10 @@ def _eval_one_half(task: tuple[str, str, dict, int]):
     if len(series) < 100:
         return symbol, params, half_idx, None, {}
     res = _run_one(symbol, base, params, series)
-    ck = _run_one_cache_key(symbol, params, series)
-    tk = rb._series_cache_key(symbol, series, rb.DEFAULT_WINDOW_SECONDS)
+    ck, tk = (
+        _run_one_cache_key(symbol, params, series),
+        rb._series_cache_key(symbol, series, rb.DEFAULT_WINDOW_SECONDS),
+    )
     diag = dict(
         _RUN_ONE_DIAG_CACHE.get(ck)
         or rb._LAST_RUN_DIAGNOSTICS.get(tk)

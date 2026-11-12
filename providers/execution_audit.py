@@ -744,6 +744,7 @@ def reconcile_intents_from_execution_audit(
         exec_pay = dict(intent.get("execution_payload")) if isinstance(intent.get("execution_payload"), dict) else {}
         v_stat, l_stat, filled_qty, f_q, raw_cost, cost_f, f_px, is_fill = _extract_audit_fill_metrics(rec)
         rec_ts = safe_pos_float(rec.get("ts"), default=None)
+        cur_st = str(exec_pay.get("status") or "").strip().upper()
         if is_fill:
             norm_st = "PARTIALLY_FILLED" if (v_stat == "PARTIALLY_FILLED" or l_stat == "partially_filled") else "FILLED"
             if rec.get("order_id") is not None and not extract_order_id(exec_pay, default=None):
@@ -761,30 +762,25 @@ def reconcile_intents_from_execution_audit(
             if rec_ts is not None:
                 exec_pay["filled_at"] = rec_ts
                 exec_pay["terminal_ts"] = rec_ts
-            if str(exec_pay.get("msg") or "").strip().lower() == "resting":
-                exec_pay.pop("msg", None)
             if norm_st != "PARTIALLY_FILLED":
                 exec_pay["reconciled_terminal"] = True
-            if exec_pay != intent.get("execution_payload"):
-                intent["execution_payload"] = exec_pay
-                updated = True
+        elif cur_st in _OPEN_WORKING_STATUSES or (
+            _parse_bool_flag(exec_pay.get("reconciled_terminal"), False)
+            and "terminal_ts" not in exec_pay
+            and rec_ts is not None
+        ):
+            norm_cancel = v_stat if v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED") else "CANCELED"
+            exec_pay["status"] = norm_cancel
+            if rec_ts is not None:
+                exec_pay["terminal_ts"] = rec_ts
+            exec_pay["reconciled_terminal"] = True
         else:
-            cur_st = str(exec_pay.get("status") or "").strip().upper()
-            if cur_st in _OPEN_WORKING_STATUSES or (
-                _parse_bool_flag(exec_pay.get("reconciled_terminal"), False)
-                and "terminal_ts" not in exec_pay
-                and rec_ts is not None
-            ):
-                norm_cancel = v_stat if v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED") else "CANCELED"
-                exec_pay["status"] = norm_cancel
-                if rec_ts is not None:
-                    exec_pay["terminal_ts"] = rec_ts
-                if str(exec_pay.get("msg") or "").strip().lower() == "resting":
-                    exec_pay.pop("msg", None)
-                exec_pay["reconciled_terminal"] = True
-                if exec_pay != intent.get("execution_payload"):
-                    intent["execution_payload"] = exec_pay
-                    updated = True
+            continue
+        if str(exec_pay.get("msg") or "").strip().lower() == "resting":
+            exec_pay.pop("msg", None)
+        if exec_pay != intent.get("execution_payload"):
+            intent["execution_payload"] = exec_pay
+            updated = True
 
     return updated
 

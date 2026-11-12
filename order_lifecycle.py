@@ -240,7 +240,7 @@ class TrackedOrderLifecycle:
         self.audit.record(event, **base)
 
     @staticmethod
-    def _validate_identity(intent: dict) -> None:
+    def _validate_identity(intent: dict) -> dict:
         if not isinstance(intent, dict):
             raise ValueError("tracked intent must be a dict")
         for key in ("intent_id", "client_order_id", "symbol"):
@@ -256,6 +256,7 @@ class TrackedOrderLifecycle:
         price = intent.get("requested_price")
         if price is not None and _lifecycle_finite(price, positive=True) is None:
             raise ValueError("tracked intent requested_price must be positive")
+        return intent
 
     def new_intent(
         self,
@@ -419,8 +420,7 @@ class TrackedOrderLifecycle:
 
     def reconcile(self, intent: dict, *, persist: PersistPending) -> TrackedOrderResult:
         """Reconcile one pending intent against venue truth; never submit here."""
-        pending = dict(intent)
-        self._validate_identity(pending)
+        pending = self._validate_identity(dict(intent))
 
         cached_terminal = _status_from_terminal_payload(pending.get("terminal_status"))
         if cached_terminal is not None:

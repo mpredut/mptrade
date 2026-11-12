@@ -132,7 +132,7 @@ def enable_writer(*, path: Optional[str] = None, pid: Optional[int] = None, now_
             "trade_cache_version": "",
         }
         _writer_enabled = True
-        _publish_locked()
+        _publish_locked(bump_generation=False)
 
 
 def disable_writer(*, now_ms: Optional[int] = None) -> bool:
@@ -144,9 +144,7 @@ def disable_writer(*, now_ms: Optional[int] = None) -> bool:
             if _writer_enabled and _writer_state:
                 _writer_state["stopping"] = True
                 _writer_state["published_at_ms"] = resolve_now_ms(now_ms)
-                _writer_state["generation"] += 1
-                _publish_locked()
-                published = True
+                published = _publish_locked()
         except Exception:
             published = False
         finally:
@@ -155,8 +153,11 @@ def disable_writer(*, now_ms: Optional[int] = None) -> bool:
         return published
 
 
-def _publish_locked() -> None:
+def _publish_locked(*, bump_generation: bool = True) -> bool:
+    if bump_generation:
+        _writer_state["generation"] += 1
     atomic_write_json(_writer_path, _writer_state, separators=(",", ":"), sort_keys=True)
+    return True
 
 
 def _clean_version_str(value: object) -> str:
@@ -191,9 +192,7 @@ def _record_cache_version(
         else:
             _writer_state["published_at_ms"] = timestamp
         _writer_state[version_field] = version
-        _writer_state["generation"] += 1
-        _publish_locked()
-    return True
+        return _publish_locked()
 
 
 def record_successful_sync(cache_name: str, data_version: str, *, now_ms: Optional[int] = None) -> bool:

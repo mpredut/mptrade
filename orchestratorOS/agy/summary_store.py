@@ -318,9 +318,7 @@ def restore_conversation_state(cli_base: str, cid: str, snapshot: Optional[dict]
     """Roll back ``<cid>.db`` and its summary row to a checkpoint captured by ``snapshot_conversation_state``."""
     if not isinstance(snapshot, dict) or not cli_base or not isinstance(cli_base, str) or not cid or not isinstance(cid, str):
         return False
-    clean_cid = cid.strip()
-    db_path = conversation_db(cli_base, clean_cid)
-    if not os.path.exists(db_path):
+    if not os.path.exists(db_path := conversation_db(cli_base, (clean_cid := cid.strip()))):
         return False
     tables_state = snapshot.get("tables")
     if not isinstance(tables_state, dict) or not tables_state:

@@ -46,18 +46,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not args.file.exists():
-        print(f"Shadow log not found: {args.file}")
-        return
-
-    lines = read_text_lines(args.file, strip=True, skip_empty=True)
-    if not lines:
-        print(f"Shadow log is empty: {args.file}")
-        return
-
-    last = _last_valid_record(lines)
+    lines = read_text_lines(args.file, strip=True, skip_empty=True) if args.file.exists() else None
+    last = _last_valid_record(lines) if lines else None
     if last is None:
-        print(f"Shadow log has no valid JSON records: {args.file}")
+        err = (
+            "Shadow log not found"
+            if lines is None
+            else ("Shadow log is empty" if not lines else "Shadow log has no valid JSON records")
+        )
+        print(f"{err}: {args.file}")
         return
 
     print("=== SHADOW 240m (4-Hour Bars) ===")

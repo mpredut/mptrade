@@ -1068,13 +1068,11 @@ def apply_code_patch_safely(
             return True
         if log:
             log.warning("Self-healing patch broke tests (exit code %d). Performing immediate rollback.", res.returncode)
-        _rollback_patched_file(real_target, content, workspace_dir)
-        return False
     except Exception as e:
         if log:
             log.error("Error during safe code patching: %s. Performing rollback.", e)
-        _rollback_patched_file(real_target, content, workspace_dir)
-        return False
+    _rollback_patched_file(real_target, content, workspace_dir)
+    return False
 
 
 def execute_venue_or_fleet_repair_action(

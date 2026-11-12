@@ -501,7 +501,7 @@ def _resolve_exit(
     clear_pending: bool = True,
     *,
     dust_resolved: bool = False,
-):
+) -> bool:
     """Unified cleanup of tracking and guard state when an exit executes or resolves."""
     if dust_resolved:
         print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty/min_notional.")
@@ -514,6 +514,7 @@ def _resolve_exit(
             st_map.pop(symbol, None)
     _clear_smart_sl_exit(symbol, inst)
     _save_mt_state()
+    return True
 
 
 def _record_pending_exit(
@@ -835,8 +836,7 @@ def _evaluate_hard_take_profit(
     )
     if placed:
         _hard_tp_last[symbol] = current_time_s
-        _resolve_exit(symbol, inst, kind="TP")
-        return True
+        return _resolve_exit(symbol, inst, kind="TP")
     if hard_tp_outcome_ctx.get("state") == "unknown":
         prev_hard_tp = safe_pos_float(_hard_tp_last.get(symbol), default=None)
         _hard_tp_last[symbol] = current_time_s
@@ -918,9 +918,7 @@ def _execute_take_profit(
         place_kw["client_order_id"] = tp_cid
     placed = _place_guarded(inst, "SELL", current_price, sell_qty, min_qty, **place_kw)
     if placed:
-        _TP_RIDE_STATE.pop(symbol, None)
-        _resolve_exit(symbol, inst, kind="TP")
-        return True
+        return _resolve_exit(symbol, inst, kind="TP")
     if tp_outcome_ctx.get("state") == "unknown":
         _TP_RIDE_STATE.pop(symbol, None)
         print(f"[{symbol}] Take-Profit submit outcome unknown/in-flight ({tp_outcome_ctx.get('reason')}) — deferring duplicate submission")
@@ -1029,9 +1027,7 @@ def _execute_stop_loss(
         placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty, **place_kw)
 
     if placed:
-        _SL_BOUNCE_STATE.pop(symbol, None)
-        _resolve_exit(symbol, inst, kind="STOP")
-        return True
+        return _resolve_exit(symbol, inst, kind="STOP")
 
     sl_state = outcome_ctx.get("state")
     if sl_state == "unknown":

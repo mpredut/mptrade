@@ -255,5 +255,5 @@ def mirror_topic_thread_to_ui(
                             logger.debug("Failed updating ghost topic trajectory %s -> %s: %s", cid, ghost_cid, exc)
             return True
     except (OSError, sqlite3.Error) as e:
-        logger.warning("Failed mirroring topic thread %s to the UI store: %s", cid, e)
+        logger.warning(f"Failed mirroring topic thread {cid} to the UI store: %s", e)
         return False

@@ -852,22 +852,19 @@ class CacheTradeManager(CacheAccountManagerBase):
         if (prep := cls._prepare_venue_cache_dict(cache_obj, now_ms)) is None:
             return False
         items, ft, resolved_ms = prep
-        changed = False
-        for s_sym in (symbols or ()):
-            if not s_sym or s_sym == "*":
-                continue
-            if create_missing:
-                items.setdefault(s_sym, [])
-                ft[s_sym] = resolved_ms
-                changed = True
-            elif s_sym in ft and s_sym in items and ft.get(s_sym) != resolved_ms:
-                ft[s_sym] = resolved_ms
-                changed = True
+        valid_syms = [s for s in (symbols or ()) if s and s != "*"]
         if create_missing:
-            for s_sym in list(items.keys()):
-                ft[s_sym] = resolved_ms
-                changed = True
-        return changed
+            for s_sym in valid_syms:
+                items.setdefault(s_sym, [])
+            touch_syms = list(items.keys())
+        else:
+            touch_syms = [
+                s_sym for s_sym in valid_syms
+                if s_sym in ft and s_sym in items and ft.get(s_sym) != resolved_ms
+            ]
+        for s_sym in touch_syms:
+            ft[s_sym] = resolved_ms
+        return bool(touch_syms)
 
     @classmethod
     def invalidate_venue_fills_snapshot(

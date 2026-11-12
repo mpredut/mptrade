@@ -210,8 +210,10 @@ def format_comparison_markdown(
         ])
         for fee, item in fee_stress.items():
             summary = item.get("summary") if isinstance(item, Mapping) and isinstance(item.get("summary"), Mapping) else {}
-            pos_w = safe_nonneg_int(summary.get("positive_windows"), default=0)
-            win_cnt = safe_nonneg_int(summary.get("window_count"), default=0)
+            pos_w, win_cnt = (
+                safe_nonneg_int(summary.get("positive_windows"), default=0),
+                safe_nonneg_int(summary.get("window_count"), default=0),
+            )
             lines.append(
                 f"| {fee} | {format_number(summary.get('mean_return_pct'), True)} | "
                 f"{format_number(summary.get('worst_return_pct'), True)} | "

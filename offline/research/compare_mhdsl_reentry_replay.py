@@ -19,12 +19,7 @@ from botcore import safe_float, safe_nonneg_int
 
 def run_comparison(csv_path=None):
     csv_file = csv_path or os.path.join(ROOT, "offline", "research", "hype_dataset", "HYPEUSDC_240m_hlspot.csv")
-    if not csv_file or isinstance(csv_file, (bool, int, float)) or not os.path.exists(str(csv_file)):
-        print(f"Dataset not found at {csv_file}")
-        return []
-
-    p = Path(csv_file)
-    if not p.is_file():
+    if not csv_file or isinstance(csv_file, (bool, int, float)) or not (p := Path(str(csv_file))).is_file():
         print(f"Dataset not found at {csv_file}")
         return []
 
@@ -36,7 +31,7 @@ def run_comparison(csv_path=None):
         return []
 
     if not bars:
-        print(f"No valid bars in {csv_file}")
+        print("No valid bars in", csv_file)
         return []
 
     print(f"Loaded {len(bars)} historical bars (HYPE spot 4h).")

@@ -444,8 +444,9 @@ def run_live_forward_shadow(
         )
 
     for name, overrides in candidates.items():
-        params = prepare_spot_interval_params(dataclasses.replace(LIVE_PARAMS, **overrides), interval)
-        budget = params.allocated_budget()
+        budget = (
+            params := prepare_spot_interval_params(dataclasses.replace(LIVE_PARAMS, **overrides), interval)
+        ).allocated_budget()
 
         # Forward bars
         m_fwd = kraken_replay.run_replay(

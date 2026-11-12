@@ -333,7 +333,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 )
                 try:
                     if mkt.cancel_order(symbol, oid_str) is False:
-                        print(f"[MONITORORDER] Cancel returned False for expired order {order_id}; will retry next cycle.")
+                        print(f"[MONITORORDER] Cancel returned False for expired order {order_id};", "will retry next cycle.")
                         continue
                     _clear_initial_order_price(initial_prices, order_id, oid_str)
                     try:
@@ -481,8 +481,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 order_retry.complete_claim(
                     replacement_claim, "success")
                 print(
-                    f"The {order_type} replacement has no durable client ID; "
-                    "the existing order remains active."
+                    f"The {order_type} replacement has no durable client ID;",
+                    "the existing order remains active.",
                 )
                 continue
 
@@ -563,18 +563,17 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             if activation == "resolved":
                 _clear_initial_order_price(initial_prices, order_id, oid_str)
                 continue
-            if activation != "activated":
+            refreshed_claim = (
+                order_retry.begin_claimed_submit(replacement_claim)
+                if activation == "activated"
+                else None
+            )
+            if refreshed_claim is None:
                 print(
                     f"The durable replacement for order {order_id} could not be "
                     "activated after cancellation; no replacement is submitted."
-                )
-                continue
-
-            refreshed_claim = order_retry.begin_claimed_submit(
-                replacement_claim)
-            if refreshed_claim is None:
-                print(
-                    f"The durable replacement claim for order {order_id} changed "
+                    if activation != "activated"
+                    else f"The durable replacement claim for order {order_id} changed "
                     "before dispatch; no replacement is submitted by this process."
                 )
                 continue
