@@ -7,12 +7,9 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 import time
-import requests
-from state_io import atomic_write_json, read_json_dict, save_json_state
+import requests  # noqa: F401 -- retained as monkeypatch seam for market_monitor.pricefetcher.requests
 from datetime import datetime
-from typing import Dict, List, Optional, Set
-from urllib.parse import quote
-from abc import ABC, abstractmethod
+from typing import Dict, List, Optional
 
 import instrument_registry as sym
 from botcore import (
@@ -22,493 +19,40 @@ from botcore import (
     is_us_rth_open,
     normalize_epoch_sec,
     optional_env,
-    parse_symbol_list,
-    required_env,
     safe_pos_float,
     safe_pos_int,
 )
 from cachepaths import (
     CACHE_WATCHER_ALL_PRICE_FILENAME,
-    cache_path,
-    canonical_base_asset,
     normalize_venue_name,
-    strip_equity_suffix,
 )
-from instrument_registry import casefold_get
-
-# Import the base classes and factory
 from cacheManager import CacheFactory
 from cacheprice import CachePriceManagerBase
-import providers.market_api as _market_api
-from providers.market_api import api
-from providers.ohlc_utils import (
-    extract_trading_quote_pairs,
-    extract_yahoo_chart_latest_price,
+from instrument_registry import casefold_get
+from market_monitor.price_platforms import (
+    BinancePricePlatform,
+    CoinMarketCapPricePlatform,
+    CryptoPricePlatformBase,
+    EquityPricePlatformBase,
+    HyperliquidPricePlatform,
+    PricePlatformFactory,
+    PricePlatformInterface,
+    StockYahooPricePlatform,
+    get_base_symbol,
+    is_rth_equity_symbol,
+    is_valid_symbol_for_monitoring,
 )
-from providers.quantity import resolve_base_asset
+from providers.market_api import api
+from state_io import atomic_write_json, read_json_dict
 
-
-# ============================================
-# Global configuration.
-# ============================================
 
 PRICE_HISTORY_RETENTION_DAYS = 7
 MAX_PRICE_HISTORY_PER_SYMBOL = 2000
 MAX_MONITORED_SYMBOLS = 20
 QUOTE_CURRENCY = "USDC"
-#DEFAULT_SYMBOLS = ["BTC", "ETH", "HYPE", "SOL", "BNB", "ADA", "DOGE", "XRP"]
 DEFAULT_SYMBOLS = ["BTC", "TAO", "HYPE"]
+PRICE_MULTI_SYNC_INTERVAL_SEC = 5 * 60
 
-
-# ============================================
-# Specialized price platforms.
-# ============================================
-
-class PricePlatformInterface(ABC):
-    _supported_symbols: Set[str]
-    _last_refresh: float = 0.0
-    _refresh_interval: float = 0.0
-
-    @abstractmethod
-    def get_price(self, symbol: str) -> Optional[float]:
-        pass
-
-    @property
-    @abstractmethod
-    def platform_name(self) -> str:
-        pass
-
-    def _init_platform_refresh(self, refresh_interval: float, *, load_now: bool = True) -> None:
-        self._supported_symbols: Set[str] = set()
-        self._last_refresh = 0
-        self._refresh_interval = refresh_interval
-        if load_now:
-            self._load_symbols()
-
-    def _load_symbols(self):
-        pass
-
-    def refresh_symbols(self):
-        if self._refresh_interval > 0 and bool(getattr(self, "api_key", True)) and time.time() - self._last_refresh > self._refresh_interval:
-            self._load_symbols()
-
-    def get_available_symbols(self) -> Set[str]:
-        self.refresh_symbols()
-        return getattr(self, "_supported_symbols", set()).copy()
-
-    def supports_symbol(self, symbol: str) -> bool:
-        if self._refresh_interval <= 0 or not bool(getattr(self, "api_key", True)) or not isinstance(symbol, str) or not symbol.strip():
-            return False
-        self.refresh_symbols()
-        symbols_set = getattr(self, "_supported_symbols", set())
-        sym_clean = symbol.strip()
-        sym_up = sym_clean.upper()
-        base_up = get_base_symbol(sym_up)
-        if sym_clean in symbols_set or sym_up in symbols_set or base_up in symbols_set:
-            return True
-        upper_set = {s.upper() for s in symbols_set if isinstance(s, str)}
-        return sym_up in upper_set or base_up in upper_set
-
-    @staticmethod
-    def _log_platform_price_warning(tag: str, symbol: str, exc: Exception) -> None:
-        print(f"[{tag}] Warning for {symbol}: {exc}")
-        return None
-
-    @staticmethod
-    def _fetch_json_get(url: str, *, timeout: float = 10, **kwargs):
-        resp = requests.get(url, timeout=timeout, **kwargs)
-        resp.raise_for_status()
-        return resp.json()
-
-
-class BinancePricePlatform(PricePlatformInterface):
-    platform_name = "Binance"
-
-    def __init__(self, api_client=None):
-# The price client is the market-data facade. Binance pairs route to bapi with
-# identical behavior. ``self.api_client`` remains an object exposing
-        # .get_current_price(symbol=...), just like bapi.
-        self.api_client = api_client or _market_api.api
-        self._usdc_pairs: Set[str] = set()
-        self._symbol_mapping: Dict[str, str] = {}
-        self._init_platform_refresh(3600)
-    
-    def _load_symbols(self):
-        try:
-            data = self._fetch_json_get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
-            supported_symbols, usdc_pairs, pair_to_base = extract_trading_quote_pairs(
-                data, quote="USDC", strict=True
-            )
-            symbol_mapping = {}
-            for pair in sorted(usdc_pairs):
-                base_asset = pair_to_base.get(pair, "")
-                if base_asset and base_asset not in symbol_mapping:
-                    symbol_mapping[base_asset] = pair
-                symbol_mapping[pair] = pair
-
-            if usdc_pairs:
-                self._usdc_pairs = usdc_pairs
-                self._supported_symbols = supported_symbols
-                self._symbol_mapping = symbol_mapping
-                print(f"[BinancePlatform] USDC: {len(self._usdc_pairs)} pairs")
-
-        except Exception as e:
-            print(f"[BinancePlatform] Warning loading symbols: {e}")
-            if not self._supported_symbols:
-                self._usdc_pairs = {
-                    "BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "ADAUSDC",
-                    "DOGEUSDC", "XRPUSDC", "TAOUSDC", "ARBUSDC",
-                }
-                self._supported_symbols = set(self._usdc_pairs)
-                self._symbol_mapping = {
-                    "BTC": "BTCUSDC", "ETH": "ETHUSDC", "BNB": "BNBUSDC",
-                    "SOL": "SOLUSDC", "ADA": "ADAUSDC", "DOGE": "DOGEUSDC",
-                    "XRP": "XRPUSDC", "TAO": "TAOUSDC", "ARB": "ARBUSDC",
-                    **{pair: pair for pair in self._usdc_pairs},
-                }
-        finally:
-            self._last_refresh = time.time()
-
-    def _resolve_trading_pair(self, symbol: str) -> Optional[str]:
-        if not isinstance(symbol, str) or not symbol.strip():
-            return None
-        sym_up = symbol.strip().upper()
-        if sym_up in self._symbol_mapping:
-            return self._symbol_mapping[sym_up]
-        pair = f"{sym_up}USDC"
-        if pair in self._supported_symbols or pair in self._usdc_pairs:
-            return pair
-        if sym_up in self._supported_symbols or sym_up in self._usdc_pairs:
-            return sym_up
-        base = get_base_symbol(sym_up)
-        if base in self._symbol_mapping:
-            return self._symbol_mapping[base]
-        base_pair = f"{base}USDC"
-        if base_pair in self._supported_symbols or base_pair in self._usdc_pairs:
-            return base_pair
-        return None
-
-    def supports_symbol(self, symbol: str) -> bool:
-        if not isinstance(symbol, str) or not symbol.strip():
-            return False
-        return self._resolve_trading_pair(symbol) is not None
-    
-    def get_price(self, symbol: str) -> Optional[float]:
-        try:
-            trading_pair = self._resolve_trading_pair(symbol)
-            if not trading_pair:
-                if isinstance(symbol, str) and symbol.strip():
-                    print(f"[BinancePlatform] No trading pair found for {symbol.strip().upper()}")
-                return None
-
-            price = self.api_client.get_current_price(symbol=trading_pair)
-            price_val = safe_pos_float(price, default=None)
-            if price_val is None:
-                if price is None or isinstance(price, bool):
-                    print(f"[BinancePlatform] Could not get price for {trading_pair}")
-                return None
-            print(f"[BinancePlatform] {symbol.strip().upper()} -> {trading_pair} = ${price_val}")
-            return price_val
-
-        except Exception as e:
-            return self._log_platform_price_warning("BinancePlatform", symbol, e)
-
-
-class HyperliquidPricePlatform(PricePlatformInterface):
-    platform_name = "Hyperliquid"
-
-    def __init__(self):
-        self._url = "https://api.hyperliquid.xyz/info"
-        self._all_mids: Dict[str, float] = {}
-        self._init_platform_refresh(300)
-    
-    def _load_symbols(self):
-        try:
-            payload = {"type": "allMids"}
-            headers = {"Content-Type": "application/json"}
-            response = requests.post(self._url, headers=headers, json=payload, timeout=10)
-            response.raise_for_status()
-            mids = response.json()
-            if not isinstance(mids, dict) or not mids:
-                raise ValueError("Hyperliquid allMids response must be a non-empty dict")
-            self._all_mids = mids
-            self._supported_symbols = set(self._all_mids.keys())
-            print(f"[HyperliquidPlatform] Loaded {len(self._supported_symbols)} symbols")
-        except Exception as e:
-            print(f"[HyperliquidPlatform] Warning loading symbols: {e}")
-            if not self._supported_symbols:
-                self._supported_symbols = {"HYPE", "PURR", "BTC", "ETH", "SOL", "USDC", "TAO", "ARB", "DOGE"}
-        finally:
-            self._last_refresh = time.time()
-
-    def get_price(self, symbol: str) -> Optional[float]:
-        try:
-            if not isinstance(symbol, str) or not symbol.strip():
-                return None
-            sym_clean = symbol.strip()
-            sym_up = sym_clean.upper()
-            base_up = get_base_symbol(sym_up)
-            self.refresh_symbols()
-            raw_val = casefold_get(self._all_mids, sym_clean)
-            if raw_val is None and base_up:
-                raw_val = casefold_get(self._all_mids, base_up)
-            if raw_val is None:
-                print(f"[HyperliquidPlatform] Symbol {sym_up} not found")
-                return None
-            return safe_pos_float(raw_val, default=None)
-        except Exception as e:
-            return self._log_platform_price_warning("HyperliquidPlatform", symbol, e)
-
-
-_CMC_KEY_UNSET = object()
-
-
-class CoinMarketCapPricePlatform(PricePlatformInterface):
-    platform_name = "CoinMarketCap"
-
-    def __init__(self, api_key: Optional[str] = _CMC_KEY_UNSET):  # type: ignore[assignment]
-        # Respect explicit api_key=None (offline/disabled) without falling back to os.environ.
-        if api_key is _CMC_KEY_UNSET:
-            raw_key = optional_env("CMC_API_KEY", "") or None
-        else:
-            raw_key = api_key
-        self.api_key = raw_key.strip() if isinstance(raw_key, str) and raw_key.strip() else None
-        self._base_url = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest"
-        self._all_listings: Dict[str, Dict] = {}
-        self._cache_file = cache_path("cmc_listings_cache.json")
-        self._init_platform_refresh(86400, load_now=bool(self.api_key))
-        if not self.api_key:
-            print("[CMCPlatform] No API key - platform disabled")
-
-    def _load_symbols_from_disk_cache(self, max_age_s: Optional[float] = None) -> bool:
-        try:
-            prev_file = f"{self._cache_file}.previous"
-            if not os.path.exists(self._cache_file) and not os.path.exists(prev_file):
-                return False
-            stat_path = self._cache_file if os.path.exists(self._cache_file) else prev_file
-            mtime = os.path.getmtime(stat_path)
-            if max_age_s is not None and (time.time() - mtime) > max_age_s:
-                return False
-
-            cached = read_json_dict(self._cache_file, default=None, recover_previous=True)
-            if not isinstance(cached, dict) or not cached:
-                return False
-            cleaned = {
-                k.strip().upper(): v
-                for k, v in cached.items()
-                if isinstance(k, str) and k.strip() and isinstance(v, dict)
-            }
-            if not cleaned:
-                return False
-            self._all_listings = cleaned
-            self._supported_symbols = set(cleaned.keys())
-            self._last_refresh = mtime
-            return True
-        except Exception:
-            return False
-
-    def _load_symbols(self):
-        if not self.api_key:
-            return
-        if self._load_symbols_from_disk_cache(max_age_s=self._refresh_interval):
-            return
-        try:
-            headers = {'X-CMC_PRO_API_KEY': self.api_key, 'Accept': 'application/json'}
-            params = {'limit': 5000, 'convert': 'USD'}
-            data = self._fetch_json_get(
-                "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-                headers=headers, params=params, timeout=15
-            )
-            if not isinstance(data, dict) or not isinstance(data.get('data'), list):
-                raise ValueError("CoinMarketCap listings response must contain a data list")
-            self._supported_symbols.clear()
-            for crypto in data['data']:
-                if not isinstance(crypto, dict):
-                    continue
-                raw_symbol = crypto.get('symbol')
-                symbol = raw_symbol.strip().upper() if isinstance(raw_symbol, str) else ""
-                if symbol:
-                    self._supported_symbols.add(symbol)
-                    self._all_listings[symbol] = {
-                        'id': crypto.get('id'),
-                        'name': crypto.get('name'),
-                        'slug': crypto.get('slug')
-                    }
-            print(f"[CMCPlatform] Loaded {len(self._supported_symbols)} symbols")
-            try:
-                os.makedirs(os.path.dirname(self._cache_file), exist_ok=True)
-                save_json_state(self._cache_file, self._all_listings)
-            except Exception:
-                pass
-        except Exception as e:
-            if not self._supported_symbols:
-                self._load_symbols_from_disk_cache(max_age_s=None)
-            print(f"[CMCPlatform] Warning loading symbols: {e}")
-        finally:
-            self._last_refresh = time.time()  # Do not retest immediately; honour _refresh_interval.
-
-    def _extract_usd_price(self, symbol: str, data: Dict) -> Optional[float]:
-        if not isinstance(data, dict):
-            return None
-        data_map = data.get('data')
-        coin_data = casefold_get(data_map, symbol) if isinstance(data_map, dict) else None
-        if isinstance(coin_data, list):
-            coin_data = coin_data[0] if coin_data else None
-        if isinstance(coin_data, dict):
-            quote = coin_data.get('quote')
-            usd = quote.get('USD') if isinstance(quote, dict) else None
-            price = usd.get('price') if isinstance(usd, dict) else None
-            return safe_pos_float(price, default=None)
-        return None
-    
-    def get_price(self, symbol: str) -> Optional[float]:
-        """
-        Get the price from the internal cache (updated from listings/latest).
-        This is the fastest and safest way to get prices for new coins.
-        """
-        if not self.api_key or not isinstance(symbol, str) or not symbol.strip():
-            if not self.api_key:
-                print("[CMCPlatform] Missing API key")
-            return None
-        symbol = symbol.strip().upper()
-
-        # Refresh if enough time has passed
-        self.refresh_symbols()
-
-        # Search the symbol in the internal cache (_all_listings only contains metadata,
-        # but we also need the price. We will use a separate dictionary for prices.
-        # A simpler solution is to use CoinMarketCapSource directly. If there is no dedicated cache,
-        # we will make a request to listings/latest for the specific symbol.
-        try:
-            lookup_symbol = symbol if symbol in self._supported_symbols else get_base_symbol(symbol)
-            headers = {'X-CMC_PRO_API_KEY': self.api_key, 'Accept': 'application/json'}
-            params = {'symbol': lookup_symbol, 'convert': 'USD'}
-            data = self._fetch_json_get(
-                self._base_url,
-                headers=headers, params=params, timeout=10
-            )
-            price = self._extract_usd_price(lookup_symbol, data)
-            if price is not None:
-                print(f"[CMCPlatform] {symbol} = ${price}")
-                return price
-            print(f"[CMCPlatform] {symbol} not found")
-            return None
-        except Exception as e:
-            return self._log_platform_price_warning("CMCPlatform", symbol, e)
-
-
-class StockYahooPricePlatform(PricePlatformInterface):
-    """Fetch configured tokenized stocks from Yahoo Finance as a last resort.
-
-    Binance, Hyperliquid, and CMC claim crypto first, so only equity tickers reach this
-    platform. It shares the T212/price-alert data source and prefers the latest intraday
-    bar because metadata can be stale. Tickers come from the required
-    ``STOCK_TICKERS`` configuration unless explicitly injected by the caller.
-    """
-    _YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
-    _UA = {"User-Agent": "Mozilla/5.0 (pricefetcher)"}
-    platform_name = "Yahoo"
-
-    def __init__(self, tickers: Optional[List[str]] = None):
-        raw_tickers = required_env("STOCK_TICKERS") if tickers is None else tickers
-        self._symbols: Set[str] = set(parse_symbol_list(raw_tickers))
-        self._supported_symbols = self._symbols
-
-    def supports_symbol(self, symbol: str) -> bool:
-        # Accept only configured tickers; do not divert crypto or make a network call here.
-        if not symbol or not isinstance(symbol, str) or not symbol.strip():
-            return False
-        return symbol.strip().upper() in self._symbols
-
-    def get_price(self, symbol: str) -> Optional[float]:
-        try:
-            if not isinstance(symbol, str) or not symbol.strip():
-                return None
-            sym_y = strip_equity_suffix(symbol, base_only=True)
-            url = self._YAHOO.format(sym=quote(sym_y, safe="")) + "?range=1d&interval=5m"
-            return extract_yahoo_chart_latest_price(
-                self._fetch_json_get(url, headers=self._UA, timeout=10), decimals=4
-            )
-        except Exception as e:
-            return self._log_platform_price_warning("YahooPlatform", symbol, e)
-
-
-# ============================================
-# Price Platform Factory
-# ============================================
-
-class PricePlatformFactory:
-    def __init__(self, cmc_api_key: Optional[str] = None):
-        self._platforms: List[PricePlatformInterface] = [
-            BinancePricePlatform(),
-            HyperliquidPricePlatform(),
-        ]
-        if cmc_api_key:
-            self._platforms.append(CoinMarketCapPricePlatform(cmc_api_key))
-        self._platforms.append(StockYahooPricePlatform())   # LAST: tokenised stocks (SPCX...).
-        self._symbol_platform_cache: Dict[str, str] = {}
-        self._discover_all_symbols()
-    
-    def _discover_all_symbols(self):
-        print("[PriceFactory] Discovering available symbols...")
-        all_symbols = {}
-        for platform in self._platforms:
-            try:
-                symbols = platform.get_available_symbols()
-                all_symbols[platform.platform_name] = {
-                    "count": len(symbols),
-                    "sample": list(symbols)[:10]
-                }
-                print(f"[PriceFactory]   {platform.platform_name}: {len(symbols)} symbols")
-            except Exception as e:
-                print(f"[PriceFactory]   {platform.platform_name}: error - {e}")
-        self._capabilities = all_symbols
-
-    def get_price(self, symbol: str) -> Dict:
-        if not isinstance(symbol, str) or not symbol.strip():
-            raise ValueError(f"Symbol '{symbol}' is not supported by any platform")
-        sym_norm = symbol.strip().upper()
-        cached_platform = None
-        supported = False
-        platform_name = casefold_get(self._symbol_platform_cache, sym_norm)
-        def _try_platform(platform) -> Optional[Dict]:
-            nonlocal supported
-            supported = True
-            price = platform.get_price(symbol)
-            if price is not None:
-                self._symbol_platform_cache[sym_norm] = platform.platform_name
-                return {
-                    "symbol": symbol, "price": price,
-                    "platform": platform.platform_name, "timestamp": math.trunc(time.time())
-                }
-            return None
-
-        if platform_name:
-            for platform in self._platforms:
-                if platform.platform_name == platform_name:
-                    cached_platform = platform
-                    if (res := _try_platform(platform)) is not None:
-                        return res
-                    self._symbol_platform_cache.pop(sym_norm, None)
-                    break
-        for platform in self._platforms:
-            if platform is not cached_platform and platform.supports_symbol(symbol):
-                if (res := _try_platform(platform)) is not None:
-                    return res
-        if not supported:
-            raise ValueError(f"Symbol '{symbol}' is not supported by any platform")
-        raise RuntimeError(f"Unable to fetch price for '{symbol}' from any supported platform")
-
-    def check_symbol_support(self, symbol: str) -> Dict:
-        support = {}
-        for platform in self._platforms:
-            support[platform.platform_name] = platform.supports_symbol(symbol)
-        return support
-
-
-# ============================================
-# CacheAllPriceFetcherManager
-# ============================================
 
 class CacheAllPriceFetcherManager(CachePriceManagerBase):
     DEFAULT_FILENAME = CACHE_WATCHER_ALL_PRICE_FILENAME
@@ -530,7 +74,6 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         initial_symbols = []
         seen_bases = set()
         for symbol in (symbols or ()):
-            #print(f"{symbol}")
             base_symbol = get_base_symbol(symbol)
             if base_symbol not in seen_bases and is_valid_symbol_for_monitoring(symbol):
                 seen_bases.add(base_symbol)
@@ -540,7 +83,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         self.original_symbols = list(initial_symbols)
         self.active_symbols = set(initial_symbols)
         self.symbol_added_time: Dict[str, float] = {}
-        self.symbol_preferred_source: Dict[str, str] = {}  # Required source preference state.
+        self.symbol_preferred_source: Dict[str, str] = {}
         super().__init__(
             sync_ts,
             initial_symbols,
@@ -559,7 +102,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 print(f"  [OK] {symbol} -> {', '.join(supported_platforms)}")
             else:
                 print(f"  [MISSING] {symbol} -> NO PLATFORM SUPPORT!")
-    
+
     def _load_symbol_metadata(self):
         data = read_json_dict(
             self.filename,
@@ -600,7 +143,8 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             raw_items = data.get("items")
             items_map = raw_items if isinstance(raw_items, dict) else {}
             recovered_symbols = [
-                symbol for symbol, added_time in self.symbol_added_time.items()
+                symbol
+                for symbol, added_time in self.symbol_added_time.items()
                 if (
                     casefold_get(items_map, symbol) is not None
                     and (at_val := safe_pos_float(added_time, default=None)) is not None
@@ -609,7 +153,10 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             ]
             for symbol in list(dict.fromkeys(active_symbols + recovered_symbols)):
                 if len(self.active_symbols) >= self.max_monitored_symbols:
-                    print(f"[Pricefetcher] Limit reached while loading: maximum {self.max_monitored_symbols} monitored coins, the rest will be ignored")
+                    print(
+                        f"[Pricefetcher] Limit reached while loading: maximum "
+                        f"{self.max_monitored_symbols} monitored coins, the rest will be ignored"
+                    )
                     break
                 base_symbol = get_base_symbol(symbol)
                 if (
@@ -632,7 +179,20 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
 
     def rebuild_fetchtimes(self):
         return self._rebuild_symbol_entry_fetchtimes(entry_lookup_fn=casefold_get)
-    
+
+    def _resolve_preferred_platform(self, preferred_source: str):
+        resolver = getattr(self.price_factory, "resolve_preferred_platform", None)
+        if callable(resolver) and type(self.price_factory) is PricePlatformFactory:
+            return resolver(preferred_source)
+        pref_raw = preferred_source.strip().lower()
+        pref_norm = normalize_venue_name(pref_raw) or pref_raw
+        for platform in getattr(self.price_factory, "_platforms", ()) or ():
+            plat_raw = str(platform.platform_name).strip().lower()
+            plat_norm = normalize_venue_name(plat_raw) or plat_raw
+            if plat_norm == pref_norm or plat_raw == pref_raw:
+                return platform
+        return None
+
     def get_remote_items(self, symbol, startTime):
         if (
             is_rth_equity_symbol(symbol, getattr(self, "price_factory", None))
@@ -643,24 +203,22 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 if self._cached_entries_locked(symbol):
                     return []
         try:
-            # Ensure the attribute exists
-            if not hasattr(self, 'symbol_preferred_source'):
+            if not hasattr(self, "symbol_preferred_source"):
                 self.symbol_preferred_source = {}
 
             preferred_source = casefold_get(self.symbol_preferred_source, symbol)
             if preferred_source and isinstance(preferred_source, str) and preferred_source.strip():
-                pref_norm = normalize_venue_name(preferred_source) or preferred_source.strip().lower()
-                for platform in self.price_factory._platforms:
-                    plat_raw = str(platform.platform_name).strip().lower()
-                    plat_norm = normalize_venue_name(plat_raw) or plat_raw
-                    if plat_norm == pref_norm or plat_raw == preferred_source.strip().lower():
-                        price_val = safe_pos_float(platform.get_price(symbol), default=None)
-                        if price_val is not None:
-                            timestamp_ms = math.trunc(time.time() * 1000)
-                            print(f"[Pricefetcher][{symbol}] ${price_val:.4f} (source: {preferred_source} - preferred)")
-                            return [[timestamp_ms, price_val]]
-                        print(f"[Pricefetcher][{symbol}] Preferred source {preferred_source} failed; trying fallback providers")
-                        break
+                platform = self._resolve_preferred_platform(preferred_source)
+                if platform is not None:
+                    price_val = safe_pos_float(platform.get_price(symbol), default=None)
+                    if price_val is not None:
+                        timestamp_ms = math.trunc(time.time() * 1000)
+                        print(f"[Pricefetcher][{symbol}] ${price_val:.4f} (source: {preferred_source} - preferred)")
+                        return [[timestamp_ms, price_val]]
+                    print(
+                        f"[Pricefetcher][{symbol}] Preferred source {preferred_source} failed; "
+                        f"trying fallback providers"
+                    )
             result = self.price_factory.get_price(symbol)
             price_val = safe_pos_float(result.get("price") if isinstance(result, dict) else None, default=None)
             if price_val is None:
@@ -672,7 +230,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         except Exception as e:
             print(f"[{self.cls_name}][Warn] {symbol}: {e}")
             return []
-    
+
     def add_symbol(self, symbol: str, preferred_source: Optional[str] = None):
         if not (symbol := clean_nonempty_str(symbol)):
             return False
@@ -681,9 +239,13 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             if symbol in self.active_symbols:
                 return self._log_tagged_false("Pricefetcher", f"{symbol} is already in the watchlist")
             if any(get_base_symbol(active_symbol) == base_symbol for active_symbol in self.active_symbols):
-                return self._log_tagged_false("Pricefetcher", f"{symbol} ignored: asset {base_symbol} is already being monitored")
+                return self._log_tagged_false(
+                    "Pricefetcher", f"{symbol} ignored: asset {base_symbol} is already being monitored"
+                )
             if len(self.active_symbols) >= self.max_monitored_symbols:
-                return self._log_tagged_false("Pricefetcher", f"Limit reached: maximum {self.max_monitored_symbols} monitored coins")
+                return self._log_tagged_false(
+                    "Pricefetcher", f"Limit reached: maximum {self.max_monitored_symbols} monitored coins"
+                )
             self.active_symbols.add(symbol)
             self.symbols.append(symbol)
             self.original_symbols.append(symbol)
@@ -696,14 +258,13 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             if symbol not in self.fetchtime_per_symbol:
                 self.fetchtime_per_symbol[symbol] = self.fallback_time_default
             print(f"[Pricefetcher] Symbol added: {symbol}")
-        # Fetch and store the new symbol's initial price outside this lock;
-        # ``update_cache_per_symbol`` acquires its own lock.
         items = self.get_remote_items(
-            symbol, self.fetchtime_per_symbol.get(symbol, self.fallback_time_default))
+            symbol, self.fetchtime_per_symbol.get(symbol, self.fallback_time_default)
+        )
         if items:
             self.update_cache_per_symbol(symbol, items)
         return True
-    
+
     def remove_symbol(self, symbol: str, reason: str = ""):
         if not (symbol := clean_nonempty_str(symbol)):
             return False
@@ -711,7 +272,8 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         with self.lock:
             pref_map = getattr(self, "symbol_preferred_source", {})
             matching_keys = {
-                s for s in (
+                s
+                for s in (
                     set(self.active_symbols)
                     | set(self.symbol_added_time.keys())
                     | (set(pref_map.keys()) if isinstance(pref_map, dict) else set())
@@ -721,17 +283,17 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             if not matching_keys:
                 return False
             self.symbols = [
-                s for s in self.symbols
+                s
+                for s in self.symbols
                 if not (isinstance(s, str) and (s in matching_keys or s.strip().upper() == sym_up))
             ]
             self.original_symbols = [
-                s for s in self.original_symbols
+                s
+                for s in self.original_symbols
                 if not (isinstance(s, str) and (s in matching_keys or s.strip().upper() == sym_up))
             ]
             for k in matching_keys:
                 self.active_symbols.discard(k)
-                # Clear auxiliary state too; otherwise ``cleanup_old_symbols`` repeatedly
-                # revisits the same symbol through ``symbol_added_time``.
                 self.symbol_added_time.pop(k, None)
                 if isinstance(pref_map, dict):
                     pref_map.pop(k, None)
@@ -761,8 +323,6 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         limit_i = exact_pos_int(limit, default=None)
         if limit_i is None or not isinstance(symbol, str) or not symbol.strip():
             return []
-        # Copy only references under the lock. Convert and format afterward so datetime
-        # work and allocations do not block price synchronization.
         with self.lock:
             entries = self._cached_entries_locked(symbol)[-limit_i:]
 
@@ -787,7 +347,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 }
             )
         return history
-        
+
     def cleanup_old_prices(self, retention_days: int = PRICE_HISTORY_RETENTION_DAYS):
         if not isinstance(retention_days, (int, float)) or safe_pos_float(retention_days, default=None) is None:
             return
@@ -863,13 +423,13 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                         "last_cleanup": time.time(),
                         "retention_days": PRICE_HISTORY_RETENTION_DAYS,
                         "symbols_count": len(self.cache),
-                        "total_entries": sum(len(v) for v in self.cache.values())
+                        "total_entries": sum(len(v) for v in self.cache.values()),
                     },
                     "symbol_metadata": {
                         "added_time": self.symbol_added_time,
                         "active_symbols": list(self.active_symbols),
                         "preferred_source": self.symbol_preferred_source,
-                    }
+                    },
                 }
                 meta_payload = {
                     "counts": dict(counts),
@@ -893,86 +453,24 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         return self.save_state_to_file()
 
 
-# ============================================
-# Main functions
-# ============================================
-
-PRICE_MULTI_SYNC_INTERVAL_SEC = 5 * 60
-
-
-def is_valid_symbol_for_monitoring(symbol: str) -> bool:
-    if not isinstance(symbol, str) or not (1 <= len(symbol) <= 10):
-        return False
-    if not symbol.isalnum() or symbol.isdigit():
-        return False
-    return not (len(symbol) > 8 and symbol.startswith("0"))
-
-
-get_base_symbol = resolve_base_asset
-
-
-def is_rth_equity_symbol(symbol: object, price_factory: Optional[object] = None) -> bool:
-    """Return True when ``symbol`` is a US RTH equity (by suffix, Yahoo-only platform, or instruments.conf)."""
-    if not isinstance(symbol, str) or isinstance(symbol, bool) or not symbol.strip():
-        return False
-    sym_u = symbol.strip().upper()
-    if sym.is_equity_symbol(sym_u):
-        return True
-    if price_factory is not None and hasattr(price_factory, "_platforms"):
-        yahoo_sup = False
-        other_sup = False
-        for plat in getattr(price_factory, "_platforms", ()) or ():
-            if getattr(plat, "platform_name", "") == "Yahoo":
-                yahoo_sup = sym_u in getattr(plat, "_symbols", set())
-            elif sym_u in getattr(plat, "_supported_symbols", set()):
-                other_sup = True
-        if yahoo_sup and not other_sup:
-            return True
-    try:
-        reg = sym.load_registry()
-
-        def _matches_sym(s) -> bool:
-            return (
-                s.symbol.upper() == sym_u
-                or s.base.upper() == sym_u
-                or canonical_base_asset(s.symbol).upper() == sym_u
-            )
-
-        has_eq = any(
-            (sym.is_equity_venue(s.provider) or s.market_hours == "rth") and _matches_sym(s)
-            for s in reg.values()
-        )
-        has_crypto = any(
-            not sym.is_equity_venue(s.provider) and s.market_hours != "rth" and _matches_sym(s)
-            for s in reg.values()
-        )
-        return has_eq and not has_crypto
-    except Exception:
-        return False
-
-
 def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_symbols=None):
-    # Use symbols/max_symbols from market_alerts.conf when supplied; otherwise retain legacy defaults.
     all_symbols = []
     seen_bases = set()
-    
-    if hasattr(sym, 'symbols'):
+
+    if hasattr(sym, "symbols"):
         for s in sym.symbols:
             if is_valid_symbol_for_monitoring(s):
                 seen_bases.add(get_base_symbol(s))
                 all_symbols.append(s)
-    
+
     for sym_default in (symbols or DEFAULT_SYMBOLS):
         if not is_valid_symbol_for_monitoring(sym_default):
             continue
         base_symbol = get_base_symbol(sym_default)
-        if (
-            base_symbol not in seen_bases
-            and sym_default not in all_symbols
-        ):
+        if base_symbol not in seen_bases and sym_default not in all_symbols:
             seen_bases.add(base_symbol)
             all_symbols.append(sym_default)
-    
+
     eff_max = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
     all_symbols = list(dict.fromkeys(all_symbols))
     all_symbols = [s for s in all_symbols if is_valid_symbol_for_monitoring(s)]
@@ -999,6 +497,29 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
     cachePriceAll.periodic_sync(sync_ts=PRICE_MULTI_SYNC_INTERVAL_SEC, save_state=True)
 
     return cachePriceAll
+
+
+__all__ = [
+    "BinancePricePlatform",
+    "CacheAllPriceFetcherManager",
+    "CoinMarketCapPricePlatform",
+    "CryptoPricePlatformBase",
+    "DEFAULT_SYMBOLS",
+    "EquityPricePlatformBase",
+    "HyperliquidPricePlatform",
+    "MAX_MONITORED_SYMBOLS",
+    "MAX_PRICE_HISTORY_PER_SYMBOL",
+    "PRICE_HISTORY_RETENTION_DAYS",
+    "PRICE_MULTI_SYNC_INTERVAL_SEC",
+    "PricePlatformFactory",
+    "PricePlatformInterface",
+    "QUOTE_CURRENCY",
+    "StockYahooPricePlatform",
+    "create_cachePriceAll",
+    "get_base_symbol",
+    "is_rth_equity_symbol",
+    "is_valid_symbol_for_monitoring",
+]
 
 
 if __name__ == "__main__":

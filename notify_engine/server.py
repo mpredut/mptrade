@@ -14,6 +14,7 @@ from typing import Dict, Any, List
 
 from botcore import (
     check_cooldown_gate,
+    http_requests_post,
     load_env_stack,
     obj_attr,
     optional_env,
@@ -318,7 +319,8 @@ class NotificationServer:
             headers["Authorization"] = f"Bearer {self.ntfy_token}"
             
         try:
-            resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=5)
+            body_bytes = message.encode("utf-8")
+            resp = http_requests_post(url, data=body_bytes, headers=headers, timeout=5, requests_mod=requests)
             if safe_int(getattr(resp, "status_code", None), default=200) == 429:
                 if _is_provider_daily_limit(resp):
                     text = getattr(resp, "text", "") or ""
@@ -329,7 +331,7 @@ class NotificationServer:
                 if retry_after:
                     ra_f = safe_nonneg_float(retry_after, default=None)
                     time.sleep(min(ra_f, 30.0) if ra_f is not None else 1.0)
-                    resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=5)
+                    resp = http_requests_post(url, data=body_bytes, headers=headers, timeout=5, requests_mod=requests)
             status_code = safe_int(getattr(resp, "status_code", None), default=200)
             if hasattr(resp, "raise_for_status"):
                 resp.raise_for_status()

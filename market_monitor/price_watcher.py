@@ -175,7 +175,7 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
     max_new_i = safe_int(max_new_coins, default=None) if isinstance(max_new_coins, (int, float)) else None
     eff_max_new = max(0, max_new_i) if max_new_i is not None else MAX_NEW_COINS_TO_TRACK
     for source_name, coins in new_coins_checker.all_new_coins.items():
-        if source_name.lower() == "coinmarketcap":
+        if new_coins_checker.source_has_price(source_name):
             for coin in coins[:eff_max_new]:
                 if new_coins_checker.add_new_coin_to_watchlist(coin):
                     auto_added_count += 1

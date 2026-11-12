@@ -1377,6 +1377,87 @@ def http_post_status(
         return exact_int(status, default=0) or 0
 
 
+def _resolve_requests_module(requests_mod: object = None) -> object:
+    return requests_mod if requests_mod is not None else importlib.import_module("requests")
+
+
+def http_requests_get(
+    url: str,
+    *,
+    headers: dict | None = None,
+    params: dict | None = None,
+    timeout: float = 10.0,
+    requests_mod: object = None,
+    **kwargs,
+):
+    """Execute a ``requests.get`` call through the canonical botcore HTTP gateway."""
+    clean_url = _validate_http_url(url)
+    timeout_f = require_pos_float(timeout, name="timeout")
+    call_kw = dict(kwargs)
+    if headers is not None:
+        call_kw["headers"] = headers
+    if params is not None:
+        call_kw["params"] = params
+    return _resolve_requests_module(requests_mod).get(clean_url, timeout=timeout_f, **call_kw)
+
+
+def http_requests_post(
+    url: str,
+    *,
+    data: object = _UNSET,
+    json_payload: object = _UNSET,
+    headers: dict | None = None,
+    timeout: float = 10.0,
+    requests_mod: object = None,
+    **kwargs,
+):
+    """Execute a ``requests.post`` call through the canonical botcore HTTP gateway."""
+    clean_url = _validate_http_url(url)
+    timeout_f = require_pos_float(timeout, name="timeout")
+    call_kw = dict(kwargs)
+    if headers is not None:
+        call_kw["headers"] = headers
+    if data is not _UNSET:
+        call_kw["data"] = data
+    if json_payload is not _UNSET:
+        call_kw["json"] = json_payload
+    return _resolve_requests_module(requests_mod).post(clean_url, timeout=timeout_f, **call_kw)
+
+
+def fetch_requests_json_get(
+    url: str,
+    *,
+    headers: dict | None = None,
+    params: dict | None = None,
+    timeout: float = 10.0,
+    requests_mod: object = None,
+    **kwargs,
+) -> object:
+    """Perform an HTTP GET via ``http_requests_get``, enforce 2xx status, and return decoded JSON."""
+    resp = http_requests_get(
+        url, headers=headers, params=params, timeout=timeout, requests_mod=requests_mod, **kwargs
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def fetch_requests_json_post(
+    url: str,
+    payload: object,
+    *,
+    headers: dict | None = None,
+    timeout: float = 10.0,
+    requests_mod: object = None,
+    **kwargs,
+) -> object:
+    """Perform an HTTP POST with JSON payload via ``http_requests_post``, enforce 2xx status, and return decoded JSON."""
+    resp = http_requests_post(
+        url, json_payload=payload, headers=headers, timeout=timeout, requests_mod=requests_mod, **kwargs
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 # -- DETERMINISTIC percentage-based approximate comparisons -------------------
 
 

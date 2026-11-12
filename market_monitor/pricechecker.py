@@ -28,7 +28,7 @@ from botcore import (
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from market_monitor.alerts_config import resolve as resolve_alert_threshold
-from market_monitor.pricefetcher import get_base_symbol, is_rth_equity_symbol
+from market_monitor.price_platforms import get_base_symbol, is_rth_equity_symbol
 from state_io import load_json_state, save_json_state
 
 # Canonical CoinMarketCap slugs for major symbols. _all_listings is keyed by

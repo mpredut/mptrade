@@ -8,8 +8,11 @@ from abc import ABC, abstractmethod
 
 from botcore import (
     _parse_bool_flag,
+    fetch_requests_json_get,
+    http_requests_get,
     normalize_epoch_sec,
     optional_env,
+    resolve_patched_attr,
     safe_float,
     safe_pos_float,
     safe_pos_int,
@@ -113,8 +116,13 @@ def is_trackable_symbol(symbol: str, name: str = "", slug: str = "") -> bool:
 # ============================================
 
 class NewCoinsSource(ABC):
+    """Level 1 abstract contract for new-coin discovery sources."""
+
+    SOURCE_KEY: str = ""
     SOURCE_NAME: str = ""
     BASE_URL: str = ""
+    SOURCE_HAS_PRICE: bool = False
+    REQUIRES_CMC_KEY: bool = False
 
     def __init__(self):
         self.base_url = self.BASE_URL
@@ -141,22 +149,137 @@ class NewCoinsSource(ABC):
     def is_available(self) -> bool:
         return True
 
+    @staticmethod
+    def _http_get(url: str, *, headers=None, params=None, timeout: float = 15):
+        return http_requests_get(
+            url, headers=headers, params=params, timeout=timeout, requests_mod=requests
+        )
+
     def _fetch_endpoint_json(self, path: str, *, headers=None, params=None):
         url = path if path.startswith("http") else f"{self.base_url}/{path.lstrip('/')}"
-        response = requests.get(url, headers=headers, params=params, timeout=15)
-        response.raise_for_status()
-        return response.json()
+        return fetch_requests_json_get(
+            url, headers=headers, params=params, timeout=15, requests_mod=requests
+        )
 
     def _record_refresh_complete(self, label: str, detail: str) -> None:
         print(f"[{label} Source] {detail}")
         self._last_refresh = time.time()
 
+
+class PricedNewCoinsSource(NewCoinsSource):
+    """Level 2 abstract domain base for discovery sources that emit live USD prices."""
+
+    SOURCE_HAS_PRICE: bool = True
+
+
+class InformationalNewCoinsSource(NewCoinsSource):
+    """Level 2 abstract domain base for listing-only discovery sources without system pricing."""
+
+    SOURCE_HAS_PRICE: bool = False
+
+
+# ============================================
+# Factory for new-coin data sources.
+# ============================================
+
+class NewCoinsFactory:
+    _SOURCE_REGISTRY: Dict[str, type[NewCoinsSource]] = {}
+
+    @classmethod
+    def register_source(cls, source_cls: type[NewCoinsSource]) -> type[NewCoinsSource]:
+        key = str(getattr(source_cls, "SOURCE_KEY", "") or getattr(source_cls, "SOURCE_NAME", "")).strip().lower()
+        if not key:
+            raise ValueError(f"Source class {source_cls.__name__} must declare SOURCE_KEY")
+        cls._SOURCE_REGISTRY[key] = source_cls
+        return source_cls
+
+    @classmethod
+    def registered_source_has_price(cls, source_name: object) -> bool:
+        if not isinstance(source_name, str) or not source_name.strip():
+            return False
+        norm = source_name.strip().lower()
+        src_cls = cls._SOURCE_REGISTRY.get(norm)
+        if src_cls is not None:
+            return bool(getattr(src_cls, "SOURCE_HAS_PRICE", False))
+        for cand_cls in cls._SOURCE_REGISTRY.values():
+            if str(getattr(cand_cls, "SOURCE_NAME", "")).strip().lower() == norm:
+                return bool(getattr(cand_cls, "SOURCE_HAS_PRICE", False))
+        return False
+
+    def __init__(self, enabled_sources: Optional[List[str]] = None, cmc_api_key: str = CMC_API_KEY):
+        registry = self._SOURCE_REGISTRY
+        if enabled_sources is not None:
+            raw_sources = (
+                split_csv(enabled_sources, lower=True)
+                if isinstance(enabled_sources, str)
+                else (enabled_sources if isinstance(enabled_sources, (list, tuple, set, frozenset)) else [])
+            )
+            selected_names = []
+            for name in raw_sources:
+                if name is None or isinstance(name, bool):
+                    continue
+                norm_n = str(name).strip().lower()
+                if norm_n in registry and norm_n not in selected_names:
+                    selected_names.append(norm_n)
+            if not selected_names and not raw_sources:
+                selected_names = list(registry.keys())
+        else:
+            selected_names = list(registry.keys())
+        self._all_sources: Dict[str, NewCoinsSource] = {}
+        for name in selected_names:
+            src_cls = registry[name]
+            eff_cls = resolve_patched_attr(
+                src_cls.__name__,
+                src_cls,
+                modules=("market_monitor.new_coins_discovery",),
+                require_callable=True,
+            )
+            self._all_sources[name] = (
+                eff_cls(cmc_api_key) if getattr(src_cls, "REQUIRES_CMC_KEY", False) else eff_cls()
+            )
+        self.sources = {
+            name: src for name, src in self._all_sources.items() if src.is_available()
+        }
+        print(f"[NewCoinsFactory] Enabled sources: {list(self.sources.keys())}")
+
+    def source_has_price(self, source_name: object) -> bool:
+        if not isinstance(source_name, str) or not source_name.strip():
+            return False
+        src = casefold_get(getattr(self, "sources", {}), source_name.strip())
+        if src is not None and hasattr(src, "SOURCE_HAS_PRICE"):
+            return bool(getattr(src, "SOURCE_HAS_PRICE", False))
+        return self.registered_source_has_price(source_name)
+
+    def get_all_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> Dict[str, List[Dict]]:
+        results = {}
+        for name, source in self.sources.items():
+            try:
+                results[name] = source.get_new_coins(days_back)
+            except Exception as e:
+                print(f"[NewCoinsFactory] Error for {name}: {e}")
+                results[name] = []
+        return results
+
+    def get_available_sources(self) -> List[str]:
+        return list(self.sources.keys())
+
+    def refresh_all(self):
+        for source in self.sources.values():
+            try:
+                source.refresh()
+            except Exception as e:
+                print(f"[NewCoinsFactory] Error refreshing {source.get_name()}: {e}")
+
+
 # ============================================
 # Source 1: CoinMarketCap
 # ============================================
 
-class CoinMarketCapSource(NewCoinsSource):
+@NewCoinsFactory.register_source
+class CoinMarketCapSource(PricedNewCoinsSource):
+    SOURCE_KEY = "coinmarketcap"
     SOURCE_NAME = "CoinMarketCap"
+    REQUIRES_CMC_KEY = True
 
     def __init__(self, api_key: str = CMC_API_KEY):
         self.api_key = api_key
@@ -222,7 +345,9 @@ class CoinMarketCapSource(NewCoinsSource):
 # Source 2: CoinGecko
 # ============================================
 
-class CoinGeckoSource(NewCoinsSource):
+@NewCoinsFactory.register_source
+class CoinGeckoSource(InformationalNewCoinsSource):
+    SOURCE_KEY = "coingecko"
     SOURCE_NAME = "CoinGecko"
     BASE_URL = "https://api.coingecko.com/api/v3"
 
@@ -260,7 +385,9 @@ class CoinGeckoSource(NewCoinsSource):
 # Source 3: Binance
 # ============================================
 
-class BinanceNewListingsSource(NewCoinsSource):
+@NewCoinsFactory.register_source
+class BinanceNewListingsSource(InformationalNewCoinsSource):
+    SOURCE_KEY = "binance"
     SOURCE_NAME = "Binance"
 
     def __init__(self):
@@ -308,15 +435,17 @@ class BinanceNewListingsSource(NewCoinsSource):
 # Source 4: DexScreener
 # ============================================
 
-class DexScreenerSource(NewCoinsSource):
+@NewCoinsFactory.register_source
+class DexScreenerSource(InformationalNewCoinsSource):
+    SOURCE_KEY = "dexscreener"
     SOURCE_NAME = "DexScreener"
     BASE_URL = "https://api.dexscreener.com/latest/dex"
 
     def refresh(self):
         try:
-            response = requests.get(f"{self.base_url}/token-profiles", timeout=15)
+            response = self._http_get(f"{self.base_url}/token-profiles", timeout=15)
             if response.status_code == 404:
-                response = requests.get("https://api.dexscreener.com/token-profiles/latest", timeout=15)
+                response = self._http_get("https://api.dexscreener.com/token-profiles/latest", timeout=15)
             if response.status_code == 200:
                 data = response.json()
                 self._cache = []
@@ -353,66 +482,9 @@ class DexScreenerSource(NewCoinsSource):
         except Exception as e:
             print(f"[DexScreener Source] Error: {e}")
             self._cache = []
-    
+
     def get_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> List[Dict]:
         return _filter_recent_coins(self._cache, days_back, utc=False)[:50]
-
-# ============================================
-# Factory for new-coin data sources.
-# ============================================
-
-class NewCoinsFactory:
-    def __init__(self, enabled_sources: Optional[List[str]] = None, cmc_api_key: str = CMC_API_KEY):
-        builders: Dict[str, Callable[[], NewCoinsSource]] = {
-            "coinmarketcap": lambda: CoinMarketCapSource(cmc_api_key),
-            "coingecko": CoinGeckoSource,
-            "binance": BinanceNewListingsSource,
-            "dexscreener": DexScreenerSource,
-        }
-        if enabled_sources is not None:
-            raw_sources = (
-                split_csv(enabled_sources, lower=True)
-                if isinstance(enabled_sources, str)
-                else (enabled_sources if isinstance(enabled_sources, (list, tuple, set, frozenset)) else [])
-            )
-            selected_names = []
-            for name in raw_sources:
-                if name is None or isinstance(name, bool):
-                    continue
-                norm_n = str(name).strip().lower()
-                if norm_n in builders and norm_n not in selected_names:
-                    selected_names.append(norm_n)
-            if not selected_names and not raw_sources:
-                selected_names = list(builders.keys())
-        else:
-            selected_names = list(builders.keys())
-        self._all_sources: Dict[str, NewCoinsSource] = {
-            name: builders[name]() for name in selected_names
-        }
-        self.sources = {
-            name: src for name, src in self._all_sources.items() if src.is_available()
-        }
-        print(f"[NewCoinsFactory] Enabled sources: {list(self.sources.keys())}")
-
-    def get_all_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> Dict[str, List[Dict]]:
-        results = {}
-        for name, source in self.sources.items():
-            try:
-                results[name] = source.get_new_coins(days_back)
-            except Exception as e:
-                print(f"[NewCoinsFactory] Error for {name}: {e}")
-                results[name] = []
-        return results
-    
-    def get_available_sources(self) -> List[str]:
-        return list(self.sources.keys())
-    
-    def refresh_all(self):
-        for source in self.sources.values():
-            try:
-                source.refresh()
-            except Exception as e:
-                print(f"[NewCoinsFactory] Error refreshing {source.get_name()}: {e}")
 
 # ============================================
 # Main monitor
@@ -449,12 +521,18 @@ class NewCoinsMonitor:
                     print(f"[NewCoinsMonitor] Ignored invalid symbol: {raw_symbol} (from {source_name})")
                     continue
 
+    def source_has_price(self, source_name: object) -> bool:
+        fac = getattr(self, "factory", None)
+        if type(fac) is NewCoinsFactory:
+            return fac.source_has_price(source_name)
+        return NewCoinsFactory.registered_source_has_price(source_name)
+
     def _trigger_alerts(self, new_coins: List[Dict], source_name: str, auto_add: bool = True):
         if not new_coins:
             return
         auto_add = _parse_bool_flag(auto_add, True)
 
-        source_has_price = str(source_name or "").strip().lower() == "coinmarketcap"
+        source_has_price = self.source_has_price(source_name)
         alerts = []
 
         for coin in new_coins:
@@ -524,7 +602,7 @@ class NewCoinsMonitor:
                                 and c['symbol'].strip().upper() in new_symbols
                             ]
                             if new_from_source:
-                                auto_add = (source_name.lower() == "coinmarketcap")
+                                auto_add = self.source_has_price(source_name)
                                 self._trigger_alerts(new_from_source, source_name, auto_add=auto_add)
                 except Exception as e:
                     print(f"[NewCoinsMonitor] Error: {e}")

@@ -1172,6 +1172,14 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 ):
                     attr_name = fn.attr if isinstance(fn, ast.Attribute) else fn.id
                     ssot_violations.append(f"{rel_s}:{lineno}: urllib {attr_name}")
+                if (
+                    rel_s != "botcore.py"
+                    and isinstance(fn, ast.Attribute)
+                    and isinstance(fn.value, ast.Name)
+                    and fn.value.id == "requests"
+                    and fn.attr in ("get", "post", "put", "delete", "request")
+                ):
+                    ssot_violations.append(f"{rel_s}:{lineno}: raw requests.{fn.attr}")
             elif (
                 rel_s not in env_owners
                 and isinstance(node, ast.Attribute)
@@ -1325,4 +1333,36 @@ def test_intent_reconciliation_modularization_and_lazy_compat():
     assert ea.summarize_recent_ai_intents is ir.summarize_recent_ai_intents
     assert ea.build_last_cycle_execution_status is ir.build_last_cycle_execution_status
     assert ea.cancel_existing_ai_open_orders is ie.cancel_existing_ai_open_orders
+
+
+def test_market_monitor_polymorphic_registries_and_soc_split():
+    from market_monitor import new_coins_discovery as ncd, price_platforms as pp, pricefetcher as pf
+
+    assert set(pp.PricePlatformFactory._PLATFORM_REGISTRY) == {
+        "binance",
+        "hyperliquid",
+        "coinmarketcap",
+        "yahoo",
+    }
+    assert issubclass(pp.BinancePricePlatform, pp.CryptoPricePlatformBase)
+    assert issubclass(pp.HyperliquidPricePlatform, pp.CryptoPricePlatformBase)
+    assert issubclass(pp.CoinMarketCapPricePlatform, pp.CryptoPricePlatformBase)
+    assert issubclass(pp.StockYahooPricePlatform, pp.EquityPricePlatformBase)
+    assert pp.StockYahooPricePlatform.IS_EQUITY_PLATFORM is True
+    assert pp.BinancePricePlatform.IS_EQUITY_PLATFORM is False
+    assert pf.PricePlatformFactory is pp.PricePlatformFactory
+    assert pf.StockYahooPricePlatform is pp.StockYahooPricePlatform
+
+    assert set(ncd.NewCoinsFactory._SOURCE_REGISTRY) == {
+        "coinmarketcap",
+        "coingecko",
+        "binance",
+        "dexscreener",
+    }
+    assert issubclass(ncd.CoinMarketCapSource, ncd.PricedNewCoinsSource)
+    assert issubclass(ncd.CoinGeckoSource, ncd.InformationalNewCoinsSource)
+    assert ncd.NewCoinsFactory.registered_source_has_price("coinmarketcap") is True
+    assert ncd.NewCoinsFactory.registered_source_has_price("CoinMarketCap") is True
+    assert ncd.NewCoinsFactory.registered_source_has_price("binance") is False
+    assert ncd.NewCoinsFactory.registered_source_has_price("dexscreener") is False
 

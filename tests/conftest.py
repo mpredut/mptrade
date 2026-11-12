@@ -80,6 +80,14 @@ _cachedb_tmp = tempfile.TemporaryDirectory(
 )
 os.environ["MPTRADE_CACHEDB_DIR"] = _cachedb_tmp.name
 
+_t212_cfg_tmp = tempfile.TemporaryDirectory(
+    prefix="mptrade-tests-t212-cfg-",
+)
+_tracked_t212_runtime_env = Path(_botcore_init._REPO_ROOT) / "212trading" / "runtime.env"
+if _tracked_t212_runtime_env.is_file():
+    shutil.copyfile(_tracked_t212_runtime_env, Path(_t212_cfg_tmp.name) / "runtime.env")
+from providers import market_api as _mkt_mod, t212_provider as _t212_prov_mod  # noqa: E402
+
 
 @pytest.fixture(autouse=True)
 def _isolate_cachedb_dir(tmp_path, monkeypatch):
@@ -131,19 +139,9 @@ def _isolate_order_outcomes_journal(tmp_path, monkeypatch):
         _order_lifecycle_init, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path / "order_outcomes"))
 
 
-_t212_cfg_tmp = tempfile.TemporaryDirectory(
-    prefix="mptrade-tests-t212-cfg-",
-)
-_tracked_t212_runtime_env = Path(_botcore_init._REPO_ROOT) / "212trading" / "runtime.env"
-if _tracked_t212_runtime_env.is_file():
-    shutil.copyfile(_tracked_t212_runtime_env, Path(_t212_cfg_tmp.name) / "runtime.env")
-
-
 @pytest.fixture(autouse=True)
 def _isolate_t212_provider_credentials(monkeypatch):
     """Prevent global T212Provider from reading gitignored 212trading/.env live credentials in tests."""
-    from providers import market_api as _mkt_mod, t212_provider as _t212_prov_mod
-
     monkeypatch.setattr(_t212_prov_mod, "_T212_DIR", _t212_cfg_tmp.name)
     for env_key in ("T212_API_KEY", "T212_API_SECRET"):
         monkeypatch.delenv(env_key, raising=False)
@@ -787,5 +785,6 @@ def _shutdown_runtime_threads_after_suite():
     _TRACKED_MKDTEMP_DIRS.clear()
     _execution_audit_tmp.cleanup()
     _notification_state_tmp.cleanup()
+    _t212_cfg_tmp.cleanup()
     _cachedb_tmp.cleanup()
 
