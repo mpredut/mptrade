@@ -67,16 +67,6 @@ def _resolve_reentry_drop(P: dict) -> float:
     return 0.0
 
 
-def _validated_fee_and_interval(P: dict) -> tuple[float, float]:
-    raw_fee = P.get("fee") if P.get("fee") is not None else 0.25
-    fee_f = require_nonneg_float(raw_fee, "fee")
-    if fee_f >= 100.0:
-        raise ValueError(f"fee must be < 100, got {raw_fee!r}")
-    raw_iv = P.get("interval") if P.get("interval") is not None else 60
-    iv_f = require_pos_float(raw_iv, "interval")
-    return fee_f, iv_f
-
-
 def fetch_with_time(pair, interval):
     """Fetch completed candles with timestamps for intraday distribution analysis."""
     records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
@@ -86,7 +76,12 @@ def fetch_with_time(pair, interval):
 def _run_isolated_replay(ohlc, P, caller: str, overrides: dict, *, warmup_ohlc=()):
     if not isinstance(P, dict):
         raise ValueError(f"{caller} requires a dict P")
-    fee_f, iv_f = _validated_fee_and_interval(P)
+    raw_fee = P.get("fee") if P.get("fee") is not None else 0.25
+    fee_f = require_nonneg_float(raw_fee, "fee")
+    if fee_f >= 100.0:
+        raise ValueError(f"fee must be < 100, got {raw_fee!r}")
+    raw_iv = P.get("interval") if P.get("interval") is not None else 60
+    iv_f = require_pos_float(raw_iv, "interval")
     over = {
         **_ISOLATED_COMPARISON_OVERRIDES,
         **overrides,

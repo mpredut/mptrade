@@ -137,20 +137,16 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
     wf_cfg = report.get("walk_forward") if isinstance(report.get("walk_forward"), dict) else {}
     warmup_bars = safe_nonneg_int(wf_cfg.get("signal_warmup_bars"), default=0)
 
-    def _load_and_verify_frozen(raw_path: str | Path, expected_hash: object, interval: int) -> list[dict]:
-        path = _resolve_frozen_file(raw_path, baseline_dir)
-        records = load_dataset(path)
-        actual_hash = dataset_sha256(records)
-        if actual_hash != expected_hash:
-            raise ValueError(
-                f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
-            )
-        return records
-
     def _store_interval_dataset(
         interval: int, frozen_spec: str, sha256_hex: str, raw_ws: Any
     ) -> None:
-        records = _load_and_verify_frozen(frozen_spec, sha256_hex, interval)
+        path = _resolve_frozen_file(frozen_spec, baseline_dir)
+        records = load_dataset(path)
+        actual_hash = dataset_sha256(records)
+        if actual_hash != sha256_hex:
+            raise ValueError(
+                f"a different dataset hash for {interval}m: {actual_hash} != {sha256_hex}"
+            )
         window_sizes = raw_ws if isinstance(raw_ws, dict) else {}
         warmup = safe_nonneg_int(window_sizes.get("signal_warmup_bars"), default=warmup_bars)
         datasets[interval] = (records, window_sizes, warmup)

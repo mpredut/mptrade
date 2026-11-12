@@ -35,18 +35,6 @@ _CLIENT_ORDER_ID_PATTERNS = {
 }
 
 
-def _client_order_id_valid(venue: object, client_order_id: object) -> bool | None:
-    """Validate only supported venues; T212/unknown do not enter the gate."""
-    raw_v = "" if isinstance(venue, bool) else str(venue or "")
-    norm_venue = normalize_venue_name(raw_v) or raw_v.strip().lower()
-    pattern = _CLIENT_ORDER_ID_PATTERNS.get(norm_venue)
-    if pattern is None:
-        return None
-    if isinstance(client_order_id, bool):
-        return False
-    return bool(pattern.fullmatch(str(client_order_id or "")))
-
-
 def _percentile(values: list[float], percentile: float) -> float | None:
     if not values:
         return None
@@ -222,8 +210,13 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             raw_req_cid = requested.get("client_order_id")
             if raw_req_cid is not None and (isinstance(raw_req_cid, bool) or str(raw_req_cid).strip()):
                 client_order_id = raw_req_cid
-        client_order_id_valid = _client_order_id_valid(
-            requested.get("venue"), client_order_id,
+        venue_val = requested.get("venue")
+        raw_v = "" if isinstance(venue_val, bool) else str(venue_val or "")
+        cid_pat = _CLIENT_ORDER_ID_PATTERNS.get(normalize_venue_name(raw_v) or raw_v.strip().lower())
+        client_order_id_valid = (
+            None
+            if cid_pat is None
+            else (False if isinstance(client_order_id, bool) else bool(cid_pat.fullmatch(str(client_order_id or ""))))
         )
         orders.append({
             "intent_id": intent_id,

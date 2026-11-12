@@ -458,22 +458,6 @@ def _save_figure_atomic(fig, out_path, **savefig_kwargs):
         fig.savefig(temp_path, format="png", **savefig_kwargs)
 
 
-def _release_unused_memory():
-    """Release Python cycles and, on glibc, return large arenas to the OS.
-
-    This best-effort operation runs only after infrequent weekly rendering. It
-    is not required for correctness and remains portable without malloc_trim.
-    """
-    gc.collect()
-    try:
-        malloc_trim = ctypes.CDLL(None).malloc_trim
-    except (AttributeError, OSError):
-        return False
-    malloc_trim.argtypes = [ctypes.c_size_t]
-    malloc_trim.restype = ctypes.c_int
-    return bool(malloc_trim(0))
-
-
 def _plot_order_markers(ax, events, *, filled, max_annotated=25):
     """Plot orders in batches instead of one PathCollection per order.
 
@@ -1105,7 +1089,14 @@ setInterval(function() {{
 def _trim_memory_and_sleep(last_memory_trim: float, interval_sec: float) -> float:
     monotonic_now = time.monotonic()
     if monotonic_now - last_memory_trim >= MEMORY_TRIM_SECONDS:
-        _release_unused_memory()
+        gc.collect()
+        try:
+            malloc_trim = ctypes.CDLL(None).malloc_trim
+            malloc_trim.argtypes = [ctypes.c_size_t]
+            malloc_trim.restype = ctypes.c_int
+            malloc_trim(0)
+        except (AttributeError, OSError):
+            pass
         last_memory_trim = monotonic_now
     time.sleep(interval_sec)
     return last_memory_trim

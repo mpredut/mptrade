@@ -77,18 +77,6 @@ _HISTORICAL_FEATURE_DEFAULTS = {
 }
 
 
-def _historical_schema_defaults() -> dict[str, str]:
-    schema_path = ROOT / "hyperliquid" / "config.env"
-    base_env: dict[str, str] = {}
-    if schema_path.is_file():
-        for line in read_text_file(schema_path).splitlines():
-            parsed = parse_dotenv_line(line)
-            if parsed is not None and parsed[0] not in _CORE_REQUIRED_STRAT_KEYS:
-                base_env[parsed[0]] = parsed[1]
-    base_env.update(_HISTORICAL_FEATURE_DEFAULTS)
-    return base_env
-
-
 def revision_params(spec: str) -> StratParams:
     if not isinstance(spec, str) or not spec.strip() or spec.strip().startswith("-"):
         raise ValueError(f"Invalid git revision spec: {spec!r}")
@@ -113,8 +101,15 @@ def revision_params(spec: str) -> StratParams:
     except ValueError:
         if not any(k in env for k in ("STRAT_ENTRY", "STRAT_ENTRY_PCT", "STRAT_MAX_BUDGET", "STRAT_TOTAL_BUDGET")):
             raise
-        merged = {**_historical_schema_defaults(), **env}
-        return StratParams.from_env(merged)
+        schema_path = ROOT / "hyperliquid" / "config.env"
+        base_env: dict[str, str] = {}
+        if schema_path.is_file():
+            for line in read_text_file(schema_path).splitlines():
+                parsed = parse_dotenv_line(line)
+                if parsed is not None and parsed[0] not in _CORE_REQUIRED_STRAT_KEYS:
+                    base_env[parsed[0]] = parsed[1]
+        base_env.update(_HISTORICAL_FEATURE_DEFAULTS)
+        return StratParams.from_env({**base_env, **env})
 
 
 def review(baseline: str, candidate: str, cash: float) -> dict:
