@@ -91,10 +91,6 @@ class BinancePriceStream(PublicPriceStreamBase):
         super().start(name=name, daemon=_parse_bool_flag(daemon, default=False))
         return self
 
-    # --- Helpers -------------------------------------------------------------
-    def _stream_name(self, symbol: str) -> str:
-        return f"{symbol.lower()}@ticker"
-
     # --- Async core ----------------------------------------------------------
     async def _main(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -112,7 +108,7 @@ class BinancePriceStream(PublicPriceStreamBase):
             await self._interruptible_sleep(1.0)
         if self._stop_event.is_set() or not current_symbols:
             return
-        streams = "/".join(self._stream_name(s) for s in sorted(current_symbols))
+        streams = "/".join(f"{s.lower()}@ticker" for s in sorted(current_symbols))
         url = f"{WS_BASE_URL}?streams={streams}"
         logger.info("Connecting to combined stream (%d symbols)...", len(current_symbols))
         async with websockets.connect(
@@ -225,7 +221,7 @@ class BinancePriceStream(PublicPriceStreamBase):
         if self._cmd_queue is None:
             logger.warning("Manager not started, cannot send %s for %s", method, symbol)
             return
-        item = {"method": method, "stream": self._stream_name(symbol)}
+        item = {"method": method, "stream": f"{symbol.lower()}@ticker"}
         loop = getattr(self, "_loop", None) or getattr(self._cmd_queue, "_loop", None)
         if loop is not None and loop.is_running():
             try:

@@ -304,9 +304,6 @@ def _win_move_at_ts(
     return (cur_p - past_p) / past_p * 100.0
 
 
-def _exceeds_gain(move_val: float | None, threshold: float) -> bool:
-    return move_val is not None and move_val >= threshold
-
 
 def evaluate_candidate_group(
     group: list[dict[str, Any]],
@@ -350,8 +347,8 @@ def evaluate_candidate_group(
                         continue
                     w_h = safe_float(fc["params"].surge_window_hours, 0.0)
                     same_win = all(
-                        _exceeds_gain(_win_move_at_ts(all_closes, wn, ts, w_h), g)
-                        == _exceeds_gain(_win_move_at_ts(all_closes, wn, ts, 72.0), g)
+                        ((m1 := _win_move_at_ts(all_closes, wn, ts, w_h)) is not None and m1 >= g)
+                        == ((m2 := _win_move_at_ts(all_closes, wn, ts, 72.0)) is not None and m2 >= g)
                         for ts in win_ts_w72
                     )
                     if same_win:

@@ -201,10 +201,13 @@ def _edge(pnl):
     return net - bh
 
 
-def _num_str(x):
-    """A compact representation of a numeric value for the grid (17.0->'17',
-    0.5->'0.5', 5.25->'5.25') -- used when the LIVE value is added to the test set."""
-    return "%g" % x
+def _resolve_pilot_test_values(key: str, grid_values, current: float) -> list[str]:
+    test_values = [v for v in grid_values if _valid_pilot_grid_value(key, v) is not None]
+    if test_values and _valid_pilot_grid_value(key, current) is not None and not any(
+        abs(safe_float(v, 0.0) - current) < 1e-9 for v in test_values
+    ):
+        test_values.append("%g" % current)
+    return test_values
 
 
 _SERIES_SPLIT_CACHE: dict[str, tuple[list, list]] = {}
@@ -265,6 +268,11 @@ def _cache_and_trend_keys(symbol, params, series):
     )
 
 
+def _apply_run_diagnostics(tk, diag: dict) -> None:
+    rb._LAST_RUN_DIAGNOSTICS[tk] = diag
+    rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
+
+
 def _run_one(symbol, base, params, series):
     """Run the canonical replay backtest (run_replay_backtest.run_symbol) over a
     pre-sliced in-memory series without writing pnl.json."""
@@ -274,9 +282,7 @@ def _run_one(symbol, base, params, series):
     if ck in _RUN_ONE_CACHE:
         cached = _RUN_ONE_CACHE[ck]
         if ck in _RUN_ONE_DIAG_CACHE:
-            diag = dict(_RUN_ONE_DIAG_CACHE[ck])
-            rb._LAST_RUN_DIAGNOSTICS[tk] = diag
-            rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
+            _apply_run_diagnostics(tk, dict(_RUN_ONE_DIAG_CACHE[ck]))
         return dict(cached) if cached is not None else None
     res = rb.run_symbol(symbol, params, base, quiet=True, series=series)
     net_v = safe_float(res.get("net"), default=None) if isinstance(res, dict) else None
@@ -335,13 +341,9 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     if len(half1) < 100 or len(half2) < 100:
         return {"full_key": full_key, "action": "skipped", "reason": "not enough history for 2 windows"}
 
-    test_values = [v for v in grid_values if _valid_pilot_grid_value(key, v) is not None]
+    test_values = _resolve_pilot_test_values(key, grid_values, current)
     if not test_values:
         return {"full_key": full_key, "action": "skipped", "reason": "no_grid_annotation"}
-    if _valid_pilot_grid_value(key, current) is not None and not any(
-        abs(safe_float(v, 0.0) - current) < 1e-9 for v in test_values
-    ):
-        test_values.append(_num_str(current))
 
     eval_order = sorted(test_values, key=lambda x: safe_float(x, 0.0)) if key == "mt.hardtp" else test_values
     inv_state = [[None, -1.0], [None, -1.0]]
@@ -658,13 +660,9 @@ def main():
             except (KeyError, ValueError):
                 continue
             base_params = dict(rb.SYMBOLS[sym]["params"])
-            test_values = [v for v in grid_values if _valid_pilot_grid_value(key, v) is not None]
+            test_values = _resolve_pilot_test_values(key, grid_values, current)
             if not test_values:
                 continue
-            if _valid_pilot_grid_value(key, current) is not None and not any(
-                abs(safe_float(v, 0.0) - current) < 1e-9 for v in test_values
-            ):
-                test_values.append(_num_str(current))
             for v in test_values:
                 p = dict(base_params, **{key: v})
                 for half_idx, h_series in ((0, half1), (1, half2)):
@@ -687,12 +685,9 @@ def main():
                     chunksize=1,
                 ):
                     h_series = _split_series(sym)[half_idx]
-                    ck = _run_one_cache_key(sym, p, h_series)
-                    _RUN_ONE_CACHE[ck] = res
-                    _RUN_ONE_DIAG_CACHE[ck] = dict(diag)
+                    _seed_cached_half(sym, p, h_series, res, diag)
                     tk = rb._series_cache_key(sym, h_series, rb.DEFAULT_WINDOW_SECONDS)
-                    rb._LAST_RUN_DIAGNOSTICS[tk] = diag
-                    rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
+                    _apply_run_diagnostics(tk, diag)
 
         entries = {}
         for fk, (sym, base, key) in keys.items():

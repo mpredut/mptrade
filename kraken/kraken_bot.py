@@ -52,9 +52,6 @@ from providers.kraken_provider import KrakenProvider  # noqa: E402
 from providers.execution_audit import AuditedStrategyExecutor  # noqa: E402
 from credentials import kraken_credentials  # noqa: E402
 
-def _build_client() -> KrakenClient:
-    return build_kraken_client(KrakenClient, kraken_credentials, "bot")
-
 
 def main() -> int:
     env_file = load_cli_env_stack(__file__, load_fn=load_env_stack)
@@ -96,10 +93,9 @@ def main() -> int:
         p = get_price(KrakenClient(), price_pair) if price_pair else None
         log(f"[PRICE] {price_pair} = {p}")
         return 0 if p else 1
+    client = build_kraken_client(KrakenClient, kraken_credentials, "bot")
     if args.balance:
-        return _cmd_balance(_build_client())
-
-    client = _build_client()
+        return _cmd_balance(client)
 
     pair        = (args.pair or required_env("KRAKEN_PAIR")).strip().upper()
     label       = required_env("SYMBOL_LABEL")

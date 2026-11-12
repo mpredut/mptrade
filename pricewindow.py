@@ -971,18 +971,15 @@ class PriceWindow:
             max_price = self.get_max()
             return max_price, self._centroid_index_for(max_price)
 
-    def _trend_buf_lengths(self) -> tuple[int, int]:
-        return len(self.prices), len(self._trend_buf.prices)
-
     def _is_trend_buf_synced(self) -> bool:
-        n, blen = self._trend_buf_lengths()
+        n, blen = len(self.prices), len(self._trend_buf.prices)
         return (
             blen >= n
             and (n == 0 or (self._trend_buf.prices[blen - n] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
         )
 
     def _eval_synced_trend_buf(self, eff_power: float | None = None):
-        n, blen = self._trend_buf_lengths()
+        n, blen = len(self.prices), len(self._trend_buf.prices)
         if eff_power is None:
             eff_power = step_wols_power_for_symbol(self.symbol)
         noise_gate_k = max(0.0, float_env("MPTRADE_TREND_NOISE_GATE_K", default=TREND_NOISE_GATE_K))
