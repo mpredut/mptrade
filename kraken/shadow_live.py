@@ -209,19 +209,6 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
     return _parse_stored_bars(rows)
 
 
-def _merge_warmup_history(pair: str, interval: int, first_fwd_ts: int, fetched, max_bars: int = 40) -> list[tuple[float, float, float, float]]:
-    """Persist and merge up to ``max_bars`` pre-anchor warmup bars so warmup survives API window rollover."""
-    w_path = _warmup_path(pair, interval)
-    cached_w = [bar for bar in _parse_stored_bars(read_json_file(w_path, default=[], recover_previous=True)) if bar[0] < first_fwd_ts]
-    fetched_w = [bar for bar in fetched if bar[0] < first_fwd_ts]
-    by_ts = {bar[0]: bar for bar in cached_w}
-    by_ts.update({bar[0]: bar for bar in fetched_w})
-    merged_w = [by_ts[ts] for ts in sorted(by_ts)][-max_bars:]
-    if merged_w and merged_w != cached_w:
-        atomic_write_json(w_path, merged_w, separators=(",", ":"))
-    return [(o, h, l, c) for (_t, o, h, l, c) in merged_w]
-
-
 def _merge_forward_history(pair: str, interval: int, anchor: int, fetched):
     """Merge retained bars with the current fetch and detect missing history."""
     cached = [bar for bar in _load_history(pair, interval) if bar[0] >= anchor]
@@ -321,7 +308,18 @@ def snapshot(pair: str, interval: int, fee_pct: float, quiet: bool = False) -> d
     fwd_bars = _merge_forward_history(pair, interval, anchor, bars)
     fwd4 = [(o, h, l, c) for (_t, o, h, l, c) in fwd_bars]
     fwd_first_ts = fwd_bars[0][0] if fwd_bars else anchor
-    fwd_warmup = _merge_warmup_history(pair, interval, fwd_first_ts, bars, max_bars=40)
+    w_path = _warmup_path(pair, interval)
+    cached_w = [
+        bar
+        for bar in _parse_stored_bars(read_json_file(w_path, default=[], recover_previous=True))
+        if bar[0] < fwd_first_ts
+    ]
+    by_ts = {bar[0]: bar for bar in cached_w}
+    by_ts.update({bar[0]: bar for bar in bars if bar[0] < fwd_first_ts})
+    merged_w = [by_ts[ts] for ts in sorted(by_ts)][-40:]
+    if merged_w and merged_w != cached_w:
+        atomic_write_json(w_path, merged_w, separators=(",", ":"))
+    fwd_warmup = [(o, h, l, c) for (_t, o, h, l, c) in merged_w]
 
     def _bh(seg):
         return round((seg[-1][3] / seg[0][3] - 1.0) * 100.0, 4) if len(seg) >= 2 and seg[0][3] > 0 else None

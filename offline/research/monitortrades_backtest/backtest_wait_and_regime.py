@@ -26,24 +26,6 @@ from offline.research.monitortrades_backtest.sweep_mt_models import (
 )
 
 
-def _load_ts_px(sym: str) -> tuple[np.ndarray, np.ndarray, str]:
-    """Load (ts, px, src_label) for `sym`, preferring fresh dense 1s .npz / 365d .jsonl when available."""
-    arrs = load_fresh_365_npz_arrays(sym)
-    if arrs is not None:
-        return arrs[0], arrs[1], "1s-dense"
-    jsonl_365 = cache_path(f"cache_365_price_{sym}.jsonl")
-    if os.path.exists(jsonl_365):
-        series_365 = load_archive_series(sym, use_365=True)
-        if series_365:
-            ts = np.fromiter((t for t, _ in series_365), dtype=np.float64, count=len(series_365))
-            px = np.fromiter((p for _, p in series_365), dtype=np.float64, count=len(series_365))
-            return ts, px, "1s-dense"
-    series = load_archive_series(sym, use_365=False)
-    ts = np.fromiter((t for t, _ in series), dtype=np.float64, count=len(series))
-    px = np.fromiter((p for _, p in series), dtype=np.float64, count=len(series))
-    return ts, px, "329d-sparse"
-
-
 def compute_exact_time_window_signals(
     ts: np.ndarray,
     px: np.ndarray,
@@ -247,7 +229,19 @@ def main():
 
     def _iter_loaded_symbol_signals(sym_list, window_sec: float, dense_div: int, sparse_div: int):
         for s in sym_list:
-            ts_arr, px_arr, src_lbl = _load_ts_px(s)
+            arrs = load_fresh_365_npz_arrays(s)
+            if arrs is not None:
+                ts_arr, px_arr, src_lbl = arrs[0], arrs[1], "1s-dense"
+            else:
+                series_365 = (
+                    load_archive_series(s, use_365=True)
+                    if os.path.exists(cache_path(f"cache_365_price_{s}.jsonl"))
+                    else None
+                )
+                series = series_365 or load_archive_series(s, use_365=False)
+                ts_arr = np.fromiter((t for t, _ in series), dtype=np.float64, count=len(series))
+                px_arr = np.fromiter((p for _, p in series), dtype=np.float64, count=len(series))
+                src_lbl = "1s-dense" if series_365 else "329d-sparse"
             if len(ts_arr) == 0:
                 continue
             step_s = max(60, len(ts_arr) // dense_div) if src_lbl == "1s-dense" else max(5, len(ts_arr) // sparse_div)

@@ -433,7 +433,13 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
 
     if not dry_run:
         _apply_config_change(section, key, current, new_value)
-        _restart_monitortrades()
+        try:
+            out = subprocess.run(["pgrep", "-f", r"python.*monitortrades\.py"],
+                                 capture_output=True, text=True, timeout=5)
+            for pid in (p for p in out.stdout.split() if p.isdigit()):
+                subprocess.run(["kill", pid], timeout=5)
+        except Exception as e:  # noqa: BLE001 -- it does not stop the journalling or the notification
+            print(f"[scheduled_pilot] error restarting monitortrades: {e}")
         _notify_change(full_key, symbol, current, new_value, winner_val, entry)
 
     return entry
@@ -479,19 +485,6 @@ def _apply_config_change(section, key, old_value, new_value):
         except Exception:
             atomic_write_text(INSTRUMENTS_CONF, orig_content)
             raise
-
-
-def _restart_monitortrades():
-    """Kills the live process -- the flota_start.sh supervisor restarts it
-    automatically (the same mechanism used by hand throughout the session)."""
-    try:
-        out = subprocess.run(["pgrep", "-f", r"python.*monitortrades\.py"],
-                              capture_output=True, text=True, timeout=5)
-        pids = [p for p in out.stdout.split() if p.isdigit()]
-        for pid in pids:
-            subprocess.run(["kill", pid], timeout=5)
-    except Exception as e:  # noqa: BLE001 -- it does not stop the journalling or the notification
-        print(f"[scheduled_pilot] error restarting monitortrades: {e}")
 
 
 def _notify_change(full_key, symbol, old_value, new_value, winner_val, entry):

@@ -1241,44 +1241,6 @@ def format_equity_macro_regime_line(data: Any, *, include_crypto: bool = True) -
     return regime
 
 
-def _resolve_cached_btc_24h_chg_ssot(cache_dir: str) -> Optional[float]:
-    if not cache_dir:
-        return None
-    for fn in (
-        "24price_BTCUSDC.json",
-        "cache_24_price_BTCUSDC.json",
-        "24price_BTCUSDT.json",
-        "cache_24_price_BTCUSDT.json",
-        "24price.json",
-        "cache_24_price.json",
-    ):
-        fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn)))
-        if not os.path.exists(fpath):
-            continue
-        raw = _default_read_json_recovering(fpath, default=None)
-        rows = lookup_symbol_cache_items(raw, "BTCUSDC", require_list=True, unwrap_items=True)
-        if not isinstance(rows, list) or len(rows) < 2:
-            continue
-        pts: List[Tuple[float, float]] = []
-        for r in rows:
-            if isinstance(r, (list, tuple)) and len(r) >= 2:
-                tf, pf = safe_pos_float(r[0], 0.0), safe_pos_float(r[1], 0.0)
-                if tf > 0.0 and pf > 0.0:
-                    pts.append((tf * 1000.0 if tf < 1e11 else tf, pf))
-        if len(pts) >= 2:
-            pts.sort(key=lambda x: x[0])
-            cutoff = pts[-1][0] - 86400.0 * 1000.0
-            win = [p for p in pts if p[0] >= cutoff]
-            if len(win) < 2:
-                win = pts
-            p0, p1 = win[0][1], win[-1][1]
-            if p0 > 0.0:
-                chg = round((p1 - p0) / p0 * 100.0, 2) + 0.0
-                if abs(chg) > 1e-6:
-                    return chg
-    return None
-
-
 def enrich_macro_benchmarks_live_state(
     data: Optional[Dict[str, Any]],
     *,
@@ -1306,7 +1268,38 @@ def enrich_macro_benchmarks_live_state(
             out["equity_regime"] = compute_equity_macro_regime(out)
         btc_chg = btc_chg_24h_pct
         if btc_chg is None and cache_dir:
-            btc_chg = _resolve_cached_btc_24h_chg_ssot(cache_dir)
+            for fn in (
+                "24price_BTCUSDC.json",
+                "cache_24_price_BTCUSDC.json",
+                "24price_BTCUSDT.json",
+                "cache_24_price_BTCUSDT.json",
+                "24price.json",
+                "cache_24_price.json",
+            ):
+                fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn)))
+                if not os.path.exists(fpath):
+                    continue
+                raw = _default_read_json_recovering(fpath, default=None)
+                rows = lookup_symbol_cache_items(raw, "BTCUSDC", require_list=True, unwrap_items=True)
+                if not isinstance(rows, list) or len(rows) < 2:
+                    continue
+                pts = [
+                    (tf * 1000.0 if tf < 1e11 else tf, pf)
+                    for r in rows
+                    if isinstance(r, (list, tuple)) and len(r) >= 2
+                    and (tf := safe_pos_float(r[0], 0.0)) > 0.0
+                    and (pf := safe_pos_float(r[1], 0.0)) > 0.0
+                ]
+                if len(pts) >= 2:
+                    pts.sort(key=lambda x: x[0])
+                    cutoff = pts[-1][0] - 86400.0 * 1000.0
+                    win = [p for p in pts if p[0] >= cutoff] or pts
+                    if len(win) < 2:
+                        win = pts
+                    p0, p1 = win[0][1], win[-1][1]
+                    if p0 > 0.0 and abs(chg := round((p1 - p0) / p0 * 100.0, 2) + 0.0) > 1e-6:
+                        btc_chg = chg
+                        break
         if (
             force_recompute
             or lead_changed

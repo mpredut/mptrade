@@ -713,8 +713,26 @@ class Strategy(BaseSpotMixin):
         if self.p.reentry_ttl_hours > 0 and last_sell_ts:
             if (self._now() - last_sell_ts) >= self.p.reentry_ttl_hours * 3600.0:
                 self.s.pop("sl_rebuy", None)
-        if self.s.get("sl_rebuy"):
-            self._handle_sl_rebuy(price)
+        rb = self.s.get("sl_rebuy")
+        if isinstance(rb, dict) and rb:
+            prev_low = safe_pos_float(rb.get("low"), None)
+            rb["low"] = min(prev_low, price) if prev_low is not None else price
+            target = rb["low"] * (1 + self.p.sl_rebuy_bounce_pct / 100.0)
+            if price >= target or are_close(price, target, self.p.reentry_tolerance_pct):
+                if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
+                    log(f"  [STRAT] re-buy SL cancelled — budget cap {self.p.max_budget:.0f} {self.ccy} reached")
+                elif self._place_buy(self.p.entry_amount, price * (1 - self.p.entry_discount_pct / 100), kind="ENTRY"):
+                    self.s.pop("sl_rebuy", None)
+                    self.s["last_exit_kind"] = "TP"
+                    if self.exit_manager is not None:
+                        self.exit_manager.reentry_state.pop(self.ticker, None)
+                    log(f"  🟢 [STRAT] RE-BUY after the SL: a +{self.p.sl_rebuy_bounce_pct}% pullback from the low {rb['low']:.2f} — re-entering ENTRY")
+                    notify(
+                        title=f"🟢 {self.yahoo_sym} RE-BUY after the stop-loss",
+                        body=(f"pullback +{self.p.sl_rebuy_bounce_pct}% from low {rb['low']:.2f} — "
+                              f"re-entering with {self.p.entry_amount:.0f}{self.ccy}"),
+                        source="T212", price=price, desktop=self.desktop,
+                    )
             return False, "handling_sl_rebuy"
         return None
 
@@ -1313,34 +1331,6 @@ class Strategy(BaseSpotMixin):
         if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):
             self._alert_stop_loss_once(price, loss_pct)
         return True
-
-    def _handle_sl_rebuy(self, price: float) -> None:
-        """Rebuy after a catastrophic stop loss once price bounces from its low."""
-        rb = self.s.get("sl_rebuy")
-        if not isinstance(rb, dict) or not rb:
-            return
-        prev_low = safe_pos_float(rb.get("low"), None)
-        rb["low"] = min(prev_low, price) if prev_low is not None else price
-        target = rb["low"] * (1 + self.p.sl_rebuy_bounce_pct / 100.0)
-        if price < target and not are_close(price, target, self.p.reentry_tolerance_pct):
-            return
-        if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
-            log(f"  [STRAT] re-buy SL cancelled — budget cap {self.p.max_budget:.0f} {self.ccy} reached")
-            return
-        disc = 1 - self.p.entry_discount_pct / 100
-        if not self._place_buy(self.p.entry_amount, price * disc, kind="ENTRY"):
-            return
-        self.s.pop("sl_rebuy", None)
-        self.s["last_exit_kind"] = "TP"
-        if self.exit_manager is not None:
-            self.exit_manager.reentry_state.pop(self.ticker, None)
-        log(f"  🟢 [STRAT] RE-BUY after the SL: a +{self.p.sl_rebuy_bounce_pct}% pullback from the low {rb['low']:.2f} — re-entering ENTRY")
-        notify(
-            title=f"🟢 {self.yahoo_sym} RE-BUY after the stop-loss",
-            body=(f"pullback +{self.p.sl_rebuy_bounce_pct}% from low {rb['low']:.2f} — "
-                  f"re-entering with {self.p.entry_amount:.0f}{self.ccy}"),
-            source="T212", price=price, desktop=self.desktop,
-        )
 
     # -- Step Pipeline Sub-Stages ----------------------------------------------
     def _step_sync_market(self, price: float) -> tuple[float, float, float, bool] | None:
