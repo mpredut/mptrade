@@ -628,14 +628,6 @@ def render_chart(symbol, window_label, window_start, window_end,
         plt.close(fig)
 
 
-def _get_active_summary():
-    """Safely fetch current active intent summary without raising."""
-    try:
-        return build_active_intent_index(ROOT).get("summary")
-    except Exception:
-        return None
-
-
 def format_state_text(entry, header, pending=None, exposure=None):
     if not isinstance(entry, dict):
         entry = {}
@@ -880,18 +872,14 @@ def main():
         else list(split_csv(args.symbols))
     )
 
-    def _load_symbol_backtest_series(directory: str, symbol: str):
-        price_ts, price_vals = load_backtest_price_samples(directory, symbol)
-        trend_events = load_backtest_trend_starts(directory, symbol)
-        order_events = load_backtest_order_events(directory, symbol)
-        all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
-        return price_ts, price_vals, trend_events, order_events, all_ts
-
     if args.backtest_dir and frame_hours is not None:
         directory = os.path.abspath(args.backtest_dir)
         chunk_sec = frame_hours * 3600
         for symbol in symbols:
-            price_ts, price_vals, trend_events, order_events, all_ts = _load_symbol_backtest_series(directory, symbol)
+            price_ts, price_vals = load_backtest_price_samples(directory, symbol)
+            trend_events = load_backtest_trend_starts(directory, symbol)
+            order_events = load_backtest_order_events(directory, symbol)
+            all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
             if not all_ts:
                 print(f"[tradeall_observe] {symbol}: no data for the frames yet")
                 paths = []
@@ -956,7 +944,10 @@ setInterval(function() {{
             while True:
                 for symbol in symbols:
                     try:
-                        price_ts, price_vals, trend_events, order_events, all_ts = _load_symbol_backtest_series(directory, symbol)
+                        price_ts, price_vals = load_backtest_price_samples(directory, symbol)
+                        trend_events = load_backtest_trend_starts(directory, symbol)
+                        order_events = load_backtest_order_events(directory, symbol)
+                        all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
                         if not all_ts:
                             window_start, window_end = time.time() - DAY_SECONDS, time.time()
                             label = "backtest (full replayed interval)"
@@ -988,7 +979,10 @@ setInterval(function() {{
             print("\n[tradeall_observe] stopped.")
         return
 
-    active_summary = _get_active_summary()
+    try:
+        active_summary = build_active_intent_index(ROOT).get("summary")
+    except Exception:
+        active_summary = None
     write_html(symbols, live_minutes=live_minutes, active_summary=active_summary)
     html_path = os.path.join(LIVE_OUT_DIR, "tradeall_live.html")
     print(f"[tradeall_observe] symbols: {symbols} | rendering every {interval_sec}s")
@@ -1005,7 +999,10 @@ setInterval(function() {{
             due_day = cycle_start - last_day >= day_refresh
             due_week = cycle_start - last_week >= week_refresh
             if due_day:
-                active_summary = _get_active_summary()
+                try:
+                    active_summary = build_active_intent_index(ROOT).get("summary")
+                except Exception:
+                    active_summary = None
                 write_html(symbols, live_minutes=live_minutes, active_summary=active_summary)
             for symbol in symbols:
                 try:

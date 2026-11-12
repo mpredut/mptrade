@@ -848,13 +848,8 @@ class TrailingAdapterBase:
             f"sells below {stop_f:.4f} (-{trail}%){free_sfx}"
         )
 
-    @staticmethod
-    def _bind_tagged_log(template: str):
-        return lambda self, arg, _t=template: self.log(_t.format(tag=self._LOG_TAG, arg=arg))
-
-    log_skip_rebuy_trend = _bind_tagged_log(
-        "  {tag} re-buy {arg} deferred -- the instant trend is CLEARLY down (not catching the knife)"
-    )
+    def log_skip_rebuy_trend(self, arg) -> None:
+        self.log(f"  {self._LOG_TAG} re-buy {arg} deferred -- the instant trend is CLEARLY down (not catching the knife)")
 
     def log_skip_sell_trend(self, key, asset, pair, trail) -> None:
         target = asset if self._PREFER_ASSET_LABEL else pair
@@ -869,7 +864,8 @@ class TrailingAdapterBase:
         self.log(f"  {self._LOG_TAG} cost_basis({pair}) unavailable ({exc}) {dash} warm-up from current price")
         return None
 
-    log_tick_error = _bind_tagged_log("  ! {tag} cycle error ({arg}) -- continuing")
+    def log_tick_error(self, arg) -> None:
+        self.log(f"  ! {self._LOG_TAG} cycle error ({arg}) -- continuing")
 
     @staticmethod
     def _extract_order_result_status(result) -> tuple[str, str]:

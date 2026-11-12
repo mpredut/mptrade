@@ -211,13 +211,6 @@ def _kalman_gate_blocks(symbol, action, reason=None):
     return trend != wanted, mode, trend  # strict
 
 
-def _normalize_action_and_symbol(action, symbol) -> tuple[str, str]:
-    return (
-        normalize_side(action) or str(action or "").upper(),
-        _resolve_tradeall_symbol(symbol),
-    )
-
-
 def _fire_order(symbol, action, price, reason, **kwargs):
     """Submit an order through the single guarded proxy.
 
@@ -228,7 +221,8 @@ def _fire_order(symbol, action, price, reason, **kwargs):
     ``qty=None`` uses the QuantityDecision maximum under Binance policy, clamped
     to the real balance.
     """
-    action, symbol = _normalize_action_and_symbol(action, symbol)
+    action = normalize_side(action) or str(action or "").upper()
+    symbol = _resolve_tradeall_symbol(symbol)
     price_f = safe_pos_float(price, default=None)
     if price_f is None:
         print(f"[TRADEALL] order refused: price invalid {price!r}")
@@ -273,7 +267,8 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     cancels expired orders on the venue, applies side-specific strategic pricing,
     and records newly placed order IDs.
     """
-    action, symbol = _normalize_action_and_symbol(action, symbol)
+    action = normalize_side(action) or str(action or "").upper()
+    symbol = _resolve_tradeall_symbol(symbol)
     print(f"Iteration {count} generated price {proposed_price} versus {current_price}")
 
     if order_ids is None:
@@ -398,13 +393,8 @@ class TrendState:
         # FIRE_MAX_PER_TREND until a new trend. _last_attempt_* records the last
         # accepted or rejected attempt, and every retry must wait at least
         # FIRE_MIN_RETRY_INTERVAL_SEC.
-        self._reset_fire_counters()
-
-    def _reset_fire_counters(self) -> None:
-        self._confirmed_count_up = 0
-        self._confirmed_count_down = 0
-        self._last_attempt_up_ts = None
-        self._last_attempt_down_ts = None
+        self._confirmed_count_up = self._confirmed_count_down = 0
+        self._last_attempt_up_ts = self._last_attempt_down_ts = None
 
     @staticmethod
     def _norm_ts(ts):
@@ -422,7 +412,8 @@ class TrendState:
         self.confirm_count = 1
         self.end_time = None
         self.expired = False
-        self._reset_fire_counters()
+        self._confirmed_count_up = self._confirmed_count_down = 0
+        self._last_attempt_up_ts = self._last_attempt_down_ts = None
         print(f"Start of {self.state} trend at {timeToHMS(self.start_time)}")
         return self.old_state
 
@@ -563,14 +554,6 @@ def _dir_action(is_up: bool) -> tuple[str, str]:
     return ("UP", "BUY") if is_up else ("DOWN", "SELL")
 
 
-def _resolve_regime_ctx(symbol: str, caller_tag: str = "TRADEALL"):
-    try:
-        return mkt.market_regime_context(symbol)
-    except Exception as e:
-        print(f"[{caller_tag}] Error resolving regime context for {symbol}: {e}")
-        return None
-
-
 def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None, price_window=None):
     """Evaluate fast-momentum and short-term acceleration impulses on the small price window."""
     trend_state.check_trend_expiration()
@@ -689,7 +672,10 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
         print(f"ALERT slope1 = {slope} gradient = {gradient}")
 
     if regime_ctx is None:
-        regime_ctx = _resolve_regime_ctx(symbol, "TRADEALL")
+        try:
+            regime_ctx = mkt.market_regime_context(symbol)
+        except Exception as e:
+            print(f"[TRADEALL] Error resolving regime context for {symbol}: {e}")
     if regime_ctx is not None:
         print(f"[TRADEALL] {symbol} resolved trend: {getattr(regime_ctx, 'resolved_trend', None)}")
 
@@ -799,14 +785,6 @@ class TrendCoordinator:
     def _new_trend_state() -> TrendState:
         return TrendState(expiration_trend_time=2.7 * 60, fresh_trend_time=3.7 * 60)
 
-    @staticmethod
-    def _attempt_timestamps(ts_small, ts_big) -> tuple:
-        return tuple(
-            getattr(ts, attr, None)
-            for ts in (ts_small, ts_big)
-            for attr in ("_last_attempt_up_ts", "_last_attempt_down_ts")
-        )
-
     def _resolve_symbol(self, symbol: str) -> str:
         if isinstance(symbol, str):
             canon = self._canonical_symbols.get(symbol.strip().upper())
@@ -867,7 +845,11 @@ class TrendCoordinator:
         current_price = safe_pos_float(current_price, default=None)
         if current_price is None:
             return None
-        regime_ctx = _resolve_regime_ctx(symbol, "TrendCoordinator")
+        try:
+            regime_ctx = mkt.market_regime_context(symbol)
+        except Exception as e:
+            print(f"[TrendCoordinator] Error resolving regime context for {symbol}: {e}")
+            regime_ctx = None
 
         win = self.instant_mgr.get_window(symbol)
         win_big = self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec)
@@ -908,7 +890,12 @@ class TrendCoordinator:
 
         ts_small = self.trend_states[symbol]
         ts_big = self.trend_states_big[symbol]
-        prev_attempts = self._attempt_timestamps(ts_small, ts_big)
+        prev_attempts = (
+            getattr(ts_small, "_last_attempt_up_ts", None),
+            getattr(ts_small, "_last_attempt_down_ts", None),
+            getattr(ts_big, "_last_attempt_up_ts", None),
+            getattr(ts_big, "_last_attempt_down_ts", None),
+        )
         prev_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
         snapshot = handle_symbol(
             symbol, current_price,
@@ -920,7 +907,12 @@ class TrendCoordinator:
             regime_ctx=regime_ctx,
         )
         cur_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
-        cur_attempts = self._attempt_timestamps(ts_small, ts_big)
+        cur_attempts = (
+            getattr(ts_small, "_last_attempt_up_ts", None),
+            getattr(ts_small, "_last_attempt_down_ts", None),
+            getattr(ts_big, "_last_attempt_up_ts", None),
+            getattr(ts_big, "_last_attempt_down_ts", None),
+        )
         handle_placed_order = bool(
             (cur_orders_snapshot and cur_orders_snapshot != prev_orders_snapshot)
             or cur_attempts != prev_attempts

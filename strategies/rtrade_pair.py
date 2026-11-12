@@ -44,15 +44,6 @@ def _parse_nonneg_int(
     return iv
 
 
-def _clean_optional_reason(val: object, label: str) -> Optional[str]:
-    if val is None:
-        return None
-    if isinstance(val, (bool, dict, list, tuple, set, frozenset)):
-        raise ValueError(f"invalid rtrade checkpoint {label}")
-    s = str(val).strip()
-    return s if s else None
-
-
 @dataclass
 class OrderTicket:
     order_id: str
@@ -200,20 +191,16 @@ def _place_failure_reason(venue: PairVenue, side: str) -> str:
     return f"{side.lower()}_place_failed"
 
 
-def _validate_adj_and_decimals(adjustment_fraction: float, decimals: int) -> tuple[float, int]:
-    adj_f = safe_float(adjustment_fraction, default=None)
-    if adj_f is None or not 0 < adj_f < 1:
-        raise ValueError("adjustment_fraction must be in (0, 1)")
-    return adj_f, _parse_nonneg_int(decimals, error_msg="decimals must be a non-negative integer")
-
-
 def quote_prices(mid: float, adjustment_fraction: float,
                  decimals: int = 4) -> tuple[float, float]:
     """Return bid/ask quotes symmetric around the same market snapshot."""
     mid_f = safe_pos_float(mid, default=None)
     if mid_f is None:
         raise ValueError("mid must be positive")
-    adj_f, dec_i = _validate_adj_and_decimals(adjustment_fraction, decimals)
+    adj_f = safe_float(adjustment_fraction, default=None)
+    if adj_f is None or not 0 < adj_f < 1:
+        raise ValueError("adjustment_fraction must be in (0, 1)")
+    dec_i = _parse_nonneg_int(decimals, error_msg="decimals must be a non-negative integer")
     return round(mid_f * (1 - adj_f), dec_i), round(mid_f * (1 + adj_f), dec_i)
 
 
@@ -225,7 +212,10 @@ def anchored_exit_price(exit_side: str, fill_price: float, current_price: float,
     fill_f, cur_f = safe_pos_float(fill_price, default=None), safe_pos_float(current_price, default=None)
     if fill_f is None or cur_f is None:
         raise ValueError("the prices must be positive")
-    adj_f, dec_i = _validate_adj_and_decimals(adjustment_fraction, decimals)
+    adj_f = safe_float(adjustment_fraction, default=None)
+    if adj_f is None or not 0 < adj_f < 1:
+        raise ValueError("adjustment_fraction must be in (0, 1)")
+    dec_i = _parse_nonneg_int(decimals, error_msg="decimals must be a non-negative integer")
     edge_f = safe_float(min_edge_fraction, default=None)
     if edge_f is None or not 0 <= edge_f < 1:
         raise ValueError("min_edge_fraction must be in [0, 1)")
@@ -392,7 +382,10 @@ class PairCoordinator:
         if norm_phase not in _VALID_PHASES:
             raise ValueError("invalid rtrade checkpoint phase")
         obj.phase = norm_phase
-        obj.reason = _clean_optional_reason(state.get("reason"), "reason")
+        raw_reason = state.get("reason")
+        if isinstance(raw_reason, (bool, dict, list, tuple, set, frozenset)):
+            raise ValueError("invalid rtrade checkpoint reason")
+        obj.reason = (str(raw_reason).strip() or None) if raw_reason is not None else None
         obj.shock = _parse_bool_flag(state.get("shock", False), default=False)
         raw_elapsed = state.get("elapsed_sec")
         elapsed_f = 0.0 if raw_elapsed is None else safe_float(raw_elapsed, default=None)
@@ -467,7 +460,10 @@ class PairCoordinator:
             if raw_hs_rev is None
             else _parse_nonneg_int(raw_hs_rev, max_val=_MAX_LIMIT_REVISION, error_msg=f"invalid hard-stop revision: {raw_hs_rev}")
         )
-        obj.hard_stop_reason = _clean_optional_reason(state.get("hard_stop_reason"), "hard_stop_reason")
+        raw_hs_reason = state.get("hard_stop_reason")
+        if isinstance(raw_hs_reason, (bool, dict, list, tuple, set, frozenset)):
+            raise ValueError("invalid rtrade checkpoint hard_stop_reason")
+        obj.hard_stop_reason = (str(raw_hs_reason).strip() or None) if raw_hs_reason is not None else None
         return obj
 
     def _append_unique_ticket(self, ticket: OrderTicket) -> OrderTicket:
@@ -644,14 +640,6 @@ class PairCoordinator:
         bq, bc, _bf, sq, sc, _sf = self._totals()
         return bq, bc, sq, sc, bq - sq
 
-    def _bump_limit_revision(self, exit_side: str) -> bool:
-        current_revision = self.limit_revisions[exit_side]
-        if current_revision >= _MAX_LIMIT_REVISION:
-            self.reason = "exit_revision_exhausted"
-            return False
-        self.limit_revisions[exit_side] = current_revision + 1
-        return True
-
     def _cancel_active_exit_ticket(
         self,
         ticket: OrderTicket,
@@ -673,8 +661,11 @@ class PairCoordinator:
             return None
         final_exit_side = "SELL" if final_net > 0 else "BUY"
         rem_qty = abs(final_net)
-        if bump_revision and not self._bump_limit_revision(exit_side):
-            return None
+        if bump_revision:
+            if self.limit_revisions[exit_side] >= _MAX_LIMIT_REVISION:
+                self.reason = "exit_revision_exhausted"
+                return None
+            self.limit_revisions[exit_side] += 1
         if final_exit_side != exit_side or rem_qty > abs(net) + 1e-8:
             self.reason = f"{prefix}_exposure_changed_during_cancel"
             return None
@@ -871,8 +862,11 @@ class PairCoordinator:
                 latest_rev = exact_nonneg_int(latest_exit.revision, default=0) or 0
                 current_revision = max(self.limit_revisions[exit_side], latest_rev)
                 self.limit_revisions[exit_side] = current_revision
-                if latest_rev == current_revision and not self._bump_limit_revision(exit_side):
-                    return self.outcome()
+                if latest_rev == current_revision:
+                    if current_revision >= _MAX_LIMIT_REVISION:
+                        self.reason = "exit_revision_exhausted"
+                        return self.outcome()
+                    self.limit_revisions[exit_side] = current_revision + 1
             try:
                 replacement = self.venue.place_limit(
                     exit_side, target, replacement_qty, self.pair_id,

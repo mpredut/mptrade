@@ -677,16 +677,6 @@ class Strategy(BaseSpotMixin):
             ok = self._cancel_order(o) and ok
         return ok
 
-    def _cancel_if_stale_buy(self, o: dict, price: float) -> None:
-        age = (self._now() - (safe_nonneg_float(o.get("ts")) or 0.0)) / 60
-        if (
-            o.get("side") == "buy"
-            and not _parse_bool_flag(o.get("cancel_requested"), False)
-            and age > self.p.order_ttl_min
-            and price > o["price"] * 1.003
-        ):
-            self._log_and_cancel_stale_buy(o, "txid", "buy", "--")
-
     def _has_pending_market_exit(self) -> bool:
         return any(o["side"] == "sell" and is_market_order(o) for o in self.s["orders"])
 
@@ -787,7 +777,13 @@ class Strategy(BaseSpotMixin):
                     elif (side == "buy" and price <= o["price"]) or (side == "sell" and price >= o["price"]):
                         fill_price = o["price"]
                     else:
-                        self._cancel_if_stale_buy(o, price)
+                        if (
+                            o.get("side") == "buy"
+                            and not _parse_bool_flag(o.get("cancel_requested"), False)
+                            and (self._now() - (safe_nonneg_float(o.get("ts")) or 0.0)) / 60 > self.p.order_ttl_min
+                            and price > o["price"] * 1.003
+                        ):
+                            self._log_and_cancel_stale_buy(o, "txid", "buy", "--")
                         continue
                     if o in self.s["orders"]:
                         self._remove(o)
@@ -864,19 +860,19 @@ class Strategy(BaseSpotMixin):
                     if o in self.s["orders"]:
                         self._remove(o)
                     if o["side"] == "sell":
-                        if st == "closed" and total_vol > eps:
-                            self._record_tp_tranche_sold(o)
+                        if st == "closed" and total_vol > eps and (tr_i := safe_nonneg_int(o.get("tranche_idx"), default=None)) is not None:
+                            sold_lvls = self.s.setdefault("tp_sold_levels", [])
+                            if tr_i not in sold_lvls:
+                                sold_lvls.append(tr_i)
                         self._finalize_cycle_if_flat(o, reported_price)
                     log(f"  [STRAT] {o['txid']} {st} (executed {total_vol}/{o['vol']})")
-                else:
-                    self._cancel_if_stale_buy(o, price)
-
-    def _record_tp_tranche_sold(self, o: dict) -> None:
-        tr_i = safe_nonneg_int(o.get("tranche_idx"), default=None)
-        if tr_i is not None:
-            sold_lvls = self.s.setdefault("tp_sold_levels", [])
-            if tr_i not in sold_lvls:
-                sold_lvls.append(tr_i)
+                elif (
+                    o.get("side") == "buy"
+                    and not _parse_bool_flag(o.get("cancel_requested"), False)
+                    and (self._now() - (safe_nonneg_float(o.get("ts")) or 0.0)) / 60 > self.p.order_ttl_min
+                    and price > o["price"] * 1.003
+                ):
+                    self._log_and_cancel_stale_buy(o, "txid", "buy", "--")
 
     def _apply_fill(self, o: dict, vol: float, price: float, fee: float,
                     *, final: bool = True) -> None:
@@ -920,7 +916,10 @@ class Strategy(BaseSpotMixin):
                 source=self.notification_source, price=price, desktop=self.desktop,
             )
             if final:
-                self._record_tp_tranche_sold(o)
+                if (tr_i := safe_nonneg_int(o.get("tranche_idx"), default=None)) is not None:
+                    sold_lvls = self.s.setdefault("tp_sold_levels", [])
+                    if tr_i not in sold_lvls:
+                        sold_lvls.append(tr_i)
                 self._finalize_cycle_if_flat(o, price)
 
     def _finalize_cycle_if_flat(self, o: dict, price: float) -> None:
