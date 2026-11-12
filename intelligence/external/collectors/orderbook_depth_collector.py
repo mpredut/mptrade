@@ -314,35 +314,47 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         tick_step = max(0.001 if mid < 5.0 else 0.01, round(mid * 0.0015, 3 if mid < 5.0 else 2))
         b_cap = min(mid * 0.9985, mid - tick_step)
         a_floor = max(mid * 1.0015, mid + tick_step)
-        for _t, _o, h_px, l_px, c_px, vol in bars[-156:]:
-            if vol <= 0.0 or c_px <= 0.0:
+        window_bars = bars[-78:]
+        n_wb = len(window_bars)
+        for idx, (_t, _o, h_px, l_px, c_px, vol) in enumerate(window_bars):
+            if vol <= 0.0 or c_px <= 0.0 or h_px < lo_band or l_px > hi_band:
                 continue
             clv = (c_px - l_px) / (h_px - l_px) if h_px > l_px else 0.5
-            # Allocate buying interest to support node below mid and selling supply to resistance node above mid
-            b_px = round(min(l_px, b_cap) / tick_step) * tick_step
-            a_px = round(max(h_px, a_floor) / tick_step) * tick_step
-            if b_px < lo_band:
-                b_px = round(min(b_cap, mid * (1.0 - band_pct * 0.6)) / tick_step) * tick_step
-            if a_px > hi_band:
-                a_px = round(max(a_floor, mid * (1.0 + band_pct * 0.6)) / tick_step) * tick_step
-            if b_px >= mid:
-                b_px = max(0.01, round(mid - tick_step, 4))
-            if a_px <= mid:
-                a_px = round(mid + tick_step, 4)
-            # Scale 5m bar dollar volume to passive book depth (~2% of bar turnover per level)
-            b_val = vol * c_px * max(0.15, clv) * 0.02
-            a_val = vol * c_px * max(0.15, 1.0 - clv) * 0.02
-            bid_buckets[round(b_px, 4)] = bid_buckets.get(round(b_px, 4), 0.0) + b_val
-            ask_buckets[round(a_px, 4)] = ask_buckets.get(round(a_px, 4), 0.0) + a_val
+            overlap_frac = (
+                max(0.05, min(1.0, (min(h_px, hi_band) - max(l_px, lo_band)) / (h_px - l_px)))
+                if h_px > l_px
+                else 1.0
+            )
+            recency_decay = 0.92 ** (n_wb - 1 - idx)
+            # Scale in-band 5m bar dollar volume to passive lit-book depth (~0.25% per level, capped against MOO/MOC cross spikes)
+            bar_passive_usd = min(vol * c_px * 0.0025, 1_500_000.0) * overlap_frac * recency_decay
+            if l_px < mid:
+                eff_l = l_px if l_px >= lo_band else 0.5 * (lo_band + min(c_px, b_cap))
+                b_px = round(min(max(eff_l, lo_band), b_cap) / tick_step) * tick_step
+                if b_px >= mid:
+                    b_px = max(0.01, round(mid - tick_step, 4))
+                b_val = bar_passive_usd * max(0.15, clv)
+                bid_buckets[round(b_px, 4)] = bid_buckets.get(round(b_px, 4), 0.0) + b_val
+            if h_px > mid:
+                eff_h = h_px if h_px <= hi_band else 0.5 * (hi_band + max(c_px, a_floor))
+                a_px = round(max(min(eff_h, hi_band), a_floor) / tick_step) * tick_step
+                if a_px <= mid:
+                    a_px = round(mid + tick_step, 4)
+                a_val = bar_passive_usd * max(0.15, 1.0 - clv)
+                ask_buckets[round(a_px, 4)] = ask_buckets.get(round(a_px, 4), 0.0) + a_val
 
         if bid_sz_usd > 0.0:
             bid_buckets[best_bid] = bid_buckets.get(best_bid, 0.0) + bid_sz_usd
         if ask_sz_usd > 0.0:
             ask_buckets[best_ask] = ask_buckets.get(best_ask, 0.0) + ask_sz_usd
+        fallback_depth_usd = min(
+            250_000.0,
+            max(1000.0, (safe_pos_float(ctx.get("daily_vol_sh"), default=1000.0) or 1000.0) * mid * 0.0005),
+        )
         if not bid_buckets:
-            bid_buckets[round(mid * 0.995, 4)] = max(1000.0, (safe_pos_float(ctx.get("daily_vol_sh"), default=1000.0) or 1000.0) * mid * 0.005)
+            bid_buckets[round(mid * 0.995, 4)] = fallback_depth_usd
         if not ask_buckets:
-            ask_buckets[round(mid * 1.005, 4)] = max(1000.0, (safe_pos_float(ctx.get("daily_vol_sh"), default=1000.0) or 1000.0) * mid * 0.005)
+            ask_buckets[round(mid * 1.005, 4)] = fallback_depth_usd
 
         bid_depth_usd = sum(bid_buckets.values())
         ask_depth_usd = sum(ask_buckets.values())

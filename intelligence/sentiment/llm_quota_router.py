@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib
 import logging
 import os
@@ -223,24 +224,6 @@ class GeminiQuotaRouterMixin:
         _quota_api_url = _gc_attr("QUOTA_API_URL", QUOTA_API_URL)
         _load_assist_api_url = _gc_attr("LOAD_ASSIST_API_URL", LOAD_ASSIST_API_URL)
 
-        with cls._QUOTA_LOCK:
-            mem = cls._QUOTA_MEM_CACHE
-            if (
-                isinstance(mem, dict)
-                and isinstance(mem.get("buckets"), dict)
-                and is_cache_fresh(mem.get("checked_ts"), now, ttl_sec, force_refresh=force_refresh)
-            ):
-                return dict(mem)
-
-            disk = _read_json_dict(state_path, default={})
-            if (
-                isinstance(disk, dict)
-                and isinstance(disk.get("buckets"), dict)
-                and is_cache_fresh(disk.get("checked_ts"), now, ttl_sec, force_refresh=force_refresh)
-            ):
-                cls._QUOTA_MEM_CACHE = dict(disk)
-                return dict(disk)
-
         cli_bases = []
         if bot_cli_base and isinstance(bot_cli_base, str):
             cli_bases.append(bot_cli_base)
@@ -248,8 +231,8 @@ class GeminiQuotaRouterMixin:
             if resolved_base and resolved_base not in cli_bases:
                 cli_bases.append(resolved_base)
 
-        access_token = ""
-        for base_dir in cli_bases:
+        valid_tokens: list[tuple[int, float, str]] = []
+        for idx, base_dir in enumerate(cli_bases):
             tok_path = os.path.join(base_dir, "antigravity-oauth-token")
             tok_data = _read_json_dict(tok_path, default={})
             if not tok_data:
@@ -266,8 +249,44 @@ class GeminiQuotaRouterMixin:
                 or 0.0
             )
             if tok and (exp_ts <= 0.0 or exp_ts > now + 10.0):
-                access_token = tok
-                break
+                valid_tokens.append((idx, exp_ts, tok))
+
+        access_token = ""
+        if valid_tokens:
+            if bot_cli_base and valid_tokens[0][0] == 0 and valid_tokens[0][1] <= 0.0:
+                access_token = valid_tokens[0][2]
+            else:
+                dated_tokens = [vt for vt in valid_tokens if vt[1] > now + 10.0]
+                if dated_tokens:
+                    access_token = max(dated_tokens, key=lambda vt: (vt[1], -vt[0]))[2]
+                else:
+                    access_token = valid_tokens[0][2]
+
+        token_fp = hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16] if access_token else ""
+
+        def _cache_matches_token(cached: Dict[str, Any]) -> bool:
+            cached_fp = str(cached.get("oauth_token_fp") or "").strip()
+            return not (token_fp and cached_fp and token_fp != cached_fp)
+
+        with cls._QUOTA_LOCK:
+            mem = cls._QUOTA_MEM_CACHE
+            if (
+                isinstance(mem, dict)
+                and isinstance(mem.get("buckets"), dict)
+                and _cache_matches_token(mem)
+                and is_cache_fresh(mem.get("checked_ts"), now, ttl_sec, force_refresh=force_refresh)
+            ):
+                return dict(mem)
+
+            disk = _read_json_dict(state_path, default={})
+            if (
+                isinstance(disk, dict)
+                and isinstance(disk.get("buckets"), dict)
+                and _cache_matches_token(disk)
+                and is_cache_fresh(disk.get("checked_ts"), now, ttl_sec, force_refresh=force_refresh)
+            ):
+                cls._QUOTA_MEM_CACHE = dict(disk)
+                return dict(disk)
 
         if not access_token:
             return None
@@ -337,9 +356,11 @@ class GeminiQuotaRouterMixin:
             prev = _read_json_dict(state_path, default={})
             if not isinstance(prev, dict):
                 prev = {}
+            prev_fp = str(prev.get("oauth_token_fp") or "").strip()
+            same_oauth_account = not (token_fp and prev_fp and token_fp != prev_fp)
             runtime_exhausted: Dict[str, float] = {}
             prev_exhausted = prev.get("runtime_exhausted")
-            if isinstance(prev_exhausted, dict) and available_credits <= 0.0:
+            if same_oauth_account and isinstance(prev_exhausted, dict) and available_credits <= 0.0:
                 for m_name, exp_val in prev_exhausted.items():
                     exp_ts = safe_float(exp_val, 0.0)
                     if exp_ts > now:
@@ -347,12 +368,13 @@ class GeminiQuotaRouterMixin:
 
             snapshot: Dict[str, Any] = {
                 "checked_ts": now,
+                "oauth_token_fp": token_fp,
                 "tier_id": tier_id,
                 "available_credits": available_credits,
                 "buckets": buckets,
                 "runtime_exhausted": runtime_exhausted,
-                "last_alert_ts": safe_float(prev.get("last_alert_ts"), 0.0),
-                "last_alert_tier": str(prev.get("last_alert_tier") or "ok"),
+                "last_alert_ts": safe_float(prev.get("last_alert_ts"), 0.0) if same_oauth_account else 0.0,
+                "last_alert_tier": str(prev.get("last_alert_tier") or "ok") if same_oauth_account else "ok",
             }
             cls._cache_and_save_quota_state_locked(state_path, snapshot, _save_json_state)
 

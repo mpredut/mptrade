@@ -627,7 +627,9 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
                 if fr_f is not None and not (is_eq_sym and abs(fr_f) < 1e-12):
                     telemetry["Perpetual Funding Rate"] = f"{fr_f * 100:+.4f}% (8h)"
                 if oi_f > 0.0:
-                    telemetry["Derivatives Open Interest"] = f"${oi_f:,.0f}"
+                    telemetry["Derivatives Open Interest"] = (
+                        f"${oi_f:,.0f} (Cboe options chain OI)" if is_eq_sym else f"${oi_f:,.0f}"
+                    )
         except Exception:
             pass
 
@@ -1595,12 +1597,13 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         if (oi_v := safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) > 0.0:
             l1_oi = safe_pos_float(cur_m_info.get("native_l1_oi_usd"), default=0.0) or 0.0
             oi_base = f"${oi_v:,.0f} (l1_oi=${l1_oi / 1e9:.2f}B)" if (l1_oi > 0.0 and abs(l1_oi - oi_v) > 1.0) else f"${oi_v:,.0f}"
+            eq_oi_tag = " (Cboe options chain OI)" if is_eq_sym else ""
             if (oi_chg := safe_float(cur_m_info.get("oi_1h_chg_pct"), default=None)) is not None:
-                telemetry["Derivatives Open Interest"] = f"{oi_base} (1h_chg={oi_chg:+.2f}%)"
+                telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag} (1h_chg={oi_chg:+.2f}%)"
             else:
-                telemetry["Derivatives Open Interest"] = oi_base
+                telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag}"
 
-        liq_c = compute_liquidation_clusters(p_est, cur_m_info)
+        liq_c = {} if is_eq_sym else compute_liquidation_clusters(p_est, cur_m_info)
         cur_m_info.update(liq_c)
         if is_usd_sym:
             cur_bd = safe_pos_float(cur_m_info.get("bid_depth_usd"), default=0.0) or 0.0
@@ -1703,7 +1706,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             if sp_cvd is not None:
                 cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f}"
             telemetry["15m Cumulative Volume Delta (CVD)"] = cvd_line
-        if not eq_no_oi_pt and liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
+        if not is_eq_sym and liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
             deep_parts = [
                 f"deep_{s_lbl}=${liq_c[px_k]} (${safe_float(liq_c.get(usd_k), 0.0):,.0f}, {safe_float(liq_c.get(dist_k), 0.0):+.2f}%)"
                 for s_lbl, px_k, usd_k, dist_k in (
@@ -1825,6 +1828,21 @@ class RecentFillsExecutionStage(PretradePillarCollectorBase):
                             sub_parts.append(f"{side_lbl}={round(diff_ms / 3_600_000.0, 1)}h")
                 if (act_avg := safe_pos_float(fills.get("active_avg_buy_px"), default=None)) is not None:
                     sub_parts.append(f"Active Cycle Avg BUY={act_avg}")
+                    if open_lots_f:
+                        rf_q = 0.0
+                        rf_cost = 0.0
+                        for flt in open_lots_f:
+                            if not isinstance(flt, dict):
+                                continue
+                            fq = safe_pos_float(flt.get("qty"), default=None)
+                            fpx = round_opt_px(flt.get("entry_px"), 6)
+                            if fq is not None and fpx is not None and fq > 0.0 and fpx > 0.0:
+                                rf_q += fq
+                                rf_cost += fq * fpx
+                        if rf_q > 0.0:
+                            rf_lifo_avg = round_opt_px(rf_cost / rf_q, 6)
+                            if rf_lifo_avg is not None and abs(rf_lifo_avg - act_avg) / act_avg >= 0.0025:
+                                sub_parts.append(f"Remaining LIFO Avg BUY={rf_lifo_avg}")
                 if (
                     (tac_avg := safe_pos_float(fills.get("tactical_avg_buy_px"), default=None)) is not None
                     and (act_avg is None or tac_avg < act_avg)

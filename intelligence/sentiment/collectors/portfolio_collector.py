@@ -1647,6 +1647,15 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
                             continue
                     except Exception:
                         checked_oq_expiry = False
+                if (
+                    lifecycle == "submit_pending"
+                    and str(rec.get("submission_state") or "").lower() == "refused"
+                    and bool(rec.get("safe_to_discard"))
+                    and (safe_float(rec.get("attempts"), 0.0) or 0.0) >= 5.0
+                    and str(rec.get("last_failure_reason") or "").lower()
+                    in {"qty_zero_after_policy", "qty_zero_after_weight", "qty_zero_or_negative", "below_min_notional"}
+                ):
+                    continue
                 if lifecycle in ("submit_pending", "awaiting_cancel", "pending", "active") and (
                     checked_oq_expiry or lifecycle == "awaiting_cancel" or exp_ts == 0.0 or exp_ts > eff_now
                 ):

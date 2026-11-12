@@ -63,11 +63,41 @@ def _age_sfx(d: Dict[str, Any], parens: bool = False) -> str:
 def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     """Format a normalized venue cycle anchor entry for Section 3C of the AI prompt."""
     extra_parts: List[str] = []
+    lb_px_f = safe_float(cyc.get("last_buy_price"), None)
+    avg_c_f = safe_float(cyc.get("avg_cost_px"), None)
+    spot_px_f = safe_float(cyc.get("_spot_px"), None)
     if cyc.get("pos_peak") is not None and not _same_anchor_px(cyc.get("pos_peak"), cyc.get("avg_cost_px")):
         pk_dd = safe_float(cyc.get("dd_from_peak_pct"), None)
         pk_dd_val = (pk_dd + 0.0) if pk_dd is not None else cyc.get("dd_from_peak_pct")
         pk_sfx = f" (dd_from_peak={pk_dd_val}%)" if pk_dd_val is not None else ""
         extra_parts.append(f"pos_peak={cyc.get('pos_peak')}{pk_sfx}")
+    if (
+        isinstance(open_lots_c_init := cyc.get("_open_lots"), list)
+        and open_lots_c_init
+        and avg_c_f is not None
+        and avg_c_f > 0.0
+    ):
+        cyc_q = safe_float(cyc.get("qty"), 0.0) or 0.0
+        eff_c_lots = clip_open_lots_to_held_qty(open_lots_c_init, cyc_q) if cyc_q > 0.0 else open_lots_c_init
+        c_lq = 0.0
+        c_lcost = 0.0
+        for clt in eff_c_lots:
+            if not isinstance(clt, dict):
+                continue
+            cq = safe_float(clt.get("qty"), None)
+            cpx = round_opt_px(clt.get("entry_px"), 6)
+            if cq is not None and cpx is not None and cq > 0.0 and cpx > 0.0 and cq * cpx >= 1.0:
+                c_lq += cq
+                c_lcost += cq * cpx
+        if cyc_q > 0.0 and c_lq >= cyc_q * 0.95:
+            lifo_c_vwap = round_opt_px(c_lcost / c_lq, 6)
+            if lifo_c_vwap is not None and abs(lifo_c_vwap - avg_c_f) / avg_c_f >= 0.0025:
+                lifo_c_pnl = (
+                    f" (pnl_vs_lifo={round(((spot_px_f - lifo_c_vwap) / lifo_c_vwap) * 100.0, 2) + 0.0:+.2f}%)"
+                    if spot_px_f is not None and spot_px_f > 0.0
+                    else ""
+                )
+                extra_parts.append(f"lifo_rem_avg={lifo_c_vwap}{lifo_c_pnl}")
     if cyc.get("realized_pnl_usd") is not None:
         extra_parts.append(f"realized_pnl=${cyc.get('realized_pnl_usd')}")
     for lbl, k in (("tp_sold", "tp_sold_levels"), ("resting_orders", "resting_orders")):
@@ -83,9 +113,6 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
         if dd_f is not None and dd_f > 0.0
         else f"dd={f'{dd_val}%' if dd_val is not None else 'N/A'}"
     )
-    lb_px_f = safe_float(cyc.get("last_buy_price"), None)
-    avg_c_f = safe_float(cyc.get("avg_cost_px"), None)
-    spot_px_f = safe_float(cyc.get("_spot_px"), None)
     lb_pnl_sfx = ""
     if (
         lb_px_f is not None
@@ -900,7 +927,7 @@ def _format_microstructure_section(
             or (isinstance(p_ctx, dict) and p_ctx.get("chg_15m_pct") is not None)
         ):
             enrich_microstructure_cvd(minfo, p_ctx)
-        if any(
+        if not sym_is_eq_3b and any(
             minfo.get(k) is None
             for k in ("long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px", "liq_magnet_bias")
         ):
@@ -928,7 +955,7 @@ def _format_microstructure_section(
                     o_copy = dict(other_m)
                     o_p = prices_and_trends.get(other_s) if isinstance(prices_and_trends.get(other_s), dict) else p_ctx
                     enrich_microstructure_cvd(o_copy, o_p)
-                    if o_copy.get("liq_magnet_bias") is None:
+                    if not sym_is_eq_3b and o_copy.get("liq_magnet_bias") is None:
                         o_copy.update(compute_liquidation_clusters(o_p, o_copy))
                     sib_view[other_s] = o_copy
             reconcile_sibling_flow_and_liq_regimes(sib_view, prices_and_trends)
@@ -985,7 +1012,7 @@ def _format_microstructure_section(
             basis_sfx = f", {', '.join(basis_parts)}"
 
         liq_sfx = ""
-        if not eq_no_oi_3b and minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
+        if not sym_is_eq_3b and minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
             liq_parts: List[str] = []
             for l_lbl, px_k, usd_k, dist_k in (
                 ("long_liq", "long_liq_px", "long_liq_usd", "long_liq_dist_pct"),
@@ -1046,7 +1073,7 @@ def _format_microstructure_section(
             ""
             if (eq_no_oi_3b and eq_zero_fund_3b)
             else (
-                f", oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+                f", oi_usd={oi_lbl} (cboe_options_oi), oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
                 if eq_zero_fund_3b
                 else (
                     f", funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
@@ -1143,6 +1170,17 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         held_pos_q = (safe_float(pos.get("free_base"), 0.0) or 0.0) + (
             safe_float(pos.get("locked_base_qty"), 0.0) or 0.0
         )
+        all_eff_lots = clip_open_lots_to_held_qty(open_lots, held_pos_q)
+        all_lots_q = 0.0
+        all_lots_cost = 0.0
+        for alt in all_eff_lots:
+            if not isinstance(alt, dict):
+                continue
+            aq = safe_float(alt.get("qty"), None)
+            apx = round_opt_px(alt.get("entry_px"), 6)
+            if aq is not None and apx is not None and aq > 0.0 and apx > 0.0 and aq * apx >= 1.0:
+                all_lots_q += aq
+                all_lots_cost += aq * apx
         eff_lots = clip_open_lots_to_held_qty(open_lots[-4:], held_pos_q)
         lot_parts: List[str] = []
         valid_lots: List[Tuple[float, float, float]] = []
@@ -1176,6 +1214,27 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
             if prof_usd >= 10.0 and prof_cost > 0.0:
                 prof_avg_pct = ((prof_usd - prof_cost) / prof_cost) * 100.0
                 t_extra += f", profitable_lifo_usd=${prof_usd:.2f}({prof_q:g}_{base_lbl}@{prof_avg_pct:+.2f}%)"
+            shown_lots_q = sum(l_q for l_q, _, _ in valid_lots)
+            if (
+                held_pos_q > 0.0
+                and (rem_core_q := held_pos_q - shown_lots_q) > max(1e-6, held_pos_q * 0.02)
+                and (px_f <= 0.0 or rem_core_q * px_f >= 5.0)
+            ):
+                t_extra += f", older_core_qty={round(rem_core_q, 6):g}_{base_lbl}"
+        if (
+            held_pos_q > 0.0
+            and all_lots_q >= held_pos_q * 0.95
+            and avg_buy_f is not None
+            and avg_buy_f > 0.0
+        ):
+            lifo_rem_vwap = round_opt_px(all_lots_cost / all_lots_q, 6)
+            if lifo_rem_vwap is not None and abs(lifo_rem_vwap - avg_buy_f) / avg_buy_f >= 0.0025:
+                lifo_pnl_sfx = (
+                    f" (pnl_vs_lifo={round(((px_f - lifo_rem_vwap) / lifo_rem_vwap) * 100.0, 2) + 0.0:+.2f}%)"
+                    if px_f > 0.0
+                    else ""
+                )
+                t_extra += f", lifo_rem_avg_px={lifo_rem_vwap}{lifo_pnl_sfx}"
     if (lifo_p := safe_float(pos.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_p) >= 0.01:
         t_extra += f", lifo_realized_pnl=${lifo_p:+.2f}"
     fee_tier = eff_pos.get("fee_tier") or "STANDARD"
@@ -1259,6 +1318,21 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
     last_b_px = round_opt_px((oinfo.get("last_buy") or {}).get("price") if isinstance(oinfo.get("last_buy"), dict) else None, 6)
     avg_b_px = round_opt_px(oinfo.get("active_avg_buy_px"), 6)
     avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
+    if avg_b_px and avg_b_px > 0.0 and open_lots_ro:
+        ro_q = 0.0
+        ro_cost = 0.0
+        for rlt in open_lots_ro:
+            if not isinstance(rlt, dict):
+                continue
+            rq = safe_float(rlt.get("qty"), None)
+            rpx = round_opt_px(rlt.get("entry_px"), 6)
+            if rq is not None and rpx is not None and rq > 0.0 and rpx > 0.0:
+                ro_q += rq
+                ro_cost += rq * rpx
+        if ro_q > 0.0:
+            ro_lifo_avg = round_opt_px(ro_cost / ro_q, 6)
+            if ro_lifo_avg is not None and abs(ro_lifo_avg - avg_b_px) / avg_b_px >= 0.0025:
+                avg_b_str += f" | Remaining LIFO Avg BUY={ro_lifo_avg}"
     tac_b_px = round_opt_px(oinfo.get("tactical_avg_buy_px"), 6)
     tac_b_str = (
         f" | Tactical Sub-Cycle Avg BUY={tac_b_px}"

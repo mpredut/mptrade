@@ -9819,3 +9819,230 @@ def test_equity_suffix_ssot_primitives_and_zero_manual_endswith_ast():
     assert violations == [], f"Manual _EQ/_US_EQ .endswith() found outside cachepaths.py: {violations}"
 
 
+def test_ai_data_coherence_and_quota_fingerprint_fixes(tmp_path, monkeypatch):
+    """Verify all 6 live AI prompt data-coherence fixes and instant OAuth token fingerprint cache invalidation."""
+    import order_retry as _or_mod
+    from intelligence.sentiment.collectors.portfolio_collector import BotRuntimeStatesCollector
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_microstructure_section,
+        _format_tradable_position_line,
+        _format_venue_cycle_line,
+    )
+
+    now_s = 1_794_500_000.0
+
+    # Fix #1A: Equity synthetic orderbook ignores out-of-band historical bars and caps MOO/MOC cross spikes
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path))
+    out_of_band_bars = [
+        (now_s - (80 - i) * 300.0, 196.0, 197.0, 195.0, 196.5, 4_000_000.0)
+        for i in range(60)
+    ]
+    in_band_bars = [
+        (now_s - (15 - i) * 300.0, 206.6, 207.4, 206.1, 206.95, 1_200_000.0)
+        for i in range(15)
+    ]
+    ob_col._fetch_equity_market_context = lambda sym, now, **kw: {
+        "ticker": "NVDA",
+        "last_price": 206.95,
+        "best_bid": 206.93,
+        "best_ask": 206.97,
+        "bid_size_sh": 400.0,
+        "ask_size_sh": 400.0,
+        "daily_vol_sh": 35_000_000.0,
+        "bars": out_of_band_bars + in_band_bars,
+    }
+    nvda_ob = ob_col._fetch_equity_orderbook("NVDA_US_EQ", now_s)
+    assert nvda_ob is not None
+    assert nvda_ob.largest_bid_wall_usd < 15_000_000.0
+    assert nvda_ob.bid_depth_usd < 25_000_000.0
+    assert abs(nvda_ob.largest_bid_wall_price - round(206.95 * 0.991, 2)) > 0.25
+
+    # Fix #1B: Section 3B suppresses perp liq_clusters on _US_EQ even when Cboe options OI > 0
+    sec_3b_lines = _format_microstructure_section(
+        {
+            "NVDA_US_EQ": {
+                "ob_imbalance": 0.54,
+                "bid_depth_usd": 4_200_000.0,
+                "ask_depth_usd": 3_600_000.0,
+                "bid_wall_px": 206.10,
+                "bid_wall_usd": 1_100_000.0,
+                "ask_wall_px": 207.40,
+                "ask_wall_usd": 950_000.0,
+                "whale_long_pct": 0.58,
+                "taker_buy_sell_ratio": 1.12,
+                "taker_buy_vol_usd": 8_500_000.0,
+                "taker_sell_vol_usd": 7_590_000.0,
+                "oi_usd": 285486813126.0,
+                "oi_1h_chg_pct": 0.4,
+                "long_liq_px": 195.0,
+                "short_liq_px": 219.0,
+            }
+        },
+        {"NVDA_US_EQ": {"price": 206.95}},
+    )
+    sec_3b_txt = "\n".join(sec_3b_lines)
+    assert "oi_usd=285486813126.0 (cboe_options_oi)" in sec_3b_txt
+    assert "liq_clusters(" not in sec_3b_txt
+
+    # Fix #2 & #5B: AVCO vs remaining LIFO VWAP on NVDA_US_EQ and older_core_qty on BTCUSDC
+    nvda_pos_line = _format_tradable_position_line(
+        {
+            "venue": "t212",
+            "symbol": "NVDA_US_EQ",
+            "base": "NVDA",
+            "quote": "USD",
+            "free_base": 0.41,
+            "value_usd": 84.85,
+            "free_quote": 1240.0,
+            "price": 206.95,
+            "active_avg_buy_px": 167.1951,
+            "pnl_vs_avg_pct": 23.78,
+            "open_lots": [
+                {"lot_id": "N1", "qty": 0.38, "entry_px": 205.65},
+                {"lot_id": "N2", "qty": 0.03, "entry_px": 207.93},
+            ],
+        }
+    )
+    assert "lifo_rem_avg_px=205.816829 (pnl_vs_lifo=+0.55%)" in nvda_pos_line
+    assert "older_core_qty=" not in nvda_pos_line
+
+    nvda_cyc_line = _format_venue_cycle_line(
+        "t212",
+        "NVDA_US_EQ",
+        {
+            "qty": 0.41,
+            "cost_usd": 68.55,
+            "avg_cost_px": 167.1951,
+            "entry_price": 167.1951,
+            "last_buy_price": 207.93,
+            "dca_buys": 2,
+            "pnl_vs_avg_pct": 23.78,
+            "_spot_px": 206.95,
+            "_open_lots": [
+                {"qty": 0.38, "entry_px": 205.65},
+                {"qty": 0.03, "entry_px": 207.93},
+            ],
+        },
+    )
+    assert "lifo_rem_avg=205.816829 (pnl_vs_lifo=+0.55%)" in nvda_cyc_line
+
+    btc_pos_line = _format_tradable_position_line(
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "base": "BTC",
+            "quote": "USDC",
+            "free_base": 0.055436,
+            "value_usd": 4102.26,
+            "free_quote": 2500.0,
+            "price": 74000.0,
+            "active_avg_buy_px": 73255.12,
+            "open_lots": [
+                {"lot_id": "B1", "qty": 0.00696, "entry_px": 73415.99},
+                {"lot_id": "B2", "qty": 0.00691, "entry_px": 73660.27},
+            ],
+        }
+    )
+    assert "older_core_qty=0.041566_BTC" in btc_pos_line
+
+    # Fix #4: HighStakeGuard dynamic USDC/USD currency, equity persona, and clean grammar
+    class _SpyPromptClient:
+        def __init__(self):
+            self.last_prompt = ""
+
+        def query_json(self, prompt, **_kw):
+            self.last_prompt = prompt
+            return {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"}
+
+    spy_hs = _SpyPromptClient()
+    monkeypatch.setattr("intelligence.sentiment.guards.high_stake_guard._HIGH_STAKE_DECISION_CACHE", {})
+    monkeypatch.setattr(
+        "intelligence.sentiment.guards.high_stake_guard.query_topic_json",
+        lambda client, topic_key, prompt, **kw: spy_hs.query_json(prompt),
+    )
+    hs_usd = HighStakeGuard(gemini_client=spy_hs, min_notional_eur=700.0, min_notional_usd=700.0)
+    hs_usd.check("SOLUSDC", "BUY", price=143.51, qty=8.0, notional_eur=1148.09, telemetry={"Price": "$143.51"}, now=now_s)
+    assert "$1,148.09 USDC" in spy_hs.last_prompt
+    assert "$700.00 USDC" in spy_hs.last_prompt
+    assert "€" not in spy_hs.last_prompt
+    assert "evaluate if executing" not in spy_hs.last_prompt
+    assert "you must evaluate whether this entry is sound" in spy_hs.last_prompt
+
+    hs_usd.check("NVDA_US_EQ", "BUY", price=206.95, qty=8.0, notional_eur=1655.60, telemetry={"Price": "$206.95"}, now=now_s + 5.0)
+    assert "principal quantitative equities and multi-asset risk officer" in spy_hs.last_prompt
+    assert "$1,655.60 USD" in spy_hs.last_prompt
+
+    # Fix #5A: kalman_primary_up fast impulse TTL = hours * 3600 (1080s for 0.3h) + zombie refused filter
+    zombie_rec = {
+        "id": "bcc26acf413f4a60a5bd7244312eec18",
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "qty": 0.0068,
+        "requested_price": 73897.15,
+        "kind": "kalman_primary_up",
+        "place_kwargs": {"hours": 0.3, "kind": "kalman_primary_up", "module": "tradeall"},
+        "created_ts": now_s - 7200.0,
+        "attempts": 200,
+        "lifecycle": "submit_pending",
+        "submission_state": "refused",
+        "safe_to_discard": True,
+        "last_failure_reason": "qty_zero_after_policy",
+    }
+    assert _or_mod.resolve_record_ttl(zombie_rec) == pytest.approx(1080.0)
+    assert _or_mod.is_expired(zombie_rec, now=now_s) is True
+
+    cdir_rq = tmp_path / "cachedb_rq"
+    (cdir_rq / "orders").mkdir(parents=True, exist_ok=True)
+    non_impulse_refused = dict(zombie_rec, id="ref2", kind="custom_grid", created_ts=now_s - 60.0)
+    (cdir_rq / "orders" / "order_retry_queue.jsonl").write_text(
+        json.dumps(zombie_rec) + "\n" + json.dumps(non_impulse_refused) + "\n",
+        encoding="utf-8",
+    )
+    rt_states = BotRuntimeStatesCollector().collect(str(cdir_rq), now=now_s)
+    assert "active_retry_queue" not in rt_states
+
+    # Fix #6: Instant OAuth token fingerprint invalidation across account switch
+    q_dir = tmp_path / "q_switch"
+    q_dir.mkdir(parents=True, exist_ok=True)
+    tok_file = q_dir / "antigravity-oauth-token"
+    q_state_file = q_dir / "llm_quota_status.json"
+    tok_file.write_text(
+        json.dumps({"token": {"access_token": "acct-A-tok", "expiry_timestamp": int((time.time() + 3600) * 1000)}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(q_state_file)))
+    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.resolve_bot_cli_base", lambda: str(q_dir))
+    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.resolve_ui_cli_base", lambda: str(q_dir))
+    GeminiClient._QUOTA_MEM_CACHE = {}
+
+    acct_tier = {"id": "free-tier", "frac": 0.0, "seen_tokens": []}
+
+    def _mock_post(url, *args, **kwargs):
+        hdrs = kwargs.get("headers") or {}
+        acct_tier["seen_tokens"].append(hdrs.get("Authorization"))
+        if "loadCodeAssist" in url:
+            return {"currentTier": {"id": acct_tier["id"]}, "paidTier": {"id": acct_tier["id"], "availableCredits": []}}
+        return {"buckets": [{"modelId": "gemini-3.8-flash-tiered", "remainingFraction": acct_tier["frac"]}]}
+
+    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.fetch_json_post", _mock_post)
+    s_a = GeminiClient.probe_live_model_quota(bot_cli_base=str(q_dir), force_refresh=True)
+    assert s_a is not None and s_a["tier_id"] == "free-tier"
+    GeminiClient._record_model_quota_exhausted("gemini-4-argon-medium", ttl_sec=120.0)
+
+    # Switch OAuth token WITHOUT force_refresh -> must bypass 30s cache in 0ms and clear old runtime_exhausted!
+    tok_file.write_text(
+        json.dumps({"token": {"access_token": "acct-B-ultra-tok", "expiry_timestamp": int((time.time() + 7200) * 1000)}}),
+        encoding="utf-8",
+    )
+    acct_tier["id"] = "g1-ultra-tier"
+    acct_tier["frac"] = 1.0
+    s_b = GeminiClient.probe_live_model_quota(bot_cli_base=str(q_dir), force_refresh=False)
+    assert s_b is not None
+    assert s_b["tier_id"] == "g1-ultra-tier"
+    assert s_b["buckets"]["gemini-4-argon-medium"] == 1.0
+    assert s_b["runtime_exhausted"] == {}
+    assert acct_tier["seen_tokens"][-1] == "Bearer acct-B-ultra-tok"
+
+
+

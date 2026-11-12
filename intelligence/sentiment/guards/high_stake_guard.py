@@ -16,6 +16,7 @@ from botcore import (
     resolve_patched_attr,
     safe_nonneg_float,
 )
+from cachepaths import has_equity_suffix
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -492,7 +493,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
-        min_notional_eur: float = DEFAULT_MIN_NOTIONAL_USD,
+        min_notional_eur: Optional[float] = None,
         min_notional_usd: Optional[float] = None,
         timeout_sec: float = 120.0,
         fallback_action: str = "allow",
@@ -510,19 +511,47 @@ class HighStakeGuard(PreTradeLLMGuardBase):
             cache_ttl_sec=cache_ttl_sec,
             max_telemetry_age_sec=max_telemetry_age_sec,
         )
-        resolved_min = safe_pos_float(min_notional_usd if min_notional_usd is not None else min_notional_eur, DEFAULT_MIN_NOTIONAL_USD)
+        self._legacy_eur_unit = min_notional_eur is not None and min_notional_usd is None
+        raw_min = (
+            min_notional_usd
+            if min_notional_usd is not None
+            else (min_notional_eur if min_notional_eur is not None else DEFAULT_MIN_NOTIONAL_USD)
+        )
+        resolved_min = safe_pos_float(raw_min, DEFAULT_MIN_NOTIONAL_USD)
         self.min_notional_usd = self.min_notional_eur = resolved_min
 
-    def _build_high_stake_prompt(self, side_norm: str, notional: float, context_str: str) -> str:
+    def _resolve_currency_display(self, symbol: str) -> tuple[str, str]:
+        sym_u = str(symbol or "").strip().upper()
+        if sym_u.endswith("EUR"):
+            return "€", "EUR"
+        if has_equity_suffix(symbol, include_compact=True):
+            return "$", "USD"
+        if self._legacy_eur_unit:
+            return "€", "EUR"
+        if sym_u.endswith("USDC"):
+            return "$", "USDC"
+        return "$", "USD"
+
+    def _build_high_stake_prompt(
+        self,
+        side_norm: str,
+        notional: float,
+        context_str: str,
+        *,
+        symbol: str = "",
+        ccy_sym: str = "€",
+        ccy_code: str = "EUR",
+    ) -> str:
+        is_eq = has_equity_suffix(symbol, include_compact=True)
         if side_norm == "BUY":
             action_desc = "HIGH-VALUE BUY order"
             risk_context = (
-                "evaluating whether this entry is sound or if there are critical red flags "
-                "(e.g., euphoric top buying, aggressive whale distribution, severe funding imbalance, or active cascade)."
+                "whether this entry is sound or if there are critical red flags "
+                "(e.g., euphoric top buying, aggressive institutional/whale distribution, severe positioning imbalance, or active cascade)."
             )
             policy_rules = (
                 "CORE RISK POLICIES & PRIORITY RULES:\n"
-                "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. Static long holdings can be trapped or liquidated. If Whale Taker Flow is below 0.85 (net sell aggression), you must NEVER issue an unrestricted APPROVED. If Whale Taker Flow is below 0.80 in a FLAT or BEAR market, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural support).\n"
+                "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. Static long holdings can be trapped or liquidated (note: on US cash equities *_US_EQ without perpetual futures, Open Interest reflects Cboe options chain OI rather than leveraged perp positions). If Whale Taker Flow is below 0.85 (net sell aggression), you must NEVER issue an unrestricted APPROVED. If Whale Taker Flow is below 0.80 in a FLAT or BEAR market, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural support).\n"
                 "2. ORDERBOOK SUPPORT LIMITATION: Bid walls and orderbook depth are passive and can be pulled or absorbed by aggressive market selling. Do NOT use orderbook depth alone to override persistent taker selling.\n"
                 "3. MACRO, GEOPOLITICAL & CONTRARIAN BOTTOM ACCUMULATION: If Macro Sentiment recommends CAUTION or Geopolitical threat is elevated, do not fight negative taker flow. However, when 6h Intraday Bottom Structure confirms 'HIGHER_LOW_DOUBLE_BOTTOM' or 'LIQUIDITY_SWEEP_RECLAIM' (especially with 'smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE') AND Whale Taker Flow is >= 1.0 (or 15m CVD is positive/spot_absorbing), issue APPROVED — do NOT veto or downscale a verified contrarian bottom entry merely because lagging 24h breadth or residual geopolitical headlines remain elevated.\n"
                 "4. CROSS-ASSET MACRO, VIX & INSTITUTIONAL FLOW SYMMETRY (Equities <-> Crypto): Synthesize 'Equity & Macro Regime' across both Stocks and Crypto: weigh SPY/QQQ/VIX/DXY/US10Y and Futures_Lead (FUTURES_PREMARKET_GAP_UP | FUTURES_PREMARKET_GAP_DOWN) alongside IBIT (US ETF flow), CB_Premium (Coinbase vs Binance institutional spot basis bps), BTC_DVOL/ETH_DVOL, Options_Surface & ETH_Options(VRP, PC_OI, Skew_25d), and Cross_Asset (COUPLED_RISK_ON | COUPLED_RISK_OFF | CRYPTO_BULLISH_DECOUPLING | EQUITY_BULLISH_DECOUPLING). When Cross_Asset is COUPLED_RISK_OFF with surging VIX, deeply negative CB_Premium (<= -8 bps), or negative Skew_25d (put-buying fear), require strict Taker/CVD absorption before approving large BUY entries; conversely, when Cross_Asset is CRYPTO_BULLISH_DECOUPLING or COUPLED_RISK_ON with positive CB_Premium / IBIT inflow or FUTURES_PREMARKET_GAP_UP, do NOT veto a crypto BUY solely due to soft prior-day equity indices."
@@ -530,18 +559,23 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         else:
             action_desc, risk_context, policy_rules = (
                 "HIGH-VALUE SELL order",
-                "evaluating whether this sale is sound or if there are critical red flags "
-                "(e.g., dumping directly into major whale support/walls, panic-selling at local bottom during whale accumulation, or excessive slippage).",
+                "whether this sale is sound or if there are critical red flags "
+                "(e.g., dumping directly into major institutional/whale support/walls, panic-selling at local bottom during accumulation, or excessive slippage).",
                 "CORE RISK POLICIES & PRIORITY RULES:\n"
-                "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions and Orderbook Ask Depth. Static short holdings can be squeezed or liquidated. If Whale Taker Flow is above 1.18 (net buy aggression), you must NEVER issue an unrestricted APPROVED for a non-stop-loss SELL into strength. If Whale Taker Flow is above 1.25 in a FLAT or BULL market during whale accumulation or short squeeze, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural resistance).\n"
+                "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions and Orderbook Ask Depth. Static short holdings can be squeezed or liquidated (on US cash equities *_US_EQ, Open Interest reflects Cboe options chain OI rather than leveraged perps). If Whale Taker Flow is above 1.18 (net buy aggression), you must NEVER issue an unrestricted APPROVED for a non-stop-loss SELL into strength. If Whale Taker Flow is above 1.25 in a FLAT or BULL market during whale accumulation or short squeeze, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural resistance).\n"
                 "2. ORDERBOOK RESISTANCE LIMITATION: Ask walls and orderbook ask depth are passive and can be pulled or absorbed by aggressive market buying. Do NOT use orderbook ask depth alone to override persistent taker buying.\n"
                 "3. CAPITULATION & SQUEEZE PROTECTION (6H DOUBLE-BOTTOM & RECLAIM DEFENSE): Do not approve panic-selling into extreme negative funding, active whale accumulation, or a verified 6h Intraday Bottom Structure ('HIGHER_LOW_DOUBLE_BOTTOM', 'LIQUIDITY_SWEEP_RECLAIM', or 'FRESH_6H_LOW_TEST') at local bottoms.\n"
                 "4. CROSS-ASSET MACRO, VIX & INSTITUTIONAL FLOW SYMMETRY (Equities <-> Crypto): Synthesize 'Equity & Macro Regime' across both Stocks and Crypto: weigh SPY/QQQ/VIX/DXY/US10Y and Futures_Lead (FUTURES_PREMARKET_GAP_UP | FUTURES_PREMARKET_GAP_DOWN) alongside IBIT, CB_Premium, BTC_DVOL/ETH_DVOL, Options_Surface & ETH_Options(VRP, PC_OI, Skew_25d), and Cross_Asset (COUPLED_RISK_ON | COUPLED_RISK_OFF | CRYPTO_BULLISH_DECOUPLING | EQUITY_BULLISH_DECOUPLING). Do NOT approve non-stop-loss panic SELLs at local lows when Cross_Asset is CRYPTO_BULLISH_DECOUPLING or COUPLED_RISK_ON with positive CB_Premium (>= +5 bps), IBIT accumulation, or FUTURES_PREMARKET_GAP_UP; conversely, approve defensive profit-taking or risk-reduction SELLs when Cross_Asset is COUPLED_RISK_OFF or EQUITY_BULLISH_DECOUPLING with negative CB_Premium, FUTURES_PREMARKET_GAP_DOWN, and rising VIX/BTC_DVOL.",
             )
+        persona_role = (
+            "principal quantitative equities and multi-asset risk officer"
+            if is_eq
+            else "principal quantitative crypto risk officer"
+        )
         return (
-            "You are a principal quantitative crypto risk officer. "
+            f"You are a {persona_role}. "
             f"An automated trading bot is about to place a {action_desc}:\n\n{context_str}\n\n"
-            f"Because this order exceeds €{self.min_notional_eur:,.2f} EUR, you must evaluate if executing {risk_context}\n\n"
+            f"Because this order exceeds {ccy_sym}{self.min_notional_eur:,.2f} {ccy_code}, you must evaluate {risk_context}\n\n"
             f"{policy_rules}"
         )
 
@@ -565,11 +599,14 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow("HighStakeGuard", "unsupported_side_exempt")
 
+        ccy_sym, ccy_code = self._resolve_currency_display(symbol)
         notional = resolve_order_notional(notional_eur, price, qty, default=0.0, fallback_on_nonfinite=False) or 0.0
         notional_f = safe_float(notional, default=None)
         if notional_f is None or notional_f < self.min_notional_eur:
             return GuardDecision.allow(
-                "HighStakeGuard", f"below_high_stake_threshold ({notional:.2f} < {self.min_notional_eur:.2f} EUR)", notional_eur=notional
+                "HighStakeGuard",
+                f"below_high_stake_threshold ({notional:.2f} < {self.min_notional_eur:.2f} {ccy_code})",
+                notional_eur=notional,
             )
 
         if self.mode in ("off", "0", "0.0", "disabled", "false", "no"):
@@ -584,7 +621,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
             f"- Side: {side_norm}",
             f"- Requested Price: {price}",
             f"- Requested Quantity: {qty}",
-            f"- Total Notional Value: €{notional:,.2f} EUR",
+            f"- Total Notional Value: {ccy_sym}{notional:,.2f} {ccy_code}",
         )
         return self._execute_pretrade_guard_eval(
             symbol=symbol,
@@ -593,8 +630,10 @@ class HighStakeGuard(PreTradeLLMGuardBase):
             decision_cache=_HIGH_STAKE_DECISION_CACHE,
             now_ts=now_ts,
             header_lines=header_lines,
-            build_prompt_fn=lambda ctx: self._build_high_stake_prompt(side_norm, notional, ctx),
-            subtitle=f"{side_norm} {symbol} €{notional:,.2f}",
+            build_prompt_fn=lambda ctx: self._build_high_stake_prompt(
+                side_norm, notional, ctx, symbol=symbol, ccy_sym=ccy_sym, ccy_code=ccy_code
+            ),
+            subtitle=f"{side_norm} {symbol} {ccy_sym}{notional:,.2f}",
             action_label=f"high-stake {side_norm}",
             timeout_log_label="high-stake",
             snapshot=snapshot,

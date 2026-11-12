@@ -1335,6 +1335,7 @@ _FAST_IMPULSE_KIND_PREFIXES = (
     "small_window_",
     "accel_surge_",
     "accel_plunge_",
+    "kalman_primary_",
 )
 
 
