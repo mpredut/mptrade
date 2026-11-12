@@ -4426,11 +4426,11 @@ def test_wave26_post_only_ssot_tick_fanout_and_border_cases(monkeypatch, tmp_pat
         "_maybe_notify_low_quota",
         classmethod(lambda cls, _snap: None),
     )
-    lqr_mod.GeminiQuotaRouterMixin._record_model_quota_exhausted("gpt-oss-120b-medium", ttl_sec=-10.0)
+    lqr_mod.GeminiQuotaRouterMixin._record_model_quota_exhausted("claude-sonnet-5-5-low", ttl_sec=-10.0)
     assert quota_state_file.exists()
     assert Path(state_io.generation_lock_path(str(quota_state_file))).exists()
     saved_quota = state_io.read_json_dict(str(quota_state_file), default={})
-    assert saved_quota["runtime_exhausted"]["gpt-oss-120b-medium"] > time.time() + 60.0
+    assert saved_quota["runtime_exhausted"]["claude-sonnet-5-5-low"] > time.time() + 60.0
 
 
 def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_path, monkeypatch):

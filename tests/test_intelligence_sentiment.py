@@ -914,15 +914,15 @@ class TestEnrichedPretradeTelemetry:
         assert "Technical Trend Regime: bull (gradient=+0.0012, epsilon=0.0004)" in prompt
         assert "€1,500.00 EUR" in prompt
 
-    def test_gemini_client_fallback_chain_and_non_gemini_rest(self):
+    def test_gemini_client_fallback_chain_and_non_gemini_rest(self, tmp_path):
 
-        # 1. Test fallback models initialization and inclusion of gpt-oss
+        # 1. Test fallback models initialization across Flash tiers
         client = GeminiClient(
             model="primary-failing-model",
-            fallback_models=["gemini-3.8-flash-low", "gpt-oss-120b-medium"],
+            fallback_models=["gemini-3.8-flash-medium", "gemini-3.8-flash-low"],
             api_key=None,
         )
-        assert client.fallback_models == ("gemini-3.8-flash-low", "gpt-oss-120b-medium")
+        assert client.fallback_models == ("gemini-3.8-flash-medium", "gemini-3.8-flash-low")
 
         # 2. Test REST fallback cleans non-Gemini model names safely
 
@@ -936,7 +936,7 @@ class TestEnrichedPretradeTelemetry:
         try:
             urllib.request.urlopen = mock_open
             rest_client = GeminiClient(
-                model="gpt-oss-120b-medium",
+                model="claude-sonnet-5-5-medium",
                 api_key="test-api-key",
                 cli_path="/nonexistent/path/to/cli",
             )
@@ -965,29 +965,29 @@ class TestEnrichedPretradeTelemetry:
             subprocess.run = mock_run
             cli_client = GeminiClient(
                 model="failing-model",
-                fallback_models=["gemini-3.8-flash-low", "gpt-oss-120b-medium"],
+                fallback_models=["gemini-3.8-flash-medium", "gemini-3.8-flash-low"],
                 cli_path=__file__,
                 api_key=None,
             )
             # First test: primary fails, secondary succeeds
             res = cli_client.query_text("sample prompt")
-            assert res == "success from gemini-3.8-flash-low"
-            assert attempted_models == ["failing-model", "gemini-3.8-flash-low"]
+            assert res == "success from gemini-3.8-flash-medium"
+            assert attempted_models == ["failing-model", "gemini-3.8-flash-medium"]
 
-            # Second test: both fail, third (gpt-oss-120b-medium) succeeds
+            # Second test: both fail, third (gemini-3.8-flash-low) succeeds
             attempted_models.clear()
-            def mock_subproc_run_gpt(cmd, **kwargs):
+            def mock_subproc_run_flash_low(cmd, **kwargs):
                 m_idx = cmd.index("--model") + 1
                 used_m = cmd[m_idx]
                 attempted_models.append(used_m)
-                if used_m in ("failing-model", "gemini-3.8-flash-low"):
+                if used_m in ("failing-model", "gemini-3.8-flash-medium"):
                     return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="Rate limit")
                 return subprocess.CompletedProcess(cmd, returncode=0, stdout=json.dumps({"response": f"success from {used_m}"}))
 
-            subprocess.run = MagicMock(side_effect=mock_subproc_run_gpt)
+            subprocess.run = MagicMock(side_effect=mock_subproc_run_flash_low)
             res2 = cli_client.query_text("sample prompt 2")
-            assert res2 == "success from gpt-oss-120b-medium"
-            assert attempted_models == ["failing-model", "gemini-3.8-flash-low", "gpt-oss-120b-medium"]
+            assert res2 == "success from gemini-3.8-flash-low"
+            assert attempted_models == ["failing-model", "gemini-3.8-flash-medium", "gemini-3.8-flash-low"]
 
             # 4. Topic session with credit/quota exhaustion skips redundant one-off retry on the same model
 
@@ -997,7 +997,7 @@ class TestEnrichedPretradeTelemetry:
                 used_m = cmd[m_idx]
                 has_conv = "--conversation" in cmd
                 cli_invocations.append((used_m, has_conv))
-                if used_m in ("failing-model", "gemini-3.8-flash-low"):
+                if used_m in ("failing-model", "gemini-3.8-flash-medium"):
                     return subprocess.CompletedProcess(
                         cmd,
                         returncode=3,
@@ -1014,12 +1014,46 @@ class TestEnrichedPretradeTelemetry:
             with patch.object(gc_mod, "prepare_topic_session", return_value=TopicSession("cid-topic-1", "", False)), \
                  patch.object(gc_mod, "record_topic_turn"):
                 res3 = cli_client.query_text("sample prompt 3", topic_key="auto_cryptotrade_executor")
-            assert res3 == "success from gpt-oss-120b-medium"
+            assert res3 == "success from gemini-3.8-flash-low"
             assert cli_invocations == [
                 ("failing-model", True),
+                ("gemini-3.8-flash-medium", True),
                 ("gemini-3.8-flash-low", True),
-                ("gpt-oss-120b-medium", True),
             ]
+
+            # 5. Unrecognized model error on gemini-4-argon-medium does not poison gemini-3.8-flash-* in runtime_exhausted
+            unrec_invocations = []
+            def mock_subproc_unrecognized(cmd, **kwargs):
+                m_idx = cmd.index("--model") + 1
+                used_m = cmd[m_idx]
+                unrec_invocations.append(used_m)
+                if used_m == "gemini-4-argon-medium":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        returncode=1,
+                        stdout="",
+                        stderr='error: invalid model selection: model "gemini-4-argon-medium" is not recognized as a known model.',
+                    )
+                return subprocess.CompletedProcess(
+                    cmd,
+                    returncode=0,
+                    stdout=json.dumps({"response": f"success from {used_m}"}),
+                )
+
+            subprocess.run = MagicMock(side_effect=mock_subproc_unrecognized)
+            tier_client = GeminiClient(
+                model="gemini-4-argon-medium",
+                fallback_models=["gemini-3.8-flash-medium", "gemini-3.8-flash-low"],
+                cli_path=__file__,
+                api_key=None,
+            )
+            q_file = str(tmp_path / "quota_unrec.json")
+            GeminiClient._QUOTA_MEM_CACHE = {}
+            with patch.object(GeminiClient, "_get_quota_state_path", staticmethod(lambda: q_file)), \
+                 patch.object(GeminiClient, "probe_live_model_quota", return_value=None):
+                res4 = tier_client.query_text("sample prompt 4")
+            assert res4 == "success from gemini-3.8-flash-medium"
+            assert unrec_invocations == ["gemini-4-argon-medium", "gemini-3.8-flash-medium"]
         finally:
             subprocess.run = orig_run
 
@@ -1189,24 +1223,35 @@ def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_p
     monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(quota_state_file)))
     GeminiClient._QUOTA_MEM_CACHE = {}
 
-    # Phase 1: Argon models exhausted (absent from buckets, 0 availableCredits), Claude & GPT-OSS have 100% quota
+    # Phase 1: Argon models exhausted (absent from buckets, 0 availableCredits), Claude has 100% quota
     api_state = {
         "buckets": [
             {"modelId": "claude-sonnet-5-5-medium", "remainingFraction": 1.0},
             {"modelId": "claude-sonnet-5-5-low", "remainingFraction": 1.0},
-            {"modelId": "gpt-oss-120b-medium", "remainingFraction": 1.0},
         ],
+        "tier": "g1-ultra-tier",
+        "companionProject": "",
         "availableCredits": [],
     }
-
+    quota_req_bodies = []
 
     def _fake_urlopen(req, timeout=2.5):
         url = req.full_url if hasattr(req, "full_url") else str(req)
         assert req.headers.get("User-agent") == "antigravity/1.4.12"
         if "retrieveUserQuota" in url:
+            body_obj = json.loads((req.data or b"{}").decode("utf-8"))
+            quota_req_bodies.append(body_obj)
+            if api_state["tier"] == "free-tier" and body_obj.get("project") != "aicode-consumers":
+                raise AssertionError("retrieveUserQuota on free-tier requires cloudaicompanionProject")
             return MockHttpResponse({"buckets": api_state["buckets"]})
         if "loadCodeAssist" in url:
-            return MockHttpResponse({"paidTier": {"id": "g1-ultra-tier", "availableCredits": api_state["availableCredits"]}})
+            payload = {
+                "currentTier": {"id": api_state["tier"]},
+                "paidTier": {"id": api_state["tier"], "availableCredits": api_state["availableCredits"]},
+            }
+            if api_state["companionProject"]:
+                payload["cloudaicompanionProject"] = api_state["companionProject"]
+            return MockHttpResponse(payload)
         raise AssertionError(f"Unexpected URL: {url}")
 
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
@@ -1222,7 +1267,6 @@ def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_p
     assert filtered_med == [
         "claude-sonnet-5-5-medium",
         "claude-sonnet-5-5-low",
-        "gpt-oss-120b-medium",
     ]
 
     low_candidates = client.get_model_candidates("gemini-4-argon-low")
@@ -1236,6 +1280,31 @@ def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_p
     assert snap2["available_credits"] == 25.0
     restored_med = GeminiClient.filter_models_with_confirmed_credits(med_candidates, snap2)
     assert restored_med[0] == "gemini-4-argon-medium"
+
+    # Phase 3: Consumer free-tier passes cloudaicompanionProject to retrieveUserQuota and routes directly to gemini-3.8-flash-*
+    api_state["tier"] = "free-tier"
+    api_state["companionProject"] = "aicode-consumers"
+    api_state["availableCredits"] = []
+    api_state["buckets"] = [
+        {"modelId": "gemini-3.8-flash-tiered", "remainingFraction": 0.83},
+    ]
+    quota_req_bodies.clear()
+    snap3 = GeminiClient.probe_live_model_quota(bot_cli_base=str(bot_cli_base), force_refresh=True)
+    assert snap3 is not None
+    assert quota_req_bodies == [{"project": "aicode-consumers"}]
+    assert snap3["buckets"]["gemini-4-argon-medium"] == 0.0
+    assert snap3["buckets"]["gemini-3.8-flash-medium"] == 0.83
+    assert snap3["buckets"]["gemini-3.8-flash-high"] == 0.83
+    assert GeminiClient.filter_models_with_confirmed_credits(med_candidates, snap3) == [
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
+    ]
+    high_candidates = client.get_model_candidates("gemini-4-argon-high")
+    assert GeminiClient.filter_models_with_confirmed_credits(high_candidates, snap3) == [
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
+    ]
 
 
 def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeypatch):
@@ -1266,7 +1335,7 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
         "available_credits": 0.0,
         "buckets": {
             "claude-sonnet-5-5-medium": 1.0,
-            "gpt-oss-120b-medium": 1.0,
+            "gemini-3.8-flash-medium": 1.0,
         },
         "last_alert_ts": 0.0,
         "last_alert_tier": "ok",
@@ -1298,7 +1367,8 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
     }
     assert GeminiClient._extract_available_credits(dup_tier_payload) == 25.0
 
-    # 6. Runtime credit exhaustion on gemini-4-argon-medium clears shared Gemini/Argon pool buckets & available_credits
+    # 6. Runtime credit exhaustion on gemini-4-argon-medium clears shared Gemini/Argon pool buckets & available_credits,
+    # whereas an unrecognized model slug marks only that single model without poisoning Flash or available_credits.
     quota_state_file.write_text(
         json.dumps({
             "checked_ts": time.time(),
@@ -1310,7 +1380,6 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
                 "gemini-3.8-flash-medium": 0.8,
                 "gemini-3.8-flash-low": 0.8,
                 "claude-sonnet-5-5-medium": 1.0,
-                "gpt-oss-120b-medium": 1.0,
             },
             "last_alert_ts": 0.0,
             "last_alert_tier": "ok",
@@ -1318,6 +1387,13 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
         encoding="utf-8",
     )
     alerts.clear()
+    GeminiClient._record_model_quota_exhausted("gemini-4-argon-medium", model_unrecognized=True)
+    assert len(alerts) == 0
+    assert GeminiClient._QUOTA_MEM_CACHE["available_credits"] == 10.0
+    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-4-argon-medium"] == 0.0
+    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-3.8-flash-medium"] == 0.8
+    assert "gemini-3.8-flash-medium" not in GeminiClient._QUOTA_MEM_CACHE["runtime_exhausted"]
+
     GeminiClient._record_model_quota_exhausted("gemini-4-argon-medium")
     assert len(alerts) == 1
     assert GeminiClient._QUOTA_MEM_CACHE["available_credits"] == 0.0
@@ -1328,10 +1404,10 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
     all_zero_snap = {
         "checked_ts": time.time(),
         "available_credits": 0.0,
-        "buckets": {"claude-sonnet-5-5-medium": 0.0, "gpt-oss-120b-medium": 0.0},
+        "buckets": {"claude-sonnet-5-5-medium": 0.0, "gemini-3.8-flash-low": 0.0},
         "runtime_exhausted": {},
     }
-    cands = ["claude-sonnet-5-5-medium", "gpt-oss-120b-medium"]
+    cands = ["claude-sonnet-5-5-medium", "gemini-3.8-flash-low"]
     assert GeminiClient.filter_models_with_confirmed_credits(cands, all_zero_snap) == cands
 
     # 8. Interrupted CLI process (SIGTERM / "error: interrupted") is never mistaken for quota exhaustion
@@ -1539,12 +1615,12 @@ def test_compact_model_candidates_skips_failed_attempts_and_runtime_exhausted(mo
 
     client = GeminiClient()
     models_to_try = [
-        "gpt-oss-120b-medium",
+        "gemini-4-argon-medium",
         "gemini-4-argon-low",
         "claude-sonnet-5-5-low",
         "gemini-3.8-flash-low",
     ]
-    # Suppose attempt_idx=2 (gpt-oss-120b-medium failed at idx 0, gemini-4-argon-low quota-exhausted at idx 1)
+    # Suppose attempt_idx=2 (gemini-4-argon-medium failed at idx 0, gemini-4-argon-low quota-exhausted at idx 1)
     monkeypatch.setattr(
         GeminiClient,
         "_QUOTA_MEM_CACHE",
@@ -1556,7 +1632,7 @@ def test_compact_model_candidates_skips_failed_attempts_and_runtime_exhausted(mo
         },
     )
     cands = client.get_compact_model_candidates(models_to_try, attempt_idx=2)
-    assert "gpt-oss-120b-medium" not in cands
+    assert "gemini-4-argon-medium" not in cands
     assert "gemini-4-argon-low" not in cands
     assert "gemini-3.8-flash-low" not in cands
     assert cands == ["claude-sonnet-5-5-low"]

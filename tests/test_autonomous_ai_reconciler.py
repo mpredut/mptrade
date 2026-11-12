@@ -5674,9 +5674,9 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
         assert spec.preferred_model == "gemini-4-argon-medium"
         assert spec.default_timeout_sec == 120.0
 
-    # 3. RSS news triage (macro_geopolitical) uses gpt-oss-120b-medium and 120.0s timeout
+    # 3. RSS news triage (macro_geopolitical) uses gemini-3.8-flash-low and 120.0s timeout
     geo_spec = topic_spec("macro_geopolitical")
-    assert geo_spec.preferred_model == "gpt-oss-120b-medium"
+    assert geo_spec.preferred_model == "gemini-3.8-flash-low"
     assert geo_spec.default_timeout_sec == 120.0
 
     # 4. 10-minute executors use gemini-4-argon-medium and 90.0s timeout
@@ -5685,7 +5685,7 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
         assert spec.preferred_model == "gemini-4-argon-medium"
         assert spec.default_timeout_sec == 90.0
 
-    # 5. GeminiClient fallback chain deduplicates primary model and orders paid fallbacks ahead of free
+    # 5. GeminiClient fallback chain deduplicates primary model, keeps weak gpt-oss excluded, and maps high/med/low chains
     observed = {}
 
     def _runner(prompt, model, timeout):
@@ -5695,36 +5695,38 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
 
     client = GeminiClient(custom_runner=_runner, project_id="autonommptrade")
     high_chain = client.get_model_candidates("gemini-4-argon-high")
-    assert high_chain[:6] == [
+    assert high_chain == [
         "gemini-4-argon-high",
         "gemini-4-argon-medium",
         "gemini-4-argon-low",
         "claude-sonnet-5-5-medium",
         "claude-sonnet-5-5-low",
+        "gemini-3.8-flash-high",
         "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
     ]
-    assert "gpt-oss-120b-medium" in high_chain
+    assert "gpt-oss-120b-medium" not in high_chain
 
     med_chain = client.get_model_candidates("gemini-4-argon-medium")
-    assert med_chain[:5] == [
+    assert med_chain == [
         "gemini-4-argon-medium",
         "gemini-4-argon-low",
         "claude-sonnet-5-5-medium",
         "claude-sonnet-5-5-low",
         "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
     ]
 
-    low_chain = client.get_model_candidates("gpt-oss-120b-medium")
-    assert low_chain[:4] == [
-        "gpt-oss-120b-medium",
+    low_chain = client.get_model_candidates("gemini-3.8-flash-low")
+    assert low_chain[:3] == [
+        "gemini-3.8-flash-low",
         "gemini-4-argon-low",
         "claude-sonnet-5-5-low",
-        "gemini-3.8-flash-low",
     ]
 
     compact_chain = client.get_compact_model_candidates(med_chain, 0)
     assert compact_chain[:3] == [
-        "gpt-oss-120b-medium",
+        "gemini-3.8-flash-low",
         "gemini-4-argon-low",
         "claude-sonnet-5-5-low",
     ]
@@ -5734,7 +5736,7 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
     assert observed["timeout"] == 120.0
 
     client.query_json("test geo", topic_key="macro_geopolitical", timeout_sec=120.0)
-    assert observed["model"] == "gpt-oss-120b-medium"
+    assert observed["model"] == "gemini-3.8-flash-low"
     assert observed["timeout"] == 120.0
 
     client.query_json("test exec", topic_key="auto_cryptotrade_executor", timeout_sec=90.0)

@@ -3184,7 +3184,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
     ),
     "macro_geopolitical": TopicSpec(
         "🌍 [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake",
-        default_preferred_model="gpt-oss-120b-medium",
+        default_preferred_model="gemini-3.8-flash-low",
         default_timeout_sec=120.0,
         model_env_key="LLM_LOW_STAKE_MODEL",
     ),

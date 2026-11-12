@@ -274,16 +274,37 @@ class GeminiClient(GeminiQuotaRouterMixin):
             )
         )
 
+    _UNRECOGNIZED_MODEL_TOKENS = (
+        "invalid model selection",
+        "not recognized as a known model",
+        "unknown model",
+        "model not found",
+    )
+
+    @classmethod
+    def _cli_error_text(cls, proc: Optional[subprocess.CompletedProcess]) -> str:
+        if proc is None:
+            return ""
+        err_raw = (proc.stderr or "").strip()
+        out_raw = (proc.stdout or "").strip()
+        # Inspect stderr when present; only fall back to stdout when stderr is empty
+        # so buffered prompt/response text on stdout (e.g. "rate limit") is never mistaken for a CLI error.
+        return (err_raw if err_raw else out_raw).lower()
+
+    @classmethod
+    def _is_unrecognized_model_error(cls, proc: Optional[subprocess.CompletedProcess]) -> bool:
+        """Return True when the CLI rejected the requested model slug as unknown or unavailable on the active tier."""
+        if proc is None or cls._is_cli_interrupted(proc):
+            return False
+        combined = cls._cli_error_text(proc)
+        return any(tok in combined for tok in cls._UNRECOGNIZED_MODEL_TOKENS)
+
     @classmethod
     def _is_quota_or_credit_error(cls, proc: Optional[subprocess.CompletedProcess]) -> bool:
         """Return True when the CLI failed due to exhausted AI credits, quota, rate limits, or unrecognized model."""
         if proc is None or cls._is_cli_interrupted(proc):
             return False
-        err_raw = (proc.stderr or "").strip()
-        out_raw = (proc.stdout or "").strip()
-        # Inspect stderr when present; only fall back to stdout when stderr is empty
-        # so buffered prompt/response text on stdout (e.g. "rate limit") is never mistaken for a CLI error.
-        combined = (err_raw if err_raw else out_raw).lower()
+        combined = cls._cli_error_text(proc)
         return any(
             tok in combined
             for tok in (
@@ -293,10 +314,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 "check quota",
                 "rate limit",
                 "too many requests",
-                "invalid model selection",
-                "not recognized as a known model",
-                "unknown model",
-                "model not found",
+                *cls._UNRECOGNIZED_MODEL_TOKENS,
             )
         )
 
@@ -631,7 +649,10 @@ class GeminiClient(GeminiQuotaRouterMixin):
                                                 if compacted_ok:
                                                     break
                                                 if enable_pre_quota and self._is_quota_or_credit_error(c_proc):
-                                                    self._record_model_quota_exhausted(compact_model)
+                                                    self._record_model_quota_exhausted(
+                                                        compact_model,
+                                                        model_unrecognized=self._is_unrecognized_model_error(c_proc),
+                                                    )
                                                 if not is_mocked and compact_snap is not None:
                                                     restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
                                                 if self._is_cli_interrupted(c_proc):
@@ -673,7 +694,10 @@ class GeminiClient(GeminiQuotaRouterMixin):
                         return output
                     else:
                         if enable_pre_quota and self._is_quota_or_credit_error(proc):
-                            self._record_model_quota_exhausted(model_candidate)
+                            self._record_model_quota_exhausted(
+                                model_candidate,
+                                model_unrecognized=self._is_unrecognized_model_error(proc),
+                            )
                         logger.warning(
                             "agy CLI with model '%s' failed (code %s): %s",
                             model_candidate,

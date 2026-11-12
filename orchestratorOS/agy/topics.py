@@ -57,7 +57,7 @@ logger = logging.getLogger("orchestratorOS.agy.topics")
 
 HIGH_STAKE_MODEL = optional_env("LLM_HIGH_STAKE_MODEL", "gemini-4-argon-high")
 EXECUTOR_MODEL = optional_env("LLM_DEFAULT_MODEL", "gemini-4-argon-medium")
-LOW_STAKE_MODEL = optional_env("LLM_LOW_STAKE_MODEL", "gpt-oss-120b-medium")
+LOW_STAKE_MODEL = optional_env("LLM_LOW_STAKE_MODEL", "gemini-3.8-flash-low")
 
 
 def get_topic_registry_path(registry_path: Optional[str] = None) -> str:

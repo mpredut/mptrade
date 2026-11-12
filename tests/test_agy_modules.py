@@ -532,7 +532,7 @@ class TestMirrorTopicThreadToUi:
             model_idx = cmd.index("--model") + 1
             m_name = cmd[model_idx]
             models_called.append(m_name)
-            if m_name == "gpt-oss-120b-medium":
+            if m_name == "gemini-3.8-flash-low":
                 return _cli_ok(
                     cmd,
                     "**Clarification Needed** I see the latest summary, which option do you want?",
@@ -542,14 +542,14 @@ class TestMirrorTopicThreadToUi:
 
         with patch("subprocess.run", side_effect=fake_run):
             client = GeminiClient(
-                model="gpt-oss-120b-medium",
+                model="gemini-3.8-flash-low",
                 fallback_models=("claude-sonnet-5-5-medium",),
                 cli_path=str(fake_bin),
                 project_id="autonommptrade",
             )
             parsed = client.query_json("Return JSON decision only.")
 
-        assert models_called == ["gpt-oss-120b-medium", "claude-sonnet-5-5-medium"]
+        assert models_called == ["gemini-3.8-flash-low", "claude-sonnet-5-5-medium"]
         assert parsed == {"decision": "HOLD", "confidence": 0.91}
 
     def test_agy_store_fix_mode_post_links_files_mirrored_during_pre_post_gap(self, tmp_path, monkeypatch):
@@ -736,7 +736,7 @@ class TestMirrorTopicThreadToUi:
                 "cid-repair",
                 "/compact Summarize prior turns in place",
                 120.0,
-                "gpt-oss-120b-medium",
+                "gemini-3.8-flash-low",
                 str(bot_cli_base),
                 {},
                 is_mocked=False,

@@ -59,7 +59,7 @@ def _gc_attr(attr_name: str, current_val: Any) -> Any:
 
 
 def canonical_rest_model(model_name: str) -> str:
-    """Map arbitrary LLM model names (Gemini, Argon, GPT-OSS, Claude) to a canonical Google AI Studio REST model."""
+    """Map arbitrary LLM model names (Gemini, Argon, Claude) to a canonical Google AI Studio REST model."""
     if not isinstance(model_name, str) or not model_name.strip():
         return "gemini-2.5-flash"
     cleaned = model_name.strip().lower()
@@ -74,13 +74,17 @@ class GeminiQuotaRouterMixin:
 
     _QUOTA_LOCK = threading.Lock()
     _QUOTA_MEM_CACHE: Dict[str, Any] = {}
-    _SHARED_GEMINI_POOL_MODELS = (
+    _ARGON_POOL_MODELS = (
         "gemini-4-argon-high",
         "gemini-4-argon-medium",
         "gemini-4-argon-low",
+    )
+    _FLASH_POOL_MODELS = (
+        "gemini-3.8-flash-high",
         "gemini-3.8-flash-medium",
         "gemini-3.8-flash-low",
     )
+    _SHARED_GEMINI_POOL_MODELS = _ARGON_POOL_MODELS + _FLASH_POOL_MODELS
 
     model: str
     fallback_models: tuple[str, ...]
@@ -90,13 +94,18 @@ class GeminiQuotaRouterMixin:
         """Return an ordered, deduplicated sequence of models to attempt (primary -> fallbacks)."""
         selected = (primary_model.strip() if isinstance(primary_model, str) and primary_model.strip() else None) or self.model
         candidates = [selected]
-        if (selected == "gpt-oss-120b-medium" or selected.endswith("-low")) and not getattr(self, "_custom_fallbacks", False):
+        custom_fb = getattr(self, "_custom_fallbacks", False)
+        if selected.endswith("-low") and not custom_fb:
             for fb in self.fallback_models:
-                if fb and fb not in candidates and (fb.endswith("-low") or fb == "gpt-oss-120b-medium"):
+                if fb and fb not in candidates and fb.endswith("-low"):
                     candidates.append(fb)
         for fb in self.fallback_models:
-            if fb and fb not in candidates:
-                candidates.append(fb)
+            if not fb or fb in candidates:
+                continue
+            if selected.endswith("-high") and not custom_fb and fb == "gemini-3.8-flash-medium":
+                if "gemini-3.8-flash-high" not in candidates:
+                    candidates.append("gemini-3.8-flash-high")
+            candidates.append(fb)
         return candidates
 
     def get_compact_model_candidates(
@@ -105,19 +114,18 @@ class GeminiQuotaRouterMixin:
         attempt_idx: int = 0,
         quota_snapshot: Optional[Dict[str, Any]] = None,
     ) -> list[str]:
-        """Return ordered models for in-place /compact summarization (free/low-cost language model first)."""
+        """Return ordered models for in-place /compact summarization (fast low-cost Gemini Flash model first)."""
         remaining = [m for m in models_to_try[attempt_idx:] if m]
         if getattr(self, "_custom_fallbacks", False):
             return remaining
-        preferred_compact = optional_env("LLM_COMPACT_MODEL", "gpt-oss-120b-medium")
+        preferred_compact = optional_env("LLM_COMPACT_MODEL", "gemini-3.8-flash-low")
         allowed = set(remaining)
         compact_chain: list[str] = []
         for low_m in (
             preferred_compact,
-            "gpt-oss-120b-medium",
+            "gemini-3.8-flash-low",
             "gemini-4-argon-low",
             "claude-sonnet-5-5-low",
-            "gemini-3.8-flash-low",
         ):
             if low_m and low_m not in compact_chain and (not allowed or low_m in allowed):
                 compact_chain.append(low_m)
@@ -270,9 +278,31 @@ class GeminiQuotaRouterMixin:
             "User-Agent": AGY_QUOTA_USER_AGENT,
         }
 
+        available_credits = 0.0
+        tier_id = ""
+        companion_project = ""
+        try:
+            assist_payload = _fetch_json_post(_load_assist_api_url, timeout=2.0, headers=headers)
+            if isinstance(assist_payload, dict):
+                available_credits = cls._extract_available_credits(assist_payload)
+                paid_tier = assist_payload.get("paidTier") if isinstance(assist_payload.get("paidTier"), dict) else {}
+                curr_tier = assist_payload.get("currentTier") if isinstance(assist_payload.get("currentTier"), dict) else {}
+                tier_id = str(paid_tier.get("id") or curr_tier.get("id") or "").strip()
+                companion_project = str(assist_payload.get("cloudaicompanionProject") or "").strip()
+        except Exception as exc:
+            logger.debug("Live LLM loadCodeAssist credit check failed (non-fatal): %s", exc)
+
         buckets: Dict[str, float] = {}
         try:
-            quota_payload = _fetch_json_post(_quota_api_url, timeout=2.5, headers=headers)
+            if companion_project:
+                quota_payload = _fetch_json_post(
+                    _quota_api_url,
+                    {"project": companion_project},
+                    timeout=2.5,
+                    headers=headers,
+                )
+            else:
+                quota_payload = _fetch_json_post(_quota_api_url, timeout=2.5, headers=headers)
             if not isinstance(quota_payload, dict) or not isinstance(quota_payload.get("buckets"), list):
                 return None
             for b in quota_payload.get("buckets", []):
@@ -285,29 +315,23 @@ class GeminiQuotaRouterMixin:
                 buckets[mid] = rem
             # Cloud Code retrieveUserQuota reports the shared Google Gemini/Argon quota pool
             # under gemini-3.8-flash-tiered / gemini-2.5-pro / gemini-3-flash.
+            # On free-tier without top-up credits, Argon slugs are unavailable in agy CLI,
+            # so only Flash aliases inherit the free-tier Gemini pool fraction.
             gemini_pool_keys = ("gemini-3.8-flash-tiered", "gemini-2.5-pro", "gemini-3-flash")
             gemini_pool_rem = max(
                 (safe_float(buckets.get(k), 0.0) for k in gemini_pool_keys),
                 default=0.0,
             )
+            is_free_tier = tier_id.lower() == "free-tier" and available_credits <= 0.0
             if gemini_pool_rem > 0.0 or any(k in buckets for k in gemini_pool_keys):
-                for gemini_alias in cls._SHARED_GEMINI_POOL_MODELS:
-                    buckets.setdefault(gemini_alias, gemini_pool_rem)
+                for flash_alias in cls._FLASH_POOL_MODELS:
+                    buckets.setdefault(flash_alias, gemini_pool_rem)
+                argon_rem_val = 0.0 if is_free_tier else gemini_pool_rem
+                for argon_alias in cls._ARGON_POOL_MODELS:
+                    buckets.setdefault(argon_alias, argon_rem_val)
         except Exception as exc:
             logger.debug("Live LLM quota check failed (non-fatal): %s", exc)
             return None
-
-        available_credits = 0.0
-        tier_id = ""
-        try:
-            assist_payload = _fetch_json_post(_load_assist_api_url, timeout=2.0, headers=headers)
-            if isinstance(assist_payload, dict):
-                available_credits = cls._extract_available_credits(assist_payload)
-                paid_tier = assist_payload.get("paidTier") if isinstance(assist_payload.get("paidTier"), dict) else {}
-                curr_tier = assist_payload.get("currentTier") if isinstance(assist_payload.get("currentTier"), dict) else {}
-                tier_id = str(paid_tier.get("id") or curr_tier.get("id") or "").strip()
-        except Exception as exc:
-            logger.debug("Live LLM loadCodeAssist credit check failed (non-fatal): %s", exc)
 
         with cls._quota_state_rmw_lock(state_path, _save_json_state):
             prev = _read_json_dict(state_path, default={})
@@ -389,8 +413,14 @@ class GeminiQuotaRouterMixin:
         return non_exhausted or list(candidates)
 
     @classmethod
-    def _record_model_quota_exhausted(cls, model_name: str, ttl_sec: float = 120.0) -> None:
-        """Record a runtime quota/credit error for a model and trigger low-quota alert check."""
+    def _record_model_quota_exhausted(
+        cls,
+        model_name: str,
+        ttl_sec: float = 120.0,
+        *,
+        model_unrecognized: bool = False,
+    ) -> None:
+        """Record a runtime quota/credit error or model unavailability and trigger low-quota alert check."""
         cleaned = str(model_name or "").strip()
         if not cleaned:
             return
@@ -413,9 +443,13 @@ class GeminiQuotaRouterMixin:
                 else {}
             )
             affected = (
-                cls._SHARED_GEMINI_POOL_MODELS
-                if cleaned in cls._SHARED_GEMINI_POOL_MODELS
-                else (cleaned,)
+                (cleaned,)
+                if model_unrecognized
+                else (
+                    cls._SHARED_GEMINI_POOL_MODELS
+                    if cleaned in cls._SHARED_GEMINI_POOL_MODELS
+                    else (cleaned,)
+                )
             )
             for m_alias in affected:
                 buckets[m_alias] = 0.0
@@ -423,10 +457,13 @@ class GeminiQuotaRouterMixin:
             data["buckets"] = buckets
             data["runtime_exhausted"] = runtime_exhausted
             data.setdefault("checked_ts", now)
-            data["available_credits"] = 0.0
+            if model_unrecognized:
+                data.setdefault("available_credits", 0.0)
+            else:
+                data["available_credits"] = 0.0
             cls._cache_and_save_quota_state_locked(state_path, data, _save_json_state)
             snapshot = dict(data)
-        if snapshot is not None:
+        if not model_unrecognized and snapshot is not None:
             cls._maybe_notify_low_quota(snapshot)
 
     @classmethod
@@ -455,7 +492,12 @@ class GeminiQuotaRouterMixin:
             safe_float(buckets.get("claude-sonnet-5-5-medium"), 0.0),
             safe_float(buckets.get("claude-sonnet-5-5-low"), 0.0),
         )
-        free_rem = safe_float(buckets.get("gpt-oss-120b-medium"), 0.0)
+        flash_rem = max(
+            safe_float(buckets.get("gemini-3.8-flash-high"), 0.0),
+            safe_float(buckets.get("gemini-3.8-flash-medium"), 0.0),
+            safe_float(buckets.get("gemini-3.8-flash-low"), 0.0),
+            safe_float(buckets.get("gemini-3.8-flash-tiered"), 0.0),
+        )
 
         if available_credits > 0.0 or argon_rem > warn_threshold:
             if snapshot.get("last_alert_tier") not in (None, "", "ok"):
@@ -465,7 +507,7 @@ class GeminiQuotaRouterMixin:
                     cls._cache_and_save_quota_state_locked(state_path, snapshot, _save_json_state)
             return
 
-        if claude_rem <= warn_threshold and free_rem <= warn_threshold:
+        if claude_rem <= warn_threshold and flash_rem <= warn_threshold:
             alert_tier, severity_rank = "all_exhausted", 3
         elif claude_rem <= warn_threshold:
             alert_tier, severity_rank = "all_paid_low", 2
@@ -506,7 +548,7 @@ class GeminiQuotaRouterMixin:
             f"Available credits: {available_credits:.0f} | "
             f"gemini-4-argon (med/low/high): {argon_rem * 100:.0f}% | "
             f"claude-sonnet-5-5 (paid fallback): {claude_rem * 100:.0f}% | "
-            f"gpt-oss-120b (free): {free_rem * 100:.0f}%. "
+            f"gemini-3.8-flash (fallback): {flash_rem * 100:.0f}%. "
             f"Automatic routing activated on first model with confirmed quota; "
             f"immediate dynamic recovery to Argon upon top-up/reset."
         )
