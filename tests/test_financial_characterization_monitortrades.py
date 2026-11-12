@@ -15,7 +15,6 @@ import os
 import pytest
 import rtrade
 import time
-import unittest
 from binance_api.bapi_ws_normalize import parse_trade_execution_report
 from instrument import Instrument
 from intelligence.external.guards.smart_stop_loss_guard import _GRACE_TRACKER
@@ -1981,10 +1980,6 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
         )
         self.assertEqual(exit_kind_ai, "SELL")
         self.assertNotIn("BTCUSDC", last_exit_kind)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)

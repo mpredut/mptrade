@@ -4,7 +4,6 @@ import json
 import os
 import threading
 import time
-import unittest
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
@@ -1446,8 +1445,3 @@ class TestFallbackThreadBehavior(TempDirTestCase):
         self.assertTrue(manager.thread.is_alive())
         self.assertTrue(manager.shutdown(timeout=1.0))
         self.assertIsNone(manager.thread)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-

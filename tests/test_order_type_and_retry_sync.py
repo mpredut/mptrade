@@ -4,7 +4,6 @@ import order_lifecycle
 import order_retry as oq
 import order_retry_worker as worker
 import os
-import unittest
 from binance_api import bapi_placeorder as po
 from instrument import Instrument
 from providers.base import extract_order_id
@@ -301,7 +300,3 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
         self.assertEqual(fields["submit_status"], "PARTIALLY_FILLED")
         self.assertEqual(fields["submitted_qty"], 3.5)
         self.assertEqual(fields["submitted_price"], 105.0)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

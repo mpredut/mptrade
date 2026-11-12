@@ -9,7 +9,6 @@ from pathlib import Path
 import signal
 import time
 from types import SimpleNamespace
-import unittest
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -911,10 +910,6 @@ class TestAdoption(_XStockBase):
         s._maybe_adopt()
         self.assertEqual(s.s["spent"], 0.0, "the cap remains available for additional funds")
 
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================
@@ -1060,4 +1055,3 @@ def test_trailing_core_is_venue_agnostic_ast():
             assert not any(v in low for v in forbidden_venues), (
                 f"trailing_core.py line {node.lineno} contains hardcoded venue literal {node.value!r}"
             )
-

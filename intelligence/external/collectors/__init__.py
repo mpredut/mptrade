@@ -1,6 +1,4 @@
 """External market and derivatives telemetry collectors (`*_collector.py`)."""
-from __future__ import annotations
-
 from intelligence.external.collectors import (
     base_collector,
     bybit_liquidations_collector,

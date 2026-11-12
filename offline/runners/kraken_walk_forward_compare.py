@@ -5,8 +5,6 @@ The canonical multi-venue compare runner is offline.runners.walk_forward_compare
 which supports Kraken, Binance, Hyperliquid, and Trading 212.
 This shim re-exports all symbols to preserve full backward compatibility.
 """
-from __future__ import annotations
-
 from pathlib import Path
 import sys
 

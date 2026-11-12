@@ -1,7 +1,5 @@
 """Backward-compatible re-exports from canonical SSOT ``strategies.replay_execution``."""
 
-from __future__ import annotations
-
 from strategies.replay_execution import (
     _POLICIES,
     ExecutionModel,

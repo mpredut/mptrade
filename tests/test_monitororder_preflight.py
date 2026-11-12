@@ -1,7 +1,6 @@
 import json
 import os
 from types import SimpleNamespace
-import unittest
 from unittest import mock
 
 import monitororder
@@ -376,7 +375,3 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         )
         cancel_order.assert_called_once()
         place.assert_called_once()
-
-
-if __name__ == "__main__":
-    unittest.main()

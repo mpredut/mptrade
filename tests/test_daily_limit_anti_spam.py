@@ -7,7 +7,6 @@ import order_retry
 import os
 import threading
 import time
-import unittest
 from instrument import Instrument
 from providers.base import aggregate_fills_by_order_id
 from providers.hyperliquid_provider import HyperliquidProvider
@@ -379,7 +378,3 @@ class TestSymmetricDailyLimitGuard(TempDirTestCase):
             with self.assertRaises(ProviderError) as ctx:
                 hp.order_status("PURRUSDC", "777")
         self.assertIn("cannot value HYPE fee in USDC", str(ctx.exception))
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

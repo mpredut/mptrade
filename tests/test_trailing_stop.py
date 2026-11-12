@@ -3,7 +3,6 @@
 import json
 import os
 from types import SimpleNamespace
-import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 import binance_api.trailing_stop as binance_ts_mod
@@ -969,11 +968,6 @@ class TestMinProfit(_BinanceTrailingBase):
                 self.po.status = "closed"
                 ts.check_once()  # retries immediately because sell_defer_started_at=1000.0 is preserved
             self.assertEqual(len(self.po.orders), 2)
-
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)

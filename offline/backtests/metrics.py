@@ -1,7 +1,5 @@
 """Backward-compatible re-exports from canonical SSOT ``strategies.replay_metrics``."""
 
-from __future__ import annotations
-
 from strategies.replay_metrics import (
     buy_hold_pct,
     calculate_performance_metrics,

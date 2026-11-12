@@ -5,8 +5,6 @@ Re-exports the 1D constant-velocity ``KalmanTrend`` and realized-volatility
 primitives from ``pricewindow`` and the stateful ``KalmanStateTracker`` /
 ``KalmanJournal`` persistence layer from ``cachetrend``.
 """
-from __future__ import annotations
-
 from botcore import pos_float_env
 from cachetrend import (
     KALMAN_SAMPLE_SEC,

@@ -6,7 +6,6 @@ import order_guard
 import order_retry
 import order_retry_worker
 import os
-import unittest
 from account_cache_health import CacheHealthStatus
 from binance_api import bapi_placeorder as placeorder
 from instrument import Instrument
@@ -371,7 +370,3 @@ class InstrumentBinancePermitIntegrationTest(TempDirTestCase):
         self.assertEqual(result["orderId"], 501)
         self.assertEqual(float(client.calls[0][1]["price"]), 98.89)
         self.assertEqual(client.calls[0][1]["quantity"], 1.5)
-
-
-if __name__ == "__main__":
-    unittest.main()

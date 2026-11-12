@@ -8,7 +8,6 @@ import os
 import pytest
 import subprocess
 import sys
-import unittest
 from cachepaths import split_symbol_assets
 from notify_engine.server import _resolve_provider_label
 from pathlib import Path
@@ -1469,10 +1468,6 @@ class ProcessOnceTest(TempDirTestCase):
             self.assertEqual(res4["succeeded"], 1)
             self.assertEqual([e[0] for e in audit_events], ["submit_requested", "submit_accepted"])
             self.assertIsNotNone(oq.get(rec_id))
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)

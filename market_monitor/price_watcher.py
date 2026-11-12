@@ -8,8 +8,6 @@ threads. Coin discovery additionally requires ``ALERT_NEW_COIN=TRUE``.
 
 Usage: ``python3 price_watcher.py [--config PATH] [--check]``.
 """
-from __future__ import annotations
-
 import argparse
 import os
 import sys

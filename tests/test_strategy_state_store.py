@@ -4,7 +4,6 @@ import ast
 import json
 import os
 import pytest
-import unittest
 from assetguardian import AssetGuardianState
 from pathlib import Path
 from providers.base import MarketDataProvider
@@ -221,7 +220,3 @@ def test_strategies_core_modules_dag_and_venue_purity():
                 assert not any(tok in low for tok in venue_tokens), (
                     f"{py_file.name}:{node.lineno} contains hardcoded venue literal {node.value!r}"
                 )
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

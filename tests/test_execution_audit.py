@@ -5,7 +5,6 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
-import unittest
 from unittest import mock
 
 import pytest
@@ -503,10 +502,6 @@ class ExecutionCalibrationTest(TempDirTestCase):
             "[auto_sharetrade_executor]",
         )
 
-
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================
@@ -615,4 +610,3 @@ def test_execution_calibration_aggregates_partial_fills_across_retries():
     assert rep["orders"][0]["final_fill_ratio"] == 1.0
     assert abs(rep["orders"][0]["limit_fill_deviation_bps"] - 60.0) < 1e-9
     assert abs(rep["orders"][0]["fee_bps"] - (0.10 / 100.6 * 10_000)) < 1e-9
-

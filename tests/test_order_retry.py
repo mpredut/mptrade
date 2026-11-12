@@ -14,7 +14,6 @@ import state_io as sio
 import subprocess
 import sys
 import time
-import unittest
 from decimal import Decimal
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
 from providers.market_api import MarketApi
@@ -1077,10 +1076,6 @@ class OrderRetryStoreTest(TempDirTestCase):
                     oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=1000.0, created_ts=bad_ts)
                 )
         self.assertEqual(oq.load_all(), [])
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)

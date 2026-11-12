@@ -14,7 +14,6 @@ import concurrent.futures as futures
 import json
 import os
 import time
-import unittest
 from binance_api.bapi_ws import BinancePriceStream, PublicPriceStreamBase
 from botcore import clamp_price_to_bbo_mid
 from intelligence.sentiment.collectors.portfolio_collector import _load_open_order_timestamps
@@ -565,7 +564,3 @@ class TestFetchDeadline(TempDirTestCase):
         ts_map = _load_open_order_timestamps(self.tmp, {})
         self.assertAlmostEqual(ts_map.get("O-KRK-777"), 1700000123.5)
         self.assertAlmostEqual(ts_map.get("ai_krk-hype-buy-1700000123"), 1700000123.5)
-
-
-if __name__ == "__main__":
-    unittest.main()

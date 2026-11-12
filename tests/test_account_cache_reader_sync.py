@@ -11,7 +11,6 @@ import os
 import sys
 import threading
 import time
-import unittest
 from binance_api import (
     bapi_allorders as allorders,
     bapi_placeorder as placeorder,
@@ -1919,7 +1918,3 @@ class AccountCacheReaderConfirmationTest(TempDirTestCase):
             )
             self.assertEqual(reader_sp.cache.get("BTC"), [[1700000000000, 60000.0]])
             self.assertTrue(os.path.exists(sp_path + ".previous"))
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
