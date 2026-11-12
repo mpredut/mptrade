@@ -19,6 +19,7 @@ from botcore import (
     stop_monitoring_thread,
 )
 from instrument_registry import casefold_get
+from providers.order_ohlc_utils import extract_trading_quote_pairs
 
 # ============================================
 # Global configuration
@@ -272,19 +273,12 @@ class BinanceNewListingsSource(NewCoinsSource):
     def refresh(self):
         try:
             data = self._fetch_endpoint_json("exchangeInfo")
-            current_symbols = set()
-            symbol_details = {}
-            raw_symbols = data.get('symbols', []) if isinstance(data, dict) else []
-            for symbol_info in (raw_symbols if isinstance(raw_symbols, list) else []):
-                if not isinstance(symbol_info, dict):
-                    continue
-                symbol = str(symbol_info.get('symbol') or '').strip().upper()
-                base_asset = str(symbol_info.get('baseAsset') or '').strip().upper()
-                quote_asset = str(symbol_info.get('quoteAsset') or '').strip().upper()
-                status = str(symbol_info.get('status') or '').strip().upper()
-                if symbol and base_asset and quote_asset == 'USDC' and status == 'TRADING':
-                    current_symbols.add(symbol)
-                    symbol_details[symbol] = {"symbol": base_asset, "full_symbol": symbol, "quote": quote_asset}
+            _, _, pair_to_base = extract_trading_quote_pairs(data, quote="USDC")
+            current_symbols = set(pair_to_base)
+            symbol_details = {
+                sym: {"symbol": base, "full_symbol": sym, "quote": "USDC"}
+                for sym, base in pair_to_base.items()
+            }
             if self._historical_symbols:
                 new_symbols = current_symbols - self._historical_symbols
                 if new_symbols:

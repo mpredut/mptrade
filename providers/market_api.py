@@ -241,6 +241,17 @@ class MarketApi:
         """Return free balance for asset from its routed or explicitly named provider."""
         return self._resolve_routed_or_named_provider(asset, provider_name).free_balance(asset)
 
+    @staticmethod
+    def _dispatch_with_cache_flags(
+        fn: Any,
+        *args: Any,
+        authoritative: bool = False,
+        publish_cache: bool = False,
+    ) -> List[dict]:
+        if authoritative or publish_cache:
+            return fn(*args, authoritative=authoritative, publish_cache=publish_cache)
+        return fn(*args)
+
     def get_orders(
         self,
         symbol: str,
@@ -251,16 +262,14 @@ class MarketApi:
         authoritative: bool = False,
         publish_cache: bool = False,
     ) -> List[dict]:
-        prov = self._provider_explicit_or_routed(symbol, provider_name)
-        if authoritative or publish_cache:
-            return prov.get_orders(
-                symbol,
-                side,
-                since_s,
-                authoritative=authoritative,
-                publish_cache=publish_cache,
-            )
-        return prov.get_orders(symbol, side, since_s)
+        return self._dispatch_with_cache_flags(
+            self._provider_explicit_or_routed(symbol, provider_name).get_orders,
+            symbol,
+            side,
+            since_s,
+            authoritative=authoritative,
+            publish_cache=publish_cache,
+        )
 
     def get_trades(
         self,
@@ -271,15 +280,13 @@ class MarketApi:
         authoritative: bool = False,
         publish_cache: bool = False,
     ) -> List[dict]:
-        prov = self._provider_explicit_or_routed(symbol, provider_name)
-        if authoritative or publish_cache:
-            return prov.get_trades(
-                symbol,
-                since_s,
-                authoritative=authoritative,
-                publish_cache=publish_cache,
-            )
-        return prov.get_trades(symbol, since_s)
+        return self._dispatch_with_cache_flags(
+            self._provider_explicit_or_routed(symbol, provider_name).get_trades,
+            symbol,
+            since_s,
+            authoritative=authoritative,
+            publish_cache=publish_cache,
+        )
 
     def get_trade_orders(
         self,

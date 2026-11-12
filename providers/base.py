@@ -1,78 +1,40 @@
-"""Provider primitives with no registry or venue-module dependencies."""
+"""Core MarketDataProvider contract with modular SSOT-bridge, venue-metadata, and WS stream layers."""
 
-import asyncio
-import contextlib
 import importlib
 import inspect
-import logging
 import math
-import sys
 import threading
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
+from typing import Any, List, Optional
 
-from botcore import (
+from botcore import (  # noqa: F401
     _parse_bool_flag,
-    async_interruptible_sleep,
     bind_attr_call,
     bool_env,
     clean_upper_token,
     exact_nonneg_int,
     is_shared_disk_cache_enabled,
-    is_worker_thread_alive,
     load_env_file_defaults,
     load_local_module,
-    require_nonneg_float,
     require_pos_float,
     resolve_patched_attr,
-    resolve_positive_max_age,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
-    safe_pos_int,
-    set_stop_event,
 )
-from cachepaths import (
-    CACHE_CURRENT_PRICE_FILENAME,
+from cachepaths import (  # noqa: F401
     cache_path,
-    canonical_symbol_key,
-    clean_symbol_key,
-    normalize_venue_name,
     split_symbol_assets,
-    symbol_quote_asset,
 )
-import instrument_registry as _default_ir
+import instrument_registry as _default_ir  # noqa: F401
 
-_ORIG_LOAD_LOCAL_MODULE = load_local_module
-_LIVE_FETCH_LOCAL = threading.local()
-
-
-@contextlib.contextmanager
-def live_price_fetch_context():
-    """Mark the current thread as performing a live venue price poll for cacheManager."""
-    depth = safe_nonneg_int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0, default=0)
-    _LIVE_FETCH_LOCAL.depth = depth + 1
-    try:
-        yield
-    finally:
-        _LIVE_FETCH_LOCAL.depth = max(0, depth)
-
-
-def is_in_live_price_fetch() -> bool:
-    """Return True when called inside a cacheManager remote price poll."""
-    return safe_nonneg_int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0, default=0) > 0
-
-
-from .order_ohlc_utils import (  # noqa: E402, F401
+from .order_ohlc_utils import (  # noqa: F401
     ClosedPriceSeries,
     VENUE_PROVIDER_SPECS,
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
-    derive_venue_128bit_client_order_id,
     extract_order_id,
     extract_order_price,
     extract_timestamp_ms,
@@ -80,26 +42,44 @@ from .order_ohlc_utils import (  # noqa: E402, F401
     extract_yahoo_chart_result_and_quote,
     normalize_side,
     normalize_timestamp_ms,
-    resolve_venue_provider_class as _resolve_venue_provider_class,
 )
-from .quantity import (  # noqa: E402, F401
+from .quantity import (  # noqa: F401
     compute_fills_cost_basis,
     decide_quantity,
     venue_fee_cap_quantity,
 )
-from .strategy_executor import (  # noqa: E402, F401
+from .ssot_bridge import (  # noqa: F401
+    ProviderSsotBridgeMixin,
+    is_in_live_price_fetch,
+    live_price_fetch_context,
+)
+from .strategy_executor import (  # noqa: F401
     OrderReconciliationCapabilities,
     OrderStatus,
     PairPrecision,
     ProviderError,
     SubmissionRefused,
 )
+from .venue_metadata import ProviderVenueMetadataMixin  # noqa: F401
+from .ws_stream import (  # noqa: F401
+    AsyncReconnectStreamBase,
+    PublicPriceStreamBase,
+    WS_CLOSE_TIMEOUT,
+    WS_PING_INTERVAL,
+    WS_PING_TIMEOUT,
+    WS_RECV_TIMEOUT,
+    WS_RETRY_INITIAL,
+    WS_RETRY_MAX,
+    WS_STOP_TIMEOUT,
+    _ws_logger,
+    mount_connect_retry,
+)
 
-
+_ORIG_LOAD_LOCAL_MODULE = load_local_module
 _UNSET_INTERVAL = object()
 
 
-class MarketDataProvider(ABC):
+class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, ABC):
     """Shared market-data, account, order, and policy-hook interface."""
 
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
@@ -151,600 +131,18 @@ class MarketDataProvider(ABC):
     def supports_symbol(self, symbol: str) -> bool:
         ...
 
-    _DEFAULT_FILLS_CACHE_FILENAME: Optional[str] = None
-    _FILLS_CACHE_PATH_MODULE_ATTR: Optional[str] = None
-    _FILLS_CACHE_DEFAULT_MODULE_ATTR: Optional[str] = None
-    _FILLS_CACHE_MAX_STALE_S: float = 60.0
-    _CLIENT_CLASS_NAME: Optional[str] = None
-    _DEFAULT_QUOTE_ASSET: Optional[str] = None
-    _DEFAULT_INTENT_EXECUTOR_TAG: str = "[auto_cryptotrade_executor]"
-    _ASSET_SCOPE: str = "crypto"
-    _RUNTIME_ENV_RELPATH: Optional[tuple[str, ...]] = None
-    _USES_SSOT_MARKET_CACHE: bool = True
     _REQUIRES_CACHE_PERMIT: bool = False
     _DEFERS_SMART_CANCELLATION: bool = False
     _SUPPORTS_BUSINESS_MINIMUM: bool = False
     _SUPPORTS_ORDER_VALIDITY: bool = False
     _DEFERS_PREFLIGHT_QUANTITY: bool = False
-    _STRATEGY_HEARTBEAT_NAME: str = ""
     _LIVE_ORDERS_ENV: Optional[str] = None
     _LIVE_ORDERS_DIR_ATTR: Optional[str] = None
     _LIVE_ORDERS_EXEC_READS_DIR: bool = True
-    _CLIENT_ID_128BIT_SPEC: Optional[tuple[str, bytes, Any, str]] = None
-    _INTENT_CLIENT_ID_FORMAT: Optional[str] = None
-    _BUY_SLIPPAGE_FEE_BUFFER: Optional[float] = None
-    _SELL_DUST_SPEC: Optional[tuple[int, float]] = None
-    _DEFAULT_FEE_SPEC: tuple[str, float, float, float] = ("STANDARD", 15.0, 15.0, 5.0)
-    _DEFAULT_STEP_LADDER: tuple[tuple[float, float], ...] = ((1000.0, 0.0001), (50.0, 0.001))
-    _DEFAULT_STEP_FALLBACK: float = 0.01
-    _DEFAULT_TICK_LADDER: tuple[tuple[float, float], ...] = ((10.0, 0.01), (1.0, 0.001))
-    _DEFAULT_TICK_FALLBACK: float = 0.0001
-    _TCA_DECIMALS_LADDER: tuple[tuple[float, int], ...] = ((10.0, 2), (1.0, 3), (0.1, 4))
-    _TCA_DECIMALS_FALLBACK: int = 6
-    _PREFER_STATIC_TICK_SIZE: bool = False
-    _USES_SHARED_REGISTRY_SYMBOLS: bool = False
-    _HISTORICAL_OHLC_PRIORITY: Optional[int] = None
-    _ORDERBOOK_L2_INFO_BOOK: bool = False
-    _EXACT_TELEMETRY_CACHE_SYMBOL: bool = False
-    _QUOTE_ISOLATED_TELEMETRY_VENUE: bool = True
-    _HAS_NATIVE_L1_DERIVATIVES: bool = False
-    _MERGES_AUDIT_TERMINAL_ORDERS: bool = False
-    _USES_BARE_BASE_ORDER_SYMBOLS: bool = False
-    _USES_SHARED_TRAILING_MAP: bool = False
-    _POSITION_PRICE_DECIMALS: int = 6
     _RECONCILIATION_CAPABILITIES: OrderReconciliationCapabilities = OrderReconciliationCapabilities()
     _OHLC_MARKET_DATA_SPEC: Optional[tuple[Optional[str], str, str]] = None
     _OHLC_DEFAULT_INTERVAL: Any = 60
-    _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = VENUE_PROVIDER_SPECS
-    _fills_match_fn: Any = None
-    _fills_normalize_fn: Any = None
-    _ssot_current_price_reader: Any = None
-    _ssot_cache_manager_getter: Any = None
-    _ssot_short_trend_getter: Any = None
-    _ssot_ensure_account_readers_fn: Any = None
-    _ssot_current_price_cls: Any = None
-    _ssot_price24_cls: Any = None
-    _ssot_trade_cache_cls: Any = None
-    _policy_weight_limit_fn: Any = None
-    _policy_window_cfg_fn: Any = None
-    _policy_window_reference_fn: Any = None
-    _policy_resolve_trade_weight_fn: Any = None
-    _policy_compute_weight_capped_qty_fn: Any = None
-    _bound_instrument_cls: Any = None
-    _bound_tracked_order_lifecycle_cls: Any = None
-    _retry_discard_refused_intent_fn: Any = None
-    _retry_discard_superseded_symbol_fn: Any = None
-    _retry_accepted_owner_map_fn: Any = None
-    _retry_resolve_accepted_order_fn: Any = None
-    _telemetry_intervals_resolver: Any = None
-
-    @classmethod
-    def bind_instrument_class(cls, instrument_cls: Any) -> None:
-        """Bind the ``Instrument`` gateway class from the higher Order Gateway layer."""
-        if instrument_cls is not None:
-            cls._bound_instrument_cls = instrument_cls
-
-    @classmethod
-    def resolve_instrument_class(cls) -> Any:
-        """Return the bound ``Instrument`` class (respecting ``instrument`` monkeypatches)."""
-        if cls._bound_instrument_cls is None:
-            importlib.import_module("instrument")
-        inst_cls = resolve_patched_attr(
-            "Instrument",
-            cls._bound_instrument_cls,
-            modules=("instrument",),
-            require_callable=True,
-        )
-        if inst_cls is None:
-            raise RuntimeError("Instrument class is not bound")
-        return inst_cls
-
-    @classmethod
-    def bind_ssot_cache_readers(
-        cls,
-        *,
-        current_price_reader: Any = None,
-        cache_manager_getter: Any = None,
-        short_trend_getter: Any = None,
-        ensure_account_readers_fn: Any = None,
-        current_price_cls: Any = None,
-        price24_cls: Any = None,
-        trade_cache_cls: Any = None,
-    ) -> None:
-        """Bind read-only SSOT cache getters and snapshot classes from ``cacheManager`` without upward imports."""
-        if current_price_reader is not None:
-            cls._ssot_current_price_reader = staticmethod(current_price_reader)
-        if cache_manager_getter is not None:
-            cls._ssot_cache_manager_getter = staticmethod(cache_manager_getter)
-        if short_trend_getter is not None:
-            cls._ssot_short_trend_getter = staticmethod(short_trend_getter)
-        if ensure_account_readers_fn is not None:
-            cls._ssot_ensure_account_readers_fn = staticmethod(ensure_account_readers_fn)
-        if current_price_cls is not None:
-            cls._ssot_current_price_cls = current_price_cls
-        if price24_cls is not None:
-            cls._ssot_price24_cls = price24_cls
-        if trade_cache_cls is not None:
-            cls._ssot_trade_cache_cls = trade_cache_cls
-
-    @classmethod
-    def _ensure_ssot_cache_bindings(cls) -> None:
-        if cls._ssot_cache_manager_getter is None:
-            importlib.import_module("cacheManager")
-
-    @classmethod
-    def ensure_ssot_account_cache_readers(cls, status: Any) -> Any:
-        """Synchronize account-cache reader versions via bound hook (respecting ``cacheManager`` monkeypatches)."""
-        cls._ensure_ssot_cache_bindings()
-        fn = resolve_patched_attr(
-            "ensure_account_cache_readers",
-            cls._ssot_ensure_account_readers_fn,
-            modules=("cacheManager",),
-            require_callable=True,
-        )
-        return fn(status) if callable(fn) else None
-
-    @classmethod
-    def get_ssot_cache_manager(cls, cache_name: str, *args: Any, **kwargs: Any) -> Any:
-        """Return a named SSOT cache manager via bound hook (respecting ``cacheManager`` monkeypatches)."""
-        cls._ensure_ssot_cache_bindings()
-        fn = resolve_patched_attr(
-            "get_cache_manager",
-            cls._ssot_cache_manager_getter,
-            modules=("cacheManager",),
-            require_callable=True,
-        )
-        if not callable(fn):
-            raise RuntimeError("SSOT cache manager getter is not bound")
-        if not args and not kwargs:
-            return fn(cache_name)
-        try:
-            return fn(cache_name, *args, **kwargs)
-        except TypeError:
-            if "symbols" in kwargs and not args:
-                return fn(cache_name, kwargs["symbols"])
-            raise
-
-    @classmethod
-    def get_ssot_short_trend_manager(cls) -> Any:
-        """Return the ShortTrend cache manager via bound hook (respecting ``cacheManager`` / ``cachetrend`` monkeypatches)."""
-        ct_mod = (
-            importlib.import_module("cachetrend")
-            if cls._ssot_short_trend_getter is None
-            else sys.modules.get("cachetrend")
-        )
-        orig_fn = getattr(ct_mod, "_ORIG_GET_SHORT_TREND_MANAGER", None) if ct_mod is not None else None
-        default_fn = (
-            cls._ssot_short_trend_getter
-            or orig_fn
-            or (getattr(ct_mod, "get_short_trend_manager", None) if ct_mod is not None else None)
-        )
-        fn = resolve_patched_attr(
-            "get_short_trend_manager",
-            default_fn,
-            defaults=(cls._ssot_short_trend_getter, orig_fn),
-            modules=("cacheManager", "cachetrend"),
-            require_callable=True,
-        )
-        return fn() if callable(fn) else None
-
-    @classmethod
-    def bind_order_guard_hooks(
-        cls,
-        *,
-        weight_limit_fn: Any = None,
-        window_cfg_fn: Any = None,
-        window_reference_fn: Any = None,
-        resolve_trade_weight_fn: Any = None,
-        compute_weight_capped_qty_fn: Any = None,
-    ) -> None:
-        """Bind order-guard policy callbacks from the higher Order Gateway layer."""
-        if weight_limit_fn is not None:
-            cls._policy_weight_limit_fn = staticmethod(weight_limit_fn)
-        if window_cfg_fn is not None:
-            cls._policy_window_cfg_fn = staticmethod(window_cfg_fn)
-        if window_reference_fn is not None:
-            cls._policy_window_reference_fn = staticmethod(window_reference_fn)
-        if resolve_trade_weight_fn is not None:
-            cls._policy_resolve_trade_weight_fn = staticmethod(resolve_trade_weight_fn)
-        if compute_weight_capped_qty_fn is not None:
-            cls._policy_compute_weight_capped_qty_fn = staticmethod(compute_weight_capped_qty_fn)
-
-    @staticmethod
-    def _bind_order_guard_hook(method_name: str, attr_name: str, fallback_attr: str):
-        def _method(cls, *args: Any, **kwargs: Any) -> Any:
-            if cls._policy_weight_limit_fn is None or cls._policy_resolve_trade_weight_fn is None:
-                importlib.import_module("order_guard")
-            fn = resolve_patched_attr(
-                attr_name,
-                getattr(cls, fallback_attr, None),
-                modules=("order_guard",),
-                require_callable=True,
-            )
-            if not callable(fn):
-                raise RuntimeError(f"order_guard.{attr_name} is not bound")
-            return fn(*args, **kwargs)
-
-        _method.__name__ = method_name
-        _method.__qualname__ = f"MarketDataProvider.{method_name}"
-        return classmethod(_method)
-
-    resolve_order_guard_trade_weight = _bind_order_guard_hook(
-        "resolve_order_guard_trade_weight",
-        "resolve_trade_weight",
-        "_policy_resolve_trade_weight_fn",
-    )
-    compute_order_guard_weight_capped_qty = _bind_order_guard_hook(
-        "compute_order_guard_weight_capped_qty",
-        "compute_weight_capped_qty",
-        "_policy_compute_weight_capped_qty_fn",
-    )
-
-    @classmethod
-    def resolve_tracked_order_lifecycle_class(cls) -> Any:
-        """Return ``TrackedOrderLifecycle`` from ``order_lifecycle`` (respecting monkeypatches)."""
-        if cls._bound_tracked_order_lifecycle_cls is None:
-            mod = importlib.import_module("order_lifecycle")
-            cls._bound_tracked_order_lifecycle_cls = getattr(mod, "TrackedOrderLifecycle", None)
-        lifecycle_cls = resolve_patched_attr(
-            "TrackedOrderLifecycle",
-            cls._bound_tracked_order_lifecycle_cls,
-            modules=("order_lifecycle",),
-            require_callable=True,
-        )
-        if lifecycle_cls is None:
-            raise RuntimeError("TrackedOrderLifecycle class is not bound")
-        return lifecycle_cls
-
-    @classmethod
-    def bind_order_retry_hooks(
-        cls,
-        *,
-        discard_refused_intent_fn: Any = None,
-        discard_superseded_symbol_fn: Any = None,
-        accepted_owner_map_fn: Any = None,
-        resolve_accepted_order_fn: Any = None,
-    ) -> None:
-        """Bind persistent retry-outbox callbacks from ``order_retry`` without upward imports."""
-        if discard_refused_intent_fn is not None:
-            cls._retry_discard_refused_intent_fn = staticmethod(discard_refused_intent_fn)
-        if discard_superseded_symbol_fn is not None:
-            cls._retry_discard_superseded_symbol_fn = staticmethod(discard_superseded_symbol_fn)
-        if accepted_owner_map_fn is not None:
-            cls._retry_accepted_owner_map_fn = staticmethod(accepted_owner_map_fn)
-        if resolve_accepted_order_fn is not None:
-            cls._retry_resolve_accepted_order_fn = staticmethod(resolve_accepted_order_fn)
-
-    @classmethod
-    def _resolve_order_retry_hook(cls, attr_name: str, slot_name: str) -> Any:
-        fallback = getattr(cls, slot_name, None)
-        if fallback is None:
-            importlib.import_module("order_retry")
-            fallback = getattr(cls, slot_name, None)
-        return resolve_patched_attr(
-            attr_name,
-            fallback,
-            modules=("order_retry",),
-            require_callable=True,
-        )
-
-    @classmethod
-    def discard_refused_intent_retry_records(cls, intent_id: str) -> list[str]:
-        """Discard ``refused`` retry-outbox records matching ``intent_id``."""
-        fn = cls._resolve_order_retry_hook("discard_refused_intent_records", "_retry_discard_refused_intent_fn")
-        return list(fn(intent_id)) if callable(fn) else []
-
-    @classmethod
-    def discard_superseded_symbol_retry_records(cls, *args: Any, **kwargs: Any) -> list[str]:
-        """Discard superseded pending retry-outbox records for a symbol/side."""
-        fn = cls._resolve_order_retry_hook("discard_superseded_symbol_records", "_retry_discard_superseded_symbol_fn")
-        return list(fn(*args, **kwargs)) if callable(fn) else []
-
-    @classmethod
-    def get_accepted_retry_order_owner_map(cls) -> dict[str, str]:
-        """Return accepted retry-outbox owner map via bound ``order_retry`` hook."""
-        fn = cls._resolve_order_retry_hook("get_accepted_order_owner_map", "_retry_accepted_owner_map_fn")
-        res = fn() if callable(fn) else {}
-        return res if isinstance(res, dict) else {}
-
-    @classmethod
-    def resolve_accepted_retry_order(cls, symbol: str, order_id: Any) -> Any:
-        """Resolve an accepted retry-outbox order via bound ``order_retry`` hook."""
-        fn = cls._resolve_order_retry_hook("resolve_accepted_order", "_retry_resolve_accepted_order_fn")
-        return fn(symbol, order_id) if callable(fn) else None
-
-    @classmethod
-    def resolve_unfilled_order_cancel_grace_sec(cls) -> float:
-        """Return ``unfilled_order_cancel_grace_sec`` from telemetry SSOT (respecting monkeypatches)."""
-        if cls._telemetry_intervals_resolver is None:
-            mod = importlib.import_module("intelligence.macro_sentiment_ssot")
-            fn_init = getattr(mod, "resolve_derived_telemetry_intervals", None)
-            if callable(fn_init):
-                cls._telemetry_intervals_resolver = staticmethod(fn_init)
-        fn = resolve_patched_attr(
-            "resolve_derived_telemetry_intervals",
-            cls._telemetry_intervals_resolver,
-            modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot"),
-            require_callable=True,
-        )
-        if not callable(fn):
-            raise RuntimeError("resolve_derived_telemetry_intervals is not bound")
-        return require_nonneg_float(
-            fn()["unfilled_order_cancel_grace_sec"],
-            name="unfilled_order_cancel_grace_sec",
-        )
-
-    @classmethod
-    def derive_client_order_id(cls, client_order_id: Any) -> str:
-        """Derive the venue-native 128-bit clientOrderId for ``cls``."""
-        return derive_venue_128bit_client_order_id(cls, client_order_id)
-
-    @staticmethod
-    def _invoke_fee_and_limits_callable(
-        fn: Any, *leading_args: Any, symbol: str, price: Optional[float] = None
-    ) -> Optional[dict]:
-        if not callable(fn):
-            return None
-        try:
-            params = inspect.signature(fn).parameters
-            has_price = "price" in params or any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-            )
-        except (TypeError, ValueError):
-            has_price = False
-        res = fn(*leading_args, symbol, price=price) if has_price else fn(*leading_args, symbol)
-        return res if isinstance(res, dict) else None
-
-    def resolve_cached_fee_and_limits(self, symbol: str, *, price: Optional[float] = None) -> dict:
-        """Return non-blocking cached fee tier and precision/limit overrides for ``symbol``."""
-        extract_fn = getattr(type(self), "extract_cached_fee_and_limits", None)
-        if not callable(extract_fn):
-            prov_cls = self.resolve_venue_provider_class(getattr(self, "name", ""))
-            extract_fn = getattr(prov_cls, "extract_cached_fee_and_limits", None) if prov_cls is not None else None
-        res = self._invoke_fee_and_limits_callable(extract_fn, self, symbol=symbol, price=price)
-        return res if res is not None else {}
-
-    @classmethod
-    def resolve_venue_provider_class(cls, venue: Any, *, provider: Any = None) -> Any:
-        """Resolve the concrete ``MarketDataProvider`` subclass for ``venue`` or ``provider``."""
-        return _resolve_venue_provider_class(
-            venue, provider=provider, base_cls=cls, specs=cls._VENUE_PROVIDER_SPECS
-        )
-
-    @staticmethod
-    def _lookup_price_ladder(px: float, ladder: tuple[tuple[float, Any], ...], fallback: Any) -> Any:
-        for threshold, val in ladder:
-            if px >= threshold:
-                return val
-        return fallback
-
-    @classmethod
-    def default_step_and_tick(cls, price: float = 0.0) -> tuple[float, float]:
-        """Return default ``(step_size, tick_size)`` fallback for TCA/fee limit evaluation."""
-        px_f = safe_pos_float(price, default=0.0) or 0.0
-        step = cls._lookup_price_ladder(px_f, cls._DEFAULT_STEP_LADDER, cls._DEFAULT_STEP_FALLBACK)
-        tick = cls._lookup_price_ladder(px_f, cls._DEFAULT_TICK_LADDER, cls._DEFAULT_TICK_FALLBACK)
-        fb_step = safe_pos_float(cls._DEFAULT_STEP_FALLBACK, default=0.01) or 0.01
-        fb_tick = safe_pos_float(cls._DEFAULT_TICK_FALLBACK, default=0.01) or 0.01
-        return safe_pos_float(step, default=fb_step) or fb_step, safe_pos_float(tick, default=fb_tick) or fb_tick
-
-    @classmethod
-    def tca_price_decimals(cls, limit_price: float = 0.0) -> int:
-        """Return rounding precision decimals for limit-order queue TCA analysis."""
-        px_f = safe_pos_float(limit_price, default=0.0) or 0.0
-        fb_dec = safe_nonneg_int(cls._TCA_DECIMALS_FALLBACK, default=2)
-        return safe_nonneg_int(
-            cls._lookup_price_ladder(px_f, cls._TCA_DECIMALS_LADDER, cls._TCA_DECIMALS_FALLBACK),
-            default=fb_dec,
-        )
-
-    @classmethod
-    def resolve_venue_default_fee_spec(
-        cls,
-        venue: Any,
-        *,
-        fallback_venue: Optional[str] = None,
-    ) -> tuple[str, float, float, float]:
-        """Return declarative ``(fee_tier, maker_bps, taker_bps, min_notional_usd)`` for ``venue``."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        if prov_cls is None and fallback_venue:
-            prov_cls = cls.resolve_venue_provider_class(fallback_venue)
-        return getattr(prov_cls, "_DEFAULT_FEE_SPEC", cls._DEFAULT_FEE_SPEC)
-
-    @classmethod
-    def _resolve_venue_target_cls(cls, venue: Any) -> type["MarketDataProvider"]:
-        return cls.resolve_venue_provider_class(venue) or cls
-
-    @classmethod
-    def resolve_venue_default_fee_and_precision(
-        cls,
-        venue: Any,
-        price: float = 0.0,
-    ) -> tuple[str, float, float, float, float, float, bool]:
-        """Return ``(fee_tier, maker_bps, taker_bps, min_notional, default_step, default_tick, prefer_static_tick)``."""
-        target_cls = cls._resolve_venue_target_cls(venue)
-        fee_tier, maker_bps, taker_bps, min_notional = getattr(
-            target_cls, "_DEFAULT_FEE_SPEC", cls._DEFAULT_FEE_SPEC
-        )
-        default_step, default_tick = target_cls.default_step_and_tick(price)
-        prefer_static_tick = bool(getattr(target_cls, "_PREFER_STATIC_TICK_SIZE", False))
-        return (
-            fee_tier,
-            maker_bps,
-            taker_bps,
-            min_notional,
-            default_step,
-            default_tick,
-            prefer_static_tick,
-        )
-
-    @classmethod
-    def resolve_venue_tca_price_decimals(cls, venue: Any, limit_price: float = 0.0) -> int:
-        """Return venue-specific TCA limit-price rounding decimals."""
-        return safe_nonneg_int(cls._resolve_venue_target_cls(venue).tca_price_decimals(limit_price), default=2)
-
-    @classmethod
-    def uses_shared_registry_symbols(cls, venue: Any) -> bool:
-        """Return whether ``venue`` defaults to ``instrument_registry.symbols`` when ``symbols=None``."""
-        v_str = str(getattr(venue, "name", venue) or "").strip()
-        if not v_str:
-            return True
-        prov_cls = cls.resolve_venue_provider_class(v_str)
-        return bool(getattr(prov_cls, "_USES_SHARED_REGISTRY_SYMBOLS", False))
-
-    @classmethod
-    def is_exact_telemetry_symbol_venue(
-        cls,
-        venue: Any,
-        *,
-        quote_isolated: bool = False,
-        multi_venue_base: bool = False,
-    ) -> bool:
-        """Return whether external telemetry disk caching requires exact symbol isolation for ``venue``."""
-        target_cls = cls._resolve_venue_target_cls(venue)
-        if getattr(target_cls, "_EXACT_TELEMETRY_CACHE_SYMBOL", False):
-            return True
-        return bool(
-            quote_isolated
-            and (
-                getattr(target_cls, "_QUOTE_ISOLATED_TELEMETRY_VENUE", True)
-                or multi_venue_base
-            )
-        )
-
-    @staticmethod
-    def _bind_venue_bool_capability(attr: str):
-        return classmethod(
-            lambda cls, venue, _attr=attr: bool(getattr(cls.resolve_venue_provider_class(venue), _attr, False))
-        )
-
-    has_native_l1_derivatives = _bind_venue_bool_capability("_HAS_NATIVE_L1_DERIVATIVES")
-
-    @classmethod
-    def canonical_venues(cls) -> tuple[str, ...]:
-        """Return all registered canonical venue identifiers in deterministic order."""
-        return tuple(cls._VENUE_PROVIDER_SPECS.keys())
-
-    merges_audit_terminal_orders = _bind_venue_bool_capability("_MERGES_AUDIT_TERMINAL_ORDERS")
-    uses_bare_base_order_symbols = _bind_venue_bool_capability("_USES_BARE_BASE_ORDER_SYMBOLS")
-    uses_shared_trailing_map = _bind_venue_bool_capability("_USES_SHARED_TRAILING_MAP")
-
-    @classmethod
-    def resolve_venue_default_quote(cls, venue: Any, fallback: str = "USD") -> str:
-        """Return the default quote currency for ``venue`` when unparsed from ``symbol``."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        q = getattr(prov_cls, "_DEFAULT_QUOTE_ASSET", None) if prov_cls is not None else None
-        return str(q).strip().upper() if isinstance(q, str) and q.strip() else str(fallback or "USD").strip().upper()
-
-    @classmethod
-    def resolve_venue_position_price_decimals(cls, venue: Any) -> int:
-        """Return mark/position price rounding decimals for ``venue``."""
-        dec = safe_nonneg_int(getattr(cls._resolve_venue_target_cls(venue), "_POSITION_PRICE_DECIMALS", 6), default=6)
-        return 6 if dec is None else dec
-
-    @classmethod
-    def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
-        """Return the daemon heartbeat module name for this provider's strategy engine."""
-        if cls._STRATEGY_HEARTBEAT_NAME:
-            return cls._STRATEGY_HEARTBEAT_NAME
-        raw_name = getattr(cls, "name", "")
-        label = raw_name if isinstance(raw_name, str) and raw_name else cls.__name__.removesuffix("Provider")
-        return f"{label or 'Strategy'}-bot"
-
-    @classmethod
-    def resolve_venue_strategy_heartbeat(cls, venue: Any, symbol: str = "") -> str:
-        """Resolve the strategy daemon heartbeat module name for ``venue`` and ``symbol``."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        if prov_cls is not None:
-            return prov_cls.format_strategy_heartbeat_name(symbol)
-        venue_str = str(venue or "").strip()
-        return f"{venue_str}-bot" if venue_str else "Strategy-bot"
-
-    @classmethod
-    def resolve_venue_intent_executor_tag(cls, venue: Any) -> str:
-        """Resolve the canonical autonomous intent executor bracket tag for ``venue``."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        tag = getattr(prov_cls, "_DEFAULT_INTENT_EXECUTOR_TAG", None) if prov_cls is not None else None
-        return str(tag) if isinstance(tag, str) and tag.strip() else cls._DEFAULT_INTENT_EXECUTOR_TAG
-
-    @classmethod
-    def load_venue_env_defaults(cls, workspace_dir: Any, *, asset_scope: str = "all") -> None:
-        """Load per-venue runtime/config env defaults matching ``asset_scope`` ('all', 'crypto', 'equities')."""
-        if not workspace_dir:
-            return
-        scope = str(asset_scope or "all").strip().lower()
-        ws_path = Path(workspace_dir)
-        for venue_key in cls._VENUE_PROVIDER_SPECS:
-            prov_cls = cls.resolve_venue_provider_class(venue_key)
-            rel = getattr(prov_cls, "_RUNTIME_ENV_RELPATH", None) if prov_cls is not None else None
-            prov_scope = str(getattr(prov_cls, "_ASSET_SCOPE", "crypto") or "crypto").strip().lower()
-            if rel and (scope == "all" or scope == prov_scope):
-                load_env_file_defaults(str(ws_path.joinpath(*rel)))
-
-    @classmethod
-    def resolve_provider_cached_fee_and_limits(
-        cls,
-        venue: str,
-        symbol: str,
-        provider: Any,
-        *,
-        price: Optional[float] = None,
-    ) -> dict:
-        """Resolve cached fee/limit overrides from ``provider`` via public hook or venue adapter."""
-        if provider is None:
-            return {}
-        inst_hook = getattr(provider, "resolve_cached_fee_and_limits", None)
-        if callable(inst_hook) and getattr(type(provider), "resolve_cached_fee_and_limits", None) is not cls.resolve_cached_fee_and_limits:
-            try:
-                res = cls._invoke_fee_and_limits_callable(inst_hook, symbol=symbol, price=price)
-                if res is not None:
-                    return res
-            except Exception:
-                pass
-        extract_fn = getattr(type(provider), "extract_cached_fee_and_limits", None)
-        if not callable(extract_fn):
-            prov_cls = cls.resolve_venue_provider_class(venue or getattr(provider, "name", ""))
-            extract_fn = getattr(prov_cls, "extract_cached_fee_and_limits", None) if prov_cls is not None else None
-        try:
-            res = cls._invoke_fee_and_limits_callable(extract_fn, provider, symbol=symbol, price=price)
-            if res is not None:
-                return res
-        except Exception:
-            pass
-        return {}
-
-    @classmethod
-    def resolve_instrument_cached_fee_and_limits(
-        cls,
-        inst: Any,
-        venue: str,
-        symbol: str,
-        *,
-        price: Optional[float] = None,
-    ) -> dict:
-        """Resolve cached fee and limit metadata from an ``Instrument`` or compatible stub."""
-        if inst is None:
-            return {}
-        inst_hook = getattr(type(inst), "cached_fee_and_limits", None)
-        if callable(inst_hook):
-            try:
-                res = inst.cached_fee_and_limits(price=price)
-                if isinstance(res, dict):
-                    return res
-            except Exception:
-                pass
-        mock_children = getattr(inst, "_mock_children", None)
-        if isinstance(mock_children, dict) and "provider" in mock_children and "_provider" not in mock_children:
-            prov = getattr(inst, "provider", None)
-        else:
-            prov = getattr(inst, "_provider", None)
-            if prov is None or isinstance(prov, str):
-                prov = getattr(inst, "provider", None)
-        if prov is None or isinstance(prov, str):
-            return {}
-        return cls.resolve_provider_cached_fee_and_limits(
-            venue, symbol, prov, price=price
-        )
+    _REMOTE_TRADES_CLIENT_ATTR: Optional[str] = None
 
     @classmethod
     def fetch_venue_remote_trades(
@@ -798,52 +196,6 @@ class MarketDataProvider(ABC):
         """Return free balance: ``0.0`` is real zero; ``None`` means unavailable."""
         return None
 
-    def _fills_cache_file(self) -> Optional[str]:
-        custom = getattr(self, "_ssot_fills_cache_path", None)
-        if custom:
-            return str(custom)
-        mod_name = type(self).__module__
-        mod_path = (
-            resolve_patched_attr(self._FILLS_CACHE_PATH_MODULE_ATTR, None, modules=(mod_name,))
-            if self._FILLS_CACHE_PATH_MODULE_ATTR
-            else None
-        )
-        def_path = (
-            resolve_patched_attr(self._FILLS_CACHE_DEFAULT_MODULE_ATTR, None, modules=(mod_name,))
-            if self._FILLS_CACHE_DEFAULT_MODULE_ATTR
-            else None
-        )
-        if mod_path and def_path and mod_path != def_path:
-            return str(mod_path)
-        if self._allow_ssot_price_cache():
-            if mod_path:
-                return str(mod_path)
-            if self._DEFAULT_FILLS_CACHE_FILENAME:
-                return cache_path(self._DEFAULT_FILLS_CACHE_FILENAME)
-        return None
-
-    def _fills_from_cache(self, symbol: str) -> Optional[List[dict]]:
-        """Read symbol fills from the shared SSOT trade cache, or return None for API fallback."""
-        cache_file = self._fills_cache_file()
-        if not cache_file:
-            return None
-        stale_s = resolve_patched_attr("_CACHE_MAX_STALE_S", None, modules=(type(self).__module__,))
-        return self.read_ssot_fills_cache(
-            symbol,
-            cache_file,
-            max_stale_sec=stale_s if stale_s is not None else self._FILLS_CACHE_MAX_STALE_S,
-            match_fn=getattr(type(self), "_fills_match_fn", None),
-            normalize_fn=getattr(type(self), "_fills_normalize_fn", None),
-        )
-
-    def _invalidate_fills_cache(self, symbol: str) -> None:
-        """Expire ``fetchtime`` for ``symbol`` in this provider's configured SSOT trade cache."""
-        cache_file = self._fills_cache_file()
-        if cache_file:
-            self.invalidate_ssot_fills_cache(
-                symbol, cache_file, match_fn=getattr(type(self), "_fills_match_fn", None)
-            )
-
     def _require_submitted_order_id(
         self,
         symbol: str,
@@ -881,8 +233,6 @@ class MarketDataProvider(ABC):
             if cache_file:
                 self.write_ssot_fills_cache(symbol, cache_file, rows)
         return rows
-
-    _REMOTE_TRADES_CLIENT_ATTR: Optional[str] = None
 
     @classmethod
     def fetch_remote_trades_with_client(
@@ -988,28 +338,6 @@ class MarketDataProvider(ABC):
         """Return recent fill rows for ``symbol`` and optional ``order_type`` within ``max_age_seconds``."""
         return self.get_orders(symbol, order_type, max_age_seconds)
 
-    @staticmethod
-    def resolve_venue_instrument_spec(venue: Any, symbol: str) -> Any:
-        """Resolve ``InstrumentSpec`` for ``symbol`` on ``venue`` from ``instrument_registry``."""
-        if (sym_u := clean_upper_token(symbol)) is None:
-            return None
-        sym_clean = clean_symbol_key(sym_u)
-        sym_canon = canonical_symbol_key(sym_u)
-        try:
-            ir = resolve_patched_attr("instrument_registry", _default_ir, modules=("providers.market_api",)) or _default_ir
-            specs = list(ir.select_instruments(normalize_venue_name(getattr(venue, "name", venue) or "")).values())
-            for item in specs:
-                item_sym = str(getattr(item, "symbol", "") or "").strip().upper()
-                if item_sym == sym_u or (sym_clean and clean_symbol_key(item_sym) == sym_clean):
-                    return item
-            for item in specs:
-                item_sym = str(getattr(item, "symbol", "") or "").strip().upper()
-                if sym_canon and canonical_symbol_key(item_sym) == sym_canon:
-                    return item
-            return None
-        except Exception:
-            return None
-
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Return inventory-reconciled acquisition cost from fresh SSOT fills, or None when unknown."""
         since_val = require_pos_float(since_s, "since_s")
@@ -1032,12 +360,7 @@ class MarketDataProvider(ABC):
         return []
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
-        """Return explicitly supported strict lifecycle operations.
-
-        The default is deliberately conservative. An inherited empty
-        ``open_orders`` implementation must never be mistaken for a confirmed
-        empty venue snapshot.
-        """
+        """Return explicitly supported strict lifecycle operations."""
         caps = MarketDataProvider._resolve_provider_attr(self, "_RECONCILIATION_CAPABILITIES", None)
         return caps if isinstance(caps, OrderReconciliationCapabilities) else OrderReconciliationCapabilities()
 
@@ -1065,11 +388,7 @@ class MarketDataProvider(ABC):
         """Optional hook run before reading ``_LIVE_ORDERS_ENV`` when ``_live_enabled`` is unset."""
 
     def execution_enabled(self) -> bool:
-        """Return whether this provider may create a real venue order now.
-
-        Providers declare ``_LIVE_ORDERS_ENV`` / ``_venue_live_orders_enabled`` so the
-        shared placement pipeline checks the live gate before creating durable retry state.
-        """
+        """Return whether this provider may create a real venue order now."""
         live_override = getattr(self, "_live_enabled", None)
         if live_override is not None:
             return _parse_bool_flag(live_override, False)
@@ -1367,18 +686,6 @@ class MarketDataProvider(ABC):
             return list(closes) if closes is not None else []
         return []
 
-    # -- Agnostic SSOT cacheManager coupling (price, 24h history, short trend) -
-
-    def _ssot_symbol_candidates(self, symbol: str) -> tuple[str, ...]:
-        """Return venue-scoped symbol keys to look up in SSOT cacheManager stores."""
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
-            return ()
-        raw_u = symbol.strip().upper()
-        cleaned = clean_symbol_key(raw_u)
-        parts = split_symbol_assets(raw_u)
-        canon = canonical_symbol_key(raw_u) if parts is not None else ""
-        return tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon) if c))
-
     _DEFINITIVE_REFUSAL_TOKENS = (
         "insufficient",
         "minimum value",
@@ -1401,152 +708,6 @@ class MarketDataProvider(ABC):
         """Return True when a venue error message indicates a permanent order rejection."""
         text = str(error or "").lower()
         return any(token in text for token in cls._DEFINITIVE_REFUSAL_TOKENS)
-
-    def _allow_ssot_price_cache(self) -> bool:
-        """Return True when this provider should consult cacheManager SSOT before venue HTTP."""
-        if is_in_live_price_fetch():
-            return False
-        if getattr(self, "_ssot_cache_enabled", None) is False:
-            return False
-        has_explicit_ssot = bool(
-            getattr(self, "_ssot_cache_enabled", None) is True
-            or getattr(self, "_force_ssot_cache", False)
-            or getattr(self, "_ssot_price_cache_path", None)
-            or getattr(self, "_ssot_trend_cache_path", None)
-            or getattr(self, "_ssot_24price_cache_dir", None)
-            or getattr(self, "_ssot_fills_cache_path", None)
-        )
-        inst_dict = getattr(self, "__dict__", {})
-        inj_client = inst_dict.get("_cli")
-        if inj_client is None:
-            inj_client = inst_dict.get("_client")
-        client_cls_name = self._resolve_provider_attr("_CLIENT_CLASS_NAME", None)
-        is_real_client = bool(
-            client_cls_name and type(inj_client).__name__ == client_cls_name
-        )
-        if inj_client is not None and not is_real_client and not has_explicit_ssot:
-            return False
-        if has_explicit_ssot:
-            return True
-        return is_shared_disk_cache_enabled()
-
-    def _prepare_ssot_price_candidates(self, symbol: str) -> Optional[tuple[str, ...]]:
-        if not self._USES_SSOT_MARKET_CACHE or not self._allow_ssot_price_cache():
-            return None
-        candidates = self._ssot_symbol_candidates(symbol)
-        if not candidates:
-            return None
-        self._ensure_ssot_cache_bindings()
-        return candidates
-
-    def _cached_current_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
-        """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
-        eff_age = resolve_positive_max_age(max_age_sec, 12.0)
-        if (
-            eff_age is None
-            or not (candidates := self._prepare_ssot_price_candidates(symbol))
-            or (cp_cls := self._ssot_current_price_cls) is None
-        ):
-            return None
-        custom_path = getattr(self, "_ssot_price_cache_path", None)
-        price_path = str(custom_path) if custom_path else cache_path(CACHE_CURRENT_PRICE_FILENAME)
-        return cp_cls.read_ssot_current_price_candidates(
-            candidates,
-            price_path,
-            eff_age,
-            use_memory_manager=(custom_path is None),
-            reader_fn=self._ssot_current_price_reader,
-        )
-
-    def _cached_price_history(
-        self,
-        symbol: str,
-        lookback_hours: float,
-        max_latest_age_sec: float = 120.0,
-    ) -> Optional[list[dict]]:
-        """Read 24h tick history from Cache24PriceManager when fresh and covering ``lookback_hours``."""
-        if not (candidates := self._prepare_ssot_price_candidates(symbol)) or (p24_cls := self._ssot_price24_cls) is None:
-            return None
-        return p24_cls.read_ssot_price_history(
-            candidates,
-            lookback_hours,
-            max_latest_age_sec=max_latest_age_sec,
-            custom_dir=getattr(self, "_ssot_24price_cache_dir", None),
-        )
-
-    @classmethod
-    def fetch_public_market_price_usd(cls, symbol: str) -> Optional[float]:
-        """Return public unauthenticated USD spot/equity price for ``symbol`` if supported."""
-        return None
-
-    @classmethod
-    def resolve_venue_public_price_usd(cls, venue: object, symbol: str) -> Optional[float]:
-        """Resolve public USD market price for ``symbol`` via the registered venue provider class."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        fn = getattr(prov_cls, "fetch_public_market_price_usd", None) if prov_cls is not None else None
-        return fn(symbol) if callable(fn) else None
-
-    @classmethod
-    def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Return ``(primary_urls, secondary_urls)`` public L2 orderbook endpoints for ``symbol``."""
-        return ((), ())
-
-    @classmethod
-    def resolve_orderbook_depth_urls(
-        cls,
-        symbol: str,
-        *,
-        venue: str = "",
-        multi_venue: bool = False,
-    ) -> tuple[tuple[str, ...], str]:
-        """Return ``(ordered_depth_urls, hl_book_url)`` across registered venue providers."""
-        canon_sym = canonical_symbol_key(symbol)
-        if symbol_quote_asset(canon_sym) == "EUR":
-            eur_urls: list[str] = []
-            for v_key in cls._VENUE_PROVIDER_SPECS:
-                prov_cls = cls.resolve_venue_provider_class(v_key)
-                if prov_cls is not None and getattr(prov_cls, "_ASSET_SCOPE", "crypto") == "crypto":
-                    prim, _ = prov_cls.public_orderbook_depth_urls(canon_sym)
-                    eur_urls.extend(prim)
-            return tuple(eur_urls), ""
-
-        crypto_venues: list[str] = []
-        l2_info_venues: set[str] = set()
-        primary_map: dict[str, tuple[str, ...]] = {}
-        secondary_map: dict[str, tuple[str, ...]] = {}
-        for v_key in cls._VENUE_PROVIDER_SPECS:
-            prov_cls = cls.resolve_venue_provider_class(v_key)
-            if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
-                continue
-            crypto_venues.append(v_key)
-            if getattr(prov_cls, "_ORDERBOOK_L2_INFO_BOOK", False):
-                l2_info_venues.add(v_key)
-            prim, sec = prov_cls.public_orderbook_depth_urls(canon_sym)
-            primary_map[v_key] = prim
-            secondary_map[v_key] = sec
-
-        l2_info_urls = tuple(
-            u for v_k in crypto_venues if v_k in l2_info_venues for u in primary_map.get(v_k, ())
-        )
-        hl_book_url = l2_info_urls[0] if l2_info_urls else ""
-        default_venue = next(
-            (v_k for v_k in crypto_venues if primary_map.get(v_k)),
-            crypto_venues[0] if crypto_venues else "",
-        )
-        v_norm = normalize_venue_name(venue)
-        eff_venue = v_norm if (v_norm in primary_map and primary_map[v_norm]) else default_venue
-        if multi_venue:
-            return primary_map.get(eff_venue, ()), hl_book_url
-
-        ordered: list[str] = list(primary_map.get(eff_venue, ()))
-        for peer in crypto_venues:
-            if peer != eff_venue and peer not in l2_info_venues:
-                ordered.extend(primary_map.get(peer, ()))
-        for peer in crypto_venues:
-            ordered.extend(secondary_map.get(peer, ()))
-        if eff_venue not in l2_info_venues:
-            ordered.extend(l2_info_urls)
-        return tuple(ordered), hl_book_url
 
     def fetch_historical_ohlc_points(
         self,
@@ -1607,378 +768,3 @@ class MarketDataProvider(ABC):
     ) -> tuple[Any, list]:
         """Return ``(meta, bars)`` intraday chart series including extended-hours bars when supported."""
         return None, []
-
-    @classmethod
-    def normalize_orderbook_payload(cls, raw_data: Any) -> Optional[dict]:
-        """Normalize L2 orderbook payloads into ``{'bids': [(px, qty), ...], 'asks': [(px, qty), ...]}``."""
-        if not isinstance(raw_data, dict):
-            return None
-        data = raw_data
-        if "bids" not in data:
-            extract_self = getattr(cls, "extract_orderbook_sides", None)
-            extracted = extract_self(data) if callable(extract_self) else None
-            if not isinstance(extracted, dict):
-                for venue_key in cls._VENUE_PROVIDER_SPECS:
-                    prov_cls = cls.resolve_venue_provider_class(venue_key)
-                    extract_fn = getattr(prov_cls, "extract_orderbook_sides", None) if prov_cls is not None else None
-                    if callable(extract_fn):
-                        extracted = extract_fn(data)
-                        if isinstance(extracted, dict):
-                            break
-            if not isinstance(extracted, dict):
-                return None
-            data = extracted
-
-        def _parse_side(rows: Any) -> list[tuple[float, float]]:
-            if not isinstance(rows, list):
-                return []
-            out_side: list[tuple[float, float]] = []
-            for item in rows:
-                if isinstance(item, dict):
-                    raw_p = item.get("px") if item.get("px") is not None else item.get("price")
-                    raw_q = next((item.get(k) for k in ("sz", "qty", "volume") if item.get(k) is not None), None)
-                    pf = safe_pos_float(raw_p, default=None)
-                    qf = safe_pos_float(raw_q, default=None)
-                elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                    pf = safe_pos_float(item[0], default=None)
-                    qf = safe_pos_float(item[1], default=None)
-                else:
-                    continue
-                if pf is not None and qf is not None:
-                    out_side.append((pf, qf))
-            return out_side
-
-        bids = _parse_side(data.get("bids"))
-        asks = _parse_side(data.get("asks"))
-        if not bids or not asks:
-            return None
-        bids.sort(key=lambda x: x[0], reverse=True)
-        asks.sort(key=lambda x: x[0])
-        return {"bids": bids, "asks": asks}
-
-    def _resolve_ssot_trade_cache_cls(self, symbol: str, cache_file: str) -> Any:
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
-            return None
-        self._ensure_ssot_cache_bindings()
-        return self._ssot_trade_cache_cls
-
-    def read_ssot_fills_cache(
-        self,
-        symbol: str,
-        cache_file: str,
-        *,
-        max_stale_sec: float = 90.0,
-        match_fn: Any = None,
-        normalize_fn: Any = None,
-    ) -> Optional[List[dict]]:
-        """Read normalized fills for ``symbol`` from a shared SSOT trade cache file (`items` + `fetchtime`)."""
-        tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
-        if tm_cls is None:
-            return None
-        return tm_cls.read_venue_fills_snapshot(
-            symbol,
-            cache_file,
-            max_stale_sec=max_stale_sec,
-            match_fn=match_fn,
-            candidate_keys=None if callable(match_fn) else self._ssot_symbol_candidates(symbol),
-            normalize_fn=normalize_fn,
-        )
-
-    def write_ssot_fills_cache(self, symbol: str, cache_file: str, fills: List[dict]) -> bool:
-        """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
-        tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
-        if tm_cls is None:
-            return False
-        sym_key = clean_symbol_key(symbol) or str(symbol).strip().upper()
-        return bool(
-            tm_cls.merge_venue_fills_snapshot(
-                cache_file, {sym_key: list(fills or ())}, is_snapshot=True
-            )
-        )
-
-    @classmethod
-    def merge_ssot_fills_cache(cls, cache_file: str, fills_by_symbol: dict) -> bool:
-        """Atomically merge normalized multi-symbol fills into a shared SSOT trade cache snapshot."""
-        if not cache_file or not isinstance(fills_by_symbol, dict):
-            return False
-        cls._ensure_ssot_cache_bindings()
-        tm_cls = cls._ssot_trade_cache_cls
-        return bool(tm_cls.merge_venue_fills_snapshot(cache_file, fills_by_symbol)) if tm_cls is not None else False
-
-    def invalidate_ssot_fills_cache(
-        self, symbol: str, cache_file: str, *, match_fn: Any = None
-    ) -> None:
-        """Expire ``fetchtime`` for ``symbol`` in the shared SSOT trade cache after order execution."""
-        tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
-        if tm_cls is not None:
-            tm_cls.invalidate_venue_fills_snapshot(
-                symbol,
-                cache_file,
-                match_fn=match_fn,
-                candidate_keys=None if callable(match_fn) else self._ssot_symbol_candidates(symbol),
-            )
-
-
-def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
-                        read: int = 0, status_forcelist=None,
-                        raise_on_status: bool = False) -> bool:
-    """Mount an order-safe Retry adapter on ``session`` for https:// and http:// (best-effort)."""
-    try:
-        if session is None or isinstance(status_forcelist, (bool, str, bytes)):
-            return False
-        att_i = safe_nonneg_int(attempts, default=None)
-        read_i = safe_nonneg_int(read, default=None)
-        bo_f = safe_nonneg_float(backoff, default=None)
-        if att_i is None or read_i is None or bo_f is None:
-            return False
-        forcelist = None
-        if status_forcelist:
-            forcelist = []
-            for code in status_forcelist:
-                c_i = safe_pos_int(code, default=None)
-                if c_i is None:
-                    return False
-                forcelist.append(c_i)
-        retry = Retry(
-            total=att_i,
-            connect=att_i,
-            read=read_i,
-            status=att_i if forcelist else 0,
-            redirect=0,
-            backoff_factor=bo_f,
-            status_forcelist=forcelist if forcelist else None,
-            raise_on_status=_parse_bool_flag(raise_on_status, default=False),
-        )
-        adapter = HTTPAdapter(max_retries=retry)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-        return True
-    except Exception:  # noqa: BLE001 -- retries are best-effort; the timeout still guards
-        return False
-
-
-# -- Shared Venue-Agnostic WebSocket Stream Primitives -------------------------
-
-WS_RECV_TIMEOUT = 0.5
-WS_STOP_TIMEOUT = 8.0
-WS_PING_INTERVAL = 20
-WS_PING_TIMEOUT = 10
-WS_CLOSE_TIMEOUT = 0.5
-WS_RETRY_INITIAL = 1.0
-WS_RETRY_MAX = 60.0
-
-_ws_logger = logging.getLogger("providers.ws")
-
-
-class AsyncReconnectStreamBase(ABC):
-    """Shared thread, asyncio loop, reconnect backoff, and clean shutdown for venue WebSocket streams."""
-
-    STABLE_SESSION_SEC = 60.0
-    _default_thread_name = "BinanceWS"
-
-    def __init__(self):
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._main_task: Optional[asyncio.Task] = None
-        self._retry_delay = WS_RETRY_INITIAL
-        self._start_lock = threading.Lock()
-
-    def start(self, name: Optional[str] = None, daemon: bool = True) -> "AsyncReconnectStreamBase":
-        eff_name = (
-            str(name).strip()
-            if isinstance(name, str) and name.strip()
-            else self._default_thread_name
-        )
-        eff_daemon = _parse_bool_flag(daemon, default=True)
-        with self._start_lock:
-            if self.is_running:
-                _ws_logger.info("%s already running", eff_name)
-                return self
-            self._stop_event.clear()
-            self._thread = threading.Thread(
-                target=self._thread_worker, name=eff_name, daemon=eff_daemon
-            )
-            self._thread.start()
-        _ws_logger.info("%s started", eff_name)
-        return self
-
-    request_stop = set_stop_event
-
-    def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
-        self.request_stop()
-        loop = getattr(self, "_loop", None)
-        task = getattr(self, "_main_task", None)
-        if loop is not None and task is not None and not loop.is_closed():
-            try:
-                loop.call_soon_threadsafe(task.cancel)
-            except RuntimeError:
-                pass
-        eff_timeout = safe_nonneg_float(timeout, default=WS_STOP_TIMEOUT * 1.0)
-        if (
-            self._thread
-            and self._thread.is_alive()
-            and self._thread is not threading.current_thread()
-        ):
-            self._thread.join(timeout=eff_timeout)
-            if self._thread.is_alive():
-                _ws_logger.warning("WS thread did not stop within %.1fs", eff_timeout)
-                return False
-        return True
-
-    is_running = property(is_worker_thread_alive)
-
-    def _thread_worker(self) -> None:
-        try:
-            asyncio.run(self._run_with_reconnect(self._connect_and_run))
-        except (asyncio.CancelledError, Exception) as exc:
-            if not isinstance(exc, asyncio.CancelledError) and not self._is_shutdown_error(exc):
-                _ws_logger.exception("WS thread crashed: %s", exc)
-        finally:
-            self._loop = None
-            self._main_task = None
-            _ws_logger.info("WS thread exited")
-
-    async def _run_with_reconnect(self, body: Callable) -> None:
-        try:
-            self._loop = asyncio.get_running_loop()
-            self._main_task = asyncio.current_task()
-        except RuntimeError:
-            pass
-        while not self._stop_event.is_set():
-            t0 = time.time()
-            exc = None
-            try:
-                await body()
-            except asyncio.CancelledError:
-                if self._stop_event.is_set():
-                    break
-                raise
-            except Exception as err:
-                exc = err
-                if self._is_shutdown_error(err):
-                    break
-                _ws_logger.warning("WS error: %s", err)
-            self._on_session_end(exc)
-            if self._stop_event.is_set():
-                break
-            if time.time() - t0 >= self.STABLE_SESSION_SEC:
-                self._retry_delay = WS_RETRY_INITIAL
-            _ws_logger.info("WS reconnect in %.1fs", self._retry_delay)
-            await self._interruptible_sleep(self._retry_delay)
-            self._retry_delay = min(self._retry_delay * 2, WS_RETRY_MAX)
-        _ws_logger.info("WS reconnect loop stopped")
-
-    def _on_session_end(self, exc: Optional[Exception]) -> None:
-        pass
-
-    @abstractmethod
-    async def _connect_and_run(self) -> None:
-        """Connect to the venue WebSocket and run one session until disconnect."""
-
-    async def _interruptible_sleep(self, delay: float, step: float = 0.2) -> None:
-        await async_interruptible_sleep(self._stop_event, delay, step, sleep_fn=asyncio.sleep)
-
-    @staticmethod
-    def _is_shutdown_error(exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return isinstance(exc, RuntimeError) and (
-            "cannot schedule new futures after shutdown" in msg
-            or "event loop is closed" in msg
-        )
-
-
-class PublicPriceStreamBase(AsyncReconnectStreamBase):
-    """Shared base class for public WebSocket price streams across all venues (Binance, Hyperliquid, Kraken)."""
-
-    _MAX_STREAMS: Optional[int] = None
-
-    @staticmethod
-    def _norm_ws_symbol(symbol: object) -> Optional[str]:
-        if not isinstance(symbol, str):
-            return None
-        s = symbol.strip().upper().replace("/", "")
-        return s or None
-
-    def __init__(self, symbols: Optional[list] = None):
-        super().__init__()
-        self._prices: Dict[str, float] = {}
-        self._subscribed: Set[str] = set()
-        self._lock = threading.Lock()
-        self._subscribers = []
-        if isinstance(symbols, str):
-            raw_syms = [symbols]
-        elif symbols is None or isinstance(symbols, (bool, bytes, dict)):
-            raw_syms = []
-        else:
-            try:
-                raw_syms = list(symbols)
-            except TypeError:
-                raw_syms = []
-        norm_list = []
-        for s in raw_syms:
-            norm_s = self._norm_ws_symbol(s)
-            if norm_s and norm_s not in self._subscribed:
-                self._subscribed.add(norm_s)
-                norm_list.append(norm_s)
-        self._symbols = tuple(norm_list)
-
-    def subscribe(self, subscriber) -> None:
-        with self._lock:
-            if subscriber not in self._subscribers:
-                self._subscribers.append(subscriber)
-
-    def unsubscribe(self, subscriber) -> None:
-        with self._lock:
-            if subscriber in self._subscribers:
-                self._subscribers.remove(subscriber)
-
-    def _notify_subscribers(self, symbol: str, items) -> None:
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for sub in subscribers:
-            try:
-                sub.on_items_update(symbol, items)
-            except Exception as exc:
-                _ws_logger.error("Subscriber notify error: %s", exc)
-
-    def add_symbol(self, symbol: str) -> bool:
-        norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return False
-        with self._lock:
-            if norm_s in self._subscribed:
-                _ws_logger.debug("[%s] Already subscribed", norm_s)
-                return False
-            if self._MAX_STREAMS is not None and len(self._subscribed) >= self._MAX_STREAMS:
-                _ws_logger.warning("Max streams (%d) reached, cannot add %s", self._MAX_STREAMS, norm_s)
-                return False
-            self._subscribed.add(norm_s)
-            self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
-        return True
-
-    def remove_symbol(self, symbol: str) -> bool:
-        norm_s = self._norm_ws_symbol(symbol)
-        with self._lock:
-            if not norm_s or norm_s not in self._subscribed:
-                return False
-            self._subscribed.discard(norm_s)
-            self._symbols = tuple(s for s in self._symbols if s != norm_s)
-            self._prices.pop(norm_s, None)
-        return True
-
-    def get_price(self, symbol: str) -> Optional[float]:
-        norm_s = self._norm_ws_symbol(symbol)
-        with self._lock:
-            return self._prices.get(norm_s) if norm_s else None
-
-    def get_all_prices(self) -> Dict[str, float]:
-        with self._lock:
-            return dict(self._prices)
-
-    @property
-    def running_symbols(self) -> Set[str]:
-        with self._lock:
-            return set(self._subscribed)
-
-

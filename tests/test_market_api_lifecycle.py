@@ -37,10 +37,15 @@ from providers.order_ohlc_utils import (
     ClosedPriceSeries as OhlcClosedPriceSeries,
     candles_to_historical_points,
     extract_broker_order_ticker,
+    extract_trading_quote_pairs,
     extract_yahoo_chart_latest_price,
     extract_yahoo_chart_result_and_quote,
     normalize_broker_history_items,
+    series_to_historical_points,
 )
+from providers.ssot_bridge import ProviderSsotBridgeMixin
+from providers.venue_metadata import ProviderVenueMetadataMixin
+from providers import ws_stream
 from providers.replay_provider import ReplayMarketDataProvider
 from providers.strategy_executor import (
     OrderReconciliationCapabilities,
@@ -470,8 +475,6 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     """Enforce strict downward DAG across providers/ and verify unified submit_order, ClosedPriceSeries SSOT, and declarative intent tags."""
 
     root = Path(__file__).resolve().parents[1]
-    base_src = (root / "providers" / "base.py").read_text(encoding="utf-8")
-    base_tree = ast.parse(base_src, filename="providers/base.py")
     forbidden_base_imports = {
         "order_guard",
         "guard_hierarchy",
@@ -491,17 +494,25 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "hyperliquid",
         "212trading",
     }
-    imported_roots = set()
-    for node in ast.walk(base_tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imported_roots.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            imported_roots.add(node.module.split(".")[0])
-    assert not (imported_roots & forbidden_base_imports), f"DAG violation in providers/base.py: {imported_roots & forbidden_base_imports}"
+    for base_mod_file in ("base.py", "ws_stream.py", "ssot_bridge.py", "venue_metadata.py"):
+        base_src = (root / "providers" / base_mod_file).read_text(encoding="utf-8")
+        base_tree = ast.parse(base_src, filename=f"providers/{base_mod_file}")
+        imported_roots = set()
+        for node in ast.walk(base_tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imported_roots.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imported_roots.add(node.module.split(".")[0])
+        assert not (imported_roots & forbidden_base_imports), (
+            f"DAG violation in providers/{base_mod_file}: {imported_roots & forbidden_base_imports}"
+        )
 
     non_facade_modules = (
         "base.py",
+        "ws_stream.py",
+        "ssot_bridge.py",
+        "venue_metadata.py",
         "binance_provider.py",
         "hyperliquid_provider.py",
         "kraken_provider.py",
@@ -968,6 +979,25 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     assert resolve_kraken_lookup_symbol("DOGEUSDC", quote="EUR") == "XDGEUR"
     assert extract_broker_order_ticker({"instrument": {"ticker": "NVDA_US_EQ"}}) == "NVDA_US_EQ"
     assert normalize_broker_history_items([]) == {}
+    assert issubclass(MarketDataProvider, ProviderSsotBridgeMixin)
+    assert issubclass(MarketDataProvider, ProviderVenueMetadataMixin)
+    assert issubclass(ws_stream.PublicPriceStreamBase, ws_stream.AsyncReconnectStreamBase)
+    sample_series = ClosedPriceSeries((101.5, 102.0), 60, 1700003600, (1700000000, 1700003600))
+    assert series_to_historical_points(sample_series) == [(1700000000.0, 101.5), (1700003600.0, 102.0)]
+    all_t, usdc_p, p2b = extract_trading_quote_pairs(
+        {
+            "symbols": [
+                {"symbol": "TAOUSDC", "baseAsset": "TAO", "quoteAsset": "USDC", "status": "TRADING"},
+                {"symbol": "TAOBTC", "baseAsset": "TAO", "quoteAsset": "BTC", "status": "TRADING"},
+                {"symbol": "DEADUSDC", "baseAsset": "DEAD", "quoteAsset": "USDC", "status": "BREAK"},
+            ]
+        },
+        quote="USDC",
+        strict=True,
+    )
+    assert all_t == {"TAOUSDC", "TAOBTC"}
+    assert usdc_p == {"TAOUSDC"}
+    assert p2b == {"TAOUSDC": "TAO"}
     yh_payload = {
         "chart": {
             "result": [

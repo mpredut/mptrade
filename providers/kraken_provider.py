@@ -55,6 +55,7 @@ from .order_ohlc_utils import (
     require_clean_order_id,
     require_pos_ohlc_interval,
     resolve_market_flag,
+    series_to_historical_points,
 )
 from .strategy_executor import (
     OrderReconciliationCapabilities,
@@ -1300,17 +1301,7 @@ class KrakenProvider(MarketDataProvider):
     ) -> list[tuple[float, float]]:
         base_u = normalize_cache_base_asset(symbol)
         krk_sym = f"{base_u}USD" if base_u else str(symbol or "").strip().upper()
-        s60 = self.ohlc_series(krk_sym, 60)
-        raw_ts = tuple(getattr(s60, "timestamps", ()) or ())
-        raw_px = tuple(getattr(s60, "closes", ()) or ())
-        if len(raw_ts) != len(raw_px):
-            return []
-        return [
-            (tv, pv)
-            for t, p in zip(raw_ts, raw_px)
-            if (tv := safe_pos_float(t, default=None)) is not None
-            and (pv := safe_pos_float(p, default=None)) is not None
-        ]
+        return series_to_historical_points(self.ohlc_series(krk_sym, 60))
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         interval_i = require_pos_ohlc_interval(symbol, interval_min)

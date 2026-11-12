@@ -1091,6 +1091,58 @@ def candles_to_historical_points(candles: Any) -> list[tuple[float, float]]:
     return out
 
 
+def series_to_historical_points(series: Any) -> list[tuple[float, float]]:
+    """Extract ``(epoch_sec, close_price)`` tuples from a ``ClosedPriceSeries``-like object."""
+    raw_ts = tuple(getattr(series, "timestamps", ()) or ())
+    raw_px = tuple(getattr(series, "closes", ()) or ())
+    if len(raw_ts) != len(raw_px):
+        return []
+    return [
+        (tv, pv)
+        for t, p in zip(raw_ts, raw_px)
+        if (tv := safe_pos_float(t, default=None)) is not None
+        and (pv := safe_pos_float(p, default=None)) is not None
+    ]
+
+
+def extract_trading_quote_pairs(
+    data: Any, *, quote: str = "USDC", strict: bool = False
+) -> tuple[set[str], set[str], dict[str, str]]:
+    """Extract ``(trading_symbols, quote_pairs, pair_to_base)`` from an ``exchangeInfo`` payload."""
+    if not isinstance(data, Mapping):
+        if strict:
+            raise ValueError("exchangeInfo response must be a dict")
+        return set(), set(), {}
+    raw_symbols = data.get("symbols")
+    if not isinstance(raw_symbols, list):
+        if strict:
+            raise ValueError("exchangeInfo symbols must be a list")
+        return set(), set(), {}
+    want_quote = quote.strip().upper()
+    trading_symbols: set[str] = set()
+    quote_pairs: set[str] = set()
+    pair_to_base: dict[str, str] = {}
+    for info in raw_symbols:
+        if not isinstance(info, Mapping):
+            continue
+        raw_sym = info.get("symbol")
+        raw_base = info.get("baseAsset")
+        raw_quote = info.get("quoteAsset")
+        raw_status = info.get("status")
+        sym = raw_sym.strip().upper() if isinstance(raw_sym, str) else ""
+        base = raw_base.strip().upper() if isinstance(raw_base, str) else ""
+        q_asset = raw_quote.strip().upper() if isinstance(raw_quote, str) else ""
+        status = raw_status.strip().upper() if isinstance(raw_status, str) else ""
+        if not sym or status != "TRADING":
+            continue
+        trading_symbols.add(sym)
+        if q_asset == want_quote:
+            quote_pairs.add(sym)
+            if base:
+                pair_to_base[sym] = base
+    return trading_symbols, quote_pairs, pair_to_base
+
+
 def extract_yahoo_chart_result_and_quote(payload: Any) -> tuple[Optional[dict], dict, list, dict]:
     """Unpack a Yahoo v8 chart JSON payload into ``(result, chart_dict, timestamps, quote_dict)``."""
     chart = payload.get("chart") if isinstance(payload, Mapping) else None

@@ -41,7 +41,10 @@ from cacheManager import CacheFactory
 from cacheprice import CachePriceManagerBase
 import providers.market_api as _market_api
 from providers.market_api import api
-from providers.order_ohlc_utils import extract_yahoo_chart_latest_price
+from providers.order_ohlc_utils import (
+    extract_trading_quote_pairs,
+    extract_yahoo_chart_latest_price,
+)
 from providers.quantity import resolve_base_asset
 
 
@@ -133,39 +136,16 @@ class BinancePricePlatform(PricePlatformInterface):
     def _load_symbols(self):
         try:
             data = self._fetch_json_get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
-            if not isinstance(data, dict):
-                raise ValueError("Binance exchangeInfo response must be a dict")
-            raw_symbols = data.get("symbols")
-            if not isinstance(raw_symbols, list):
-                raise ValueError("Binance exchangeInfo symbols must be a list")
-
-            usdc_pairs = set()
-            supported_symbols = set()
+            supported_symbols, usdc_pairs, pair_to_base = extract_trading_quote_pairs(
+                data, quote="USDC", strict=True
+            )
             symbol_mapping = {}
+            for pair in sorted(usdc_pairs):
+                base_asset = pair_to_base.get(pair, "")
+                if base_asset and base_asset not in symbol_mapping:
+                    symbol_mapping[base_asset] = pair
+                symbol_mapping[pair] = pair
 
-            for symbol_info in raw_symbols:
-                if not isinstance(symbol_info, dict):
-                    continue
-                raw_sym = symbol_info.get("symbol")
-                raw_base = symbol_info.get("baseAsset")
-                raw_quote = symbol_info.get("quoteAsset")
-                raw_status = symbol_info.get("status")
-                symbol = raw_sym.strip().upper() if isinstance(raw_sym, str) else ""
-                base_asset = raw_base.strip().upper() if isinstance(raw_base, str) else ""
-                quote_asset = raw_quote.strip().upper() if isinstance(raw_quote, str) else ""
-                status = raw_status.strip().upper() if isinstance(raw_status, str) else ""
-
-                if not symbol or status != "TRADING":
-                    continue
-
-                supported_symbols.add(symbol)
-
-                if quote_asset == "USDC":
-                    usdc_pairs.add(symbol)
-                    if base_asset and base_asset not in symbol_mapping:
-                        symbol_mapping[base_asset] = symbol
-                    symbol_mapping[symbol] = symbol
-            
             if usdc_pairs:
                 self._usdc_pairs = usdc_pairs
                 self._supported_symbols = supported_symbols

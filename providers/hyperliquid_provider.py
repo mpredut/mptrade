@@ -68,6 +68,7 @@ from .order_ohlc_utils import (
     extract_order_side,
     extract_orig_qty,
     require_int_order_id,
+    require_pos_ohlc_interval,
     resolve_market_flag,
     resolve_ohlc_time_window_ms,
 )
@@ -950,9 +951,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         self.validate_symbol(symbol)
-        interval = exact_pos_int(interval_min, default=None)
-        if interval is None:
-            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
+        interval = require_pos_ohlc_interval(symbol, interval_min)
         client, pair, _ = self._require_hl_client_and_pair(f"ohlc_series({symbol})")
         lookback_h = max(1, (90 * interval) // 60)
         try:
