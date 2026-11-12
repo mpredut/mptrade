@@ -1660,13 +1660,9 @@ def evaluate_and_maybe_sell_or_buy(
 
 def run_forever():
     _STOP_EVENT.clear()
-
-    def _on_signal(_signum, _frame):
-        _STOP_EVENT.set()
-
     for _sig in (signal.SIGTERM, signal.SIGINT):
         try:
-            signal.signal(_sig, _on_signal)
+            signal.signal(_sig, lambda _signum, _frame: _STOP_EVENT.set())
         except Exception:
             pass
     print(

@@ -1301,18 +1301,15 @@ class BaseSpotMixin:
         if stop is None and threading.current_thread() is threading.main_thread():
             try:
                 prev_sigterm = signal.getsignal(signal.SIGTERM)
-
-                def _on_sigterm(signum, frame):
-                    sigterm_ev.set()
-                    if callable(prev_sigterm):
-                        prev_sigterm(signum, frame)
-
-                signal.signal(signal.SIGTERM, _on_sigterm)
+                signal.signal(
+                    signal.SIGTERM,
+                    lambda signum, frame: (
+                        sigterm_ev.set(),
+                        prev_sigterm(signum, frame) if callable(prev_sigterm) else None,
+                    ),
+                )
             except (ValueError, OSError):
                 prev_sigterm = None
-
-        def _is_stopped() -> bool:
-            return bool((stop is not None and stop.is_set()) or sigterm_ev.is_set())
 
         def _delay() -> None:
             self._touch_strategy_heartbeat(last_price[0], sleep_sec)
@@ -1324,7 +1321,7 @@ class BaseSpotMixin:
                 sleep_fn(sleep_sec)
 
         try:
-            while not _is_stopped():
+            while not ((stop is not None and stop.is_set()) or sigterm_ev.is_set()):
                 price = safe_pos_float(price_fn(), default=None)
                 last_price[0] = price
                 if price is None:

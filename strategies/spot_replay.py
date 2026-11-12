@@ -262,26 +262,27 @@ def run_replay(
     warmup_rows = tuple(warmup_ohlc) if warmup_ohlc else ()
     scenario_diags: dict[str, dict] = {}
 
-    def _eval_scenario(scenario: ExecutionModel) -> dict:
-        out = _run_once(
-            ohlc,
-            params,
-            fee_model=fees,
-            bar_minutes=bar_minutes,
-            warmup_ohlc=warmup_rows,
-            execution=scenario,
-            include_decision_trace=include_decision_trace,
-            initial_cash=initial_cash,
-            dca_drop_series=dca_drop_series,
-            reentry_series=reentry_series,
-            intrabar_high=intrabar_high,
-            timestamps=ts_tuple,
-            warmup_timestamps=warmup_ts_tuple,
-        )
-        scenario_diags[scenario.intrabar_policy] = dict(_LAST_REPLAY_DIAG)
-        return out
-
-    chosen = choose_intrabar_scenario(model, _eval_scenario)
+    chosen = choose_intrabar_scenario(
+        model,
+        lambda scenario: (
+            out := _run_once(
+                ohlc,
+                params,
+                fee_model=fees,
+                bar_minutes=bar_minutes,
+                warmup_ohlc=warmup_rows,
+                execution=scenario,
+                include_decision_trace=include_decision_trace,
+                initial_cash=initial_cash,
+                dca_drop_series=dca_drop_series,
+                reentry_series=reentry_series,
+                intrabar_high=intrabar_high,
+                timestamps=ts_tuple,
+                warmup_timestamps=warmup_ts_tuple,
+            ),
+            scenario_diags.__setitem__(scenario.intrabar_policy, dict(_LAST_REPLAY_DIAG)),
+        )[0],
+    )
     selected_policy = chosen.get("intrabar_policy_selected")
     if selected_policy in scenario_diags:
         global _LAST_REPLAY_DIAG

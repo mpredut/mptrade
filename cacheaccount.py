@@ -2274,12 +2274,6 @@ def attach_hyperliquid_user_fills_bridge(
             else cache_path(CACHE_HYPERLIQUID_TRADE_FILENAME)
         )
 
-    def _build_user_fills_subscribe_payloads() -> tuple[str, ...]:
-        ws_stream._fills_ws_seeded = False
-        if hl_prov_cls is None:
-            return ()
-        return hl_prov_cls.build_ws_user_fills_subscriptions(ws_stream._user_address)
-
     def _handle_user_fills(data: object, *, ts_ms: int) -> None:
         if hl_prov_cls is None:
             return
@@ -2328,7 +2322,10 @@ def attach_hyperliquid_user_fills_bridge(
         ws_stream.register_channel_handler(
             "userFills",
             _handle_user_fills,
-            subscribe_builder=_build_user_fills_subscribe_payloads,
+            subscribe_builder=lambda: (
+                setattr(ws_stream, "_fills_ws_seeded", False)
+                or (() if hl_prov_cls is None else hl_prov_cls.build_ws_user_fills_subscriptions(ws_stream._user_address))
+            ),
             on_tick=_touch_fills_cache_if_needed,
         )
 

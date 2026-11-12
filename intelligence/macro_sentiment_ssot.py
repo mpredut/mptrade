@@ -663,13 +663,17 @@ def get_cache_filenames(group_key: str) -> Tuple[str, ...]:
 def _bind_taxonomy_normalizer(
     tax_key: str, alias_cfg_key: str, default_idx: int, fallback_str: str
 ):
-    def _normalizer(value: Any, default: Optional[str] = None) -> str:
-        allowed = _tax_tuple(tax_key)
-        fallback = default if (default and default in allowed) else (allowed[default_idx] if len(allowed) > default_idx else fallback_str)
-        cleaned = "" if isinstance(value, bool) else re.sub(r"[\s\-]+", "_", str(value or "").strip().upper())
-        return cleaned if cleaned in allowed else _parse_kv_map(_cfg_str("taxonomies", alias_cfg_key)).get(cleaned, fallback)
-
-    return _normalizer
+    return lambda value, default=None: (
+        cleaned
+        if (
+            cleaned := ("" if isinstance(value, bool) else re.sub(r"[\s\-]+", "_", str(value or "").strip().upper()))
+        )
+        in (allowed := _tax_tuple(tax_key))
+        else _parse_kv_map(_cfg_str("taxonomies", alias_cfg_key)).get(
+            cleaned,
+            default if (default and default in allowed) else (allowed[default_idx] if len(allowed) > default_idx else fallback_str),
+        )
+    )
 
 
 normalize_market_bias = _bind_taxonomy_normalizer("market_biases", "bias_aliases", 1, "NEUTRAL")
