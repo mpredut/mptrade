@@ -3524,9 +3524,10 @@ def test_c24_nonblocking_ws_tick_during_snapshot_save_and_assetguardian_shutdown
         30,
         ["BTCUSDC"],
         str(c24_path),
+        current_price_getter=lambda: None,
         data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
     )
-    base_ms = int(time.time() * 1000) - 5_000
+    base_ms = int(time.time() * 1000)
     c24.on_price_update("BTCUSDC", base_ms, 70000.0)
 
     notified = []
@@ -3592,6 +3593,7 @@ def test_c24_nonblocking_ws_tick_during_snapshot_save_and_assetguardian_shutdown
         30,
         ["BTCUSDC"],
         str(tmp_path / "cache_24_stagger.json"),
+        current_price_getter=lambda: None,
         data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
     )
     c24_stagger._initial_sync_delay_sec = 5.0

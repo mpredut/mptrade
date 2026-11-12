@@ -929,6 +929,9 @@ class TrendCoordinator:
         return regime_ctx
 
     def evaluate(self, symbol):
+        stop_ev = getattr(self, "_stop", None)
+        if stop_ev is not None and stop_ev.is_set():
+            return None
         symbol = self._resolve_symbol(symbol)
         if symbol not in self.trend_states:
             self.trend_states[symbol] = self._new_trend_state()
@@ -966,9 +969,11 @@ class TrendCoordinator:
         else:
             current_price = self.current_price_mgr.get_price_value(symbol)
         current_price = safe_pos_float(current_price, default=None)
-        if current_price is None:
+        if current_price is None or (stop_ev is not None and stop_ev.is_set()):
             return None
         regime_ctx = self._resolve_regime_context(symbol)
+        if stop_ev is not None and stop_ev.is_set():
+            return None
 
         win = self.instant_mgr.get_window(symbol)
         win_big = self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec)

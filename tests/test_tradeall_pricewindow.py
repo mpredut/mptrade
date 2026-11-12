@@ -881,6 +881,9 @@ class TestTrendCoordinator(TempDirTestCase):
         self.mgr = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "trend.json"))
         self.mgr.start_computation({"BTCUSDT": self.cache24}, self.cpm)
         self._orig_kalman_ref = ta._kalman_ref
+        self._regime_patcher = patch.object(ta.mkt, "market_regime_context", return_value=None)
+        self._regime_patcher.start()
+        self.addCleanup(self._regime_patcher.stop)
 
     def tearDown(self):
         ta._kalman_ref = self._orig_kalman_ref
@@ -960,11 +963,21 @@ class TestTrendCoordinator(TempDirTestCase):
 
         with self.subTest("stop wakes run loop"):
             coord = self._make_coord()
+            coord._last_eval["BTCUSDT"] = time.time()
+            coord._dirty["BTCUSDT"] = False
             thread = threading.Thread(target=coord.run)
             thread.start()
+            time.sleep(0.02)
             coord.stop()
             thread.join(timeout=2)
             self.assertFalse(thread.is_alive())
+
+            coord_cold = self._make_coord()
+            thread_cold = threading.Thread(target=coord_cold.run)
+            thread_cold.start()
+            coord_cold.stop()
+            thread_cold.join(timeout=2)
+            self.assertFalse(thread_cold.is_alive())
 
     def test_coordinator_validation_and_rejection_rules(self):
         with self.subTest("invalid intervals fail fast and symbols deduplicated"):
