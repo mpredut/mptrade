@@ -13,8 +13,7 @@ import numpy as np
 import pytest
 
 from offline.backtests.execution_calibration import calibrate_execution_events
-from offline.research import chop_weight_backtest as chop_bt
-from offline.research import compare_mhdsl_reentry_replay as cmp_mhdsl
+from offline.research import chop_weight_backtest as chop_bt, compare_mhdsl_reentry_replay as cmp_mhdsl
 from offline.research.kraken_continuous_grid import (
     fetch_data as kcg_fetch,
     grid as kcg_grid,

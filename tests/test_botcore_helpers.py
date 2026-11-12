@@ -132,8 +132,7 @@ class SharedHttpHelpersTest(unittest.TestCase):
 
 class DotenvHelpersTest(TempDirTestCase):
     def test_load_and_parse_share_syntax_but_keep_their_override_contracts(self):
-        directory = self.tmp
-        path = Path(directory) / ".env"
+        path = self.tmp / ".env"
         path.write_text(
             "# comment\n"
             "export FIRST=one # inline\n"
@@ -255,8 +254,7 @@ class NumericCoercionHelpersTest(TempDirTestCase):
         with self.assertRaisesRegex(ValueError, "Missing or empty mandatory TestMod settings: B"):
             botcore.validate_required_env_keys(("A", "B"), env={"A": "1", "B": "   "}, label="TestMod")
 
-        directory = self.tmp
-        hb_path = str(Path(directory) / "sub" / "hb.heartbeat")
+        hb_path = str(self.tmp / "sub" / "hb.heartbeat")
         ts = botcore.touch_heartbeat_file(hb_path, last_ts=0.0, force=True, now=123456.78)
         self.assertEqual(ts, 123456.78)
         self.assertTrue(Path(hb_path).exists())
@@ -269,8 +267,7 @@ class NumericCoercionHelpersTest(TempDirTestCase):
         with self.assertRaises(ValueError):
             botcore.parse_dotenv_line("=missing_key", strict=True)
 
-        directory = self.tmp
-        env_path = Path(directory) / "sample.env"
+        env_path = self.tmp / "sample.env"
         env_path.write_text(
             "export Alpha=true # inline\nBeta=12.5\nGamma='hello'\n",
             encoding="utf-8",
@@ -286,7 +283,7 @@ class NumericCoercionHelpersTest(TempDirTestCase):
             {"alpha": True, "beta": 12.5, "gamma": "hello"},
         )
 
-        ini_path = Path(directory) / "sample.conf"
+        ini_path = self.tmp / "sample.conf"
         ini_path.write_text("[sec]\nkey = val1 # inline\n", encoding="utf-8")
         cp1 = botcore.load_ini_config(ini_path)
         self.assertEqual(cp1.get("sec", "key"), "val1")
@@ -423,8 +420,7 @@ class TestCachepaths(TempDirTestCase):
         self.assertIsNone(resolve_cache_subdomain("unclassified_custom_file.json"))
 
     def test_organize_cachedb_subdomains_moves_files_and_cleans_staging(self):
-        tmpdir = self.tmp
-        root = Path(tmpdir)
+        root = Path(self.tmp)
         (root / "cache_current_price.json").write_text('{"BTC": 100}', encoding="utf-8")
         (root / "cache_current_price.json.meta").write_text("{}", encoding="utf-8")
         (root / "cache_short_trend.json").write_text("{}", encoding="utf-8")
@@ -439,7 +435,7 @@ class TestCachepaths(TempDirTestCase):
         stale_dir.mkdir()
         (stale_dir / "staged.tmp").write_text("old", encoding="utf-8")
 
-        moved = organize_cachedb_subdomains(tmpdir, remove_stale_staging=True)
+        moved = organize_cachedb_subdomains(self.tmp, remove_stale_staging=True)
         self.assertEqual(
             sorted(moved["prices"]),
             ["cache_current_price.json", "cache_current_price.json.meta"],
@@ -466,12 +462,12 @@ class TestCachepaths(TempDirTestCase):
         self.assertTrue((root / "system" / "heartbeat" / "macro_analyzer.heartbeat").exists())
         self.assertFalse((root / "system" / "macro_analyzer.heartbeat").exists())
 
-        resolved = resolve_cachedb_filepath(os.path.join(tmpdir, "cache_current_price.json"))
+        resolved = resolve_cachedb_filepath(os.path.join(self.tmp, "cache_current_price.json"))
         self.assertEqual(
             Path(resolved),
             root / "prices" / "cache_current_price.json",
         )
-        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmpdir}, clear=False):
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}, clear=False):
             self.assertEqual(
                 Path(cache_path("orderbook_depth_BTCUSDC.json")),
                 root / "telemetry" / "orderbook_depth_BTCUSDC.json",

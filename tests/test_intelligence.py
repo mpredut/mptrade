@@ -579,11 +579,10 @@ class TestIntelligenceState(TempDirTestCase):
             self.assertIn("/custom/cache", path.replace("\\", "/"))
 
     def test_resolve_cached_volatility_1h_from_instant_trend_cache(self):
-        tmp_dir = self.tmp
-        trend_path = os.path.join(tmp_dir, "cache_short_trend.json")
+        trend_path = os.path.join(self.tmp, "cache_short_trend.json")
         with open(trend_path, "w", encoding="utf-8") as f:
             json.dump({"HYPEUSD": {"vol_1h_pct": 1.85}}, f)
-        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}):
             self.assertAlmostEqual(resolve_cached_volatility_1h("HYPEUSD"), 0.0185)
             self.assertAlmostEqual(resolve_cached_volatility_1h_pct("HYPEUSD"), 1.85)
 

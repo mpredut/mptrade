@@ -257,9 +257,8 @@ class TestExternalGuards(TempDirTestCase):
 
     def test_disk_serialization_round_trip(self):
 
-        tmpdir = self.tmp
         # 1. Whale collector disk round-trip
-        w_collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=tmpdir)
+        w_collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=self.tmp)
         t0 = time.time()
         w_snap = WhalePositioningSnapshot(
             symbol="BTCUSDT",
@@ -276,14 +275,14 @@ class TestExternalGuards(TempDirTestCase):
         w_collector.record_snapshot(w_snap, save_to_disk=True)
 
         # Read back with a brand new collector instance
-        w_collector2 = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=tmpdir)
+        w_collector2 = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=self.tmp)
         loaded_w = w_collector2.fetch("BTCUSDT")
         self.assertIsNotNone(loaded_w)
         self.assertEqual(loaded_w.symbol, "BTCUSDT")
         self.assertEqual(loaded_w.divergence_regime, "accumulation")
 
         # 2. Orderbook collector disk round-trip
-        ob_collector = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+        ob_collector = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=self.tmp)
         ob_snap = OrderbookSnapshot(
             symbol="ETHUSDT",
             mid_price=3500.0,
@@ -298,14 +297,14 @@ class TestExternalGuards(TempDirTestCase):
         )
         ob_collector.record_snapshot(ob_snap, save_to_disk=True)
 
-        ob_collector2 = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+        ob_collector2 = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=self.tmp)
         loaded_ob = ob_collector2.fetch("ETHUSDT")
         self.assertIsNotNone(loaded_ob)
         self.assertEqual(loaded_ob.symbol, "ETHUSDT")
         self.assertAlmostEqual(loaded_ob.imbalance_ratio, 0.571)
 
         # 3. Derivatives telemetry disk round-trip
-        d_collector = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+        d_collector = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=self.tmp)
         d_snap = DerivativesTelemetry(
             symbol="SOLUSDT",
             funding_rate=0.0002,
@@ -316,7 +315,7 @@ class TestExternalGuards(TempDirTestCase):
         )
         d_collector.record_snapshot(d_snap, save_to_disk=True)
 
-        d_collector2 = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+        d_collector2 = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=self.tmp)
         loaded_d = d_collector2.fetch("SOLUSDT")
         self.assertIsNotNone(loaded_d)
         self.assertEqual(loaded_d.symbol, "SOLUSDT")
@@ -757,8 +756,7 @@ class TestOrderGuardPillar2Integration(TempDirTestCase):
 
     def test_volatility_cache_symbol_variants_and_composite_high_stake_default(self):
 
-        tmpdir = self.tmp
-        kalman_path = os.path.join(tmpdir, "cache_kalman_trend.json")
+        kalman_path = os.path.join(self.tmp, "cache_kalman_trend.json")
         with open(kalman_path, "w", encoding="utf-8") as f:
             json.dump({"TAOUSDC": {"vol_1h_pct": 3.2}, "HYPEUSDC": {"vol_1h_pct": 4.5}}, f)
         self.assertAlmostEqual(resolve_cached_volatility_1h("TAOUSD", state_path=kalman_path), 0.032)
@@ -856,8 +854,7 @@ class TestOrderGuardPillar2Integration(TempDirTestCase):
     def test_collector_exact_venue_cache_isolation_and_stale_first_skip(self):
 
         now = 1_700_000_000.0
-        tmpdir = self.tmp
-        ob_col = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=tmpdir)
+        ob_col = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=self.tmp)
         # 1. Stale exact entry in memory must not shadow a fresh compatible variant when allow_network=False
         ob_col.record_snapshot(
             OrderbookSnapshot(
@@ -894,14 +891,14 @@ class TestOrderGuardPillar2Integration(TempDirTestCase):
 
         # 2. When allow_network=True on a multi-venue symbol (TAOUSD on Kraken), fresh disk TAOUSDC
         # must NOT pollute _cache['TAOUSD'] or be returned on Kraken network error.
-        ob_col2 = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=tmpdir)
+        ob_col2 = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=self.tmp)
         with patch.object(ob_col2, "_fetch_json_dict", side_effect=RuntimeError("network down")):
             res_fail = ob_col2.fetch("TAOUSD", allow_network=True, now=now)
         self.assertIsNone(res_fail)
         self.assertNotIn("TAOUSD", ob_col2._cache)
 
         # 3. Hyperliquid whale fallback preserves 1h OI change on sub-15m unchanged OI and handles 0 buy volume
-        w_col = WhalePositioningCollector(cache_ttl_sec=60.0, disk_ttl_sec=180.0, cache_dir=tmpdir)
+        w_col = WhalePositioningCollector(cache_ttl_sec=60.0, disk_ttl_sec=180.0, cache_dir=self.tmp)
         w_col.record_snapshot(
             WhalePositioningSnapshot(
                 symbol="HYPEUSDC",

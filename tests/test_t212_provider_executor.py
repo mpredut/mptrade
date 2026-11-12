@@ -470,12 +470,11 @@ class T212ClientTransportTest(TempDirTestCase):
             self.assertEqual(client._ord_cache[1], cached_orders)
 
     def test_runtime_env_fallback_and_post_order_endpoint_pacing(self):
-        tmpdir = self.tmp
-        with open(os.path.join(tmpdir, "runtime.env"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(self.tmp, "runtime.env"), "w", encoding="utf-8") as fh:
             fh.write("T212_LIVE_ORDERS=true\nT212_ORDER_VALIDITY=DAY\n")
         fake = FakeT212Client()
         prov = T212Provider(client=fake)
-        with mock.patch.object(t212_prov_mod, "_T212_DIR", tmpdir), \
+        with mock.patch.object(t212_prov_mod, "_T212_DIR", self.tmp), \
              mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("T212_LIVE_ORDERS", None)
             os.environ.pop("T212_ORDER_VALIDITY", None)
@@ -545,8 +544,7 @@ class T212ClientTransportTest(TempDirTestCase):
             self.assertAlmostEqual(both_sleeps[0], 2.1, delta=0.2)
 
     def test_list_instruments_shared_cache_and_429_negative_cache(self):
-        tmpdir = self.tmp
-        shared_path = os.path.join(tmpdir, "shared_t212.json")
+        shared_path = os.path.join(self.tmp, "shared_t212.json")
         c1 = t212_client.T212Client(
             "demo-key",
             "demo-secret",
@@ -610,13 +608,13 @@ class T212ClientTransportTest(TempDirTestCase):
         # and _hist_cache syncs FILLED orders into _trade_cache_path (cache_trade_t212.json)
         instr_sidecar = c1._instr_shared_cache_path()
         self.assertTrue(os.path.exists(instr_sidecar))
-        stale_tmp = os.path.join(tmpdir, ".shared_t212.json.orphan123.tmp")
+        stale_tmp = os.path.join(self.tmp, ".shared_t212.json.orphan123.tmp")
         with open(stale_tmp, "w", encoding="utf-8") as fh:
             fh.write("{}")
         old_ts = time.time() - (STALE_STAGING_MAX_AGE_SEC + 60.0)
         os.utime(stale_tmp, (old_ts, old_ts))
 
-        trade_cache_file = os.path.join(tmpdir, "cache_trade_t212.json")
+        trade_cache_file = os.path.join(self.tmp, "cache_trade_t212.json")
         c1._trade_cache_path = trade_cache_file
         hist_body = (
             b'{"items":['

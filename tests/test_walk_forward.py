@@ -352,7 +352,7 @@ class WalkForwardCompareTest(TempDirTestCase):
         self.assertIs(kraken_compare.main, walk_forward_compare.main)
 
     def test_load_report_supports_both_schemas(self):
-        report_path = Path(self.tmp) / "report.json"
+        report_path = self.tmp / "report.json"
         for payload in (
             {"schema_version": 1, "intervals": {"240": {}}},
             {"schema_version": 1, "dataset": {}, "windows": {}},

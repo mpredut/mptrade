@@ -227,9 +227,8 @@ class TestSymmetricDailyLimitGuard(TempDirTestCase):
         inst = Instrument(name="KRAKEN_BTC", symbol="BTCUSDC", provider="kraken",
                           base="BTC", quote="USDC", api=api)
 
-        tmpdir = self.tmp
-        qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-        lfile = os.path.join(tmpdir, "order_retry.lock")
+        qfile = os.path.join(self.tmp, "order_retry_queue.jsonl")
+        lfile = os.path.join(self.tmp, "order_retry.lock")
         with patch.object(order_retry, "QUEUE_FILE", qfile), \
              patch.object(order_retry, "LOCK_FILE", lfile), \
              patch.object(order_guard, "profit_guard", return_value=True):
@@ -240,9 +239,8 @@ class TestSymmetricDailyLimitGuard(TempDirTestCase):
         """When RETRY_DEDUP=False, repeated GO1 'daily_limit' blocks for the same
         (provider, symbol, side, kind) must consolidate into a single pending retry
         record instead of piling up duplicates."""
-        tmpdir = self.tmp
-        qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-        lfile = os.path.join(tmpdir, "order_retry.lock")
+        qfile = os.path.join(self.tmp, "order_retry_queue.jsonl")
+        lfile = os.path.join(self.tmp, "order_retry.lock")
         with patch.object(order_retry, "QUEUE_FILE", qfile), \
              patch.object(order_retry, "LOCK_FILE", lfile), \
              patch.object(order_retry, "RETRY_DEDUP", False):
@@ -321,9 +319,8 @@ class TestSymmetricDailyLimitGuard(TempDirTestCase):
         inst = Instrument(name="KRAKEN_TAO", symbol="TAOUSD", provider="kraken",
                           base="TAO", quote="USD", api=api)
 
-        tmpdir = self.tmp
-        qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-        lfile = os.path.join(tmpdir, "order_retry.lock")
+        qfile = os.path.join(self.tmp, "order_retry_queue.jsonl")
+        lfile = os.path.join(self.tmp, "order_retry.lock")
         with patch.object(order_retry, "QUEUE_FILE", qfile), \
              patch.object(order_retry, "LOCK_FILE", lfile), \
              patch.object(order_guard, "profit_guard", return_value=True):

@@ -14,8 +14,7 @@ import numpy as np
 import pytest
 
 from offline.backtests import evaluation as bt_eval
-from offline.research import short_trend_estimator_benchmark as st_bench
-from offline.research import slice_dense_archive as sda
+from offline.research import short_trend_estimator_benchmark as st_bench, slice_dense_archive as sda
 from offline.research.kraken_continuous_grid import (
     grid as kcg_grid,
     report as kcg_report,

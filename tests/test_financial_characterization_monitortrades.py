@@ -841,16 +841,15 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_get_symbol_volatility_1h_explicit_percentage_to_ratio_conversion(self):
         """Verify get_symbol_volatility_1h explicitly converts percentage to decimal ratio (no 100x blowup for vol < 0.10%)."""
-        tmp_dir = self.tmp
         state_data = {
             "BTCUSDT": {"vol_1h_pct": 2.5},     # 2.5% normal vol -> ratio 0.025
             "ETHUSDT": {"vol_1h_pct": 0.05},    # 0.05% low vol -> ratio 0.0005 (NOT 0.05!)
             "USDCUSDT": {"vol_1h_pct": 0.0031}, # 0.0031% very low vol -> ratio 0.000031
         }
-        with open(os.path.join(tmp_dir, "cache_kalman_trend.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(self.tmp, "cache_kalman_trend.json"), "w", encoding="utf-8") as f:
             json.dump(state_data, f)
 
-        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}):
             # 1. Normal volatility: 2.5% -> 0.025
             self.assertAlmostEqual(mt.get_symbol_volatility_1h("BTCUSDT"), 0.025, places=6)
             # 2. Low volatility < 0.10%: 0.05% -> 0.0005, MUST NOT return 0.05
@@ -1865,9 +1864,8 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
             )
 
     def test_executed_trade_resolves_owner_from_execution_audit(self):
-        tmpdir = self.tmp
         audit_ts = 1700000100.0
-        audit = ExecutionAudit(directory=tmpdir, clock=lambda: audit_ts)
+        audit = ExecutionAudit(directory=self.tmp, clock=lambda: audit_ts)
         audit.record(
             "submit_accepted",
             intent_id="outbox-999111222",
@@ -1888,7 +1886,7 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
             "time": int(audit_ts * 1000),
             "isBuyer": False,
         }
-        with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": tmpdir}), \
+        with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": self.tmp}), \
              patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, [new_trade]]), \
              patch("notify_engine.alertnotifiers.notify") as mock_notify:
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])

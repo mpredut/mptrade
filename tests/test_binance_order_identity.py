@@ -220,9 +220,8 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
 
     def test_order_retry_infers_owner_and_cleans_up_accepted_trackers(self):
 
-        tmpdir = self.tmp
-        qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-        lfile = os.path.join(tmpdir, "order_retry.lock")
+        qfile = os.path.join(self.tmp, "order_retry_queue.jsonl")
+        lfile = os.path.join(self.tmp, "order_retry.lock")
         with patch.object(oq, "QUEUE_FILE", qfile), patch.object(oq, "LOCK_FILE", lfile):
             rid = oq.enqueue(
                 "BTCUSDC", "BUY", 0.00066, {},
@@ -284,9 +283,8 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
 
     def test_same_deferred_stream_consolidates_across_deferral_reasons(self):
 
-        tmpdir = self.tmp
-        qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-        lfile = os.path.join(tmpdir, "order_retry.lock")
+        qfile = os.path.join(self.tmp, "order_retry_queue.jsonl")
+        lfile = os.path.join(self.tmp, "order_retry.lock")
         with patch.object(oq, "QUEUE_FILE", qfile), \
              patch.object(oq, "LOCK_FILE", lfile), \
              patch.object(oq, "RETRY_DEDUP", False):
