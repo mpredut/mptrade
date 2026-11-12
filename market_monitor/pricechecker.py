@@ -15,6 +15,7 @@ from operator import itemgetter
 from urllib.parse import quote
 
 from botcore import (
+    _parse_bool_flag,
     is_rth_gate_enabled,
     is_us_rth_open,
     safe_float,
@@ -328,7 +329,7 @@ class PriceChecker:
         alerts = []
         stats = self._calculate_24h_stats(symbol)
 
-        if not stats.get("has_data", False):
+        if not _parse_bool_flag(stats.get("has_data"), False):
             print(f"[Checker][{symbol}] {stats.get('error', 'Unknown error')}")
             return alerts
 

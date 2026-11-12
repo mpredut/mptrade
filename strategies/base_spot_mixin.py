@@ -1207,7 +1207,7 @@ class BaseSpotMixin:
         if not allowed:
             self._log_msg(f"  [STRAT] re-entry blocked: {reason}")
             return False
-        if self.s.get("last_sell_price"):
+        if (safe_pos_float(self.s.get("last_sell_price"), 0.0) or 0.0) > 0.0:
             self._log_msg(f"  [STRAT] re-entry approved: {reason} -- placing ENTRY")
         if self.s[self._spent_state_key] + entry_amt > budget:
             self._restore_reentry_state()

@@ -744,7 +744,8 @@ def ratchet_post_exit_peak_sell_price(
     """Ratchet ``state["last_sell_price"]`` up to the highest close since a post-TP flat state."""
     if not isinstance(state, dict) or safe_float(state.get("qty"), 0.0) > qty_eps:
         return
-    if not state.get("last_sell_price") or state.get("sl_rebuy"):
+    raw_sl_rb = state.get("sl_rebuy")
+    if bool(raw_sl_rb) if isinstance(raw_sl_rb, dict) else bool(_parse_bool_flag(raw_sl_rb, False)):
         return
     if require_tp_kind and state.get("last_exit_kind") != "TP":
         return

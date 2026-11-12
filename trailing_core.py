@@ -437,7 +437,11 @@ class TrailingCore:
 
         if self._reconcile_pending(state, st, price, pair):
             return
-        if isinstance(st.get("rebuy"), dict) and st.get("rebuy") and not st.get("exit_sold_qty"):
+        if (
+            isinstance(st.get("rebuy"), dict)
+            and st.get("rebuy")
+            and (safe_pos_float(st.get("exit_sold_qty"), default=0.0) or 0.0) <= 0.0
+        ):
             # Keep the low while a dynamic gate is closed, so later recovery can
             # resume the existing intent without forgetting the intervening dip.
             low_f = safe_pos_float(st["rebuy"].get("low"), default=None)

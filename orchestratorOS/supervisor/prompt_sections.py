@@ -34,6 +34,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     enrich_microstructure_cvd,
     reconcile_sibling_flow_and_liq_regimes,
     should_skip_sibling_telemetry_key,
+    sibling_structure_presence,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     clip_open_lots_to_held_qty,
@@ -411,7 +412,7 @@ def _format_sre_and_fleet_section(
         stopped_names = {
             f"{p.get('name')}.heartbeat"
             for p in sensors.fleet_processes
-            if isinstance(p, dict) and not p.get("is_running") and p.get("name")
+            if isinstance(p, dict) and not _parse_bool_flag(p.get("is_running"), False) and p.get("name")
         }
         stopped_hbs = [k for k in hb_keys if k in stopped_names]
         if stopped_hbs:
@@ -429,7 +430,7 @@ def _format_sre_and_fleet_section(
     if getattr(logs, "persistent_errors", None):
         lines.append("- Persistent / Unresolved Errors in Logs:")
         for pe in logs.persistent_errors[:15]:
-            tail_lbl = "UNRESOLVED_AT_TAIL" if pe.get("unresolved_at_tail") else "RECURRING"
+            tail_lbl = "UNRESOLVED_AT_TAIL" if _parse_bool_flag(pe.get("unresolved_at_tail"), False) else "RECURRING"
             lines.append(
                 f"  * [{tail_lbl} x{pe.get('count', 1)} in {pe.get('file', 'log')}] {pe.get('sample', '')}"
             )
@@ -440,12 +441,12 @@ def _format_sre_and_fleet_section(
         lines.append(f"  * [GUARD] {g_evt}")
 
     if sensors.fleet_processes:
-        running_p = [p for p in sensors.fleet_processes if p.get("is_running")]
-        stopped_p = [p["name"] for p in sensors.fleet_processes if not p.get("is_running")]
+        running_p = [p for p in sensors.fleet_processes if _parse_bool_flag(p.get("is_running"), False)]
+        stopped_p = [p["name"] for p in sensors.fleet_processes if not _parse_bool_flag(p.get("is_running"), False)]
         stale_p = [
             f"{p['name']} (age={p.get('age_seconds')}s > {p.get('max_stale_seconds')}s)"
             for p in sensors.fleet_processes
-            if p.get("is_running") and not p.get("heartbeat_fresh", True)
+            if _parse_bool_flag(p.get("is_running"), False) and not _parse_bool_flag(p.get("heartbeat_fresh"), True)
         ]
         hb_summary = (
             f" | STALE HEARTBEAT: {stale_p}"
@@ -476,7 +477,7 @@ def _format_sre_and_fleet_section(
             f"- CPU Load Avg (1m/5m/15m): {sv.get('load_avg', 'N/A')}\n"
             f"- Memory: used={sv.get('mem_used_pct', 'N/A')}%, avail={sv.get('mem_avail_mb', 'N/A')} MB\n"
             f"- Disk: used={sv.get('disk_used_pct', 'N/A')}%, free={sv.get('disk_free_gb', 'N/A')} GB\n"
-            f"- VPN Tunnel ({sv.get('vpn_interface', 'wgpia0')}): {'UP' if sv.get('vpn_tunnel_up') else 'DOWN / NOT PRESENT'}\n"
+            f"- VPN Tunnel ({sv.get('vpn_interface', 'wgpia0')}): {'UP' if _parse_bool_flag(sv.get('vpn_tunnel_up'), False) else 'DOWN / NOT PRESENT'}\n"
             f"- Internet & DNS Connectivity: healthy={sv.get('internet_healthy', True)}, "
             f"default_route={sv.get('default_route_present', 'N/A')}, dns_servers={sv.get('dns_servers', 'N/A')}, "
             f"vpn_outage_active={sv.get('vpn_outage_active', False)}\n"
@@ -548,8 +549,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             for sib_sym, sib_info in sym_group[1:]:
                 s_px = safe_float(sib_info.get("price"), 0.0)
                 if px_f <= 0 or s_px <= 0 or abs(px_f - s_px) / max(px_f, s_px) <= 0.10:
-                    has_own_vp = pinfo.get("poc_px") is not None
-                    has_own_bottom = pinfo.get("bottom_structure_6h") is not None
+                    has_own_vp, has_own_bottom = sibling_structure_presence(pinfo, sib_info)
                     for sk, sv in sib_info.items():
                         if should_skip_sibling_telemetry_key(
                             sk,

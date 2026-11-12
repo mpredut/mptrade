@@ -1143,7 +1143,10 @@ def _resolve_intent_execution_details(
 
 
 def _is_open_resting_detail(det: dict[str, Any]) -> bool:
-    return bool(det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED"))
+    return bool(
+        _parse_bool_flag(det.get("is_open_in_venue"), False)
+        and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED")
+    )
 
 
 def _attach_intent_age_fields(
@@ -1241,7 +1244,7 @@ def summarize_recent_ai_intents(
         if (
             det.get("exec_status")
             in ("CANCELED", "CANCELLED", "EXPIRED", "CANCELED_OR_EXPIRED", "SKIPPED_DUPLICATE_OPEN_ORDER")
-            and not det.get("filled_qty")
+            and (safe_pos_float(det.get("filled_qty"), default=0.0) or 0.0) <= 0.0
             and sym_side_key in seen_sym_side
         ):
             continue

@@ -1072,7 +1072,17 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
             sw_lo_new, sw_hi_new = round(min(sw_lo, p_cur, l24), 6), round(max(sw_hi, p_cur, h24), 6)
         else:
             sw_lo_new = round(
-                min(sw_lo, p_cur, *([l24] if l24 is not None and l24 < sw_lo and not pinfo.get("major_swing_low_px") else [])),
+                min(
+                    sw_lo,
+                    p_cur,
+                    *(
+                        [l24]
+                        if l24 is not None
+                        and l24 < sw_lo
+                        and safe_pos_float(pinfo.get("major_swing_low_px"), default=None) is None
+                        else []
+                    ),
+                ),
                 6,
             )
             sw_hi_new = round(max(sw_hi, p_cur, h24 if h24 is not None and not pinfo.get("recent_swings_7d") else p_cur), 6)
@@ -1202,7 +1212,7 @@ def _apply_24h_series_enrichment(
             sw_hi_e = safe_pos_float(entry.get("swing_high_px"), default=None)
             if sw_lo_e is not None and sw_hi_e is not None:
                 has_swings_e = bool(entry.get("recent_swings_7d"))
-                has_maj_lo_e = bool(entry.get("major_swing_low_px"))
+                has_maj_lo_e = safe_pos_float(entry.get("major_swing_low_px"), default=None) is not None
                 sw_lo_n = round(
                     min(sw_lo_e, cur_e_px, *([l24_e] if not has_swings_e or (l24_e < sw_lo_e and not has_maj_lo_e) else [])),
                     eff_dec_7d,

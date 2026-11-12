@@ -70,8 +70,22 @@ def _accepted_order_payload(payload):
     return extract_order_id(payload) is not None
 
 
+def _eval_callable_bool_gate(fn: Any, *, missing_default: bool) -> bool:
+    if not callable(fn):
+        return missing_default
+    raw_val = fn()
+    parsed = _parse_bool_flag(raw_val, None)
+    if parsed is not None:
+        return bool(parsed)
+    if raw_val is None or isinstance(
+        raw_val, (str, bytes, int, float, dict, list, tuple, set, frozenset)
+    ):
+        return False
+    return bool(raw_val)
+
+
 def _is_aborted(cb: Any) -> bool:
-    return callable(cb) and bool(cb())
+    return _eval_callable_bool_gate(cb, missing_default=False)
 
 
 @dataclass(slots=True)
@@ -462,11 +476,14 @@ class Instrument:
             )
         if inst_live is not None and "live_enabled" not in kwargs:
             kwargs["live_enabled"] = provider_execution_enabled
-        supports_validity = getattr(
-            self._provider,
-            "supports_order_validity",
-            lambda: MarketDataProvider.supports_order_validity(self._provider),
-        )()
+        supports_validity = _eval_callable_bool_gate(
+            getattr(
+                self._provider,
+                "supports_order_validity",
+                lambda: MarketDataProvider.supports_order_validity(self._provider),
+            ),
+            missing_default=False,
+        )
         if supports_validity and "order_validity" not in kwargs:
             inst_validity = self.param("execution", "order_validity")
             if isinstance(inst_validity, str) and inst_validity.strip():
@@ -737,15 +754,7 @@ class Instrument:
 
     @staticmethod
     def _is_execution_gate_enabled(exec_fn: Any) -> bool:
-        if not callable(exec_fn):
-            return True
-        raw_val = exec_fn()
-        return bool(
-            _parse_bool_flag(
-                raw_val,
-                False if isinstance(raw_val, str) else bool(raw_val),
-            )
-        )
+        return _eval_callable_bool_gate(exec_fn, missing_default=True)
 
     @classmethod
     def _check_abort_and_execution_gate(cls, ctx: Any) -> bool:

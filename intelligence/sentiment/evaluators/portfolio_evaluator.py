@@ -1155,7 +1155,10 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                             or safe_pos_float(cyc.get("last_buy_price"), default=None)
                         )
                         _sync_cycle_wallet_qty_and_avg(cyc, qty=eff_rem_wallet, avg_px=eff_avg_w, spot_px=px_c, avg_dec=avg_dec)
-                        if cyc.get("avg_cost_px") and not cyc.get("entry_price"):
+                        if (
+                            safe_pos_float(cyc.get("avg_cost_px"), default=None) is not None
+                            and safe_pos_float(cyc.get("entry_price"), default=None) is None
+                        ):
                             cyc["entry_price"] = cyc["avg_cost_px"]
                     else:
                         _sync_cycle_wallet_qty_and_avg(cyc, qty=0.0, avg_px=None, spot_px=px_c, avg_dec=avg_dec)

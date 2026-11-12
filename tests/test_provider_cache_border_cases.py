@@ -55,7 +55,7 @@ from cachetrend import CacheShortTrendManager
 import external_order_guard as eog
 import guard_hierarchy as gh
 from guard_hierarchy import preflight_intelligence_guard_entry
-from instrument import Instrument
+from instrument import Instrument, _is_aborted
 from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
 from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
@@ -105,7 +105,7 @@ from kraken.kraken_common import load_isolated_kraken_cfg
 from kraken.trailing_stop import KrakenTrailing
 import llm_order_guard
 from market_monitor.new_coins_discovery import NewCoinsFactory
-from market_monitor.pricechecker import PriceAlert
+from market_monitor.pricechecker import PriceAlert, PriceChecker
 from market_monitor.pricefetcher import StockYahooPricePlatform
 from market_regime import MarketRegimeHorizon, MarketRegimeService
 import monitortrades as mt
@@ -132,7 +132,12 @@ import pricewindow as pw
 from providers import binance_provider as bp_mod, order_id_context as oic
 from providers.base import MarketDataProvider
 from providers.binance_provider import BinanceProvider
-from providers.execution_audit import _filter_intents_by_scope, reconcile_intents_from_execution_audit
+from providers.execution_audit import (
+    _filter_intents_by_scope,
+    _is_open_resting_detail,
+    reconcile_intents_from_execution_audit,
+    summarize_recent_ai_intents,
+)
 from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
 from providers.kraken_provider import KrakenProvider
 from providers.order_ohlc_utils import (
@@ -182,6 +187,7 @@ from strategies.replay_metrics import (
 )
 from strategies.spot_replay import (
     post_exit_peak_step_scope,
+    ratchet_post_exit_peak_sell_price,
     split_warmup_ohlc,
     summarize_grid_replay_metrics,
 )
@@ -3276,5 +3282,128 @@ def test_wave20_llm_guard_audit_hl_fills_macro_news_xstock_and_spot_flags(tmp_pa
     spot_stub.s["orders"][0]["cancel_requested"] = "true"
     assert spot_stub._dispatch_take_profit(100.0, 100.0, 1.0) is False
     assert len(canceled_tp) == 1
+
+
+def test_wave21_callable_gates_sre_sibling_structure_audit_zero_qty_and_replay_ratchet():
+    """Verify Wave 21 border cases: Instrument._is_execution_gate_enabled fail-closed on NaN/Inf/containers/string-false, _is_aborted no spurious abort on string-false/NaN, prompt_sections SRE fleet/error/VPN flags and sibling_structure_presence guard, execution_audit _is_open_resting_detail and zero-string filled_qty dedup, ratchet_post_exit_peak_sell_price sl_rebuy string/dict handling, and PriceChecker has_data string-false."""
+
+    # 1. Instrument._is_execution_gate_enabled (fail-closed) and _is_aborted (no spurious abort)
+    assert Instrument._is_execution_gate_enabled(None) is True
+    assert Instrument._is_execution_gate_enabled(lambda: True) is True
+    assert Instrument._is_execution_gate_enabled(lambda: "true") is True
+    assert Instrument._is_execution_gate_enabled(lambda: "false") is False
+    assert Instrument._is_execution_gate_enabled(lambda: "0") is False
+    assert Instrument._is_execution_gate_enabled(lambda: float("nan")) is False
+    assert Instrument._is_execution_gate_enabled(lambda: float("inf")) is False
+    assert Instrument._is_execution_gate_enabled(lambda: [0]) is False
+    assert Instrument._is_execution_gate_enabled(lambda: {"live": False}) is False
+
+    assert _is_aborted(None) is False
+    assert _is_aborted(lambda: "false") is False
+    assert _is_aborted(lambda: "0") is False
+    assert _is_aborted(lambda: float("nan")) is False
+    assert _is_aborted(lambda: "true") is True
+    assert _is_aborted(lambda: True) is True
+
+    # 2. prompt_sections._format_sre_and_fleet_section & _format_market_prices_section (sibling_structure_presence)
+    sre_out = "\n".join(
+        ps_mod._format_sre_and_fleet_section(
+            SimpleNamespace(
+                active_heartbeats={"bot.heartbeat": 1.0},
+                state_files=[],
+                fleet_processes=[{"name": "bot", "is_running": "false", "heartbeat_fresh": "false"}],
+                system_and_vpn={"vpn_tunnel_up": "false"},
+            ),
+            SimpleNamespace(
+                total_scanned_files=1,
+                error_count=1,
+                warning_count=0,
+                persistent_errors=[
+                    {"unresolved_at_tail": "false", "count": 2, "file": "bot.log", "sample": "err"}
+                ],
+                critical_events=[],
+                guard_interventions=[],
+            ),
+            6.0,
+        )
+    )
+    assert "0/1 running | STOPPED: ['bot']" in sre_out
+    assert "[RECURRING x2 in bot.log]" in sre_out
+    assert "DOWN / NOT PRESENT" in sre_out
+
+    mkt_out = "\n".join(
+        ps_mod._format_market_prices_section(
+            {
+                "BTCUSDC": {
+                    "price": 100.0,
+                    "chg_6h_pct": -2.0,
+                    "low_15m": 95.0,
+                    "low_24h": 94.0,
+                },
+                "BTCUSDT": {
+                    "price": 100.0,
+                    "recent_1h_low_px": 99.0,
+                    "prior_6h_low_px": 98.0,
+                    "bottom_structure_6h": "HIGHER_LOW",
+                },
+            }
+        )
+    )
+    assert "HIGHER_LOW" not in mkt_out
+
+    # 3. execution_audit._is_open_resting_detail & summarize_recent_ai_intents zero-string filled_qty dedup
+    assert _is_open_resting_detail({"is_open_in_venue": "false", "exec_status": "OPEN_RESTING"}) is False
+    assert _is_open_resting_detail({"is_open_in_venue": "true", "exec_status": "OPEN_RESTING"}) is True
+
+    summarized = summarize_recent_ai_intents(
+        [
+            {
+                "intent_id": "old-cancel",
+                "decision": "BUY",
+                "symbol": "BTCUSDC",
+                "venue": "binance",
+                "status": "EXECUTED",
+                "timestamp": 1_700_000_000.0,
+                "execution_payload": {
+                    "orderId": "oid-old",
+                    "status": "CANCELED",
+                    "executedQty": "0.00000000",
+                },
+            },
+            {
+                "intent_id": "new-fill",
+                "decision": "BUY",
+                "symbol": "BTCUSDC",
+                "venue": "binance",
+                "status": "EXECUTED",
+                "timestamp": 1_700_000_060.0,
+                "execution_payload": {
+                    "orderId": "oid-new",
+                    "status": "FILLED",
+                    "executedQty": "1.0",
+                    "price": "100.0",
+                    "cummulativeQuoteQty": "100.0",
+                },
+            },
+        ],
+        "crypto",
+        1_700_000_120.0,
+        lambda o, **_kw: 100.0 if o else None,
+    )
+    assert len(summarized) == 1 and summarized[0]["order_id"] == "oid-new"
+
+    # 4. ratchet_post_exit_peak_sell_price sl_rebuy string vs dict & PriceChecker has_data string-false
+    st_r = {"qty": 0.0, "last_sell_price": 100.0, "sl_rebuy": "false"}
+    ratchet_post_exit_peak_sell_price(st_r, 108.0)
+    assert st_r["last_sell_price"] == 108.0
+
+    st_r_dict = {"qty": 0.0, "last_sell_price": 100.0, "sl_rebuy": {"low": 95.0}}
+    ratchet_post_exit_peak_sell_price(st_r_dict, 108.0)
+    assert st_r_dict["last_sell_price"] == 100.0
+
+    pc = PriceChecker.__new__(PriceChecker)
+    pc._calculate_24h_stats = lambda _s: {"has_data": "false", "error": "empty"}
+    assert pc.check_symbol("BTCUSDC") == []
+
 
 
