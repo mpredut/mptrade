@@ -1130,56 +1130,66 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
         variants = _short_trend_symbol_variants(symbol)
 
-        # 1. Check in-memory _live_windows and _mem['dynamic'] first:
-        with self._lock:
-            for cand in variants:
-                mem_live = (casefold_get(self._live_windows, cand) or {}).get(w_key)
-                if isinstance(mem_live, dict):
-                    fresh = _check_fresh(mem_live)
-                    if fresh is not None:
-                        return fresh
-            for cand in variants:
-                mem_snap = casefold_get(self._mem, cand)
-                if isinstance(mem_snap, dict):
-                    mem_pub = mem_snap.get("dynamic")
-                    if isinstance(mem_pub, dict) and w_key in mem_pub:
-                        fresh = _check_fresh(mem_pub.get(w_key))
+        def _check_memory():
+            with self._lock:
+                for cand in variants:
+                    mem_live = (casefold_get(self._live_windows, cand) or {}).get(w_key)
+                    if isinstance(mem_live, dict):
+                        fresh = _check_fresh(mem_live)
                         if fresh is not None:
                             return fresh
+                for cand in variants:
+                    mem_snap = casefold_get(self._mem, cand)
+                    if isinstance(mem_snap, dict):
+                        mem_pub = mem_snap.get("dynamic")
+                        if isinstance(mem_pub, dict) and w_key in mem_pub:
+                            fresh = _check_fresh(mem_pub.get(w_key))
+                            if fresh is not None:
+                                return fresh
+            return None
 
-        # 2. Check shared snapshot file dynamic dict (authoritative if present):
-        file_data = self._read_file()
-        for cand in variants:
-            snap = casefold_get(file_data, cand)
-            if isinstance(snap, dict):
-                published = snap.get("dynamic")
-                if isinstance(published, dict) and w_key in published:
-                    fresh = _check_fresh(published.get(w_key))
+        def _check_disk():
+            file_data = self._read_file()
+            for cand in variants:
+                snap = casefold_get(file_data, cand)
+                if isinstance(snap, dict):
+                    published = snap.get("dynamic")
+                    if isinstance(published, dict) and w_key in published:
+                        fresh = _check_fresh(published.get(w_key))
+                        if fresh is not None:
+                            return fresh
+                    if (
+                        math.isclose(clamped, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6)
+                        and "gradient_recent" in snap
+                        and "ts" in snap
+                    ):
+                        fresh = _check_fresh(snap)
+                        if fresh is not None:
+                            return fresh
+            for cand in variants:
+                if not isinstance(cand, str) or not cand:
+                    continue
+                file_live = read_json_dict(
+                    self._live_trend_file(cand),
+                    default={},
+                    recover_previous=True,
+                    repair_files=bool(self.writer),
+                ).get(w_key)
+                if isinstance(file_live, dict):
+                    fresh = _check_fresh(file_live)
                     if fresh is not None:
                         return fresh
-                if (
-                    math.isclose(clamped, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6)
-                    and "gradient_recent" in snap
-                    and "ts" in snap
-                ):
-                    fresh = _check_fresh(snap)
-                    if fresh is not None:
-                        return fresh
+            return None
 
-        # 3. Check per-symbol 24trend/live_<SYMBOL>.json:
-        for cand in variants:
-            if not isinstance(cand, str) or not cand:
-                continue
-            file_live = read_json_dict(
-                self._live_trend_file(cand),
-                default={},
-                recover_previous=True,
-                repair_files=bool(self.writer),
-            ).get(w_key)
-            if isinstance(file_live, dict):
-                fresh = _check_fresh(file_live)
-                if fresh is not None:
-                    return fresh
+        checks = (
+            (_check_disk, _check_memory)
+            if self._is_clean_disk_reader()
+            else (_check_memory, _check_disk)
+        )
+        for check_fn in checks:
+            found = check_fn()
+            if found is not None:
+                return found
 
         return None
 
@@ -1477,33 +1487,40 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         price = abs(safe_float(snap.get("current_price"), default=0.0))
         return price * self.FAVORABLE_REL_EPS
 
+    def _is_clean_disk_reader(self) -> bool:
+        return (
+            not self.writer
+            and not self._computing
+            and not self._mem_dirty
+            and getattr(self, "data_sync_mode", self.MODE_DISK_READER) == self.MODE_DISK_READER
+        )
+
     def get_fresh_snapshot(self, symbol, now=None):
         """Return a symbol snapshot only when it is within ``TREND_STALE_SEC``.
 
         This is the shared public staleness check used by both trend and wait decisions.
         """
-        snap = self.get_snapshot(symbol)
         now = now if now is not None else time.time()
-        if not self._snapshot_is_usable(snap, now, self.TREND_STALE_SEC):
-            if (
-                not self.writer
-                and not self._computing
-                and getattr(self, "data_sync_mode", self.MODE_DISK_READER)
-                == self.MODE_DISK_READER
+        if self._is_clean_disk_reader():
+            _, val = _find_by_symbol_variant(
+                self._read_file(), symbol, expected_type=dict
+            )
+            if isinstance(val, dict) and self._snapshot_is_usable(
+                val, now, self.TREND_STALE_SEC
             ):
-                _, val = _find_by_symbol_variant(
-                    self._read_file(), symbol, expected_type=dict
-                )
-                if isinstance(val, dict) and self._snapshot_is_usable(
-                    val, now, self.TREND_STALE_SEC
-                ):
-                    with self._lock:
-                        cleaned_snap = {
-                            k: v for k, v in val.items() if k not in _LEGACY_SNAP_KEYS
-                        }
-                        self._mem[symbol] = cleaned_snap
-                        self._sync_symbol_cursor_from_snap(symbol, val)
-                    return dict(cleaned_snap)
+                with self._lock:
+                    cleaned_snap = {
+                        k: v for k, v in val.items() if k not in _LEGACY_SNAP_KEYS
+                    }
+                    self._mem[symbol] = cleaned_snap
+                    self._sync_symbol_cursor_from_snap(symbol, val)
+                return dict(cleaned_snap)
+            mem_snap = self.get_cached_memory_snapshot(symbol)
+            if self._snapshot_is_usable(mem_snap, now, self.TREND_STALE_SEC):
+                return mem_snap
+            return None
+        snap = self.get_snapshot(symbol)
+        if not self._snapshot_is_usable(snap, now, self.TREND_STALE_SEC):
             return None
         return snap
 

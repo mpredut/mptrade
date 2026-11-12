@@ -1621,8 +1621,8 @@ print(f"[INFO] DEFAULT_ADJUSTMENT_PERCENT = {DEFAULT_ADJUSTMENT_PERCENT}")
 def _init_live_price_tick_stream(symbol: str):
     """Subscribe this process's SSOT current-price reader to the local AF_UNIX tick stream."""
     cpm = get_current_price_manager(data_sync_mode="live_reader")
-    if symbol and symbol not in cpm.symbols:
-        cpm.symbols = [*cpm.symbols, symbol]
+    if symbol:
+        cpm.symbols = [symbol]
     cpm.start_local_tick_stream()
     return cpm
 

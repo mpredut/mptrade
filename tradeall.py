@@ -817,6 +817,7 @@ class TrendCoordinator:
             print(f"[TrendCoordinator] shadow_signals unavailable (continuing without it): {_e}")
             self._kalman_state = None
 
+        self._regime_ctx_memo = {}
         self.trend_states = {}
         self.trend_states_big = {}
         for symbol in self.symbols:
@@ -889,12 +890,21 @@ class TrendCoordinator:
     REGIME_CTX_MEMO_TTL_SEC = 1.0
 
     def _resolve_regime_context(self, symbol: str):
-        memo = getattr(self, "_regime_ctx_memo", None)
-        if memo is None:
-            memo = {}
-            self._regime_ctx_memo = memo
+        lock = getattr(self, "_lock", None)
         now_mono = time.monotonic()
-        cached = memo.get(symbol)
+        if lock is not None:
+            with lock:
+                memo = getattr(self, "_regime_ctx_memo", None)
+                if memo is None:
+                    memo = {}
+                    self._regime_ctx_memo = memo
+                cached = memo.get(symbol)
+        else:
+            memo = getattr(self, "_regime_ctx_memo", None)
+            if memo is None:
+                memo = {}
+                self._regime_ctx_memo = memo
+            cached = memo.get(symbol)
         if cached is not None:
             cached_mono, cached_ctx = cached
             if 0.0 <= (now_mono - cached_mono) < self.REGIME_CTX_MEMO_TTL_SEC:
@@ -904,8 +914,12 @@ class TrendCoordinator:
         except Exception as e:
             print(f"[TrendCoordinator] Error resolving regime context for {symbol}: {e}")
             return None
-        if regime_ctx is not None:
-            memo[symbol] = (now_mono, regime_ctx)
+        if regime_ctx is not None and bool(getattr(regime_ctx, "fresh", False)):
+            if lock is not None:
+                with lock:
+                    memo[symbol] = (now_mono, regime_ctx)
+            else:
+                memo[symbol] = (now_mono, regime_ctx)
         return regime_ctx
 
     def evaluate(self, symbol):
@@ -928,10 +942,13 @@ class TrendCoordinator:
                 return None
             ts_ms, current_price = entry[0], entry[1]
             ts_ms_f = safe_float(ts_ms, default=None)
-            max_age_ms = safe_float(
-                getattr(self.current_price_mgr, "STALE_THRESHOLD_MS", PRICE_FRESHNESS_MAX_AGE_MS),
-                default=None,
+            stale_fn = getattr(self.current_price_mgr, "stale_threshold_ms_for", None)
+            raw_max_age_ms = (
+                stale_fn(symbol)
+                if callable(stale_fn)
+                else getattr(self.current_price_mgr, "STALE_THRESHOLD_MS", PRICE_FRESHNESS_MAX_AGE_MS)
             )
+            max_age_ms = safe_float(raw_max_age_ms, default=None)
             if ts_ms_f is None or max_age_ms is None:
                 return None
             age_ms = time.time() * 1000.0 - ts_ms_f

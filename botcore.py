@@ -1513,6 +1513,7 @@ def summarize_current_price_cache_freshness(
         if (ts_ft := (normalize_epoch_sec(v, default=0.0) or 0.0)) > 0.0
     ]
     open_ages: list[float] = []
+    open_bounds: list[tuple[float, float]] = []
     any_open_invalid_or_missing_ts = False
 
     for sym_key, val in items_map.items():
@@ -1526,8 +1527,9 @@ def summarize_current_price_cache_freshness(
         if ts_sec > 0.0:
             all_ts.append(ts_sec)
         px_val = extract_current_price_item(val) or 0.0
+        is_eq = has_equity_suffix(sym_str)
         is_open = (
-            (not has_equity_suffix(sym_str) or is_us_rth_open(now_s))
+            (not is_eq or is_us_rth_open(now_s))
             if market_open_fn is None
             else bool(market_open_fn(sym_str))
         )
@@ -1536,19 +1538,27 @@ def summarize_current_price_cache_freshness(
         if not valid_struct or px_val <= 0.0 or ts_sec <= 0.0:
             any_open_invalid_or_missing_ts = True
             continue
-        open_ages.append(now_s - ts_sec)
+        age = now_s - ts_sec
+        sym_max_age = (
+            max(eff_max_age, SHORT_TREND_FRESHNESS_MAX_AGE_SEC)
+            if is_eq
+            else eff_max_age
+        )
+        open_ages.append(age)
+        open_bounds.append((age, sym_max_age))
 
     latest_ts = max(all_ts, default=0.0)
     freshest_age = round(max(0.0, now_s - latest_ts), 2) if latest_ts > 0.0 else None
     oldest_open_age = round(max(0.0, max(open_ages)), 2) if open_ages else None
+    stream_max_age = min((bound for _, bound in open_bounds), default=eff_max_age)
     fresh_ok = bool(
         items_map
         and not any_open_invalid_or_missing_ts
         and freshest_age is not None
-        and freshest_age < eff_max_age
+        and freshest_age < stream_max_age
         and (
-            not open_ages
-            or all(-5.0 <= age < eff_max_age for age in open_ages)
+            not open_bounds
+            or all(-5.0 <= age < bound for age, bound in open_bounds)
         )
     )
     return {

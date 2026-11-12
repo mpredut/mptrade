@@ -549,6 +549,40 @@ class TestStepWolsGeneralization(unittest.TestCase):
                 instant_mgr.shutdown(timeout=0.5)
                 cpm.shutdown(timeout=0.5)
 
+    def test_runtime_market_regime_snapshot_rejects_stale_dynamic_subsnapshot_without_double_call(self):
+        stale_w90 = {
+            "growth_coefficient": -0.35,
+            "gradient_recent": -0.35,
+            "epsilon": 0.02,
+            "window_seconds": 90.0,
+            "ts": 900.0,
+        }
+        snap = {
+            "growth_coefficient": 0.15,
+            "gradient_recent": 0.15,
+            "epsilon": 0.02,
+            "window_seconds": 222.0,
+            "ts": 1000.0,
+            "dynamic": {"90": stale_w90},
+        }
+        live_calls = []
+
+        def _cold_live_window(symbol, window_seconds, now=None):
+            live_calls.append((symbol, window_seconds, now))
+            return None
+
+        fake_mgr = SimpleNamespace(
+            writer=False,
+            _cache24_managers={"TAOUSDC": object()},
+            TREND_STALE_SEC=15.0,
+            get_short_trend_for_window=_cold_live_window,
+            get_fresh_snapshot=lambda _sym, now=None: snap,
+        )
+        with patch.object(cm, "get_short_trend_manager", return_value=fake_mgr):
+            res = _runtime_market_regime_snapshot("TAOUSDC", now=1001.0)
+        self.assertIsNone(res)
+        self.assertEqual(len(live_calls), 1)
+
     def test_kalman_grad_std_and_adaptive_thresholds_in_update(self):
 
         fed = [100.0, 101.2, 100.8, 102.5, 103.1, 102.9, 104.0]

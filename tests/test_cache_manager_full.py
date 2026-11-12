@@ -3335,4 +3335,153 @@ def test_cache24pricemanager_producer_refreshes_equity_ohlc_and_seeds_365price(t
     assert len(ohlc_payload["points"]) >= 30
 
 
+def test_equity_rth_cadence_and_future_tick_hygiene(tmp_path, monkeypatch):
+    """Equities polled at 6s cadence stay healthy during US RTH without 0.8s HTTP spam, and future AF_UNIX ticks cannot poison subscribers."""
+    import tempfile
+    import botcore
+    import cacheprice
+    import verify_tools.check_cache_coherence as ccc
+
+    now_s = 1_780_000_000.0
+    cp_payload = {
+        "items": {
+            "BTCUSDC": [[(now_s - 0.9) * 1000.0, 95100.0]],
+            "NVDA_US_EQ": [[(now_s - 5.6) * 1000.0, 178.5]],
+        },
+        "fetchtime": {
+            "BTCUSDC": (now_s - 0.9) * 1000.0,
+            "NVDA_US_EQ": (now_s - 5.6) * 1000.0,
+        },
+    }
+    summary_ok = botcore.summarize_current_price_cache_freshness(
+        cp_payload,
+        now_ts=now_s,
+        market_open_fn=lambda _sym: True,
+    )
+    assert summary_ok["ws_realtime_fresh"] is True
+
+    # Crypto exceeding 3.0s still fails even when equity is fresh.
+    cp_crypto_stale = {
+        "items": {
+            "BTCUSDC": [[(now_s - 3.4) * 1000.0, 95100.0]],
+            "NVDA_US_EQ": [[(now_s - 5.6) * 1000.0, 178.5]],
+        },
+    }
+    assert (
+        botcore.summarize_current_price_cache_freshness(
+            cp_crypto_stale, now_ts=now_s, market_open_fn=lambda _sym: True
+        )["ws_realtime_fresh"]
+        is False
+    )
+
+    # Equity exceeding 15.0s fails during US RTH.
+    cp_eq_stale = {
+        "items": {
+            "BTCUSDC": [[(now_s - 0.8) * 1000.0, 95100.0]],
+            "NVDA_US_EQ": [[(now_s - 16.0) * 1000.0, 178.5]],
+        },
+    }
+    assert (
+        botcore.summarize_current_price_cache_freshness(
+            cp_eq_stale, now_ts=now_s, market_open_fn=lambda _sym: True
+        )["ws_realtime_fresh"]
+        is False
+    )
+
+    # check_cache_coherence honors 15.0s ceiling for open RTH equities while enforcing 3.0s on crypto.
+    coh_dir = tmp_path / "coh"
+    coh_dir.mkdir(parents=True, exist_ok=True)
+    (coh_dir / "cache_short_trend.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": {"ts": now_s - 1.0, "current_price": 95100.0, "gradient_recent": 0.01},
+                    "NVDA_US_EQ": {"ts": now_s - 5.6, "current_price": 178.5, "gradient_recent": 0.01},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (coh_dir / "cache_current_price.json").write_text(json.dumps(cp_payload), encoding="utf-8")
+    monkeypatch.setattr(ccc, "CACHEDB", str(coh_dir))
+    monkeypatch.setattr(ccc, "expected_symbols", lambda: ["BTCUSDC", "NVDA_US_EQ"])
+    monkeypatch.setattr(ccc.time, "time", lambda: now_s)
+    monkeypatch.setattr(ccc, "is_symbol_market_open", lambda _s, _n=None: True)
+    assert ccc.main() == 0
+
+    # CacheCurrentPriceManager does not trigger forced HTTP fetches at 5.6s for NVDA_US_EQ,
+    # and _ws_is_healthy stays True below 10.0s then flips False at 10.5s for failover.
+    api_mock = MagicMock()
+    api_mock.get_current_price.return_value = 179.0
+    monkeypatch.setattr(cacheprice, "_now_time", lambda: now_s)
+    cpm = cacheprice.CacheCurrentPriceManager(
+        sync_ts=botcore.PRICE_STREAM_POLL_INTERVAL_SEC,
+        symbols=["BTCUSDC", "NVDA_US_EQ"],
+        filename=str(tmp_path / "cp_rth.json"),
+        ws_manager=None,
+        api_client=api_mock,
+        market_api=api_mock,
+        data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
+    )
+    cpm.on_items_update("BTCUSDC", [[int((now_s - 0.5) * 1000), 95100.0]])
+    cpm.on_items_update("NVDA_US_EQ", [[int((now_s - 5.6) * 1000), 178.5]])
+    cpm._ws_last_event_ts_per_symbol["BTCUSDC"] = now_s - 0.5
+    cpm._ws_last_event_ts_per_symbol["NVDA_US_EQ"] = now_s - 5.6
+    api_mock.get_current_price.reset_mock()
+
+    assert cpm._ws_is_healthy("NVDA_US_EQ") is True
+    assert cpm._should_poll() is False
+    assert cpm.get_price_value("NVDA_US_EQ") == pytest.approx(178.5)
+    api_mock.get_current_price.assert_not_called()
+
+    cpm._ws_last_event_ts_per_symbol["NVDA_US_EQ"] = now_s - 10.5
+    assert cpm._ws_is_healthy("NVDA_US_EQ") is False
+    assert cpm._should_poll() is True
+
+    # Future-timestamp tick over AF_UNIX is rejected so it cannot poison real ticks.
+    monkeypatch.undo()
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="mptr_fut_") as sock_dir:
+        sock_path = os.path.join(sock_dir, "current_price_ticks.sock")
+        prod = cacheprice.CacheCurrentPriceManager(
+            sync_ts=9999,
+            symbols=["BTCUSDC"],
+            filename=str(tmp_path / "prod_fut.json"),
+            ws_manager=None,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        cons = cacheprice.CacheCurrentPriceManager(
+            sync_ts=9999,
+            symbols=["BTCUSDC", None, 123],
+            filename=str(tmp_path / "cons_fut.json"),
+            ws_manager=None,
+            read_only=True,
+            data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
+        )
+        try:
+            assert prod.start_tick_fanout_server(sock_path) == sock_path
+            cons.start_local_tick_stream(sock_path)
+            deadline = time.monotonic() + 1.0
+            while not prod._tick_ipc_clients and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert prod._tick_ipc_clients
+
+            real_now_ms = int(time.time() * 1000)
+            prod._broadcast_tick_ipc("BTCUSDC", real_now_ms + 3_600_000, 999999.0)
+            prod._broadcast_tick_ipc("BTCUSDC", real_now_ms, 95432.0)
+
+            deadline = time.monotonic() + 0.5
+            while (
+                (obs := cons.get_cached_price_observation("BTCUSDC", 3.0)) is None
+                or abs(obs[1] - 95432.0) > 1e-6
+            ) and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert obs is not None
+            assert obs[1] == pytest.approx(95432.0)
+        finally:
+            cons.shutdown(timeout=1.0)
+            prod.shutdown(timeout=1.0)
+
+
+
 

@@ -79,6 +79,8 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
         if mgr is None:
             return None
         fw = safe_pos_float(pw.fast_trend_window_for_symbol(symbol), default=None)
+        live_fn = getattr(mgr, "get_short_trend_for_window", None)
+        tried_live_window = False
         # Live-reader compute processes (such as tradeall) maintain live Cache24 buffers in RAM
         # without running the writer's periodic dynamic-window publisher, so snap["dynamic"]
         # seeded from disk at startup becomes stale. Resolve directly from the live O(1) buffer.
@@ -86,15 +88,16 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
             fw is not None
             and isinstance(getattr(mgr, "_cache24_managers", None), dict)
             and not bool(getattr(mgr, "writer", False))
-            and callable(getattr(mgr, "get_short_trend_for_window", None))
+            and callable(live_fn)
         ):
-            live_w = mgr.get_short_trend_for_window(symbol, fw, now=now)
+            tried_live_window = True
+            live_w = live_fn(symbol, fw, now=now)
             if isinstance(live_w, dict):
                 return live_w
         snap_fn = getattr(mgr, "get_fresh_snapshot", None)
         snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
         resolved = pw.resolve_dynamic_trend_snapshot(snap, symbol)
-        if fw is not None and callable(getattr(mgr, "get_short_trend_for_window", None)):
+        if fw is not None:
             eff_now = botcore.resolve_now_ts(now)
             max_age = safe_pos_float(
                 getattr(mgr, "TREND_STALE_SEC", None),
@@ -112,9 +115,12 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
                 and botcore._is_fresh_obs_ts(w_ts, eff_now, max_age)
             )
             if not is_dyn_fresh:
-                live_w = mgr.get_short_trend_for_window(symbol, fw, now=now)
-                if isinstance(live_w, dict):
-                    return live_w
+                if not tried_live_window and callable(live_fn):
+                    live_w = live_fn(symbol, fw, now=now)
+                    if isinstance(live_w, dict):
+                        return live_w
+                if resolved is not snap:
+                    return None
         return resolved
     except Exception:
         return None

@@ -1632,6 +1632,52 @@ def test_trend_coordinator_memoizes_market_regime_context_within_1s(monkeypatch)
     assert bare_coord._resolve_regime_context("TAOUSDC") is ctx_v2
     assert len(calls) == 3
 
+    # Unfresh MarketRegimeContext(fresh=False) is NOT memoized, so immediate retry resolves fresh data.
+    unfresh_ctx = SimpleNamespace(regime="unknown", fresh=False)
+    fresh_ctx = SimpleNamespace(regime="bull", fresh=True)
+    retry_seq = [unfresh_ctx, fresh_ctx]
+    retry_calls = []
+    monkeypatch.setattr(
+        ta.mkt,
+        "market_regime_context",
+        lambda sym, **kw: (retry_calls.append(sym) or retry_seq[min(len(retry_calls) - 1, 1)]),
+    )
+    fake_mono[0] = 200.0
+    assert bare_coord._resolve_regime_context("ARBUSDC") is unfresh_ctx
+    fake_mono[0] = 200.05
+    assert bare_coord._resolve_regime_context("ARBUSDC") is fresh_ctx
+    assert len(retry_calls) == 2
+
+    # TrendCoordinator.evaluate uses stale_threshold_ms_for(symbol) so 5.6s-old NVDA_US_EQ ticks evaluate cleanly.
+    now_ms = int(time.time() * 1000)
+    monkeypatch.setattr(ta, "is_symbol_market_open", lambda _sym: True)
+    eq_coord = ta.TrendCoordinator.__new__(ta.TrendCoordinator)
+    eq_coord._lock = threading.Lock()
+    eq_coord._dirty = {"NVDA_US_EQ": True, "BTCUSDC": True}
+    eq_coord._last_eval = {}
+    eq_coord._canonical_symbols = {"NVDA_US_EQ": "NVDA_US_EQ", "BTCUSDC": "BTCUSDC"}
+    eq_coord.symbol_aliases = {}
+    eq_coord.trend_states = {}
+    eq_coord.trend_states_big = {}
+    eq_coord._kalman_state = None
+    eq_coord._regime_ctx_memo = {"NVDA_US_EQ": (time.monotonic(), fresh_ctx)}
+    eq_coord.current_price_mgr = SimpleNamespace(
+        STALE_THRESHOLD_MS=3000,
+        stale_threshold_ms_for=lambda sym: 15000 if sym == "NVDA_US_EQ" else 3000,
+        get_price=lambda _sym: [now_ms - 5600, 178.5],
+    )
+    regime_seen = []
+    eq_coord._resolve_regime_context = lambda sym: (regime_seen.append(sym) or fresh_ctx)
+    eq_coord.instant_mgr = SimpleNamespace(
+        window_big_sec=900,
+        get_window=lambda *_a: None,
+        get_analyzer=lambda *_a: None,
+    )
+    eq_coord.evaluate("BTCUSDC")
+    assert regime_seen == []
+    eq_coord.evaluate("NVDA_US_EQ")
+    assert regime_seen == ["NVDA_US_EQ"]
+
 
 def test_af_unix_price_tick_subscriber_o1_lookup_and_dynamic_symbols_refresh(tmp_path):
     """PriceTickSubscriber O(1) lookup resolves exact and cleaned keys, drops unconfigured symbols, and refreshes on symbol mutation."""

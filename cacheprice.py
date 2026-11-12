@@ -33,6 +33,7 @@ from botcore import (
     PRICE_FRESHNESS_MAX_AGE_SEC,
     PRICE_STREAM_POLL_INTERVAL_SEC,
     PRICE_WS_TIMEOUT_SEC,
+    SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     _is_fresh_obs_ts,
     _parse_bool_flag,
     _ts_ms_to_s,
@@ -1281,6 +1282,36 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             or (casefold_get(self._provider_names, ck) if ck else None)
         )
 
+    def _is_equity_instrument(self, symbol: Optional[str]) -> bool:
+        if not isinstance(symbol, str) or not symbol.strip():
+            return False
+        return bool(
+            is_equity_venue(self.provider_name_for(symbol) or "")
+            or is_equity_symbol(symbol)
+            or has_equity_suffix(symbol)
+        )
+
+    def ws_timeout_sec_for(self, symbol: Optional[str]) -> float:
+        base_timeout = (
+            safe_pos_float(self.WS_TIMEOUT_SEC, default=PRICE_WS_TIMEOUT_SEC)
+            or PRICE_WS_TIMEOUT_SEC
+        )
+        if "WS_TIMEOUT_SEC" not in self.__dict__ and self._is_equity_instrument(symbol):
+            return max(
+                base_timeout,
+                round(SHORT_TREND_FRESHNESS_MAX_AGE_SEC * (2.0 / 3.0), 3),
+            )
+        return base_timeout
+
+    def stale_threshold_ms_for(self, symbol: Optional[str]) -> int:
+        base_ms = (
+            safe_pos_int(self.STALE_THRESHOLD_MS, default=PRICE_FRESHNESS_MAX_AGE_MS)
+            or PRICE_FRESHNESS_MAX_AGE_MS
+        )
+        if "STALE_THRESHOLD_MS" not in self.__dict__ and self._is_equity_instrument(symbol):
+            return max(base_ms, math.trunc(SHORT_TREND_FRESHNESS_MAX_AGE_SEC * 1000))
+        return base_ms
+
     def _is_ws_ts_map_healthy(
         self, ts_map: dict, symbol: Optional[str] = None
     ) -> bool:
@@ -1291,7 +1322,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 (val for cand in (symbol, sym_u, sym_clean) if cand and (val := ts_map.get(cand)) is not None),
                 self._ws_default_event_ts,
             )
-            return -5.0 <= (now - last_ts) < self.WS_TIMEOUT_SEC
+            return -5.0 <= (now - last_ts) < self.ws_timeout_sec_for(symbol)
         if not self.symbols:
             return -5.0 <= (now - self._ws_last_event_ts_value) < self.WS_TIMEOUT_SEC
         return all(self._is_ws_ts_map_healthy(ts_map, s) for s in self.symbols)
@@ -1361,10 +1392,11 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             existing_ts = (
                 self._entry_timestamp_ms(entries[0]) if entries else 0
             )
+        sym_stale_ms = self.stale_threshold_ms_for(symbol)
         ooo_limit_ms = (
-            self.STALE_THRESHOLD_MS
+            sym_stale_ms
             if self.is_real_ws_healthy(symbol)
-            else max(self.STALE_THRESHOLD_MS, 5_000)
+            else max(sym_stale_ms, 5_000)
         )
         if existing_ts > 0 and (existing_ts - ts_ms) > ooo_limit_ms:
             return
@@ -1515,18 +1547,23 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
 
     def get_price(self, symbol: str):
         now_ms = math.trunc(_now_time() * 1000)
-        target_sym, entry, age_ms = self._resolve_and_load_cached_entry(symbol, now_ms)
-        stale_threshold_ms = self.STALE_THRESHOLD_MS
         sym_mod = _cm_override("sym", sym)
-        if (
-            entry is not None
-            and is_rth_gate_enabled(
-                getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
-            )
-            and hasattr(sym_mod, "is_symbol_market_open")
-            and not sym_mod.is_symbol_market_open(target_sym)
-        ):
-            stale_threshold_ms = max(stale_threshold_ms, 3_600_000)
+
+        def _eff_stale_ms(sym_key: str, cur_entry) -> int:
+            thr_ms = self.stale_threshold_ms_for(sym_key)
+            if (
+                cur_entry is not None
+                and is_rth_gate_enabled(
+                    getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
+                )
+                and hasattr(sym_mod, "is_symbol_market_open")
+                and not sym_mod.is_symbol_market_open(sym_key)
+            ):
+                thr_ms = max(thr_ms, 3_600_000)
+            return thr_ms
+
+        target_sym, entry, age_ms = self._resolve_and_load_cached_entry(symbol, now_ms)
+        stale_threshold_ms = _eff_stale_ms(target_sym, entry)
         if (
             entry is None
             or age_ms is None
@@ -1539,6 +1576,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             ):
                 self.resync_mem_file()
                 target_sym, entry, age_ms = self._resolve_and_load_cached_entry(symbol, now_ms)
+                stale_threshold_ms = _eff_stale_ms(target_sym, entry)
         if (
             entry is None
             or age_ms is None
@@ -1664,7 +1702,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                                 for px_v, ts_v in (self.extract_price_and_ts(entries),)
                                 if px_v is not None
                                 and ts_v is not None
-                                and -5_000 <= (now_ms - ts_v) <= self.STALE_THRESHOLD_MS
+                                and -5_000 <= (now_ms - ts_v) <= self.stale_threshold_ms_for(sym_k)
                             ]
                         if warm:
                             conn.send("".join(f"{s}\t{t}\t{p}\n" for s, t, p in warm).encode("utf-8"))
@@ -1738,7 +1776,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                                         rebuilt_exact: dict[str, str] = {}
                                         rebuilt_clean: dict[str, str] = {}
                                         for s in configured:
-                                            s_u = str(s).strip().upper()
+                                            if not isinstance(s, str):
+                                                continue
+                                            s_u = s.strip().upper()
                                             if s_u:
                                                 rebuilt_exact.setdefault(s_u, s)
                                                 s_clean = clean_symbol_key(s_u)
@@ -1756,12 +1796,10 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                                     continue
                                 ts_i = safe_pos_int(ts_s, default=None)
                                 px_f = safe_pos_float(px_s, default=None)
-                                if (
-                                    ts_i is not None
-                                    and px_f is not None
-                                    and (_now_time() * 1000.0 - ts_i) <= self.STALE_THRESHOLD_MS
-                                ):
-                                    self.on_items_update(canon_sym, [[ts_i, px_f]])
+                                if ts_i is not None and px_f is not None:
+                                    tick_age_ms = _now_time() * 1000.0 - ts_i
+                                    if -5_000.0 <= tick_age_ms <= self.stale_threshold_ms_for(canon_sym):
+                                        self.on_items_update(canon_sym, [[ts_i, px_f]])
                     except OSError:
                         pass
                     finally:

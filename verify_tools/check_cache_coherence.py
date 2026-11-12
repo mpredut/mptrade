@@ -19,7 +19,7 @@ from botcore import (  # noqa: E402
     first_pos_float,
     summarize_current_price_cache_freshness,
 )
-from cachepaths import cache_symbol_variants, is_primary_stream_venue  # noqa: E402
+from cachepaths import cache_symbol_variants, has_equity_suffix, is_primary_stream_venue  # noqa: E402
 from instrument_registry import casefold_get, is_symbol_market_open, select_instruments, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
@@ -127,11 +127,16 @@ def main() -> int:
 
         age = (now - ts_sec_val) if ts_sec_val > 0 else 1e9
         market_open = is_symbol_market_open(s, now)
+        sym_stale_s = (
+            max(CURRENT_PRICE_STALE_S, SHORT_TREND_STALE_S)
+            if has_equity_suffix(s)
+            else CURRENT_PRICE_STALE_S
+        )
         if market_open:
-            cp_open_ages.append(age)
-        ok = px_val > 0 and (not market_open or (-5.0 <= age < CURRENT_PRICE_STALE_S))
+            cp_open_ages.append((age, sym_stale_s))
+        ok = px_val > 0 and (not market_open or (-5.0 <= age < sym_stale_s))
         if not ok:
-            problems.append(f"currentprice {s} age={age:.2f}s>={CURRENT_PRICE_STALE_S:.1f}s")
+            problems.append(f"currentprice {s} age={age:.2f}s>={sym_stale_s:.1f}s")
         print(f"   {s:10} age={age:6.2f}s price={px_val} -> {'OK' if ok else 'STALE'}")
 
     stream_summary = summarize_current_price_cache_freshness(
@@ -141,14 +146,15 @@ def main() -> int:
         market_open_fn=lambda sym: is_symbol_market_open(sym, now),
     )
     if cp_open_ages and not stream_summary["ws_realtime_fresh"]:
-        freshest = min(cp_open_ages)
-        if freshest >= CURRENT_PRICE_STREAM_STALE_S:
+        freshest = min(a for a, _ in cp_open_ages)
+        stream_ceil = min(lim for _, lim in cp_open_ages)
+        if freshest >= stream_ceil:
             problems.append(
-                f"currentprice_stream freshest_age={freshest:.2f}s>={CURRENT_PRICE_STREAM_STALE_S:.1f}s"
+                f"currentprice_stream freshest_age={freshest:.2f}s>={stream_ceil:.1f}s"
             )
             print(
                 f"   STREAM     freshest_age={freshest:.2f}s -> STALE "
-                f"(>={CURRENT_PRICE_STREAM_STALE_S:.1f}s SSOT freshness threshold)"
+                f"(>={stream_ceil:.1f}s SSOT freshness threshold)"
             )
 
     if problems:

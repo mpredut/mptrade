@@ -294,7 +294,7 @@ class RTradeLiveTickStreamTest(TempDirTestCase):
             )
             reader = cm.CacheCurrentPriceManager(
                 sync_ts=9999,
-                symbols=["TAOUSDC"],
+                symbols=["BTCUSDC", "ADAUSD", "TAOUSDC", "NVDA_US_EQ"],
                 filename=disk_cp_path,
                 ws_manager=None,
                 read_only=True,
@@ -304,6 +304,7 @@ class RTradeLiveTickStreamTest(TempDirTestCase):
                 self.assertEqual(producer.start_tick_fanout_server(sock_path), sock_path)
                 live_ts_ms = int(time.time() * 1000)
                 producer.push_price("TAOUSDC", 288.75, ts_ms=live_ts_ms)
+                producer.push_price("ADAUSD", 0.72, ts_ms=live_ts_ms)
 
                 def _fake_get_cpm(**kw):
                     if kw.get("data_sync_mode") == "live_reader":
@@ -318,6 +319,7 @@ class RTradeLiveTickStreamTest(TempDirTestCase):
                     started = rtrade._init_live_price_tick_stream("TAOUSDC")
                 self.assertIs(started, reader)
                 self.assertEqual(reader.data_sync_mode, cm.CacheManagerInterface.MODE_LIVE_READER)
+                self.assertEqual(reader.symbols, ["TAOUSDC"])
 
                 deadline = time.monotonic() + 1.0
                 while (
@@ -325,6 +327,7 @@ class RTradeLiveTickStreamTest(TempDirTestCase):
                     or abs(obs[1] - 288.75) > 1e-6
                 ) and time.monotonic() < deadline:
                     time.sleep(0.005)
+                self.assertIsNone(reader.get_cached_price_observation("ADAUSD", 3.0))
 
                 # RAM tick (288.75) wins over disk file (250.0).
                 px_ram = cp_mod.CacheCurrentPriceManager.read_ssot_current_price_candidates(

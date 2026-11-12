@@ -1990,3 +1990,57 @@ class TestWsBridgeIntegration(TempDirTestCase):
         with patch.dict(os.environ, {"HL_ACCOUNT_ADDRESS": "0xabc123"}):
             hl_ws = HyperliquidPriceStream(symbols=["HYPE"], resolve_env_user_address=True)
         self.assertEqual(hl_ws._user_address, "0xabc123")
+
+    def test_passive_disk_reader_sees_fresh_disk_over_primed_memory(self):
+        trend_file = os.path.join(self.tmp, "passive_fresh_short_trend.json")
+        writer = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, data_sync_mode="producer")
+        reader = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, data_sync_mode="disk_reader")
+        t0 = 1_780_000_000.0
+        w90_v1 = {
+            "final_trend": -1,
+            "growth_coefficient": -0.20,
+            "slope_full": -0.20,
+            "gradient_recent": -0.20,
+            "epsilon": 0.01,
+            "n_samples": 30,
+            "window_seconds": 90.0,
+            "current_price": 60000.0,
+            "ts": t0,
+        }
+        writer.update_snapshot(
+            "BTCUSDT",
+            gradient_recent=-0.25,
+            growth_coefficient=-0.25,
+            current_price=60000.0,
+            ts=t0,
+            dynamic={"90": w90_v1},
+        )
+
+        # Prime reader memory and _live_windows via initial read at t0 + 0.5s.
+        snap1 = reader.get_fresh_snapshot("BTCUSDT", now=t0 + 0.5)
+        self.assertIsNotNone(snap1)
+        self.assertAlmostEqual(snap1["gradient_recent"], -0.25, places=6)
+        reader._live_windows["BTCUSDT"] = {"90": dict(w90_v1)}
+        win1 = reader.get_short_trend_for_window("BTCUSDT", 90.0, now=t0 + 0.5)
+        self.assertIsNotNone(win1)
+        self.assertAlmostEqual(win1["gradient_recent"], -0.20, places=6)
+
+        # Writer publishes a newer snapshot 2s later (well inside the 15s TREND_STALE_SEC window).
+        w90_v2 = dict(w90_v1, final_trend=1, growth_coefficient=0.55, gradient_recent=0.55, current_price=60500.0, ts=t0 + 2.0)
+        writer.update_snapshot(
+            "BTCUSDT",
+            gradient_recent=0.65,
+            growth_coefficient=0.65,
+            current_price=60500.0,
+            ts=t0 + 2.0,
+            dynamic={"90": w90_v2},
+        )
+        snap2 = reader.get_fresh_snapshot("BTCUSDT", now=t0 + 2.5)
+        self.assertIsNotNone(snap2)
+        self.assertAlmostEqual(snap2["gradient_recent"], 0.65, places=6)
+        self.assertAlmostEqual(snap2["current_price"], 60500.0, places=6)
+
+        win2 = reader.get_short_trend_for_window("BTCUSDT", 90.0, now=t0 + 2.5)
+        self.assertIsNotNone(win2)
+        self.assertAlmostEqual(win2["gradient_recent"], 0.55, places=6)
+        self.assertAlmostEqual(win2["current_price"], 60500.0, places=6)
