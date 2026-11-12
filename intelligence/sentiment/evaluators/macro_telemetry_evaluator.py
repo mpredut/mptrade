@@ -38,24 +38,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 
 MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = get_macro_benchmark_specs()
 
-_MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
-    "equity_regime",
-    "cross_asset_regime",
-    "coinbase_premium_bps",
-    "coinbase_premium_regime",
-    "options_vol_regime",
-    "futures_lead_pct",
-    "futures_lead_regime",
-    "nq_qqq_lead_pct",
-    "es_spy_lead_pct",
-    *(
-        f"{ccy.lower()}_{sfx}"
-        for ccy in get_deribit_options_currencies()
-        for sfx in ("dvol", "rv_pct", "vrp_pct", "pc_oi_ratio", "skew_25d_pct")
-    ),
-})
-
-
 def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_items: Any) -> Dict[str, float]:
     """Build fallback price map from orderbook mid-prices and watcher_all_price series for cycle state parsing."""
     cycle_fallback_prices: Dict[str, float] = {}
@@ -1033,7 +1015,6 @@ __all__ = [
     "LiveVenueEquityReconciliationEvaluator",
     "MACRO_BENCHMARK_SPECS",
     "MacroTelemetryEvaluatorBase",
-    "_MACRO_EXTRA_TELEMETRY_KEYS",
     "apply_asset_scope_filter",
     "build_cycle_fallback_prices",
     "compute_cross_asset_regime",

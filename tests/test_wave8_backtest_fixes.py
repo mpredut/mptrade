@@ -1,7 +1,5 @@
 """Targeted regression tests for Wave 8 backtest, replay, strategy, research, and runner fixes."""
 
-from __future__ import annotations
-
 import ast
 import dataclasses
 from datetime import datetime, timedelta, timezone

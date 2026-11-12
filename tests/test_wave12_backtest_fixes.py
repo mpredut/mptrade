@@ -1,7 +1,5 @@
 """Regression tests for Wave 12 backtesting, calibration, grid, and runner fixes."""
 
-from __future__ import annotations
-
 import argparse
 import ast
 import dataclasses

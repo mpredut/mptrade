@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional, Tuple
 
 from notify_engine import alertnotifiers as alert
 from botcore import (
-    SIMULATED_PROVIDER_NAMES,
     _parse_bool_flag,
     bool_env,
     clean_scale,
@@ -479,9 +478,6 @@ def _load_mt_state(now_curr: float | None = None):
                         _PENDING_STOP_EXIT[str(s_name).strip().upper()] = state
     except Exception:
         pass
-
-
-_SIMULATED_PROVIDERS = set(SIMULATED_PROVIDER_NAMES)
 
 
 def _is_simulated_env_or_inst(inst: Any = None) -> bool:

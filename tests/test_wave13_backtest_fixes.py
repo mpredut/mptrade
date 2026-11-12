@@ -1,7 +1,5 @@
 """Regression tests for Wave 13 backtesting, forecast, pilot, sweep, and CLI fixes."""
 
-from __future__ import annotations
-
 import ast
 import builtins
 import math

@@ -237,12 +237,6 @@ class KrakenTrailing(TrailingAdapterBase):
                 matched.append(val)
         return matched
 
-    def _balance_ex_entry(self, asset: str) -> dict | None:
-        for entry in self._balance_ex_entries(asset):
-            if isinstance(entry, dict):
-                return entry
-        return None
-
     # == TrailingCore ADAPTER contract ========================================
     def assets(self):
         for asset, trail in TRAIL_PCT.items():

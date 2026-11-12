@@ -1,7 +1,5 @@
 """Targeted regression tests for Wave 10 backtest, replay, walk-forward, and sweep fixes."""
 
-from __future__ import annotations
-
 import ast
 import dataclasses
 import subprocess

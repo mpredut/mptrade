@@ -1,7 +1,5 @@
 """Regression tests for Wave 16 replay provider, continuous grid, T212 fetch, and sweep fixes."""
 
-from __future__ import annotations
-
 import ast
 import dataclasses
 import os

@@ -1,7 +1,5 @@
 """Targeted regression tests for Wave 9 backtest, replay, simulation, runner, and research fixes."""
 
-from __future__ import annotations
-
 import ast
 import subprocess
 from pathlib import Path

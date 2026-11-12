@@ -1,7 +1,5 @@
 """Regression tests for Wave 14 backtesting, replay, ML forecast, grid, and runner fixes."""
 
-from __future__ import annotations
-
 import argparse
 import ast
 import dataclasses

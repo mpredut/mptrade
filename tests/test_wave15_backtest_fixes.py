@@ -1,7 +1,5 @@
 """Regression tests for Wave 15 backtest, replay, promotion, ML forecast, and runner fixes."""
 
-from __future__ import annotations
-
 import ast
 import math
 import os
