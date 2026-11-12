@@ -22,6 +22,7 @@ import pytest
 import random
 import shadow_signals
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -109,6 +110,7 @@ class TestTradeallOrderBoundary(unittest.TestCase):
             "PRICE_CHANGE_THRESHOLD_BIG_EUR", "TREND_UNIFORM_RATE_THRESHOLD",
             "SLOPE_EXTREME_THRESHOLD", "FIRE_MIN_RETRY_INTERVAL_SEC",
             "FIRE_SAFEBACK_SEC", "FIRE_MAX_PER_TREND",
+            "MIN_EVAL_INTERVAL_SEC",
             "TREND_MIN_VALIDATED_SECONDS", "TREND_MIN_VALIDATED_CONFIRMS",
             "TREND_CONSISTENT_CONFIRMS",
         )
@@ -1417,3 +1419,180 @@ def test_pricewindow_from_cache24_with_string_window_seconds_and_windowanalyzer_
     wa = pw_mod.WindowAnalyzer(win)
     slope, pos = wa.check_price_change("1.0")
     assert slope != 0 and pos == 0
+
+
+def test_af_unix_tick_fanout_delivers_multivenue_ticks_sub_100ms(tmp_path):
+    """Producer AF_UNIX fanout streams multi-venue ticks to live_reader TradeAll in < 100ms without duplicate WS."""
+    syms = ["BTCUSDC", "HYPEUSD", "HYPEUSDC"]
+    provs = {"HYPEUSD": "kraken", "HYPEUSDC": "hyperliquid"}
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="mptr_tk_") as sock_dir:
+        sock_path = os.path.join(sock_dir, "current_price_ticks.sock")
+        producer = cm.CacheCurrentPriceManager(
+            sync_ts=9999,
+            symbols=syms,
+            filename=str(tmp_path / "prod_cp.json"),
+            ws_manager=None,
+            provider_names=provs,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        consumer = cm.CacheCurrentPriceManager(
+            sync_ts=9999,
+            symbols=syms,
+            filename=str(tmp_path / "cons_cp.json"),
+            ws_manager=None,
+            provider_names=provs,
+            read_only=True,
+            data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
+        )
+        try:
+            now_ms = int(time.time() * 1000)
+            producer.push_price("BTCUSDC", 94500.0, ts_ms=now_ms)
+            bound = producer.start_tick_fanout_server(sock_path)
+            assert bound == sock_path
+
+            rec = _RecordingSubscriber()
+            consumer.subscribe_price(rec)
+            consumer.start_local_tick_stream(sock_path)
+
+            deadline = time.monotonic() + 1.0
+            while ("BTCUSDC", 94500.0) not in rec.events and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert ("BTCUSDC", 94500.0) in rec.events
+            assert consumer._ws_is_healthy("BTCUSDC") is True
+
+            t0 = time.monotonic()
+            ts_live = int(time.time() * 1000)
+            producer.push_price("HYPEUSD", 42.25, ts_ms=ts_live)
+            producer.push_price("HYPEUSDC", 42.30, ts_ms=ts_live)
+            while (
+                (("HYPEUSD", 42.25) not in rec.events or ("HYPEUSDC", 42.30) not in rec.events)
+                and (time.monotonic() - t0) < 0.5
+            ):
+                time.sleep(0.002)
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            assert ("HYPEUSD", 42.25) in rec.events
+            assert ("HYPEUSDC", 42.30) in rec.events
+            assert elapsed_ms < 100.0, f"expected < 100ms AF_UNIX fanout latency, got {elapsed_ms:.1f}ms"
+            assert consumer._ws_is_healthy("HYPEUSD") is True
+            assert consumer._ws_is_healthy("HYPEUSDC") is True
+        finally:
+            consumer.shutdown(timeout=1.0)
+            producer.shutdown(timeout=1.0)
+        assert not os.path.exists(sock_path)
+
+
+def test_coordinator_sub_100ms_tick_wakeup_and_confirm_calibration(tmp_path):
+    """Dirty tick inside the 50ms floor evaluates right at ~50ms (no 30s lost wakeup) while confirm_count stays calibrated."""
+    entries = make_synthetic_price_entries(40, interval_ms=800)
+    c24 = _make_cache24_manager("BTCUSDT", entries, str(tmp_path))
+    cpm = cm.CacheCurrentPriceManager(
+        sync_ts=9999,
+        symbols=["BTCUSDT"],
+        filename=str(tmp_path / "cp_sub100.json"),
+        ws_manager=None,
+        api_client=mock_bapi,
+    )
+    cpm.on_items_update("BTCUSDT", [[int(time.time() * 1000), 60000.0]])
+    mgr = cm.CacheShortTrendManager(["BTCUSDT"], str(tmp_path / "st_sub100.json"))
+    mgr.start_computation({"BTCUSDT": c24}, cpm)
+
+    eval_times = []
+    orig_kalman_ref = ta._kalman_ref
+    coord = ta.TrendCoordinator(
+        symbols=["BTCUSDT"],
+        instant_mgr=mgr,
+        current_price_mgr=cpm,
+        cache24_managers={"BTCUSDT": c24},
+        min_interval=0.05,
+        max_interval=30.0,
+    )
+    assert coord.trend_states["BTCUSDT"]._min_confirm_interval == pytest.approx(ta.TIME_SLEEP_GET_PRICE)
+
+    orig_eval = coord.evaluate
+
+    def _tracked_eval(sym):
+        res = orig_eval(sym)
+        eval_times.append(time.monotonic())
+        return res
+
+    coord.evaluate = _tracked_eval
+    th = threading.Thread(target=coord.run, daemon=True)
+    try:
+        th.start()
+        deadline = time.monotonic() + 1.0
+        while not eval_times and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert len(eval_times) == 1
+
+        # Push a tick 10ms after initial evaluation (inside the 50ms min_interval floor).
+        time.sleep(0.010)
+        t_tick = time.monotonic()
+        now_ms = int(time.time() * 1000)
+        cpm.on_items_update("BTCUSDT", [[now_ms, 60100.0]])
+        c24.on_price_update("BTCUSDT", now_ms, 60100.0)
+
+        deadline = time.monotonic() + 0.5
+        while len(eval_times) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert len(eval_times) >= 2
+        wakeup_ms = (eval_times[1] - t_tick) * 1000.0
+        assert wakeup_ms < 150.0, f"lost wakeup regression: took {wakeup_ms:.1f}ms instead of ~40ms"
+    finally:
+        coord.stop()
+        th.join(timeout=1.0)
+        mgr.shutdown(timeout=0.5)
+        cpm.shutdown(timeout=0.5)
+        ta._kalman_ref = orig_kalman_ref
+
+    # Verify confirm_count calibration under 50ms tick bursts vs 0.8s cadence:
+    clock = [1000.0]
+    ts = ta.TrendState(180.0, 220.0, now_fn=lambda: clock[0], min_confirm_interval_sec=0.8)
+    ts.start_trend("UP")
+    assert ts.confirm_count == 1
+    for step in range(1, 10):
+        clock[0] = 1000.0 + step * 0.05
+        ts.confirm_trend()
+    assert ts.confirm_count == 1
+    assert ts.last_confirmation_time == pytest.approx(1000.45)
+    clock[0] = 1000.85
+    ts.confirm_trend()
+    assert ts.confirm_count == 2
+
+
+def test_multivenue_provider_routing_and_closed_rth_skip(monkeypatch, tmp_path):
+    """TradeAll routes non-Binance venues explicitly via provider_name and skips closed RTH equities."""
+    monkeypatch.setitem(ta.PROVIDER_BY_SYMBOL, "HYPEUSD", "kraken")
+    monkeypatch.setitem(ta.PROVIDER_BY_SYMBOL, "NVDA_US_EQ", "t212")
+    monkeypatch.setattr(ta, "TRADEALL_FIRE_SYMBOLS", {"HYPEUSD", "BTCUSDC"})
+    monkeypatch.setitem(ta.KALMAN_MODES, "HYPEUSD", "off")
+    monkeypatch.setitem(ta.KALMAN_MODES, "BTCUSDC", "off")
+
+    placed_calls = []
+    cancelled_calls = []
+    expired_calls = []
+    monkeypatch.setattr(ta.mkt, "place", lambda *a, **kw: (placed_calls.append((a, kw)) or {"orderId": "K1"}))
+    monkeypatch.setattr(ta.mkt, "cancel_order", lambda *a, **kw: cancelled_calls.append((a, kw)))
+    monkeypatch.setattr(ta.api, "cancel_expired_orders", lambda *a, **kw: expired_calls.append((a, kw)))
+    monkeypatch.setattr(order_retry, "get_accepted_order_ids_for_owner", lambda sym, owner: [])
+    monkeypatch.setattr(order_retry, "resolve_accepted_order", lambda sym, oid: None)
+
+    ids = ta.track_and_place_order("BUY", "HYPEUSD", 1, 40.0, 40.0, order_ids=["OLD1"])
+    assert ids == ["K1"]
+    assert cancelled_calls[0][1].get("provider_name") == "kraken"
+    assert expired_calls[0][1].get("provider_name") == "kraken"
+    assert placed_calls[0][1].get("provider_name") == "kraken"
+
+    # Closed RTH equity symbol skips evaluation cleanly without calling get_price or logging stale warnings.
+    get_price_mock = MagicMock(side_effect=AssertionError("should not fetch price when RTH closed"))
+    coord = ta.TrendCoordinator(
+        symbols=["NVDA_US_EQ"],
+        instant_mgr=SimpleNamespace(),
+        current_price_mgr=SimpleNamespace(get_price=get_price_mock),
+        min_interval=0.05,
+        max_interval=30.0,
+    )
+    monkeypatch.setattr(ta, "is_symbol_market_open", lambda sym: False)
+    assert coord.evaluate("NVDA_US_EQ") is None
+    assert coord._dirty["NVDA_US_EQ"] is False
+    get_price_mock.assert_not_called()

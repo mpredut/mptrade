@@ -10,14 +10,20 @@ from notify_engine import alertnotifiers as alert  # noqa: F401 (re-export: test
 import cacheManager as cm
 from intelligence.internal.state.volatility import get_kalman_state_path
 import order_retry
-from instrument_registry import casefold_get, select_instruments, symbols_for
+from instrument_registry import (
+    casefold_get,
+    is_symbol_market_open,
+    select_instruments,
+    symbols_for,
+    tracked_price_instruments,
+)
 import order_lifecycle
 from providers.base import extract_order_id, normalize_side
-from cachepaths import clean_symbol_key, split_symbol_assets
+from cachepaths import clean_symbol_key, is_primary_stream_venue, split_symbol_assets
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
 api = mkt
 import shadow_signals
-from state_io import append_text_line
+from state_io import append_text_line, read_json_dict_cached
 
 from pricewindow import (  # noqa: F401 (re-export: test compat)
     PriceTrendAnalyzer,
@@ -42,6 +48,8 @@ load_dotenv()
 
 
 TIME_SLEEP_GET_PRICE = PRICE_STREAM_POLL_INTERVAL_SEC  # Nominal price-collection sleep interval in seconds.
+MIN_EVAL_INTERVAL_SEC = required_float_env("TRADEALL_MIN_EVAL_INTERVAL_SEC")
+MAX_EVAL_INTERVAL_SEC = 30.0
 ORDER_EXPIRY_HOURS = required_float_env("TRADEALL_ORDER_EXPIRY_HOURS")
 EXP_TIME_BUY_ORDER = ORDER_EXPIRY_HOURS * 3600  # Configurable order expiration horizon.
 EXP_TIME_SELL_ORDER = EXP_TIME_BUY_ORDER
@@ -110,12 +118,17 @@ def _validate_tradeall_config():
         "FIRE_MIN_RETRY_INTERVAL_SEC": FIRE_MIN_RETRY_INTERVAL_SEC,
         "FIRE_SAFEBACK_SEC": FIRE_SAFEBACK_SEC,
         "ORDER_EXPIRY_HOURS": ORDER_EXPIRY_HOURS,
+        "MIN_EVAL_INTERVAL_SEC": MIN_EVAL_INTERVAL_SEC,
         "SMALL_SLOPE_THRESHOLD": SMALL_SLOPE_THRESHOLD,
         "ACCEL_WINDOW_SEC": ACCEL_WINDOW_SEC,
     }
     for name, value in positive.items():
         if safe_pos_float(value, default=None) is None:
             raise ValueError(f"tradeall config invalid: {name}={value!r}")
+    if MIN_EVAL_INTERVAL_SEC > MAX_EVAL_INTERVAL_SEC:
+        raise ValueError(
+            f"tradeall config invalid: MIN_EVAL_INTERVAL_SEC={MIN_EVAL_INTERVAL_SEC!r} > MAX_EVAL_INTERVAL_SEC={MAX_EVAL_INTERVAL_SEC!r}"
+        )
     nonnegative_counts = {
         "TREND_MIN_VALIDATED_CONFIRMS": TREND_MIN_VALIDATED_CONFIRMS,
         "TREND_CONSISTENT_CONFIRMS": TREND_CONSISTENT_CONFIRMS,
@@ -162,16 +175,28 @@ GATE_OUTCOME_LOG = None                 # Backtests redirect this away from the 
 GATE_STALE_SEC = 300
 
 
-# All per-coin execution choices come from instruments.conf. An enabled Binance
+# All per-instrument execution choices come from instruments.conf across all
+# enabled venues (Binance, Kraken, Hyperliquid, Trading212). An enabled
 # instrument is trend-tracked even when it opts out of TradeAll order attempts.
 # No opted-in symbols means no TradeAll orders; it is not a missing configuration.
+PROVIDER_BY_SYMBOL = {
+    spec.symbol.strip().upper(): spec.provider.strip()
+    for spec in select_instruments(only_enabled=True).values()
+}
 KALMAN_MODES = {
     spec.symbol: spec.setting("tradeall.kalman_mode")
-    for spec in select_instruments("binance", "tradeall_fire").values()
+    for spec in select_instruments(role="tradeall_fire").values()
 }
 TRADEALL_FIRE_SYMBOLS = set(KALMAN_MODES)
-KALMAN_PRIMARY_SYMBOLS = set(symbols_for("binance", "kalman_primary"))
+KALMAN_PRIMARY_SYMBOLS = set(symbols_for(role="kalman_primary"))
 KALMAN_BYPASS_SELL_REASONS = frozenset({"accel_plunge_down", "small_window_plunge_down"})
+
+
+def _provider_kw(symbol) -> dict:
+    prov = casefold_get(PROVIDER_BY_SYMBOL, str(symbol or "").strip().upper())
+    if prov and not is_primary_stream_venue(prov):
+        return {"provider_name": prov}
+    return {}
 
 
 def _resolve_tradeall_symbol(symbol, allowed_set=TRADEALL_FIRE_SYMBOLS, *, preserve_raw=False):
@@ -250,7 +275,14 @@ def _fire_order(symbol, action, price, reason, **kwargs):
         except Exception as _e:  # noqa: BLE001
             print(f"[KALMAN-GATE] journal error ({_e}) — block remains")
         return None
-    return mkt.place(symbol, action, price, None, motivation=reason, **kwargs)
+    return mkt.place(
+        symbol,
+        action,
+        price,
+        None,
+        motivation=reason,
+        **{**_provider_kw(symbol), **kwargs},
+    )
 
 
 _symbol_order_ids = {}
@@ -337,7 +369,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
         failed_cancels = []
         for order_id in to_cancel:
             try:
-                if mkt.cancel_order(symbol, str(order_id)) is False:
+                if mkt.cancel_order(symbol, str(order_id), **_provider_kw(symbol)) is False:
                     failed_cancels.append(order_id)
                     continue
                 try:
@@ -353,7 +385,13 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     # Cancel expired orders on venue
     exp_time = EXP_TIME_BUY_ORDER if action == 'BUY' else EXP_TIME_SELL_ORDER
     try:
-        api.cancel_expired_orders(action, symbol, exp_time, allowed_owners={"tradeall"})
+        api.cancel_expired_orders(
+            action,
+            symbol,
+            exp_time,
+            allowed_owners={"tradeall"},
+            **_provider_kw(symbol),
+        )
     except Exception as _e:
         print(f"[TRADEALL] cancel_expired_orders error for {symbol}: {_e}")
 
@@ -376,7 +414,14 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
 
 
 class TrendState:
-    def __init__(self, expiration_trend_time, fresh_trend_time, now_fn=time.time):
+    def __init__(
+        self,
+        expiration_trend_time,
+        fresh_trend_time,
+        now_fn=time.time,
+        *,
+        min_confirm_interval_sec: float = 0.0,
+    ):
         self.state = 'HOLD'
         self.old_state = self.state
         self.expired = False
@@ -387,6 +432,8 @@ class TrendState:
         self.expiration_trend_time = expiration_trend_time  # Maximum seconds between confirmations.
         self.fresh_trend_time = fresh_trend_time            # Freshness threshold.
         self._now = now_fn   # Real clock by default; replay injects each tick's time (A5).
+        self._min_confirm_interval = safe_nonneg_float(min_confirm_interval_sec, default=0.0) or 0.0
+        self._last_counted_confirm_ts = None
         # Per-trend cooldown: _confirmed_count_{up,down} is a legacy field name
         # counting accepted submissions, not fills. Stop at
         # FIRE_MAX_PER_TREND until a new trend. _last_attempt_* records the last
@@ -407,6 +454,7 @@ class TrendState:
         self.state = new_state
         self.start_time = self._now_sec()
         self.last_confirmation_time = self.start_time
+        self._last_counted_confirm_ts = self.start_time
         self.confirm_count = 1
         self.end_time = None
         self.expired = False
@@ -434,9 +482,18 @@ class TrendState:
 
     def confirm_trend(self):
         assert self.start_time is not None, "Trend must be started before confirming"
-        self.last_confirmation_time = self._now_sec()
-        self.confirm_count += 1
-        print(f"{self.confirm_count} times trend confirmed: {self.state} at {timeToHMS(self.last_confirmation_time)}")
+        now = self._now_sec()
+        self.last_confirmation_time = now
+        last_counted = self._norm_ts(self._last_counted_confirm_ts)
+        if (
+            self._min_confirm_interval <= 0.0
+            or last_counted is None
+            or (now - last_counted) < 0.0
+            or (now - last_counted) >= self._min_confirm_interval
+        ):
+            self.confirm_count += 1
+            self._last_counted_confirm_ts = now
+            print(f"{self.confirm_count} times trend confirmed: {self.state} at {timeToHMS(self.last_confirmation_time)}")
         return self.confirm_count
 
     def get_started_trend_time(self):
@@ -670,7 +727,7 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
 
     if regime_ctx is None:
         try:
-            regime_ctx = mkt.market_regime_context(symbol)
+            regime_ctx = mkt.market_regime_context(symbol, **_provider_kw(symbol))
         except Exception as e:
             print(f"[TRADEALL] Error resolving regime context for {symbol}: {e}")
     if regime_ctx is not None:
@@ -716,9 +773,6 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
 #       - or MAX_EVAL_INTERVAL_SEC has elapsed (heartbeat prevents sparse evaluation)
 # Cached lookup is O(1), and the single-threaded loop prevents reentrant placement.
 # ============================================================================
-
-MIN_EVAL_INTERVAL_SEC = 1.5    # Floor: at most one evaluation per symbol every 1.5 seconds.
-MAX_EVAL_INTERVAL_SEC = 30.0   # Heartbeat ceiling: evaluate at least every 30 seconds.
 
 
 class TrendCoordinator:
@@ -778,9 +832,17 @@ class TrendCoordinator:
                 if c24 is not None:
                     c24.subscribe_price(self)
 
-    @staticmethod
-    def _new_trend_state() -> TrendState:
-        return TrendState(expiration_trend_time=2.7 * 60, fresh_trend_time=3.7 * 60)
+    def _new_trend_state(self) -> TrendState:
+        min_confirm = (
+            TIME_SLEEP_GET_PRICE
+            if getattr(self, "min_interval", TIME_SLEEP_GET_PRICE) < TIME_SLEEP_GET_PRICE
+            else 0.0
+        )
+        return TrendState(
+            expiration_trend_time=2.7 * 60,
+            fresh_trend_time=3.7 * 60,
+            min_confirm_interval_sec=min_confirm,
+        )
 
     def _resolve_symbol(self, symbol: str) -> str:
         if isinstance(symbol, str):
@@ -811,12 +873,34 @@ class TrendCoordinator:
             dirty = self._dirty.get(symbol, False)
         return dirty and elapsed >= self.min_interval   # floor
 
+    def _next_wait_timeout(self, now: float) -> float:
+        wait_sec = self.max_interval
+        with self._lock:
+            dirty_state = [(s, self._dirty.get(s, False)) for s in self.symbols]
+        for sym, is_dirty in dirty_state:
+            elapsed = max(0.0, now - self._last_eval.get(sym, 0.0))
+            rem_hb = max(0.0, self.max_interval - elapsed)
+            if rem_hb < wait_sec:
+                wait_sec = rem_hb
+            if is_dirty:
+                rem_min = max(0.0, self.min_interval - elapsed)
+                if rem_min < wait_sec:
+                    wait_sec = rem_min
+        return wait_sec
+
     def evaluate(self, symbol):
         symbol = self._resolve_symbol(symbol)
         if symbol not in self.trend_states:
             self.trend_states[symbol] = self._new_trend_state()
         if symbol not in self.trend_states_big:
             self.trend_states_big[symbol] = self._new_trend_state()
+        if not is_symbol_market_open(symbol):
+            lock = getattr(self, "_lock", None)
+            if lock is not None:
+                with lock:
+                    self._dirty[symbol] = False
+                    self._last_eval[symbol] = time.time()
+            return None
         get_entry = getattr(self.current_price_mgr, "get_price", None)
         if callable(get_entry):
             entry = get_entry(symbol)
@@ -843,7 +927,7 @@ class TrendCoordinator:
         if current_price is None:
             return None
         try:
-            regime_ctx = mkt.market_regime_context(symbol)
+            regime_ctx = mkt.market_regime_context(symbol, **_provider_kw(symbol))
         except Exception as e:
             print(f"[TrendCoordinator] Error resolving regime context for {symbol}: {e}")
             regime_ctx = None
@@ -863,11 +947,15 @@ class TrendCoordinator:
                 if st_prev:
                     prev_ktrend = st_prev.get("kalman_trend")
                 ssot_vol = None
-                if (
-                    hasattr(self.instant_mgr, "_read_file")
-                    and isinstance(getattr(self.instant_mgr, "filename", None), str)
-                    and os.path.exists(self.instant_mgr.filename)
-                ):
+                inst_fname = getattr(self.instant_mgr, "filename", None)
+                if isinstance(inst_fname, str) and inst_fname and os.path.exists(inst_fname):
+                    try:
+                        disk_st = casefold_get(read_json_dict_cached(inst_fname, default={}), symbol)
+                        if isinstance(disk_st, dict):
+                            ssot_vol = safe_pos_float(disk_st.get("vol_1h_pct"), default=None)
+                    except Exception:
+                        ssot_vol = None
+                elif hasattr(self.instant_mgr, "_read_file"):
                     try:
                         disk_st = casefold_get(self.instant_mgr._read_file(), symbol)
                         if isinstance(disk_st, dict):
@@ -952,29 +1040,39 @@ class TrendCoordinator:
             interval_sec=30.0,
             force=True,
             symbols=list(self.symbols),
-            intervals={"max_interval": self.max_interval},
+            intervals={"min_interval": self.min_interval, "max_interval": self.max_interval},
         )
         while not self._stop.is_set():
-            self._event.wait(timeout=self.max_interval)
             self._event.clear()
             if self._stop.is_set():
                 break
-            touch_module_heartbeat(
-                "tradeall",
-                interval_sec=30.0,
-                symbols=list(self.symbols),
-                intervals={"max_interval": self.max_interval},
-            )
             now = time.time()
             due = [s for s in self.symbols if self._is_due(s, now)]
-            if not due:
+            if due:
+                touch_module_heartbeat(
+                    "tradeall",
+                    interval_sec=30.0,
+                    symbols=list(self.symbols),
+                    intervals={"min_interval": self.min_interval, "max_interval": self.max_interval},
+                )
+                print("----------------------------------")
+                for symbol in due:
+                    if self._stop.is_set():
+                        break
+                    try:
+                        self.evaluate(symbol)
+                    except Exception as e:
+                        print(f"[TrendCoordinator] Error while evaluating {symbol}: {e}")
                 continue
-            print("----------------------------------")
-            for symbol in due:
-                try:
-                    self.evaluate(symbol)
-                except Exception as e:
-                    print(f"[TrendCoordinator] Error while evaluating {symbol}: {e}")
+            wait_timeout = self._next_wait_timeout(time.time())
+            self._event.wait(timeout=wait_timeout)
+            if not self._stop.is_set():
+                touch_module_heartbeat(
+                    "tradeall",
+                    interval_sec=30.0,
+                    symbols=list(self.symbols),
+                    intervals={"min_interval": self.min_interval, "max_interval": self.max_interval},
+                )
 
     def stop(self):
         """Wake and stop the coordinator loop deterministically."""
@@ -983,31 +1081,33 @@ class TrendCoordinator:
 
 
 if __name__ == "__main__":
-    _main_symbols = symbols_for("binance")
-    trades = mkt.get_trades(
-        _main_symbols[0] if _main_symbols else "BTCUSDC",
-        86400.0,
-    )
+    _main_symbols, _, _nb_providers = tracked_price_instruments()
+    _first_sym = _main_symbols[0] if _main_symbols else "BTCUSDC"
+    trades = mkt.get_trades(_first_sym, 86400.0, **_provider_kw(_first_sym))
     print(f" --------- {len(trades)}")
     print(f" my trades of today : {trades}")
 
-    # Price chain: WebSocket market data -> CacheCurrentPriceManager -> Cache24PriceManager -> PriceWindow.
-    # Create CacheCurrentPriceManager before Cache24PriceManager with the correct sync_ts; otherwise
-    # Cache24PriceManager.get_remote_items creates it internally with sync_ts=30.
-    _bn_prov = mkt.provider_by_name("binance")
+    # Price chain: cacheManager AF_UNIX tick stream (with 0.8s HTTP fallback if daemon absent)
+    # -> CacheCurrentPriceManager (live_reader) -> Cache24PriceManager (live_reader) -> PriceWindow.
     current_price_mgr = cm.get_current_price_manager(
-        ws_manager=_bn_prov.get_default_price_ws_manager() if _bn_prov is not None else None,
         symbols=_main_symbols,
         sync_ts=TIME_SLEEP_GET_PRICE,
+        provider_names=_nb_providers or None,
+        data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
     )
+    current_price_mgr.start_local_tick_stream()
     current_price_mgr.periodic_sync(TIME_SLEEP_GET_PRICE, save_state=False)
     cache24_managers = cm.CacheFactory.get(
         "24Price",
         symbols=_main_symbols,
+        data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
     )   # dict {symbol: Cache24PriceManager}
 
-    # Trend manager owns windows, calculations, and the cross-process cache.
-    instant_mgr = cm.get_short_trend_manager(symbols=_main_symbols)
+    # Trend manager owns windows, calculations, and live in-memory state.
+    instant_mgr = cm.get_short_trend_manager(
+        symbols=_main_symbols,
+        data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
+    )
     instant_mgr.start_computation(cache24_managers, current_price_mgr)
 
     coordinator = TrendCoordinator(

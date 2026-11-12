@@ -14,6 +14,7 @@ import time
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 
 CACHE_CURRENT_PRICE_FILENAME = "cache_current_price.json"
+CACHE_CURRENT_PRICE_TICKS_SOCKET_FILENAME = "current_price_ticks.sock"
 CACHE_WATCHER_ALL_PRICE_FILENAME = "cache_watcher_all_price.json"
 CACHE_SHORT_TREND_FILENAME = "cache_short_trend.json"
 CACHE_LONG_TREND_FILENAME = "cache_long_trend.json"
@@ -92,7 +93,12 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "suffixes": (),
     },
     "prices": {
-        "exact": ("cache_current_price.json", "cache_currentprice.json", "cache_watcher_all_price.json"),
+        "exact": (
+            "cache_current_price.json",
+            "cache_currentprice.json",
+            "cache_watcher_all_price.json",
+            "current_price_ticks.sock",
+        ),
         "prefixes": (
             "cache_current_price.", "cache_currentprice.", "cache_watcher_all_price.",
             "cache_24_price_", "cache_24price_", "price_24h_",

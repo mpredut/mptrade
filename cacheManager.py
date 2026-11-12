@@ -642,6 +642,8 @@ if __name__ == "__main__":
             sync_ts=CURRENT_PRICE_SYNC_INTERVAL_SEC,
             data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
         )
+        if _trend_cpm is not None:
+            _trend_cpm.start_tick_fanout_server()
         if _nb_syms and _trend_cpm is not None:
             _nb_poller = _start_nonbinance_trend_poller(
                 _trend_cpm,
@@ -685,6 +687,9 @@ if __name__ == "__main__":
                 sync_ts=CURRENT_PRICE_SYNC_INTERVAL_SEC,
                 data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
             )
+        _cpm_producer = _trend_cpm or CacheFactory._instances.get("CurrentPrice")
+        if _cpm_producer is not None and hasattr(_cpm_producer, "start_tick_fanout_server"):
+            _cpm_producer.start_tick_fanout_server()
         _trend_cache24 = CacheFactory.get(
             "24Price",
             data_sync_mode=CacheManagerInterface.MODE_PRODUCER,

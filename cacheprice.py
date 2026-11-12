@@ -25,6 +25,7 @@ from collections import defaultdict, deque
 import concurrent.futures as _futures
 import math
 import os
+import socket
 import sys
 import threading
 import time
@@ -72,6 +73,7 @@ from cachepaths import (
     CACHE_24_PRICE_PREFIX,
     CACHE_365_PRICE_PREFIX,
     CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_CURRENT_PRICE_TICKS_SOCKET_FILENAME,
     CACHE_SPARSE_PRICE_PREFIX,
     cache_24_price_filename,
     cache_path,
@@ -1062,6 +1064,14 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._update_timestamps: dict = defaultdict(deque)
         self._rth_empty_backoff_ts: dict = {}
         self._first_sleep = True
+        self._tick_ipc_lock = threading.Lock()
+        self._tick_ipc_stop = threading.Event()
+        self._tick_ipc_server = None
+        self._tick_ipc_bound_path: Optional[str] = None
+        self._tick_ipc_clients: list = []
+        self._tick_ipc_thread: Optional[threading.Thread] = None
+        self._tick_sub_sock = None
+        self._tick_sub_thread: Optional[threading.Thread] = None
         self.market_api = market_api or _market_api.api
         self._provider_names = {}
         self.bind_providers(provider_names)
@@ -1169,6 +1179,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 dq.popleft()
         self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
         self._notify_price_subscribers(symbol, ts_val, price_val)
+        if self._tick_ipc_clients:
+            self._broadcast_tick_ipc(symbol, ts_val, price_val)
 
     @staticmethod
     def extract_price_and_ts(items):
@@ -1406,6 +1418,240 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         ):
             self.data_sync_mode = self.MODE_LIVE_READER
         ws_manager.subscribe(self)
+
+    @property
+    def tick_socket_path(self) -> str:
+        return os.path.join(
+            os.path.dirname(os.path.abspath(self.filename)),
+            CACHE_CURRENT_PRICE_TICKS_SOCKET_FILENAME,
+        )
+
+    def _broadcast_tick_ipc(self, symbol: str, ts_ms: int, price: float) -> None:
+        payload = f"{symbol}\t{ts_ms}\t{price}\n".encode("utf-8")
+        dead = []
+        with self._tick_ipc_lock:
+            clients = list(self._tick_ipc_clients)
+        for conn in clients:
+            try:
+                if conn.send(payload) < len(payload):
+                    dead.append(conn)
+            except OSError:
+                dead.append(conn)
+        if dead:
+            with self._tick_ipc_lock:
+                for conn in dead:
+                    if conn in self._tick_ipc_clients:
+                        self._tick_ipc_clients.remove(conn)
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+
+    def start_tick_fanout_server(self, sock_path: Optional[str] = None) -> Optional[str]:
+        """Publish every fresh multi-venue tick over a non-blocking AF_UNIX stream socket."""
+        if not hasattr(socket, "AF_UNIX"):
+            return None
+        target_path = os.path.abspath(sock_path or self.tick_socket_path)
+        if len(target_path.encode("utf-8")) > 104:
+            print(f"[{self.cls_name}] tick socket path too long, skipping bind: {target_path}")
+            return None
+        with self._tick_ipc_lock:
+            if self._tick_ipc_thread is not None and self._tick_ipc_thread.is_alive():
+                return self._tick_ipc_bound_path
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            if os.path.lexists(target_path):
+                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    probe.settimeout(0.05)
+                    probe.connect(target_path)
+                    return None
+                except OSError:
+                    try:
+                        os.unlink(target_path)
+                    except OSError:
+                        return None
+                finally:
+                    try:
+                        probe.close()
+                    except OSError:
+                        pass
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                srv.bind(target_path)
+                os.chmod(target_path, 0o600)
+                srv.listen(8)
+                srv.settimeout(0.25)
+            except OSError as exc:
+                try:
+                    srv.close()
+                except OSError:
+                    pass
+                print(f"[{self.cls_name}] cannot bind tick socket {target_path}: {exc}")
+                return None
+            self._tick_ipc_stop.clear()
+            self._tick_ipc_server = srv
+            self._tick_ipc_bound_path = target_path
+
+            def _accept_loop() -> None:
+                while not self._stop_event.is_set() and not self._tick_ipc_stop.is_set():
+                    try:
+                        conn, _ = srv.accept()
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        break
+                    try:
+                        conn.setblocking(False)
+                        now_ms = math.trunc(_now_time() * 1000)
+                        with self.lock:
+                            warm = [
+                                (sym_k, ts_v, px_v)
+                                for sym_k, entries in self.cache.items()
+                                for px_v, ts_v in (self.extract_price_and_ts(entries),)
+                                if px_v is not None
+                                and ts_v is not None
+                                and -5_000 <= (now_ms - ts_v) <= self.STALE_THRESHOLD_MS
+                            ]
+                        if warm:
+                            conn.send("".join(f"{s}\t{t}\t{p}\n" for s, t, p in warm).encode("utf-8"))
+                        with self._tick_ipc_lock:
+                            self._tick_ipc_clients.append(conn)
+                    except OSError:
+                        try:
+                            conn.close()
+                        except OSError:
+                            pass
+
+            th = threading.Thread(target=_accept_loop, name="PriceTickFanout", daemon=True)
+            th.start()
+            self._tick_ipc_thread = th
+            return target_path
+
+    def start_local_tick_stream(
+        self, sock_path: Optional[str] = None
+    ) -> Optional[threading.Thread]:
+        """Subscribe in live_reader mode to the local producer AF_UNIX tick stream."""
+        if not hasattr(socket, "AF_UNIX"):
+            return None
+        target_path = os.path.abspath(sock_path or self.tick_socket_path)
+        if not self.save_state and getattr(self, "data_sync_mode", None) == self.MODE_DISK_READER:
+            self.data_sync_mode = self.MODE_LIVE_READER
+        with self._tick_ipc_lock:
+            if self._tick_sub_thread is not None and self._tick_sub_thread.is_alive():
+                return self._tick_sub_thread
+            self._tick_ipc_stop.clear()
+
+            def _read_loop() -> None:
+                while not self._stop_event.is_set() and not self._tick_ipc_stop.is_set():
+                    sock = None
+                    try:
+                        if not os.path.exists(target_path):
+                            self._tick_ipc_stop.wait(0.2)
+                            continue
+                        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                        sock.settimeout(0.5)
+                        sock.connect(target_path)
+                        with self._tick_ipc_lock:
+                            self._tick_sub_sock = sock
+                        buf = b""
+                        while not self._stop_event.is_set() and not self._tick_ipc_stop.is_set():
+                            try:
+                                chunk = sock.recv(4096)
+                            except socket.timeout:
+                                continue
+                            if not chunk:
+                                break
+                            buf += chunk
+                            if len(buf) > 65536:
+                                buf = b""
+                                break
+                            while b"\n" in buf:
+                                raw_line, buf = buf.split(b"\n", 1)
+                                parts = raw_line.decode("utf-8", errors="ignore").split("\t")
+                                if len(parts) != 3:
+                                    continue
+                                sym_raw, ts_s, px_s = parts
+                                sym_u = sym_raw.strip().upper()
+                                if not sym_u:
+                                    continue
+                                configured = self.symbols
+                                canon_sym = (
+                                    next(
+                                        (s for s in configured if str(s).strip().upper() == sym_u),
+                                        None,
+                                    )
+                                    if configured
+                                    else sym_raw.strip()
+                                )
+                                if not canon_sym:
+                                    continue
+                                ts_i = safe_pos_int(ts_s, default=None)
+                                px_f = safe_pos_float(px_s, default=None)
+                                if (
+                                    ts_i is not None
+                                    and px_f is not None
+                                    and (_now_time() * 1000.0 - ts_i) <= self.STALE_THRESHOLD_MS
+                                ):
+                                    self.on_items_update(canon_sym, [[ts_i, px_f]])
+                    except OSError:
+                        pass
+                    finally:
+                        with self._tick_ipc_lock:
+                            if self._tick_sub_sock is sock:
+                                self._tick_sub_sock = None
+                        if sock is not None:
+                            try:
+                                sock.close()
+                            except OSError:
+                                pass
+                    if not self._stop_event.is_set() and not self._tick_ipc_stop.is_set():
+                        self._tick_ipc_stop.wait(0.2)
+
+            th = threading.Thread(target=_read_loop, name="PriceTickSubscriber", daemon=True)
+            th.start()
+            self._tick_sub_thread = th
+            return th
+
+    def request_stop(self) -> None:
+        super().request_stop()
+        self._tick_ipc_stop.set()
+        with self._tick_ipc_lock:
+            srv = self._tick_ipc_server
+            sub_sock = self._tick_sub_sock
+            clients = list(self._tick_ipc_clients)
+            self._tick_ipc_clients.clear()
+        for sock_obj in (srv, sub_sock, *clients):
+            if sock_obj is not None:
+                try:
+                    sock_obj.close()
+                except OSError:
+                    pass
+
+    def shutdown(self, timeout=5.0):
+        eff_timeout = safe_nonneg_float(timeout, default=5.0)
+        deadline = _monotonic_time() + eff_timeout
+        self.request_stop()
+        stopped = super().shutdown(timeout=max(0.0, deadline - _monotonic_time()))
+        for attr in ("_tick_ipc_thread", "_tick_sub_thread"):
+            th = getattr(self, attr, None)
+            if th is not None and th is not threading.current_thread():
+                th.join(timeout=max(0.0, deadline - _monotonic_time()))
+            if th is None or not th.is_alive():
+                setattr(self, attr, None)
+            else:
+                stopped = False
+        with self._tick_ipc_lock:
+            bound_path = self._tick_ipc_bound_path
+            self._tick_ipc_bound_path = None
+            self._tick_ipc_server = None
+            self._tick_sub_sock = None
+        if bound_path:
+            try:
+                if os.path.lexists(bound_path):
+                    os.unlink(bound_path)
+            except OSError:
+                pass
+        return stopped
 
     @classmethod
     def read_ssot_current_price_candidates(
