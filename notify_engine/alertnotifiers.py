@@ -397,7 +397,7 @@ def _normalize_channel_state(state: dict, channel: str, now_ts: float) -> dict:
 
 
 def _is_ntfy_channel_blocked(channel: str, channel_state: dict, now_ts: float) -> bool:
-    if channel != "ntfy" or not channel_state.get("blocked"):
+    if channel != "ntfy" or not _parse_bool_flag(channel_state.get("blocked"), default=False):
         return False
     blocked_until = safe_float(channel_state.get("blocked_until", 0.0), 0.0)
     if blocked_until > 0 and now_ts >= blocked_until:

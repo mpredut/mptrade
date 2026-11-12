@@ -29,6 +29,7 @@ from strategies.replay_execution import (
     ExecutionModel,
     FeeModel,
     choose_intrabar_scenario,
+    is_market_order,
     require_optional_pos_float,
     select_eligible_intrabar_orders,
     split_order_fill,
@@ -313,7 +314,7 @@ def _run_once(
             if cash is None:
                 return client._default_balance
             reserved = sum(
-                o["vol"] * o["price"] * (1 + fee_model.rate_pct(market=bool(o.get("market"))) / 100)
+                o["vol"] * o["price"] * (1 + fee_model.rate_pct(market=is_market_order(o)) / 100)
                 for o in strategy.s["orders"]
                 if normalize_side(o.get("side")) == "BUY"
             )
@@ -435,7 +436,7 @@ def _run_once(
                         for order in eligible_orders:
                             if order not in strategy.s["orders"] or order["side"] != side:
                                 continue
-                            market = bool(order.get("market"))
+                            market = is_market_order(order)
                             fill_order, volume, complete = split_order_fill(
                                 order,
                                 quantity_key="vol",
@@ -491,7 +492,7 @@ def _run_once(
 
                 if check_ttl and strategy.s["orders"]:
                     for order in list(strategy.s["orders"]):
-                        if order["side"] == "buy" and not order.get("market") and close > order["price"] * 1.003:
+                        if order["side"] == "buy" and not is_market_order(order) and close > order["price"] * 1.003:
                             strategy._remove(order)
             strategy.step(close, timestamp=replay_time, high=high if intrabar_high else None)
             eq_val, exp_val = _current_equity_and_exposure(close)
@@ -501,7 +502,7 @@ def _run_once(
         last_close = require_pos_float(ohlc[-1][3], "last_close")
         settled_end_exit = False
         for order in list(strategy.s["orders"]):
-            if order.get("market") and order["side"] == "sell" and strategy.s["qty"] > 1e-12:
+            if is_market_order(order) and order["side"] == "sell" and strategy.s["qty"] > 1e-12:
                 volume = min(require_pos_float(order["vol"], "order_vol"), strategy.s["qty"])
                 price = execution.market_price("sell", last_close)
                 _settle_order_fill(

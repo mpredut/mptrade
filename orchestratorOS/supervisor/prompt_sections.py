@@ -15,7 +15,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import safe_float
+from botcore import _parse_bool_flag, safe_float
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -1608,10 +1608,10 @@ def _format_portfolio_section(
                     filt_d: Dict[str, Any] = {}
                     for sk, sv in ag_d.items():
                         if isinstance(sv, dict):
-                            if not sv.get("active") and (
+                            if not _parse_bool_flag(sv.get("active"), False) and (
                                 sv.get("pending") is False
                                 or (
-                                    not sv.get("pending")
+                                    not _parse_bool_flag(sv.get("pending"), False)
                                     and not sv.get("open_orders")
                                     and (not sv or any(k in sv for k in (*_ag_hist_keys, "open_orders")))
                                 )

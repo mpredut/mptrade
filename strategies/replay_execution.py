@@ -9,7 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from botcore import _parse_bool_flag, require_finite_float, require_pos_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    is_market_order,
+    require_finite_float,
+    require_pos_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from providers.base import normalize_side
 from providers.order_ohlc_utils import validate_ohlc_bars
 
@@ -140,8 +147,7 @@ def select_eligible_intrabar_orders(
         side_norm = normalize_side(side_raw)
         if side_norm not in {"BUY", "SELL"}:
             raise ValueError(f"side invalid: {side_raw!r}")
-        is_mkt = _parse_bool_flag(o.get("market"), default=False)
-        if is_mkt or execution.limit_touched(side_norm, high=high_f, low=low_f, limit=o.get(limit_key)):
+        if is_market_order(o) or execution.limit_touched(side_norm, high=high_f, low=low_f, limit=o.get(limit_key)):
             eligible.append(o)
     sides = {normalize_side(o.get("side")) for o in eligible}
     ambiguous = len(eligible) > 1 and {"BUY", "SELL"}.issubset(sides)
@@ -220,6 +226,7 @@ __all__ = [
     "ExecutionModel",
     "FeeModel",
     "choose_intrabar_scenario",
+    "is_market_order",
     "require_optional_pos_float",
     "select_eligible_intrabar_orders",
     "split_order_fill",

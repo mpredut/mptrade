@@ -235,13 +235,20 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
 
     monitor_pattern = "monitortrades.py"
     monitor_configured = monitor_pattern in patterns
-    trade_enabled = _parse_bool_flag(
-        trade_settings.get("trade_enabled")
-        or trade_settings.get("TRADE_ENABLED")
-        or root_env.get("TRADE_ENABLED")
-        or root_env.get("trade_enabled")
-        or "true"
+    raw_trade_enabled = next(
+        (
+            v
+            for v in (
+                trade_settings.get("trade_enabled"),
+                trade_settings.get("TRADE_ENABLED"),
+                root_env.get("TRADE_ENABLED"),
+                root_env.get("trade_enabled"),
+            )
+            if _parse_bool_flag(v, None) is not None
+        ),
+        True,
     )
+    trade_enabled = bool(_parse_bool_flag(raw_trade_enabled, True))
     instruments_path = root / "instruments.conf"
     if instruments_path.exists():
         parser = load_ini_config(instruments_path, must_exist=False, inline_comments=True)

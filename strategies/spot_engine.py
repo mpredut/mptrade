@@ -17,7 +17,7 @@ from typing import Callable
 
 from notify_engine.alertnotifiers import bind_notify
 from botcore import (
-    _parse_bool_flag, extract_timestamp_s, format_price_log, log, defined_env, normalize_epoch_sec,
+    _parse_bool_flag, extract_timestamp_s, format_price_log, is_market_order, log, defined_env, normalize_epoch_sec,
     require_finite_float, require_int,
     required_float_env, required_int_env, required_bool_env,
     safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
@@ -666,7 +666,7 @@ class Strategy(BaseSpotMixin):
             return True
         selected = [
             o for o in list(orders)
-            if (side is None or o["side"] == side) and not (exclude_market and o.get("market"))
+            if (side is None or o["side"] == side) and not (exclude_market and is_market_order(o))
         ]
         ok = True
         for o in selected:
@@ -677,7 +677,7 @@ class Strategy(BaseSpotMixin):
         age = (self._now() - (safe_nonneg_float(o.get("ts")) or 0.0)) / 60
         if (
             o.get("side") == "buy"
-            and not o.get("cancel_requested")
+            and not _parse_bool_flag(o.get("cancel_requested"), False)
             and age > self.p.order_ttl_min
             and price > o["price"] * 1.003
         ):
@@ -685,7 +685,7 @@ class Strategy(BaseSpotMixin):
             self._cancel_order(o)
 
     def _has_pending_market_exit(self) -> bool:
-        return any(o["side"] == "sell" and o.get("market") for o in self.s["orders"])
+        return any(o["side"] == "sell" and is_market_order(o) for o in self.s["orders"])
 
     def _request_market_exit(self, price: float, kind: str, *, soft_floor: bool = False,
                              min_profit_pct: float | None = None) -> bool:
@@ -767,11 +767,11 @@ class Strategy(BaseSpotMixin):
                     elif result.outcome in {"absent", "retryable"}:
                         log("  [STRAT] intent absence confirmed -- the strategy may re-evaluate it")
         if not self.s.get("pending_exit"):
-            exit_order = next((o for o in self.s["orders"] if o["side"] == "sell" and o.get("market")), None)
+            exit_order = next((o for o in self.s["orders"] if o["side"] == "sell" and is_market_order(o)), None)
             if exit_order:
                 self.s["pending_exit"] = {
                     "kind": exit_order.get("kind") or "TP",
-                    "soft_floor": (self.s.get("trail_peak") is not None and not self.s.get("trend_mode")),
+                    "soft_floor": (self.s.get("trail_peak") is not None and not self._state_flag("trend_mode")),
                 }
                 self._save()
         for side in ("buy", "sell"):
@@ -779,7 +779,7 @@ class Strategy(BaseSpotMixin):
                 if o not in self.s["orders"]:
                     continue
                 if self.dry_run:
-                    if o.get("market"):
+                    if is_market_order(o):
                         fill_price = price
                     elif (side == "buy" and price <= o["price"]) or (side == "sell" and price >= o["price"]):
                         fill_price = o["price"]
@@ -1205,7 +1205,7 @@ class Strategy(BaseSpotMixin):
             surge_peak = max(safe_pos_float(self.s.get("surge_peak"), price), price)
             self.s["surge_peak"] = surge_peak
             peak_gain = (surge_peak - avg) / avg * 100.0
-            is_armed = bool(self.s.get("surge_active"))
+            is_armed = self._state_flag("surge_active")
             min_g = (
                 min(self.p.surge_min_gain_pct, self.p.surge_max_gain_pct, self.p.surge_gain_pct)
                 if self.p.surge_dynamic else self.p.surge_gain_pct

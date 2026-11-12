@@ -2283,6 +2283,23 @@ def extract_order_qty(order: object, default: float = 0.0) -> float:
     return _first_mapped(order, _QTY_KEYS, _pos_abs_float, default)
 
 
+def is_market_order(order: object) -> bool:
+    """Return whether ``order`` represents a market order (safe against string flags like ``'false'``)."""
+    if not isinstance(order, Mapping):
+        return False
+    if "market" in order and order.get("market") is not None:
+        return bool(_parse_bool_flag(order.get("market"), False))
+    descr = order.get("descr")
+    for raw_ot in (
+        order.get("ordertype"),
+        order.get("type"),
+        descr.get("ordertype") if isinstance(descr, Mapping) else None,
+    ):
+        if isinstance(raw_ot, str) and raw_ot.strip().upper() == "MARKET":
+            return True
+    return False
+
+
 def clamp_price_to_bbo_mid(
     price: float | None,
     bid: object,

@@ -28,6 +28,7 @@ import botcore
 from botcore import (
     clean_scale,
     coerce_dict_maps,
+    is_market_order,
     load_cli_env_stack,
     parse_ratio_or_pct,
     resolve_cli_env_path,
@@ -121,6 +122,7 @@ from offline.research.monitortrades_backtest.sweep_mt_models import (
 from offline.runners import apply_proposals
 from orchestratorOS.agy import paths as agy_paths, ui_mirror as agy_ui_mirror
 from orchestratorOS.livecheck import os_resources_watchdog as wd
+from orchestratorOS.supervisor import prompt_sections as ps_mod
 import order_guard
 from order_lifecycle import TrackedOrderLifecycle
 import order_retry
@@ -166,8 +168,11 @@ from state_io import (
     read_tail_complete_lines_text,
     read_text_file,
 )
+from strategies import spot_engine as spot_eng_mod
 from strategies.base_spot_mixin import BaseSpotMixin, parse_tp_ladder_env
+from strategies.replay_execution import ExecutionModel, select_eligible_intrabar_orders
 from strategies.replay_metrics import (
+    calculate_performance_metrics,
     print_ascii_table_header,
     print_single_backtest_report,
     run_cli_single_or_sweep_backtest,
@@ -189,7 +194,7 @@ from tests.conftest import (
 import tradeall
 from trailing_core import TrailingAdapterBase
 import utils
-from verify_tools import monitor_night, portfolio_snapshot
+from verify_tools import monitor_night, ownership_inventory, portfolio_snapshot
 import visuals.tradeall_observe as tobs
 
 
@@ -2925,3 +2930,121 @@ def test_wave18_sentiment_eval_loader_execution_gate_market_flag_and_duplicate_d
             mod_tree = ast.parse(read_text_file(str(fpath)), filename=rel)
             _scan_scope(mod_tree.body, "", rel)
     assert dup_defs == []
+
+
+def test_wave19_is_market_order_state_flag_replay_ownership_and_ntfy_border_cases(tmp_path):
+    """Verify Wave 19 border cases: is_market_order SSOT predicate, BaseSpotMixin._state_flag on string/dict slots, T212 pending_submit market limit=None sanitization, calculate_performance_metrics None error message, ntfy blocked string flag, ownership_inventory trade_enabled fallback, and prompt_sections inactive assetguardian filtering."""
+
+    # 1. botcore.is_market_order & select_eligible_intrabar_orders reject string "false"/"0" market flags
+    assert is_market_order({"market": "false"}) is False
+    assert is_market_order({"market": "0"}) is False
+    assert is_market_order({"market": "true"}) is True
+    assert is_market_order({"ordertype": "market"}) is True
+    assert is_market_order({"descr": {"ordertype": "MARKET"}}) is True
+    assert is_market_order({"market": "false", "ordertype": "market"}) is False
+    assert is_market_order("not-a-mapping") is False
+
+    elig, ambig = select_eligible_intrabar_orders(
+        [{"side": "SELL", "limit": 200.0, "market": "false"}],
+        ExecutionModel(),
+        high=150.0,
+        low=140.0,
+        limit_key="limit",
+    )
+    assert elig == [] and ambig is False
+
+    # 2. BaseSpotMixin._state_flag, spot_engine._has_pending_market_exit, and T212 Strategy state/pending_submit border cases
+    mixin_obj = BaseSpotMixin()
+    mixin_obj.s = {
+        "sl_pending": "false",
+        "sl_alerted": "1",
+        "sl_pending_exit": {"reason": "mhdsl_exit"},
+        "empty_exit": {},
+    }
+    assert mixin_obj._state_flag("sl_pending") is False
+    assert mixin_obj._state_flag("sl_alerted") is True
+    assert mixin_obj._state_flag("sl_pending_exit") is True
+    assert mixin_obj._state_flag("empty_exit") is False
+    assert mixin_obj._state_flag("missing_key", True) is True
+
+    spot_stub = spot_eng_mod.Strategy.__new__(spot_eng_mod.Strategy)
+    spot_stub.s = {"orders": [{"side": "sell", "market": "false"}]}
+    assert spot_stub._has_pending_market_exit() is False
+    spot_stub.s["orders"].append({"side": "sell", "market": "true"})
+    assert spot_stub._has_pending_market_exit() is True
+
+    t212_strat_mod = load_venue_modules("212trading", "strategy")
+    sanitized_mkt = t212_strat_mod._sanitize_t212_state(
+        {
+            "pending_submit": {
+                "side": "SELL",
+                "qty": 1.5,
+                "limit": None,
+                "market": "true",
+                "intent_id": "mkt-1",
+            }
+        }
+    )
+    assert sanitized_mkt["pending_submit"] is not None
+    assert sanitized_mkt["pending_submit"]["market"] is True
+    assert sanitized_mkt["pending_submit"]["limit"] == 0.0
+
+    sanitized_lim_bad = t212_strat_mod._sanitize_t212_state(
+        {
+            "pending_submit": {
+                "side": "SELL",
+                "qty": 1.5,
+                "limit": None,
+                "market": "false",
+                "intent_id": "lim-1",
+            }
+        }
+    )
+    assert sanitized_lim_bad["pending_submit"] is None
+
+    t212_dust = t212_strat_mod.Strategy.__new__(t212_strat_mod.Strategy)
+    t212_dust.p = SimpleNamespace(tp_ladder=[(3.0, 0.5), (6.0, 0.5)])
+    t212_dust.s = {"tp_sold_levels": [3.0], "sl_pending": "false", "sl_pending_exit": "false"}
+    assert t212_dust._can_close_dust_cycle() is False
+    t212_dust.s["sl_pending_exit"] = {"reason": "mhdsl"}
+    assert t212_dust._can_close_dust_cycle() is True
+
+    # 3. calculate_performance_metrics distinguishes None (non-finite) from bool
+    with pytest.raises(ValueError, match="equity_curve must contain finite numbers"):
+        calculate_performance_metrics([100.0, None], initial_capital=100.0)  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="equity_curve cannot contain booleans"):
+        calculate_performance_metrics([100.0, True], initial_capital=100.0)
+
+    # 4. alertnotifiers ntfy blocked string flag, ownership_inventory trade_enabled fallback, and prompt_sections inactive assetguardian filtering
+    assert alert_mod._is_ntfy_channel_blocked("ntfy", {"blocked": "false", "blocked_until": 9e9}, 1_700_000_000.0) is False
+    assert alert_mod._is_ntfy_channel_blocked("ntfy", {"blocked": "true", "blocked_until": 9e9}, 1_700_000_000.0) is True
+
+    inv_root = tmp_path / "inv_ws"
+    (inv_root / "orchestratorOS").mkdir(parents=True)
+    atomic_write_text(str(inv_root / "orchestratorOS" / "procs.manifest"), "bot|monitortrades.py|python3 monitortrades.py\n")
+    atomic_write_text(str(inv_root / "config.txt"), "trade_enabled=\n")
+    atomic_write_text(str(inv_root / "config.env"), "TRADE_ENABLED=false\n")
+    atomic_write_text(
+        str(inv_root / "instruments.conf"),
+        "[BTCUSDC]\nprovider = binance\nsymbol = BTCUSDC\nenabled = true\nrole.mt = true\n",
+    )
+    owners = ownership_inventory.build_inventory(inv_root, commands=[])
+    mt_owners = [o for o in owners if o.owner_id == "monitortrades:BTCUSDC"]
+    assert len(mt_owners) == 1 and mt_owners[0].live_enabled is False
+
+    pf_lines = ps_mod._format_portfolio_section(
+        {
+            "assetguardian_state": {
+                "BTCUSDC": {
+                    "dip_tier_1": {
+                        "active": "false",
+                        "pending": "false",
+                        "open_orders": [],
+                    }
+                }
+            }
+        },
+        include_macro_benchmarks=False,
+    )
+    assert all("Active AssetGuardian State" not in ln for ln in pf_lines)
+

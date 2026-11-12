@@ -628,6 +628,13 @@ class BaseSpotMixin:
         return not self._state_write_failed
 
     # -- Position, Fill Accounting & Order Helpers -----------------------------
+    def _state_flag(self, key: str, default: bool = False) -> bool:
+        """Read a boolean or nullable-dict state slot from ``self.s`` safely (treating ``'false'``/``'0'`` as False)."""
+        raw = self.s.get(key) if isinstance(getattr(self, "s", None), dict) else None
+        if isinstance(raw, dict):
+            return bool(raw)
+        return default if raw is None else bool(_parse_bool_flag(raw, default))
+
     def _avg(self) -> float | None:
         qty = safe_pos_float(self.s.get("qty"), None)
         cost = safe_pos_float(self.s.get(self._cost_state_key), None)
@@ -697,7 +704,7 @@ class BaseSpotMixin:
             self._remove(o)
             self._log_msg(f"  [STRAT] {log_prefix} {o.get('side', '?')} {o[id_key]}")
             return True
-        if o.get("cancel_requested"):
+        if _parse_bool_flag(o.get("cancel_requested"), False):
             return True
         try:
             cancel_fn(o)

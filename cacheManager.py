@@ -650,7 +650,7 @@ if __name__ == "__main__":
         print(f"[cacheManager] Warning pre-attaching price WS: {_ws_init_err}")
 
     for name, config in CacheFactory._CONFIG.items():
-        if config.get("read_only"):
+        if _parse_bool_flag(config.get("read_only"), default=False):
             continue
         if name == "365Price":
             _arch_syms = tracked_price_instruments(role="archive")[0]

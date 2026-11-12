@@ -38,6 +38,7 @@ from providers.replay_provider import SimClock
 from strategies.replay_execution import (
     ExecutionModel,
     choose_intrabar_scenario,
+    is_market_order,
     require_optional_pos_float,
     select_eligible_intrabar_orders,
     split_order_fill,
@@ -312,7 +313,7 @@ def _run_once(
                         for order in eligible_orders:
                             if order not in engine.s["orders"] or order["side"].lower() != side:
                                 continue
-                            market = bool(_parse_bool_flag(order.get("market"), False))
+                            market = is_market_order(order)
                             cand_price = (
                                 execution.market_price(side, open_)
                                 if market
@@ -389,7 +390,7 @@ def _run_once(
         last_close = require_pos_float(ohlc[-1][3], "last_close")
         settled_end_exit = False
         for order in list(engine.s["orders"]):
-            if order.get("market") and str(order.get("side") or "").lower() == "sell" and engine.s["qty"] > 1e-9:
+            if is_market_order(order) and str(order.get("side") or "").lower() == "sell" and engine.s["qty"] > 1e-9:
                 held_before = engine.s["qty"]
                 quantity = min(require_pos_float(order["qty"], "order_qty"), held_before)
                 if quantity <= 1e-12:

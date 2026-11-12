@@ -44,7 +44,7 @@ def _coerce_finite_number_list(
         )
     out: list[float] = []
     for value in values:
-        if isinstance(value, bool) or value is None:
+        if isinstance(value, bool):
             raise ValueError(f"{name} cannot contain booleans")
         fval = safe_float(value, default=None)
         if fval is None:
