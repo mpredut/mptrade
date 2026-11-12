@@ -371,8 +371,7 @@ class KrakenProvider(MarketDataProvider):
         try:
             return self._client().last_price(symbol)
         except Exception as e:  # noqa: BLE001
-            print(f"[Kraken] price {symbol}: {e}")
-            return None
+            return self._log_provider_balance_error("Kraken", "price", symbol, e)
 
     def min_order_qty(self, symbol: str) -> float:
         """Return public pair minimum volume, caching only a positive result.
@@ -424,8 +423,7 @@ class KrakenProvider(MarketDataProvider):
             )
             return out or None
         except Exception as e:  # noqa: BLE001
-            print(f"[Kraken] history {symbol}: {e}")
-            return None
+            return self._log_provider_balance_error("Kraken", "history", symbol, e)
 
     # -- Credentialed account access. -----------------------------------------
     _USD_EQUIVALENT_BUCKETS = (

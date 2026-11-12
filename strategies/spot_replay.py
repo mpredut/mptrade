@@ -76,6 +76,18 @@ def overwrite_tail_equity_and_exposure(
         exposure[-1] = exp_val
 
 
+def iter_end_of_replay_market_sell_orders(
+    orders: list[dict], open_qty: float, *, qty_eps: float = 1e-12
+) -> list[dict]:
+    """Return pending market SELL orders eligible for end-of-replay settlement when open_qty > qty_eps."""
+    if open_qty <= qty_eps:
+        return []
+    return [
+        o for o in list(orders)
+        if is_market_order(o) and str(o.get("side") or "").lower() == "sell"
+    ]
+
+
 def build_replay_summary(
     *,
     realized: float,
@@ -526,14 +538,20 @@ def _run_once(
 
         last_close = require_pos_float(ohlc[-1][3], "last_close")
         settled_end_exit = False
-        for order in list(strategy.s["orders"]):
-            if is_market_order(order) and order["side"] == "sell" and strategy.s["qty"] > 1e-12:
-                volume = min(require_pos_float(order["vol"], "order_vol"), strategy.s["qty"])
-                price = execution.market_price("sell", last_close)
-                _settle_order_fill(
-                    order, order, "sell", volume, price, market=True, final=True
-                )
-                settled_end_exit = True
+        for order in iter_end_of_replay_market_sell_orders(strategy.s["orders"], strategy.s["qty"]):
+            if strategy.s["qty"] <= 1e-12:
+                break
+            volume = min(require_pos_float(order["vol"], "order_vol"), strategy.s["qty"])
+            _settle_order_fill(
+                order,
+                order,
+                "sell",
+                volume,
+                execution.market_price("sell", last_close),
+                market=True,
+                final=True,
+            )
+            settled_end_exit = True
         if settled_end_exit:
             eq_val, exp_val = _current_equity_and_exposure(last_close)
             overwrite_tail_equity_and_exposure(equity_curve, exposure, eq_val, exp_val)

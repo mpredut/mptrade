@@ -321,8 +321,9 @@ class HyperliquidProvider(MarketDataProvider):
         try:
             return c.spot_mid(pair)
         except Exception as e:  # noqa: BLE001
-            print(f"[HL] get_current_price({symbol}) failed: {e}")
-            return None
+            return self._log_provider_balance_error(
+                "HL", "get_current_price", symbol, e, fmt="[{tag}] {label}({asset}) failed: {exc}"
+            )
 
     def spot_balances_and_mid(self, coin: str = "HYPE", quote: str = "USDC") -> dict:
         """Return read-only spot balances and mid price for ``coin``/``quote`` without polluting sys.modules."""
@@ -375,8 +376,9 @@ class HyperliquidProvider(MarketDataProvider):
                 lambda k: k.get("c") if isinstance(k, dict) else None,
             )
         except Exception as e:  # noqa: BLE001
-            print(f"[HL] get_price_history({symbol}) failed: {e}")
-            return None
+            return self._log_provider_balance_error(
+                "HL", "get_price_history", symbol, e, fmt="[{tag}] {label}({asset}) failed: {exc}"
+            )
 
     # -- Read-only spot account access. ----------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:

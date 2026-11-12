@@ -1006,12 +1006,15 @@ class CacheTradeManager(CacheAccountManagerBase):
     def _migrate_legacy_json_if_needed(self):
         """Migrate legacy ``.json`` Trade cache under the generation lock."""
         with self._generation_lock():
-            return self._migrate_legacy_json_with_compactor(
-                self._compact_account_trade_jsonl_generation_locked,
-                post_compact_fn=self._verify_migrated_trade_snapshot_locked,
-                skip_if_read_only=False,
-                read_json_fn=read_json_dict,
-            )
+            return self._migrate_legacy_json_generation_locked()
+
+    def _migrate_legacy_json_generation_locked(self):
+        return self._migrate_legacy_json_with_compactor(
+            self._compact_account_trade_jsonl_generation_locked,
+            post_compact_fn=self._verify_migrated_trade_snapshot_locked,
+            skip_if_read_only=False,
+            read_json_fn=read_json_dict,
+        )
 
     def _save_jsonl_append(self):
         """Commit Trade data and its manifest under the generation lock."""
@@ -1049,11 +1052,10 @@ class CacheTradeManager(CacheAccountManagerBase):
                 )
                 identity_matches = durable_identity == manager_identity
             if not identity_matches:
-                builtins.print(
-                    f"[{self.cls_name}][resync] durable Trade generation "
-                    "differs from this manager; refusing stale append"
+                return self._log_tagged_false(
+                    "resync",
+                    "durable Trade generation differs from this manager; refusing stale append",
                 )
-                return False
             if self._is_file_newer_than_memory_locked():
                 return False
             return self._save_account_trade_append_generation_locked()
@@ -1415,11 +1417,10 @@ class CacheTradeManager(CacheAccountManagerBase):
                         self._account_cache_dirty = original_dirty
                         self._legacy_jsonl_needs_rewrite = original_needs_rewrite
                         discard_generation_file(archive)
-                        builtins.print(
-                            f"[{self.cls_name}][maintain] Trade rotation "
-                            "aborted because generation publication failed"
+                        return self._log_tagged_false(
+                            "maintain",
+                            "Trade rotation aborted because generation publication failed",
                         )
-                        return False
                     published = True
             return self._finalize_rotation(archive)
         except Exception as exc:
@@ -1430,8 +1431,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     self._legacy_jsonl_needs_rewrite = original_needs_rewrite
             if not published and archive is not None:
                 discard_generation_file(archive)
-            builtins.print(f"[{self.cls_name}][maintain] Trade rotation failed: {exc}")
-            return False
+            return self._log_tagged_false("maintain", f"Trade rotation failed: {exc}")
 
     def _persist_periodic_state(self, sync_complete):
         """Persist one cycle without reversing the Trade generation lock order."""
@@ -1681,11 +1681,7 @@ class CacheOrderManager(CacheAccountManagerBase):
         with self._generation_lock():
             loaded = self._load_order_state_generation_locked()
         if not loaded and not self.read_only:
-            print(
-                f"[{self.cls_name}][Info] File is missing, may be is it first time run. Creating it ...."
-            )
-            self.query_remote_and_update_cache()
-            self.save_state_to_file_if_enabled()
+            self._log_missing_and_seed_remote()
 
     def _load_order_state_generation_locked(self):
         meta_path = meta_file_path(self.filename)
@@ -1750,11 +1746,10 @@ class CacheOrderManager(CacheAccountManagerBase):
                     and self._persisted_data_version
                     and previous_metadata["data_version"] != self._persisted_data_version
                 ):
-                    builtins.print(
-                        f"[{self.cls_name}][resync] durable Order generation "
-                        "differs from this manager; refusing stale overwrite"
+                    return self._log_tagged_false(
+                        "resync",
+                        "durable Order generation differs from this manager; refusing stale overwrite",
                     )
-                    return False
                 if self._is_file_newer_than_memory_locked():
                     return False
 
@@ -1794,8 +1789,7 @@ class CacheOrderManager(CacheAccountManagerBase):
 
                 self._persisted_counts = dict(counts)
                 self._remember_account_commit_locked(metadata)
-                print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
-                return True
+                return self._log_cache_saved_ok()
         except Exception as exc:
             with self.lock:
                 self._mark_account_cache_dirty_locked()

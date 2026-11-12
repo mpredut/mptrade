@@ -996,8 +996,7 @@ class Cache365PriceManager(Cache24PriceManager):
         try:
             self._snapshot_file_to(archive)
         except OSError as exc:
-            builtins.print(f"[{self.cls_name}][maintain] archiving failed: {exc}")
-            return False
+            return self._log_tagged_false("maintain", f"archiving failed: {exc}")
         try:
             archive_size = os.path.getsize(archive)
             keep_bytes = max(1, math.trunc(archive_size * self.ROTATE_KEEP_FRACTION))
@@ -1020,11 +1019,7 @@ class Cache365PriceManager(Cache24PriceManager):
         if not meta_ok:
             with self.lock:
                 self._rollback_memory_state_with_live_delta_locked(original_state, snap_item_ids)
-                self._restore_archive_after_failed_rotation_locked(archive)
-            builtins.print(
-                f"[{self.cls_name}][maintain] rotation aborted; restored active file and in-memory state"
-            )
-            return False
+                return self._restore_archive_after_failed_rotation_locked(archive)
         self._compress_and_prune_archive(archive)
         return True
 
@@ -1796,8 +1791,9 @@ class _VenuePriceStreamBase(PublicPriceStreamBase, ABC):
                     await ws.send(extra_msg)
             while not self._stop_event.is_set():
                 try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
-                    self._process_message(raw)
+                    self._process_message(
+                        await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
+                    )
                 except asyncio.TimeoutError:
                     continue
                 except _websockets.exceptions.ConnectionClosed:

@@ -503,15 +503,25 @@ class CacheManagerInterface(ABC):
             for symbol, items in self.cache.items()
         )
 
+    def _seed_remote_and_persist_if_writable(self) -> None:
+        if not self.read_only:
+            self.query_remote_and_update_cache()
+            self.save_state_to_file_if_enabled()
+
+    def _log_missing_and_seed_remote(self) -> None:
+        print(
+            f"[{self.cls_name}][Info] File is missing, may be is it first time run. Creating it ...."
+        )
+        self._seed_remote_and_persist_if_writable()
+
     def load_state(self):
         migrate_legacy_filename_if_needed(self.filename)
         print(f"[{self.cls_name}][Info] Load state from {self.filename} ...")
         if self.append_persist:
             self._migrate_legacy_json_if_needed()
             self._load_jsonl()
-            if not self.cache and not self.read_only:
-                self.query_remote_and_update_cache()
-                self.save_state_to_file_if_enabled()
+            if not self.cache:
+                self._seed_remote_and_persist_if_writable()
             return
         self._load_snapshot_state()
 
@@ -545,16 +555,9 @@ class CacheManagerInterface(ABC):
                 print(
                     f"[{self.cls_name}][Error] While reading the cache file {self.filename} : {e}"
                 )
-                if not self.read_only:
-                    self.query_remote_and_update_cache()
-                    self.save_state_to_file_if_enabled()
+                self._seed_remote_and_persist_if_writable()
         else:
-            print(
-                f"[{self.cls_name}][Info] File is missing, may be is it first time run. Creating it ...."
-            )
-            if not self.read_only:
-                self.query_remote_and_update_cache()
-                self.save_state_to_file_if_enabled()
+            self._log_missing_and_seed_remote()
 
     def _advance_symbol_fetchtime_locked(
         self, symbol, now_ms: Optional[int] = None
@@ -716,8 +719,21 @@ class CacheManagerInterface(ABC):
             write_json_fn(meta_file_path(self.filename), payload)
             return True
         except Exception as e:
-            print(f"[{self.cls_name}][Error] metadata {self.filename}: {e}")
-            return False
+            return self._log_cache_file_error("metadata", e)
+
+    def _log_cache_file_error(
+        self, label: str, exc: Exception, *, suffix: str = ""
+    ) -> bool:
+        print(f"[{self.cls_name}][Error] {label} {self.filename}{suffix}: {exc}")
+        return False
+
+    def _log_cache_saved_ok(self) -> bool:
+        print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
+        return True
+
+    def _log_tagged_false(self, tag: str, detail: str) -> bool:
+        builtins.print(f"[{self.cls_name}][{tag}] {detail}")
+        return False
 
     def _commit_file_and_meta_locked(
         self,
@@ -756,10 +772,9 @@ class CacheManagerInterface(ABC):
         try:
             return self._save_state_to_file_impl()
         except Exception as e:
-            print(
-                f"[{self.cls_name}][Error] While saving the cache file {self.filename} / .tmp : {e}"
+            return self._log_cache_file_error(
+                "While saving the cache file", e, suffix=" / .tmp "
             )
-            return False
 
     def _save_state_to_file_impl(self) -> bool:
         with self.lock:
@@ -794,8 +809,7 @@ class CacheManagerInterface(ABC):
             self._last_disk_sync_max_ts = max(
                 self._persisted_max_ts(), self._mem_max_ts()
             )
-            print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
-            return True
+            return self._log_cache_saved_ok()
 
     def _with_generation_lock_bool(
         self, fn, label: str, *, mark_rewrite_on_error: bool = False
@@ -806,8 +820,7 @@ class CacheManagerInterface(ABC):
         except Exception as exc:
             if mark_rewrite_on_error:
                 self._legacy_jsonl_needs_rewrite = True
-            print(f"[{self.cls_name}][Error] lock {label} {self.filename}: {exc}")
-            return False
+            return self._log_cache_file_error(f"lock {label}", exc)
 
     def _reload_from_disk(self):
         """Reload the cache when another process has written a newer file."""
@@ -925,8 +938,7 @@ class CacheManagerInterface(ABC):
                 return self._write_meta(self._build_basic_meta_locked(candidate_counts))
         except Exception as e:
             self._persisted_counts = previous_counts
-            print(f"[{self.cls_name}][Error] append JSONL {self.filename}: {e}")
-            return False
+            return self._log_cache_file_error("append JSONL", e)
 
     def _truncate_failed_jsonl_append(self, initial_size):
         """Best-effort rollback of bytes written by a failed append attempt."""
@@ -1024,8 +1036,7 @@ class CacheManagerInterface(ABC):
                 return True
         except Exception as e:
             self._restore_memory_state_locked(original_state)
-            print(f"[{self.cls_name}][Error] compact JSONL {self.filename}: {e}")
-            return False
+            return self._log_cache_file_error("compact JSONL", e)
 
     @staticmethod
     def _entry_timestamp_ms(item):
@@ -1101,13 +1112,16 @@ class CacheManagerInterface(ABC):
         snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
         snapshot_fn(self.filename, target_path)
 
-    def _restore_archive_after_failed_rotation_locked(self, archive: str) -> None:
+    def _restore_archive_after_failed_rotation_locked(self, archive: str) -> bool:
         try:
             self._restore_previous_generation(archive)
         except OSError as restore_err:
             builtins.print(
                 f"[{self.cls_name}][maintain] failed to restore active file from {archive}: {restore_err}"
             )
+        return self._log_tagged_false(
+            "maintain", "rotation aborted; restored active file and in-memory state"
+        )
 
     def _finalize_rotation(self, archive: str) -> bool:
         archive = self._compress_and_prune_archive(archive)
@@ -1124,8 +1138,7 @@ class CacheManagerInterface(ABC):
             try:
                 self._snapshot_file_to(archive)
             except OSError as e:
-                builtins.print(f"[{self.cls_name}][maintain] archiving failed: {e}")
-                return False
+                return self._log_tagged_false("maintain", f"archiving failed: {e}")
             original_state = self._snapshot_memory_state_locked()
             self._trim_cache_to_keep_fraction_locked()
             self._persisted_counts = {}
@@ -1138,11 +1151,7 @@ class CacheManagerInterface(ABC):
                 compacted = False
             if not compacted:
                 self._restore_memory_state_locked(original_state)
-                self._restore_archive_after_failed_rotation_locked(archive)
-                builtins.print(
-                    f"[{self.cls_name}][maintain] rotation aborted; restored active file and in-memory state"
-                )
-                return False
+                return self._restore_archive_after_failed_rotation_locked(archive)
             return self._finalize_rotation(archive)
 
     @abstractmethod

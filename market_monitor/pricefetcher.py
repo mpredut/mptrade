@@ -109,6 +109,11 @@ class PricePlatformInterface(ABC):
         upper_set = {s.upper() for s in symbols_set if isinstance(s, str)}
         return sym_up in upper_set or base_up in upper_set
 
+    @staticmethod
+    def _log_platform_price_warning(tag: str, symbol: str, exc: Exception) -> None:
+        print(f"[{tag}] Warning for {symbol}: {exc}")
+        return None
+
 
 class BinancePricePlatform(PricePlatformInterface):
     platform_name = "Binance"
@@ -225,8 +230,7 @@ class BinancePricePlatform(PricePlatformInterface):
             return price_val
 
         except Exception as e:
-            print(f"[BinancePlatform] Warning for {symbol}: {e}")
-            return None
+            return self._log_platform_price_warning("BinancePlatform", symbol, e)
 
 
 class HyperliquidPricePlatform(PricePlatformInterface):
@@ -272,8 +276,7 @@ class HyperliquidPricePlatform(PricePlatformInterface):
                 return None
             return safe_pos_float(raw_val, default=None)
         except Exception as e:
-            print(f"[HyperliquidPlatform] Warning for {symbol}: {e}")
-            return None
+            return self._log_platform_price_warning("HyperliquidPlatform", symbol, e)
 
 
 _CMC_KEY_UNSET = object()
@@ -414,8 +417,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             print(f"[CMCPlatform] {symbol} not found")
             return None
         except Exception as e:
-            print(f"[CMCPlatform] Warning for {symbol}: {e}")
-            return None
+            return self._log_platform_price_warning("CMCPlatform", symbol, e)
 
 
 class StockYahooPricePlatform(PricePlatformInterface):
@@ -451,8 +453,7 @@ class StockYahooPricePlatform(PricePlatformInterface):
             resp.raise_for_status()
             return extract_yahoo_chart_latest_price(resp.json(), decimals=4)
         except Exception as e:
-            print(f"[YahooPlatform] Warning for {symbol}: {e}")
-            return None
+            return self._log_platform_price_warning("YahooPlatform", symbol, e)
 
 
 # ============================================
@@ -640,6 +641,10 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         except (OSError, ValueError, TypeError, KeyError) as exc:
             print(f"[Pricefetcher] Metadata cache ignored: {exc}")
 
+    def _log_warn_and_return(self, detail: str, default):
+        print(f"[{self.cls_name}][Warn] {detail}")
+        return default
+
     def _track_monitored_symbol(self, symbol: str) -> None:
         self.active_symbols.add(symbol)
         self.symbols.append(symbol)
@@ -690,8 +695,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             print(f"[Pricefetcher][{symbol}] ${price_val:.4f} (source: {platform_used})")
             return [[timestamp_ms, price_val]]
         except Exception as e:
-            print(f"[Pricefetcher][Warn] {symbol}: {e}")
-            return []
+            return self._log_warn_and_return(f"{symbol}: {e}", [])
     
     def add_symbol(self, symbol: str, preferred_source: Optional[str] = None):
         if not (symbol := clean_nonempty_str(symbol)):
@@ -903,11 +907,9 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 ):
                     return False
                 self._persisted_counts = counts
-                print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
-                return True
+                return self._log_cache_saved_ok()
         except Exception as e:
-            print(f"[{self.cls_name}][Warn] Saving cache file {self.filename}: {e}")
-            return False
+            return self._log_warn_and_return(f"Saving cache file {self.filename}: {e}", False)
 
     def save_state_to_file_if_enabled(self):
         if not self.save_state:
