@@ -34,6 +34,7 @@ import cachepaths
 from guard_hierarchy import GUARD_REGISTRY
 from instrument import Instrument, load_for
 import intelligence.external.guards.smart_stop_loss_guard as _smart_sl_guard
+from intelligence.internal.guards.guard_decision import unpack_guard_decision
 from intelligence.internal.state.volatility import resolve_cached_volatility_1h as get_symbol_volatility_1h
 import intelligence.sentiment.guards.high_stake_guard as _high_stake_guard
 import intelligence.sentiment.guards.post_stop_reentry_guard as _post_stop_guard
@@ -1183,14 +1184,14 @@ def _apply_post_stop_ai_guard(
             qty=_est_qty, notional_eur=_est_qty * current_price,
             last_sell_time_s=sell_time, now=reentry_snap.current_time_s,
         )
-        ps_scale = safe_float(getattr(_ps_dec, "suggested_scale", 1.0), 1.0)
-        if ps_scale is None or not (0.0 < ps_scale <= 1.0):
-            ps_scale = 1.0
-        if not _ps_dec.allowed:
-            print(f"[{symbol}] Post-STOP re-entry VETOED by Pillar 3 AI: {_ps_dec.reason}")
+        ps_allowed, _ps_brake, ps_scale, ps_reason = unpack_guard_decision(
+            _ps_dec, default_reason="post_stop_ai_veto"
+        )
+        if not ps_allowed or ps_scale <= 0.0:
+            print(f"[{symbol}] Post-STOP re-entry VETOED by Pillar 3 AI: {ps_reason}")
             return False, buy_budget, buy_qty_cfg, qty
         if ps_scale < 1.0:
-            print(f"[{symbol}] Post-STOP re-entry DOWNSCALED by Pillar 3 AI to {ps_scale * 100:.0f}%: {_ps_dec.reason}")
+            print(f"[{symbol}] Post-STOP re-entry DOWNSCALED by Pillar 3 AI to {ps_scale * 100:.0f}%: {ps_reason}")
             scale = safe_pos_float(ps_scale, 1.0) or 1.0
             scaled_qty = _est_qty * scale
             if provider is not None and not isinstance(provider, str):

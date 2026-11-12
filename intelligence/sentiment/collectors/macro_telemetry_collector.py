@@ -17,6 +17,7 @@ from botcore import (
     first_epoch_sec,
     first_pos_float,
     is_live_network_backfill_enabled,
+    safe_nonneg_float,
 )
 from cachepaths import (
     CACHE_WATCHER_ALL_PRICE_FILENAME,
@@ -722,13 +723,15 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                 )
                 breaking_news.append({
                     "title": clean_title or item.get("title"), "source": item.get("source"),
-                    "is_high_severity": bool(item.get("is_high_severity")),
+                    "is_high_severity": bool(_parse_bool_flag(item.get("is_high_severity"), False)),
                     "keywords": item.get("matched_keywords") or [],
                     "age_min": round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None,
                     **({"published_utc": pub_utc} if pub_utc else {}),
                 })
         gt_cur = macro_sensors.get("geopolitical_threat")
-        if isinstance(gt_cur, dict) and valid_news and not any(n.get("is_high_severity") for n in valid_news):
+        if isinstance(gt_cur, dict) and valid_news and not any(
+            _parse_bool_flag(n.get("is_high_severity"), False) for n in valid_news
+        ):
             gt_digest = str(gt_cur.get("headlines_digest") or "").strip()
             gt_digest_titles = split_headlines_digest(gt_digest) if gt_digest else []
             valid_digest_titles = [
@@ -801,7 +804,8 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                 fresh_hs_news := [
                     n
                     for n in breaking_news
-                    if n.get("is_high_severity") and (safe_float(n.get("age_min"), 999.0) or 999.0) < 90.0
+                    if _parse_bool_flag(n.get("is_high_severity"), False)
+                    and safe_nonneg_float(n.get("age_min"), default=999.0) < 90.0
                 ]
             )
         ):

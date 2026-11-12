@@ -552,7 +552,7 @@ def load_symbol_microstructure(
             and deriv_oi > w_oi * 1.35
             and (
                 (safe_pos_float(m_info.get("taker_buy_vol_usd"), default=0.0) or 0.0) > 0.0
-                or abs((safe_float(m_info.get("whale_long_pct"), default=0.5) or 0.5) - 0.5) > 1e-4
+                or abs(safe_float(m_info.get("whale_long_pct"), default=0.5) - 0.5) > 1e-4
             )
         ):
             m_info["native_l1_oi_usd"] = round(deriv_oi, 2)

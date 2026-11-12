@@ -47,7 +47,12 @@ from guard_hierarchy import (
     validate_guard_mode_cfg,
 )
 from instrument_registry import is_equity_symbol
-from intelligence.internal.guards.guard_decision import BrakeAction, OrderGuardEvaluatorBase, OrderGuardEvaluatorFactory
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+    unpack_guard_decision,
+)
 import intelligence.macro.geopolitical_analyzer as _geo_analyzer
 import intelligence.macro.geopolitical_guard as _geo_guard
 import intelligence.macro_sentiment_ssot as _mss
@@ -156,14 +161,13 @@ def evaluate_high_stake_order_guard(
                 symbol, side, price, qty if qty is not None else 1.0,
                 notional_eur=computed_notional,
             )
-        g_scale = clean_scale(obj_attr(g_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
+        g_allowed_bool, g_brake, g_scale, g_reason_str = unpack_guard_decision(
+            g_dec, default_reason="high_stake_guard"
+        )
         g_meta = obj_attr(g_dec, "metadata", None)
         g_meta = g_meta if isinstance(g_meta, dict) else {}
         eval_notional = safe_pos_float(g_meta.get("evaluated_notional_eur"), computed_notional)
         is_cache_hit = bool(_parse_bool_flag(g_meta.get("cache_hit"), False))
-        g_allowed_bool = bool(_parse_bool_flag(obj_attr(g_dec, "allowed", False), False))
-        g_reason_str = str(obj_attr(g_dec, "reason", "") or "high_stake_guard")
-        g_brake = obj_attr(g_dec, "brake_action", BrakeAction.NONE)
         if valid_context:
             try:
                 g_tuple = (g_allowed_bool, g_reason_str, g_scale)
@@ -325,12 +329,14 @@ def check_geopolitical_order_guards(
             geo_dec = _geo_guard.GeopoliticalShockGuard().check(
                 symbol, order_side, cached_geo, market_absorbed=market_absorbed
             )
-            geo_scale = clean_scale(getattr(geo_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
-            if market_absorbed and geo_dec.allowed and geo_dec.brake_action != BrakeAction.DOWNSCALE_QTY:
-                return True, geo_dec.reason, 1.0
-            if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+            geo_allowed, geo_brake, geo_scale, geo_reason = unpack_guard_decision(
+                geo_dec, default_reason="geopolitical_guard"
+            )
+            if market_absorbed and geo_allowed and geo_scale >= 1.0 and geo_brake != BrakeAction.DOWNSCALE_QTY:
+                return True, geo_reason, 1.0
+            if not geo_allowed or geo_brake == BrakeAction.DOWNSCALE_QTY or geo_scale < 1.0:
                 prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
-                print(f"{prefix} {order_side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_scale})")
+                print(f"{prefix} {order_side} {symbol}: {geo_reason} (brake={geo_brake}, suggested_scale={geo_scale})")
                 if (
                     geo_mode == "shadow"
                     and shadow_notify
@@ -341,12 +347,12 @@ def check_geopolitical_order_guards(
                         scale_pct = round(geo_scale * 100)
                         geo_title = (
                             f"🛑 {geo_tag} BLOCK {order_side} {symbol}"
-                            if not geo_dec.allowed
+                            if not geo_allowed or geo_scale <= 0.0
                             else f"🛡 {geo_tag} SCALE {scale_pct}% {order_side} {symbol}"
                         )
-                        clean_summary = obj_attr(cached_geo, "summary") or geo_dec.reason
-                        if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):
-                            clean_summary = geo_dec.reason.split("(", 1)[1].rstrip(")")
+                        clean_summary = obj_attr(cached_geo, "summary") or geo_reason
+                        if "(" in geo_reason and geo_reason.endswith(")"):
+                            clean_summary = geo_reason.split("(", 1)[1].rstrip(")")
                         raw_tl = obj_attr(cached_geo, "threat_level", "UNKNOWN")
                         raw_rs = clean_scale(obj_attr(cached_geo, "risk_score", 0.0), default=0.0, allow_percent=True)
                         _alertnotifiers.notify(
@@ -358,9 +364,9 @@ def check_geopolitical_order_guards(
                     except Exception:
                         pass
                 if geo_mode == "enforce":
-                    if not geo_dec.allowed or geo_scale <= 0.0:
-                        return False, geo_dec.reason, 0.0
-                    return True, geo_dec.reason, geo_scale
+                    if not geo_allowed or geo_scale <= 0.0:
+                        return False, geo_reason, 0.0
+                    return True, geo_reason, geo_scale
     except Exception as e:
         logger.debug("Geopolitical guard evaluation exception: %s", e)
 

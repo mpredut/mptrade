@@ -239,7 +239,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             dec = MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px)
             queue_penalty = 1.0
             if isinstance(m_entry, dict) and side in ("SELL", "BUY"):
-                sp_bps = safe_nonneg_float(m_entry.get("spread_bps"), default=2.0) or 2.0
+                sp_bps = safe_nonneg_float(m_entry.get("spread_bps"), default=2.0)
                 best_bid_px = safe_pos_float(m_entry.get("best_bid"), default=None) or (
                     spot_px * (1.0 - sp_bps / 20000.0) if spot_px and spot_px > 0.0 else None
                 )

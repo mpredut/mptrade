@@ -704,7 +704,7 @@ class HyperliquidProvider(MarketDataProvider):
                     if caller == "submit_order"
                     else f"{caller} {'BUY' if is_buy else 'SELL'} {symbol}: market price unavailable"
                 )
-            s_val = safe_nonneg_float(slippage, default=0.05) or 0.05
+            s_val = safe_nonneg_float(slippage, default=0.05)
             eff_slip = s_val if s_val < 1.0 else 0.05
             raw_px = base_px * (1.0 + eff_slip if is_buy else 1.0 - eff_slip)
             order_tif = "Ioc"

@@ -244,7 +244,12 @@ def handle_binance_ws_event(
 
 
 def _bridge_is_usable(bridge: Any) -> bool:
-    return bridge is not None and bool(getattr(bridge, "is_running", True))
+    if bridge is None:
+        return False
+    raw = getattr(bridge, "is_running", True)
+    if callable(raw):
+        raw = raw()
+    return bool(_parse_bool_flag(raw, False))
 
 
 def enable_real_ws_event_sync(

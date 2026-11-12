@@ -178,7 +178,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         d1_a = safe_pos_float(minfo.get("depth_1pct_ask_usd"), default=0.0) or 0.0
         eff_d1 = min(d1_b, d1_a) if (d1_b > 0.0 and d1_a > 0.0) else max(d1_b, d1_a)
         if eff_d1 > 0.0:
-            sp_half = (safe_nonneg_float(minfo.get("spread_bps"), default=2.0) or 2.0) * 0.5
+            sp_half = safe_nonneg_float(minfo.get("spread_bps"), default=2.0) * 0.5
             minfo["est_slip_2k_bps"] = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
     p_dict = pinfo if isinstance(pinfo, dict) else {}
     m_px = safe_pos_float(p_dict.get("price"), default=None) or (ob_mid if ob_mid > 0.0 else None)

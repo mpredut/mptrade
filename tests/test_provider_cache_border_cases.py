@@ -23,7 +23,7 @@ import pytest
 import account_cache_health as health
 import active_intents
 import assetguardian as ag
-from binance_api import bapi_trades, bapi_ws_normalize as ws_norm
+from binance_api import bapi_trades, bapi_ws_bridge, bapi_ws_normalize as ws_norm
 import botcore
 from botcore import (
     clean_scale,
@@ -61,6 +61,7 @@ from cacheprice import (
     resolve_cached_symbol_price,
     resolve_ssot_price_from_cache,
 )
+import cachetrend
 from cachetrend import CacheShortTrendManager
 import external_order_guard as eog
 import guard_hierarchy as gh
@@ -74,7 +75,7 @@ from intelligence.external.guards.funding_crowding_guard import FundingCrowdingG
 from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
 from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision, unpack_guard_decision
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.state import survival as surv_mod
 from intelligence.macro import calendar_ssot
@@ -188,6 +189,7 @@ from providers.quantity import (
 from providers.replay_provider import ReplayMarketDataProvider
 from providers.strategy_executor import OrderReconciliationCapabilities, ProviderError, SubmissionRefused
 from providers.t212_provider import T212Provider
+import qlimit_order_guard as qog
 import rtrade
 from rtrade_pair_store import RTradePairStore
 import state_io
@@ -200,7 +202,7 @@ from state_io import (
     read_tail_complete_lines_text,
     read_text_file,
 )
-from strategies import mt_position_accounting as mt_pa_mod, spot_engine as spot_eng_mod
+from strategies import mt_position_accounting as mt_pa_mod, rtrade_pair as rtp_mod, spot_engine as spot_eng_mod
 from strategies.base_spot_mixin import BaseSpotMixin, parse_tp_ladder_env
 from strategies.replay_execution import ExecutionModel, select_eligible_intrabar_orders
 from strategies.replay_metrics import (
@@ -4023,6 +4025,237 @@ def test_wave24_cli_parsers_patch_seam_defaults_rtrade_recovery_and_prune_overfl
         max_threads=2.7,
         dry_run=True,
     ) == (0, 0)
+
+
+def test_wave25_guard_decision_unpack_macro_zero_age_and_patch_seam_border_cases(tmp_path, monkeypatch):
+    gd = GuardDecision(
+        allowed="false",
+        brake_action="downscale_qty",
+        guard_name="G",
+        reason="str_false_ctor",
+        suggested_scale=50,
+    )
+    assert gd.allowed is False
+    assert gd.brake_action == BrakeAction.DOWNSCALE_QTY
+    assert gd.suggested_scale == pytest.approx(0.5)
+
+    assert unpack_guard_decision(SimpleNamespace(allowed="false", reason="str_false")) == (
+        False,
+        BrakeAction.HARD_VETO,
+        0.0,
+        "str_false",
+    )
+    assert unpack_guard_decision(
+        {"allowed": "true", "suggested_scale": "0", "reason": "zero_scale"}
+    ) == (False, BrakeAction.HARD_VETO, 0.0, "zero_scale")
+    u_ok, u_brake, u_scale, u_reason = unpack_guard_decision(
+        SimpleNamespace(allowed="true", suggested_scale=40, reason="pct_40")
+    )
+    assert u_ok is True and u_brake == BrakeAction.DOWNSCALE_QTY and u_scale == pytest.approx(0.4) and u_reason == "pct_40"
+
+    geo_margins = make_test_margins(
+        intelligence_guards_mode="enforce",
+        geopolitical_guard_mode="enforce",
+        shadow_notify=False,
+    )
+    monkeypatch.setattr(
+        geo_an_mod,
+        "GeopoliticalThreatAnalyzer",
+        lambda **_kw: SimpleNamespace(
+            _cached_assessment=SimpleNamespace(
+                ts=1_700_000_000.0,
+                threat_level="CRITICAL_SHOCK",
+                risk_score=0.9,
+                summary="shock",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        geo_gd_mod,
+        "GeopoliticalShockGuard",
+        lambda: SimpleNamespace(
+            check=lambda *_a, **_kw: SimpleNamespace(allowed="false", reason="shock_str_false")
+        ),
+    )
+    assert llm_order_guard.check_geopolitical_order_guards(
+        "BTCUSDC", "BUY", margins=geo_margins, now=1_700_000_010.0, bypass_guards=set()
+    ) == (False, "shock_str_false", 0.0)
+
+    ext_margins = make_test_margins(
+        intelligence_guards_mode="enforce",
+        external_guard_mode="enforce",
+        whale_guard_mode="off",
+        orderbook_wall_guard_mode="enforce",
+        funding_guard_mode="off",
+        shadow_notify=False,
+    )
+    monkeypatch.setattr(eog, "get_orderbook_collector", lambda: SimpleNamespace())
+    monkeypatch.setattr(eog, "fetch_guard_snapshot", lambda *_a, **_kw: {"bid_ask_ratio": 0.2})
+    monkeypatch.setattr(
+        eog.owg,
+        "OrderbookWallGuard",
+        lambda **_kw: SimpleNamespace(
+            check=lambda *_a, **_k: {"allowed": "false", "reason": "wall_dict"}
+        ),
+    )
+    assert eog.check_external_order_guards(
+        "BTCUSDC", "BUY", 60000.0, margins=ext_margins, now=1_700_000_000.0, bypass_guards=set()
+    ) == (False, "wall_dict", 0.0)
+
+    ql2_margins = make_test_margins(
+        intelligence_guards_mode="enforce",
+        internal_guard_mode="enforce",
+    )
+    monkeypatch.setattr(
+        qog,
+        "WeibullExhaustionGuard",
+        lambda **_kw: SimpleNamespace(
+            check=lambda *_a, **_k: SimpleNamespace(
+                allowed="false", brake_action=BrakeAction.NONE, reason="exhaust_str_false"
+            )
+        ),
+    )
+    assert qog.check_qlimit2_order_guards(
+        "BTCUSDC",
+        "BUY",
+        60000.0,
+        price_history=[],
+        trend_duration_seconds=3600.0,
+        margins=ql2_margins,
+        now=1_700_000_000.0,
+        bypass_guards={"parabolic_guard"},
+    ) == (False, "exhaust_str_false", 0.0)
+
+    ps_dec_box = [SimpleNamespace(allowed=True, suggested_scale=0.0, reason="zero_ps_scale")]
+    monkeypatch.setattr(mt, "_is_simulated_env_or_inst", lambda _inst: False)
+    monkeypatch.setattr(mt._high_stake_guard, "is_llm_guard_exempt", lambda: False)
+    monkeypatch.setattr(
+        mt._post_stop_guard,
+        "get_post_stop_reentry_guard",
+        lambda: SimpleNamespace(mode="enforce", check=lambda **_kw: ps_dec_box[0]),
+    )
+    re_snap = SimpleNamespace(
+        post_sell_trough=58000.0,
+        current_time_s=1_700_000_100.0,
+        bounce_ratio=lambda trough: (62500.0 - trough) / trough,
+    )
+    ok_ps0, bud_ps0, _, _ = mt._apply_post_stop_ai_guard(
+        "BTCUSDC", 62500.0, 60000.0, 1_700_000_000.0, re_snap, 1000.0, None, 0.01, inst=None
+    )
+    assert ok_ps0 is False and bud_ps0 == pytest.approx(1000.0)
+
+    ps_dec_box[0] = SimpleNamespace(allowed="true", suggested_scale=40, reason="pct_40_ps")
+    ok_ps40, bud_ps40, _, _ = mt._apply_post_stop_ai_guard(
+        "BTCUSDC", 62500.0, 60000.0, 1_700_000_000.0, re_snap, 1000.0, None, 0.01, inst=None
+    )
+    assert ok_ps40 is True and bud_ps40 == pytest.approx(400.0)
+
+    macro_dir = tmp_path / "macro_zero_age"
+    macro_dir.mkdir()
+    now_macro = 1_700_000_000.0
+    atomic_write_text(
+        str(macro_dir / "geopolitical_eval.json"),
+        json.dumps(
+            {
+                "ts": now_macro - 30.0,
+                "threat_level": "NORMAL",
+                "risk_score": 0.1,
+                "recommended_brake": "NONE",
+                "summary": "Geopolitical threat de-escalated to NORMAL: no fresh high-severity macro headlines in the last 90 minutes.",
+                "headlines_digest": "",
+            }
+        ),
+    )
+    atomic_write_text(
+        str(macro_dir / "news_feed_collect.json"),
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "title": "Emergency central bank rate cut shock hits bond markets",
+                        "source": "Reuters",
+                        "first_seen_ts": now_macro,
+                        "is_high_severity": "true",
+                        "matched_keywords": [],
+                    },
+                    {
+                        "title": "Routine treasury auction settles in line with consensus",
+                        "source": "Reuters",
+                        "first_seen_ts": now_macro,
+                        "is_high_severity": "false",
+                        "matched_keywords": [],
+                    },
+                ]
+            }
+        ),
+    )
+    sensors_out, breaking_out = MacroAndNewsSensorsCollector().collect(
+        cachedb_dir=str(macro_dir),
+        now_ts=now_macro,
+        allow_network=False,
+        persist=False,
+    )
+    by_title = {item["title"]: item for item in breaking_out}
+    assert by_title["Emergency central bank rate cut shock hits bond markets"]["is_high_severity"] is True
+    assert by_title["Emergency central bank rate cut shock hits bond markets"]["age_min"] == 0.0
+    assert by_title["Routine treasury auction settles in line with consensus"]["is_high_severity"] is False
+    assert "monitoring 1 fresh high-severity macro headline(s)" in sensors_out["geopolitical_threat"]["summary"]
+
+    assert WhaleDivergenceGuard(severe_cascade_oi_pct=5.0).severe_cascade_oi_pct == pytest.approx(-5.0)
+    hl_prov = HyperliquidProvider.__new__(HyperliquidProvider)
+    hl_prov.get_current_price = lambda _sym: 10.0
+    hl_prov.round_price = lambda _sym, px: round(px, 4)
+    hl_px, hl_tif = hl_prov._resolve_spot_order_price_and_tif(
+        "HYPE/USDC",
+        True,
+        10.0,
+        is_market=True,
+        slippage=0.0,
+    )
+    assert hl_px == pytest.approx(10.0) and hl_tif == "Ioc"
+    assert bapi_ws_bridge._bridge_is_usable(SimpleNamespace(is_running=lambda: False)) is False
+    assert bapi_ws_bridge._bridge_is_usable(SimpleNamespace(is_running="false")) is False
+    assert bapi_ws_bridge._bridge_is_usable(SimpleNamespace(is_running=lambda: True)) is True
+
+    live_venue = rtrade._LivePairVenue.__new__(rtrade._LivePairVenue)
+    live_venue.symbol = "BTCUSDC"
+    live_venue.pair_store = None
+    live_venue._recovery_clock = lambda: 1_700_100_000.0
+    with pytest.raises(rtrade._IntentRecoveryPending, match="requires manual reconciliation"):
+        live_venue.recover_intent(
+            {"pair_id": "p1", "symbol": "BTCUSDC", "start_side": "BUY", "qty": 0.01},
+            {
+                "client_order_id": "cid1",
+                "side": "BUY",
+                "kind": "limit",
+                "requested_qty": 0.01,
+                "requested_price": 60000.0,
+                "recovery_state": "horizon_exhausted",
+                "recovery_started_at": 1_700_000_000.0,
+            },
+        )
+    coord_blocked = rtp_mod.PairCoordinator.__new__(rtp_mod.PairCoordinator)
+    coord_blocked.venue = SimpleNamespace(recovery_blocked="false")
+    assert coord_blocked._is_venue_recovery_pending(None, False) is False
+
+    sentinel_mgr = SimpleNamespace(tag="patched_short_trend")
+    importlib.import_module("cacheManager")
+    monkeypatch.setattr(MarketDataProvider, "_ssot_short_trend_getter", None)
+    monkeypatch.setattr(cachetrend, "get_short_trend_manager", lambda: sentinel_mgr)
+    assert MarketDataProvider.get_ssot_short_trend_manager() is sentinel_mgr
+
+    t212_strat_mod = load_venue_modules("212trading", "strategy")
+    t212_strat = t212_strat_mod.Strategy.__new__(t212_strat_mod.Strategy)
+    t212_strat.p = SimpleNamespace(tp_ladder=[(5.0, 0.5)])
+    t212_strat.s = {"tp_sold_levels": None}
+    assert t212_strat._can_close_dust_cycle() is False
+    t212_strat.s = {"tp_sold_levels": ["5.0", {"bad": 1}]}
+    assert t212_strat._can_close_dust_cycle() is True
+    t212_strat.fx_to_usd = 1.0
+    t212_strat.ccy = "USD"
+    t212_strat.dry_run = True
+    assert t212_strat._place_buy(100.0, 1e-308, "DCA") is False
+
 
 
 

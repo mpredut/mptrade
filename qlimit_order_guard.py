@@ -31,7 +31,12 @@ from guard_hierarchy import (
     validate_guard_mode_cfg,
 )
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-from intelligence.internal.guards.guard_decision import BrakeAction, OrderGuardEvaluatorBase, OrderGuardEvaluatorFactory
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+    unpack_guard_decision,
+)
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 import intelligence.internal.state.survival as _survival
 from intelligence.internal.state.survival import (
@@ -128,11 +133,12 @@ def check_qlimit2_order_guards(
 
     if history and px_clean > 0.0 and not parabolic_only_bypass and not bool(raw_bypass_tokens & {"parabolic_guard", "parabolicsurgeguard"}):
         p_dec = p_guard.check(symbol, order_side, px_clean, price_history=history, now=now)
-        if not p_dec.allowed:
+        p_allowed, p_brake, _p_scale, p_reason = unpack_guard_decision(p_dec, default_reason="parabolic_surge")
+        if not p_allowed:
             prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
-            print(f"{prefix} {order_side} {symbol} @ {price}: {p_dec.reason} (brake={p_dec.brake_action})")
+            print(f"{prefix} {order_side} {symbol} @ {price}: {p_reason} (brake={p_brake})")
             if mode == "enforce":
-                return False, p_dec.reason, 0.0
+                return False, p_reason, 0.0
 
     # 2. Weibull trend exhaustion check (calibrated past G_QLIMIT1's Gaussian Zone 2 when resolved from live cache)
     explicit_duration_override = safe_pos_float(trend_duration_seconds, 0.0) > 0.0
@@ -179,17 +185,17 @@ def check_qlimit2_order_guards(
             trend_direction=trend_dir,
             gaussian_horizon_days=gauss_horizon_d,
         )
-        if e_dec.brake_action != BrakeAction.NONE:
+        e_allowed, e_brake, s_val, e_reason = unpack_guard_decision(
+            e_dec, default_reason="weibull_exhaustion", default_scale=1.0
+        )
+        if not e_allowed or e_brake != BrakeAction.NONE or s_val < 1.0:
             prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
-            print(f"{prefix} {order_side} {symbol} @ {price}: {e_dec.reason} (brake={e_dec.brake_action}, suggested_scale={e_dec.suggested_scale})")
+            print(f"{prefix} {order_side} {symbol} @ {price}: {e_reason} (brake={e_brake}, suggested_scale={s_val})")
             if mode == "enforce":
-                if not e_dec.allowed:
-                    return False, e_dec.reason, 0.0
-                s_val = clean_scale(e_dec.suggested_scale, default=0.0, allow_percent=True)
-                if s_val <= 0.0:
-                    return False, e_dec.reason, 0.0
+                if not e_allowed or e_brake in (BrakeAction.HARD_VETO, BrakeAction.DEFER_WAIT) or s_val <= 0.0:
+                    return False, e_reason, 0.0
                 effective_scale = min(effective_scale, min(1.0, s_val))
-                active_reason = e_dec.reason
+                active_reason = e_reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 

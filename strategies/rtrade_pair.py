@@ -250,10 +250,10 @@ class PairCoordinator:
         self.hard_stop_reason: Optional[str] = None
 
     def _is_venue_recovery_pending(self, reason: Optional[str], exc_raised: bool = False) -> bool:
-        return (
+        return bool(
             exc_raised
             or _is_recovery_pending(reason)
-            or bool(getattr(self.venue, "recovery_blocked", False))
+            or _parse_bool_flag(getattr(self.venue, "recovery_blocked", False), False)
         )
 
     def start(self, mid: Optional[float] = None,
@@ -502,8 +502,8 @@ class PairCoordinator:
                 self.hard_stop_reason = self.hard_stop_reason or "inventory_hard_stop"
         blocked = getattr(self.venue, "pair_recovery_blocked", None)
         if callable(blocked):
-            return not bool(blocked(self.pair_id))
-        return not bool(getattr(self.venue, "recovery_blocked", False))
+            return not bool(_parse_bool_flag(blocked(self.pair_id), False))
+        return not bool(_parse_bool_flag(getattr(self.venue, "recovery_blocked", False), False))
 
     def _cancel_and_reconcile(self, ticket: OrderTicket):
         """Return the terminal post-cancel snapshot, or a fail-closed reason."""

@@ -32,6 +32,7 @@ from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorFactory,
     resolve_hierarchical_guard_mode,
+    unpack_guard_decision,
 )
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
@@ -203,11 +204,14 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
         if not self.notify_enabled:
             return
         try:
-            scale_pct = round(clean_scale(getattr(decision, "suggested_scale", 1.0), 1.0) * 100)
+            d_allowed, d_brake, d_scale, d_reason = unpack_guard_decision(
+                decision, default_reason="post_stop_reentry_guard"
+            )
+            scale_pct = round(d_scale * 100)
             action_label = (
                 "VETO"
-                if not decision.allowed
-                else (f"SCALE ({scale_pct}%)" if decision.brake_action == BrakeAction.DOWNSCALE_QTY else "APPROVED")
+                if not d_allowed or d_scale <= 0.0
+                else (f"SCALE ({scale_pct}%)" if (d_brake == BrakeAction.DOWNSCALE_QTY or d_scale < 1.0) else "APPROVED")
             )
             ts = resolve_now_ts(now_ts)
             cooldown = self.cache_ttl_sec if self.cache_ttl_sec > 0 else 0.0
@@ -222,7 +226,7 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
                 body=(
                     f"{symbol} @ ${cur_s} (Bounce: +{bounce_pct:.2f}% from low ${trough_s}, SL at: ${sl_s})\n"
                     f"Decision: {action_label}\n"
-                    f"AI Reason: {decision.reason}"
+                    f"AI Reason: {d_reason}"
                 ),
                 source="post_stop_guard",
                 symbol=symbol,

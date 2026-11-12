@@ -374,7 +374,7 @@ class Strategy(BaseSpotMixin):
             "level": pending.get("level"),
             "intent_id": pending.get("intent_id"),
             "market": is_market_order(pending),
-            "ts": safe_float(pending.get("ts"), default=None) or self._now(),
+            "ts": safe_pos_float(pending.get("ts"), default=None) or self._now(),
         }
         if pending.get("amount") is not None:
             order["amount"] = pending["amount"]
@@ -517,9 +517,15 @@ class Strategy(BaseSpotMixin):
         return gross, fee, net
 
     def _can_close_dust_cycle(self) -> bool:
+        raw_sold = self.s.get("tp_sold_levels")
+        sold_lvls = {
+            sf
+            for x in (raw_sold if isinstance(raw_sold, (list, tuple, set, frozenset)) else ())
+            if (sf := safe_float(x, default=None)) is not None
+        }
         return bool(
             not self.p.tp_ladder
-            or {lvl for (lvl, _) in self.p.tp_ladder}.issubset(set(self.s.get("tp_sold_levels", [])))
+            or {lvl for (lvl, _) in self.p.tp_ladder}.issubset(sold_lvls)
             or self._state_flag("sl_pending")
             or self._state_flag("sl_pending_exit")
         )
@@ -563,10 +569,11 @@ class Strategy(BaseSpotMixin):
     def _place_buy(self, amount: float, limit: float, kind: str) -> bool:
         lim_f = safe_pos_float(limit, None)
         amt_f = safe_pos_float(amount, None)
-        fx_f = safe_pos_float(self.fx_to_usd, None)
-        usd = safe_pos_float(amt_f * fx_f, default=None) if (amt_f is not None and fx_f is not None) else None
-        qty = round(usd / lim_f, 2) if (usd is not None and lim_f is not None) else 0.0
         invalid_buy = lim_f is None or amt_f is None or round(lim_f, 2) <= 0
+        fx_f = safe_pos_float(self.fx_to_usd, None)
+        usd = safe_pos_float(amt_f * fx_f, default=None) if (not invalid_buy and fx_f is not None) else None
+        raw_qty = safe_pos_float(usd / lim_f, default=None) if (usd is not None and lim_f is not None) else None
+        qty = round(raw_qty, 2) if raw_qty is not None else 0.0
         if invalid_buy or qty <= 0:
             log("  ! [STRAT] invalid BUY amount/limit — skipping" if invalid_buy else "  ! [STRAT] qty 0 — skipping")
             return False

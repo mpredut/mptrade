@@ -1957,6 +1957,7 @@ def get_short_trend_manager(
 
 
 get_short_trend_manager._is_ssot_short_trend_getter = True  # type: ignore[attr-defined]
+_ORIG_GET_SHORT_TREND_MANAGER = get_short_trend_manager
 
 
 def get_long_trend_manager(

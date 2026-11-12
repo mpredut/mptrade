@@ -5,8 +5,18 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from botcore import LazyPluginRegistryFactory, StringEnum, clean_scale, normalize_side, safe_float
+from botcore import (
+    LazyPluginRegistryFactory,
+    StringEnum,
+    _parse_bool_flag,
+    clean_scale,
+    normalize_side,
+    obj_attr,
+    safe_float,
+)
 from cachepaths import canonical_symbol_key
+
+_MISSING = object()
 
 
 def normalize_guard_mode(val: Any, default: str = "enforce") -> str:
@@ -82,6 +92,22 @@ class BrakeAction(StringEnum):
     DOWNSCALE_QTY = "DOWNSCALE_QTY"   # Yellow light: reduce quantity/weight (e.g. exhausted trend)
 
 
+def _coerce_brake_action(raw_brake: Any, *, allowed: bool, scale: float = 1.0) -> BrakeAction:
+    if isinstance(raw_brake, BrakeAction):
+        return raw_brake
+    if isinstance(raw_brake, str):
+        token = raw_brake.strip().upper()
+        if token in BrakeAction.__members__:
+            return BrakeAction[token]
+    if not allowed:
+        return BrakeAction.HARD_VETO
+    if scale <= 0.0:
+        return BrakeAction.HARD_VETO
+    if scale < 1.0:
+        return BrakeAction.DOWNSCALE_QTY
+    return BrakeAction.NONE
+
+
 @dataclass(frozen=True)
 class GuardDecision:
     """Evaluation outcome produced by a risk or market guard."""
@@ -92,6 +118,22 @@ class GuardDecision:
     reason: str
     suggested_scale: float = 1.0       # Range 0.0 - 1.0 (used if brake_action is DOWNSCALE_QTY)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        allowed_b = bool(_parse_bool_flag(self.allowed, False))
+        scale_f = clean_scale(
+            self.suggested_scale,
+            default=1.0 if allowed_b else 0.0,
+            allow_percent=True,
+        )
+        brake = _coerce_brake_action(self.brake_action, allowed=allowed_b, scale=scale_f)
+        reason_s = "" if self.reason is None or isinstance(self.reason, bool) else str(self.reason)
+        meta_d = dict(self.metadata) if isinstance(self.metadata, dict) else {}
+        object.__setattr__(self, "allowed", allowed_b)
+        object.__setattr__(self, "brake_action", brake)
+        object.__setattr__(self, "suggested_scale", scale_f)
+        object.__setattr__(self, "reason", reason_s)
+        object.__setattr__(self, "metadata", meta_d)
 
     @property
     def shadow_decision(self) -> Optional["GuardDecision"]:
@@ -142,6 +184,50 @@ class GuardDecision:
             suggested_scale=clamped_scale,
             metadata=meta,
         )
+
+
+def unpack_guard_decision(
+    dec: Any,
+    *,
+    default_allowed: bool = False,
+    default_reason: str = "guard_veto",
+    default_scale: float = 1.0,
+) -> tuple[bool, BrakeAction, float, str]:
+    """Normalize a GuardDecision (or duck-typed/dict substitute) into ``(allowed, brake_action, scale, reason)``."""
+    raw_allowed = obj_attr(dec, "allowed", _MISSING)
+    allowed_b = (
+        bool(default_allowed)
+        if raw_allowed is _MISSING
+        else bool(_parse_bool_flag(raw_allowed, default_allowed))
+    )
+    raw_scale = obj_attr(dec, "suggested_scale", _MISSING)
+    eff_default = (
+        clean_scale(default_scale, default=1.0, allow_percent=True)
+        if allowed_b
+        else 0.0
+    )
+    if not allowed_b:
+        scale_f = 0.0
+    elif raw_scale is _MISSING or raw_scale is None:
+        scale_f = eff_default
+    else:
+        num_s = safe_float(raw_scale, default=None)
+        if num_s is not None and num_s <= 0.0:
+            scale_f = 0.0
+        else:
+            scale_f = clean_scale(raw_scale, default=eff_default, allow_percent=True)
+    if scale_f <= 0.0:
+        allowed_b = False
+        scale_f = 0.0
+    raw_brake = obj_attr(dec, "brake_action", None)
+    brake = _coerce_brake_action(raw_brake, allowed=allowed_b, scale=scale_f)
+    raw_reason = obj_attr(dec, "reason", None)
+    reason_s = (
+        str(raw_reason)
+        if (raw_reason is not None and not isinstance(raw_reason, bool) and str(raw_reason))
+        else (default_reason if not allowed_b else "ok")
+    )
+    return allowed_b, brake, scale_f, reason_s
 
 
 class OrderGuardEvaluatorInterface(ABC):

@@ -47,6 +47,7 @@ from intelligence.internal.guards.guard_decision import (
     OrderGuardEvaluatorFactory,
     fetch_guard_snapshot,
     normalize_guard_mode,
+    unpack_guard_decision,
 )
 import notify_engine.alertnotifiers as _alertnotifiers
 
@@ -114,17 +115,19 @@ def check_external_order_guards(
                 dec = guard.check(symbol, order_side, **{kw_name: snap}, now=now_ts)
             except TypeError:
                 dec = guard.check(symbol, order_side, **{kw_name: snap})
-            d_scale = clean_scale(getattr(dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
-            if not dec.allowed or dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
+            d_allowed, d_brake, d_scale, d_reason = unpack_guard_decision(
+                dec, default_reason=f"{notify_key}_guard"
+            )
+            if not d_allowed or d_brake in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY) or d_scale < 1.0:
                 prefix = f"[{log_tag}_GUARD_SHADOW]" if g_mode == "shadow" else f"[{log_tag}_GUARD_ENFORCE]"
                 scale_sfx = f", suggested_scale={d_scale}" if log_scale else ""
-                print(f"{prefix} {order_side} {symbol}: {dec.reason} (brake={dec.brake_action}{scale_sfx})")
+                print(f"{prefix} {order_side} {symbol}: {d_reason} (brake={d_brake}{scale_sfx})")
                 if g_mode == "shadow" and shadow_notify_enabled:
                     scale_pct = round(d_scale * 100) if d_scale < 1.0 else None
                     action_str = (
-                        str(dec.brake_action.value)
+                        str(d_brake.value)
                         if use_brake_value_in_title
-                        else (f"SCALE {scale_pct}%" if (dec.allowed and scale_pct is not None) else "DEFER")
+                        else (f"SCALE {scale_pct}%" if (d_allowed and scale_pct is not None and d_scale > 0.0) else "DEFER")
                     )
                     cd_key = (sym_norm or symbol, order_side, notify_key)
                     if check_cooldown_gate(_MICRO_SHADOW_NOTIFY_COOLDOWN, cd_key, now_ts):
@@ -133,16 +136,16 @@ def check_external_order_guards(
                             scale_str = f" (Scale: {scale_pct}%)" if scale_pct is not None else ""
                             _alertnotifiers.notify(
                                 title=f"🛡 [{guard_id}] {action_str} {order_side} {symbol}",
-                                body=f"Order: {order_side} {symbol}{price_str}{scale_str}\n{dec.reason}",
+                                body=f"Order: {order_side} {symbol}{price_str}{scale_str}\n{d_reason}",
                                 source="order_guard",
                                 symbol=symbol,
                             )
                         except Exception:
                             pass
                 if g_mode == "enforce":
-                    if not dec.allowed or d_scale <= 0.0:
-                        return False, dec.reason, 0.0
-                    effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, d_scale, dec.reason)
+                    if not d_allowed or d_scale <= 0.0:
+                        return False, d_reason, 0.0
+                    effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, d_scale, d_reason)
             return None
         except Exception:
             return None

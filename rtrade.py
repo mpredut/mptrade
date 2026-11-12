@@ -375,18 +375,20 @@ class _LivePairVenue:
                 return val_f
 
             r_started = _pending_ts("recovery_started_at", "recovery timing")
-            terminal_state = pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}
-            horizon_exhausted = (
+            rec_state = pending.get("recovery_state")
+            terminal_state = rec_state in {"absence_confirmed_no_reuse", "horizon_exhausted"}
+            newly_exhausted = (
                 not terminal_state
                 and r_started is not None
                 and max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC
             )
-            if terminal_state or horizon_exhausted:
-                if horizon_exhausted:
-                    pending.update(recovery_state="horizon_exhausted", recovery_horizon_exhausted_at=now)
+            if terminal_state or newly_exhausted:
+                if newly_exhausted:
+                    rec_state = "horizon_exhausted"
+                    pending.update(recovery_state=rec_state, recovery_horizon_exhausted_at=now)
                 persist_raw(pending)
                 raise _IntentRecoveryPending(
-                    f"{kind}:{side} {'recovery horizon is exhausted' if horizon_exhausted else 'requires manual reconciliation'}"
+                    f"{kind}:{side} {'recovery horizon is exhausted' if newly_exhausted else 'requires manual reconciliation'}"
                 )
             n_rec = _pending_ts("next_recovery_at", "next recovery time")
             if n_rec is not None and now < n_rec:
@@ -1356,7 +1358,9 @@ class TradingBot:
 
         last_start_at = last_recovery_retry = last_recovery_diag_log = last_active_summary_log = last_whale_log = -math.inf
         recovery_blocked_since = (
-            _rtrade_monotonic_time() if (recovery_blocked or bool(getattr(venue, "recovery_blocked", False))) else None
+            _rtrade_monotonic_time()
+            if (recovery_blocked or _parse_bool_flag(getattr(venue, "recovery_blocked", False), False))
+            else None
         )
         next_direction = 0
         side_backoff_until = {"BUY": 0.0, "SELL": 0.0}
@@ -1364,7 +1368,8 @@ class TradingBot:
         while True:
             try:
                 now = _rtrade_monotonic_time()
-                is_recovery_blocked = recovery_blocked or bool(getattr(venue, "recovery_blocked", False))
+                venue_blocked = bool(_parse_bool_flag(getattr(venue, "recovery_blocked", False), False))
+                is_recovery_blocked = recovery_blocked or venue_blocked
 
                 if is_recovery_blocked:
                     if recovery_blocked_since is None:
@@ -1383,7 +1388,7 @@ class TradingBot:
                         blocked_list = list(getattr(venue, "_recovery_blocked_pairs", []))
                         print(
                             f"[{self.symbol}] RECOVERY IN PROGRESS / BLOCKED: elapsed={elapsed_blocked:.1f}s / max={_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:.1f}s "
-                            f"(orchestrator timeout in {rem:.1f}s) | venue_blocked={bool(getattr(venue, 'recovery_blocked', False))} "
+                            f"(orchestrator timeout in {rem:.1f}s) | venue_blocked={venue_blocked} "
                             f"init_blocked={recovery_blocked} blocked_pairs={blocked_list}"
                         )
 

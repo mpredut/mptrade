@@ -6,6 +6,7 @@ import importlib
 import inspect
 import logging
 import math
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -306,13 +307,21 @@ class MarketDataProvider(ABC):
     @classmethod
     def get_ssot_short_trend_manager(cls) -> Any:
         """Return the ShortTrend cache manager via bound hook (respecting ``cacheManager`` / ``cachetrend`` monkeypatches)."""
-        if cls._ssot_short_trend_getter is None:
-            default_fn = getattr(importlib.import_module("cachetrend"), "get_short_trend_manager", None)
-        else:
-            default_fn = cls._ssot_short_trend_getter
+        ct_mod = (
+            importlib.import_module("cachetrend")
+            if cls._ssot_short_trend_getter is None
+            else sys.modules.get("cachetrend")
+        )
+        orig_fn = getattr(ct_mod, "_ORIG_GET_SHORT_TREND_MANAGER", None) if ct_mod is not None else None
+        default_fn = (
+            cls._ssot_short_trend_getter
+            or orig_fn
+            or (getattr(ct_mod, "get_short_trend_manager", None) if ct_mod is not None else None)
+        )
         fn = resolve_patched_attr(
             "get_short_trend_manager",
             default_fn,
+            defaults=(cls._ssot_short_trend_getter, orig_fn),
             modules=("cacheManager", "cachetrend"),
             require_callable=True,
         )
@@ -571,7 +580,7 @@ class MarketDataProvider(ABC):
     @classmethod
     def resolve_venue_tca_price_decimals(cls, venue: Any, limit_price: float = 0.0) -> int:
         """Return venue-specific TCA limit-price rounding decimals."""
-        return safe_nonneg_int(cls._resolve_venue_target_cls(venue).tca_price_decimals(limit_price), default=2) or 0
+        return safe_nonneg_int(cls._resolve_venue_target_cls(venue).tca_price_decimals(limit_price), default=2)
 
     @classmethod
     def uses_shared_registry_symbols(cls, venue: Any) -> bool:

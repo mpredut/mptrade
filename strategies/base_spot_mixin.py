@@ -503,7 +503,7 @@ class BaseSpotMixin:
 
     def _now(self) -> float:
         """Return the current timestamp honoring custom clock or simulated time in replay mode."""
-        replay = bool(getattr(self, "replay_mode", False))
+        replay = bool(_parse_bool_flag(getattr(self, "replay_mode", False), False))
         if replay:
             sim_ts = getattr(self, "_simulated_ts", None)
             if sim_ts is not None:
@@ -1066,10 +1066,12 @@ class BaseSpotMixin:
             self.exit_manager = self._init_exit_manager()
         cfg = self.exit_manager.config
         cfg.tp_pullback_pct = eff_trail_pct / 100.0
-        cfg.tp_trend_ride_enabled = (
-            bool(getattr(self.p, "tp_trend_hold", True)) if trend_ride_enabled is None else trend_ride_enabled
+        cfg.tp_trend_ride_enabled = bool(
+            _parse_bool_flag(getattr(self.p, "tp_trend_hold", True), True)
+            if trend_ride_enabled is None
+            else _parse_bool_flag(trend_ride_enabled, True)
         )
-        cfg.tp_profit_floor_min_pct = (getattr(self.p, self._tp_floor_param_attr, None) or 0.0) / 100.0
+        cfg.tp_profit_floor_min_pct = safe_nonneg_float(getattr(self.p, self._tp_floor_param_attr, None), default=0.0) / 100.0
         cfg.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
         if self._supports_fast_profit_guard:
             cfg.fast_profit_guard_enabled = self.p.fast_profit_guard

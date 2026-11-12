@@ -20,6 +20,7 @@ from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
     OrderGuardEvaluatorFactory,
+    unpack_guard_decision,
 )
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
@@ -167,14 +168,21 @@ class CompositeMarketIntelligence(OrderGuardEvaluatorBase):
 
         def _apply_guard_dec(dec: GuardDecision) -> Optional[GuardDecision]:
             nonlocal effective_scale, downscale_dec
-            if not dec.allowed:
-                return dec
-            if dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                s_val = clean_scale(getattr(dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
+            d_allowed, d_brake, s_val, d_reason = unpack_guard_decision(dec)
+            g_name = str(obj_attr(dec, "guard_name", "") or "CompositeGuard")
+            raw_meta = obj_attr(dec, "metadata", None)
+            g_meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+            if not d_allowed:
+                return dec if isinstance(dec, GuardDecision) else GuardDecision(
+                    allowed=False, brake_action=d_brake, guard_name=g_name, reason=d_reason, suggested_scale=0.0, metadata=g_meta
+                )
+            if d_brake == BrakeAction.DOWNSCALE_QTY or s_val < 1.0:
+                if s_val <= 0.0:
+                    return GuardDecision.veto(g_name, reason=d_reason, **g_meta)
                 if s_val < effective_scale or downscale_dec is None:
                     effective_scale = min(effective_scale, s_val)
                     downscale_dec = GuardDecision.downscale(
-                        dec.guard_name, scale=effective_scale, reason=dec.reason, **dec.metadata
+                        g_name, scale=effective_scale, reason=d_reason, **g_meta
                     )
             return None
 
@@ -392,8 +400,8 @@ class CompositeMarketIntelligence(OrderGuardEvaluatorBase):
         else:
             guard_dec = GuardDecision.allow("NoActiveOrder", "idle")
 
-        can_exec = bool(active_trigger and active_trigger.is_executable() and guard_dec.allowed)
-        sc_val = clean_scale(getattr(guard_dec, "suggested_scale", 1.0), default=0.0, allow_percent=True)
+        gd_allowed, _gd_brake, sc_val, _gd_reason = unpack_guard_decision(guard_dec)
+        can_exec = bool(active_trigger and active_trigger.is_executable() and gd_allowed)
         scale = (1.0 if side == "SELL" else sc_val) if can_exec else 0.0
         if scale <= 0.0:
             can_exec = False
