@@ -1554,7 +1554,7 @@ class Strategy(BaseSpotMixin):
         ):
             return
         if self.p.dca_trend_gate_pct > 0:
-            if self._now() < getattr(self, "_dca_gate_until", 0):
+            if self._now() < safe_nonneg_float(getattr(self, "_dca_gate_until", 0.0), default=0.0):
                 return
             slope_f = safe_float(self._trend_slope_provider(self.yahoo_sym), default=None)
             if slope_f is not None and slope_f < -self.p.dca_trend_gate_pct:

@@ -127,7 +127,11 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
 )
 from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
 from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
-from kraken import kraken_xstock_watch as xstock_watch, shadow_live as kraken_shadow
+from kraken import (
+    kraken_xstock_watch as xstock_watch,
+    market_data as kraken_md_mod,
+    shadow_live as kraken_shadow,
+)
 from kraken.kraken_client import KrakenClient
 from kraken.kraken_common import load_isolated_kraken_cfg
 from kraken.trailing_stop import KrakenTrailing
@@ -176,6 +180,7 @@ from providers.ohlc_utils import (
     drop_incomplete_last_bar,
     resolve_ohlc_time_window_ms,
     validate_dataset,
+    validate_ohlc_candle_bar,
 )
 from providers.order_ohlc_utils import (
     POST_ONLY_CROSS_TOKENS,
@@ -217,7 +222,12 @@ from state_io import (
     read_tail_complete_lines_text,
     read_text_file,
 )
-from strategies import mt_position_accounting as mt_pa_mod, rtrade_pair as rtp_mod, spot_engine as spot_eng_mod
+from strategies import (
+    mt_position_accounting as mt_pa_mod,
+    rtrade_pair as rtp_mod,
+    spot_engine as spot_eng_mod,
+    state_store as strat_ss_mod,
+)
 from strategies.base_spot_mixin import BaseSpotMixin, parse_tp_ladder_env
 from strategies.replay_execution import ExecutionModel, select_eligible_intrabar_orders
 from strategies.replay_metrics import (
@@ -4580,6 +4590,195 @@ def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_pa
 
     tsg = TrendSignificanceGuard(max_p_value=0.0)
     assert tsg.max_p_value == pytest.approx(0.05)
+
+
+def test_wave28_spot_params_bool_ssot_ohlc_drop_incomplete_and_border_cases(tmp_path, monkeypatch):
+    """Verify Wave 28 SSOT bool normalization on SpotParamsMixin/HL StratParams, cross-venue drop_incomplete='false' symmetry, BaseSpotMixin._qty_for/replay_mode, AssetGuardian pending dict guard, KalmanStateTracker._write_state, and negative ob_mid_price fallbacks."""
+    # 1. SpotParamsMixin.__post_init__ normalizes string booleans across spot_engine and T212 StratParams
+    t212_strat_mod = load_venue_modules("212trading", "strategy")
+    t212_p = t212_strat_mod.StratParams.from_dict(
+        {
+            "enable_takeprofit": "false",
+            "sl_rebuy_enabled": "0",
+            "reentry_hybrid_enabled": "false",
+            "reentry_pullback_adaptive": "false",
+            "sl_mhdsl_enabled": "0",
+            "sl_structural_break_enabled": "false",
+            "tp_mdhtp_enabled": "false",
+        }
+    )
+    assert t212_p.enable_takeprofit is False
+    assert t212_p.sl_rebuy_enabled is False
+    assert t212_p.reentry_hybrid_enabled is False
+    assert t212_p.reentry_pullback_adaptive is False
+    assert t212_p.sl_mhdsl_enabled is False
+    assert t212_p.sl_structural_break_enabled is False
+    assert t212_p.tp_mdhtp_enabled is False
+
+    spot_p = spot_eng_mod.StratParams.from_dict(
+        {
+            "currency": "USDC",
+            "entry_amount": 50.0,
+            "entry_discount_pct": 0.2,
+            "dca_amount": 25.0,
+            "dca_drop_pct": 2.0,
+            "check_minutes": 15.0,
+            "takeprofit_pct": 3.0,
+            "max_budget": 200.0,
+            "max_dca_buys": 4,
+            "enable_takeprofit": "false",
+            "order_ttl_min": 30.0,
+            "stop_loss_pct": 5.0,
+            "trend_overlay": "false",
+            "surge_guard": "0",
+        }
+    )
+    assert spot_p.enable_takeprofit is False
+    assert spot_p.trend_overlay is False
+    assert spot_p.surge_guard is False
+
+    # 2. Hyperliquid StratParams normalizes signal_gate="false" and rejects invalid signal_gate strings
+    hl_strat_mod = load_venue_modules("hyperliquid", "strategy")
+    hl_p = hl_strat_mod.StratParams(signal_gate="false", enable_takeprofit="false")
+    hl_p._validate_numeric_bounds("long")
+    assert hl_p.signal_gate is False
+    assert hl_p.enable_takeprofit is False
+    with pytest.raises(ValueError, match="signal_gate"):
+        hl_bad = hl_strat_mod.StratParams(signal_gate="maybe")
+        hl_bad._validate_numeric_bounds("long")
+
+    # 3. state_store.compute_adaptive_reentry_pullback_pct honors string "false" on SimpleNamespace
+    ns_p = SimpleNamespace(
+        reentry_pullback_adaptive="false",
+        reentry_pullback_pct=1.75,
+        reentry_pullback_min=0.8,
+        reentry_pullback_max=4.0,
+        reentry_pullback_k=1.5,
+    )
+    assert strat_ss_mod.compute_adaptive_reentry_pullback_pct(ns_p, 2.0) == (1.75, "fixed")
+
+    # 4. BaseSpotMixin._qty_for handles vol_dec=None / string sz_dec and _record_state_file_mtime honors replay_mode="false"
+    mixin_q = BaseSpotMixin()
+    mixin_q.vol_dec = None
+    mixin_q.sz_dec = "4"
+    assert mixin_q._qty_for(10.0, 8.0) == pytest.approx(1.25)
+    sf_path = tmp_path / "spot_mtime.json"
+    atomic_write_text(str(sf_path), "{}")
+    mixin_q.replay_mode = "false"
+    mixin_q.state_file = str(sf_path)
+    mixin_q._record_state_file_mtime()
+    assert getattr(mixin_q, "_state_file_mtime", 0.0) > 0.0
+
+    # 5. Cross-venue OHLC drop_incomplete="false" symmetry across ohlc_utils, Kraken, Hyperliquid, and T212/Yahoo
+    bar_keep = validate_ohlc_candle_bar(
+        1700000000000,
+        100.0,
+        105.0,
+        99.0,
+        102.0,
+        close_ts=1700003600000,
+        now_ms=1700001000000,
+        drop_incomplete="false",
+        ts_in_ms=True,
+    )
+    assert bar_keep is not None and bar_keep["timestamp"] == 1700000000
+
+    monkeypatch.setattr(
+        kraken_md_mod,
+        "fetch_public_json",
+        lambda *_a, **_kw: {
+            "error": [],
+            "result": {
+                "XXBTZUSD": [
+                    [1700000000, "100", "105", "99", "101", "101", "10", 5],
+                    [1700003600, "101", "106", "100", "104", "103", "12", 6],
+                ],
+                "last": 1700000000,
+            },
+        },
+    )
+    assert len(kraken_md_mod.fetch_ohlc_candles("XBTUSD", 60, drop_incomplete="false")) == 2
+
+    hl_md_mod = load_venue_modules("hyperliquid", "market_data")
+    hl_rows = [
+        {"t": 1700000000000, "T": 1700003599999, "o": "40", "h": "42", "l": "39", "c": "41"},
+        {"t": 1700003600000, "T": 1700007199999, "o": "41", "h": "43", "l": "40", "c": "42"},
+    ]
+    assert len(hl_md_mod.normalize_closed_candles(hl_rows, now_ms=1700004000000, drop_incomplete="false")) == 2
+
+    t212_md_mod = load_venue_modules("212trading", "market_data")
+    now_sec = math.trunc(time.time())
+    bar_start = (now_sec // 300) * 300
+    monkeypatch.setattr(
+        t212_md_mod,
+        "fetch_public_json",
+        lambda *_a, **_kw: {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {"currentTradingPeriod": {"regular": {"start": bar_start - 3600, "end": bar_start + 3600}}},
+                        "timestamp": [bar_start - 300, bar_start],
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [100.0, 101.0],
+                                    "high": [102.0, 103.0],
+                                    "low": [99.0, 100.5],
+                                    "close": [101.0, 102.5],
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        },
+    )
+    assert len(t212_md_mod.fetch_yahoo_candles("NVDA", "1d", "5m", drop_incomplete="false")) == 2
+
+    # 6. T212 _dca_gate_until=None, AssetGuardian _has_pending_campaign, KalmanStateTracker._last_written_count=None, and negative ob_mid_price fallback
+    t212_s = t212_strat_mod.Strategy.__new__(t212_strat_mod.Strategy)
+    t212_s.ticker = "NVDA_US_EQ"
+    t212_s.yahoo_sym = "NVDA"
+    t212_s.exit_manager = None
+    t212_s._dca_gate_until = None
+    t212_s._now = lambda: 1_700_000_000.0
+    t212_s._trend_slope_provider = lambda _sym: -2.0
+    t212_s._has_open = lambda _side: False
+    t212_s.p = SimpleNamespace(
+        max_dca_buys=3,
+        dca_amount=25.0,
+        max_budget=200.0,
+        reentry_tolerance_pct=0.0,
+        dca_trend_gate_pct=0.5,
+        dca_drop_pct=2.0,
+    )
+    t212_s.s = {
+        "dca_buys": 0,
+        "spent_cash": 50.0,
+        "last_buy_price": 100.0,
+        "sl_pending": False,
+        "sl_pending_exit": None,
+        "buy_backoff_until": 0.0,
+    }
+    t212_s._dispatch_dca_buy(95.0, 1.0, in_backoff=False)
+    assert t212_s._dca_gate_until == pytest.approx(1_700_000_300.0)
+
+    assert ag._has_pending_campaign({"pending": "false"}) is False
+    assert ag._has_pending_campaign({"pending": {}}) is False
+    assert ag._has_pending_campaign({"pending": {"client_order_id": "ag-1"}}) is True
+
+    kst = cachetrend.KalmanStateTracker(state_path=str(tmp_path / "kalman_test.json"), read_only=False)
+    kst._last_written_count = None
+    kst._state = {"BTCUSDC": {"price": 65000.0, "slope": 0.01}}
+    kst._write_state(time.time())
+    assert (tmp_path / "kalman_test.json").exists()
+
+    sec3b = ps_mod._format_microstructure_section(
+        {"BTCUSDC": {"ob_mid_price": -5.0, "best_bid": 100.0, "best_ask": 102.0, "spread_bps": 200.0}},
+        {"BTCUSDC": {"price": 0.0}},
+    )
+    assert "ob_mid=101.0" in "\n".join(sec3b)
+
 
 
 

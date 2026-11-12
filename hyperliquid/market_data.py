@@ -15,6 +15,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (  # noqa: E402
+    _parse_bool_flag,
     fetch_json_post,
     load_local_module,
     log,
@@ -57,7 +58,8 @@ def normalize_closed_candles(
     """Sort, deduplicate and drop the candle that is still open."""
     if not isinstance(rows, list):
         return []
-    if drop_incomplete:
+    should_drop = _parse_bool_flag(drop_incomplete, True)
+    if should_drop:
         now_i = safe_int(now_ms, default=None)
         if now_i is None or not isinstance(now_ms, (int, float)):
             return []
@@ -74,7 +76,7 @@ def normalize_closed_candles(
             row.get("c"),
             close_ts=row.get("T"),
             now_ms=now_ms,
-            drop_incomplete=drop_incomplete,
+            drop_incomplete=should_drop,
             close_inclusive=True,
             ts_in_ms=True,
         )

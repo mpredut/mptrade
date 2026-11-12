@@ -1287,7 +1287,9 @@ def sync_sibling_symbol_telemetry(
             sib_micro = casefold_get(microstructure, cand)
             if isinstance(sib_micro, dict) and sib_micro:
                 p_px_m = safe_float(pinfo.get("price"), 0.0)
-                s_ob_mid = safe_float(sib_micro.get("ob_mid_price"), 0.0) or safe_float(sib_pinfo.get("price") if isinstance(sib_pinfo, dict) else None, 0.0)
+                s_ob_mid = safe_pos_float(sib_micro.get("ob_mid_price"), 0.0) or safe_pos_float(
+                    sib_pinfo.get("price") if isinstance(sib_pinfo, dict) else None, 0.0
+                )
                 micro_px_diverged = (not cand_same_quote_family) or _prices_diverged(p_px_m, s_ob_mid)
                 if not isinstance(microstructure.get(sym), dict):
                     microstructure[sym] = {mk: mv for mk, mv in sib_micro.items() if not (micro_px_diverged and mk in _MICRO_PRICE_ANCHOR_KEYS)}

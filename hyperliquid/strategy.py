@@ -111,14 +111,13 @@ class StratParams:
             raise ValueError(f"entry_discount_pct must be < 100 for long, got {self.entry_discount_pct!r}")
         if dir_norm == "short" and disc_f <= -100.0:
             raise ValueError(f"entry_discount_pct must be > -100 for short, got {self.entry_discount_pct!r}")
-        if isinstance(self.enable_takeprofit, bool):
-            en_tp = self.enable_takeprofit
-        else:
-            parsed_tp = _parse_bool_flag(self.enable_takeprofit, default=None)
-            if parsed_tp is None:
-                raise ValueError(f"invalid enable_takeprofit: {self.enable_takeprofit!r}")
-            en_tp = parsed_tp
-            self.enable_takeprofit = en_tp
+        for b_attr, b_def in (("enable_takeprofit", True), ("signal_gate", False)):
+            raw_b = getattr(self, b_attr, b_def)
+            parsed_b = raw_b if isinstance(raw_b, bool) else _parse_bool_flag(raw_b, default=None)
+            if parsed_b is None:
+                raise ValueError(f"invalid {b_attr}: {raw_b!r}")
+            setattr(self, b_attr, parsed_b)
+        en_tp = self.enable_takeprofit
         tp_f = require_finite_float(self.takeprofit_pct, "takeprofit_pct")
         if en_tp:
             if tp_f <= 0.0:

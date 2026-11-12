@@ -15,7 +15,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, normalize_timestamp_ms, safe_float
+from botcore import _parse_bool_flag, normalize_timestamp_ms, safe_float, safe_pos_float
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -850,7 +850,7 @@ def _format_microstructure_section(
         aw_px_f = safe_float(aw_px, 0.0)
         b_bid = safe_float(minfo.get("best_bid"), 0.0)
         b_ask = safe_float(minfo.get("best_ask"), 0.0)
-        ob_mid = safe_float(minfo.get("ob_mid_price"), 0.0) or (
+        ob_mid = safe_pos_float(minfo.get("ob_mid_price"), 0.0) or (
             (b_bid + b_ask) / 2.0 if b_bid > 0 and b_ask > 0 else 0.0
         )
         if ob_mid > 0 and (

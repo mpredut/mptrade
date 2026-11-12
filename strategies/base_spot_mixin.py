@@ -9,6 +9,7 @@ coordination, MDHTP take-profit configuration, and ReentrySnapshot evaluation ac
 from __future__ import annotations
 
 from collections import OrderedDict, deque
+from dataclasses import fields
 import math
 import os
 import signal
@@ -37,7 +38,13 @@ from .state_store import (
 
 
 class SpotParamsMixin:
-    """Shared from_dict constructor and percentage-sizing helpers for StratParams dataclasses."""
+    """Shared __post_init__ bool normalization, from_dict constructor, and percentage-sizing helpers for StratParams dataclasses."""
+
+    def __post_init__(self) -> None:
+        for f in fields(self):
+            if f.name == "enable_takeprofit" or isinstance(f.default, bool):
+                b_def = True if f.name == "enable_takeprofit" else f.default
+                setattr(self, f.name, _parse_bool_flag(getattr(self, f.name, b_def), b_def))
 
     @classmethod
     def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False):
@@ -595,7 +602,9 @@ class BaseSpotMixin:
         )
 
     def _record_state_file_mtime(self) -> None:
-        if getattr(self, "replay_mode", False) or not isinstance(getattr(self, "state_file", None), str):
+        if _parse_bool_flag(getattr(self, "replay_mode", False), False) or not isinstance(
+            getattr(self, "state_file", None), str
+        ):
             return
         try:
             if os.path.exists(self.state_file):
@@ -642,7 +651,9 @@ class BaseSpotMixin:
 
     def _qty_for(self, amount: float, price: float) -> float:
         amt_f, px_f = safe_pos_float(amount, default=None), safe_pos_float(price, default=None)
-        dec = getattr(self, "vol_dec", getattr(self, "sz_dec", 8))
+        dec = safe_nonneg_int(getattr(self, "vol_dec", None), default=None)
+        if dec is None:
+            dec = safe_nonneg_int(getattr(self, "sz_dec", None), default=8)
         return round(amt_f / px_f, dec) if (amt_f is not None and px_f is not None) else 0.0
 
     def _apply_buy_fill_accounting(

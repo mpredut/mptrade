@@ -22,6 +22,7 @@ if _ROOT not in sys.path:
 
 from botcore import (
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
+    _parse_bool_flag,
     clean_nonempty_str,
     exact_pos_int,
     fetch_public_json,
@@ -129,7 +130,7 @@ def fetch_yahoo_candles(
         )
         if bar is not None:
             records.append(bar)
-    if drop_incomplete:
+    if _parse_bool_flag(drop_incomplete, True):
         regular = ((result.get("meta") or {}).get("currentTradingPeriod") or {}).get(
             "regular"
         ) or {}

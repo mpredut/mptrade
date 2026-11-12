@@ -1716,7 +1716,7 @@ class KalmanStateTracker:
         with self._lock:
             if self._last_state_write > now:
                 self._last_state_write = 0.0
-            has_new_symbols = len(self._state) > getattr(self, "_last_written_count", 0)
+            has_new_symbols = len(self._state) > safe_nonneg_int(getattr(self, "_last_written_count", 0), default=0)
             if not has_new_symbols and (now - self._last_state_write) < self.state_min_interval:
                 return
             try:

@@ -757,6 +757,10 @@ def _symbol_campaign(symbol, kind):
     return dict(campaign) if isinstance(campaign, dict) else {}
 
 
+def _has_pending_campaign(campaign: object) -> bool:
+    return isinstance(campaign, dict) and isinstance(campaign.get("pending"), dict) and bool(campaign["pending"])
+
+
 def _save_symbol_campaign(symbol, kind, campaign):
     if kind not in {"buy", "sell"}:
         raise ValueError(f"unknown AssetGuardian campaign: {kind}")
@@ -1487,7 +1491,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
 
     for kind in ("sell", "buy"):
         campaign = _symbol_campaign(symbol, kind)
-        if not campaign.get("pending"):
+        if not _has_pending_campaign(campaign):
             continue
         _campaign, pending_outcome = _reconcile_pending_campaign(symbol, kind, campaign)
         if pending_outcome == "active":
@@ -1568,7 +1572,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         if not ready:
             return False
         if _submit_sell_tier(symbol, current_price=current_price, tier=sell_tier, state=sell_state):
-            evaluation["pending_tier"] = bool(_symbol_campaign(symbol, "sell").get("pending"))
+            evaluation["pending_tier"] = _has_pending_campaign(_symbol_campaign(symbol, "sell"))
             return True
         return False
 
@@ -1668,7 +1672,7 @@ def run_forever():
         # Flushing at the cycle boundary publishes all preceding lines when stdout
         # is redirected by flota_start.sh, preventing a quiet bot from appearing stale.
         print(f"[DEBUG] sleep {sleep_seconds}s before next cycle", flush=True)
-        _STOP_EVENT.wait(sleep_seconds)
+        _STOP_EVENT.wait(safe_nonneg_float(sleep_seconds, default=CHECK_INTERVAL_SECONDS))
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
+    _parse_bool_flag,
     exact_nonneg_int,
     fetch_public_json,
     log,
@@ -78,7 +79,7 @@ def fetch_ohlc_candles(
     raw = res[key]
     if not isinstance(raw, list):
         return []
-    rows = raw[:-1] if drop_incomplete else raw
+    rows = raw[:-1] if _parse_bool_flag(drop_incomplete, True) else raw
     records: list[dict] = []
     for x in rows:
         if isinstance(x, (list, tuple)) and len(x) >= 5:

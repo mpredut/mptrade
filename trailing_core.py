@@ -319,7 +319,7 @@ class TrailingCore:
             else:
                 st["exit_sold_qty"] = accum_qty
                 st["exit_sold_cost"] = accum_cost
-                peak_val = safe_nonneg_float(st.get("peak"), default=avg) or avg
+                peak_val = safe_pos_float(st.get("peak"), default=avg) or avg
                 self.log(
                     f"  [TRAIL] partial exit: sold {filled:.4f} @ {avg:.4f} (accum {accum_qty:.4f}/{target_qty:.4f}), "
                     f"remaining position still protected under peak {peak_val:.4f}"

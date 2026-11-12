@@ -35,7 +35,7 @@ def compute_adaptive_reentry_pullback_pct(
     vol_label: str = "vol",
 ) -> tuple[float, str]:
     """Compute volatility-scaled or fixed re-entry pullback threshold from peak."""
-    if not getattr(params, "reentry_pullback_adaptive", False):
+    if not _parse_bool_flag(getattr(params, "reentry_pullback_adaptive", False), False):
         return params.reentry_pullback_pct, "fixed"
     vol_f = safe_pos_float(vol, default=None)
     if vol_f is None:
@@ -65,7 +65,7 @@ def build_strategy_exit_manager(
         sl_trend_defer_max_sec=p.sl_trend_defer_max_sec,
         sl_bounce_min_recovery_pct=to_ratio(p.sl_bounce_min_recovery_pct),
         sl_bounce_pullback_pct=to_ratio(p.sl_bounce_pullback_pct),
-        sl_structural_break_enabled=p.sl_structural_break_enabled,
+        sl_structural_break_enabled=_parse_bool_flag(p.sl_structural_break_enabled, True),
         smart_sl_enabled=False,
         reentry_enabled=True,
         reentry_drop_pct=to_ratio(p.reentry_drop_pct),

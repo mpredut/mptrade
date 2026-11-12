@@ -12,7 +12,7 @@ import math
 import os
 import time  # noqa: F401 -- resolved via BaseSpotMixin._mod_global("time")
 from collections import OrderedDict, deque
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from typing import Callable
 
 from notify_engine.alertnotifiers import bind_notify
@@ -177,10 +177,7 @@ class StratParams(SpotParamsMixin):
         self.dca_drop_pct = finite("STRAT_DCA_DROP_PCT", self.dca_drop_pct)
         self.takeprofit_pct = finite("STRAT_TAKEPROFIT_PCT", self.takeprofit_pct)
         self.stop_loss_pct = finite("STRAT_STOP_LOSS_PCT", self.stop_loss_pct)
-        for f in fields(self):
-            if f.name == "enable_takeprofit" or isinstance(f.default, bool):
-                b_def = True if f.name == "enable_takeprofit" else f.default
-                setattr(self, f.name, _parse_bool_flag(getattr(self, f.name, b_def), b_def))
+        super().__post_init__()
         if isinstance(self.tp_tranches, str):
             self.tp_tranches = _parse_tranches(self.tp_tranches)
         elif self.tp_tranches is None:

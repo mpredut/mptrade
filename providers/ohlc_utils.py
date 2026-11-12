@@ -8,6 +8,7 @@ from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence
 
 from botcore import (
     ClosedPriceSeries,
+    _parse_bool_flag,
     exact_int,
     exact_pos_int,
     normalize_epoch_sec,
@@ -263,11 +264,15 @@ def validate_ohlc_candle_bar(
         close_i = math.trunc(ct_f)
         if close_i < open_i:
             return None
-        if drop_incomplete and now_ms is not None and ((close_i >= now_ms) if close_inclusive else (close_i > now_ms)):
+        if (
+            _parse_bool_flag(drop_incomplete, True)
+            and now_ms is not None
+            and ((close_i >= now_ms) if _parse_bool_flag(close_inclusive, False) else (close_i > now_ms))
+        ):
             return None
     if h_v < l_v or h_v < max(o_v, c_v) or l_v > min(o_v, c_v):
         return None
-    ts_sec = open_i // 1000 if ts_in_ms else open_i
+    ts_sec = open_i // 1000 if _parse_bool_flag(ts_in_ms, True) else open_i
     if ts_sec <= 0:
         return None
     return {"timestamp": ts_sec, "open": o_v, "high": h_v, "low": l_v, "close": c_v}
