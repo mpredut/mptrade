@@ -1401,9 +1401,6 @@ class AssetGuardianTest(unittest.TestCase):
                 self.assertEqual(audit_mock.record.call_count, 2)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

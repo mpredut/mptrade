@@ -625,9 +625,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(bapi._normalize_side("short"), "SELL")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

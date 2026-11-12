@@ -441,7 +441,3 @@ class CorePercentageValidationTest(unittest.TestCase):
                     ValueError, "STRAT_REGIME_MIN_SAMPLES",
                 ):
                     _strategy(FakeExecutor(), regime_min_samples=invalid)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

@@ -675,9 +675,6 @@ class PublicCacheTest(unittest.TestCase):
             self.assertEqual(mnotify.call_args.kwargs["title"], "HYPEUSD listed on Kraken!")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

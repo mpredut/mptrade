@@ -674,9 +674,6 @@ def test_registry_execution_independence_and_layered_binding(tmp_path):
     assert resolve_cached_symbol_price("SOLUSDC", venue="binance", base="SOL", quote="USDC", cache_dir=str(tmp_path)) == pytest.approx(150.0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

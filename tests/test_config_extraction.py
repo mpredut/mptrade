@@ -481,7 +481,3 @@ def test_sweep_report_is_complete_and_records_effective_policy(tmp_path, monkeyp
         text = (tmp_path / "output/DEEP_SURGE_SWEEP_REPORT.md").read_text()
         assert "no live promotion is justified" in text
         assert "Calmar" not in text
-
-
-if __name__ == "__main__":
-    unittest.main()

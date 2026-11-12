@@ -333,9 +333,6 @@ class BinanceCacheHealthConfigTest(unittest.TestCase):
                     health.require_pos_float(value, "TEST_VALUE")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================
@@ -473,4 +470,3 @@ def test_persistence_and_cache_layer_dag_and_sibling_purity_ast():
         other_siblings = set(siblings) - {sib}
         assert not (imports & other_siblings), f"{sib}.py imports sibling cache domain: {imports & other_siblings}"
         assert "cacheManager" not in imports, f"{sib}.py must not import cacheManager"
-

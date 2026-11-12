@@ -481,9 +481,6 @@ class TestNewCoinsDiscovery(TempDirTestCase):
         self.assertEqual(format_ntfy_url(False), "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================
@@ -646,4 +643,3 @@ def test_cache_all_price_fetcher_accepts_data_sync_mode_and_clears_recovered_typ
     )
     anom = harvest_log_anomalies_from_dirs([str(tmp_path)], lookback_hours=24.0)
     assert anom.error_count == 0
-

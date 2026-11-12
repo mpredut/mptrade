@@ -535,7 +535,3 @@ class BaseV2GoldenTest(unittest.TestCase):
         self.assertEqual(res["fills"], 2)
         self.assertEqual(res["funding"]["refused_buys"], 0)
         self.assertGreaterEqual(res["funding"]["final_cash"], 0.0)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

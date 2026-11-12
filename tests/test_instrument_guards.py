@@ -2115,9 +2115,6 @@ def test_iter67_terminal_shadowing_refused_status_negative_exec_qty_and_zero_not
     assert "SOLUSDC: $0.00" in formatted
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

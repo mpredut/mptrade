@@ -989,9 +989,6 @@ class HttpResilienceTest(unittest.TestCase):
         self.assertFalse(mount_connect_retry(bad_sess))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

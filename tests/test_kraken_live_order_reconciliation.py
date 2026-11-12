@@ -302,8 +302,3 @@ class KrakenStatePersistenceTest(TempDirTestCase):
         self.assertEqual(engine2.s["post_sell_trough"], 93.30)
         self.assertEqual(engine2.s["sl_low"], 93.30)
         self.assertEqual(engine2.s["last_sell_ts"], 1793289000.0)
-
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

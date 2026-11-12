@@ -325,7 +325,3 @@ def test_exchange_and_business_minima_are_distinct_and_fail_closed():
         rules.normalize(quantity="0.5", price="100", business_min_notional="100")
     with pytest.raises(BinanceFilterError, match="PRICE_FILTER"):
         BinanceOrderRules.from_symbol_info({"baseAsset": "TAO", "quoteAsset": "USDC", "filters": []})
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

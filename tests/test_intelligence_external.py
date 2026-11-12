@@ -972,9 +972,6 @@ class TestOrderGuardPillar2Integration(TempDirTestCase):
         self.assertNotIn("@107", hl_stream._candidate_mids_keys("PURRUSDC"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================
@@ -2189,4 +2186,3 @@ def test_intelligence_and_market_monitor_zero_venue_sdk_imports_ast():
                     imported.add(node.args[0].value.split(".")[0])
             leak = imported & forbidden_venue_sdks
             assert not leak, f"{rel} imports venue SDK directly instead of providers/: {leak}"
-

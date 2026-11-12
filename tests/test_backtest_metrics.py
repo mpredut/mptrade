@@ -681,7 +681,3 @@ def test_chop_weight_backtest_zero_trade_pf_and_asof_btc_lookup():
     sampled_btc = [(9_800.0 + i * 900.0, 50_000.0 + i * 250.0) for i in range(40)]
     tape = cwb._precompute_chop_bar_tape("TAOUSDC", sampled_alt, sampled_btc, step_seconds=900)
     assert any(bar["btc_regime"] == "BULL" for bar in tape)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -2248,9 +2248,6 @@ class TestAtomicWrite(TempDirTestCase):
             rtrade._validate_intent_recovery_config(poll_sec=True)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================
@@ -3148,5 +3145,3 @@ def test_cache_modules_delegate_venue_ws_protocols_to_providers():
         None,
         None,
     )
-
-

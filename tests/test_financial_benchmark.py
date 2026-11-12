@@ -362,7 +362,3 @@ class RiskAdjustedPromotionGateTest(TempDirTestCase):
         candidate = _report(mean=0.8, worst=-1.5, drawdown=3.0, returns=(0.8,) * 20, drawdowns=(3.0,) * 20, calmar=1.1, sortino=1.4, cvar=-1.2, exposure=45.0)
         res = evaluate_risk_adjusted_promotion(baseline, candidate)
         self.assertTrue(res["promote"])
-
-
-if __name__ == "__main__":
-    unittest.main()

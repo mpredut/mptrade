@@ -828,9 +828,6 @@ class HyperliquidDatasetTest(unittest.TestCase):
             validate_continuity([{"timestamp": 0}, {"timestamp": 3_600}, {"timestamp": 10_800}], 60)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

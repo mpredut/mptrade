@@ -303,7 +303,3 @@ class BinanceSubmitGuardTest(unittest.TestCase):
                         api_client=self.client, **options)
         self.client.order_limit_buy.assert_not_called()
         self.client.order_market_buy.assert_not_called()
-
-
-if __name__ == "__main__":
-    unittest.main()

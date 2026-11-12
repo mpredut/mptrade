@@ -328,7 +328,3 @@ class TestBinanceProviderHooks(unittest.TestCase):
             with patch("providers.market_api._get_bapi", return_value=module):
                 with self.assertRaisesRegex(ProviderError, "submit_order"):
                     self.p.submit_order(SYMBOL, "SELL", 1.0, price=None, market=True)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
