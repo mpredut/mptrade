@@ -1,7 +1,5 @@
 """Targeted regression tests for Wave 5 backtest, replay, runner, and research fixes."""
 
-from __future__ import annotations
-
 import botcore
 import importlib
 import math

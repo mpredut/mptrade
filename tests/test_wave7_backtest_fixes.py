@@ -1,6 +1,4 @@
 """Targeted regression tests for Wave 7 backtest, replay, strategy, runner, and research fixes."""
-from __future__ import annotations
-
 import ast
 from pathlib import Path
 from types import SimpleNamespace

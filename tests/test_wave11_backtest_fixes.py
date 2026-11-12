@@ -1,7 +1,5 @@
 """Targeted regression tests for Wave 11 backtest, replay, promotion, and grid fixes."""
 
-from __future__ import annotations
-
 import argparse
 import ast
 import dataclasses

@@ -35,7 +35,6 @@ from botcore import (
     normalize_epoch_sec,
     normalize_side,
     normalize_timestamp_ms,
-    parse_symbol_list,
     pos_float_env,
     require_pos_float,
     required_env,

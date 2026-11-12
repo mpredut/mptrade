@@ -31,12 +31,10 @@ def _series():
     return pts
 
 
-_params = make_spot_test_params
-
 
 class ReplayEngineTest(TempDirTestCase):
     def test_cash_account_rejects_entry_that_cannot_pay_its_fee(self):
-        result = rp.run_replay([(100, 101, 99, 100)] * 3, _params(), initial_cash=100)
+        result = rp.run_replay([(100, 101, 99, 100)] * 3, make_spot_test_params(), initial_cash=100)
         self.assertEqual(result["fills"], 0)
         self.assertGreater(result["funding"]["refused_buys"], 0)
         self.assertEqual(result["funding"]["final_cash"], 100)
@@ -44,11 +42,11 @@ class ReplayEngineTest(TempDirTestCase):
     def test_cash_account_rejects_invalid_capital(self):
         for cash in (0, -1, True, float("nan"), float("inf")):
             with self.subTest(cash=cash), self.assertRaises(ValueError):
-                rp.run_replay([(100, 101, 99, 100)], _params(), initial_cash=cash)
+                rp.run_replay([(100, 101, 99, 100)], make_spot_test_params(), initial_cash=cash)
 
     def test_cash_account_equity_matches_cash_plus_marked_inventory(self):
         bars = [(100, 101, 99, 100), (100, 101, 90, 94), (94, 95, 89, 90)]
-        result = rp.run_replay(bars, _params(), initial_cash=120,
+        result = rp.run_replay(bars, make_spot_test_params(), initial_cash=120,
                                execution=rp.ExecutionModel(partial_fill_ratio=0.5))
         self.assertGreaterEqual(result["funding"]["minimum_cash"], 0)
         self.assertAlmostEqual(result["funding"]["final_cash"] + result["open_qty"] * 90,
@@ -60,7 +58,7 @@ class ReplayEngineTest(TempDirTestCase):
         for policy in ("buy_first", "sell_first"):
             with self.subTest(policy=policy), patch.object(strat, "log"):
                 result = rp.run_replay(
-                    bars, _params(tp_trend_hold=True, tp_trail_pct=3.0,
+                    bars, make_spot_test_params(tp_trend_hold=True, tp_trail_pct=3.0,
                                   reentry_drop_pct=2.2), bar_minutes=240,
                     execution=rp.ExecutionModel(
                         partial_fill_ratio=0.5, intrabar_policy=policy),
@@ -74,9 +72,9 @@ class ReplayEngineTest(TempDirTestCase):
 
     def test_partial_limit_fill_remains_for_the_next_bar(self):
         bars = [(100, 101, 99, 100), (100, 101, 99, 100)]
-        full = rp.run_replay(bars, _params(), fee_pct=0.26)
+        full = rp.run_replay(bars, make_spot_test_params(), fee_pct=0.26)
         partial = rp.run_replay(
-            bars, _params(), fee_pct=0.26,
+            bars, make_spot_test_params(), fee_pct=0.26,
             execution=rp.ExecutionModel(partial_fill_ratio=0.5),
         )
         self.assertEqual(full["fills"], 1)
@@ -84,7 +82,7 @@ class ReplayEngineTest(TempDirTestCase):
         self.assertAlmostEqual(partial["open_qty"], full["open_qty"] / 2)
 
     def test_runs_and_returns_metrics(self):
-        res = rp.run_replay(_series(), _params(), fee_pct=0.26, bar_minutes=60)
+        res = rp.run_replay(_series(), make_spot_test_params(), fee_pct=0.26, bar_minutes=60)
         for k in ("realized", "net", "fees", "total", "cycles", "wins", "maxdd",
                   "open_qty", "return_pct", "max_drawdown_pct", "sharpe", "sortino",
                   "calmar", "cvar_95_pct", "exposure_pct", "profit_factor",
@@ -99,9 +97,9 @@ class ReplayEngineTest(TempDirTestCase):
         self.assertAlmostEqual(res["net_pnl"], res["total"])
 
     def test_decision_trace_is_explicitly_opt_in(self):
-        plain = rp.run_replay(_series(), _params(), fee_pct=0.26, bar_minutes=60)
+        plain = rp.run_replay(_series(), make_spot_test_params(), fee_pct=0.26, bar_minutes=60)
         traced = rp.run_replay(
-            _series(), _params(), fee_pct=0.26, bar_minutes=60,
+            _series(), make_spot_test_params(), fee_pct=0.26, bar_minutes=60,
             include_decision_trace=True,
         )
 
@@ -114,32 +112,32 @@ class ReplayEngineTest(TempDirTestCase):
 
     def test_no_state_file_written(self):
         before = set(os.listdir(os.path.join(ROOT, "kraken")))
-        rp.run_replay(_series(), _params(), fee_pct=0.26)
+        rp.run_replay(_series(), make_spot_test_params(), fee_pct=0.26)
         after = set(os.listdir(os.path.join(ROOT, "kraken")))
         new_state = [f for f in (after - before) if "REPLAY" in f or f.startswith(".state")]
         self.assertEqual(new_state, [], f"replay must NOT write state: {new_state}")
 
     def test_existing_replay_state_cannot_contaminate_result(self):
-        clean = rp.run_replay(_series(), _params(), fee_pct=0.26)
+        clean = rp.run_replay(_series(), make_spot_test_params(), fee_pct=0.26)
         state_path = os.path.join(self.tmp, ".state_REPLAY.json")
         contaminated = strat._new_state()
         contaminated.update({"qty": 99.0, "cost": 1.0, "realized_net": 999999.0})
         with open(state_path, "w", encoding="utf-8") as handle:
             json.dump(contaminated, handle)
         with patch.object(strat, "state_path_for", return_value=state_path):
-            replayed = rp.run_replay(_series(), _params(), fee_pct=0.26)
+            replayed = rp.run_replay(_series(), make_spot_test_params(), fee_pct=0.26)
         self.assertEqual(replayed, clean)
 
     def test_order_created_at_close_cannot_fill_on_same_bar(self):
         # A low of 1 would fill any BUY, but the order is only decided at close=100.
         # The harness must only be able to execute it on the next bar.
         first_bar = (100.0, 200.0, 1.0, 100.0)
-        one_bar = rp.run_replay([first_bar], _params(), fee_pct=0.26)
+        one_bar = rp.run_replay([first_bar], make_spot_test_params(), fee_pct=0.26)
         self.assertEqual(one_bar["fills"], 0)
         self.assertEqual(one_bar["open_qty"], 0.0)
 
         second_bar = (100.0, 101.0, 99.0, 100.0)
-        two_bars = rp.run_replay([first_bar, second_bar], _params(), fee_pct=0.26)
+        two_bars = rp.run_replay([first_bar, second_bar], make_spot_test_params(), fee_pct=0.26)
         self.assertEqual(two_bars["fills"], 1)
         self.assertGreater(two_bars["open_qty"], 0.0)
 
@@ -150,7 +148,7 @@ class ReplayEngineTest(TempDirTestCase):
         bars = [(100.0, 100.5, 99.9, 100.0)]
         bars += [(p, p * 1.004, p * 0.9995, p) for p in (103.0, 106.0, 109.0, 111.0)]
         bars += [(111.0, 111.2, 110.5, 111.0)]
-        trace = rp.run_replay(bars, _params(), fee_pct=0.26, bar_minutes=240,
+        trace = rp.run_replay(bars, make_spot_test_params(), fee_pct=0.26, bar_minutes=240,
                               include_decision_trace=True)
         entries = [e for e in trace["decision_trace"] if e["kind"] == "ENTRY"]
         self.assertGreater(len(entries), 1)
@@ -158,7 +156,7 @@ class ReplayEngineTest(TempDirTestCase):
         self.assertGreater(trace["open_qty"], 0.0)
 
         # Bars shorter than the TTL keep the order, as live would.
-        short = rp.run_replay(bars, _params(order_ttl_min=300.0), fee_pct=0.26,
+        short = rp.run_replay(bars, make_spot_test_params(order_ttl_min=300.0), fee_pct=0.26,
                               bar_minutes=240, include_decision_trace=True)
         self.assertEqual(
             [e["kind"] for e in short["decision_trace"]].count("ENTRY"), 1)
@@ -173,7 +171,7 @@ class ReplayEngineTest(TempDirTestCase):
         ]
 
         result = rp.run_replay(
-            bars, _params(stop_loss_pct=10.0), fee_pct=0.26, bar_minutes=60,
+            bars, make_spot_test_params(stop_loss_pct=10.0), fee_pct=0.26, bar_minutes=60,
         )
 
         self.assertEqual(result["fills"], 2)
@@ -188,9 +186,9 @@ class ReplayEngineTest(TempDirTestCase):
             (80.0, 82.0, 78.0, 80.0),
             (70.0, 71.0, 69.0, 70.0),
         ]
-        plain = rp.run_replay(bars, _params(stop_loss_pct=10), fee_pct=0.26)
+        plain = rp.run_replay(bars, make_spot_test_params(stop_loss_pct=10), fee_pct=0.26)
         stressed = rp.run_replay(
-            bars, _params(stop_loss_pct=10), fee_pct=0.26,
+            bars, make_spot_test_params(stop_loss_pct=10), fee_pct=0.26,
             execution=rp.ExecutionModel(spread_bps=20, market_slippage_bps=80),
         )
         self.assertLess(stressed["return_pct"], plain["return_pct"])
@@ -204,10 +202,10 @@ class ReplayEngineTest(TempDirTestCase):
         ]
 
         uniform = rp.run_replay(
-            bars, _params(stop_loss_pct=10), fee_pct=0.16, bar_minutes=60,
+            bars, make_spot_test_params(stop_loss_pct=10), fee_pct=0.16, bar_minutes=60,
         )
         maker_taker = rp.run_replay(
-            bars, _params(stop_loss_pct=10), fee_pct=0.16, bar_minutes=60,
+            bars, make_spot_test_params(stop_loss_pct=10), fee_pct=0.16, bar_minutes=60,
             fee_model=FeeModel(limit_fee_pct=0.16, market_fee_pct=0.40),
         )
 
@@ -217,7 +215,7 @@ class ReplayEngineTest(TempDirTestCase):
     def test_overlay_requires_replay_bars_at_configured_trend_interval(self):
         with self.assertRaisesRegex(ValueError, "trend_interval"):
             rp.run_replay(
-                _series(), _params(trend_overlay=True, trend_interval=240),
+                _series(), make_spot_test_params(trend_overlay=True, trend_interval=240),
                 fee_pct=0.26, bar_minutes=60,
             )
 
@@ -225,7 +223,7 @@ class ReplayEngineTest(TempDirTestCase):
         with self.assertRaisesRegex(ValueError, "trend_interval"):
             rp.run_replay(
                 _series(),
-                _params(
+                make_spot_test_params(
                     tp_dynamic_flat=True,
                     trend_interval=240,
                 ),
@@ -240,7 +238,7 @@ class ReplayEngineTest(TempDirTestCase):
                     ValueError, "trend_interval",
                 ):
                     rp.run_replay(
-                        _series(), _params(**{feature: True}, trend_interval=240),
+                        _series(), make_spot_test_params(**{feature: True}, trend_interval=240),
                         bar_minutes=minutes,
                     )
 
@@ -251,7 +249,7 @@ class ReplayEngineTest(TempDirTestCase):
             dict(surge_guard=True, surge_move_pct=0.0),
         ):
             with self.subTest(overrides=overrides):
-                rp._validate_replay(_series(), _params(**overrides), bar_minutes=60)
+                rp._validate_replay(_series(), make_spot_test_params(**overrides), bar_minutes=60)
 
     def test_long_surge_window_keeps_its_own_replay_history(self):
         strategy_type = rp._strat.Strategy
@@ -262,7 +260,7 @@ class ReplayEngineTest(TempDirTestCase):
             created.append(strategy)
             return strategy
 
-        params = _params(surge_guard=True, surge_window_hours=96.0, trend_interval=60)
+        params = make_spot_test_params(surge_guard=True, surge_window_hours=96.0, trend_interval=60)
         bar = (100.0, 100.0, 100.0, 100.0)
         with patch.object(rp._strat, "Strategy", side_effect=capture_strategy):
             for warmup_count, expected_move in ((95, None), (96, 25.0)):
@@ -282,7 +280,7 @@ class ReplayEngineTest(TempDirTestCase):
                             self.assertAlmostEqual(move, expected_move)
 
     def test_long_surge_window_can_arm_without_position_gain_threshold(self):
-        params = _params(
+        params = make_spot_test_params(
             tp_trend_hold=True, takeprofit_pct=5.0, tp_trail_pct=8.0,
             surge_guard=True, surge_gain_pct=18.0, surge_move_pct=10.0,
             surge_window_hours=96.0, trend_interval=60,
@@ -307,30 +305,30 @@ class ReplayEngineTest(TempDirTestCase):
     def test_adaptive_features_require_their_configured_bar_interval(self):
         with self.assertRaisesRegex(ValueError, "tp_trail_vol_interval"):
             rp.run_replay(
-                _series(), _params(surge_guard=True, surge_dynamic=True,
+                _series(), make_spot_test_params(surge_guard=True, surge_dynamic=True,
                                    trend_interval=60, tp_trail_vol_interval=240),
                 bar_minutes=60,
             )
         with self.assertRaisesRegex(ValueError, "tp_trail_vol_interval"):
             rp.run_replay(
-                _series(), _params(tp_trail_adaptive=True, tp_trail_vol_interval=240),
+                _series(), make_spot_test_params(tp_trail_adaptive=True, tp_trail_vol_interval=240),
                 fee_pct=0.26, bar_minutes=60,
             )
         with self.assertRaisesRegex(ValueError, "trend_interval"):
             rp.run_replay(
-                _series(), _params(dca_trend_brake=True, trend_interval=240),
+                _series(), make_spot_test_params(dca_trend_brake=True, trend_interval=240),
                 fee_pct=0.26, bar_minutes=60,
             )
         with self.assertRaisesRegex(ValueError, "dca_vol_interval"):
             rp.run_replay(
                 _series(),
-                _params(dca_vol_scale_k=-1.0, dca_vol_interval=240),
+                make_spot_test_params(dca_vol_scale_k=-1.0, dca_vol_interval=240),
                 fee_pct=0.26, bar_minutes=60,
             )
 
     def test_adaptive_reentry_requires_bar_interval_for_time_scaling(self):
         with self.assertRaisesRegex(ValueError, "reentry_adaptive"):
-            rp.run_replay(_series(), _params(reentry_adaptive=True), fee_pct=0.26)
+            rp.run_replay(_series(), make_spot_test_params(reentry_adaptive=True), fee_pct=0.26)
 
     def test_dca_drop_series_adapts_threshold_per_bar(self):
         bars = [
@@ -340,7 +338,7 @@ class ReplayEngineTest(TempDirTestCase):
             (98.0, 98.0, 97.0, 97.0),     # low 97.0 fills DCA limit if placed
         ]
         # Standard params: drop=1.0%. 98.0 is -1.8% -> triggers DCA BUY
-        p_std = _params(dca_drop_pct=1.0)
+        p_std = make_spot_test_params(dca_drop_pct=1.0)
         res_std = rp.run_replay(bars, p_std, fee_pct=0.26, bar_minutes=60)
 
         # Dynamic series with 3.0% drop on bar 2: 98.0 is NOT -3.0% -> skips DCA BUY
@@ -354,8 +352,8 @@ class ReplayEngineTest(TempDirTestCase):
 
 class PercentageSizingReplayTest(unittest.TestCase):
     def test_equivalent_fixed_and_percentage_models_are_financially_identical(self):
-        fixed = _params()
-        percent = _params(
+        fixed = make_spot_test_params()
+        percent = make_spot_test_params(
             total_budget=1000.0, alloc_pct=50.0,
             entry_pct=20.0, dca_pct=10.0,
         )
@@ -370,7 +368,7 @@ class PercentageSizingReplayTest(unittest.TestCase):
         self.assertEqual(percent_result, fixed_result)
 
     def test_make_kraken_replay_adapter_walk_forward_compatibility(self):
-        params = _params()
+        params = make_spot_test_params()
         records = [
             {"timestamp": 1000 + i * 3600, "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0}
             for i in range(10)
@@ -446,7 +444,7 @@ GOLDEN_METRICS = {
 }
 
 
-def _base_v2_params():
+def _base_v2make_spot_test_params():
     return strat.StratParams(
         currency="USD", entry_amount=650.0, entry_discount_pct=0.8,
         dca_amount=325.0, dca_drop_pct=1.25, check_minutes=2.0,
@@ -481,7 +479,7 @@ class BaseV2GoldenTest(unittest.TestCase):
         strat.Strategy._place = _rec
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                metrics = rp.run_replay(ohlc, _base_v2_params(),
+                metrics = rp.run_replay(ohlc, _base_v2make_spot_test_params(),
                                         fee_pct=0.26, bar_minutes=240)
         finally:
             strat.Strategy._place = orig_place
@@ -512,7 +510,7 @@ class BaseV2GoldenTest(unittest.TestCase):
             (100.0, 104.0, 96.0, 100.0),   # ambiguous bar: touches both TP and DCA
         ]
         res = rp.run_replay(
-            bars, _params(max_dca_buys=2), fee_pct=0.26, bar_minutes=60,
+            bars, make_spot_test_params(max_dca_buys=2), fee_pct=0.26, bar_minutes=60,
             execution=rp.ExecutionModel(intrabar_policy="sell_first"),
             include_decision_trace=True,
         )
@@ -531,7 +529,7 @@ class BaseV2GoldenTest(unittest.TestCase):
             (96.0, 97.0, 94.0, 95.0),     # fills resized DCA cleanly without cash refusal
         ]
         res = rp.run_replay(
-            bars, _params(entry_amount=100.0, dca_amount=50.0, max_budget=150.0, max_dca_buys=1),
+            bars, make_spot_test_params(entry_amount=100.0, dca_amount=50.0, max_budget=150.0, max_dca_buys=1),
             fee_pct=0.26, bar_minutes=60, initial_cash=150.0,
         )
         self.assertEqual(res["fills"], 2)

@@ -10,8 +10,6 @@ Verifies:
 7. Shadow mode logs without delaying execution.
 """
 
-from __future__ import annotations
-
 import contextlib
 import json
 import math

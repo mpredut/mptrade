@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Tests for trailing_stop (no real API, no money)."""
-from __future__ import annotations
-
 import json
 import os
 from types import SimpleNamespace

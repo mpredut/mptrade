@@ -1,6 +1,4 @@
 """Targeted regression tests for Wave 6 backtest, replay, research, and runner fixes."""
-from __future__ import annotations
-
 import os
 from pathlib import Path
 import subprocess

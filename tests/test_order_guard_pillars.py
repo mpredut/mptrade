@@ -4,8 +4,6 @@
 - Pillar 3 & 4 (GLLM1 / GLLM2 / GLLM3): llm_order_guard
 """
 
-from __future__ import annotations
-
 import enum
 import json
 import math

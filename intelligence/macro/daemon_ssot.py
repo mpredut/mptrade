@@ -20,7 +20,6 @@ from botcore import (
     build_heartbeat_payload,
     exact_pos_int,
     fetch_public_json as _fetch_public_json,
-    is_cache_fresh,
     is_interval_due,
     load_dotenv,
     normalize_epoch_sec,

@@ -1,6 +1,4 @@
 """Unit tests for Macro Geopolitical & Energy Shock Shield (Pillar Macro) and MacroAnalyzer."""
-from __future__ import annotations
-
 import asyncio
 import botcore
 import email.utils

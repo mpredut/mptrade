@@ -1,7 +1,5 @@
 """Non-blocking durability and response-loss recovery for T212 one-shot orders."""
 
-from __future__ import annotations
-
 import json
 from types import SimpleNamespace
 import unittest

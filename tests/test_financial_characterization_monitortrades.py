@@ -147,14 +147,6 @@ class UnknownOutcomeInstrument(FakeInstrument):
         return None
 
 
-class UnavailableBalanceApi:
-    """Provider account read failed: this is distinct from a real zero balance."""
-
-    @staticmethod
-    def free_balance(asset):
-        return None
-
-
 class PipelineProvider(MarketDataProvider):
     """Minimal provider for testing monitortrades through real Instrument guards."""
 

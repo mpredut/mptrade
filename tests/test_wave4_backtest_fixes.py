@@ -1,7 +1,5 @@
 """Targeted verification suite for Wave 4 backtesting & research bug fixes."""
 
-from __future__ import annotations
-
 import dataclasses
 import json
 from types import SimpleNamespace
