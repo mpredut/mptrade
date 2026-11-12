@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-11-12T01:14:32+00:00",
+    "ts": "2026-11-12T01:37:30+00:00",
     "full_key": "BINANCE_BTC.mt.lost",
     "section": "BINANCE_BTC",
     "key": "mt.lost",
@@ -8,13 +8,13 @@
     "current_on_dev": 2.6281,
     "winner_value": 2.3,
     "margin_vs_current": {
-      "half1": 79.7,
+      "half1": 79.83,
       "half2": 18.07
     },
-    "dev_commit": "aa0fb135"
+    "dev_commit": "0251aafa"
   },
   {
-    "ts": "2026-11-12T01:14:32+00:00",
+    "ts": "2026-11-12T01:37:30+00:00",
     "full_key": "KRAKEN_HYPE.mt.lost",
     "section": "KRAKEN_HYPE",
     "key": "mt.lost",
@@ -25,6 +25,6 @@
       "half1": 479.4,
       "half2": 480.83
     },
-    "dev_commit": "aa0fb135"
+    "dev_commit": "0251aafa"
   }
 ]
