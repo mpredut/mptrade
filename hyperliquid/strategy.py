@@ -331,9 +331,6 @@ class Strategy(BaseSpotMixin):
             except Exception:
                 pass
 
-    def _dust_eps(self) -> float:
-        return max(self._qty_eps, 0.5 * (10.0 ** (-self.sz_dec)))
-
     # -- persistence -----------------------------------------------------------
     def _load(self) -> dict:
         st = load_json_state(
@@ -588,7 +585,7 @@ class Strategy(BaseSpotMixin):
             notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{px_s} N{net:+.2f} [hl_bot]",
                    body=f"a{avg_s} | gr{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
                    source="hyperliquid", price=price, desktop=self.desktop)
-        flat_eps = 1e-12 if real_qty is not None else self._dust_eps()
+        flat_eps = 1e-12 if real_qty is not None else max(self._qty_eps, 0.5 * (10.0 ** (-self.sz_dec)))
         if real_qty is not None:
             eff_avg = safe_pos_float(real_avg, default=avg)
             self.s["qty"] = real_qty

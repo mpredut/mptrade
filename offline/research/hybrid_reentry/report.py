@@ -8,7 +8,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import safe_float, safe_nonneg_int
+from botcore import clean_nonempty_str, safe_float, safe_nonneg_int
 from state_io import atomic_write_text, read_json_dict, read_json_file
 
 
@@ -21,14 +21,7 @@ def _fmt_pct(val, *, decimals: int = 2, signed: bool = False, bold: bool = False
 
 
 def _valid_ablation_row(row) -> bool:
-    return (
-        isinstance(row, dict)
-        and "error" not in row
-        and isinstance(row.get("asset"), str)
-        and bool(row["asset"].strip())
-        and isinstance(row.get("test_id"), str)
-        and bool(row["test_id"].strip())
-    )
+    return isinstance(row, dict) and "error" not in row and bool(clean_nonempty_str(row.get("asset")) and clean_nonempty_str(row.get("test_id")))
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
 CRYPTO_JSON = os.path.join(OUT_DIR, "ablation_results.json")

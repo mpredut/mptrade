@@ -657,13 +657,10 @@ class _RecordingSubscriber:
 
 class TestSubscriberPatternInheritance(TempDirTestCase):
 
-    def _cache24(self, symbol="BTCUSDT"):
-        return _make_cache24_manager(symbol, make_synthetic_price_entries(5), self.tmp)
-
     def test_subscriber_pattern_and_ws_attachment(self):
         with self.subTest("managers inherit subscribe_price"):
             cases = (
-                ("cache24", type(self._cache24()).subscribe_price),
+                ("cache24", cm.Cache24PriceManager.subscribe_price),
                 ("current-price", cm.CacheCurrentPriceManager.subscribe_price),
             )
             for label, method in cases:
@@ -671,7 +668,7 @@ class TestSubscriberPatternInheritance(TempDirTestCase):
                     self.assertIs(method, cm.CachePriceManagerBase.subscribe_price)
 
         with self.subTest("inherited notify reaches subscriber"):
-            mgr = self._cache24("BTCUSDT")
+            mgr = _make_cache24_manager("BTCUSDT", make_synthetic_price_entries(5), self.tmp)
             rec = _RecordingSubscriber()
             mgr.subscribe_price(rec)
             mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 123.0)

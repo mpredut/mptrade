@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 
 import instrument_registry as sym
 from botcore import (
+    clean_nonempty_str,
     exact_pos_int,
     is_rth_gate_enabled,
     is_us_rth_open,
@@ -692,12 +693,8 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             print(f"[Pricefetcher][Warn] {symbol}: {e}")
             return []
     
-    @staticmethod
-    def _clean_symbol_str(symbol: object) -> Optional[str]:
-        return symbol.strip() if isinstance(symbol, str) and symbol.strip() else None
-
     def add_symbol(self, symbol: str, preferred_source: Optional[str] = None):
-        if not (symbol := self._clean_symbol_str(symbol)):
+        if not (symbol := clean_nonempty_str(symbol)):
             return False
         with self.lock:
             base_symbol = get_base_symbol(symbol)
@@ -729,7 +726,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         return True
     
     def remove_symbol(self, symbol: str, reason: str = ""):
-        if not (symbol := self._clean_symbol_str(symbol)):
+        if not (symbol := clean_nonempty_str(symbol)):
             return False
         sym_up = symbol.upper()
         with self.lock:
