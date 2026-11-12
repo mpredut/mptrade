@@ -375,14 +375,14 @@ class _LivePairVenue:
                 return val_f
 
             r_started = _pending_ts("recovery_started_at", "recovery timing")
-            if r_started is not None and max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC:
-                pending["recovery_state"] = "horizon_exhausted"
-                pending["recovery_horizon_exhausted_at"] = now
+            horizon_hit = r_started is not None and max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC
+            if horizon_hit:
+                pending.update(recovery_state="horizon_exhausted", recovery_horizon_exhausted_at=now)
+            if horizon_hit or pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}:
                 persist_raw(pending)
-                raise _IntentRecoveryPending(f"{kind}:{side} recovery horizon is exhausted")
-            if pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}:
-                persist_raw(pending)
-                raise _IntentRecoveryPending(f"{kind}:{side} requires manual reconciliation")
+                raise _IntentRecoveryPending(
+                    f"{kind}:{side} {'recovery horizon is exhausted' if horizon_hit else 'requires manual reconciliation'}"
+                )
             n_rec = _pending_ts("next_recovery_at", "next recovery time")
             if n_rec is not None and now < n_rec:
                 raise _IntentRecoveryPending(f"{kind}:{side} reconciliation is not due yet")
@@ -1066,8 +1066,7 @@ class TradingBot:
                 current_price = safe_pos_float(current_price, 0.0) or safe_pos_float(filled_opp_price, 0.0)
                 if current_price <= 0:
                     time.sleep(WAIT_FOR_ORDER)
-                    failure_count += 1
-                    if failure_count > max_failures:
+                    if (failure_count := failure_count + 1) > max_failures:
                         return _complete_followup()
                     continue
 
@@ -1186,7 +1185,7 @@ class TradingBot:
                     else (0.0 if final_status.fully_filled else max(0.0, sub_f - fill_f))
                 )
                 if remaining_qty is None:
-                    print(f"[{self.symbol}] Invalid final {side} quantity; replacement deferred.")
+                    print(f"[{self.symbol}]", f"Invalid final {side} quantity; replacement deferred.")
                     return None
                 if remaining_qty <= max(1e-12, target_qty * 1e-9):
                     print(f"[{self.symbol}] {side} filled during cancellation; moving to {opp_side}.")

@@ -809,8 +809,10 @@ class PositionExitManager:
     def evaluate_take_profit(
         self, snapshot: PositionSnapshot, custom_threshold: Optional[float] = None,
     ) -> ExitDecision:
-        decision = self._evaluate_take_profit_core(snapshot, custom_threshold=custom_threshold)
-        if decision.action == ExitAction.SELL or decision.should_exit:
+        if (
+            (decision := self._evaluate_take_profit_core(snapshot, custom_threshold=custom_threshold)).action == ExitAction.SELL
+            or decision.should_exit
+        ):
             _clear_smart_sl(_clean_symbol_str(snapshot.symbol), snapshot.provider)
         return decision
 

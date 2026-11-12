@@ -42,15 +42,11 @@ def _run_variant_symbol(task_args):
     label, enabled, sym, params, base = task_args
     orig_break_enabled = getattr(mt, "MT_SL_STRUCTURAL_BREAK_ENABLED", True)
     try:
-        mt.MT_SL_STRUCTURAL_BREAK_ENABLED = enabled
-        mt._CACHED_EXIT_MGR = None
-        mt._CACHED_EXIT_MGR_KEY = None
+        mt.MT_SL_STRUCTURAL_BREAK_ENABLED, mt._CACHED_EXIT_MGR, mt._CACHED_EXIT_MGR_KEY = enabled, None, None
         res = run_symbol(sym, params, base, quiet=True, series=_WORKER_SERIES.get(sym))
         return label, sym, res
     finally:
-        mt.MT_SL_STRUCTURAL_BREAK_ENABLED = orig_break_enabled
-        mt._CACHED_EXIT_MGR = None
-        mt._CACHED_EXIT_MGR_KEY = None
+        mt.MT_SL_STRUCTURAL_BREAK_ENABLED, mt._CACHED_EXIT_MGR, mt._CACHED_EXIT_MGR_KEY = orig_break_enabled, None, None
 
 
 def main():

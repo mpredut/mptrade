@@ -1031,29 +1031,29 @@ def apply_code_patch_safely(
 ) -> bool:
     """Apply code or configuration patch, run pytest test suite, commit on 100% green or roll back immediately."""
     real_target, err_msg = resolve_patchable_target(target_file, workspace_dir)
-    if real_target is None:
+    if real_target is None or not (
+        isinstance(search_block, str) and isinstance(replace_block, str) and search_block and search_block != replace_block
+    ):
         if log:
-            log.warning("%s", err_msg)
-        return False
-    if not (isinstance(search_block, str) and isinstance(replace_block, str) and search_block and search_block != replace_block):
-        if log:
-            log.warning("Refusing empty or no-op autonomous patch on %s.", target_file)
+            if real_target is None:
+                log.warning("%s", err_msg)
+            else:
+                log.warning("Refusing empty or no-op autonomous patch on %s.", target_file)
         return False
 
     content: Optional[str] = None
     try:
         content = read_text_file(real_target)
         match_count = content.count(search_block)
-        if match_count == 0:
+        if match_count != 1:
             if log:
-                log.warning("Search block not found in %s. Skipping patch.", target_file)
-            return False
-        if match_count > 1:
-            if log:
-                log.warning(
-                    "Search block matched %d locations in %s (must be unique). Skipping ambiguous patch.",
-                    match_count, target_file,
-                )
+                if match_count == 0:
+                    log.warning("Search block not found in %s. Skipping patch.", target_file)
+                else:
+                    log.warning(
+                        "Search block matched %d locations in %s (must be unique). Skipping ambiguous patch.",
+                        match_count, target_file,
+                    )
             return False
 
         atomic_write_text(real_target, content.replace(search_block, replace_block, 1))

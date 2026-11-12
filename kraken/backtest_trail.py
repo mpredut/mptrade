@@ -177,7 +177,7 @@ def run_wf(pair, interval, segments=4):
     try:
         ohlc = fetch_candles(pair, interval)
     except Exception as e:  # noqa: BLE001
-        print(f"ERROR: {e}"); return
+        print("ERROR:", e); return
     n = len(ohlc); seg = max(1, n // segments)
     print(f"=== WALK-FORWARD {pair} interval={interval}m ({n} bars, {segments} segments) ===")
     print(f"{'segment':<9} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  winner")
@@ -211,7 +211,7 @@ def run_intraday(pair, tz_offset=3):
     try:
         rows = fetch_with_time(pair, 60)
     except Exception as e:  # noqa: BLE001
-        print(f"ERROR: {e}"); return
+        print("ERROR:", e); return
     by_hour = collections.defaultdict(list)
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) < 5:

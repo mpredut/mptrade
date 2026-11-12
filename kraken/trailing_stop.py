@@ -233,13 +233,10 @@ class KrakenTrailing(TrailingAdapterBase):
                 yield (asset, asset, pair, trail)
 
     def begin_tick(self) -> bool:
-        self._tick_balances = None
-        bx_map = self._balance_ex_map()
-        if bx_map is None:
+        self._tick_balances = self._balance_ex_map()
+        if self._tick_balances is None:
             self.log("  ! [TRAIL-K] empty or invalid BalanceEx snapshot -- skipping the tick")
-            return False
-        self._tick_balances = bx_map
-        return True
+        return self._tick_balances is not None
 
     def free_qty(self, asset: str) -> float:
         """Return FREE balance (total minus order holds), excluding the bot position."""

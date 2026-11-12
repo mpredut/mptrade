@@ -327,15 +327,21 @@ def process_once(mkt, now=None):
             if owner_state == "alive":
                 live_producer_reconciliation.append(r)
                 continue
-            if owner_state not in {"dead", "mismatched"}:
+            q_reason = (
+                "producer_identity_unverifiable"
+                if owner_state not in {"dead", "mismatched"}
+                else (
+                    "lookup_unavailable"
+                    if not (
+                        (caps := _reconciliation_capabilities(mkt, symbol, _provider_name(mkt, r))) is not None
+                        and caps.lookup_by_client_order_id
+                    )
+                    else None
+                )
+            )
+            if q_reason is not None:
                 quarantined += 1
-                _alert_producer_quarantine(r, reason="producer_identity_unverifiable")
-                continue
-            provider_name = _provider_name(mkt, r)
-            caps = _reconciliation_capabilities(mkt, symbol, provider_name)
-            if caps is None or not caps.lookup_by_client_order_id:
-                quarantined += 1
-                _alert_producer_quarantine(r, reason="lookup_unavailable")
+                _alert_producer_quarantine(r, reason=q_reason)
                 continue
         if not oq.is_due(r, now):
             continue

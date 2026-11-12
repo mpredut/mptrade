@@ -766,7 +766,7 @@ def _sync_margins_state(
     margins: Optional[Dict[str, Any]],
     file_mtime: float,
     last_check: float,
-) -> None:
+) -> Optional[Dict[str, Any]]:
     global _MARGINS, _MARGINS_FILE_MTIME, _MARGINS_LAST_CHECK
     _MARGINS = margins
     _MARGINS_FILE_MTIME = file_mtime
@@ -775,6 +775,7 @@ def _sync_margins_state(
         og_mod._MARGINS = margins
         og_mod._MARGINS_FILE_MTIME = file_mtime
         og_mod._MARGINS_LAST_CHECK = last_check
+    return margins
 
 
 def _load_margins() -> Dict[str, Any]:
@@ -812,18 +813,15 @@ def _load_margins() -> Dict[str, Any]:
         raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
     mtime = os.path.getmtime(path)
     if cur_margins is not None and (cur_mtime == 0.0 or mtime == cur_mtime):
-        _sync_margins_state(og_mod, cur_margins, mtime, now_ts)
-        return cur_margins
+        return _sync_margins_state(og_mod, cur_margins, mtime, now_ts)  # type: ignore[return-value]
     m: Dict[str, Any] = parse_dotenv(path, lower_keys=True, coerce_floats=True)
     missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
     if missing:
         if cur_margins is not None and bool_env("BACKTEST_MODE", default=False):
-            _sync_margins_state(og_mod, cur_margins, mtime, now_ts)
-            return cur_margins
+            return _sync_margins_state(og_mod, cur_margins, mtime, now_ts)  # type: ignore[return-value]
         raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")
     _validate_margins_cfg(m, path)
-    _sync_margins_state(og_mod, m, mtime, now_ts)
-    return m
+    return _sync_margins_state(og_mod, m, mtime, now_ts)  # type: ignore[return-value]
 
 
 _ORIG_LOAD_MARGINS = _load_margins

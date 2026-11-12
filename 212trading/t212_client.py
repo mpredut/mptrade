@@ -375,9 +375,8 @@ class T212Client:
         validity: str = "DAY",
     ) -> tuple[int, dict]:
         """Place a limit order and return HTTP status with response payload."""
-        if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
+        if not (clean_ticker := "" if isinstance(ticker, bool) else str(ticker or "").strip()):
             raise ValueError(f"invalid T212 ticker: {ticker!r}")
-        clean_ticker = str(ticker).strip()
         if isinstance(quantity, bool) or isinstance(limit_price, bool):
             raise ValueError("place_limit_order quantity and limit_price cannot be bool")
         val_u = str(validity or "").strip().upper() if not isinstance(validity, bool) else ""
@@ -509,13 +508,11 @@ class T212Client:
         if status == 429:
             self.notify_rate_limit(max(5.0, self._pf_ttl))
         if status != 200 or not body:
-            self._record_read_fail("order history", status, "_hist_cache")
-            return None
+            return self._record_read_fail("order history", status, "_hist_cache")
         try:
             payload = parse_json_payload(body)
         except ValueError:
-            self._record_read_fail("order history (invalid JSON)", status, "_hist_cache")
-            return None
+            return self._record_read_fail("order history (invalid JSON)", status, "_hist_cache")
         items = payload.get("items", []) if isinstance(payload, dict) else payload
         if isinstance(items, list):
             self._store_shared_hist_cache(0.0, items)

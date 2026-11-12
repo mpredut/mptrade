@@ -653,7 +653,7 @@ def _assign_record_ttl(rec: dict, cts: float, custom_ttl: Optional[float], *, cl
         rec.pop("expires_at_ts", None)
 
 
-def _apply_claim_qty_and_scale(record: dict, qty=None, applied_scale=None) -> None:
+def _apply_claim_qty_and_scale(record: dict, existing: list, qty=None, applied_scale=None) -> dict:
     q_val = safe_pos_float(qty, default=None)
     if q_val is not None:
         _set_record_qty(record, q_val)
@@ -663,6 +663,9 @@ def _apply_claim_qty_and_scale(record: dict, qty=None, applied_scale=None) -> No
             pk = dict(record.get("place_kwargs") or {})
             pk["applied_scale"] = s_val
             record["place_kwargs"] = pk
+    refreshed = dict(record)
+    _write_nolock(existing)
+    return refreshed
 
 
 def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
@@ -676,10 +679,7 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
     with _locked_queue() as existing:
         for record in existing:
             if _matches_exact_claim(record, claim_snapshot, snapshot_client_id):
-                _apply_claim_qty_and_scale(record, q_val, applied_scale)
-                refreshed = dict(record)
-                _write_nolock(existing)
-                return refreshed
+                return _apply_claim_qty_and_scale(record, existing, q_val, applied_scale)
     return None
 
 
@@ -708,10 +708,7 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
                     safe_nonneg_float(record.get("claim_until"), default=0.0) or 0.0,
                     now_f + lease_f,
                 )
-                _apply_claim_qty_and_scale(record, qty, applied_scale)
-                refreshed = dict(record)
-                _write_nolock(existing)
-                return refreshed
+                return _apply_claim_qty_and_scale(record, existing, qty, applied_scale)
     return None
 
 

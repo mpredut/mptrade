@@ -1875,8 +1875,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
             if handler is not None:
                 handler(envelope.get("data"), ts_ms=ts_ms)
                 return
-            prov_cls = self._prov_cls
-            if prov_cls is None:
+            if (prov_cls := self._prov_cls) is None:
                 return
             with self._lock:
                 symbols = self._symbols
@@ -1951,8 +1950,7 @@ class KrakenPriceStream(_VenuePriceStreamBase):
 
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
-            prov_cls = self._prov_cls
-            if prov_cls is None:
+            if (prov_cls := self._prov_cls) is None:
                 return
             msg = parse_json_payload(raw) if isinstance(raw, str) else raw
             ts_ms = resolve_now_ms(now_ms)
