@@ -142,8 +142,8 @@ class FileLock:
                     return self
                 except (BlockingIOError, OSError):
                     if _time.monotonic() >= deadline:
-                        self._fd.close()
-                        self._fd = None
+                        self._fd, fd = None, self._fd
+                        fd.close()
                         if self._raise_on_timeout:
                             raise TimeoutError(f"timed out acquiring FileLock on {self.path}")
                         return self
@@ -161,9 +161,8 @@ class FileLock:
             if _HAVE_FCNTL and self.acquired:
                 fcntl.flock(self._fd, fcntl.LOCK_UN)
         finally:
-            self.acquired = False
-            self._fd.close()
-            self._fd = None
+            self.acquired, self._fd, fd = False, None, self._fd
+            fd.close()
 
 
 # =============================================================================

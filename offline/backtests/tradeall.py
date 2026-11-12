@@ -282,15 +282,13 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
 
     sym_variants = set(cache_symbol_variants(symbol, include_original=True))
     if sig[1] > _MAX_CACHEABLE_FILE_BYTES:
-        for rec in iter_jsonl_dicts(path):
-            if rec.get("s") not in sym_variants:
-                continue
-            parsed = _parse_tick_pair(rec.get("i"))
-            if parsed is None:
-                continue
-            ts, price = parsed
-            if (start_ts is None or ts >= start_ts) and (end_ts is None or ts <= end_ts):
-                yield ts, price
+        yield from (
+            (ts, price)
+            for rec in iter_jsonl_dicts(path)
+            if rec.get("s") in sym_variants and (parsed := _parse_tick_pair(rec.get("i"))) is not None
+            for ts, price in (parsed,)
+            if (start_ts is None or ts >= start_ts) and (end_ts is None or ts <= end_ts)
+        )
         return
 
     full_ticks = _FILE_TICKS_CACHE.get(file_key)

@@ -309,12 +309,10 @@ class TrailingCore:
                 prev_low = safe_nonneg_float(rb.get("low"), default=avg)
                 rb["low"] = min(prev_low if prev_low > 0 else avg, avg)
                 st["rebuy"] = rb
-                st["is_flat"] = False
-                st["peak"] = avg
             else:
                 st.pop("rebuy", None)
-                st["is_flat"] = False
-                st["peak"] = avg
+            st["is_flat"] = False
+            st["peak"] = avg
             if self.min_profit_pct > 0:
                 st["warmup_at"] = avg * (1 + self.min_profit_pct / 100.0)
         st.pop("pending_order", None)

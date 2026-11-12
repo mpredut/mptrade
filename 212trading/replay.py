@@ -222,9 +222,7 @@ def _run_once(
             engine._place_buy = _guarded_place_buy
 
         initial_capital = require_pos_float(params.max_budget if cash is None else cash, "initial_capital")
-        equity_curve = [initial_capital]
-        exposure = []
-        trade_pnls = []
+        equity_curve, exposure, trade_pnls = [initial_capital], [], []
         turnover_account = realized_gross_account = realized_net_account = fees_account = 0.0
         open_cost_account = open_buy_fee_account = 0.0
         fills = wins = ambiguous_bars = 0

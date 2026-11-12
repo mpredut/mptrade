@@ -387,10 +387,9 @@ def run_intelligence_backtest(
                             continue
 
                 if use_p2:
-                    drop_15m = bar["drop_15m"]
-                    drop_30m = bar["drop_30m"]
-                    p_1h_pct = bar["p_1h_pct"]
-                    p_4h_pct = bar["p_4h_pct"]
+                    drop_15m, drop_30m, p_1h_pct, p_4h_pct = (
+                        bar["drop_15m"], bar["drop_30m"], bar["p_1h_pct"], bar["p_4h_pct"]
+                    )
 
                     # 4. Liquidation Cascade Guard (Waterfall knife protection)
                     if drop_15m >= 1.5 or drop_30m >= 2.5:
@@ -465,22 +464,19 @@ def run_intelligence_backtest(
                         continue
 
                 f_dec = None
-                if use_p2:
-                    p_1h_pct = bar["p_1h_pct"]
-                    p_4h_pct = bar["p_4h_pct"]
-                    if p_1h_pct >= 2.0 or (p_4h_pct >= 3.5 and p_1h_pct >= 0.8):
-                        d_telemetry = DerivativesTelemetry(
-                            symbol=symbol,
-                            funding_rate=0.00065,  # +0.065% per 8h (crowded long threshold is 0.05%)
-                            predicted_funding_rate=0.00070,
-                            open_interest=30_000_000.0 / p if p > 0 else 0.0,
-                            open_interest_usd=30_000_000.0,
-                            ts=t,
-                        )
-                        f_dec = funding_guard.check(symbol, "BUY", telemetry=d_telemetry)
-                        if not f_dec.allowed:
-                            funding_downscales += 1
-                            continue
+                if use_p2 and (p_1h_pct >= 2.0 or (p_4h_pct >= 3.5 and p_1h_pct >= 0.8)):
+                    d_telemetry = DerivativesTelemetry(
+                        symbol=symbol,
+                        funding_rate=0.00065,  # +0.065% per 8h (crowded long threshold is 0.05%)
+                        predicted_funding_rate=0.00070,
+                        open_interest=30_000_000.0 / p if p > 0 else 0.0,
+                        open_interest_usd=30_000_000.0,
+                        ts=t,
+                    )
+                    f_dec = funding_guard.check(symbol, "BUY", telemetry=d_telemetry)
+                    if not f_dec.allowed:
+                        funding_downscales += 1
+                        continue
 
                 s_dec = None
                 if (

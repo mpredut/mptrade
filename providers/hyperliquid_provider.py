@@ -1231,8 +1231,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
         self.validate_symbol(symbol)
-        oid = require_int_order_id(order_id, f"cancel_order({order_id})")
-        pair = self._pair()
+        oid, pair = require_int_order_id(order_id, f"cancel_order({order_id})"), self._pair()
         if pair is None:
             raise ProviderError(
                 f"cancel_order({order_id}): pair unavailable")

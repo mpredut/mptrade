@@ -505,17 +505,24 @@ def _clear_reentry_and_last_exit_state(symbol: str, *, clear_done_sell_time: boo
     _save_mt_state()
 
 
-def _resolve_exit(symbol: str, inst: Any = None, kind: Optional[str] = None, clear_pending: bool = True):
+def _resolve_exit(
+    symbol: str,
+    inst: Any = None,
+    kind: Optional[str] = None,
+    clear_pending: bool = True,
+    *,
+    dust_resolved: bool = False,
+):
     """Unified cleanup of tracking and guard state when an exit executes or resolves."""
+    if dust_resolved:
+        print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty/min_notional.")
     if kind:
         _LAST_EXIT_KIND[symbol] = kind
     _REENTRY_STATE.pop(symbol, None)
     _REENTRY_DONE_SELL_TIME.pop(symbol, None)
     if _parse_bool_flag(clear_pending, default=True):
-        _PENDING_STOP_EXIT.pop(symbol, None)
-        _SL_BOUNCE_STATE.pop(symbol, None)
-        _SL_EPISODE_STATE.pop(symbol, None)
-        _TP_RIDE_STATE.pop(symbol, None)
+        for st_map in (_PENDING_STOP_EXIT, _SL_BOUNCE_STATE, _SL_EPISODE_STATE, _TP_RIDE_STATE):
+            st_map.pop(symbol, None)
     _clear_smart_sl_exit(symbol, inst)
     _save_mt_state()
 
@@ -741,8 +748,7 @@ def _is_pending_exit_active(
     if not pending_stop:
         return False
     if _is_untradable_dust(inst, symbol, sellable_qty, current_price, min_qty):
-        print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty/min_notional.")
-        _resolve_exit(symbol, inst)
+        _resolve_exit(symbol, inst, dust_resolved=True)
         return False
 
     active_sell_exists = False
@@ -1377,17 +1383,17 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             print(f"POSITION (reference SELL=AVG) for {symbol} : {position}")
 
     current_price = safe_pos_float(inst.price(), default=None)
-    if current_price is None:
+    avail_qty = None if current_price is None else safe_nonneg_float(inst.free(), default=None)
+    if current_price is None or avail_qty is None:
         if _verbose:
-            print(f"No current price for {symbol} (market closed / unavailable) — skip")
+            if current_price is None:
+                print(f"No current price for {symbol} (market closed / unavailable) — skip")
+            else:
+                print(f"Current price for {symbol}: {current_price}")
+                print(f"No available balance snapshot for {symbol} — skip")
         return
     if _verbose:
         print(f"Current price for {symbol}: {current_price}")
-    avail_qty = safe_nonneg_float(inst.free(), default=None)
-    if avail_qty is None:
-        if _verbose:
-            print(f"No available balance snapshot for {symbol} — skip")
-        return
     isolation = inst.isolation
     owned_qty = safe_nonneg_float(position.get("net_qty"), default=0.0) or 0.0
     sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
@@ -1401,8 +1407,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             _clear_reentry_and_last_exit_state(symbol, clear_done_sell_time=True)
 
     if symbol in _PENDING_STOP_EXIT and _is_untradable_dust(inst, symbol, sellable_qty, current_price, min_qty):
-        print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty/min_notional.")
-        _resolve_exit(symbol, inst)
+        _resolve_exit(symbol, inst, dust_resolved=True)
 
     position_closed_by_sell = (
         bool(trade_orders_sell)
@@ -1413,9 +1418,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     if position_closed_by_sell and (
         symbol in _SL_BOUNCE_STATE or symbol in _SL_EPISODE_STATE or symbol in _TP_RIDE_STATE
     ):
-        _SL_BOUNCE_STATE.pop(symbol, None)
-        _SL_EPISODE_STATE.pop(symbol, None)
-        _TP_RIDE_STATE.pop(symbol, None)
+        for st_map in (_SL_BOUNCE_STATE, _SL_EPISODE_STATE, _TP_RIDE_STATE):
+            st_map.pop(symbol, None)
         _save_mt_state()
 
     if trade_orders_buy and not position_closed_by_sell:

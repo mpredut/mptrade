@@ -123,23 +123,27 @@ class MarketDataProvider(ABC):
         self.validate_symbol(symbol)
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             return None
-        cached = self._cached_current_price(symbol)
-        if cached is not None:
-            return cached
-        return safe_pos_float(self._fetch_current_price(symbol), default=None)
+        return (
+            cached
+            if (cached := self._cached_current_price(symbol)) is not None
+            else safe_pos_float(self._fetch_current_price(symbol), default=None)
+        )
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Return ascending historical prices over ``lookback_h`` hours (SSOT 24h cache first, then venue transport)."""
         self.validate_symbol(symbol)
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        if (
+            not symbol
+            or isinstance(symbol, bool)
+            or not str(symbol).strip()
+            or (lookback_f := safe_nonneg_float(lookback_h, default=None)) is None
+        ):
             return None
-        lookback_f = safe_nonneg_float(lookback_h, default=None)
-        if lookback_f is None:
-            return None
-        cached_hist = self._cached_price_history(symbol, lookback_f)
-        if cached_hist is not None:
-            return cached_hist
-        return self._fetch_price_history(symbol, lookback_f)
+        return (
+            cached_hist
+            if (cached_hist := self._cached_price_history(symbol, lookback_f)) is not None
+            else self._fetch_price_history(symbol, lookback_f)
+        )
 
     @abstractmethod
     def supports_symbol(self, symbol: str) -> bool:

@@ -322,7 +322,7 @@ def _run_once(
         if strategy.s.get("cycles_completed", 0) > cycle_before:
             _record_closed_cycle()
 
-    def _execute_liquidation(liq_px: float, *, append_bar: bool = True) -> None:
+    def _execute_liquidation(liq_px: float) -> None:
         nonlocal liquidated
         held_q = strategy.s["qty"]
         avg_now = strategy._avg() or liq_px
@@ -334,9 +334,8 @@ def _run_once(
         strategy.s["realized_net"] = -(initial_capital + funding)
         _record_fill_and_closed_cycle(held_q, liq_px, cycle_before)
         liquidated = True
-        if append_bar:
-            equity_curve.append(0.0)
-            exposure.append(False)
+        equity_curve.append(0.0)
+        exposure.append(False)
 
     for i in range(len(ohlc)):
         o = require_pos_float(ohlc[i][0], "open")
@@ -515,14 +514,12 @@ def _run_once(
         current_equity = initial_capital + realized + funding + upnl - open_fee
         if current_equity <= 0.0:
             if qty > dust_eps:
-                _execute_liquidation(c, append_bar=False)
-            else:
-                strategy.s["orders"].clear()
-                strategy.s["realized_net"] = -(initial_capital + funding)
-                liquidated = True
-            equity_curve.append(0.0)
-            exposure.append(False)
-            continue
+                _execute_liquidation(c)
+                continue
+            strategy.s["orders"].clear()
+            strategy.s["realized_net"] = -(initial_capital + funding)
+            liquidated = True
+            current_equity = 0.0
         equity_curve.append(current_equity)
         exposure.append(qty > dust_eps)
 

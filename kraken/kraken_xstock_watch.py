@@ -151,15 +151,22 @@ def yahoo_last(sym: str) -> float | None:
         return None
 
 
-# -- checks ------------------------------------------------------------------
-def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> None:
-    """Treat a new account asset as a possible allocation; first run only snapshots."""
+def _fetch_balance_dict(client: KrakenClient, err_fmt: str) -> dict | None:
     try:
         bal = client.balance()
     except KrakenError as e:
-        log(f"  ! the balance is unavailable ({e}) -- continuing with the public watch only")
-        return
-    if not isinstance(bal, dict):
+        log(err_fmt.format(e=e))
+        return None
+    return bal if isinstance(bal, dict) else None
+
+
+# -- checks ------------------------------------------------------------------
+def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> None:
+    """Treat a new account asset as a possible allocation; first run only snapshots."""
+    bal = _fetch_balance_dict(
+        client, "  ! the balance is unavailable ({e}) -- continuing with the public watch only"
+    )
+    if bal is None:
         return
     assets: dict[str, float] = {
         a: qf
@@ -409,12 +416,8 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
         trial_pair = None
         try:
             log("=== END-TO-END TRIAL (PAPER bot, isolated state, real account) ===")
-            try:
-                bal = client.balance()
-            except KrakenError as e:
-                log(f"  ! cannot read the balance: {e}")
-                return 1
-            if not isinstance(bal, dict):
+            bal = _fetch_balance_dict(client, "  ! cannot read the balance: {e}")
+            if bal is None:
                 return 1
             asset_bal = safe_pos_float(casefold_get(bal, asset, 0), 0.0)
             if asset_bal <= 0:

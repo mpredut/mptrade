@@ -1200,9 +1200,11 @@ def check_math_profit_reference(
                           f"during confirmed {trend.upper()} trend; price {px_val} permitted")
                     return True
                 if diff < prof_pct:
-                    print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                          f"found recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}%, threshold {prof_pct}%")
-                    print(f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. The {side} order is BLOCKED.")
+                    print(
+                        f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                        f"found recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}%, threshold {prof_pct}%\n"
+                        f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. The {side} order is BLOCKED."
+                    )
                     return False
             print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
                   f"recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}% >= {prof_pct}%. Permitted.")

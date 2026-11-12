@@ -1173,12 +1173,14 @@ def activate_claimed_replacement(claimed, qty, now=None):
                 result = "resolved"
             else:
                 _set_record_qty(rec, qty)
-                rec["lifecycle"] = "submit_pending"
-                rec["last_failure_reason"] = "submit_pending"
-                rec["submission_state"] = "refused"
+                rec.update(
+                    lifecycle="submit_pending",
+                    last_failure_reason="submit_pending",
+                    submission_state="refused",
+                    ttl_started_ts=now,
+                    last_attempt_ts=0.0,
+                )
                 _set_safe_to_discard(rec, False)
-                rec["ttl_started_ts"] = now
-                rec["last_attempt_ts"] = 0.0
                 result = "activated"
             break
         if result is not None:

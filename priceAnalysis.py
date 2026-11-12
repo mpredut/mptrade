@@ -327,7 +327,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
         detection_lag_hours=detection_lag_hours, mk_alpha=mk_alpha)
 
     if res is None:
-        print(f"[{symbol}] Trend undecidable (not enough data, a gap, or MK-insignificant).")
+        print(f"[{symbol}]", "Trend undecidable (not enough data, a gap, or MK-insignificant).")
         return None
 
     # Hurst regime is informational: persistence favors trend following, while
@@ -373,7 +373,7 @@ def write_all_trends(all_trends, filename=None):
     
     for symbol, trend_data in all_trends.items():
         if not isinstance(trend_data, dict):
-            print(f"\n{symbol}: ❌ Not enough data")
+            print(f"\n{symbol}:", "❌ Not enough data")
             continue
             
         direction = str(trend_data.get('direction') or 'down').strip().lower()

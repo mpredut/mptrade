@@ -53,7 +53,7 @@ def sync_time(safety_margin_ms=TIME_SAFETY_MARGIN_MS):
         _client.timestamp_offset = server_ms - local_ms - margin_ms
         return _client.timestamp_offset
     except Exception as e:
-        print(f"[bapi_client] sync_time failed: {e}")
+        print("[bapi_client] sync_time failed:", e)
         return None
 
 

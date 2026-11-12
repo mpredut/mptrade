@@ -2443,22 +2443,23 @@ def run_kraken_trade_ws_loop(
     if callable(heartbeat_fn):
         heartbeat_fn(force=True)
 
-    def _merge_rest() -> None:
-        by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
-            client, pairs=pairs, lookback_sec=lookback_sec
-        )
-        CacheTradeManager.merge_venue_fills_into_dict(
-            cache, by_sym, is_snapshot=False
-        )
+    def _merge_rest(err_label: Optional[str] = None) -> None:
+        try:
+            by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
+                client, pairs=pairs, lookback_sec=lookback_sec
+            )
+            CacheTradeManager.merge_venue_fills_into_dict(
+                cache, by_sym, is_snapshot=False
+            )
+            if err_label is not None:
+                save_json_state(cache_file, cache, indent=1)
+                last_flush_ms[0] = last_rest_sync_ms[0] = resolve_now_ms()
+        except Exception as exc:
+            if err_label is None:
+                raise
+            log(f"[kraken_cache][ws] {err_label}: {exc}")
 
-    try:
-        _merge_rest()
-        save_json_state(cache_file, cache, indent=1)
-        now_init_ms = resolve_now_ms()
-        last_flush_ms[0] = now_init_ms
-        last_rest_sync_ms[0] = now_init_ms
-    except Exception as exc:
-        log(f"[kraken_cache][ws] REST seed failed: {exc}")
+    _merge_rest("REST seed failed")
 
     def on_open(ws) -> None:
         try:
@@ -2547,14 +2548,7 @@ def run_kraken_trade_ws_loop(
                 break
         else:
             _sleep_time(5)
-        try:
-            _merge_rest()
-            save_json_state(cache_file, cache, indent=1)
-            now_resync_ms = resolve_now_ms()
-            last_flush_ms[0] = now_resync_ms
-            last_rest_sync_ms[0] = now_resync_ms
-        except Exception as exc:
-            log(f"[kraken_cache][ws] REST resync after disconnect failed: {exc}")
+        _merge_rest("REST resync after disconnect failed")
 
 
 class _KrakenAccountTradeBridge:
