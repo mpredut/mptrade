@@ -1330,12 +1330,13 @@ def _format_portfolio_section(
             pre_parts.append(
                 f"cvar_975=${safe_float(pre.get('intraday_cvar_975_usd'), 0.0):,.2f} ({pre.get('intraday_cvar_975_pct')}%)"
             )
-        if pre.get("vol_target_tranche_usd") is not None:
-            pre_parts.append(f"vol_target_tranche=${safe_float(pre.get('vol_target_tranche_usd'), 0.0):,.0f}")
-        if pre.get("subcycle_lifo_realized_pnl_usd") is not None:
-            pre_parts.append(f"subcycle_lifo_pnl=${safe_float(pre.get('subcycle_lifo_realized_pnl_usd'), 0.0):+.2f}")
-        if pre.get("est_recent_fee_drag_usd") is not None:
-            pre_parts.append(f"est_fee_drag=${safe_float(pre.get('est_recent_fee_drag_usd'), 0.0):.2f}")
+        for k_pre, lbl_pre, fmt_pre in (
+            ("vol_target_tranche_usd", "vol_target_tranche=$", ",.0f"),
+            ("subcycle_lifo_realized_pnl_usd", "subcycle_lifo_pnl=$", "+.2f"),
+            ("est_recent_fee_drag_usd", "est_fee_drag=$", ".2f"),
+        ):
+            if pre.get(k_pre) is not None:
+                pre_parts.append(f"{lbl_pre}{format(safe_float(pre.get(k_pre), 0.0), fmt_pre)}")
         pt_parts: List[str] = []
         if (em_v := safe_float(pre.get("avg_entry_markout_bps"), None)) is not None:
             pt_parts.append(f"entry={em_v:+.0f}bps")

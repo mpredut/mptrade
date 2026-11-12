@@ -1030,8 +1030,10 @@ class TradingBot:
         cumulative_filled_qty = cumulative_cost = 0.0
         completed = False
 
-        def _complete_followup(chunk_qty=0.0, chunk_price=0.0):
+        def _complete_followup(chunk_qty=0.0, chunk_price=0.0, msg=None):
             nonlocal completed
+            if msg:
+                print(f"[{self.symbol}] {msg}")
             add_qty = safe_nonneg_float(chunk_qty, default=0.0) or 0.0
             total_qty = round(cumulative_filled_qty + add_qty, 8)
             if total_qty <= 1e-12:
@@ -1053,15 +1055,16 @@ class TradingBot:
             completed = True
             return mark_filled(avg_px)
 
+        def _defer_replacement(msg: str):
+            print(f"[{self.symbol}] {msg}")
+            return None
+
         try:
             while True:
                 _touch_rtrade_heartbeat()
                 if getattr(self, "_round_aborted", False) and not is_opp_filled():
-                    print(f"[{self.symbol}] Aborting {side} loop because {opp_side} worker exited without fill.")
-                    return _complete_followup()
-                latest_price = safe_pos_float(api.get_current_price(self.symbol), 0.0)
-                if latest_price > 0:
-                    current_price = latest_price
+                    return _complete_followup(msg=f"Aborting {side} loop because {opp_side} worker exited without fill.")
+                current_price = safe_pos_float(api.get_current_price(self.symbol), 0.0) or current_price
                 current_price = safe_pos_float(current_price, 0.0) or safe_pos_float(filled_opp_price, 0.0)
                 if current_price <= 0:
                     time.sleep(WAIT_FOR_ORDER)
@@ -1088,8 +1091,7 @@ class TradingBot:
                     return mark_filled(cur_filled_px)
 
                 if getattr(self, "_round_aborted", False) and not is_opp_filled():
-                    print(f"[{self.symbol}] Aborting {side} order placement because {opp_side} worker exited without fill.")
-                    return _complete_followup()
+                    return _complete_followup(msg=f"Aborting {side} order placement because {opp_side} worker exited without fill.")
 
                 outcome_context = {}
                 try:
@@ -1111,24 +1113,19 @@ class TradingBot:
                         side, aborted=bool(is_term_refusal and not is_opp_filled())
                     )
                     if refusal_reason in _TERMINAL_QTY_OR_LIMIT_REFUSALS or is_terminal_filter_refusal(refusal_reason):
-                        print(f"[{self.symbol}] 24h limit reached ({side}: {refusal_reason}) — exiting without retry")
-                        return _complete_followup()
+                        return _complete_followup(msg=f"24h limit reached ({side}: {refusal_reason}) — exiting without retry")
                     if refusal_reason == "profit_guard" and (is_buy or not is_opp_filled()):
-                        print(f"[{self.symbol}] Blocked by profit guard ({side}: {refusal_reason}) — exiting without retry")
-                        return _complete_followup()
+                        return _complete_followup(msg=f"Blocked by profit guard ({side}: {refusal_reason}) — exiting without retry")
                     if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not is_opp_filled():
-                        print(f"[{self.symbol}] Deferred by trend ({side}: {refusal_reason}) — exiting without retry")
-                        return _complete_followup()
+                        return _complete_followup(msg=f"Deferred by trend ({side}: {refusal_reason}) — exiting without retry")
                     if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not is_opp_filled():
-                        print(f"[{self.symbol}] Aborting {side} loop because {opp_side} worker exited without fill.")
-                        return _complete_followup()
+                        return _complete_followup(msg=f"Aborting {side} loop because {opp_side} worker exited without fill.")
                     print(f"[{self.symbol}] Order {side} failed, retried {failure_count} times. Retrying again ...")
                     _touch_rtrade_heartbeat()
                     time.sleep(WAIT_FOR_ORDER)
                     failure_count += 1
                     if failure_count > max_failures:
-                        print(f"[{self.symbol}] Order {side} failed {failure_count} times. Exiting.")
-                        return _complete_followup()
+                        return _complete_followup(msg=f"Order {side} failed {failure_count} times. Exiting.")
                     continue
 
                 self._finish_side_precheck(side, aborted=False)
@@ -1157,9 +1154,7 @@ class TradingBot:
                     print(f"[{self.symbol}] Starting urgent {opp_side} follow-up (2)")
                     return _complete_followup(target_qty, recent_fill_px)
 
-                latest_price = safe_pos_float(api.get_current_price(self.symbol), 0.0)
-                if latest_price > 0:
-                    current_price = latest_price
+                current_price = safe_pos_float(api.get_current_price(self.symbol), 0.0) or current_price
                 bad_day = (
                     (current_price > filled_opp_price if is_buy else current_price < filled_opp_price)
                     and not are_close(current_price, filled_opp_price, RTRADE_BAD_DAY_TOLERANCE_PCT)
@@ -1182,8 +1177,7 @@ class TradingBot:
                         print(f"[{self.symbol}] Cancel {side} order failed. Maybe it was filled :-)? Moving to {opp_side} ...")
                         print(f"[{self.symbol}] Starting urgent {opp_side} follow-up (3)")
                         return _complete_followup(target_qty, getattr(self, filled_attr))
-                    print(f"[{self.symbol}] Cancel {side} order remains ambiguous; replacement is deferred.")
-                    return None
+                    return _defer_replacement(f"Cancel {side} order remains ambiguous; replacement is deferred.")
 
                 sub_f = safe_pos_float(target_qty, default=None)
                 fill_f = safe_nonneg_float(getattr(final_status, "filled_qty", None), default=None)
@@ -1193,8 +1187,7 @@ class TradingBot:
                     else (0.0 if final_status.fully_filled else max(0.0, sub_f - fill_f))
                 )
                 if remaining_qty is None:
-                    print(f"[{self.symbol}] Invalid final {side} quantity; replacement deferred.")
-                    return None
+                    return _defer_replacement(f"Invalid final {side} quantity; replacement deferred.")
                 if remaining_qty <= max(1e-12, target_qty * 1e-9):
                     print(f"[{self.symbol}] {side} filled during cancellation; moving to {opp_side}.")
                     return _complete_followup(target_qty, getattr(self, filled_attr))
@@ -1203,8 +1196,7 @@ class TradingBot:
                     cumulative_filled_qty += step_filled
                     cumulative_cost += step_filled * getattr(self, filled_attr)
                 if aborting_unfilled or (getattr(self, "_round_aborted", False) and not is_opp_filled()):
-                    print(f"[{self.symbol}] Aborting {side} loop after cancel because {opp_side} worker exited without fill.")
-                    return _complete_followup()
+                    return _complete_followup(msg=f"Aborting {side} loop after cancel because {opp_side} worker exited without fill.")
                 pending_cache_permit = replacement_cache_permit
                 pending_replacement_price = replacement_price
                 pending_replacement_qty = remaining_qty

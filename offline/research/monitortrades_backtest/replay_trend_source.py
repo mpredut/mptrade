@@ -152,11 +152,9 @@ class ReplayTrendSource:
             if cached is not None:
                 return cached
         elif win is not None and ws_f is not None:
-            custom = self._custom_window_trend(symbol, ws_f)
-            if custom is None:
+            if (custom := self._custom_window_trend(symbol, ws_f)) is None:
                 return False
-            tup, eps, n_p = custom
-            return _is_trend_up_tuple(tup, eps=eps, n_samples=n_p)
+            return _is_trend_up_tuple(custom[0], eps=custom[1], n_samples=custom[2])
         if win is None or len(win.prices) < 2:
             res = False
         else:
@@ -187,8 +185,7 @@ class ReplayTrendSource:
         if not valid_ws:
             return False
         if ws_f is not None and not same_win:
-            custom = self._custom_window_trend(symbol, ws_f)
-            if custom is None:
+            if (custom := self._custom_window_trend(symbol, ws_f)) is None:
                 return False
             (_ft, gc, _sf, gr), base_eps, n_p = custom
         else:

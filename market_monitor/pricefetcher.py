@@ -493,6 +493,8 @@ class PricePlatformFactory:
         supported = False
         platform_name = casefold_get(self._symbol_platform_cache, sym_norm)
         def _try_platform(platform) -> Optional[Dict]:
+            nonlocal supported
+            supported = True
             price = platform.get_price(symbol)
             if price is not None:
                 self._symbol_platform_cache[sym_norm] = platform.platform_name
@@ -506,16 +508,12 @@ class PricePlatformFactory:
             for platform in self._platforms:
                 if platform.platform_name == platform_name:
                     cached_platform = platform
-                    supported = True
                     if (res := _try_platform(platform)) is not None:
                         return res
                     self._symbol_platform_cache.pop(sym_norm, None)
                     break
         for platform in self._platforms:
-            if platform is cached_platform:
-                continue
-            if platform.supports_symbol(symbol):
-                supported = True
+            if platform is not cached_platform and platform.supports_symbol(symbol):
                 if (res := _try_platform(platform)) is not None:
                     return res
         if not supported:

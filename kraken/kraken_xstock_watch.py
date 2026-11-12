@@ -269,24 +269,33 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
     chg = (price - alloc_price) / alloc_price * 100
     log(f"  price {price} vs allocation {alloc_price} ({chg:+.1f}%)")
     qty = safe_nonneg_float(allocated.get("qty", 0), 0.0)
-    if tp_pct > 0 and not st.get("alerted_tp") and chg >= tp_pct:
-        st["alerted_tp"] = True
-        notify(title=f"📈 xStock {chg:+.1f}% above the allocation ({price})",
-               body=f"Estimated value: {qty * price:.0f} (allocated at {alloc_price}). "
-                    f"Consider a partial sale or starting the bot with adoption.",
-               source="xstock-watch", price=price, desktop=desktop)
     tp2 = required_float_env("XSTOCK_TP2_ALERT_PCT")
-    if tp2 > 0 and not st.get("alerted_tp2") and chg >= tp2:
-        st["alerted_tp2"] = True
-        notify(title=f"📈📈 TRANCHE 2: xStock {chg:+.1f}% ({price})",
-               body=f"The second target is reached — sell the rest. Value: {qty * price:.0f}.",
-               source="xstock-watch", price=price, desktop=desktop)
-    if sl_pct > 0 and not st.get("alerted_sl") and chg <= -sl_pct:
-        st["alerted_sl"] = True
-        notify(title=f"📉 xStock {chg:+.1f}% below allocation ({price})",
-               body=f"Estimated value: {qty * price:.0f} (allocated at {alloc_price}). "
-                    f"Decide: hold (DCA) or cut the loss.",
-               source="xstock-watch", price=price, desktop=desktop)
+    val_s = f"{qty * price:.0f}"
+    for key, triggered, title, body in (
+        (
+            "alerted_tp",
+            tp_pct > 0 and chg >= tp_pct,
+            f"📈 xStock {chg:+.1f}% above the allocation ({price})",
+            f"Estimated value: {val_s} (allocated at {alloc_price}). "
+            "Consider a partial sale or starting the bot with adoption.",
+        ),
+        (
+            "alerted_tp2",
+            tp2 > 0 and chg >= tp2,
+            f"📈📈 TRANCHE 2: xStock {chg:+.1f}% ({price})",
+            f"The second target is reached — sell the rest. Value: {val_s}.",
+        ),
+        (
+            "alerted_sl",
+            sl_pct > 0 and chg <= -sl_pct,
+            f"📉 xStock {chg:+.1f}% below allocation ({price})",
+            f"Estimated value: {val_s} (allocated at {alloc_price}). "
+            "Decide: hold (DCA) or cut the loss.",
+        ),
+    ):
+        if triggered and not st.get(key):
+            st[key] = True
+            notify(title=title, body=body, source="xstock-watch", price=price, desktop=desktop)
 
 
 # -- automatic bot startup ----------------------------------------------------

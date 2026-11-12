@@ -321,17 +321,17 @@ def _parse_pos_ts_price(ts, price) -> tuple[float | None, float | None]:
 
 
 def _parse_trend_start_rows(rows, symbol):
-    events = []
-    for row in rows:
-        ts, sym_, event, state, old_state, price, prev_confirm = row[:7]
-        if sym_ != symbol or event != "trend_start":
-            continue
-        t_val, p_val = _parse_pos_ts_price(ts, price)
-        if t_val is None:
-            continue
-        events.append({"ts": t_val, "state": state, "old_state": old_state,
-                        "price": p_val, "prev_confirm_count": prev_confirm})
-    return _sort_events_by_ts(events)
+    return _sort_events_by_ts([
+        {
+            "ts": tp[0],
+            "state": state,
+            "old_state": old_state,
+            "price": tp[1],
+            "prev_confirm_count": prev_confirm,
+        }
+        for ts, sym_, event, state, old_state, price, prev_confirm, *_ in rows
+        if sym_ == symbol and event == "trend_start" and (tp := _parse_pos_ts_price(ts, price))[0] is not None
+    ])
 
 
 def load_trend_starts(symbol, days_back):

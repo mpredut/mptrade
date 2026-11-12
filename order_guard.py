@@ -1188,18 +1188,14 @@ def check_math_profit_reference(
                         return True
                     pos_window_ref = resolved_dyn_ref
                     diff = profit_diff_pct(side, px_val, pos_window_ref)
-                    if diff >= prof_pct:
-                        print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                              f"recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}% >= {prof_pct}%. Permitted.")
-                        return True
                 elif _is_favorable_trend(side, trend):
-                    if not hasattr(provider, "get_orders"):
-                        print(f"[GUARD] {side} {symbol}: dynamic mode bypassed historical {opp_side.lower()} reference "
-                              f"during confirmed {trend.upper()} trend; price {px_val} permitted")
-                        return True
-                print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                      f"found recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}%, threshold {prof_pct}%")
-                return _block_below_profit_threshold(side, diff, prof_pct)
+                    print(f"[GUARD] {side} {symbol}: dynamic mode bypassed historical {opp_side.lower()} reference "
+                          f"during confirmed {trend.upper()} trend; price {px_val} permitted")
+                    return True
+                if diff < prof_pct:
+                    print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                          f"found recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}%, threshold {prof_pct}%")
+                    return _block_below_profit_threshold(side, diff, prof_pct)
             print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
                   f"recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}% >= {prof_pct}%. Permitted.")
             return True

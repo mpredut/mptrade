@@ -241,16 +241,21 @@ class T212Provider(MarketDataProvider):
         return None
 
     @staticmethod
-    def _extract_history_matches(items, target_oid: str) -> list[tuple[dict, Optional[dict]]]:
-        matches: list[tuple[dict, Optional[dict]]] = []
+    def _iter_history_order_fills(items):
         for item in items or []:
             if not isinstance(item, dict):
                 continue
             order = item.get("order") if isinstance(item.get("order"), dict) else item
-            cand_oid = extract_order_id(order)
-            if cand_oid is not None and cand_oid == target_oid:
-                matches.append((order, item.get("fill")))
-        return matches
+            if isinstance(order, dict) and (oid := extract_order_id(order)):
+                yield str(oid), order, item.get("fill")
+
+    @classmethod
+    def _extract_history_matches(cls, items, target_oid: str) -> list[tuple[dict, Optional[dict]]]:
+        return [
+            (order, fill)
+            for oid, order, fill in cls._iter_history_order_fills(items)
+            if oid == target_oid
+        ]
 
     @staticmethod
     def _aggregate_history_fills(matches: list[tuple[dict, Optional[dict]]]) -> dict:
@@ -312,18 +317,9 @@ class T212Provider(MarketDataProvider):
     def normalize_history_items(cls, items: list) -> dict[str, list[dict]]:
         """Group FILLED T212 history items by ticker and orderId into canonical cache_trade_t212 records."""
         grouped: dict[str, list[tuple[dict, Optional[dict]]]] = {}
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            order = item.get("order") if isinstance(item.get("order"), dict) else item
-            if not isinstance(order, dict):
-                continue
-            if str(order.get("status") or "").strip().upper() != "FILLED":
-                continue
-            oid = extract_order_id(order)
-            if not oid:
-                continue
-            grouped.setdefault(str(oid), []).append((order, item.get("fill") if isinstance(item.get("fill"), dict) else None))
+        for oid, order, fill in cls._iter_history_order_fills(items):
+            if str(order.get("status") or "").strip().upper() == "FILLED":
+                grouped.setdefault(oid, []).append((order, fill if isinstance(fill, dict) else None))
         by_symbol: dict[str, list[dict]] = {}
         for oid, matches in grouped.items():
             enriched = cls._aggregate_history_fills(matches)
