@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import math
 import time
 import uuid
-from typing import Callable, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 from botcore import (
     _parse_bool_flag,
@@ -82,6 +82,16 @@ class OrderTicket:
         self.active = _parse_bool_flag(self.active, default=False)
 
 
+def _coerce_dataclass_float_fields(
+    instance: Any, fields: tuple[str, ...], coercer: Callable[..., Optional[float]], err_msg: str
+) -> None:
+    for name in fields:
+        f = coercer(getattr(instance, name), default=None)
+        if f is None:
+            raise ValueError(err_msg)
+        object.__setattr__(instance, name, f)
+
+
 @dataclass(frozen=True)
 class OrderSnapshot:
     status: str = "open"       # open|closed|canceled|expired
@@ -94,11 +104,9 @@ class OrderSnapshot:
         if norm_status not in {"open", "closed", "canceled", "expired"}:
             raise ValueError(f"invalid rtrade order status: {self.status}")
         object.__setattr__(self, "status", norm_status)
-        for name in ("filled_qty", "cost", "fee"):
-            f = safe_nonneg_float(getattr(self, name), default=None)
-            if f is None:
-                raise ValueError("invalid rtrade financial snapshot")
-            object.__setattr__(self, name, f)
+        _coerce_dataclass_float_fields(
+            self, ("filled_qty", "cost", "fee"), safe_nonneg_float, "invalid rtrade financial snapshot"
+        )
 
 
 @dataclass(frozen=True)
@@ -113,14 +121,15 @@ class PairPolicy:
     price_decimals: int = 4
 
     def __post_init__(self):
-        for name in (
-            "adjustment_fraction", "quote_ttl_sec", "poll_sec", "fast_fill_ratio",
-            "min_edge_fraction", "shock_hard_stop_fraction", "hard_stop_fraction",
-        ):
-            f = safe_float(getattr(self, name), default=None)
-            if f is None:
-                raise ValueError("the rtrade policy must hold finite values")
-            object.__setattr__(self, name, f)
+        _coerce_dataclass_float_fields(
+            self,
+            (
+                "adjustment_fraction", "quote_ttl_sec", "poll_sec", "fast_fill_ratio",
+                "min_edge_fraction", "shock_hard_stop_fraction", "hard_stop_fraction",
+            ),
+            safe_float,
+            "the rtrade policy must hold finite values",
+        )
         if not 0 < self.adjustment_fraction < 1:
             raise ValueError("adjustment_fraction must be in (0, 1)")
         if self.quote_ttl_sec <= 0 or self.poll_sec <= 0:
@@ -633,14 +642,53 @@ class PairCoordinator:
         self._refresh()
         return self._totals()
 
+    def _totals_and_net(self, *, refresh: bool = False) -> tuple[float, float, float, float, float]:
+        bq, bc, _bf, sq, sc, _sf = self._refresh_and_totals() if refresh else self._totals()
+        return bq, bc, sq, sc, bq - sq
+
+    def _bump_limit_revision(self, exit_side: str) -> bool:
+        current_revision = self.limit_revisions[exit_side]
+        if current_revision >= _MAX_LIMIT_REVISION:
+            self.reason = "exit_revision_exhausted"
+            return False
+        self.limit_revisions[exit_side] = current_revision + 1
+        return True
+
+    def _cancel_active_exit_ticket(
+        self,
+        ticket: OrderTicket,
+        exit_side: str,
+        net: float,
+        *,
+        prefix: str,
+        flat_phase: str,
+        flat_reason: Optional[str],
+        bump_revision: bool = False,
+    ) -> Optional[float]:
+        _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
+        if cancel_reason is not None:
+            self.reason = f"{prefix}_cancel_failed" if cancel_reason == "cancel_failed" else f"{prefix}_cancel_ambiguous"
+            return None
+        final_net = self._net_qty()
+        if abs(final_net) <= 1e-8:
+            self.phase, self.reason = flat_phase, flat_reason
+            return None
+        final_exit_side = "SELL" if final_net > 0 else "BUY"
+        rem_qty = abs(final_net)
+        if bump_revision and not self._bump_limit_revision(exit_side):
+            return None
+        if final_exit_side != exit_side or rem_qty > abs(net) + 1e-8:
+            self.reason = f"{prefix}_exposure_changed_during_cancel"
+            return None
+        return rem_qty
+
     def _try_complete_flat_exposure(self) -> tuple[bool, float, float, float, float, float]:
         cancel_ambiguous = False
         for ticket in self.tickets:
             if ticket.active:
                 _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
                 cancel_ambiguous = cancel_ambiguous or cancel_reason is not None
-        bq, bc, _bf, sq, sc, _sf = self._refresh_and_totals()
-        net = bq - sq
+        bq, bc, sq, sc, net = self._totals_and_net(refresh=True)
         if abs(net) <= 1e-8:
             if cancel_ambiguous or any(ticket.active for ticket in self.tickets):
                 self.phase, self.reason = "closing", "balanced_cancel_pending"
@@ -657,10 +705,9 @@ class PairCoordinator:
         now = safe_float(self.clock() if now is None else now, default=None)
         if now is None:
             raise ValueError("the rtrade clock must be finite")
-        bq, bc, _bf, sq, sc, _sf = self._refresh_and_totals()
+        bq, bc, sq, sc, net = self._totals_and_net(refresh=True)
         if self.phase != "startup_recovery":
             self._record_first_fill(now, bq, sq)
-        net = bq - sq
 
         if self.phase == "startup_recovery":
             if _is_recovery_pending(self.reason) and not self._recover_persisted_intents():
@@ -668,9 +715,8 @@ class PairCoordinator:
             for ticket in self.tickets:
                 if ticket.active and self._cancel_and_reconcile(ticket)[1] is not None:
                     return self.outcome()
-            bq, bc, _bf, sq, sc, _sf = self._totals()
+            bq, bc, sq, sc, net = self._totals_and_net()
             self._record_first_fill(now, bq, sq)
-            net = bq - sq
             if abs(net) <= 1e-8:
                 if bq > 0 and sq > 0:
                     self.phase = "complete"
@@ -684,8 +730,7 @@ class PairCoordinator:
             if not self._recover_persisted_intents():
                 return self.outcome()
             self.reason = None
-            bq, bc, _bf, sq, sc, _sf = self._totals()
-            net = bq - sq
+            bq, bc, sq, sc, net = self._totals_and_net()
 
         if self.phase == "hard_stop_recovery":
             if self.reason == "hard_stop_retry_failed":
@@ -693,8 +738,7 @@ class PairCoordinator:
                 return self.outcome()
             if not _is_recovery_pending(self.reason) or not self._recover_persisted_intents():
                 return self.outcome()
-            bq, bc, _bf, sq, sc, _sf = self._totals()
-            net = bq - sq
+            bq, bc, sq, sc, net = self._totals_and_net()
             if abs(net) <= 1e-8:
                 self.phase = "hard_stop"
                 self.reason = self.hard_stop_reason or "inventory_hard_stop"
@@ -731,9 +775,7 @@ class PairCoordinator:
                     if cancel_reason is not None:
                         self.reason = "entry_cancel_failed" if cancel_reason == "cancel_failed" else "entry_cancel_ambiguous"
                         return self.outcome()
-            self._refresh()
-            bq, bc, _bf, sq, sc, _sf = self._totals()
-            net = bq - sq
+            bq, bc, sq, sc, net = self._totals_and_net(refresh=True)
             if abs(net) <= 1e-8:
                 self.phase = "closing"
                 settled, bq, bc, sq, sc, net = self._try_complete_flat_exposure()
@@ -771,19 +813,13 @@ class PairCoordinator:
                         cache_permit = self.venue.preflight_order(
                             exit_side, exit_qty, None, market=True, kind=f"rtrade:{hs_reason}:{self.pair_id}"
                         )
-                        _snapshot, cancel_reason = self._cancel_and_reconcile(exit_ticket)
-                        if cancel_reason is not None:
-                            self.reason = "hard_stop_cancel_failed" if cancel_reason == "cancel_failed" else "hard_stop_cancel_ambiguous"
+                        rem_qty = self._cancel_active_exit_ticket(
+                            exit_ticket, exit_side, net,
+                            prefix="hard_stop", flat_phase="hard_stop", flat_reason=hs_reason,
+                        )
+                        if rem_qty is None:
                             return self.outcome()
-                        final_net = self._net_qty()
-                        if abs(final_net) <= 1e-8:
-                            self.reason, self.phase = hs_reason, "hard_stop"
-                            return self.outcome()
-                        final_exit_side = "SELL" if final_net > 0 else "BUY"
-                        exit_qty = abs(final_net)
-                        if final_exit_side != exit_side or exit_qty > abs(net) + 1e-8:
-                            self.reason = "hard_stop_exposure_changed_during_cancel"
-                            return self.outcome()
+                        exit_qty = rem_qty
                     try:
                         market = self.venue.place_market_exit(
                             exit_side, exit_qty, reason=hs_reason, pair_id=self.pair_id,
@@ -832,24 +868,13 @@ class PairCoordinator:
                 cache_permit = self.venue.preflight_order(
                     exit_side, replacement_qty, target, market=False, kind="rtrade_pair_quote"
                 )
-                _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
-                if cancel_reason is not None:
-                    self.reason = "exit_cancel_failed" if cancel_reason == "cancel_failed" else "exit_cancel_ambiguous"
+                rem_qty = self._cancel_active_exit_ticket(
+                    ticket, exit_side, net,
+                    prefix="exit", flat_phase="complete", flat_reason=None, bump_revision=True,
+                )
+                if rem_qty is None:
                     return self.outcome()
-                final_net = self._net_qty()
-                if abs(final_net) <= 1e-8:
-                    self.phase, self.reason = "complete", None
-                    return self.outcome()
-                final_exit_side = "SELL" if final_net > 0 else "BUY"
-                replacement_qty = abs(final_net)
-                current_revision = self.limit_revisions[exit_side]
-                if current_revision >= _MAX_LIMIT_REVISION:
-                    self.reason = "exit_revision_exhausted"
-                    return self.outcome()
-                self.limit_revisions[exit_side] = current_revision + 1
-                if final_exit_side != exit_side or replacement_qty > abs(net) + 1e-8:
-                    self.reason = "exit_exposure_changed_during_cancel"
-                    return self.outcome()
+                replacement_qty = rem_qty
             elif latest_exit is not None:
                 latest_snapshot = self.snapshots.get(latest_exit.order_id, OrderSnapshot())
                 if latest_snapshot.status not in _TERMINAL_ORDER_STATUSES:
@@ -858,11 +883,8 @@ class PairCoordinator:
                 latest_rev = exact_nonneg_int(latest_exit.revision, default=0) or 0
                 current_revision = max(self.limit_revisions[exit_side], latest_rev)
                 self.limit_revisions[exit_side] = current_revision
-                if latest_rev == current_revision:
-                    if current_revision >= _MAX_LIMIT_REVISION:
-                        self.reason = "exit_revision_exhausted"
-                        return self.outcome()
-                    self.limit_revisions[exit_side] = current_revision + 1
+                if latest_rev == current_revision and not self._bump_limit_revision(exit_side):
+                    return self.outcome()
             try:
                 replacement = self.venue.place_limit(
                     exit_side, target, replacement_qty, self.pair_id,

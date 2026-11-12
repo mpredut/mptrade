@@ -306,6 +306,22 @@ def execute_enforce_intent_order(
     return intent
 
 
+def _iter_matching_open_orders(
+    raw_open: Any, want_side: str, *, any_side: bool = False
+) -> list[tuple[dict[str, Any], str, str]]:
+    out: list[tuple[dict[str, Any], str, str]] = []
+    if not isinstance(raw_open, list):
+        return out
+    for oo in raw_open:
+        if not isinstance(oo, dict):
+            continue
+        oo_side = extract_order_side(oo) or normalize_side(oo.get("side") or oo.get("type"))
+        if not any_side and oo_side != want_side:
+            continue
+        out.append((oo, oo_side, extract_order_id(oo, default="")))
+    return out
+
+
 def cancel_existing_ai_open_orders(
     inst: Any,
     side: str,
@@ -327,41 +343,33 @@ def cancel_existing_ai_open_orders(
     excluded = {str(x) for x in (exclude_order_ids or ()) if x}
     ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
     try:
-        raw_open = open_fn()
-        if isinstance(raw_open, list):
-            for oo in raw_open:
-                if not isinstance(oo, dict):
-                    continue
-                oo_side = extract_order_side(oo) or normalize_side(oo.get("side") or oo.get("type"))
-                if not any_side and oo_side != want_side:
-                    continue
-                oid = extract_order_id(oo, default="")
-                if oid and str(oid) in excluded:
-                    continue
-                is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
-                if not is_ai_order and not include_bot_orders:
-                    continue
-                if oid:
-                    try:
-                        if cancel_fn(str(oid)) is False:
-                            if log:
-                                log.warning(
-                                    "[INTENT GATEWAY] Venue refused cancel of prior open order %s on %s; it stays active.",
-                                    oid, getattr(inst, "symbol", ""),
-                                )
-                            continue
-                        canceled_ids.append(str(oid))
+        for oo, oo_side, oid in _iter_matching_open_orders(open_fn(), want_side, any_side=any_side):
+            if oid and str(oid) in excluded:
+                continue
+            is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
+            if not is_ai_order and not include_bot_orders:
+                continue
+            if oid:
+                try:
+                    if cancel_fn(str(oid)) is False:
                         if log:
-                            log.info(
-                                "[INTENT GATEWAY] Canceled prior %s open %s order %s on %s before replacement.",
-                                "AI" if is_ai_order else "BOT",
-                                oo_side or side,
-                                oid,
-                                getattr(inst, "symbol", ""),
+                            log.warning(
+                                "[INTENT GATEWAY] Venue refused cancel of prior open order %s on %s; it stays active.",
+                                oid, getattr(inst, "symbol", ""),
                             )
-                    except Exception as ce:
-                        if log:
-                            log.debug("Could not cancel open order %s: %s", oid, ce)
+                        continue
+                    canceled_ids.append(str(oid))
+                    if log:
+                        log.info(
+                            "[INTENT GATEWAY] Canceled prior %s open %s order %s on %s before replacement.",
+                            "AI" if is_ai_order else "BOT",
+                            oo_side or side,
+                            oid,
+                            getattr(inst, "symbol", ""),
+                        )
+                except Exception as ce:
+                    if log:
+                        log.debug("Could not cancel open order %s: %s", oid, ce)
     except Exception as e:
         if log:
             log.debug("Open order scan failed before replacement: %s", e)
@@ -430,12 +438,7 @@ def find_duplicate_ai_open_limit_order(
                     if k:
                         intent_notional_by_id[k] = (p_sug, p_clamp)
                         intent_notional_by_id[k.lower()] = (p_sug, p_clamp)
-        for oo in raw_open:
-            if not isinstance(oo, dict):
-                continue
-            oo_side = extract_order_side(oo) or normalize_side(oo.get("side") or oo.get("type"))
-            if oo_side != want_side:
-                continue
+        for oo, _oo_side, oid in _iter_matching_open_orders(raw_open, want_side):
             if resolve_order_actor(oo, ai_oids) != "AI":
                 continue
             if extract_executed_qty(oo) > 0:
@@ -447,7 +450,6 @@ def find_duplicate_ai_open_limit_order(
             oo_notional = oo_px * oo_qty
             if oo_notional <= 0:
                 continue
-            oid = extract_order_id(oo, default="")
             if require_notional_match:
                 notional_ok = abs(oo_notional - notional_usd) <= max(1.0, 0.05 * max(notional_usd, oo_notional))
                 if not notional_ok and intent_notional_by_id:

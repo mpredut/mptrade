@@ -975,6 +975,17 @@ def _clean_id_set(ids) -> set:
     return {i for i in ids if not isinstance(i, bool) and i}
 
 
+def _assign_revision_client_order_id(rec: dict, revision: int, *, overwrite: bool) -> None:
+    placement = dict(rec.get("place_kwargs") or {})
+    pfx = rec.get("prefix") or placement.get("prefix") or "OR"
+    coid = _client_order_id(rec.get("id", ""), revision, prefix=pfx)
+    if overwrite:
+        placement["client_order_id"] = coid
+    else:
+        placement.setdefault("client_order_id", coid)
+    rec["place_kwargs"] = placement
+
+
 def claim(ids, now=None, lease_sec=None):
     """Lease entries without removing them, making crash recovery deterministic."""
     if not (ids := _clean_id_set(ids)):
@@ -990,10 +1001,7 @@ def claim(ids, now=None, lease_sec=None):
             if rec.get("id") not in ids or safe_float(rec.get("claim_until"), default=0.0) > now:
                 continue
             revision = max(0, exact_int(rec.get("revision"), 0))
-            placement = dict(rec.get("place_kwargs") or {})
-            pfx = rec.get("prefix") or placement.get("prefix") or "OR"
-            placement.setdefault("client_order_id", _client_order_id(rec.get("id", ""), revision, prefix=pfx))
-            rec["place_kwargs"] = placement
+            _assign_revision_client_order_id(rec, revision, overwrite=False)
             rec["revision"] = revision
             rec["claim_token"] = token
             rec["claim_until"] = now + lease_f
@@ -1079,9 +1087,12 @@ def complete_claim(
                 status_orig = safe_pos_float(getattr(status, "orig_qty", None), default=None)
                 if status_orig is not None:
                     _set_record_qty(rec, status_orig)
-                rec["filled_qty"] = safe_nonneg_float(getattr(status, "filled_qty", None), default=0.0)
-                rec["filled_cost"] = safe_nonneg_float(getattr(status, "cost", None), default=0.0)
-                rec["filled_fee"] = safe_nonneg_float(getattr(status, "fee", None), default=0.0)
+                for rec_key, attr_name in (
+                    ("filled_qty", "filled_qty"),
+                    ("filled_cost", "cost"),
+                    ("filled_fee", "fee"),
+                ):
+                    rec[rec_key] = safe_nonneg_float(getattr(status, attr_name, None), default=0.0)
                 rec.pop("status_error", None)
             elif outcome == "status_error":
                 rec["last_status_ts"] = now
@@ -1114,10 +1125,7 @@ def complete_claim(
                 rec["submission_state"] = "refused"
                 for key in _TERMINAL_RESET_KEYS:
                     rec.pop(key, None)
-                placement = dict(rec.get("place_kwargs") or {})
-                pfx = rec.get("prefix") or placement.get("prefix") or "OR"
-                placement["client_order_id"] = _client_order_id(rec.get("id", ""), revision, prefix=pfx)
-                rec["place_kwargs"] = placement
+                _assign_revision_client_order_id(rec, revision, overwrite=True)
             elif outcome == "failure":
                 prev_attempts = max(
                     max(0, exact_int(rec.get("attempts"), 0)),

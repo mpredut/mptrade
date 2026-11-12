@@ -858,15 +858,19 @@ class Strategy(BaseSpotMixin):
                     if o in self.s["orders"]:
                         self._remove(o)
                     if o["side"] == "sell":
-                        tr_i = safe_nonneg_int(o.get("tranche_idx"), default=None)
-                        if st == "closed" and total_vol > eps and tr_i is not None:
-                            sold_lvls = self.s.setdefault("tp_sold_levels", [])
-                            if tr_i not in sold_lvls:
-                                sold_lvls.append(tr_i)
+                        if st == "closed" and total_vol > eps:
+                            self._record_tp_tranche_sold(o)
                         self._finalize_cycle_if_flat(o, reported_price)
                     log(f"  [STRAT] {o['txid']} {st} (executed {total_vol}/{o['vol']})")
                 else:
                     self._cancel_if_stale_buy(o, price)
+
+    def _record_tp_tranche_sold(self, o: dict) -> None:
+        tr_i = safe_nonneg_int(o.get("tranche_idx"), default=None)
+        if tr_i is not None:
+            sold_lvls = self.s.setdefault("tp_sold_levels", [])
+            if tr_i not in sold_lvls:
+                sold_lvls.append(tr_i)
 
     def _apply_fill(self, o: dict, vol: float, price: float, fee: float,
                     *, final: bool = True) -> None:
@@ -910,11 +914,7 @@ class Strategy(BaseSpotMixin):
                 source=self.notification_source, price=price, desktop=self.desktop,
             )
             if final:
-                tr_i = safe_nonneg_int(o.get("tranche_idx"), default=None)
-                if tr_i is not None:
-                    sold_lvls = self.s.setdefault("tp_sold_levels", [])
-                    if tr_i not in sold_lvls:
-                        sold_lvls.append(tr_i)
+                self._record_tp_tranche_sold(o)
                 self._finalize_cycle_if_flat(o, price)
 
     def _finalize_cycle_if_flat(self, o: dict, price: float) -> None:
@@ -1593,6 +1593,19 @@ class Strategy(BaseSpotMixin):
             regime=regime, tick_time=tick_time,
         )
 
+    def _is_soft_trailing_blocked(
+        self, exit_px: float, profit_floor: float | None, *, prev_ride_state: dict | None = None
+    ) -> bool:
+        if profit_floor is None or exit_px >= profit_floor:
+            return False
+        if prev_ride_state:
+            self.exit_manager.tp_ride_state[self.pair] = prev_ride_state
+        log(
+            f"  [STRAT] soft trailing blocked: reference {exit_px:.{self.price_dec}f} below the "
+            f"profitable floor {profit_floor:.{self.price_dec}f}; hard stop stays MARKET"
+        )
+        return True
+
     def _evaluate_mdhtp_tp(
         self,
         price: float,
@@ -1649,13 +1662,7 @@ class Strategy(BaseSpotMixin):
             exit_px = round(price * 0.999, self.price_dec)
             use_soft = str(decision.reason or "").startswith("mdhtp_peak_pullback")
             profit_floor = self._trail_profit_floor_price(avg) if use_soft else None
-            if use_soft and profit_floor is not None and exit_px < profit_floor:
-                if prev_ride_state:
-                    self.exit_manager.tp_ride_state[self.pair] = prev_ride_state
-                log(
-                    f"  [STRAT] soft trailing blocked: reference {exit_px:.{self.price_dec}f} below the "
-                    f"profitable floor {profit_floor:.{self.price_dec}f}; hard stop stays MARKET"
-                )
+            if use_soft and self._is_soft_trailing_blocked(exit_px, profit_floor, prev_ride_state=prev_ride_state):
                 return True
             if self._request_market_exit(price, "TP", soft_floor=use_soft):
                 log(f"  [STRAT] MDHTP EXIT ({decision.reason}) -> reference {exit_px}")
@@ -1723,11 +1730,7 @@ class Strategy(BaseSpotMixin):
             self.s["trail_stop"] = trail_stop
             exit_px = round(price * 0.999, self.price_dec)
             profit_floor = self._trail_profit_floor_price(avg)
-            if price <= trail_stop and profit_floor is not None and exit_px < profit_floor:
-                log(
-                    f"  [STRAT] soft trailing blocked: reference {exit_px:.{self.price_dec}f} below the "
-                    f"profitable floor {profit_floor:.{self.price_dec}f}; hard stop stays MARKET"
-                )
+            if price <= trail_stop and self._is_soft_trailing_blocked(exit_px, profit_floor):
                 return True
             if price <= trail_stop:
                 if self._request_market_exit(price, "TP", soft_floor=True):

@@ -381,6 +381,19 @@ def _attach_trailing_peak_to_position(
             pending_peaks_by_vs[(v_norm, sym)] = (round(eff_peak, 6), dd_pct)
 
 
+def _iter_valid_tradable_positions(
+    tradable_positions: List[Dict[str, Any]],
+) -> List[tuple[Dict[str, Any], str, str]]:
+    out: List[tuple[Dict[str, Any], str, str]] = []
+    for pos_item in tradable_positions:
+        if isinstance(pos_item, dict):
+            pv = normalize_venue_name(pos_item.get("venue"))
+            ps = str(pos_item.get("symbol") or "").strip().upper()
+            if pv and ps:
+                out.append((pos_item, pv, ps))
+    return out
+
+
 def _apply_open_orders_locked_balances(
     open_orders_list: List[Dict[str, Any]],
     tradable_positions: List[Dict[str, Any]],
@@ -396,13 +409,9 @@ def _apply_open_orders_locked_balances(
     """Aggregate locked quote/base from `open_orders_list` and enrich `venue_quote_cash` and `tradable_positions`."""
     if not open_orders_list:
         return
-    pos_by_vs: Dict[tuple[str, str], Dict[str, Any]] = {}
-    for pos_item in tradable_positions:
-        if isinstance(pos_item, dict):
-            pv = normalize_venue_name(pos_item.get("venue"))
-            ps = str(pos_item.get("symbol") or "").strip().upper()
-            if pv and ps:
-                pos_by_vs[(pv, ps)] = pos_item
+    pos_by_vs: Dict[tuple[str, str], Dict[str, Any]] = {
+        (pv, ps): pos_item for pos_item, pv, ps in _iter_valid_tradable_positions(tradable_positions)
+    }
 
     def _resolve_pos_sym_and_quote(oo_v: str, oo_sym: str) -> tuple[str, str]:
         inst_oo = inst_by_sym.get(f"{oo_v}:{oo_sym}") or inst_by_sym.get(oo_sym)
@@ -1457,18 +1466,15 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 if fills := extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=fb_ai_intents, symbol=sym_fb):
                     _record_venue_fills(fallback_venue, sym_fb, fills)
         live_held_by_venue_sym: Dict[tuple[str, str], float] = {}
-        for pos_item in tradable_positions:
-            if isinstance(pos_item, dict):
-                pv = normalize_venue_name(pos_item.get("venue"))
-                ps = str(pos_item.get("symbol") or "").strip().upper()
-                fb = safe_float(pos_item.get("free_base"), -1.0)
-                lb = safe_pos_float(pos_item.get("locked_base_qty"), default=0.0) or 0.0
-                if pv and ps and (fb >= 0.0 or lb > 0.0):
-                    held_q = (max(0.0, fb) + lb) if fb >= 0.0 else lb
-                    for sv in _scoped_sym_variants(ps, is_eq=is_equity_venue_or_suffix(ps, pv)):
-                        sv_k = (pv, sv.upper())
-                        if sv_k not in live_held_by_venue_sym or held_q > live_held_by_venue_sym[sv_k]:
-                            live_held_by_venue_sym[sv_k] = held_q
+        for pos_item, pv, ps in _iter_valid_tradable_positions(tradable_positions):
+            fb = safe_float(pos_item.get("free_base"), -1.0)
+            lb = safe_pos_float(pos_item.get("locked_base_qty"), default=0.0) or 0.0
+            if fb >= 0.0 or lb > 0.0:
+                held_q = (max(0.0, fb) + lb) if fb >= 0.0 else lb
+                for sv in _scoped_sym_variants(ps, is_eq=is_equity_venue_or_suffix(ps, pv)):
+                    sv_k = (pv, sv.upper())
+                    if sv_k not in live_held_by_venue_sym or held_q > live_held_by_venue_sym[sv_k]:
+                        live_held_by_venue_sym[sv_k] = held_q
         bcache_path_ro = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
         raw_cb_ro = _rj(bcache_path_ro) if bcache_path_ro and os.path.exists(bcache_path_ro) else None
         cached_bals_ro: Dict[str, Any] = raw_cb_ro if isinstance(raw_cb_ro, dict) else {}

@@ -204,6 +204,15 @@ def did_cross_session_checkpoint(
     return crossed_label
 
 
+def _iter_news_titles(breaking_news: Optional[Sequence[Any]]) -> List[Tuple[str, str]]:
+    out: List[Tuple[str, str]] = []
+    for item in (breaking_news or ()):
+        title = item.strip() if isinstance(item, str) else str(obj_attr(item, "title", "") or "").strip()
+        if title:
+            out.append((title, title.lower()))
+    return out
+
+
 def parse_live_macro_release_surprises(breaking_news: Optional[Sequence[Any]]) -> List[Dict[str, Any]]:
     """Extract live Actual vs. Consensus/Forecast vs. Prior macro prints and compute Surprise Z-Score."""
     if not breaking_news:
@@ -224,11 +233,7 @@ def parse_live_macro_release_surprises(breaking_news: Optional[Sequence[Any]]) -
         ("ism manufacturing", "US ISM Manufacturing", 0.80, False),
         ("ism services", "US ISM Services", 0.80, False),
     )
-    for item in breaking_news:
-        title = item.strip() if isinstance(item, str) else str(obj_attr(item, "title", "") or "").strip()
-        if not title:
-            continue
-        low = title.lower()
+    for title, low in _iter_news_titles(breaking_news):
         ev_name, std_unit, inflation_like = None, 0.10, True
         for kw, lbl, su, inf_flag in macro_labels:
             if re.search(r"\b" + re.escape(kw) + r"\b", low):
@@ -307,11 +312,7 @@ def resolve_macro_economic_calendar(
     macro_kws = split_csv(_ssot._cfg_str("sessions", "macro_calendar_headline_keywords"), lower=True)
     detected_macro_headlines: List[str] = []
     if breaking_news and macro_kws:
-        for item in breaking_news:
-            title = item.strip() if isinstance(item, str) else str(obj_attr(item, "title", "") or "").strip()
-            if not title:
-                continue
-            low_t = title.lower()
+        for title, low_t in _iter_news_titles(breaking_news):
             matched_kws = [kw for kw in macro_kws if re.search(r"\b" + re.escape(kw) + r"\b", low_t)]
             if not matched_kws:
                 continue
