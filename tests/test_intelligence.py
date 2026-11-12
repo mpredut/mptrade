@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import assetguardian as ag
+from tests.conftest import TempDirTestCase
 import binance_api.bapi_allorders as bapi_allorders
 import botcore
 import cacheManager as cm
@@ -521,7 +522,7 @@ class TestIntelligenceGuards(unittest.TestCase):
         self.assertEqual(dec_veto.brake_action, BrakeAction.HARD_VETO)
 
 
-class TestIntelligenceState(unittest.TestCase):
+class TestIntelligenceState(TempDirTestCase):
     def test_volatility_1h(self):
         prices = [100.0 * (1.0 + 0.001 * (i % 5)) for i in range(30)]
         vol = calculate_volatility_1h(prices, sample_rate_sec=60.0)
@@ -584,13 +585,13 @@ class TestIntelligenceState(unittest.TestCase):
             self.assertIn("/custom/cache", path.replace("\\", "/"))
 
     def test_resolve_cached_volatility_1h_from_instant_trend_cache(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            trend_path = os.path.join(tmp_dir, "cache_short_trend.json")
-            with open(trend_path, "w", encoding="utf-8") as f:
-                json.dump({"HYPEUSD": {"vol_1h_pct": 1.85}}, f)
-            with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
-                self.assertAlmostEqual(resolve_cached_volatility_1h("HYPEUSD"), 0.0185)
-                self.assertAlmostEqual(resolve_cached_volatility_1h_pct("HYPEUSD"), 1.85)
+        tmp_dir = str(self.tmp)
+        trend_path = os.path.join(tmp_dir, "cache_short_trend.json")
+        with open(trend_path, "w", encoding="utf-8") as f:
+            json.dump({"HYPEUSD": {"vol_1h_pct": 1.85}}, f)
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
+            self.assertAlmostEqual(resolve_cached_volatility_1h("HYPEUSD"), 0.0185)
+            self.assertAlmostEqual(resolve_cached_volatility_1h_pct("HYPEUSD"), 1.85)
 
 
 class TestCompositeMarketIntelligence(unittest.TestCase):

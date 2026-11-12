@@ -4,7 +4,6 @@ import math
 import numpy as np
 import os
 import pytest
-import tempfile
 import unittest
 from offline.backtests.comparison import (
     dominates,
@@ -455,7 +454,7 @@ def _dataset_rows():
     ]
 
 
-class OhlcDatasetContractTest(unittest.TestCase):
+class OhlcDatasetContractTest(TempDirTestCase):
     def test_drops_only_the_incomplete_intraday_bar(self):
         rows = _dataset_rows()
         self.assertEqual(
@@ -506,14 +505,14 @@ class OhlcDatasetContractTest(unittest.TestCase):
             align_previous_values([9], fx)
 
     def test_round_trip_is_canonical_and_hashed(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "bars.csv"
-            save_dataset(_dataset_rows(), path)
-            loaded = load_dataset(path)
-            self.assertEqual(loaded, validate_dataset(_dataset_rows(), interval_minutes=60))
-            metadata = dataset_metadata(loaded, interval_minutes=60)
-            self.assertEqual(metadata["bars"], 2)
-            self.assertEqual(len(metadata["sha256"]), 64)
+        directory = str(self.tmp)
+        path = Path(directory) / "bars.csv"
+        save_dataset(_dataset_rows(), path)
+        loaded = load_dataset(path)
+        self.assertEqual(loaded, validate_dataset(_dataset_rows(), interval_minutes=60))
+        metadata = dataset_metadata(loaded, interval_minutes=60)
+        self.assertEqual(metadata["bars"], 2)
+        self.assertEqual(len(metadata["sha256"]), 64)
 
     def test_merge_overlapping_windows_preserves_history_and_newer_value(self):
         older = _dataset_rows()

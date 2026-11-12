@@ -1,4 +1,5 @@
 from collections import OrderedDict
+from tests.conftest import TempDirTestCase
 from decimal import Decimal
 import importlib
 import io
@@ -8,7 +9,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import threading
 import types
 from types import SimpleNamespace
@@ -131,31 +131,31 @@ class SharedHttpHelpersTest(unittest.TestCase):
             )
 
 
-class DotenvHelpersTest(unittest.TestCase):
+class DotenvHelpersTest(TempDirTestCase):
     def test_load_and_parse_share_syntax_but_keep_their_override_contracts(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / ".env"
-            path.write_text(
-                "# comment\n"
-                "export FIRST=one # inline\n"
-                "QUOTED='two # preserved'\n"
-                "DUP=first\n"
-                "DUP=last\n",
-                encoding="utf-8",
-            )
+        directory = str(self.tmp)
+        path = Path(directory) / ".env"
+        path.write_text(
+            "# comment\n"
+            "export FIRST=one # inline\n"
+            "QUOTED='two # preserved'\n"
+            "DUP=first\n"
+            "DUP=last\n",
+            encoding="utf-8",
+        )
 
-            parsed = botcore.parse_dotenv(str(path))
-            self.assertEqual(parsed["FIRST"], "one")
-            self.assertEqual(parsed["QUOTED"], "two # preserved")
-            self.assertEqual(parsed["DUP"], "last")
+        parsed = botcore.parse_dotenv(str(path))
+        self.assertEqual(parsed["FIRST"], "one")
+        self.assertEqual(parsed["QUOTED"], "two # preserved")
+        self.assertEqual(parsed["DUP"], "last")
 
-            with patch.dict(os.environ, {"FIRST": "real"}, clear=True), patch.object(
-                botcore, "log"
-            ):
-                botcore.load_dotenv(str(path))
-                self.assertEqual(os.environ["FIRST"], "real")
-                self.assertEqual(os.environ["QUOTED"], "two # preserved")
-                self.assertEqual(os.environ["DUP"], "first")
+        with patch.dict(os.environ, {"FIRST": "real"}, clear=True), patch.object(
+            botcore, "log"
+        ):
+            botcore.load_dotenv(str(path))
+            self.assertEqual(os.environ["FIRST"], "real")
+            self.assertEqual(os.environ["QUOTED"], "two # preserved")
+            self.assertEqual(os.environ["DUP"], "first")
 
     def test_required_settings_reject_missing_empty_and_invalid_values(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -191,7 +191,7 @@ class DotenvHelpersTest(unittest.TestCase):
         self.assertIsNone(botcore.int_env("MISSING", env))
 
 
-class NumericCoercionHelpersTest(unittest.TestCase):
+class NumericCoercionHelpersTest(TempDirTestCase):
     def test_safe_float_and_pos_and_nonneg_float(self):
         self.assertEqual(botcore.safe_float("12.5", 0.0), 12.5)
         self.assertEqual(botcore.safe_float(None, 0.0), 0.0)
@@ -256,11 +256,11 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing or empty mandatory TestMod settings: B"):
             botcore.validate_required_env_keys(("A", "B"), env={"A": "1", "B": "   "}, label="TestMod")
 
-        with tempfile.TemporaryDirectory() as directory:
-            hb_path = str(Path(directory) / "sub" / "hb.heartbeat")
-            ts = botcore.touch_heartbeat_file(hb_path, last_ts=0.0, force=True, now=123456.78)
-            self.assertEqual(ts, 123456.78)
-            self.assertTrue(Path(hb_path).exists())
+        directory = str(self.tmp)
+        hb_path = str(Path(directory) / "sub" / "hb.heartbeat")
+        ts = botcore.touch_heartbeat_file(hb_path, last_ts=0.0, force=True, now=123456.78)
+        self.assertEqual(ts, 123456.78)
+        self.assertTrue(Path(hb_path).exists())
 
     def test_unified_config_env_and_ini_parsers(self):
         self.assertEqual(botcore.parse_dotenv_line("export FOO = 'bar' # comment"), ("FOO", "bar"))
@@ -270,34 +270,34 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             botcore.parse_dotenv_line("=missing_key", strict=True)
 
-        with tempfile.TemporaryDirectory() as directory:
-            env_path = Path(directory) / "sample.env"
-            env_path.write_text(
-                "export Alpha=true # inline\nBeta=12.5\nGamma='hello'\n",
-                encoding="utf-8",
-            )
-            parsed_upper = botcore.parse_dotenv(env_path, upper_keys=True)
-            self.assertEqual(parsed_upper, {"ALPHA": "true", "BETA": "12.5", "GAMMA": "hello"})
+        directory = str(self.tmp)
+        env_path = Path(directory) / "sample.env"
+        env_path.write_text(
+            "export Alpha=true # inline\nBeta=12.5\nGamma='hello'\n",
+            encoding="utf-8",
+        )
+        parsed_upper = botcore.parse_dotenv(env_path, upper_keys=True)
+        self.assertEqual(parsed_upper, {"ALPHA": "true", "BETA": "12.5", "GAMMA": "hello"})
 
-            parsed_lower_coerced = botcore.parse_dotenv(
-                env_path, lower_keys=True, coerce_bools=True, coerce_floats=True
-            )
-            self.assertEqual(
-                parsed_lower_coerced,
-                {"alpha": True, "beta": 12.5, "gamma": "hello"},
-            )
+        parsed_lower_coerced = botcore.parse_dotenv(
+            env_path, lower_keys=True, coerce_bools=True, coerce_floats=True
+        )
+        self.assertEqual(
+            parsed_lower_coerced,
+            {"alpha": True, "beta": 12.5, "gamma": "hello"},
+        )
 
-            ini_path = Path(directory) / "sample.conf"
-            ini_path.write_text("[sec]\nkey = val1 # inline\n", encoding="utf-8")
-            cp1 = botcore.load_ini_config(ini_path)
-            self.assertEqual(cp1.get("sec", "key"), "val1")
-            cp2 = botcore.load_ini_config(ini_path)
-            self.assertIs(cp1, cp2)
+        ini_path = Path(directory) / "sample.conf"
+        ini_path.write_text("[sec]\nkey = val1 # inline\n", encoding="utf-8")
+        cp1 = botcore.load_ini_config(ini_path)
+        self.assertEqual(cp1.get("sec", "key"), "val1")
+        cp2 = botcore.load_ini_config(ini_path)
+        self.assertIs(cp1, cp2)
 
-            ini_path.write_text("[sec]\nkey = val_updated_longer\n", encoding="utf-8")
-            cp3 = botcore.load_ini_config(ini_path)
-            self.assertEqual(cp3.get("sec", "key"), "val_updated_longer")
-            self.assertIsNot(cp1, cp3)
+        ini_path.write_text("[sec]\nkey = val_updated_longer\n", encoding="utf-8")
+        cp3 = botcore.load_ini_config(ini_path)
+        self.assertEqual(cp3.get("sec", "key"), "val_updated_longer")
+        self.assertIsNot(cp1, cp3)
 
 
 class BoundNotifierTest(unittest.TestCase):
@@ -334,7 +334,7 @@ class NotificationIsolationTest(unittest.TestCase):
         email.assert_not_called()
 
 
-class TestCachepaths(unittest.TestCase):
+class TestCachepaths(TempDirTestCase):
     def test_mptrade_cachedb_dir_override(self):
         with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": "/custom/mptrade/cache"}, clear=False):
             self.assertEqual(get_cachedb_dir(), "/custom/mptrade/cache")
@@ -424,59 +424,59 @@ class TestCachepaths(unittest.TestCase):
         self.assertIsNone(resolve_cache_subdomain("unclassified_custom_file.json"))
 
     def test_organize_cachedb_subdomains_moves_files_and_cleans_staging(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            (root / "cache_current_price.json").write_text('{"BTC": 100}', encoding="utf-8")
-            (root / "cache_current_price.json.meta").write_text("{}", encoding="utf-8")
-            (root / "cache_short_trend.json").write_text("{}", encoding="utf-8")
-            (root / "fear_greed_index.json").write_text("{}", encoding="utf-8")
-            (root / "rtrade_BTCUSDC.heartbeat").write_text("123", encoding="utf-8")
-            (root / "system").mkdir(exist_ok=True)
-            (root / "system" / "macro_analyzer.heartbeat").write_text("456", encoding="utf-8")
-            (root / "orders").mkdir(exist_ok=True)
-            (root / "orders" / "cache_order.json").write_text("{}", encoding="utf-8")
-            (root / "orders" / "cache_trade.jsonl").write_text("", encoding="utf-8")
-            stale_dir = root / ".cache_24_price_BTCUSDC.json.previous.abcd123"
-            stale_dir.mkdir()
-            (stale_dir / "staged.tmp").write_text("old", encoding="utf-8")
+        tmpdir = str(self.tmp)
+        root = Path(tmpdir)
+        (root / "cache_current_price.json").write_text('{"BTC": 100}', encoding="utf-8")
+        (root / "cache_current_price.json.meta").write_text("{}", encoding="utf-8")
+        (root / "cache_short_trend.json").write_text("{}", encoding="utf-8")
+        (root / "fear_greed_index.json").write_text("{}", encoding="utf-8")
+        (root / "rtrade_BTCUSDC.heartbeat").write_text("123", encoding="utf-8")
+        (root / "system").mkdir(exist_ok=True)
+        (root / "system" / "macro_analyzer.heartbeat").write_text("456", encoding="utf-8")
+        (root / "orders").mkdir(exist_ok=True)
+        (root / "orders" / "cache_order.json").write_text("{}", encoding="utf-8")
+        (root / "orders" / "cache_trade.jsonl").write_text("", encoding="utf-8")
+        stale_dir = root / ".cache_24_price_BTCUSDC.json.previous.abcd123"
+        stale_dir.mkdir()
+        (stale_dir / "staged.tmp").write_text("old", encoding="utf-8")
 
-            moved = organize_cachedb_subdomains(tmpdir, remove_stale_staging=True)
-            self.assertEqual(
-                sorted(moved["prices"]),
-                ["cache_current_price.json", "cache_current_price.json.meta"],
-            )
-            self.assertEqual(moved["trends"], ["cache_short_trend.json"])
-            self.assertEqual(moved["macro"], ["fear_greed_index.json"])
-            self.assertEqual(
-                sorted(moved["orders"]),
-                ["cache_order_binance.json", "cache_trade_binance.jsonl"],
-            )
-            self.assertEqual(
-                sorted(moved["system/heartbeat"]),
-                ["macro_analyzer.heartbeat", "rtrade_BTCUSDC.heartbeat"],
-            )
-            self.assertFalse(stale_dir.exists())
-            self.assertTrue((root / "prices" / "cache_current_price.json").exists())
-            self.assertTrue((root / "trends" / "cache_short_trend.json").exists())
-            self.assertTrue((root / "macro" / "fear_greed_index.json").exists())
-            self.assertTrue((root / "orders" / "cache_order_binance.json").exists())
-            self.assertTrue((root / "orders" / "cache_trade_binance.jsonl").exists())
-            self.assertFalse((root / "orders" / "cache_order.json").exists())
-            self.assertFalse((root / "orders" / "cache_trade.jsonl").exists())
-            self.assertTrue((root / "system" / "heartbeat" / "rtrade_BTCUSDC.heartbeat").exists())
-            self.assertTrue((root / "system" / "heartbeat" / "macro_analyzer.heartbeat").exists())
-            self.assertFalse((root / "system" / "macro_analyzer.heartbeat").exists())
+        moved = organize_cachedb_subdomains(tmpdir, remove_stale_staging=True)
+        self.assertEqual(
+            sorted(moved["prices"]),
+            ["cache_current_price.json", "cache_current_price.json.meta"],
+        )
+        self.assertEqual(moved["trends"], ["cache_short_trend.json"])
+        self.assertEqual(moved["macro"], ["fear_greed_index.json"])
+        self.assertEqual(
+            sorted(moved["orders"]),
+            ["cache_order_binance.json", "cache_trade_binance.jsonl"],
+        )
+        self.assertEqual(
+            sorted(moved["system/heartbeat"]),
+            ["macro_analyzer.heartbeat", "rtrade_BTCUSDC.heartbeat"],
+        )
+        self.assertFalse(stale_dir.exists())
+        self.assertTrue((root / "prices" / "cache_current_price.json").exists())
+        self.assertTrue((root / "trends" / "cache_short_trend.json").exists())
+        self.assertTrue((root / "macro" / "fear_greed_index.json").exists())
+        self.assertTrue((root / "orders" / "cache_order_binance.json").exists())
+        self.assertTrue((root / "orders" / "cache_trade_binance.jsonl").exists())
+        self.assertFalse((root / "orders" / "cache_order.json").exists())
+        self.assertFalse((root / "orders" / "cache_trade.jsonl").exists())
+        self.assertTrue((root / "system" / "heartbeat" / "rtrade_BTCUSDC.heartbeat").exists())
+        self.assertTrue((root / "system" / "heartbeat" / "macro_analyzer.heartbeat").exists())
+        self.assertFalse((root / "system" / "macro_analyzer.heartbeat").exists())
 
-            resolved = resolve_cachedb_filepath(os.path.join(tmpdir, "cache_current_price.json"))
+        resolved = resolve_cachedb_filepath(os.path.join(tmpdir, "cache_current_price.json"))
+        self.assertEqual(
+            Path(resolved),
+            root / "prices" / "cache_current_price.json",
+        )
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmpdir}, clear=False):
             self.assertEqual(
-                Path(resolved),
-                root / "prices" / "cache_current_price.json",
+                Path(cache_path("orderbook_depth_BTCUSDC.json")),
+                root / "telemetry" / "orderbook_depth_BTCUSDC.json",
             )
-            with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmpdir}, clear=False):
-                self.assertEqual(
-                    Path(cache_path("orderbook_depth_BTCUSDC.json")),
-                    root / "telemetry" / "orderbook_depth_BTCUSDC.json",
-                )
 
 
 def test_env_stack_preserves_process_secret_and_versioned_precedence(tmp_path, monkeypatch):

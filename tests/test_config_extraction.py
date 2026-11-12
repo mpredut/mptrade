@@ -14,6 +14,7 @@ The intent is PRESERVED in full for the legacy modules and strict for AssetGuard
 """
 
 import assetguardian as ag
+from tests.conftest import TempDirTestCase
 import botcore
 import importlib
 import json
@@ -22,7 +23,6 @@ import os
 import pytest
 import rtrade as rt
 import strategies
-import tempfile
 import tradeall as ta
 import unittest
 from botcore import parse_dotenv
@@ -292,7 +292,7 @@ def _Executor():
 _params = make_spot_live_test_params
 
 
-class SpotModuleBoundaryTest(unittest.TestCase):
+class SpotModuleBoundaryTest(TempDirTestCase):
     def test_strategies_package_exports_spot_engine_canonical(self):
         self.assertIs(strategies.Strategy, spot_engine.Strategy)
         self.assertIs(strategies.StratParams, spot_engine.StratParams)
@@ -310,12 +310,12 @@ class SpotModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(spot_engine.state_path_for("HYPE/USD"), expected)
 
     def test_state_directory_is_injectable_for_another_runtime(self):
-        with tempfile.TemporaryDirectory() as directory:
-            engine = spot_engine.Strategy(
-                _Executor(), "ASSET/USD", _params(), dry_run=True,
-                initial_state=spot_engine._new_state(), state_dir=directory,
-            )
-            self.assertEqual(engine.state_file, os.path.join(directory, ".state_ASSETUSD.json"))
+        directory = str(self.tmp)
+        engine = spot_engine.Strategy(
+            _Executor(), "ASSET/USD", _params(), dry_run=True,
+            initial_state=spot_engine._new_state(), state_dir=directory,
+        )
+        self.assertEqual(engine.state_file, os.path.join(directory, ".state_ASSETUSD.json"))
 
     def test_notification_sink_and_source_are_injectable(self):
         events = []

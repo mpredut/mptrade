@@ -1,4 +1,5 @@
 import argparse
+from tests.conftest import TempDirTestCase
 import dataclasses
 import json
 import math
@@ -262,7 +263,7 @@ class WalkForwardSplitsTest(unittest.TestCase):
         self.assertEqual(res_full["metrics"]["total"], 10.0)
 
 
-class WalkForwardCompareTest(unittest.TestCase):
+class WalkForwardCompareTest(TempDirTestCase):
     def test_detect_venue_explicit_field(self):
         self.assertEqual(_detect_venue({"venue": "binance"}), "binance")
         self.assertEqual(_detect_venue({"venue": "Hyperliquid"}), "hyperliquid")
@@ -427,12 +428,12 @@ class WalkForwardCompareTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             periods_per_year(False)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            broker = BacktestBroker(tmp, lambda: 1000.0)
-            self.assertIsNone(broker._execute("BUY", "BTCUSDC", 0.0))
-            self.assertIsNone(broker._execute("BUY", "BTCUSDC", float("nan")))
-            self.assertIsNone(broker._execute("BUY", "BTCUSDC", 100.0, qty=0.0))
-            self.assertIsNone(broker._execute("BUY", "BTCUSDC", True))
+        tmp = str(self.tmp)
+        broker = BacktestBroker(tmp, lambda: 1000.0)
+        self.assertIsNone(broker._execute("BUY", "BTCUSDC", 0.0))
+        self.assertIsNone(broker._execute("BUY", "BTCUSDC", float("nan")))
+        self.assertIsNone(broker._execute("BUY", "BTCUSDC", 100.0, qty=0.0))
+        self.assertIsNone(broker._execute("BUY", "BTCUSDC", True))
 
         with self.assertRaises(ValueError):
             run_backtest("BTCUSDC", 0.0, 1.0, "fast", "", "history")

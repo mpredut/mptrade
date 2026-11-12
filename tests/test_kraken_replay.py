@@ -2,12 +2,12 @@
 Characterisation: on a deterministic series the engine runs without network,
 notifications or state files, and returns sane metrics (accounting from the live _apply_fill)."""
 import contextlib
+from tests.conftest import TempDirTestCase
 import csv
 import hashlib
 import io
 import json
 import os
-import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -35,7 +35,7 @@ def _series():
 _params = make_spot_test_params
 
 
-class ReplayEngineTest(unittest.TestCase):
+class ReplayEngineTest(TempDirTestCase):
     def test_cash_account_rejects_entry_that_cannot_pay_its_fee(self):
         result = rp.run_replay([(100, 101, 99, 100)] * 3, _params(), initial_cash=100)
         self.assertEqual(result["fills"], 0)
@@ -122,14 +122,14 @@ class ReplayEngineTest(unittest.TestCase):
 
     def test_existing_replay_state_cannot_contaminate_result(self):
         clean = rp.run_replay(_series(), _params(), fee_pct=0.26)
-        with tempfile.TemporaryDirectory() as tmp:
-            state_path = os.path.join(tmp, ".state_REPLAY.json")
-            contaminated = strat._new_state()
-            contaminated.update({"qty": 99.0, "cost": 1.0, "realized_net": 999999.0})
-            with open(state_path, "w", encoding="utf-8") as handle:
-                json.dump(contaminated, handle)
-            with patch.object(strat, "state_path_for", return_value=state_path):
-                replayed = rp.run_replay(_series(), _params(), fee_pct=0.26)
+        tmp = str(self.tmp)
+        state_path = os.path.join(tmp, ".state_REPLAY.json")
+        contaminated = strat._new_state()
+        contaminated.update({"qty": 99.0, "cost": 1.0, "realized_net": 999999.0})
+        with open(state_path, "w", encoding="utf-8") as handle:
+            json.dump(contaminated, handle)
+        with patch.object(strat, "state_path_for", return_value=state_path):
+            replayed = rp.run_replay(_series(), _params(), fee_pct=0.26)
         self.assertEqual(replayed, clean)
 
     def test_order_created_at_close_cannot_fill_on_same_bar(self):

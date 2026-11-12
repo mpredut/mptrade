@@ -6,6 +6,7 @@ the filter (as at warm-up) -- the trend comes out FLAT after a gap, not "confide
 stale direction.
 """
 import contextlib
+from tests.conftest import TempDirTestCase
 import dataclasses
 import io
 import json
@@ -152,26 +153,26 @@ class TestCurrentTrendClock(unittest.TestCase):
         self.assertGreater(age, 1e8)
 
 
-class TestShadowRuntime(unittest.TestCase):
+class TestShadowRuntime(TempDirTestCase):
     """Runtime setup idempotency and interval validation."""
 
     def test_prepare_shadow_runtime_is_idempotent(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            old_val = os.environ.get("BINANCE_AUTO_START_WEBSOCKETS")
-            try:
-                if "BINANCE_AUTO_START_WEBSOCKETS" in os.environ:
-                    del os.environ["BINANCE_AUTO_START_WEBSOCKETS"]
-                prepare_shadow_runtime(tmp_dir)
-                prepare_shadow_runtime(tmp_dir)
-                self.assertEqual(os.environ["BINANCE_AUTO_START_WEBSOCKETS"], "0")
-                self.assertEqual(sys.path.count(tmp_dir), 1)
-            finally:
-                if old_val is not None:
-                    os.environ["BINANCE_AUTO_START_WEBSOCKETS"] = old_val
-                elif "BINANCE_AUTO_START_WEBSOCKETS" in os.environ:
-                    del os.environ["BINANCE_AUTO_START_WEBSOCKETS"]
-                if tmp_dir in sys.path:
-                    sys.path.remove(tmp_dir)
+        tmp_dir = str(self.tmp)
+        old_val = os.environ.get("BINANCE_AUTO_START_WEBSOCKETS")
+        try:
+            if "BINANCE_AUTO_START_WEBSOCKETS" in os.environ:
+                del os.environ["BINANCE_AUTO_START_WEBSOCKETS"]
+            prepare_shadow_runtime(tmp_dir)
+            prepare_shadow_runtime(tmp_dir)
+            self.assertEqual(os.environ["BINANCE_AUTO_START_WEBSOCKETS"], "0")
+            self.assertEqual(sys.path.count(tmp_dir), 1)
+        finally:
+            if old_val is not None:
+                os.environ["BINANCE_AUTO_START_WEBSOCKETS"] = old_val
+            elif "BINANCE_AUTO_START_WEBSOCKETS" in os.environ:
+                del os.environ["BINANCE_AUTO_START_WEBSOCKETS"]
+            if tmp_dir in sys.path:
+                sys.path.remove(tmp_dir)
 
     def test_shadow_interval_validation(self):
         require_shadow_interval(240, 240, "HL shadow")
@@ -251,17 +252,17 @@ class TestShadowRuntime(unittest.TestCase):
 
     def test_kalman_state_tracker_ports_legacy_shadow_state_to_kalman_state(self):
         """KalmanStateTracker ports legacy shadow_state.json to cache_kalman_trend.json on init and loads state."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            legacy_path = os.path.join(tmp_dir, "shadow_state.json")
-            new_path = os.path.join(tmp_dir, "cache_kalman_trend.json")
-            payload = {"TAOUSDC": {"kalman_trend": -1, "vol_1h_pct": 1.45, "ts": 1000.0, "price": 275.0}}
-            with open(legacy_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
-            journal = ss.KalmanJournal(fixed_path=os.devnull)
-            tracker = ss.KalmanStateTracker(journal=journal, state_path=new_path, now_fn=lambda: 1010.0)
-            self.assertFalse(os.path.exists(legacy_path))
-            self.assertTrue(os.path.exists(new_path))
-            self.assertEqual(tracker.current_trend("TAOUSDC"), (-1, 10.0))
+        tmp_dir = str(self.tmp)
+        legacy_path = os.path.join(tmp_dir, "shadow_state.json")
+        new_path = os.path.join(tmp_dir, "cache_kalman_trend.json")
+        payload = {"TAOUSDC": {"kalman_trend": -1, "vol_1h_pct": 1.45, "ts": 1000.0, "price": 275.0}}
+        with open(legacy_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        journal = ss.KalmanJournal(fixed_path=os.devnull)
+        tracker = ss.KalmanStateTracker(journal=journal, state_path=new_path, now_fn=lambda: 1010.0)
+        self.assertFalse(os.path.exists(legacy_path))
+        self.assertTrue(os.path.exists(new_path))
+        self.assertEqual(tracker.current_trend("TAOUSDC"), (-1, 10.0))
 
     def test_tape_15m_range_bounds_and_non_crisis_wildlife_attack_filter(self):
         """15m_range includes -15m tape anchor, 3m covers up to 4.999m, and wildlife attack headlines are excluded."""
@@ -332,7 +333,7 @@ class TestShadowRuntime(unittest.TestCase):
         self.assertIn("LIVE_SELL_REVERSAL", sa_bull.get("live_flow_divergence", ""))
 
 
-class ShadowLiveTest(unittest.TestCase):
+class ShadowLiveTest(TempDirTestCase):
     def test_decision_distance_counts_changed_order_events(self):
         current = [
             {"bar": 1, "side": "buy", "kind": "ENTRY"},
@@ -442,19 +443,19 @@ class ShadowLiveTest(unittest.TestCase):
             self.assertIn("skipped", out.getvalue())
 
     def test_runtime_config_matches_live_precedence(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            config_path = Path(tmp) / "config.env"
-            env_path.write_text("KRAKEN_PAIR=FROM_ENV\nSTRAT_TAKEPROFIT_PCT=4.5\n", encoding="utf-8")
-            config_path.write_text(
-                "KRAKEN_PAIR=FROM_CONFIG\nSTRAT_TAKEPROFIT_PCT=5.0\nSTRAT_DCA_DROP_PCT=1.25  # versioned\n",
-                encoding="utf-8",
-            )
-            with patch.dict(os.environ, {}, clear=True):
-                shadow._load_runtime_config(str(env_path), str(config_path))
-                self.assertEqual(os.environ["KRAKEN_PAIR"], "FROM_ENV")
-                self.assertEqual(os.environ["STRAT_TAKEPROFIT_PCT"], "4.5")
-                self.assertEqual(os.environ["STRAT_DCA_DROP_PCT"], "1.25")
+        tmp = str(self.tmp)
+        env_path = Path(tmp) / ".env"
+        config_path = Path(tmp) / "config.env"
+        env_path.write_text("KRAKEN_PAIR=FROM_ENV\nSTRAT_TAKEPROFIT_PCT=4.5\n", encoding="utf-8")
+        config_path.write_text(
+            "KRAKEN_PAIR=FROM_CONFIG\nSTRAT_TAKEPROFIT_PCT=5.0\nSTRAT_DCA_DROP_PCT=1.25  # versioned\n",
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            shadow._load_runtime_config(str(env_path), str(config_path))
+            self.assertEqual(os.environ["KRAKEN_PAIR"], "FROM_ENV")
+            self.assertEqual(os.environ["STRAT_TAKEPROFIT_PCT"], "4.5")
+            self.assertEqual(os.environ["STRAT_DCA_DROP_PCT"], "1.25")
 
     def test_forward_history_keeps_anchor_after_api_window_moves(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(shadow, "LOG_DIR", tmp):

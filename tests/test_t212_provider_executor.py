@@ -1,9 +1,9 @@
 """The StrategyExecutor contract for Trading212, without network or real keys."""
 
 import importlib
+from tests.conftest import TempDirTestCase
 import os
 import sys
-import tempfile
 import time
 from types import SimpleNamespace
 import unittest
@@ -363,7 +363,7 @@ class T212ExecutorContractTest(unittest.TestCase):
         self.assertEqual(mock_mkt.call_args_list[1].args, ("NVDA_US_EQ", 0.41))
 
 
-class T212ClientTransportTest(unittest.TestCase):
+class T212ClientTransportTest(TempDirTestCase):
     def test_the_market_payload_and_the_history_fallback(self):
         client = t212_client.T212Client(
             "dummy", "dummy", env="demo", min_gap_sec=0.0,
@@ -471,19 +471,19 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertEqual(client._ord_cache[1], cached_orders)
 
     def test_runtime_env_fallback_and_post_order_endpoint_pacing(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with open(os.path.join(tmpdir, "runtime.env"), "w", encoding="utf-8") as fh:
-                fh.write("T212_LIVE_ORDERS=true\nT212_ORDER_VALIDITY=DAY\n")
-            fake = FakeT212Client()
-            prov = T212Provider(client=fake)
-            with mock.patch.object(t212_prov_mod, "_T212_DIR", tmpdir), \
-                 mock.patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("T212_LIVE_ORDERS", None)
-                os.environ.pop("T212_ORDER_VALIDITY", None)
-                self.assertTrue(prov.execution_enabled())
-                oid = prov.submit_order("SPCX_US_EQ", "buy", 1.0, price=140.0)
-                self.assertEqual(oid, "712")
-                self.assertEqual(fake.calls[-1], ("limit", "SPCX_US_EQ", 1.0, 140.0, "DAY"))
+        tmpdir = str(self.tmp)
+        with open(os.path.join(tmpdir, "runtime.env"), "w", encoding="utf-8") as fh:
+            fh.write("T212_LIVE_ORDERS=true\nT212_ORDER_VALIDITY=DAY\n")
+        fake = FakeT212Client()
+        prov = T212Provider(client=fake)
+        with mock.patch.object(t212_prov_mod, "_T212_DIR", tmpdir), \
+             mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("T212_LIVE_ORDERS", None)
+            os.environ.pop("T212_ORDER_VALIDITY", None)
+            self.assertTrue(prov.execution_enabled())
+            oid = prov.submit_order("SPCX_US_EQ", "buy", 1.0, price=140.0)
+            self.assertEqual(oid, "712")
+            self.assertEqual(fake.calls[-1], ("limit", "SPCX_US_EQ", 1.0, 140.0, "DAY"))
 
         client = t212_client.T212Client(
             "dummy", "dummy", env="demo", min_gap_sec=0.0,
@@ -546,201 +546,201 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertAlmostEqual(both_sleeps[0], 2.1, delta=0.2)
 
     def test_list_instruments_shared_cache_and_429_negative_cache(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            shared_path = os.path.join(tmpdir, "shared_t212.json")
-            c1 = t212_client.T212Client(
-                "demo-key",
-                "demo-secret",
-                env="demo",
-                min_gap_sec=0.0,
-                portfolio_ttl_sec=6.0,
-                order_min_gap_sec=0.0,
-            )
-            c1._shared_cache_path = shared_path
-            c1._enable_shared_disk_cache = True
-            calls = []
+        tmpdir = str(self.tmp)
+        shared_path = os.path.join(tmpdir, "shared_t212.json")
+        c1 = t212_client.T212Client(
+            "demo-key",
+            "demo-secret",
+            env="demo",
+            min_gap_sec=0.0,
+            portfolio_ttl_sec=6.0,
+            order_min_gap_sec=0.0,
+        )
+        c1._shared_cache_path = shared_path
+        c1._enable_shared_disk_cache = True
+        calls = []
 
-            def fake_get(url, headers=None):
-                calls.append(url)
-                return 200, b'[{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}]'
+        def fake_get(url, headers=None):
+            calls.append(url)
+            return 200, b'[{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}]'
 
-            with mock.patch.object(t212_client, "http_get", side_effect=fake_get), \
-                 mock.patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 99}')):
-                res1 = c1.list_instruments()
-                self.assertEqual(res1, [{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
-                self.assertEqual(len(calls), 1)
-                # Placing an order invalidates order/portfolio caches but preserves _instr_cache on disk
-                c1.place_market_order("NVDA_US_EQ", 1.0)
+        with mock.patch.object(t212_client, "http_get", side_effect=fake_get), \
+             mock.patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 99}')):
+            res1 = c1.list_instruments()
+            self.assertEqual(res1, [{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
+            self.assertEqual(len(calls), 1)
+            # Placing an order invalidates order/portfolio caches but preserves _instr_cache on disk
+            c1.place_market_order("NVDA_US_EQ", 1.0)
 
-            c2 = t212_client.T212Client(
-                "demo-key",
-                "demo-secret",
-                env="demo",
-                min_gap_sec=0.0,
-                portfolio_ttl_sec=6.0,
-                order_min_gap_sec=0.0,
-            )
-            c2._shared_cache_path = shared_path
-            c2._enable_shared_disk_cache = True
-            with mock.patch.object(t212_client, "http_get", side_effect=AssertionError("should use shared disk cache")):
-                res2 = c2.list_instruments()
-                self.assertEqual(res2, [{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
+        c2 = t212_client.T212Client(
+            "demo-key",
+            "demo-secret",
+            env="demo",
+            min_gap_sec=0.0,
+            portfolio_ttl_sec=6.0,
+            order_min_gap_sec=0.0,
+        )
+        c2._shared_cache_path = shared_path
+        c2._enable_shared_disk_cache = True
+        with mock.patch.object(t212_client, "http_get", side_effect=AssertionError("should use shared disk cache")):
+            res2 = c2.list_instruments()
+            self.assertEqual(res2, [{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
 
-            # Negative cache on 429 prevents multi-thread stampede when cold
-            c3 = t212_client.T212Client(
-                "demo-key",
-                "demo-secret",
-                env="demo",
-                min_gap_sec=0.0,
-                portfolio_ttl_sec=6.0,
-                order_min_gap_sec=0.0,
-            )
-            c3._enable_shared_disk_cache = False
-            calls_429 = []
+        # Negative cache on 429 prevents multi-thread stampede when cold
+        c3 = t212_client.T212Client(
+            "demo-key",
+            "demo-secret",
+            env="demo",
+            min_gap_sec=0.0,
+            portfolio_ttl_sec=6.0,
+            order_min_gap_sec=0.0,
+        )
+        c3._enable_shared_disk_cache = False
+        calls_429 = []
 
-            def fake_429(url, headers=None):
-                calls_429.append(url)
-                return 429, b'{"error": "rate limit"}'
+        def fake_429(url, headers=None):
+            calls_429.append(url)
+            return 429, b'{"error": "rate limit"}'
 
-            with mock.patch.object(t212_client, "http_get", side_effect=fake_429):
-                self.assertIsNone(c3.list_instruments())
-                self.assertIsNone(c3.list_instruments())
-                self.assertEqual(len(calls_429), 1)
+        with mock.patch.object(t212_client, "http_get", side_effect=fake_429):
+            self.assertIsNone(c3.list_instruments())
+            self.assertIsNone(c3.list_instruments())
+            self.assertEqual(len(calls_429), 1)
 
-            # Verify _instr_cache lives in dedicated _instruments.json sidecar, stale .tmp files are cleaned,
-            # and _hist_cache syncs FILLED orders into _trade_cache_path (cache_trade_t212.json)
-            instr_sidecar = c1._instr_shared_cache_path()
-            self.assertTrue(os.path.exists(instr_sidecar))
-            stale_tmp = os.path.join(tmpdir, ".shared_t212.json.orphan123.tmp")
-            with open(stale_tmp, "w", encoding="utf-8") as fh:
-                fh.write("{}")
-            old_ts = time.time() - (STALE_STAGING_MAX_AGE_SEC + 60.0)
-            os.utime(stale_tmp, (old_ts, old_ts))
+        # Verify _instr_cache lives in dedicated _instruments.json sidecar, stale .tmp files are cleaned,
+        # and _hist_cache syncs FILLED orders into _trade_cache_path (cache_trade_t212.json)
+        instr_sidecar = c1._instr_shared_cache_path()
+        self.assertTrue(os.path.exists(instr_sidecar))
+        stale_tmp = os.path.join(tmpdir, ".shared_t212.json.orphan123.tmp")
+        with open(stale_tmp, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        old_ts = time.time() - (STALE_STAGING_MAX_AGE_SEC + 60.0)
+        os.utime(stale_tmp, (old_ts, old_ts))
 
-            trade_cache_file = os.path.join(tmpdir, "cache_trade_t212.json")
-            c1._trade_cache_path = trade_cache_file
-            hist_body = (
-                b'{"items":['
-                b'{"order":{"id":777,"ticker":"SPCX_US_EQ","status":"FILLED","orderedQuantity":4.01,"type":"LIMIT"},'
-                b'"fill":{"quantity":4.01,"price":156.47,"filledAt":"2026-10-13T15:37:40.000Z"}},'
-                b'{"order":{"id":778,"ticker":"SPCX_US_EQ","status":"CANCELLED","orderedQuantity":-1.0,"limitPrice":180.0}}'
-                b']}'
-            )
-            with mock.patch.object(t212_client, "http_get", side_effect=[(404, b""), (200, hist_body)]):
-                ord_res = c1.get_order_status(777)
-            self.assertEqual(ord_res["status"], "FILLED")
-            self.assertFalse(os.path.exists(stale_tmp))
-            self.assertTrue(os.path.exists(trade_cache_file))
-            saved_trades = read_json_dict(trade_cache_file, default={})
-            self.assertIn("SPCX_US_EQ", saved_trades.get("items", {}))
-            self.assertEqual(len(saved_trades["items"]["SPCX_US_EQ"]), 1)
-            row = saved_trades["items"]["SPCX_US_EQ"][0]
-            self.assertEqual(row["orderId"], "777")
-            self.assertEqual(row["side"], "BUY")
-            self.assertAlmostEqual(row["price"], 156.47)
-            self.assertAlmostEqual(row["qty"], 4.01)
+        trade_cache_file = os.path.join(tmpdir, "cache_trade_t212.json")
+        c1._trade_cache_path = trade_cache_file
+        hist_body = (
+            b'{"items":['
+            b'{"order":{"id":777,"ticker":"SPCX_US_EQ","status":"FILLED","orderedQuantity":4.01,"type":"LIMIT"},'
+            b'"fill":{"quantity":4.01,"price":156.47,"filledAt":"2026-10-13T15:37:40.000Z"}},'
+            b'{"order":{"id":778,"ticker":"SPCX_US_EQ","status":"CANCELLED","orderedQuantity":-1.0,"limitPrice":180.0}}'
+            b']}'
+        )
+        with mock.patch.object(t212_client, "http_get", side_effect=[(404, b""), (200, hist_body)]):
+            ord_res = c1.get_order_status(777)
+        self.assertEqual(ord_res["status"], "FILLED")
+        self.assertFalse(os.path.exists(stale_tmp))
+        self.assertTrue(os.path.exists(trade_cache_file))
+        saved_trades = read_json_dict(trade_cache_file, default={})
+        self.assertIn("SPCX_US_EQ", saved_trades.get("items", {}))
+        self.assertEqual(len(saved_trades["items"]["SPCX_US_EQ"]), 1)
+        row = saved_trades["items"]["SPCX_US_EQ"][0]
+        self.assertEqual(row["orderId"], "777")
+        self.assertEqual(row["side"], "BUY")
+        self.assertAlmostEqual(row["price"], 156.47)
+        self.assertAlmostEqual(row["qty"], 4.01)
 
-            latest_buy = c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="BUY", refresh=False)
-            self.assertIsNotNone(latest_buy)
-            self.assertEqual(latest_buy["orderId"], "777")
-            self.assertAlmostEqual(latest_buy["price"], 156.47)
-            self.assertIsNone(c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="SELL", refresh=False))
+        latest_buy = c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="BUY", refresh=False)
+        self.assertIsNotNone(latest_buy)
+        self.assertEqual(latest_buy["orderId"], "777")
+        self.assertAlmostEqual(latest_buy["price"], 156.47)
+        self.assertIsNone(c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="SELL", refresh=False))
 
-            # Verify T212Provider.get_orders reads real BUY/SELL fills from cache_trade_t212.json
-            now_ms = int(time.time() * 1000)
-            save_json_state(
+        # Verify T212Provider.get_orders reads real BUY/SELL fills from cache_trade_t212.json
+        now_ms = int(time.time() * 1000)
+        save_json_state(
+            trade_cache_file,
+            {
+                "items": {
+                    "SPCX_US_EQ": [
+                        {"orderId": "801", "symbol": "SPCX_US_EQ", "side": "BUY", "price": 138.0, "qty": 1.0, "timestamp": now_ms - 1800_000},
+                        {"orderId": "802", "symbol": "SPCX_US_EQ", "side": "SELL", "price": 145.0, "qty": 0.5, "timestamp": now_ms - 900_000},
+                    ]
+                },
+                "fetchtime": {"SPCX_US_EQ": now_ms},
+            },
+        )
+        fake_prov = T212Provider(client=FakeT212Client())
+        fake_prov._ssot_fills_cache_path = trade_cache_file
+        buys = fake_prov.get_orders("SPCX_US_EQ", "BUY", 3600.0)
+        sells = fake_prov.get_orders("SPCX_US_EQ", "SELL", 3600.0)
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(buys[0]["orderId"], "801")
+        self.assertAlmostEqual(buys[0]["price"], 138.0)
+        self.assertEqual(len(sells), 1)
+        self.assertEqual(sells[0]["orderId"], "802")
+        self.assertAlmostEqual(sells[0]["price"], 145.0)
+        # When window is narrower than cached fills, BUY falls back to synthetic portfolio averagePrice
+        fake_prov._cli.portfolio_result = [{"ticker": "SPCX_US_EQ", "quantity": 2.0, "averagePrice": 140.5, "currentPrice": 142.0}]
+        synth_buys = fake_prov.get_orders("SPCX_US_EQ", "BUY", 60.0)
+        self.assertEqual(len(synth_buys), 1)
+        self.assertAlmostEqual(synth_buys[0]["price"], 140.5)
+        self.assertEqual(fake_prov.get_orders("SPCX_US_EQ", "SELL", 60.0), [])
+
+        # Order lifecycle mutations invalidate fetchtime and trigger refresh_order_history on next get_orders
+        fake_prov._live_enabled = True
+        fake_prov._order_validity = "DAY"
+        fake_prov.submit_order("SPCX_US_EQ", "BUY", 1.0, 140.0)
+        invalidated = read_json_dict(trade_cache_file, default={})
+        self.assertNotIn("SPCX_US_EQ", invalidated.get("fetchtime", {}))
+
+        refresh_calls = []
+
+        def _fake_refresh(*, max_age_sec=None):
+            refresh_calls.append(max_age_sec)
+            CacheTradeManager.merge_venue_fills_snapshot(
                 trade_cache_file,
                 {
-                    "items": {
-                        "SPCX_US_EQ": [
-                            {"orderId": "801", "symbol": "SPCX_US_EQ", "side": "BUY", "price": 138.0, "qty": 1.0, "timestamp": now_ms - 1800_000},
-                            {"orderId": "802", "symbol": "SPCX_US_EQ", "side": "SELL", "price": 145.0, "qty": 0.5, "timestamp": now_ms - 900_000},
-                        ]
-                    },
-                    "fetchtime": {"SPCX_US_EQ": now_ms},
+                    "SPCX_US_EQ": [
+                        {"orderId": "901", "symbol": "SPCX_US_EQ", "side": "BUY", "price": 140.0, "qty": 1.0, "timestamp": now_ms - 10_000},
+                    ]
                 },
             )
-            fake_prov = T212Provider(client=FakeT212Client())
-            fake_prov._ssot_fills_cache_path = trade_cache_file
-            buys = fake_prov.get_orders("SPCX_US_EQ", "BUY", 3600.0)
-            sells = fake_prov.get_orders("SPCX_US_EQ", "SELL", 3600.0)
-            self.assertEqual(len(buys), 1)
-            self.assertEqual(buys[0]["orderId"], "801")
-            self.assertAlmostEqual(buys[0]["price"], 138.0)
-            self.assertEqual(len(sells), 1)
-            self.assertEqual(sells[0]["orderId"], "802")
-            self.assertAlmostEqual(sells[0]["price"], 145.0)
-            # When window is narrower than cached fills, BUY falls back to synthetic portfolio averagePrice
-            fake_prov._cli.portfolio_result = [{"ticker": "SPCX_US_EQ", "quantity": 2.0, "averagePrice": 140.5, "currentPrice": 142.0}]
-            synth_buys = fake_prov.get_orders("SPCX_US_EQ", "BUY", 60.0)
-            self.assertEqual(len(synth_buys), 1)
-            self.assertAlmostEqual(synth_buys[0]["price"], 140.5)
-            self.assertEqual(fake_prov.get_orders("SPCX_US_EQ", "SELL", 60.0), [])
+            return []
 
-            # Order lifecycle mutations invalidate fetchtime and trigger refresh_order_history on next get_orders
-            fake_prov._live_enabled = True
-            fake_prov._order_validity = "DAY"
-            fake_prov.submit_order("SPCX_US_EQ", "BUY", 1.0, 140.0)
-            invalidated = read_json_dict(trade_cache_file, default={})
-            self.assertNotIn("SPCX_US_EQ", invalidated.get("fetchtime", {}))
+        fake_prov._cli.refresh_order_history = _fake_refresh
+        refreshed_buys = fake_prov.get_orders("SPCX_US_EQ", "BUY", 3600.0)
+        self.assertEqual(refresh_calls, [0.0])
+        self.assertEqual([o["orderId"] for o in refreshed_buys], ["801", "901"])
 
-            refresh_calls = []
+        # Verify 10-minute (600s) 429 shared-cache fallback and cross-process fail_ts backoff
+        save_json_state(
+            shared_path,
+            {
+                "_ord_cache": {
+                    "ts": time.time() - 300.0,
+                    "data": [{"id": 501, "ticker": "SPCX_US_EQ", "quantity": 1.0, "limitPrice": 120.0}],
+                }
+            },
+        )
+        c_p1 = t212_client.T212Client(
+            "demo-key", "demo-secret", env="demo",
+            min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
+        )
+        c_p1._shared_cache_path = shared_path
+        c_p1._enable_shared_disk_cache = True
+        c_p2 = t212_client.T212Client(
+            "demo-key", "demo-secret", env="demo",
+            min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
+        )
+        c_p2._shared_cache_path = shared_path
+        c_p2._enable_shared_disk_cache = True
+        p1_calls = []
 
-            def _fake_refresh(*, max_age_sec=None):
-                refresh_calls.append(max_age_sec)
-                CacheTradeManager.merge_venue_fills_snapshot(
-                    trade_cache_file,
-                    {
-                        "SPCX_US_EQ": [
-                            {"orderId": "901", "symbol": "SPCX_US_EQ", "side": "BUY", "price": 140.0, "qty": 1.0, "timestamp": now_ms - 10_000},
-                        ]
-                    },
-                )
-                return []
+        def fake_429_orders(url, headers=None):
+            p1_calls.append(url)
+            return 429, b'{"error": "rate limit"}'
 
-            fake_prov._cli.refresh_order_history = _fake_refresh
-            refreshed_buys = fake_prov.get_orders("SPCX_US_EQ", "BUY", 3600.0)
-            self.assertEqual(refresh_calls, [0.0])
-            self.assertEqual([o["orderId"] for o in refreshed_buys], ["801", "901"])
-
-            # Verify 10-minute (600s) 429 shared-cache fallback and cross-process fail_ts backoff
-            save_json_state(
-                shared_path,
-                {
-                    "_ord_cache": {
-                        "ts": time.time() - 300.0,
-                        "data": [{"id": 501, "ticker": "SPCX_US_EQ", "quantity": 1.0, "limitPrice": 120.0}],
-                    }
-                },
-            )
-            c_p1 = t212_client.T212Client(
-                "demo-key", "demo-secret", env="demo",
-                min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
-            )
-            c_p1._shared_cache_path = shared_path
-            c_p1._enable_shared_disk_cache = True
-            c_p2 = t212_client.T212Client(
-                "demo-key", "demo-secret", env="demo",
-                min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
-            )
-            c_p2._shared_cache_path = shared_path
-            c_p2._enable_shared_disk_cache = True
-            p1_calls = []
-
-            def fake_429_orders(url, headers=None):
-                p1_calls.append(url)
-                return 429, b'{"error": "rate limit"}'
-
-            with mock.patch.object(t212_client, "http_get", side_effect=fake_429_orders):
-                ords_p1 = c_p1.list_active_orders()
-                self.assertEqual(len(ords_p1), 1)
-                self.assertEqual(ords_p1[0]["id"], 501)
-                self.assertEqual(len(p1_calls), 1)
-                # Process 2 reads the fail_ts-stamped shared cache entry without making a duplicate 429 request
-                ords_p2 = c_p2.list_active_orders()
-                self.assertEqual(len(ords_p2), 1)
-                self.assertEqual(ords_p2[0]["id"], 501)
-                self.assertEqual(len(p1_calls), 1)
+        with mock.patch.object(t212_client, "http_get", side_effect=fake_429_orders):
+            ords_p1 = c_p1.list_active_orders()
+            self.assertEqual(len(ords_p1), 1)
+            self.assertEqual(ords_p1[0]["id"], 501)
+            self.assertEqual(len(p1_calls), 1)
+            # Process 2 reads the fail_ts-stamped shared cache entry without making a duplicate 429 request
+            ords_p2 = c_p2.list_active_orders()
+            self.assertEqual(len(ords_p2), 1)
+            self.assertEqual(ords_p2[0]["id"], 501)
+            self.assertEqual(len(p1_calls), 1)
 
 
 if __name__ == "__main__":

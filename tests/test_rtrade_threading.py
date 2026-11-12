@@ -220,7 +220,7 @@ def _old_exposed_checkpoint(pair_id):
     }
 
 
-class RTradeThreadingTest(unittest.TestCase):
+class RTradeThreadingTest(TempDirTestCase):
     def test_intent_recovery_config_fails_closed_on_missing_or_invalid_values(self):
         invalid = [
             (None, 1.0, 300.0),
@@ -686,13 +686,13 @@ class RTradeThreadingTest(unittest.TestCase):
             pair_precision=lambda _symbol: precision,
             preflight_order=lambda *args, **kwargs: None,
             submit_order=lambda *args, **kwargs: "M9")
-        with tempfile.TemporaryDirectory(prefix="rtrade-test-audit-") as audit_dir:
-            with _binance_mkt_env(executor, root=audit_dir, patch_place=False), \
-                 patch.object(rtrade.mkt, "get_current_price", return_value=90.0), \
-                 patch.object(executor, "submit_order", wraps=executor.submit_order) as submit:
-                venue = rtrade._LivePairVenue("TAOUSDC")
-                ticket = venue.place_market_exit(
-                    "SELL", 0.4, "fast_fill_hard_stop", pair_id="pair-9")
+        audit_dir = str(self.tmp)
+        with _binance_mkt_env(executor, root=audit_dir, patch_place=False), \
+             patch.object(rtrade.mkt, "get_current_price", return_value=90.0), \
+             patch.object(executor, "submit_order", wraps=executor.submit_order) as submit:
+            venue = rtrade._LivePairVenue("TAOUSDC")
+            ticket = venue.place_market_exit(
+                "SELL", 0.4, "fast_fill_hard_stop", pair_id="pair-9")
 
         self.assertEqual((ticket.order_id, ticket.qty, ticket.pair_id),
                          ("M9", 0.39, "pair-9"))

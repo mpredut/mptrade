@@ -226,7 +226,7 @@ class HyperliquidProvider(MarketDataProvider):
         self._env_loaded = True
         try:
             load_env_stack(os.path.join(_HL_DIR, ".env"))
-        except Exception as e:  # noqa: BLE001 — Without env files, use public data only.
+        except Exception as e:  # noqa: BLE001 -- Without env files, use public data only.
             print(f"[HL] _load_env failed: {e}")
 
     @staticmethod

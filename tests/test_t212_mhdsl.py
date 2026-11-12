@@ -1,6 +1,7 @@
 """Unified tests for Trading 212 environment loading, MHDSL, MDHTP, and Hybrid Re-entry."""
 
 import atexit
+from tests.conftest import TempDirTestCase
 import json
 import os
 import tempfile
@@ -751,14 +752,14 @@ class TestParamsIsolation(unittest.TestCase):
             strategy.StratParams.from_env({})
 
 
-class TestDiscover(unittest.TestCase):
+class TestDiscover(TempDirTestCase):
     def test_it_finds_the_active_configs(self):
-        with tempfile.TemporaryDirectory() as d:
-            for n in ("nvda", "spcx", "rgnt"):
-                open(os.path.join(d, f"config.{n}.env"), "w").close()
-            open(os.path.join(d, ".env"), "w").close()
-            names = [n for n, _ in t212_bot.discover_assets(d)]
-            self.assertEqual(names, ["nvda", "rgnt", "spcx"])
+        d = str(self.tmp)
+        for n in ("nvda", "spcx", "rgnt"):
+            open(os.path.join(d, f"config.{n}.env"), "w").close()
+        open(os.path.join(d, ".env"), "w").close()
+        names = [n for n, _ in t212_bot.discover_assets(d)]
+        self.assertEqual(names, ["nvda", "rgnt", "spcx"])
 
 
 # --- Launch Detection & ISIN Verification (from test_launch_detect.py) ------

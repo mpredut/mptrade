@@ -1,6 +1,7 @@
 """Unit tests for symmetric GO1 (30 filled orders / 24h) and Kraken multi-fill aggregation."""
 
 import json
+from tests.conftest import TempDirTestCase
 import order_guard
 import order_retry
 import os
@@ -87,14 +88,16 @@ class FakeProvider(MarketDataProvider):
         })
 
 
-class TestSymmetricDailyLimitGuard(unittest.TestCase):
+class TestSymmetricDailyLimitGuard(TempDirTestCase):
     def setUp(self):
+        super().setUp()
         order_guard._MARGINS = None
         order_guard._MARGINS_FILE_MTIME = 0.0
 
     def tearDown(self):
         order_guard._MARGINS = None
         order_guard._MARGINS_FILE_MTIME = 0.0
+        super().tearDown()
 
     def test_recent_trades_below_daily_cap_are_allowed_symmetrically(self):
         for side in ("BUY", "SELL"):
@@ -229,49 +232,49 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
         inst = Instrument(name="KRAKEN_BTC", symbol="BTCUSDC", provider="kraken",
                           base="BTC", quote="USDC", api=api)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-            lfile = os.path.join(tmpdir, "order_retry.lock")
-            with patch.object(order_retry, "QUEUE_FILE", qfile), \
-                 patch.object(order_retry, "LOCK_FILE", lfile), \
-                 patch.object(order_guard, "profit_guard", return_value=True):
-                res = inst.place("SELL", 100.0, 1.0, bypass_guards={"all"}, kind="STOP")
-                self.assertIsNotNone(res)
+        tmpdir = str(self.tmp)
+        qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
+        lfile = os.path.join(tmpdir, "order_retry.lock")
+        with patch.object(order_retry, "QUEUE_FILE", qfile), \
+             patch.object(order_retry, "LOCK_FILE", lfile), \
+             patch.object(order_guard, "profit_guard", return_value=True):
+            res = inst.place("SELL", 100.0, 1.0, bypass_guards={"all"}, kind="STOP")
+            self.assertIsNotNone(res)
 
     def test_daily_limit_deferral_consolidates_when_retry_dedup_disabled(self):
         """When RETRY_DEDUP=False, repeated GO1 'daily_limit' blocks for the same
         (provider, symbol, side, kind) must consolidate into a single pending retry
         record instead of piling up duplicates."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-            lfile = os.path.join(tmpdir, "order_retry.lock")
-            with patch.object(order_retry, "QUEUE_FILE", qfile), \
-                 patch.object(order_retry, "LOCK_FILE", lfile), \
-                 patch.object(order_retry, "RETRY_DEDUP", False):
-                rec1 = order_retry.enqueue(
-                    "HYPEUSD",
-                    "BUY",
-                    1.0,
-                    requested_price=40.0,
-                    failure_reason="daily_limit",
-                    provider_name="kraken",
-                    kind="ENTRY",
-                )
-                rec2 = order_retry.enqueue(
-                    "HYPEUSD",
-                    "BUY",
-                    1.2,
-                    requested_price=41.5,
-                    failure_reason="daily_limit",
-                    provider_name="kraken",
-                    kind="ENTRY",
-                )
-                self.assertIsNotNone(rec1)
-                self.assertIsNotNone(rec2)
-                pending = order_retry._read_nolock()
-                self.assertEqual(len(pending), 1)
-                self.assertAlmostEqual(pending[0]["requested_price"], 41.5)
-                self.assertAlmostEqual(pending[0]["qty"], 1.2)
+        tmpdir = str(self.tmp)
+        qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
+        lfile = os.path.join(tmpdir, "order_retry.lock")
+        with patch.object(order_retry, "QUEUE_FILE", qfile), \
+             patch.object(order_retry, "LOCK_FILE", lfile), \
+             patch.object(order_retry, "RETRY_DEDUP", False):
+            rec1 = order_retry.enqueue(
+                "HYPEUSD",
+                "BUY",
+                1.0,
+                requested_price=40.0,
+                failure_reason="daily_limit",
+                provider_name="kraken",
+                kind="ENTRY",
+            )
+            rec2 = order_retry.enqueue(
+                "HYPEUSD",
+                "BUY",
+                1.2,
+                requested_price=41.5,
+                failure_reason="daily_limit",
+                provider_name="kraken",
+                kind="ENTRY",
+            )
+            self.assertIsNotNone(rec1)
+            self.assertIsNotNone(rec2)
+            pending = order_retry._read_nolock()
+            self.assertEqual(len(pending), 1)
+            self.assertAlmostEqual(pending[0]["requested_price"], 41.5)
+            self.assertAlmostEqual(pending[0]["qty"], 1.2)
 
     def test_hyperliquid_transient_startup_timeout_does_not_permanently_disable_client(self):
         """A transient network timeout during HyperliquidProvider._new_client() must not
@@ -323,24 +326,24 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
         inst = Instrument(name="KRAKEN_TAO", symbol="TAOUSD", provider="kraken",
                           base="TAO", quote="USD", api=api)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-            lfile = os.path.join(tmpdir, "order_retry.lock")
-            with patch.object(order_retry, "QUEUE_FILE", qfile), \
-                 patch.object(order_retry, "LOCK_FILE", lfile), \
-                 patch.object(order_guard, "profit_guard", return_value=True):
-                # $15 notional BUY (price=15, qty=1.0) with enforce_business_minimum=False must succeed
-                res = inst.place(
-                    "BUY",
-                    15.0,
-                    1.0,
-                    market=True,
-                    enforce_business_minimum=False,
-                    bypass_guards={"all"},
-                )
-                self.assertIsNotNone(res)
-                self.assertIn(("filter", False), observed_flags)
-                self.assertIn(("place", False), observed_flags)
+        tmpdir = str(self.tmp)
+        qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
+        lfile = os.path.join(tmpdir, "order_retry.lock")
+        with patch.object(order_retry, "QUEUE_FILE", qfile), \
+             patch.object(order_retry, "LOCK_FILE", lfile), \
+             patch.object(order_guard, "profit_guard", return_value=True):
+            # $15 notional BUY (price=15, qty=1.0) with enforce_business_minimum=False must succeed
+            res = inst.place(
+                "BUY",
+                15.0,
+                1.0,
+                market=True,
+                enforce_business_minimum=False,
+                bypass_guards={"all"},
+            )
+            self.assertIsNotNone(res)
+            self.assertIn(("filter", False), observed_flags)
+            self.assertIn(("place", False), observed_flags)
 
     def test_hyperliquid_order_status_does_not_use_unrelated_fill_price_for_hype_fee(self):
         """When self._token != 'HYPE' and feeToken == 'HYPE', order_status must not

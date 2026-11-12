@@ -1,6 +1,7 @@
 """Comprehensive unit tests for external intelligence (Pillar 2: liquidations, guards, telemetry)."""
 
 import ast
+from tests.conftest import TempDirTestCase
 import cacheprice as cp
 import external_order_guard
 import intelligence.external.guards.funding_crowding_guard as fcg
@@ -14,7 +15,6 @@ import monitortrades as mt
 import order_guard
 import os
 import pytest
-import tempfile
 import threading
 import time
 import unittest
@@ -152,7 +152,7 @@ class TestExternalTriggers(unittest.TestCase):
         self.assertEqual(ev.reason, "liquidation_short_squeeze_burst")
 
 
-class TestExternalGuards(unittest.TestCase):
+class TestExternalGuards(TempDirTestCase):
     def test_cascade_guard_defers_during_active_falling_knife(self):
         guard = LiquidationCascadeGuard(max_active_cascade_usd=500_000.0, active_window_sec=60.0)
 
@@ -258,73 +258,73 @@ class TestExternalGuards(unittest.TestCase):
 
     def test_disk_serialization_round_trip(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # 1. Whale collector disk round-trip
-            w_collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=tmpdir)
-            t0 = time.time()
-            w_snap = WhalePositioningSnapshot(
-                symbol="BTCUSDT",
-                top_traders_long_ratio=1.75,
-                top_traders_long_pct=0.63,
-                taker_buy_sell_ratio=1.30,
-                taker_buy_vol_usd=1_000_000.0,
-                taker_sell_vol_usd=750_000.0,
-                open_interest_usd=5_000_000_000.0,
-                open_interest_1h_change_pct=2.1,
-                divergence_regime="accumulation",
-                ts=t0,
-            )
-            w_collector.record_snapshot(w_snap, save_to_disk=True)
+        tmpdir = str(self.tmp)
+        # 1. Whale collector disk round-trip
+        w_collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=tmpdir)
+        t0 = time.time()
+        w_snap = WhalePositioningSnapshot(
+            symbol="BTCUSDT",
+            top_traders_long_ratio=1.75,
+            top_traders_long_pct=0.63,
+            taker_buy_sell_ratio=1.30,
+            taker_buy_vol_usd=1_000_000.0,
+            taker_sell_vol_usd=750_000.0,
+            open_interest_usd=5_000_000_000.0,
+            open_interest_1h_change_pct=2.1,
+            divergence_regime="accumulation",
+            ts=t0,
+        )
+        w_collector.record_snapshot(w_snap, save_to_disk=True)
 
-            # Read back with a brand new collector instance
-            w_collector2 = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=tmpdir)
-            loaded_w = w_collector2.fetch("BTCUSDT")
-            self.assertIsNotNone(loaded_w)
-            self.assertEqual(loaded_w.symbol, "BTCUSDT")
-            self.assertEqual(loaded_w.divergence_regime, "accumulation")
+        # Read back with a brand new collector instance
+        w_collector2 = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=tmpdir)
+        loaded_w = w_collector2.fetch("BTCUSDT")
+        self.assertIsNotNone(loaded_w)
+        self.assertEqual(loaded_w.symbol, "BTCUSDT")
+        self.assertEqual(loaded_w.divergence_regime, "accumulation")
 
-            # 2. Orderbook collector disk round-trip
-            ob_collector = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
-            ob_snap = OrderbookSnapshot(
-                symbol="ETHUSDT",
-                mid_price=3500.0,
-                bid_depth_usd=2_000_000.0,
-                ask_depth_usd=1_500_000.0,
-                imbalance_ratio=0.571,
-                largest_bid_wall_usd=300_000.0,
-                largest_bid_wall_price=3490.0,
-                largest_ask_wall_usd=250_000.0,
-                largest_ask_wall_price=3510.0,
-                ts=t0,
-            )
-            ob_collector.record_snapshot(ob_snap, save_to_disk=True)
+        # 2. Orderbook collector disk round-trip
+        ob_collector = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+        ob_snap = OrderbookSnapshot(
+            symbol="ETHUSDT",
+            mid_price=3500.0,
+            bid_depth_usd=2_000_000.0,
+            ask_depth_usd=1_500_000.0,
+            imbalance_ratio=0.571,
+            largest_bid_wall_usd=300_000.0,
+            largest_bid_wall_price=3490.0,
+            largest_ask_wall_usd=250_000.0,
+            largest_ask_wall_price=3510.0,
+            ts=t0,
+        )
+        ob_collector.record_snapshot(ob_snap, save_to_disk=True)
 
-            ob_collector2 = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
-            loaded_ob = ob_collector2.fetch("ETHUSDT")
-            self.assertIsNotNone(loaded_ob)
-            self.assertEqual(loaded_ob.symbol, "ETHUSDT")
-            self.assertAlmostEqual(loaded_ob.imbalance_ratio, 0.571)
+        ob_collector2 = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+        loaded_ob = ob_collector2.fetch("ETHUSDT")
+        self.assertIsNotNone(loaded_ob)
+        self.assertEqual(loaded_ob.symbol, "ETHUSDT")
+        self.assertAlmostEqual(loaded_ob.imbalance_ratio, 0.571)
 
-            # 3. Derivatives telemetry disk round-trip
-            d_collector = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
-            d_snap = DerivativesTelemetry(
-                symbol="SOLUSDT",
-                funding_rate=0.0002,
-                predicted_funding_rate=0.00025,
-                open_interest=100_000.0,
-                open_interest_usd=15_000_000.0,
-                ts=t0,
-            )
-            d_collector.record_snapshot(d_snap, save_to_disk=True)
+        # 3. Derivatives telemetry disk round-trip
+        d_collector = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+        d_snap = DerivativesTelemetry(
+            symbol="SOLUSDT",
+            funding_rate=0.0002,
+            predicted_funding_rate=0.00025,
+            open_interest=100_000.0,
+            open_interest_usd=15_000_000.0,
+            ts=t0,
+        )
+        d_collector.record_snapshot(d_snap, save_to_disk=True)
 
-            d_collector2 = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
-            loaded_d = d_collector2.fetch("SOLUSDT")
-            self.assertIsNotNone(loaded_d)
-            self.assertEqual(loaded_d.symbol, "SOLUSDT")
-            self.assertEqual(loaded_d.funding_rate, 0.0002)
+        d_collector2 = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+        loaded_d = d_collector2.fetch("SOLUSDT")
+        self.assertIsNotNone(loaded_d)
+        self.assertEqual(loaded_d.symbol, "SOLUSDT")
+        self.assertEqual(loaded_d.funding_rate, 0.0002)
 
 
-class TestOrderGuardPillar2Integration(unittest.TestCase):
+class TestOrderGuardPillar2Integration(TempDirTestCase):
     """Verify Pillar 2 guards wire cleanly into order_guard.check_intelligence_guards."""
 
     def test_whale_guard_shadow_allows_while_enforce_blocks(self):
@@ -758,14 +758,14 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
     def test_volatility_cache_symbol_variants_and_composite_high_stake_default(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            kalman_path = os.path.join(tmpdir, "cache_kalman_trend.json")
-            with open(kalman_path, "w", encoding="utf-8") as f:
-                json.dump({"TAOUSDC": {"vol_1h_pct": 3.2}, "HYPEUSDC": {"vol_1h_pct": 4.5}}, f)
-            self.assertAlmostEqual(resolve_cached_volatility_1h("TAOUSD", state_path=kalman_path), 0.032)
-            self.assertAlmostEqual(resolve_cached_volatility_1h("TAO/USD", state_path=kalman_path), 0.032)
-            self.assertAlmostEqual(resolve_cached_volatility_1h("HYPE/USDC", state_path=kalman_path), 0.045)
-            self.assertAlmostEqual(resolve_cached_volatility_1h("HYPE", state_path=kalman_path), 0.045)
+        tmpdir = str(self.tmp)
+        kalman_path = os.path.join(tmpdir, "cache_kalman_trend.json")
+        with open(kalman_path, "w", encoding="utf-8") as f:
+            json.dump({"TAOUSDC": {"vol_1h_pct": 3.2}, "HYPEUSDC": {"vol_1h_pct": 4.5}}, f)
+        self.assertAlmostEqual(resolve_cached_volatility_1h("TAOUSD", state_path=kalman_path), 0.032)
+        self.assertAlmostEqual(resolve_cached_volatility_1h("TAO/USD", state_path=kalman_path), 0.032)
+        self.assertAlmostEqual(resolve_cached_volatility_1h("HYPE/USDC", state_path=kalman_path), 0.045)
+        self.assertAlmostEqual(resolve_cached_volatility_1h("HYPE", state_path=kalman_path), 0.045)
 
         comp = CompositeMarketIntelligence()
         self.assertEqual(comp.gemini_guard.min_notional_eur, 700.0)
@@ -857,82 +857,82 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
     def test_collector_exact_venue_cache_isolation_and_stale_first_skip(self):
 
         now = 1_700_000_000.0
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ob_col = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=tmpdir)
-            # 1. Stale exact entry in memory must not shadow a fresh compatible variant when allow_network=False
-            ob_col.record_snapshot(
-                OrderbookSnapshot(
-                    symbol="TAOUSD",
-                    mid_price=400.0,
-                    bid_depth_usd=50_000.0,
-                    ask_depth_usd=50_000.0,
-                    imbalance_ratio=0.5,
-                    largest_bid_wall_usd=10_000.0,
-                    largest_bid_wall_price=399.0,
-                    largest_ask_wall_usd=10_000.0,
-                    largest_ask_wall_price=401.0,
-                    ts=now - 120.0,
-                )
+        tmpdir = str(self.tmp)
+        ob_col = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=tmpdir)
+        # 1. Stale exact entry in memory must not shadow a fresh compatible variant when allow_network=False
+        ob_col.record_snapshot(
+            OrderbookSnapshot(
+                symbol="TAOUSD",
+                mid_price=400.0,
+                bid_depth_usd=50_000.0,
+                ask_depth_usd=50_000.0,
+                imbalance_ratio=0.5,
+                largest_bid_wall_usd=10_000.0,
+                largest_bid_wall_price=399.0,
+                largest_ask_wall_usd=10_000.0,
+                largest_ask_wall_price=401.0,
+                ts=now - 120.0,
             )
-            ob_col.record_snapshot(
-                OrderbookSnapshot(
-                    symbol="TAOUSDC",
-                    mid_price=455.0,
-                    bid_depth_usd=80_000.0,
-                    ask_depth_usd=80_000.0,
-                    imbalance_ratio=0.5,
-                    largest_bid_wall_usd=15_000.0,
-                    largest_bid_wall_price=454.0,
-                    largest_ask_wall_usd=15_000.0,
-                    largest_ask_wall_price=456.0,
-                    ts=now - 5.0,
-                ),
-                save_to_disk=True,
-            )
-            hit_ro = ob_col.fetch("TAOUSD", allow_network=False, now=now)
-            self.assertIsNotNone(hit_ro)
-            self.assertAlmostEqual(hit_ro.mid_price, 455.0)
+        )
+        ob_col.record_snapshot(
+            OrderbookSnapshot(
+                symbol="TAOUSDC",
+                mid_price=455.0,
+                bid_depth_usd=80_000.0,
+                ask_depth_usd=80_000.0,
+                imbalance_ratio=0.5,
+                largest_bid_wall_usd=15_000.0,
+                largest_bid_wall_price=454.0,
+                largest_ask_wall_usd=15_000.0,
+                largest_ask_wall_price=456.0,
+                ts=now - 5.0,
+            ),
+            save_to_disk=True,
+        )
+        hit_ro = ob_col.fetch("TAOUSD", allow_network=False, now=now)
+        self.assertIsNotNone(hit_ro)
+        self.assertAlmostEqual(hit_ro.mid_price, 455.0)
 
-            # 2. When allow_network=True on a multi-venue symbol (TAOUSD on Kraken), fresh disk TAOUSDC
-            # must NOT pollute _cache['TAOUSD'] or be returned on Kraken network error.
-            ob_col2 = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=tmpdir)
-            with patch.object(ob_col2, "_fetch_json_dict", side_effect=RuntimeError("network down")):
-                res_fail = ob_col2.fetch("TAOUSD", allow_network=True, now=now)
-            self.assertIsNone(res_fail)
-            self.assertNotIn("TAOUSD", ob_col2._cache)
+        # 2. When allow_network=True on a multi-venue symbol (TAOUSD on Kraken), fresh disk TAOUSDC
+        # must NOT pollute _cache['TAOUSD'] or be returned on Kraken network error.
+        ob_col2 = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=tmpdir)
+        with patch.object(ob_col2, "_fetch_json_dict", side_effect=RuntimeError("network down")):
+            res_fail = ob_col2.fetch("TAOUSD", allow_network=True, now=now)
+        self.assertIsNone(res_fail)
+        self.assertNotIn("TAOUSD", ob_col2._cache)
 
-            # 3. Hyperliquid whale fallback preserves 1h OI change on sub-15m unchanged OI and handles 0 buy volume
-            w_col = WhalePositioningCollector(cache_ttl_sec=60.0, disk_ttl_sec=180.0, cache_dir=tmpdir)
-            w_col.record_snapshot(
-                WhalePositioningSnapshot(
-                    symbol="HYPEUSDC",
-                    top_traders_long_ratio=1.0,
-                    top_traders_long_pct=0.5,
-                    taker_buy_sell_ratio=1.1,
-                    taker_buy_vol_usd=10_000.0,
-                    taker_sell_vol_usd=9_000.0,
-                    open_interest_usd=100_000_000.0,
-                    open_interest_1h_change_pct=4.5,
-                    divergence_regime="accumulation",
-                    ts=now - 60.0,
-                ),
-                save_to_disk=True,
-            )
-            with patch.object(
-                w_col,
-                "_fetch_json_dict",
-                return_value={"result_list": [{"px": "25.0", "sz": "100.0", "side": "A"}]},
-            ), patch.object(
-                w_col,
-                "_fetch_hyperliquid_asset_ctx",
-                return_value={"openInterest": "4000000.0", "markPx": "25.0", "funding": "0.0001"},
-            ):
-                hl_w = w_col._fetch_hyperliquid_whale_fallback("HYPEUSDC", -1.2, now, None)
-            self.assertIsNotNone(hl_w)
-            self.assertAlmostEqual(hl_w.taker_buy_sell_ratio, 0.0)
-            self.assertAlmostEqual(hl_w.open_interest_1h_change_pct, 4.5)
-            self.assertEqual(hl_w.divergence_regime, "aggressive_shorting")
-            self.assertAlmostEqual(hl_w.cvd_5m_usd, -2500.0)
+        # 3. Hyperliquid whale fallback preserves 1h OI change on sub-15m unchanged OI and handles 0 buy volume
+        w_col = WhalePositioningCollector(cache_ttl_sec=60.0, disk_ttl_sec=180.0, cache_dir=tmpdir)
+        w_col.record_snapshot(
+            WhalePositioningSnapshot(
+                symbol="HYPEUSDC",
+                top_traders_long_ratio=1.0,
+                top_traders_long_pct=0.5,
+                taker_buy_sell_ratio=1.1,
+                taker_buy_vol_usd=10_000.0,
+                taker_sell_vol_usd=9_000.0,
+                open_interest_usd=100_000_000.0,
+                open_interest_1h_change_pct=4.5,
+                divergence_regime="accumulation",
+                ts=now - 60.0,
+            ),
+            save_to_disk=True,
+        )
+        with patch.object(
+            w_col,
+            "_fetch_json_dict",
+            return_value={"result_list": [{"px": "25.0", "sz": "100.0", "side": "A"}]},
+        ), patch.object(
+            w_col,
+            "_fetch_hyperliquid_asset_ctx",
+            return_value={"openInterest": "4000000.0", "markPx": "25.0", "funding": "0.0001"},
+        ):
+            hl_w = w_col._fetch_hyperliquid_whale_fallback("HYPEUSDC", -1.2, now, None)
+        self.assertIsNotNone(hl_w)
+        self.assertAlmostEqual(hl_w.taker_buy_sell_ratio, 0.0)
+        self.assertAlmostEqual(hl_w.open_interest_1h_change_pct, 4.5)
+        self.assertEqual(hl_w.divergence_regime, "aggressive_shorting")
+        self.assertAlmostEqual(hl_w.cvd_5m_usd, -2500.0)
 
         # 4. Zero ob_imbalance and zero taker_buy_sell_ratio are preserved in microstructure CVD & liq clusters
         minfo = {"ob_imbalance": 0.0, "taker_buy_vol_usd": 1000.0, "taker_sell_vol_usd": 500.0}

@@ -1,6 +1,6 @@
 import copy
+from tests.conftest import TempDirTestCase
 import json
-import tempfile
 import unittest
 from offline.backtests.financial_benchmark import aggregate_financial_windows, default_scenarios
 from offline.backtests.promotion import (
@@ -234,7 +234,7 @@ class PromotionGateTest(unittest.TestCase):
             evaluate_promotion(baseline, candidate, PromotionThresholds())
 
 
-class RiskAdjustedPromotionGateTest(unittest.TestCase):
+class RiskAdjustedPromotionGateTest(TempDirTestCase):
     def test_material_robust_risk_reduction_passes_defensive_path(self):
         baseline = _report(returns=(0.0,) * 20, drawdowns=(4.0,) * 20)
         candidate = _report(
@@ -332,14 +332,14 @@ class RiskAdjustedPromotionGateTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "cash must be a finite positive number"):
                 review("HEAD:kraken/config.env", "HEAD:kraken/config.env", bad_cash)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            state_file = Path(tmp) / ".state_HYPEUSD.json"
-            state_file.write_text("[]", encoding="utf-8")
-            alert_file = Path(tmp) / "alerts.json"
-            alert_file.write_text("[]", encoding="utf-8")
-            with patch.object(ps, "KRAKEN_DIR", tmp), patch.object(ps, "ALERT_STATE", str(alert_file)):
-                self.assertIsNone(ps._load_state("HYPEUSD"))
-                self.assertEqual(ps.run_alerts([]), [])
+        tmp = str(self.tmp)
+        state_file = Path(tmp) / ".state_HYPEUSD.json"
+        state_file.write_text("[]", encoding="utf-8")
+        alert_file = Path(tmp) / "alerts.json"
+        alert_file.write_text("[]", encoding="utf-8")
+        with patch.object(ps, "KRAKEN_DIR", tmp), patch.object(ps, "ALERT_STATE", str(alert_file)):
+            self.assertIsNone(ps._load_state("HYPEUSD"))
+            self.assertEqual(ps.run_alerts([]), [])
 
     def test_median_profit_factor_includes_zero_loss_winning_folds_and_negative_base_defensive_gate(self):
         win_fold_1 = _window("w1", 3.0, 2.0, 0.5, 117.0)

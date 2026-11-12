@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from tests.conftest import TempDirTestCase
 import log as mp_log
 import os
 import tempfile
@@ -162,7 +163,7 @@ class PriceAlertLinkTests(unittest.TestCase):
         self.assertIn("Link: https://coinmarketcap.com/currencies/bittensor/", message)
 
 
-class PriceCheckerTests(unittest.TestCase):
+class PriceCheckerTests(TempDirTestCase):
     def test_check_symbol_returns_empty_list_when_history_is_insufficient(self):
         checker = PriceChecker(DummyPriceManager(history=[]))
         self.assertEqual(checker.check_symbol("BTCUSDC"), [])
@@ -195,18 +196,18 @@ class PriceCheckerTests(unittest.TestCase):
         manager = DummyPriceManager(latest_price=136.3700, history=history)
         cfg = {"per_coin": {"SPCX": {"up_percent": 4.7, "down_percent": 3.0}}, "cooldown_minutes": 180}
 
-        with tempfile.TemporaryDirectory() as tmp:
-            sf = os.path.join(tmp, "cache_watcher_all_price.cooldowns.json")
-            checker1 = PriceChecker(manager, config=cfg, state_file=sf)
-            alerts1 = checker1.check_symbol("SPCX")
-            self.assertEqual(len(alerts1), 1)
-            self.assertEqual(alerts1[0].alert_type, "down")
-            self.assertTrue(os.path.exists(sf))
+        tmp = str(self.tmp)
+        sf = os.path.join(tmp, "cache_watcher_all_price.cooldowns.json")
+        checker1 = PriceChecker(manager, config=cfg, state_file=sf)
+        alerts1 = checker1.check_symbol("SPCX")
+        self.assertEqual(len(alerts1), 1)
+        self.assertEqual(alerts1[0].alert_type, "down")
+        self.assertTrue(os.path.exists(sf))
 
-            # Simulated process restart: new PriceChecker instance loads sf and suppresses duplicate alert
-            checker2 = PriceChecker(manager, config=cfg, state_file=sf)
-            alerts2 = checker2.check_symbol("SPCX")
-            self.assertEqual(alerts2, [])
+        # Simulated process restart: new PriceChecker instance loads sf and suppresses duplicate alert
+        checker2 = PriceChecker(manager, config=cfg, state_file=sf)
+        alerts2 = checker2.check_symbol("SPCX")
+        self.assertEqual(alerts2, [])
 
         # Verify log._patched_print does not prepend a duplicate HH:MM:SS when message starts with [HH:MM:SS]
         buf = io.StringIO()
