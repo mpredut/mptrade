@@ -105,13 +105,6 @@ def get_cached_pair_info(candidates, cache_dict: dict | None = None) -> dict | N
     return _get_cached_pair_info(candidates, cache_dict if isinstance(cache_dict, dict) else _CACHE)
 
 
-def _format_kraken_number(value: float, max_decimals: int) -> str:
-    s = f"{value}"
-    if "e" in s.lower():
-        return f"{value:.{max_decimals}f}".rstrip("0").rstrip(".") or "0"
-    return s
-
-
 class KrakenError(Exception):
     pass
 
@@ -352,11 +345,12 @@ class KrakenClient:
         ot_norm = str(ordertype or "").strip().lower() if not isinstance(ordertype, bool) else ""
         if ot_norm not in {"limit", "market"}:
             raise ValueError(f"invalid Kraken ordertype: {ordertype!r}")
+        vol_s = f"{vol_f}"
         data = {
             "pair": pair_s,
             "type": side_u.lower(),
             "ordertype": ot_norm,
-            "volume": _format_kraken_number(vol_f, 12),
+            "volume": (f"{vol_f:.12f}".rstrip("0").rstrip(".") or "0") if "e" in vol_s.lower() else vol_s,
         }
         if ot_norm == "limit":
             px_f = safe_pos_float(price, default=None)
@@ -365,7 +359,8 @@ class KrakenClient:
             price = round(px_f, self.price_decimals(pair_s))
             if price <= 0.0:
                 raise ValueError(f"invalid Kraken rounded limit price: {price!r}")
-            data["price"] = _format_kraken_number(price, 18)
+            px_s = f"{price}"
+            data["price"] = (f"{price:.18f}".rstrip("0").rstrip(".") or "0") if "e" in px_s.lower() else px_s
         if cl_ord_id is not None:
             if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
                 raise ValueError("a Kraken cl_ord_id must be a 128-bit hex UUID")

@@ -880,13 +880,6 @@ class Cache365PriceManager(Cache24PriceManager):
         self._merge_live_delta_locked(post_delta)
         return post_delta
 
-    def _rollback_memory_state_with_live_delta_locked(
-        self, original_state, snap_item_ids: set[int]
-    ):
-        post_delta = self._collect_live_delta_locked(snap_item_ids)
-        self._restore_memory_state_locked(original_state)
-        self._merge_live_delta_locked(post_delta)
-
     def _write_unpersisted_and_live_delta(
         self, target, original_state, snap_item_ids: set[int], *, min_ts_ms=None
     ) -> bool:
@@ -971,7 +964,9 @@ class Cache365PriceManager(Cache24PriceManager):
             return True
         except OSError as exc:
             with self.lock:
-                self._rollback_memory_state_with_live_delta_locked(original_state, snap_item_ids)
+                post_delta = self._collect_live_delta_locked(snap_item_ids)
+                self._restore_memory_state_locked(original_state)
+                self._merge_live_delta_locked(post_delta)
                 if backup_path is not None and os.path.exists(backup_path):
                     try:
                         self._restore_previous_generation(backup_path)
@@ -1018,7 +1013,9 @@ class Cache365PriceManager(Cache24PriceManager):
             meta_ok = False
         if not meta_ok:
             with self.lock:
-                self._rollback_memory_state_with_live_delta_locked(original_state, snap_item_ids)
+                post_delta = self._collect_live_delta_locked(snap_item_ids)
+                self._restore_memory_state_locked(original_state)
+                self._merge_live_delta_locked(post_delta)
                 return self._restore_archive_after_failed_rotation_locked(archive)
         self._compress_and_prune_archive(archive)
         return True
@@ -1309,13 +1306,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return None
         return observed_at, price
 
-    def _cached_entry_for_symbol_locked(self, target_sym: str):
-        cached_price, last_ts = self.extract_price_and_ts(self.cache.get(target_sym))
-        return (
-            ([last_ts, cached_price] if cached_price is not None else None),
-            last_ts,
-        )
-
     def _resolve_and_load_cached_entry(self, symbol: str, now_ms: int):
         with self.lock:
             sym_u, sym_clean = _norm_symbol_keys(symbol)
@@ -1332,7 +1322,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 ),
                 symbol,
             )
-            entry, last_ts = self._cached_entry_for_symbol_locked(target_sym)
+            cached_price, last_ts = self.extract_price_and_ts(self.cache.get(target_sym))
+            entry = [last_ts, cached_price] if cached_price is not None else None
         return target_sym, entry, ((now_ms - last_ts) if last_ts else None)
 
     def get_price(self, symbol: str):
@@ -1375,7 +1366,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             self._persist_items(target_sym, new)
             self.save_state_to_file_if_enabled()
             with self.lock:
-                entry, _ = self._cached_entry_for_symbol_locked(target_sym)
+                cached_price, last_ts = self.extract_price_and_ts(self.cache.get(target_sym))
+                entry = [last_ts, cached_price] if cached_price is not None else None
         return entry
 
     def get_price_value(self, symbol: str) -> float:

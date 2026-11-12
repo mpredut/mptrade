@@ -1252,19 +1252,15 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         if not os.path.exists(self.filename) and not os.path.exists(backup_path):
             return {}
         try:
-            def _load_candidate(candidate_path):
-                data = read_json_dict(candidate_path)
-                if isinstance(data.get("items"), dict) and set(data.keys()) <= {
-                    "items",
-                    "fetchtime",
-                    "rest_sync_cursor",
-                    "data_version",
-                }:
-                    return dict(data["items"])
-                return data
-
             return read_recovering_previous(
-                self.filename, _load_candidate, backup_path=backup_path
+                self.filename,
+                lambda p: (
+                    dict(data["items"])
+                    if isinstance((data := read_json_dict(p)).get("items"), dict)
+                    and set(data.keys()) <= {"items", "fetchtime", "rest_sync_cursor", "data_version"}
+                    else data
+                ),
+                backup_path=backup_path,
             )
         except Exception:
             return {}
@@ -1767,19 +1763,6 @@ class KalmanStateTracker:
         mean = sum_g / n
         return math.sqrt(max(0.0, sum_g2 / n - mean * mean))
 
-    def _build_fields(self, k: dict, v1h: float | None) -> dict:
-        adapt_reentry, adapt_dca = pw.adaptive_thresholds(
-            v1h, k_reentry=pw.K_REENTRY_DEFAULT, k_dca=pw.K_DCA_DEFAULT
-        )
-        return {
-            "kalman_vel": k["vel"],
-            "kalman_vel_std": k["vel_std"],
-            "kalman_trend": k["trend"],
-            "vol_1h_pct": v1h,
-            "adapt_reentry_pct": adapt_reentry,
-            "adapt_dca_pct": adapt_dca,
-        }
-
     def update(
         self,
         symbol: str,
@@ -1803,7 +1786,18 @@ class KalmanStateTracker:
             price := safe_pos_float(price, default=None)
         ) is None:
             k = self._last_kfields.get(symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0})
-            return self._build_fields(k, self._last_vol_fields.get(symbol))
+            v1h_cached = self._last_vol_fields.get(symbol)
+            adapt_reentry, adapt_dca = pw.adaptive_thresholds(
+                v1h_cached, k_reentry=pw.K_REENTRY_DEFAULT, k_dca=pw.K_DCA_DEFAULT
+            )
+            return {
+                "kalman_vel": k["vel"],
+                "kalman_vel_std": k["vel_std"],
+                "kalman_trend": k["trend"],
+                "vol_1h_pct": v1h_cached,
+                "adapt_reentry_pct": adapt_reentry,
+                "adapt_dca_pct": adapt_dca,
+            }
         sr_val = safe_pos_float(big_sample_rate, 1.0)
         eps_val = safe_nonneg_float(epsilon, 0.0)
         last_fed = self._last_fed.get(symbol, -1e18)
@@ -1889,7 +1883,17 @@ class KalmanStateTracker:
         if should_store_vol:
             self._last_vol_time[symbol] = ts
             self._last_vol_fields[symbol] = v1h
-        fields = self._build_fields(k, v1h)
+        adapt_reentry, adapt_dca = pw.adaptive_thresholds(
+            v1h, k_reentry=pw.K_REENTRY_DEFAULT, k_dca=pw.K_DCA_DEFAULT
+        )
+        fields = {
+            "kalman_vel": k["vel"],
+            "kalman_vel_std": k["vel_std"],
+            "kalman_trend": k["trend"],
+            "vol_1h_pct": v1h,
+            "adapt_reentry_pct": adapt_reentry,
+            "adapt_dca_pct": adapt_dca,
+        }
         prev_st = self._state.get(symbol)
         if (
             isinstance(prev_st, dict)
