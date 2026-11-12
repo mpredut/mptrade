@@ -1,5 +1,5 @@
 #!/bin/bash
-# pia_supervisor.sh — Private Internet Access Dedicated IP & WireGuard supervisor daemon.
+# pia_supervisor.sh -- Private Internet Access Dedicated IP & WireGuard supervisor daemon.
 #
 # Usage:
 #   systemd service daemon: runs continuously supervising the tunnel and probing health.

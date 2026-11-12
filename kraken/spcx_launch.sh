@@ -1,6 +1,6 @@
 #!/bin/bash
-# Launch the SPCX bot (xStock, NO allocation — a direct buy at listing time).
-# Run it when the 🚀 listing alert arrives (it carries the exact pair key):
+# Launch the SPCX bot (xStock, NO allocation -- a direct buy at listing time).
+# Run it when the listing alert arrives (it carries the exact pair key):
 #   ./spcx_launch.sh SPCXXUSD
 set -euo pipefail
 

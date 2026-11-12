@@ -1,5 +1,5 @@
 #!/bin/bash
-# vpn_watchdog.sh — automatic recovery of the PIA VPN, plus an alert spool that delivers
+# vpn_watchdog.sh -- automatic recovery of the PIA VPN, plus an alert spool that delivers
 # retroactively when connectivity returns after an outage.
 #
 # Manual diagnostic / emergency recovery tool:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# wait_for_vpn.sh — Brief, bounded settle gate before starting Antigravity daemon.
+# wait_for_vpn.sh -- Brief, bounded settle gate before starting Antigravity daemon.
 # Prefers binding the daemon's WebChannel socket after wgpia0 policy routing settles
 # during boot/reconnect, but never requires VPN: exits immediately if wgpia0 is already
 # routing or PIA is intentionally Disconnected (ISP fallback), and caps total wall-clock

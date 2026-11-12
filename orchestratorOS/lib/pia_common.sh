@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pia_common.sh — Single Source of Truth (SSOT) for Private Internet Access (PIA) VPN
+# pia_common.sh -- Single Source of Truth (SSOT) for Private Internet Access (PIA) VPN
 # CLI calls, health/routing probes, DIP reachability, and supervisor ownership state,
 # shared by pia_supervisor.sh, vpn_watchdog.sh, and wait_for_vpn.sh.
 

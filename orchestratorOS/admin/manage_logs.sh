@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# manage_logs.sh — combined log rotation, logger/ retention, and 3h agy-bot thread pruning.
+# manage_logs.sh -- combined log rotation, logger/ retention, and 3h agy-bot thread pruning.
 # 1. logrotate: caps the size of continuous nohup console logs via copytruncate.
 # 2. retention: age-based compression and deletion for dated files in logger/ and stream archives.
 # 3. prune_llm_threads.py: runs every 3 hours to prune expired automated agy-bot threads.

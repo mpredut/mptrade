@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# os_notify.sh — unified helper for ntfy.sh push notifications from bash.
-# Topics that the mirror policy copies to email (ERROR, DEADMAN — see
+# os_notify.sh -- unified helper for ntfy.sh push notifications from bash.
+# Topics that the mirror policy copies to email (ERROR, DEADMAN -- see
 # notify_engine/mailer.py) are also emailed, in the background, best-effort.
 # Usage:
 #   Direct:  ./os_notify.sh "Title" "Body" [priority] [topic]

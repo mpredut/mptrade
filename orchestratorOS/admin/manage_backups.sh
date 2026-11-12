@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# manage_backups.sh — Unified script for backup and disaster recovery.
+# manage_backups.sh -- Unified script for backup and disaster recovery.
 # Usage:
 #   ./manage_backups.sh local                     # Create a local full DR backup of secrets, state, and cachedb
 #   ./manage_backups.sh remote                    # Create local full DR backup + upload raw price-only archive to Storj

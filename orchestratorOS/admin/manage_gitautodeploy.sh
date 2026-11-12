@@ -1,5 +1,5 @@
 #!/bin/bash
-# manage_gitautodeploy.sh — optional auto-deploy, part of disaster recovery.
+# manage_gitautodeploy.sh -- optional auto-deploy, part of disaster recovery.
 # Runs from the ROOT crontab (systemd/crontab.root.prod.txt); executes git as the repo owner via runuser.
 # Modes (in autodeploy.local.conf):
 #   off    -- do nothing

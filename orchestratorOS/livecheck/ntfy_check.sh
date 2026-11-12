@@ -1,5 +1,5 @@
 #!/bin/bash
-# ntfy_check.sh — checks the ntfy topics for ALARM messages (monitoring from dev, without SSH to the server).
+# ntfy_check.sh -- checks the ntfy topics for ALARM messages (monitoring from dev, without SSH to the server).
 # Usage: ./ntfy_check.sh [since]   (default: 40m; ex. 12h)
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/os_notify.sh

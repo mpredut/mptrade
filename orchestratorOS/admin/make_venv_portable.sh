@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# make_venv_portable.sh — rewrites VIRTUAL_ENV in <venv>/bin/activate to self-derive from its own path.
+# make_venv_portable.sh -- rewrites VIRTUAL_ENV in <venv>/bin/activate to self-derive from its own path.
 # Idempotent. Re-run after any venv (re)creation.
 set -euo pipefail
 

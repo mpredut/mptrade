@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# env_common.sh — single source of truth for shell execution environment.
+# env_common.sh -- single source of truth for shell execution environment.
 # Resolves repository root, virtual environment, and Python interpreter.
 
 # Resolve REPO_ROOT

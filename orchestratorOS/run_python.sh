@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_python.sh — execute Python scripts within the repository environment.
+# run_python.sh -- execute Python scripts within the repository environment.
 # Dynamically resolves virtualenv (myenv or .venv) without hardcoded paths.
 set -euo pipefail
 

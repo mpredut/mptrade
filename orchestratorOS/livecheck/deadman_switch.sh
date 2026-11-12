@@ -1,5 +1,5 @@
 #!/bin/bash
-# deadman_switch.sh — "dead man's switch" via ntfy scheduled delivery ("In: 35m") + healthchecks.io.
+# deadman_switch.sh -- "dead man's switch" via ntfy scheduled delivery ("In: 35m") + healthchecks.io.
 # If the server or cron dies, the scheduled ntfy message is not pushed forward and delivers itself 35m later.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/os_notify.sh

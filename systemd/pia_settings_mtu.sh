@@ -1,5 +1,5 @@
 #!/bin/bash
-# pia_settings_mtu.sh — Ensure PIA runs WireGuard with a 1200-byte tunnel MTU and auto killswitch.
+# pia_settings_mtu.sh -- Ensure PIA runs WireGuard with a 1200-byte tunnel MTU and auto killswitch.
 # Runs as ExecStartPre of piavpn.service (root) before pia-daemon reads settings.json.
 set -u
 
