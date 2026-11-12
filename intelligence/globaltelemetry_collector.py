@@ -25,6 +25,7 @@ if _ROOT_DIR not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
+    bool_env,
     load_dotenv,
     pos_float_env,
     safe_nonneg_ts,
@@ -393,7 +394,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def maybe_trigger_kinematic_ai_wakeup(self, now: Optional[float] = None) -> Optional[List[str]]:
         """Spawn a non-blocking flock-guarded crypto AI evaluation on acute mid-cycle kinematic price shocks."""
         try:
-            if not _parse_bool_flag(os.environ.get("AI_IMPULSE_TRIGGER_ENABLED", "true"), True):
+            if not bool_env("AI_IMPULSE_TRIGGER_ENABLED", True):
                 return None
             eff_now = resolve_now_ts(self._resolve_step_now(now))
             cooldown_sec = pos_float_env("AI_IMPULSE_COOLDOWN_SEC", 150.0)
@@ -572,10 +573,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""
-        self._live_impulse_wakeup_enabled = _parse_bool_flag(
-            os.environ.get("AI_IMPULSE_TRIGGER_ENABLED", "true"),
-            True,
-        )
+        self._live_impulse_wakeup_enabled = bool_env("AI_IMPULSE_TRIGGER_ENABLED", True)
         run_daemon_loop(
             self,
             poll_interval_sec=poll_interval_sec,
