@@ -18,6 +18,7 @@ BinanceAccountStream     (private user-data execution reports)
 
 import asyncio
 import logging
+import math
 import threading
 import time
 import websockets
@@ -208,11 +209,11 @@ class BinancePriceStream(PublicPriceStreamBase):
                 ts_f = safe_float(raw_ts, default=None)
                 if ts_f is None:
                     raise ValueError(f"invalid ticker timestamp: {raw_ts!r}")
-                ts_ms = int(ts_f)
+                ts_ms = math.trunc(ts_f)
             else:
-                ts_ms = int(time.time() * 1000)
+                ts_ms = math.trunc(time.time() * 1000)
             if ts_ms <= 0:
-                ts_ms = int(time.time() * 1000)
+                ts_ms = math.trunc(time.time() * 1000)
             with self._lock:
                 self._prices[symbol] = price
             self._notify_subscribers(symbol, [[ts_ms, price]])
@@ -284,8 +285,8 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
         self.on_available = on_available or (lambda *_: None)
         self.on_healthy = on_healthy or (lambda: None)
         self.on_unhealthy = on_unhealthy or (lambda: None)
-        self.keepalive_sec = safe_pos_float(keepalive_sec, default=float(WS_USERDATA_KEEPALIVE_SEC))
-        self.loss_timeout_sec = safe_pos_float(loss_timeout_sec, default=float(WS_USERDATA_LOSS_TIMEOUT_SEC))
+        self.keepalive_sec = safe_pos_float(keepalive_sec, default=safe_pos_float(WS_USERDATA_KEEPALIVE_SEC, 0.0))
+        self.loss_timeout_sec = safe_pos_float(loss_timeout_sec, default=safe_pos_float(WS_USERDATA_LOSS_TIMEOUT_SEC, 0.0))
         self._signing_key = _load_ed25519_signing_key()
         self._watchdog_thread: Optional[threading.Thread] = None
         self._health_lock = threading.Lock()
@@ -321,7 +322,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
         return self
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
-        eff_timeout = safe_nonneg_float(timeout, default=float(WS_STOP_TIMEOUT))
+        eff_timeout = safe_nonneg_float(timeout, default=safe_nonneg_float(WS_STOP_TIMEOUT, 0.0))
         ok = super().stop(timeout=eff_timeout)          # Set stop event and join run thread.
         if (
             self._watchdog_thread
@@ -333,7 +334,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
 
     # --- Signed logon (login + keepalive) ------------------------------------
     def _signed_logon_msg(self, msg_id: str) -> str:
-        timestamp = int(time.time() * 1000)
+        timestamp = math.trunc(time.time() * 1000)
         params_str = f"apiKey={api_key_ws}&timestamp={timestamp}"
         signature = _sign_ed25519(self._signing_key, params_str)
         return encode_json_payload({
@@ -395,7 +396,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
                     last_ping = now
 
                 recv_timeout = min(
-                    float(WS_USERDATA_RECV_TIMEOUT),
+                    safe_pos_float(WS_USERDATA_RECV_TIMEOUT, 0.0) or 0.0,
                     max(1.0, ping_interval - max(0.0, time.time() - last_ping)),
                 )
                 try:
@@ -438,7 +439,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
         while not self._stop_event.is_set():
             now = time.time()
             with self._health_lock:
-                age = max(0.0, now - self._last_event_ts) if self._last_event_ts else float("inf")
+                age = max(0.0, now - self._last_event_ts) if self._last_event_ts else math.inf
                 available, healthy = self._available, self._healthy
             if available and healthy and age > self.loss_timeout_sec:
                 age_i = safe_nonneg_int(age, default=None)

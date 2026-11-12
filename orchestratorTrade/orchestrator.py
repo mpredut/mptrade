@@ -23,7 +23,7 @@ import notify_engine.alertnotifiers as _an
 import notify_engine.mailer as _mailer
 import notify_engine.server as _ns
 from notify_engine.server import NotificationServer
-from state_io import read_bytes_file
+from state_io import open_append_text_file, read_bytes_file
 
 
 def _bot_hb_files(bot: Dict[str, Any]) -> List[str]:
@@ -172,8 +172,7 @@ class BotManager:
         if log_path:
             abs_log_path = log_path if os.path.isabs(log_path) else os.path.join(directory, log_path)
             try:
-                os.makedirs(os.path.dirname(abs_log_path), exist_ok=True)
-                log_fh = open(abs_log_path, "a", encoding="utf-8")
+                log_fh = open_append_text_file(abs_log_path)
                 try:
                     os.utime(abs_log_path, None)
                 except OSError:

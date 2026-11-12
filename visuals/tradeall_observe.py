@@ -24,6 +24,7 @@ import argparse
 import ctypes
 import gc
 import json
+import math
 from math import ceil
 import os
 import time
@@ -52,7 +53,14 @@ from botcore import (
     sanitize_pipe_field,
     split_csv,
 )
-from state_io import append_text_line, atomic_file_path, atomic_write_text, read_json_dict, read_tail_jsonl_dicts
+from state_io import (
+    append_text_line,
+    atomic_file_path,
+    atomic_write_text,
+    open_binary_read_file,
+    read_json_dict,
+    read_tail_jsonl_dicts,
+)
 from providers.base import normalize_side
 from intelligence.internal.state.volatility import get_kalman_state_path
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
@@ -100,8 +108,8 @@ def _read_pipe_log(path, ncols):
     after its first read. Binary seek avoids text-mode encoding offset issues.
     """
     try:
-        stream = open(path, "rb")
-    except OSError:
+        stream = open_binary_read_file(path)
+    except (OSError, TypeError, ValueError):
         # Log rotation deletes old files. Return [], while retaining that file's
         # parsed rows for the process lifetime.
         _PIPE_LOG_CACHE.pop(path, None)
@@ -197,7 +205,7 @@ def sample_current_prices(symbols):
             continue
         # The loop runs every two seconds, but the source may publish less often.
         # Avoid recording the same tick repeatedly and inflating the log and RAM cache.
-        if sample_ts <= _LAST_SAMPLED_TS.get(symbol, float("-inf")):
+        if sample_ts <= _LAST_SAMPLED_TS.get(symbol, -math.inf):
             continue
         pending.append((symbol, sample_ts, raw_px))
     if not pending:
@@ -275,7 +283,7 @@ def _ingest_cachedb_points(points: dict, entries) -> None:
         t_ms = safe_pos_float(entry[0], default=None)
         p_val = safe_pos_float(entry[1], default=None)
         if t_ms is not None and p_val is not None:
-            points[int(t_ms / 1000.0)] = p_val
+            points[math.trunc(t_ms / 1000.0)] = p_val
 
 
 def load_price_series_live(symbol, days_back, include_history=True):
@@ -295,7 +303,7 @@ def load_price_series_live(symbol, days_back, include_history=True):
         t_val = safe_pos_float(t, default=None)
         p_val = safe_pos_float(p, default=None)
         if t_val is not None and p_val is not None:
-            points[int(t_val)] = p_val
+            points[math.trunc(t_val)] = p_val
     _ingest_cachedb_points(points, _load_cachedb_price_entries(cache_24_price_filename(symbol), symbol))
     ts_sorted = sorted(points)
     return ts_sorted, [points[t] for t in ts_sorted]
@@ -886,7 +894,7 @@ def main():
                 paths = []
             else:
                 range_start, range_end = min(all_ts), max(all_ts)
-                n_chunks = max(1, int(ceil((range_end - range_start) / chunk_sec))) if range_end > range_start else 1
+                n_chunks = max(1, ceil((range_end - range_start) / chunk_sec)) if range_end > range_start else 1
                 paths = []
                 for i in range(n_chunks):
                     c_start = range_start + i * chunk_sec
@@ -898,9 +906,9 @@ def main():
                         end_label = end_dt.strftime('%Y-%m-%d %H:%M')
                         start_tag = start_dt.strftime('%Y%m%d_%H%M')
                     except (ValueError, OSError, OverflowError):
-                        start_label = str(int(c_start))
-                        end_label = str(int(c_end))
-                        start_tag = str(int(c_start))
+                        start_label = str(math.trunc(c_start))
+                        end_label = str(math.trunc(c_end))
+                        start_tag = str(math.trunc(c_start))
                     label = f"{start_label} → {end_label}  (frame {i+1}/{n_chunks})"
                     path = os.path.join(directory, f"tradeall_live_{symbol}_frame{i+1:03d}_{start_tag}.png")
                     render_chart(symbol, label, c_start, c_end, price_ts, price_vals, trend_events, order_events, path)

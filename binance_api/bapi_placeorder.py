@@ -13,6 +13,7 @@ from botcore import (
     _parse_bool_flag,
     clean_order_id,
     load_dotenv,
+    require_finite_float,
     required_float_env,
     required_int_env,
     safe_float,
@@ -103,9 +104,9 @@ class _AccountCacheSubmitPermit:
             trade_cache_version=str(status.trade_cache_version),
             symbol="" if isinstance(symbol, bool) else str(symbol or "").strip().upper(),
             side="" if isinstance(side, bool) else str(_normalize_side(side or "")).strip().upper(),
-            max_qty=float(qty),
-            requested_price=None if is_market else float(price),
-            price_tick_size=float(price_tick_size),
+            max_qty=require_finite_float(qty, "qty"),
+            requested_price=None if is_market else require_finite_float(price, "price"),
+            price_tick_size=require_finite_float(price_tick_size, "price_tick_size"),
             market=is_market,
             kind=str(kind or ""),
         ))
@@ -234,7 +235,7 @@ def issue_account_cache_submit_permit(symbol, side, qty, price=None, *,
     if not market:
         try:
             rules = BinanceOrderRules.from_symbol_info((api_client or client).get_symbol_info(symbol_str))
-            price_tick_size = float(rules.tick_size)
+            price_tick_size = require_finite_float(rules.tick_size, "tick_size")
         except Exception as exc:
             raise SubmissionRefused("binance_symbol_rules_unavailable") from exc
     status = _require_submit_permit_headroom(require_account_cache_for_submit())
@@ -440,7 +441,7 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
     """Execute Binance-specific submission mechanics."""
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol, price, qty)
-    price, qty = float(price), float(qty)
+    price, qty = require_finite_float(price, "price"), require_finite_float(qty, "qty")
     enforce_business_minimum = _parse_bool_flag(enforce_business_minimum, True)
     is_market = resolve_market_flag(force=force, market=market, **kwargs)
     try:
@@ -480,9 +481,9 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
             )
         except BinanceFilterError as exc:
             raise SubmissionRefused(binance_filter_refusal_reason(exc)) from exc
-        qty = float(normalized_qty)
+        qty = require_finite_float(normalized_qty, "normalized_qty")
         if normalized_price is not None:
-            price = float(normalized_price)
+            price = require_finite_float(normalized_price, "normalized_price")
 
         print(f"Trying to place {order_type} {symbol} qty {qty:.8f} at "
               f"{'market price' if is_market else f'price {price}'}")

@@ -1,4 +1,5 @@
 
+import math
 import os
 import time
 from datetime import datetime
@@ -16,6 +17,8 @@ from botcore import (
     require_int,  # noqa: F401
     required_bool_env,
     required_int_env,
+    safe_float,
+    safe_int,
     safe_pos_float,
     safe_pos_int,
     touch_module_heartbeat,
@@ -115,7 +118,12 @@ def _bounded_plot_indices(length: int, max_points: Optional[int] = None) -> np.n
     """Return uniform plot indices with retained endpoints and bounded memory."""
     if length <= 0:
         return np.empty(0, dtype=np.intp)
-    limit = max(2, PRICEANALYSIS_DRAW_MAX_POINTS if max_points is None else int(max_points))
+    limit = max(
+        2,
+        PRICEANALYSIS_DRAW_MAX_POINTS
+        if max_points is None
+        else safe_int(max_points, default=PRICEANALYSIS_DRAW_MAX_POINTS),
+    )
     if length <= limit:
         return np.arange(length, dtype=np.intp)
     return np.linspace(0, length - 1, num=limit, dtype=np.intp)
@@ -137,7 +145,7 @@ def drawPriceLst(timestamps, prices, trend_block_indices, symbol, trend_directio
     timestamps = np.asarray(timestamps)
     prices = np.asarray(prices)
     plot_idx = _bounded_plot_indices(len(timestamps))
-    times = [datetime.fromtimestamp(float(timestamps[i])) for i in plot_idx]
+    times = [datetime.fromtimestamp(safe_float(timestamps[i], 0.0)) for i in plot_idx]
 
     if symbol not in _draw_fig:
         _draw_fig[symbol] = plt.subplots(figsize=(12, 5))
@@ -152,7 +160,7 @@ def drawPriceLst(timestamps, prices, trend_block_indices, symbol, trend_directio
         if block_idx.size < 2 and end > start:
             block_idx = np.unique(np.array([start, end - 1], dtype=np.intp))
         if block_idx.size:
-            block_times = [datetime.fromtimestamp(float(timestamps[i])) for i in block_idx]
+            block_times = [datetime.fromtimestamp(safe_float(timestamps[i], 0.0)) for i in block_idx]
             ax.plot(block_times, prices[block_idx], color='red', linewidth=2)
 
     ax.set_xlabel('Time')
@@ -185,7 +193,7 @@ def _interpolate_price_gaps(
         t_prev, p_prev = out[-1]
         dt = t_cur - t_prev
         if step_s < dt <= max_gap_s:
-            n_steps = int(round(dt / step_s))
+            n_steps = round(dt / step_s)
             for step_k in range(1, n_steps):
                 frac = step_k / n_steps
                 out.append((t_prev + frac * dt, p_prev + frac * (p_cur - p_prev)))
@@ -204,7 +212,7 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
         ttl_s = _OHLC_BACKFILL_TTL_SEC if cached[1] else 60.0
         if 0.0 <= (now_s - cached[0]) < ttl_s:
             return cached[1]
-    days_int = max(30, int(round(safe_pos_float(lookback_days, 30.0) or 30.0)) + 3)
+    days_int = max(30, round(safe_pos_float(lookback_days, 30.0) or 30.0) + 3)
     is_eq = is_equity_symbol(sym_u)
     cands = (
         [sym_u]
@@ -217,7 +225,11 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
             try:
                 ts_arr, px_arr = fetch_klines(cand, days=days_int, interval=iv)
                 if len(ts_arr) >= 48 and len(ts_arr) == len(px_arr):
-                    raw_pts = [(float(t), float(p)) for t, p in zip(ts_arr, px_arr) if t > 0 and p > 0]
+                    raw_pts = [
+                        (tf, pf)
+                        for t, p in zip(ts_arr, px_arr)
+                        if (tf := safe_pos_float(t, 0.0)) > 0.0 and (pf := safe_pos_float(p, 0.0)) > 0.0
+                    ]
                     if raw_pts:
                         break
             except Exception:
@@ -253,7 +265,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     min_req_span_s = min((safe_pos_float(lookback_days, 30.0) or 30.0) * 0.5, 7.0) * 86400.0
     cur_span_s = (norm_data[-1][0] - norm_data[0][0]) if len(norm_data) >= 2 else 0.0
     if cur_span_s < min_req_span_s and priceLstFor is _ORIG_PRICE_LST_FOR and price_cache_manager is not None:
-        oldest_ts = norm_data[0][0] if norm_data else float("inf")
+        oldest_ts = norm_data[0][0] if norm_data else math.inf
         anchor_px = norm_data[0][1] if norm_data else None
         if not is_eq:
             for sib in cache_symbol_variants(symbol, include_original=False, include_base=False, quotes=("USDC", "USDT", "USD")):
@@ -341,7 +353,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
 
     est_future_h = estimate_remaining_trend_hours(dur / 3600.0, symbol=symbol, allow_network=True)
     return {
-        'timestamp': int(time.time()),
+        'timestamp': math.trunc(time.time()),
         'direction': direction,
         'start_timestamp': res['start_timestamp'],
         'duration_seconds': dur,

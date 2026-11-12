@@ -1,6 +1,7 @@
 """Pre-trade telemetry collector for HighStakeGuard and PostStopReentryGuard (0 ms local cache)."""
 from __future__ import annotations
 
+import math
 import os
 import time as _time
 from abc import ABC, abstractmethod
@@ -573,7 +574,7 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
                 raw_imb = obj_attr(ob_snap, "imbalance_ratio", obj_attr(ob_snap, "ob_imbalance", None))
                 imb_f = clean_scale(raw_imb, default=None, allow_percent=True)
                 if imb_f is not None:
-                    bid_pct = max(0, min(100, int(round(imb_f * 100.0))))
+                    bid_pct = max(0, min(100, round(imb_f * 100.0)))
                     ask_pct = 100 - bid_pct
                     telemetry["Orderbook Depth Imbalance"] = f"{bid_pct / 100.0:.2f} ({bid_pct}% bids vs {ask_pct}% asks)"
                 ob_sym_raw = obj_attr(ob_snap, "symbol")
@@ -761,7 +762,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                 or memo_chart_eq is not None
                 or eq_rth_open_chk
                 or raw_alt_last_ts_ms <= 0.0
-                or (int(now_s_eq_chk * 1000) - raw_alt_last_ts_ms) > 5 * 60 * 1000
+                or (math.trunc(now_s_eq_chk * 1000) - raw_alt_last_ts_ms) > 5 * 60 * 1000
             )
         ):
             try:
@@ -787,7 +788,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                 pass
 
         if is_eq_sym and last_alt_pt is not None:
-            now_ms_eq = int(_time.time() * 1000)
+            now_ms_eq = math.trunc(_time.time() * 1000)
             eq_rth_open = bool(is_symbol_market_open(symbol, now_ms_eq / 1000.0))
             eff_live_px_ts = max(cp_ts_sec, vb_pos_ts)
             if (
@@ -814,13 +815,14 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
             if live_cur_px > 0.0 and not _prices_diverged(live_cur_px, last_alt_pt[1], threshold=0.35) and abs(round(live_cur_px, 4) - round(last_alt_pt[1], 4)) > 1e-4:
                 cur_px_est = round(live_cur_px, 4)
                 if rth_fresh_eq:
+                    vb_pos_ts_ms = math.trunc(vb_pos_ts * 1000)
                     eq_pt_ts_ms = (
-                        int(vb_pos_ts * 1000)
-                        if vb_pos_ts > 0.0 and int(vb_pos_ts * 1000) > last_alt_pt[0]
+                        vb_pos_ts_ms
+                        if vb_pos_ts > 0.0 and vb_pos_ts_ms > last_alt_pt[0]
                         else now_ms_eq
                     )
                     if (eq_pt_ts_ms - last_alt_pt[0]) > 300 * 1000:
-                        eq_pt_ts_ms = int(last_alt_pt[0] + 1000)
+                        eq_pt_ts_ms = math.trunc(last_alt_pt[0] + 1000)
                     alt_series_24h = list(alt_series_24h) + [[eq_pt_ts_ms, cur_px_est]]
                     m24 = compute_24h_price_metrics(alt_series_24h) or m24
                 elif m24:
@@ -1403,7 +1405,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
             stale_short_ts = bool(
                 st_ts_t is not None
                 and last_alt_pt is not None
-                and (float(last_alt_pt[0]) / 1000.0 - st_ts_t) > 600.0
+                and (safe_float(last_alt_pt[0], 0.0) / 1000.0 - st_ts_t) > 600.0
             )
             s15_val, s25_val = t_entry.get("slope_15m"), t_entry.get("slope_2_5h")
             eq_ohlc_flat_short = bool(

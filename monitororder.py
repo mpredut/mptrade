@@ -32,6 +32,7 @@ from botcore import (
     clean_order_id_str,
     clean_upper_token,
     diff_percent,
+    exact_nonneg_int,
     format_notify_price,
     format_notify_qty,
     format_price_log,
@@ -357,10 +358,11 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             print(f"Order {order_id} (owner='{owner}', cid='{cid}') is protected from monitororder repricing; skipping.")
             continue
 
+        price_f = safe_pos_float(price, default=0.0) or 0.0
         init_px_f = safe_pos_float(initial_prices.get(order_id), default=None)
         if init_px_f is None:
             cid_base = cid.rsplit("_", 1)[0] if cid and "_" in cid else None
-            for alt_k in (oid_str, int(oid_str) if oid_str.isdigit() else None, cid or None, cid_base):
+            for alt_k in (oid_str, exact_nonneg_int(oid_str, default=None), cid or None, cid_base):
                 if alt_k is not None and alt_k in initial_prices:
                     init_px_f = safe_pos_float(initial_prices.pop(alt_k, None), default=None)
                     if init_px_f is not None:
@@ -368,7 +370,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         if init_px_f is not None:
             initial_prices[order_id] = init_px_f
         else:
-            lru_dict_put(initial_prices, order_id, float(price), MAX_TRACKED_ORDER_IDS)
+            lru_dict_put(initial_prices, order_id, price_f, MAX_TRACKED_ORDER_IDS)
 
         difference_percent = diff_percent(current_price, price)
         print(f"{order_type.capitalize()} price {price}, current price {current_price} difference: {difference_percent:.2f}%, Order ID {order_id}")
@@ -380,9 +382,9 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
 
             if short_favorable and super_short_favorable and order_diff_percent <= eff_mid_proc:
                 if order_type == "SELL":
-                    new_price = max(float(price), current_price * (1.0 + eff_pushback_offset))
+                    new_price = max(price_f, current_price * (1.0 + eff_pushback_offset))
                 else:
-                    new_price = min(float(price), current_price * (1.0 - eff_pushback_offset))
+                    new_price = min(price_f, current_price * (1.0 - eff_pushback_offset))
                 print(
                     f"[MONITORORDER] Favorable short+super-short trend for {order_type} "
                     f"order {order_id} near market ({order_diff_percent:.2f}% <= {eff_mid_proc:.2f}%); "
@@ -413,8 +415,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             if callable(round_px) and not hasattr(round_px, "_mock_name"):
                 effective_new_price = safe_pos_float(round_px(symbol, new_price), default=new_price)
             if (
-                abs(effective_new_price - float(price)) <= 1e-12
-                or abs(new_price - float(price)) <= 1e-12
+                abs(effective_new_price - price_f) <= 1e-12
+                or abs(new_price - price_f) <= 1e-12
             ):
                 print(
                     f"Order {order_id} is already at target replacement price "
@@ -627,7 +629,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 if orig_init_px is None:
                     orig_init_px = safe_pos_float(initial_prices.pop(oid_str, None), default=None)
                 if orig_init_px is None:
-                    orig_init_px = float(price)
+                    orig_init_px = price_f
                 lru_dict_put(initial_prices, raw_new_id, orig_init_px, MAX_TRACKED_ORDER_IDS)
                 print(f"Updated order from {price} to {new_price}. New ID: {raw_new_id} (derived replacement)")
             else:

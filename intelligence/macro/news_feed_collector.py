@@ -18,6 +18,7 @@ from botcore import (
     normalize_epoch_sec,
     obj_attr,
     resolve_now_ts,
+    safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
@@ -241,7 +242,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
             try:
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
-                pub_ts = float(dt.timestamp())
+                pub_ts = dt.timestamp() * 1.0
                 if (now_s - pub_ts) >= -600.0:
                     return min(now_s, pub_ts)
             except Exception:
@@ -318,8 +319,8 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
     ) -> NewsFeedSnapshot:
         all_headlines = [
             (
-                replace(v[1], first_seen_ts=float(v[0]))
-                if isinstance(v[1], NewsHeadline) and float(v[0]) > 0.0
+                replace(v[1], first_seen_ts=safe_float(v[0], 0.0))
+                if isinstance(v[1], NewsHeadline) and safe_float(v[0], 0.0) > 0.0
                 else v[1]
             )
             for v in sorted(
@@ -392,7 +393,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                     else:
                         self._aggregated_pool[old_norm] = (
                             merged_ts,
-                            replace(old_h, first_seen_ts=float(merged_ts))
+                            replace(old_h, first_seen_ts=merged_ts * 1.0)
                             if isinstance(old_h, NewsHeadline) and merged_ts > 0.0
                             else old_h,
                         )
@@ -417,7 +418,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
             else:
                 self._aggregated_pool[norm] = (
                     eff_ts,
-                    replace(h_obj, first_seen_ts=float(eff_ts))
+                    replace(h_obj, first_seen_ts=eff_ts * 1.0)
                     if isinstance(h_obj, NewsHeadline) and eff_ts > 0.0
                     else h_obj,
                 )
@@ -475,7 +476,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         for k, v in self._aggregated_pool.items():
             if not self._is_valid_pool_entry(v, cutoff):
                 continue
-            ts_val, h_item = float(v[0]), v[1]
+            ts_val, h_item = safe_float(v[0], 0.0), v[1]
             pub_ts = self._parse_recent_pub_date_ts(getattr(h_item, "pub_date", ""), now)
             eff_ts = min(ts_val, pub_ts) if pub_ts is not None else ts_val
             self._seen_first_ts[k] = min(self._seen_first_ts.get(k, eff_ts), eff_ts)
@@ -509,7 +510,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                     url_to_key[canon_url] = k
                 cleaned_pool[k] = (
                     eff_ts,
-                    replace(h_item, first_seen_ts=float(eff_ts))
+                    replace(h_item, first_seen_ts=eff_ts * 1.0)
                     if isinstance(h_item, NewsHeadline) and eff_ts > 0.0
                     else h_item,
                 )
@@ -534,7 +535,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                             url=getattr(h_item, "url", ""),
                             matched_keywords=merged_kws,
                             is_high_severity=True,
-                            first_seen_ts=float(seen_ts) if seen_ts > 0.0 else None,
+                            first_seen_ts=(seen_ts * 1.0) if seen_ts > 0.0 else None,
                         ),
                     )
 

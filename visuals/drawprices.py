@@ -1,4 +1,5 @@
 
+import math
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -51,7 +52,7 @@ def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
         p_val = safe_float(item[1], default=None)
         if t_f is None or p_val is None:
             continue
-        out.append((int(t_f), p_val))
+        out.append((math.trunc(t_f), p_val))
     return out
 
 
@@ -68,7 +69,7 @@ def to_series(cache_pairs: List[Tuple[int, float]]):
         if t_f is None or p_val is None:
             continue
         try:
-            t_val = int(t_f)
+            t_val = math.trunc(t_f)
             dt_val = datetime.fromtimestamp(t_val / 1000.0, timezone.utc).replace(tzinfo=None)
         except (TypeError, ValueError, OverflowError, OSError):
             continue
@@ -200,8 +201,8 @@ def forecast_linear(ts_ms: np.ndarray, prices: np.ndarray, horizon: int = 20):
     # fit y ~ a*x + b via closed-form OLS
     dev_x = x - mean_x
     var_x = n * (n * n - 1.0) / 12.0
-    a = float(np.dot(dev_x, y) / var_x) if var_x > 0.0 else 0.0
-    b = float(np.mean(y)) - a * mean_x
+    a = safe_float(np.dot(dev_x, y) / var_x, 0.0) if var_x > 0.0 else 0.0
+    b = safe_float(np.mean(y), 0.0) - a * mean_x
     # Predictions for the following steps.
     x_future = np.arange(n, n + hz, dtype=np.float64)
     y_future = a * x_future + b
@@ -263,7 +264,7 @@ def forecast_lstm(prices: np.ndarray, window: int = 20, epochs: int = 50, batch_
     scaled, vmin, vmax = min_max_scale(prices)
     X, y = make_sequences(scaled, window)
     # Simple training/validation split.
-    split = max(window, int(0.8 * len(X)))
+    split = max(window, math.trunc(0.8 * len(X)))
     X_train, y_train = X[:split], y[:split]
     X_val, y_val = X[split:], y[split:]
 

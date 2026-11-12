@@ -27,6 +27,7 @@ from botcore import (
     _parse_bool_flag,
     build_heartbeat_payload,
     clean_json_value,
+    exact_nonneg_int,
     load_ini_config,
     normalize_epoch_sec,
     obj_attr,
@@ -362,7 +363,7 @@ def gather_system_and_vpn_telemetry(
     try:
         if os.path.exists("/proc/meminfo"):
             mem_kv = {
-                parts[0].strip(): int(v_parts[0])
+                parts[0].strip(): exact_nonneg_int(v_parts[0], default=0)
                 for mline in read_text_lines("/proc/meminfo", errors="replace")
                 if len(parts := mline.split(":")) == 2 and (v_parts := parts[1].strip().split()) and v_parts[0].isdigit()
             }
@@ -468,7 +469,7 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
     except (ValueError, OverflowError, OSError):
         fm = time.time()
         ref = datetime.fromtimestamp(fm)
-    day, prev_ts = ref.date(), float(fm)
+    day, prev_ts = ref.date(), fm * 1.0
     picked: List[str] = []
 
     def _resolve_fold_ts(dt_naive: datetime, upper_ts: float) -> float:
@@ -492,7 +493,7 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
         elif g := _GLOG_TS_RE.match(line):
             has_stamp_token = True
             try:
-                mm, dd, hh, mi, ss = (int(g.group(i)) for i in range(1, 6))
+                mm, dd, hh, mi, ss = (exact_nonneg_int(g.group(i), default=0) for i in range(1, 6))
                 dt = datetime(ref.year, mm, dd, hh, mi, ss)
                 if (dt - ref).total_seconds() > 86400:
                     dt = datetime(ref.year - 1, mm, dd, hh, mi, ss)
@@ -500,9 +501,14 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
                 prev_ts = ts
             except ValueError:
                 pass
-        elif (c := _CLOCK_TS_RE.match(line)) and int(c.group(1)) < 24 and int(c.group(2)) < 60 and int(c.group(3)) < 60:
+        elif (
+            (c := _CLOCK_TS_RE.match(line))
+            and (c_hh := exact_nonneg_int(c.group(1), default=24)) < 24
+            and (c_mm := exact_nonneg_int(c.group(2), default=60)) < 60
+            and (c_ss := exact_nonneg_int(c.group(3), default=60)) < 60
+        ):
             has_stamp_token = True
-            secs = int(c.group(1)) * 3600 + int(c.group(2)) * 60 + int(c.group(3))
+            secs = c_hh * 3600 + c_mm * 60 + c_ss
             ts_same = _resolve_fold_ts(datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs), prev_ts)
             if ts_same <= prev_ts + 300.0:
                 ts = ts_same

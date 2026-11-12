@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC
+import math
 import os
 import time as _time
 from typing import Any, Dict, List, Optional
@@ -20,7 +21,7 @@ from cachepaths import (
 )
 from cacheprice import Cache365PriceManager, CacheSparsePriceManager
 from state_io import read_tail_jsonl_records, resolve_cachedb_filepath
-from botcore import safe_nonneg_float, safe_nonneg_int, safe_pos_int
+from botcore import safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_int
 from intelligence.macro_sentiment_ssot import (
     coerce_dict_maps,
     safe_float,
@@ -316,7 +317,7 @@ def _resolve_cycle_high_since(
         casefold_get(prices_and_trends, sym_u),
     )
     best_high = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
-    now_ms = int(_time.time() * 1000)
+    now_ms = math.trunc(_time.time() * 1000)
     if cache_dir and oldest_ts_ms > 0 and (now_ms - oldest_ts_ms) > 24 * 3600 * 1000:
         for cand in dict.fromkeys(cands):
             for mgr_cls in (Cache365PriceManager, CacheSparsePriceManager):
@@ -329,7 +330,7 @@ def _resolve_cycle_high_since(
                         if pt is not None and len(pt) >= 2:
                             t_f = safe_pos_float(pt[0], default=0.0) or 0.0
                             p_f = safe_pos_float(pt[1], default=0.0) or 0.0
-                            t_ms = int(t_f * 1000.0 if 0.0 < t_f < 1e11 else t_f)
+                            t_ms = math.trunc(t_f * 1000.0 if 0.0 < t_f < 1e11 else t_f)
                             if t_ms >= oldest_ts_ms and p_f > best_high:
                                 best_high = p_f
                 except Exception:
@@ -551,7 +552,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                     "price": exec_p,
                     "qty": exec_q,
                     "executedQty": exec_q,
-                    "timestamp": int(round(i_ts_s * 1000.0)),
+                    "timestamp": round(i_ts_s * 1000.0),
                     "status": "FILLED",
                 })
                 if synth_oid:
@@ -692,7 +693,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                             and (
                                 last_sell_ts_ms <= 0
                                 or not ts_raw
-                                or (int(ts_raw) - last_sell_ts_ms) <= 72 * 3600 * 1000
+                                or (safe_int(ts_raw, 0) - last_sell_ts_ms) <= 72 * 3600 * 1000
                             )
                         )
                         if not keep_oversold_swing_pnl:
@@ -1144,7 +1145,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     buys_after
                     and cyc_qty_cur > 1e-8
                     and ls_ts_ms > 0.0
-                    and (sell_ts_ms is None or float(sell_ts_ms) < ls_ts_ms - 5000.0)
+                    and (sell_ts_ms is None or safe_float(sell_ts_ms, 0.0) < ls_ts_ms - 5000.0)
                 ):
                     if ls_px > 0:
                         cyc["last_sell_price"] = round(ls_px, avg_dec)
@@ -1286,7 +1287,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         if isinstance(x, dict) and (t := safe_pos_int(x.get("ts_ms"), default=0) or 0) > 0
                     ]
                     oldest_pos_ts = min(open_lot_ts_vals) if open_lot_ts_vals else newest_lot_ts
-                    pos_age_ms = (int(_time.time() * 1000) - oldest_pos_ts) if oldest_pos_ts > 0 else 0
+                    pos_age_ms = (math.trunc(_time.time() * 1000) - oldest_pos_ts) if oldest_pos_ts > 0 else 0
                     cur_pk = safe_pos_float(pos.get("trailing_peak"), default=None)
                     act_avg_pk = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
                     pk_is_missing_or_unwarmed = cur_pk is None or (
@@ -1410,7 +1411,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                             oldest_c_ts_p = _extract_oldest_cycle_lot_ts_ms(
                                 ro, fallback_ts_ms=cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or 0
                             )
-                            c_age_ms_p = (int(_time.time() * 1000) - oldest_c_ts_p) if oldest_c_ts_p > 0 else 0
+                            c_age_ms_p = (math.trunc(_time.time() * 1000) - oldest_c_ts_p) if oldest_c_ts_p > 0 else 0
                             if 12 * 3600 * 1000 <= c_age_ms_p <= 90 * 86400 * 1000:
                                 hi_24h_p = _resolve_cycle_high_since(
                                     p_sym, p_quote_variants, oldest_c_ts_p, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo
@@ -1530,7 +1531,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         oldest_c_ts = _extract_oldest_cycle_lot_ts_ms(
                             ro, fallback_ts_ms=cyc_sell_ts_map.get((f"{c_venue}:entry", c_sym_u)) or 0
                         )
-                        c_age_ms = (int(_time.time() * 1000) - oldest_c_ts) if oldest_c_ts > 0 else 0
+                        c_age_ms = (math.trunc(_time.time() * 1000) - oldest_c_ts) if oldest_c_ts > 0 else 0
                         if 12 * 3600 * 1000 <= c_age_ms <= 90 * 86400 * 1000:
                             hi_24h_c = _resolve_cycle_high_since(
                                 c_sym_u, c_quote_variants, oldest_c_ts, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo

@@ -55,7 +55,7 @@ from strategies.spot_engine import state_path_for
 from kraken.kraken_common import build_kraken_client, notify
 from kraken.kraken_client import KrakenClient, KrakenError
 from kraken.market_data import is_pair_status_tradable
-from state_io import load_json_state, read_text_lines, save_json_state
+from state_io import load_json_state, open_append_text_file, read_text_lines, save_json_state
 from credentials import kraken_credentials
 from instrument_registry import casefold_get
 from trailing_core import add_once_status_cli_args
@@ -359,7 +359,7 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     if required_bool_env("XSTOCK_BOT_PAPER"):
         cmd.append("--paper")
     try:
-        with open(BOT_LOG, "a", encoding="utf-8") as logf:
+        with open_append_text_file(BOT_LOG) as logf:
             proc = subprocess.Popen(cmd, cwd=_HERE, env=env, stdout=logf,
                                     stderr=subprocess.STDOUT, start_new_session=True)
     except OSError as e:

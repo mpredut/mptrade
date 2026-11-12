@@ -16,6 +16,7 @@ from botcore import (
     are_close,
     bind_attr_call,
     exact_int,
+    exact_nonneg_int,
     format_price_log,
     load_dotenv,
     normalize_epoch_sec,
@@ -62,7 +63,7 @@ _RTRADE_HEARTBEAT_PATH = cache_path("rtrade.heartbeat")
 _RTRADE_HEARTBEAT_INTERVAL_SEC = 30.0
 _RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC = 120.0
 _rtrade_heartbeat_lock = threading.Lock()
-_rtrade_heartbeat_last = float("-inf")
+_rtrade_heartbeat_last = -math.inf
 
 
 def _rtrade_monotonic_time() -> float:
@@ -576,7 +577,7 @@ class _LivePairVenue:
         if handled:
             return existing_ticket
         available_qty, required_asset = balance_cap_quantity(self.executor.free_balance, self.symbol, side, price)
-        if required_asset and available_qty is not None and float(available_qty) <= 1e-12:
+        if required_asset and available_qty is not None and safe_nonneg_float(available_qty, 0.0) <= 1e-12:
             self._last_place_failures[side] = f"{side.lower()}_insufficient_funds:{required_asset}"
             print(f"[{self.symbol}] {side} insufficient funds: available=0.00000000 {required_asset}")
             return None
@@ -588,7 +589,7 @@ class _LivePairVenue:
             if refusal in {"insufficient_funds", "balance_unavailable"} or (
                 (refusal == "below_min_notional" or is_terminal_filter_refusal(refusal))
                 and available_qty is not None
-                and float(available_qty) < float(qty)
+                and safe_nonneg_float(available_qty, 0.0) < safe_nonneg_float(qty, 0.0)
             ):
                 self._last_place_failures[side] = f"{side.lower()}_insufficient_funds:{required_asset or 'UNKNOWN'}"
             return None
@@ -630,7 +631,7 @@ class _LivePairVenue:
     def place_market_exit(self, side, qty, reason, pair_id=None, *, cache_permit=None, revision=0):
         """Place a spot market exit reserved for reducing hard-stop exposure."""
         side, store_kind = side.upper(), self._kind_for_revision("hard_stop", revision, label="hard-stop")
-        revision = int(store_kind.removeprefix("hard_stop_")) if store_kind != "hard_stop" else 0
+        revision = exact_nonneg_int(store_kind.removeprefix("hard_stop_"), default=0) if store_kind != "hard_stop" else 0
         handled, existing_ticket = self._check_reconciled_existing_intent(
             pair_id, side, store_kind, require_pair_id=True
         )
@@ -653,7 +654,7 @@ class _LivePairVenue:
             vol_dec = safe_nonneg_int(getattr(precision, "volume_decimals", None), default=None)
             if vol_dec is not None:
                 quantum = Decimal(1).scaleb(-vol_dec)
-                final_qty = float(Decimal(str(final_qty)).quantize(quantum, rounding=ROUND_DOWN))
+                final_qty = safe_nonneg_float(Decimal(str(final_qty)).quantize(quantum, rounding=ROUND_DOWN), 0.0)
             min_qty = safe_nonneg_float(getattr(precision, "order_min", None), default=0.0) or 0.0
             if final_qty <= 0 or final_qty < min_qty:
                 print(f"[{self.symbol}] {side} hard-stop BLOCKED: qty {final_qty} below the minimum {precision.order_min}")
@@ -738,7 +739,7 @@ def _trend_too_strong(symbol):
 
 def _effective_trend_filter_k(snapshot) -> float:
     """Scale RTRADE_TREND_FILTER_K by sqrt(10 / m) for dense multi-step dynamic windows."""
-    base_k = float(RTRADE_TREND_FILTER_K)
+    base_k = safe_pos_float(RTRADE_TREND_FILTER_K, 0.0) or 0.0
     if not isinstance(snapshot, dict):
         return base_k
     n_f = safe_float(snapshot.get("n_samples"), default=None)
@@ -1138,7 +1139,7 @@ class TradingBot:
                     else extract_order_id(placed_order)
                 )
                 extracted_px = extract_order_price(placed_order, default=0.0)
-                filled_px = round(float(extracted_px if extracted_px > 0 else target_price), 4)
+                filled_px = round(safe_pos_float(extracted_px if extracted_px > 0 else target_price, 0.0) or 0.0, 4)
                 setattr(self, filled_attr, filled_px)
 
                 if _order_fully_filled(self.symbol, order_id):
@@ -1353,7 +1354,7 @@ class TradingBot:
             print(f"[{self.symbol}] RECOVERY BLOCKED: exchange inventory unavailable ({exc})")
             recovery_blocked = True
 
-        last_start_at = last_recovery_retry = last_recovery_diag_log = last_active_summary_log = last_whale_log = float("-inf")
+        last_start_at = last_recovery_retry = last_recovery_diag_log = last_active_summary_log = last_whale_log = -math.inf
         recovery_blocked_since = (
             _rtrade_monotonic_time() if (recovery_blocked or bool(getattr(venue, "recovery_blocked", False))) else None
         )
@@ -1468,7 +1469,7 @@ class TradingBot:
                         if start_side is None:
                             time.sleep(RTRADE_PAIR_POLL_SEC)
                             continue
-                        round_qty = RTRADE_NOTIONAL_USDC / float(current_price)
+                        round_qty = RTRADE_NOTIONAL_USDC / (safe_pos_float(current_price, 0.0) or 1.0)
                         reserved_pair_id = uuid.uuid4().hex
                         eff_adjustment = _effective_adjustment_fraction(self.symbol, self.DEFAULT_ADJUSTMENT_PERCENT)
                         round_policy = (

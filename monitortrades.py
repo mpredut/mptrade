@@ -1,4 +1,5 @@
 import builtins
+import math
 import os
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -776,10 +777,10 @@ def _is_pending_exit_active(
     pending_ts = extract_timestamp_s(pending_stop, default=current_time_s) or current_time_s
     pending_ts_f = safe_pos_float(pending_ts, default=None)
     if pending_ts_f is None or pending_ts_f > current_time_s:
-        pending_ts_f = float(current_time_s)
+        pending_ts_f = current_time_s * 1.0
         if isinstance(pending_stop, dict):
             pending_stop["time"] = current_time_s
-    elapsed = current_time_s - int(pending_ts_f)
+    elapsed = current_time_s - math.trunc(pending_ts_f)
     if active_sell_exists or elapsed < 60:
         print(
             f"[{symbol}] Pending Stop-Loss in flight (elapsed={elapsed}s, active_sell={active_sell_exists}) "
@@ -842,7 +843,7 @@ def _evaluate_hard_take_profit(
         _hard_tp_last[symbol] = current_time_s
         _record_pending_exit(
             symbol, inst, "TP", current_time_s, hard_qty, snapshot.current_price,
-            hard_tp_outcome_ctx, default_intent_id=f"mt_htp_{symbol}_{int(current_time_s)}",
+            hard_tp_outcome_ctx, default_intent_id=f"mt_htp_{symbol}_{math.trunc(current_time_s)}",
             prev_tp_state=_TP_RIDE_STATE.pop(symbol, None),
             prev_hard_tp_last=prev_hard_tp,
             restore_hard_tp_last=True,
@@ -900,7 +901,7 @@ def _execute_take_profit(
     sell_frac = safe_pos_float(getattr(tp_decision, "sell_fraction", 1.0), 1.0)
     sell_qty = round(sellable_qty * sell_frac, 8) if 0.0 < sell_frac < 1.0 else sellable_qty
     bypass_pg = current_price < snapshot.avg_buy_price or bool(tp_decision.forced)
-    tp_intent_id = (pending_tp or {}).get("intent_id") or f"mt_tp_{symbol}_{int(current_time_s)}"
+    tp_intent_id = (pending_tp or {}).get("intent_id") or f"mt_tp_{symbol}_{math.trunc(current_time_s)}"
     tp_cid = (pending_tp or {}).get("client_order_id")
     tp_outcome_ctx = {}
     place_kw = {
@@ -997,7 +998,7 @@ def _execute_stop_loss(
     )
     bounce_started_at = (prev_sl_state or {}).get("started_at") or episode_started_at
     cand_bs = safe_pos_float(bounce_started_at, default=None)
-    bounce_started_f = min(cand_bs, float(current_time_s)) if cand_bs is not None else None
+    bounce_started_f = min(cand_bs, current_time_s * 1.0) if cand_bs is not None else None
     if _is_trend_gate_deferred(symbol, inst):
         print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
         _restore_or_init_sl_bounce(symbol, prev_sl_state, bounce_started_f, snapshot, init_if_empty=True)
@@ -1013,7 +1014,7 @@ def _execute_stop_loss(
 
     placed = False
     outcome_ctx = {}
-    stop_intent_id = (pending_stop or {}).get("intent_id") or f"mt_sl_{symbol}_{int(current_time_s)}"
+    stop_intent_id = (pending_stop or {}).get("intent_id") or f"mt_sl_{symbol}_{math.trunc(current_time_s)}"
     stop_cid = (pending_stop or {}).get("client_order_id")
     if sellable_qty > 0:
         place_kw = {
@@ -1114,7 +1115,7 @@ def _can_pass_buy_quantity_policy(
             balance_asset = getattr(decision, "balance_asset", None) or quote_asset or "quote"
             print(f"[{symbol}] Post-STOP re-entry deferred before AI guard: {refuse_reason} asset={balance_asset}")
             return False
-        if min_qty and final_qty < float(min_qty):
+        if min_qty and final_qty < (safe_pos_float(min_qty, 0.0) or 0.0):
             print(f"[{symbol}] Post-STOP re-entry deferred before AI guard: qty_below_min ({final_qty} < {min_qty})")
             return False
         refusal = check_order_filter_refusal(
@@ -1140,7 +1141,7 @@ def _can_pass_buy_quantity_policy(
             intel_scale_f = safe_float(intel_scale, 1.0)
             if intel_scale_f is not None and 0.0 < intel_scale_f < 1.0:
                 ok_scaled, _ = _validate_scaled_buy_qty(
-                    provider, symbol, current_price, final_qty, float(intel_scale), min_qty,
+                    provider, symbol, current_price, final_qty, intel_scale_f, min_qty,
                     "Post-STOP re-entry deferred before AI guard", qty_label="late-scaled qty",
                 )
                 if not ok_scaled:
@@ -1219,7 +1220,7 @@ def _apply_post_stop_ai_guard(
             return False, buy_budget, buy_qty_cfg, qty
         if ps_scale < 1.0:
             print(f"[{symbol}] Post-STOP re-entry DOWNSCALED by Pillar 3 AI to {ps_scale * 100:.0f}%: {_ps_dec.reason}")
-            scale = float(ps_scale)
+            scale = safe_pos_float(ps_scale, 1.0) or 1.0
             scaled_qty = _est_qty * scale
             if provider is not None and not isinstance(provider, str):
                 min_qty_fn = getattr(inst, "min_qty", None)
@@ -1304,7 +1305,7 @@ def _resolve_mt_inst_cfg(inst):
     vals = (
         _g / 100.0 if _g is not None else 0.07,
         _l / 100.0 if _l is not None else 0.033,
-        int(_md * 24 * 3600) if _md is not None else 4 * 24 * 3600,
+        math.trunc(_md * 24 * 3600) if _md is not None else 4 * 24 * 3600,
         inst.param("mt", "hardtp", HARD_TP_PCT * 100, float) / 100.0,
         inst.param("mt", "hardtp_fraction", HARD_TP_FRACTION, float),
         inst.param("mt", "hardtp_cooldown_h", HARD_TP_COOLDOWN_S / 3600.0, float) * 3600,
@@ -1344,7 +1345,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     if maxage_trade_s is None:
         maxage_trade_s = _def_maxage_s
 
-    current_time_s = int(resolve_now_ts(now_fn()))
+    current_time_s = math.trunc(resolve_now_ts(now_fn()))
     trade_orders_buy = _coerce_order_list(inst.orders("BUY", maxage_trade_s))
     trade_orders_sell = _coerce_order_list(inst.orders("SELL", maxage_trade_s))
     if not (trade_orders_buy or trade_orders_sell):
@@ -1515,7 +1516,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             sell_time
             and symbol not in _LAST_EXIT_KIND
             and symbol not in _REENTRY_STATE
-            and _REENTRY_DONE_SELL_TIME.get(symbol) == float(sell_time)
+            and _REENTRY_DONE_SELL_TIME.get(symbol) == safe_float(sell_time, 0.0)
         ):
             if _verbose:
                 print(f"[{symbol}] Re-entry already submitted for sell at {sell_time} — skipping duplicate")

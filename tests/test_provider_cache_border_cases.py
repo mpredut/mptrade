@@ -118,6 +118,7 @@ from orchestratorOS.livecheck import os_resources_watchdog as wd
 import order_guard
 from order_lifecycle import TrackedOrderLifecycle
 import order_retry
+import priceAnalysis
 import pricewindow as pw
 from providers import binance_provider as bp_mod, order_id_context as oic
 from providers.base import MarketDataProvider
@@ -163,6 +164,7 @@ from strategies.replay_metrics import (
     print_ascii_table_header,
     print_single_backtest_report,
     run_cli_single_or_sweep_backtest,
+    run_tp_drop_sl_sweep,
     write_markdown_report,
 )
 from strategies.spot_replay import (
@@ -2579,6 +2581,98 @@ def test_wave15_bind_attr_call_monkeypatch_seams_isolated_cfg_loader_and_nan_ts_
         {"items": {}, "coinbase_premium_bps": 12.5, "btc_dvol": 55.0}
     )
     assert "CB_Premium=+12.5bps" in summary_crypto_only and "BTC_DVOL=55.0%" in summary_crypto_only
+
+
+def test_wave16_bind_attr_call_duck_stubs_timed_filelock_feed_url_seams_and_sweep_null_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wave 16: bind_attr_call duck-stub descriptor, timed FileLock, feed URL monkeypatch seams, and sweep null guards."""
+    # 1. bind_attr_call works on unbound duck-typed SimpleNamespace stubs AND bound/overridden instances
+    assert MarketDataProvider.requires_cache_permit(SimpleNamespace(name="binance")) is True
+    assert MarketDataProvider.requires_cache_permit(SimpleNamespace(name="kraken")) is False
+    assert MarketDataProvider.defers_smart_cancellation(SimpleNamespace(name="binance")) is True
+    assert MarketDataProvider.supports_business_minimum(SimpleNamespace(name="binance")) is True
+    assert MarketDataProvider.supports_order_validity(SimpleNamespace(name="t212")) is True
+    assert MarketDataProvider.defers_preflight_quantity(SimpleNamespace(name="kraken")) is True
+    assert (
+        MarketDataProvider.requires_cache_permit(
+            SimpleNamespace(_provider_bool_attr=lambda attr: attr == "_REQUIRES_CACHE_PERMIT")
+        )
+        is True
+    )
+    assert KrakenClient.open_orders(SimpleNamespace(_private=lambda m: {"open": {"ODUCK": {"m": m}}})) == {
+        "ODUCK": {"m": "OpenOrders"}
+    }
+
+    # 2. Timed botcore.FileLock contention & input guards + state_io append/binary-read helpers
+    with pytest.raises(TypeError):
+        botcore.FileLock(tmp_path / "bad_bool.lock", timeout=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        botcore.FileLock(tmp_path / "bad_nan.lock", timeout=float("nan"))
+
+    contended_lock_path = tmp_path / "contended.lock"
+    with botcore.FileLock(contended_lock_path) as outer_lock:
+        assert outer_lock.acquired is True
+        with pytest.raises(TimeoutError):
+            with botcore.FileLock(contended_lock_path, timeout=0.02, poll_interval=0.005, raise_on_timeout=True):
+                pass
+        with botcore.FileLock(
+            contended_lock_path, timeout=0.02, poll_interval=0.005, raise_on_timeout=False
+        ) as soft_lock:
+            assert soft_lock.acquired is False
+
+    with botcore.FileLock(contended_lock_path, timeout=0.2, poll_interval=0.005) as after_lock:
+        assert after_lock.acquired is True
+
+    nested_log = tmp_path / "logs" / "nested" / "append.log"
+    with state_io.open_append_text_file(nested_log) as fh1:
+        fh1.write("alpha\n")
+    with state_io.open_append_text_file(nested_log) as fh2:
+        fh2.write("beta\n")
+    with state_io.open_binary_read_file(nested_log) as bfh:
+        assert bfh.read() == b"alpha\nbeta\n"
+
+    # 3. Feed URL getters honor monkeypatches on mss._cfg_str and forward positional config_path accurately
+    seen_feed_calls: list[tuple[str, str, str, str | None]] = []
+    monkeypatch.setattr(
+        mss,
+        "_cfg_str",
+        lambda sec, key, fallback="", config_path=None: seen_feed_calls.append((sec, key, fallback, config_path))
+        or f"https://example.test/{key}",
+    )
+    assert mss.get_fear_greed_endpoint_url("/tmp/custom_macro.conf") == "https://example.test/fear_greed_endpoint_url"
+    assert (
+        mss.get_market_breadth_endpoint_url(config_path="/tmp/custom_macro2.conf")
+        == "https://example.test/market_breadth_endpoint_url"
+    )
+    assert seen_feed_calls == [
+        ("feeds", "fear_greed_endpoint_url", "", "/tmp/custom_macro.conf"),
+        ("feeds", "market_breadth_endpoint_url", "", "/tmp/custom_macro2.conf"),
+    ]
+
+    # 4. run_tp_drop_sl_sweep tolerates None/non-Mapping eval_fn returns and priceAnalysis._bounded_plot_indices rejects bool
+    rows_no_sl = run_tp_drop_sl_sweep(
+        {"entry": 10.0},
+        lambda _p: None,
+        budget=100.0,
+        tp_values=(1.5,),
+        drop_values=(2.0,),
+        sl_values=None,
+        emit=lambda _s: None,
+    )
+    assert rows_no_sl == [(0.0, 1.5, 2.0, 0, 0.0, 0.0)]
+    rows_with_sl = run_tp_drop_sl_sweep(
+        {"entry": 10.0},
+        lambda _p: None,
+        budget=100.0,
+        tp_values=(1.5,),
+        drop_values=(2.0,),
+        sl_values=(8.0,),
+        emit=lambda _s: None,
+    )
+    assert rows_with_sl == [(0.0, 1.5, 2.0, 8.0, 0, 0.0)]
+    assert len(priceAnalysis._bounded_plot_indices(10, True)) == 10
+
 
 
 

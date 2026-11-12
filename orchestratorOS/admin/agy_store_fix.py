@@ -32,10 +32,10 @@ from __future__ import annotations
 
 import collections
 from datetime import datetime, timezone
-import fcntl
 import glob
 import hashlib
 import logging
+import math
 import os
 import re
 import shutil
@@ -48,7 +48,16 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:   # executed directly by the systemd drop-in with /usr/bin/python3
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import TOPIC_SPECS, _parse_bool_flag, is_env_defined, optional_env, safe_nonneg_int, safe_pos_float
+from botcore import (
+    FileLock,
+    TOPIC_SPECS,
+    _parse_bool_flag,
+    exact_nonneg_int,
+    is_env_defined,
+    optional_env,
+    safe_nonneg_int,
+    safe_pos_float,
+)
 import intelligence.macro_sentiment_ssot as _mss
 from state_io import (  # noqa: E402
     atomic_write_bytes,
@@ -284,7 +293,7 @@ def mode_pre(force: bool = False) -> int:
     mt = {}
     for p2 in glob.glob(os.path.join(glob.escape(D2), "*.db")):
         cid = os.path.basename(p2)[:-3]
-        sec = int(os.stat(p2).st_mtime)
+        sec = math.trunc(os.stat(p2).st_mtime)
         os.utime(p2, (sec, sec))
         mt[cid] = sec
 
@@ -419,7 +428,7 @@ def mode_post(timeout: int = 50) -> int:
             break
         time.sleep(0.2)
     if not ready:
-        log.warning("post: daemon startup scan not confirmed within %ds; continuing after a fixed wait", int(timeout_s))
+        log.warning("post: daemon startup scan not confirmed within %ds; continuing after a fixed wait", math.trunc(timeout_s))
         time.sleep(5)
     time.sleep(0.5)   # link immediately after startup scan so reconnecting Web UI tabs find trajectories in D1
     linked = exists = bad = 0
@@ -676,8 +685,17 @@ def _glog_rel_ts(line: str) -> float | None:
         return None
     try:
         mo, dy, hh, mm, ss, us_raw = m.groups()
-        us = int((us_raw or "0")[:6].ljust(6, "0"))
-        return datetime(2024, int(mo), int(dy), int(hh), int(mm), int(ss), us, tzinfo=timezone.utc).timestamp()
+        us = exact_nonneg_int((us_raw or "0")[:6].ljust(6, "0"), default=0)
+        return datetime(
+            2024,
+            exact_nonneg_int(mo, default=0),
+            exact_nonneg_int(dy, default=0),
+            exact_nonneg_int(hh, default=0),
+            exact_nonneg_int(mm, default=0),
+            exact_nonneg_int(ss, default=0),
+            us,
+            tzinfo=timezone.utc,
+        ).timestamp()
     except ValueError:
         return None
 
@@ -1034,19 +1052,11 @@ def main(argv) -> int:
     os.makedirs(os.path.dirname(os.path.abspath(LOCK)) or ".", exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)])
-    lock = open(LOCK, "w")
-    try:
-        lock_wait_s = 15.0 if mode in ("pre", "post") else 2.0
-        lock_deadline = time.time() + lock_wait_s
-        while True:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError:
-                if time.time() >= lock_deadline:
-                    log.error("another agy_store_fix is running")
-                    return 3
-                time.sleep(0.1)
+    lock_wait_s = 15.0 if mode in ("pre", "post") else 2.0
+    with FileLock(LOCK, timeout=lock_wait_s, poll_interval=0.1, raise_on_timeout=False) as lock:
+        if not lock.acquired:
+            log.error("another agy_store_fix is running")
+            return 3
         try:
             if mode == "pre":
                 return mode_pre(force="--force" in argv)
@@ -1097,11 +1107,6 @@ def main(argv) -> int:
         except Exception:
             log.exception("agy_store_fix %s failed", mode)
             return 1
-    finally:
-        try:
-            lock.close()
-        except OSError:
-            pass
 
 
 if __name__ == "__main__":

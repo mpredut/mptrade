@@ -276,12 +276,14 @@ def _require_positive_budget(budget: float) -> float:
     return b_val
 
 
-def _extract_cycle_win_stats(md: Mapping[str, Any], b_val: float) -> tuple[float, int, int, float]:
-    tot = safe_float(md.get("total"), 0.0) / b_val * 100.0
-    cycles = safe_nonneg_int(md.get("cycles"), default=0)
-    wins = safe_nonneg_int(md.get("wins"), default=0)
+def _extract_cycle_win_stats(md: Any, b_val: float) -> tuple[float, int, int, float, float]:
+    md_map = md if isinstance(md, Mapping) else {}
+    tot = safe_float(md_map.get("total"), 0.0) / b_val * 100.0
+    cycles = safe_nonneg_int(md_map.get("cycles"), default=0)
+    wins = safe_nonneg_int(md_map.get("wins"), default=0)
     wr = 100.0 * wins / cycles if cycles else 0.0
-    return tot, cycles, wins, wr
+    maxdd = safe_float(md_map.get("maxdd"), 0.0)
+    return tot, cycles, wins, wr, maxdd
 
 
 def create_backtest_cli_parser(description: str) -> argparse.ArgumentParser:
@@ -317,16 +319,15 @@ def print_single_backtest_report(
 ) -> None:
     """Emit standardized single-run CLI backtest report across Kraken, Hyperliquid, and T212."""
     b_val = _require_positive_budget(budget)
-    md = m if isinstance(m, dict) else {}
+    md = m if isinstance(m, Mapping) else {}
     bh_f = safe_float(bh, 0.0)
     inc_fund = _parse_bool_flag(include_funding, default=False)
     qty_dec = safe_nonneg_int(open_qty_decimals, default=4)
-    tot, cycles, wins, wr = _extract_cycle_win_stats(md, b_val)
+    tot, cycles, wins, wr, maxdd = _extract_cycle_win_stats(md, b_val)
     net_pct = safe_float(md.get("net"), 0.0) / b_val * 100.0
     realized = safe_float(md.get("realized"), 0.0)
     upnl = safe_float(md.get("final_upnl"), 0.0)
     fees = safe_float(md.get("fees"), 0.0)
-    maxdd = safe_float(md.get("maxdd"), 0.0)
     open_qty = safe_float(md.get("open_qty"), 0.0)
     emit(header)
     emit(f"  params: {params_line}")
@@ -376,9 +377,8 @@ def run_tp_drop_sl_sweep(
         for tp_val in tp_values:
             for drop_val in drop_values:
                 p = dict(base, tp=tp_val, drop=drop_val)
-                m = eval_fn(p)
-                tot, cyc, _, wr = _extract_cycle_win_stats(m, b_val)
-                rows.append((tot, tp_val, drop_val, cyc, wr, safe_float(m.get("maxdd"), 0.0)))
+                tot, cyc, _, wr, maxdd = _extract_cycle_win_stats(eval_fn(p), b_val)
+                rows.append((tot, tp_val, drop_val, cyc, wr, maxdd))
         rows.sort(key=lambda r: (r[0], -r[5], r[4], r[3], r[1], r[2]), reverse=True)
         emit(f"  top {limit_n} combinations (net% | tp | drop | cycles | win% | maxDD$):")
         for net, tp_v, drop_v, cyc, wr, dd in rows[:limit_n]:
@@ -389,9 +389,8 @@ def run_tp_drop_sl_sweep(
         for drop_val in drop_values:
             for sl_val in sl_values:
                 p = dict(base, tp=tp_val, drop=drop_val, sl=sl_val)
-                m = eval_fn(p)
-                tot = safe_float(m.get("total"), 0.0) / b_val * 100.0
-                rows.append((tot, tp_val, drop_val, sl_val, safe_nonneg_int(m.get("cycles"), default=0), safe_float(m.get("maxdd"), 0.0)))
+                tot, cyc, _, _, maxdd = _extract_cycle_win_stats(eval_fn(p), b_val)
+                rows.append((tot, tp_val, drop_val, sl_val, cyc, maxdd))
     rows.sort(key=lambda r: (r[0], -r[5], r[4], r[1], r[2], r[3]), reverse=True)
     emit(f"  top {limit_n} (total% | tp | drop | sl | cycles | maxDD$):")
     for tot, tp_v, drop_v, sl_v, cyc, dd in rows[:limit_n]:

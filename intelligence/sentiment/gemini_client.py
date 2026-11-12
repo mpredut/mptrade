@@ -1,7 +1,6 @@
 """Google Gemini client providing LLM reasoning via authenticated CLI or REST API."""
 from __future__ import annotations
 
-import fcntl
 import importlib
 import logging
 import os
@@ -13,6 +12,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import urllib.request
 
 from botcore import (
+    FileLock,
     fetch_json_post,
     is_cache_fresh,
     is_gemini_llm_disabled,
@@ -159,18 +159,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         exec_cwd = _ROOT_DIR if (use_repo_rules and os.path.isdir(_ROOT_DIR)) else bot_cli_base
         lock_path = os.path.join(bot_cli_base, ".agy_bot_cli.lock")
         lock_wait = max(90.0, call_timeout) if call_timeout >= 30.0 else min(call_timeout * 0.5, 5.0)
-        deadline = time.monotonic() + lock_wait
-        with open(lock_path, "a+", encoding="utf-8") as lock_fh:
-            locked = False
-            while True:
-                try:
-                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    locked = True
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(0.15)
+        with FileLock(lock_path, timeout=lock_wait, poll_interval=0.15, raise_on_timeout=False):
             pre_dirty = (
                 self._snapshot_dirty_tracked_files(_ROOT_DIR)
                 if (use_repo_rules and os.path.isdir(_ROOT_DIR))
@@ -182,11 +171,6 @@ class GeminiClient(GeminiQuotaRouterMixin):
             finally:
                 if pre_dirty is not None:
                     self._restore_newly_dirtied_tracked_files(_ROOT_DIR, pre_dirty)
-                if locked:
-                    try:
-                        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
-                    except OSError:
-                        pass
 
     @staticmethod
     def _snapshot_dirty_tracked_files(repo_dir: str) -> Optional[set[str]]:

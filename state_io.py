@@ -221,6 +221,22 @@ def atomic_text_writer(path: str, *, encoding: str = "utf-8",
     return _atomic_stream_writer(path, "w", encoding=encoding, newline=newline)
 
 
+def open_append_text_file(
+    path: str | os.PathLike[str],
+    *,
+    encoding: str = "utf-8",
+    newline: str | None = None,
+) -> Any:
+    """Ensure parent directory exists and open ``path`` in append text mode."""
+    destination, _ = _prepare_target_and_dir(path)  # type: ignore[arg-type]
+    return open(destination, "a", encoding=encoding, newline=newline)
+
+
+def open_binary_read_file(path: str | os.PathLike[str]) -> Any:
+    """Resolve ``path`` and open it in binary read mode (``rb``)."""
+    return open(_resolve_target_path(path), "rb")
+
+
 def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8",
                       newline: str | None = None) -> None:
     """Write text ``content`` to ``path`` atomically through ``atomic_text_writer``."""

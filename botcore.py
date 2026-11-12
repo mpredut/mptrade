@@ -26,6 +26,7 @@ import tarfile
 import tempfile
 import threading
 import time as _time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -94,34 +95,73 @@ _HAVE_FCNTL = True
 
 
 class FileLock:
-    """Cross-process/thread lock using fcntl.flock(LOCK_EX) on an owned fd."""
+    """Cross-process/thread lock using fcntl.flock(LOCK_EX) on an owned fd, with optional bounded wait."""
 
-    def __init__(self, path):
-
+    def __init__(
+        self,
+        path,
+        timeout: float | None = None,
+        *,
+        poll_interval: float = 0.1,
+        raise_on_timeout: bool = True,
+    ):
         self.path = resolve_cachedb_filepath(path)
+        if timeout is None:
+            self._timeout: float | None = None
+        else:
+            if isinstance(timeout, bool):
+                raise TypeError("timeout must be numeric or None")
+            t_val = safe_float(timeout, default=None)
+            if t_val is None:
+                raise ValueError(f"invalid FileLock timeout: {timeout!r}")
+            self._timeout = max(0.0, t_val)
+        self._poll_interval = safe_pos_float(poll_interval, default=0.1) or 0.1
+        self._raise_on_timeout = _parse_bool_flag(raise_on_timeout, True)
         self._fd = None
+        self.acquired = False
 
     def __enter__(self):
         parent = os.path.dirname(os.fspath(self.path))
         if parent:
             os.makedirs(parent, exist_ok=True)
         self._fd = open(self.path, "a+")
-        if _HAVE_FCNTL:
-            try:
+        self.acquired = False
+        if not _HAVE_FCNTL:
+            self.acquired = True
+            return self
+        try:
+            if self._timeout is None:
                 fcntl.flock(self._fd, fcntl.LOCK_EX)
-            except BaseException:
+                self.acquired = True
+                return self
+            deadline = _time.monotonic() + self._timeout
+            while True:
+                try:
+                    fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.acquired = True
+                    return self
+                except (BlockingIOError, OSError):
+                    if _time.monotonic() >= deadline:
+                        self._fd.close()
+                        self._fd = None
+                        if self._raise_on_timeout:
+                            raise TimeoutError(f"timed out acquiring FileLock on {self.path}")
+                        return self
+                    _time.sleep(self._poll_interval)
+        except BaseException:
+            if self._fd is not None:
                 self._fd.close()
                 self._fd = None
-                raise
-        return self
+            raise
 
     def __exit__(self, *exc):
         if self._fd is None:
             return
         try:
-            if _HAVE_FCNTL:
+            if _HAVE_FCNTL and self.acquired:
                 fcntl.flock(self._fd, fcntl.LOCK_UN)
         finally:
+            self.acquired = False
             self._fd.close()
             self._fd = None
 
@@ -1803,14 +1843,60 @@ class StringEnum(str, Enum):
         return str(self.value)
 
 
-def bind_attr_call(method_name: str, *bound_args: object, **bound_kwargs: object):
-    """Bind a method dispatching ``getattr(self, method_name)`` at call time so overrides and monkeypatches apply."""
+class _BoundAttrCall:
+    """Non-data method descriptor dispatching ``getattr(self, method_name)`` with owner fallback for duck stubs."""
 
-    def _bound(self: object, *args: object, **kwargs: object):
-        merged_kw = {**bound_kwargs, **kwargs} if bound_kwargs else kwargs
-        return getattr(self, method_name)(*bound_args, *args, **merged_kw)
+    def __init__(
+        self,
+        method_name: str,
+        bound_args: tuple[object, ...],
+        bound_kwargs: dict[str, object],
+        *,
+        owner: type | None = None,
+        name: str = "",
+    ) -> None:
+        self._method_name = method_name
+        self._bound_args = bound_args
+        self._bound_kwargs = bound_kwargs
+        self._owner = owner
+        self.__name__ = name or method_name
+        self.__qualname__ = f"{owner.__qualname__}.{self.__name__}" if owner is not None else self.__name__
 
-    return _bound
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._owner = owner
+        self.__name__ = name
+        self.__qualname__ = f"{owner.__qualname__}.{name}"
+
+    def __call__(self, target: object, *args: object, **kwargs: object):
+        merged_kw = {**self._bound_kwargs, **kwargs} if self._bound_kwargs else kwargs
+        fn = getattr(target, self._method_name, None)
+        if callable(fn):
+            return fn(*self._bound_args, *args, **merged_kw)
+        if self._owner is not None:
+            owner_fn = getattr(self._owner, self._method_name, None)
+            if callable(owner_fn):
+                return owner_fn(target, *self._bound_args, *args, **merged_kw)
+        return getattr(target, self._method_name)(*self._bound_args, *args, **merged_kw)
+
+    def __get__(self, instance: object, owner: type | None = None):
+        eff_owner = owner if owner is not None else self._owner
+        bound_target = (
+            self
+            if eff_owner is self._owner
+            else _BoundAttrCall(
+                self._method_name,
+                self._bound_args,
+                self._bound_kwargs,
+                owner=eff_owner,
+                name=self.__name__,
+            )
+        )
+        return bound_target if instance is None else types.MethodType(bound_target, instance)
+
+
+def bind_attr_call(method_name: str, *bound_args: object, **bound_kwargs: object) -> _BoundAttrCall:
+    """Bind a method dispatching ``getattr(self, method_name)`` at call time so overrides, monkeypatches, and duck stubs apply."""
+    return _BoundAttrCall(method_name, bound_args, dict(bound_kwargs))
 
 
 def bind_module_importer(module_name: str):

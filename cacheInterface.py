@@ -11,6 +11,7 @@ from __future__ import annotations
 import builtins
 from abc import ABC, abstractmethod
 from collections import defaultdict
+import math
 import os
 import threading
 import time
@@ -294,7 +295,7 @@ class CacheManagerInterface(ABC):
         self.lock = threading.RLock()
 
         self.fallback_time_default = (
-            int(_now_time() * 1000) - self.days_back * 24 * 60 * 60 * 1000
+            math.trunc(_now_time() * 1000) - self.days_back * 24 * 60 * 60 * 1000
         )
 
         self.load_state()
@@ -345,7 +346,7 @@ class CacheManagerInterface(ABC):
                 default=0.0,
             )
             if max_ts_sec > 0:
-                last_times[symbol] = max(0, int(round(max_ts_sec * 1000.0)) - 60_000)
+                last_times[symbol] = max(0, round(max_ts_sec * 1000.0) - 60_000)
         return last_times
 
     def _rebuild_fetchtimes(self):
@@ -364,7 +365,7 @@ class CacheManagerInterface(ABC):
         if not last_times_per_sym:
             fallback_time_file = self.fallback_time_default
             if os.path.exists(self.filename):
-                fallback_time_file = int(os.path.getmtime(self.filename) * 1000) - 60_000
+                fallback_time_file = math.trunc(os.path.getmtime(self.filename) * 1000) - 60_000
             fallback_time = min(self.fallback_time_default, fallback_time_file)
             return {symbol: fallback_time for symbol in self.symbols}
         return last_times_per_sym
@@ -596,7 +597,7 @@ class CacheManagerInterface(ABC):
                 if isinstance(fetchtime_map, dict)
                 else 0
             )
-            payload["saved_at"] = int(_now_time() * 1000)
+            payload["saved_at"] = math.trunc(_now_time() * 1000)
             write_json_fn = _cm_override("atomic_write_json", atomic_write_json)
             write_json_fn(meta_file_path(self.filename), payload)
             return True
@@ -913,7 +914,7 @@ class CacheManagerInterface(ABC):
         """Perform weekly maintenance for every append-mode cache."""
         if not self.append_mode:
             return
-        cutoff_ms = int((_now_time() - self.RETENTION_DAYS * 24 * 3600) * 1000)
+        cutoff_ms = math.trunc((_now_time() - self.RETENTION_DAYS * 24 * 3600) * 1000)
         changed = False
         with self.lock:
             original_state = self._snapshot_memory_state_locked()
@@ -964,21 +965,21 @@ class CacheManagerInterface(ABC):
 
     def _trim_cache_to_keep_fraction_locked(self) -> None:
         for symbol, items in self.cache.items():
-            keep_n = max(1, int(len(items) * self.ROTATE_KEEP_FRACTION))
+            keep_n = max(1, math.trunc(len(items) * self.ROTATE_KEEP_FRACTION))
             self.cache[symbol] = items[-keep_n:]
 
     def _finalize_rotation(self, archive: str) -> bool:
         archive = self._compress_and_prune_archive(archive)
         builtins.print(
             f"[{self.cls_name}][maintain] ROTATION: archived -> {archive}, "
-            f"kept the last {int(self.ROTATE_KEEP_FRACTION * 100)}%"
+            f"kept the last {math.trunc(self.ROTATE_KEEP_FRACTION * 100)}%"
         )
         return True
 
     def _rotate_keep_latest(self):
         """Archive the current file and retain each symbol's latest configured fraction."""
         with self.lock:
-            archive = f"{self.filename}.{int(_now_time())}.archive"
+            archive = f"{self.filename}.{math.trunc(_now_time())}.archive"
             snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
             try:
                 snapshot_fn(self.filename, archive)
@@ -1034,7 +1035,7 @@ class CacheManagerInterface(ABC):
     def update_cache_per_symbol(self, symbol, new_items):
         if new_items is None:
             return
-        current_time = int(_now_time() * 1000)
+        current_time = math.trunc(_now_time() * 1000)
         if self.append_mode:
             new_items = self._coerce_item_list(new_items)
 
@@ -1086,7 +1087,7 @@ class CacheManagerInterface(ABC):
 
         account_cycle_high_water = None
         for symbol in list(self.symbols):
-            request_high_water = int(_now_time() * 1000)
+            request_high_water = math.trunc(_now_time() * 1000)
             fallback_ft = self.fetchtime_per_symbol.get(
                 symbol, self.fallback_time_default
             )

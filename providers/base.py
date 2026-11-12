@@ -1221,20 +1221,11 @@ class MarketDataProvider(ABC):
     def _provider_bool_attr(self, attr: str) -> bool:
         return bool(MarketDataProvider._resolve_provider_attr(self, attr, False))
 
-    def requires_cache_permit(self) -> bool:
-        return MarketDataProvider._provider_bool_attr(self, "_REQUIRES_CACHE_PERMIT")
-
-    def defers_smart_cancellation(self) -> bool:
-        return MarketDataProvider._provider_bool_attr(self, "_DEFERS_SMART_CANCELLATION")
-
-    def supports_business_minimum(self) -> bool:
-        return MarketDataProvider._provider_bool_attr(self, "_SUPPORTS_BUSINESS_MINIMUM")
-
-    def supports_order_validity(self) -> bool:
-        return MarketDataProvider._provider_bool_attr(self, "_SUPPORTS_ORDER_VALIDITY")
-
-    def defers_preflight_quantity(self) -> bool:
-        return MarketDataProvider._provider_bool_attr(self, "_DEFERS_PREFLIGHT_QUANTITY")
+    requires_cache_permit = bind_attr_call("_provider_bool_attr", "_REQUIRES_CACHE_PERMIT")
+    defers_smart_cancellation = bind_attr_call("_provider_bool_attr", "_DEFERS_SMART_CANCELLATION")
+    supports_business_minimum = bind_attr_call("_provider_bool_attr", "_SUPPORTS_BUSINESS_MINIMUM")
+    supports_order_validity = bind_attr_call("_provider_bool_attr", "_SUPPORTS_ORDER_VALIDITY")
+    defers_preflight_quantity = bind_attr_call("_provider_bool_attr", "_DEFERS_PREFLIGHT_QUANTITY")
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         """Return normalized pair precision and limits, or None if unavailable."""

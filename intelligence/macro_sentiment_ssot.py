@@ -13,7 +13,6 @@ boilerplate across ``intelligence/`` and ``llm_order_guard.py`` by:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import partial
 import configparser
 import importlib
 import logging
@@ -576,8 +575,30 @@ DEFAULT_NEWS_ROLLING_WINDOW_SEC: float = _INIT_DERIVED_INTERVALS["default_news_r
 DEFAULT_FALLBACK_RETRY_TTL_SEC: float = _INIT_DERIVED_INTERVALS["default_fallback_retry_ttl_sec"]
 
 
-get_fear_greed_endpoint_url = partial(_cfg_str, "feeds", "fear_greed_endpoint_url")
-get_market_breadth_endpoint_url = partial(_cfg_str, "feeds", "market_breadth_endpoint_url")
+def _bind_feed_url_getter(key: str, doc: str) -> Callable[[Optional[str]], str]:
+    def _get(config_path: Optional[str] = None) -> str:
+        cfg_str_fn = resolve_patched_attr(
+            "_cfg_str",
+            _cfg_str,
+            modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot"),
+            require_callable=True,
+        )
+        return cfg_str_fn("feeds", key, "", config_path=config_path)
+
+    _get.__name__ = f"get_{key}"
+    _get.__qualname__ = _get.__name__
+    _get.__doc__ = doc
+    return _get
+
+
+get_fear_greed_endpoint_url = _bind_feed_url_getter(
+    "fear_greed_endpoint_url",
+    "Resolve the Fear & Greed Index endpoint URL from [feeds] in macro_intelligence.conf.",
+)
+get_market_breadth_endpoint_url = _bind_feed_url_getter(
+    "market_breadth_endpoint_url",
+    "Resolve the Market Breadth 24h ticker endpoint URL from [feeds] in macro_intelligence.conf.",
+)
 
 
 def _require_feed_str(key: str) -> str:
