@@ -223,14 +223,6 @@ class TestMKFilterInDetector(unittest.TestCase):
         self.assertIsNotNone(r)
 
 
-def build_series(climb_days=5, climb_from=233.0, peak=287.0, decline_to=265.0, decline_hours=36):
-    ts, px, t = [], [], 0.0
-    n_up = climb_days * 24
-    for h in range(n_up):
-        ts.append(t); px.append(climb_from + (peak - climb_from) * h / (n_up - 1)); t += H
-    for h in range(1, decline_hours + 1):
-        ts.append(t); px.append(peak - (peak - decline_to) * h / decline_hours); t += H
-    return np.array(ts), np.array(px)
 
 
 def direction_at(ts, px, i, **kw):
@@ -241,7 +233,12 @@ def direction_at(ts, px, i, **kw):
 
 class TestTrendLagOnDecline(unittest.TestCase):
     def setUp(self):
-        self.ts, self.px = build_series()
+        ts, px, t = [], [], 0.0
+        for h in range(120):
+            ts.append(t); px.append(233.0 + (287.0 - 233.0) * h / 119); t += H
+        for h in range(1, 37):
+            ts.append(t); px.append(287.0 - (287.0 - 265.0) * h / 36); t += H
+        self.ts, self.px = np.array(ts), np.array(px)
         self.peak_i = int(np.argmax(self.px))
 
     def test_shows_the_lag(self):

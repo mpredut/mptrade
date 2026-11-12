@@ -120,7 +120,9 @@ market_hours = 24x7
 class TestCurrentRegistry(unittest.TestCase):
     def test_all_enabled_mt_instruments_parse_numeric_params(self):
         instruments = load_instruments()
-        raw_sections = _raw_param_presence()
+        cp = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+        cp.read(ROOT / "instruments.conf")
+        raw_sections = {sec: {k for k in cp[sec] if k.startswith("mt.")} for sec in cp.sections()}
         for name, inst in instruments.items():
             if not inst.enabled:
                 continue
@@ -393,15 +395,6 @@ def test_registry_refactor_preserves_existing_mt_values():
     assert cp["KRAKEN_HYPE"]["mt.max_budget"] == "5000"
 
 
-def _raw_param_presence():
-    """Read the registry independently to identify declared mt parameters."""
-    path = ROOT / "instruments.conf"
-    cp = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
-    cp.read(path)
-    return {
-        section_name: {key for key in cp[section_name] if key.startswith("mt.")}
-        for section_name in cp.sections()
-    }
 
 
 def test_resolve_tradable_instrument_filtering_and_variants():

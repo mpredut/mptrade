@@ -50,8 +50,6 @@ def _make_cache24(symbol, entries, tmp):
     return make_cache24_test_manager(symbol, entries, tmp, api_client=mock_api)
 
 
-def _entries_now(n=60, interval_ms=800, start=60000.0, delta=10.0):
-    return make_synthetic_price_entries(n=n, start_price=start, delta=delta, interval_ms=interval_ms)
 
 
 def _mgr(tmp, name="trend.json"):
@@ -229,7 +227,7 @@ class TestGate(_ShortTrendMgrTestCase):
 class TestComputation(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        self.cache24 = _make_cache24("BTCUSDT", _entries_now(60), self.tmp)
+        self.cache24 = _make_cache24("BTCUSDT", make_synthetic_price_entries(n=60, start_price=60000.0, delta=10.0, interval_ms=800), self.tmp)
         fname = os.path.join(self.tmp, "cp.json")
         self.cpm = cm.CacheCurrentPriceManager(sync_ts=9999, symbols=["BTCUSDT"],
                                                filename=fname, ws_manager=None, api_client=mock_api,
@@ -706,7 +704,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
     def test_disk_cache24_and_jsonl_recover_previous_generation(self):
         trend_file = os.path.join(self.tmp, "cache_short_trend.json")
         c24_file = os.path.join(self.tmp, "cache_24_price_BTCUSDT.json")
-        entries = _entries_now(15, interval_ms=500, start=60000.0, delta=5.0)
+        entries = make_synthetic_price_entries(n=15, start_price=60000.0, delta=5.0, interval_ms=500)
         with open(c24_file + ".previous", "w", encoding="utf-8") as fh:
             json.dump({"items": {"BTCUSDT": entries}, "fetchtime": {"BTCUSDT": entries[-1][0]}}, fh)
         with open(c24_file, "w", encoding="utf-8") as fh:
@@ -1903,15 +1901,6 @@ class TestBapiWsSubscriber(unittest.TestCase):
         good.on_items_update.assert_called_once()
 
 
-def _make_current_price_manager(tmp_dir, price=50000.0):
-    mock_api.get_current_price.return_value = price
-    mgr = cm.CacheCurrentPriceManager(
-        sync_ts=9999, symbols=_WS_BRIDGE_SYMBOLS,
-        filename=os.path.join(tmp_dir, "cache_current_price.json"),
-        ws_manager=None, api_client=mock_api, market_api=mock_api,
-    )
-    mgr.save_state = True
-    return mgr
 
 
 def _make_ws_cache24_manager(tmp_dir, current_price_manager):
@@ -1930,8 +1919,11 @@ class TestWsBridgeIntegration(TempDirTestCase):
         super().setUp()
         mock_api.get_current_price.return_value = 50000.0
         self.ws = BinancePriceStream(symbols=["BTCUSDC"])
-        self.cur = _make_current_price_manager(self.tmp)
-        self.h24 = _make_ws_cache24_manager(self.tmp, self.cur)
+        self.cur = cm.CacheCurrentPriceManager(sync_ts=9999, symbols=_WS_BRIDGE_SYMBOLS, filename=os.path.join(self.tmp, "cache_current_price.json"), ws_manager=None, api_client=mock_api, market_api=mock_api)
+        self.cur.save_state = True
+        with patch.object(cm, "get_current_price_manager", return_value=self.cur):
+            self.h24 = cm.Cache24PriceManager(sync_ts=9999, symbols=_WS_BRIDGE_SYMBOLS, filename=os.path.join(self.tmp, "cache_24_price_BTCUSDC.json"), api_client=mock_api)
+        self.h24.save_state = True
         self.ws.subscribe(self.cur)
         self.cur.subscribe_price(self.h24)
 

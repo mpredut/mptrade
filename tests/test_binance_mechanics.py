@@ -207,22 +207,10 @@ class TestBinanceProviderHooks(unittest.TestCase):
     def setUp(self):
         self.p = BinanceProvider()
 
-    @staticmethod
-    def _symbol_info(*, apply_to_market):
-        return {
-            "baseAsset": "BTC", "quoteAsset": "USDC", "filters": [
-                {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
-                {"filterType": "LOT_SIZE", "stepSize": "0.1", "minQty": "0.1"},
-                {"filterType": "MIN_NOTIONAL", "minNotional": "10",
-                 "applyToMarket": apply_to_market},
-            ],
-        }
-
     def _rules_client(self, *, apply_to_market):
         module = MagicMock()
         module.get_current_price.return_value = 100.0
-        module.client.get_symbol_info.return_value = self._symbol_info(
-            apply_to_market=apply_to_market)
+        module.client.get_symbol_info.return_value = {"baseAsset": "BTC", "quoteAsset": "USDC", "filters": [{"filterType": "PRICE_FILTER", "tickSize": "0.01"}, {"filterType": "LOT_SIZE", "stepSize": "0.1", "minQty": "0.1"}, {"filterType": "MIN_NOTIONAL", "minNotional": "10", "applyToMarket": apply_to_market}]}
         return module
 
     def test_provider_hooks_misc(self):

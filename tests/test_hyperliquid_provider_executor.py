@@ -145,13 +145,6 @@ class FakeSigner:
         return self._c
 
 
-def _provider(read, signer):
-    p = HyperliquidProvider(token="HYPE")
-    p._client = read
-    p._client_tried = True
-    p._spot_pair = "@107"
-    p._signer = lambda: signer
-    return p
 
 
 class HLExecutorContractTest(unittest.TestCase):
@@ -159,7 +152,11 @@ class HLExecutorContractTest(unittest.TestCase):
         os.environ["HL_ACCOUNT_ADDRESS"] = "0xABC"
         os.environ.pop("HL_LIVE_ORDERS", None)
         self.signer = FakeSigner()
-        self.p = _provider(FakeRead(), self.signer)
+        self.p = HyperliquidProvider(token="HYPE")
+        self.p._client = FakeRead()
+        self.p._client_tried = True
+        self.p._spot_pair = "@107"
+        self.p._signer = lambda: self.signer
 
     def tearDown(self):
         os.environ.pop("HL_LIVE_ORDERS", None)

@@ -819,16 +819,6 @@ rank = _funding_scan.rank
 _DN_COIN = "TSTDN"
 
 
-def _dn_params(**over) -> DNParams:
-    base = dict(
-        coin=_DN_COIN, spot_pair="@999", spot_token=_DN_COIN, notional=100.0,
-        entry_funding_hr=0.0, exit_funding_hr=-0.00005, funding_window_h=4.0,
-        min_hold_h=6.0, rebalance_pct=5.0, check_minutes=5.0, sz_decimals=2,
-        liq_alert_pct=20.0, auto_protect=True, reduce_pct=25.0, perp_leverage=1,
-        allow_scale_up=False, fee_pct=0.035,
-    )
-    base.update(over)
-    return DNParams(**base)
 
 
 class _FakeDNClient:
@@ -923,7 +913,8 @@ class _DNBase(unittest.TestCase):
                 os.remove(p)
 
     def make(self, dry=False, **over) -> DeltaNeutral:
-        return DeltaNeutral(self.c, _dn_params(**over), dry_run=dry, desktop=False)
+        params = DNParams(**{"coin": _DN_COIN, "spot_pair": "@999", "spot_token": _DN_COIN, "notional": 100.0, "entry_funding_hr": 0.0, "exit_funding_hr": -0.00005, "funding_window_h": 4.0, "min_hold_h": 6.0, "rebalance_pct": 5.0, "check_minutes": 5.0, "sz_decimals": 2, "liq_alert_pct": 20.0, "auto_protect": True, "reduce_pct": 25.0, "perp_leverage": 1, "allow_scale_up": False, "fee_pct": 0.035, **over})
+        return DeltaNeutral(self.c, params, dry_run=dry, desktop=False)
 
     def opened(self, d: DeltaNeutral, target=2.0):
         d.s["status"] = "open"

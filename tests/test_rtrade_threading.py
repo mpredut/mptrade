@@ -1357,15 +1357,6 @@ def _saved_file(tmp_dir, price, ts_ms=None):
     return fname
 
 
-def _make_mgr(filename, sync_ts, api_mock):
-    return cm.CacheCurrentPriceManager(
-        sync_ts=sync_ts,
-        symbols=_TB_SYMBOLS,
-        filename=filename,
-        ws_manager=None,
-        api_client=api_mock,
-        market_api=api_mock,
-    )
 
 
 class TestFallbackThreadBehavior(TempDirTestCase):
@@ -1381,7 +1372,7 @@ class TestFallbackThreadBehavior(TempDirTestCase):
         super().tearDown()
 
     def _manager(self, filename, sync_ts, api_mock):
-        manager = _make_mgr(filename, sync_ts, api_mock)
+        manager = cm.CacheCurrentPriceManager(sync_ts=sync_ts, symbols=_TB_SYMBOLS, filename=filename, ws_manager=None, api_client=api_mock, market_api=api_mock)
         self.managers.append(manager)
         manager.periodic_sync(save_state=False)
         return manager
