@@ -294,8 +294,7 @@ class KrakenTrailing(TrailingAdapterBase):
                 return None
             return self.executor.position_cost_basis(pair_norm or pair, held, COST_BASIS_LOOKBACK_S)
         except Exception as e:  # noqa: BLE001
-            self.log(f"  [TRAIL-K] cost_basis({pair}) unavailable ({e}) -- warm-up from current price")
-            return None
+            return self._log_cost_basis_unavailable(pair, e)
 
     def unlock_qty(self, pair: str) -> bool:
         """Cancel open SELL orders to release locked quantity for emergency stop."""

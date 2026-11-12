@@ -124,9 +124,7 @@ def main():
                 else:
                     print(f"[{sym}] No results or no data.")
 
-        print("\n\n" + "=" * 60)
-        print("           BACKTEST COMPARISON SUMMARY")
-        print("=" * 60)
+        print(f"\n\n{'=' * 60}\n           BACKTEST COMPARISON SUMMARY\n{'=' * 60}")
         compared_count = 0
         for sym in SYMBOLS._SECTIONS:
             prop = results[variants[0][0]].get(sym) or {}
@@ -136,10 +134,12 @@ def main():
             if prop_net is not None and base_net is not None:
                 compared_count += 1
                 diff = prop_net - base_net
-                print(f"\n{sym}:")
-                print(f"  Proposed (Break ON) : {prop_net:.2f} USD ({prop.get('sells', 0)} sells)")
-                print(f"  Baseline (Break OFF): {base_net:.2f} USD ({base.get('sells', 0)} sells)")
-                print(f"  Difference          : {'+' if diff >= 0 else ''}{diff:.2f} USD ({'OUTPERFORMS' if diff > 0 else 'UNDERPERFORMS' if diff < 0 else 'EQUAL'})")
+                print(
+                    f"\n{sym}:\n"
+                    f"  Proposed (Break ON) : {prop_net:.2f} USD ({prop.get('sells', 0)} sells)\n"
+                    f"  Baseline (Break OFF): {base_net:.2f} USD ({base.get('sells', 0)} sells)\n"
+                    f"  Difference          : {'+' if diff >= 0 else ''}{diff:.2f} USD ({'OUTPERFORMS' if diff > 0 else 'UNDERPERFORMS' if diff < 0 else 'EQUAL'})"
+                )
             else:
                 print(f"\n{sym}: Incomplete data.")
         if SYMBOLS._SECTIONS and compared_count == 0:

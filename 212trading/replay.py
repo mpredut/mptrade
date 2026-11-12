@@ -48,6 +48,7 @@ from strategies.replay_execution import (
 from strategies.replay_metrics import round_metric
 from strategies.spot_replay import (
     build_replay_summary,
+    overwrite_tail_equity_and_exposure,
     record_closed_cycle_pnl,
     scale_subbar_timeout_params,
 )
@@ -234,6 +235,12 @@ def _run_once(
         cycle_net_start = 0.0
         side_order = execution.side_order()
 
+        def _current_upnl_and_open_fee(px: float, fx: float) -> tuple[float, float, float]:
+            q = engine.s["qty"]
+            if q <= 1e-9:
+                return q, 0.0, 0.0
+            return q, q * px / fx - open_cost_account, open_buy_fee_account
+
         def _execute_sell_fill(
             order: dict,
             fill_order: dict,
@@ -381,9 +388,7 @@ def _run_once(
             trend_closes.append(close)
             engine.step(close)
 
-            qty = engine.s["qty"]
-            unrealized_account = (qty * close / rate - open_cost_account) if qty > 1e-9 else 0.0
-            cur_open_fee_account = open_buy_fee_account if qty > 1e-9 else 0.0
+            qty, unrealized_account, cur_open_fee_account = _current_upnl_and_open_fee(close, rate)
             equity_curve.append(initial_capital + realized_net_account + unrealized_account - cur_open_fee_account)
             exposure.append(qty > 1e-9)
 
@@ -410,19 +415,17 @@ def _run_once(
                 )
                 settled_end_exit = True
         if settled_end_exit:
-            rem_qty = engine.s["qty"]
-            rem_upnl = (rem_qty * last_close / final_rate - open_cost_account) if rem_qty > 1e-9 else 0.0
-            rem_open_fee = open_buy_fee_account if rem_qty > 1e-9 else 0.0
-            if equity_curve:
-                equity_curve[-1] = initial_capital + realized_net_account + rem_upnl - rem_open_fee
-            if exposure:
-                exposure[-1] = rem_qty > 1e-9
+            rem_qty, rem_upnl, rem_open_fee = _current_upnl_and_open_fee(last_close, final_rate)
+            overwrite_tail_equity_and_exposure(
+                equity_curve,
+                exposure,
+                initial_capital + realized_net_account + rem_upnl - rem_open_fee,
+                rem_qty > 1e-9,
+            )
     finally:
         _strat.log, _strat.notify = original_log, original_notify
 
-    qty = engine.s["qty"]
-    final_upnl_account = (qty * last_close / final_rate - open_cost_account) if qty > 1e-9 else 0.0
-    final_open_buy_fee_account = open_buy_fee_account if qty > 1e-9 else 0.0
+    qty, final_upnl_account, final_open_buy_fee_account = _current_upnl_and_open_fee(last_close, final_rate)
     eff_periods_per_year = (
         periods_per_year
         if periods_per_year is not None

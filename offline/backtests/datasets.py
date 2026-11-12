@@ -110,3 +110,18 @@ def dataset_metadata(records: Iterable[Mapping], *, interval_minutes: int | None
             rows[-1]["timestamp"], tz=dt.timezone.utc,
         ).isoformat(),
     }
+
+
+def dataset_metadata_and_csv_path(
+    records: Iterable[Mapping],
+    output_dir: Path,
+    stem: str,
+    interval: int,
+    *,
+    tag: str = "",
+) -> tuple[dict, Path]:
+    """Compute validated dataset metadata and its content-addressed CSV path."""
+    meta = dataset_metadata(records, interval_minutes=interval)
+    digest = meta["sha256"]
+    tag_part = f"_{tag}" if tag else ""
+    return meta, Path(output_dir) / f"{stem}_{interval}m{tag_part}_{digest[:12]}.csv"

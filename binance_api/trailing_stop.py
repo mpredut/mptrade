@@ -252,8 +252,7 @@ class TrailingStop(TrailingAdapterBase):
             return self.po.position_cost_basis(
                 pair_norm or pair, free + locked, COST_BASIS_LOOKBACK_S, provider_name="binance")
         except Exception as e:  # noqa: BLE001
-            self.log(f"  [TRAIL] cost_basis({pair}) unavailable ({e}) — warm-up from current price")
-            return None
+            return self._log_cost_basis_unavailable(pair, e, "—")
 
     # == TrailingCore ADAPTER contract ========================================
     def assets(self):

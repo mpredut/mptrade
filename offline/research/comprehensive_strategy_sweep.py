@@ -501,8 +501,10 @@ def main():
     shadow_results = run_live_forward_shadow(candidates, records=records)
 
     if not wf_results and not cont_results:
-        print("ERROR: Strategy sweep produced zero walk-forward and continuous results; refusing to write empty reports.", file=sys.stderr)
-        sys.exit(1)
+        sys.stderr.write(
+            "ERROR: Strategy sweep produced zero walk-forward and continuous results; refusing to write empty reports.\n"
+        )
+        raise SystemExit(1)
 
     # Combine into unified master dictionary
     master = []
@@ -596,8 +598,10 @@ def main():
     if not shadow_results:
         lines.append("*Live shadow evaluation skipped: insufficient forward bars recorded in `logs/shadow_live/` (minimum 2 bars required).* \n")
     else:
-        lines.append("| Candidate | Forward Net % | Forward Total % | Forward DD % | 120d Net % | 120d Total % | 120d DD % |\n")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|\n")
+        lines.extend((
+            "| Candidate | Forward Net % | Forward Total % | Forward DD % | 120d Net % | 120d Total % | 120d DD % |\n",
+            "|---|---:|---:|---:|---:|---:|---:|\n",
+        ))
         for r in master:
             f_net = safe_float(r.get("fwd_net"), 0.0)
             f_tot = safe_float(r.get("fwd_total"), 0.0)

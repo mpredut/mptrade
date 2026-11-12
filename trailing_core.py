@@ -865,6 +865,10 @@ class TrailingAdapterBase:
     def log_item_error(self, key, e) -> None:
         self.log(f"  ! {self._LOG_TAG} {key}: {e}")
 
+    def _log_cost_basis_unavailable(self, pair: str, exc: Exception, dash: str = "--") -> None:
+        self.log(f"  {self._LOG_TAG} cost_basis({pair}) unavailable ({exc}) {dash} warm-up from current price")
+        return None
+
     log_tick_error = _bind_tagged_log("  ! {tag} cycle error ({arg}) -- continuing")
 
     @staticmethod

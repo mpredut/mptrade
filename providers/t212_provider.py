@@ -462,13 +462,11 @@ class T212Provider(MarketDataProvider):
                     return round(free_ron / (usd_ron * eur_usd), 2)
                 return round(free_ron / usd_ron, 2)
             except Exception as e:
-                print(f"[T212] cash balance {asset}: {e}")
-                return None
+                return self._log_provider_balance_error("T212", "cash balance", asset, e)
         try:
             p = self._position(asset, strict=True)
         except ProviderError as e:
-            print(f"[T212] balance {asset}: {e}")
-            return None
+            return self._log_provider_balance_error("T212", "balance", asset, e)
         if not p:
             return 0.0
         total_qty = safe_nonneg_float(p.get("quantity", 0.0), default=None)

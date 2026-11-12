@@ -920,8 +920,7 @@ class Strategy(BaseSpotMixin):
         """Close a cycle once, only after terminal exit status."""
         dust = 2 * 10.0 ** -(max(self.vol_dec - 1, 1))
         if abs(self.s["qty"]) < dust:
-            self.s["qty"] = 0.0
-            self.s["cost"] = 0.0
+            self._zero_position_exposure()
         if self.s["qty"] > 1e-12:
             return
         if self.dry_run:

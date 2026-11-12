@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 
 from botcore import exact_int, exact_pos_int, safe_int
 from state_io import atomic_write_bytes, atomic_write_json
-from offline.backtests.datasets import canonical_bytes, dataset_metadata
+from offline.backtests.datasets import canonical_bytes, dataset_metadata_and_csv_path
 from offline.backtests.evaluation import (
     ensure_cli_output_dir,
     load_venue_module,
@@ -170,9 +170,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError(f"an empty dataset for {coin} {interval}m")
             validate_continuity(records, interval)
             raw = canonical_bytes(records)
-            meta = dataset_metadata(records, interval_minutes=interval)
-            digest = meta["sha256"]
-            path = output_dir / f"{stem}_{interval}m_hlspot_{digest[:12]}.csv"
+            meta, path = dataset_metadata_and_csv_path(
+                records, output_dir, stem, interval, tag="hlspot"
+            )
             atomic_write_bytes(path, raw)
             manifest["datasets"][str(interval)] = {
                 "file": str(path),

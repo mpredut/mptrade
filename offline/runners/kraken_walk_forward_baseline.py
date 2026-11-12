@@ -28,7 +28,7 @@ from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
 from strategies.spot_replay import prepare_spot_interval_params  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
-    dataset_metadata,
+    dataset_metadata_and_csv_path,
     load_dataset,
     save_dataset,
     validate_dataset,
@@ -145,9 +145,9 @@ def main(argv: list[str] | None = None) -> int:
         if not records:
             raise RuntimeError(f"an empty dataset for {pair} {interval}m")
         records = validate_dataset(records, interval_minutes=interval)
-        meta = dataset_metadata(records, interval_minutes=interval)
-        digest = meta["sha256"]
-        frozen_path = dataset_dir / f"{safe_pair}_{interval}m_{digest[:12]}.csv"
+        meta, frozen_path = dataset_metadata_and_csv_path(
+            records, dataset_dir, safe_pair, interval
+        )
         save_dataset(records, frozen_path)
         train_size, validation_size, test_size, step_size = resolve_window_sizes(
             args, len(records)

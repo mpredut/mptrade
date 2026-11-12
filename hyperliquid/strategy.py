@@ -509,9 +509,7 @@ class Strategy(BaseSpotMixin):
                               real_qty=qty_now, real_avg=entry)
         else:
             if qty_now <= 1e-12:
-                self.s["qty"] = 0.0
-                self.s["cost"] = 0.0
-                self.s["spent"] = 0.0
+                self._zero_position_exposure(clear_spent=True)
             else:
                 self.s["qty"] = qty_now
                 if entry > 0:
@@ -599,9 +597,7 @@ class Strategy(BaseSpotMixin):
             if self.s["qty"] > flat_eps and prev_qty > 0:
                 self.s["spent"] = max(0.0, self.s["spent"] * (self.s["qty"] / prev_qty))
         if self.s["qty"] <= flat_eps:
-            self.s["qty"] = 0.0
-            self.s["cost"] = 0.0
-            self.s["spent"] = 0.0
+            self._zero_position_exposure(clear_spent=True)
             self.s["cycles_completed"] = self.s.get("cycles_completed", 0) + 1
             remaining_orders = []
             for o in list(self.s.get("orders", [])):

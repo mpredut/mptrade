@@ -671,6 +671,13 @@ class BaseSpotMixin:
         self.s["qty"] -= qty
         self.s[self._cost_state_key] = max(0.0, self.s[self._cost_state_key] - avg * qty)
 
+    def _zero_position_exposure(self, *, clear_spent: bool = False) -> None:
+        """Zero out open quantity, cost basis, and optionally spent budget when flat."""
+        self.s["qty"] = 0.0
+        self.s[self._cost_state_key] = 0.0
+        if clear_spent:
+            self.s[self._spent_state_key] = 0.0
+
     def _find_open(self, side: str) -> dict | None:
         return find_open_order(self.s, side)
 

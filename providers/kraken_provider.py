@@ -515,8 +515,7 @@ class KrakenProvider(MarketDataProvider):
             found, val = self._lookup_balance_candidates(bal, candidates)
             return val if found else 0.0
         except Exception as e:  # noqa: BLE001
-            print(f"[Kraken] balance {asset}: {e}")
-            return None
+            return self._log_provider_balance_error("Kraken", "balance", asset, e)
 
     def open_orders(self, symbol: str) -> List[dict]:
         """Return a strict Binance-shaped snapshot of active Kraken orders."""

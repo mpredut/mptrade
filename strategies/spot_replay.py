@@ -63,6 +63,19 @@ def record_closed_cycle_pnl(
     return realized_net, wins
 
 
+def overwrite_tail_equity_and_exposure(
+    equity_curve: list[float],
+    exposure: list[bool],
+    eq_val: float,
+    exp_val: bool,
+) -> None:
+    """Update the final bar's equity and exposure in-place after end-of-replay market settlements."""
+    if equity_curve:
+        equity_curve[-1] = eq_val
+    if exposure:
+        exposure[-1] = exp_val
+
+
 def build_replay_summary(
     *,
     realized: float,
@@ -523,10 +536,7 @@ def _run_once(
                 settled_end_exit = True
         if settled_end_exit:
             eq_val, exp_val = _current_equity_and_exposure(last_close)
-            if equity_curve:
-                equity_curve[-1] = eq_val
-            if exposure:
-                exposure[-1] = exp_val
+            overwrite_tail_equity_and_exposure(equity_curve, exposure, eq_val, exp_val)
     finally:
         _strat.notify, _strat.log = original_notify, original_log
 
