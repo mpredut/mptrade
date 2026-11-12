@@ -220,7 +220,7 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
 
     def test_order_retry_infers_owner_and_cleans_up_accepted_trackers(self):
 
-        tmpdir = str(self.tmp)
+        tmpdir = self.tmp
         qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
         lfile = os.path.join(tmpdir, "order_retry.lock")
         with patch.object(oq, "QUEUE_FILE", qfile), patch.object(oq, "LOCK_FILE", lfile):
@@ -284,7 +284,7 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
 
     def test_same_deferred_stream_consolidates_across_deferral_reasons(self):
 
-        tmpdir = str(self.tmp)
+        tmpdir = self.tmp
         qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
         lfile = os.path.join(tmpdir, "order_retry.lock")
         with patch.object(oq, "QUEUE_FILE", qfile), \

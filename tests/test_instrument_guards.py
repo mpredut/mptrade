@@ -217,9 +217,8 @@ class _ZeroPolicyProvider(_FakeProvider):
 class InstrumentGuardsTestCase(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        self._tmp = str(self.tmp)
         # Isolate the outcome journal and execution audit from the production logger directory.
-        self._log_tmp = os.path.join(self._tmp, "logs")
+        self._log_tmp = os.path.join(self.tmp, "logs")
         os.makedirs(self._log_tmp, exist_ok=True)
         self._orig_log_dir = outcomes_log.ORDER_OUTCOMES_LOG_DIR
         outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._log_tmp
@@ -228,8 +227,8 @@ class InstrumentGuardsTestCase(TempDirTestCase):
         # The re-placement queue: isolated -- Instrument.place() enqueues on failure, and
         # these tests trigger many expected failures (cooldown/daily-limit) -> they must NOT
         # pollute the real cachedb/order_retry_queue.jsonl.
-        oq.QUEUE_FILE = os.path.join(self._tmp, "order_retry_queue.jsonl")
-        oq.LOCK_FILE = os.path.join(self._tmp, "order_retry_queue.lock")
+        oq.QUEUE_FILE = os.path.join(self.tmp, "order_retry_queue.jsonl")
+        oq.LOCK_FILE = os.path.join(self.tmp, "order_retry_queue.lock")
         # Explicit pin -- the tests must not depend on the kill switch in the live config
         oq.RETRY_ENABLED = True
         oq.RETRY_DEDUP = True

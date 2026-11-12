@@ -1,5 +1,4 @@
 from collections import OrderedDict
-from tests.conftest import TempDirTestCase
 from decimal import Decimal
 import importlib
 import io
@@ -67,7 +66,7 @@ from providers.kraken_provider import KrakenProvider
 from providers.order_ohlc_utils import parse_ohlc_interval_minutes
 from state_io import exact_nonneg_int
 from strategies.state_store import JsonStateStore, StatePersistenceError
-from tests.conftest import DummyCachedHttpJsonCollector
+from tests.conftest import TempDirTestCase, DummyCachedHttpJsonCollector
 from trailing_core import vwap_or_fallback
 import utils
 
@@ -133,7 +132,7 @@ class SharedHttpHelpersTest(unittest.TestCase):
 
 class DotenvHelpersTest(TempDirTestCase):
     def test_load_and_parse_share_syntax_but_keep_their_override_contracts(self):
-        directory = str(self.tmp)
+        directory = self.tmp
         path = Path(directory) / ".env"
         path.write_text(
             "# comment\n"
@@ -256,7 +255,7 @@ class NumericCoercionHelpersTest(TempDirTestCase):
         with self.assertRaisesRegex(ValueError, "Missing or empty mandatory TestMod settings: B"):
             botcore.validate_required_env_keys(("A", "B"), env={"A": "1", "B": "   "}, label="TestMod")
 
-        directory = str(self.tmp)
+        directory = self.tmp
         hb_path = str(Path(directory) / "sub" / "hb.heartbeat")
         ts = botcore.touch_heartbeat_file(hb_path, last_ts=0.0, force=True, now=123456.78)
         self.assertEqual(ts, 123456.78)
@@ -270,7 +269,7 @@ class NumericCoercionHelpersTest(TempDirTestCase):
         with self.assertRaises(ValueError):
             botcore.parse_dotenv_line("=missing_key", strict=True)
 
-        directory = str(self.tmp)
+        directory = self.tmp
         env_path = Path(directory) / "sample.env"
         env_path.write_text(
             "export Alpha=true # inline\nBeta=12.5\nGamma='hello'\n",
@@ -424,7 +423,7 @@ class TestCachepaths(TempDirTestCase):
         self.assertIsNone(resolve_cache_subdomain("unclassified_custom_file.json"))
 
     def test_organize_cachedb_subdomains_moves_files_and_cleans_staging(self):
-        tmpdir = str(self.tmp)
+        tmpdir = self.tmp
         root = Path(tmpdir)
         (root / "cache_current_price.json").write_text('{"BTC": 100}', encoding="utf-8")
         (root / "cache_current_price.json.meta").write_text("{}", encoding="utf-8")

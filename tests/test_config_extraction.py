@@ -14,7 +14,6 @@ The intent is PRESERVED in full for the legacy modules and strict for AssetGuard
 """
 
 import assetguardian as ag
-from tests.conftest import TempDirTestCase
 import botcore
 import importlib
 import json
@@ -34,7 +33,7 @@ from pathlib import Path
 from providers.strategy_executor import PairPrecision
 from strategies import spot_engine
 from strategies.spot_engine import StratParams
-from tests.conftest import make_spot_live_test_params
+from tests.conftest import TempDirTestCase, make_spot_live_test_params
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -307,12 +306,11 @@ class SpotModuleBoundaryTest(TempDirTestCase):
         self.assertEqual(spot_engine.state_path_for("HYPE/USD"), expected)
 
     def test_state_directory_is_injectable_for_another_runtime(self):
-        directory = str(self.tmp)
         engine = spot_engine.Strategy(
             _Executor(), "ASSET/USD", make_spot_live_test_params(), dry_run=True,
-            initial_state=spot_engine._new_state(), state_dir=directory,
+            initial_state=spot_engine._new_state(), state_dir=self.tmp,
         )
-        self.assertEqual(engine.state_file, os.path.join(directory, ".state_ASSETUSD.json"))
+        self.assertEqual(engine.state_file, os.path.join(self.tmp, ".state_ASSETUSD.json"))
 
     def test_notification_sink_and_source_are_injectable(self):
         events = []

@@ -1,7 +1,6 @@
 """The StrategyExecutor contract for Trading212, without network or real keys."""
 
 import importlib
-from tests.conftest import TempDirTestCase
 import os
 import sys
 import time
@@ -33,7 +32,7 @@ from providers.t212_provider import (
     _parse_bool_flag as t212_bool,
 )
 from state_io import read_json_dict, save_json_state
-from tests.conftest import load_venue_modules
+from tests.conftest import TempDirTestCase, load_venue_modules
 
 (
     t212_client,
@@ -471,7 +470,7 @@ class T212ClientTransportTest(TempDirTestCase):
             self.assertEqual(client._ord_cache[1], cached_orders)
 
     def test_runtime_env_fallback_and_post_order_endpoint_pacing(self):
-        tmpdir = str(self.tmp)
+        tmpdir = self.tmp
         with open(os.path.join(tmpdir, "runtime.env"), "w", encoding="utf-8") as fh:
             fh.write("T212_LIVE_ORDERS=true\nT212_ORDER_VALIDITY=DAY\n")
         fake = FakeT212Client()
@@ -546,7 +545,7 @@ class T212ClientTransportTest(TempDirTestCase):
             self.assertAlmostEqual(both_sleeps[0], 2.1, delta=0.2)
 
     def test_list_instruments_shared_cache_and_429_negative_cache(self):
-        tmpdir = str(self.tmp)
+        tmpdir = self.tmp
         shared_path = os.path.join(tmpdir, "shared_t212.json")
         c1 = t212_client.T212Client(
             "demo-key",

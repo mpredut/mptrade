@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import assetguardian as ag
-from tests.conftest import TempDirTestCase
 import binance_api.bapi_allorders as bapi_allorders
 import botcore
 import cacheManager as cm
@@ -338,7 +337,7 @@ from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, 
 from strategies.spot_engine import StratParams, Strategy
 from strategies.spot_rules import _iter_valid_shadow_prices
 from strategies.state_store import update_post_sell_anchors
-from tests.conftest import DummyCachedHttpJsonCollector, DummyTrailingAdapter, load_venue_modules
+from tests.conftest import TempDirTestCase, DummyCachedHttpJsonCollector, DummyTrailingAdapter, load_venue_modules
 from trailing_core import TrailingAdapterBase, TrailingCore
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -580,7 +579,7 @@ class TestIntelligenceState(TempDirTestCase):
             self.assertIn("/custom/cache", path.replace("\\", "/"))
 
     def test_resolve_cached_volatility_1h_from_instant_trend_cache(self):
-        tmp_dir = str(self.tmp)
+        tmp_dir = self.tmp
         trend_path = os.path.join(tmp_dir, "cache_short_trend.json")
         with open(trend_path, "w", encoding="utf-8") as f:
             json.dump({"HYPEUSD": {"vol_1h_pct": 1.85}}, f)

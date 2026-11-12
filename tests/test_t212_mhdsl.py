@@ -1,6 +1,5 @@
 """Unified tests for Trading 212 environment loading, MHDSL, MDHTP, and Hybrid Re-entry."""
 
-from tests.conftest import TempDirTestCase
 import json
 import os
 import threading
@@ -11,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from botcore import float_env, parse_dotenv
-from tests.conftest import load_venue_modules, make_t212_test_env
+from tests.conftest import TempDirTestCase, load_venue_modules, make_t212_test_env
 
 ROOT = Path(__file__).resolve().parents[1]
 T212_DIR = ROOT / "212trading"
@@ -744,11 +743,10 @@ class TestParamsIsolation(TempDirTestCase):
 
 class TestDiscover(TempDirTestCase):
     def test_it_finds_the_active_configs(self):
-        d = str(self.tmp)
         for n in ("nvda", "spcx", "rgnt"):
-            open(os.path.join(d, f"config.{n}.env"), "w").close()
-        open(os.path.join(d, ".env"), "w").close()
-        names = [n for n, _ in t212_bot.discover_assets(d)]
+            open(os.path.join(self.tmp, f"config.{n}.env"), "w").close()
+        open(os.path.join(self.tmp, ".env"), "w").close()
+        names = [n for n, _ in t212_bot.discover_assets(self.tmp)]
         self.assertEqual(names, ["nvda", "rgnt", "spcx"])
 
 

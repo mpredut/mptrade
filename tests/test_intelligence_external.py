@@ -1,7 +1,6 @@
 """Comprehensive unit tests for external intelligence (Pillar 2: liquidations, guards, telemetry)."""
 
 import ast
-from tests.conftest import TempDirTestCase
 import cacheprice as cp
 import external_order_guard
 import intelligence.external.guards.funding_crowding_guard as fcg
@@ -67,7 +66,7 @@ from intelligence.sentiment.triggers.sentiment_contrarian_trigger import Sentime
 from market_regime import MarketRegimeContext, MarketRegimeDecision
 from pathlib import Path
 from rtrade import _effective_adjustment_fraction, _whale_flow_blocks_side
-from tests.conftest import MockHttpResponse
+from tests.conftest import TempDirTestCase, MockHttpResponse
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -258,7 +257,7 @@ class TestExternalGuards(TempDirTestCase):
 
     def test_disk_serialization_round_trip(self):
 
-        tmpdir = str(self.tmp)
+        tmpdir = self.tmp
         # 1. Whale collector disk round-trip
         w_collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=tmpdir)
         t0 = time.time()
@@ -758,7 +757,7 @@ class TestOrderGuardPillar2Integration(TempDirTestCase):
 
     def test_volatility_cache_symbol_variants_and_composite_high_stake_default(self):
 
-        tmpdir = str(self.tmp)
+        tmpdir = self.tmp
         kalman_path = os.path.join(tmpdir, "cache_kalman_trend.json")
         with open(kalman_path, "w", encoding="utf-8") as f:
             json.dump({"TAOUSDC": {"vol_1h_pct": 3.2}, "HYPEUSDC": {"vol_1h_pct": 4.5}}, f)
@@ -857,7 +856,7 @@ class TestOrderGuardPillar2Integration(TempDirTestCase):
     def test_collector_exact_venue_cache_isolation_and_stale_first_skip(self):
 
         now = 1_700_000_000.0
-        tmpdir = str(self.tmp)
+        tmpdir = self.tmp
         ob_col = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=tmpdir)
         # 1. Stale exact entry in memory must not shadow a fresh compatible variant when allow_network=False
         ob_col.record_snapshot(

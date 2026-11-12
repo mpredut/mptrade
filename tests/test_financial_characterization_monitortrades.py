@@ -9,7 +9,6 @@ and the change must be reviewed explicitly.
 from __future__ import annotations
 
 import json
-from tests.conftest import TempDirTestCase
 import monitortrades as mt
 import order_guard
 import order_retry
@@ -38,7 +37,7 @@ from providers.execution_audit import ExecutionAudit
 from providers.quantity import QuantityDecision
 from strategies.mt_position_accounting import _infer_mt_exit_kind, _update_mt_reentry_state
 from strategies.position_exit_manager import ExitAction, ExitDecision, PositionSnapshot
-from tests.conftest import DummySpotExecutionProvider
+from tests.conftest import TempDirTestCase, DummySpotExecutionProvider
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -842,7 +841,7 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_get_symbol_volatility_1h_explicit_percentage_to_ratio_conversion(self):
         """Verify get_symbol_volatility_1h explicitly converts percentage to decimal ratio (no 100x blowup for vol < 0.10%)."""
-        tmp_dir = str(self.tmp)
+        tmp_dir = self.tmp
         state_data = {
             "BTCUSDT": {"vol_1h_pct": 2.5},     # 2.5% normal vol -> ratio 0.025
             "ETHUSDT": {"vol_1h_pct": 0.05},    # 0.05% low vol -> ratio 0.0005 (NOT 0.05!)
@@ -1866,7 +1865,7 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
             )
 
     def test_executed_trade_resolves_owner_from_execution_audit(self):
-        tmpdir = str(self.tmp)
+        tmpdir = self.tmp
         audit_ts = 1700000100.0
         audit = ExecutionAudit(directory=tmpdir, clock=lambda: audit_ts)
         audit.record(
