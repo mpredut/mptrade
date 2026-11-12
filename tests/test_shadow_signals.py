@@ -6,12 +6,10 @@ the filter (as at warm-up) -- the trend comes out FLAT after a gap, not "confide
 stale direction.
 """
 import contextlib
-from tests.conftest import TempDirTestCase
 import dataclasses
 import io
 import json
 import os
-from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
@@ -40,7 +38,7 @@ import pricewindow as pw
 from pricewindow import PriceWindow
 import shadow_signals as ss
 from shadow_signals import KalmanStateTracker
-from tests.conftest import load_venue_modules
+from tests.conftest import TempDirTestCase, load_venue_modules, make_spot_live_test_params
 import tradeall as ta
 
 shadow = load_venue_modules("kraken", "shadow_live")
@@ -156,22 +154,21 @@ class TestShadowRuntime(TempDirTestCase):
     """Runtime setup idempotency and interval validation."""
 
     def test_prepare_shadow_runtime_is_idempotent(self):
-        tmp_dir = str(self.tmp)
         old_val = os.environ.get("BINANCE_AUTO_START_WEBSOCKETS")
         try:
             if "BINANCE_AUTO_START_WEBSOCKETS" in os.environ:
                 del os.environ["BINANCE_AUTO_START_WEBSOCKETS"]
-            prepare_shadow_runtime(tmp_dir)
-            prepare_shadow_runtime(tmp_dir)
+            prepare_shadow_runtime(self.tmp)
+            prepare_shadow_runtime(self.tmp)
             self.assertEqual(os.environ["BINANCE_AUTO_START_WEBSOCKETS"], "0")
-            self.assertEqual(sys.path.count(tmp_dir), 1)
+            self.assertEqual(sys.path.count(self.tmp), 1)
         finally:
             if old_val is not None:
                 os.environ["BINANCE_AUTO_START_WEBSOCKETS"] = old_val
             elif "BINANCE_AUTO_START_WEBSOCKETS" in os.environ:
                 del os.environ["BINANCE_AUTO_START_WEBSOCKETS"]
-            if tmp_dir in sys.path:
-                sys.path.remove(tmp_dir)
+            if self.tmp in sys.path:
+                sys.path.remove(self.tmp)
 
     def test_shadow_interval_validation(self):
         require_shadow_interval(240, 240, "HL shadow")
@@ -251,9 +248,8 @@ class TestShadowRuntime(TempDirTestCase):
 
     def test_kalman_state_tracker_ports_legacy_shadow_state_to_kalman_state(self):
         """KalmanStateTracker ports legacy shadow_state.json to cache_kalman_trend.json on init and loads state."""
-        tmp_dir = str(self.tmp)
-        legacy_path = os.path.join(tmp_dir, "shadow_state.json")
-        new_path = os.path.join(tmp_dir, "cache_kalman_trend.json")
+        legacy_path = os.path.join(self.tmp, "shadow_state.json")
+        new_path = os.path.join(self.tmp, "cache_kalman_trend.json")
         payload = {"TAOUSDC": {"kalman_trend": -1, "vol_1h_pct": 1.45, "ts": 1000.0, "price": 275.0}}
         with open(legacy_path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
@@ -348,35 +344,19 @@ class ShadowLiveTest(TempDirTestCase):
 
     @staticmethod
     def _live_params():
-        @dataclasses.dataclass(frozen=True)
-        class Params:
-            takeprofit_pct: float = 4.0
-            dca_drop_pct: float = 1.25
-            dca_spacing_growth_pct: float = 0.25
-            reentry_drop_pct: float = 2.2
-            stop_loss_pct: float = 18.0
-            tp_trail_profit_floor_pct: float = 1.0
-            dca_vol_scale_k: float = 0.0
-            dca_vol_ref: float = 2.0
-            dca_vol_interval: int = 240
-            dca_trend_brake: bool = False
-            dca_brake_min_pct: float = 1.5
-            tp_trend_hold: bool = True
-            tp_trail_adaptive: bool = True
-            tp_trail_vol_interval: int = 240
-            trend_interval: int = 240
-            trend_overlay: bool = False
-            trend_topup: float = 2000.0
-            trend_trail_pct: float = 5.0
-            trend_exit_break: bool = False
-            tp_regime_gate: bool = True
-            surge_guard: bool = True
-            surge_gain_pct: float = 18.0
-            surge_exit_pullback_pct: float = 3.5
-            surge_move_pct: float = 18.0
-            surge_dynamic: bool = False
-
-        return Params()
+        return make_spot_live_test_params(
+            takeprofit_pct=4.0,
+            dca_spacing_growth_pct=0.25,
+            stop_loss_pct=18.0,
+            tp_trail_profit_floor_pct=1.0,
+            tp_trend_hold=True,
+            tp_trail_adaptive=True,
+            tp_regime_gate=True,
+            surge_guard=True,
+            surge_gain_pct=18.0,
+            surge_exit_pullback_pct=3.5,
+            surge_move_pct=18.0,
+        )
 
     def test_variants_isolate_each_promoted_change_against_live(self):
         live = self._live_params()
@@ -442,9 +422,8 @@ class ShadowLiveTest(TempDirTestCase):
             self.assertIn("skipped", out.getvalue())
 
     def test_runtime_config_matches_live_precedence(self):
-        tmp = str(self.tmp)
-        env_path = Path(tmp) / ".env"
-        config_path = Path(tmp) / "config.env"
+        env_path = self.tmp / ".env"
+        config_path = self.tmp / "config.env"
         env_path.write_text("KRAKEN_PAIR=FROM_ENV\nSTRAT_TAKEPROFIT_PCT=4.5\n", encoding="utf-8")
         config_path.write_text(
             "KRAKEN_PAIR=FROM_CONFIG\nSTRAT_TAKEPROFIT_PCT=5.0\nSTRAT_DCA_DROP_PCT=1.25  # versioned\n",
@@ -457,7 +436,7 @@ class ShadowLiveTest(TempDirTestCase):
             self.assertEqual(os.environ["STRAT_DCA_DROP_PCT"], "1.25")
 
     def test_forward_history_keeps_anchor_after_api_window_moves(self):
-        with patch.object(shadow, "LOG_DIR", str(self.tmp)):
+        with patch.object(shadow, "LOG_DIR", self.tmp):
             first = [(100, 1.0, 2.0, 0.5, 1.5), (160, 1.5, 2.5, 1.0, 2.0)]
             later = [(160, 1.5, 2.5, 1.0, 2.0), (220, 2.0, 3.0, 1.5, 2.5)]
             shadow._merge_forward_history("PAIR", 1, 100, first)
@@ -465,7 +444,7 @@ class ShadowLiveTest(TempDirTestCase):
             self.assertEqual([bar[0] for bar in merged], [100, 160, 220])
 
     def test_forward_history_fails_closed_when_a_gap_loses_bars(self):
-        with patch.object(shadow, "LOG_DIR", str(self.tmp)):
+        with patch.object(shadow, "LOG_DIR", self.tmp):
             shadow._merge_forward_history("PAIR", 1, 100, [(100, 1.0, 2.0, 0.5, 1.5), (160, 1.5, 2.5, 1.0, 2.0)])
             with self.assertRaisesRegex(RuntimeError, "gap"):
                 shadow._merge_forward_history("PAIR", 1, 100, [(400, 4.0, 5.0, 3.5, 4.5)])
@@ -497,8 +476,8 @@ class ShadowLiveTest(TempDirTestCase):
             self.assertEqual(shadow.main(), 1)
 
     def test_get_anchor_replaces_non_positive_persisted_anchor(self):
-        with patch.object(shadow, "LOG_DIR", str(self.tmp)):
-            anchor_file = Path(self.tmp) / "HYPEUSD_240m.anchor"
+        with patch.object(shadow, "LOG_DIR", self.tmp):
+            anchor_file = self.tmp / "HYPEUSD_240m.anchor"
             anchor_file.write_text("0\n", encoding="utf-8")
             self.assertEqual(shadow._get_anchor("HYPEUSD", 240, 1700000000), 1700000000)
             self.assertEqual(anchor_file.read_text(encoding="utf-8").strip(), "1700000000")

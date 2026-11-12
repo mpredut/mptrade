@@ -2,7 +2,6 @@
 Characterisation: on a deterministic series the engine runs without network,
 notifications or state files, and returns sane metrics (accounting from the live _apply_fill)."""
 import contextlib
-from tests.conftest import TempDirTestCase
 import csv
 import hashlib
 import io
@@ -17,7 +16,7 @@ from kraken.market_data import fetch_ohlc_candles
 from offline.backtests.evaluation import evaluate_segment
 from offline.backtests.execution import FeeModel
 from strategies import spot_replay as rp
-from tests.conftest import load_venue_modules, make_spot_test_params
+from tests.conftest import TempDirTestCase, load_venue_modules, make_spot_test_params
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 strat = rp._strat
@@ -122,8 +121,7 @@ class ReplayEngineTest(TempDirTestCase):
 
     def test_existing_replay_state_cannot_contaminate_result(self):
         clean = rp.run_replay(_series(), _params(), fee_pct=0.26)
-        tmp = str(self.tmp)
-        state_path = os.path.join(tmp, ".state_REPLAY.json")
+        state_path = os.path.join(self.tmp, ".state_REPLAY.json")
         contaminated = strat._new_state()
         contaminated.update({"qty": 99.0, "cost": 1.0, "realized_net": 999999.0})
         with open(state_path, "w", encoding="utf-8") as handle:

@@ -204,8 +204,6 @@ def _make_cache24_manager(symbol, entries, tmp_dir):
     return make_cache24_test_manager(symbol, entries, tmp_dir, api_client=mock_bapi)
 
 
-_synthetic_entries = make_synthetic_price_entries
-
 
 # ===========================================================================
 # PriceTrendAnalyzer
@@ -305,7 +303,7 @@ class TestPriceWindowSampleRate(TempDirTestCase):
             self.assertEqual(pw.window_size, 50)
 
     def test_from_cache24_stores_window_seconds(self):
-        mgr = _make_cache24_manager("BTCUSDT", _synthetic_entries(30), str(self.tmp))
+        mgr = _make_cache24_manager("BTCUSDT", make_synthetic_price_entries(30), self.tmp)
         pw = ta.PriceWindow.from_cache24("BTCUSDT", 24.0, mgr)
         self.assertAlmostEqual(pw.window_seconds, 24.0)
 
@@ -347,41 +345,41 @@ class TestPriceWindowFromCache24(TempDirTestCase):
 
     def test_window_properties_initialization(self):
         with self.subTest(msg="prices_loaded"):
-            entries = _synthetic_entries(50)
+            entries = make_synthetic_price_entries(50)
             pw = self._make(entries, window_seconds=50 * 0.8)
             self.assertGreater(len(pw.prices), 0)
 
         with self.subTest(msg="size_bounded_by_window_seconds"):
-            entries = _synthetic_entries(200, interval_ms=800)
+            entries = make_synthetic_price_entries(200, interval_ms=800)
             pw = self._make(entries, window_seconds=60.0)  # 60s / 0.8s = 75 samples
             self.assertLessEqual(pw.window_size, 100)
 
         with self.subTest(msg="sample_rate_computed_from_intervals"):
-            entries = _synthetic_entries(50, interval_ms=2000)  # 2s per sample
+            entries = make_synthetic_price_entries(50, interval_ms=2000)  # 2s per sample
             pw = self._make(entries, window_seconds=100.0)
             self.assertAlmostEqual(pw.sample_rate_sec, 2.0, delta=0.1)
 
         with self.subTest(msg="window_within_24h_only"):
-            entries = _synthetic_entries(100, interval_ms=800)
+            entries = make_synthetic_price_entries(100, interval_ms=800)
             max_seconds = cm.Cache24PriceManager.KEEP_HOURS * 3600
             pw = self._make(entries, window_seconds=max_seconds)
             self.assertLessEqual(pw.window_size, max_seconds / pw.sample_rate_sec + 1)
 
         with self.subTest(msg="minimum_window_size_ten"):
-            entries = _synthetic_entries(2)
+            entries = make_synthetic_price_entries(2)
             pw = self._make(entries, window_seconds=1.0)
             self.assertGreaterEqual(pw.window_size, 10)
 
     def test_trend_detection(self):
         with self.subTest(msg="uptrend"):
-            entries = _synthetic_entries(60, delta=10.0, interval_ms=800)
+            entries = make_synthetic_price_entries(60, delta=10.0, interval_ms=800)
             pw = self._make(entries, window_seconds=60 * 0.8)
             final_trend, gc, sf, gr = pw.get_short_trend()
             self.assertEqual(final_trend, 1)
             self.assertGreater(gc, 0)
 
         with self.subTest(msg="downtrend"):
-            entries = _synthetic_entries(60, delta=-10.0, interval_ms=800)
+            entries = make_synthetic_price_entries(60, delta=-10.0, interval_ms=800)
             pw = self._make(entries, window_seconds=60 * 0.8)
             final_trend, gc, sf, gr = pw.get_short_trend()
             self.assertEqual(final_trend, -1)
@@ -660,7 +658,7 @@ class _RecordingSubscriber:
 class TestSubscriberPatternInheritance(TempDirTestCase):
 
     def _cache24(self, symbol="BTCUSDT"):
-        return _make_cache24_manager(symbol, _synthetic_entries(5), self.tmp)
+        return _make_cache24_manager(symbol, make_synthetic_price_entries(5), self.tmp)
 
     def test_subscriber_pattern_and_ws_attachment(self):
         with self.subTest("managers inherit subscribe_price"):
@@ -732,14 +730,14 @@ class TestPriceWindowCache24Wiring(TempDirTestCase):
 
     def test_subscription_lifecycle_and_flags(self):
         with self.subTest(msg="subscription_flags"):
-            entries = _synthetic_entries(20)
+            entries = make_synthetic_price_entries(20)
             wired, _ = self._make_wired(entries)
             plain = ta.PriceWindow("BTCUSDT", 50)
             self.assertTrue(wired._subscribed_to_cache24)
             self.assertFalse(plain._subscribed_to_cache24)
 
         with self.subTest(msg="subscribe_method_directly"):
-            entries = _synthetic_entries(10)
+            entries = make_synthetic_price_entries(10)
             mgr = _make_cache24_manager("BTCUSDT", entries, self.tmp)
             pw = ta.PriceWindow("BTCUSDT", 20)
             self.assertFalse(pw._subscribed_to_cache24)
@@ -749,7 +747,7 @@ class TestPriceWindowCache24Wiring(TempDirTestCase):
             self.assertIn(88888.0, pw.prices)
 
         with self.subTest(msg="unsubscribe_stops_updates"):
-            entries = _synthetic_entries(10)
+            entries = make_synthetic_price_entries(10)
             pw, mgr = self._make_wired(entries, symbol="BTCUSDT")
             mgr.unsubscribe_price(pw)
             n_before = len(pw.prices)
@@ -758,7 +756,7 @@ class TestPriceWindowCache24Wiring(TempDirTestCase):
 
     def test_price_update_routing(self):
         with self.subTest(msg="direct_price_updates_filter_symbol"):
-            entries = _synthetic_entries(10)
+            entries = make_synthetic_price_entries(10)
             pw, _ = self._make_wired(entries, symbol="BTCUSDT")
             n_before = len(pw.prices)
             pw.on_price_update("ETHUSDT", int(time.time() * 1000), 3000.0)
@@ -767,7 +765,7 @@ class TestPriceWindowCache24Wiring(TempDirTestCase):
             self.assertEqual(len(pw.prices), min(n_before + 1, pw.window_size))
 
         with self.subTest(msg="cache24_notifies_pricewindow"):
-            entries = _synthetic_entries(10)
+            entries = make_synthetic_price_entries(10)
             pw, mgr = self._make_wired(entries, symbol="BTCUSDT")
             n_before = len(pw.prices)
             ts_ms = int(time.time() * 1000)
@@ -776,7 +774,7 @@ class TestPriceWindowCache24Wiring(TempDirTestCase):
             self.assertIn(77777.0, pw.prices)
 
         with self.subTest(msg="multiple_windows_same_cache24"):
-            entries = _synthetic_entries(50)
+            entries = make_synthetic_price_entries(50)
             mgr = _make_cache24_manager("BTCUSDT", entries, self.tmp)
             pw_small = ta.PriceWindow.from_cache24("BTCUSDT", 20 * 0.8, mgr)
             pw_big   = ta.PriceWindow.from_cache24("BTCUSDT", 50 * 0.8, mgr)
@@ -870,7 +868,7 @@ class TestTrendCoordinator(TempDirTestCase):
 
     def setUp(self):
         super().setUp()
-        entries = _synthetic_entries(60, interval_ms=800)
+        entries = make_synthetic_price_entries(60, interval_ms=800)
         self.cache24 = _make_cache24_manager("BTCUSDT", entries, self.tmp)
 
         fname = os.path.join(self.tmp, "cp.json")

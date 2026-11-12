@@ -348,9 +348,8 @@ class TestArchiverLifecycle(TempDirTestCase):
             self.assertEqual(sum(1 for line in handle if line.strip()), total + 1)
 
     def test_legacy_json_migration_succeeds_for_cache365_price_manager(self):
-        tmp_dir = str(self.tmp)
-        legacy_json = os.path.join(tmp_dir, "cache_365_price_BTCUSDC.json")
-        target_jsonl = os.path.join(tmp_dir, "cache_365_price_BTCUSDC.jsonl")
+        legacy_json = os.path.join(self.tmp, "cache_365_price_BTCUSDC.json")
+        target_jsonl = os.path.join(self.tmp, "cache_365_price_BTCUSDC.jsonl")
         with open(legacy_json, "w", encoding="utf-8") as handle:
             json.dump(
                 {
@@ -373,8 +372,7 @@ class TestArchiverLifecycle(TempDirTestCase):
         )
 
     def test_cache365_rotation_failure_restores_active_file_and_memory(self):
-        tmp_dir = str(self.tmp)
-        target_jsonl = os.path.join(tmp_dir, "cache_365_price_BTCUSDC.jsonl")
+        target_jsonl = os.path.join(self.tmp, "cache_365_price_BTCUSDC.jsonl")
         now_ms = int(cm.time.time() * 1000)
         with open(target_jsonl, "w", encoding="utf-8") as handle:
             for i in range(20):
@@ -394,13 +392,12 @@ class TestArchiverLifecycle(TempDirTestCase):
         self.assertEqual(len(manager.cache["BTCUSDC"]), 20)
         self.assertEqual(manager._persisted_counts.get("BTCUSDC"), 20)
         self.assertEqual(
-            [f for f in os.listdir(tmp_dir) if ".archive" in f],
+            [f for f in os.listdir(self.tmp) if ".archive" in f],
             [],
         )
 
     def test_cache365_maintenance_preserves_unpersisted_memory_tail_and_fetchtime(self):
-        tmp_dir = str(self.tmp)
-        target_jsonl = os.path.join(tmp_dir, "cache_365_price_BTCUSDC.jsonl")
+        target_jsonl = os.path.join(self.tmp, "cache_365_price_BTCUSDC.jsonl")
         now_ms = int(cm.time.time() * 1000)
         with open(target_jsonl, "w", encoding="utf-8") as handle:
             handle.write(
@@ -442,8 +439,7 @@ class TestArchiverLifecycle(TempDirTestCase):
         self.assertEqual(json.loads(tail_rows[0])["i"], [now_ms + 1000, 15.0])
 
     def test_cache365_maintenance_streams_unlocked_and_merges_concurrent_ws_ticks(self):
-        tmp_dir = str(self.tmp)
-        target_jsonl = os.path.join(tmp_dir, "cache_365_price_BTCUSDC.jsonl")
+        target_jsonl = os.path.join(self.tmp, "cache_365_price_BTCUSDC.jsonl")
         self.assertEqual(
             cm.Cache365PriceManager.KEEP_HOURS,
             cm.CM_LONG_ARCHIVE_MONTHS * 30 * 24,

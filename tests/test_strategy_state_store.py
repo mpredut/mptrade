@@ -36,8 +36,7 @@ class JsonStateStoreTest(TempDirTestCase):
         return store, messages
 
     def test_load_merges_schema_and_rejects_corruption_by_mode(self):
-        directory = str(self.tmp)
-        path = os.path.join(directory, "state.json")
+        path = os.path.join(self.tmp, "state.json")
         with open(path, "w", encoding="utf-8") as handle:
             json.dump({"qty": 2.5}, handle)
         store, _messages = self._store(path, fail_closed=True)
@@ -53,33 +52,30 @@ class JsonStateStoreTest(TempDirTestCase):
         self.assertIn("reset allowed only in PAPER", messages[-1])
 
     def test_save_replaces_atomically_without_temporary_residue(self):
-        directory = str(self.tmp)
-        path = os.path.join(directory, "state.json")
+        path = os.path.join(self.tmp, "state.json")
         store, _messages = self._store(path, fail_closed=True)
 
         self.assertTrue(store.save({"cycle": 2, "qty": 1.25, "orders": []}))
 
         with open(path, encoding="utf-8") as handle:
             self.assertEqual(json.load(handle)["qty"], 1.25)
-        self.assertEqual(os.listdir(directory), ["state.json"])
+        self.assertEqual(os.listdir(self.tmp), ["state.json"])
 
     def test_failed_replace_cleans_temporary_and_fails_closed(self):
-        directory = str(self.tmp)
-        path = os.path.join(directory, "state.json")
+        path = os.path.join(self.tmp, "state.json")
         store, _messages = self._store(path, fail_closed=True)
         with patch("state_io.os.replace", side_effect=OSError("disk")):
             with self.assertRaisesRegex(StatePersistenceError, "persisting the"):
                 store.save(_defaults())
-        self.assertEqual(os.listdir(directory), [])
+        self.assertEqual(os.listdir(self.tmp), [])
 
     def test_paper_save_failure_is_reported_without_raising(self):
-        directory = str(self.tmp)
-        path = os.path.join(directory, "state.json")
+        path = os.path.join(self.tmp, "state.json")
         store, messages = self._store(path, fail_closed=False)
         with patch("state_io.os.replace", side_effect=OSError("disk")):
             self.assertFalse(store.save(_defaults()))
         self.assertIn("cannot save the state", messages[-1])
-        self.assertEqual(os.listdir(directory), [])
+        self.assertEqual(os.listdir(self.tmp), [])
 
     def test_safe_state_token_and_state_path_for_sanitize_and_fallback(self):
         self.assertEqual(safe_state_token("HYPE/USD", "unknown"), "HYPEUSD")

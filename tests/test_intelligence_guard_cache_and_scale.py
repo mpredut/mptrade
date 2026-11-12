@@ -74,8 +74,6 @@ from unittest.mock import MagicMock
 _margins = lambda **overrides: make_test_margins(disable_external_pillars=True, **overrides)
 
 
-_build_test_context = make_test_regime_context
-
 
 MockProvider = lambda: DummySpotExecutionProvider("binance")
 
@@ -142,7 +140,7 @@ def _setup_late_scale_place_and_profit_guard(monkeypatch, provider, *, scale: fl
 class TestIntelligenceGuardDynamicEvaluation:
     def test_price_surge_blocked_on_same_regime_context(self, monkeypatch):
         """Verify that BUY at 100 is approved, but subsequent BUY at 125 is blocked by parabolic surge guard on the same context."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
 
         margins = _margins(
             internal_guard_mode="enforce",
@@ -185,7 +183,7 @@ class TestIntelligenceGuardDynamicEvaluation:
 
     def test_notional_jump_triggers_gemini_guard_on_same_context(self, monkeypatch):
         """Verify that jumping from small notional to high notional evaluates Gemini guard."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
 
         margins = _margins(
             internal_guard_mode="enforce",
@@ -230,7 +228,7 @@ class TestIntelligenceGuardDynamicEvaluation:
 class TestIntelligenceQuantityScaling:
     def test_suggested_scale_applied_once_in_decide_quantity(self):
         """Verify that suggested_scale on regime_context scales quantity and is tracked on QuantityDecision without mutating context."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         object.__setattr__(ctx, "suggested_scale", 0.25)
 
         provider = MagicMock()
@@ -261,7 +259,7 @@ class TestIntelligenceQuantityScaling:
 
     def test_profit_guard_propagates_suggested_scale_to_regime_context(self, monkeypatch):
         """Verify profit_guard records suggested_scale on regime_context when intelligence downscales."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
 
         # Mock check_intelligence_guards returning scale 0.25 (e.g. Weibull trend exhausted)
         monkeypatch.setattr(
@@ -587,7 +585,7 @@ class TestArchitectureFixes4Cases:
     def test_case1_anti_fomo_threshold_crossing_on_fractional_price_move(self, monkeypatch):
         """Case 1: Anti-FOMO parabolic surge guard recalculates on any price move,
         preventing crossing 15% threshold via a small move (114.9 -> 115.1)."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         now = time.time()
         # Price history with base 100.0
         history = [(now - 120, 100.0), (now - 60, 100.0)]
@@ -620,7 +618,7 @@ class TestArchitectureFixes4Cases:
         """Case 2: If profit_guard / intelligence guard recommends downscale late (e.g. 0.25),
         Instrument.place updates quantity dispatched to venue from 4.0 to 1.0."""
 
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         provider = MagicMock()
         provider.name = "binance"
         provider.guards_internally.return_value = False
@@ -658,7 +656,7 @@ class TestArchitectureFixes4Cases:
     def test_case3_context_reuse_preserves_scale_across_multiple_orders(self):
         """Case 3: Two separate order requests sharing the same context with scale 0.25
         both produce scaled quantity 1.0 instead of 1.0 then 4.0."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         object.__setattr__(ctx, "suggested_scale", 0.25)
 
         provider = MagicMock()
@@ -748,7 +746,7 @@ class TestSisterArchitecturalDefects:
     def test_sister2_sell_orders_not_downscaled_by_regime_context_suggested_scale(self):
         """Sister 2: Market intelligence suggested_scale must ONLY downscale BUY entries,
         never downscaling SELL exits or risk reductions."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         object.__setattr__(ctx, "suggested_scale", 0.25)
 
         provider = MagicMock()
@@ -772,7 +770,7 @@ class TestSisterArchitecturalDefects:
 
     def test_sister3_gemini_evaluated_notional_prevents_ratchet_drift(self, monkeypatch):
         """Sister 3: Incremental notional growth must not ratchet baseline forward without evaluation."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         calls = _setup_gemini_notional_check(monkeypatch)
 
         # 1. Initial evaluation at 1000 EUR
@@ -804,7 +802,7 @@ class TestSisterArchitecturalDefects:
     def test_sister3_gemini_decision_preserved_on_identical_subsequent_check(self, monkeypatch):
         """Sister 3: Gemini decisions (rejection and downscaling) must be cached and re-applied
         on identical subsequent checks rather than reverting to allow/1.0."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         gemini_result = [GuardDecision.veto("gemini", "Gemini high-risk block")]
         calls = _setup_gemini_notional_check(monkeypatch, result_box=gemini_result)
 
@@ -836,7 +834,7 @@ class TestSisterArchitecturalDefects:
         assert len(calls) == 1  # No second API call
 
         # 4. Downscaling test: Gemini returns scale = 0.25
-        ctx_downscale = _build_test_context()
+        ctx_downscale = make_test_regime_context()
         calls.clear()
         gemini_result[0] = GuardDecision.downscale("gemini", 0.25, "Gemini downscale risk")
 
@@ -867,7 +865,7 @@ class TestSisterArchitecturalDefects:
         monkeypatch.setattr(order_retry, "LOCK_FILE", lock_file)
         monkeypatch.setattr(order_retry, "RETRY_ENABLED", True)
 
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         # Initial scale is 1.0 so intent is prequeued for full quantity (4.0)
         object.__setattr__(ctx, "suggested_scale", 1.0)
 
@@ -944,7 +942,7 @@ class TestSisterArchitecturalDefects:
     def test_sister5_profit_guard_dynamic_history_exception_fails_closed(self, monkeypatch):
         """Sister 5: Unhandled exceptions in provider.get_orders within dynamic buy window
         fail closed (return False) cleanly."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         provider = MagicMock()
         provider.name = "binance"
         provider.get_orders.side_effect = RuntimeError("network socket reset")
@@ -1087,7 +1085,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_batch6_cross_side_regime_context_cache_isolation(self, monkeypatch):
         """Evaluating SELL first on shared regime_context must not bypass BUY geopolitical/internal guards,
         and a blocked BUY must not block a subsequent SELL exit."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         margins = _margins(
             internal_guard_mode="enforce",
             intelligence_guards_mode="enforce",
@@ -1126,7 +1124,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert buy_scale == 0.0
 
         # 3. Reverse order on a fresh context: BUY blocked first, then SELL evaluated -> SELL must still be allowed!
-        ctx2 = _build_test_context()
+        ctx2 = make_test_regime_context()
         buy_ok2, _, _ = order_guard.check_intelligence_guards(
             "binance", "BTCUSDC", "BUY", 100.0, qty=20.0, notional_eur=2000.0, regime_context=ctx2
         )
@@ -1141,7 +1139,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_batch6_cross_bypass_and_parabolic_pullback_recovery_on_same_context(self, monkeypatch):
         """A BUY rejected at a parabolic spike price (125.0) on a fresh context must re-evaluate and pass
         when price pulls back to 100.0 or when GI1 is bypassed."""
-        ctx = _build_test_context()
+        ctx = make_test_regime_context()
         margins = _margins(
             internal_guard_mode="enforce",
             intelligence_guards_mode="enforce",
@@ -1810,7 +1808,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         )
 
         # Case A: Order 1 ($1500) vetoed by GLLM1 -> Order 2 ($100) on same context must pass (1.0)
-        ctx_veto = _build_test_context()
+        ctx_veto = make_test_regime_context()
         ok1, reason1, scale1 = order_guard.check_intelligence_guards(
             "binance", "BTCUSDC", "BUY", 100.0, qty=15.0, notional_eur=1500.0, regime_context=ctx_veto
         )
@@ -1826,7 +1824,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert len(calls) == 1
 
         # Case B: Order 1 ($1500) downscaled (0.25) by GLLM1 -> Order 2 ($100) on same context must have scale 1.0
-        ctx_scale = _build_test_context()
+        ctx_scale = make_test_regime_context()
         calls.clear()
         gemini_result[0] = GuardDecision.downscale("HighStakeGuard", 0.25, "gemini_high_stake_downscale")
 
@@ -2085,7 +2083,7 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
     now_ts = time.time()
 
     # 1. Order 1 at 750 EUR on ctx1 -> 1 telemetry read, 1 LLM call
-    ctx1 = _build_test_context()
+    ctx1 = make_test_regime_context()
     ok1, reason1, scale1 = order_guard.check_intelligence_guards(
         MockProvider(), "BTCUSDC", "BUY", 100.0, regime_context=ctx1, qty=7.5, now=now_ts + 1.0
     )
@@ -2095,7 +2093,7 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
 
     # 2. Order 2 immediately after on a NEW context (ctx2) at 1400 EUR (+86.7% <= 100%, different $100 bucket)
     # -> Reuses cached decision with 0 new telemetry reads and 0 new LLM queries!
-    ctx2 = _build_test_context()
+    ctx2 = make_test_regime_context()
     ok2, reason2, scale2 = order_guard.check_intelligence_guards(
         MockProvider(), "BTCUSDC", "BUY", 100.0, regime_context=ctx2, qty=14.0, now=now_ts + 15.0
     )
@@ -2122,7 +2120,7 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
         "check_qlimit2_order_guards",
         lambda **kw: (qlimit2_calls.append(kw.get("price")) or orig_qlimit2(**kw)),
     )
-    ctx3 = _build_test_context()
+    ctx3 = make_test_regime_context()
     order_guard.check_intelligence_guards(MockProvider(), "BTCUSDC", "BUY", 100.0, regime_context=ctx3, qty=5.0)
     assert len(qlimit2_calls) == 1
     # Second stage of same order with identical price=100.0 and default duration -> skipped!
@@ -2136,7 +2134,7 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
 def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_iter9_s1(monkeypatch):
     """[ITER9 #1] check_intelligence_guards cache hit across G_PROF/GLLM1 bypass & GLLM1 re-eval when un-bypassed."""
     # 1. check_intelligence_guards cache hit across G_PROF/GLLM1 bypass & GLLM1 re-eval when un-bypassed
-    ctx = _build_test_context()
+    ctx = make_test_regime_context()
     raw_calls = []
     orig_raw = order_guard._evaluate_intelligence_guards_raw
 

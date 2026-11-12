@@ -149,11 +149,10 @@ class TestFetchDeadline(TempDirTestCase):
 
     def test_poller_marks_nonbinance_symbol_healthy_on_cpm(self):
         api = _FakeApi(hang=False, price=76.5)
-        tmp_dir = str(self.tmp)
         cpm = cm.CacheCurrentPriceManager(
             sync_ts=9999,
             symbols=["HYPEUSD"],
-            filename=os.path.join(tmp_dir, "cache_current_price.json"),
+            filename=os.path.join(self.tmp, "cache_current_price.json"),
             ws_manager=None,
             api_client=api,
             market_api=api,
@@ -184,11 +183,10 @@ class TestFetchDeadline(TempDirTestCase):
     def test_hyperliquid_and_kraken_ws_streams_feed_cpm_and_suppress_rest_polling(self):
 
         api = _FakeApi(hang=False, price=99.9)
-        tmp_dir = str(self.tmp)
         cpm = cm.CacheCurrentPriceManager(
             sync_ts=9999,
             symbols=["HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"],
-            filename=os.path.join(tmp_dir, "cache_current_price.json"),
+            filename=os.path.join(self.tmp, "cache_current_price.json"),
             ws_manager=None,
             api_client=api,
             market_api=api,
@@ -270,8 +268,7 @@ class TestFetchDeadline(TempDirTestCase):
 
     def test_hyperliquid_ws_user_fills_updates_ssot_trade_cache(self):
 
-        tmpdir = str(self.tmp)
-        cache_file = os.path.join(tmpdir, "cache_trade_hyperliquid.json")
+        cache_file = os.path.join(self.tmp, "cache_trade_hyperliquid.json")
         hl_ws = cm.HyperliquidPriceStream(
             ["HYPEUSDC"],
             user_address="0x1234567890abcdef1234567890abcdef12345678",
@@ -420,11 +417,10 @@ class TestFetchDeadline(TempDirTestCase):
         self.assertAlmostEqual(clamp_price_to_bbo_mid(None, "100.0", "101.0"), 100.5)
 
         # 3. is_real_ws_healthy must not fall through to _ws_default_event_ts when symbol ts is 0.0
-        tmp_dir = str(self.tmp)
         cpm = cm.CacheCurrentPriceManager(
             sync_ts=9999,
             symbols=["HYPEUSD"],
-            filename=os.path.join(tmp_dir, "cache_current_price.json"),
+            filename=os.path.join(self.tmp, "cache_current_price.json"),
             ws_manager=None,
             api_client=_FakeApi(),
             market_api=_FakeApi(),
@@ -438,7 +434,7 @@ class TestFetchDeadline(TempDirTestCase):
         # 4. read_ssot_fills_cache skips stale alias key and returns fresh matching key
 
         kp = KrakenProvider(client=object())
-        fills_file = os.path.join(tmp_dir, "cache_trade_kraken.json")
+        fills_file = os.path.join(self.tmp, "cache_trade_kraken.json")
         with open(fills_file, "w", encoding="utf-8") as fh:
             json.dump(
                 {
@@ -466,7 +462,7 @@ class TestFetchDeadline(TempDirTestCase):
         self.assertTrue(issubclass(cm.HyperliquidPriceStream, PublicPriceStreamBase))
         self.assertTrue(issubclass(cm.KrakenPriceStream, PublicPriceStreamBase))
 
-        kr_cost_file = os.path.join(tmp_dir, "kr_cost_cache.json")
+        kr_cost_file = os.path.join(self.tmp, "kr_cost_cache.json")
         with open(kr_cost_file, "w", encoding="utf-8") as fh:
             json.dump(
                 {
@@ -502,7 +498,7 @@ class TestFetchDeadline(TempDirTestCase):
         # Total cost = (40*2 + 0.20) + (50*2 + 0.20) = 180.40 for 4.0 HYPE -> 45.10
         self.assertAlmostEqual(kp.position_cost_basis("HYPEUSD", 4.0, 3600.0), 45.10, places=4)
 
-        hl_cost_file = os.path.join(tmp_dir, "hl_cost_cache.json")
+        hl_cost_file = os.path.join(self.tmp, "hl_cost_cache.json")
         with open(hl_cost_file, "w", encoding="utf-8") as fh:
             json.dump(
                 {
@@ -554,7 +550,7 @@ class TestFetchDeadline(TempDirTestCase):
         self.assertAlmostEqual(pinfo["pos_15m_pct"], 0.0)
         self.assertAlmostEqual(pinfo["span_15m_pct"], 2.51, places=2)
 
-        intents_file = os.path.join(tmp_dir, "autonomous_trade_intents_state.json")
+        intents_file = os.path.join(self.tmp, "autonomous_trade_intents_state.json")
         with open(intents_file, "w", encoding="utf-8") as fh:
             json.dump(
                 [
@@ -566,7 +562,7 @@ class TestFetchDeadline(TempDirTestCase):
                 ],
                 fh,
             )
-        ts_map = _load_open_order_timestamps(tmp_dir, {})
+        ts_map = _load_open_order_timestamps(self.tmp, {})
         self.assertAlmostEqual(ts_map.get("O-KRK-777"), 1700000123.5)
         self.assertAlmostEqual(ts_map.get("ai_krk-hype-buy-1700000123"), 1700000123.5)
 
