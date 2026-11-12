@@ -289,9 +289,6 @@ def _Executor():
     return SimpleNamespace(pair_precision=lambda _symbol: PairPrecision(2, 4, 0.01, "ASSET"))
 
 
-_params = make_spot_live_test_params
-
-
 class SpotModuleBoundaryTest(TempDirTestCase):
     def test_strategies_package_exports_spot_engine_canonical(self):
         self.assertIs(strategies.Strategy, spot_engine.Strategy)
@@ -302,7 +299,7 @@ class SpotModuleBoundaryTest(TempDirTestCase):
         executor = SimpleNamespace(pair_precision=lambda _symbol: None)
         with self.assertRaisesRegex(RuntimeError, "no pair metadata"):
             spot_engine.Strategy(
-                executor, "ASSETUSD", _params(), dry_run=False, initial_state=spot_engine._new_state(),
+                executor, "ASSETUSD", make_spot_live_test_params(), dry_run=False, initial_state=spot_engine._new_state(),
             )
 
     def test_default_state_path_stays_in_legacy_kraken_directory(self):
@@ -312,7 +309,7 @@ class SpotModuleBoundaryTest(TempDirTestCase):
     def test_state_directory_is_injectable_for_another_runtime(self):
         directory = str(self.tmp)
         engine = spot_engine.Strategy(
-            _Executor(), "ASSET/USD", _params(), dry_run=True,
+            _Executor(), "ASSET/USD", make_spot_live_test_params(), dry_run=True,
             initial_state=spot_engine._new_state(), state_dir=directory,
         )
         self.assertEqual(engine.state_file, os.path.join(directory, ".state_ASSETUSD.json"))
@@ -320,7 +317,7 @@ class SpotModuleBoundaryTest(TempDirTestCase):
     def test_notification_sink_and_source_are_injectable(self):
         events = []
         engine = spot_engine.Strategy(
-            _Executor(), "ASSETUSD", _params(), dry_run=True,
+            _Executor(), "ASSETUSD", make_spot_live_test_params(), dry_run=True,
             initial_state=spot_engine._new_state(), notifier=lambda **event: events.append(event),
             notification_source="paper-venue",
         )

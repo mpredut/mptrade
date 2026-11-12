@@ -77,7 +77,7 @@ _margins = lambda **overrides: make_test_margins(disable_external_pillars=True, 
 _build_test_context = make_test_regime_context
 
 
-MockProvider = MockProv = lambda: DummySpotExecutionProvider("binance")
+MockProvider = lambda: DummySpotExecutionProvider("binance")
 
 
 def _setup_gemini_notional_check(
@@ -2087,7 +2087,7 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
     # 1. Order 1 at 750 EUR on ctx1 -> 1 telemetry read, 1 LLM call
     ctx1 = _build_test_context()
     ok1, reason1, scale1 = order_guard.check_intelligence_guards(
-        MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx1, qty=7.5, now=now_ts + 1.0
+        MockProvider(), "BTCUSDC", "BUY", 100.0, regime_context=ctx1, qty=7.5, now=now_ts + 1.0
     )
     assert ok1 is True and scale1 == pytest.approx(0.5)
     assert len(telem_calls) == 1
@@ -2097,7 +2097,7 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
     # -> Reuses cached decision with 0 new telemetry reads and 0 new LLM queries!
     ctx2 = _build_test_context()
     ok2, reason2, scale2 = order_guard.check_intelligence_guards(
-        MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx2, qty=14.0, now=now_ts + 15.0
+        MockProvider(), "BTCUSDC", "BUY", 100.0, regime_context=ctx2, qty=14.0, now=now_ts + 15.0
     )
     assert ok2 is True and scale2 == pytest.approx(0.5)
     assert len(telem_calls) == 1
@@ -2107,7 +2107,7 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
 
     # 3. Order 3 on ctx2 with notional 1600 EUR (+113.3% > 100% vs 750 EUR baseline) -> triggers fresh LLM query!
     ok3, reason3, scale3 = order_guard.check_intelligence_guards(
-        MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx2, qty=16.0, now=now_ts + 30.0
+        MockProvider(), "BTCUSDC", "BUY", 100.0, regime_context=ctx2, qty=16.0, now=now_ts + 30.0
     )
     assert ok3 is True and scale3 == pytest.approx(0.5)
     assert len(telem_calls) == 2
@@ -2123,13 +2123,13 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
         lambda **kw: (qlimit2_calls.append(kw.get("price")) or orig_qlimit2(**kw)),
     )
     ctx3 = _build_test_context()
-    order_guard.check_intelligence_guards(MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx3, qty=5.0)
+    order_guard.check_intelligence_guards(MockProvider(), "BTCUSDC", "BUY", 100.0, regime_context=ctx3, qty=5.0)
     assert len(qlimit2_calls) == 1
     # Second stage of same order with identical price=100.0 and default duration -> skipped!
-    order_guard.check_intelligence_guards(MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx3, qty=5.0)
+    order_guard.check_intelligence_guards(MockProvider(), "BTCUSDC", "BUY", 100.0, regime_context=ctx3, qty=5.0)
     assert len(qlimit2_calls) == 1
     # Price change on same context -> re-evaluates G_QLIMIT2!
-    order_guard.check_intelligence_guards(MockProv(), "BTCUSDC", "BUY", 101.0, regime_context=ctx3, qty=5.0)
+    order_guard.check_intelligence_guards(MockProvider(), "BTCUSDC", "BUY", 101.0, regime_context=ctx3, qty=5.0)
     assert len(qlimit2_calls) == 2
 
 
@@ -2173,7 +2173,7 @@ def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_it
 
     # Call 1: bypass_guards={"G_PROF", "GLLM1"} at notional=1000 -> populates static cache, skips GLLM1
     ok1, reason1, _ = order_guard.check_intelligence_guards(
-        MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx, qty=10.0, bypass_guards={"G_PROF", "GLLM1"}
+        MockProvider(), "BTCUSDC", "BUY", 100.0, regime_context=ctx, qty=10.0, bypass_guards={"G_PROF", "GLLM1"}
     )
     assert ok1 is True
     assert len(raw_calls) == 1
@@ -2181,7 +2181,7 @@ def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_it
 
     # Call 2: bypass_guards={"GO1"} (GLLM1 now active!) at same notional=1000 -> must hit static cache AND run GLLM1!
     ok2, reason2, _ = order_guard.check_intelligence_guards(
-        MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx, qty=10.0, bypass_guards={"GO1"}
+        MockProvider(), "BTCUSDC", "BUY", 100.0, regime_context=ctx, qty=10.0, bypass_guards={"GO1"}
     )
     assert len(raw_calls) == 1  # Static evaluation reused from Call 1!
     assert len(hs_calls) == 1   # GLLM1 was NOT tricked by Call 1's static notional!

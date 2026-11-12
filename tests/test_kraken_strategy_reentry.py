@@ -22,6 +22,7 @@ import botcore
 from market_regime import MarketRegimeDecision
 from providers.strategy_executor import PairPrecision
 from strategies import spot_engine as strat, spot_rules as sr
+from tests.conftest import make_spot_test_params
 
 
 
@@ -37,15 +38,10 @@ def _make_strategy(tmp_pair="TESTPAIR_REENTRY", **param_overrides):
     """Build a strategy with explicit synthetic venue precision and minimal parameters."""
     client = MagicMock()
     client.pair_precision.return_value = PairPrecision(2, 6, 0.01, "TEST")
-    defaults = dict(
-        currency="USD", entry_amount=100.0, entry_discount_pct=0.2, dca_amount=50.0,
-        dca_drop_pct=2.0, check_minutes=2.0, takeprofit_pct=1.9, max_budget=1000.0,
-        max_dca_buys=10, enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=0.0,
-        adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=2.2, reentry_tolerance_pct=0.05,
-        reentry_adaptive=False, reentry_sl_bounce_pct=1.5, tp_tranches=[],
-    )
-    defaults.update(param_overrides)
-    params = strat.StratParams(**defaults)
+    params = make_spot_test_params(**{
+        "takeprofit_pct": 1.9, "max_budget": 1000.0, "max_dca_buys": 10,
+        "stop_loss_pct": 0.0, "reentry_drop_pct": 2.2, **param_overrides,
+    })
     return strat.Strategy(
         client, tmp_pair, params, dry_run=True,
         initial_state=strat._new_state(), state_dir=_STATE_DIR.name,

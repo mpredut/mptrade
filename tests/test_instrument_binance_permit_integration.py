@@ -92,9 +92,9 @@ class InstrumentBinancePermitIntegrationTest(TempDirTestCase):
         self.old_retry_enabled = order_retry.RETRY_ENABLED
         self.old_retry_dedup = order_retry.RETRY_DEDUP
         order_retry.QUEUE_FILE = os.path.join(
-            self.temp.name, "order_retry_queue.jsonl")
+            self.tmp, "order_retry_queue.jsonl")
         order_retry.LOCK_FILE = os.path.join(
-            self.temp.name, "order_retry_queue.lock")
+            self.tmp, "order_retry_queue.lock")
         order_retry.RETRY_ENABLED = True
         order_retry.RETRY_DEDUP = True
 

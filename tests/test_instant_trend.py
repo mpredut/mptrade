@@ -133,17 +133,6 @@ class TestStore(_ShortTrendMgrTestCase):
             m.update_snapshot("BTCUSDT", gradient_recent=0.6)
             self.assertTrue(os.path.exists(fname))     # It now writes.
 
-    def _cache24(self):
-        return _make_cache24("BTCUSDT", _entries_now(60), self.tmp)
-
-    def _cpm(self):
-        fname = os.path.join(self.tmp, "cp_res.json")
-        c = cm.CacheCurrentPriceManager(sync_ts=9999, symbols=["BTCUSDT"],
-                                        filename=fname, ws_manager=None, api_client=mock_api,
-                                        market_api=mock_api)
-        c.on_items_update("BTCUSDT", [[int(time.time() * 1000), 60000.0]])
-        return c
-
     def test_cross_process_behavior(self):
         with self.subTest(msg="prime from file loads initial"):
             fname = os.path.join(self.tmp, "shared2.json")

@@ -45,18 +45,18 @@ from visuals.tradeall_observe import (
 
 
 # -- mocks for the external dependencies (before any local import) ---------
-_mock_bapi = MagicMock()
-_mock_bapi.get_current_price = MagicMock(return_value=60000.0)
-_mock_bapi.cancel_order      = MagicMock(return_value=True)
-_mock_bapi.cancel_expired_orders = MagicMock()
-_mock_bapi.client            = MagicMock()
+mock_bapi = MagicMock()
+mock_bapi.get_current_price = MagicMock(return_value=60000.0)
+mock_bapi.cancel_order      = MagicMock(return_value=True)
+mock_bapi.cancel_expired_orders = MagicMock()
+mock_bapi.client            = MagicMock()
 
 _mock_market_api = MagicMock()
-_mock_market_api.api = _mock_bapi
+_mock_market_api.api = mock_bapi
 
 _IMPORT_MOCKS = dict([
-    ("bapi",            _mock_bapi),
-    ("binance_api.bapi", _mock_bapi),
+    ("bapi",            mock_bapi),
+    ("binance_api.bapi", mock_bapi),
     ("bapi_trades",     MagicMock(**{"get_my_trades_24.return_value": []})),
     ("binance_api.bapi_trades", MagicMock(**{"get_my_trades_24.return_value": []})),
     ("bapi_allorders",  MagicMock()),
@@ -95,8 +95,6 @@ finally:
     if getattr(_ca_mod, "apiorders", None) is _IMPORT_MOCKS["binance_api.bapi_allorders"]:
         from binance_api import bapi_allorders as _real_bapi_allorders
         _ca_mod.apiorders = _real_bapi_allorders
-
-mock_bapi = _mock_bapi
 
 
 # ===========================================================================

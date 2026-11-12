@@ -18,14 +18,12 @@ from tests.conftest import TempDirTestCase, make_spot_live_test_params
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CONFIG_ENV = parse_dotenv(os.path.join(ROOT, "kraken", "config.env"))
 
-_params = make_spot_live_test_params
-
 
 def _strategy(*, state=None, **param_overrides):
     client = MagicMock()
     client.pair_precision.return_value = PairPrecision(2, 6, 0.01, "TEST")
     engine = strat.Strategy(
-        client, "TESTPAIR_LIVE_RECONCILE", _params(**param_overrides),
+        client, "TESTPAIR_LIVE_RECONCILE", make_spot_live_test_params(**param_overrides),
         dry_run=False, initial_state=state or strat._new_state(),
     )
     engine._save = lambda: None
@@ -206,7 +204,7 @@ class KrakenLiveReconciliationTest(unittest.TestCase):
         state["orders"].append(order)
         engine = strat.Strategy(
             KrakenStatePersistenceTest._client(), "PAIR",
-            _params(order_ttl_min=10), dry_run=True, initial_state=state,
+            make_spot_live_test_params(order_ttl_min=10), dry_run=True, initial_state=state,
         )
         engine._save = MagicMock()
         engine._now = lambda: 15 * 60.0  # 15 min > 10 min TTL
@@ -246,7 +244,7 @@ class KrakenStatePersistenceTest(TempDirTestCase):
             handle.write('{"qty":')
         with patch.object(strat, "state_path_for", return_value=state_file):
             with self.assertRaisesRegex(RuntimeError, "invalid.*state"):
-                strat.Strategy(self._client(), "PAIR", _params(), dry_run=False)
+                strat.Strategy(self._client(), "PAIR", make_spot_live_test_params(), dry_run=False)
 
     def test_corrupt_state_may_reset_only_in_paper_mode(self):
         tmp = str(self.tmp)
@@ -254,14 +252,14 @@ class KrakenStatePersistenceTest(TempDirTestCase):
         with open(state_file, "w", encoding="utf-8") as handle:
             handle.write("not-json")
         with patch.object(strat, "state_path_for", return_value=state_file):
-            engine = strat.Strategy(self._client(), "PAIR", _params(), dry_run=True)
+            engine = strat.Strategy(self._client(), "PAIR", make_spot_live_test_params(), dry_run=True)
         self.assertEqual(engine.s, strat._new_state())
 
     def test_save_replaces_state_atomically(self):
         tmp = str(self.tmp)
         state_file = os.path.join(tmp, "state.json")
         engine = strat.Strategy(
-            self._client(), "PAIR", _params(), dry_run=False,
+            self._client(), "PAIR", make_spot_live_test_params(), dry_run=False,
             initial_state=strat._new_state(),
         )
         engine.state_file = state_file

@@ -65,7 +65,6 @@ from unittest.mock import MagicMock, patch
 
 
 SYMBOL = "BTCUSDC"
-TAO_SYMBOL = "TAOUSDC"
 
 
 # --- WebSocket & UserData Stream --------------------------------------------
