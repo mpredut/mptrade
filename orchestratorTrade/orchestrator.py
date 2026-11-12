@@ -329,6 +329,8 @@ class BotManager:
             importlib.reload(_cp)
             importlib.reload(_sio)
             importlib.reload(botcore)
+            if (_u_mod := sys.modules.get("utils")) is not None:
+                importlib.reload(_u_mod)
             organize_cachedb_subdomains = _cp.organize_cachedb_subdomains
             resolve_cachedb_filepath = _cp.resolve_cachedb_filepath
             open_append_text_file = _sio.open_append_text_file
