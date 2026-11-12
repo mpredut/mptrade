@@ -664,13 +664,10 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
             side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
             return origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k)
 
-        def _is_untagged_bot_origin(o: Dict[str, Any]) -> bool:
-            cur_act, cur_mod, cur_rule = _lookup_cached_origin(o) or ("BOT", None, None)
-            return bool(cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")))
-
         if parsed_ai_intents:
             for o in valid:
-                if _is_untagged_bot_origin(o) and _matches_ai_intent(o):
+                cur_act, cur_mod, cur_rule = _lookup_cached_origin(o) or ("BOT", None, None)
+                if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")) and _matches_ai_intent(o):
                     _mark_ai_origin(o)
             for i_sym, i_side, i_ts_s, i_qty, _ in parsed_ai_intents:
                 if i_qty <= 0.0:
@@ -685,7 +682,8 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                     o_sym = str(o.get("symbol") or o.get("pair") or fallback_sym).strip().upper()
                     if i_sym and o_sym and not _same_asset_scope_and_quote(i_sym, o_sym):
                         continue
-                    if _is_untagged_bot_origin(o):
+                    cur_act, cur_mod, cur_rule = _lookup_cached_origin(o) or ("BOT", None, None)
+                    if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")):
                         if (o_q := extract_executed_qty(o, default=0.0) or 0.0) > 0.0:
                             cands.append((o, o_q))
                 if len(cands) > 1 and abs(sum(q for _, q in cands) - i_qty) <= max(1e-5, i_qty * 0.01):

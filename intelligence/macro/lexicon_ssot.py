@@ -1249,16 +1249,12 @@ _MAJOR_GEOPOLITICAL_THEATER_WORDS: frozenset[str] = frozenset({
 })
 
 
-def _clean_headline_and_words(title: str) -> Tuple[str, Set[str]]:
-    clean_low = _strip_headline_publisher_suffix(title).lower()
-    return clean_low, set(re.findall(r"[a-z]{3,}", clean_low))
-
-
 def has_financial_or_geopolitical_context(title: Any) -> bool:
     """Return True if a headline contains explicit financial, market, macro, or geopolitical context tokens."""
     if not isinstance(title, str) or not title.strip() or is_excluded_reference_news_item(title):
         return False
-    clean_low, words = _clean_headline_and_words(title)
+    clean_low = _strip_headline_publisher_suffix(title).lower()
+    words = set(re.findall(r"[a-z]{3,}", clean_low))
     matched_fin = words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS
     has_multi_theater_geo = len(words & _MAJOR_GEOPOLITICAL_THEATER_WORDS) >= 2 and bool(
         words & {"aggressive", "alliance", "conflict", "cooperation", "deal", "defence", "defense", "escalation", "pact", "security", "summit", "tensions", "treaty"}
@@ -1321,7 +1317,8 @@ def is_off_topic_general_news_title(title: Any) -> bool:
     """Return True if a headline is sports/wildlife/entertainment/weather filler without macro or market relevance."""
     if not isinstance(title, str) or not title.strip():
         return False
-    clean_low, words = _clean_headline_and_words(title)
+    clean_low = _strip_headline_publisher_suffix(title).lower()
+    words = set(re.findall(r"[a-z]{3,}", clean_low))
     if not words or has_financial_or_geopolitical_context(title):
         return False
     if _is_editorial_clickbait_or_advice_title(clean_low):

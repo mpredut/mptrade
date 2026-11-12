@@ -313,11 +313,6 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             return {}
         now_ms, cur_px = clean_series[-1]
         span_ms = now_ms - clean_series[0][0]
-
-        def _sample_at(mins: float) -> Tuple[Optional[float], float]:
-            target = now_ms - mins * 60000.0
-            return next(((tms, p_val) for tms, p_val in reversed(clean_series) if tms <= target), (None, clean_series[0][1]))
-
         out = _compute_horizon_range_dict(
             cur_px,
             round(min(x[1] for x in clean_series), 6),
@@ -335,7 +330,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
             ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0), ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
         ):
-            tms, p_ref = _sample_at(mins)
+            tms, p_ref = next(((t_v, p_v) for t_v, p_v in reversed(clean_series) if t_v <= now_ms - mins * 60000.0), (None, clean_series[0][1]))
             valid_back = p_ref > 0 and span_ms >= min_span_ms and (
                 max_gap_mins <= 0.0 or (tms is not None and tms >= now_ms - (mins + max_gap_mins) * 60000.0)
             )
@@ -379,7 +374,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                 if span_ms < m_off * 60000.0:
                     continue
                 max_tape_gap = 5.2 if m_off == 5.0 else (1.999 if m_off in (1.0, 3.0) else max(3.0, m_off * 0.5))
-                t_tap, p_tap = _sample_at(m_off)
+                t_tap, p_tap = next(((t_v, p_v) for t_v, p_v in reversed(clean_series) if t_v <= now_ms - m_off * 60000.0), (None, clean_series[0][1]))
                 if t_tap is None or t_tap < now_ms - (m_off + max_tape_gap) * 60000.0 or t_tap in seen_tape_tms:
                     continue
                 seen_tape_tms.add(t_tap)

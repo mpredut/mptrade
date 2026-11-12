@@ -314,11 +314,6 @@ def step_wols_power_for_symbol(symbol: str | None = None) -> float:
     return found if found is not None else eff_default
 
 
-def _effective_step_wols_power(power, symbol: str | None = None) -> float:
-    pwr = safe_nonneg_float(power, default=None)
-    return pwr if pwr is not None else (safe_nonneg_float(step_wols_power_for_symbol(symbol), default=DEFAULT_STEP_WOLS_POWER) or 0.0)
-
-
 def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None = None) -> float:
     """Generalized Step-WOLS slope: sum(k^p * dy_k) / sum(k^p) directly on raw prices.
 
@@ -330,7 +325,9 @@ def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None
     """
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return 0.0
-    pwr = _effective_step_wols_power(power, symbol)
+    pwr = safe_nonneg_float(power, default=None)
+    if pwr is None:
+        pwr = safe_nonneg_float(step_wols_power_for_symbol(symbol), default=DEFAULT_STEP_WOLS_POWER) or 0.0
     try:
         arr = np.asarray(prices, dtype=np.float64)
     except (TypeError, ValueError):
@@ -558,7 +555,9 @@ class IncrementalTrendBuffer:
         if m < 1:
             return 0.0
         p = self.prices
-        pwr = _effective_step_wols_power(power, symbol)
+        pwr = safe_nonneg_float(power, default=None)
+        if pwr is None:
+            pwr = safe_nonneg_float(step_wols_power_for_symbol(symbol), default=DEFAULT_STEP_WOLS_POWER) or 0.0
         ref_last = p[b] * 1.0
         m_f = m * 1.0
 

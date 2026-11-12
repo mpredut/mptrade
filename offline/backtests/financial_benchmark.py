@@ -163,11 +163,6 @@ def _median(values: Iterable[float | int | None]) -> float | None:
     return statistics.median(present) if present else None
 
 
-def _minimum(values: Iterable[float | int | None]) -> float | None:
-    present = clean_finite_floats(values)
-    return min(present) if present else None
-
-
 def _regime(buy_hold_return_pct: float | None, threshold_pct: float) -> str:
     val = safe_float(buy_hold_return_pct, default=None)
     if val is None:
@@ -223,7 +218,7 @@ def aggregate_financial_windows(
         regimes[name] = {
             "windows": len(selected),
             "mean_return_pct": _mean(window["return_pct"] for window in selected),
-            "worst_return_pct": _minimum(window["return_pct"] for window in selected),
+            "worst_return_pct": min(clean_finite_floats(window["return_pct"] for window in selected), default=None),
             "mean_buy_hold_return_pct": _mean(
                 window.get("buy_hold_return_pct") for window in selected
             ),
@@ -328,7 +323,7 @@ def aggregate_financial_windows(
         "median_profit_factor": median_pf,
         "aggregate_profit_factor": aggregate_pf,
         "mean_expectancy_usd": mean_expectancy,
-        "worst_cvar_95_pct": _minimum(item.get("cvar_95_pct") for item in metrics),
+        "worst_cvar_95_pct": min(clean_finite_floats(item.get("cvar_95_pct") for item in metrics), default=None),
         "mean_exposure_pct": _mean(item.get("exposure_pct") for item in metrics),
         "mean_turnover_pct": _mean(item.get("turnover_pct") for item in metrics),
         "total_trade_count": total_trade_count,

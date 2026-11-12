@@ -734,16 +734,12 @@ def _record_order_and_client_ids(r: dict) -> list:
     return [x for x in (oid, cid) if x]
 
 
-def _is_active_accepted_or_unassigned(r: dict) -> bool:
-    lc = str(r.get("lifecycle") or "").lower()
-    return lc == "accepted" or (lc == "submit_pending" and r.get("order_id") is None)
-
-
 def get_accepted_order_ttl_map() -> dict:
     """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
     res = {}
     for r in _safe_load_all():
-        if not _is_active_accepted_or_unassigned(r):
+        lc = str(r.get("lifecycle") or "").lower()
+        if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
             continue
         ttl_val = safe_pos_float(r.get("ttl_sec"), default=None)
         if ttl_val is not None:
@@ -821,7 +817,8 @@ def get_accepted_order_owner_map() -> dict:
     """Return a mapping of order_id and client_order_id to logical bot owner for active accepted orders."""
     res = {}
     for r in _safe_load_all():
-        if not _is_active_accepted_or_unassigned(r):
+        lc = str(r.get("lifecycle") or "").lower()
+        if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
             continue
         inferred = infer_concrete_record_owner(r)
         if not inferred:
