@@ -355,11 +355,6 @@ def _symbol_volatility_mult(symbol):
     return _clamp_volatility_mult(row.get("volatility_mult") if isinstance(row, dict) else None)
 
 
-def _resolve_window_bounds(minutes_back: float) -> tuple[float, float]:
-    now_ts = time.time() * 1.0
-    return now_ts, now_ts - minutes_back * 60.0
-
-
 def _log_symbol_and_return(symbol: str, message: str, ret_val=False):
     print(f"[{symbol}] {message}")
     return ret_val
@@ -373,7 +368,8 @@ def _get_symbol_window_extrema(symbol, current_price,
     current_price = _finite_float(current_price, positive=True)
     if minutes_back is None or current_price is None:
         return _log_symbol_and_return(symbol, "Invalid price/cache window; skip evaluation.", None)
-    now_ts, target_ts = _resolve_window_bounds(minutes_back)
+    now_ts = time.time() * 1.0
+    target_ts = now_ts - minutes_back * 60.0
 
     local = _local_price_samples.setdefault(symbol, [])
     local.append([now_ts, current_price])
@@ -431,7 +427,8 @@ def _get_portfolio_growth_percent(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFA
     minutes_back = _finite_float(minutes_back, positive=True)
     if minutes_back is None:
         return None
-    now_ts, target_ts = _resolve_window_bounds(minutes_back)
+    now_ts = time.time() * 1.0
+    target_ts = now_ts - minutes_back * 60.0
     rows = _read_total_asset_value_rows()
     valid = []
     for row in rows:
@@ -865,23 +862,15 @@ def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
             "terminal_orders": [],
         }
         _save_symbol_campaign(symbol, "buy", state)
-    elif stored_peak is None:
-        # A legacy global campaign has no meaningful per-asset peak. Preserve
-        # its completed tiers so migration cannot repeat an already accepted
-        # order, then attach the first valid per-asset peak conservatively.
-        state = dict(state)
-        state["peak_price"] = peak_price
-        state["peak_ts"] = peak_ts
-        if _finite_float(state.get("initial_cash"), positive=True) is None:
-            state["initial_cash"] = free_cash
-        state["completed_tiers"] = sorted(_completed_tier_values(state))
-        _save_symbol_campaign(symbol, "buy", state)
-    elif peak_price > stored_peak:
-        # A higher peak within the same unrecovered campaign changes the
-        # reference, but must never clear completed tiers or replenish budget.
-        state = dict(state)
-        state["peak_price"] = peak_price
-        state["peak_ts"] = peak_ts
+    elif stored_peak is None or peak_price > stored_peak:
+        # Legacy global campaign migration (stored_peak is None) or a higher peak
+        # within the same unrecovered campaign: update peak reference without
+        # clearing completed tiers or replenishing budget.
+        state = {**state, "peak_price": peak_price, "peak_ts": peak_ts}
+        if stored_peak is None:
+            if _finite_float(state.get("initial_cash"), positive=True) is None:
+                state["initial_cash"] = free_cash
+            state["completed_tiers"] = sorted(_completed_tier_values(state))
         _save_symbol_campaign(symbol, "buy", state)
 
     # Try the deepest crossed tier first. The shallowest tier respects the profit

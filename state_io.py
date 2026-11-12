@@ -20,7 +20,7 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
 from cachepaths import (
@@ -685,19 +685,13 @@ def append_jsonl_bucket_delta(
         raise
 
 
-def _iter_nonempty_lines(lines: Iterable[str]) -> Iterator[str]:
-    for line in lines:
-        if raw := line.strip():
-            yield raw
-
-
 def read_jsonl_bucket_map(path: str) -> tuple[dict[str, list[Any]], bool]:
     """Read a JSONL file of ``{'s': symbol, 'i': item}`` records into ``(cache_map, had_invalid_line)``."""
     target_path = _resolve_target_path(path)
     cache: dict[str, list[Any]] = {}
     had_invalid_line = False
     with open(target_path, "r", encoding="utf-8") as handle:
-        for raw in _iter_nonempty_lines(handle):
+        for raw in filter(None, map(str.strip, handle)):
             try:
                 rec = json.loads(raw)
                 if (
@@ -932,7 +926,7 @@ def iter_jsonl_records(path: str, *, strict: bool = False) -> Iterator[Any]:
         if not strict and not os.path.isfile(target):
             return
         with open(target, "r", encoding="utf-8") as handle:
-            for raw in _iter_nonempty_lines(handle):
+            for raw in filter(None, map(str.strip, handle)):
                 try:
                     yield json.loads(raw)
                 except ValueError:

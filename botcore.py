@@ -435,16 +435,12 @@ def _log_dotenv_loaded_once(path: str, *, override: bool = False) -> None:
         log(f"  .env loaded from {path}")
 
 
-def _discard_root_config_key(key: str) -> None:
-    _ROOT_CONFIG_KEYS.discard(key)
-    _ROOT_CONFIG_VALUES.pop(key, None)
-
-
 def _is_unmodified_root_key(key: str) -> bool:
     if key not in _ROOT_CONFIG_KEYS:
         return False
     if key not in os.environ or os.environ.get(key) != _ROOT_CONFIG_VALUES.get(key):
-        _discard_root_config_key(key)
+        _ROOT_CONFIG_KEYS.discard(key)
+        _ROOT_CONFIG_VALUES.pop(key, None)
         return False
     return True
 
@@ -455,7 +451,8 @@ def _set_dotenv_env_key(key: str, value: str, *, is_root: bool) -> None:
         _ROOT_CONFIG_KEYS.add(key)
         _ROOT_CONFIG_VALUES[key] = value
     else:
-        _discard_root_config_key(key)
+        _ROOT_CONFIG_KEYS.discard(key)
+        _ROOT_CONFIG_VALUES.pop(key, None)
 
 
 def load_dotenv(path: str | os.PathLike | None = None, override: bool = False) -> None:
@@ -744,15 +741,11 @@ def _raw_env_val(key: str, env: object = None) -> object:
     return (os.environ if env is None else env).get(key)  # type: ignore[union-attr]
 
 
-def _raw_env_str(key: str, env: object = None) -> str:
-    return _clean_env_str(_raw_env_val(key, env))
-
-
 def _bind_coerced_env(name: str, coercer: object):
     def _fn(key: str, env: object = None, default: object = None):
         if env is not None and not hasattr(env, "get"):
             default, env = env, None
-        raw = _raw_env_str(key, env)
+        raw = _clean_env_str(_raw_env_val(key, env))
         return coercer(raw, default=default) if raw else default  # type: ignore[operator]
 
     _fn.__name__ = _fn.__qualname__ = name
@@ -841,7 +834,7 @@ def optional_env(key: str, default: str | dict | None = "", env: dict | None = N
     if isinstance(default, dict) and env is None:
         env, default = default, ""
     default_str = "" if default is None else str(default)
-    raw = _raw_env_str(key, env)
+    raw = _clean_env_str(_raw_env_val(key, env))
     return raw if raw else default_str
 
 
@@ -1277,13 +1270,9 @@ def fetch_json_post(
 # -- DETERMINISTIC percentage-based approximate comparisons -------------------
 
 
-def _safe_float_pair(value1: object, value2: object) -> tuple[float | None, float | None]:
-    return safe_float(value1, default=None), safe_float(value2, default=None)
-
-
 def diff_percent(value1: float, value2: float) -> float:
     """Return symmetric percentage difference relative to the values' absolute mean."""
-    v1, v2 = _safe_float_pair(value1, value2)
+    v1, v2 = safe_float(value1, default=None), safe_float(value2, default=None)
     if v1 is None or v2 is None:
         return float("nan")
     if v1 == v2:
@@ -1367,13 +1356,9 @@ _AMBIGUOUS_LOCAL_MODULES = (
 _LEGACY_ARCHIVE_DIR: str | None = None
 
 
-def _has_module_target(directory: str, stem: str) -> bool:
-    return os.path.isfile(os.path.join(directory, f"{stem}.py")) or os.path.isdir(os.path.join(directory, stem))
-
-
 def _resolve_archived_module_dir(abs_dir: str, stem: str) -> str:
     global _LEGACY_ARCHIVE_DIR
-    if _has_module_target(abs_dir, stem):
+    if os.path.isfile(os.path.join(abs_dir, f"{stem}.py")) or os.path.isdir(os.path.join(abs_dir, stem)):
         return abs_dir
     archive_tar = os.path.join(_REPO_ROOT, "archive", "legacy_archive.tar.gz")
     if not os.path.isfile(archive_tar):
@@ -1387,7 +1372,7 @@ def _resolve_archived_module_dir(abs_dir: str, stem: str) -> str:
         with tarfile.open(archive_tar, "r:gz") as tf:
             tf.extractall(_LEGACY_ARCHIVE_DIR, filter="data")
     extracted_dir = os.path.join(_LEGACY_ARCHIVE_DIR, rel)
-    return extracted_dir if _has_module_target(extracted_dir, stem) else abs_dir
+    return extracted_dir if (os.path.isfile(os.path.join(extracted_dir, f"{stem}.py")) or os.path.isdir(os.path.join(extracted_dir, stem))) else abs_dir
 
 
 def load_local_module(
@@ -1742,7 +1727,7 @@ def clamp_float(
 
 
 def value_diff_to_percent(value1, value2) -> float:
-    v1, v2 = _safe_float_pair(value1, value2)
+    v1, v2 = safe_float(value1, default=None), safe_float(value2, default=None)
     if v1 is None or v2 is None or v1 == 0.0:
         return 0.0
     return safe_float(((v1 - v2) / v1) * 100.0, default=0.0)

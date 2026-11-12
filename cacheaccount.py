@@ -2451,11 +2451,6 @@ def run_kraken_trade_ws_loop(
             cache, by_sym, is_snapshot=False
         )
 
-    def _touch_fetchtimes(now_ms: Optional[int] = None) -> None:
-        CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
-            cache, now_ms=now_ms, symbols=pairs, create_missing=True
-        )
-
     try:
         _merge_rest()
         save_json_state(cache_file, cache, indent=1)
@@ -2483,7 +2478,7 @@ def run_kraken_trade_ws_loop(
         now_ms = resolve_now_ms()
 
         def _flush_ws_cache(ts_ms: int) -> None:
-            _touch_fetchtimes(ts_ms)
+            CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms=ts_ms, symbols=pairs, create_missing=True)
             save_json_state(cache_file, cache, indent=1)
             last_flush_ms[0] = ts_ms
 

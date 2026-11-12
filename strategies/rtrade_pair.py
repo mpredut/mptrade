@@ -343,7 +343,7 @@ class PairCoordinator:
                 self.phase = "startup_recovery"
                 self.reason = pend_reason if recovery_pending else placement_reason
                 return self.outcome()
-            self.phase = "exposed" if abs(self._net_qty()) > 1e-8 else "failed"
+            self.phase = "exposed" if abs(self._side_totals("BUY")[0] - self._side_totals("SELL")[0]) > 1e-8 else "failed"
             self.reason = placement_reason
             return self.outcome()
         self.tickets.append(second)
@@ -537,10 +537,6 @@ class PairCoordinator:
             return None, "status_unconfirmed"
         return snapshot, None
 
-    def _net_qty(self) -> float:
-        buy_qty, _bc, _bf, sell_qty, _sc, _sf = self._totals()
-        return buy_qty - sell_qty
-
     def _refresh(self) -> None:
         for ticket in self.tickets:
             try:
@@ -667,7 +663,7 @@ class PairCoordinator:
         if cancel_reason is not None:
             self.reason = f"{prefix}_cancel_failed" if cancel_reason == "cancel_failed" else f"{prefix}_cancel_ambiguous"
             return None
-        final_net = self._net_qty()
+        final_net = self._side_totals("BUY")[0] - self._side_totals("SELL")[0]
         if abs(final_net) <= 1e-8:
             self.phase, self.reason = flat_phase, flat_reason
             return None

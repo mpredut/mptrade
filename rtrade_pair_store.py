@@ -46,10 +46,6 @@ class RTradePairStore:
         self.terminal_retention = safe_nonneg_int(terminal_retention, default=200)
 
     @staticmethod
-    def _clean_pair_id(pair_id):
-        return str(pair_id).strip() if isinstance(pair_id, str) else pair_id
-
-    @staticmethod
     def _is_valid_store_str(value) -> bool:
         return (
             isinstance(value, str)
@@ -247,7 +243,7 @@ class RTradePairStore:
     ) -> tuple[str, str, str, str]:
         side_u = normalize_side(side)
         kind_s = str(kind or default_kind).strip()
-        return self._clean_pair_id(pair_id), side_u, kind_s, f"{kind_s}:{side_u}"
+        return (str(pair_id).strip() if isinstance(pair_id, str) else pair_id), side_u, kind_s, f"{kind_s}:{side_u}"
 
     @staticmethod
     def _upsert_rec_intent(rec: dict, key: str, value: dict, now: float) -> bool:
@@ -344,7 +340,7 @@ class RTradePairStore:
         def op(pairs):
             now = time.time()
             for pair_id, state, terminal in checkpoints:
-                rec = pairs[self._clean_pair_id(pair_id)]
+                rec = pairs[str(pair_id).strip() if isinstance(pair_id, str) else pair_id]
                 rec["state"] = state
                 rec["phase"] = state.get("phase")
                 rec["terminal"] = _parse_bool_flag(terminal, False)
