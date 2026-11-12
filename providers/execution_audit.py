@@ -591,13 +591,14 @@ def reconcile_intents_from_execution_audit(
             failed_by_id[clean_id] = item
         elif st_up == "EXECUTED":
             exec_pay = item.get("execution_payload") if isinstance(item.get("execution_payload"), dict) else {}
+            is_reconciled_term = bool(_parse_bool_flag(exec_pay.get("reconciled_terminal"), False))
             needs_ts_backfill = (
-                bool(exec_pay.get("reconciled_terminal"))
+                is_reconciled_term
                 and "filled_at" not in exec_pay
                 and "terminal_ts" not in exec_pay
-                and not exec_pay.get("_ts_backfill_checked")
+                and not _parse_bool_flag(exec_pay.get("_ts_backfill_checked"), False)
             )
-            if not exec_pay.get("reconciled_terminal") or needs_ts_backfill:
+            if not is_reconciled_term or needs_ts_backfill:
                 cur_v_st = str(exec_pay.get("status") or "").strip().upper()
                 item_oid = clean_order_id(extract_order_id(exec_pay, default=None))
                 has_fill_metrics = (
@@ -692,7 +693,7 @@ def reconcile_intents_from_execution_audit(
     for iid_chk, item_chk in executed_incomplete_by_id.items():
         if iid_chk not in matched_exec_records:
             ep_chk = item_chk.get("execution_payload")
-            if isinstance(ep_chk, dict) and ep_chk.get("reconciled_terminal"):
+            if isinstance(ep_chk, dict) and _parse_bool_flag(ep_chk.get("reconciled_terminal"), False):
                 ep_chk["_ts_backfill_checked"] = True
 
     if not matched_records and not matched_exec_records:
@@ -773,7 +774,9 @@ def reconcile_intents_from_execution_audit(
         else:
             cur_st = str(exec_pay.get("status") or "").strip().upper()
             if cur_st in _OPEN_WORKING_STATUSES or (
-                exec_pay.get("reconciled_terminal") and "terminal_ts" not in exec_pay and rec_ts is not None
+                _parse_bool_flag(exec_pay.get("reconciled_terminal"), False)
+                and "terminal_ts" not in exec_pay
+                and rec_ts is not None
             ):
                 norm_cancel = v_stat if v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED") else "CANCELED"
                 exec_pay["status"] = norm_cancel

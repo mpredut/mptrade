@@ -1144,7 +1144,7 @@ class Strategy(BaseSpotMixin):
                 elif status == "not_found":
                     misses = safe_nonneg_int(o.get("lookup_misses"), default=0) + 1
                     o["lookup_misses"] = misses
-                    if misses >= (2 if o.get("cancel_requested") else 3):
+                    if misses >= (2 if _parse_bool_flag(o.get("cancel_requested"), False) else 3):
                         log(f"  [STRAT] order {o.get('side', '?')} {o['id']} confirmed absent ({misses} misses) — removing from tracking")
                         if (
                             o.get("side") == "SELL" and o.get("level") is not None

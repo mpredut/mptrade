@@ -597,7 +597,7 @@ class HyperliquidProvider(MarketDataProvider):
         )
         if not isinstance(raw_fills, list):
             return None
-        is_snapshot = bool(data.get("isSnapshot")) if isinstance(data, dict) else False
+        is_snapshot = bool(_parse_bool_flag(data.get("isSnapshot"), False)) if isinstance(data, dict) else False
         fills_by_symbol: dict[str, list[dict]] = {}
         for s_sym in symbols or ():
             spot_coins = {

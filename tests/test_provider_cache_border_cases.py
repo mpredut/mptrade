@@ -84,6 +84,7 @@ from intelligence.macro.news_feed_collector import NewsFeedCollector
 import intelligence.macro_sentiment_ssot as mss
 from intelligence.macro_sentiment_ssot import FearGreedSnapshot
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+from intelligence.sentiment.collectors.macro_telemetry_collector import MacroAndNewsSensorsCollector
 from intelligence.sentiment.collectors.portfolio_collector import _resolve_ai_intents_and_known_order_ids
 from intelligence.sentiment.evaluators import (
     microstructure_evaluator as me_mod,
@@ -98,7 +99,7 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
 from intelligence.sentiment.evaluators.tca_risk_evaluator import VenueFeeAndLimitsEvaluator
 from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
 from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
-from kraken import shadow_live as kraken_shadow
+from kraken import kraken_xstock_watch as xstock_watch, shadow_live as kraken_shadow
 from kraken.kraken_client import KrakenClient
 from kraken.kraken_common import load_isolated_kraken_cfg
 from kraken.trailing_stop import KrakenTrailing
@@ -131,7 +132,7 @@ import pricewindow as pw
 from providers import binance_provider as bp_mod, order_id_context as oic
 from providers.base import MarketDataProvider
 from providers.binance_provider import BinanceProvider
-from providers.execution_audit import _filter_intents_by_scope
+from providers.execution_audit import _filter_intents_by_scope, reconcile_intents_from_execution_audit
 from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
 from providers.kraken_provider import KrakenProvider
 from providers.order_ohlc_utils import (
@@ -3047,4 +3048,233 @@ def test_wave19_is_market_order_state_flag_replay_ownership_and_ntfy_border_case
         include_macro_benchmarks=False,
     )
     assert all("Active AssetGuardian State" not in ln for ln in pf_lines)
+
+
+def test_wave20_llm_guard_audit_hl_fills_macro_news_xstock_and_spot_flags(tmp_path, monkeypatch):
+    """Verify Wave 20 border cases: GLLM1 cache_hit/allowed string flags, execution_audit reconciled_terminal string flag, Hyperliquid extract_ws_user_fills isSnapshot string flag, MacroAndNewsSensorsCollector is_high_severity string flag, prompt_sections macro_calendar string flags, kraken_xstock_watch alerted flags, and spot_engine trend_mode/cancel_requested/_replay_had_fill string flags."""
+
+    # 1. llm_order_guard.evaluate_high_stake_order_guard: "cache_hit": "false" does not suppress notify, and cached "false" allowed still blocks
+    hs_notifies: list[dict[str, Any]] = []
+    monkeypatch.setattr(llm_order_guard._high_stake_guard, "is_llm_guard_exempt", lambda: False)
+    monkeypatch.setattr(
+        llm_order_guard._high_stake_guard,
+        "HighStakeGuard",
+        lambda **_kw: SimpleNamespace(
+            check=lambda *_a, **_k: GuardDecision.veto(
+                "GLLM1",
+                "llm_veto_test",
+                cache_hit="false",
+                evaluated_notional_eur=1000.0,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        llm_order_guard._alertnotifiers,
+        "notify",
+        lambda **kw: hs_notifies.append(kw),
+    )
+    llm_order_guard._LLM_SHADOW_NOTIFY_COOLDOWN.clear()
+    margins_hs = make_test_margins(llm_guard_mode="enforce", high_stake_min_notional_usd=700.0)
+    hs_ctx = SimpleNamespace()
+    hs_ok, hs_reason, hs_scale = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="BTCUSDC",
+        side="BUY",
+        price=100.0,
+        qty=10.0,
+        computed_notional=1000.0,
+        regime_context=hs_ctx,
+        valid_context=True,
+        cache_key=("BUY", ()),
+        margins=margins_hs,
+        bypassed=set(),
+        now=1_700_000_000.0,
+        notify_on_eval=True,
+    )
+    assert (hs_ok, hs_reason, hs_scale) == (False, "llm_veto_test", 0.0)
+    assert len(hs_notifies) == 1
+
+    cached_ctx = SimpleNamespace(
+        _intelligence_decisions_by_key={
+            ("BUY", ()): {
+                "gemini_notional": 1000.0,
+                "gemini_decision": ("false", "cached_string_veto", 1.0),
+            }
+        }
+    )
+    c_ok, c_reason, c_scale = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="BTCUSDC",
+        side="BUY",
+        price=100.0,
+        qty=10.0,
+        computed_notional=1000.0,
+        regime_context=cached_ctx,
+        valid_context=True,
+        cache_key=("BUY", ()),
+        margins=margins_hs,
+        bypassed=set(),
+        now=1_700_000_010.0,
+        notify_on_eval=False,
+    )
+    assert (c_ok, c_reason, c_scale) == (False, "cached_string_veto", 0.0)
+
+    # 2. reconcile_intents_from_execution_audit: "reconciled_terminal": "false" still reconciles live order to FILLED
+    audit_dir = tmp_path / "audit_w20"
+    audit_dir.mkdir(parents=True)
+    day_str = datetime.fromtimestamp(1_700_000_000.0, timezone.utc).strftime("%Y-%m-%d")
+    atomic_write_text(
+        str(audit_dir / f"execution_audit_{day_str}.jsonl"),
+        json.dumps(
+            {
+                "event": "order_terminal",
+                "intent_id": "int-w20",
+                "order_id": "oid-w20",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "venue_status": "FILLED",
+                "lifecycle_status": "filled",
+                "filled_qty": 2.0,
+                "cost": 200.0,
+                "avg_fill_price": 100.0,
+                "ts": 1_700_000_005.0,
+            }
+        )
+        + "\n",
+    )
+    intents_w20 = [
+        {
+            "intent_id": "int-w20",
+            "status": "EXECUTED",
+            "timestamp": 1_700_000_000.0,
+            "execution_payload": {
+                "orderId": "oid-w20",
+                "status": "NEW",
+                "reconciled_terminal": "false",
+                "_ts_backfill_checked": "false",
+            },
+        }
+    ]
+    assert reconcile_intents_from_execution_audit(intents_w20, str(audit_dir)) is True
+    assert intents_w20[0]["execution_payload"]["status"] == "FILLED"
+    assert intents_w20[0]["execution_payload"]["reconciled_terminal"] is True
+
+    # 3. HyperliquidProvider.extract_ws_user_fills: "isSnapshot": "false" is incremental (does not zero untouched symbols)
+    hl_parsed = HyperliquidProvider.extract_ws_user_fills(
+        {"isSnapshot": "false", "fills": [{"coin": "@107", "px": "25.0", "sz": "1.0"}]},
+        ["HYPEUSDC", "PURRUSDC"],
+        candidate_mids_fn=lambda sym: ("@107",) if sym == "HYPEUSDC" else ("@1",),
+    )
+    assert hl_parsed is not None
+    is_snap, fills_by_sym = hl_parsed
+    assert is_snap is False
+    assert list(fills_by_sym.keys()) == ["HYPEUSDC"]
+
+    # 4. MacroAndNewsSensorsCollector.collect: "is_high_severity": "false" stays False
+    _macro_s, breaking = MacroAndNewsSensorsCollector().collect(
+        cachedb_dir=str(tmp_path),
+        now_ts=1_700_000_000.0,
+        read_json_fn=lambda p: (
+            {
+                "items": [
+                    {
+                        "title": "Routine crypto market recap",
+                        "source": "CoinDesk",
+                        "first_seen_ts": 1_700_000_000.0 - 300.0,
+                        "is_high_severity": "false",
+                        "matched_keywords": [],
+                    }
+                ]
+            }
+            if str(p).endswith("news_feed_collect.json")
+            else {}
+        ),
+        allow_network=False,
+        persist=False,
+    )
+    assert len(breaking) == 1 and breaking[0]["is_high_severity"] is False
+
+    # 5. prompt_sections._format_macro_and_news_section: macro_calendar string "false" flags
+    mc_out = "\n".join(
+        ps_mod._format_macro_and_news_section(
+            SimpleNamespace(
+                macro_calendar={
+                    "session_label": "US_PRE",
+                    "next_high_impact_event": "US Regular Open",
+                    "next_event_is_high_impact": "false",
+                    "active_release_window": "false",
+                    "next_scheduled_event": "CPI",
+                    "fomc_today": "false",
+                }
+            )
+        )
+    )
+    assert 'next_routine_session_window="US Regular Open"' in mc_out
+    assert 'next_scheduled="CPI"' not in mc_out
+    assert "fomc_today=False" in mc_out
+
+    # 6. kraken_xstock_watch.check_levels: "alerted_tp": "false" still triggers alert
+    xw_alerts: list[dict[str, Any]] = []
+    monkeypatch.setattr(xstock_watch, "notify", lambda **kw: xw_alerts.append(kw))
+    st_xw = {
+        "pair": "AAPLXUSD",
+        "allocated": {"qty": 10.0},
+        "alerted_tp": "false",
+        "alerted_tp2": "false",
+        "alerted_sl": "false",
+    }
+    with temporary_environ({"XSTOCK_TP2_ALERT_PCT": "25.0"}):
+        xstock_watch.check_levels(
+            SimpleNamespace(last_price=lambda _p: 115.0),
+            st_xw,
+            100.0,
+            10.0,
+            10.0,
+            "",
+            False,
+        )
+    assert st_xw["alerted_tp"] is True
+    assert len(xw_alerts) == 1
+
+    # 7. spot_engine._is_trend_up and _dispatch_take_profit string boolean flags
+    spot_stub = spot_eng_mod.Strategy.__new__(spot_eng_mod.Strategy)
+    spot_stub.p = SimpleNamespace(
+        enable_takeprofit=True,
+        takeprofit_pct=3.0,
+        tp_dynamic_flat=False,
+        tp_trend_hold=False,
+        tp_tranches=[],
+    )
+    spot_stub.price_dec = 2
+    spot_stub.vol_dec = 4
+    spot_stub.ordermin = 0.01
+    spot_stub._dust_safe_qty = lambda q: q
+    spot_stub._is_trend_direction = lambda *_a, **_k: False
+    spot_stub.s = {
+        "trend_mode": "false",
+        "trail_peak": None,
+        "trail_stop": None,
+        "tp_sold_levels": [],
+        "orders": [
+            {
+                "side": "sell",
+                "price": 103.0,
+                "vol": 1.0,
+                "cancel_requested": "false",
+                "_replay_had_fill": "false",
+            }
+        ],
+    }
+    assert spot_stub._is_trend_up(None) is False
+    spot_stub.s["trend_mode"] = "true"
+    assert spot_stub._is_trend_up(None) is True
+
+    canceled_tp: list[dict[str, Any]] = []
+    placed_tp: list[tuple[Any, Any]] = []
+    spot_stub._cancel_order = lambda o: canceled_tp.append(o)
+    spot_stub._place = lambda *a, **k: placed_tp.append((a, k)) or True
+    assert spot_stub._dispatch_take_profit(100.0, 100.0, 1.0) is False
+    assert canceled_tp == [] and placed_tp == []
+    spot_stub.s["orders"][0]["cancel_requested"] = "true"
+    assert spot_stub._dispatch_take_profit(100.0, 100.0, 1.0) is False
+    assert len(canceled_tp) == 1
+
 

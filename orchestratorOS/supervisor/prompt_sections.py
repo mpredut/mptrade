@@ -357,9 +357,12 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     )
     if isinstance(mc, dict) and mc.get("next_high_impact_event"):
         if "next_event_is_high_impact" in mc:
-            is_confirmed_macro = bool(mc.get("next_event_is_high_impact"))
+            is_confirmed_macro = bool(_parse_bool_flag(mc.get("next_event_is_high_impact"), False))
         elif "macro_release_confirmed" in mc or "fomc_today" in mc:
-            is_confirmed_macro = bool(mc.get("macro_release_confirmed") or mc.get("fomc_today"))
+            is_confirmed_macro = bool(
+                _parse_bool_flag(mc.get("macro_release_confirmed"), False)
+                or _parse_bool_flag(mc.get("fomc_today"), False)
+            )
         else:
             is_confirmed_macro = True
         ev_lbl = "next_high_impact_event" if is_confirmed_macro else "next_routine_session_window"
@@ -367,10 +370,10 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             f'session="{mc.get("session_label")}"',
             f'{ev_lbl}="{mc.get("next_high_impact_event")}"',
         ]
-        if mc.get("active_release_window") and mc.get("next_scheduled_event"):
+        if _parse_bool_flag(mc.get("active_release_window"), False) and mc.get("next_scheduled_event"):
             mc_parts.append(f'next_scheduled="{mc.get("next_scheduled_event")}"')
         if mc.get("fomc_today") is not None:
-            mc_parts.append(f'fomc_today={mc.get("fomc_today")}')
+            mc_parts.append(f'fomc_today={bool(_parse_bool_flag(mc.get("fomc_today"), False))}')
         if mc.get("next_fomc_date"):
             mc_parts.append(f'next_fomc_date="{mc.get("next_fomc_date")}"')
         if mc.get("upcoming_windows"):

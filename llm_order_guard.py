@@ -154,10 +154,11 @@ def evaluate_high_stake_order_guard(
         g_meta = getattr(g_dec, "metadata", None)
         g_meta = g_meta if isinstance(g_meta, dict) else {}
         eval_notional = safe_pos_float(g_meta.get("evaluated_notional_eur"), computed_notional)
-        is_cache_hit = bool(g_meta.get("cache_hit"))
+        is_cache_hit = bool(_parse_bool_flag(g_meta.get("cache_hit"), False))
+        g_allowed_bool = bool(_parse_bool_flag(g_dec.allowed, True))
         if valid_context:
             try:
-                g_tuple = (bool(g_dec.allowed), g_dec.reason, g_scale)
+                g_tuple = (g_allowed_bool, g_dec.reason, g_scale)
                 if not isinstance(decisions_map, dict):
                     decisions_map = {}
                 entry = decisions_map.get(cache_key, {})
@@ -222,7 +223,7 @@ def evaluate_high_stake_order_guard(
     if isinstance(cached_g_dec, (tuple, list)) and len(cached_g_dec) == 3 and llm_mode == "enforce":
         g_allowed, g_reason, raw_g_scale = cached_g_dec
         g_scale = clean_scale(raw_g_scale, default=1.0, allow_percent=True)
-        if not g_allowed or g_scale <= 0.0:
+        if not _parse_bool_flag(g_allowed, True) or g_scale <= 0.0:
             return False, g_reason, 0.0
         if g_scale < 1.0:
             return True, g_reason, g_scale

@@ -10,7 +10,7 @@ import os
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from botcore import extract_current_price_item, fetch_public_json, is_live_network_backfill_enabled
+from botcore import _parse_bool_flag, extract_current_price_item, fetch_public_json, is_live_network_backfill_enabled
 from cachepaths import (
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     canonical_base_asset,
@@ -226,7 +226,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                 pts_24h = ([p for p in pts if p[0] >= pts[-1][0] - 86400.0] or pts) if pts else []
                 mkt_state = str(meta.get("marketState") or "").strip().upper()
                 reg_time_s = normalize_epoch_sec(meta.get("regularMarketTime"), default=None)
-                if not mkt_state and bool(meta.get("hasPrePostMarketData")) and isinstance(ctp := meta.get("currentTradingPeriod"), dict):
+                if not mkt_state and _parse_bool_flag(meta.get("hasPrePostMarketData"), False) and isinstance(ctp := meta.get("currentTradingPeriod"), dict):
                     reg_d, pre_d, post_d = coerce_dict_maps(
                         ctp.get("regular"), ctp.get("pre"), ctp.get("post")
                     )
@@ -615,14 +615,15 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                 clean_kws = list(filter_valid_severity_keywords(raw_kws, title=str(item.get("title") or ""))) if raw_kws else []
                 item_seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
                 is_stale_sev = item_seen_ts > 0.0 and now_ts > item_seen_ts and (now_ts - item_seen_ts) > 5400.0
-                was_valid_aged_sev = bool(is_stale_sev and item.get("is_high_severity") and (clean_kws or not raw_kws))
+                item_high_sev = bool(_parse_bool_flag(item.get("is_high_severity"), False))
+                was_valid_aged_sev = bool(is_stale_sev and item_high_sev and (clean_kws or not raw_kws))
                 if was_valid_aged_sev:
                     stale_valid_sev_titles.add(_strip_headline_publisher_suffix(str(item.get("title") or "")).strip().lower())
                     stale_valid_sev_titles.add(str(item.get("title") or "").strip().lower())
                 cand_entry = {
                     **item,
                     "matched_keywords": clean_kws,
-                    "is_high_severity": False if (is_stale_sev or (raw_kws and not clean_kws)) else bool(item.get("is_high_severity")),
+                    "is_high_severity": False if (is_stale_sev or (raw_kws and not clean_kws)) else item_high_sev,
                     "_aged_high_sev_context": was_valid_aged_sev,
                 }
                 merged_dup = False

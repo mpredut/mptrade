@@ -231,7 +231,7 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
     k, v = matches[0]
     name = v.get("wsname") or k
     st["pair"] = k
-    if not st.get("alerted_pair"):
+    if not _parse_bool_flag(st.get("alerted_pair"), False):
         st["alerted_pair"] = True
         px = None
         try:
@@ -293,7 +293,7 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
             "Decide: hold (DCA) or cut the loss.",
         ),
     ):
-        if triggered and not st.get(key):
+        if triggered and not _parse_bool_flag(st.get(key), False):
             st[key] = True
             notify(title=title, body=body, source="xstock-watch", price=price, desktop=desktop)
 
@@ -341,7 +341,7 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
         return
     alloc_f = safe_pos_float(alloc_price, 0.0)
     if alloc_f <= 0:
-        if not st.get("alerted_need_price"):
+        if not _parse_bool_flag(st.get("alerted_need_price"), False):
             st["alerted_need_price"] = True
             notify(title="⚠ xStock: set XSTOCK_ALLOC_PRICE",
                    body=f"The allocation {allocated['asset']} is in the account and the pair "

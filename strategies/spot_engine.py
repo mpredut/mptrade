@@ -963,7 +963,7 @@ class Strategy(BaseSpotMixin):
 
     def _is_trend_up(self, regime: MarketRegimeDecision | None = None) -> bool:
         """Return True if an uptrend is identified via regime, trend_mode, or venue client."""
-        return bool(self.s.get("trend_mode")) or self._is_trend_direction(regime, "bull", ("up", "bull", "uptrend"))
+        return self._state_flag("trend_mode") or self._is_trend_direction(regime, "bull", ("up", "bull", "uptrend"))
 
     def _check_stop_loss(self, price: float) -> bool:
         """Close everything when unrealized loss crosses the anti-runaway threshold."""
@@ -1014,7 +1014,7 @@ class Strategy(BaseSpotMixin):
 
     def _maybe_adopt(self) -> None:
         """Adopt an existing account position instead of buying an entry."""
-        if self.p.adopt_cost <= 0 or self.s.get("adopted"):
+        if self.p.adopt_cost <= 0 or self._state_flag("adopted"):
             return
         if self.s["qty"] > 1e-12 or self.s["orders"] or self.s["cycle"] != 1 or self.s["spent"] > 0:
             log("  [STRAT] adopt: the state is not fresh -- NOT adopting (cycle in progress)")
@@ -1290,7 +1290,7 @@ class Strategy(BaseSpotMixin):
     def _overlay_step(self, price: float, regime: MarketRegimeDecision,
                       closes: list, tick_time: float | None = None) -> bool:
         """Apply the regime overlay and return whether it handled the tick."""
-        if self.s.get("trend_mode"):
+        if self._state_flag("trend_mode"):
             avg = self._avg()
             if self._check_advanced_profit_guards(price, avg, self.s["qty"], closes, tick_time):
                 return True
@@ -1503,7 +1503,7 @@ class Strategy(BaseSpotMixin):
             log("  [STRAT] pre-submit intent in reconciliation -- deferring new decisions")
             return None
         clean_ts = normalize_epoch_sec(timestamp, default=None, allow_zero=True)
-        had_persisted_reconcile = bool(self.s.get("ledger_reconcile_required"))
+        had_persisted_reconcile = self._state_flag("ledger_reconcile_required")
         if self.observe_only:
             tick_time = clean_ts if clean_ts is not None else self._now()
             self._shadow_prices.append((tick_time, price))
@@ -1513,7 +1513,7 @@ class Strategy(BaseSpotMixin):
                 return None
         held = self.s["qty"]
         if (
-            not self.dry_run and self.s.get("ledger_reconcile_required")
+            not self.dry_run and self._state_flag("ledger_reconcile_required")
             and (held > 1e-12 or self.observe_only) and not self.s.get("orders")
         ):
             if self._reconcile_venue_ledger(price, clean_ts, had_persisted_reconcile):
@@ -1530,9 +1530,9 @@ class Strategy(BaseSpotMixin):
         if self._surge_replay_closes is not None:
             self._surge_replay_closes.append(price)
 
-        if self.p.adopt_cost > 0 and not self.s.get("adopted") and held <= 1e-12:
+        if self.p.adopt_cost > 0 and not self._state_flag("adopted") and held <= 1e-12:
             self._maybe_adopt()
-            if not self.s.get("adopted"):
+            if not self._state_flag("adopted"):
                 return None
             held = self.s["qty"]
         return price, entry_px, held, tick_time, high
@@ -1565,7 +1565,7 @@ class Strategy(BaseSpotMixin):
             and "evaluate_closes_for_horizon" not in self._regime_service.__dict__
             and (
                 (
-                    self.p.trend_overlay and bool(self.s.get("trend_mode"))
+                    self.p.trend_overlay and self._state_flag("trend_mode")
                     and not self.p.trend_exit_break and not self.p.slow_grind_guard
                 )
                 or (not self.p.trend_overlay and held <= 1e-12 and self._has_open("buy"))
@@ -1764,9 +1764,9 @@ class Strategy(BaseSpotMixin):
             if target_px <= 0:
                 continue
             for o in sells:
-                if id(o) in used_orders or o.get("cancel_requested"):
+                if id(o) in used_orders or _parse_bool_flag(o.get("cancel_requested"), False):
                     continue
-                in_progress = bool(o.get("_replay_had_fill")) or (safe_pos_float(o.get("applied_vol"), None) is not None)
+                in_progress = bool(_parse_bool_flag(o.get("_replay_had_fill"), False)) or (safe_pos_float(o.get("applied_vol"), None) is not None)
                 if not in_progress:
                     continue
                 o_tr = safe_nonneg_int(o.get("tranche_idx"), default=None)
@@ -1814,7 +1814,7 @@ class Strategy(BaseSpotMixin):
 
         ok = (
             len(sells) == len(desired)
-            and all(not o.get("cancel_requested") for o in sells)
+            and all(not _parse_bool_flag(o.get("cancel_requested"), False) for o in sells)
             and all(
                 abs(o["price"] - p) / p <= 0.001 and abs(o["vol"] - q) <= 1e-9
                 for o, (p, q, _tr) in zip(
