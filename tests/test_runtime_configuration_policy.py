@@ -5,13 +5,13 @@ import pytest
 import re
 import subprocess
 import sys
-import tempfile
 import textwrap
 import tomllib
 import unittest
 from binance_api import bapi_client
 from botcore import resolve_cli_env_path
 from pathlib import Path
+from tests.conftest import TempDirTestCase
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from verify_tools.direct_order_api_inventory import inventory, scan_direct_calls
@@ -208,8 +208,7 @@ def _write_inv(root: Path, relative: str, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _ownership_fixture() -> Path:
-    root = Path(tempfile.mkdtemp())
+def _ownership_fixture(root: Path) -> Path:
     _write_inv(root, "procs.conf", """
 dn_bot.py$|x|x|DN|||bot
 kraken_bot.py|x|x|Kraken|||bot
@@ -252,11 +251,9 @@ mt.gain=9
     return root
 
 
-class OwnershipInventoryTest(unittest.TestCase):
+class OwnershipInventoryTest(TempDirTestCase):
     def _make_fixture(self) -> Path:
-        root = _ownership_fixture()
-        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
-        return root
+        return _ownership_fixture(Path(self.tmp))
 
     def test_two_primary_kraken_owners_are_warning_but_trailing_is_protective(self):
         root = self._make_fixture()

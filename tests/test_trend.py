@@ -14,7 +14,6 @@ import numpy as np
 import order_guard
 import os
 import priceAnalysis as pa
-import tempfile
 import time
 import unittest
 from intelligence.internal.state import survival as surv
@@ -25,6 +24,7 @@ from intelligence.internal.state.persistence import (
 )
 from intelligence.internal.state.survival import hybrid_T
 from priceAnalysis import detect_long_term_trend, get_trade_weight
+from tests.conftest import TempDirTestCase
 from unittest.mock import patch
 
 
@@ -330,7 +330,7 @@ class TestTimeBasedTrend(unittest.TestCase):
             self.assertEqual(r_dn["direction"], "down")
 
 
-class TestTrendPersistence(unittest.TestCase):
+class TestTrendPersistence(TempDirTestCase):
     def test_persistence_behaviors(self):
         with self.subTest(msg="write_all_trends_uses_the_shared_atomic_json_writer"):
             payload = {
@@ -341,10 +341,9 @@ class TestTrendPersistence(unittest.TestCase):
                     "estimated_future_hours": 2,
                 },
             }
-            with tempfile.TemporaryDirectory() as directory:
-                filename = os.path.join(directory, "trends.json")
-                with patch.object(pa, "atomic_write_json") as writer:
-                    self.assertEqual(pa.write_all_trends(payload, filename), payload)
+            filename = os.path.join(self.tmp, "trends1.json")
+            with patch.object(pa, "atomic_write_json") as writer:
+                self.assertEqual(pa.write_all_trends(payload, filename), payload)
             writer.assert_called_once_with(filename, payload, indent=2)
 
         with self.subTest(msg="failed_atomic_write_preserves_the_previous_generation"):
@@ -357,14 +356,13 @@ class TestTrendPersistence(unittest.TestCase):
                     "estimated_future_hours": 2,
                 },
             }
-            with tempfile.TemporaryDirectory() as directory:
-                filename = os.path.join(directory, "trends.json")
-                with open(filename, "w", encoding="utf-8") as handle:
-                    json.dump(previous, handle)
-                with patch.object(pa, "atomic_write_json", side_effect=OSError("disk full")):
-                    self.assertEqual(pa.write_all_trends(payload, filename), payload)
-                with open(filename, encoding="utf-8") as handle:
-                    self.assertEqual(json.load(handle), previous)
+            filename = os.path.join(self.tmp, "trends2.json")
+            with open(filename, "w", encoding="utf-8") as handle:
+                json.dump(previous, handle)
+            with patch.object(pa, "atomic_write_json", side_effect=OSError("disk full")):
+                self.assertEqual(pa.write_all_trends(payload, filename), payload)
+            with open(filename, encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), previous)
 
 
 class TestBoundedPlotIndices(unittest.TestCase):

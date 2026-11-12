@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import signal
-import tempfile
 import time
 from types import SimpleNamespace
 import unittest
@@ -34,7 +33,7 @@ from providers.order_ohlc_utils import (
     resolve_ohlc_time_window_ms,
 )
 from strategies import spot_engine as _xstock_strategy
-from tests.conftest import TrailingTestBase, load_venue_modules
+from tests.conftest import TempDirTestCase, TrailingTestBase, load_venue_modules
 import trailing_core
 from trailing_core import should_sell
 
@@ -444,9 +443,7 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
         self.assertNotEqual(first_cid, second_cid)
 
     def test_trend_value_resolves_cross_venue_symbol_variants(self):
-
-        fd, trend_path = tempfile.mkstemp(suffix=".json")
-        os.close(fd)
+        trend_path = os.path.join(self.tmp, "trend.json")
         prev_cache = ts_mod.CACHE_TREND
         try:
             with open(trend_path, "w", encoding="utf-8") as f:
@@ -470,8 +467,6 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
             self.assertAlmostEqual(ts.trend("TAO/USD"), -0.42)
         finally:
             ts_mod.CACHE_TREND = prev_cache
-            if os.path.exists(trend_path):
-                os.remove(trend_path)
 
     def test_free_balance_fails_closed_on_corrupt_hold_trade_and_unlock_qty_handles_null_descr(self):
         c = FakeK(60.0, total=25.0, held=0.0)
@@ -547,52 +542,47 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
 
     def test_cross_venue_shared_cost_basis_cli_dispatch_and_strategy_dry_run_gates(self):
         # 1. KrakenTrailing.cost_basis delegates to KrakenProvider.position_cost_basis / compute_fills_cost_basis
-        fd, tmp_cache_path = tempfile.mkstemp(suffix=".json")
-        os.close(fd)
+        tmp_cache_path = os.path.join(self.tmp, "kraken_trades.json")
         now_ms = int(time.time() * 1000)
-        try:
-            with open(tmp_cache_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "items": {
-                            "HYPEUSD": [
-                                {
-                                    "id": "T1",
-                                    "ordertxid": "O1",
-                                    "symbol": "HYPEUSD",
-                                    "side": "BUY",
-                                    "price": 40.0,
-                                    "qty": 10.0,
-                                    "fee": 0.0,
-                                    "feeAsset": "USD",
-                                    "time": now_ms - 5000,
-                                },
-                                {
-                                    "id": "T2",
-                                    "ordertxid": "O2",
-                                    "symbol": "HYPEUSD",
-                                    "side": "BUY",
-                                    "price": 50.0,
-                                    "qty": 15.0,
-                                    "fee": 0.0,
-                                    "feeAsset": "USD",
-                                    "time": now_ms - 2000,
-                                },
-                            ]
-                        },
-                        "fetchtime": {"HYPEUSD": now_ms},
+        with open(tmp_cache_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "items": {
+                        "HYPEUSD": [
+                            {
+                                "id": "T1",
+                                "ordertxid": "O1",
+                                "symbol": "HYPEUSD",
+                                "side": "BUY",
+                                "price": 40.0,
+                                "qty": 10.0,
+                                "fee": 0.0,
+                                "feeAsset": "USD",
+                                "time": now_ms - 5000,
+                            },
+                            {
+                                "id": "T2",
+                                "ordertxid": "O2",
+                                "symbol": "HYPEUSD",
+                                "side": "BUY",
+                                "price": 50.0,
+                                "qty": 15.0,
+                                "fee": 0.0,
+                                "feeAsset": "USD",
+                                "time": now_ms - 2000,
+                            },
+                        ]
                     },
-                    f,
-                )
-            with patch("providers.kraken_provider._KRAKEN_CACHE_FILE", tmp_cache_path):
-                c = FakeK(60.0, total=25.0, held=5.0)  # total balance = 25.0 (20 free + 5 held)
-                ts = self.ts(c)
-                basis = ts.cost_basis("HYPEUSD")
-                # 10 @ 40 + 15 @ 50 = 400 + 750 = 1150 / 25 = 46.0
-                self.assertAlmostEqual(basis, 46.0)
-        finally:
-            if os.path.exists(tmp_cache_path):
-                os.remove(tmp_cache_path)
+                    "fetchtime": {"HYPEUSD": now_ms},
+                },
+                f,
+            )
+        with patch("providers.kraken_provider._KRAKEN_CACHE_FILE", tmp_cache_path):
+            c = FakeK(60.0, total=25.0, held=5.0)  # total balance = 25.0 (20 free + 5 held)
+            ts = self.ts(c)
+            basis = ts.cost_basis("HYPEUSD")
+            # 10 @ 40 + 15 @ 50 = 400 + 750 = 1150 / 25 = 46.0
+            self.assertAlmostEqual(basis, 46.0)
 
         # 2. Shared TrailingAdapterBase print_status and dispatch_cli
         c = FakeK(60.0, total=25.0, held=0.0)
@@ -686,12 +676,11 @@ class FakeKrakenXStock:
         return float(self.bal.get(asset, 0.0) or 0.0)
 
 
-class _XStockBase(unittest.TestCase):
+class _XStockBase(TempDirTestCase):
     def setUp(self):
+        super().setUp()
         self._env = dict(os.environ)
-        fd, path = tempfile.mkstemp(suffix=".json")
-        os.close(fd)
-        os.remove(path)
+        path = os.path.join(self.tmp, "xstock_state.json")
         self.state_path = path
         os.environ["XSTOCK_STATE_FILE"] = path
         os.environ.update(parse_dotenv(os.path.join(_KRAKEN_DIR, "config.env")))
@@ -704,10 +693,9 @@ class _XStockBase(unittest.TestCase):
     def tearDown(self):
         xw.notify = self._xw_notify
         _xstock_strategy.notify = self._st_notify
-        if os.path.exists(self.state_path):
-            os.remove(self.state_path)
         os.environ.clear()
         os.environ.update(self._env)
+        super().tearDown()
 
 
 class TestWatcherPersistence(_XStockBase):
@@ -788,8 +776,8 @@ class TestAutoStart(_XStockBase):
     def setUp(self):
         super().setUp()
         self._script, self._log = xw.BOT_SCRIPT, xw.BOT_LOG
-        fd, self.stub = tempfile.mkstemp(suffix=".py")
-        with os.fdopen(fd, "w") as f:
+        self.stub = os.path.join(self.tmp, "bot_stub.py")
+        with open(self.stub, "w", encoding="utf-8") as f:
             f.write("import time\ntime.sleep(120)\n")
         xw.BOT_SCRIPT = self.stub
         xw.BOT_LOG = self.stub + ".log"
@@ -805,9 +793,6 @@ class TestAutoStart(_XStockBase):
                 xw._bot_alive(self.st["bot_pid"])
             except (OSError, ValueError, TypeError):
                 pass
-        for p in (self.stub, xw.BOT_LOG):
-            if os.path.exists(p):
-                os.remove(p)
         xw.BOT_SCRIPT, xw.BOT_LOG = self._script, self._log
         super().tearDown()
 

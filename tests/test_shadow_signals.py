@@ -13,7 +13,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -458,7 +457,7 @@ class ShadowLiveTest(TempDirTestCase):
             self.assertEqual(os.environ["STRAT_DCA_DROP_PCT"], "1.25")
 
     def test_forward_history_keeps_anchor_after_api_window_moves(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(shadow, "LOG_DIR", tmp):
+        with patch.object(shadow, "LOG_DIR", str(self.tmp)):
             first = [(100, 1.0, 2.0, 0.5, 1.5), (160, 1.5, 2.5, 1.0, 2.0)]
             later = [(160, 1.5, 2.5, 1.0, 2.0), (220, 2.0, 3.0, 1.5, 2.5)]
             shadow._merge_forward_history("PAIR", 1, 100, first)
@@ -466,7 +465,7 @@ class ShadowLiveTest(TempDirTestCase):
             self.assertEqual([bar[0] for bar in merged], [100, 160, 220])
 
     def test_forward_history_fails_closed_when_a_gap_loses_bars(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(shadow, "LOG_DIR", tmp):
+        with patch.object(shadow, "LOG_DIR", str(self.tmp)):
             shadow._merge_forward_history("PAIR", 1, 100, [(100, 1.0, 2.0, 0.5, 1.5), (160, 1.5, 2.5, 1.0, 2.0)])
             with self.assertRaisesRegex(RuntimeError, "gap"):
                 shadow._merge_forward_history("PAIR", 1, 100, [(400, 4.0, 5.0, 3.5, 4.5)])
@@ -498,8 +497,8 @@ class ShadowLiveTest(TempDirTestCase):
             self.assertEqual(shadow.main(), 1)
 
     def test_get_anchor_replaces_non_positive_persisted_anchor(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(shadow, "LOG_DIR", tmp):
-            anchor_file = Path(tmp) / "HYPEUSD_240m.anchor"
+        with patch.object(shadow, "LOG_DIR", str(self.tmp)):
+            anchor_file = Path(self.tmp) / "HYPEUSD_240m.anchor"
             anchor_file.write_text("0\n", encoding="utf-8")
             self.assertEqual(shadow._get_anchor("HYPEUSD", 240, 1700000000), 1700000000)
             self.assertEqual(anchor_file.read_text(encoding="utf-8").strip(), "1700000000")

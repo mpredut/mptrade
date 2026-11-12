@@ -667,7 +667,7 @@ class DummyCachedHttpJsonCollector(CachedHttpJsonCollector):
         return {"ok": True, "value": data.get("v", 0), "val": data.get("val"), "ts": now}
 
 
-class TrailingTestBase(unittest.TestCase):
+class TrailingTestBase(TempDirTestCase):
     """Shared base class for trailing-stop unit tests with isolated temp state file and TRAIL_PCT restore."""
 
     TRAIL_MODULE = None
@@ -676,9 +676,8 @@ class TrailingTestBase(unittest.TestCase):
     SUPPRESS_MODULE_NOTIFY: bool = False
 
     def setUp(self):
-        fd, self.sf = tempfile.mkstemp(suffix=".json")
-        os.close(fd)
-        os.remove(self.sf)
+        super().setUp()
+        self.sf = os.path.join(self.tmp, "trailing_state.json")
         self._orig_trail_pct = {}
         if self.TRAIL_MODULE is not None:
             self._orig_trail_pct = dict(self.TRAIL_MODULE.TRAIL_PCT)
@@ -701,9 +700,7 @@ class TrailingTestBase(unittest.TestCase):
         if self.TRAIL_MODULE is not None:
             self.TRAIL_MODULE.TRAIL_PCT.clear()
             self.TRAIL_MODULE.TRAIL_PCT.update(self._orig_trail_pct)
-        for p in (self.sf, self.sf + ".tmp"):
-            if os.path.exists(p):
-                os.remove(p)
+        super().tearDown()
 
 
 def make_fake_chronos_pipeline(fill_value: float = 0.5, *, last_col_value: float | None = None):

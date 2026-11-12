@@ -30,7 +30,6 @@ import priceAnalysis as pa
 import pytest
 import rtrade
 import sys
-import tempfile
 import threading
 import time
 import tradeall
@@ -1368,14 +1367,16 @@ class TestWsHealthFunctions(unittest.TestCase):
 # ===============================================================================
 # 10. CacheFactory / get_cache_manager
 # ===============================================================================
-class TestCacheFactory(unittest.TestCase):
+class TestCacheFactory(TempDirTestCase):
 
     def setUp(self):
+        super().setUp()
         # Reset singletons.
         cm.CacheFactory.shutdown_all()
 
     def tearDown(self):
         cm.CacheFactory.shutdown_all()
+        super().tearDown()
 
     def test_factory_lifecycle_promotion_and_identity(self):
         def _reset():
@@ -1477,7 +1478,8 @@ class TestCacheFactory(unittest.TestCase):
 
         with self.subTest("disk_reader_never_queries_remote_when_cache_missing_or_empty"):
             _reset()
-            empty_dir = tempfile.mkdtemp()
+            empty_dir = os.path.join(self.tmp, "empty")
+            os.makedirs(empty_dir, exist_ok=True)
             with patch("cachepaths.cache_path", side_effect=lambda f: os.path.join(empty_dir, f)), \
                  patch.object(cm.CacheTradeManager, "query_remote_and_update_cache") as trade_remote, \
                  patch.object(cm.CacheOrderManager, "query_remote_and_update_cache") as order_remote, \
@@ -1785,7 +1787,7 @@ class TestAppendJsonlPersist(TempDirTestCase):
             self.assertEqual(m._persisted_counts.get("SYM"), 1)
 
     def test_maintain_pruning_and_rotation(self):
-        tmp = tempfile.mkdtemp(dir=self.tmp)
+        tmp = self.tmp
         with self.subTest("maintain prunes old entries"):
             fname = os.path.join(tmp, "p.jsonl")
             m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
@@ -1878,7 +1880,7 @@ class TestAppendJsonlPersist(TempDirTestCase):
             self.assertEqual(manager.cache["SYM"], [[now, 1.0]])
 
     def test_maintain_edge_cases_and_corruption(self):
-        tmp = tempfile.mkdtemp(dir=self.tmp)
+        tmp = self.tmp
         with self.subTest("maintain noop leaves file intact"):
             fname = os.path.join(tmp, "intact.jsonl")
             m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
@@ -2043,8 +2045,8 @@ class TestAtomicWrite(TempDirTestCase):
                 self.assertEqual(json.load(f), {"v": "old"})   # Previous content remains intact.
 
         with self.subTest("legacy filename migration and sidecars"):
-
-            mig_dir = tempfile.mkdtemp(dir=self.tmp)
+            mig_dir = os.path.join(self.tmp, "mig")
+            os.makedirs(mig_dir, exist_ok=True)
             cases = [
                 ("cache_currentprice.json", "cache_current_price.json"),
                 ("cache_instant_trend.json", "cache_short_trend.json"),

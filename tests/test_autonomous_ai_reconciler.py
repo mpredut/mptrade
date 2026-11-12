@@ -13,7 +13,6 @@ import order_retry as oq
 import os
 import pytest
 import subprocess
-import tempfile
 import time
 import types
 import verify_tools.check_cache_coherence as ccc
@@ -8325,7 +8324,7 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
     assert "Options_Surface(RV=32.1%, VRP=+7.8%, PC_OI=0.24, Skew_25d=+3.00%)" in mb_line
 
 
-def test_prompt_deanchoring_and_cognitive_noise_optimizations():
+def test_prompt_deanchoring_and_cognitive_noise_optimizations(tmp_path):
     """Verify the 5 AI prompt de-anchoring and cognitive noise optimizations."""
 
     # 1 & 4. Section 1 omits directive labels (bias/risk/action/level/brake) and distinguishes routine session windows
@@ -8632,29 +8631,29 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     assert "/HOLD" not in s1_compound_posture
 
     # 7. harvest_log_anomalies_from_dirs collapses tick-level float variations in guard_interventions samples
-
-    with tempfile.TemporaryDirectory() as tmp_d:
-        guard_log = Path(tmp_d) / "guard_dedup.log"
-        guard_log.write_text(
-            "\n".join(
-                [
-                    "20:54:04 [order_guard.py:2174] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 216.2, price 216.8, diff -0.28%, threshold 1.15%",
-                    "20:57:04 [order_guard.py:2174] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 216.2, price 216.4, diff -0.09%, threshold 1.15%",
-                    "20:58:04 [order_guard.py:1727] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') recent sell ref 216.2, price 213.2, diff 1.39% >= 1.15%. Permitted.",
-                    "21:00:04 [order_guard.py:2174] [GUARD] BUY ARBUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 0.1180, price 0.1182, diff -0.17%, threshold 1.05%",
-                    "21:01:04 [llm_order_guard.py:153] [LLM_GUARD_ENFORCE] BUY TAOUSDC €1079.15: Gemini downscaled high-stake BUY (brake=DOWNSCALE_QTY, suggested_scale=0.35)",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
+    tmp_d = tmp_path / "guard_dedup"
+    tmp_d.mkdir(parents=True, exist_ok=True)
+    guard_log = tmp_d / "guard_dedup.log"
+    guard_log.write_text(
+        "\n".join(
+            [
+                "20:54:04 [order_guard.py:2174] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 216.2, price 216.8, diff -0.28%, threshold 1.15%",
+                "20:57:04 [order_guard.py:2174] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 216.2, price 216.4, diff -0.09%, threshold 1.15%",
+                "20:58:04 [order_guard.py:1727] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') recent sell ref 216.2, price 213.2, diff 1.39% >= 1.15%. Permitted.",
+                "21:00:04 [order_guard.py:2174] [GUARD] BUY ARBUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 0.1180, price 0.1182, diff -0.17%, threshold 1.05%",
+                "21:01:04 [llm_order_guard.py:153] [LLM_GUARD_ENFORCE] BUY TAOUSDC €1079.15: Gemini downscaled high-stake BUY (brake=DOWNSCALE_QTY, suggested_scale=0.35)",
+            ]
         )
-        g_res = harvest_log_anomalies_from_dirs([tmp_d], lookback_hours=24.0)
-        assert g_res.warning_count == 4
-        assert len(g_res.guard_interventions) == 3
-        assert "price 216.4, diff -0.09%" in g_res.guard_interventions[0]
-        assert "Permitted." not in " ".join(g_res.guard_interventions)
-        assert "ARBUSDC" in g_res.guard_interventions[1]
-        assert "BUY TAOUSDC $1079.15:" in g_res.guard_interventions[2]
+        + "\n",
+        encoding="utf-8",
+    )
+    g_res = harvest_log_anomalies_from_dirs([str(tmp_d)], lookback_hours=24.0)
+    assert g_res.warning_count == 4
+    assert len(g_res.guard_interventions) == 3
+    assert "price 216.4, diff -0.09%" in g_res.guard_interventions[0]
+    assert "Permitted." not in " ".join(g_res.guard_interventions)
+    assert "ARBUSDC" in g_res.guard_interventions[1]
+    assert "BUY TAOUSDC $1079.15:" in g_res.guard_interventions[2]
 
     # 8. compute_24h_price_metrics preserves 6h bottom structure during extended 24h selloff when 6h range contracts to -1.38%
     now_ms_b24 = 1_793_860_000_000
@@ -8711,95 +8710,96 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     )
 
     # 11. Transient '! network error GET: The read operation timed out' recovered by '[STRAT] price=...' is not flagged
-    with tempfile.TemporaryDirectory() as tmp_net:
-        t212_log = Path(tmp_net) / "T212-bot.log"
-        t212_log.write_text(
-            "\n".join(
-                [
-                    "[02:05:26] [nvda]   [STRAT] price=182.21  qty=0.41  avg=205.83  deployed=84USD  NET=+27.39USD  ord=0",
-                    "[02:05:27]   ! network error GET: The read operation timed out",
-                    "[02:05:27] [spcx]   [STRAT] price unavailable — retrying",
-                    "[02:05:46] [spcx]   [STRAT] price=123.52  qty=7.04  avg=144.99  deployed=1021USD  NET=-179.69USD  ord=0",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
+    tmp_net = tmp_path / "net_logs"
+    tmp_net.mkdir(parents=True, exist_ok=True)
+    t212_log = tmp_net / "T212-bot.log"
+    t212_log.write_text(
+        "\n".join(
+            [
+                "[02:05:26] [nvda]   [STRAT] price=182.21  qty=0.41  avg=205.83  deployed=84USD  NET=+27.39USD  ord=0",
+                "[02:05:27]   ! network error GET: The read operation timed out",
+                "[02:05:27] [spcx]   [STRAT] price unavailable — retrying",
+                "[02:05:46] [spcx]   [STRAT] price=123.52  qty=7.04  avg=144.99  deployed=1021USD  NET=-179.69USD  ord=0",
+            ]
         )
-        rtrade_log = Path(tmp_net) / "rtrade_2026-11-07.log"
-        rtrade_log.write_text(
-            "\n".join(
-                [
-                    "00:00:54 [ws_async.py:216] [STDERR] 2026-11-07 00:00:54,992 [ERROR] WS error: sent 1011 (internal error) keepalive ping timeout; no close frame received",
-                    "00:01:00 get_free_balance: Error for USDC: HTTPSConnectionPool(host='api.binance.com', port=443): Max retries exceeded (Caused by NameResolutionError(\"Failed to resolve 'api.binance.com' ([Errno -3] Temporary failure in name resolution)\"))",
-                    "00:01:33 [TAOUSDC] Current price: 224.90",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
+        + "\n",
+        encoding="utf-8",
+    )
+    rtrade_log = tmp_net / "rtrade_2026-11-07.log"
+    rtrade_log.write_text(
+        "\n".join(
+            [
+                "00:00:54 [ws_async.py:216] [STDERR] 2026-11-07 00:00:54,992 [ERROR] WS error: sent 1011 (internal error) keepalive ping timeout; no close frame received",
+                "00:01:00 get_free_balance: Error for USDC: HTTPSConnectionPool(host='api.binance.com', port=443): Max retries exceeded (Caused by NameResolutionError(\"Failed to resolve 'api.binance.com' ([Errno -3] Temporary failure in name resolution)\"))",
+                "00:01:33 [TAOUSDC] Current price: 224.90",
+            ]
         )
-        xstock_log = Path(tmp_net) / "xStock-watch.log"
-        xstock_log.write_text(
-            "\n".join(
-                [
-                    ".[00:00:55]   ! network error POST: <urlopen error timed out>",
-                    "[00:01:05]   price 134.27000427246094 vs allocation 141.75 (-5.3%)",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
+        + "\n",
+        encoding="utf-8",
+    )
+    xstock_log = tmp_net / "xStock-watch.log"
+    xstock_log.write_text(
+        "\n".join(
+            [
+                ".[00:00:55]   ! network error POST: <urlopen error timed out>",
+                "[00:01:05]   price 134.27000427246094 vs allocation 141.75 (-5.3%)",
+            ]
         )
-        kraken_ws_log = Path(tmp_net) / "Kraken-cache.log"
-        kraken_ws_log.write_text(
-            "\n".join(
-                [
-                    "[11:14:32] [kraken_cache][ws] error: Connection to remote host was lost.",
-                    "[11:14:34] [kraken_cache][ws] subscribed ownTrades",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
+        + "\n",
+        encoding="utf-8",
+    )
+    kraken_ws_log = tmp_net / "Kraken-cache.log"
+    kraken_ws_log.write_text(
+        "\n".join(
+            [
+                "[11:14:32] [kraken_cache][ws] error: Connection to remote host was lost.",
+                "[11:14:34] [kraken_cache][ws] subscribed ownTrades",
+            ]
         )
-        kraken_trail_log = Path(tmp_net) / "Kraken-trailing.log"
-        kraken_trail_log.write_text(
-            "\n".join(
-                [
-                    "Traceback (most recent call last):",
-                    '  File "/home/predut/mptrade/kraken/trailing_stop.py", line 1709, in <module>',
-                    "SyntaxError: invalid syntax",
-                    "[09:33:30] === TRAILING STOP KRAKEN started — ACTIVE ===",
-                    "[18:54:24]   ! [TRAIL-K] BalanceEx failed (KrakenError: network error/empty response in BalanceEx (HTTP 0))",
-                    "[18:55:00] [TRAIL-K] heartbeat",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
+        + "\n",
+        encoding="utf-8",
+    )
+    kraken_trail_log = tmp_net / "Kraken-trailing.log"
+    kraken_trail_log.write_text(
+        "\n".join(
+            [
+                "Traceback (most recent call last):",
+                '  File "/home/predut/mptrade/kraken/trailing_stop.py", line 1709, in <module>',
+                "SyntaxError: invalid syntax",
+                "[09:33:30] === TRAILING STOP KRAKEN started — ACTIVE ===",
+                "[18:54:24]   ! [TRAIL-K] BalanceEx failed (KrakenError: network error/empty response in BalanceEx (HTTP 0))",
+                "[18:55:00] [TRAIL-K] heartbeat",
+            ]
         )
-        order_retry_log = Path(tmp_net) / "order_retry.log"
-        order_retry_log.write_text(
-            "\n".join(
-                [
-                    "[18:48:15]   ! network error POST: <urlopen error [Errno -3] Temporary failure in name resolution>",
-                    "18:48:58 [order_retry] {'attempted': 0, 'succeeded': 0, 'reconciled': 0, 'observed': 3, 'filled': 0}",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
+        + "\n",
+        encoding="utf-8",
+    )
+    order_retry_log = tmp_net / "order_retry.log"
+    order_retry_log.write_text(
+        "\n".join(
+            [
+                "[18:48:15]   ! network error POST: <urlopen error [Errno -3] Temporary failure in name resolution>",
+                "18:48:58 [order_retry] {'attempted': 0, 'succeeded': 0, 'reconciled': 0, 'observed': 3, 'filled': 0}",
+            ]
         )
-        auto_exec_log = Path(tmp_net) / "auto_trade_executor.log"
-        auto_exec_log.write_text(
-            "\n".join(
-                [
-                    "2026-11-10 18:28:16,015 [WARNING] agy CLI with model 'gemini-4-argon-medium' failed (code 1): Error: authentication required.",
-                    "error: authentication failed or timed out",
-                    "2026-11-10 18:35:00,000 [INFO] Starting Autonomous AI Supervisor cycle",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
+        + "\n",
+        encoding="utf-8",
+    )
+    auto_exec_log = tmp_net / "auto_trade_executor.log"
+    auto_exec_log.write_text(
+        "\n".join(
+            [
+                "2026-11-10 18:28:16,015 [WARNING] agy CLI with model 'gemini-4-argon-medium' failed (code 1): Error: authentication required.",
+                "error: authentication failed or timed out",
+                "2026-11-10 18:35:00,000 [INFO] Starting Autonomous AI Supervisor cycle",
+            ]
         )
-        net_res = harvest_log_anomalies_from_dirs([tmp_net], lookback_hours=24.0)
-        assert net_res.error_count == 0
-        assert not net_res.persistent_errors
+        + "\n",
+        encoding="utf-8",
+    )
+    net_res = harvest_log_anomalies_from_dirs([str(tmp_net)], lookback_hours=24.0)
+    assert net_res.error_count == 0
+    assert not net_res.persistent_errors
 
     # 12. ProviderBase.get_trades and BinanceProvider/ReplayProvider/T212Provider.get_orders accept authoritative/publish_cache
 
