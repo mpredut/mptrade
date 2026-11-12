@@ -1259,6 +1259,58 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         return series_24h, vals_7d
 
 
+def _resolve_live_24trend_current_price(
+    cachedb_dir: str, sym_u: str, rj_fn
+) -> Optional[float]:
+    if not cachedb_dir:
+        return None
+    _ensure_cacheprice_classes_bound()
+    l24_s = rj_fn(
+        os.path.join(
+            cachedb_dir,
+            CacheShortTrendManager.live_window_relpath_for_symbol(sym_u.upper()),
+        )
+    )
+    if not isinstance(l24_s, dict):
+        return None
+    w_src = l24_s.get("windows") if isinstance(l24_s.get("windows"), dict) else l24_s
+    return safe_pos_float(
+        ((w_src.get("222") or w_src.get("900") or {}) if isinstance(w_src, dict) else {}).get(
+            "current_price"
+        ),
+        default=None,
+    )
+
+
+def _should_rescale_usd_sibling_walls(
+    sym_u: str,
+    sib_live_px: Optional[float],
+    ob_mid: Optional[float],
+    ref_px: float,
+    *,
+    ob_ts: float = 0.0,
+    last_pt: Optional[tuple] = None,
+) -> bool:
+    u = str(sym_u or "").strip().upper()
+    if (
+        not u.endswith("USD")
+        or u.endswith(("FDUSD", "TUSD", "BUSD"))
+        or not sib_live_px
+        or sib_live_px <= 0.0
+        or ob_mid is None
+        or abs(sib_live_px - ob_mid) / max(sib_live_px, ob_mid) <= 0.01
+        or _prices_diverged(sib_live_px, ob_mid)
+    ):
+        return False
+    if 0.0 < ob_ts and last_pt is not None and (ob_ts * 1000.0 - last_pt[0]) > 60_000.0:
+        return False
+    return not (
+        ref_px > 0.0
+        and abs(ref_px - ob_mid) / max(ref_px, ob_mid) <= 0.005
+        and abs(sib_live_px - ref_px) / max(sib_live_px, ref_px) > 0.01
+    )
+
+
 class MicrostructureCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for orderbook, derivatives, and whale positioning cache collectors."""
 
@@ -1772,13 +1824,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 if msym.upper().endswith("USD") and not msym.upper().endswith(("FDUSD", "TUSD", "BUSD")) and ob_mid_sib is not None:
                     sib_live_px = extract_current_price_item(casefold_get(cp_map, msym))
                     if (not sib_live_px or sib_live_px <= 0.0) and cachedb_dir:
-                        _ensure_cacheprice_classes_bound()
-                        if isinstance(l24_s := _rj(os.path.join(cachedb_dir, CacheShortTrendManager.live_window_relpath_for_symbol(msym.upper()))), dict):
-                            w_src = l24_s.get("windows") if isinstance(l24_s.get("windows"), dict) else l24_s
-                            sib_live_px = safe_pos_float(
-                                ((w_src.get("222") or w_src.get("900") or {}) if isinstance(w_src, dict) else {}).get("current_price"),
-                                default=None,
-                            )
+                        sib_live_px = _resolve_live_24trend_current_price(cachedb_dir, msym, _rj)
                         if not sib_live_px or sib_live_px <= 0.0:
                             if ob_ref_ts <= 0.0:
                                 ob_ref_d = _rj(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{msym.upper()}.json"))
@@ -1790,17 +1836,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                                 )
                             if ob_ref_ts > 0.0 and (eff_now - ob_ref_ts) > 120.0:
                                 sib_live_px = p_ref_px if p_ref_px > 0.0 else None
-                    if (
-                        sib_live_px
-                        and sib_live_px > 0.0
-                        and abs(sib_live_px - ob_mid_sib) / max(sib_live_px, ob_mid_sib) > 0.01
-                        and not _prices_diverged(sib_live_px, ob_mid_sib)
-                        and not (
-                            p_ref_px > 0.0
-                            and abs(p_ref_px - ob_mid_sib) / max(p_ref_px, ob_mid_sib) <= 0.005
-                            and abs(sib_live_px - p_ref_px) / max(sib_live_px, p_ref_px) > 0.01
-                        )
-                    ):
+                    if _should_rescale_usd_sibling_walls(msym, sib_live_px, ob_mid_sib, p_ref_px):
                         ob_mid_sib = rescale_orderbook_walls_to_price(m_info_ref, sib_live_px, ob_mid_sib)
                 if ob_mid_sib is not None and not _prices_diverged(ob_mid_sib, safe_float(p_ref.get("price"), 0.0)):
                     p_sib = dict(p_ref)

@@ -1248,6 +1248,15 @@ def _std_to_vol1h_pct(std: float, sample_rate_sec: float) -> float:
     return 0.0 if std == 0.0 else round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
 
 
+def extract_sorted_2d_price_column(arr):
+    """Extract the 1D price column from a 2D ``[ts, price, ...]`` numpy array, sorting by timestamp when unordered."""
+    arr2 = arr[:, :2].astype(float, copy=False)
+    ts_col = np.where(arr2[:, 0] > 1e11, arr2[:, 0] / 1000.0, arr2[:, 0])
+    if np.all(np.isfinite(ts_col) & (ts_col > 0)) and len(ts_col) > 1 and np.any(np.diff(ts_col) < 0):
+        return arr2[np.argsort(ts_col, kind="mergesort"), 1]
+    return arr2[:, 1]
+
+
 def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60.0) -> Optional[float]:
     """Estimate one-sigma hourly volatility percentage from scaled log returns."""
     if prices is None or isinstance(prices, (bool, str, bytes)):
@@ -1257,14 +1266,7 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
             return None
         if prices.ndim == 2 and prices.shape[1] >= 2:
             try:
-                arr2 = prices[:, :2].astype(float, copy=False)
-                ts_col = np.where(arr2[:, 0] > 1e11, arr2[:, 0] / 1000.0, arr2[:, 0])
-                valid_ts = np.isfinite(ts_col) & (ts_col > 0)
-                if np.all(valid_ts) and len(ts_col) > 1 and np.any(np.diff(ts_col) < 0):
-                    order = np.argsort(ts_col, kind="mergesort")
-                    prices = arr2[order, 1]
-                else:
-                    prices = arr2[:, 1]
+                prices = extract_sorted_2d_price_column(prices)
             except (TypeError, ValueError):
                 return None
     else:

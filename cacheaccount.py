@@ -1294,14 +1294,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     self._remember_loaded_trade_manifest_locked(metadata, counts)
                 return
 
-            legacy_metadata = {}
-            metaf = meta_file_path(self.filename)
-            if os.path.exists(metaf):
-                try:
-                    legacy_metadata = read_json_dict(metaf)
-                except (OSError, ValueError, TypeError):
-                    legacy_metadata = {}
-
+            legacy_metadata = self._read_optional_meta_dict()
             with self.lock:
                 self.cache = _cache_integrity.read_legacy_trade_jsonl_strict(
                     self.filename,
@@ -1310,9 +1303,8 @@ class CacheTradeManager(CacheAccountManagerBase):
                     reader_reason=self._account_reader_reason(),
                 )
                 self._legacy_jsonl_needs_rewrite = True
-                self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
-                self._hydrate_fetchtimes_from_mapping_locked(
-                    legacy_metadata, preserve_if_missing=True
+                self._sync_persisted_counts_and_legacy_fetchtimes_locked(
+                    legacy_metadata
                 )
 
     def compact_jsonl(self):
@@ -2707,37 +2699,25 @@ def get_asset_value_manager(
     data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
 ) -> CacheAssetValueManager:
     """Return the ``CacheAssetValueManager`` singleton without importing ``cacheManager`` in read-only consumers."""
-    cm_mod = sys.modules.get("cacheManager")
-    if cm_mod is not None:
-        cm_fn = getattr(cm_mod, "get_asset_value_manager", None)
-        if callable(cm_fn) and getattr(cm_fn, "_is_ssot_asset_value_getter", None) is not True:
-            if (
-                symbols is None
-                and filename == CacheAssetValueManager.DEFAULT_FILENAME
-                and data_sync_mode == CacheManagerInterface.MODE_DISK_READER
-            ):
-                return cm_fn()
-            return cm_fn(symbols=symbols, filename=filename, data_sync_mode=data_sync_mode)
-        cm_gcm = getattr(cm_mod, "get_cache_manager", None)
-        if callable(cm_gcm) and getattr(cm_gcm, "_is_ssot_cache_manager_getter", None) is not True:
-            if symbols is None and data_sync_mode == CacheManagerInterface.MODE_DISK_READER:
-                return cm_gcm("AssetValue")
-            return cm_gcm("AssetValue", symbols, data_sync_mode=data_sync_mode)
-        factory = getattr(cm_mod, "CacheFactory", None)
-        if factory is not None:
-            return factory.get(
-                "AssetValue",
-                symbols=symbols,
-                data_sync_mode=data_sync_mode,
-                filename=filename,
-            )
-
-    resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(data_sync_mode)
-    eff_symbols = (
-        ["TOTAL"]
-        if symbols is None
-        else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
+    (
+        delegated,
+        res,
+        resolved_mode,
+        save_state_flag,
+        start_periodic,
+        eff_symbols,
+    ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
+        "AssetValue",
+        symbols=symbols,
+        default_symbols=["TOTAL"],
+        data_sync_mode=data_sync_mode,
+        filename=filename,
+        default_filename=CacheAssetValueManager.DEFAULT_FILENAME,
+        cm_getter_name="get_asset_value_manager",
+        getter_tag="_is_ssot_asset_value_getter",
     )
+    if delegated:
+        return res
     with _READONLY_ACCOUNT_LOCK:
         inst = _READONLY_ACCOUNT_READERS.get("AssetValue")
         if (
@@ -2747,12 +2727,7 @@ def get_asset_value_manager(
             and not save_state_flag
             and not start_periodic
         ):
-            if getattr(inst, "read_only", False) and hasattr(inst, "resync_mem_file"):
-                try:
-                    inst.resync_mem_file()
-                except Exception:
-                    pass
-            return inst
+            return CacheManagerInterface._resync_readonly_reader(inst)
         inst = CacheAssetValueManager(
             sync_ts=ASSET_VALUE_SYNC_INTERVAL_SEC,
             filename=filename,
@@ -2775,37 +2750,25 @@ def get_binance_order_manager(
     data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
 ) -> CacheOrderManager:
     """Return the ``CacheOrderManager`` singleton without importing ``cacheManager`` in read-only consumers."""
-    cm_mod = sys.modules.get("cacheManager")
-    if cm_mod is not None:
-        cm_fn = getattr(cm_mod, "get_binance_order_manager", None)
-        if callable(cm_fn) and getattr(cm_fn, "_is_ssot_binance_order_getter", None) is not True:
-            if (
-                symbols is None
-                and filename == CacheOrderManager.DEFAULT_FILENAME
-                and data_sync_mode == CacheManagerInterface.MODE_DISK_READER
-            ):
-                return cm_fn()
-            return cm_fn(symbols=symbols, filename=filename, data_sync_mode=data_sync_mode)
-        cm_gcm = getattr(cm_mod, "get_cache_manager", None)
-        if callable(cm_gcm) and getattr(cm_gcm, "_is_ssot_cache_manager_getter", None) is not True:
-            if symbols is None and data_sync_mode == CacheManagerInterface.MODE_DISK_READER:
-                return cm_gcm("BinanceOrder")
-            return cm_gcm("BinanceOrder", symbols, data_sync_mode=data_sync_mode)
-        factory = getattr(cm_mod, "CacheFactory", None)
-        if factory is not None:
-            return factory.get(
-                "BinanceOrder",
-                symbols=symbols,
-                data_sync_mode=data_sync_mode,
-                filename=filename,
-            )
-
-    resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(data_sync_mode)
-    eff_symbols = (
-        list(sym.symbols)
-        if symbols is None
-        else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
+    (
+        delegated,
+        res,
+        resolved_mode,
+        save_state_flag,
+        start_periodic,
+        eff_symbols,
+    ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
+        "BinanceOrder",
+        symbols=symbols,
+        default_symbols=lambda: list(sym.symbols),
+        data_sync_mode=data_sync_mode,
+        filename=filename,
+        default_filename=CacheOrderManager.DEFAULT_FILENAME,
+        cm_getter_name="get_binance_order_manager",
+        getter_tag="_is_ssot_binance_order_getter",
     )
+    if delegated:
+        return res
     with _READONLY_ACCOUNT_LOCK:
         inst = _READONLY_ACCOUNT_READERS.get("BinanceOrder")
         if (
@@ -2842,27 +2805,23 @@ def get_trade_manager(
     cache_name = _VENUE_TRADE_CACHE_NAMES.get(v_norm)
     if cache_name is None:
         raise ValueError(f"Unsupported trade cache venue: {venue!r}")
-    cm_mod = sys.modules.get("cacheManager")
-    if cm_mod is not None:
-        cm_gcm = getattr(cm_mod, "get_cache_manager", None)
-        if callable(cm_gcm) and getattr(cm_gcm, "_is_ssot_cache_manager_getter", None) is not True:
-            if symbols is None and data_sync_mode == CacheManagerInterface.MODE_DISK_READER:
-                return cm_gcm(cache_name)
-            return cm_gcm(cache_name, symbols, data_sync_mode=data_sync_mode)
-        factory = getattr(cm_mod, "CacheFactory", None)
-        if factory is not None:
-            return factory.get(cache_name, symbols=symbols, data_sync_mode=data_sync_mode)
-
     is_non_binance = not is_primary_stream_venue(v_norm)
-    resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(
-        data_sync_mode,
+    (
+        delegated,
+        res,
+        resolved_mode,
+        save_state_flag,
+        start_periodic,
+        eff_symbols,
+    ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
+        cache_name,
+        symbols=symbols,
+        default_symbols=None if is_non_binance else list(sym.symbols),
+        data_sync_mode=data_sync_mode,
         config_read_only=is_non_binance,
     )
-    eff_symbols = (
-        (None if is_non_binance else list(sym.symbols))
-        if symbols is None
-        else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
-    )
+    if delegated:
+        return res
     with _READONLY_ACCOUNT_LOCK:
         inst = _READONLY_ACCOUNT_READERS.get(cache_name)
         if inst is not None and symbols is None and not save_state_flag and not start_periodic:

@@ -13,6 +13,7 @@ from typing import Sequence
 import numpy as np
 
 from botcore import lru_dict_put, require_int, safe_float, safe_nonneg_float, safe_pos_float
+from pricewindow import extract_sorted_2d_price_column
 
 
 def _extract_finite_prices(prices: Sequence[float]) -> np.ndarray:
@@ -23,11 +24,7 @@ def _extract_finite_prices(prices: Sequence[float]) -> np.ndarray:
             return np.empty(0, dtype=float)
         if prices.dtype.kind in ("f", "i", "u"):
             if prices.ndim == 2 and prices.shape[1] >= 2:
-                arr2 = prices[:, :2].astype(float, copy=False)
-                ts_col = np.where(arr2[:, 0] > 1e11, arr2[:, 0] / 1000.0, arr2[:, 0])
-                if np.all(np.isfinite(ts_col) & (ts_col > 0)) and len(ts_col) > 1 and np.any(np.diff(ts_col) < 0):
-                    arr2 = arr2[np.argsort(ts_col, kind="mergesort")]
-                arr = arr2[:, 1].ravel()
+                arr = extract_sorted_2d_price_column(prices).ravel()
             else:
                 arr = prices.astype(float, copy=False).ravel()
             return arr[np.isfinite(arr)]

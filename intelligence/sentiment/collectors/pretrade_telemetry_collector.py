@@ -53,6 +53,8 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     _load_stitched_7d_ohlc_closes,
     _refresh_stale_t212_cached_positions,
     _resolve_fallback_ohlc_fn,
+    _resolve_live_24trend_current_price,
+    _should_rescale_usd_sibling_walls,
     ensure_fresh_symbol_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
@@ -1629,34 +1631,17 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                         sib_last_pt = _parse_ts_px_row(sib_s24[-1]) if sib_s24 else None
                         sib_live_px = extract_current_price_item(casefold_get(cur_p_items, cand_u))
                         if not sib_live_px or sib_live_px <= 0.0:
-                            _ensure_cacheprice_classes_bound()
-                            if isinstance(l24_s := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.live_window_relpath_for_symbol(cand_u))), dict):
-                                w_src = l24_s.get("windows") if isinstance(l24_s.get("windows"), dict) else l24_s
-                                sib_live_px = safe_pos_float(
-                                    ((w_src.get("222") or w_src.get("900") or {}) if isinstance(w_src, dict) else {}).get("current_price"),
-                                    default=None,
-                                )
+                            sib_live_px = _resolve_live_24trend_current_price(cachedb_dir, cand_u, _rj)
                         if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0:
                             if sib_ob_ts > 0.0 and (_time.time() - sib_ob_ts) > 120.0:
                                 sib_live_px = cur_px_est
-                        if (
-                            cand_u.endswith("USD")
-                            and not cand_u.endswith(("FDUSD", "TUSD", "BUSD"))
-                            and sib_live_px
-                            and sib_live_px > 0.0
-                            and sib_ob_mid is not None
-                            and abs(sib_live_px - sib_ob_mid) / max(sib_live_px, sib_ob_mid) > 0.01
-                            and not _prices_diverged(sib_live_px, sib_ob_mid)
-                            and not (
-                                0.0 < sib_ob_ts
-                                and sib_last_pt is not None
-                                and (sib_ob_ts * 1000.0 - sib_last_pt[0]) > 60_000.0
-                            )
-                            and not (
-                                cur_px_est > 0.0
-                                and abs(cur_px_est - sib_ob_mid) / max(cur_px_est, sib_ob_mid) <= 0.005
-                                and abs(sib_live_px - cur_px_est) / max(sib_live_px, cur_px_est) > 0.01
-                            )
+                        if _should_rescale_usd_sibling_walls(
+                            cand_u,
+                            sib_live_px,
+                            sib_ob_mid,
+                            cur_px_est,
+                            ob_ts=sib_ob_ts,
+                            last_pt=sib_last_pt,
                         ):
                             rescale_orderbook_walls_to_price(sib_m, sib_live_px, sib_ob_mid)
                         sib_px = safe_pos_float(sib_m.get("ob_mid_price"), default=None) or sib_live_px or cur_px_est

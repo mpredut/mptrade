@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 import math
 import os
+import sys
 import threading
 import time
 from typing import Any, Optional
@@ -26,6 +27,7 @@ from botcore import (
     is_worker_thread_alive,
     load_dotenv,
     normalize_timestamp_ms,
+    parse_symbol_list,
     required_float_env,
     required_int_env,
     resolve_patched_attr,
@@ -209,6 +211,122 @@ class CacheManagerInterface(ABC):
         cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
         instances = getattr(cf, "_instances", None)
         return instances.get(factory_key) if isinstance(instances, dict) else None
+
+    @staticmethod
+    def _resync_readonly_reader(inst: Any) -> Any:
+        if getattr(inst, "read_only", False) and hasattr(inst, "resync_mem_file"):
+            try:
+                inst.resync_mem_file()
+            except Exception:
+                pass
+        return inst
+
+    @staticmethod
+    def _read_recovering_dict_and_items(
+        path: str, reader_fn: Any
+    ) -> Optional[tuple[dict, dict]]:
+        if not isinstance(data := reader_fn(path), dict):
+            return None
+        return data, (items if isinstance(items := data.get("items"), dict) else data)
+
+    @classmethod
+    def _delegate_or_resolve_sync_and_symbols(
+        cls,
+        cache_name: str,
+        *,
+        symbols: Any = None,
+        default_symbols: Any = None,
+        data_sync_mode: Optional[str] = MODE_DISK_READER,
+        default_data_sync_mode: Optional[str] = MODE_DISK_READER,
+        filename: Any = None,
+        default_filename: Any = None,
+        cm_getter_name: Optional[str] = None,
+        getter_tag: Optional[str] = None,
+        include_gcm: bool = True,
+        config_read_only: bool = False,
+    ) -> tuple[bool, Any, str, bool, bool, Any]:
+        """Delegate cache reader/manager resolution to ``cacheManager`` or resolve mode and symbols."""
+        cm_mod = sys.modules.get("cacheManager")
+        if cm_mod is not None:
+            has_filename = filename is not None or default_filename is not None
+            if cm_getter_name and getter_tag:
+                cm_fn = getattr(cm_mod, cm_getter_name, None)
+                if callable(cm_fn) and getattr(cm_fn, getter_tag, None) is not True:
+                    if (
+                        symbols is None
+                        and (not has_filename or filename == default_filename)
+                        and data_sync_mode == default_data_sync_mode
+                    ):
+                        return True, cm_fn(), "", False, False, None
+                    if has_filename:
+                        return (
+                            True,
+                            cm_fn(
+                                symbols=symbols,
+                                filename=filename,
+                                data_sync_mode=data_sync_mode,
+                            ),
+                            "",
+                            False,
+                            False,
+                            None,
+                        )
+                    return (
+                        True,
+                        cm_fn(symbols=symbols, data_sync_mode=data_sync_mode),
+                        "",
+                        False,
+                        False,
+                        None,
+                    )
+            if include_gcm:
+                cm_gcm = getattr(cm_mod, "get_cache_manager", None)
+                if callable(cm_gcm) and getattr(cm_gcm, "_is_ssot_cache_manager_getter", None) is not True:
+                    if symbols is None and data_sync_mode == default_data_sync_mode:
+                        return True, cm_gcm(cache_name), "", False, False, None
+                    return (
+                        True,
+                        cm_gcm(cache_name, symbols, data_sync_mode=data_sync_mode),
+                        "",
+                        False,
+                        False,
+                        None,
+                    )
+            factory = getattr(cm_mod, "CacheFactory", None)
+            if factory is not None:
+                if has_filename:
+                    return (
+                        True,
+                        factory.get(
+                            cache_name,
+                            symbols=symbols,
+                            data_sync_mode=data_sync_mode,
+                            filename=filename,
+                        ),
+                        "",
+                        False,
+                        False,
+                        None,
+                    )
+                return (
+                    True,
+                    factory.get(
+                        cache_name, symbols=symbols, data_sync_mode=data_sync_mode
+                    ),
+                    "",
+                    False,
+                    False,
+                    None,
+                )
+        resolved_mode, save_state_flag, start_periodic = cls.resolve_data_sync_mode(
+            data_sync_mode, config_read_only=config_read_only
+        )
+        eff_symbols = (
+            (default_symbols() if callable(default_symbols) else default_symbols)
+            if symbols is None
+            else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
+        )
+        return False, None, resolved_mode, save_state_flag, start_periodic, eff_symbols
 
     @classmethod
     def resolve_data_sync_mode(
@@ -837,34 +955,47 @@ class CacheManagerInterface(ABC):
         """Atomically restore data matching the still-current manifest."""
         restore_previous_generation(self.filename, backup_path=backup_path)
 
-    def _load_jsonl(self):
-        """Load generic JSONL state and recover ``.previous`` if interrupted."""
-        legacy_metadata = {}
+    def _read_optional_meta_dict(self) -> dict:
         metaf = meta_file_path(self.filename)
         if os.path.exists(metaf):
             try:
-                legacy_metadata = read_json_dict(metaf)
+                data = read_json_dict(metaf)
+                if isinstance(data, dict):
+                    return data
             except (OSError, ValueError, TypeError):
-                legacy_metadata = {}
+                pass
+        return {}
 
+    def _ensure_file_or_restore_previous_locked(self) -> str:
+        backup_path = self._previous_generation_path()
+        if not os.path.exists(self.filename) and os.path.exists(backup_path):
+            try:
+                self._restore_previous_generation(backup_path)
+            except OSError:
+                pass
+        return backup_path
+
+    def _sync_persisted_counts_and_legacy_fetchtimes_locked(
+        self, legacy_metadata: dict
+    ) -> None:
+        self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
+        self._hydrate_fetchtimes_from_mapping_locked(
+            legacy_metadata, preserve_if_missing=True
+        )
+
+    def _load_jsonl(self):
+        """Load generic JSONL state and recover ``.previous`` if interrupted."""
+        legacy_metadata = self._read_optional_meta_dict()
         with self.lock:
             self.cache = {}
             had_invalid_line = False
-            backup_path = self._previous_generation_path()
-            if not os.path.exists(self.filename) and os.path.exists(backup_path):
-                try:
-                    self._restore_previous_generation(backup_path)
-                except OSError:
-                    pass
+            backup_path = self._ensure_file_or_restore_previous_locked()
             if os.path.exists(self.filename):
                 self.cache, had_invalid_line = read_jsonl_bucket_map(self.filename)
             self._legacy_jsonl_needs_rewrite = had_invalid_line
             if not self.read_only and not had_invalid_line and os.path.exists(backup_path):
                 discard_generation_file(backup_path)
-            self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
-            self._hydrate_fetchtimes_from_mapping_locked(
-                legacy_metadata, preserve_if_missing=True
-            )
+            self._sync_persisted_counts_and_legacy_fetchtimes_locked(legacy_metadata)
 
     def compact_jsonl(self):
         """Rewrite JSONL from memory after full in-memory and on-disk deduplication."""
@@ -1082,6 +1213,20 @@ class CacheManagerInterface(ABC):
     ) -> None:
         pass
 
+    def _fetch_and_apply_remote_items(self, symbol: str, startTime) -> list:
+        new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
+        if new_items is None:
+            raise RuntimeError(
+                f"{self.cls_name} returned no synchronization result for {symbol}"
+            )
+        if not new_items:
+            print(
+                f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {timestampToTime(startTime)} "
+            )
+        else:
+            self._persist_items(symbol, new_items)
+        return new_items
+
     def query_remote_and_update_cache(self):
         self._ensure_fetchtimes_initialized(sync_rest_cursor=True)
 
@@ -1094,17 +1239,7 @@ class CacheManagerInterface(ABC):
             startTime = self._resolve_remote_query_start_time(symbol, fallback_ft)
             if account_cycle_high_water is None:
                 account_cycle_high_water = request_high_water
-            new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
-            if new_items is None:
-                raise RuntimeError(
-                    f"{self.cls_name} returned no synchronization result for {symbol}"
-                )
-            if not new_items:
-                print(
-                    f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {timestampToTime(startTime)} "
-                )
-            else:
-                self._persist_items(symbol, new_items)
+            self._fetch_and_apply_remote_items(symbol, startTime)
             self._on_symbol_remote_sync_completed(symbol, request_high_water)
         self._on_complete_remote_sync_cycle(account_cycle_high_water)
         return True

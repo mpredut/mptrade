@@ -17,7 +17,6 @@ import bisect
 import builtins
 import math
 import os
-import sys
 import threading
 import time
 import weakref
@@ -1508,10 +1507,12 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         if not trend_path or (max_age := resolve_positive_max_age(max_age_sec, 15.0)) is None:
             return None
         try:
-            data = read_json_dict_recovering(trend_path)
-            if not isinstance(data, dict):
+            loaded = CacheManagerInterface._read_recovering_dict_and_items(
+                trend_path, read_json_dict_recovering
+            )
+            if loaded is None:
                 return None
-            items = data.get("items") if isinstance(data.get("items"), dict) else data
+            _, items = loaded
             eff_now = resolve_now_ts(now_s)
             for cand in candidates:
                 if not cand:
@@ -1913,32 +1914,31 @@ def get_short_trend_manager(
     data_sync_mode: Optional[str] = None,
 ):
     """Return the ``CacheShortTrendManager`` singleton without importing ``cacheManager`` in read-only consumers."""
-    cm_mod = sys.modules.get("cacheManager")
-    if cm_mod is not None:
-        cm_fn = getattr(cm_mod, "get_short_trend_manager", None)
-        if callable(cm_fn) and getattr(cm_fn, "_is_ssot_short_trend_getter", None) is not True:
-            if symbols is None and filename == CacheShortTrendManager.DEFAULT_FILENAME and data_sync_mode is None:
-                return cm_fn()
-            return cm_fn(symbols=symbols, filename=filename, data_sync_mode=data_sync_mode)
-        factory = getattr(cm_mod, "CacheFactory", None)
-        if factory is not None:
-            return factory.get(
-                "ShortTrend",
-                symbols=symbols,
-                data_sync_mode=data_sync_mode,
-                filename=filename,
-            )
-
-    resolved_mode, _, _ = CacheManagerInterface.resolve_data_sync_mode(data_sync_mode)
+    (
+        delegated,
+        res,
+        resolved_mode,
+        _,
+        _,
+        eff_symbols,
+    ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
+        "ShortTrend",
+        symbols=symbols,
+        default_symbols=lambda: tracked_price_instruments()[0],
+        data_sync_mode=data_sync_mode,
+        default_data_sync_mode=None,
+        filename=filename,
+        default_filename=CacheShortTrendManager.DEFAULT_FILENAME,
+        cm_getter_name="get_short_trend_manager",
+        getter_tag="_is_ssot_short_trend_getter",
+        include_gcm=False,
+    )
+    if delegated:
+        return res
     with _READONLY_TREND_LOCK:
         inst = _READONLY_TREND_READERS.get("ShortTrend")
         if inst is not None and symbols is None and filename == CacheShortTrendManager.DEFAULT_FILENAME:
             return inst
-        eff_symbols = (
-            tracked_price_instruments()[0]
-            if symbols is None
-            else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
-        )
         inst = CacheShortTrendManager(
             eff_symbols,
             filename,
@@ -1959,32 +1959,25 @@ def get_long_trend_manager(
     data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
 ):
     """Return the ``CacheLongTrendManager`` singleton without importing ``cacheManager`` in read-only consumers."""
-    cm_mod = sys.modules.get("cacheManager")
-    if cm_mod is not None:
-        cm_lt_fn = getattr(cm_mod, "get_long_trend_manager", None)
-        if callable(cm_lt_fn) and getattr(cm_lt_fn, "_is_ssot_long_trend_getter", None) is not True:
-            if (
-                symbols is None
-                and filename == CacheLongTrendManager.DEFAULT_FILENAME
-                and data_sync_mode == CacheManagerInterface.MODE_DISK_READER
-            ):
-                return cm_lt_fn()
-            return cm_lt_fn(symbols=symbols, filename=filename, data_sync_mode=data_sync_mode)
-        cm_gcm = getattr(cm_mod, "get_cache_manager", None)
-        if callable(cm_gcm) and getattr(cm_gcm, "_is_ssot_cache_manager_getter", None) is not True:
-            if symbols is None and data_sync_mode == CacheManagerInterface.MODE_DISK_READER:
-                return cm_gcm("LongTrend")
-            return cm_gcm("LongTrend", symbols, data_sync_mode=data_sync_mode)
-        factory = getattr(cm_mod, "CacheFactory", None)
-        if factory is not None:
-            return factory.get(
-                "LongTrend",
-                symbols=symbols,
-                data_sync_mode=data_sync_mode,
-                filename=filename,
-            )
-
-    resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(data_sync_mode)
+    (
+        delegated,
+        res,
+        resolved_mode,
+        save_state_flag,
+        start_periodic,
+        eff_symbols,
+    ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
+        "LongTrend",
+        symbols=symbols,
+        default_symbols=lambda: tracked_price_instruments()[0],
+        data_sync_mode=data_sync_mode,
+        filename=filename,
+        default_filename=CacheLongTrendManager.DEFAULT_FILENAME,
+        cm_getter_name="get_long_trend_manager",
+        getter_tag="_is_ssot_long_trend_getter",
+    )
+    if delegated:
+        return res
     with _READONLY_TREND_LOCK:
         inst = _READONLY_TREND_READERS.get("LongTrend")
         if (
@@ -1994,17 +1987,7 @@ def get_long_trend_manager(
             and not save_state_flag
             and not start_periodic
         ):
-            if getattr(inst, "read_only", False) and hasattr(inst, "resync_mem_file"):
-                try:
-                    inst.resync_mem_file()
-                except Exception:
-                    pass
-            return inst
-        eff_symbols = (
-            tracked_price_instruments()[0]
-            if symbols is None
-            else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
-        )
+            return CacheManagerInterface._resync_readonly_reader(inst)
         inst = CacheLongTrendManager(
             sync_ts=LONG_TREND_SYNC_INTERVAL_SEC,
             filename=filename,

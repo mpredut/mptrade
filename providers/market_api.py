@@ -19,12 +19,10 @@ import botcore
 from botcore import (
     _parse_bool_flag,
     lru_dict_put,
-    normalize_scalar_order_id,
     require_finite_float,
     require_pos_float,
     safe_int,
     safe_nonneg_float,
-    safe_nonneg_ts,
     safe_pos_float,
 )
 from cachepaths import normalize_venue_name
@@ -37,12 +35,11 @@ from .base import (
     extract_timestamp_ms,
     normalize_side,
 )
-from .order_ohlc_utils import (
+from .order_ohlc_utils import (  # noqa: F401
     clean_order_id,
     extract_order_qty,
     extract_order_side,
-    extract_orig_qty,
-    extract_remaining_qty,
+    filter_and_normalize_open_orders,
     iter_expired_open_order_ids,
     require_clean_order_id,
     require_int_order_id,
@@ -457,61 +454,13 @@ class MarketApi:
         sym_clean = symbol.strip().upper()
         try:
             open_list = self.open_orders(sym_clean, provider_name=provider_name)
-            filtered_orders: dict = {}
-            accepted_owner_map = None
-            for order in (open_list or ()):
-                if not isinstance(order, dict):
-                    continue
-                if extract_order_side(order) != side:
-                    continue
-                cid = clean_order_id(order.get("clientOrderId")) or ""
-                if allowed_owners is not None and not rc.order_matches_owner(cid, allowed_owners):
-                    if cid.startswith("OR_"):
-                        if accepted_owner_map is None:
-                            try:
-                                accepted_owner_map = MarketDataProvider.get_accepted_retry_order_owner_map()
-                            except Exception:
-                                accepted_owner_map = {}
-                        inferred = (
-                            accepted_owner_map.get(str(order.get("orderId") or ""))
-                            or accepted_owner_map.get(cid)
-                        )
-                        allowed_set = rc._normalize_allowed_owners(allowed_owners)
-                        if not inferred or str(inferred).strip().lower() not in allowed_set:
-                            continue
-                    else:
-                        continue
-                original_qty = extract_orig_qty(order, default=0.0) or 0.0
-                raw_exec_qty = next(
-                    (order.get(k) for k in ("executedQty", "z", "vol_exec") if order.get(k) is not None),
-                    None,
-                )
-                executed_qty = safe_nonneg_float(raw_exec_qty, default=0.0)
-                remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
-                ts_ms = extract_timestamp_ms(order, default=0) or 0
-                ts_sec = safe_nonneg_ts(ts_ms, default=0.0)
-                raw_time = safe_nonneg_float(order.get("time"), default=None)
-                if raw_time is not None:
-                    ts_sec = (
-                        raw_time / 1000.0
-                        if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0)
-                        else raw_time
-                    )
-                raw_oid = normalize_scalar_order_id(order.get("orderId"))
-                if raw_oid is None:
-                    continue
-                filtered_orders[raw_oid] = {
-                    "price": extract_order_price(order),
-                    "quantity": original_qty,
-                    "origQty": original_qty,
-                    "qty": remaining_qty,
-                    "executedQty": executed_qty,
-                    "remainingQty": remaining_qty,
-                    "timestamp": ts_sec,
-                    "time": ts_ms,
-                    "clientOrderId": cid,
-                }
-            return filtered_orders
+            return filter_and_normalize_open_orders(
+                open_list,
+                side,
+                allowed_owners=allowed_owners,
+                rc_mod=rc,
+                owner_map_fn=MarketDataProvider.get_accepted_retry_order_owner_map,
+            )
         except Exception as exc:
             print(f"Error getting open {side} orders: {exc}")
             if strict_flag:

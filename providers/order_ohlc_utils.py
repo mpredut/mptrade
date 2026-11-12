@@ -25,6 +25,7 @@ from botcore import (
     extract_timestamp_ms,
     extract_timestamp_s,
     normalize_epoch_sec,
+    normalize_scalar_order_id,
     normalize_side,
     normalize_timestamp_ms,
     obj_attr,
@@ -34,6 +35,7 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
+    safe_nonneg_ts,
     safe_pos_float,
     safe_pos_int,
 )
@@ -1129,6 +1131,79 @@ def extract_yahoo_chart_latest_price(payload: Any, *, decimals: Optional[int] = 
     if val is None:
         return None
     return round(val, decimals) if decimals is not None else val
+
+
+def filter_and_normalize_open_orders(
+    open_orders: Any,
+    side: str,
+    *,
+    allowed_owners: Any = None,
+    rc_mod: Any = None,
+    owner_map_fn: Optional[Callable[[], Any]] = None,
+    fallback_extract_oid: bool = False,
+) -> dict:
+    """Filter venue open orders by ``side`` and optional ``allowed_owners`` into a normalized dict keyed by scalar order ID."""
+    want_side = str(side or "").strip().upper()
+    filtered_orders: dict = {}
+    accepted_owner_map = None
+    for order in (open_orders or ()):
+        if not isinstance(order, dict) or extract_order_side(order) != want_side:
+            continue
+        cid = clean_order_id(order.get("clientOrderId")) or ""
+        if (
+            allowed_owners is not None
+            and rc_mod is not None
+            and not rc_mod.order_matches_owner(cid, allowed_owners)
+        ):
+            if not cid.startswith("OR_"):
+                continue
+            if accepted_owner_map is None:
+                try:
+                    accepted_owner_map = owner_map_fn() if callable(owner_map_fn) else {}
+                except Exception:
+                    accepted_owner_map = {}
+            oid_key = (
+                str(extract_order_id(order) or "")
+                if fallback_extract_oid
+                else str(order.get("orderId") or "")
+            )
+            inferred = accepted_owner_map.get(oid_key) or accepted_owner_map.get(cid)
+            allowed_set = rc_mod._normalize_allowed_owners(allowed_owners)
+            if not inferred or str(inferred).strip().lower() not in allowed_set:
+                continue
+        original_qty = safe_nonneg_float(extract_orig_qty(order, default=0.0), default=0.0) or 0.0
+        raw_exec_qty = next(
+            (order.get(k) for k in ("executedQty", "z", "vol_exec") if order.get(k) is not None),
+            None,
+        )
+        executed_qty = safe_nonneg_float(raw_exec_qty, default=0.0)
+        remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
+        ts_ms = extract_timestamp_ms(order, default=0) or 0
+        ts_sec = safe_nonneg_ts(ts_ms, default=0.0)
+        raw_time = safe_nonneg_float(order.get("time"), default=None)
+        if raw_time is not None:
+            ts_sec = (
+                raw_time / 1000.0
+                if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0)
+                else raw_time
+            )
+        raw_oid = normalize_scalar_order_id(order.get("orderId"))
+        if raw_oid is None and fallback_extract_oid:
+            raw_oid = normalize_scalar_order_id(extract_order_id(order))
+        if raw_oid is None:
+            continue
+        filtered_orders[raw_oid] = {
+            "price": extract_order_price(order),
+            "quantity": original_qty,
+            "origQty": original_qty,
+            "qty": remaining_qty,
+            "executedQty": executed_qty,
+            "remainingQty": remaining_qty,
+            "timestamp": ts_sec,
+            "time": ts_ms,
+            "clientOrderId": cid,
+        }
+    return filtered_orders
 
 
 def iter_expired_open_order_ids(

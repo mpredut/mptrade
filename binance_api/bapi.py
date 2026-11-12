@@ -7,14 +7,12 @@ import signal
 #### MYLIB
 from botcore import (
     _parse_bool_flag,
-    clean_order_id,
     clean_upper_token,
     load_dotenv,
     normalize_scalar_order_id,
     required_float_env,
     safe_float,
     safe_nonneg_float,
-    safe_nonneg_ts,
     safe_pos_float,
 )
 import instrument_registry as sym
@@ -24,12 +22,7 @@ from . import bapi_ws
 from providers import order_id_context as rc
 from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
-    extract_order_id,
-    extract_order_price,
-    extract_order_side,
-    extract_orig_qty,
-    extract_remaining_qty,
-    extract_timestamp_ms,
+    filter_and_normalize_open_orders,
     iter_expired_open_order_ids,
 )
 
@@ -176,58 +169,14 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
         
     try:
         open_orders = client.get_open_orders(symbol=symbol)
-        #print(open_orders)
-        filtered_orders = {}
-        accepted_owner_map = None
-        for order in (open_orders or ()):
-            if not isinstance(order, dict):
-                continue
-            if extract_order_side(order) != order_type.upper():
-                continue
-            cid = clean_order_id(order.get('clientOrderId')) or ''
-            if allowed_owners is not None and not rc.order_matches_owner(cid, allowed_owners):
-                if cid.startswith("OR_"):
-                    if accepted_owner_map is None:
-                        try:
-                            accepted_owner_map = MarketDataProvider.get_accepted_retry_order_owner_map()
-                        except Exception:
-                            accepted_owner_map = {}
-                    inferred = (
-                        accepted_owner_map.get(str(extract_order_id(order) or ''))
-                        or accepted_owner_map.get(cid)
-                    )
-                    allowed_set = rc._normalize_allowed_owners(allowed_owners)
-                    if not inferred or str(inferred).strip().lower() not in allowed_set:
-                        continue
-                else:
-                    continue
-            original_qty = safe_nonneg_float(extract_orig_qty(order, default=0.0), default=0.0) or 0.0
-            raw_exec_qty = next((order.get(k) for k in ("executedQty", "z", "vol_exec") if order.get(k) is not None), None)
-            executed_qty = safe_nonneg_float(raw_exec_qty, default=0.0)
-            remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
-            ts_ms = extract_timestamp_ms(order, default=0) or 0
-            ts_sec = safe_nonneg_ts(ts_ms, default=0.0)
-            raw_time = safe_nonneg_float(order.get('time'), default=None)
-            if raw_time is not None:
-                ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
-            raw_oid = normalize_scalar_order_id(order.get('orderId')) or normalize_scalar_order_id(extract_order_id(order))
-            if raw_oid is None:
-                continue
-            filtered_orders[raw_oid] = {
-                'price': extract_order_price(order),
-                # Preserve the legacy field while exposing the financially correct
-                # unfilled quantity to cancel-and-replace consumers.
-                'quantity': original_qty,
-                'origQty': original_qty,
-                'qty': remaining_qty,
-                'executedQty': executed_qty,
-                'remainingQty': remaining_qty,
-                'timestamp': ts_sec,
-                'time': ts_ms,
-                'clientOrderId': cid,
-            }
-        
-        return filtered_orders
+        return filter_and_normalize_open_orders(
+            open_orders,
+            order_type.upper(),
+            allowed_owners=allowed_owners,
+            rc_mod=rc,
+            owner_map_fn=MarketDataProvider.get_accepted_retry_order_owner_map,
+            fallback_extract_oid=True,
+        )
     except Exception as e:
         print(f"Error getting open {order_type} orders: {e}")
         if strict:

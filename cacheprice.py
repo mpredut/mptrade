@@ -752,12 +752,7 @@ class Cache365PriceManager(Cache24PriceManager):
         """Load only a recent working set; the JSONL file remains the full archive."""
         with self.lock:
             self.cache = {}
-            backup_path = self._previous_generation_path()
-            if not os.path.exists(self.filename) and os.path.exists(backup_path):
-                try:
-                    self._restore_previous_generation(backup_path)
-                except OSError:
-                    pass
+            self._ensure_file_or_restore_previous_locked()
             if os.path.exists(self.filename):
                 for raw_line in read_tail_lines(
                     self.filename, CM_LONG_ARCHIVE_MEMORY_ROWS
@@ -770,16 +765,10 @@ class Cache365PriceManager(Cache24PriceManager):
                     ):
                         self.cache.setdefault(rec["s"], []).append(rec["i"])
             self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
-            metaf = meta_file_path(self.filename)
-            if os.path.exists(metaf):
-                try:
-                    meta_payload = read_json_dict(metaf)
-                    if isinstance(meta_payload, dict):
-                        self._hydrate_fetchtimes_from_mapping_locked(
-                            meta_payload, filter_symbols=True, coerce_nonneg_int=True
-                        )
-                except (OSError, ValueError, TypeError):
-                    pass
+            if meta_payload := self._read_optional_meta_dict():
+                self._hydrate_fetchtimes_from_mapping_locked(
+                    meta_payload, filter_symbols=True, coerce_nonneg_int=True
+                )
             if self.cache:
                 for s_sym, rebuilt_ft in self.rebuild_fetchtimes().items():
                     self.fetchtime_per_symbol[s_sym] = max(
@@ -1254,21 +1243,12 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             startTime = self.fetchtime_per_symbol.get(
                 symbol, self.fallback_time_default
             )
-            new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
-            if new_items is None:
-                raise RuntimeError(
-                    f"{self.cls_name} returned no synchronization result for {symbol}"
-                )
-            if not new_items:
-                if is_rth_sym:
+            new_items = self._fetch_and_apply_remote_items(symbol, startTime)
+            if is_rth_sym:
+                if not new_items:
                     self._rth_empty_backoff_ts[symbol] = _now_time()
-                print(
-                    f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {timestampToTime(startTime)} "
-                )
-            else:
-                if is_rth_sym:
+                else:
                     self._rth_empty_backoff_ts.pop(symbol, None)
-                self._persist_items(symbol, new_items)
         return True
 
     def get_remote_items(self, symbol, startTime):
@@ -1485,10 +1465,12 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if not price_path:
             return None
         try:
-            data = read_json_dict_recovering(price_path, default=None)
-            if not isinstance(data, dict):
+            loaded = cls._read_recovering_dict_and_items(
+                price_path, read_json_dict_recovering
+            )
+            if loaded is None:
                 return None
-            items = data.get("items") if isinstance(data.get("items"), dict) else data
+            data, items = loaded
             fetchtime_map = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
             file_ts = extract_timestamp_s(data, default=None)
             eff_now = resolve_now_ts(now_s)
@@ -2388,43 +2370,31 @@ def _get_per_symbol_price_managers(
     getter_tag: str,
     cm_getter_name: str,
 ):
-    cm_mod = sys.modules.get("cacheManager")
-    if cm_mod is not None:
-        cm_fn = getattr(cm_mod, cm_getter_name, None)
-        if callable(cm_fn) and getattr(cm_fn, getter_tag, None) is not True:
-            if symbols is None and data_sync_mode == CacheManagerInterface.MODE_DISK_READER:
-                return cm_fn()
-            return cm_fn(symbols=symbols, data_sync_mode=data_sync_mode)
-        cm_gcm = getattr(cm_mod, "get_cache_manager", None)
-        if callable(cm_gcm) and getattr(cm_gcm, "_is_ssot_cache_manager_getter", None) is not True:
-            if symbols is None and data_sync_mode == CacheManagerInterface.MODE_DISK_READER:
-                return cm_gcm(cache_name)
-            return cm_gcm(cache_name, symbols, data_sync_mode=data_sync_mode)
-        factory = getattr(cm_mod, "CacheFactory", None)
-        if factory is not None:
-            return factory.get(cache_name, symbols=symbols, data_sync_mode=data_sync_mode)
-
-    resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(data_sync_mode)
-    eff_symbols = (
-        tracked_price_instruments()[0]
-        if symbols is None
-        else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
+    (
+        delegated,
+        res,
+        resolved_mode,
+        save_state_flag,
+        start_periodic,
+        eff_symbols,
+    ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
+        cache_name,
+        symbols=symbols,
+        default_symbols=lambda: tracked_price_instruments()[0],
+        data_sync_mode=data_sync_mode,
+        cm_getter_name=cm_getter_name,
+        getter_tag=getter_tag,
     )
+    if delegated:
+        return res
     with _READONLY_PRICE_LOCK:
         inst = _READONLY_PRICE_READERS.get(cache_name)
         if isinstance(inst, dict) and not save_state_flag and not start_periodic:
             wanted = {str(s).strip().upper() for s in eff_symbols if s}
             if wanted.issubset({str(k).strip().upper() for k in inst}):
                 for sym_k, mgr in inst.items():
-                    if (
-                        str(sym_k).strip().upper() in wanted
-                        and getattr(mgr, "read_only", False)
-                        and hasattr(mgr, "resync_mem_file")
-                    ):
-                        try:
-                            mgr.resync_mem_file()
-                        except Exception:
-                            pass
+                    if str(sym_k).strip().upper() in wanted:
+                        CacheManagerInterface._resync_readonly_reader(mgr)
                 return inst
         prefix, ext = manager_cls.FILE_PREFIX, manager_cls.FILE_EXT
         eff_read_only = not save_state_flag and not start_periodic
