@@ -909,21 +909,18 @@ def load_cached_whale_telemetry(
     return None
 
 
-def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
-    """Load and normalize cached SentimentAdvisor evaluation dictionary from ``cache_dir``."""
-    data, _ = read_first_cached_dict(cache_dir, "sentiment_eval_files")
 def _read_and_finalize_cached_eval_dict(
     cache_dir: str,
-    cfg_key: str,
-    default_fname: str,
     list_key: str,
     overrides_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
     *,
+    cfg_key: str = "",
+    default_fname: str = "",
     scale_key: str,
     scale_default: float,
 ) -> Optional[Dict[str, Any]]:
-    fname = _cfg_str("cache_files", cfg_key, default_fname)
-    data, _ = read_first_cached_dict(cache_dir, list_key, fname)
+    fname = _cfg_str("cache_files", cfg_key, default_fname) if cfg_key else default_fname
+    data, _ = read_first_cached_dict(cache_dir, list_key, *([fname] if fname else []))
     if not data:
         return None
     out: Dict[str, Any] = {**data, **overrides_fn(data)}
@@ -938,14 +935,13 @@ def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any
     """Load and normalize cached SentimentAdvisor evaluation dictionary from ``cache_dir``."""
     return _read_and_finalize_cached_eval_dict(
         cache_dir,
-        "sentiment_advisor_eval_file",
-        "sentiment_advisor_eval.json",
-        "sentiment_advisor_eval_files",
+        "sentiment_eval_files",
         lambda d: {
             "market_bias": normalize_market_bias(d.get("market_bias")),
             "risk_level": normalize_risk_level(d.get("risk_level")),
             "recommended_action": normalize_recommended_action(d.get("recommended_action")),
         },
+        default_fname="sentiment_eval.json",
         scale_key="confidence",
         scale_default=0.5,
     )
@@ -955,13 +951,13 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached GeopoliticalThreatAnalyzer evaluation dictionary from ``cache_dir``."""
     return _read_and_finalize_cached_eval_dict(
         cache_dir,
-        "geopolitical_eval_file",
-        "geopolitical_eval.json",
         "geopolitical_eval_files",
         lambda d: {
             "threat_level": (tl := normalize_threat_level(d.get("threat_level"))),
             "recommended_brake": normalize_recommended_brake(d.get("recommended_brake"), threat_level=tl),
         },
+        cfg_key="geopolitical_eval_file",
+        default_fname="geopolitical_eval.json",
         scale_key="risk_score",
         scale_default=0.0,
     )

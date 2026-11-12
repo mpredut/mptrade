@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Tuple
 
-from botcore import normalize_epoch_sec, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, normalize_epoch_sec, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -111,7 +111,7 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
             st["peak"] = safe_pos_float(st.get("peak"), default=current_price) or current_price
             st["ts"] = normalize_epoch_sec(st.get("ts"), default=0.0, allow_zero=True) or 0.0
             st["disarmed_peak_ts"] = normalize_epoch_sec(st.get("disarmed_peak_ts"), default=0.0, allow_zero=True) or 0.0
-            st["surge_active"] = bool(st.get("surge_active", False))
+            st["surge_active"] = bool(_parse_bool_flag(st.get("surge_active"), default=False))
 
         # Reset clock-skewed future timestamps
         if ts_now > 0 and (safe_nonneg_float(st.get("disarmed_peak_ts"), default=0.0) or 0.0) > ts_now + 5.0:

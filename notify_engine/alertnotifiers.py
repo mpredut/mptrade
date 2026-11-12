@@ -783,8 +783,7 @@ def pass_common_gate(
             budget = _positive_int_env("NTFY_DAILY_BUDGET", 220)
             reserve = _positive_int_env("NTFY_URGENT_RESERVE", 20)
             if sent >= max(0, budget - reserve):
-                warn = not bool(channel_state.get("budget_warning_sent"))
-                channel_state["budget_warning_sent"] = True
+                warn = _claim_budget_warning(channel_state)
                 _save_delivery_state(path, state)
                 return False, "local_daily_budget", warn, None
 
@@ -854,6 +853,13 @@ def pass_common_gate(
         return True, "reserved", False, (title, body, priority, topic)
 
 
+def _claim_budget_warning(channel_state: dict[str, Any]) -> bool:
+    """Mark ``budget_warning_sent`` on ``channel_state`` and return True only on the first warning."""
+    first = not bool(_parse_bool_flag(channel_state.get("budget_warning_sent"), default=False))
+    channel_state["budget_warning_sent"] = True
+    return first
+
+
 def _gate_and_topic_bulk_seconds() -> tuple[int, int]:
     return _config_notification_int("NOTIFICATION_GATE_SECONDS", 180), _topic_bulk_seconds()
 
@@ -920,10 +926,9 @@ def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) ->
     with FileLock(path.with_suffix(path.suffix + ".lock")):
         state = _load_delivery_state(path, today)
         channel_state = state["channels"].setdefault(channel, {})
-        first = not bool(channel_state.get("budget_warning_sent"))
+        first = _claim_budget_warning(channel_state)
         channel_state["blocked"] = True
         channel_state["blocked_until"] = now + cd_sec
-        channel_state["budget_warning_sent"] = True
         _save_delivery_state(path, state)
         return first
 

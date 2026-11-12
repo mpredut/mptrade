@@ -656,12 +656,16 @@ def _is_unseeded_single_sample_window(w_dict: Dict[str, Any]) -> bool:
 
 def _resolve_window_metric_with_fallbacks(primary: Any, *fallbacks: Any) -> Any:
     """Return ``primary`` unless it is near-zero (``< 5e-8``), in which case return the first non-near-zero fallback."""
-    val = primary
-    if val is not None and abs(safe_float(val, 0.0)) < 5e-8:
-        for fb in fallbacks:
-            if fb is not None and abs(safe_float(fb, 0.0)) >= 5e-8:
-                return fb
-    return val
+    if primary is None:
+        return None
+    p_f = safe_float(primary, default=None)
+    if p_f is not None and abs(p_f) >= 5e-8:
+        return primary if isinstance(primary, (int, float)) and not isinstance(primary, bool) else p_f
+    for fb in fallbacks:
+        fb_f = safe_float(fb, default=None)
+        if fb_f is not None and abs(fb_f) >= 5e-8:
+            return fb if isinstance(fb, (int, float)) and not isinstance(fb, bool) else fb_f
+    return p_f if p_f is not None else 0.0
 
 
 def is_unseeded_kalman_state(

@@ -17,6 +17,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import (
+    _parse_bool_flag,
     load_local_module,
     require_pos_float,
     safe_nonneg_float,
@@ -311,7 +312,7 @@ def _run_once(
                         for order in eligible_orders:
                             if order not in engine.s["orders"] or order["side"].lower() != side:
                                 continue
-                            market = bool(order.get("market"))
+                            market = bool(_parse_bool_flag(order.get("market"), False))
                             cand_price = (
                                 execution.market_price(side, open_)
                                 if market

@@ -109,6 +109,7 @@ from market_monitor.pricechecker import PriceAlert
 from market_monitor.pricefetcher import StockYahooPricePlatform
 from market_regime import MarketRegimeHorizon, MarketRegimeService
 import monitortrades as mt
+from notify_engine import alertnotifiers as alert_mod
 from offline.backtests import evaluation as bt_eval
 from offline.backtests.comparison import add_path_cli_args, add_report_output_cli_args
 from offline.backtests.evaluation import parse_intervals
@@ -153,7 +154,7 @@ from providers.quantity import (
     venue_fee_cap_quantity,
 )
 from providers.replay_provider import ReplayMarketDataProvider
-from providers.strategy_executor import OrderReconciliationCapabilities, ProviderError
+from providers.strategy_executor import OrderReconciliationCapabilities, ProviderError, SubmissionRefused
 from providers.t212_provider import T212Provider
 import rtrade
 from rtrade_pair_store import RTradePairStore
@@ -2811,3 +2812,118 @@ def test_wave17_kalman_reset_string_price_short_trend_nan_bool_and_repo_zero_raw
             if hits:
                 offenders[rel] = hits
     assert offenders == {}
+
+
+def test_wave18_sentiment_eval_loader_execution_gate_market_flag_and_duplicate_def_invariants(tmp_path):
+    """Verify Wave 18 border cases: load_cached_sentiment_advisor_eval reads sentiment_eval.json, Instrument execution gate fails closed on string false, T212 pending market flag, ParabolicSurgeGuard, alertnotifiers budget warning, window metric NaN/bool sanitization, and zero duplicate definitions repo-wide."""
+
+    # 1. load_cached_sentiment_advisor_eval reads canonical sentiment_eval.json and normalizes fields
+    sent_path = tmp_path / "sentiment_eval.json"
+    atomic_write_text(
+        str(sent_path),
+        json.dumps(
+            {
+                "market_bias": "bull",
+                "risk_level": "elevated",
+                "recommended_action": "buy",
+                "confidence": "72%",
+                "ts": 1_700_000_123_000,
+            }
+        ),
+    )
+    loaded_sent = mss.load_cached_sentiment_advisor_eval(str(tmp_path))
+    assert loaded_sent is not None
+    assert loaded_sent["market_bias"] == "BULLISH"
+    assert loaded_sent["risk_level"] == "HIGH"
+    assert loaded_sent["recommended_action"] == "ACCUMULATE"
+    assert loaded_sent["confidence"] == pytest.approx(0.72)
+    assert loaded_sent["ts"] == pytest.approx(1_700_000_123.0)
+
+    # 2. Instrument._check_abort_and_execution_gate fails closed when execution_enabled() returns "false" or "0"
+    for disabled_ret in ("false", "0", False, None):
+        ctx_dis = SimpleNamespace(abort_if=None, execution_enabled=lambda v=disabled_ret: v, reason=None)
+        with pytest.raises(SubmissionRefused, match="execution_disabled"):
+            Instrument._check_abort_and_execution_gate(ctx_dis)
+    ctx_ok = SimpleNamespace(abort_if=None, execution_enabled=lambda: "true", reason=None)
+    assert Instrument._check_abort_and_execution_gate(ctx_ok) is True
+
+    # 3. T212 Strategy _adopt_pending_submit & _submit_pending_order honor "market": "false" as LIMIT
+    t212_strat_mod = load_venue_modules("212trading", "strategy")
+    captured_submits: list[tuple[Any, Any]] = []
+    t212_stub = t212_strat_mod.Strategy.__new__(t212_strat_mod.Strategy)
+    t212_stub.ticker = "NVDA_US_EQ"
+    t212_stub.s = {"orders": [], "pending_submit": None}
+    t212_stub._now = lambda: 1_700_000_000.0
+    t212_stub._persist_pending_submit = lambda val: t212_stub.s.__setitem__("pending_submit", val)
+    t212_stub.executor = SimpleNamespace(
+        submit_outcome_with_intent=lambda _iid, _sym, _side, _qty, lim, *, market=False, **_kw: (
+            captured_submits.append((lim, market)) or SimpleNamespace(state="accepted", order_id="ord-77", reason=None)
+        )
+    )
+    pending_lim = {
+        "intent_id": "i-77",
+        "side": "BUY",
+        "qty": 2.0,
+        "limit": 125.5,
+        "market": "false",
+        "kind": "ENTRY",
+    }
+    t212_stub._submit_pending_order(pending_lim)
+    assert captured_submits == [(125.5, False)]
+    assert len(t212_stub.s["orders"]) == 1 and t212_stub.s["orders"][0]["market"] is False
+
+    # 4. ParabolicSurgeGuard string-false state, _claim_budget_warning, NewsFeedCollector _seen_first_ts, and window metric NaN/bool sanitization
+    pg = ParabolicSurgeGuard(surge_threshold_pct=5.0, pullback_required_pct=1.5, window_seconds=3600.0)
+    pg._states["BTCUSDC"] = {
+        "peak": 100.0,
+        "surge_active": "false",
+        "surge_start_px": 100.0,
+        "ts": 1_700_000_000.0,
+        "disarmed_peak_ts": 0.0,
+    }
+    pg_dec = pg.check("BTCUSDC", "BUY", 101.0, [(1_700_000_000.0, 100.0), (1_700_000_060.0, 101.0)])
+    assert pg_dec.allowed is True and pg._states["BTCUSDC"]["surge_active"] is False
+
+    ch_state: dict[str, Any] = {"budget_warning_sent": "false"}
+    assert alert_mod._claim_budget_warning(ch_state) is True
+    assert ch_state["budget_warning_sent"] is True
+    assert alert_mod._claim_budget_warning(ch_state) is False
+
+    nfc = NewsFeedCollector(history_file=str(tmp_path / "news_feed_collect.json"), start_sync=False)
+    nfc._seen_first_ts = {"bad_bool": True, "nan_ts": math.nan, "good_str": "1700000100.0"}
+    nfc._aggregate(SimpleNamespace(headlines=[]), 1_700_000_200.0)
+    assert nfc._seen_first_ts == {"good_str": pytest.approx(1_700_000_100.0)}
+
+    assert pse_mod._resolve_window_metric_with_fallbacks(None, 0.01) is None
+    assert pse_mod._resolve_window_metric_with_fallbacks(math.nan, None) == 0.0
+    assert pse_mod._resolve_window_metric_with_fallbacks(True, None) == 0.0
+    assert pse_mod._resolve_window_metric_with_fallbacks(math.nan, 0.002) == pytest.approx(0.002)
+
+    # 5. Repo-wide invariant: zero duplicate def/async def/class names within any module or class body
+    repo_root = Path(botcore.__file__).resolve().parent
+    skip_dirs = {".git", "myenv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "cachedb", "node_modules"}
+    dup_defs: list[tuple[str, int, int, str]] = []
+
+    def _scan_scope(body: list[ast.stmt], scope_prefix: str, rel_path: str) -> None:
+        seen_names: dict[str, int] = {}
+        for stmt in body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                decs = [ast.unparse(d) for d in stmt.decorator_list]
+                if any("overload" in d or d.endswith((".setter", ".deleter")) for d in decs):
+                    continue
+                qualified = f"{scope_prefix}.{stmt.name}" if scope_prefix else stmt.name
+                if stmt.name in seen_names:
+                    dup_defs.append((rel_path, seen_names[stmt.name], stmt.lineno, qualified))
+                seen_names[stmt.name] = stmt.lineno
+                _scan_scope(stmt.body, qualified, rel_path)
+
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+        for fname in sorted(filenames):
+            if not fname.endswith(".py"):
+                continue
+            fpath = Path(dirpath) / fname
+            rel = fpath.relative_to(repo_root).as_posix()
+            mod_tree = ast.parse(read_text_file(str(fpath)), filename=rel)
+            _scan_scope(mod_tree.body, "", rel)
+    assert dup_defs == []

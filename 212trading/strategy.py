@@ -372,7 +372,7 @@ class Strategy(BaseSpotMixin):
             "kind": pending.get("kind"),
             "level": pending.get("level"),
             "intent_id": pending.get("intent_id"),
-            "market": bool(pending.get("market")),
+            "market": bool(_parse_bool_flag(pending.get("market"), False)),
             "ts": safe_float(pending.get("ts"), default=None) or self._now(),
         }
         if pending.get("amount") is not None:
@@ -383,7 +383,7 @@ class Strategy(BaseSpotMixin):
 
     def _submit_pending_order(self, pending: dict):
         """Persist once, submit through the common typed contract, and adopt acceptance."""
-        market = bool(pending.get("market"))
+        market = bool(_parse_bool_flag(pending.get("market"), False))
         qty = safe_pos_float(pending.get("qty"), default=None)
         limit = safe_pos_float(pending.get("limit"), default=None)
         if qty is None or (not market and limit is None):

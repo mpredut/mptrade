@@ -433,13 +433,13 @@ class Instrument:
         ctx.abort_if = kwargs.pop("abort_if", None)
         ctx.early_abort_if = getattr(ctx.abort_if, "is_aborted", None)
         ctx.requires_permit = bool(
-            getattr(self._provider, "requires_cache_permit", lambda: False)()
+            _parse_bool_flag(getattr(self._provider, "requires_cache_permit", lambda: False)(), False)
         )
         ctx.defers_smart_cancel = bool(
-            getattr(self._provider, "defers_smart_cancellation", lambda: False)()
+            _parse_bool_flag(getattr(self._provider, "defers_smart_cancellation", lambda: False)(), False)
         )
         ctx.supports_biz_min = bool(
-            getattr(self._provider, "supports_business_minimum", lambda: False)()
+            _parse_bool_flag(getattr(self._provider, "supports_business_minimum", lambda: False)(), False)
         )
         if ctx.cache_permit is not None and not ctx.requires_permit:
             print(f"[{self.symbol}] {side_u} BLOCKED (pre-submit): invalid_cache_permit_provider")
@@ -448,9 +448,13 @@ class Instrument:
         inst_live = self.param("execution", "live_enabled", None, bool)
         try:
             provider_execution_enabled = (
-                bool(inst_live)
+                bool(_parse_bool_flag(inst_live, False))
                 if inst_live is not None
-                else (True if not callable(ctx.execution_enabled) else bool(ctx.execution_enabled()))
+                else (
+                    True
+                    if not callable(ctx.execution_enabled)
+                    else bool(_parse_bool_flag(ctx.execution_enabled(), False))
+                )
             )
         except Exception as exc:  # noqa: BLE001 - An unreadable gate must fail closed.
             print(
@@ -740,7 +744,7 @@ class Instrument:
         if _is_aborted(ctx.abort_if):
             ctx.reason = "aborted_by_caller"
             return False
-        if callable(ctx.execution_enabled) and not bool(ctx.execution_enabled()):
+        if callable(ctx.execution_enabled) and not _parse_bool_flag(ctx.execution_enabled(), False):
             raise SubmissionRefused("execution_disabled")
         return True
 

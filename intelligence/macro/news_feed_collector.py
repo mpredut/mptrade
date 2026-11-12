@@ -426,9 +426,9 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         cache_dir = self._CacheDirOrNone()
         retention_cutoff = now - max(self.rolling_window_sec * 8.0, 172800.0)
         self._seen_first_ts = {
-            k: ts
+            k: ts_f
             for k, ts in getattr(self, "_seen_first_ts", {}).items()
-            if isinstance(ts, (int, float)) and retention_cutoff <= ts <= now + 5.0
+            if (ts_f := safe_pos_float(ts, default=None)) is not None and retention_cutoff <= ts_f <= now + 5.0
         }
         raw_headlines = obj_attr(latest_snapshot, "headlines", None)
         if isinstance(raw_headlines, (list, tuple)):

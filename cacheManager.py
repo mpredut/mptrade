@@ -287,7 +287,10 @@ class CacheFactory:
             if provider_names is not None and name != "CurrentPrice":
                 raise ValueError("provider_names is supported only for CurrentPrice")
 
-            cfg_read_only = bool(cls._CONFIG[name].get("read_only", False)) and name != "ShortTrend"
+            cfg_read_only = (
+                bool(_parse_bool_flag(cls._CONFIG[name].get("read_only", False), default=False))
+                and name != "ShortTrend"
+            )
             resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(
                 data_sync_mode,
                 config_read_only=cfg_read_only,
