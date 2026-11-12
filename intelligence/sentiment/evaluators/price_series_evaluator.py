@@ -25,6 +25,7 @@ from instrument_registry import is_equity_symbol, is_symbol_market_open
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
 from intelligence.macro_sentiment_ssot import (
+    ALL_KINEMATIC_METRIC_KEYS,
     KINEMATIC_HORIZON_SPECS,
     SHORT_KINEMATIC_METRIC_KEYS,
     _extract_sorted_ts_px,
@@ -927,12 +928,29 @@ def _fit_quadratic_kinematics(
     min_span_ms: float,
 ) -> Optional[Tuple[float, float]]:
     """Fit continuous-time quadratic OLS y(tau) = b0 + b1*tau + b2*tau^2 at tau=0 (%/min, %/min^2)."""
-    if len(pts_ms_px) < 3:
+    if not isinstance(pts_ms_px, (list, tuple)) or len(pts_ms_px) < 3:
         return None
-    dedup: List[Tuple[float, float]] = []
-    for t_ms, px_v in pts_ms_px:
-        if px_v <= 0.0:
+    req_span_ms = safe_nonneg_float(min_span_ms, default=0.0)
+    clean_pts: List[Tuple[float, float]] = []
+    is_sorted = True
+    prev_t = -math.inf
+    for item in pts_ms_px:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
+        t_ms = safe_float(item[0], default=None)
+        px_v = safe_pos_float(item[1], default=None)
+        if t_ms is None or px_v is None:
+            continue
+        if t_ms < prev_t:
+            is_sorted = False
+        prev_t = t_ms
+        clean_pts.append((t_ms, px_v))
+    if len(clean_pts) < 3:
+        return None
+    if not is_sorted:
+        clean_pts.sort(key=lambda pt: pt[0])
+    dedup: List[Tuple[float, float]] = []
+    for t_ms, px_v in clean_pts:
         if dedup and abs(t_ms - dedup[-1][0]) < 1.0:
             dedup[-1] = (t_ms, px_v)
         else:
@@ -942,7 +960,7 @@ def _fit_quadratic_kinematics(
     t_start, p0 = dedup[0]
     t_now, _ = dedup[-1]
     span_ms = t_now - t_start
-    if p0 <= 0.0 or span_ms < min_span_ms:
+    if p0 <= 0.0 or span_ms < req_span_ms:
         return None
     span_min = span_ms / 60000.0
     if not any(-0.92 * span_min <= ((t_m - t_now) / 60000.0) <= -0.08 * span_min for t_m, _ in dedup[1:-1]):
@@ -1428,7 +1446,7 @@ def _apply_24h_series_enrichment(
                 "trend_2_5h",
                 "gradient_recent_fast",
                 "gradient_recent",
-                *SHORT_KINEMATIC_METRIC_KEYS,
+                *ALL_KINEMATIC_METRIC_KEYS,
             ):
                 entry.pop(k_st_clr, None)
         s_2_5h = safe_float(entry.get("slope_2_5h"), default=None)

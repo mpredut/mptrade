@@ -584,9 +584,15 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         eps_primary = pwin.get_noise_epsilon(self.EPSILON_K)
         kin_extra: Dict[str, float] = {}
         try:
-            for win_key, horizon_sec, label in ((90, 90.0, "90s"), (900, 300.0, "5m")):
-                w_kin = wins.get(win_key) or pwin
-                if hasattr(w_kin, "calculate_acceleration") and len(getattr(w_kin, "prices", ())) >= 3:
+            w_90_kin = wins.get(90) or pwin
+            w_5m_kin = wins.get(900) or wins.get(300) or wins.get(self.window_seconds[-1]) or pwin
+            for w_kin, horizon_sec, min_span_sec, label in (
+                (w_90_kin, 90.0, 45.0, "90s"),
+                (w_5m_kin, 300.0, 120.0, "5m"),
+            ):
+                n_kin = len(getattr(w_kin, "prices", ()))
+                r_kin = max(safe_pos_float(getattr(w_kin, "sample_rate_sec", 1.0), default=1.0) or 1.0, 0.1)
+                if hasattr(w_kin, "calculate_acceleration") and n_kin >= 3 and (n_kin - 1) * r_kin >= min_span_sec:
                     vel_k, acc_k = w_kin.calculate_acceleration(window_sec=horizon_sec)
                     if abs(vel_k) >= 1e-6 or abs(acc_k) >= 1e-6:
                         kin_extra[f"vel_{label}_pct_min"] = round(vel_k, 5)

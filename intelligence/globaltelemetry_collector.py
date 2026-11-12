@@ -27,6 +27,7 @@ from botcore import (
     _parse_bool_flag,
     bool_env,
     load_dotenv,
+    normalize_epoch_sec,
     parse_symbol_list,
     pos_float_env,
     resolve_now_ts,
@@ -91,20 +92,24 @@ def evaluate_kinematic_impulse_symbols(
     """Identify non-equity crypto symbols experiencing an acute symmetric short-horizon price/kinematic shock."""
     if not isinstance(prices_and_trends, dict) or not prices_and_trends:
         return []
-    allowed_bases = {
-        canonical_base_asset(s)
-        for s in (candidate_symbols or ())
-        if s and not is_equity_symbol(s)
-    }
+    allowed_bases: Optional[set[str]] = None
+    if candidate_symbols is not None:
+        allowed_bases = {
+            b
+            for s in parse_symbol_list(candidate_symbols)
+            if s and not is_equity_symbol(s) and (b := canonical_base_asset(s))
+        }
+        if not allowed_bases:
+            return []
     best_by_base: Dict[str, tuple[int, str]] = {}
     for raw_sym, pinfo in prices_and_trends.items():
-        if not isinstance(pinfo, dict):
+        if not isinstance(raw_sym, str) or not isinstance(pinfo, dict):
             continue
         sym = clean_symbol_key(raw_sym)
         if not sym or is_equity_symbol(sym) or not has_crypto_quote_suffix(sym):
             continue
         base = canonical_base_asset(sym)
-        if not base or (allowed_bases and base not in allowed_bases):
+        if not base or (allowed_bases is not None and base not in allowed_bases):
             continue
         c3m = safe_float(pinfo.get("chg_3m_pct"), default=None)
         c5m = safe_float(pinfo.get("chg_5m_pct"), default=None)
@@ -422,8 +427,9 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                     pass
                 eval_doc = read_json_dict_recovering(eval_path)
                 if isinstance(eval_doc, dict):
-                    doc_ts = safe_nonneg_ts(eval_doc.get("ts"), 0.0)
-                    if doc_ts <= eff_now + 5.0:
+                    raw_doc_ts = eval_doc.get("ts") if eval_doc.get("ts") is not None else eval_doc.get("evaluated_at_ts")
+                    doc_ts = normalize_epoch_sec(raw_doc_ts, default=0.0, allow_iso=True) or 0.0
+                    if 0.0 < doc_ts <= eff_now + 5.0:
                         last_eval_ts = max(last_eval_ts, doc_ts)
             min_eval_gap_sec = safe_pos_float(getattr(self, "ai_impulse_min_eval_gap_sec", None), 65.0)
             if last_eval_ts > 0.0 and 0.0 <= (eff_now - last_eval_ts) < min_eval_gap_sec:
@@ -439,7 +445,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 prices_data=cp_doc,
                 trends_data=st_doc,
             )
-            shocked = evaluate_kinematic_impulse_symbols(prices_and_trends, candidate_symbols=self.symbols or None)
+            cand_syms = self.symbols if (self.symbols or getattr(self, "_explicit_symbols", False)) else None
+            shocked = evaluate_kinematic_impulse_symbols(prices_and_trends, candidate_symbols=cand_syms)
             if not shocked:
                 return None
             workspace_dir = resolve_workspace_dir_from_cachedb(self.cache_dir)
@@ -539,10 +546,11 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         result_key=res_key,
                         on_done=on_done_cb,
                     )
+            last_imp_chk = safe_nonneg_ts(getattr(self, "_last_ai_impulse_check_ts", 0.0), 0.0)
             if (
                 not self.skip_external
-                and getattr(self, "_live_impulse_wakeup_enabled", False)
-                and (current_ts - getattr(self, "_last_ai_impulse_check_ts", 0.0)) >= 5.0
+                and _parse_bool_flag(getattr(self, "_live_impulse_wakeup_enabled", False), False)
+                and (last_imp_chk <= 0.0 or not (0.0 < (current_ts - last_imp_chk) < 5.0))
             ):
                 self._last_ai_impulse_check_ts = current_ts
                 self.maybe_trigger_kinematic_ai_wakeup(now=current_ts)

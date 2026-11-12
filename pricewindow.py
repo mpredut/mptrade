@@ -1081,7 +1081,7 @@ class PriceWindow:
                 if n_samples is not None:
                     prices = prices[-n_samples:]
         n = len(prices)
-        if n < 3:
+        if n < 3 or any(isinstance(p, bool) for p in prices):
             return 0.0, 0.0
 
         p0 = safe_pos_float(prices[0], default=None)
@@ -1090,7 +1090,7 @@ class PriceWindow:
 
         try:
             arr = np.asarray(prices, dtype=np.float64)
-            if not np.all(np.isfinite(arr)):
+            if not np.all(np.isfinite(arr)) or np.any(arr <= 0.0):
                 return 0.0, 0.0
             dp = arr - p0
             n_f = n * 1.0

@@ -103,6 +103,7 @@ import intelligence.macro.geopolitical_guard as geo_gd_mod
 import intelligence.macro.lexicon_ssot as lex_ssot
 from intelligence.macro.lexicon_ssot import _tracked_equity_base_tickers
 from intelligence.macro.news_feed_collector import NewsFeedCollector
+import intelligence.globaltelemetry_collector as gtc_mod
 import intelligence.macro_analyzer as macro_an_mod
 import intelligence.macro_sentiment_ssot as mss
 from intelligence.macro_sentiment_ssot import FearGreedSnapshot
@@ -167,7 +168,7 @@ from orchestratorOS.admin import prune_llm_threads as plt_mod
 from orchestratorOS.agy import paths as agy_paths, ui_mirror as agy_ui_mirror
 from orchestratorOS.lib import technical_repair_ssot as tr_ssot
 from orchestratorOS.livecheck import os_resources_watchdog as wd
-from orchestratorOS.supervisor import prompt_sections as ps_mod
+from orchestratorOS.supervisor import prompt_formatters as pf_mod, prompt_sections as ps_mod
 import order_guard
 from order_lifecycle import TrackedOrderLifecycle
 import order_retry
@@ -5435,6 +5436,240 @@ def test_cycle1_price_cache_ws_and_orchestrator_guards(tmp_path, monkeypatch):
 
     asyncio.run(_exercise_hot_reload_abort())
     assert stop_calls == []
+
+
+def test_wave31_kinematic_ssot_and_impulse_border_cases(tmp_path, monkeypatch):
+    """Verify Wave 31 kinematic fitting, short-trend span gates, Kalman z overwrite, and impulse wakeup filters."""
+    # 1. PriceWindow.calculate_acceleration rejects bool & non-positive samples cleanly.
+    win_bad_bool = pw.PriceWindow("BTCUSDC", 20, sample_rate_sec=5.0, window_seconds=90.0)
+    win_bad_bool.prices = [72000.0, True, 72005.0, 72010.0]
+    assert win_bad_bool.calculate_acceleration(window_sec=90.0) == (0.0, 0.0)
+
+    win_bad_zero = pw.PriceWindow("BTCUSDC", 20, sample_rate_sec=5.0, window_seconds=90.0)
+    win_bad_zero.prices = [72000.0, 0.0, 72005.0, 72010.0]
+    assert win_bad_zero.calculate_acceleration(window_sec=90.0) == (0.0, 0.0)
+
+    # 2. CacheShortTrendManager.evaluate_full suppresses 3-tick cold-boot noise and uses 9000s window for 5m horizon.
+    st_mgr = CacheShortTrendManager.__new__(CacheShortTrendManager)
+    st_mgr.window_seconds = [222.0, 9000.0]
+    st_mgr.TREND_STALE_SEC = 180.0
+    st_mgr.EPSILON_K = 1.0
+    st_mgr.writer = False
+    st_mgr._full_eval_thread = None
+    st_mgr._lock = threading.RLock()
+    st_mgr._live_windows = {}
+    st_mgr._dirty_live_symbols = set()
+    st_mgr._threshold_fn = lambda _sym, _sec: 0.25
+    st_mgr._published_dynamic_windows = lambda _sym, now=None: {}
+    st_mgr._get_trend_buffer = lambda _sym: SimpleNamespace(timestamps=[], prices=[])
+    captured_mem = {}
+    st_mgr._set_mem = lambda sym, **kw: captured_mem.update({sym: kw})
+    st_mgr.current_price_mgr = SimpleNamespace(
+        get_cached_price_observation=lambda _sym, _stale: (1700000500.0, 72150.0)
+    )
+    monkeypatch.setattr(cachetrend, "resolve_sustained_sample_rate", lambda *_a, **_kw: None)
+
+    w_cold_222 = pw.PriceWindow(
+        "BTCUSDC", 45, sample_rate_sec=5.0, initial_prices=[72000.0, 72000.5, 72002.0], window_seconds=222.0
+    )
+    w_cold_9000 = pw.PriceWindow(
+        "BTCUSDC", 1800, sample_rate_sec=5.0, initial_prices=[72000.0, 72000.5, 72002.0], window_seconds=9000.0
+    )
+    st_mgr.windows = {"BTCUSDC": {222.0: w_cold_222, 9000.0: w_cold_9000}}
+    st_mgr.analyzers = {
+        "BTCUSDC": {
+            222.0: pw.WindowAnalyzer(w_cold_222),
+            9000.0: pw.WindowAnalyzer(w_cold_9000),
+        }
+    }
+    st_mgr.evaluate_full("BTCUSDC")
+    assert "vel_90s_pct_min" not in captured_mem["BTCUSDC"]
+    assert "vel_5m_pct_min" not in captured_mem["BTCUSDC"]
+
+    # Populate 65 samples at 5s cadence (320s > 222s primary window) with a steady quadratic ramp in 9000s window.
+    ramp_prices = [100.0 * math.exp(0.0004 * idx + 0.00001 * (idx ** 2)) for idx in range(65)]
+    w_warm_222 = pw.PriceWindow(
+        "BTCUSDC", 45, sample_rate_sec=5.0, initial_prices=ramp_prices[-45:], window_seconds=222.0
+    )
+    w_warm_9000 = pw.PriceWindow(
+        "BTCUSDC", 1800, sample_rate_sec=5.0, initial_prices=ramp_prices, window_seconds=9000.0
+    )
+    st_mgr.windows["BTCUSDC"] = {222.0: w_warm_222, 9000.0: w_warm_9000}
+    st_mgr.analyzers["BTCUSDC"] = {
+        222.0: pw.WindowAnalyzer(w_warm_222),
+        9000.0: pw.WindowAnalyzer(w_warm_9000),
+    }
+    st_mgr.evaluate_full("BTCUSDC")
+    exp_vel_5m, _ = w_warm_9000.calculate_acceleration(window_sec=300.0)
+    assert captured_mem["BTCUSDC"]["vel_5m_pct_min"] == round(exp_vel_5m, 5)
+    assert captured_mem["BTCUSDC"]["vel_90s_pct_min"] > 0.0
+
+    # 3. resolve_kalman_vel_z overwrites stale kalman_vel_z when populate=True and honors populate="false".
+    stale_k_entry = {"kalman_vel": 0.45, "kalman_vel_std": 0.15, "kalman_vel_z": -9.99}
+    assert mss.resolve_kalman_vel_z(stale_k_entry, populate="false") == -9.99
+    assert stale_k_entry["kalman_vel_z"] == -9.99
+    assert mss.resolve_kalman_vel_z(stale_k_entry, populate=True) == 3.0
+    assert stale_k_entry["kalman_vel_z"] == 3.0
+
+    # 4. _fit_quadratic_kinematics sanitizes unsorted/bool/NaN tuples and _apply_24h_series_enrichment drops stale 15m kinematics.
+    assert pse_mod._fit_quadratic_kinematics(True, min_span_ms=30000.0) is None
+    raw_unsorted = [
+        (1060000.0, 101.2),
+        (1000000.0, 100.0),
+        (1020000.0, True),
+        (1030000.0, math.nan),
+        (1030000.0, 100.5),
+    ]
+    kin_fit = pse_mod._fit_quadratic_kinematics(raw_unsorted, min_span_ms=45000.0)
+    assert kin_fit is not None and kin_fit[0] > 0.0
+
+    stale_entry = {
+        "price": 102.0,
+        "_short_trend_ts": 1000.0,
+        "vel_15m_pct_min": 0.88,
+        "accel_15m_pct_min2": 0.44,
+    }
+    short_s24 = [[2000000, 100.0], [2060000, 101.0], [2120000, 102.0]]
+    pse_mod._apply_24h_series_enrichment("TAOUSDC", stale_entry, {}, short_s24, None)
+    assert "vel_15m_pct_min" not in stale_entry
+    assert "accel_15m_pct_min2" not in stale_entry
+
+    # 5. resolve_runtime_market_regime_snapshot rejects bool/non-str symbol and bool/bad now; PricePlatformInterface refresh guards.
+    dummy_regime_mgr = SimpleNamespace(get_market_regime=lambda sym, now=None: SimpleNamespace(symbol=sym, now=now))
+    assert mapi_mod.resolve_runtime_market_regime_snapshot(True, mgr=dummy_regime_mgr) is None
+    assert mapi_mod.resolve_runtime_market_regime_snapshot("BTCUSDC", now=True, mgr=dummy_regime_mgr) is None
+    assert mapi_mod.resolve_runtime_market_regime_snapshot("BTCUSDC", now="bad", mgr=dummy_regime_mgr) is None
+
+    plat = StockYahooPricePlatform.__new__(StockYahooPricePlatform)
+    plat_loads = []
+    plat._load_symbols = lambda: plat_loads.append(1) or ["NVDA"]
+    plat._init_platform_refresh("60", load_now="false")
+    assert plat._refresh_interval == 60.0
+    assert plat_loads == []
+    plat._last_refresh = time.time() + 7200.0
+    plat.refresh_symbols()
+    assert len(plat_loads) == 1
+
+    # 6. build_supervisor_prompt normalizes CSV and boolean focus_symbols via parse_symbol_list.
+    empty_sensors = SimpleNamespace(prices_and_trends={}, microstructure={}, portfolio_summary={})
+    prompt_csv = pf_mod.build_supervisor_prompt(
+        empty_sensors,
+        [],
+        topic_key="auto_cryptotrade_executor",
+        focus_symbols="btcusdc, taousdc",
+    )
+    assert "### 4. TACTICAL PRIORITY SYMBOLS: BTCUSDC, TAOUSDC" in prompt_csv
+    prompt_bool = pf_mod.build_supervisor_prompt(
+        empty_sensors,
+        [],
+        topic_key="auto_cryptotrade_executor",
+        focus_symbols=True,
+    )
+    assert "TACTICAL PRIORITY SYMBOLS" not in prompt_bool
+
+    # 7. evaluate_kinematic_impulse_symbols, maybe_trigger_kinematic_ai_wakeup, and run_cycle wakeup gates.
+    shock_map = {
+        True: {"vel_90s_pct_min": 1.2, "accel_90s_pct_min2": 0.8},
+        "TAOUSDC": {"vel_90s_pct_min": 0.9, "accel_90s_pct_min2": 0.6, "vol_1h_pct": 1.0},
+    }
+    assert gtc_mod.evaluate_kinematic_impulse_symbols(shock_map, candidate_symbols=[]) == []
+    assert gtc_mod.evaluate_kinematic_impulse_symbols(shock_map, candidate_symbols=["NVDA_US_EQ"]) == []
+    assert gtc_mod.evaluate_kinematic_impulse_symbols(shock_map, candidate_symbols=True) == []
+    assert gtc_mod.evaluate_kinematic_impulse_symbols(shock_map, candidate_symbols="taousdc") == ["TAOUSDC"]
+
+    ws_dir = tmp_path / "ws"
+    cdb_dir = ws_dir / "cachedb"
+    (ws_dir / "orchestratorOS").mkdir(parents=True, exist_ok=True)
+    runner_sh = ws_dir / "orchestratorOS" / "run_python.sh"
+    atomic_write_text(runner_sh, "#!/bin/sh\nexit 0\n")
+
+    eval_now = 3600.0 + 120.0
+    eval_file = cachepaths.resolve_cachedb_filepath(os.path.join(str(cdb_dir), "auto_cryptotrade_executor_eval.json"))
+    state_io.save_json_state(str(eval_file), {"ts": (eval_now - 20.0) * 1000.0})
+    old_mtime = eval_now - 600.0
+    os.utime(str(eval_file), (old_mtime, old_mtime))
+
+    st_file = cachepaths.resolve_cachedb_filepath(os.path.join(str(cdb_dir), cachepaths.CACHE_SHORT_TREND_FILENAME))
+    cp_file = cachepaths.resolve_cachedb_filepath(os.path.join(str(cdb_dir), cachepaths.CACHE_CURRENT_PRICE_FILENAME))
+    state_io.save_json_state(
+        str(st_file),
+        {"TAOUSDC": {"ts": eval_now, "vel_90s_pct_min": 0.95, "accel_90s_pct_min2": 0.65, "vol_1h_pct": 1.0}},
+    )
+    state_io.save_json_state(str(cp_file), {"TAOUSDC": {"price": 420.0, "ts": eval_now}})
+
+    popen_calls = []
+    monkeypatch.setattr(
+        gtc_mod.subprocess,
+        "Popen",
+        lambda cmd, **kw: popen_calls.append((cmd, kw)) or SimpleNamespace(pid=12345),
+    )
+    monkeypatch.setattr(gtc_mod.os.path, "isfile", lambda p: True)
+
+    gtc = gtc_mod.GlobalTelemetryCollector.__new__(gtc_mod.GlobalTelemetryCollector)
+    gtc.cache_dir = str(cdb_dir)
+    gtc.crypto_executor_interval_sec = 360.0
+    gtc.ai_impulse_cooldown_sec = 150.0
+    gtc.ai_impulse_post_cron_guard_sec = 20.0
+    gtc.ai_impulse_pre_cron_guard_sec = 45.0
+    gtc.ai_impulse_min_eval_gap_sec = 65.0
+    gtc.ai_impulse_exec_timeout_sec = 240.0
+    gtc._last_ai_impulse_ts = 0.0
+    gtc._active_cycle_ts = None
+    gtc.symbols = ["NVDA_US_EQ"]
+    gtc._explicit_symbols = True
+
+    with temporary_environ({"AI_IMPULSE_TRIGGER_ENABLED": "true"}):
+        # Millisecond eval_doc ts (20s ago < 65s min_eval_gap_sec) suppresses duplicate wakeup.
+        assert gtc.maybe_trigger_kinematic_ai_wakeup(now=eval_now) is None
+        assert popen_calls == []
+
+        # Once eval_doc ts is older than 65s, equities-only explicit symbols still suppress crypto wakeup.
+        state_io.save_json_state(str(eval_file), {"ts": (eval_now - 120.0) * 1000.0})
+        os.utime(str(eval_file), (old_mtime, old_mtime))
+        assert gtc.maybe_trigger_kinematic_ai_wakeup(now=eval_now) is None
+        assert popen_calls == []
+
+        # Allowing TAOUSDC triggers wakeup and persists kinematic_impulse_signal.json under cachedb/system.
+        gtc.symbols = ["TAOUSDC"]
+        shocked_out = gtc.maybe_trigger_kinematic_ai_wakeup(now=eval_now)
+        assert shocked_out == ["TAOUSDC"]
+        assert len(popen_calls) == 1
+        sig_path = cachepaths.resolve_cachedb_filepath(
+            os.path.join(str(cdb_dir), cachepaths.KINEMATIC_IMPULSE_SIGNAL_FILENAME)
+        )
+        sig_doc = state_io.read_json_dict(str(sig_path))
+        assert sig_doc["symbols"] == ["TAOUSDC"]
+
+    # Verify run_cycle string-bool gate ("false") and future _last_ai_impulse_check_ts NTP recovery.
+    wakeup_check_ts = []
+    gtc.skip_external = False
+    gtc.skip_news = True
+    gtc.news_interval_sec = 3600.0
+    gtc.fear_greed_interval_sec = 3600.0
+    gtc.breadth_interval_sec = 3600.0
+    gtc.macro_benchmarks_interval_sec = 3600.0
+    gtc.pretrade_caches_interval_sec = 3600.0
+    gtc.venue_balances_interval_sec = 3600.0
+    gtc._last_fear_greed_ts = eval_now
+    gtc._last_breadth_ts = eval_now
+    gtc._last_macro_benchmarks_ts = eval_now
+    gtc._last_pretrade_caches_ts = eval_now
+    gtc._last_venue_balances_ts = eval_now
+    gtc.write_heartbeat = lambda _res: None
+    gtc._step_external_symbols = lambda *_a, **_kw: None
+    monkeypatch.setattr(gtc_mod, "finalize_daemon_cycle", lambda _self, res, **_kw: res)
+    gtc.maybe_trigger_kinematic_ai_wakeup = lambda now=None: wakeup_check_ts.append(now)
+
+    gtc._live_impulse_wakeup_enabled = "false"
+    gtc._last_ai_impulse_check_ts = 0.0
+    gtc.run_cycle(force=False, now=eval_now)
+    assert wakeup_check_ts == []
+
+    gtc._live_impulse_wakeup_enabled = "true"
+    gtc._last_ai_impulse_check_ts = eval_now + 3600.0
+    gtc.run_cycle(force=False, now=eval_now)
+    assert wakeup_check_ts == [eval_now]
+
 
 
 

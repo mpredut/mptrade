@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, List, Optional
 from zoneinfo import ZoneInfo
 
-from botcore import safe_pos_float, topic_spec
+from botcore import parse_symbol_list, safe_pos_float, topic_spec
 from orchestratorOS.lib.technical_repair_ssot import (
     ALL_DIAGNOSED_CATEGORIES,
     ALL_REPAIR_ACTIONS,
@@ -76,8 +76,7 @@ def build_supervisor_prompt(
             )
         )
     if not is_pure_sre and focus_symbols:
-        raw_focus = [focus_symbols] if isinstance(focus_symbols, str) else focus_symbols
-        clean_syms = [s.strip().upper() for s in raw_focus if isinstance(s, str) and s.strip()]
+        clean_syms = parse_symbol_list(focus_symbols)
         if clean_syms:
             context_items.append(
                 f"\n### 4. TACTICAL PRIORITY SYMBOLS: {', '.join(clean_syms)}\n"

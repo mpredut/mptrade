@@ -77,6 +77,10 @@ from .binance_provider import (  # noqa: F401
 def resolve_runtime_market_regime_snapshot(symbol: str, now=None, mgr=None):
     """Read the optional short-trend snapshot from ``mgr`` or the process SSOT short-trend manager."""
     try:
+        if not isinstance(symbol, str) or not symbol.strip():
+            return None
+        if now is not None and botcore.normalize_epoch_sec(now, default=None) is None:
+            return None
         mgr = MarketDataProvider.get_ssot_short_trend_manager() if mgr is None else mgr
         if mgr is None:
             return None

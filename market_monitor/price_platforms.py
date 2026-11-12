@@ -25,12 +25,14 @@ if _ROOT not in sys.path:
 
 import instrument_registry as sym
 from botcore import (
+    _parse_bool_flag,
     fetch_requests_json_get,
     fetch_requests_json_post,
     optional_env,
     parse_symbol_list,
     required_env,
     resolve_patched_attr,
+    safe_nonneg_float,
     safe_pos_float,
 )
 from cachepaths import (
@@ -93,19 +95,21 @@ class PricePlatformInterface(ABC):
 
     def _init_platform_refresh(self, refresh_interval: float, *, load_now: bool = True) -> None:
         self._supported_symbols = set()
-        self._last_refresh = 0
-        self._refresh_interval = refresh_interval
-        if load_now:
+        self._last_refresh = 0.0
+        self._refresh_interval = safe_nonneg_float(refresh_interval, default=0.0)
+        if _parse_bool_flag(load_now, True):
             self._load_symbols()
 
     def _load_symbols(self):
         pass
 
     def refresh_symbols(self):
+        now_s = time.time()
+        last_ref = safe_nonneg_float(getattr(self, "_last_refresh", 0.0), default=0.0)
         if (
             self._refresh_interval > 0
             and bool(getattr(self, "api_key", True))
-            and time.time() - self._last_refresh > self._refresh_interval
+            and (last_ref <= 0.0 or not (0.0 <= (now_s - last_ref) <= self._refresh_interval))
         ):
             self._load_symbols()
 
