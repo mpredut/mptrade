@@ -18,7 +18,7 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import ET, ensure_local_module_priority, log, safe_float
+from botcore import ET, ensure_local_module_priority, log, safe_float, safe_nonneg_float
 ensure_local_module_priority(_HERE, "ipo_common", "market_data")
 from cachepaths import same_canonical_base_asset as _t212_tickers_match  # noqa: E402
 from market_data import check_market  # noqa: E402
@@ -75,10 +75,11 @@ def verify_instrument_isin(
 
 def _wait(stop: "threading.Event | None", seconds: float) -> None:
     """Sleep interruptibly when a stop event exists, otherwise sleep normally."""
+    sec_f = safe_nonneg_float(seconds, default=0.0)
     if stop is not None:
-        stop.wait(seconds)
+        stop.wait(sec_f)
     else:
-        time.sleep(seconds)
+        time.sleep(sec_f)
 
 
 def wait_for_launch(yahoo_symbol: str, label: str, interval: int = 60, *,

@@ -834,11 +834,8 @@ class TrendCoordinator:
                     c24.subscribe_price(self)
 
     def _new_trend_state(self) -> TrendState:
-        min_confirm = (
-            TIME_SLEEP_GET_PRICE
-            if getattr(self, "min_interval", TIME_SLEEP_GET_PRICE) < TIME_SLEEP_GET_PRICE
-            else 0.0
-        )
+        eff_min_interval = safe_pos_float(getattr(self, "min_interval", None), default=TIME_SLEEP_GET_PRICE)
+        min_confirm = TIME_SLEEP_GET_PRICE if eff_min_interval < TIME_SLEEP_GET_PRICE else 0.0
         return TrendState(
             expiration_trend_time=2.7 * 60,
             fresh_trend_time=3.7 * 60,

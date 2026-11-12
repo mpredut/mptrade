@@ -7,7 +7,7 @@ from Brownian noise (Mann-Kendall p-value > alpha) or executing momentum strateg
 from __future__ import annotations
 
 from typing import Sequence
-from botcore import normalize_side, obj_attr, safe_float, safe_nonneg_float
+from botcore import normalize_side, obj_attr, safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -40,7 +40,7 @@ class TrendSignificanceGuard(OrderGuardEvaluatorBase):
             min_hurst: If specified (e.g. 0.50), requires Hurst exponent >= min_hurst for trend entries.
         """
         super().__init__()
-        self.max_p_value = safe_nonneg_float(max_p_value, default=0.05) or 0.05
+        self.max_p_value = safe_pos_float(max_p_value, default=0.05)
         self.min_hurst = safe_float(min_hurst, default=None)
 
     def evaluate(

@@ -79,6 +79,7 @@ from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceG
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision, unpack_guard_decision
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
 from intelligence.internal.state import survival as surv_mod
 from intelligence.macro import calendar_ssot
 from intelligence.macro.calendar_ssot import headline_effective_ts, parse_headline_age_minutes
@@ -136,7 +137,7 @@ from market_monitor.pricechecker import PriceAlert, PriceChecker
 from market_monitor.pricefetcher import StockYahooPricePlatform
 from market_regime import MarketRegimeHorizon, MarketRegimeService
 import monitortrades as mt
-from notify_engine import alertnotifiers as alert_mod
+from notify_engine import alertnotifiers as alert_mod, server as notify_server_mod
 from offline.backtests import evaluation as bt_eval
 from offline.backtests.comparison import add_path_cli_args, add_report_output_cli_args
 from offline.backtests.evaluation import build_execution_model_from_args, parse_intervals
@@ -170,18 +171,26 @@ from providers.execution_audit import (
 from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
 from providers.intent_state import _resolve_clamped_intent_notional
 from providers.kraken_provider import KrakenProvider
+from providers.ohlc_utils import (
+    build_price_history_points,
+    drop_incomplete_last_bar,
+    resolve_ohlc_time_window_ms,
+    validate_dataset,
+)
 from providers.order_ohlc_utils import (
     POST_ONLY_CROSS_TOKENS,
-    build_price_history_points,
     compute_post_only_maker_price,
     derive_venue_128bit_client_order_id,
-    drop_incomplete_last_bar,
     filter_and_normalize_open_orders,
     format_venue_intent_client_order_id,
     is_post_only_cross_refusal,
     iter_expired_open_order_ids,
-    resolve_ohlc_time_window_ms,
-    validate_dataset,
+    parse_nonneg_order_field,
+)
+from providers.price_poller import (
+    NonBinanceTrendPoller,
+    fetch_price_with_deadline,
+    start_nonbinance_trend_poller,
 )
 from providers.quantity import (
     BinanceFilterError,
@@ -4412,6 +4421,166 @@ def test_wave26_post_only_ssot_tick_fanout_and_border_cases(monkeypatch, tmp_pat
     assert Path(state_io.generation_lock_path(str(quota_state_file))).exists()
     saved_quota = state_io.read_json_dict(str(quota_state_file), default={})
     assert saved_quota["runtime_exhausted"]["gpt-oss-120b-medium"] > time.time() + 60.0
+
+
+def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_path, monkeypatch):
+    """Verify Wave 27 border cases across providers/price_poller, parse_nonneg_order_field, price_series_evaluator, T212 strategy/listing_watcher, notify_engine.server, tradeall, bapi_trades, and TrendSignificanceGuard."""
+    # 1. start_nonbinance_trend_poller rejects bare string / bool symbols and sanitizes string/NaN deadlines + string-false ws_health_fn
+    pushed_prices = []
+    stub_cpm = SimpleNamespace(
+        market_api=SimpleNamespace(get_current_price=lambda symbol=None, provider_name=None: 44.25),
+        bind_providers=lambda _b: None,
+        is_real_ws_healthy=lambda _s: "false",
+        push_price=lambda sym, px: pushed_prices.append((sym, px)),
+        _delegated_poller_symbols=set(),
+    )
+    for bad_syms in ("XBTUSD", b"XBTUSD", True, 123):
+        with pytest.raises(ValueError, match="iterable"):
+            start_nonbinance_trend_poller(stub_cpm, bad_syms, provider_names={"XBTUSD": "kraken"}, start_ws=False)
+    with pytest.raises(ValueError, match="explicit provider bindings"):
+        start_nonbinance_trend_poller(stub_cpm, [True], provider_names={"TRUE": "kraken"}, start_ws=False)
+
+    poller = start_nonbinance_trend_poller(
+        stub_cpm,
+        ["XBTUSD"],
+        interval_sec="0.05",
+        fetch_deadline_sec=float("nan"),
+        provider_names={"XBTUSD": "kraken"},
+        start_ws=False,
+    )
+    try:
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline and not pushed_prices:
+            time.sleep(0.02)
+        assert pushed_prices and pushed_prices[0] == ("XBTUSD", pytest.approx(44.25))
+    finally:
+        poller.stop(timeout=0.5)
+
+    # 2. NonBinanceTrendPoller.stop(timeout=0.0) passes 0.0 to attached WS streams instead of forcing 0.05s
+    ws_stop_timeouts = []
+    dummy_ws = SimpleNamespace(
+        request_stop=lambda: None,
+        stop=lambda timeout=None: ws_stop_timeouts.append(timeout),
+    )
+    dummy_pool = SimpleNamespace(shutdown=lambda **kw: None, _threads=())
+    dummy_thread = SimpleNamespace(join=lambda timeout=None: None, is_alive=lambda: False)
+    nb_poller = NonBinanceTrendPoller(dummy_thread, dummy_pool, threading.Event(), ws_streams=[dummy_ws])
+    assert nb_poller.stop(timeout=0.0) is True
+    assert ws_stop_timeouts == [0.0]
+
+    # 3. fetch_price_with_deadline sanitizes invalid/negative deadline_sec instead of raising ValueError
+    captured_fut_timeouts = []
+    fake_fut = SimpleNamespace(
+        result=lambda timeout=None: (captured_fut_timeouts.append(timeout) or 19.5),
+        cancel=lambda: None,
+    )
+    fake_pool = SimpleNamespace(submit=lambda fn: (fn() and fake_fut))
+    px_res = fetch_price_with_deadline(
+        SimpleNamespace(get_current_price=lambda **kw: 19.5),
+        "XBTUSD",
+        fake_pool,
+        deadline_sec=-5.0,
+        provider_name="kraken",
+    )
+    assert px_res == pytest.approx(19.5)
+    assert captured_fut_timeouts and captured_fut_timeouts[0] > 0.0
+
+    # 4. parse_nonneg_order_field handles whitespace-only strings and string-boolean allow_empty_str
+    assert parse_nonneg_order_field("  \t ", allow_empty_str=True) == 0.0
+    assert parse_nonneg_order_field("   ", allow_empty_str="false") is None
+    assert parse_nonneg_order_field("", allow_empty_str="true") == 0.0
+
+    # 5. price_series_evaluator preserves epoch-0 points when cutoff_ms <= 300000 and clamps invalid num_bins
+    ohlc_dir = tmp_path / "ohlc24"
+    ohlc_dir.mkdir()
+    ohlc_file = ohlc_dir / "cache_ohlc_24h_BTCUSDC.json"
+    pts_zero = [[i * 3 * 3600 * 1000, 100.0 + i, 10.0] for i in range(9)]
+    state_io.save_json_state(str(ohlc_file), {"points": pts_zero})
+    loaded_pts = pse_mod._load_stitched_24h_ohlc_points(
+        None,
+        "BTCUSDC",
+        cutoff_24h=0.0,
+        require_positive_volume=True,
+        cache_dir=str(ohlc_dir),
+    )
+    assert len(loaded_pts) == 9 and loaded_pts[0][0] == 0
+
+    vp_samples = [[100.0 + (i % 10), 1.0] for i in range(30)]
+    vp_res = pse_mod.compute_volume_profile_metrics(
+        [[1700000000000 + i * 60000, s[0], s[1]] for i, s in enumerate(vp_samples)],
+        num_bins=0,
+    )
+    assert vp_res and vp_res.get("poc_px") is not None
+
+    # 6. T212 Strategy._reconcile_real handles _unconfirmed_zero_polls=None and listing_watcher._wait clamps negative sleep
+    t212_strat_mod = load_venue_modules("212trading", "strategy")
+    t212_lw_mod = load_venue_modules("212trading", "listing_watcher")
+    strat_obj = t212_strat_mod.Strategy.__new__(t212_strat_mod.Strategy)
+    strat_obj.ticker = "NVDA_US_EQ"
+    strat_obj.yahoo_sym = "NVDA"
+    strat_obj._unconfirmed_zero_polls = None
+    strat_obj._portfolio_position = lambda: (0.0, 0.0)
+    strat_obj._recover_pending_submit = lambda _rq, _ao: None
+    strat_obj._exact_execution_price = lambda *_a, **_kw: None
+    strat_obj._avg = lambda: 120.0
+    strat_obj._now = lambda: 1_700_000_000.0
+    strat_obj.s = {"qty": 2.0, "orders": [], "pending_submit": None}
+    strat_obj.client = SimpleNamespace(
+        list_active_orders=lambda: [],
+        latest_filled_order_for_ticker=lambda *_a, **_kw: None,
+    )
+    assert strat_obj._reconcile_real(125.0) is False
+    assert strat_obj._unconfirmed_zero_polls == 1
+
+    waited_vals = []
+    t212_lw_mod._wait(SimpleNamespace(wait=lambda s: waited_vals.append(s)), -3.5)
+    assert waited_vals == [0.0]
+
+    # 7. notify_engine.server._send_ntfy handles status_code=None / string "500" without TypeError
+    srv_stub = notify_server_mod.NotificationServer.__new__(notify_server_mod.NotificationServer)
+    srv_stub.ntfy_token = ""
+    srv_stub._in_gated_dispatch = True
+    enqueued = []
+    srv_stub._enqueue_payload = lambda kind, payload: enqueued.append((kind, payload))
+    monkeypatch.setattr(notify_server_mod, "_external_notifications_disabled", lambda: False)
+    monkeypatch.setattr(notify_server_mod, "is_fake_alert_text", lambda *_a: False)
+    monkeypatch.setattr(notify_server_mod, "is_email_mirrored", lambda _t: False)
+    monkeypatch.setattr(notify_server_mod, "format_ntfy_url", lambda _t: "https://ntfy.example/topic")
+    monkeypatch.setattr(
+        notify_server_mod.requests,
+        "post",
+        lambda *_a, **_kw: SimpleNamespace(status_code=None, headers={}),
+    )
+    assert srv_stub._send_ntfy("ProdCheck", "BodyMsg", "default", "ops_topic", skip_email=True) is True
+    monkeypatch.setattr(
+        notify_server_mod.requests,
+        "post",
+        lambda *_a, **_kw: SimpleNamespace(status_code="500", headers={}),
+    )
+    assert srv_stub._send_ntfy("ProdCheck", "BodyMsg", "default", "ops_topic", skip_email=True) is False
+    assert len(enqueued) == 1 and enqueued[0][0] == "ntfy_webhook"
+
+    # 8. tradeall._new_trend_state handles min_interval=None, bapi_trades clamps limit=0->1000, and TrendSignificanceGuard clamps max_p_value=0->0.05
+    ta_stub = tradeall.TrendCoordinator.__new__(tradeall.TrendCoordinator)
+    ta_stub.min_interval = None
+    ts_state = ta_stub._new_trend_state()
+    assert ts_state._min_confirm_interval == 0.0
+    ta_stub.min_interval = 0.01
+    assert ta_stub._new_trend_state()._min_confirm_interval == pytest.approx(tradeall.TIME_SLEEP_GET_PRICE)
+
+    seen_limits = []
+    monkeypatch.setattr(bapi_trades.apiorders, "validate_order_query_args", lambda ot, _s: ot)
+    monkeypatch.setattr(
+        bapi_trades.apiorders,
+        "paginate_my_trades",
+        lambda _cli, _sym, _st, lim: (seen_limits.append(lim) or []),
+    )
+    assert bapi_trades.get_my_trades_24("ALL", "BTCUSDC", days_ago=-2, limit=0) == []
+    assert seen_limits == [1000]
+
+    tsg = TrendSignificanceGuard(max_p_value=0.0)
+    assert tsg.max_p_value == pytest.approx(0.05)
+
 
 
 

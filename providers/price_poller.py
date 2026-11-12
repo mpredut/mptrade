@@ -410,8 +410,9 @@ def fetch_price_with_deadline(
             return market_api.get_current_price(**kwargs)
 
     fut = pool.submit(_poll)
+    eff_deadline = safe_pos_float(deadline_sec, default=_NB_FETCH_DEADLINE_SEC) or _NB_FETCH_DEADLINE_SEC
     try:
-        return fut.result(timeout=deadline_sec)
+        return fut.result(timeout=eff_deadline)
     except _futures.TimeoutError:
         fut.cancel()
         raise
@@ -458,7 +459,7 @@ class NonBinanceTrendPoller:
         ws_deadline = time.monotonic() + ws_budget
         for ws in self.ws_streams:
             try:
-                rem = max(0.05, ws_deadline - time.monotonic())
+                rem = min(eff_timeout, max(0.05, ws_deadline - time.monotonic())) if eff_timeout > 0.0 else 0.0
                 ws.stop(timeout=rem)
             except Exception:
                 pass
@@ -486,7 +487,11 @@ def start_nonbinance_trend_poller(
     start_ws=None,
 ):
     """Feed short trends for non-Binance symbols using WebSocket-first + REST fallback."""
-    symbols = tuple(str(symbol or "").strip() for symbol in symbols)
+    if isinstance(symbols, (str, bytes, bool)) or not hasattr(symbols, "__iter__"):
+        raise ValueError("symbols must be an iterable of symbol strings")
+    symbols = tuple("" if isinstance(symbol, bool) else str(symbol or "").strip() for symbol in symbols)
+    eff_interval = safe_pos_float(interval_sec, default=PRICE_STREAM_POLL_INTERVAL_SEC) or PRICE_STREAM_POLL_INTERVAL_SEC
+    eff_deadline = safe_pos_float(fetch_deadline_sec, default=_NB_FETCH_DEADLINE_SEC) or _NB_FETCH_DEADLINE_SEC
     bindings = {
         str(symbol or "").strip().upper(): str(provider_name or "").strip()
         for symbol, provider_name in dict(provider_names or {}).items()
@@ -559,7 +564,7 @@ def start_nonbinance_trend_poller(
         rth_seeded: set[str] = set()
         empty_backoff_ts: dict[str, float] = {}
         last_equity_poll_ts: dict[str, float] = {}
-        equity_min_gap_sec = max(safe_pos_float(interval_sec, default=0.8) or 0.8, 6.0)
+        equity_min_gap_sec = max(eff_interval, 6.0)
         cpm_cache = getattr(cpm, "cache", None)
         extract_fn = getattr(cpm, "extract_price_and_ts", None)
         if isinstance(cpm_cache, dict) and callable(extract_fn):
@@ -573,7 +578,9 @@ def start_nonbinance_trend_poller(
         if ws_streams:
             for _ in range(20):
                 ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
-                if stop_event.is_set() or (callable(ws_health_fn) and all(bool(ws_health_fn(s)) for s in symbols)):
+                if stop_event.is_set() or (
+                    callable(ws_health_fn) and all(_parse_bool_flag(ws_health_fn(s), False) for s in symbols)
+                ):
                     break
                 stop_event.wait(0.1)
 
@@ -598,7 +605,7 @@ def start_nonbinance_trend_poller(
                 if stop_event.is_set():
                     break
                 ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
-                if callable(ws_health_fn) and bool(ws_health_fn(s)):
+                if callable(ws_health_fn) and _parse_bool_flag(ws_health_fn(s), False):
                     continue
                 prov_name = bindings[s.upper()]
                 is_eq = is_equity_venue(prov_name) or is_equity_symbol(s)
@@ -627,13 +634,13 @@ def start_nonbinance_trend_poller(
                         cpm.market_api,
                         s_one,
                         pool,
-                        fetch_deadline_sec,
+                        eff_deadline,
                         provider_name=prov_one,
                     )
                     _apply_fetched_price(s_one, p, is_eq=is_eq_one)
                 except _futures.TimeoutError:
                     builtins.print(
-                        f"[NB-trend] {s_one}: fetch BLOCKED >{fetch_deadline_sec}s "
+                        f"[NB-trend] {s_one}: fetch BLOCKED >{eff_deadline}s "
                         f"(poll deadline -- probably DNS or the network) -- skipping, retrying next cycle"
                     )
                 except Exception as _e:
@@ -645,7 +652,7 @@ def start_nonbinance_trend_poller(
                         with live_price_fetch_context():
                             return cpm.market_api.get_current_price(symbol=_sym, provider_name=_prov)
                     fut_map[pool.submit(_poll_item)] = (s_item, is_eq_item)
-                done, not_done = _futures.wait(fut_map.keys(), timeout=fetch_deadline_sec)
+                done, not_done = _futures.wait(fut_map.keys(), timeout=eff_deadline)
                 for fut in done:
                     s_done, is_eq_done = fut_map[fut]
                     try:
@@ -656,10 +663,10 @@ def start_nonbinance_trend_poller(
                     fut.cancel()
                     s_slow, _ = fut_map[fut]
                     builtins.print(
-                        f"[NB-trend] {s_slow}: fetch BLOCKED >{fetch_deadline_sec}s "
+                        f"[NB-trend] {s_slow}: fetch BLOCKED >{eff_deadline}s "
                         f"(poll deadline -- probably DNS or the network) -- skipping, retrying next cycle"
                     )
-            stop_event.wait(interval_sec)
+            stop_event.wait(eff_interval)
 
     t = threading.Thread(target=run, name="NonBinanceTrendPoller", daemon=True)
     t.start()

@@ -10,6 +10,7 @@ from botcore import (
     extract_order_side,
     extract_timestamp_ms,
     safe_nonneg_int,
+    safe_pos_int,
 )
 from . import bapi as api, bapi_allorders as apiorders
 from providers.base import MarketDataProvider
@@ -43,7 +44,7 @@ def _resolve_trade_order_id(trade_obj):
 def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
     order_type = apiorders.validate_order_query_args(order_type, symbol)
     days_ago = safe_nonneg_int(days_ago, default=0)
-    limit = min(1000, safe_nonneg_int(limit, default=1000) or 1000)
+    limit = min(1000, safe_pos_int(limit, default=1000))
     try:
         end_time = math.trunc(time.time() * 1000) - days_ago * 24 * 60 * 60 * 1000
         start_time = end_time - 24 * 60 * 60 * 1000

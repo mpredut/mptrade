@@ -155,7 +155,7 @@ def compute_post_only_maker_price(
 
 def parse_nonneg_order_field(raw: Any, *, allow_empty_str: bool = False) -> Optional[float]:
     """Parse an optional venue order quantity/cost/fee field into a non-negative float (``None`` -> ``0.0``)."""
-    if raw is None or (allow_empty_str and raw == ""):
+    if raw is None or (_parse_bool_flag(allow_empty_str, False) and isinstance(raw, str) and not raw.strip()):
         return 0.0
     return safe_nonneg_float(raw, default=None)
 

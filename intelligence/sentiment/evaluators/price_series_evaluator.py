@@ -13,6 +13,7 @@ from botcore import (
     is_offline_disk_cache_enabled,
     safe_int,
     safe_nonneg_float,
+    safe_pos_int,
 )
 from pricewindow import KalmanTrend as _DefaultKalmanTrend
 from cachepaths import cache_path, canonical_base_asset
@@ -174,7 +175,7 @@ def compute_volume_profile_metrics(
 
         cur_px = samples[-1][0]
         low_px, high_px = min(p for p, _ in samples), max(p for p, _ in samples)
-        n_bins = max(8, min(64, safe_int(num_bins, default=24) or 24))
+        n_bins = max(8, min(64, safe_pos_int(num_bins, default=24)))
         bin_w = (high_px - low_px) / (n_bins * 1.0) if high_px > low_px and low_px > 0.0 else 0.0
         if bin_w <= 0.0:
             return {}
@@ -977,7 +978,7 @@ def _load_stitched_24h_ohlc_points(
                         filt = [
                             list(p)
                             for p in raw_pts
-                            if (safe_float(p[0], default=-1e18) or -1e18) >= cutoff_ms - 300000.0
+                            if safe_float(p[0], default=-1e18) >= cutoff_ms - 300000.0
                             and (not require_positive_volume or (len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0))
                         ]
                         if len(filt) >= 8 and (filt[-1][0] - filt[0][0]) >= 18 * 3600 * 1000:

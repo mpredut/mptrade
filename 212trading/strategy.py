@@ -1124,16 +1124,17 @@ class Strategy(BaseSpotMixin):
                 or bool(pending_for_fill and pending_for_fill.get("side") == "SELL")
             )
             hist_fn = getattr(self.client, "latest_filled_order_for_ticker", None)
+            zero_polls = safe_nonneg_int(getattr(self, "_unconfirmed_zero_polls", 0), default=0)
             if (
                 real_qty <= 1e-9
                 and exact_price is None
                 and not has_tracked_sell
                 and callable(hist_fn)
                 and not hasattr(hist_fn, "_mock_name")
-                and getattr(self, "_unconfirmed_zero_polls", 0) < 1
+                and zero_polls < 1
             ):
-                self._unconfirmed_zero_polls = getattr(self, "_unconfirmed_zero_polls", 0) + 1
-                log(f"  [STRAT] {self.yahoo_sym} portfolio qty transiently 0 with no tracked SELL or fill history — awaiting confirmation")
+                self._unconfirmed_zero_polls = zero_polls + 1
+                log(f"  [STRAT] {self.yahoo_sym} portfolio qty transiently 0 with no tracked SELL or fill history -- awaiting confirmation")
                 return False
             self._unconfirmed_zero_polls = 0
             sell_price = exact_price or price

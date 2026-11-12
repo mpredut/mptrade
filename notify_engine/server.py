@@ -18,6 +18,7 @@ from botcore import (
     obj_attr,
     optional_env,
     safe_float,
+    safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
 )
@@ -318,7 +319,7 @@ class NotificationServer:
             
         try:
             resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=5)
-            if getattr(resp, "status_code", None) == 429:
+            if safe_int(getattr(resp, "status_code", None), default=200) == 429:
                 if _is_provider_daily_limit(resp):
                     text = getattr(resp, "text", "") or ""
                     logging.warning(f"ntfy daily limit reached: {text}")
@@ -329,10 +330,11 @@ class NotificationServer:
                     ra_f = safe_nonneg_float(retry_after, default=None)
                     time.sleep(min(ra_f, 30.0) if ra_f is not None else 1.0)
                     resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=5)
+            status_code = safe_int(getattr(resp, "status_code", None), default=200)
             if hasattr(resp, "raise_for_status"):
                 resp.raise_for_status()
-            elif getattr(resp, "status_code", 200) >= 400:
-                raise requests.HTTPError(f"HTTP {getattr(resp, 'status_code', 0)}")
+            elif status_code >= 400:
+                raise requests.HTTPError(f"HTTP {status_code}")
             logging.info(f"Dispatched ntfy alert to [{topic_str}] (priority={priority}): {title}")
             return True
         except Exception as e:

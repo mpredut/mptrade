@@ -1071,7 +1071,75 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     json_owners = {"state_io.py", "botcore.py", "cacheintegrity.py"}
     text_owners = {"state_io.py", "botcore.py"}
     env_owners = {"botcore.py", "cachepaths.py", "credentials.py"}
+    order_ohlc_reexports = {
+        "ClosedPriceSeries",
+        "OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES",
+        "OHLC_INTERVALS_MIN_TO_STR",
+        "OHLC_INTERVALS_STR_TO_MIN",
+        "ProviderError",
+        "REQUIRED_FIELDS",
+        "_CANDLE_INTERVALS",
+        "_parse_epoch_or_iso_s",
+        "_ts_ms_to_s",
+        "align_previous_values",
+        "build_price_history_points",
+        "candle_interval",
+        "candles_to_historical_points",
+        "clean_order_id",
+        "drop_incomplete_last_bar",
+        "extract_order_id",
+        "extract_order_price",
+        "extract_order_qty",
+        "extract_order_side",
+        "extract_timestamp_ms",
+        "extract_timestamp_s",
+        "extract_trading_quote_pairs",
+        "extract_yahoo_chart_latest_price",
+        "extract_yahoo_chart_result_and_quote",
+        "normalize_record",
+        "normalize_side",
+        "normalize_timestamp_ms",
+        "normalize_yahoo_5d_chart_bars",
+        "parse_ohlc_interval",
+        "parse_ohlc_interval_minutes",
+        "require_pos_ohlc_interval",
+        "resolve_ohlc_time_window_ms",
+        "series_to_historical_points",
+        "validate_dataset",
+        "validate_ohlc_bars",
+        "validate_ohlc_candle_bar",
+    }
+    cacheprice_poller_reexports = {
+        "HyperliquidPriceStream",
+        "KrakenPriceStream",
+        "NonBinanceTrendPoller",
+        "_NonBinanceTrendPoller",
+        "VenuePriceStreamBase",
+        "_VenuePriceStreamBase",
+        "_NB_FETCH_DEADLINE_SEC",
+        "fetch_price_with_deadline",
+        "_fetch_price_with_deadline",
+        "start_nonbinance_trend_poller",
+        "_start_nonbinance_trend_poller",
+    }
     ssot_violations: list[str] = []
+
+    def _check_reexport_imports(rel_s: str, node: ast.ImportFrom) -> None:
+        lineno = getattr(node, "lineno", 0)
+        if node.module == "providers.base" or (rel_s.startswith("providers/") and node.level == 1 and node.module == "base"):
+            bad_names = [a.name for a in node.names if a.name != "MarketDataProvider"]
+            if bad_names:
+                ssot_violations.append(f"{rel_s}:{lineno}: legacy re-export import from providers.base: {bad_names}")
+        elif node.module == "providers.order_ohlc_utils" or (
+            rel_s.startswith("providers/") and node.level == 1 and node.module == "order_ohlc_utils"
+        ):
+            bad_oou = [a.name for a in node.names if a.name in order_ohlc_reexports]
+            if bad_oou:
+                ssot_violations.append(f"{rel_s}:{lineno}: non-canonical re-export import from order_ohlc_utils: {bad_oou}")
+        elif node.module == "cacheprice":
+            bad_cp = [a.name for a in node.names if a.name in cacheprice_poller_reexports]
+            if bad_cp:
+                ssot_violations.append(f"{rel_s}:{lineno}: non-canonical poller re-export import from cacheprice: {bad_cp}")
 
     for rel_s, path_obj in prod_files:
         tree = ast.parse(path_obj.read_text(encoding="utf-8"), filename=rel_s)
@@ -1112,13 +1180,8 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 and node.attr in ("environ", "getenv")
             ):
                 ssot_violations.append(f"{rel_s}:{lineno}: os.{node.attr}")
-            elif isinstance(node, ast.ImportFrom) and (
-                node.module == "providers.base"
-                or (rel_s.startswith("providers/") and node.level == 1 and node.module == "base")
-            ):
-                bad_names = [a.name for a in node.names if a.name != "MarketDataProvider"]
-                if bad_names:
-                    ssot_violations.append(f"{rel_s}:{lineno}: legacy re-export import from providers.base: {bad_names}")
+            elif isinstance(node, ast.ImportFrom):
+                _check_reexport_imports(rel_s, node)
 
     for extra_dir in ("offline", "verify_tools"):
         for p in sorted((root / extra_dir).rglob("*.py")):
@@ -1127,18 +1190,16 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 continue
             tree = ast.parse(p.read_text(encoding="utf-8"), filename=rel_s)
             for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.module == "providers.base":
-                    bad_names = [a.name for a in node.names if a.name != "MarketDataProvider"]
-                    if bad_names:
-                        ssot_violations.append(
-                            f"{rel_s}:{getattr(node, 'lineno', 0)}: legacy re-export import from providers.base: {bad_names}"
-                        )
+                if isinstance(node, ast.ImportFrom):
+                    _check_reexport_imports(rel_s, node)
 
     assert ssot_violations == [], f"SSOT boundary violation(s) detected: {ssot_violations}"
 
     assert parse_nonneg_order_field(None) == 0.0
     assert parse_nonneg_order_field("") is None
     assert parse_nonneg_order_field("", allow_empty_str=True) == 0.0
+    assert parse_nonneg_order_field("   ", allow_empty_str=True) == 0.0
+    assert parse_nonneg_order_field("", allow_empty_str="false") is None
     assert parse_nonneg_order_field("12.5") == 12.5
     for bad_field in (True, False, -0.01, "nan", "inf", "abc"):
         assert parse_nonneg_order_field(bad_field, allow_empty_str=True) is None, bad_field
