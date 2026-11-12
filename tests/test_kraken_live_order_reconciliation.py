@@ -6,7 +6,6 @@ reports it terminal (closed/canceled/expired).
 """
 import json
 import os
-import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
@@ -14,7 +13,7 @@ from unittest.mock import MagicMock, patch
 from botcore import parse_dotenv
 from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError
 from strategies import spot_engine as strat
-from tests.conftest import make_spot_live_test_params
+from tests.conftest import TempDirTestCase, make_spot_live_test_params
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CONFIG_ENV = parse_dotenv(os.path.join(ROOT, "kraken", "config.env"))
@@ -233,7 +232,7 @@ class KrakenConfigParsingTest(unittest.TestCase):
             self.assertEqual(strat.StratParams.from_env().tp_trail_profit_floor_pct, 0.0)
 
 
-class KrakenStatePersistenceTest(unittest.TestCase):
+class KrakenStatePersistenceTest(TempDirTestCase):
     @staticmethod
     def _client():
         client = MagicMock()
@@ -241,38 +240,38 @@ class KrakenStatePersistenceTest(unittest.TestCase):
         return client
 
     def test_corrupt_state_fails_closed_in_real_mode(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            state_file = os.path.join(tmp, "state.json")
-            with open(state_file, "w", encoding="utf-8") as handle:
-                handle.write('{"qty":')
-            with patch.object(strat, "state_path_for", return_value=state_file):
-                with self.assertRaisesRegex(RuntimeError, "invalid.*state"):
-                    strat.Strategy(self._client(), "PAIR", _params(), dry_run=False)
+        tmp = str(self.tmp)
+        state_file = os.path.join(tmp, "state.json")
+        with open(state_file, "w", encoding="utf-8") as handle:
+            handle.write('{"qty":')
+        with patch.object(strat, "state_path_for", return_value=state_file):
+            with self.assertRaisesRegex(RuntimeError, "invalid.*state"):
+                strat.Strategy(self._client(), "PAIR", _params(), dry_run=False)
 
     def test_corrupt_state_may_reset_only_in_paper_mode(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            state_file = os.path.join(tmp, "state.json")
-            with open(state_file, "w", encoding="utf-8") as handle:
-                handle.write("not-json")
-            with patch.object(strat, "state_path_for", return_value=state_file):
-                engine = strat.Strategy(self._client(), "PAIR", _params(), dry_run=True)
+        tmp = str(self.tmp)
+        state_file = os.path.join(tmp, "state.json")
+        with open(state_file, "w", encoding="utf-8") as handle:
+            handle.write("not-json")
+        with patch.object(strat, "state_path_for", return_value=state_file):
+            engine = strat.Strategy(self._client(), "PAIR", _params(), dry_run=True)
         self.assertEqual(engine.s, strat._new_state())
 
     def test_save_replaces_state_atomically(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            state_file = os.path.join(tmp, "state.json")
-            engine = strat.Strategy(
-                self._client(), "PAIR", _params(), dry_run=False,
-                initial_state=strat._new_state(),
-            )
-            engine.state_file = state_file
-            engine.s["qty"] = 1.25
-            engine._save()
+        tmp = str(self.tmp)
+        state_file = os.path.join(tmp, "state.json")
+        engine = strat.Strategy(
+            self._client(), "PAIR", _params(), dry_run=False,
+            initial_state=strat._new_state(),
+        )
+        engine.state_file = state_file
+        engine.s["qty"] = 1.25
+        engine._save()
 
-            with open(state_file, "r", encoding="utf-8") as handle:
-                saved = json.load(handle)
-            self.assertEqual(saved["qty"], 1.25)
-            self.assertEqual(os.listdir(tmp), ["state.json"])
+        with open(state_file, "r", encoding="utf-8") as handle:
+            saved = json.load(handle)
+        self.assertEqual(saved["qty"], 1.25)
+        self.assertEqual(os.listdir(tmp), ["state.json"])
 
     def test_reconcile_rejects_boolean_status_fields_and_ledger_reconcile_resets_exit_anchors(self):
         state = strat._new_state()

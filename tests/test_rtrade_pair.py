@@ -8,7 +8,6 @@ import order_guard
 import os
 import pytest
 import rtrade
-import tempfile
 import time
 import unittest
 from intelligence.external.collectors.whale_positioning_collector import (
@@ -1014,31 +1013,33 @@ class PairCoordinatorTest(unittest.TestCase):
 _RTRADE_ROOT = Path(__file__).resolve().parents[1]
 
 
-class RTradeHeartbeatTest(unittest.TestCase):
+class RTradeHeartbeatTest(TempDirTestCase):
     def setUp(self):
+        super().setUp()
         self._last = rtrade._rtrade_heartbeat_last
 
     def tearDown(self):
         rtrade._rtrade_heartbeat_last = self._last
+        super().tearDown()
 
     def test_heartbeat_is_written_and_throttled_by_loop_progress(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "rtrade.heartbeat")
-            with (
-                patch.object(rtrade, "_RTRADE_HEARTBEAT_PATH", path),
-                patch.object(rtrade, "_RTRADE_HEARTBEAT_INTERVAL_SEC", 30.0),
-                patch.object(rtrade, "_rtrade_monotonic_time", side_effect=(100.0, 110.0, 131.0)),
-            ):
-                rtrade._rtrade_heartbeat_last = float("-inf")
-                rtrade._touch_rtrade_heartbeat()
-                self.assertTrue(os.path.exists(path))
-                self.assertEqual(rtrade._rtrade_heartbeat_last, 100.0)
+        tmp = str(self.tmp)
+        path = os.path.join(tmp, "rtrade.heartbeat")
+        with (
+            patch.object(rtrade, "_RTRADE_HEARTBEAT_PATH", path),
+            patch.object(rtrade, "_RTRADE_HEARTBEAT_INTERVAL_SEC", 30.0),
+            patch.object(rtrade, "_rtrade_monotonic_time", side_effect=(100.0, 110.0, 131.0)),
+        ):
+            rtrade._rtrade_heartbeat_last = float("-inf")
+            rtrade._touch_rtrade_heartbeat()
+            self.assertTrue(os.path.exists(path))
+            self.assertEqual(rtrade._rtrade_heartbeat_last, 100.0)
 
-                rtrade._touch_rtrade_heartbeat()
-                self.assertEqual(rtrade._rtrade_heartbeat_last, 100.0)
+            rtrade._touch_rtrade_heartbeat()
+            self.assertEqual(rtrade._rtrade_heartbeat_last, 100.0)
 
-                rtrade._touch_rtrade_heartbeat()
-                self.assertEqual(rtrade._rtrade_heartbeat_last, 131.0)
+            rtrade._touch_rtrade_heartbeat()
+            self.assertEqual(rtrade._rtrade_heartbeat_last, 131.0)
 
     def test_process_manifest_uses_dedicated_heartbeat(self):
         line = next(
@@ -1150,50 +1151,50 @@ class RTradeHeartbeatTest(unittest.TestCase):
 
     def test_touch_module_heartbeat_and_harvest_fleet_heartbeats(self):
 
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "system" / "heartbeat").mkdir(parents=True, exist_ok=True)
-            with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp}, clear=False):
-                ts1 = botcore.touch_module_heartbeat(
-                    "cacheManager", interval_sec=30.0, force=True, now=500.0,
-                    status={"ts": 1700000500.0}, symbols=["BTCUSDC", "TAOUSDC"],
-                )
-                self.assertEqual(ts1, 500.0)
-                hb_file = Path(tmp) / "system" / "heartbeat" / "cacheManager.heartbeat"
-                self.assertTrue(hb_file.exists())
-                data = json.loads(hb_file.read_text(encoding="utf-8"))
-                self.assertEqual(data["status"], "alive")
-                self.assertEqual(data["symbols"], ["BTCUSDC", "TAOUSDC"])
+        tmp = str(self.tmp)
+        (Path(tmp) / "system" / "heartbeat").mkdir(parents=True, exist_ok=True)
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp}, clear=False):
+            ts1 = botcore.touch_module_heartbeat(
+                "cacheManager", interval_sec=30.0, force=True, now=500.0,
+                status={"ts": 1700000500.0}, symbols=["BTCUSDC", "TAOUSDC"],
+            )
+            self.assertEqual(ts1, 500.0)
+            hb_file = Path(tmp) / "system" / "heartbeat" / "cacheManager.heartbeat"
+            self.assertTrue(hb_file.exists())
+            data = json.loads(hb_file.read_text(encoding="utf-8"))
+            self.assertEqual(data["status"], "alive")
+            self.assertEqual(data["symbols"], ["BTCUSDC", "TAOUSDC"])
 
-                ts2 = botcore.touch_module_heartbeat("cacheManager", interval_sec=30.0, now=510.0)
-                self.assertEqual(ts2, 500.0)
+            ts2 = botcore.touch_module_heartbeat("cacheManager", interval_sec=30.0, now=510.0)
+            self.assertEqual(ts2, 500.0)
 
-                ts3 = botcore.touch_module_heartbeat(
-                    "cacheManager", interval_sec=30.0, now=535.0, symbols=["BTCUSDC"],
-                )
-                self.assertEqual(ts3, 535.0)
-                data_after = json.loads(hb_file.read_text(encoding="utf-8"))
-                self.assertEqual(data_after["symbols"], ["BTCUSDC", "TAOUSDC"])
-                self.assertEqual(data_after["status"], "alive")
+            ts3 = botcore.touch_module_heartbeat(
+                "cacheManager", interval_sec=30.0, now=535.0, symbols=["BTCUSDC"],
+            )
+            self.assertEqual(ts3, 535.0)
+            data_after = json.loads(hb_file.read_text(encoding="utf-8"))
+            self.assertEqual(data_after["symbols"], ["BTCUSDC", "TAOUSDC"])
+            self.assertEqual(data_after["status"], "alive")
 
-                mtime = os.path.getmtime(str(hb_file))
-                active_hb, _ = harvest_heartbeats_and_state_files(tmp, tmp, mtime + 1500.0)
-                self.assertIn("cacheManager.heartbeat", active_hb)
-                self.assertEqual(active_hb["cacheManager.heartbeat"]["status"], "alive")
+            mtime = os.path.getmtime(str(hb_file))
+            active_hb, _ = harvest_heartbeats_and_state_files(tmp, tmp, mtime + 1500.0)
+            self.assertIn("cacheManager.heartbeat", active_hb)
+            self.assertEqual(active_hb["cacheManager.heartbeat"]["status"], "alive")
 
-                log_file = Path(tmp) / "Kraken-trailing.log"
-                log_file.write_text("quiet stdout\n", encoding="utf-8")
-                os.utime(str(log_file), (mtime - 3600.0, mtime - 3600.0))
-                fresh, age_s, _, stale_path = botcore.evaluate_heartbeat_files_freshness(
-                    [str(hb_file), str(log_file)], 900.0, mtime + 30.0,
-                )
-                self.assertTrue(fresh, f"Expected fresh=True when .heartbeat is fresh even if .log is quiet, got {stale_path}")
-                self.assertAlmostEqual(age_s, 30.0, delta=1.0)
+            log_file = Path(tmp) / "Kraken-trailing.log"
+            log_file.write_text("quiet stdout\n", encoding="utf-8")
+            os.utime(str(log_file), (mtime - 3600.0, mtime - 3600.0))
+            fresh, age_s, _, stale_path = botcore.evaluate_heartbeat_files_freshness(
+                [str(hb_file), str(log_file)], 900.0, mtime + 30.0,
+            )
+            self.assertTrue(fresh, f"Expected fresh=True when .heartbeat is fresh even if .log is quiet, got {stale_path}")
+            self.assertAlmostEqual(age_s, 30.0, delta=1.0)
 
-                stale_fresh, _, _, stale_reason = botcore.evaluate_heartbeat_files_freshness(
-                    [str(hb_file), str(log_file)], 900.0, mtime + 950.0,
-                )
-                self.assertFalse(stale_fresh)
-                self.assertIn("cacheManager.heartbeat", stale_reason)
+            stale_fresh, _, _, stale_reason = botcore.evaluate_heartbeat_files_freshness(
+                [str(hb_file), str(log_file)], 900.0, mtime + 950.0,
+            )
+            self.assertFalse(stale_fresh)
+            self.assertIn("cacheManager.heartbeat", stale_reason)
 
 
 class RTradePairStoreTest(TempDirTestCase):

@@ -87,7 +87,7 @@ PRICE_SAMPLES_PREFIX = "tradeall_price_samples_"
 DECISIONS_PREFIX = "tradeall_decisions_"
 OUTCOMES_PREFIX = "order_outcomes_"
 SHADOW_PREFIX = "tradeall_shadow_"
-SHADOW_COLOR = "#8250df"   # violet — shadow signals (Kalman), distinct from green/red
+SHADOW_COLOR = "#8250df"   # violet -- shadow signals (Kalman), distinct from green/red
 
 STATE_COLORS = {"UP": "#1a7f37", "DOWN": "#cf222e", "HOLD": "#8c8c8c"}
 DAY_SECONDS = 24 * 3600
@@ -146,7 +146,7 @@ def _read_pipe_log(path, ncols):
     consumed = offset
     for raw in chunk.splitlines(keepends=True):
         if not raw.endswith(b"\n"):
-            break                               # incomplete line (write in progress) — retry next cycle
+            break                               # incomplete line (write in progress) -- retry next cycle
         consumed += len(raw)
         parts = raw.decode("utf-8", errors="replace").rstrip("\n").split("|")
         if len(parts) < ncols:

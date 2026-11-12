@@ -2,7 +2,6 @@ import ast
 import importlib
 import os
 import pathlib
-import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -12,6 +11,7 @@ import botcore
 from instrument import Instrument
 import intelligence.macro_sentiment_ssot as mss
 import monitororder
+from tests.conftest import TempDirTestCase
 import monitortrades as mt
 import order_retry as oq
 from providers import order_id_context as rc
@@ -137,12 +137,14 @@ class TestBapiOrderIdentityFiltering(unittest.TestCase):
             mock_cancel.assert_called_once_with("BTCUSDC", 201)
 
 
-class TestMonitororderProtectsOtherBots(unittest.TestCase):
+class TestMonitororderProtectsOtherBots(TempDirTestCase):
     def setUp(self):
+        super().setUp()
         monitororder.reset_monitororder_state_for_test()
 
     def tearDown(self):
         monitororder.reset_monitororder_state_for_test()
+        super().tearDown()
 
     def test_monitororder_skips_repricing_for_rtrade_and_circuit_breakers(self):
         # Open orders include:
@@ -218,91 +220,91 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
 
     def test_order_retry_infers_owner_and_cleans_up_accepted_trackers(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-            lfile = os.path.join(tmpdir, "order_retry.lock")
-            with patch.object(oq, "QUEUE_FILE", qfile), patch.object(oq, "LOCK_FILE", lfile):
-                rid = oq.enqueue(
-                    "BTCUSDC", "BUY", 0.00066, {},
-                    requested_price=81733.6, ref_price=81815.42,
-                    kind="kalman_primary_up", provider_name="binance", now=1000.0,
-                )
-                rec = oq.get(rid)
-                self.assertEqual(rec["prefix"], "TA_OR")
-                self.assertTrue(rec["place_kwargs"]["client_order_id"].startswith("TA_OR_"))
-                self.assertEqual(oq.infer_record_owner(rec), "tradeall")
+        tmpdir = str(self.tmp)
+        qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
+        lfile = os.path.join(tmpdir, "order_retry.lock")
+        with patch.object(oq, "QUEUE_FILE", qfile), patch.object(oq, "LOCK_FILE", lfile):
+            rid = oq.enqueue(
+                "BTCUSDC", "BUY", 0.00066, {},
+                requested_price=81733.6, ref_price=81815.42,
+                kind="kalman_primary_up", provider_name="binance", now=1000.0,
+            )
+            rec = oq.get(rid)
+            self.assertEqual(rec["prefix"], "TA_OR")
+            self.assertTrue(rec["place_kwargs"]["client_order_id"].startswith("TA_OR_"))
+            self.assertEqual(oq.infer_record_owner(rec), "tradeall")
 
-                # Simulate legacy OR_ client_order_id with kalman_primary_up kind
-                oq.complete_claim(
-                    oq.claim([rid], now=1010.0)[0],
-                    "accepted",
-                    order={"orderId": 10574289378, "status": "NEW"},
-                    now=1010.0,
-                )
-                owner_map = oq.get_accepted_order_owner_map()
-                self.assertEqual(owner_map.get("10574289378"), "tradeall")
-                self.assertEqual(
-                    oq.get_accepted_order_ids_for_owner("BTCUSDC", "tradeall"),
-                    ["10574289378"],
-                )
+            # Simulate legacy OR_ client_order_id with kalman_primary_up kind
+            oq.complete_claim(
+                oq.claim([rid], now=1010.0)[0],
+                "accepted",
+                order={"orderId": 10574289378, "status": "NEW"},
+                now=1010.0,
+            )
+            owner_map = oq.get_accepted_order_owner_map()
+            self.assertEqual(owner_map.get("10574289378"), "tradeall")
+            self.assertEqual(
+                oq.get_accepted_order_ids_for_owner("BTCUSDC", "tradeall"),
+                ["10574289378"],
+            )
 
-                # Replacement activation retires the replaced accepted tracker
-                rep_id = oq.enqueue(
-                    "BTCUSDC", "BUY", 0.00066, {"parent_owner": "tradeall"},
-                    requested_price=81800.0, ref_price=81800.0,
-                    provider_name="binance", now=1020.0,
-                    lifecycle="awaiting_cancel",
-                    replaces_order_id="10574289378",
-                    replaces_original_qty=0.00066,
-                )
-                claimed_rep = oq.claim([rep_id], now=1021.0)[0]
-                self.assertEqual(
-                    oq.activate_claimed_replacement(claimed_rep, 0.00066, now=1022.0),
-                    "activated",
-                )
-                self.assertEqual(
-                    oq.get_accepted_order_ids_for_owner("BTCUSDC", "tradeall"),
-                    [],
-                )
+            # Replacement activation retires the replaced accepted tracker
+            rep_id = oq.enqueue(
+                "BTCUSDC", "BUY", 0.00066, {"parent_owner": "tradeall"},
+                requested_price=81800.0, ref_price=81800.0,
+                provider_name="binance", now=1020.0,
+                lifecycle="awaiting_cancel",
+                replaces_order_id="10574289378",
+                replaces_original_qty=0.00066,
+            )
+            claimed_rep = oq.claim([rep_id], now=1021.0)[0]
+            self.assertEqual(
+                oq.activate_claimed_replacement(claimed_rep, 0.00066, now=1022.0),
+                "activated",
+            )
+            self.assertEqual(
+                oq.get_accepted_order_ids_for_owner("BTCUSDC", "tradeall"),
+                [],
+            )
 
-                # Intentional external cancellation resolves accepted tracker
-                rid2 = oq.enqueue(
-                    "BTCUSDC", "BUY", 0.00064, {},
-                    requested_price=82125.73, ref_price=82207.94,
-                    kind="kalman_primary_up", provider_name="binance", now=1030.0,
-                )
-                oq.complete_claim(
-                    oq.claim([rid2], now=1031.0)[0],
-                    "accepted",
-                    order={"orderId": 10574512957, "status": "NEW"},
-                    now=1031.0,
-                )
-                self.assertTrue(oq.resolve_accepted_order("BTCUSDC", 10574512957))
-                self.assertEqual(oq.load_all(), [oq.get(rep_id)])
+            # Intentional external cancellation resolves accepted tracker
+            rid2 = oq.enqueue(
+                "BTCUSDC", "BUY", 0.00064, {},
+                requested_price=82125.73, ref_price=82207.94,
+                kind="kalman_primary_up", provider_name="binance", now=1030.0,
+            )
+            oq.complete_claim(
+                oq.claim([rid2], now=1031.0)[0],
+                "accepted",
+                order={"orderId": 10574512957, "status": "NEW"},
+                now=1031.0,
+            )
+            self.assertTrue(oq.resolve_accepted_order("BTCUSDC", 10574512957))
+            self.assertEqual(oq.load_all(), [oq.get(rep_id)])
 
     def test_same_deferred_stream_consolidates_across_deferral_reasons(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-            lfile = os.path.join(tmpdir, "order_retry.lock")
-            with patch.object(oq, "QUEUE_FILE", qfile), \
-                 patch.object(oq, "LOCK_FILE", lfile), \
-                 patch.object(oq, "RETRY_DEDUP", False):
-                oq.enqueue(
-                    "BTCUSDC", "BUY", 0.00066, {},
-                    requested_price=81733.6, ref_price=81815.42,
-                    failure_reason="profit_guard",
-                    kind="kalman_primary_up", provider_name="binance", now=1000.0,
-                )
-                second = oq.enqueue(
-                    "BTCUSDC", "BUY", 0.00064, {},
-                    requested_price=82125.73, ref_price=82207.94,
-                    failure_reason="trend_deferred",
-                    kind="kalman_primary_up", provider_name="binance", now=1020.0,
-                )
-                rows = oq.load_all()
-                self.assertEqual(len(rows), 1)
-                self.assertEqual(rows[0]["id"], second)
+        tmpdir = str(self.tmp)
+        qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
+        lfile = os.path.join(tmpdir, "order_retry.lock")
+        with patch.object(oq, "QUEUE_FILE", qfile), \
+             patch.object(oq, "LOCK_FILE", lfile), \
+             patch.object(oq, "RETRY_DEDUP", False):
+            oq.enqueue(
+                "BTCUSDC", "BUY", 0.00066, {},
+                requested_price=81733.6, ref_price=81815.42,
+                failure_reason="profit_guard",
+                kind="kalman_primary_up", provider_name="binance", now=1000.0,
+            )
+            second = oq.enqueue(
+                "BTCUSDC", "BUY", 0.00064, {},
+                requested_price=82125.73, ref_price=82207.94,
+                failure_reason="trend_deferred",
+                kind="kalman_primary_up", provider_name="binance", now=1020.0,
+            )
+            rows = oq.load_all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["id"], second)
 
     def test_monitororder_reprices_legacy_or_tradeall_order(self):
         open_orders = {
