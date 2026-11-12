@@ -1147,12 +1147,8 @@ def _normalize_semantic_stem(token: str) -> str:
             t = t[:-3] + "y"
         elif len(t) > 5 and t.endswith(("ches", "shes", "xes", "zes", "sses")):
             t = t[:-2]
-        elif len(t) > 5 and t.endswith("ing"):
-            t = t[:-3]
-            if len(t) >= 4 and t[-1] == t[-2] and t[-1] not in "lsz":
-                t = t[:-1]
-        elif len(t) > 4 and t.endswith("ed"):
-            t = t[:-2]
+        elif (len(t) > 5 and t.endswith("ing")) or (len(t) > 4 and t.endswith("ed")):
+            t = t[:-3] if t.endswith("ing") else t[:-2]
             if len(t) >= 4 and t[-1] == t[-2] and t[-1] not in "lsz":
                 t = t[:-1]
         elif len(t) > 4 and t.endswith("s") and not t.endswith(("ss", "is", "us", "as", "os")):

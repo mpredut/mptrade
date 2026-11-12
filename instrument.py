@@ -713,6 +713,37 @@ class Instrument:
         return None
 
     # -- Order placement: dry or real after provider gates. --------------------
+    def _require_live_market_price(self, ctx: Any, label: str) -> Optional[float]:
+        px = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
+        if px is None:
+            print(f"[{self.symbol}] {ctx.side_u} {label}: current price unavailable")
+            ctx.reason = "market_price_unavailable"
+        return px
+
+    def _acquire_fresh_cache_permit(self, ctx: Any) -> Any:
+        if not callable(ctx.preflight_order):
+            raise SubmissionRefused("account_cache_not_fresh")
+        permit = ctx.preflight_order(
+            self.symbol,
+            ctx.side_u,
+            ctx.qty,
+            ctx.price,
+            market=ctx.is_market,
+            kind=ctx.order_kind,
+        )
+        if permit is None:
+            raise SubmissionRefused("account_cache_not_fresh")
+        return permit
+
+    @staticmethod
+    def _check_abort_and_execution_gate(ctx: Any) -> bool:
+        if _is_aborted(ctx.abort_if):
+            ctx.reason = "aborted_by_caller"
+            return False
+        if callable(ctx.execution_enabled) and not bool(ctx.execution_enabled()):
+            raise SubmissionRefused("execution_disabled")
+        return True
+
     def place(self, side: str, price: float, qty: Optional[float] = None, **kwargs):
         ctx, early_return = self._init_and_gate_pre_pipeline(side, price, qty, kwargs)
         if ctx is None:
@@ -818,12 +849,8 @@ class Instrument:
 
             ctx.quantity_price = ctx.price
             if ctx.is_market:
-                ctx.quantity_price = safe_pos_float(
-                    self._provider.get_current_price(self.symbol), default=None
-                )
+                ctx.quantity_price = self._require_live_market_price(ctx, "MARKET BLOCKED")
                 if ctx.quantity_price is None:
-                    print(f"[{self.symbol}] {ctx.side_u} MARKET BLOCKED: current price unavailable")
-                    ctx.reason = "market_price_unavailable"
                     return None
 
             ctx.profit_window_ref = None
@@ -1081,11 +1108,8 @@ class Instrument:
                         ctx.reason = refusal
                         return None
 
-            if _is_aborted(ctx.abort_if):
-                ctx.reason = "aborted_by_caller"
+            if not self._check_abort_and_execution_gate(ctx):
                 return None
-            if callable(ctx.execution_enabled) and not bool(ctx.execution_enabled()):
-                raise SubmissionRefused("execution_disabled")
 
             # Stage 4: Persistent Outbox Claim Reservation & Cache Permit Acquisition.
             if not ctx.caller_owns_retry:
@@ -1150,18 +1174,7 @@ class Instrument:
 
             ctx.permit_requested_price = None if ctx.is_market else ctx.orig_price
             if ctx.requires_permit and ctx.cache_permit is None:
-                if not callable(ctx.preflight_order):
-                    raise SubmissionRefused("account_cache_not_fresh")
-                ctx.cache_permit = ctx.preflight_order(
-                    self.symbol,
-                    ctx.side_u,
-                    ctx.qty,
-                    ctx.price,
-                    market=ctx.is_market,
-                    kind=ctx.order_kind,
-                )
-                if ctx.cache_permit is None:
-                    raise SubmissionRefused("account_cache_not_fresh")
+                ctx.cache_permit = self._acquire_fresh_cache_permit(ctx)
                 ctx.permit_requested_price = None if ctx.is_market else ctx.price
                 validate_order_state = getattr(self._provider, "validate_order_state", None)
                 if not callable(validate_order_state):
@@ -1171,15 +1184,10 @@ class Instrument:
             # Stage 5: Pre-dispatch Market Revalidation & Venue Submission.
             final_profit_check = not ctx.bypass_profit_guard and ctx.is_market
             if ctx.is_market and (final_profit_check or ctx.retry_constraint_supplied):
-                final_market_price = safe_pos_float(
-                    self._provider.get_current_price(self.symbol), default=None
+                final_market_price = self._require_live_market_price(
+                    ctx, "MARKET BLOCKED at dispatch"
                 )
                 if final_market_price is None:
-                    print(
-                        f"[{self.symbol}] {ctx.side_u} MARKET BLOCKED at dispatch: "
-                        "current price unavailable"
-                    )
-                    ctx.reason = "market_price_unavailable"
                     return None
                 if ctx.retry_constraint_supplied and not order_retry.is_retry_price_favorable(
                     ctx.side_u,
@@ -1227,16 +1235,7 @@ class Instrument:
                         and not ctx.caller_supplied_cache_permit
                         and callable(ctx.preflight_order)
                     ):
-                        ctx.cache_permit = ctx.preflight_order(
-                            self.symbol,
-                            ctx.side_u,
-                            ctx.qty,
-                            ctx.price,
-                            market=ctx.is_market,
-                            kind=ctx.order_kind,
-                        )
-                        if ctx.cache_permit is None:
-                            raise SubmissionRefused("account_cache_not_fresh")
+                        ctx.cache_permit = self._acquire_fresh_cache_permit(ctx)
                     if ctx.prequeued_claim is not None:
                         ctx.prequeued_claim = self._sync_claimed_qty(
                             ctx.prequeued_claim, ctx.qty, ctx.applied_scale
@@ -1252,11 +1251,8 @@ class Instrument:
                                 scale=ctx.applied_scale,
                             )
 
-            if _is_aborted(ctx.abort_if):
-                ctx.reason = "aborted_by_caller"
+            if not self._check_abort_and_execution_gate(ctx):
                 return None
-            if callable(ctx.execution_enabled) and not bool(ctx.execution_enabled()):
-                raise SubmissionRefused("execution_disabled")
 
             if ctx.prequeued_claim is not None:
                 if not ctx.caller_owns_retry:

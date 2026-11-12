@@ -50,6 +50,20 @@ class FundingCrowdingGuard(OrderGuardEvaluatorBase):
             allow_percent=True,
         )
 
+    def _crowding_decision(self, reason: str, fr: float) -> GuardDecision:
+        if self.crowding_policy == "defer":
+            return GuardDecision.defer(
+                guard_name="FundingCrowdingGuard",
+                reason=reason,
+                funding_rate=fr,
+            )
+        return GuardDecision.downscale(
+            guard_name="FundingCrowdingGuard",
+            scale=self.crowded_scale,
+            reason=reason,
+            funding_rate=fr,
+        )
+
     def _evaluate_external_snapshot(
         self, side_norm: str, telemetry: DerivativesTelemetry
     ) -> GuardDecision:
@@ -58,34 +72,12 @@ class FundingCrowdingGuard(OrderGuardEvaluatorBase):
         # 1. Entering BUY when market is hyper-crowded long
         if side_norm == "BUY" and fr >= self.max_long_funding_rate:
             reason = f"long_crowding_extreme (funding_rate={fr*100:.3f}% >= {self.max_long_funding_rate*100:.3f}%)"
-            if self.crowding_policy == "defer":
-                return GuardDecision.defer(
-                    guard_name="FundingCrowdingGuard",
-                    reason=reason,
-                    funding_rate=fr,
-                )
-            return GuardDecision.downscale(
-                guard_name="FundingCrowdingGuard",
-                scale=self.crowded_scale,
-                reason=reason,
-                funding_rate=fr,
-            )
+            return self._crowding_decision(reason, fr)
 
         # 2. Entering SELL when market is hyper-crowded short
         if side_norm == "SELL" and fr <= self.min_short_funding_rate:
             reason = f"short_crowding_extreme (funding_rate={fr*100:.3f}% <= {self.min_short_funding_rate*100:.3f}%)"
-            if self.crowding_policy == "defer":
-                return GuardDecision.defer(
-                    guard_name="FundingCrowdingGuard",
-                    reason=reason,
-                    funding_rate=fr,
-                )
-            return GuardDecision.downscale(
-                guard_name="FundingCrowdingGuard",
-                scale=self.crowded_scale,
-                reason=reason,
-                funding_rate=fr,
-            )
+            return self._crowding_decision(reason, fr)
 
         return GuardDecision.allow(
             guard_name="FundingCrowdingGuard",

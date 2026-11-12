@@ -212,6 +212,21 @@ class TrailingCore:
                 return asset
         return default
 
+    @staticmethod
+    def _merge_rebuy_state(st: dict, added_qty: float, overall_avg: float, low_candidate: float) -> None:
+        prev_rb = st.get("rebuy") if isinstance(st.get("rebuy"), dict) else {}
+        prev_rb_qty = safe_pos_float(prev_rb.get("qty"), default=0.0) or 0.0
+        prev_rb_sell = safe_pos_float(prev_rb.get("sell_price"), default=overall_avg) or overall_avg
+        prev_rb_low = safe_pos_float(prev_rb.get("low"), default=low_candidate) or low_candidate
+        comb_qty = round(prev_rb_qty + added_qty, 8)
+        comb_sell = (
+            ((prev_rb_qty * prev_rb_sell) + (added_qty * overall_avg)) / comb_qty
+            if prev_rb_qty > 0 and comb_qty > 0
+            else overall_avg
+        )
+        comb_low = min(prev_rb_low, low_candidate) if prev_rb_qty > 0 else low_candidate
+        st["rebuy"] = {"qty": comb_qty, "sell_price": comb_sell, "low": comb_low}
+
     def _safe_free_qty(self, asset: str) -> float:
         raw_free = self.a.free_qty(asset)
         return safe_nonneg_float(raw_free, default=0.0)
@@ -269,18 +284,7 @@ class TrailingCore:
                 if is_flat:
                     st["is_flat"] = True
                 if self._rebuy_for(pair, arm=True):
-                    prev_rb = st.get("rebuy") if isinstance(st.get("rebuy"), dict) else {}
-                    prev_rb_qty = safe_pos_float(prev_rb.get("qty"), default=0.0) or 0.0
-                    prev_rb_sell = safe_pos_float(prev_rb.get("sell_price"), default=overall_avg) or overall_avg
-                    prev_rb_low = safe_pos_float(prev_rb.get("low"), default=avg) or avg
-                    comb_qty = round(prev_rb_qty + accum_qty, 8)
-                    comb_sell = (
-                        ((prev_rb_qty * prev_rb_sell) + (accum_qty * overall_avg)) / comb_qty
-                        if prev_rb_qty > 0 and comb_qty > 0
-                        else overall_avg
-                    )
-                    comb_low = min(prev_rb_low, avg) if prev_rb_qty > 0 else avg
-                    st["rebuy"] = {"qty": comb_qty, "sell_price": comb_sell, "low": comb_low}
+                    self._merge_rebuy_state(st, accum_qty, overall_avg, avg)
             else:
                 st["exit_sold_qty"] = accum_qty
                 st["exit_sold_cost"] = accum_cost
@@ -529,22 +533,7 @@ class TrailingCore:
                 overall_avg = vwap_or_fallback(st.get("exit_sold_cost", 0.0), sold_qty, price)
                 st["peak"] = overall_avg
                 if self._rebuy_for(pair, arm=True):
-                    prev_rb = st.get("rebuy") if isinstance(st.get("rebuy"), dict) else {}
-                    prev_rb_qty = safe_pos_float(prev_rb.get("qty"), default=0.0) or 0.0
-                    prev_rb_sell = safe_pos_float(prev_rb.get("sell_price"), default=overall_avg) or overall_avg
-                    prev_rb_low = safe_pos_float(prev_rb.get("low"), default=min(overall_avg, price)) or min(overall_avg, price)
-                    comb_qty = round(prev_rb_qty + sold_qty, 8)
-                    comb_sell = (
-                        ((prev_rb_qty * prev_rb_sell) + (sold_qty * overall_avg)) / comb_qty
-                        if prev_rb_qty > 0 and comb_qty > 0
-                        else overall_avg
-                    )
-                    comb_low = min(prev_rb_low, overall_avg, price) if prev_rb_qty > 0 else min(overall_avg, price)
-                    st["rebuy"] = {
-                        "qty": comb_qty,
-                        "sell_price": comb_sell,
-                        "low": comb_low,
-                    }
+                    self._merge_rebuy_state(st, sold_qty, overall_avg, min(overall_avg, price))
             st["is_flat"] = True
             _clear_exit_progress(st)
             return                                            # nothing to protect; keep resting orders intact

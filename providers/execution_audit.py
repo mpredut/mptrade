@@ -315,16 +315,21 @@ class AuditedStrategyExecutor:
             cache_permit=cache_permit,
         )
 
+    def _record_order_exception(
+        self, event: str, intent_id: str, symbol: str, order_id: str, exc: Exception,
+    ) -> None:
+        self.audit.record(
+            event, intent_id=intent_id, venue=self.name, symbol=symbol,
+            order_id=str(order_id), error_type=exc.__class__.__name__, error=str(exc),
+        )
+
     def order_status_with_intent(self, intent_id: str, symbol: str,
                                  order_id: str) -> OrderStatus:
         intent_id = self._intent(symbol, order_id, intent_id)
         try:
             status = self._executor.order_status(symbol, order_id)
         except Exception as exc:
-            self.audit.record(
-                "status_error", intent_id=intent_id, venue=self.name, symbol=symbol,
-                order_id=str(order_id), error_type=exc.__class__.__name__, error=str(exc),
-            )
+            self._record_order_exception("status_error", intent_id, symbol, order_id, exc)
             raise
         fingerprint = (
             status.status, status.filled_qty, status.cost, status.fee,
@@ -358,10 +363,7 @@ class AuditedStrategyExecutor:
         try:
             self._executor.cancel_order(symbol, order_id)
         except Exception as exc:
-            self.audit.record(
-                "cancel_rejected", intent_id=intent_id, venue=self.name, symbol=symbol,
-                order_id=str(order_id), error_type=exc.__class__.__name__, error=str(exc),
-            )
+            self._record_order_exception("cancel_rejected", intent_id, symbol, order_id, exc)
             raise
         self.audit.record(
             "cancel_accepted", intent_id=intent_id, venue=self.name,
@@ -1158,6 +1160,28 @@ def _attach_intent_age_fields(
         target[f"placed_age_{suffix}"] = round((now_ts - ts_val) / unit_sec, ndigits)
 
 
+def _resolve_executed_open_resting_detail(
+    intent_obj: dict[str, Any],
+    now_ts: float,
+    extract_notional_fn: Callable[..., Any],
+    *,
+    recent_orders: Optional[dict[str, Any]] = None,
+    open_orders: Optional[list[dict[str, Any]]] = None,
+    verified_open_venues: Optional[set[str]] = None,
+) -> Optional[dict[str, Any]]:
+    if str(intent_obj.get("status") or "").strip().upper() != "EXECUTED":
+        return None
+    det = _resolve_intent_execution_details(
+        intent_obj,
+        now_ts,
+        extract_notional_fn,
+        recent_orders=recent_orders,
+        open_orders=open_orders,
+        verified_open_venues=verified_open_venues,
+    )
+    return det if _is_open_resting_detail(det) else None
+
+
 def summarize_recent_ai_intents(
     intents_data: list[dict[str, Any]],
     scope: str,
@@ -1238,9 +1262,7 @@ def summarize_recent_ai_intents(
         for idx, i in enumerate(scoped_intents):
             if idx in recent_indices:
                 continue
-            if str(i.get("status") or "").strip().upper() != "EXECUTED":
-                continue
-            det = _resolve_intent_execution_details(
+            det = _resolve_executed_open_resting_detail(
                 i,
                 now_ts,
                 extract_notional_fn,
@@ -1248,10 +1270,7 @@ def summarize_recent_ai_intents(
                 open_orders=open_orders,
                 verified_open_venues=verified_open_venues,
             )
-            if (
-                _is_open_resting_detail(det)
-                and (det["order_id"] is None or str(det["order_id"]) not in seen_oids)
-            ):
+            if det is not None and (det["order_id"] is None or str(det["order_id"]) not in seen_oids):
                 if det["order_id"] is not None:
                     seen_oids.add(str(det["order_id"]))
                 older_resting.append(_to_summary(i, det))
@@ -1359,9 +1378,7 @@ def build_last_cycle_execution_status(
         for i in reversed(scoped_intents):
             if id(i) in cycle_ids:
                 continue
-            if str(i.get("status") or "").strip().upper() != "EXECUTED":
-                continue
-            det = _resolve_intent_execution_details(
+            det = _resolve_executed_open_resting_detail(
                 i,
                 now_ts,
                 extract_notional_fn,
@@ -1369,7 +1386,7 @@ def build_last_cycle_execution_status(
                 open_orders=open_orders,
                 verified_open_venues=verified_open_venues,
             )
-            if not _is_open_resting_detail(det):
+            if det is None:
                 continue
             oid_str = str(det["order_id"]) if det["order_id"] is not None else None
             s_key = _intent_sym_key(i)

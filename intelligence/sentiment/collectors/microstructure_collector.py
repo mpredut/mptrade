@@ -779,6 +779,22 @@ def _refresh_stale_t212_cached_positions(
             t212_rows = []
         t212_dirty = False
         seen_portfolio_tickers: set[str] = set()
+
+        def _update_t212_pos_price(c_pos: Dict[str, Any], cur_px: float, *, ts_missing: bool) -> bool:
+            prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
+            new_c_px = round(cur_px, 4)
+            if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or ts_missing:
+                c_free = safe_pos_float(
+                    c_pos.get("free") if c_pos.get("free") is not None else c_pos.get("free_base"),
+                    default=0.0,
+                ) or 0.0
+                c_pos["price"] = new_c_px
+                if c_free > 0.0:
+                    c_pos["value_usd"] = round(c_free * cur_px, 2)
+                c_pos["ts"] = now_ts
+                return True
+            return False
+
         for row in t212_rows:
             if not isinstance(row, dict):
                 continue
@@ -787,18 +803,7 @@ def _refresh_stale_t212_cached_positions(
                 seen_portfolio_tickers.add(rticker)
             cur_px_r = safe_pos_float(row.get("currentPrice"), default=None)
             if rticker and cur_px_r is not None and isinstance(c_pos := cached_bals.get(f"pos:t212:{rticker}"), dict):
-                prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
-                prev_c_ts = safe_pos_float(c_pos.get("ts"), default=None)
-                new_c_px = round(cur_px_r, 4)
-                if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or prev_c_ts is None:
-                    c_free = safe_pos_float(
-                        c_pos.get("free") if c_pos.get("free") is not None else c_pos.get("free_base"),
-                        default=0.0,
-                    ) or 0.0
-                    c_pos["price"] = new_c_px
-                    if c_free > 0.0:
-                        c_pos["value_usd"] = round(c_free * cur_px_r, 2)
-                    c_pos["ts"] = now_ts
+                if _update_t212_pos_price(c_pos, cur_px_r, ts_missing=safe_pos_float(c_pos.get("ts"), default=None) is None):
                     t212_dirty = True
         for bkey, c_pos in list(cached_bals.items()):
             if not (isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(c_pos, dict)):
@@ -811,19 +816,8 @@ def _refresh_stale_t212_cached_positions(
                 continue
             try:
                 cur_px_fb = MarketDataProvider.resolve_venue_public_price_usd("t212", rticker)
-                if cur_px_fb is not None:
-                    prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
-                    new_c_px = round(cur_px_fb, 4)
-                    if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or prev_c_ts <= 0.0:
-                        c_free = safe_pos_float(
-                            c_pos.get("free") if c_pos.get("free") is not None else c_pos.get("free_base"),
-                            default=0.0,
-                        ) or 0.0
-                        c_pos["price"] = new_c_px
-                        if c_free > 0.0:
-                            c_pos["value_usd"] = round(c_free * cur_px_fb, 2)
-                        c_pos["ts"] = now_ts
-                        t212_dirty = True
+                if cur_px_fb is not None and _update_t212_pos_price(c_pos, cur_px_fb, ts_missing=prev_c_ts <= 0.0):
+                    t212_dirty = True
             except Exception:
                 pass
         if t212_dirty:

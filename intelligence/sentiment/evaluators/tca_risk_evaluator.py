@@ -195,32 +195,24 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             v_norm = normalize_venue_name(o.get("venue"))
             is_eq_o = is_equity_venue_or_suffix(sym, v_norm)
             scoped_sym = ensure_equity_suffix(sym, is_equity=is_eq_o)
-            p_entry = (
-                casefold_get(prices_and_trends, sym)
-                if isinstance(prices_and_trends, dict) and has_equity_suffix(sym) == is_eq_o
-                else None
-            )
-            if not isinstance(p_entry, dict) and isinstance(prices_and_trends, dict):
+
+            def _lookup_scoped_entry(mapping: Any) -> Optional[Dict[str, Any]]:
+                if not isinstance(mapping, dict):
+                    return None
+                direct = casefold_get(mapping, sym) if has_equity_suffix(sym) == is_eq_o else None
+                if isinstance(direct, dict):
+                    return direct
+                target_quotes = compatible_quote_suffixes(scoped_sym)
                 for cand in cache_symbol_variants(scoped_sym, include_base=False):
                     if has_equity_suffix(cand) != is_eq_o:
                         continue
-                    cand_p = casefold_get(prices_and_trends, cand)
-                    if isinstance(cand_p, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(scoped_sym):
-                        p_entry = cand_p
-                        break
-            m_entry = (
-                casefold_get(microstructure, sym)
-                if isinstance(microstructure, dict) and has_equity_suffix(sym) == is_eq_o
-                else None
-            )
-            if not isinstance(m_entry, dict):
-                for cand in cache_symbol_variants(scoped_sym, include_base=False):
-                    if has_equity_suffix(cand) != is_eq_o:
-                        continue
-                    cand_m = casefold_get(microstructure, cand) if isinstance(microstructure, dict) else None
-                    if isinstance(cand_m, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(scoped_sym):
-                        m_entry = cand_m
-                        break
+                    cand_d = casefold_get(mapping, cand)
+                    if isinstance(cand_d, dict) and compatible_quote_suffixes(cand) == target_quotes:
+                        return cand_d
+                return None
+
+            p_entry = _lookup_scoped_entry(prices_and_trends)
+            m_entry = _lookup_scoped_entry(microstructure)
             spot_px = (
                 safe_pos_float((m_entry or {}).get("ob_mid_price"), default=None)
                 or safe_pos_float((p_entry or {}).get("price"), default=None)
@@ -259,6 +251,25 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                     spot_px * (1.0 + sp_bps / 20000.0) if spot_px and spot_px > 0.0 else None
                 )
                 tick_step = 10.0 ** (-dec)
+
+                def _set_wall_queue(
+                    pos_label: str,
+                    wall_prefix: str,
+                    wall_px: float,
+                    wall_usd: float,
+                    penalty: float,
+                    *,
+                    front_run_px: Optional[float] = None,
+                ) -> float:
+                    o.update({
+                        "wall_queue_pos": pos_label,
+                        f"{wall_prefix}_wall_ahead_px": wall_px,
+                        f"{wall_prefix}_wall_ahead_usd": round(wall_usd, 0),
+                    })
+                    if front_run_px is not None:
+                        o["recommended_front_run_px"] = front_run_px
+                    return penalty
+
                 if side == "SELL":
                     aw_px = safe_pos_float(m_entry.get("ask_wall_px"), default=None)
                     aw_usd = safe_pos_float(m_entry.get("ask_wall_usd"), default=0.0) or 0.0
@@ -269,19 +280,13 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                         if floor_ask > 0.0:
                             raw_fr = max(floor_ask + tick_step, raw_fr)
                         fr_px = round(min(aw_px, raw_fr), dec)
+                        eff_fr = fr_px if (can_front_run and fr_px < aw_px and fr_px < lim_px) else None
                         if lim_px > aw_px * 1.015:
-                            o.update({"wall_queue_pos": "FAR_ABOVE_ASK_WALL", "ask_wall_ahead_px": aw_px, "ask_wall_ahead_usd": round(aw_usd, 0)})
-                            queue_penalty = 0.85
+                            queue_penalty = _set_wall_queue("FAR_ABOVE_ASK_WALL", "ask", aw_px, aw_usd, 0.85)
                         elif lim_px > aw_px * 1.0003:
-                            o.update({"wall_queue_pos": "BEHIND_ASK_WALL", "ask_wall_ahead_px": aw_px, "ask_wall_ahead_usd": round(aw_usd, 0)})
-                            if can_front_run and fr_px < aw_px and fr_px < lim_px:
-                                o["recommended_front_run_px"] = fr_px
-                            queue_penalty = 0.60
+                            queue_penalty = _set_wall_queue("BEHIND_ASK_WALL", "ask", aw_px, aw_usd, 0.60, front_run_px=eff_fr)
                         elif lim_px >= aw_px - 0.5 * tick_step and (lim_px - aw_px) / aw_px <= 0.0003:
-                            o.update({"wall_queue_pos": "AT_ASK_WALL", "ask_wall_ahead_px": aw_px, "ask_wall_ahead_usd": round(aw_usd, 0)})
-                            if can_front_run and fr_px < aw_px and fr_px < lim_px:
-                                o["recommended_front_run_px"] = fr_px
-                            queue_penalty = 0.78
+                            queue_penalty = _set_wall_queue("AT_ASK_WALL", "ask", aw_px, aw_usd, 0.78, front_run_px=eff_fr)
                         else:
                             o["wall_queue_pos"] = "FRONT_OF_ASK_WALL"
                 else:
@@ -297,19 +302,13 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                         if ceil_bid > 0.0:
                             raw_fr = min(ceil_bid - tick_step, raw_fr)
                         fr_px = round(max(bw_px, raw_fr), dec)
+                        eff_fr = fr_px if (can_front_run and fr_px > bw_px and fr_px > lim_px) else None
                         if lim_px < bw_px * 0.985:
-                            o.update({"wall_queue_pos": "DEEP_PASSIVE_BID", "bid_wall_ahead_px": bw_px, "bid_wall_ahead_usd": round(bw_usd, 0)})
-                            queue_penalty = 0.85
+                            queue_penalty = _set_wall_queue("DEEP_PASSIVE_BID", "bid", bw_px, bw_usd, 0.85)
                         elif lim_px < bw_px * 0.9997:
-                            o.update({"wall_queue_pos": "BEHIND_BID_WALL", "bid_wall_ahead_px": bw_px, "bid_wall_ahead_usd": round(bw_usd, 0)})
-                            if can_front_run and fr_px > bw_px and fr_px > lim_px:
-                                o["recommended_front_run_px"] = fr_px
-                            queue_penalty = 0.60
+                            queue_penalty = _set_wall_queue("BEHIND_BID_WALL", "bid", bw_px, bw_usd, 0.60, front_run_px=eff_fr)
                         elif lim_px <= bw_px + 0.5 * tick_step and (bw_px - lim_px) / bw_px <= 0.0003:
-                            o.update({"wall_queue_pos": "AT_BID_WALL", "bid_wall_ahead_px": bw_px, "bid_wall_ahead_usd": round(bw_usd, 0)})
-                            if can_front_run and fr_px > bw_px and fr_px > lim_px:
-                                o["recommended_front_run_px"] = fr_px
-                            queue_penalty = 0.78
+                            queue_penalty = _set_wall_queue("AT_BID_WALL", "bid", bw_px, bw_usd, 0.78, front_run_px=eff_fr)
                         else:
                             o["wall_queue_pos"] = "FRONT_OF_BID_WALL"
             raw_prob = 100.0 * math.exp(-0.5 * ((dist_pct / vol_1h) ** 2)) * queue_penalty
