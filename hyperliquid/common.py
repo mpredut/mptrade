@@ -28,10 +28,8 @@ load_isolated_hl_cfg = bind_isolated_venue_cfg_loader(_HERE, ("HL_",), dir_kwarg
 def load_hl_default_env(hl_dir: str | os.PathLike[str] = _HERE) -> dict[str, str]:
     """Load Hyperliquid config.env + .env layered with current os.environ overrides."""
     base_dir = os.fspath(hl_dir)
-    base = load_layered_env_config(
+    return load_layered_env_config(
         os.path.join(base_dir, "config.env"),
         os.path.join(base_dir, ".env"),
-        fallback_prefixes=(),
+        override_all_env=True,
     )
-    base.update(os.environ)
-    return base

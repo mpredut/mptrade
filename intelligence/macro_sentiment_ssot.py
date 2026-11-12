@@ -13,7 +13,6 @@ boilerplate across ``intelligence/`` and ``llm_order_guard.py`` by:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import configparser
 import importlib
 import logging
 import os
@@ -110,6 +109,7 @@ from botcore import (
     clean_nonempty_str,
     clean_scale,
     coerce_dict_maps,
+    empty_ini_config,
     first_epoch_sec,
     is_live_network_backfill_enabled,
     load_ini_config,
@@ -215,7 +215,7 @@ def _resolve_macro_cfg_attr(
     )
 
 
-def load_macro_intelligence_config(config_path: Optional[str] = None) -> configparser.ConfigParser:
+def load_macro_intelligence_config(config_path: Optional[str] = None) -> Any:
     """Load ``macro_intelligence.conf`` with automatic mtime-based hot reload."""
     default_path = _resolve_macro_cfg_attr(
         "DEFAULT_MACRO_CONFIG_PATH",
@@ -227,7 +227,7 @@ def load_macro_intelligence_config(config_path: Optional[str] = None) -> configp
         return load_ini_config(target, must_exist=False, inline_comments=True)
     except Exception as exc:
         logger.warning("Failed reading %s: %s", target, exc)
-        return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
+        return empty_ini_config(inline_comments=True)
 
 
 def _cfg_str(section: str, key: str, fallback: str = "", config_path: Optional[str] = None) -> str:

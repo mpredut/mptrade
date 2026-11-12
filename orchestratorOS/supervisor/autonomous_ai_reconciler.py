@@ -23,13 +23,12 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
 from botcore import (
     TOPIC_ALIASES,
     TOPIC_SPECS,
     _parse_bool_flag,
     bool_env,
+    disable_auto_start_websockets_default,
     is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
@@ -39,6 +38,8 @@ from botcore import (
     safe_pos_float,
     topic_spec,
 )
+
+disable_auto_start_websockets_default()
 from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.collectors.macro_telemetry_collector import (

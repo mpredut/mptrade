@@ -50,6 +50,7 @@ from botcore import (  # noqa: E402
     resolve_cli_arg,
     resolve_cli_env_path,
     safe_pos_float,
+    set_process_env,
 )
 ensure_local_module_priority(
     _HERE,
@@ -114,7 +115,7 @@ def main() -> int:
     args = ap.parse_args()
     # The one-shot lifecycle marker is namespaced by profile. Preserve the CLI
     # identity explicitly so parallel profiles/accounts never share one marker.
-    os.environ["IPO_PROFILE"] = args.profile.strip()
+    set_process_env("IPO_PROFILE", args.profile.strip())
 
     # --- .env configuration ---
     t212_env = required_env("T212_ENV").lower()

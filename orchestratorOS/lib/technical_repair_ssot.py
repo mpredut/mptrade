@@ -19,7 +19,6 @@ import subprocess
 import sys
 import time
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
-import urllib.request
 
 from botcore import (
     TOPIC_ALIASES,
@@ -29,6 +28,7 @@ from botcore import (
     clean_json_value,
     exact_nonneg_int,
     first_epoch_sec,
+    http_post_status,
     load_ini_config,
     normalize_epoch_sec,
     obj_attr,
@@ -1462,12 +1462,8 @@ def send_supervisor_ntfy_http(
     if ntfy_token:
         headers["Authorization"] = f"Bearer {ntfy_token}"
 
-    _urlopen = urlopen_fn or urllib.request.urlopen
     try:
-        req = urllib.request.Request(url, data=body.encode("utf-8"), headers=headers, method="POST")
-        with _urlopen(req, timeout=10) as resp:
-            status = getattr(resp, "status", None) or getattr(resp, "code", None) or (resp.getcode() if callable(getattr(resp, "getcode", None)) else None)
-            return status == 200
+        return http_post_status(url, body, headers=headers, timeout=10, urlopen_fn=urlopen_fn) == 200
     except Exception as exc:
         if log:
             log.error("Failed sending standalone ntfy notification: %s", exc)

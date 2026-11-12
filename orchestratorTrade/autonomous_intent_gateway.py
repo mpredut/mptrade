@@ -36,6 +36,7 @@ if ROOT_DIR not in sys.path:
 from botcore import (
     _parse_bool_flag,
     add_store_true_cli_args,
+    disable_auto_start_websockets_default,
     is_us_rth_open,
     load_key_value_conf,
 )
@@ -448,7 +449,7 @@ class AutonomousIntentGateway:
 
 
 def main() -> None:
-    os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+    disable_auto_start_websockets_default()
     parser = argparse.ArgumentParser(description="MPTrade Autonomous Intent Gateway")
     parser.add_argument("--mode", choices=["shadow", "enforce"], default=None, help="Override operational mode")
     add_store_true_cli_args(

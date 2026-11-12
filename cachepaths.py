@@ -27,6 +27,10 @@ CACHE_ASSET_VALUE_FILENAME = "cache_asset_value.jsonl"
 CACHE_KRAKEN_TRADE_FILENAME = "cache_trade_kraken.json"
 CACHE_HYPERLIQUID_TRADE_FILENAME = "cache_trade_hyperliquid.json"
 CACHE_T212_TRADE_FILENAME = "cache_trade_t212.json"
+ORDER_RETRY_QUEUE_FILENAME = "order_retry_queue.jsonl"
+ASSETGUARDIAN_STATE_FILENAME = "assetguardian_state.json"
+RTRADE_PAIRS_STATE_FILENAME = "rtrade_pairs_state.json"
+TRAILING_STATE_FILENAME = "trailing_state.json"
 
 CACHE_ORDERBOOK_DEPTH_PREFIX = "orderbook_depth_"
 CACHE_DERIVATIVES_TELEMETRY_PREFIX = "derivatives_telemetry_"
@@ -172,6 +176,18 @@ def _norm_rel_cache_path(raw: str, *, strip_cachedb_prefix: bool = False) -> str
     if strip_cachedb_prefix and s.startswith("cachedb/"):
         s = s[len("cachedb/"):]
     return s
+
+
+def cache_relpath(filename: object) -> str:
+    """Return a workspace-relative ``cachedb/<filename>`` path string."""
+    norm = _norm_rel_cache_path(_clean_path_str(filename), strip_cachedb_prefix=True)
+    return f"cachedb/{norm}" if norm else ""
+
+
+def is_cachedb_relpath(path: object) -> bool:
+    """Return True if ``path`` is a workspace-relative ``cachedb/...`` path."""
+    norm = _norm_rel_cache_path(_clean_path_str(path), strip_cachedb_prefix=False)
+    return norm.startswith("cachedb/") and len(norm) > len("cachedb/")
 
 
 def _exists_with_prev(path: str) -> bool:
@@ -530,6 +546,7 @@ EQUITY_VENUES: frozenset[str] = frozenset({"t212"})
 PRIMARY_STREAM_VENUES: frozenset[str] = frozenset({"binance"})
 CYCLE_STATE_VENUES: frozenset[str] = frozenset({"kraken", "hyperliquid", "t212"})
 _USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD", "TUSD", "BUSD")
+_USD_STABLECOIN_QUOTES: tuple[str, ...] = ("USDC", "USDT", "FDUSD", "TUSD", "BUSD")
 
 
 def _has_xstock_lowercase_x(token: str) -> bool:
@@ -543,6 +560,13 @@ _CRYPTO_QUOTE_SUFFIXES: tuple[str, ...] = (
 _EXPLICIT_CRYPTO_QUOTE_SUFFIXES: tuple[str, ...] = (
     "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR",
 )
+
+
+def has_crypto_quote_suffix(symbol: object) -> bool:
+    """Return True if ``symbol`` ends with a known crypto quote suffix."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return False
+    return symbol.strip().upper().endswith(_CRYPTO_QUOTE_SUFFIXES)
 
 
 def is_readonly_xstock_symbol(symbol: object) -> bool:
@@ -609,7 +633,7 @@ def filter_asset_class_variants(
         return tuple(
             c
             for c in (variants or ())
-            if isinstance(c, str) and not c.strip().upper().endswith(_CRYPTO_QUOTE_SUFFIXES)
+            if isinstance(c, str) and not has_crypto_quote_suffix(c)
         )
     return tuple(
         c
@@ -788,6 +812,27 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     return None
 
 
+def is_fiat_usd_pair(symbol: object) -> bool:
+    """Return True if ``symbol`` is a crypto fiat-USD pair (e.g. ``XBTUSD``, ``DOTUSD``, ``ARBUSD``, ``TAO/USD``), excluding stablecoins and equities."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return False
+    raw_u = symbol.strip().upper()
+    if not raw_u.endswith("USD") or has_equity_suffix(raw_u, include_compact=True):
+        return False
+    parts = split_symbol_assets(symbol)
+    return parts is not None and parts[1] == "USD"
+
+
+def is_usd_stablecoin_pair(symbol: object) -> bool:
+    """Return True if ``symbol`` is quoted in a USD stablecoin (``USDC``, ``USDT``, ``FDUSD``, ``TUSD``, ``BUSD``), excluding false ``TUSD``/``BUSD`` stems like ``XBTUSD``/``DOTUSD``/``ARBUSD``."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return False
+    if has_equity_suffix(symbol, include_compact=True):
+        return False
+    parts = split_symbol_assets(symbol)
+    return parts is not None and parts[1] in _USD_STABLECOIN_QUOTES
+
+
 def canonical_symbol_key(symbol: object) -> str:
     """Return a delimiter-stripped uppercase symbol key with canonical base asset aliases
     (e.g. ``XBT/USDC`` -> ``BTCUSDC``, ``XXBTZUSD`` -> ``BTCUSD``, ``XDG-USD`` -> ``DOGEUSD``,
@@ -928,8 +973,6 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
         return None
     return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")))
 
-
-TRAILING_STATE_FILENAME = "trailing_state.json"
 
 VENUE_RUNTIME_DIR_MAP: dict[str, str] = {
     "binance": "cachedb",

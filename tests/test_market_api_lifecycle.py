@@ -7,8 +7,13 @@ import pytest
 import time
 import unittest
 from cachepaths import (
+    cache_relpath,
+    has_crypto_quote_suffix,
+    is_cachedb_relpath,
+    is_fiat_usd_pair,
     is_primary_stream_venue,
     is_readonly_xstock_symbol,
+    is_usd_stablecoin_pair,
     matches_asset_scope,
     strip_equity_suffix,
     uses_cycle_state_files,
@@ -41,6 +46,7 @@ from providers.strategy_executor import (
 )
 from providers.t212_provider import T212Provider
 from strategies import replay_execution, replay_metrics
+from trailing_core import apply_trailing_asset_env_overrides
 from unittest.mock import Mock, patch
 
 
@@ -964,3 +970,159 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     monkeypatch.setattr("botcore.is_live_network_backfill_enabled", lambda: True)
     pts = facade.fetch_historical_ohlc_points("BTCUSDC", 7, interval="1h")
     assert len(pts) == 60
+
+
+def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
+    """Lock repo-wide SSOT AST boundaries (zero raw json/ConfigParser/urlopen/Request/os.environ outside canonical SSOT modules) and verify quote/env/HTTP helpers."""
+    root = Path(__file__).resolve().parents[1]
+    skip_top = {"tests", "offline", "verify_tools", "ops", ".venv", "venv", "myenv", ".git", "__pycache__"}
+    prod_files: list[tuple[str, Path]] = []
+    for p in sorted(root.rglob("*.py")):
+        rel = p.relative_to(root)
+        if any(part in skip_top or part.startswith(".") or part == "site-packages" for part in rel.parts):
+            continue
+        prod_files.append((rel.as_posix(), p))
+
+    json_owners = {"state_io.py", "botcore.py", "cacheintegrity.py"}
+    text_owners = {"state_io.py", "botcore.py"}
+    env_owners = {"botcore.py", "cachepaths.py", "credentials.py"}
+    ssot_violations: list[str] = []
+
+    for rel_s, path_obj in prod_files:
+        tree = ast.parse(path_obj.read_text(encoding="utf-8"), filename=rel_s)
+        for node in ast.walk(tree):
+            lineno = getattr(node, "lineno", 0)
+            if isinstance(node, ast.Call):
+                fn = node.func
+                if (
+                    rel_s not in json_owners
+                    and isinstance(fn, ast.Attribute)
+                    and isinstance(fn.value, ast.Name)
+                    and fn.value.id == "json"
+                    and fn.attr in ("load", "loads", "dump", "dumps")
+                ):
+                    ssot_violations.append(f"{rel_s}:{lineno}: raw json.{fn.attr}")
+                if (
+                    rel_s not in text_owners
+                    and isinstance(fn, ast.Attribute)
+                    and fn.attr in ("read_text", "write_text")
+                ):
+                    ssot_violations.append(f"{rel_s}:{lineno}: Path.{fn.attr}")
+                if rel_s != "botcore.py" and (
+                    (isinstance(fn, ast.Attribute) and fn.attr == "ConfigParser")
+                    or (isinstance(fn, ast.Name) and fn.id == "ConfigParser")
+                ):
+                    ssot_violations.append(f"{rel_s}:{lineno}: ConfigParser")
+                if rel_s != "botcore.py" and (
+                    (isinstance(fn, ast.Attribute) and fn.attr in ("urlopen", "Request"))
+                    or (isinstance(fn, ast.Name) and fn.id in ("urlopen", "Request"))
+                ):
+                    attr_name = fn.attr if isinstance(fn, ast.Attribute) else fn.id
+                    ssot_violations.append(f"{rel_s}:{lineno}: urllib {attr_name}")
+            elif (
+                rel_s not in env_owners
+                and isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "os"
+                and node.attr in ("environ", "getenv")
+            ):
+                ssot_violations.append(f"{rel_s}:{lineno}: os.{node.attr}")
+
+    assert ssot_violations == [], f"SSOT boundary violation(s) detected: {ssot_violations}"
+
+    # Fiat-USD vs USD-stablecoin quote disambiguation (including false TUSD/BUSD stems)
+    for fiat_sym in ("XBTUSD", "DOTUSD", "ARBUSD", "XAUTUSD", "TAOUSD", "TAO/USD"):
+        assert is_fiat_usd_pair(fiat_sym) is True, fiat_sym
+        assert is_usd_stablecoin_pair(fiat_sym) is False, fiat_sym
+    for stable_sym in ("BTCUSDC", "BTCUSDT", "BTCTUSD", "BTCBUSD", "BTCFDUSD", "SOL/USDC"):
+        assert is_usd_stablecoin_pair(stable_sym) is True, stable_sym
+        assert is_fiat_usd_pair(stable_sym) is False, stable_sym
+    for non_crypto_usd in ("SPCX_US_EQ", "AAPL_EQ", "SPCXUSEQ", "SPCXx.T", "BTC", "", None, True):
+        assert is_fiat_usd_pair(non_crypto_usd) is False, non_crypto_usd
+        assert is_usd_stablecoin_pair(non_crypto_usd) is False, non_crypto_usd
+
+    assert has_crypto_quote_suffix("BTCUSDC") is True
+    assert has_crypto_quote_suffix("XBTUSD") is True
+    assert has_crypto_quote_suffix("ETHBTC") is True
+    assert has_crypto_quote_suffix("SPCX_US_EQ") is False
+    assert has_crypto_quote_suffix("NVDA") is False
+
+    assert cache_relpath("order_retry_queue.jsonl") == "cachedb/order_retry_queue.jsonl"
+    assert cache_relpath("cachedb/trailing_state.json") == "cachedb/trailing_state.json"
+    assert is_cachedb_relpath("cachedb/trailing_state.json") is True
+    assert is_cachedb_relpath("kraken/trailing_state.json") is False
+
+    # Declarative MarketApi crypto OHLC provider routing
+    assert api.resolve_crypto_ohlc_provider("HYPEUSDC").name == "Hyperliquid"
+    assert api.resolve_crypto_ohlc_provider("TAOUSDC").name == "Binance"
+    assert api.resolve_crypto_ohlc_provider("BTCTUSD").name == "Binance"
+    assert api.resolve_crypto_ohlc_provider("XBTUSD").name == "Kraken"
+    assert api.resolve_crypto_ohlc_provider("DOTUSD").name == "Kraken"
+    assert api.resolve_crypto_ohlc_provider("ARBUSD").name == "Kraken"
+    assert api.resolve_crypto_ohlc_provider("SPCX_US_EQ") is None
+
+    # New botcore & trailing_core SSOT helpers
+    cp = botcore.empty_ini_config(inline_comments=True)
+    cp.read_string("[sec]\nk = val # comment\n")
+    assert cp.get("sec", "k") == "val"
+
+    captured_reqs = []
+
+    class _DummyResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    assert (
+        botcore.http_post_status(
+            "https://ntfy.sh/test_topic",
+            "hello",
+            headers={"Title": "Test"},
+            timeout=5.0,
+            urlopen_fn=lambda req, timeout=0: (captured_reqs.append((req, timeout)) or _DummyResp()),
+        )
+        == 200
+    )
+    assert len(captured_reqs) == 1
+    assert captured_reqs[0][0].full_url == "https://ntfy.sh/test_topic"
+    assert captured_reqs[0][0].data == b"hello"
+    assert captured_reqs[0][1] == 5.0
+
+    f_low = tmp_path / "low.env"
+    f_mid = tmp_path / "mid.env"
+    f_high = tmp_path / "high.env"
+    f_low.write_text("A=low\nB=low\nC=low\n", encoding="utf-8")
+    f_mid.write_text("B=mid\nC=mid\n", encoding="utf-8")
+    f_high.write_text("C=high\n", encoding="utf-8")
+    monkeypatch.setenv("T212_CUSTOM_TEST", "from_env")
+    layered = botcore.load_layered_env_config(f_low, f_mid, f_high, override_prefixes=("T212_",))
+    assert (layered["A"], layered["B"], layered["C"], layered["T212_CUSTOM_TEST"]) == ("low", "mid", "high", "from_env")
+    layered_all = botcore.load_layered_env_config(f_low, override_all_env=True)
+    assert layered_all["T212_CUSTOM_TEST"] == "from_env"
+
+    monkeypatch.delenv("BINANCE_AUTO_START_WEBSOCKETS", raising=False)
+    botcore.disable_auto_start_websockets_default()
+    assert botcore.optional_env("BINANCE_AUTO_START_WEBSOCKETS") == "0"
+    assert botcore.set_process_env("TEST_SET_PROC_ENV", 123) == "123"
+    cloned = botcore.clone_process_env({"TEST_CLONE_EXTRA": "yes", "TEST_SET_PROC_ENV": None})
+    assert cloned["TEST_CLONE_EXTRA"] == "yes" and "TEST_SET_PROC_ENV" not in cloned
+
+    pair_for = {"HYPE": "HYPEUSD"}
+    trail_pct = {"HYPE": 15.0}
+    apply_trailing_asset_env_overrides(
+        "KRAKEN_TRAILING_",
+        pair_for,
+        trail_pct,
+        12.5,
+        env={
+            "KRAKEN_TRAILING_DEFAULT_PCT": "12.5",
+            "KRAKEN_TRAILING_SOL_PAIR": "SOLUSD",
+            "KRAKEN_TRAILING_HYPE_PCT": "18.0",
+        },
+    )
+    assert pair_for == {"HYPE": "HYPEUSD", "SOL": "SOLUSD"}
+    assert trail_pct == {"HYPE": 18.0, "SOL": 12.5}

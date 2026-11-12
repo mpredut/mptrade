@@ -17,8 +17,8 @@ from botcore import (  # noqa: E402
     ET,
     _parse_bool_flag,
     load_dotenv,
+    load_layered_env_config,
     load_local_module,
-    parse_dotenv,
     required_env,
     required_float_env,
 )
@@ -69,16 +69,10 @@ def load_t212_environment(env_file: str, *, profile_file: str | None = None) -> 
 
 def load_isolated_t212_cfg(env_file: str, *, profile_file: str | None = None) -> dict[str, str]:
     """Load T212 environment layers into an isolated dict without mutating ``os.environ``."""
-    cfg: dict[str, str] = {}
-    for path in t212_env_layer_paths(env_file, profile_file=profile_file):
-        if os.path.exists(path):
-            for k, v in parse_dotenv(path).items():
-                if k not in cfg:
-                    cfg[k] = v
-    for k, v in os.environ.items():
-        if k.startswith(("T212_", "YAHOO_")):
-            cfg[k] = v
-    return cfg
+    return load_layered_env_config(
+        *reversed(t212_env_layer_paths(env_file, profile_file=profile_file)),
+        override_prefixes=("T212_", "YAHOO_"),
+    )
 
 
 def now_str() -> str:

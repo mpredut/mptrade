@@ -585,18 +585,22 @@ def load_key_value_conf(
 
 
 def load_layered_env_config(
-    config_file: str | os.PathLike,
-    env_file: str | os.PathLike,
-    *,
+    *env_files: str | os.PathLike,
     override_prefixes: tuple[str, ...] | list[str] = (),
     fallback_prefixes: tuple[str, ...] | list[str] = (),
+    override_all_env: bool = False,
 ) -> dict[str, str]:
-    """Load ``config_file`` then ``env_file``, applying ``os.environ`` overrides and fallbacks."""
+    """Load ``env_files`` in lowest-to-highest precedence order, applying ``os.environ`` overrides and fallbacks."""
     cfg: dict[str, str] = {}
-    for path_val in (config_file, env_file):
+    for path_val in env_files:
+        if path_val is None:
+            continue
         p_str = os.fspath(path_val)
         if p_str and os.path.exists(p_str):
             cfg.update(dict(parse_dotenv(p_str)))
+    if override_all_env:
+        cfg.update(os.environ)
+        return cfg
     ov_tuple, fb_tuple = tuple(override_prefixes), tuple(fallback_prefixes)
     for k, v in os.environ.items():
         if (ov_tuple and k.startswith(ov_tuple)) or (fb_tuple and k.startswith(fb_tuple) and k not in cfg):
@@ -676,6 +680,12 @@ _INI_CONFIG_CACHE: dict[str, tuple[tuple[int, int, bool], configparser.ConfigPar
 _INI_CONFIG_LOCK = globals().get("_INI_CONFIG_LOCK") or threading.RLock()
 
 
+def empty_ini_config(*, inline_comments: bool = True) -> configparser.ConfigParser:
+    """Create an empty ``ConfigParser(interpolation=None)`` with canonical inline comment handling."""
+    prefixes = ("#", ";") if inline_comments else ()
+    return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=prefixes)
+
+
 def load_ini_config(
     path: str | os.PathLike, *, must_exist: bool = True, inline_comments: bool = True
 ) -> configparser.ConfigParser:
@@ -683,18 +693,17 @@ def load_ini_config(
     if isinstance(path, bool) or not isinstance(path, (str, os.PathLike)) or not str(path).strip():
         raise ValueError(f"Invalid INI configuration path: {path!r}")
     abs_path = os.path.abspath(os.fspath(path))
-    prefixes = ("#", ";") if inline_comments else ()
     if not os.path.exists(abs_path):
         if must_exist:
             raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
-        return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=prefixes)
+        return empty_ini_config(inline_comments=inline_comments)
     st = os.stat(abs_path)
     sig = (st.st_mtime_ns, st.st_size, bool(inline_comments))
     with _INI_CONFIG_LOCK:
         cached = _INI_CONFIG_CACHE.get(abs_path)
         if cached is not None and cached[0] == sig:
             return cached[1]
-        cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=prefixes)
+        cp = empty_ini_config(inline_comments=inline_comments)
         with open(abs_path, "r", encoding="utf-8") as handle:
             cp.read_file(handle)
         lru_dict_put(_INI_CONFIG_CACHE, abs_path, (sig, cp), 64)
@@ -855,6 +864,36 @@ def env_value(folder: str | os.PathLike, key: str) -> str | None:
 def is_env_defined(key: str, env: dict | None = None) -> bool:
     """Return True if ``key`` exists in ``env`` (or ``os.environ`` when ``env`` is None)."""
     return key in (os.environ if env is None else env)
+
+
+def clone_process_env(overrides: Mapping[str, object] | None = None) -> dict[str, str]:
+    """Return a shallow ``dict`` copy of ``os.environ`` overlaid with ``overrides``."""
+    out = dict(os.environ)
+    if isinstance(overrides, Mapping):
+        for k, v in overrides.items():
+            if isinstance(k, str) and k:
+                if v is None:
+                    out.pop(k, None)
+                else:
+                    out[k] = str(v)
+    return out
+
+
+def set_process_env(key: str, value: object) -> str:
+    """Set ``os.environ[key] = str(value)`` after validating ``key`` and return the assigned string."""
+    if isinstance(key, bool) or not isinstance(key, str) or not key.strip():
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    val_s = str(value)
+    os.environ[key] = val_s
+    return val_s
+
+
+def env_items_with_prefix(prefix: str, env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return all ``(key, value)`` pairs from ``env``/``os.environ`` whose key starts with ``prefix``."""
+    if isinstance(prefix, bool) or not isinstance(prefix, str) or not prefix:
+        return {}
+    src = os.environ if env is None else env
+    return {k: str(v) for k, v in src.items() if isinstance(k, str) and k.startswith(prefix) and v is not None}
 
 
 def has_explicit_nonroot_env(key: str) -> bool:
@@ -1311,6 +1350,30 @@ def fetch_json_post(
     else:
         data = json.dumps(payload).encode("utf-8")
     return _urlopen_json(urllib.request.Request(clean_url, data=data, headers=req_headers), timeout)
+
+
+def http_post_status(
+    url: str,
+    body: str | bytes = b"",
+    *,
+    headers: dict | None = None,
+    timeout: float = 10.0,
+    urlopen_fn: object = None,
+) -> int:
+    """Send an HTTP POST request and return its integer status code (raising on transport error)."""
+    clean_url = _validate_http_url(url)
+    timeout_f = require_pos_float(timeout, name="timeout")
+    data = body.encode("utf-8") if isinstance(body, str) else bytes(body)
+    req_headers = dict(headers) if isinstance(headers, dict) else {}
+    req = urllib.request.Request(clean_url, data=data, headers=req_headers, method="POST")
+    opener = urlopen_fn if callable(urlopen_fn) else urllib.request.urlopen
+    with opener(req, timeout=timeout_f) as resp:
+        status = (
+            getattr(resp, "status", None)
+            or getattr(resp, "code", None)
+            or (resp.getcode() if callable(getattr(resp, "getcode", None)) else None)
+        )
+        return exact_int(status, default=0) or 0
 
 
 # -- DETERMINISTIC percentage-based approximate comparisons -------------------
@@ -2764,6 +2827,11 @@ def is_offline_disk_cache_enabled(env: dict | None = None) -> bool:
 def is_auto_start_websockets_enabled(env: dict | None = None) -> bool:
     """Return True when ``BINANCE_AUTO_START_WEBSOCKETS`` permits background WS startup (default True)."""
     return bool_env("BINANCE_AUTO_START_WEBSOCKETS", env=env, default=True)
+
+
+def disable_auto_start_websockets_default() -> None:
+    """Default ``BINANCE_AUTO_START_WEBSOCKETS=0`` in ``os.environ`` for read-only CLI/supervisor entrypoints."""
+    os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 def is_rth_gate_enabled(override: bool | None = None, *, rth_fn: object = None) -> bool:

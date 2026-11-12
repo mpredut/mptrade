@@ -23,7 +23,17 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import legacy_filenames_for, normalize_venue_name, resolve_cachedb_filepath
+from cachepaths import (
+    ASSETGUARDIAN_STATE_FILENAME,
+    ORDER_RETRY_QUEUE_FILENAME,
+    RTRADE_PAIRS_STATE_FILENAME,
+    TRAILING_STATE_FILENAME,
+    cache_relpath,
+    is_cachedb_relpath,
+    legacy_filenames_for,
+    normalize_venue_name,
+    resolve_cachedb_filepath,
+)
 from state_io import encode_json_payload, read_json_file, read_jsonl_records, read_recovering_previous
 
 
@@ -35,12 +45,12 @@ class StateSource:
 
 
 DEFAULT_SOURCES = (
-    StateSource("global_outbox", "cachedb/order_retry_queue.jsonl", True),
-    StateSource("assetguardian", "cachedb/assetguardian_state.json"),
-    StateSource("rtrade", "cachedb/rtrade_pairs_state.json"),
-    StateSource("binance_trailing", "cachedb/trailing_state.json"),
+    StateSource("global_outbox", cache_relpath(ORDER_RETRY_QUEUE_FILENAME), True),
+    StateSource("assetguardian", cache_relpath(ASSETGUARDIAN_STATE_FILENAME)),
+    StateSource("rtrade", cache_relpath(RTRADE_PAIRS_STATE_FILENAME)),
+    StateSource("binance_trailing", cache_relpath(TRAILING_STATE_FILENAME)),
     StateSource("kraken", "kraken/.state_*.json"),
-    StateSource("kraken_trailing", "kraken/trailing_state.json"),
+    StateSource("kraken_trailing", f"kraken/{TRAILING_STATE_FILENAME}"),
     StateSource("t212", "212trading/.state_*.json"),
     StateSource("t212_one_shot", "212trading/.t212_order.*.json"),
     StateSource("hyperliquid", "hyperliquid/.state_*.json"),
@@ -293,7 +303,7 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     files = []
     for spec in sources:
         matched_paths = sorted(glob.glob(os.path.join(glob.escape(root), spec.pattern)))
-        if not matched_paths and spec.pattern.startswith("cachedb/"):
+        if not matched_paths and is_cachedb_relpath(spec.pattern):
             resolved_pat = str(resolve_cachedb_filepath(os.path.join(root, spec.pattern)))
             matched_paths = sorted(glob.glob(resolved_pat))
             if not matched_paths:

@@ -28,6 +28,7 @@ from botcore import (
     are_close,
     diff_percent,
     float_env,
+    is_env_defined,
     normalize_epoch_sec,
     optional_env,
     pos_float_env,
@@ -150,7 +151,7 @@ def dynamic_window_key(window_seconds: float) -> str:
 
 
 def _env_or_estimator_power(estimator_name: str | None = None) -> float | None:
-    if "MPTRADE_STEP_WOLS_POWER" in os.environ:
+    if is_env_defined("MPTRADE_STEP_WOLS_POWER"):
         return max(0.0, float_env("MPTRADE_STEP_WOLS_POWER", default=DEFAULT_STEP_WOLS_POWER))
     est = _normalize_short_trend_estimator(
         estimator_name if estimator_name is not None else optional_env("MPTRADE_SHORT_TREND_ESTIMATOR", "")
@@ -245,7 +246,7 @@ def fast_trend_window_for_symbol(symbol: str | None = None) -> float | None:
     Returns ``None`` when the symbol uses the default 222s primary window, or a positive
     float (e.g. ``90.0`` for ``TAOUSDC``) when ``trend.fast_window_sec`` is configured.
     """
-    if "MPTRADE_FAST_TREND_WINDOW_SEC" in os.environ:
+    if is_env_defined("MPTRADE_FAST_TREND_WINDOW_SEC"):
         return safe_pos_float(float_env("MPTRADE_FAST_TREND_WINDOW_SEC"), default=None)
     return _lookup_symbol_param(symbol, _ensure_symbol_trend_caches()[1])
 

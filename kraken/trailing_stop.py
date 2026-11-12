@@ -56,6 +56,7 @@ from kraken_client import KrakenClient  # noqa: E402
 from trailing_core import (  # noqa: E402
     COST_BASIS_LOOKBACK_S,
     TrailingAdapterBase,
+    apply_trailing_asset_env_overrides,
     extract_trailing_intent_action_asset,
     load_trailing_common_env,
     parse_trailing_cli_args,
@@ -126,25 +127,7 @@ MIN_NOTIONAL_USD = required_float_env("KRAKEN_TRAILING_MIN_NOTIONAL_USD")
 TRAILING_MARKET = required_bool_env("KRAKEN_TRAILING_MARKET")
 
 # Optional environment overrides (e.g. ad-hoc tests or KRAKEN_TRAILING_<ASSET>_PAIR/PCT)
-for _env_k, _env_v in os.environ.items():
-    if _env_k.startswith("KRAKEN_TRAILING_") and _env_k.endswith("_PAIR"):
-        _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PAIR")].strip().upper()
-        if _asset and str(_env_v or "").strip():
-            PAIR_FOR[_asset] = required_env(_env_k, os.environ)
-            TRAIL_PCT.setdefault(_asset, DEFAULT_TRAIL_PCT)
-for _env_k in os.environ:
-    if (
-        _env_k.startswith("KRAKEN_TRAILING_")
-        and _env_k.endswith("_PCT")
-        and _env_k not in {
-            "KRAKEN_TRAILING_DEFAULT_PCT",
-            "KRAKEN_TRAILING_REBUY_BOUNCE_PCT",
-            "KRAKEN_TRAILING_MIN_PROFIT_PCT",
-        }
-    ):
-        _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PCT")].strip().upper()
-        if _asset and _asset in PAIR_FOR:
-            TRAIL_PCT[_asset] = required_float_env(_env_k, os.environ)
+apply_trailing_asset_env_overrides("KRAKEN_TRAILING_", PAIR_FOR, TRAIL_PCT, DEFAULT_TRAIL_PCT)
 
 
 class KrakenTrailing(TrailingAdapterBase):

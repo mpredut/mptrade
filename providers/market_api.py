@@ -25,7 +25,12 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import normalize_venue_name
+from cachepaths import (
+    is_fiat_usd_pair,
+    is_primary_stream_venue,
+    is_usd_stablecoin_pair,
+    normalize_venue_name,
+)
 from instrument_registry import is_equity_symbol
 import pricewindow as pw
 from . import order_id_context as rc
@@ -803,6 +808,34 @@ class MarketApi:
         if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
             return False
         return any(p.supports_symbol(symbol) for p in self._providers)
+
+    def resolve_crypto_ohlc_provider(self, symbol: str) -> Optional[MarketDataProvider]:
+        """Resolve the canonical crypto OHLC provider for ``symbol`` (including unconfigured reference pairs)."""
+        if isinstance(symbol, bool) or not isinstance(symbol, str):
+            return None
+        sym_u = symbol.strip().upper()
+        if not sym_u or is_equity_symbol(sym_u):
+            return None
+        crypto_provs = [p for p in self._providers if getattr(p, "_ASSET_SCOPE", "crypto") == "crypto"]
+        for prov in crypto_provs:
+            try:
+                if prov.supports_symbol(sym_u):
+                    return prov
+            except Exception:
+                continue
+        if is_usd_stablecoin_pair(sym_u):
+            return next((p for p in crypto_provs if is_primary_stream_venue(p.name)), None)
+        if is_fiat_usd_pair(sym_u):
+            return next(
+                (
+                    p
+                    for p in crypto_provs
+                    if not is_primary_stream_venue(p.name)
+                    and MarketDataProvider.resolve_venue_default_quote(p.name) == "USD"
+                ),
+                None,
+            )
+        return None
 
     def provider_name_for(self, symbol: str) -> str:
         """Return the provider that would serve the symbol for logs and debugging."""

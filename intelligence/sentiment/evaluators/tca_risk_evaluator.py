@@ -11,6 +11,7 @@ from cachepaths import (
     compatible_quote_suffixes,
     ensure_equity_suffix,
     filter_asset_class_variants,
+    has_crypto_quote_suffix,
     has_equity_suffix,
     is_equity_venue_or_suffix,
     normalize_venue_name,
@@ -609,7 +610,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                 (
                     val
                     for cand in cache_symbol_variants(eq_sym, include_original=True, include_base=True)
-                    if not str(cand).strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
+                    if not has_crypto_quote_suffix(cand)
                     and isinstance((val := casefold_get(all_t212_cycles, cand)), dict)
                 ),
                 {},

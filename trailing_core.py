@@ -40,8 +40,10 @@ from botcore import (
     _parse_bool_flag,
     clean_json_value,
     clean_upper_token,
+    env_items_with_prefix,
     first_pos_float,
     required_bool_env,
+    required_env,
     required_float_env,
     safe_float,
     safe_nonneg_float,
@@ -74,6 +76,33 @@ def load_trailing_common_env(
         required_float_env(f"{prefix}SELL_TREND_DEFER_MAX_SEC", env),
         required_float_env(f"{prefix}MIN_PROFIT_PCT", env),
     )
+
+
+def apply_trailing_asset_env_overrides(
+    prefix: str,
+    pair_for: dict[str, str],
+    trail_pct: dict[str, float],
+    default_trail_pct: float,
+    env: dict | None = None,
+) -> None:
+    """Apply optional ``<PREFIX><ASSET>_PAIR`` and ``<PREFIX><ASSET>_PCT`` overrides in place."""
+    prefixed = env_items_with_prefix(prefix, env=env)
+    reserved_pct = {
+        f"{prefix}DEFAULT_PCT",
+        f"{prefix}REBUY_BOUNCE_PCT",
+        f"{prefix}MIN_PROFIT_PCT",
+    }
+    for env_k, env_v in prefixed.items():
+        if env_k.endswith("_PAIR"):
+            asset = env_k[len(prefix):-len("_PAIR")].strip().upper()
+            if asset and str(env_v or "").strip():
+                pair_for[asset] = required_env(env_k, env)
+                trail_pct.setdefault(asset, default_trail_pct)
+    for env_k in prefixed:
+        if env_k.endswith("_PCT") and env_k not in reserved_pct:
+            asset = env_k[len(prefix):-len("_PCT")].strip().upper()
+            if asset and asset in pair_for:
+                trail_pct[asset] = required_float_env(env_k, env)
 
 
 def add_once_status_cli_args(

@@ -26,6 +26,7 @@ from botcore import (
     exact_int,
     fetch_json_post,
     is_cache_fresh,
+    is_env_defined,
     is_rth_gate_enabled,
     normalize_epoch_sec,
     resolve_patched_attr,
@@ -633,7 +634,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                         closed_rth_max_age_sec = 192.0 * share_exec_sec  # 192 * 30m = 96h (covers 3-day holiday weekend + overnight)
                         stale_was_open_rth = (
                             allow_net_bool
-                            and "MPTRADE_FORCE_RTH_GATE" not in os.environ
+                            and not is_env_defined("MPTRADE_FORCE_RTH_GATE")
                             and stale_ts > 0.0
                             and bool(is_symbol_market_open(sym_clean, stale_ts))
                         )

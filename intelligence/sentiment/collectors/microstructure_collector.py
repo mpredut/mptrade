@@ -29,11 +29,13 @@ from cachepaths import (
     canonical_base_asset,
     clean_symbol_key,
     compatible_quote_suffixes,
+    has_crypto_quote_suffix,
     has_equity_suffix,
     is_equity_venue,
+    is_fiat_usd_pair,
     legacy_filenames_for,
+    normalize_venue_name,
     resolve_cache_dir_path,
-    split_symbol_assets,
 )
 Cache24PriceManager: Any = None
 Cache365PriceManager: Any = None
@@ -258,8 +260,10 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
     sym_u = str(sym or "").strip().upper()
     sym_clean = clean_symbol_key(sym_u)
     inst_map = inst_by_sym or {}
+    routed_prov = mkt.resolve_crypto_ohlc_provider(sym_u)
+    routed_key = normalize_venue_name(routed_prov)
     inst_obj = (
-        (inst_map.get(f"binance:{sym_clean}") if sym_clean != "HYPEUSDC" else None)
+        (inst_map.get(f"{routed_key}:{sym_clean}") if routed_key else None)
         or inst_map.get(sym)
         or inst_map.get(sym_u)
         or inst_map.get(sym_clean)
@@ -268,22 +272,13 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
     if callable(ohlc_fn) or not is_live_network_backfill_enabled():
         return ohlc_fn if callable(ohlc_fn) else None
     try:
-        prov_key = ""
-        sym_parts = split_symbol_assets(sym_u) if sym_u and not is_equity_symbol(sym_u) else None
-        sym_q = sym_parts[1] if sym_parts is not None else ""
-        if sym_clean == "HYPEUSDC":
-            prov_key = "hyperliquid"
-        elif sym_q in ("USDC", "USDT", "FDUSD", "TUSD", "BUSD") or sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD")):
-            prov_key = "binance"
-        elif sym_q == "USD" or (sym_u.endswith("USD") and not is_equity_symbol(sym_u) and not sym_u.endswith(("FDUSD", "TUSD", "BUSD"))):
-            prov_key = "kraken"
-        if prov_key and prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
-            _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
-                prov_key,
-                lambda pk=prov_key: getattr(mkt.provider_by_name(pk), "ohlc_series", None),
+        if routed_key and routed_key not in _FALLBACK_PROVIDER_OHLC_FNS:
+            _FALLBACK_PROVIDER_OHLC_FNS[routed_key] = _wrap_cached_ohlc_fn(
+                routed_key,
+                lambda pk=routed_key: getattr(mkt.provider_by_name(pk), "ohlc_series", None),
                 is_factory=True,
             )
-        if prov_key and callable(cached_fn := _FALLBACK_PROVIDER_OHLC_FNS.get(prov_key)):
+        if routed_key and callable(cached_fn := _FALLBACK_PROVIDER_OHLC_FNS.get(routed_key)):
             return cached_fn
     except Exception:
         pass
@@ -1050,11 +1045,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
             for c in cache_symbol_variants(symbol, include_original=True, include_base="USD" in eff_quotes, quotes=eff_quotes)
             if isinstance(c, str)
             and "/" not in c
-            and (
-                not c.upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
-                if is_eq_sym
-                else not is_equity_symbol(c)
-            )
+            and (not has_crypto_quote_suffix(c) if is_eq_sym else not is_equity_symbol(c))
         ]
         _ensure_cacheprice_classes_bound()
         _rj_cand = _resolve_read_json_cached()
@@ -1292,10 +1283,8 @@ def _should_rescale_usd_sibling_walls(
     ob_ts: float = 0.0,
     last_pt: Optional[tuple] = None,
 ) -> bool:
-    u = str(sym_u or "").strip().upper()
     if (
-        not u.endswith("USD")
-        or u.endswith(("FDUSD", "TUSD", "BUSD"))
+        not is_fiat_usd_pair(sym_u)
         or not sib_live_px
         or sib_live_px <= 0.0
         or ob_mid is None
@@ -1771,8 +1760,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 elif (
                     not _prices_diverged(sym_px_m, ob_mid_m)
                     and is_exact_ob_sym
-                    and str(sym).strip().upper().endswith("USD")
-                    and not str(sym).strip().upper().endswith(("FDUSD", "TUSD", "BUSD"))
+                    and is_fiat_usd_pair(sym)
                     and (
                         bool(matched_series_24h)
                         or any(
@@ -1823,7 +1811,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             if p_ref is not None and msym not in pt_map:
                 ob_mid_sib = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
                 p_ref_px = safe_pos_float(p_ref.get("price"), default=0.0) or 0.0
-                if msym.upper().endswith("USD") and not msym.upper().endswith(("FDUSD", "TUSD", "BUSD")) and ob_mid_sib is not None:
+                if is_fiat_usd_pair(msym) and ob_mid_sib is not None:
                     sib_live_px = extract_current_price_item(casefold_get(cp_map, msym))
                     if (not sib_live_px or sib_live_px <= 0.0) and cachedb_dir:
                         sib_live_px = _resolve_live_24trend_current_price(cachedb_dir, msym, _rj)
@@ -1854,7 +1842,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             elif p_ref is None:
                 ref_px = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
                 ser_24h, vals_7d = load_symbol_price_series(cachedb_dir, msym, current_price_items=cp_map)
-                if not ser_24h and allow_network and msym.endswith("USD") and not msym.endswith(("FDUSD", "TUSD", "BUSD")) and is_live_network_backfill_enabled():
+                if not ser_24h and allow_network and is_fiat_usd_pair(msym) and is_live_network_backfill_enabled():
                     try:
                         krk_ohlc_fn = _resolve_fallback_ohlc_fn(msym, inst_map)
                         if callable(krk_ohlc_fn):

@@ -58,10 +58,10 @@ class BotManager:
             (cand for cand in (".venv", "myenv") if os.path.exists(os.path.join(ROOT_DIR, cand, "bin", "activate"))),
             "myenv",
         )
-        if "ORCHESTRATOR_VERBOSE_STDOUT" not in os.environ:
+        if not botcore.is_env_defined("ORCHESTRATOR_VERBOSE_STDOUT"):
             raise KeyError("Missing required env key 'ORCHESTRATOR_VERBOSE_STDOUT' in config.env")
-        self.verbose_stdout = botcore._parse_bool_flag(os.environ["ORCHESTRATOR_VERBOSE_STDOUT"], False)
-        if "ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC" not in os.environ:
+        self.verbose_stdout = botcore.bool_env("ORCHESTRATOR_VERBOSE_STDOUT", default=False)
+        if not botcore.is_env_defined("ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC"):
             raise KeyError("Missing required env key 'ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC' in config.env")
         self.zombie_cooldown_sec = botcore.required_float_env("ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC")
         if self.zombie_cooldown_sec < 0:
@@ -134,7 +134,7 @@ class BotManager:
         log_fh = None
         task = None
         try:
-            fresh_env = dict(os.environ)
+            fresh_env = botcore.clone_process_env()
             config_env_path = os.path.join(ROOT_DIR, "config.env")
             if os.path.exists(config_env_path):
                 try:

@@ -13,6 +13,7 @@ import urllib.request
 
 from botcore import (
     FileLock,
+    clone_process_env,
     fetch_json_post,
     is_cache_fresh,
     is_gemini_llm_disabled,
@@ -418,8 +419,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 body = f"{session.history_prefix}{prompt}" if session.history_prefix else prompt
                 cli_prompt = f"{effective_title}\n\n{body}" if effective_title else body
 
-                run_env = os.environ.copy()
-                run_env["AGY_BOT_HOME"] = os.path.dirname(os.path.dirname(bot_cli_base))
+                run_env = clone_process_env({"AGY_BOT_HOME": os.path.dirname(os.path.dirname(bot_cli_base))})
 
                 # Attempt primary model followed by fallback models if CLI call fails
                 raw_candidates = self.get_model_candidates(selected_model)

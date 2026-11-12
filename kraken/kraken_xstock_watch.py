@@ -35,6 +35,7 @@ if _ROOT not in sys.path:
 from botcore import (
     INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
+    clone_process_env,
     exact_pos_int,
     fetch_public_json,
     load_env_stack,
@@ -361,8 +362,7 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     if _bot_alive(st.get("bot_pid")):
         return
     relaunch = st.get("bot_pid") is not None
-    env = dict(os.environ)
-    env["STRAT_ADOPT_COST"] = str(alloc_price)
+    env = clone_process_env({"STRAT_ADOPT_COST": str(alloc_price)})
     # Volatile-IPO tuning overrides config.env only for this bot instance.
     for src, dst in (("XSTOCK_BOT_TP_PCT", "STRAT_TAKEPROFIT_PCT"),
                      ("XSTOCK_BOT_DCA_DROP_PCT", "STRAT_DCA_DROP_PCT"),

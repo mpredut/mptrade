@@ -25,6 +25,7 @@ from cachepaths import (
     clean_symbol_key,
     compatible_quote_suffixes,
     get_cachedb_dir,
+    has_crypto_quote_suffix,
     resolve_cachedb_filepath,
 )
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
@@ -317,7 +318,7 @@ def _scope_symbol_variants(
             return False
         if not is_eq_sym:
             return not is_equity_symbol(c_u)
-        return not c_u.endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "BTC", "ETH", "EUR"))
+        return not has_crypto_quote_suffix(c_u)
 
     sym_variants = [c for c in cache_symbol_variants(symbol, include_base=True) if _scope_ok_variant(c)]
     quote_variants = [c for c in cache_symbol_variants(symbol, include_base=is_usd_sym, quotes=sym_quotes) if _scope_ok_variant(c)]
