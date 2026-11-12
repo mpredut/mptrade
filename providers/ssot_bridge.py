@@ -2,26 +2,34 @@
 
 import contextlib
 import importlib
+import os
 import sys
 import threading
 from typing import Any, List, Optional
 
 from botcore import (
     PRICE_FRESHNESS_MAX_AGE_SEC,
+    _is_fresh_obs_ts,
     _parse_bool_flag,
     is_shared_disk_cache_enabled,
+    normalize_epoch_sec,
     require_nonneg_float,
+    resolve_now_ts,
     resolve_patched_attr,
     resolve_positive_max_age,
     safe_nonneg_int,
+    safe_pos_float,
 )
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
+    cache_ohlc_24h_filename,
     cache_path,
     canonical_symbol_key,
     clean_symbol_key,
+    resolve_cachedb_filepath,
     split_symbol_assets,
 )
+from state_io import read_json_dict_recovering
 
 _LIVE_FETCH_LOCAL = threading.local()
 
@@ -145,6 +153,17 @@ class ProviderSsotBridgeMixin:
                 tgt._ssot_trade_cache_cls = trade_cache_cls
 
     @classmethod
+    def _patched_mdp_attr(cls, attr_name: str) -> Any:
+        """Return a test-patched attribute on ``MarketDataProvider.__dict__`` when called via ``ProviderSsotBridgeMixin``."""
+        if cls is not ProviderSsotBridgeMixin:
+            return None
+        base_mod = sys.modules.get("providers.base")
+        mdp = getattr(base_mod, "MarketDataProvider", None) if base_mod is not None else None
+        if mdp is not None and attr_name in mdp.__dict__:
+            return getattr(mdp, attr_name)
+        return None
+
+    @classmethod
     def _ensure_ssot_cache_bindings(cls) -> None:
         if cls._ssot_cache_manager_getter is None:
             importlib.import_module("cacheManager")
@@ -152,6 +171,8 @@ class ProviderSsotBridgeMixin:
     @classmethod
     def ensure_ssot_account_cache_readers(cls, status: Any) -> Any:
         """Synchronize account-cache reader versions via bound hook (respecting ``cacheManager`` monkeypatches)."""
+        if callable(patched := cls._patched_mdp_attr("ensure_ssot_account_cache_readers")):
+            return patched(status)
         cls._ensure_ssot_cache_bindings()
         fn = resolve_patched_attr(
             "ensure_account_cache_readers",
@@ -164,6 +185,8 @@ class ProviderSsotBridgeMixin:
     @classmethod
     def get_ssot_cache_manager(cls, cache_name: str, *args: Any, **kwargs: Any) -> Any:
         """Return a named SSOT cache manager via bound hook (respecting ``cacheManager`` monkeypatches)."""
+        if callable(patched := cls._patched_mdp_attr("get_ssot_cache_manager")):
+            return patched(cache_name, *args, **kwargs)
         cls._ensure_ssot_cache_bindings()
         fn = resolve_patched_attr(
             "get_cache_manager",
@@ -185,6 +208,8 @@ class ProviderSsotBridgeMixin:
     @classmethod
     def get_ssot_short_trend_manager(cls) -> Any:
         """Return the ShortTrend cache manager via bound hook (respecting ``cacheManager`` / ``cachetrend`` monkeypatches)."""
+        if callable(patched := cls._patched_mdp_attr("get_ssot_short_trend_manager")):
+            return patched()
         ct_mod = (
             importlib.import_module("cachetrend")
             if cls._ssot_short_trend_getter is None
@@ -320,6 +345,9 @@ class ProviderSsotBridgeMixin:
     @classmethod
     def get_accepted_retry_order_owner_map(cls) -> dict[str, str]:
         """Return accepted retry-outbox owner map via bound ``order_retry`` hook."""
+        if callable(patched := cls._patched_mdp_attr("get_accepted_retry_order_owner_map")):
+            res_p = patched()
+            return res_p if isinstance(res_p, dict) else {}
         fn = cls._resolve_order_retry_hook("get_accepted_order_owner_map", "_retry_accepted_owner_map_fn")
         res = fn() if callable(fn) else {}
         return res if isinstance(res, dict) else {}
@@ -327,6 +355,8 @@ class ProviderSsotBridgeMixin:
     @classmethod
     def resolve_accepted_retry_order(cls, symbol: str, order_id: Any) -> Any:
         """Resolve an accepted retry-outbox order via bound ``order_retry`` hook."""
+        if callable(patched := cls._patched_mdp_attr("resolve_accepted_retry_order")):
+            return patched(symbol, order_id)
         fn = cls._resolve_order_retry_hook("resolve_accepted_order", "_retry_resolve_accepted_order_fn")
         return fn(symbol, order_id) if callable(fn) else None
 
@@ -431,6 +461,11 @@ class ProviderSsotBridgeMixin:
         cls, symbol: str, max_age_sec: float = PRICE_FRESHNESS_MAX_AGE_SEC
     ) -> Optional[float]:
         """Read fresh SSOT current price without instantiating a provider or triggering network I/O."""
+        if callable(patched := cls._patched_mdp_attr("read_passive_ssot_current_price")):
+            try:
+                return patched(symbol, max_age_sec)
+            except TypeError:
+                return patched(symbol)
         in_live_fn = resolve_patched_attr(
             "is_in_live_price_fetch",
             is_in_live_price_fetch,
@@ -448,6 +483,55 @@ class ProviderSsotBridgeMixin:
         if in_live_fn() or not shared_fn() or eff_age is None or not candidates:
             return None
         return cls.read_ssot_spot_price(candidates, max_age_sec=eff_age)
+
+    @classmethod
+    def read_ssot_ohlc_24h_closes(
+        cls,
+        candidates: tuple[str, ...] | list[str],
+        *,
+        max_age_sec: float = 300.0,
+        cache_dir_override: Optional[str] = None,
+    ) -> list[float]:
+        """Read fresh 5m close series for ``candidates`` from ``cache_ohlc_24h_<SYM>.json``."""
+        eff_age = resolve_positive_max_age(max_age_sec, 300.0)
+        norm_cands = (
+            (candidates,)
+            if isinstance(candidates, str)
+            else (
+                ()
+                if isinstance(candidates, (bool, bytes, bytearray)) or not hasattr(candidates, "__iter__")
+                else tuple(c.strip() for c in candidates if not isinstance(c, bool) and isinstance(c, str) and c.strip())
+            )
+        )
+        if eff_age is None or not norm_cands:
+            return []
+        now_s = resolve_now_ts()
+        for cand in norm_cands:
+            fname = cache_ohlc_24h_filename(cand)
+            ohlc_path = (
+                str(resolve_cachedb_filepath(os.path.join(cache_dir_override, fname)))
+                if cache_dir_override
+                else str(cls._resolve_cache_path(fname))
+            )
+            raw_doc = read_json_dict_recovering(ohlc_path)
+            if not isinstance(raw_doc, dict):
+                continue
+            doc_ts = normalize_epoch_sec(raw_doc.get("ts"), default=None)
+            if doc_ts is None or not _is_fresh_obs_ts(doc_ts, now_s, eff_age):
+                continue
+            pts = raw_doc.get("points")
+            if not isinstance(pts, list):
+                continue
+            closes = [
+                px
+                for p in pts
+                if isinstance(p, (list, tuple))
+                and len(p) >= 2
+                and (px := safe_pos_float(p[1], default=None)) is not None
+            ]
+            if closes:
+                return closes
+        return []
 
     @classmethod
     def read_ssot_spot_price(
@@ -610,6 +694,8 @@ class ProviderSsotBridgeMixin:
     @classmethod
     def merge_ssot_fills_cache(cls, cache_file: str, fills_by_symbol: dict) -> bool:
         """Atomically merge normalized multi-symbol fills into a shared SSOT trade cache snapshot."""
+        if callable(patched := cls._patched_mdp_attr("merge_ssot_fills_cache")):
+            return bool(patched(cache_file, fills_by_symbol))
         if not cache_file or not isinstance(fills_by_symbol, dict):
             return False
         cls._ensure_ssot_cache_bindings()

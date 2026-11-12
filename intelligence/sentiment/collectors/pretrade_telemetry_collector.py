@@ -26,6 +26,7 @@ from cachepaths import (
     CACHE_ORDERBOOK_DEPTH_PREFIX,
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     CACHE_WHALE_SNAPSHOT_PREFIX,
+    cache_ohlc_24h_filename,
     cache_symbol_variants,
     canonical_base_asset,
     clean_symbol_key,
@@ -1428,7 +1429,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                 and len(alt_series_24h) >= 5
                 and (
                     sum(1 for r in alt_series_24h if isinstance(r, (list, tuple)) and len(r) >= 3) >= 4
-                    or os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"cache_ohlc_24h_{symbol}.json"))))
+                    or os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_ohlc_24h_filename(symbol)))))
                 )
             )
             if (eq_px_diverged_05pct or eq_chart_refreshed or stale_short_ts or eq_ohlc_flat_short) and alt_series_24h:
@@ -2127,7 +2128,7 @@ def refresh_pretrade_telemetry_caches(
             and ensure_fresh_symbol_microstructure is _ORIG_ENSURE_FRESH_SYMBOL_MICROSTRUCTURE
         ):
             sym_u = clean_symbol_key(sym_raw) or sym_raw.upper()
-            ohlc_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"cache_ohlc_24h_{sym_u}.json")))
+            ohlc_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_ohlc_24h_filename(sym_u))))
             if os.path.exists(ohlc_path) or os.path.exists(
                 str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{sym_u}.json")))
             ):

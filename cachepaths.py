@@ -45,6 +45,8 @@ CACHE_24_PRICE_PREFIX = "cache_24_price_"
 CACHE_24_PRICE_EXT = ".json"
 CACHE_365_PRICE_PREFIX = "cache_365_price_"
 CACHE_365_PRICE_EXT = ".jsonl"
+CACHE_OHLC_24H_PREFIX = "cache_ohlc_24h_"
+CACHE_OHLC_24H_EXT = ".json"
 
 
 def cache_sparse_price_filename(symbol: object) -> str:
@@ -63,6 +65,12 @@ def cache_365_price_filename(symbol: object, *, ext: str = CACHE_365_PRICE_EXT) 
     """Return canonical on-disk filename for a 365d dense price archive (`cache_365_price_<SYM>.jsonl`)."""
     sym = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
     return f"{CACHE_365_PRICE_PREFIX}{sym}{ext}"
+
+
+def cache_ohlc_24h_filename(symbol: object) -> str:
+    """Return canonical on-disk filename for a 24h 5m OHLCV series (`cache_ohlc_24h_<SYM>.json`)."""
+    sym = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
+    return f"{CACHE_OHLC_24H_PREFIX}{sym}{CACHE_OHLC_24H_EXT}"
 
 
 EXACT_LEGACY_FILENAMES = {

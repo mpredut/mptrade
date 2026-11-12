@@ -9,12 +9,10 @@ from functools import partial
 import math
 import os
 import re
-import statistics
 import sys
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -22,7 +20,6 @@ if _ROOT not in sys.path:
 
 from botcore import (
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
-    _is_fresh_obs_ts,
     _parse_bool_flag,
     clean_nonempty_str,
     exact_pos_int,
@@ -31,27 +28,27 @@ from botcore import (
     is_shared_disk_cache_enabled,
     log,
     normalize_epoch_sec,
-    resolve_now_ts,
-    safe_float,
     safe_int,
     safe_nonneg_float,
     safe_pos_float,
 )
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
-    cache_path,
     ensure_equity_suffix,
     resolve_cachedb_filepath,
 )
 from providers.ohlc_utils import (
+    compute_ols_slope_pct,
     drop_incomplete_last_bar,
     extract_yahoo_chart_result_and_quote as _extract_yahoo_result_and_quote,
+    extract_yahoo_intraday_chart_bars,
     parse_ohlc_interval_minutes,
+    require_ohlc_symbol,
     validate_dataset,
     validate_ohlc_candle_bar,
 )
 from providers.ssot_bridge import ProviderSsotBridgeMixin, is_in_live_price_fetch
-from state_io import parse_json_payload, read_json_dict_recovering
+from state_io import parse_json_payload
 
 _ORIG_HTTP_GET = http_get
 _SSOT_CACHE_DIR_OVERRIDE: str | None = None
@@ -83,13 +80,11 @@ def fetch_yahoo_candles(
     to_f = safe_pos_float(timeout, default=None)
     if to_f is None:
         raise ValueError(f"invalid timeout: {timeout!r}")
-    if (sym_clean := clean_nonempty_str(symbol)) is None:
-        raise ValueError(f"invalid symbol: {symbol!r}")
+    symbol = require_ohlc_symbol(symbol, label="symbol")
     if (rng_clean := clean_nonempty_str(range_)) is None:
         raise ValueError(f"invalid range: {range_!r}")
     if (itv_clean := clean_nonempty_str(interval)) is None:
         raise ValueError(f"invalid interval: {interval!r}")
-    symbol = sym_clean
     range_ = rng_clean
     interval = itv_clean
     query = {"range": range_, "interval": interval}
@@ -167,82 +162,7 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
     if status != 200 or not body:
         return None, []
     try:
-        result, _, ts, q = _extract_yahoo_result_and_quote(parse_json_payload(body))
-        if result is None:
-            return None, []
-        meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
-        closes = q.get("close") if isinstance(q.get("close"), list) else []
-        vols = q.get("volume") if isinstance(q.get("volume"), list) else []
-        bars = []
-        for i, (t, c) in enumerate(zip(ts, closes)):
-            t_f = safe_pos_float(t, default=None)
-            c_f = safe_pos_float(c, default=None)
-            if t_f is None or c_f is None:
-                continue
-            raw_v = vols[i] if i < len(vols) else None
-            v_clean = safe_nonneg_float(raw_v, default=None)
-            bars.append((math.trunc(t_f) if t_f.is_integer() else t_f, c_f, v_clean))
-        reg_period = (
-            ((meta.get("currentTradingPeriod") or {}).get("regular") or {})
-            if isinstance(meta.get("currentTradingPeriod"), dict)
-            else {}
-        )
-        reg_start = safe_pos_float(reg_period.get("start"), default=None) if isinstance(reg_period, dict) else None
-        reg_end = safe_pos_float(reg_period.get("end"), default=None) if isinstance(reg_period, dict) else None
-        ref_meta_px = (
-            safe_pos_float(meta.get("regularMarketPrice"), default=None)
-            or safe_pos_float(meta.get("chartPreviousClose"), default=None)
-        )
-        if reg_start is not None and bars:
-            reg_bars = [b for b in bars if reg_start <= b[0] <= (reg_end or math.inf)]
-            cleaned_pre_post = []
-            for idx, b in enumerate(bars):
-                is_outside_reg = b[0] < reg_start or (reg_end is not None and b[0] > reg_end)
-                if is_outside_reg and (b[2] is None or b[2] <= 0.0):
-                    ref_px = (
-                        (reg_bars[0][1] if b[0] < reg_start else reg_bars[-1][1])
-                        if reg_bars
-                        else ref_meta_px
-                    )
-                    if ref_px is not None and ref_px > 0.0 and abs(b[1] - ref_px) / ref_px > 0.01:
-                        near_bars = [
-                            nb for j, nb in enumerate(bars)
-                            if j != idx and abs(nb[0] - b[0]) <= 1800 and b[1] > 0.0 and abs(nb[1] - b[1]) / b[1] <= 0.01
-                        ]
-                        has_session_peer = len(near_bars) >= 2 or any(abs(nb[1] - b[1]) > 1e-9 for nb in near_bars)
-                        if not has_session_peer:
-                            continue
-                cleaned_pre_post.append(b)
-            if cleaned_pre_post:
-                bars = cleaned_pre_post
-        if len(bars) >= 3 and any((b[2] or 0.0) > 0.0 for b in bars):
-            filtered_bars = [bars[0]]
-            for idx in range(1, len(bars) - 1):
-                cur_b = bars[idx]
-                prev_b = filtered_bars[-1]
-                cur_v = cur_b[2]
-                if cur_v is None or cur_v <= 0.0:
-                    next_idx = idx + 1
-                    while (
-                        next_idx < len(bars) - 1
-                        and (bars[next_idx][2] is None or bars[next_idx][2] <= 0.0)
-                        and abs(bars[next_idx][1] - cur_b[1]) <= 1e-9
-                    ):
-                        next_idx += 1
-                    next_b = bars[next_idx]
-                    if (prev_b[2] or 0.0) > 0.0 or (next_b[2] or 0.0) > 0.0:
-                        p_prev, p_cur, p_next = prev_b[1], cur_b[1], next_b[1]
-                        ref_mid = 0.5 * (p_prev + p_next)
-                        if (
-                            ref_mid > 0.0
-                            and abs(p_prev - p_next) / ref_mid <= 0.025
-                            and abs(p_cur - ref_mid) / ref_mid > 0.025
-                        ):
-                            continue
-                filtered_bars.append(cur_b)
-            filtered_bars.append(bars[-1])
-            bars = filtered_bars
-        return meta, bars
+        return extract_yahoo_intraday_chart_bars(parse_json_payload(body))
     except (ValueError, KeyError, TypeError):
         return None, []
 
@@ -294,32 +214,11 @@ def _ssot_equity_price_usd(sym_u: str) -> float | None:
 
 
 def _ssot_equity_ohlc_closes(sym_u: str) -> list[float]:
-    now_s = resolve_now_ts()
-    ttl_s = parse_interval_minutes("5m") * 60.0
-    for eq_sym in _equity_ssot_candidates(sym_u, include_bare=False):
-        fname = f"cache_ohlc_24h_{eq_sym}.json"
-        ohlc_path = (
-            str(resolve_cachedb_filepath(os.path.join(_SSOT_CACHE_DIR_OVERRIDE, fname)))
-            if _SSOT_CACHE_DIR_OVERRIDE
-            else str(cache_path(fname))
-        )
-        raw_doc = read_json_dict_recovering(ohlc_path)
-        if not isinstance(raw_doc, dict):
-            continue
-        doc_ts = normalize_epoch_sec(raw_doc.get("ts"), default=None)
-        if doc_ts is None or not _is_fresh_obs_ts(doc_ts, now_s, ttl_s):
-            continue
-        pts = raw_doc.get("points")
-        if not isinstance(pts, list):
-            continue
-        closes = [
-            px
-            for p in pts
-            if isinstance(p, (list, tuple)) and len(p) >= 2 and (px := safe_pos_float(p[1], default=None)) is not None
-        ]
-        if closes:
-            return closes
-    return []
+    return ProviderSsotBridgeMixin.read_ssot_ohlc_24h_closes(
+        _equity_ssot_candidates(sym_u, include_bare=False),
+        max_age_sec=parse_interval_minutes("5m") * 60.0,
+        cache_dir_override=_SSOT_CACHE_DIR_OVERRIDE,
+    )
 
 
 def get_price_usd(sym: str) -> float | None:
@@ -334,32 +233,6 @@ def get_price_usd(sym: str) -> float | None:
     if meta:
         return safe_pos_float(meta.get("regularMarketPrice"), default=None)
     return None
-
-
-def compute_ols_slope_pct(closes, bars: int = 12) -> float | None:
-    """Compute short-term OLS trend slope percentage per bar over the last ``bars`` closes."""
-    if closes is None or isinstance(closes, bool):
-        return None
-    bars_i = safe_int(bars, default=None)
-    bars_n = max(4, bars_i) if bars_i is not None else 12
-    try:
-        clean_closes = [
-            cf for c in closes
-            if (cf := safe_pos_float(c, default=None)) is not None
-        ][-bars_n:]
-    except TypeError:
-        return None
-    if len(clean_closes) < max(4, bars_n // 2):
-        return None
-    n = len(clean_closes)
-    mx = (n - 1) / 2.0
-    my = statistics.fmean(clean_closes)
-    denom = n * (n * n - 1) / 12.0
-    my_f = safe_pos_float(my, default=None)
-    if denom == 0 or my_f is None:
-        return None
-    slope = sum((i - mx) * (clean_closes[i] - my_f) for i in range(n)) / denom
-    return safe_float(slope / my_f * 100.0, default=None)
 
 
 def trend_slope_pct(sym: str, bars: int = 12) -> float | None:

@@ -1148,6 +1148,8 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     def _check_reexport_imports(rel_s: str, node: ast.ImportFrom) -> None:
         lineno = getattr(node, "lineno", 0)
         if node.module == "providers.base" or (rel_s.startswith("providers/") and node.level == 1 and node.module == "base"):
+            if rel_s.startswith(("binance_api/", "kraken/", "hyperliquid/", "212trading/", "market_monitor/")):
+                ssot_violations.append(f"{rel_s}:{lineno}: upward layer import from providers.base")
             bad_names = [a.name for a in node.names if a.name != "MarketDataProvider"]
             if bad_names:
                 ssot_violations.append(f"{rel_s}:{lineno}: legacy re-export import from providers.base: {bad_names}")
@@ -1249,6 +1251,19 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 ssot_violations.append(f"{rel_s}:{lineno}: os.{node.attr}")
             elif isinstance(node, ast.ImportFrom):
                 _check_reexport_imports(rel_s, node)
+            elif isinstance(node, ast.Import) and rel_s.startswith(
+                ("binance_api/", "kraken/", "hyperliquid/", "212trading/", "market_monitor/")
+            ):
+                for alias in node.names:
+                    if alias.name == "providers.base":
+                        ssot_violations.append(f"{rel_s}:{lineno}: upward layer import providers.base")
+            elif (
+                rel_s != "cachepaths.py"
+                and isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value.startswith("cache_ohlc_24h_")
+            ):
+                ssot_violations.append(f"{rel_s}:{lineno}: hardcoded cache_ohlc_24h_ filename prefix")
 
     for extra_dir in ("offline", "verify_tools"):
         for p in sorted((root / extra_dir).rglob("*.py")):
@@ -1460,4 +1475,56 @@ def test_market_monitor_polymorphic_registries_and_soc_split():
     assert ncd.NewCoinsFactory.registered_source_has_price("CoinMarketCap") is True
     assert ncd.NewCoinsFactory.registered_source_has_price("binance") is False
     assert ncd.NewCoinsFactory.registered_source_has_price("dexscreener") is False
+
+
+def test_ohlc_utils_and_ssot_ohlc_24h_bridge_helpers(tmp_path):
+    from cachepaths import cache_ohlc_24h_filename
+    from providers.ohlc_utils import (
+        compute_ols_slope_pct,
+        extract_kraken_ohlc_rows,
+        extract_yahoo_intraday_chart_bars,
+        require_ohlc_symbol,
+    )
+    from providers.ssot_bridge import ProviderSsotBridgeMixin
+    from state_io import save_json_state
+
+    assert cache_ohlc_24h_filename("nvda_us_eq") == "cache_ohlc_24h_NVDA_US_EQ.json"
+    assert cache_ohlc_24h_filename(True) == "cache_ohlc_24h_.json"
+    assert require_ohlc_symbol(" btcusdc ", upper=True) == "BTCUSDC"
+    for bad_sym in (None, True, False, "", "   "):
+        with pytest.raises(ValueError):
+            require_ohlc_symbol(bad_sym, label="pair")
+
+    kr_rows = extract_kraken_ohlc_rows(
+        {"XXBTZUSD": [[100, 1, 2, 1, 1.5], [200, 1.5, 2.5, 1.2, 2.0]], "last": 200},
+        drop_incomplete=True,
+    )
+    assert kr_rows == [[100, 1, 2, 1, 1.5]]
+    assert compute_ols_slope_pct([100.0, 101.0, 102.0, 103.0, 104.0, 105.0], bars=6) > 0.0
+
+    meta, y_bars = extract_yahoo_intraday_chart_bars(
+        {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {"regularMarketPrice": 152.0},
+                        "timestamp": [1700000000, 1700000300],
+                        "indicators": {"quote": [{"close": [150.5, 152.0], "volume": [1000, 1200]}]},
+                    }
+                ]
+            }
+        }
+    )
+    assert meta == {"regularMarketPrice": 152.0}
+    assert y_bars == [(1700000000, 150.5, 1000.0), (1700000300, 152.0, 1200.0)]
+
+    ohlc_file = tmp_path / cache_ohlc_24h_filename("NVDA_US_EQ")
+    save_json_state(
+        str(ohlc_file),
+        {"ts": time.time(), "symbol": "NVDA_US_EQ", "points": [[1700000000000, 150.5, 100.0], [1700000300000, 152.0, 120.0]]},
+    )
+    assert ProviderSsotBridgeMixin.read_ssot_ohlc_24h_closes(
+        ("NVDA_US_EQ",), max_age_sec=300.0, cache_dir_override=str(tmp_path)
+    ) == [150.5, 152.0]
+
 

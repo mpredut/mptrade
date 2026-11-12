@@ -15,7 +15,7 @@ from binance_api.bapi_ws_normalize import (
 )
 from botcore import _parse_bool_flag, normalize_class_name, safe_pos_float
 from instrument_registry import casefold_get
-from providers.base import MarketDataProvider
+from providers.ssot_bridge import ProviderSsotBridgeMixin
 import log  # noqa: F401 -- keep print behavior aligned with the rest of the runtime
 
 ORDER_CACHE_CLASSES = frozenset({"CacheOrderManager"})
@@ -109,8 +109,8 @@ _ws_event_stats: defaultdict[str, int] = defaultdict(int)
 
 def _default_cache_getter(name: str, symbols=None):
     if symbols is not None:
-        return MarketDataProvider.get_ssot_cache_manager(name, symbols=symbols)
-    return MarketDataProvider.get_ssot_cache_manager(name)
+        return ProviderSsotBridgeMixin.get_ssot_cache_manager(name, symbols=symbols)
+    return ProviderSsotBridgeMixin.get_ssot_cache_manager(name)
 
 
 def _persist_ws_execution_report(

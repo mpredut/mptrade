@@ -45,12 +45,12 @@ from cachepaths import (
     cache_path,
     same_canonical_base_asset,
 )
-from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
     aggregate_broker_history_fills,
     extract_broker_history_matches,
     normalize_broker_history_items,
 )
+from providers.ssot_bridge import ProviderSsotBridgeMixin
 from state_io import (
     atomic_write_json,
     cleanup_stale_staging_siblings,
@@ -436,7 +436,7 @@ class T212Client:
         if not by_symbol:
             return
         target_path = str(explicit_path) if explicit_path else str(cache_path(CACHE_T212_TRADE_FILENAME))
-        MarketDataProvider.merge_ssot_fills_cache(target_path, by_symbol)
+        ProviderSsotBridgeMixin.merge_ssot_fills_cache(target_path, by_symbol)
 
     def _hist_matches_from_cache(self, target_oid: str, ttl: float) -> list[tuple[dict, dict | None]]:
         items = self._fresh_hist_cache(ttl)

@@ -20,7 +20,7 @@ from botcore import (
     safe_pos_int,
 )
 from pricewindow import KalmanTrend as _DefaultKalmanTrend
-from cachepaths import cache_path, canonical_base_asset, resolve_cachedb_filepath
+from cachepaths import cache_ohlc_24h_filename, cache_path, canonical_base_asset, resolve_cachedb_filepath
 from instrument_registry import is_equity_symbol, is_symbol_market_open
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
@@ -1097,7 +1097,7 @@ def _load_stitched_24h_ohlc_points(
     disk_fallback_pts: List[List[Any]] = []
     if sym_u and sym_u.replace("_", "").isalnum():
         try:
-            fname = f"cache_ohlc_24h_{sym_u}.json"
+            fname = cache_ohlc_24h_filename(sym_u)
             cpath = (
                 str(resolve_cachedb_filepath(os.path.join(cache_dir, fname)))
                 if cache_dir

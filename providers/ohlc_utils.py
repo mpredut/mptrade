@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 import time
 from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence
 
@@ -16,6 +17,7 @@ from botcore import (
     require_finite_float,
     require_int,
     safe_float,
+    safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -34,14 +36,18 @@ __all__ = [
     "build_price_history_points",
     "candle_interval",
     "candles_to_historical_points",
+    "compute_ols_slope_pct",
     "drop_incomplete_last_bar",
+    "extract_kraken_ohlc_rows",
     "extract_trading_quote_pairs",
     "extract_yahoo_chart_latest_price",
     "extract_yahoo_chart_result_and_quote",
+    "extract_yahoo_intraday_chart_bars",
     "normalize_record",
     "normalize_yahoo_5d_chart_bars",
     "parse_ohlc_interval",
     "parse_ohlc_interval_minutes",
+    "require_ohlc_symbol",
     "require_pos_ohlc_interval",
     "resolve_ohlc_time_window_ms",
     "series_to_historical_points",
@@ -87,6 +93,53 @@ def require_pos_ohlc_interval(symbol: object, interval_min: Any) -> int:
     if interval_i is None:
         raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
     return interval_i
+
+
+def require_ohlc_symbol(symbol: Any, *, label: str = "symbol", upper: bool = False) -> str:
+    """Validate a non-empty string OHLC symbol/pair/coin identifier or raise ``ValueError``."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError(f"invalid {label} ({label} must be a non-empty string): {symbol!r}")
+    cleaned = symbol.strip()
+    return cleaned.upper() if upper else cleaned
+
+
+def extract_kraken_ohlc_rows(result_map: Any, *, drop_incomplete: bool = True) -> list:
+    """Extract the candle list from a Kraken ``result`` map (skipping ``'last'``) and optionally drop the forming tail bar."""
+    if not isinstance(result_map, Mapping):
+        return []
+    key = next((k for k in result_map if k != "last"), None)
+    if not key:
+        return []
+    raw = result_map.get(key)
+    if not isinstance(raw, list):
+        return []
+    return list(raw[:-1]) if _parse_bool_flag(drop_incomplete, True) else list(raw)
+
+
+def compute_ols_slope_pct(closes: Any, bars: int = 12) -> Optional[float]:
+    """Compute short-term OLS trend slope percentage per bar over the last ``bars`` closes."""
+    if closes is None or isinstance(closes, bool):
+        return None
+    bars_i = safe_int(bars, default=None)
+    bars_n = max(4, bars_i) if bars_i is not None else 12
+    try:
+        clean_closes = [
+            cf for c in closes
+            if (cf := safe_pos_float(c, default=None)) is not None
+        ][-bars_n:]
+    except TypeError:
+        return None
+    if len(clean_closes) < max(4, bars_n // 2):
+        return None
+    n = len(clean_closes)
+    mx = (n - 1) / 2.0
+    my = statistics.fmean(clean_closes)
+    denom = n * (n * n - 1) / 12.0
+    my_f = safe_pos_float(my, default=None)
+    if denom == 0 or my_f is None:
+        return None
+    slope = sum((i - mx) * (clean_closes[i] - my_f) for i in range(n)) / denom
+    return safe_float(slope / my_f * 100.0, default=None)
 
 
 def build_price_history_points(
@@ -597,6 +650,88 @@ def extract_yahoo_chart_latest_price(payload: Any, *, decimals: Optional[int] = 
     if val is None:
         return None
     return round(val, decimals) if decimals is not None else val
+
+
+def extract_yahoo_intraday_chart_bars(
+    payload: Any,
+) -> tuple[Optional[dict], list[tuple[Any, float, Optional[float]]]]:
+    """Extract ``(meta, bars)`` from a Yahoo chart payload, pruning off-RTH zero-volume outlier spikes."""
+    result, _, ts, q = extract_yahoo_chart_result_and_quote(payload)
+    if result is None:
+        return None, []
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    closes = q.get("close") if isinstance(q.get("close"), list) else []
+    vols = q.get("volume") if isinstance(q.get("volume"), list) else []
+    bars: list[tuple[Any, float, Optional[float]]] = []
+    for i, (t, c) in enumerate(zip(ts, closes)):
+        t_f = safe_pos_float(t, default=None)
+        c_f = safe_pos_float(c, default=None)
+        if t_f is None or c_f is None:
+            continue
+        raw_v = vols[i] if i < len(vols) else None
+        v_clean = safe_nonneg_float(raw_v, default=None)
+        bars.append((math.trunc(t_f) if t_f.is_integer() else t_f, c_f, v_clean))
+    reg_period = (
+        ((meta.get("currentTradingPeriod") or {}).get("regular") or {})
+        if isinstance(meta.get("currentTradingPeriod"), dict)
+        else {}
+    )
+    reg_start = safe_pos_float(reg_period.get("start"), default=None) if isinstance(reg_period, dict) else None
+    reg_end = safe_pos_float(reg_period.get("end"), default=None) if isinstance(reg_period, dict) else None
+    ref_meta_px = (
+        safe_pos_float(meta.get("regularMarketPrice"), default=None)
+        or safe_pos_float(meta.get("chartPreviousClose"), default=None)
+    )
+    if reg_start is not None and bars:
+        reg_bars = [b for b in bars if reg_start <= b[0] <= (reg_end or math.inf)]
+        cleaned_pre_post = []
+        for idx, b in enumerate(bars):
+            is_outside_reg = b[0] < reg_start or (reg_end is not None and b[0] > reg_end)
+            if is_outside_reg and (b[2] is None or b[2] <= 0.0):
+                ref_px = (
+                    (reg_bars[0][1] if b[0] < reg_start else reg_bars[-1][1])
+                    if reg_bars
+                    else ref_meta_px
+                )
+                if ref_px is not None and ref_px > 0.0 and abs(b[1] - ref_px) / ref_px > 0.01:
+                    near_bars = [
+                        nb for j, nb in enumerate(bars)
+                        if j != idx and abs(nb[0] - b[0]) <= 1800 and b[1] > 0.0 and abs(nb[1] - b[1]) / b[1] <= 0.01
+                    ]
+                    has_session_peer = len(near_bars) >= 2 or any(abs(nb[1] - b[1]) > 1e-9 for nb in near_bars)
+                    if not has_session_peer:
+                        continue
+            cleaned_pre_post.append(b)
+        if cleaned_pre_post:
+            bars = cleaned_pre_post
+    if len(bars) >= 3 and any((b[2] or 0.0) > 0.0 for b in bars):
+        filtered_bars = [bars[0]]
+        for idx in range(1, len(bars) - 1):
+            cur_b = bars[idx]
+            prev_b = filtered_bars[-1]
+            cur_v = cur_b[2]
+            if cur_v is None or cur_v <= 0.0:
+                next_idx = idx + 1
+                while (
+                    next_idx < len(bars) - 1
+                    and (bars[next_idx][2] is None or bars[next_idx][2] <= 0.0)
+                    and abs(bars[next_idx][1] - cur_b[1]) <= 1e-9
+                ):
+                    next_idx += 1
+                next_b = bars[next_idx]
+                if (prev_b[2] or 0.0) > 0.0 or (next_b[2] or 0.0) > 0.0:
+                    p_prev, p_cur, p_next = prev_b[1], cur_b[1], next_b[1]
+                    ref_mid = 0.5 * (p_prev + p_next)
+                    if (
+                        ref_mid > 0.0
+                        and abs(p_prev - p_next) / ref_mid <= 0.025
+                        and abs(p_cur - ref_mid) / ref_mid > 0.025
+                    ):
+                        continue
+            filtered_bars.append(cur_b)
+        filtered_bars.append(bars[-1])
+        bars = filtered_bars
+    return meta, bars
 
 
 def normalize_yahoo_5d_chart_bars(

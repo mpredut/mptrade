@@ -24,13 +24,14 @@ from botcore import (
     safe_pos_float,
 )
 from providers import order_id_context as rc
-from providers.base import MarketDataProvider
+from providers.ssot_bridge import ProviderSsotBridgeMixin
 
 from . import bapi as api, bapi_allorders as apiorders
 from .bapi import _normalize_side
 from .bapi_client import client
 from providers.order_ohlc_utils import (
     compute_post_only_maker_price,
+    is_post_only_cross_refusal,
     resolve_market_flag,
 )
 from providers.quantity import (
@@ -150,7 +151,7 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
         raise SubmissionRefused(reason) from exc
 
     try:
-        weight = safe_pos_float(MarketDataProvider.resolve_order_guard_trade_weight(
+        weight = safe_pos_float(ProviderSsotBridgeMixin.resolve_order_guard_trade_weight(
             symbol, order_type, provider_name="binance", raise_on_error=True), default=None)
     except SubmissionRefused:
         raise
@@ -168,7 +169,7 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     if traded_value is None:
         raise SubmissionRefused("invalid_trade_stats")
 
-    adjusted_qty = MarketDataProvider.compute_order_guard_weight_capped_qty(
+    adjusted_qty = ProviderSsotBridgeMixin.compute_order_guard_weight_capped_qty(
         weight=weight, price=price, required_qty=required_qty,
         available_qty=available_qty, traded_24h_value=traded_value,
     )
@@ -197,7 +198,7 @@ def require_account_cache_for_submit():
     try:
         for _attempt in range(2):
             requested = account_cache_health.require_fresh_account_cache()
-            MarketDataProvider.ensure_ssot_account_cache_readers(requested)
+            ProviderSsotBridgeMixin.ensure_ssot_account_cache_readers(requested)
             confirmed = account_cache_health.require_fresh_account_cache()
             if (requested.order_cache_version, requested.trade_cache_version) == (
                 confirmed.order_cache_version, confirmed.trade_cache_version
@@ -318,7 +319,7 @@ def _step_binance_post_only_price(side: str, price_f: float, symbol: str, target
     return compute_post_only_maker_price(
         side,
         price_f,
-        current_price=MarketDataProvider.read_passive_ssot_current_price(symbol),
+        current_price=ProviderSsotBridgeMixin.read_passive_ssot_current_price(symbol),
         tick_size=tick_size,
         round_price_fn=lambda p: round(p, dec),
     )
@@ -374,7 +375,7 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
     except BinanceAPIException as exc:
         retry_px = (
             _step_binance_post_only_price(side, price_f, symbol, target_client, cache_permit=cache_permit)
-            if post_only_flag and price_f is not None and MarketDataProvider._is_post_only_cross_refusal(exc)
+            if post_only_flag and price_f is not None and is_post_only_cross_refusal(exc)
             else 0.0
         )
         if not (retry_px > 0.0 and retry_px != price_f):

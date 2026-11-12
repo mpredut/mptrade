@@ -40,12 +40,12 @@ from botcore import (  # noqa: E402
 _common_mod = load_local_module(_HERE, "common")
 from cachepaths import split_symbol_assets
 from instrument_registry import casefold_get
-from providers.base import MarketDataProvider
 from providers.ohlc_utils import resolve_ohlc_time_window_ms
 from providers.order_ohlc_utils import (
     compute_post_only_maker_price,
     is_post_only_cross_refusal,
 )
+from providers.ssot_bridge import ProviderSsotBridgeMixin
 from providers.ws_stream import mount_connect_retry
 
 try:
@@ -532,7 +532,7 @@ class HLClient:
             retry_px = compute_post_only_maker_price(
                 "BUY" if is_buy else "SELL",
                 px,
-                current_price=MarketDataProvider.read_passive_ssot_current_price(coin),
+                current_price=ProviderSsotBridgeMixin.read_passive_ssot_current_price(coin),
                 round_price_fn=lambda p: _validate_and_round_order_params(
                     sz, p, sz_d, is_perp=True
                 )[1],

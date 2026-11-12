@@ -19,14 +19,18 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
-    _parse_bool_flag,
     exact_nonneg_int,
     fetch_public_json,
     log,
     safe_nonneg_float,
     safe_pos_float,
 )
-from providers.ohlc_utils import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
+from providers.ohlc_utils import (
+    extract_kraken_ohlc_rows,
+    parse_ohlc_interval_minutes,
+    require_ohlc_symbol,
+    validate_ohlc_candle_bar,
+)
 from kraken.kraken_client import KrakenClient, KrakenError
 
 
@@ -42,9 +46,7 @@ def fetch_ohlc_candles(
     Excludes the final still-forming candle when drop_incomplete is True to ensure
     reproducible historical backtests and avoid lookahead bias.
     """
-    if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
-        raise ValueError(f"invalid pair: {pair!r}")
-    pair = pair.strip()
+    pair = require_ohlc_symbol(pair, label="pair")
     interval = parse_ohlc_interval_minutes(
         interval,
         str_to_min={},
@@ -70,16 +72,7 @@ def fetch_ohlc_candles(
         err_val = data["error"]
         err_msg = ", ".join(str(x) for x in err_val) if isinstance(err_val, (list, tuple)) else str(err_val)
         raise RuntimeError(err_msg)
-    res = data.get("result")
-    if not isinstance(res, dict):
-        return []
-    key = next((k for k in res if k != "last"), None)
-    if not key:
-        return []
-    raw = res[key]
-    if not isinstance(raw, list):
-        return []
-    rows = raw[:-1] if _parse_bool_flag(drop_incomplete, True) else raw
+    rows = extract_kraken_ohlc_rows(data.get("result"), drop_incomplete=drop_incomplete)
     records: list[dict] = []
     for x in rows:
         if isinstance(x, (list, tuple)) and len(x) >= 5:

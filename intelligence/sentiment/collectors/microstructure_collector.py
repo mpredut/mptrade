@@ -31,6 +31,7 @@ from cachepaths import (
     CACHE_ORDERBOOK_DEPTH_PREFIX,
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     CACHE_WHALE_SNAPSHOT_PREFIX,
+    cache_ohlc_24h_filename,
     cache_symbol_variants,
     canonical_base_asset,
     clean_symbol_key,
@@ -877,7 +878,7 @@ def upgrade_tpo_vp_from_ohlc(
         )
         if (len(pts_vp) < 8 or (pts_vp[-1][0] - pts_vp[0][0]) < 18 * 3600 * 1000) and cache_dir and os.path.isdir(cache_dir):
             for c_vp in cache_symbol_variants(sym, include_original=True, include_base=False, quotes=compatible_quote_suffixes(sym)):
-                p_vp = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_ohlc_24h_{c_vp}.json")))
+                p_vp = str(resolve_cachedb_filepath(os.path.join(cache_dir, cache_ohlc_24h_filename(c_vp))))
                 if os.path.exists(p_vp) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
                     cand_vp = [
                         [ts_i, px_f, vol_f]
@@ -1012,7 +1013,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 for sp in _candidate_cache_paths(
                     cachedb_dir,
                     *(Cache24PriceManager.disk_filename_for_symbol(c) for c in cands),
-                    *((f"cache_ohlc_24h_{c}.json" for c in cands) if is_eq_sym else ()),
+                    *((cache_ohlc_24h_filename(c) for c in cands) if is_eq_sym else ()),
                     *(CacheSparsePriceManager.disk_filename_for_symbol(c) for c in cands),
                     *(Cache365PriceManager.disk_filename_for_symbol(c) for c in cands),
                     *(f"cache_365_price_{c}.json" for c in cands),
@@ -1054,7 +1055,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                     continue
                 raw_ser = sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands))
                 if is_eq_sym_load and len(raw_ser) >= 2:
-                    for ohlc24_path in _candidate_cache_paths(cachedb_dir, f"cache_ohlc_24h_{cand}.json"):
+                    for ohlc24_path in _candidate_cache_paths(cachedb_dir, cache_ohlc_24h_filename(cand)):
                         if not os.path.exists(ohlc24_path):
                             continue
                         ohlc24_obj = _rj(ohlc24_path)

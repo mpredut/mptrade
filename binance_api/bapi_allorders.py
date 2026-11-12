@@ -24,7 +24,7 @@ from botcore import (
 )
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
-from providers.base import MarketDataProvider
+from providers.ssot_bridge import ProviderSsotBridgeMixin
 
 
 from .bapi import (
@@ -153,7 +153,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     # Consumer processes read the cache written by the dedicated cacheManager process.
     # Starting a second polling loop here duplicates API traffic and mixes cache logs
     # into callers such as order_retry_worker.
-    cache_order_manager = MarketDataProvider.get_ssot_cache_manager("BinanceOrder")
+    cache_order_manager = ProviderSsotBridgeMixin.get_ssot_cache_manager("BinanceOrder")
     return [
         {
             'orderId': order.get("orderId"),

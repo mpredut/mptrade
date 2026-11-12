@@ -27,6 +27,7 @@ from botcore import (  # noqa: E402
 from providers.ohlc_utils import (  # noqa: E402
     OHLC_INTERVALS_MIN_TO_STR,
     parse_ohlc_interval,
+    require_ohlc_symbol,
     resolve_ohlc_time_window_ms,
     validate_ohlc_candle_bar,
 )
@@ -106,9 +107,7 @@ def fetch_ohlc_candles(
     Returns a list of dicts:
         {"timestamp": int, "open": float, "high": float, "low": float, "close": float}
     """
-    if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
-        raise ValueError(f"invalid coin: {coin!r}")
-    coin = coin.strip()
+    coin = require_ohlc_symbol(coin, label="coin")
     _, interval_str = parse_ohlc_interval(
         interval,
         min_to_str=INTERVALS,

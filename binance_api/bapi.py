@@ -18,11 +18,11 @@ import instrument_registry as sym
 from .bapi_client import client
 from . import bapi_ws
 from providers import order_id_context as rc
-from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
     filter_and_normalize_open_orders,
     iter_expired_open_order_ids,
 )
+from providers.ssot_bridge import ProviderSsotBridgeMixin
 
 load_dotenv()
 
@@ -150,7 +150,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
             order_type.upper(),
             allowed_owners=allowed_owners,
             rc_mod=rc,
-            owner_map_fn=MarketDataProvider.get_accepted_retry_order_owner_map,
+            owner_map_fn=ProviderSsotBridgeMixin.get_accepted_retry_order_owner_map,
             fallback_extract_oid=True,
         )
     except Exception as e:
@@ -163,7 +163,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
 def _cancel_and_resolve(symbol, order_id) -> bool:
     if cancel_order(symbol, order_id):
         try:
-            MarketDataProvider.resolve_accepted_retry_order(symbol, order_id)
+            ProviderSsotBridgeMixin.resolve_accepted_retry_order(symbol, order_id)
         except Exception:
             pass
         return True

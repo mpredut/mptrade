@@ -41,6 +41,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from providers.ohlc_utils import extract_kraken_ohlc_rows, require_ohlc_symbol
 from providers.order_ohlc_utils import get_cached_pair_info as _get_cached_pair_info
 from state_io import parse_json_payload
 from credentials import kraken_credentials
@@ -249,9 +250,7 @@ class KrakenClient:
         self, pair: str, interval: int,
     ) -> tuple[list, tuple]:
         """Return completed OHLC closes and every corresponding close timestamp."""
-        if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
-            raise ValueError("pair must be a non-empty string")
-        pair = pair.strip()
+        pair = require_ohlc_symbol(pair, label="pair")
         if (
             isinstance(interval, (bool, float))
             or interval is None
@@ -262,9 +261,10 @@ class KrakenClient:
         if itv_int is None:
             raise ValueError("interval must be a positive integer")
         itv_sec = itv_int * 60
-        res = self._public("OHLC", {"pair": pair, "interval": itv_int})
-        key = next((key for key in res if key != "last"), None)
-        rows = list(res[key])[:-1] if key and isinstance(res.get(key), list) else []
+        rows = extract_kraken_ohlc_rows(
+            self._public("OHLC", {"pair": pair, "interval": itv_int}),
+            drop_incomplete=True,
+        )
         closes: list[float] = []
         timestamps: list[float] = []
         volumes: list[float] = []

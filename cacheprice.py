@@ -74,6 +74,7 @@ from cachepaths import (
     CACHE_CURRENT_PRICE_TICKS_SOCKET_FILENAME,
     CACHE_SPARSE_PRICE_PREFIX,
     cache_24_price_filename,
+    cache_ohlc_24h_filename,
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
@@ -516,7 +517,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                     try:
                         ohlc24_target = str(
                             resolve_cachedb_filepath(
-                                os.path.join(base_cachedb, f"cache_ohlc_24h_{sym_eq}.json")
+                                os.path.join(base_cachedb, cache_ohlc_24h_filename(sym_eq))
                             )
                         )
                         with generation_file_lock(ohlc24_target):

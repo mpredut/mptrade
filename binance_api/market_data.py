@@ -19,6 +19,7 @@ from providers.ohlc_utils import (
     OHLC_INTERVALS_STR_TO_MIN,
     parse_ohlc_interval,
     parse_ohlc_interval_minutes,
+    require_ohlc_symbol,
     resolve_ohlc_time_window_ms,
     validate_ohlc_candle_bar,
 )
@@ -57,9 +58,7 @@ def fetch_ohlc_candles(
     Returns:
         list[dict] with keys: 'timestamp' (seconds), 'open', 'high', 'low', 'close'
     """
-    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
-        raise ValueError(f"symbol must be a non-empty string: {symbol!r}")
-    sym = symbol.strip().upper()
+    sym = require_ohlc_symbol(symbol, label="symbol", upper=True)
     interval_min, interval_str = parse_ohlc_interval(
         interval,
         min_to_str=INTERVALS_MIN_TO_STR,
