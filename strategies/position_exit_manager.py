@@ -580,11 +580,6 @@ class PositionExitManager:
             "divergence_pct": vol_ratio_to_pct(buf_b - buf_a),
         }
 
-    def _finalize_exit_decision(self, snapshot: PositionSnapshot, decision: ExitDecision) -> ExitDecision:
-        if decision.action == ExitAction.SELL or decision.should_exit:
-            _clear_smart_sl(_clean_symbol_str(snapshot.symbol), snapshot.provider)
-        return decision
-
     def _sl_forced_sell(self, symbol: str, reason: str, **metadata: Any) -> ExitDecision:
         self.sl_bounce_state.pop(symbol, None)
         return ExitDecision(ExitAction.SELL, True, reason, forced=True, metadata=metadata)
@@ -596,9 +591,10 @@ class PositionExitManager:
     def evaluate_stop_loss(
         self, snapshot: PositionSnapshot, custom_threshold: Optional[float] = None,
     ) -> ExitDecision:
-        return self._finalize_exit_decision(
-            snapshot, self._evaluate_stop_loss_core(snapshot, custom_threshold=custom_threshold)
-        )
+        decision = self._evaluate_stop_loss_core(snapshot, custom_threshold=custom_threshold)
+        if decision.action == ExitAction.SELL or decision.should_exit:
+            _clear_smart_sl(_clean_symbol_str(snapshot.symbol), snapshot.provider)
+        return decision
 
     def _prepare_exit_core_inputs(
         self, snapshot: PositionSnapshot, custom_threshold: Optional[float], default_threshold: float,
@@ -813,9 +809,10 @@ class PositionExitManager:
     def evaluate_take_profit(
         self, snapshot: PositionSnapshot, custom_threshold: Optional[float] = None,
     ) -> ExitDecision:
-        return self._finalize_exit_decision(
-            snapshot, self._evaluate_take_profit_core(snapshot, custom_threshold=custom_threshold)
-        )
+        decision = self._evaluate_take_profit_core(snapshot, custom_threshold=custom_threshold)
+        if decision.action == ExitAction.SELL or decision.should_exit:
+            _clear_smart_sl(_clean_symbol_str(snapshot.symbol), snapshot.provider)
+        return decision
 
     def compute_tp_anomaly_pullback(
         self, symbol: str, gain_threshold: float, peak_gain: float, vol_1h: Optional[float] = None,

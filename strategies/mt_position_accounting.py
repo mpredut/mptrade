@@ -374,13 +374,8 @@ def _infer_mt_exit_kind(
         if isinstance(last_exit_kind_map, dict):
             last_exit_kind_map.pop(symbol, None)
         return "SELL"
-    def _mark_stop_exit() -> str:
-        if isinstance(last_exit_kind_map, dict):
-            last_exit_kind_map[symbol] = "STOP"
-        return "STOP"
-
     raw_explicit = (last_exit_kind_map.get(symbol) if isinstance(last_exit_kind_map, dict) else None) or (latest_sell_kind or None)
-    explicit_exit_kind = _mark_stop_exit() if is_stop_exit_kind(raw_explicit) else raw_explicit
+    explicit_exit_kind = "STOP" if is_stop_exit_kind(raw_explicit) else raw_explicit
     if (
         not explicit_exit_kind
         and position_closed_by_sell
@@ -400,7 +395,9 @@ def _infer_mt_exit_kind(
         tol_factor = 1.0 - min(lost_f * 0.25, 0.002)
         sell_px_f = safe_pos_float(sell_price, default=None)
         if sell_px_f is not None and bp_f > 0 and sell_px_f < bp_f * tol_factor and sell_px_f < ref_buy_px * tol_factor:
-            explicit_exit_kind = _mark_stop_exit()
+            explicit_exit_kind = "STOP"
+    if explicit_exit_kind == "STOP" and isinstance(last_exit_kind_map, dict):
+        last_exit_kind_map[symbol] = "STOP"
     return "SELL" if (is_ai_sell and explicit_exit_kind != "STOP") else (explicit_exit_kind or "SELL")
 
 

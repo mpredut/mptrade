@@ -374,17 +374,15 @@ class _LivePairVenue:
                     raise ValueError(f"{kind}:{side} has invalid {err_label}")
                 return val_f
 
-            def _persist_and_raise_recovery_pending(msg: str) -> None:
-                persist_raw(pending)
-                raise _IntentRecoveryPending(f"{kind}:{side} {msg}")
-
             r_started = _pending_ts("recovery_started_at", "recovery timing")
             if r_started is not None and max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC:
                 pending["recovery_state"] = "horizon_exhausted"
                 pending["recovery_horizon_exhausted_at"] = now
-                _persist_and_raise_recovery_pending("recovery horizon is exhausted")
+                persist_raw(pending)
+                raise _IntentRecoveryPending(f"{kind}:{side} recovery horizon is exhausted")
             if pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}:
-                _persist_and_raise_recovery_pending("requires manual reconciliation")
+                persist_raw(pending)
+                raise _IntentRecoveryPending(f"{kind}:{side} requires manual reconciliation")
             n_rec = _pending_ts("next_recovery_at", "next recovery time")
             if n_rec is not None and now < n_rec:
                 raise _IntentRecoveryPending(f"{kind}:{side} reconciliation is not due yet")
@@ -1059,10 +1057,6 @@ class TradingBot:
             completed = True
             return mark_filled(avg_px)
 
-        def _defer_replacement(msg: str):
-            print(f"[{self.symbol}] {msg}")
-            return None
-
         try:
             while True:
                 _touch_rtrade_heartbeat()
@@ -1181,7 +1175,8 @@ class TradingBot:
                         print(f"[{self.symbol}] Cancel {side} order failed. Maybe it was filled :-)? Moving to {opp_side} ...")
                         print(f"[{self.symbol}] Starting urgent {opp_side} follow-up (3)")
                         return _complete_followup(target_qty, getattr(self, filled_attr))
-                    return _defer_replacement(f"Cancel {side} order remains ambiguous; replacement is deferred.")
+                    print(f"[{self.symbol}] Cancel {side} order remains ambiguous; replacement is deferred.")
+                    return None
 
                 sub_f = safe_pos_float(target_qty, default=None)
                 fill_f = safe_nonneg_float(getattr(final_status, "filled_qty", None), default=None)
@@ -1191,7 +1186,8 @@ class TradingBot:
                     else (0.0 if final_status.fully_filled else max(0.0, sub_f - fill_f))
                 )
                 if remaining_qty is None:
-                    return _defer_replacement(f"Invalid final {side} quantity; replacement deferred.")
+                    print(f"[{self.symbol}] Invalid final {side} quantity; replacement deferred.")
+                    return None
                 if remaining_qty <= max(1e-12, target_qty * 1e-9):
                     print(f"[{self.symbol}] {side} filled during cancellation; moving to {opp_side}.")
                     return _complete_followup(target_qty, getattr(self, filled_attr))

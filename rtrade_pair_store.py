@@ -216,12 +216,9 @@ class RTradePairStore:
             return f"{resolve_cachedb_filepath(self.path)}.lock"
         return str(resolve_cachedb_filepath(self.lock_path))
 
-    def _lock_ctx(self):
-        resolved_lock = self._resolved_lock_path()
-        return FileLock(resolved_lock) if resolved_lock else self._mem_lock
-
     def mutate(self, fn):
-        with self._lock_ctx():
+        resolved_lock = self._resolved_lock_path()
+        with (FileLock(resolved_lock) if resolved_lock else self._mem_lock):
             data = self._read()
             pairs = data["pairs"]
             result = fn(pairs)
@@ -353,7 +350,8 @@ class RTradePairStore:
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return []
         sym_key = canonical_symbol_key(symbol)
-        with self._lock_ctx():
+        resolved_lock = self._resolved_lock_path()
+        with (FileLock(resolved_lock) if resolved_lock else self._mem_lock):
             pairs = self._read().get("pairs", {})
         return [
             rec for rec in pairs.values()

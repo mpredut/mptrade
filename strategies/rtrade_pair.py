@@ -453,16 +453,20 @@ class PairCoordinator:
         elif not isinstance(stored_limit_revisions, dict):
             raise ValueError("invalid rtrade checkpoint limit_revisions")
 
-        def _parse_revision(raw_val, label: str) -> int:
-            return 0 if raw_val is None else _parse_nonneg_int(
-                raw_val, max_val=_MAX_LIMIT_REVISION, error_msg=f"invalid {label}: {raw_val}"
-            )
-
         obj.limit_revisions = {
-            side: _parse_revision(stored_limit_revisions.get(side, 0), f"{side} limit revision")
+            side: (
+                0
+                if (rv := stored_limit_revisions.get(side, 0)) is None
+                else _parse_nonneg_int(rv, max_val=_MAX_LIMIT_REVISION, error_msg=f"invalid {side} limit revision: {rv}")
+            )
             for side in ("BUY", "SELL")
         }
-        obj.hard_stop_revision = _parse_revision(state.get("hard_stop_revision", 0), "hard-stop revision")
+        raw_hs_rev = state.get("hard_stop_revision", 0)
+        obj.hard_stop_revision = (
+            0
+            if raw_hs_rev is None
+            else _parse_nonneg_int(raw_hs_rev, max_val=_MAX_LIMIT_REVISION, error_msg=f"invalid hard-stop revision: {raw_hs_rev}")
+        )
         obj.hard_stop_reason = _clean_optional_reason(state.get("hard_stop_reason"), "hard_stop_reason")
         return obj
 

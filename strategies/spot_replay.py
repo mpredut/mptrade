@@ -440,11 +440,6 @@ def _run_once(
                     strategy.s["realized_net"], cycle_net_start, trade_pnls, wins
                 )
 
-        def _current_equity_and_exposure(px: float) -> tuple[float, bool]:
-            q = strategy.s["qty"]
-            upnl = (px - strategy.s["cost"] / q) * q if q > 1e-12 else 0.0
-            return initial_capital + strategy.s["realized_net"] + upnl, q > 1e-12
-
         for bar_index, row in enumerate(ohlc):
             open_, high, low, close = unpack_ohlc_bar(row)
             current_bar = bar_index
@@ -533,9 +528,10 @@ def _run_once(
                         if order["side"] == "buy" and not is_market_order(order) and close > order["price"] * 1.003:
                             strategy._remove(order)
             strategy.step(close, timestamp=replay_time, high=high if intrabar_high else None)
-            eq_val, exp_val = _current_equity_and_exposure(close)
-            equity_curve.append(eq_val)
-            exposure.append(exp_val)
+            q = strategy.s["qty"]
+            upnl = (close - strategy.s["cost"] / q) * q if q > 1e-12 else 0.0
+            equity_curve.append(initial_capital + strategy.s["realized_net"] + upnl)
+            exposure.append(q > 1e-12)
 
         last_close, end_exit_orders = iter_end_of_replay_market_sell_orders(
             ohlc, strategy.s["orders"], strategy.s["qty"]
@@ -556,8 +552,11 @@ def _run_once(
             )
             settled_end_exit = True
         if settled_end_exit:
-            eq_val, exp_val = _current_equity_and_exposure(last_close)
-            overwrite_tail_equity_and_exposure(equity_curve, exposure, eq_val, exp_val)
+            q = strategy.s["qty"]
+            upnl = (last_close - strategy.s["cost"] / q) * q if q > 1e-12 else 0.0
+            overwrite_tail_equity_and_exposure(
+                equity_curve, exposure, initial_capital + strategy.s["realized_net"] + upnl, q > 1e-12
+            )
     finally:
         _strat.notify, _strat.log = original_notify, original_log
 
