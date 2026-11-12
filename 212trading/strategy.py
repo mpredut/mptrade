@@ -27,6 +27,7 @@ from botcore import (  # noqa: E402
     are_close,
     clean_order_id,
     ensure_local_module_priority,
+    first_pos_float,
     is_market_order,
     log as _log,
     normalize_epoch_sec,
@@ -498,11 +499,12 @@ class Strategy(BaseSpotMixin):
             orders=saved_orders,
             **({"pending_submit": saved_pending_submit} if keep_pending_submit else {}),
         )
+        exit_px = first_pos_float(exit_price) or safe_nonneg_float(exit_price, 0.0) or 0.0
         self._seed_post_exit_anchors(
-            exit_price, "STOP" if was_sl else "TP", self._now(), include_sl_low=False
+            exit_px, "STOP" if was_sl else "TP", self._now(), include_sl_low=False
         )
         if was_sl and self.p.sl_rebuy_enabled:
-            self.s["sl_rebuy"] = {"low": exit_price, "sell_price": exit_price}
+            self.s["sl_rebuy"] = {"low": exit_px, "sell_price": exit_px}
             log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss "
                 f"(expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
         log(f"  [STRAT] === cycle closed, restarting (cycle {nxt}) ===")
@@ -990,7 +992,10 @@ class Strategy(BaseSpotMixin):
                 latest = hist_fn(self.ticker, side=side, refresh=True)
                 if isinstance(latest, dict):
                     fill_oid = str(latest.get("orderId") or latest.get("id") or "").strip()
-                    fill_ts_s = normalize_epoch_sec(latest.get("timestamp") or latest.get("time"), None)
+                    fill_ts_s = (
+                        normalize_epoch_sec(latest.get("timestamp"), None)
+                        or normalize_epoch_sec(latest.get("time"), None)
+                    )
                     last_sell_ts = safe_pos_float(self.s.get("last_sell_ts"), None)
                     stale_hist = bool(
                         (fill_oid and fill_oid == str(self.s.get("last_hist_fill_id") or ""))
@@ -1000,10 +1005,13 @@ class Strategy(BaseSpotMixin):
                         latest_any = hist_fn(self.ticker, side=None, refresh=False)
                         if isinstance(latest_any, dict):
                             any_side = str(latest_any.get("side") or "").strip().upper()
-                            any_ts_s = normalize_epoch_sec(latest_any.get("timestamp") or latest_any.get("time"), None)
+                            any_ts_s = (
+                                normalize_epoch_sec(latest_any.get("timestamp"), None)
+                                or normalize_epoch_sec(latest_any.get("time"), None)
+                            )
                             if any_side and any_side != side.upper() and any_ts_s is not None and any_ts_s >= fill_ts_s:
                                 stale_hist = True
-                    fill_qty = safe_pos_float(latest.get("executedQty") or latest.get("qty"), None)
+                    fill_qty = first_pos_float(latest.get("executedQty"), latest.get("qty"))
                     fill_px = safe_pos_float(latest.get("price"), None)
                     if (
                         not stale_hist
@@ -1179,7 +1187,7 @@ class Strategy(BaseSpotMixin):
         if cycle_closed:
             exit_kind = (pending_for_fill or {}).get("kind") if isinstance(pending_for_fill, dict) else None
             self._close_cycle(
-                self.s.get("last_sell_price") or price,
+                first_pos_float(self.s.get("last_sell_price"), price) or price,
                 keep_pending_submit=True,
                 exit_kind=exit_kind,
             )

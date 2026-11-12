@@ -80,12 +80,16 @@ def iter_end_of_replay_market_sell_orders(
     ohlc: list, orders: list[dict], open_qty: float, *, qty_eps: float = 1e-12
 ) -> tuple[float, list[dict]]:
     """Return ``(last_close, eligible_market_sell_orders)`` for end-of-replay settlement."""
-    last_close = require_pos_float(ohlc[-1][3], "last_close")
-    if open_qty <= qty_eps:
+    if not isinstance(ohlc, (list, tuple)) or not ohlc:
+        raise ValueError("ohlc cannot be empty")
+    _, _, _, last_close = unpack_ohlc_bar(ohlc[-1])
+    qty_f = safe_pos_float(open_qty, default=0.0) or 0.0
+    eps_f = safe_nonneg_float(qty_eps, default=1e-12) or 0.0
+    if qty_f <= eps_f:
         return last_close, []
     return last_close, [
-        o for o in list(orders)
-        if is_market_order(o) and str(o.get("side") or "").lower() == "sell"
+        o for o in list(orders or ())
+        if isinstance(o, dict) and is_market_order(o) and normalize_side(o.get("side")) == "SELL"
     ]
 
 

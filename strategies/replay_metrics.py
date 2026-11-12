@@ -16,6 +16,7 @@ from typing import Any
 from botcore import (
     _parse_bool_flag,
     exact_int,
+    exact_nonneg_int,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -590,17 +591,20 @@ def validate_common_backtest_cli_bounds(
     extra_pct_lt_100: Sequence[float] = (),
 ) -> str | None:
     """Validate common backtest CLI numeric bounds, returning an error message or ``None``."""
-    if budget <= 0:
+    if safe_pos_float(budget, default=None) is None:
         return "budget must be > 0"
-    if entry <= 0 or dca <= 0:
+    if safe_pos_float(entry, default=None) is None or safe_pos_float(dca, default=None) is None:
         return "entry and dca must be > 0"
-    if maxdca < 0:
+    if exact_nonneg_int(maxdca, default=None) is None:
         return "maxdca must be >= 0"
-    if fee < 0 or sl < 0 or disc < 0 or any(v < 0 for v in extra_nonneg):
+    if any(safe_nonneg_float(v, default=None) is None for v in (fee, sl, disc, *(extra_nonneg or ()))):
         return f"{pct_label} must be >= 0"
-    if fee >= 100.0 or sl >= 100.0 or disc >= 100.0 or any(v >= 100.0 for v in extra_pct_lt_100):
+    if any(
+        (vf := safe_nonneg_float(v, default=None)) is None or vf >= 100.0
+        for v in (fee, sl, disc, *(extra_pct_lt_100 or ()))
+    ):
         return f"{pct_label} must be < 100"
-    if tp <= 0 or drop <= 0:
+    if safe_pos_float(tp, default=None) is None or safe_pos_float(drop, default=None) is None:
         return "tp and drop must be > 0"
     return None
 

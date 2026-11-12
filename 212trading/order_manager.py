@@ -24,6 +24,7 @@ from botcore import (  # noqa: E402
     clean_order_id,
     clean_upper_token,
     ensure_local_module_priority,
+    first_pos_float,
     log,
     optional_env,
     safe_float,
@@ -116,8 +117,13 @@ def poll_order_until_terminal(client: T212Client, order_id, ticker: str,
     log(f"  [ORDER] status {order_id}: {st or 'UNKNOWN'}")
     if st not in T212_ORDER_TERMINAL:
         return info
-    fq = info.get("filledQuantity") or info.get("quantity") or info.get("orderedQuantity", 0)
-    fp = info.get("fillPrice") or info.get("limitPrice", 0)
+    fq = first_pos_float(
+        info.get("filledQuantity"),
+        info.get("quantity"),
+        info.get("orderedQuantity"),
+        default=0,
+    )
+    fp = first_pos_float(info.get("fillPrice"), info.get("limitPrice"), default=0)
     if st == "FILLED":
         log(f"  [ORDER] ✓ FILLED: {fq} @ {fp} USD")
         notify_px = safe_pos_float(fp, 0.0)

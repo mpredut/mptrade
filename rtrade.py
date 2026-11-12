@@ -17,6 +17,7 @@ from botcore import (
     bind_attr_call,
     exact_int,
     exact_nonneg_int,
+    first_pos_float,
     format_price_log,
     load_dotenv,
     normalize_epoch_sec,
@@ -266,20 +267,19 @@ class _LivePairVenue:
             if fq is not None and fc is not None:
                 implied_px = safe_pos_float(fc / fq, 0.0)
         ticket_price = (
-            safe_pos_float(
-                pending.get("submitted_price") or pending.get("requested_price") or pending.get("price"), 0.0
+            first_pos_float(
+                pending.get("submitted_price"),
+                pending.get("requested_price"),
+                pending.get("price"),
+                implied_px,
             )
-            or implied_px
             or safe_pos_float(self.current_price(), 0.0)
         )
         if ticket_price <= 0:
             raise _IntentRecoveryPending(
                 f"intent {pending.get('kind')}:{pending.get('side')} has an order_id but no available reference price"
             )
-        ticket_qty = (
-            safe_pos_float(pending.get("submitted_qty"), default=None)
-            or safe_pos_float(pending.get("requested_qty"), default=None)
-        )
+        ticket_qty = first_pos_float(pending.get("submitted_qty"), pending.get("requested_qty"))
         if ticket_qty is None:
             raise _IntentRecoveryPending(
                 f"intent {pending.get('kind')}:{pending.get('side')} has an order_id but no valid quantity"

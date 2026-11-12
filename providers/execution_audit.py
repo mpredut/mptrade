@@ -21,6 +21,7 @@ from botcore import (
     _parse_bool_flag,
     clean_order_id,
     clean_order_id_str,
+    first_pos_float,
     float_env,
     lru_dict_put,
     optional_env,
@@ -997,12 +998,11 @@ def _resolve_intent_execution_details(
         if (now_ts - ts_val) > cancel_grace_sec:
             venue_st = "CANCELED_OR_EXPIRED"
     if fill_px is None and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW") and not is_unfilled_resting_limit:
-        fill_px = safe_pos_float(
-            last_hist.get("price")
-            or i.get("requested_price")
-            or i.get("limit_price")
-            or i.get("reference_price"),
-            default=None,
+        fill_px = first_pos_float(
+            last_hist.get("price"),
+            i.get("requested_price"),
+            i.get("limit_price"),
+            i.get("reference_price"),
         )
 
     if matched_open is not None:
@@ -1025,13 +1025,12 @@ def _resolve_intent_execution_details(
     else:
         exec_status = raw_intent_st or "UNKNOWN"
 
-    ref_px = safe_pos_float(
-        i.get("reference_price")
-        or i.get("limit_price")
-        or i.get("requested_price")
-        or last_hist.get("price")
-        or fill_px,
-        default=None,
+    ref_px = first_pos_float(
+        i.get("reference_price"),
+        i.get("limit_price"),
+        i.get("requested_price"),
+        last_hist.get("price"),
+        fill_px,
     )
     if exec_status in ("OPEN_RESTING", *_TERMINAL_CANCEL_STATUSES) and filled_qty <= 0:
         fill_px = None
@@ -1058,10 +1057,9 @@ def _resolve_intent_execution_details(
         else (orig_qty if (orig_qty is not None and exec_status in ("FILLED", "SHADOW_SIMULATED")) else None)
     )
     limit_px = (
-        safe_pos_float(
-            i.get("limit_price")
-            or (matched_open.get("price") if isinstance(matched_open, dict) else None),
-            default=None,
+        first_pos_float(
+            i.get("limit_price"),
+            matched_open.get("price") if isinstance(matched_open, dict) else None,
         )
         if order_type == "LIMIT"
         else None

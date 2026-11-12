@@ -216,6 +216,14 @@ require_pos_float = _bind_required_float("require_pos_float", safe_pos_float, "f
 require_nonneg_float = _bind_required_float("require_nonneg_float", safe_nonneg_float, "finite and non-negative")
 
 
+def first_pos_float(*values: object, default: float | None = None) -> float | None:
+    """Return the first strictly positive finite float among ``values``, skipping None/0/'0'/'0.0'/NaN/Inf/bool."""
+    for val in values:
+        if (parsed := safe_pos_float(val, default=None)) is not None:
+            return parsed
+    return default
+
+
 def require_int(
     val: object, name: str = "value", *, min_value: int | None = None, error_msg: str | None = None
 ) -> int:
@@ -3089,12 +3097,7 @@ def compute_venue_nav_breakdown(
             c_asset_u = str(
                 c.get("asset") or (k_parts[1] if len(k_parts) > 1 and k_parts[1].strip() else c_key or "USD")
             ).strip().upper() or "USD"
-            f_u = (
-                safe_pos_float(c.get("free"), default=None)
-                or safe_pos_float(c.get("free_quote_usd"), default=None)
-                or safe_pos_float(c.get("free_usd"), default=0.0)
-                or 0.0
-            )
+            f_u = first_pos_float(c.get("free"), c.get("free_quote_usd"), c.get("free_usd"), default=0.0) or 0.0
             l_u = safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0
         else:
             f_u = safe_pos_float(c, default=0.0) or 0.0

@@ -16,7 +16,7 @@ from intelligence.macro.calendar_ssot import (
     parse_cited_cvd_usd,
     parse_cited_taker_ratio,
 )
-from botcore import compute_venue_nav_breakdown, safe_nonneg_float
+from botcore import compute_venue_nav_breakdown, first_pos_float, safe_nonneg_float
 from intelligence.macro_sentiment_ssot import (
     coerce_dict_maps,
     compute_cross_asset_regime as _ssot_compute_cross_asset_regime,
@@ -466,7 +466,7 @@ class DeribitOptionsSurfaceEvaluator(MacroTelemetryEvaluatorBase):
         if isinstance(books, list) and books:
             for b in books:
                 if isinstance(b, dict):
-                    u_px = safe_pos_float(b.get("estimated_delivery_price") or b.get("underlying_price"), default=0.0) or 0.0
+                    u_px = first_pos_float(b.get("estimated_delivery_price"), b.get("underlying_price"), default=0.0) or 0.0
                     if u_px > 0.0:
                         spot = u_px
                         break

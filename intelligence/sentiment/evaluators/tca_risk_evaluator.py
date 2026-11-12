@@ -19,6 +19,7 @@ from cachepaths import (
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from botcore import (
     compute_venue_nav_breakdown,
+    first_pos_float,
     normalize_side,
     safe_nonneg_float,
 )
@@ -184,12 +185,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 continue
             sym = str(o.get("symbol") or o.get("pair") or o.get("ticker") or "").strip().upper()
             side = normalize_side(o.get("side")) or str(o.get("side") or "").strip().upper()
-            lim_px = (
-                safe_pos_float(o.get("price"), default=None)
-                or safe_pos_float(o.get("px"), default=None)
-                or safe_pos_float(o.get("limit_price"), default=None)
-                or safe_pos_float(o.get("limit"), default=None)
-            )
+            lim_px = first_pos_float(o.get("price"), o.get("px"), o.get("limit_price"), o.get("limit"))
             if not sym or lim_px is None or lim_px <= 0.0:
                 continue
             v_norm = normalize_venue_name(o.get("venue"))
@@ -214,8 +210,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             p_entry = _lookup_scoped_entry(prices_and_trends)
             m_entry = _lookup_scoped_entry(microstructure)
             spot_px = (
-                safe_pos_float((m_entry or {}).get("ob_mid_price"), default=None)
-                or safe_pos_float((p_entry or {}).get("price"), default=None)
+                first_pos_float((m_entry or {}).get("ob_mid_price"), (p_entry or {}).get("price"))
                 or resolve_symbol_price(scoped_sym, prices_and_trends)
             )
             if spot_px and spot_px > 0.0:
@@ -338,8 +333,8 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
             portfolio_summary.get("hyperliquid_readonly"),
         )
 
-        bn_snap = safe_pos_float(portfolio_summary.get("live_binance_equity_usdc") or portfolio_summary.get("total_value_usdc"), default=0.0) or 0.0
-        hl_snap = safe_pos_float(hl_ro.get("live_reconciled_spot_usd") or hl_ro.get("total_equity_usd"), default=0.0) or 0.0
+        bn_snap = first_pos_float(portfolio_summary.get("live_binance_equity_usdc"), portfolio_summary.get("total_value_usdc"), default=0.0) or 0.0
+        hl_snap = first_pos_float(hl_ro.get("live_reconciled_spot_usd"), hl_ro.get("total_equity_usd"), default=0.0) or 0.0
         nav = compute_venue_nav_breakdown(
             positions=t_pos,
             quote_cash=vq_cash,

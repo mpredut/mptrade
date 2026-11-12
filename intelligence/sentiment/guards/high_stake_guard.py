@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional, Sequence
 
 from botcore import (
     _parse_bool_flag,
+    first_pos_float,
     is_cache_fresh,
     is_gemini_llm_disabled,
     normalize_side,
@@ -253,9 +254,9 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
                 )
                 base_meta = getattr(base_dec, "metadata", None)
                 base_meta = base_meta if isinstance(base_meta, dict) else {}
-                eval_notional = safe_pos_float(
-                    base_meta.get("evaluated_notional_eur") or base_meta.get("notional_eur"),
-                    default=None,
+                eval_notional = first_pos_float(
+                    base_meta.get("evaluated_notional_eur"),
+                    base_meta.get("notional_eur"),
                 )
                 notional_jumped = (
                     max_notional_jump_ratio is not None

@@ -10,7 +10,13 @@ import os
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from botcore import _parse_bool_flag, extract_current_price_item, fetch_public_json, is_live_network_backfill_enabled
+from botcore import (
+    _parse_bool_flag,
+    extract_current_price_item,
+    fetch_public_json,
+    first_pos_float,
+    is_live_network_backfill_enabled,
+)
 from cachepaths import (
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     canonical_base_asset,
@@ -247,14 +253,14 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                             mkt_state = "CLOSED"
                 ext_px = None
                 if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") or not mkt_state:
-                    ext_px = safe_pos_float(meta.get("postMarketPrice") or meta.get("preMarketPrice"), default=None)
+                    ext_px = first_pos_float(meta.get("postMarketPrice"), meta.get("preMarketPrice"))
                     if ext_px is None and reg_time_s is not None and pts and pts[-1][0] > reg_time_s + 60.0:
                         ext_px = pts[-1][1]
-                px = (
-                    safe_pos_float(meta.get("fulldayPrice"), default=None)
-                    or ext_px
-                    or safe_pos_float(meta.get("regularMarketPrice"), default=None)
-                    or (pts[-1][1] if pts else None)
+                px = first_pos_float(
+                    meta.get("fulldayPrice"),
+                    ext_px,
+                    meta.get("regularMarketPrice"),
+                    pts[-1][1] if pts else None,
                 )
                 if px is None:
                     continue

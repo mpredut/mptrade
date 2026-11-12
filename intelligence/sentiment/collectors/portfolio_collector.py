@@ -9,6 +9,7 @@ import time as _time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from botcore import (
+    first_pos_float,
     is_live_network_backfill_enabled,
     load_key_value_conf,
     safe_nonneg_float,
@@ -373,7 +374,7 @@ def _attach_trailing_peak_to_position(
         return
     eff_peak = max(peak_f, px_f) if px_f > 0.0 else peak_f
     dd_pct = (round(((px_f - eff_peak) / eff_peak) * 100.0, 2) + 0.0) if px_f > 0.0 else fallback_dd
-    min_notional_f = max(1.0, safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0))
+    min_notional_f = max(1.0, first_pos_float(pos_entry.get("exchange_min_notional_usd"), pos_entry.get("min_notional_usd"), default=1.0) or 1.0)
     has_held_base = fb_val is None or (fb_val > 1e-8 and (px_f <= 0.0 or fb_val * px_f >= min_notional_f))
     if has_held_base:
         pos_entry["trailing_peak"] = round(eff_peak, 6)
@@ -519,7 +520,7 @@ def _apply_open_orders_locked_balances(
             if prev_inst_limits:
                 pos_entry.update(prev_inst_limits)
             if lb_pos > 1e-8 and "trailing_peak" not in pos_entry and (pend_peak := pending_peaks_by_vs.get((p_v_norm, p_sym_u))) is not None:
-                min_not_pos = max(1.0, safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0))
+                min_not_pos = max(1.0, first_pos_float(pos_entry.get("exchange_min_notional_usd"), pos_entry.get("min_notional_usd"), default=1.0) or 1.0)
                 held_total = (fb_pos or 0.0) + lb_pos
                 if px_pos <= 0.0 or held_total * px_pos >= min_not_pos:
                     pos_entry["trailing_peak"] = pend_peak[0]
@@ -545,12 +546,23 @@ def _merge_audit_orders(primary_list: Any, audit_list: Any) -> List[Dict[str, An
         if a_oid and a_oid in seen_oids:
             continue
         a_side = extract_order_side(ar)
-        a_ts = normalize_timestamp_ms(ar.get("timestamp") or ar.get("time"), default=0) or 0
-        a_qty = safe_pos_float(ar.get("executedQty") or ar.get("qty"), default=0.0) or 0.0
+        a_ts = (
+            normalize_timestamp_ms(ar.get("timestamp"), default=0)
+            or normalize_timestamp_ms(ar.get("time"), default=0)
+            or 0
+        )
+        a_qty = first_pos_float(ar.get("executedQty"), ar.get("qty"), default=0.0) or 0.0
         if a_ts > 0 and a_qty > 0.0 and any(
             extract_order_side(br) == a_side
-            and abs((normalize_timestamp_ms(br.get("timestamp") or br.get("time"), default=0) or 0) - a_ts) <= 60000
-            and abs((safe_pos_float(br.get("executedQty") or br.get("qty"), default=0.0) or 0.0) - a_qty) <= max(1e-5, a_qty * 0.01)
+            and abs(
+                (
+                    normalize_timestamp_ms(br.get("timestamp"), default=0)
+                    or normalize_timestamp_ms(br.get("time"), default=0)
+                    or 0
+                )
+                - a_ts
+            ) <= 60000
+            and abs((first_pos_float(br.get("executedQty"), br.get("qty"), default=0.0) or 0.0) - a_qty) <= max(1e-5, a_qty * 0.01)
             for br in base_rows
         ):
             continue
@@ -1229,9 +1241,9 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                     if matched_cyc is not None:
                         break
                 if isinstance(matched_cyc, dict):
-                    cyc_lb = safe_pos_float(matched_cyc.get("last_buy_price") or matched_cyc.get("entry_price"), default=None)
+                    cyc_lb = first_pos_float(matched_cyc.get("last_buy_price"), matched_cyc.get("entry_price"))
                     cyc_ls = safe_pos_float(matched_cyc.get("last_sell_price"), default=None)
-                    cyc_avg = safe_pos_float(matched_cyc.get("avg_cost_px") or matched_cyc.get("entry_price"), default=None)
+                    cyc_avg = first_pos_float(matched_cyc.get("avg_cost_px"), matched_cyc.get("entry_price"))
                     cyc_qty = safe_nonneg_float(matched_cyc.get("qty"), default=0.0) or 0.0
                     cyc_ls_ts = matched_cyc.get("_last_sell_ts_ms")
                     cyc_lb_ts = matched_cyc.get("_entry_ts_ms")
@@ -1297,7 +1309,7 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                                 p_d.get("free_base") if p_d.get("free_base") is not None else p_d.get("free"),
                                 default=None,
                             )
-                            lb_v = safe_pos_float(p_d.get("locked_base_qty") or p_d.get("locked"), default=0.0) or 0.0
+                            lb_v = first_pos_float(p_d.get("locked_base_qty"), p_d.get("locked"), default=0.0) or 0.0
                             if fb_v is not None:
                                 held_cur_f = fb_v + lb_v
                                 break
@@ -1514,7 +1526,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                             ensure_equity_suffix(t_sym_u),
                             prices_and_trends,
                         )
-                        if (t_avg := safe_pos_float(t_cyc.get("avg_cost_px") or t_cyc.get("entry_price"), default=None)) is not None:
+                        if (t_avg := first_pos_float(t_cyc.get("avg_cost_px"), t_cyc.get("entry_price"))) is not None:
                             t_cyc["cost_usd"] = round(held_c * t_avg, 2)
                             if t_px > 0.0:
                                 t_cyc["pnl_vs_avg_pct"] = t_cyc["dd_pct"] = round(((t_px - t_avg) / t_avg) * 100.0, 2) + 0.0
@@ -1622,7 +1634,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
                     (
                         0.0 <= safe_float(pos.get("value_usd"), -1.0)
                         and (safe_float(pos.get("value_usd"), 0.0) + max(0.0, safe_float(pos.get("locked_base_usd"), 0.0)))
-                        < max(1.0, safe_float(pos.get("exchange_min_notional_usd") or pos.get("min_notional_usd"), 5.0))
+                        < max(1.0, first_pos_float(pos.get("exchange_min_notional_usd"), pos.get("min_notional_usd"), default=5.0) or 5.0)
                     )
                     or (
                         0.0 <= safe_float(pos.get("free_base"), -1.0) <= 1e-8

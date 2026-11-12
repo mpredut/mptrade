@@ -28,6 +28,7 @@ import botcore
 from botcore import (
     clean_scale,
     coerce_dict_maps,
+    first_pos_float,
     is_market_order,
     load_cli_env_stack,
     parse_ratio_or_pct,
@@ -93,10 +94,14 @@ from intelligence.sentiment.evaluators import (
 from intelligence.sentiment.evaluators.microstructure_evaluator import evaluate_microstructure_cycle_deltas
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     clip_open_lots_to_held_qty,
+    parse_venue_cycle_state,
     reconcile_fresh_lots_vwap,
     select_fresh_open_lots,
 )
-from intelligence.sentiment.evaluators.tca_risk_evaluator import VenueFeeAndLimitsEvaluator
+from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+    OpenLimitOrdersTcaEvaluator,
+    VenueFeeAndLimitsEvaluator,
+)
 from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
 from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from kraken import kraken_xstock_watch as xstock_watch, shadow_live as kraken_shadow
@@ -183,9 +188,11 @@ from strategies.replay_metrics import (
     print_single_backtest_report,
     run_cli_single_or_sweep_backtest,
     run_tp_drop_sl_sweep,
+    validate_common_backtest_cli_bounds,
     write_markdown_report,
 )
 from strategies.spot_replay import (
+    iter_end_of_replay_market_sell_orders,
     post_exit_peak_step_scope,
     ratchet_post_exit_peak_sell_price,
     split_warmup_ohlc,
@@ -3404,6 +3411,213 @@ def test_wave21_callable_gates_sre_sibling_structure_audit_zero_qty_and_replay_r
     pc = PriceChecker.__new__(PriceChecker)
     pc._calculate_24h_stats = lambda _s: {"has_data": "false", "error": "empty"}
     assert pc.check_symbol("BTCUSDC") == []
+
+
+def test_wave22_first_pos_float_cli_bounds_replay_end_exit_and_string_zero_fallbacks():
+    # 1. SSOT botcore.first_pos_float skips None, 0, "0", "0.00000000", NaN, Inf, bool, and negative numbers
+    assert first_pos_float(None, 0, "0", "0.00000000", float("nan"), float("inf"), True, -5.0, "125.5") == 125.5
+    assert first_pos_float("0", "0.0", float("nan"), default=3.5) == 3.5
+    assert first_pos_float("0", None) is None
+
+    # 2. validate_common_backtest_cli_bounds rejects NaN, Inf, bool, and fractional maxdca (no fail-open)
+    valid_kw = dict(
+        budget=1000.0,
+        entry=100.0,
+        dca=50.0,
+        maxdca=5,
+        fee=0.25,
+        sl=10.0,
+        disc=0.2,
+        tp=2.0,
+        drop=2.0,
+    )
+    assert validate_common_backtest_cli_bounds(**valid_kw) is None
+    assert validate_common_backtest_cli_bounds(**{**valid_kw, "budget": float("nan")}) == "budget must be > 0"
+    assert validate_common_backtest_cli_bounds(**{**valid_kw, "budget": float("inf")}) == "budget must be > 0"
+    assert validate_common_backtest_cli_bounds(**{**valid_kw, "entry": float("nan")}) == "entry and dca must be > 0"
+    assert validate_common_backtest_cli_bounds(**{**valid_kw, "dca": True}) == "entry and dca must be > 0"
+    assert validate_common_backtest_cli_bounds(**{**valid_kw, "maxdca": True}) == "maxdca must be >= 0"
+    assert validate_common_backtest_cli_bounds(**{**valid_kw, "maxdca": 1.5}) == "maxdca must be >= 0"
+    assert validate_common_backtest_cli_bounds(**{**valid_kw, "fee": float("nan")}) == "fee/sl/disc must be >= 0"
+    assert (
+        validate_common_backtest_cli_bounds(
+            **valid_kw,
+            pct_label="fee/sl/disc/trail",
+            extra_nonneg=(float("nan"),),
+        )
+        == "fee/sl/disc/trail must be >= 0"
+    )
+    assert (
+        validate_common_backtest_cli_bounds(
+            **valid_kw,
+            pct_label="fee/sl/disc/trail",
+            extra_pct_lt_100=(float("inf"),),
+        )
+        == "fee/sl/disc/trail must be < 100"
+    )
+    assert validate_common_backtest_cli_bounds(**{**valid_kw, "tp": float("nan")}) == "tp and drop must be > 0"
+
+    # 3. iter_end_of_replay_market_sell_orders guards empty OHLC, NaN/string-zero open_qty, and non-dict orders
+    with pytest.raises(ValueError, match="ohlc cannot be empty"):
+        iter_end_of_replay_market_sell_orders([], [], 1.0)
+    orders_sample = [
+        None,
+        {"side": " BUY ", "market": True, "vol": 1.0},
+        {"side": " SELL ", "market": "false", "vol": 1.0},
+        {"side": " sell ", "market": "true", "vol": 1.0},
+    ]
+    lc_nan, elig_nan = iter_end_of_replay_market_sell_orders([(100.0, 105.0, 99.0, 102.5)], orders_sample, float("nan"))
+    assert lc_nan == 102.5 and elig_nan == []
+    lc_ok, elig_ok = iter_end_of_replay_market_sell_orders([(100.0, 105.0, 99.0, 102.5)], orders_sample, 0.5)
+    assert lc_ok == 102.5 and len(elig_ok) == 1 and elig_ok[0]["vol"] == 1.0
+
+    # 4. summarize_recent_ai_intents resolves fill_px and ref_px when venue history has string-zero "0.00000000"
+    summarized = summarize_recent_ai_intents(
+        [
+            {
+                "intent_id": "mkt-zero-str",
+                "decision": "BUY",
+                "order_type": "MARKET",
+                "symbol": "BTCUSDC",
+                "venue": "binance",
+                "status": "EXECUTED",
+                "timestamp": 1_700_000_100.0,
+                "requested_price": "64500.0",
+                "limit_price": "0.00000000",
+                "reference_price": "0.00000000",
+                "history": [{"action": "EXECUTED", "price": "0.00000000"}],
+                "execution_payload": {
+                    "orderId": "oid-mkt-1",
+                    "status": "FILLED",
+                    "executedQty": "0.01",
+                    "price": "0.00000000",
+                },
+            },
+            {
+                "intent_id": "mkt-ref-zero-str",
+                "decision": "BUY",
+                "order_type": "MARKET",
+                "symbol": "ETHUSDC",
+                "venue": "binance",
+                "status": "EXECUTED",
+                "timestamp": 1_700_000_110.0,
+                "requested_price": "2000.0",
+                "limit_price": "0.00000000",
+                "reference_price": "0.00000000",
+                "execution_payload": {
+                    "orderId": "oid-mkt-2",
+                    "status": "FILLED",
+                    "executedQty": "1.0",
+                    "cummulativeQuoteQty": "2004.0",
+                    "price": "0.00000000",
+                },
+            },
+        ],
+        "crypto",
+        1_700_000_120.0,
+        lambda _o, **_kw: None,
+    )
+    by_oid = {row["order_id"]: row for row in summarized}
+    assert by_oid["oid-mkt-1"]["fill_px"] == 64500.0
+    assert by_oid["oid-mkt-2"]["fill_px"] == 2004.0
+    assert by_oid["oid-mkt-2"]["slippage_bps"] == 20.0
+
+    # 5. T212Provider.normalize_history_items & rtrade._LivePairVenue._ticket_from_pending string-zero fallbacks
+    grouped_t212 = T212Provider.normalize_history_items(
+        [
+            {
+                "order": {
+                    "id": 777,
+                    "ticker": "NVDA_US_EQ",
+                    "status": "FILLED",
+                    "orderedQuantity": 2.0,
+                    "filledQuantity": "0.00",
+                    "fillPrice": "0.00",
+                    "limitPrice": "132.25",
+                    "dateExecuted": "2026-01-15T15:00:00Z",
+                },
+                "fill": None,
+            }
+        ]
+    )
+    assert "NVDA_US_EQ" in grouped_t212
+    assert grouped_t212["NVDA_US_EQ"][0]["price"] == 132.25
+    assert grouped_t212["NVDA_US_EQ"][0]["qty"] == 2.0
+
+    venue_rt = rtrade._LivePairVenue.__new__(rtrade._LivePairVenue)
+    venue_rt.current_price = lambda: 0.0
+    ticket = venue_rt._ticket_from_pending(
+        {
+            "order_id": "rt-oid-1",
+            "side": "BUY",
+            "kind": "limit_0",
+            "submitted_price": "0.00000000",
+            "requested_price": "61250.0",
+            "submitted_qty": "0.00000000",
+            "requested_qty": "0.02",
+        },
+        "pair-1",
+    )
+    assert ticket is not None and ticket.price == 61250.0 and ticket.qty == 0.02
+
+    # 6. T212 Strategy._close_cycle & portfolio_evaluator.parse_venue_cycle_state string-zero fallbacks
+    t212_strat_mod = load_venue_modules("212trading", "strategy")
+    t212_strat_cls = t212_strat_mod.Strategy
+    st_inst = t212_strat_cls.__new__(t212_strat_cls)
+    st_inst.ticker = "NVDA_US_EQ"
+    st_inst.yahoo_sym = "NVDA"
+    st_inst.ccy = "USD"
+    st_inst.desktop = False
+    st_inst.dry_run = True
+    st_inst.exit_manager = None
+    st_inst.p = SimpleNamespace(sl_rebuy_enabled=True, sl_rebuy_bounce_pct=1.5, tp_ladder=[])
+    st_inst.s = {
+        "cycle": 1,
+        "qty": 0.0,
+        "spent_cash": 0.0,
+        "dca_buys": 0,
+        "entry_price": None,
+        "last_buy_price": None,
+        "last_sell_price": "0.00",
+        "orders": [],
+        "tp_sold_levels": [],
+        "sl_pending": True,
+        "realized_pnl_usd": 0.0,
+        "realized_net_usd": 0.0,
+        "fees_usd": 0.0,
+    }
+    st_inst._now = lambda: 1_700_000_000.0
+    st_inst._save = lambda: None
+    exit_anchor = first_pos_float(st_inst.s.get("last_sell_price"), 140.5) or 140.5
+    st_inst._close_cycle(exit_anchor, exit_kind="SL")
+    assert st_inst.s["sl_rebuy"] == {"low": 140.5, "sell_price": 140.5}
+    assert st_inst.s["last_sell_price"] == 140.5
+
+    cyc_parsed = parse_venue_cycle_state(
+        {
+            "qty": 0.5,
+            "cost_usd": 0.0,
+            "avg_cost": "0.00000000",
+            "avg_cost_px": "62000.0",
+            "pos_peak": "0.0",
+            "trail_peak": "65000.0",
+            "orders": [{"side": "SELL", "px": "0.0", "price": "66000.0", "sz": "0.0", "qty": "0.5", "kind": "TP"}],
+        },
+        "BTCUSDC",
+        {"BTCUSDC": {"price": 63000.0}},
+    )
+    assert cyc_parsed["avg_cost_px"] == 62000.0
+    assert cyc_parsed["pos_peak"] == 65000.0
+    assert cyc_parsed["resting_orders"][0]["px"] == 66000.0
+    assert cyc_parsed["resting_orders"][0]["sz"] == 0.5
+
+    tca_orders = OpenLimitOrdersTcaEvaluator().evaluate(
+        [{"symbol": "BTCUSDC", "venue": "binance", "side": "BUY", "price": "0.0", "limit_price": "60000.0"}],
+        {"BTCUSDC": {"price": 61000.0, "vol_1h_pct": 1.2}},
+        {},
+    )
+    assert "fill_prob_1h_pct" in tca_orders[0]
+
 
 
 

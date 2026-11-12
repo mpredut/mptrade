@@ -21,7 +21,7 @@ from cachepaths import (
 )
 from cacheprice import Cache365PriceManager, CacheSparsePriceManager
 from state_io import read_tail_jsonl_records, resolve_cachedb_filepath
-from botcore import safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_int
+from botcore import first_pos_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_int
 from intelligence.macro_sentiment_ssot import (
     coerce_dict_maps,
     safe_float,
@@ -114,8 +114,8 @@ def _populate_cycle_fallback_recent_order(
     if not uses_cycle_state_files(p_venue):
         return ro
     is_eq_v = is_equity_venue(p_venue)
-    cyc_avg = safe_pos_float(cyc.get("avg_cost_px") or cyc.get("entry_price"), default=0.0) or 0.0
-    cyc_lb = safe_pos_float(cyc.get("last_buy_price") or cyc.get("entry_price"), default=None)
+    cyc_avg = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"), default=0.0) or 0.0
+    cyc_lb = first_pos_float(cyc.get("last_buy_price"), cyc.get("entry_price"))
     cyc_ls = safe_pos_float(cyc.get("last_sell_price"), default=None)
     cyc_ls_ts = cyc_sell_ts_map.get((p_venue, p_sym)) or normalize_timestamp_ms(cyc.get("_last_sell_ts_ms"), default=None)
     cyc_lb_ts = cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or normalize_timestamp_ms(cyc.get("_entry_ts_ms"), default=None)
@@ -400,13 +400,14 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
         raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
         cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
         last_buy_px = st_data.get("last_buy_price") if st_data.get("last_buy_price") is not None else st_data.get("last_open_price")
-        explicit_avg = safe_pos_float(
-            st_data.get("avg_cost") or st_data.get("avg_cost_px") or st_data.get("avg_price"),
-            default=None,
+        explicit_avg = first_pos_float(
+            st_data.get("avg_cost"),
+            st_data.get("avg_cost_px"),
+            st_data.get("avg_price"),
         )
         dca_buys_i = safe_nonneg_int(st_data.get("dca_buys"), default=0)
         single_lot_px = (
-            safe_pos_float(st_data.get("entry_price") or last_buy_px, default=None)
+            first_pos_float(st_data.get("entry_price"), last_buy_px)
             if dca_buys_i == 0
             else None
         )
@@ -419,7 +420,7 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
                 avg_cost = round(cost / qty, avg_decimals)
         elif qty > 1e-12:
             avg_cost = round_opt_px(
-                explicit_avg or st_data.get("entry_price"),
+                first_pos_float(explicit_avg, st_data.get("entry_price")),
                 avg_decimals,
             )
         else:
@@ -438,7 +439,10 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
             "dd_pct": dd_pct,
             "pnl_vs_avg_pct": dd_pct,
         }
-        pos_peak = round_opt_px(st_data.get("pos_peak") or st_data.get("trail_peak"), avg_decimals)
+        pos_peak = round_opt_px(
+            first_pos_float(st_data.get("pos_peak"), st_data.get("trail_peak")),
+            avg_decimals,
+        )
         if pos_peak is not None and qty > 1e-12:
             if px_f > 0 and pos_peak > 0:
                 eff_peak = max(pos_peak, px_f)
@@ -453,7 +457,7 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
         if abs(realized_pnl := safe_float(raw_realized, 0.0) or 0.0) > 1e-9:
             cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
         entry_px_f = safe_pos_float(cyc_entry.get("entry_price"), default=0.0) or 0.0
-        ref_entry_px = safe_pos_float(avg_cost or entry_px_f or cyc_entry.get("last_buy_price"), default=0.0) or 0.0
+        ref_entry_px = first_pos_float(avg_cost, entry_px_f, cyc_entry.get("last_buy_price"), default=0.0) or 0.0
         if realized_pnl < 0.0 and entry_px_f > ref_entry_px:
             ref_entry_px = entry_px_f
         last_sell_px_f = safe_pos_float(cyc_entry.get("last_sell_price"), default=0.0) or 0.0
@@ -470,7 +474,12 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
             cyc_entry["tp_sold_levels"] = tp_sold
         if isinstance((raw_orders := st_data.get("orders")), list) and raw_orders:
             close_orders = [
-                {"side": o.get("side"), "px": o.get("px") or o.get("price") or o.get("limit"), "sz": o.get("sz") or o.get("qty"), "role": o.get("role") or o.get("kind")}
+                {
+                    "side": o.get("side"),
+                    "px": first_pos_float(o.get("px"), o.get("price"), o.get("limit")),
+                    "sz": first_pos_float(o.get("sz"), o.get("qty")),
+                    "role": o.get("role") or o.get("kind"),
+                }
                 for o in raw_orders if isinstance(o, dict)
             ]
             if close_orders:
@@ -1248,7 +1257,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             fb_cur = safe_float(pos.get("free_base"), -1.0)
             lb_cur = safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0
             held_cur = (fb_cur + lb_cur) if fb_cur >= 0.0 else (lb_cur if lb_cur > 0.0 else -1.0)
-            min_notional_f = max(1.0, safe_float(pos.get("exchange_min_notional_usd") or pos.get("min_notional_usd"), 1.0))
+            min_notional_f = max(1.0, first_pos_float(pos.get("exchange_min_notional_usd"), pos.get("min_notional_usd"), default=1.0) or 1.0)
             is_flat_balance = held_cur >= 0.0 and (held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < min_notional_f))
             if is_flat_balance:
                 pos.pop("trailing_peak", None)
@@ -1396,7 +1405,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     cyc.pop("pos_peak", None)
                     cyc.pop("dd_from_peak_pct", None)
                 elif not is_flat_after_exit and cyc_has_open_qty:
-                    cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
+                    cyc_avg = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"), cyc.get("last_buy_price"))
                     set_pos_anchor(
                         pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f,
                         overwrite=(is_equity_venue(p_venue) and cyc.get("avg_cost_px") is not None),
@@ -1428,7 +1437,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         )
                     if pos_px_f > 0.0:
                         cur_pk_c = safe_pos_float(pos.get("trailing_peak"), default=None)
-                        act_avg_c = safe_pos_float(pos.get("active_avg_buy_px") or cyc.get("avg_cost_px") or cyc.get("entry_price"), default=None)
+                        act_avg_c = first_pos_float(pos.get("active_avg_buy_px"), cyc.get("avg_cost_px"), cyc.get("entry_price"))
                         c_entry_c = safe_pos_float(cyc.get("entry_price"), default=None)
                         if (
                             raw_pk_orig is None
@@ -1546,7 +1555,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     prices_and_trends,
                 )
                 if c_px > 0.0:
-                    c_avg = safe_pos_float(cyc.get("avg_cost_px") or cyc.get("entry_price"), default=None)
+                    c_avg = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"))
                     c_entry = safe_pos_float(cyc.get("entry_price"), default=None)
                     c_pk = safe_pos_float(cyc.get("pos_peak"), default=None)
                     c_pk_missing_or_unwarmed = (
@@ -1565,7 +1574,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                             )
                             ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
                             ls_c_ts = safe_pos_int(ls_c_d.get("ts_ms"), default=0) or 0
-                            ls_c_px = (safe_pos_float(cyc.get("last_sell_price") or ls_c_d.get("price"), default=0.0) or 0.0) if ls_c_ts >= oldest_c_ts else 0.0
+                            ls_c_px = (first_pos_float(cyc.get("last_sell_price"), ls_c_d.get("price"), default=0.0) or 0.0) if ls_c_ts >= oldest_c_ts else 0.0
                             ref_pk_anchor_c = max(c_px, c_avg or 0.0, c_entry or 0.0, ls_c_px)
                             if hi_24h_c > 0.0 and not _prices_diverged(ref_pk_anchor_c, hi_24h_c, threshold=0.35):
                                 c_pk = max(

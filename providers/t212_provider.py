@@ -22,6 +22,7 @@ from botcore import (
     _parse_bool_flag,
     clean_upper_token,
     env_values_map,
+    first_pos_float,
     folder_or_env_value,
     normalize_side,
     safe_float,
@@ -332,8 +333,8 @@ class T212Provider(MarketDataProvider):
                 default=0.0,
             )
             side = normalize_side(enriched.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
-            qty = safe_pos_float(enriched.get("filledQuantity"), default=None) or safe_pos_float(abs(raw_qty), default=None)
-            px = safe_pos_float(enriched.get("fillPrice") or enriched.get("limitPrice"), default=None)
+            qty = first_pos_float(enriched.get("filledQuantity"), abs(raw_qty))
+            px = first_pos_float(enriched.get("fillPrice"), enriched.get("limitPrice"))
             ts_ms = enriched.get("_timestamp_ms")
             if qty is None or px is None or ts_ms is None:
                 continue

@@ -40,6 +40,7 @@ from botcore import (
     _parse_bool_flag,
     clean_json_value,
     clean_upper_token,
+    first_pos_float,
     required_bool_env,
     required_float_env,
     safe_float,
@@ -297,8 +298,8 @@ class TrailingCore:
             st.pop("target_exit_qty", None)
         elif action == "REBUY" and filled > 0:
             rb = st.get("rebuy") if isinstance(st.get("rebuy"), dict) else {}
-            submitted_qty = safe_nonneg_float(pending.get("submitted_qty") or rb.get("qty") or 0.0)
-            remaining = max(0.0, safe_nonneg_float(rb.get("qty") or 0.0) - filled)
+            submitted_qty = first_pos_float(pending.get("submitted_qty"), rb.get("qty"), default=0.0) or 0.0
+            remaining = max(0.0, (safe_nonneg_float(rb.get("qty"), 0.0) or 0.0) - filled)
             order_fully_filled = (
                 str(getattr(status, "status", "") or "").lower() == "closed"
                 or (submitted_qty > 0 and filled >= submitted_qty - 1e-6)
@@ -802,10 +803,7 @@ class TrailingAdapterBase:
             _bump_retry(clear_pending=True)
         elif result.outcome == "terminal":
             filled = safe_nonneg_float(getattr(result.status, "filled_qty", 0.0), 0.0)
-            req_qty = safe_nonneg_float(
-                pending.get("submitted_qty") or pending.get("requested_qty") or 0.0,
-                0.0,
-            )
+            req_qty = first_pos_float(pending.get("submitted_qty"), pending.get("requested_qty"), default=0.0) or 0.0
             st_name = str(getattr(result.status, "status", "") or "").lower()
             if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
                 _bump_retry()
