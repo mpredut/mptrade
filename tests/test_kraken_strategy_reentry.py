@@ -1264,7 +1264,3 @@ class TrendOverlayTest(unittest.TestCase):
                 ValueError, "STRAT_TREND_TOPUP",
             ):
                 _make_overlay_strategy(trend_topup=invalid)
-
-
-if __name__ == "__main__":
-    unittest.main()

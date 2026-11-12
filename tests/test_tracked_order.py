@@ -331,7 +331,3 @@ class TrackedOrderLifecycleTest(unittest.TestCase):
         )
         self.assertEqual(res_ok.outcome, "active")
         self.assertEqual([e[0] for e in audited], ["submit_requested", "submit_accepted"])
-
-
-if __name__ == "__main__":
-    unittest.main()

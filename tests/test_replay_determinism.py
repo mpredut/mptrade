@@ -555,7 +555,3 @@ class TestSimClock(unittest.TestCase):
 
     def test_tradeall_backtest_uses_shared_class(self):
         self.assertIs(tb.SimClock, SimClock)
-
-
-if __name__ == "__main__":
-    unittest.main()

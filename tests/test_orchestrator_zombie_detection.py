@@ -402,8 +402,3 @@ class OrchestratorZombieDetectionTest(TempDirTestCase, unittest.IsolatedAsyncioT
             self.assertEqual([h[1] for h in hist], [124.0, 123.62])
             alerts = checker.check_symbol("SPCX")
             self.assertEqual(alerts, [])
-
-
-if __name__ == "__main__":
-    unittest.main()
-

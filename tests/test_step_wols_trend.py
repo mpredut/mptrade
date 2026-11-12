@@ -477,7 +477,3 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertIsNotNone(res.get("vol_1h_pct"))
         self.assertIsNotNone(res.get("adapt_reentry_pct"))
         self.assertIsNotNone(res.get("adapt_dca_pct"))
-
-
-if __name__ == "__main__":
-    unittest.main()

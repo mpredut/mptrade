@@ -351,9 +351,6 @@ class MarketApiLifecycleTest(unittest.TestCase):
             self.api.order_status("ABCUSD", "9")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================
@@ -967,5 +964,3 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     monkeypatch.setattr("botcore.is_live_network_backfill_enabled", lambda: True)
     pts = facade.fetch_historical_ohlc_points("BTCUSDC", 7, interval="1h")
     assert len(pts) == 60
-
-

@@ -263,8 +263,3 @@ class ReaderProcessTrendTest(TempDirTestCase):
         dyn = self.reader.get_short_trend_for_window("TAOUSDC", self.WINDOW)
         self.assertIsNotNone(dyn)
         self.assertFalse(rtrade._trend_too_strong("TAOUSDC"))
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-

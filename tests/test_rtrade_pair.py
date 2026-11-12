@@ -1362,9 +1362,6 @@ class RTradePairStoreTest(TempDirTestCase):
         self.assertEqual(store.active("TAOUSDC"), [])
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

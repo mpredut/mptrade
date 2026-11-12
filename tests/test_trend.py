@@ -601,7 +601,3 @@ class TestUnifiedWeightResolution(unittest.TestCase):
         confirm_lo = res["blocks"][-1][0]
         self.assertGreater(px[confirm_lo], px[-1])
         self.assertLessEqual(res["duration_seconds"] / 3600.0, 152.0)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

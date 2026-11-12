@@ -740,9 +740,6 @@ class T212ClientTransportTest(TempDirTestCase):
             self.assertEqual(len(p1_calls), 1)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

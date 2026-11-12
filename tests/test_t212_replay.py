@@ -899,9 +899,6 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         self.assertEqual(obs_engine._unconfirmed_zero_polls, 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================
@@ -920,8 +917,8 @@ def test_212trading_replay__fx_rates_accepts_scalar_numeric_strings_without_iter
 def test_walk_forward_compare_load_venue_module_registers_sys_modules_before_iter72_s6():
     """[ITER72 #6] walk_forward_compare.load_venue_module registers sys.modules before exec_module."""
     # 6. walk_forward_compare.load_venue_module registers sys.modules before exec_module
-    hl_mod = wfc.load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
-    t212_mod = wfc.load_venue_module("212trading", "replay.py", "t212_wf_replay")
+    hl_mod = wfc.load_venue_replay_module("hyperliquid", "hl_wf_replay")
+    t212_mod = wfc.load_venue_replay_module("t212", "t212_wf_replay")
     assert hasattr(hl_mod, "run_replay")
     assert hasattr(t212_mod, "run_replay")
 
@@ -970,4 +967,3 @@ def test_t212_wave3_fx_principal_translation_shadow_vol_and_ladder_cancel():
     ]
     engine._apply_fill({"side": "BUY", "kind": "DCA", "qty": 1.0, "limit": 95.0, "amount": 95.0}, 1.0, 95.0)
     assert [o for o in engine.s["orders"] if o["side"] == "SELL"] == []
-

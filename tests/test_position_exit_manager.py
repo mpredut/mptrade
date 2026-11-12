@@ -1081,9 +1081,6 @@ class TestPositionReentryManager(unittest.TestCase):
         self.assertEqual(policy.quote_ttl_sec, 30.0)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

@@ -483,9 +483,6 @@ class ShadowLiveTest(TempDirTestCase):
             self.assertEqual(anchor_file.read_text(encoding="utf-8").strip(), "1700000000")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

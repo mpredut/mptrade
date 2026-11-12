@@ -1468,8 +1468,3 @@ class TestSlRebuyEndToEnd(_T212StateFileTestBase):
         s.step(92.0 * 1.02)
         self.assertIsNone(s.s.get("sl_rebuy"))
         self.assertEqual(len(client.placed), n_after_arm + 1)
-
-
-if __name__ == "__main__":
-    unittest.main()
-

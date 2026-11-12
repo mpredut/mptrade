@@ -532,9 +532,6 @@ class QuantityDecisionTest(unittest.TestCase):
         self.assertEqual(decision_dust_req.refuse_reason, "below_min_notional")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

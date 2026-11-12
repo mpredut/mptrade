@@ -639,9 +639,3 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             self.assertEqual(order_guard.resolve_caller_module(None, prefix="AG_OR"), "assetguardian")
             self.assertEqual(order_guard.resolve_caller_module(None, prefix="MT_OR"), "monitortrades")
             self.assertEqual(order_guard.resolve_caller_module(None, prefix="RT_OR"), "rtrade")
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-

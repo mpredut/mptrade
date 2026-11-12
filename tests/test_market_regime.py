@@ -408,9 +408,6 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertEqual(pw.fast_trend_window_for_symbol("TAO_USDC"), 90.0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

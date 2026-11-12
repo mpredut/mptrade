@@ -1209,9 +1209,6 @@ class TestLogicSmall(unittest.TestCase):
             self.assertEqual(trend_state._confirmed_count_up, 1)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================

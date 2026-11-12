@@ -631,9 +631,3 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             )
             self.assertTrue(ok_eth)
             self.assertEqual(reason_eth, "ok")
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-

@@ -527,9 +527,6 @@ class TestWalkForwardFacade(unittest.TestCase):
         mock_dispatch.assert_called_once_with(["--venue", "kraken"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ============================================================================
 # Domain Regressions & Input Hygiene (Targeted Validation)
 # ============================================================================
@@ -1177,4 +1174,3 @@ def test_declarative_venue_replay_and_benchmark_registries():
     assert default_scenarios("unknown_venue") == VENUE_BENCHMARK_SCENARIOS["kraken"]
     _, t212_fee, _ = _build_venue_evaluator("trading212", {"strategy_params": {"fx_fee_pct": 0.15}})
     assert t212_fee == pytest.approx(0.15)
-
