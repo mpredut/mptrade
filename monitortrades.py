@@ -97,18 +97,6 @@ MT_GUARD_WINDOW_DAYS = required_float_env("MT_GUARD_WINDOW_DAYS")
 MT_NOTIFY_ONLY = required_bool_env("MT_NOTIFY_ONLY")
 
 
-def _print_trade_order_counts(header: str, fetch_fn, maxage_trade_s):
-    print(header)
-    days = secondsToDays(maxage_trade_s)
-    for symbol in sym.symbols:
-        print(f"For {symbol}")
-        for side in ("BUY", "SELL"):
-            found = fetch_fn(side, symbol, maxage_trade_s)
-            print(f"get_trade_orders:           Found {len(found)} close '{side}' orders in the last {days} days.")
-        orders = fetch_fn(None, symbol, maxage_trade_s)
-        print(f"get_trade_orders:           Total found {len(orders)} orders in the last {days} days.")
-
-
 _notified_trade_ids = _FifoTradeIdTracker()
 _trades_monitor_initialized = False
 _trades_monitor_warmup_failed_symbols: set[str] = set()
@@ -960,17 +948,6 @@ def _log_sl_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDe
         )
 
 
-def _restore_or_init_sl_bounce(
-    symbol: str, prev_sl_state: dict, bounce_started_f: Optional[float], snapshot: PositionSnapshot, init_if_empty: bool = False
-) -> None:
-    if prev_sl_state:
-        if bounce_started_f is not None and prev_sl_state.get("started_at") != bounce_started_f:
-            prev_sl_state = {**prev_sl_state, "started_at": bounce_started_f}
-        _SL_BOUNCE_STATE[symbol] = prev_sl_state
-    elif init_if_empty:
-        _SL_BOUNCE_STATE[symbol] = _build_sl_bounce_state(snapshot, bounce_started_f)
-
-
 def _execute_stop_loss(
     inst, snapshot: PositionSnapshot, sl_decision: ExitDecision, sbs: float, min_qty: float,
     lost_threshold: float, prev_sl_state: dict, pending_stop: Optional[dict] = None,
@@ -998,7 +975,12 @@ def _execute_stop_loss(
     bounce_started_f = min(cand_bs, current_time_s * 1.0) if cand_bs is not None else None
     if _is_trend_gate_deferred(symbol, inst):
         print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
-        _restore_or_init_sl_bounce(symbol, prev_sl_state, bounce_started_f, snapshot, init_if_empty=True)
+        if prev_sl_state:
+            if bounce_started_f is not None and prev_sl_state.get("started_at") != bounce_started_f:
+                prev_sl_state = {**prev_sl_state, "started_at": bounce_started_f}
+            _SL_BOUNCE_STATE[symbol] = prev_sl_state
+        else:
+            _SL_BOUNCE_STATE[symbol] = _build_sl_bounce_state(snapshot, bounce_started_f)
         _save_mt_state()
         return False
 
@@ -1045,7 +1027,9 @@ def _execute_stop_loss(
         if _is_terminal_dust_refusal(outcome_ctx.get("reason")):
             _SL_BOUNCE_STATE.pop(symbol, None)
         else:
-            _restore_or_init_sl_bounce(symbol, prev_sl_state, bounce_started_f, snapshot)
+            if bounce_started_f is not None and prev_sl_state.get("started_at") != bounce_started_f:
+                prev_sl_state = {**prev_sl_state, "started_at": bounce_started_f}
+            _SL_BOUNCE_STATE[symbol] = prev_sl_state
         _save_mt_state()
     elif outcome_ctx.get("reason") == "trend_deferred":
         _SL_BOUNCE_STATE[symbol] = _build_sl_bounce_state(snapshot, bounce_started_f)
@@ -1496,8 +1480,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     if trade_orders_sell and (not trade_orders_buy or sell_time >= buy_time):
         sell_price_f = safe_pos_float(sell_price, 0.0)
         if sell_price_f <= 0.0:
-            if _verbose:
-                print("No sell_price !!!!!")
+            _verbose and print("No sell_price !!!!!")
             return
         sell_price = sell_price_f
         sell_time_f = normalize_epoch_sec(sell_time, default=None)
@@ -1539,10 +1522,9 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             print(f"(price_decrease_versus_sell: {reentry_snap.sale_drop_pct}%)")
 
         if not current_trend_up:
-            _restore_reentry_state(symbol, prev_reentry_state)
             if _verbose:
                 print("No action taken, because trend is down!")
-            return
+            return _restore_reentry_state(symbol, prev_reentry_state)
 
         reentry_dec = exit_mgr.evaluate_reentry(reentry_snap, custom_drop_pct=gain_threshold)
         if not reentry_dec.should_enter:
@@ -1619,12 +1601,19 @@ def main():
     )
     while True:
         try:
-            _print_trade_order_counts(
-                "ORDER COUNT",
-                lambda side, symbol, age: mkt.get_orders(symbol, side, age),
-                maxage_trade_s,
-            )
-            _print_trade_order_counts("TRADE COUNT", apitrades.get_trade_orders, maxage_trade_s)
+            days = secondsToDays(maxage_trade_s)
+            for header, fetch_fn in (
+                ("ORDER COUNT", lambda side, symbol, age: mkt.get_orders(symbol, side, age)),
+                ("TRADE COUNT", apitrades.get_trade_orders),
+            ):
+                print(header)
+                for symbol in sym.symbols:
+                    print(f"For {symbol}")
+                    for side in ("BUY", "SELL"):
+                        found = fetch_fn(side, symbol, maxage_trade_s)
+                        print(f"get_trade_orders:           Found {len(found)} close '{side}' orders in the last {days} days.")
+                    orders = fetch_fn(None, symbol, maxage_trade_s)
+                    print(f"get_trade_orders:           Total found {len(orders)} orders in the last {days} days.")
             check_and_notify_executed_trades(maxage_trade_s)
         except Exception as _e:
             print(f"[MONITORTRADES] Error in loop pre-checks: {_e}")

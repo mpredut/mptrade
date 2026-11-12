@@ -140,12 +140,9 @@ class StrategyExecutorLifecycleApi:
     def reconciliation_capabilities(self):
         return reconciliation_capabilities_of(self.executor)
 
-    def _require(self, capability: str, operation: str) -> None:
-        if not getattr(self.reconciliation_capabilities(), capability):
-            raise RuntimeError(f"{self.executor.__class__.__name__}: {operation} is unsupported")
-
     def order_by_client_id(self, symbol: str, client_order_id: str, *, provider_name=None):
-        self._require("lookup_by_client_order_id", "order_by_client_id")
+        if not self.reconciliation_capabilities().lookup_by_client_order_id:
+            raise RuntimeError(f"{self.executor.__class__.__name__}: order_by_client_id is unsupported")
         method = getattr(self.executor, "order_by_client_id", None)
         if not callable(method):
             raise RuntimeError(
@@ -157,7 +154,8 @@ class StrategyExecutorLifecycleApi:
         return method(symbol, clean_cid)
 
     def _require_order_id_op(self, cap: str, method_name: str, order_id: str) -> str:
-        self._require(cap, method_name)
+        if not getattr(self.reconciliation_capabilities(), cap):
+            raise RuntimeError(f"{self.executor.__class__.__name__}: {method_name} is unsupported")
         clean_oid = extract_order_id(order_id)
         if not clean_oid:
             raise ProviderError("invalid order_id")

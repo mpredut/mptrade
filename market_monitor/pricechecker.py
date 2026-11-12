@@ -76,20 +76,17 @@ class PriceAlert:
         self.url = "" if isinstance(url, bool) or url is None else str(url)
         self.reference_time = None if isinstance(reference_time, bool) else reference_time
 
-    def _format_timestamp(self, *, iso: bool = False) -> str:
-        ts_f = safe_float(self.timestamp, default=None)
-        if ts_f is not None:
-            try:
-                dt = datetime.fromtimestamp(ts_f)
-                return dt.isoformat() if iso else dt.strftime("%Y-%m-%d %H:%M:%S")
-            except (OSError, OverflowError, ValueError):
-                pass
-        return str(self.timestamp)
-
     def __str__(self) -> str:
         direction = "🚀 RISE" if self.alert_type == "up" else "📉 DROP"
         emoji = "🟢" if self.alert_type == "up" else "🔴"
-        reference_time = self.reference_time if self.reference_time else self._format_timestamp(iso=False)
+        reference_time = self.reference_time
+        if not reference_time:
+            reference_time = str(self.timestamp)
+            if (ts_f := safe_float(self.timestamp, default=None)) is not None:
+                try:
+                    reference_time = datetime.fromtimestamp(ts_f).strftime("%Y-%m-%d %H:%M:%S")
+                except (OSError, OverflowError, ValueError):
+                    pass
         url_line = f"🔗 CoinMarketCap: {self.url}\n" if self.url else ""
         return (
             f"\n{emoji} {direction} {emoji}\n"
@@ -101,7 +98,12 @@ class PriceAlert:
         )
 
     def to_dict(self) -> dict:
-        ts_readable = self._format_timestamp(iso=True)
+        ts_readable = str(self.timestamp)
+        if (ts_f := safe_float(self.timestamp, default=None)) is not None:
+            try:
+                ts_readable = datetime.fromtimestamp(ts_f).isoformat()
+            except (OSError, OverflowError, ValueError):
+                pass
         return {
             "symbol": self.symbol,
             "alert_type": self.alert_type,

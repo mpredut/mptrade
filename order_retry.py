@@ -459,7 +459,9 @@ def enqueue(
         "last_failure_reason": str(failure_reason) if failure_reason is not None else None,
         "ttl_started_ts": cts, "revision": 0, "lifecycle": lifecycle,
     }
-    _assign_record_ttl(rec, cts, custom_ttl)
+    if custom_ttl is not None:
+        rec["ttl_sec"] = custom_ttl
+        rec["expires_at_ts"] = cts + custom_ttl
     if lifecycle == "awaiting_cancel":
         rec["replaces_order_id"] = clean_rep_oid
         rec["replaces_original_qty"] = replaces_original_qty
@@ -553,7 +555,12 @@ def enqueue(
                     e["intent_id"] = str(intent_id or e.get("intent_id") or f"outbox-{e.get('id', record_id)}")
                     e["kind"] = None if kind is None else str(kind)
                     e["lifecycle"] = "submit_pending"
-                    _assign_record_ttl(e, cts, custom_ttl, clear_if_none=True)
+                    if custom_ttl is not None:
+                        e["ttl_sec"] = custom_ttl
+                        e["expires_at_ts"] = cts + custom_ttl
+                    else:
+                        e.pop("ttl_sec", None)
+                        e.pop("expires_at_ts", None)
                     e.pop("order_id", None)
                     _set_safe_to_discard(
                         e,
@@ -641,15 +648,6 @@ def _matches_exact_claim(record: dict, claim_snapshot: dict, snapshot_client_id:
 def _set_record_qty(rec: dict, qty: float) -> None:
     rec["qty"] = qty
     rec["requested_qty_total"] = safe_nonneg_float(rec.get("delivered_qty"), default=0.0) + qty
-
-
-def _assign_record_ttl(rec: dict, cts: float, custom_ttl: Optional[float], *, clear_if_none: bool = False) -> None:
-    if custom_ttl is not None:
-        rec["ttl_sec"] = custom_ttl
-        rec["expires_at_ts"] = cts + custom_ttl
-    elif clear_if_none:
-        rec.pop("ttl_sec", None)
-        rec.pop("expires_at_ts", None)
 
 
 def _apply_claim_qty_and_scale(record: dict, existing: list, qty=None, applied_scale=None) -> dict:
@@ -948,17 +946,6 @@ def _append_order_history(rec, *, observed_at, status=None):
     rec["order_history"] = history[-20:]
 
 
-def _assign_revision_client_order_id(rec: dict, revision: int, *, overwrite: bool) -> None:
-    placement = dict(rec.get("place_kwargs") or {})
-    pfx = rec.get("prefix") or placement.get("prefix") or "OR"
-    coid = _client_order_id(rec.get("id", ""), revision, prefix=pfx)
-    if overwrite:
-        placement["client_order_id"] = coid
-    else:
-        placement.setdefault("client_order_id", coid)
-    rec["place_kwargs"] = placement
-
-
 def claim(ids, now=None, lease_sec=None):
     """Lease entries without removing them, making crash recovery deterministic."""
     if ids is None or isinstance(ids, (str, bytes, bool)) or not (ids := {i for i in ids if not isinstance(i, bool) and i}):
@@ -974,7 +961,10 @@ def claim(ids, now=None, lease_sec=None):
             if rec.get("id") not in ids or safe_float(rec.get("claim_until"), default=0.0) > now:
                 continue
             revision = max(0, exact_int(rec.get("revision"), 0))
-            _assign_revision_client_order_id(rec, revision, overwrite=False)
+            placement = dict(rec.get("place_kwargs") or {})
+            pfx = rec.get("prefix") or placement.get("prefix") or "OR"
+            placement.setdefault("client_order_id", _client_order_id(rec.get("id", ""), revision, prefix=pfx))
+            rec["place_kwargs"] = placement
             rec["revision"] = revision
             rec["claim_token"] = token
             rec["claim_until"] = now + lease_f
@@ -1013,16 +1003,14 @@ def complete_claim(
     with _locked_queue() as existing:
         remaining = []
         for rec in existing:
-            if rec.get("id") != claimed.get("id") or rec.get("claim_token") != claimed.get("claim_token"):
-                remaining.append(rec)
-                continue
             claimed_client_id = _record_client_order_id(claimed)
-            same_revision = (
-                exact_int(rec.get("revision"), 0) == exact_int(claimed.get("claim_revision"), -1)
-                and claimed_client_id is not None
-                and _record_client_order_id(rec) == claimed_client_id
-            )
-            if not same_revision:
+            if (
+                rec.get("id") != claimed.get("id")
+                or rec.get("claim_token") != claimed.get("claim_token")
+                or exact_int(rec.get("revision"), 0) != exact_int(claimed.get("claim_revision"), -1)
+                or claimed_client_id is None
+                or _record_client_order_id(rec) != claimed_client_id
+            ):
                 remaining.append(rec)
                 continue
             changed = True
@@ -1098,7 +1086,10 @@ def complete_claim(
                 rec["submission_state"] = "refused"
                 for key in _TERMINAL_RESET_KEYS:
                     rec.pop(key, None)
-                _assign_revision_client_order_id(rec, revision, overwrite=True)
+                placement = dict(rec.get("place_kwargs") or {})
+                pfx = rec.get("prefix") or placement.get("prefix") or "OR"
+                placement["client_order_id"] = _client_order_id(rec.get("id", ""), revision, prefix=pfx)
+                rec["place_kwargs"] = placement
             elif outcome == "failure":
                 prev_attempts = max(
                     max(0, exact_int(rec.get("attempts"), 0)),

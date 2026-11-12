@@ -815,20 +815,12 @@ class MarketRegimeService:
         return decision, observed_at, continuous
 
     @classmethod
-    def _resolve_horizon_window(cls, horizon="short", interval_min=None):
-        if interval_min is not None:
-            interval_min = cls._validate_positive_interval(interval_min, "the regime interval must be positive")
-        parsed = MarketRegimeHorizon.parse(horizon)
-        configured_interval, window_seconds = _HORIZON_SOURCES[parsed][0]
-        interval = configured_interval if interval_min is None else interval_min
-        return parsed, interval, window_seconds
-
-    @classmethod
     def horizon_sample_capacity(cls, horizon="short", interval_min=None) -> int:
         """Return the maximum samples in the canonical horizon window."""
-        _parsed, interval, window_seconds = cls._resolve_horizon_window(
-            horizon, interval_min=interval_min
-        )
+        if interval_min is not None:
+            interval_min = cls._validate_positive_interval(interval_min, "the regime interval must be positive")
+        configured_interval, window_seconds = _HORIZON_SOURCES[MarketRegimeHorizon.parse(horizon)][0]
+        interval = configured_interval if interval_min is None else interval_min
         return max(3, safe_pos_int(math.ceil(window_seconds / (interval * 60.0)), default=3) or 3)
 
     _EVAL_CLOSES_CACHE: OrderedDict = OrderedDict()
@@ -838,9 +830,11 @@ class MarketRegimeService:
     def evaluate_closes_for_horizon(self, closes, *, horizon="short",
                                     interval_min=None) -> MarketRegimeDecision:
         """Classify supplied closes with the canonical window for one horizon."""
-        parsed, interval, window_seconds = self._resolve_horizon_window(
-            horizon, interval_min=interval_min
-        )
+        if interval_min is not None:
+            interval_min = self._validate_positive_interval(interval_min, "the regime interval must be positive")
+        parsed = MarketRegimeHorizon.parse(horizon)
+        configured_interval, window_seconds = _HORIZON_SOURCES[parsed][0]
+        interval = configured_interval if interval_min is None else interval_min
         return self._annotate(
             self.evaluate_closes(
                 closes, interval_min=interval, window_seconds=window_seconds,

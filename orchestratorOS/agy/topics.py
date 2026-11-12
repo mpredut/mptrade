@@ -116,18 +116,6 @@ def get_topic_canonical_titles(registry_path: Optional[str] = None) -> Dict[str,
     return out
 
 
-def _apply_and_mirror_topic_title(base: str, cid: str, title: str) -> None:
-    try:
-        bot_row = read_summary_row(base, cid)
-        if bot_row is not None:
-            upsert_ui_visible_summary(base, bot_row, title)
-        else:
-            write_annotation_title(base, cid, title)
-    except OSError:
-        pass
-    mirror_topic_thread_to_ui(cid, title, bot_cli_base=base)
-
-
 def sync_all_topic_titles(
     cli_base: Optional[str] = None,
     registry_path: Optional[str] = None,
@@ -184,7 +172,15 @@ def sync_all_topic_titles(
                 except OSError:
                     pass
             continue
-        _apply_and_mirror_topic_title(base, cid, canonical)
+        try:
+            bot_row = read_summary_row(base, cid)
+            if bot_row is not None:
+                upsert_ui_visible_summary(base, bot_row, canonical)
+            else:
+                write_annotation_title(base, cid, canonical)
+        except OSError:
+            pass
+        mirror_topic_thread_to_ui(cid, canonical, bot_cli_base=base)
         updated += 1
     if changed_reg:
         save_topic_registry(reg, registry_path)
@@ -436,4 +432,12 @@ def record_topic_turn(
     reg[resolved] = entry
     save_topic_registry(reg, registry_path)
     if active_cid:
-        _apply_and_mirror_topic_title(base, active_cid, spec.title)
+        try:
+            bot_row = read_summary_row(base, active_cid)
+            if bot_row is not None:
+                upsert_ui_visible_summary(base, bot_row, spec.title)
+            else:
+                write_annotation_title(base, active_cid, spec.title)
+        except OSError:
+            pass
+        mirror_topic_thread_to_ui(active_cid, spec.title, bot_cli_base=base)
