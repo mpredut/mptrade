@@ -20,8 +20,13 @@ from intelligence.macro_sentiment_ssot import load_cached_sentiment_advisor_eval
 import order_guard as _og
 import pricewindow as pw
 
+from cacheInterface import CacheManagerInterface
 from cacheaccount import get_asset_value_manager
-from cacheprice import get_24_price_manager
+from cacheprice import (
+    get_24_price_manager,
+    request_stop_price_ws_streams,
+    stop_price_ws_streams,
+)
 import cachetrend as cm
 from instrument_registry import casefold_get, symbols_for
 
@@ -1655,24 +1660,29 @@ def run_forever():
         symbols=list(TRACKED_SYMBOLS),
         intervals={"check_interval": CHECK_INTERVAL_SECONDS},
     )
-    while not _STOP_EVENT.is_set():
-        try:
-            evaluate_and_maybe_sell_or_buy(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
-        except Exception as e:
-            print(f" Runtime ERROR: {e}")
-        if _STOP_EVENT.is_set():
-            break
-        sleep_seconds = _next_check_seconds()
-        touch_module_heartbeat(
-            "assetguardian",
-            interval_sec=30.0,
-            symbols=list(TRACKED_SYMBOLS),
-            intervals={"check_interval": sleep_seconds},
-        )
-        # Flushing at the cycle boundary publishes all preceding lines when stdout
-        # is redirected by flota_start.sh, preventing a quiet bot from appearing stale.
-        print(f"[DEBUG] sleep {sleep_seconds}s before next cycle", flush=True)
-        _STOP_EVENT.wait(safe_nonneg_float(sleep_seconds, default=CHECK_INTERVAL_SECONDS))
+    try:
+        while not _STOP_EVENT.is_set():
+            try:
+                evaluate_and_maybe_sell_or_buy(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
+            except Exception as e:
+                print(f" Runtime ERROR: {e}")
+            if _STOP_EVENT.is_set():
+                break
+            sleep_seconds = _next_check_seconds()
+            touch_module_heartbeat(
+                "assetguardian",
+                interval_sec=30.0,
+                symbols=list(TRACKED_SYMBOLS),
+                intervals={"check_interval": sleep_seconds},
+            )
+            # Flushing at the cycle boundary publishes all preceding lines when stdout
+            # is redirected by flota_start.sh, preventing a quiet bot from appearing stale.
+            print(f"[DEBUG] sleep {sleep_seconds}s before next cycle", flush=True)
+            _STOP_EVENT.wait(safe_nonneg_float(sleep_seconds, default=CHECK_INTERVAL_SECONDS))
+    finally:
+        request_stop_price_ws_streams()
+        CacheManagerInterface.shutdown_all_instances(timeout=0.8)
+        stop_price_ws_streams(time.monotonic() + 1.0)
 
 
 if __name__ == "__main__":

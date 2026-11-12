@@ -654,6 +654,7 @@ if __name__ == "__main__":
     except Exception as _ws_init_err:
         print(f"[cacheManager] Warning pre-attaching price WS: {_ws_init_err}")
 
+    _singleton_stagger_idx = 0
     for name, config in CacheFactory._CONFIG.items():
         if _parse_bool_flag(config.get("read_only"), default=False):
             continue
@@ -672,11 +673,33 @@ if __name__ == "__main__":
         )
 
         if isinstance(cache, dict):
-            for idx, manager in enumerate(cache.values()):
+            _mgr_list = list(cache.values())
+            _mgr_total = max(1, len(_mgr_list))
+            _base_offset = (
+                1.35
+                if name == "24Price"
+                else (2.25 if name == "365Price" else 5.15)
+            )
+            _span_sec = min(interval * 0.85, max(2.0, interval - 3.0))
+            for idx, manager in enumerate(_mgr_list):
                 if name == "365Price":
                     manager._maint_stagger_sec = idx * 300.0
+                if name != "CurrentPrice" and interval >= 10.0:
+                    manager._initial_sync_delay_sec = round(
+                        min(
+                            interval * 0.9,
+                            _base_offset + (idx * _span_sec) / _mgr_total,
+                        ),
+                        3,
+                    )
                 threads.append(manager.periodic_sync(interval, save_state=True))
         else:
+            if name != "CurrentPrice" and interval >= 10.0:
+                cache._initial_sync_delay_sec = round(
+                    min(interval * 0.5, 0.45 + _singleton_stagger_idx * 0.65),
+                    3,
+                )
+                _singleton_stagger_idx += 1
             threads.append(cache.periodic_sync(interval, save_state=True))
         CacheFactory._sync_started.add(name)
 

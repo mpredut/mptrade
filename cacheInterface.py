@@ -524,6 +524,9 @@ class CacheManagerInterface(ABC):
         """Hook invoked under ``self.lock`` to filter reloaded snapshot items."""
         return items
 
+    def _after_state_persisted(self) -> None:
+        """Hook invoked after ``_save_state_to_file_impl`` releases ``self.lock``."""
+
     def _should_compact_before_append_locked(self) -> bool:
         """Return whether ``_save_jsonl_append`` should compact because memory shrank."""
         return any(
@@ -806,15 +809,22 @@ class CacheManagerInterface(ABC):
             return self._log_cache_file_error(
                 "While saving the cache file", e, suffix=" / .tmp "
             )
+        finally:
+            try:
+                self._after_state_persisted()
+            except Exception as post_err:
+                self._log_cache_file_error("post-save hook", post_err)
 
     def _save_state_to_file_impl(self) -> bool:
         with self.lock:
             persisted_max_ts = self._persisted_max_ts()
+            pre_commit_merged = False
             if (
                 not self.append_persist
                 and self._mem_max_ts() > self._last_disk_sync_max_ts
             ):
                 self._before_snapshot_commit_locked(persisted_max_ts)
+                pre_commit_merged = True
             if persisted_max_ts > self._mem_max_ts():
                 builtins.print(
                     f"[{self.cls_name}][resync] file newer than memory -> "
@@ -824,7 +834,8 @@ class CacheManagerInterface(ABC):
                 return False
             if self.append_persist:
                 return self._save_jsonl_append()
-            self._before_snapshot_commit_locked(persisted_max_ts)
+            if not pre_commit_merged:
+                self._before_snapshot_commit_locked(persisted_max_ts)
             metadata = self._build_basic_meta_locked(sanitize_cursor=True)
             payload = {
                 "items": self.cache,
@@ -1346,7 +1357,16 @@ class CacheManagerInterface(ABC):
 
             def run():
                 first_wait = safe_nonneg_float(self.sync_ts, default=0.0) or 0.0
-                if self._first_sleep and self._stop_event.wait(first_wait):
+                init_delay = (
+                    safe_nonneg_float(
+                        getattr(self, "_initial_sync_delay_sec", 0.0), default=0.0
+                    )
+                    or 0.0
+                )
+                if init_delay > 0.0:
+                    if self._stop_event.wait(init_delay):
+                        return
+                elif self._first_sleep and self._stop_event.wait(first_wait):
                     return
                 maint_stagger = (
                     safe_nonneg_float(

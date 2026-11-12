@@ -3517,5 +3517,109 @@ def test_equity_rth_cadence_and_future_tick_hygiene(tmp_path, monkeypatch):
         cpm_prod.shutdown(timeout=1.0)
 
 
+def test_c24_nonblocking_ws_tick_during_snapshot_save_and_assetguardian_shutdown(tmp_path):
+    """Verify Cache24PriceManager.on_price_update never blocks WS threads during save_state_to_file, deduplicates _before_snapshot_commit_locked, honors _initial_sync_delay_sec, and assetguardian.run_forever shuts down WS streams."""
+    c24_path = tmp_path / "cache_24_price_BTCUSDC.json"
+    c24 = cacheprice.Cache24PriceManager(
+        30,
+        ["BTCUSDC"],
+        str(c24_path),
+        data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+    )
+    base_ms = int(time.time() * 1000) - 5_000
+    c24.on_price_update("BTCUSDC", base_ms, 70000.0)
+
+    notified = []
+
+    class _FastSub:
+        def on_price_update(self, symbol, ts_ms, price):
+            notified.append((symbol, ts_ms, price))
+
+    c24.subscribe_price(_FastSub())
+
+    real_atomic_write = cacheprice.atomic_write_json
+    ws_elapsed_sec = []
+    cache_len_mid_save = []
+    before_commit_calls = []
+    orig_before_commit = c24._before_snapshot_commit_locked
+
+    def _tracked_before_commit(persisted_max_ts):
+        before_commit_calls.append(persisted_max_ts)
+        return orig_before_commit(persisted_max_ts)
+
+    c24._before_snapshot_commit_locked = _tracked_before_commit
+
+    def _slow_atomic_write(path, payload, indent=None):
+        if path == str(c24_path):
+            def _push_ws_ticks():
+                t0 = time.monotonic()
+                # Out-of-order tick must be ignored while contended
+                c24.on_price_update("BTCUSDC", base_ms - 100, 69900.0)
+                c24.on_price_update("BTCUSDC", base_ms + 1000, 70100.0)
+                c24.on_price_update("BTCUSDC", base_ms + 2000, 70200.0)
+                ws_elapsed_sec.append(time.monotonic() - t0)
+
+            ws_thread = threading.Thread(target=_push_ws_ticks)
+            ws_thread.start()
+            ws_thread.join(timeout=1.0)
+            assert not ws_thread.is_alive()
+            cache_len_mid_save.append(len(c24.cache["BTCUSDC"]))
+        return real_atomic_write(path, payload, indent=indent)
+
+    with patch.object(cacheprice, "atomic_write_json", side_effect=_slow_atomic_write):
+        assert c24.save_state_to_file() is True
+
+    # WS thread returned immediately (<50ms) and notified subscriber in real time
+    assert len(ws_elapsed_sec) == 1 and ws_elapsed_sec[0] < 0.05
+    assert notified == [
+        ("BTCUSDC", base_ms + 1000, 70100.0),
+        ("BTCUSDC", base_ms + 2000, 70200.0),
+    ]
+    # Snapshot written to disk was not mutated mid-commit, and _before_snapshot_commit_locked ran only once
+    assert cache_len_mid_save == [1]
+    assert len(before_commit_calls) == 1
+    disk_doc = json.loads(c24_path.read_text(encoding="utf-8"))
+    assert disk_doc["items"]["BTCUSDC"] == [[base_ms, 70000.0]]
+    # Deferred ticks drained into c24.cache immediately after save_state_to_file released self.lock
+    assert c24.cache["BTCUSDC"] == [
+        [base_ms, 70000.0],
+        [base_ms + 1000, 70100.0],
+        [base_ms + 2000, 70200.0],
+    ]
+
+    # _initial_sync_delay_sec delays first periodic_sync iteration cleanly and stops immediately on shutdown
+    c24_stagger = cacheprice.Cache24PriceManager(
+        30,
+        ["BTCUSDC"],
+        str(tmp_path / "cache_24_stagger.json"),
+        data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+    )
+    c24_stagger._initial_sync_delay_sec = 5.0
+    stagger_saves = []
+    with patch.object(c24_stagger, "_persist_periodic_state", side_effect=lambda sc: stagger_saves.append(sc)):
+        c24_stagger.periodic_sync(30, save_state=True)
+        time.sleep(0.05)
+        assert stagger_saves == []
+        assert c24_stagger.shutdown(timeout=1.0) is True
+
+    # assetguardian.run_forever cleans up lazily-started WS streams on exit
+    import assetguardian as ag
+    stop_calls = []
+    try:
+        with (
+            patch.object(ag.signal, "signal"),
+            patch.object(ag, "evaluate_and_maybe_sell_or_buy", side_effect=lambda **kw: ag._STOP_EVENT.set()),
+            patch.object(ag, "touch_module_heartbeat"),
+            patch.object(ag, "request_stop_price_ws_streams", side_effect=lambda: stop_calls.append("req")),
+            patch.object(ag.CacheManagerInterface, "shutdown_all_instances", side_effect=lambda timeout=5.0: stop_calls.append("cm")),
+            patch.object(ag, "stop_price_ws_streams", side_effect=lambda dl: stop_calls.append("stop")),
+        ):
+            ag.run_forever()
+    finally:
+        ag._STOP_EVENT.clear()
+    assert stop_calls == ["req", "cm", "stop"]
+
+
+
 
 

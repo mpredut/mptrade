@@ -184,6 +184,10 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
             raise TypeError("Cannot instantiate abstract class CachePriceManagerBase")
         self._current_price_getter = current_price_getter
         self._current_price_mgr = current_price_mgr
+        self._subscribers_lock = threading.Lock()
+        self._deferred_ticks_lock = threading.Lock()
+        self._deferred_price_ticks: deque = deque(maxlen=4096)
+        self._last_accepted_tick_ts_ms: dict[str, int] = {}
         self._price_subscribers = []
         super().__init__(*args, **kwargs)
 
@@ -191,7 +195,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
 
     def subscribe_price(self, subscriber) -> None:
         """Subscribe an object implementing ``on_price_update(symbol, ts_ms, price)``."""
-        with self.lock:
+        with self._subscribers_lock:
             if subscriber not in self._price_subscribers:
                 self._price_subscribers.append(subscriber)
         if (
@@ -201,13 +205,13 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
             subscriber.data_sync_mode = self.MODE_LIVE_READER
 
     def unsubscribe_price(self, subscriber) -> None:
-        with self.lock:
+        with self._subscribers_lock:
             if subscriber in self._price_subscribers:
                 self._price_subscribers.remove(subscriber)
 
     def _notify_price_subscribers(self, symbol: str, ts_ms: int, price: float) -> None:
-        with self.lock:
-            subs = list(self._price_subscribers)
+        with self._subscribers_lock:
+            subs = tuple(self._price_subscribers)
         for sub in subs:
             try:
                 sub.on_price_update(symbol, ts_ms, price)
@@ -399,6 +403,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                 for s, v in self._rest_sync_cursor_per_symbol.items()
                 if s in self.symbols
             }
+            self._sync_last_accepted_tick_ts_locked()
 
     def _on_stale_memory_detected_locked(self) -> None:
         self._reload_from_disk()
@@ -600,19 +605,87 @@ class Cache24PriceManager(CachePriceManagerBase):
             print(f"[{self.cls_name}][Error] merge disk OHLC {self.filename}: {exc}")
 
     def _filter_reloaded_items_locked(self, items: dict) -> dict:
-        return {s: v for s, v in items.items() if s in self.symbols}
+        filtered = {s: v for s, v in items.items() if s in self.symbols}
+        with self._deferred_ticks_lock:
+            for sym_k, entries in filtered.items():
+                if isinstance(entries, list) and entries:
+                    last_ts = self._entry_timestamp_ms(entries[-1])
+                    if last_ts > self._last_accepted_tick_ts_ms.get(sym_k, 0):
+                        self._last_accepted_tick_ts_ms[sym_k] = last_ts
+        return filtered
+
+    def _sync_last_accepted_tick_ts_locked(self) -> None:
+        with self._deferred_ticks_lock:
+            for sym_k, entries in self.cache.items():
+                if isinstance(entries, list) and entries:
+                    last_ts = self._entry_timestamp_ms(entries[-1])
+                    if last_ts > self._last_accepted_tick_ts_ms.get(sym_k, 0):
+                        self._last_accepted_tick_ts_ms[sym_k] = last_ts
+
+    def _drain_deferred_price_ticks_locked(self) -> None:
+        """Apply ticks buffered while ``self.lock`` was held by persistence I/O."""
+        with self._deferred_ticks_lock:
+            if not self._deferred_price_ticks:
+                return
+            pending = list(self._deferred_price_ticks)
+            self._deferred_price_ticks.clear()
+        self._ensure_fetchtimes_initialized()
+        grouped: dict[str, list[list]] = {}
+        for sym_k, ts_val, price_val in pending:
+            if sym_k not in self.symbols:
+                continue
+            entries = self.cache.get(sym_k)
+            last_mem_ts = self._entry_timestamp_ms(entries[-1]) if entries else 0
+            if sym_k in grouped and grouped[sym_k]:
+                last_mem_ts = max(last_mem_ts, grouped[sym_k][-1][0])
+            if ts_val < last_mem_ts:
+                continue
+            grouped.setdefault(sym_k, []).append([ts_val, price_val])
+            with self._deferred_ticks_lock:
+                if ts_val > self._last_accepted_tick_ts_ms.get(sym_k, 0):
+                    self._last_accepted_tick_ts_ms[sym_k] = ts_val
+        for sym_k, batch in grouped.items():
+            self.update_cache_per_symbol(sym_k, batch)
+            self._trim_old_data(sym_k)
+
+    def _after_state_persisted(self) -> None:
+        with self._deferred_ticks_lock:
+            if not self._deferred_price_ticks:
+                return
+        with self.lock:
+            self._drain_deferred_price_ticks_locked()
 
     def on_price_update(self, symbol: str, ts_ms: int, price: float):
-        """Receive every new WebSocket or HTTP price from CacheCurrentPriceManager."""
+        """Receive every new WebSocket or HTTP price from CacheCurrentPriceManager without blocking on disk I/O."""
         if symbol not in self.symbols:
             return
-        tick = self._validate_monotonic_tick(symbol, ts_ms, price)
-        if tick is None:
+        if self.lock.acquire(blocking=False):
+            try:
+                self._drain_deferred_price_ticks_locked()
+                tick = self._validate_monotonic_tick(symbol, ts_ms, price)
+                if tick is None:
+                    return
+                ts_val, price_val = tick
+                with self._deferred_ticks_lock:
+                    if ts_val > self._last_accepted_tick_ts_ms.get(symbol, 0):
+                        self._last_accepted_tick_ts_ms[symbol] = ts_val
+                self._ensure_fetchtimes_initialized()
+                self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
+                self._trim_old_data(symbol)
+            finally:
+                self.lock.release()
+            self._notify_price_subscribers(symbol, ts_val, price_val)
             return
-        ts_val, price_val = tick
-        self._ensure_fetchtimes_initialized()
-        self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
-        self._trim_old_data(symbol)
+
+        ts_val = safe_pos_int(ts_ms, default=None)
+        price_val = safe_pos_float(price, default=None)
+        if ts_val is None or price_val is None:
+            return
+        with self._deferred_ticks_lock:
+            if ts_val < self._last_accepted_tick_ts_ms.get(symbol, 0):
+                return
+            self._last_accepted_tick_ts_ms[symbol] = ts_val
+            self._deferred_price_ticks.append((symbol, ts_val, price_val))
         self._notify_price_subscribers(symbol, ts_val, price_val)
 
     def _trim_old_data(self, symbol):
@@ -637,6 +710,7 @@ class Cache24PriceManager(CachePriceManagerBase):
             return []
         cutoff_ms = math.trunc((_now_time() - sec_val) * 1000)
         with self.lock:
+            self._drain_deferred_price_ticks_locked()
             entries = casefold_get(self.cache, symbol, [])
             if not entries or not isinstance(entries, list):
                 return []
@@ -1118,6 +1192,8 @@ class Cache365PriceManager(Cache24PriceManager):
                 f"[{self.cls_name}][Error] streaming maintenance {self.filename}: {exc}"
             )
             return False
+        finally:
+            self._after_state_persisted()
 
     def compact_jsonl(self):
         """Never rebuild an existing long archive from its bounded memory tail."""
@@ -1351,9 +1427,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             while dq and dq[0] < cutoff:
                 dq.popleft()
         self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
-        self._notify_price_subscribers(symbol, ts_val, price_val)
         if self._tick_ipc_clients:
             self._broadcast_tick_ipc(symbol, ts_val, price_val)
+        self._notify_price_subscribers(symbol, ts_val, price_val)
 
     @staticmethod
     def extract_price_and_ts(items):
