@@ -3624,6 +3624,147 @@ def test_c24_nonblocking_ws_tick_during_snapshot_save_and_assetguardian_shutdown
     assert stop_calls == ["req", "cm", "stop"]
 
 
+def test_cpm_lock_free_disk_save_stale_ws_ts_poll_and_factory_deferred_periodic(tmp_path):
+    """Verify CacheCurrentPriceManager lock-free fsync save, stale WS ts_ms live poll, and deferred factory periodic_sync."""
+    import cacheprice
+
+    cpm_path = tmp_path / "cache_current_price.json"
+    mock_market_api = MagicMock()
+    cpm = cacheprice.CacheCurrentPriceManager(
+        0.8,
+        ["BTCUSDC", "ETHUSDC", "SOLUSDC", "XRPUSDC"],
+        str(cpm_path),
+        market_api=mock_market_api,
+        data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+    )
+    now_ms = int(time.time() * 1000)
+    cpm.on_items_update("BTCUSDC", [[now_ms - 200, 71000.0]])
+    cpm.on_items_update("ETHUSDC", [[now_ms - 200, 2200.0]])
+    cpm.on_items_update("SOLUSDC", [[now_ms - 200, 150.0]])
+    cpm.on_items_update("XRPUSDC", [[now_ms - 200, 1.40]])
+
+    notified = []
+
+    class _Sub:
+        def on_price_update(self, sym_k, ts_ms, px):
+            notified.append((sym_k, ts_ms, px))
+
+    cpm.subscribe_price(_Sub())
+
+    write_entered = threading.Event()
+    allow_write_finish = threading.Event()
+    ws_elapsed_sec = []
+    read_elapsed_sec = []
+    read_prices = []
+    mid_write_btc = []
+    real_atomic_write = cacheprice.atomic_write_json
+
+    def _slow_cpm_write(path, payload, **kwargs):
+        if os.path.abspath(str(path)) == os.path.abspath(str(cpm_path)):
+            write_entered.set()
+            assert allow_write_finish.wait(timeout=2.0)
+            mid_write_btc.append(list(payload["items"]["BTCUSDC"][0]))
+        return real_atomic_write(path, payload, **kwargs)
+
+    def _ws_and_reader_worker():
+        assert write_entered.wait(timeout=2.0)
+        t0 = time.perf_counter()
+        cpm.on_items_update("BTCUSDC", [[now_ms + 100, 71250.0]])
+        ws_elapsed_sec.append(time.perf_counter() - t0)
+        t1 = time.perf_counter()
+        obs = cpm.get_price("BTCUSDC")
+        read_elapsed_sec.append(time.perf_counter() - t1)
+        read_prices.append(obs)
+        time.sleep(0.02)
+        allow_write_finish.set()
+
+    worker = threading.Thread(target=_ws_and_reader_worker, daemon=True)
+    worker.start()
+    try:
+        with patch.object(cm, "atomic_write_json", side_effect=_slow_cpm_write):
+            assert cpm.save_state_to_file() is True
+    finally:
+        allow_write_finish.set()
+        worker.join(timeout=2.0)
+
+    # 1. Both WS tick ingestion and get_price() returned in <50ms without waiting for slow disk write
+    assert len(ws_elapsed_sec) == 1 and ws_elapsed_sec[0] < 0.05
+    assert len(read_elapsed_sec) == 1 and read_elapsed_sec[0] < 0.05
+    assert read_prices == [[now_ms + 100, 71250.0]]
+    assert notified == [("BTCUSDC", now_ms + 100, 71250.0)]
+    # Snapshot payload was isolated from concurrent cache mutation, while live cache holds latest tick
+    assert mid_write_btc == [[now_ms - 200, 71000.0]]
+    assert cpm.cache["BTCUSDC"] == [[now_ms + 100, 71250.0]]
+
+    # 2. Stale exchange timestamp inside a newly-arrived WS frame:
+    #    - In mock/unit-test mode: _should_poll() stays False when _ws_last_event_ts is fresh
+    stale_ts_ms = int(time.time() * 1000) - 6_000
+    cpm.cache["BTCUSDC"] = [[stale_ts_ms, 70900.0]]
+    cpm.mark_symbol_ws_event("BTCUSDC")
+    assert cpm._should_poll() is False
+
+    #    - In live daemon poll mode: _should_poll() detects stale cache ts_ms and refreshes via HTTP pool
+    cpm.market_api = cacheprice._market_api.api
+    try:
+        with (
+            patch.object(cacheprice, "is_live_network_backfill_enabled", return_value=True),
+            patch.object(cacheprice._market_api.api, "get_current_price", return_value=71500.0) as mock_live_px,
+        ):
+            assert cpm._should_poll() is True
+            assert cpm.query_remote_and_update_cache() is True
+            mock_live_px.assert_called_once_with(symbol="BTCUSDC")
+            assert cpm.cache["BTCUSDC"][0][1] == 71500.0
+            assert cpm._should_poll() is False
+            pool = cpm._get_or_create_fallback_pool(1)
+            assert pool._max_workers == 4
+    finally:
+        cpm.shutdown(timeout=1.0)
+
+    # 3. CacheFactory.get(..., start_periodic_sync=False) leaves producer thread unstarted so stagger is honored
+    cm.CacheFactory.shutdown_all(timeout=1.0)
+    try:
+        with patch.dict(
+            cm.CacheFactory._CONFIG["SparsePrice"],
+            {"prefix": str(tmp_path / "sparse_")},
+        ):
+            sparse_map = cm.CacheFactory.get(
+                "SparsePrice",
+                symbols=["BTCUSDC"],
+                data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+                start_periodic_sync=False,
+            )
+            mgr = sparse_map["BTCUSDC"]
+            assert mgr.save_state is True
+            assert mgr.read_only is False
+            assert mgr.thread is None
+            mgr._initial_sync_delay_sec = 5.0
+            saves = []
+            with patch.object(mgr, "_persist_periodic_state", side_effect=lambda sc: saves.append(sc)):
+                mgr.periodic_sync(180, save_state=True)
+                time.sleep(0.05)
+                assert saves == []
+                assert mgr.shutdown(timeout=1.0) is True
+    finally:
+        cm.CacheFactory.shutdown_all(timeout=1.0)
+
+    # 4. Reloading botcore keeps order_guard.opposite_side synchronized with botcore.opposite_side
+    import importlib
+    import botcore
+    import order_guard
+
+    saved_botcore_dict = dict(botcore.__dict__)
+    try:
+        importlib.reload(botcore)
+        assert order_guard.opposite_side is botcore.opposite_side
+    finally:
+        botcore.__dict__.update(saved_botcore_dict)
+        botcore._sync_reexport_modules()
+    assert order_guard.opposite_side is botcore.opposite_side
+
+
+
+
+
 
 
 

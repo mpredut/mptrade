@@ -1476,11 +1476,56 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._ws_stream_event_ts_per_symbol[str(symbol).strip().upper()] = now
         self.push_price(symbol, price, ts_ms=ts_ms)
 
+    @staticmethod
+    def _clone_snapshot_items(cache_map: dict) -> dict:
+        return {
+            sym_k: (
+                [list(pt) if isinstance(pt, (list, tuple)) else pt for pt in rows]
+                if isinstance(rows, (list, tuple))
+                else rows
+            )
+            for sym_k, rows in cache_map.items()
+        }
+
+    def _save_state_to_file_impl(self) -> bool:
+        """Persist ``cache_current_price.json`` without holding ``self.lock`` across disk ``fsync``."""
+        write_json_fn = _cm_override("atomic_write_json", atomic_write_json)
+        with self._generation_lock():
+            persisted_max_ts = self._persisted_max_ts()
+            with self.lock:
+                self._before_state_persist_locked()
+                mem_max_ts = self._mem_max_ts()
+                if persisted_max_ts > mem_max_ts:
+                    builtins.print(
+                        f"[{self.cls_name}][resync] file newer than memory -> "
+                        f"refusing to overwrite with stale data ({self.filename})"
+                    )
+                    self._on_stale_memory_detected_locked()
+                    return False
+                self._before_snapshot_commit_locked(persisted_max_ts)
+                items_snapshot = self._clone_snapshot_items(self.cache)
+                metadata = self._build_basic_meta_locked(sanitize_cursor=True)
+            payload = {
+                "items": items_snapshot,
+                "fetchtime": metadata["fetchtime"],
+                "rest_sync_cursor": metadata["rest_sync_cursor"],
+            }
+            if not self._commit_file_and_meta_locked(
+                lambda: write_json_fn(self.filename, payload, indent=1),
+                metadata,
+            ):
+                return False
+            persisted_after = self._persisted_max_ts()
+        with self.lock:
+            self._last_disk_sync_max_ts = max(persisted_after, self._mem_max_ts())
+        return self._log_cache_saved_ok()
+
     def _get_or_create_fallback_pool(self, worker_hint: int) -> _futures.ThreadPoolExecutor:
         with self._fallback_pool_lock:
             if self._fallback_pool is None:
+                eff_hint = max(worker_hint, len(getattr(self, "symbols", ()) or ()))
                 self._fallback_pool = _futures.ThreadPoolExecutor(
-                    max_workers=max(2, min(6, worker_hint)),
+                    max_workers=max(2, min(6, eff_hint)),
                     thread_name_prefix="CPFallbackFetch",
                 )
             return self._fallback_pool
@@ -1497,28 +1542,59 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             except Exception:
                 pass
 
+    def _is_live_daemon_poll_mode(self) -> bool:
+        stop_ev = getattr(self, "_stop_event", None)
+        return bool(
+            self.save_state
+            and getattr(self, "market_api", None) is _market_api.api
+            and is_live_network_backfill_enabled()
+            and not (stop_ev is not None and stop_ev.is_set())
+        )
+
+    def _cached_entry_ts_ms(self, symbol: str) -> Optional[int]:
+        sym_u, sym_clean = _norm_symbol_keys(symbol)
+        with self.lock:
+            entries = (
+                self.cache.get(symbol)
+                or casefold_get(self.cache, sym_u)
+                or casefold_get(self.cache, sym_clean)
+            )
+            _, cur_ts_ms = self.extract_price_and_ts(entries)
+        return cur_ts_ms
+
+    def _symbol_ws_and_cache_fresh(
+        self, symbol: str, *, is_live_daemon_poll: bool, now_ms: Optional[float] = None
+    ) -> bool:
+        if not self._ws_is_healthy(symbol):
+            return False
+        if not is_live_daemon_poll or self._is_equity_instrument(symbol):
+            return True
+        cur_ts_ms = self._cached_entry_ts_ms(symbol)
+        if cur_ts_ms is None:
+            return False
+        eff_now_ms = (_now_time() * 1000.0) if now_ms is None else now_ms
+        return -5_000.0 <= (eff_now_ms - cur_ts_ms) < (self.ws_timeout_sec_for(symbol) * 1000.0)
+
     def query_remote_and_update_cache(self):
         if not self.fetchtime_per_symbol:
             self._ensure_fetchtimes_initialized()
             self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
         delegated = getattr(self, "_delegated_poller_symbols", ())
-        is_live_daemon_poll = bool(
-            self.save_state
-            and self.market_api is _market_api.api
-            and is_live_network_backfill_enabled()
-            and not self._stop_event.is_set()
-        )
+        is_live_daemon_poll = self._is_live_daemon_poll_mode()
         min_poll_gap = max(
             0.45,
             min(safe_pos_float(self.sync_ts, default=0.8) or 0.8, 0.75),
         )
         pending_polls: list[tuple[str, Any, bool]] = []
+        now_ms_scan = _now_time() * 1000.0
         for symbol in list(self.symbols):
             if delegated and (
                 symbol in delegated or str(symbol).strip().upper() in delegated
             ):
                 continue
-            if self._ws_is_healthy(symbol):
+            if self._symbol_ws_and_cache_fresh(
+                symbol, is_live_daemon_poll=is_live_daemon_poll, now_ms=now_ms_scan
+            ):
                 continue
             is_rth_sym = self._is_equity_instrument(symbol)
             if is_rth_sym and is_rth_gate_enabled(
@@ -1539,8 +1615,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 now_s = _now_time()
                 last_poll = self._last_http_poll_ts_per_symbol.get(symbol, 0.0)
                 if last_poll > 0.0 and 0.0 <= (now_s - last_poll) < min_poll_gap:
-                    with self.lock:
-                        _, cur_ts_ms = self.extract_price_and_ts(self.cache.get(symbol))
+                    cur_ts_ms = self._cached_entry_ts_ms(symbol)
                     if cur_ts_ms is not None and (now_s * 1000.0 - cur_ts_ms) < 1_800.0:
                         continue
             startTime = self.fetchtime_per_symbol.get(
@@ -1619,7 +1694,24 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self.push_price(symbol, price, ts_ms=ts_ms)
 
     def _should_poll(self):
-        return not self._ws_is_healthy()
+        if not self._ws_is_healthy():
+            return True
+        if not self._is_live_daemon_poll_mode():
+            return False
+        delegated = getattr(self, "_delegated_poller_symbols", ())
+        now_ms = _now_time() * 1000.0
+        for sym_item in list(self.symbols):
+            if delegated and (
+                sym_item in delegated or str(sym_item).strip().upper() in delegated
+            ):
+                continue
+            if self._is_equity_instrument(sym_item):
+                continue
+            if not self._symbol_ws_and_cache_fresh(
+                sym_item, is_live_daemon_poll=True, now_ms=now_ms
+            ):
+                return True
+        return False
 
     def _next_sync_wait_sec(self) -> float:
         base_wait = safe_nonneg_float(self.sync_ts, default=0.8)
@@ -1629,6 +1721,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return base_wait
         wait_sec = min(base_wait, 0.35)
         now = _now_time()
+        is_live_daemon = self._is_live_daemon_poll_mode()
         delegated = getattr(self, "_delegated_poller_symbols", ())
         for sym_item in list(self.symbols):
             if delegated and (
@@ -1646,8 +1739,15 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 ),
                 self._ws_default_event_ts,
             )
-            if last_ts > 0.0:
-                rem = self.ws_timeout_sec_for(sym_item) - (now - last_ts)
+            eff_last_ts = last_ts
+            if is_live_daemon:
+                cur_ts_ms = self._cached_entry_ts_ms(sym_item)
+                if cur_ts_ms is not None and cur_ts_ms > 0:
+                    cur_ts_s = cur_ts_ms / 1000.0
+                    if eff_last_ts <= 0.0 or cur_ts_s < eff_last_ts:
+                        eff_last_ts = cur_ts_s
+            if eff_last_ts > 0.0:
+                rem = self.ws_timeout_sec_for(sym_item) - (now - eff_last_ts)
                 if rem > 0.0:
                     wait_sec = min(wait_sec, max(0.05, rem + 0.02))
         return wait_sec

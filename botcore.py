@@ -3645,6 +3645,7 @@ def stop_monitoring_thread(
 
 _REEXPORT_MODULE_NAMES = (
     "utils",
+    "order_guard",
     "intelligence.macro_sentiment_ssot",
     "macro_sentiment_ssot",
     "offline.backtests.evaluation",

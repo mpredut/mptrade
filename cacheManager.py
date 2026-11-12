@@ -241,10 +241,13 @@ class CacheFactory:
         sync_ts=None,
         read_only=None,
         filename=None,
+        start_periodic_sync: Optional[bool] = None,
     ):
         resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(
             data_sync_mode
         )
+        if start_periodic_sync is not None and name != "ShortTrend":
+            start_periodic = _parse_bool_flag(start_periodic_sync, default=start_periodic)
         if (
             name == "CurrentPrice"
             and ws_manager is not None
@@ -260,6 +263,7 @@ class CacheFactory:
             and not provider_names
             and ws_manager is None
             and sync_ts is None
+            and start_periodic_sync is None
             and not save_state_flag
             and (
                 not start_periodic
@@ -303,6 +307,10 @@ class CacheFactory:
                 resolved_mode = CacheManagerInterface.MODE_LIVE_READER
             if name == "ShortTrend":
                 start_periodic = False
+            elif start_periodic_sync is not None:
+                start_periodic = _parse_bool_flag(
+                    start_periodic_sync, default=start_periodic
+                )
 
             if name in cls._instances and symbols is not None and name not in ("CurrentPrice", "ShortTrend"):
                 inst = cls._instances[name]
@@ -583,11 +591,13 @@ def get_cache_manager(
     symbols=None,
     *,
     data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
+    start_periodic_sync: Optional[bool] = None,
 ):
     return CacheFactory.get(
         name,
         symbols,
         data_sync_mode=data_sync_mode,
+        start_periodic_sync=start_periodic_sync,
     )
 
 
@@ -654,17 +664,42 @@ if __name__ == "__main__":
     except Exception as _ws_init_err:
         print(f"[cacheManager] Warning pre-attaching price WS: {_ws_init_err}")
 
+    if _trend_cpm is not None:
+        try:
+            _early_cache24 = CacheFactory.get(
+                "24Price",
+                data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
+                start_periodic_sync=False,
+            )
+            _trend_mgr = CacheFactory.get(
+                "ShortTrend",
+                data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
+            )
+            _trend_mgr.start_computation(
+                _early_cache24, _trend_cpm, run_full_eval=True
+            )
+            print("⚙️ cacheManager: full trend computation started (cache_short_trend.json).")
+        except Exception as _early_trend_err:
+            _trend_mgr = None
+            print(f"[cacheManager] Warning pre-starting ShortTrend: {_early_trend_err}")
+
     _singleton_stagger_idx = 0
     for name, config in CacheFactory._CONFIG.items():
         if _parse_bool_flag(config.get("read_only"), default=False):
             continue
         if name == "365Price":
             _arch_syms = tracked_price_instruments(role="archive")[0]
-            cache = get_cache_manager(name, symbols=_arch_syms or None)
+            cache = get_cache_manager(
+                name,
+                symbols=_arch_syms or None,
+                data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
+                start_periodic_sync=False,
+            )
         else:
             cache = get_cache_manager(
                 name,
                 data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
+                start_periodic_sync=False,
             )
         interval = (
             cache.sync_ts
@@ -713,22 +748,23 @@ if __name__ == "__main__":
         _cpm_producer = _trend_cpm or CacheFactory._instances.get("CurrentPrice")
         if _cpm_producer is not None and hasattr(_cpm_producer, "start_tick_fanout_server"):
             _cpm_producer.start_tick_fanout_server()
-        _trend_cache24 = CacheFactory.get(
-            "24Price",
-            data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
-        )
         _trend_cache365 = CacheFactory._instances.get("365Price") or {}
-        if isinstance(_trend_cache365, dict):
+        if _trend_cpm is not None and isinstance(_trend_cache365, dict):
             for _c365 in _trend_cache365.values():
                 _trend_cpm.subscribe_price(_c365)
-        _trend_mgr = CacheFactory.get(
-            "ShortTrend",
-            data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
-        )
-        _trend_mgr.start_computation(
-            _trend_cache24, _trend_cpm, run_full_eval=True
-        )
-        print("⚙️ cacheManager: full trend computation started (cache_short_trend.json).")
+        if _trend_mgr is None:
+            _trend_cache24 = CacheFactory.get(
+                "24Price",
+                data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
+            )
+            _trend_mgr = CacheFactory.get(
+                "ShortTrend",
+                data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
+            )
+            _trend_mgr.start_computation(
+                _trend_cache24, _trend_cpm, run_full_eval=True
+            )
+            print("⚙️ cacheManager: full trend computation started (cache_short_trend.json).")
         if _nb_syms and _nb_poller is None:
             _nb_poller = _start_nonbinance_trend_poller(
                 _trend_cpm,
