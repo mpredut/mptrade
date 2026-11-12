@@ -836,8 +836,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         create_missing: bool = False,
     ) -> bool:
         """Refresh ``fetchtime`` in ``cache_obj`` across active WS symbols."""
-        prep = cls._prepare_venue_cache_dict(cache_obj, now_ms)
-        if prep is None:
+        if (prep := cls._prepare_venue_cache_dict(cache_obj, now_ms)) is None:
             return False
         items, ft, resolved_ms = prep
         changed = False
@@ -1893,9 +1892,8 @@ class CacheOrderManager(CacheAccountManagerBase):
 
     def _persist_items(self, symbol, new_items):
         """Merge each immutable fill exactly once into its order aggregate."""
-        if not new_items:
+        if not new_items or not (new_items := self._coerce_item_list(new_items)):
             return
-        new_items = self._coerce_item_list(new_items)
         now_ms = int(_now_time() * 1000)
         with self.lock:
             bucket = self.cache.setdefault(symbol, [])

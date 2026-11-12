@@ -74,6 +74,13 @@ class PricePlatformInterface(ABC):
     def platform_name(self) -> str:
         pass
 
+    def _init_platform_refresh(self, refresh_interval: float, *, load_now: bool = True) -> None:
+        self._supported_symbols: Set[str] = set()
+        self._last_refresh = 0
+        self._refresh_interval = refresh_interval
+        if load_now:
+            self._load_symbols()
+
     def _can_refresh_symbols(self) -> bool:
         return self._refresh_interval > 0 and bool(getattr(self, "api_key", True))
 
@@ -110,12 +117,9 @@ class BinancePricePlatform(PricePlatformInterface):
 # identical behavior. ``self.api_client`` remains an object exposing
         # .get_current_price(symbol=...), just like bapi.
         self.api_client = api_client or _market_api.api
-        self._supported_symbols: Set[str] = set()
         self._usdc_pairs: Set[str] = set()
         self._symbol_mapping: Dict[str, str] = {}
-        self._last_refresh = 0
-        self._refresh_interval = 3600
-        self._load_symbols()
+        self._init_platform_refresh(3600)
     
     def _load_symbols(self):
         try:
@@ -229,11 +233,8 @@ class HyperliquidPricePlatform(PricePlatformInterface):
 
     def __init__(self):
         self._url = "https://api.hyperliquid.xyz/info"
-        self._supported_symbols: Set[str] = set()
         self._all_mids: Dict[str, float] = {}
-        self._last_refresh = 0
-        self._refresh_interval = 300
-        self._load_symbols()
+        self._init_platform_refresh(300)
     
     def _load_symbols(self):
         try:
@@ -288,15 +289,10 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             raw_key = api_key
         self.api_key = raw_key.strip() if isinstance(raw_key, str) and raw_key.strip() else None
         self._base_url = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest"
-        self._supported_symbols: Set[str] = set()
         self._all_listings: Dict[str, Dict] = {}
-        self._last_refresh = 0
-        self._refresh_interval = 86400
         self._cache_file = cache_path("cmc_listings_cache.json")
-        
-        if self.api_key:
-            self._load_symbols()
-        else:
+        self._init_platform_refresh(86400, load_now=bool(self.api_key))
+        if not self.api_key:
             print("[CMCPlatform] No API key - platform disabled")
 
     def _load_symbols_from_disk_cache(self, max_age_s: Optional[float] = None) -> bool:

@@ -552,8 +552,7 @@ def load_layered_env_config(
         p_str = os.fspath(path_val)
         if p_str and os.path.exists(p_str):
             cfg.update(dict(parse_dotenv(p_str)))
-    ov_tuple = tuple(override_prefixes)
-    fb_tuple = tuple(fallback_prefixes)
+    ov_tuple, fb_tuple = tuple(override_prefixes), tuple(fallback_prefixes)
     for k, v in os.environ.items():
         if (ov_tuple and k.startswith(ov_tuple)) or (fb_tuple and k.startswith(fb_tuple) and k not in cfg):
             cfg[k] = v
@@ -595,8 +594,7 @@ def bind_isolated_venue_cfg_loader(
     dir_kwarg: str | None = None,
 ):
     """Return a venue-specific isolated config loader bound to ``default_dir`` and ``override_prefixes``."""
-    ov_tuple = tuple(override_prefixes)
-    fb_tuple = tuple(fallback_prefixes)
+    ov_tuple, fb_tuple = tuple(override_prefixes), tuple(fallback_prefixes)
 
     def _loader(
         venue_dir: object = _VENUE_DIR_UNSET,
@@ -741,11 +739,16 @@ def defined_env(key: str, env: dict | None = None) -> str:
     return _clean_env_str(val)
 
 
-def required_float_env(key: str, env: dict | None = None) -> float:
-    """Return a mandatory finite floating-point setting."""
+def _raw_nonbool_numeric_env(key: str, env: dict | None = None) -> object:
     raw_val = _raw_env_val(key, env)
     if isinstance(raw_val, bool):
         raise ValueError(f"Invalid numeric setting: {key}={raw_val!r}")
+    return raw_val
+
+
+def required_float_env(key: str, env: dict | None = None) -> float:
+    """Return a mandatory finite floating-point setting."""
+    _raw_nonbool_numeric_env(key, env)
     raw = required_env(key, env)
     try:
         value = float(raw)
@@ -758,9 +761,7 @@ def required_float_env(key: str, env: dict | None = None) -> float:
 
 def required_int_env(key: str, env: dict | None = None) -> int:
     """Return a mandatory integer setting without silently truncating fractions."""
-    raw_val = _raw_env_val(key, env)
-    if isinstance(raw_val, bool):
-        raise ValueError(f"Invalid numeric setting: {key}={raw_val!r}")
+    raw_val = _raw_nonbool_numeric_env(key, env)
     if isinstance(raw_val, int):
         return raw_val
     raw = required_env(key, env)
@@ -1223,10 +1224,13 @@ def fetch_json_post(
 # ── DETERMINISTIC percentage-based approximate comparisons ───────────────────
 
 
+def _safe_float_pair(value1: object, value2: object) -> tuple[float | None, float | None]:
+    return safe_float(value1, default=None), safe_float(value2, default=None)
+
+
 def diff_percent(value1: float, value2: float) -> float:
     """Return symmetric percentage difference relative to the values' absolute mean."""
-    v1 = safe_float(value1, default=None)
-    v2 = safe_float(value2, default=None)
+    v1, v2 = _safe_float_pair(value1, value2)
     if v1 is None or v2 is None:
         return float("nan")
     if v1 == v2:
@@ -1685,8 +1689,7 @@ def clamp_float(
 
 
 def value_diff_to_percent(value1, value2) -> float:
-    v1 = safe_float(value1, default=None)
-    v2 = safe_float(value2, default=None)
+    v1, v2 = _safe_float_pair(value1, value2)
     if v1 is None or v2 is None or v1 == 0.0:
         return 0.0
     return safe_float(((v1 - v2) / v1) * 100.0, default=0.0)

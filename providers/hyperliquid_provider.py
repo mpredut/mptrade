@@ -279,8 +279,7 @@ class HyperliquidProvider(MarketDataProvider):
         """Return the memoized spot @index pair for HYPE/USDC."""
         if self._spot_pair:
             return self._spot_pair
-        c = self._hl()
-        if c is None:
+        if (c := self._hl()) is None:
             return None
         try:
             self._spot_pair = c.resolve_spot_pair(self._token)
@@ -361,9 +360,9 @@ class HyperliquidProvider(MarketDataProvider):
 
     def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Fetch ascending granular spot closes over the last ``lookback_h`` hours from Hyperliquid."""
-        if (lookback_f := safe_pos_float(lookback_h, default=None)) is None:
-            return None
-        if (cp := self._hl_client_and_pair_or_none()) is None:
+        if (lookback_f := safe_pos_float(lookback_h, default=None)) is None or (
+            cp := self._hl_client_and_pair_or_none()
+        ) is None:
             return None
         c, pair = cp
         try:
@@ -385,8 +384,7 @@ class HyperliquidProvider(MarketDataProvider):
         if not asset or isinstance(asset, bool) or not str(asset).strip():
             return None
         asset_u = str(asset).strip().upper()
-        c = self._hl()
-        if c is None:
+        if (c := self._hl()) is None:
             return None
         try:
             addr = self._env_account_address()
@@ -878,8 +876,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def pair_precision(self, symbol: str):
         self.validate_symbol(symbol)
-        c = self._hl()
-        if c is None:
+        if (c := self._hl()) is None:
             return None
         try:
             raw_szd = c.sz_decimals(self._token)
@@ -1056,9 +1053,7 @@ class HyperliquidProvider(MarketDataProvider):
     def order_by_client_id(self, symbol: str, client_order_id: str):
         """Recover a Hyperliquid spot order by CLOID when supported by the SDK."""
         self.validate_symbol(symbol)
-        c = self._hl()
-        pair = self._pair()
-        addr = self._env_account_address()
+        c, pair, addr = self._hl(), self._pair(), self._env_account_address()
         if c is None or pair is None or not addr:
             raise ProviderError(
                 "order_by_client_id: client/pair/address unavailable")

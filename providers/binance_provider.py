@@ -83,26 +83,22 @@ def _resolve_or_import_bapi_submodule(attr_name: str, import_path: str):
     return cur
 
 
-def _default_get_bapi():
-    return _resolve_or_import_bapi_submodule("_bapi", "binance_api.bapi")
+def _bind_bapi_getter(fn_name: str, attr_name: str, import_path: str):
+    def _default_get():
+        return _resolve_or_import_bapi_submodule(attr_name, import_path)
+
+    def _get():
+        fn = resolve_patched_attr(fn_name, _default_get, modules=("providers.market_api",))
+        if callable(fn) and fn is not _get:
+            return fn()
+        return _default_get()
+
+    _get.__name__ = _get.__qualname__ = fn_name
+    return _default_get, _get
 
 
-def _get_bapi():
-    fn = resolve_patched_attr("_get_bapi", _default_get_bapi, modules=("providers.market_api",))
-    if callable(fn) and fn is not _get_bapi:
-        return fn()
-    return _default_get_bapi()
-
-
-def _default_get_allorders():
-    return _resolve_or_import_bapi_submodule("_allorders", "binance_api.bapi_allorders")
-
-
-def _get_allorders():
-    fn = resolve_patched_attr("_get_allorders", _default_get_allorders, modules=("providers.market_api",))
-    if callable(fn) and fn is not _get_allorders:
-        return fn()
-    return _default_get_allorders()
+_default_get_bapi, _get_bapi = _bind_bapi_getter("_get_bapi", "_bapi", "binance_api.bapi")
+_default_get_allorders, _get_allorders = _bind_bapi_getter("_get_allorders", "_allorders", "binance_api.bapi_allorders")
 
 
 _get_placeorder = bind_module_importer("binance_api.bapi_placeorder")

@@ -551,20 +551,20 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
             ctx.rj,
             allow_network=ctx.allow_network,
         )
-        cachedb_dir = ctx.cachedb_dir
-        symbol = ctx.symbol
-        regime_context = ctx.regime_context
-        dur_sec = ctx.dur_sec
-        sym_variants = ctx.sym_variants
-        quote_variants = ctx.quote_variants
-        sym_quotes = ctx.sym_quotes
-        is_usd_sym = ctx.is_usd_sym
-        is_eq_sym = ctx.is_eq_sym
-        _rj = ctx.rj
+        cachedb_dir, symbol, regime_context, dur_sec, sym_variants, quote_variants, sym_quotes, is_usd_sym, is_eq_sym, _rj = (
+            ctx.cachedb_dir,
+            ctx.symbol,
+            ctx.regime_context,
+            ctx.dur_sec,
+            ctx.sym_variants,
+            ctx.quote_variants,
+            ctx.sym_quotes,
+            ctx.is_usd_sym,
+            ctx.is_eq_sym,
+            ctx.rj,
+        )
         telemetry: Dict[str, Any] = {}
-        ob_snap = None
-        f_snap = None
-        w_snap = None
+        ob_snap = f_snap = w_snap = None
         try:
             ob_snap = _fetch_pillar2_snapshot(
                 cachedb_dir, symbol, get_orderbook_collector, CACHE_ORDERBOOK_DEPTH_PREFIX, sym_variants, quote_variants, _rj
@@ -886,15 +886,17 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
     cls_name = "PretradeMicrostructureReconcileStage"
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
-        cachedb_dir = ctx.cachedb_dir
-        symbol = ctx.symbol
-        telemetry = ctx.telemetry
-        m24 = ctx.m24
-        cur_px_est = ctx.cur_px_est
-        last_alt_pt = ctx.last_alt_pt
-        is_usd_sym = ctx.is_usd_sym
-        is_eq_sym = ctx.is_eq_sym
-        allow_network = bool(ctx.allow_network)
+        cachedb_dir, symbol, telemetry, m24, cur_px_est, last_alt_pt, is_usd_sym, is_eq_sym, allow_network = (
+            ctx.cachedb_dir,
+            ctx.symbol,
+            ctx.telemetry,
+            ctx.m24,
+            ctx.cur_px_est,
+            ctx.last_alt_pt,
+            ctx.is_usd_sym,
+            ctx.is_eq_sym,
+            bool(ctx.allow_network),
+        )
         ob_ts_est = 0.0
         cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, ctx.rj, ob=ctx.ob_snap, deriv=ctx.f_snap, whale=ctx.w_snap)
         if not cur_m_info:
@@ -972,13 +974,15 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
     cls_name = "Pretrade24hAndBtcFormatStage"
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
-        cachedb_dir = ctx.cachedb_dir
-        symbol = ctx.symbol
-        telemetry = ctx.telemetry
-        m24 = ctx.m24
-        alt_series_24h = ctx.alt_series_24h
-        cur_p_items = ctx.cur_p_items
-        _rj = ctx.rj
+        cachedb_dir, symbol, telemetry, m24, alt_series_24h, cur_p_items, _rj = (
+            ctx.cachedb_dir,
+            ctx.symbol,
+            ctx.telemetry,
+            ctx.m24,
+            ctx.alt_series_24h,
+            ctx.cur_p_items,
+            ctx.rj,
+        )
         btc_m24: Dict[str, Any] = {}
         btc_vals_7d: list = []
         btc_live_px: float = 0.0
@@ -1093,21 +1097,39 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
     cls_name = "PretradeStructural7dStage"
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
-        cachedb_dir = ctx.cachedb_dir
-        symbol = ctx.symbol
-        telemetry = ctx.telemetry
-        m24 = ctx.m24
-        arch_vals_7d = list(ctx.arch_vals_7d)
-        cur_px_est = ctx.cur_px_est
-        last_alt_pt = ctx.last_alt_pt
-        ob_ts_est = ctx.ob_ts_est
-        btc_m24 = ctx.btc_m24
-        btc_vals_7d = list(ctx.btc_vals_7d)
-        btc_live_px = ctx.btc_live_px or 0.0
-        sym_variants = ctx.sym_variants
-        cur_p_items = ctx.cur_p_items
-        _rj = ctx.rj
-        allow_network = bool(ctx.allow_network)
+        (
+            cachedb_dir,
+            symbol,
+            telemetry,
+            m24,
+            arch_vals_7d,
+            cur_px_est,
+            last_alt_pt,
+            ob_ts_est,
+            btc_m24,
+            btc_vals_7d,
+            btc_live_px,
+            sym_variants,
+            cur_p_items,
+            _rj,
+            allow_network,
+        ) = (
+            ctx.cachedb_dir,
+            ctx.symbol,
+            ctx.telemetry,
+            ctx.m24,
+            list(ctx.arch_vals_7d),
+            ctx.cur_px_est,
+            ctx.last_alt_pt,
+            ctx.ob_ts_est,
+            ctx.btc_m24,
+            list(ctx.btc_vals_7d),
+            ctx.btc_live_px or 0.0,
+            ctx.sym_variants,
+            ctx.cur_p_items,
+            ctx.rj,
+            bool(ctx.allow_network),
+        )
         is_eq = is_equity_symbol(symbol)
         eq_div_thr = 0.35 if is_eq else 0.10
         if cur_px_est > 0.0 and arch_vals_7d:
@@ -1282,19 +1304,35 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
     cls_name = "PretradeShortSlopesKalmanStage"
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
-        cachedb_dir = ctx.cachedb_dir
-        symbol = ctx.symbol
-        sym_variants = ctx.sym_variants
-        sym_quotes = ctx.sym_quotes
-        alt_series_24h = ctx.alt_series_24h
-        m24 = ctx.m24
-        cur_px_est = ctx.cur_px_est
-        last_alt_pt = ctx.last_alt_pt
-        is_eq_sym = ctx.is_eq_sym
-        rth_fresh_eq = ctx.rth_fresh_eq
-        eq_px_diverged_05pct = ctx.eq_px_diverged_05pct
-        eq_chart_refreshed = ctx.eq_chart_refreshed
-        _rj = ctx.rj
+        (
+            cachedb_dir,
+            symbol,
+            sym_variants,
+            sym_quotes,
+            alt_series_24h,
+            m24,
+            cur_px_est,
+            last_alt_pt,
+            is_eq_sym,
+            rth_fresh_eq,
+            eq_px_diverged_05pct,
+            eq_chart_refreshed,
+            _rj,
+        ) = (
+            ctx.cachedb_dir,
+            ctx.symbol,
+            ctx.sym_variants,
+            ctx.sym_quotes,
+            ctx.alt_series_24h,
+            ctx.m24,
+            ctx.cur_px_est,
+            ctx.last_alt_pt,
+            ctx.is_eq_sym,
+            ctx.rth_fresh_eq,
+            ctx.eq_px_diverged_05pct,
+            ctx.eq_chart_refreshed,
+            ctx.rj,
+        )
         t_entry: Dict[str, Any] = {}
         has_st_tinfo = False
         st_items_map: Dict[str, Any] = {}
@@ -1435,27 +1473,51 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
     cls_name = "PretradeOrderbookCvdAndLiqStage"
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
-        cachedb_dir = ctx.cachedb_dir
-        symbol = ctx.symbol
-        telemetry = ctx.telemetry
-        cur_m_info = ctx.cur_m_info
-        t_entry = ctx.t_entry
-        m24 = ctx.m24
-        m7d = ctx.m7d
-        is_sub24h_dup_7d = ctx.is_sub24h_dup_7d
-        alt_series_24h = ctx.alt_series_24h
-        cur_px_est = ctx.cur_px_est
-        last_alt_pt = ctx.last_alt_pt
-        is_usd_sym = ctx.is_usd_sym
-        is_eq_sym = ctx.is_eq_sym
-        rth_fresh_eq = ctx.rth_fresh_eq
-        eq_px_diverged_05pct = ctx.eq_px_diverged_05pct
-        quote_variants = ctx.quote_variants
-        cur_p_items = ctx.cur_p_items
-        st_items_map = ctx.st_items_map
-        k_items_map = ctx.k_items_map
-        _rj = ctx.rj
-        allow_network = bool(ctx.allow_network)
+        (
+            cachedb_dir,
+            symbol,
+            telemetry,
+            cur_m_info,
+            t_entry,
+            m24,
+            m7d,
+            is_sub24h_dup_7d,
+            alt_series_24h,
+            cur_px_est,
+            last_alt_pt,
+            is_usd_sym,
+            is_eq_sym,
+            rth_fresh_eq,
+            eq_px_diverged_05pct,
+            quote_variants,
+            cur_p_items,
+            st_items_map,
+            k_items_map,
+            _rj,
+            allow_network,
+        ) = (
+            ctx.cachedb_dir,
+            ctx.symbol,
+            ctx.telemetry,
+            ctx.cur_m_info,
+            ctx.t_entry,
+            ctx.m24,
+            ctx.m7d,
+            ctx.is_sub24h_dup_7d,
+            ctx.alt_series_24h,
+            ctx.cur_px_est,
+            ctx.last_alt_pt,
+            ctx.is_usd_sym,
+            ctx.is_eq_sym,
+            ctx.rth_fresh_eq,
+            ctx.eq_px_diverged_05pct,
+            ctx.quote_variants,
+            ctx.cur_p_items,
+            ctx.st_items_map,
+            ctx.k_items_map,
+            ctx.rj,
+            bool(ctx.allow_network),
+        )
         if not cur_m_info:
             return
         if cur_m_info.get("spread_bps") is not None:

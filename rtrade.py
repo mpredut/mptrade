@@ -629,8 +629,7 @@ class _LivePairVenue:
 
     def place_market_exit(self, side, qty, reason, pair_id=None, *, cache_permit=None, revision=0):
         """Place a spot market exit reserved for reducing hard-stop exposure."""
-        side = side.upper()
-        store_kind = self._kind_for_revision("hard_stop", revision, label="hard-stop")
+        side, store_kind = side.upper(), self._kind_for_revision("hard_stop", revision, label="hard-stop")
         revision = int(store_kind.removeprefix("hard_stop_")) if store_kind != "hard_stop" else 0
         handled, existing_ticket = self._check_reconciled_existing_intent(
             pair_id, side, store_kind, require_pair_id=True

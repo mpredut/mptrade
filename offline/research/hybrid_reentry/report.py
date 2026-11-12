@@ -48,29 +48,28 @@ def generate_markdown_report() -> str:
     raw_eq = read_json_file(EQUITIES_JSON, default=[]) if os.path.isfile(EQUITIES_JSON) else []
     equities_data = [eq for eq in raw_eq if _valid_ablation_row(eq)] if isinstance(raw_eq, list) else []
 
-    md = []
-    md.append("# Hybrid Re-Entry Architecture: Ablation Benchmark & Research Report")
-    md.append(f"\n**Date:** {datetime.now(timezone.utc).strftime('%B %d, %Y')}")
-    md.append("**Evaluation Scope:** 11 Crypto Assets (4h bars, Binance 2018-2026 + Hyperliquid HYPE) & US Equities (NVDA, RGNT).")
-    md.append("**Accounting Model:** Strict Finite Cash Account ($3,900 USD crypto, $500 USD equities), realistic taker/FX fees (0.26% crypto, 0.15% equity), no magical refills.")
-    md.append("\n---\n")
-
-    md.append("## 1. Executive Summary & Test Matrix")
-    md.append("\nThe core problem of the legacy spot DCA engine is the **static post-take-profit re-entry lock**:")
-    md.append(r"$$P_t \le P_{\text{last\_sell}} \times (1 - \text{drop\_pct})$$")
-    md.append("In a secular bull market or extended trending rally, this path-dependent anchor guarantees permanent lockout.")
-    md.append("\nTo isolate the mathematical contribution of each decoupled component without confounding variables, five tests were evaluated on the validated base profile (`ov650_t8_brake_gateoff`):\n")
-    
-    md.append("| Test ID | Variant Name | Trend Gate (Macro) | Pullback Trigger (Micro) | Sale Anchor | Stale Barrier TTL |")
-    md.append("|---|---|---|---|---|---|")
-    md.append("| **Test 0** | Baseline (Control) | Off | Off | $P_{\\text{last\\_sell}}$ | None |")
-    md.append("| **Test 1** | Peak-Relative | Off | On (1.5% from Peak) | $\\text{Peak}_{\\text{post\\_sell}}$ | None |")
-    md.append("| **Test 2** | Trend Bypass | On (`bull` regime) | Off (Immediate 0%) | Ignored in Bull | None |")
-    md.append("| **Test 3** | Hybrid | On (`bull` regime) | On (1.5% from Peak) | Peak in Bull, Sale in Chop | None |")
-    md.append("| **Test 4** | Hybrid + TTL | On (`bull` regime) | On (1.5% from Peak) | Peak in Bull, Sale in Chop | 14 Days (336h) |")
-    md.append("\n### Aggregate Multi-Asset Performance (11 Crypto Assets)")
-    md.append("\n| Test ID | Variant Name | Positive Assets | Median Return (%) | Worst Return (%) | Best Return (%) | Median Max DD (%) | Max DD (%) | Time in Market (%) | Cycles | Wins |")
-    md.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    md = [
+        "# Hybrid Re-Entry Architecture: Ablation Benchmark & Research Report",
+        f"\n**Date:** {datetime.now(timezone.utc).strftime('%B %d, %Y')}",
+        "**Evaluation Scope:** 11 Crypto Assets (4h bars, Binance 2018-2026 + Hyperliquid HYPE) & US Equities (NVDA, RGNT).",
+        "**Accounting Model:** Strict Finite Cash Account ($3,900 USD crypto, $500 USD equities), realistic taker/FX fees (0.26% crypto, 0.15% equity), no magical refills.",
+        "\n---\n",
+        "## 1. Executive Summary & Test Matrix",
+        "\nThe core problem of the legacy spot DCA engine is the **static post-take-profit re-entry lock**:",
+        r"$$P_t \le P_{\text{last\_sell}} \times (1 - \text{drop\_pct})$$",
+        "In a secular bull market or extended trending rally, this path-dependent anchor guarantees permanent lockout.",
+        "\nTo isolate the mathematical contribution of each decoupled component without confounding variables, five tests were evaluated on the validated base profile (`ov650_t8_brake_gateoff`):\n",
+        "| Test ID | Variant Name | Trend Gate (Macro) | Pullback Trigger (Micro) | Sale Anchor | Stale Barrier TTL |",
+        "|---|---|---|---|---|---|",
+        "| **Test 0** | Baseline (Control) | Off | Off | $P_{\\text{last\\_sell}}$ | None |",
+        "| **Test 1** | Peak-Relative | Off | On (1.5% from Peak) | $\\text{Peak}_{\\text{post\\_sell}}$ | None |",
+        "| **Test 2** | Trend Bypass | On (`bull` regime) | Off (Immediate 0%) | Ignored in Bull | None |",
+        "| **Test 3** | Hybrid | On (`bull` regime) | On (1.5% from Peak) | Peak in Bull, Sale in Chop | None |",
+        "| **Test 4** | Hybrid + TTL | On (`bull` regime) | On (1.5% from Peak) | Peak in Bull, Sale in Chop | 14 Days (336h) |",
+        "\n### Aggregate Multi-Asset Performance (11 Crypto Assets)",
+        "\n| Test ID | Variant Name | Positive Assets | Median Return (%) | Worst Return (%) | Best Return (%) | Median Max DD (%) | Max DD (%) | Time in Market (%) | Cycles | Wins |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
 
     for var in ["Test 0", "Test 1", "Test 2", "Test 3", "Test 4"]:
         if var in summary and isinstance(summary[var], dict):
