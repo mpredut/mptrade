@@ -26,7 +26,8 @@ from botcore import (
 )
 from .spot_rules import check_fast_profit_reversal
 import intelligence.external.guards.smart_stop_loss_guard as _smart_sl_guard
-from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_ratio_to_pct
+from pricewindow import vol_ratio_to_pct
+from intelligence.internal.state.volatility import resolve_cached_volatility_1h
 
 
 

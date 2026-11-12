@@ -40,7 +40,8 @@ from providers.replay_provider import load_price_series
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
-from intelligence.internal.state.volatility import calculate_volatility_1h
+from intelligence.macro_sentiment_ssot import FearGreedSnapshot
+from pricewindow import calculate_volatility_1h
 from intelligence.internal.guards.guard_decision import BrakeAction
 
 # Pillar 2 Microstructure & Derivatives Imports
@@ -59,7 +60,6 @@ from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessmen
 
 # Pillar 4 Sentiment & Market Breadth Imports
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
-from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
 logger = logging.getLogger("intelligence.backtest")
 

@@ -35,20 +35,8 @@ from state_io import (
 )
 from notify_engine.alertnotifiers import (
     AlertNotifier,
-    _AUTO_TOPIC_TAG_RE,
-    _GATE_ACCEPTED_REASONS,
-    _GATE_SUPPRESSED_REASONS,
-    _PRICE_ALERT_SOURCES,
-    _alerts_are_urgent,
-    _canonical_topic_key,
-    _category_for_title_and_source,
-    _clean_str,
-    _external_notifications_disabled,
-    _is_provider_daily_limit,
-    _mark_provider_daily_limit,
-    _queue_max_items,
-    _topic_for_category,
     format_ntfy_url,
+    is_email_mirrored,
     is_fake_alert_text,
     make_bot_event_alert,
     pass_common_gate,
@@ -56,12 +44,24 @@ from notify_engine.alertnotifiers import (
     register_notification_server_cls,
     resolve_topic,
     sanitize_single_line,
+    _alerts_are_urgent,
+    _AUTO_TOPIC_TAG_RE,
+    _canonical_topic_key,
+    _category_for_title_and_source,
+    _clean_str,
+    _external_notifications_disabled,
+    _GATE_ACCEPTED_REASONS,
+    _GATE_SUPPRESSED_REASONS,
+    _is_provider_daily_limit,
+    _mark_provider_daily_limit,
+    _PRICE_ALERT_SOURCES,
+    _queue_max_items,
+    _topic_for_category,
 )
 from notify_engine.mailer import (
-    _config as _email_config,
-    is_email_mirrored,
     last_error_is_auth_failure,
     send_email,
+    _config as _email_config,
 )
 
 _MAX_QUEUE_RETRIES = 5

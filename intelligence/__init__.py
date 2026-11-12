@@ -23,13 +23,9 @@ if TYPE_CHECKING:
     from intelligence.internal.state.persistence import calculate_hurst_exponent, calculate_mann_kendall, classify_hurst_regime
     from intelligence.internal.state.survival import estimate_T, get_trend_survival_metrics, hybrid_T
     from intelligence.internal.state.volatility import (
-        adaptive_thresholds,
-        calculate_volatility_1h,
         get_kalman_state_path,
         resolve_cached_volatility_1h,
         resolve_cached_volatility_1h_pct,
-        vol_pct_to_ratio,
-        vol_ratio_to_pct,
     )
     from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
     from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
@@ -38,8 +34,9 @@ if TYPE_CHECKING:
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
-    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
+    from intelligence.macro_sentiment_ssot import FearGreedSnapshot, MarketBreadthSnapshot
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
     from intelligence.sentiment.gemini_client import GeminiClient
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
@@ -47,6 +44,12 @@ if TYPE_CHECKING:
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, SentimentAdvisorAssessment
     from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
     from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
+    from pricewindow import (
+        adaptive_thresholds,
+        calculate_volatility_1h,
+        vol_pct_to_ratio,
+        vol_ratio_to_pct,
+    )
 
 _LAZY_IMPORTS: dict[str, str] = {
     # Pillar 1: Internal dynamics
@@ -62,10 +65,10 @@ _LAZY_IMPORTS: dict[str, str] = {
     "WeibullExhaustionGuard": "intelligence.internal.guards.exhaustion_guard",
     "NoiseFloorGuard": "intelligence.internal.guards.noise_guard",
     "TrendSignificanceGuard": "intelligence.internal.guards.trend_significance_guard",
-    "calculate_volatility_1h": "intelligence.internal.state.volatility",
-    "adaptive_thresholds": "intelligence.internal.state.volatility",
-    "vol_pct_to_ratio": "intelligence.internal.state.volatility",
-    "vol_ratio_to_pct": "intelligence.internal.state.volatility",
+    "calculate_volatility_1h": "pricewindow",
+    "adaptive_thresholds": "pricewindow",
+    "vol_pct_to_ratio": "pricewindow",
+    "vol_ratio_to_pct": "pricewindow",
     "get_kalman_state_path": "intelligence.internal.state.volatility",
     "resolve_cached_volatility_1h": "intelligence.internal.state.volatility",
     "resolve_cached_volatility_1h_pct": "intelligence.internal.state.volatility",
@@ -93,9 +96,9 @@ _LAZY_IMPORTS: dict[str, str] = {
     # Pillar 3: Sentiment & LLM telemetry
     "GeminiClient": "intelligence.sentiment.gemini_client",
     "FearGreedCollector": "intelligence.sentiment.collectors.fear_greed_collector",
-    "FearGreedSnapshot": "intelligence.sentiment.collectors.fear_greed_collector",
+    "FearGreedSnapshot": "intelligence.macro_sentiment_ssot",
     "MarketBreadthCollector": "intelligence.sentiment.collectors.market_breadth_collector",
-    "MarketBreadthSnapshot": "intelligence.sentiment.collectors.market_breadth_collector",
+    "MarketBreadthSnapshot": "intelligence.macro_sentiment_ssot",
     "SentimentAdvisor": "intelligence.sentiment.sentiment_advisor",
     "SentimentAdvisorAssessment": "intelligence.sentiment.sentiment_advisor",
     "SentimentContrarianTrigger": "intelligence.sentiment.triggers.sentiment_contrarian_trigger",

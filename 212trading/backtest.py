@@ -25,7 +25,6 @@ if ROOT not in sys.path:
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     create_backtest_cli_parser,
-    parse_bt_cli_float,
     print_bt_cli_error,
     resolve_cli_ohlc_and_timestamps,
     run_cli_single_or_sweep_backtest,
@@ -34,14 +33,15 @@ from strategies.replay_metrics import (
 )
 from strategies.spot_replay import scale_subbar_timeout_params
 from botcore import (
-    _parse_bool_flag,
     float_env,
     load_local_module,
+    parse_cli_float as parse_bt_cli_float,
     required_env,
     required_float_env,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    _parse_bool_flag,
 )
 from strategies.base_spot_mixin import parse_max_dca_buys_env
 

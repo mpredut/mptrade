@@ -13,8 +13,8 @@ import copy
 import dataclasses
 
 from botcore import (
-    _parse_bool_flag,
     exact_nonneg_int,
+    is_market_order,
     normalize_epoch_sec,
     normalize_side,
     require_pos_float,
@@ -24,17 +24,17 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
+    _parse_bool_flag,
 )
+from providers.ohlc_utils import validate_ohlc_bars
 from strategies.replay_execution import (
+    choose_intrabar_scenario,
     ExecutionModel,
     FeeModel,
-    choose_intrabar_scenario,
-    is_market_order,
     require_optional_pos_float,
     select_eligible_intrabar_orders,
     split_order_fill,
     unpack_ohlc_bar,
-    validate_ohlc_bars,
 )
 from strategies.replay_metrics import calculate_performance_metrics, round_metric
 from providers.strategy_executor import PairPrecision

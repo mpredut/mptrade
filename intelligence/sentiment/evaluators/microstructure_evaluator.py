@@ -6,7 +6,6 @@ from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
-    _parse_bool_flag,
     clean_scale,
     coerce_dict_maps,
     is_live_network_backfill_enabled,
@@ -15,6 +14,8 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    _parse_bool_flag,
+    _prices_diverged,
 )
 from cachepaths import (
     cache_symbol_variants,
@@ -26,29 +27,29 @@ from cachepaths import (
     is_usd_compatible_pair,
     is_usdc_pair,
 )
-from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
+from intelligence.external.collectors.base_collector import round_spread_bps
+from pricewindow import adaptive_thresholds
+from providers.base import MarketDataProvider
 from intelligence.internal.state import survival as _surv_mod
-from intelligence.internal.state.volatility import adaptive_thresholds
 from intelligence.macro_sentiment_ssot import (
     load_microstructure_cycle_history,
     save_microstructure_cycle_history,
     scan_latest_long_trend_value,
+    _parse_ts_px_row,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
-    TelemetryEvaluatorFactory,
-    TelemetryEvaluatorInterface,
-    _LAST_7D_SPAN_MS_BY_SYM,
-    _auto_px_decimals,
-    _parse_ts_px_row,
-    _prices_diverged,
     apply_short_trend_item,
     compute_7d_range_metrics,
     is_unseeded_kalman_state,
     pct_delta,
     recalculate_live_price_geometry,
+    TelemetryEvaluatorFactory,
+    TelemetryEvaluatorInterface,
+    _auto_px_decimals,
+    _LAST_7D_SPAN_MS_BY_SYM,
 )
 from instrument_registry import casefold_get
-from providers.market_api import MarketDataProvider, api as mkt_api
+from providers.market_api import api as mkt_api
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_evaluator")
 

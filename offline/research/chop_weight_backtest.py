@@ -36,7 +36,7 @@ from state_io import atomic_write_json
 from offline.backtests.evaluation import parse_cli_int
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
-from intelligence.internal.state.volatility import calculate_volatility_1h
+from pricewindow import calculate_volatility_1h
 from intelligence.internal.state.persistence import calculate_mann_kendall
 
 logger = logging.getLogger("chop_backtest")

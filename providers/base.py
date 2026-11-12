@@ -38,7 +38,7 @@ from cachepaths import (  # noqa: F401
 )
 import instrument_registry as _default_ir  # noqa: F401
 
-from .ohlc_utils import extract_yahoo_chart_result_and_quote  # noqa: F401
+from .ohlc_utils import extract_yahoo_chart_result_and_quote, ProviderError
 from .order_id_context import VENUE_PROVIDER_SPECS  # noqa: F401
 from .order_ohlc_utils import (  # noqa: F401
     POST_ONLY_CROSS_TOKENS,
@@ -56,11 +56,10 @@ from .ssot_bridge import (  # noqa: F401
     is_in_live_price_fetch,
     live_price_fetch_context,
 )
-from .strategy_executor import (  # noqa: F401
+from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
     PairPrecision,
-    ProviderError,
     SubmissionRefused,
 )
 from .venue_metadata import ProviderVenueMetadataMixin  # noqa: F401

@@ -36,8 +36,8 @@ from offline.backtests.evaluation import (
     validate_bt_cli_token,
 )
 from providers.market_api import api as mkt
+from strategies.spot_engine import StratParams
 from strategies.spot_replay import (
-    StratParams,
     align_spot_interval_params,
     make_spot_replay_adapter,
     scale_subbar_timeout_params,

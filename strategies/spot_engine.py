@@ -26,7 +26,7 @@ from botcore import (
 from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.order_ohlc_utils import extract_remaining_qty
 from providers.execution_audit import intent_client_order_id
-from providers.strategy_executor import ProviderError
+from providers.ohlc_utils import ProviderError
 from order_lifecycle import StrategyExecutorLifecycleApi, TrackedOrderLifecycle
 
 from . import spot_rules as sr

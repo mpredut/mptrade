@@ -11,7 +11,7 @@ from botcore import (
     safe_float,
     safe_pos_float,
 )
-from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+from intelligence.macro_sentiment_ssot import MarketBreadthSnapshot
 
 
 class MarketBreadthTrigger:

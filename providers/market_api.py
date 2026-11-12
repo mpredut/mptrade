@@ -50,11 +50,11 @@ from .order_ohlc_utils import (  # noqa: F401
     require_int_order_id,
 )
 from .quantity import resolve_assets
+from .ohlc_utils import ProviderError
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
     PairPrecision,
-    ProviderError,
     reconciliation_capabilities_of,
 )
 from market_regime import (

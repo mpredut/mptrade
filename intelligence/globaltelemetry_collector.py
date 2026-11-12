@@ -63,7 +63,7 @@ from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
 from instrument_registry import has_workspace_instrument_sources, is_equity_symbol
-from providers.market_api import MarketDataProvider
+from providers.base import MarketDataProvider
 
 load_tradable_instruments = MarketDataProvider.load_tradable_instruments
 from intelligence.sentiment.collectors.macro_telemetry_collector import (

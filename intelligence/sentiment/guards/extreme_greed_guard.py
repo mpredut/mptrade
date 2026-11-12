@@ -9,7 +9,7 @@ from intelligence.internal.guards.guard_decision import (
     OrderGuardEvaluatorFactory,
 )
 from botcore import clean_scale, normalize_side, safe_thresh
-from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+from intelligence.macro_sentiment_ssot import FearGreedSnapshot
 
 
 class ExtremeGreedGuard(OrderGuardEvaluatorBase):

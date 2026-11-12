@@ -1087,13 +1087,43 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
         "intelligence/sentiment/collectors/market_breadth_collector.py",
     }
     quote_suffix_tokens = {"USDC", "USDT", "USD", "EUR", "FDUSD", "TUSD", "BUSD"}
-    mss_tree = ast.parse((root / "intelligence" / "macro_sentiment_ssot.py").read_text(encoding="utf-8"))
-    mss_reexports = {
-        a.asname or a.name
-        for n in mss_tree.body
-        if isinstance(n, ast.ImportFrom) and n.module in ("botcore", "cachepaths", "state_io")
-        for a in n.names
-    }
+
+    def _rel_to_mod(rel_path: str) -> str:
+        return rel_path[:-12].replace("/", ".") if rel_path.endswith("/__init__.py") else rel_path[:-3].replace("/", ".")
+
+    def _resolve_import_target(rel_path: str, level: int, module: str | None) -> str:
+        base_dir = "/".join(rel_path.split("/")[:-1])
+        base_pkg = base_dir.replace("/", ".")
+        if level == 0 or not base_pkg:
+            return module or ""
+        parts = base_pkg.split(".")
+        keep = parts[: len(parts) - (level - 1)] if level > 1 else parts
+        prefix = ".".join(keep)
+        return f"{prefix}.{module}" if (module and prefix) else (module or prefix)
+
+    pkg_init_mods = {_rel_to_mod(r) for r, _ in prod_files if r.endswith("/__init__.py")}
+    parsed_prod_trees: dict[str, ast.Module] = {}
+    reexport_defs_by_mod: dict[str, set[str]] = {}
+    for rel_s, path_obj in prod_files:
+        mod_name = _rel_to_mod(rel_s)
+        tree = ast.parse(path_obj.read_text(encoding="utf-8"), filename=rel_s)
+        parsed_prod_trees[rel_s] = tree
+        def_set: set[str] = set()
+        imp_set: set[str] = set()
+        for top_n in tree.body:
+            if isinstance(top_n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                def_set.add(top_n.name)
+            elif isinstance(top_n, ast.Assign):
+                for tgt in top_n.targets:
+                    if isinstance(tgt, ast.Name):
+                        def_set.add(tgt.id)
+            elif isinstance(top_n, ast.AnnAssign) and isinstance(top_n.target, ast.Name):
+                def_set.add(top_n.target.id)
+            elif isinstance(top_n, ast.ImportFrom) and top_n.module:
+                for al in top_n.names:
+                    if al.name != "*":
+                        imp_set.add(al.asname or al.name)
+        reexport_defs_by_mod[mod_name] = imp_set - def_set
     order_ohlc_reexports = {
         "ClosedPriceSeries",
         "MANUAL_CID_PREFIXES",
@@ -1180,18 +1210,22 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
             bad_cp = [a.name for a in node.names if a.name in cacheprice_poller_reexports]
             if bad_cp:
                 ssot_violations.append(f"{rel_s}:{lineno}: non-canonical poller re-export import from cacheprice: {bad_cp}")
-        elif rel_s != "intelligence/macro_sentiment_ssot.py" and (
-            node.module == "intelligence.macro_sentiment_ssot"
-            or (rel_s.startswith("intelligence/") and node.module and node.module.endswith("macro_sentiment_ssot"))
-        ):
-            bad_mss = [a.name for a in node.names if a.name in mss_reexports]
-            if bad_mss:
-                ssot_violations.append(
-                    f"{rel_s}:{lineno}: non-canonical botcore/cachepaths/state_io re-export import from macro_sentiment_ssot: {bad_mss}"
-                )
+        if node.module:
+            target_mod = _resolve_import_target(rel_s, node.level, node.module)
+            if (
+                target_mod
+                and target_mod != "botcore"
+                and target_mod not in pkg_init_mods
+                and target_mod in reexport_defs_by_mod
+            ):
+                bad_reexp = [a.name for a in node.names if a.name in reexport_defs_by_mod[target_mod]]
+                if bad_reexp:
+                    ssot_violations.append(
+                        f"{rel_s}:{lineno}: non-canonical transitive re-export import from {target_mod}: {bad_reexp}"
+                    )
 
     for rel_s, path_obj in prod_files:
-        tree = ast.parse(path_obj.read_text(encoding="utf-8"), filename=rel_s)
+        tree = parsed_prod_trees[rel_s]
         seen_top_import_from: set[tuple[int, str]] = set()
         for top_node in tree.body:
             if isinstance(top_node, ast.ImportFrom) and top_node.module:

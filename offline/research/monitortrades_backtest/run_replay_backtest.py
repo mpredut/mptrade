@@ -62,7 +62,7 @@ from state_io import read_text_file
 from providers.market_api import MarketApi
 from instrument import Instrument
 from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss
-from intelligence.internal.state.volatility import calculate_volatility_1h
+from pricewindow import calculate_volatility_1h
 import monitortrades as mt
 import pricewindow as pw
 from offline.research.monitortrades_backtest.replay_trend_source import (

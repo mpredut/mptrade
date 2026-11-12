@@ -47,14 +47,15 @@ ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
 from typing import Any
 from cachepaths import canonical_base_asset, same_canonical_base_asset as _t212_tickers_match
-from intelligence.internal.state.volatility import vol_pct_to_ratio
+from pricewindow import vol_pct_to_ratio
+from providers.ohlc_utils import ProviderError
 from ipo_common import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, trend_slope_pct
 from t212_client import T212Client
 from providers.broker_history import extract_broker_order_ticker as _order_ticker
 from providers.order_ohlc_utils import extract_orig_qty
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
-from providers.strategy_executor import OrderNotFound, ProviderError
+from providers.strategy_executor import OrderNotFound
 from providers.t212_provider import T212Provider
 from strategies.base_spot_mixin import (
     BaseSpotMixin,

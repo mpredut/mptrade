@@ -25,7 +25,6 @@ from strategies.spot_engine import StratParams
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     create_backtest_cli_parser,
-    parse_bt_cli_int,
     print_bt_cli_error,
     resolve_cli_ohlc_and_timestamps,
     run_cli_single_or_sweep_backtest,
@@ -35,6 +34,7 @@ from strategies.replay_metrics import (
 from botcore import (
     add_store_true_cli_args,
     exact_nonneg_int,
+    parse_cli_int as parse_bt_cli_int,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,

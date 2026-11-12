@@ -19,6 +19,7 @@ from botcore import (
     resolve_now_ts,
     safe_float,
     safe_pos_float,
+    _prices_diverged,
 )
 from cachepaths import (
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,
@@ -39,11 +40,13 @@ from cachepaths import (
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
-    SHORT_KINEMATIC_METRIC_KEYS,
     enrich_macro_benchmarks_live_state,
+    format_equity_macro_regime_line,
     read_first_cached_dict,
     resolve_kalman_vel_z,
     resolve_read_json_cached,
+    SHORT_KINEMATIC_METRIC_KEYS,
+    _parse_ts_px_row,
 )
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
@@ -53,63 +56,60 @@ from intelligence.external.collectors.base_collector import (
     get_whale_collector,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
-    _EQ_YAHOO_CHART_MEMO,
-    _LAST_7D_SPAN_MS_BY_SYM,
-    _ensure_cacheprice_classes_bound,
-    _load_stitched_7d_ohlc_closes,
-    _refresh_stale_t212_cached_positions,
-    _resolve_fallback_ohlc_fn,
-    _resolve_live_24trend_current_price,
-    _should_rescale_usd_sibling_walls,
     ensure_fresh_symbol_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
     resolve_cached_btc_24h_change_pct,
     upgrade_tpo_vp_from_ohlc,
+    _ensure_cacheprice_classes_bound,
+    _EQ_YAHOO_CHART_MEMO,
+    _load_stitched_7d_ohlc_closes,
+    _refresh_stale_t212_cached_positions,
+    _resolve_fallback_ohlc_fn,
+    _resolve_live_24trend_current_price,
+    _should_rescale_usd_sibling_walls,
 )
 import intelligence.sentiment.collectors.microstructure_collector as _mc_mod
 from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
-    format_equity_macro_regime_line,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
-    _MICRO_PRICE_ANCHOR_KEYS,
-    _first_variant_dict,
     align_equity_orderbook_to_spot,
     compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
     is_ob_mid_fresher_than_series,
-    is_unseeded_kalman_state,
     reconcile_sibling_flow_and_liq_regimes,
     rescale_orderbook_walls_to_price,
+    _first_variant_dict,
+    _MICRO_PRICE_ANCHOR_KEYS,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     format_recent_fill_subcycle_parts,
     is_last_buy_lot_harvested,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
-    _RTH_VP_ANCHOR_KEYS,
-    _STALE_SHORT_24H_KEYS,
-    AssetSessionPolicy,
-    _apply_24h_series_enrichment,
-    _compute_kalman_from_series,
-    _compute_short_slopes_from_series,
-    _load_stitched_24h_ohlc_points,
-    _parse_ts_px_row,
-    _prices_diverged,
     apply_live_24trend_windows,
     apply_short_trend_item,
-    compute_7d_range_metrics,
+    AssetSessionPolicy,
     compute_24h_price_metrics,
+    compute_7d_range_metrics,
     compute_cross_btc_metrics,
     compute_series_kinematics,
     format_kinematic_parts,
     format_multi_window_slopes_core,
+    is_unseeded_kalman_state,
     pct_delta,
     recalculate_live_price_geometry,
     round_opt_px,
+    _apply_24h_series_enrichment,
+    _compute_kalman_from_series,
+    _compute_short_slopes_from_series,
+    _LAST_7D_SPAN_MS_BY_SYM,
+    _load_stitched_24h_ohlc_points,
+    _RTH_VP_ANCHOR_KEYS,
+    _STALE_SHORT_24H_KEYS,
 )
 from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open
 from state_io import (

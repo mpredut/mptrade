@@ -38,11 +38,11 @@ from strategies.spot_replay import (  # noqa: E402
     scale_subbar_timeout_params,
 )
 from strategy import Strategy, StratParams, HL_FEE_PCT  # noqa: E402
-from strategies.replay_execution import (  # noqa: E402
-    ExecutionModel,
+from providers.ohlc_utils import validate_ohlc_bars
+from strategies.replay_execution import (
     choose_intrabar_scenario,
+    ExecutionModel,
     split_order_fill,
-    validate_ohlc_bars,
 )
 from strategies.replay_metrics import round_metric  # noqa: E402
 

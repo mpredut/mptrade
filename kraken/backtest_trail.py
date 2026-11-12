@@ -26,6 +26,7 @@ if _ROOT not in sys.path:
 
 from botcore import (
     normalize_epoch_sec,
+    parse_cli_int as parse_bt_cli_int,
     require_nonneg_float,
     require_pos_float,
     safe_int,
@@ -35,11 +36,7 @@ from botcore import (
 from kraken.backtest import _bt_params, fetch_candles, simulate  # noqa: F401
 from kraken.market_data import fetch_ohlc_candles
 from strategies import spot_replay as rp
-from strategies.replay_metrics import (
-    buy_hold_pct as bh,
-    parse_bt_cli_int,
-    validate_bt_cli_token,
-)
+from strategies.replay_metrics import buy_hold_pct as bh, validate_bt_cli_token
 
 
 _ISOLATED_COMPARISON_OVERRIDES = {

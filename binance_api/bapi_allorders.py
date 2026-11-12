@@ -21,16 +21,14 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
+    _parse_bool_flag,
 )
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from providers.ssot_bridge import ProviderSsotBridgeMixin
 
 
-from .bapi import (
-    _normalize_side,
-    _parse_bool_flag,
-)
+from .bapi import _normalize_side
 
 
 def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,

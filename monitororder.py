@@ -14,7 +14,8 @@ extract_client_order_id = rc.extract_client_order_id
 from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
 api = mkt
-from providers.strategy_executor import ProviderError, SubmissionRefused
+from providers.ohlc_utils import ProviderError
+from providers.strategy_executor import SubmissionRefused
 import order_retry
 import order_lifecycle
 from botcore import (

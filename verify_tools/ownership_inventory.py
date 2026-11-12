@@ -21,10 +21,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import _parse_bool_flag, load_ini_config, parse_dotenv  # noqa: E402
+from botcore import (
+    load_ini_config,
+    parse_dotenv,
+    parse_procs_manifest,
+    _parse_bool_flag,
+)
 from cachepaths import normalize_venue_name, split_symbol_assets  # noqa: E402
 from instrument_registry import single_symbol_for, symbols_for  # noqa: E402
-from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest  # noqa: E402
 from providers.quantity import resolve_assets  # noqa: E402
 from state_io import encode_json_payload  # noqa: E402
 

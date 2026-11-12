@@ -54,7 +54,8 @@ from providers.execution_audit import AuditedStrategyExecutor
 from providers.market_api import api as mkt
 api = mkt
 from providers.quantity import balance_cap_quantity, decide_quantity
-from providers.strategy_executor import ProviderError, SubmissionRefused
+from providers.ohlc_utils import ProviderError
+from providers.strategy_executor import SubmissionRefused
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 from strategies.rtrade_pair import (
     OrderSnapshot as PairOrderSnapshot,

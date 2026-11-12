@@ -1,5 +1,5 @@
 """Reusable local synchronization primitives (`FileLock`)."""
-from .cooldown import FileLock
+from botcore import FileLock
 
 __all__ = ["FileLock"]
 

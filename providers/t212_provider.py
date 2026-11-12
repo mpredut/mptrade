@@ -42,7 +42,7 @@ from .broker_history import (
     iter_broker_history_order_fills,
     normalize_broker_history_items,
 )
-from .ohlc_utils import candles_to_historical_points
+from .ohlc_utils import candles_to_historical_points, ProviderError
 from .order_ohlc_utils import (
     build_open_order_entry,
     normalize_order,
@@ -55,7 +55,6 @@ from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
     PairPrecision,
-    ProviderError,
     SubmissionRefused,
 )
 from credentials import t212_credentials

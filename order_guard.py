@@ -74,7 +74,8 @@ import llm_order_guard as _llm_order_guard
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
 import providers.market_api as _market_api_mod
 import providers.order_id_context as _order_id_ctx
-from providers.strategy_executor import ProviderError, SubmissionRefused
+from providers.ohlc_utils import ProviderError
+from providers.strategy_executor import SubmissionRefused
 import qlimit_order_guard as _qlimit_order_guard
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()

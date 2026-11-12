@@ -11,7 +11,7 @@ from botcore import (
     safe_pos_float,
     safe_thresh,
 )
-from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+from intelligence.macro_sentiment_ssot import FearGreedSnapshot
 
 
 class SentimentContrarianTrigger:

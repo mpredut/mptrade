@@ -26,11 +26,13 @@ from cachepaths import (
     normalize_venue_name,
 )
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
-from intelligence.macro_sentiment_ssot import SHORT_KINEMATIC_METRIC_KEYS
-from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-    format_bottom_structure_6h_parts,
+from intelligence.macro_sentiment_ssot import (
     format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
+    SHORT_KINEMATIC_METRIC_KEYS,
+)
+from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+    format_bottom_structure_6h_parts,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_liquidation_clusters,

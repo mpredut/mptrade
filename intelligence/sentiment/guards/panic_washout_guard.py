@@ -15,8 +15,7 @@ from botcore import (
     safe_float,
     safe_thresh,
 )
-from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+from intelligence.macro_sentiment_ssot import FearGreedSnapshot, MarketBreadthSnapshot
 
 
 class PanicWashoutGuard(OrderGuardEvaluatorBase):

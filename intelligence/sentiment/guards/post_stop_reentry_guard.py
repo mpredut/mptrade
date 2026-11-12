@@ -40,12 +40,14 @@ from intelligence.internal.guards.guard_decision import (
 )
 from cachepaths import clean_symbol_key
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
-from intelligence.sentiment.guards.high_stake_guard import (
-    DEFAULT_LLM_GUARD_CACHE_TTL_SEC,
-    PreTradeLLMGuardBase,
+from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
     PretradeTelemetrySnapshot,
+)
+from intelligence.sentiment.guards.high_stake_guard import (
     collect_pretrade_telemetry,
+    DEFAULT_LLM_GUARD_CACHE_TTL_SEC,
     is_llm_guard_exempt,
+    PreTradeLLMGuardBase,
 )
 import notify_engine.alertnotifiers as _alertnotifiers
 

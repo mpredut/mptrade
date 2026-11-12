@@ -166,6 +166,7 @@ from cachepaths import (
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
+    resolve_cachedb_filepath,
 )
 from instrument_registry import casefold_get, symbols_for
 from state_io import (
@@ -173,7 +174,6 @@ from state_io import (
     read_json_file,
     read_json_recovering as _default_read_json_recovering,
     read_text_lines,
-    resolve_cachedb_filepath,
     save_json_state as _default_save_json_state,
 )
 

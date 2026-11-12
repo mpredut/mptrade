@@ -19,7 +19,7 @@ from cachepaths import (
     normalize_venue_name,
     split_symbol_assets,
 )
-from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
+from intelligence.external.collectors.base_collector import round_spread_bps
 from botcore import (
     coerce_dict_maps,
     compute_venue_nav_breakdown,
