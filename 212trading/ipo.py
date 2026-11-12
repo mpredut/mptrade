@@ -43,6 +43,7 @@ from botcore import (  # noqa: E402
     float_env,
     log,
     optional_env,
+    parse_pos_cli_float,
     required_bool_env,
     required_env,
     required_float_env,
@@ -90,7 +91,7 @@ def main() -> int:
     ap.add_argument("--env-file",          default=env_file)
     ap.add_argument("--symbol",            metavar="T212_TICKER",
                     help="Override the instrument (otherwise T212_TICKER from .env)")
-    ap.add_argument("--interval",          type=float,
+    ap.add_argument("--interval",          type=parse_pos_cli_float,
                     default=required_float_env("POLL_SECONDS"))
     add_paper_skip_wait_cli_args(
         ap,

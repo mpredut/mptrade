@@ -17,6 +17,8 @@ from botcore import (
     _parse_bool_flag,
     exact_int,
     exact_nonneg_int,
+    parse_cli_float as parse_bt_cli_float,
+    parse_cli_int as parse_bt_cli_int,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -245,33 +247,6 @@ def buy_hold_pct(ohlc_or_closes: Sequence) -> float:
     if c0 is None or c1 is None:
         return 0.0
     return (c1 - c0) / c0 * 100.0
-
-
-def _bind_bt_cli_parser(name: str, coercer, label: str, doc: str):
-    def _parse(raw: Any):
-        val = coercer(raw, default=None)
-        if val is None:
-            raise argparse.ArgumentTypeError(f"invalid {label} value: {raw!r}")
-        return val
-
-    _parse.__name__ = name
-    _parse.__qualname__ = name
-    _parse.__doc__ = doc
-    return _parse
-
-
-parse_bt_cli_float = _bind_bt_cli_parser(
-    "parse_bt_cli_float",
-    safe_float,
-    "finite float",
-    "Parse a finite CLI float argument, rejecting NaN/Inf/booleans.",
-)
-parse_bt_cli_int = _bind_bt_cli_parser(
-    "parse_bt_cli_int",
-    exact_int,
-    "integer",
-    "Parse an exact CLI integer argument, rejecting floats/NaN/Inf/booleans.",
-)
 
 
 def _extract_cycle_win_stats(md: Any, b_val: float) -> tuple[float, int, int, float, float]:

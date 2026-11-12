@@ -40,6 +40,7 @@ from botcore import (
     load_env_stack,
     log,
     optional_env,
+    parse_pos_cli_float,
     required_bool_env,
     required_env,
     required_float_env,
@@ -496,7 +497,7 @@ def main() -> int:
     ap.add_argument("--trial", action="store_true",
                     help="an end-to-end DRILL with ZERO money: an existing asset as a simulated allocation, a PAPER bot, the watchdog tested, cleanup at the end")
     ap.add_argument("--desktop", action="store_true")
-    ap.add_argument("--interval", type=float,
+    ap.add_argument("--interval", type=parse_pos_cli_float,
                     default=required_float_env("XSTOCK_CHECK_MINUTES"), help="minutes")
     args = ap.parse_args()
     if not args.status and not args.trial:

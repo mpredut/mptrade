@@ -35,7 +35,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_nonneg_int
+from botcore import parse_nonneg_cli_int, safe_nonneg_int
 from state_io import read_text_file
 
 # Detection dictionary. Diacritics are conclusive on their own; the word list holds
@@ -271,9 +271,9 @@ def main() -> int:
 
     scan = sub.add_parser("scan", help="report blocks that still look Romanian")
     scan.add_argument("targets", nargs="+", help="files or directories")
-    scan.add_argument("--min-score", type=int, default=2,
+    scan.add_argument("--min-score", type=parse_nonneg_cli_int, default=2,
                       help="report a block at or above this score (default: 2)")
-    scan.add_argument("--limit", type=int, default=6,
+    scan.add_argument("--limit", type=parse_nonneg_cli_int, default=6,
                       help="blocks shown per file (default: 6)")
     scan.add_argument("--all", action="store_true", help="show every block")
     scan.set_defaults(func=cmd_scan)

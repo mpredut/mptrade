@@ -33,6 +33,7 @@ from botcore import (
     is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
+    parse_pos_cli_float,
     parse_symbol_list,
     safe_nonneg_float,
     safe_pos_float,
@@ -438,7 +439,7 @@ def main() -> None:
                         help="Override supervisor_mode from order_guard.conf (bounds trading and self-heal)")
     parser.add_argument("--focus-symbols", default="",
                         help="Optional comma-separated priority watchlist (by default all live coins are evaluated)")
-    parser.add_argument("--lookback-hours", type=float, default=24.0,
+    parser.add_argument("--lookback-hours", type=parse_pos_cli_float, default=24.0,
                         help="Log anomaly lookback window in hours (default: 24; 0.2 for 10-minute runs)")
     parser.add_argument("--force-rth-open", action="store_true",
                         help="Allow auto_sharetrade_executor evaluation even outside US Regular Trading Hours")

@@ -37,6 +37,8 @@ from botcore import (
     normalize_epoch_sec,
     normalize_trend_direction,
     obj_attr,
+    parse_pos_cli_float,
+    parse_pos_cli_int,
     resolve_now_ts,
     resolve_patched_attr,
     safe_float,
@@ -1037,10 +1039,10 @@ def _read_cached_price_history(
 def main() -> int:
     ap = argparse.ArgumentParser(description="Empirical trend survival analysis.")
     ap.add_argument("--symbol", default="BTCUSDC")
-    ap.add_argument("--days", type=int, default=700)
-    ap.add_argument("--window", type=int, default=24, help="hours per window")
-    ap.add_argument("--step", type=int, default=8)
-    ap.add_argument("--T", type=float, default=14.0, help="prior Gaussian horizon (days)")
+    ap.add_argument("--days", type=parse_pos_cli_int, default=700)
+    ap.add_argument("--window", type=parse_pos_cli_int, default=24, help="hours per window")
+    ap.add_argument("--step", type=parse_pos_cli_int, default=8)
+    ap.add_argument("--T", type=parse_pos_cli_float, default=14.0, help="prior Gaussian horizon (days)")
     args = add_store_true_cli_args(ap, ("--estimate", "only estimate T and exit")).parse_args()
 
     if args.estimate:

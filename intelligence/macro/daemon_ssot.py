@@ -26,6 +26,7 @@ from botcore import (
     obj_attr,
     obj_float,
     parse_dotenv,
+    parse_pos_cli_float,
     required_float_env,
     resolve_now_ts,
     resolve_patched_attr,
@@ -485,7 +486,7 @@ def add_external_telemetry_cli_args(
         ("--whale-interval", whale_default, "Whale positioning refresh interval in seconds."),
         *((name, None, hlp) for name, hlp in extra_float_flags),
     ):
-        parser.add_argument(flag_name, type=float, default=default_val, help=flag_help)
+        parser.add_argument(flag_name, type=parse_pos_cli_float, default=default_val, help=flag_help)
     return parser
 
 
@@ -501,7 +502,7 @@ def add_macro_analyzer_cli_args(parser: Any) -> Any:
         ("--macro-llm-interval", "Geopolitical LLM evaluation interval in seconds."),
         ("--advisor-interval", "Market advisor synthesis interval in seconds."),
     ):
-        parser.add_argument(flag_name, type=float, default=None, help=flag_help)
+        parser.add_argument(flag_name, type=parse_pos_cli_float, default=None, help=flag_help)
     return parser
 
 

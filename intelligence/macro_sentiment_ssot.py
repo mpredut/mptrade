@@ -188,12 +188,39 @@ DEFAULT_CRONTAB_PATH = os.path.join(_ROOT_DIR, "systemd", "crontab.prod.txt")
 _CRONTAB_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "interval_sec": None}
 
 
+_MACRO_CFG_PATCH_MODULES: Tuple[str, ...] = (
+    "intelligence.macro_sentiment_ssot",
+    "macro_sentiment_ssot",
+    "intelligence.macro.lexicon_ssot",
+)
+_ORIG_MACRO_CFG_ATTRS: Dict[str, Any] = {
+    "DEFAULT_MACRO_CONFIG_PATH": DEFAULT_MACRO_CONFIG_PATH,
+}
+
+
+def _resolve_macro_cfg_attr(
+    name: str,
+    current_val: Any,
+    *,
+    require_callable: bool = True,
+) -> Any:
+    orig = _ORIG_MACRO_CFG_ATTRS.get(name, current_val)
+    return resolve_patched_attr(
+        name,
+        orig,
+        local_val=current_val,
+        defaults=(orig,),
+        modules=_MACRO_CFG_PATCH_MODULES,
+        require_callable=require_callable,
+    )
+
+
 def load_macro_intelligence_config(config_path: Optional[str] = None) -> configparser.ConfigParser:
     """Load ``macro_intelligence.conf`` with automatic mtime-based hot reload."""
-    default_path = resolve_patched_attr(
+    default_path = _resolve_macro_cfg_attr(
         "DEFAULT_MACRO_CONFIG_PATH",
         DEFAULT_MACRO_CONFIG_PATH,
-        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
+        require_callable=False,
     )
     target = config_path or _botcore.optional_env("MACRO_INTELLIGENCE_CONF") or default_path
     try:
@@ -204,34 +231,23 @@ def load_macro_intelligence_config(config_path: Optional[str] = None) -> configp
 
 
 def _cfg_str(section: str, key: str, fallback: str = "", config_path: Optional[str] = None) -> str:
-    loader = resolve_patched_attr(
-        "load_macro_intelligence_config",
-        load_macro_intelligence_config,
-        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
-        require_callable=True,
-    )
+    loader = _resolve_macro_cfg_attr("load_macro_intelligence_config", load_macro_intelligence_config)
     cfg = loader(config_path)
     return cfg.get(section, key).strip() if cfg.has_option(section, key) else fallback
 
 
+_ORIG_MACRO_CFG_ATTRS["load_macro_intelligence_config"] = load_macro_intelligence_config
+_ORIG_MACRO_CFG_ATTRS["_cfg_str"] = _cfg_str
+
+
 def _cfg_float(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
-    cfg_str_fn = resolve_patched_attr(
-        "_cfg_str",
-        _cfg_str,
-        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
-        require_callable=True,
-    )
+    cfg_str_fn = _resolve_macro_cfg_attr("_cfg_str", _cfg_str)
     return safe_float(cfg_str_fn(section, key, "", config_path=config_path), fallback)
 
 
 def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
     """Parse a float or rational multiplier expression (e.g. ``1/24``, ``5/6``, ``5/3``) from config."""
-    cfg_str_fn = resolve_patched_attr(
-        "_cfg_str",
-        _cfg_str,
-        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
-        require_callable=True,
-    )
+    cfg_str_fn = _resolve_macro_cfg_attr("_cfg_str", _cfg_str)
     raw = cfg_str_fn(section, key, "", config_path=config_path)
     if not raw:
         return fallback
@@ -245,12 +261,7 @@ def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[st
 
 
 def _cfg_int(section: str, key: str, fallback: int, config_path: Optional[str] = None) -> int:
-    cfg_str_fn = resolve_patched_attr(
-        "_cfg_str",
-        _cfg_str,
-        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
-        require_callable=True,
-    )
+    cfg_str_fn = _resolve_macro_cfg_attr("_cfg_str", _cfg_str)
     return safe_int(cfg_str_fn(section, key, "", config_path=config_path), fallback)
 
 
@@ -586,12 +597,7 @@ DEFAULT_FALLBACK_RETRY_TTL_SEC: float = _INIT_DERIVED_INTERVALS["default_fallbac
 
 def _bind_feed_url_getter(key: str, doc: str) -> Callable[[Optional[str]], str]:
     def _get(config_path: Optional[str] = None) -> str:
-        cfg_str_fn = resolve_patched_attr(
-            "_cfg_str",
-            _cfg_str,
-            modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot"),
-            require_callable=True,
-        )
+        cfg_str_fn = _resolve_macro_cfg_attr("_cfg_str", _cfg_str)
         return cfg_str_fn("feeds", key, "", config_path=config_path)
 
     _get.__name__ = f"get_{key}"

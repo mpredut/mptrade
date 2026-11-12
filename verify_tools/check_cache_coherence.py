@@ -9,7 +9,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import coerce_dict_maps, extract_current_price_item, normalize_epoch_sec, safe_nonneg_int, safe_pos_float  # noqa: E402
+from botcore import coerce_dict_maps, extract_current_price_item, first_epoch_sec, first_pos_float, normalize_epoch_sec, safe_nonneg_int  # noqa: E402
 from cachepaths import cache_symbol_variants, is_primary_stream_venue  # noqa: E402
 from instrument_registry import casefold_get, select_instruments, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
@@ -42,22 +42,36 @@ def main() -> int:
 
     # 1. short trend
     raw_st = read_json_dict(os.path.join(CACHEDB, "cache_short_trend.json"), default=None, recover_previous=True) or {}
-    it = raw_st.get("items") if isinstance(raw_st.get("items"), dict) else raw_st
-    print(f"-- cache_short_trend.json: {sorted(it.keys())}")
+    (st_d,) = coerce_dict_maps(raw_st)
+    it, st_fetchtime = coerce_dict_maps(st_d.get("items", st_d), st_d.get("fetchtime"))
+    print(f"-- cache_short_trend.json: {sorted(k for k in it.keys() if k != 'fetchtime')}")
     for s in exp:
         e = None
+        matched_st = s
         for cand in cache_symbol_variants(s, include_original=True, include_base=True):
             cand_entry = casefold_get(it, cand)
             if isinstance(cand_entry, dict) and cand_entry:
                 e = cand_entry
+                matched_st = cand
                 break
         if not isinstance(e, dict) or not e:
             _record_symbol_status("short_trend", s, status="MISSING")
             continue
-        ts_val = safe_pos_float(e.get("ts"), default=0.0)
+        ts_val = (
+            first_epoch_sec(
+                e.get("ts"),
+                e.get("timestamp"),
+                e.get("time"),
+                casefold_get(st_fetchtime, matched_st),
+                casefold_get(st_fetchtime, s),
+                default=0.0,
+                allow_iso=True,
+            )
+            or 0.0
+        )
         age = now - ts_val if ts_val > 0 else 1e9
-        px = e.get("current_price")
-        px_ok = safe_pos_float(px, default=None) is not None
+        px = first_pos_float(e.get("current_price"), e.get("price"), default=None)
+        px_ok = px is not None
         ok = -5.0 <= age < STALE_S and px_ok
         if not ok:
             problems.append(f"short_trend {s} age={age:.0f}s px={px}")
@@ -86,7 +100,7 @@ def main() -> int:
             continue
 
         px_val = extract_current_price_item(entries) or 0.0
-        ts_raw = None
+        ts_sec_val = 0.0
         ft_matched = casefold_get(fetchtime_map, matched_key)
         ft_sym = casefold_get(fetchtime_map, s)
         invalid_list = False
@@ -95,23 +109,27 @@ def main() -> int:
             if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:
                 invalid_list = True
             else:
-                ts_raw = last_entry[0]
+                ts_sec_val = normalize_epoch_sec(last_entry[0], default=0.0) or 0.0
         elif isinstance(entries, dict):
-            ts_raw = (
-                entries.get("ts")
-                or entries.get("timestamp")
-                or entries.get("time")
-                or ft_matched
-                or ft_sym
+            ts_sec_val = (
+                first_epoch_sec(
+                    entries.get("ts"),
+                    entries.get("timestamp"),
+                    entries.get("time"),
+                    ft_matched,
+                    ft_sym,
+                    default=0.0,
+                    allow_iso=True,
+                )
+                or 0.0
             )
         else:
-            ts_raw = ft_matched or ft_sym
+            ts_sec_val = first_epoch_sec(ft_matched, ft_sym, default=0.0, allow_iso=True) or 0.0
 
         if invalid_list or px_val <= 0:
             _record_symbol_status("currentprice", sym=s, status="INVALID")
             continue
 
-        ts_sec_val = normalize_epoch_sec(ts_raw, default=0.0) or 0.0
         age = (now - ts_sec_val) if ts_sec_val > 0 else 1e9
         ok = -5.0 <= age < STALE_S and px_val > 0
         if not ok:

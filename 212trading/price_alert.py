@@ -28,6 +28,7 @@ from botcore import (  # noqa: E402
     format_price_log,
     log,
     optional_env,
+    parse_cli_float,
     safe_pos_float,
 )
 ensure_local_module_priority(_HERE, "ipo_common", "market_data")
@@ -57,8 +58,8 @@ def push(topic: str, title: str, body: str) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser(description="ntfy alert on a price threshold (Yahoo).")
     ap.add_argument("symbol")
-    ap.add_argument("--below", type=float, help="alert when the price <= this threshold")
-    ap.add_argument("--above", type=float, help="alert when the price >= this threshold")
+    ap.add_argument("--below", type=parse_cli_float, help="alert when the price <= this threshold")
+    ap.add_argument("--above", type=parse_cli_float, help="alert when the price >= this threshold")
     ap.add_argument("--topic", default=None, help="the ntfy topic (otherwise NTFY_TOPIC from .env)")
     ap.add_argument("--state", default=None)
     args = parse_t212_cli_args(ap, _HERE)

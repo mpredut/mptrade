@@ -16,6 +16,7 @@ from botcore import (
     _parse_bool_flag,
     clean_scale,
     normalize_epoch_sec,
+    parse_pos_cli_float,
     safe_float,
     safe_int,
     safe_nonneg_int,
@@ -315,7 +316,7 @@ def main():
         ("--qty", 1.0, "Order quantity for guard test (default: 1.0)."),
         ("--notional", 250.0, "Order notional in EUR for guard test (default: 250.0)."),
     ):
-        parser.add_argument(flag_name, type=float, default=default_val, help=flag_help)
+        parser.add_argument(flag_name, type=parse_pos_cli_float, default=default_val, help=flag_help)
 
     args = parser.parse_args()
     symbol = args.symbol.strip().upper()

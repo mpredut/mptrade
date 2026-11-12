@@ -17,6 +17,7 @@ from botcore import (
     bind_attr_call,
     exact_int,
     exact_nonneg_int,
+    first_epoch_sec,
     first_pos_float,
     format_price_log,
     load_dotenv,
@@ -339,8 +340,7 @@ class _LivePairVenue:
         req_px_f = None if requested_price is None else safe_pos_float(requested_price, default=None)
         if requested_price is not None and req_px_f is None:
             raise ValueError(f"invalid requested_price in rtrade intent {kind}:{side}")
-        raw_created = pending.get("created_at") or record.get("created_ts")
-        created_f = normalize_epoch_sec(raw_created, default=None)
+        created_f = first_epoch_sec(pending.get("created_at"), record.get("created_ts"), default=None)
         pending.update({
             "intent_id": pending.get("intent_id") or self._intent_id(record["pair_id"], side, kind),
             "client_order_id": pending["client_order_id"],
@@ -375,14 +375,13 @@ class _LivePairVenue:
                 return val_f
 
             r_started = _pending_ts("recovery_started_at", "recovery timing")
-            horizon_hit = r_started is not None and max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC
-            if horizon_hit:
-                pending.update(recovery_state="horizon_exhausted", recovery_horizon_exhausted_at=now)
-            if horizon_hit or pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}:
+            if pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}:
                 persist_raw(pending)
-                raise _IntentRecoveryPending(
-                    f"{kind}:{side} {'recovery horizon is exhausted' if horizon_hit else 'requires manual reconciliation'}"
-                )
+                raise _IntentRecoveryPending(f"{kind}:{side} requires manual reconciliation")
+            if r_started is not None and max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC:
+                pending.update(recovery_state="horizon_exhausted", recovery_horizon_exhausted_at=now)
+                persist_raw(pending)
+                raise _IntentRecoveryPending(f"{kind}:{side} recovery horizon is exhausted")
             n_rec = _pending_ts("next_recovery_at", "next recovery time")
             if n_rec is not None and now < n_rec:
                 raise _IntentRecoveryPending(f"{kind}:{side} reconciliation is not due yet")

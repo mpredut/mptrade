@@ -31,6 +31,7 @@ from botcore import (
     add_store_true_cli_args,
     evaluate_heartbeat_files_freshness,
     load_key_value_conf,
+    parse_pos_cli_float,
     parse_procs_manifest,
     resolve_heartbeat_paths,
     safe_pos_float,
@@ -278,7 +279,7 @@ def harvest_fleet_and_system_telemetry(workspace_dir: str) -> tuple[List[Dict[st
 def main() -> None:
     parser = argparse.ArgumentParser(description="Autonomous Overnight Fleet & Backtest Monitor")
     add_store_true_cli_args(parser, ("--once", "Run a single check and exit"))
-    parser.add_argument("--interval", type=float, default=60.0, help="Loop interval in seconds")
+    parser.add_argument("--interval", type=parse_pos_cli_float, default=60.0, help="Loop interval in seconds")
     args = parser.parse_args()
 
     monitor = FleetHealthMonitor()

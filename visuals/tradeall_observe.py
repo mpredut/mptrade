@@ -45,6 +45,7 @@ from active_intents import build_active_intent_index
 from botcore import (
     lru_dict_put,
     normalize_trend_direction,
+    parse_cli_float,
     require_pos_float,
     safe_float,
     safe_int,
@@ -831,7 +832,7 @@ def main():
         ("--day-refresh", 30.0, "how often, in seconds, the DAY chart is redrawn (default 30)"),
         ("--week-refresh", 300.0, "how often, in seconds, the WEEK chart is redrawn (default 300)"),
     ):
-        parser.add_argument(flag, type=float, default=default_val, help=help_text)
+        parser.add_argument(flag, type=parse_cli_float, default=default_val, help=help_text)
     parser.add_argument("--backtest-dir", default=None,
                          help="if given: BACKTEST mode — it renders the folder of an "
                               "offline/backtests/tradeall.py run instead of running live")
@@ -850,7 +851,7 @@ def main():
             "the events appear on the frame exactly when the backtester reaches them)",
         ),
     ):
-        parser.add_argument(flag, type=float, default=None, help=help_text)
+        parser.add_argument(flag, type=parse_cli_float, default=None, help=help_text)
     args = parser.parse_args()
     interval_sec = require_pos_float(args.interval, name="--interval")
     live_minutes = require_pos_float(args.live_minutes, name="--live-minutes")

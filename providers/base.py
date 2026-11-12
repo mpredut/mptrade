@@ -45,7 +45,7 @@ from cachepaths import (
 )
 import instrument_registry as _default_ir
 
-
+_ORIG_LOAD_LOCAL_MODULE = load_local_module
 _LIVE_FETCH_LOCAL = threading.local()
 
 
@@ -1568,8 +1568,10 @@ class MarketDataProvider(ABC):
         if mod_dir:
             loader = resolve_patched_attr(
                 "load_local_module",
-                load_local_module,
-                modules=(type(self).__module__,),
+                _ORIG_LOAD_LOCAL_MODULE,
+                local_val=load_local_module,
+                defaults=(_ORIG_LOAD_LOCAL_MODULE,),
+                modules=(type(self).__module__, __name__),
                 require_callable=True,
             ) or load_local_module
             md = loader(mod_dir, mod_name)

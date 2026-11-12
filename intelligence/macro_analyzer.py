@@ -25,6 +25,7 @@ if _ROOT_DIR not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
+    first_epoch_sec,
     is_interval_due,
     load_dotenv,
     safe_nonneg_ts,
@@ -125,11 +126,14 @@ class MacroAnalyzer:
         )
         self.gemini_advisor = self.sentiment_advisor
 
-        cached_geo_ts = safe_nonneg_ts(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0), 0.0)
-        cached_adv_ts = safe_nonneg_ts(
-            obj_attr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts")
-            or getattr(self.sentiment_advisor, "_last_eval_ts", 0.0),
-            0.0,
+        cached_geo_ts = first_epoch_sec(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0), default=0.0) or 0.0
+        cached_adv_ts = (
+            first_epoch_sec(
+                obj_attr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts"),
+                getattr(self.sentiment_advisor, "_last_eval_ts", 0.0),
+                default=0.0,
+            )
+            or 0.0
         )
         self._last_macro_llm_ts = self._last_notified_geo_ts = cached_geo_ts
         self._last_advisor_ts = self._last_notified_advisor_ts = cached_adv_ts

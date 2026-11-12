@@ -80,6 +80,7 @@ from providers.strategy_executor import ProviderError, SubmissionRefused
 import qlimit_order_guard as _qlimit_order_guard
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()
+_ORIG_GET_WEIGHT_FOR_CASH_PERMISSION = get_weight_for_cash_permission_at_quant_time
 _MARGINS = _gh._MARGINS
 _MARGINS_FILE_MTIME: float = _gh._MARGINS_FILE_MTIME
 _MARGINS_LAST_CHECK: float = _gh._MARGINS_LAST_CHECK
@@ -643,8 +644,10 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
         try:
             weight_fn = resolve_patched_attr(
                 "get_weight_for_cash_permission_at_quant_time",
-                get_weight_for_cash_permission_at_quant_time,
-                modules=("priceAnalysis", "intelligence.internal.state.survival"),
+                _ORIG_GET_WEIGHT_FOR_CASH_PERMISSION,
+                local_val=get_weight_for_cash_permission_at_quant_time,
+                defaults=(_ORIG_GET_WEIGHT_FOR_CASH_PERMISSION,),
+                modules=("order_guard", "priceAnalysis", "intelligence.internal.state.survival"),
                 require_callable=True,
             )
             val = weight_fn(sym, order_type)

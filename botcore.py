@@ -1019,6 +1019,57 @@ def load_cli_env_stack(
     return env_file
 
 
+def _bind_cli_parser(name: str, coercer, label: str, doc: str):
+    def _parse(raw: object):
+        val = coercer(raw, default=None)
+        if val is None:
+            raise argparse.ArgumentTypeError(f"invalid {label} value: {raw!r}")
+        return val
+
+    _parse.__name__ = name
+    _parse.__qualname__ = name
+    _parse.__doc__ = doc
+    return _parse
+
+
+parse_cli_float = _bind_cli_parser(
+    "parse_cli_float",
+    safe_float,
+    "finite float",
+    "Parse a finite CLI float argument, rejecting NaN/Inf/booleans.",
+)
+parse_pos_cli_float = _bind_cli_parser(
+    "parse_pos_cli_float",
+    safe_pos_float,
+    "positive float",
+    "Parse a strictly positive finite CLI float argument, rejecting <= 0/NaN/Inf/booleans.",
+)
+parse_nonneg_cli_float = _bind_cli_parser(
+    "parse_nonneg_cli_float",
+    safe_nonneg_float,
+    "non-negative float",
+    "Parse a non-negative finite CLI float argument, rejecting < 0/NaN/Inf/booleans.",
+)
+parse_cli_int = _bind_cli_parser(
+    "parse_cli_int",
+    exact_int,
+    "integer",
+    "Parse an exact CLI integer argument, rejecting floats/NaN/Inf/booleans.",
+)
+parse_pos_cli_int = _bind_cli_parser(
+    "parse_pos_cli_int",
+    exact_pos_int,
+    "positive integer",
+    "Parse a strictly positive exact CLI integer argument, rejecting <= 0/floats/NaN/Inf/booleans.",
+)
+parse_nonneg_cli_int = _bind_cli_parser(
+    "parse_nonneg_cli_int",
+    exact_nonneg_int,
+    "non-negative integer",
+    "Parse a non-negative exact CLI integer argument, rejecting < 0/floats/NaN/Inf/booleans.",
+)
+
+
 def create_env_cli_parser(description: str, env_file: str) -> argparse.ArgumentParser:
     """Create an ``ArgumentParser`` pre-populated with ``--env-file``."""
     ap = argparse.ArgumentParser(description=description)

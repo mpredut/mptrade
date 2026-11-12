@@ -33,6 +33,7 @@ from botcore import (
     load_env_stack,
     log,
     optional_env,
+    parse_pos_cli_int,
     required_bool_env,
     required_env,
     required_int_env,
@@ -59,7 +60,7 @@ def main() -> int:
 
     ap = create_env_cli_parser("Kraken DCA and take-profit bot.", env_file)
     ap.add_argument("--pair", help="Override the pair (otherwise from .env KRAKEN_PAIR)")
-    ap.add_argument("--interval", type=int, default=poll_seconds)
+    ap.add_argument("--interval", type=parse_pos_cli_int, default=poll_seconds)
     add_paper_skip_wait_cli_args(
         ap,
         paper_help="Force paper mode without using real money",

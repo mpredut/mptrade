@@ -22,6 +22,7 @@ from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
     clean_scale,
+    first_pos_float,
     format_notify_price,
     normalize_epoch_sec,
     normalize_side,
@@ -134,7 +135,11 @@ def evaluate_high_stake_order_guard(
     if prev_notional is None or prev_notional < min_notional or notional_jump:
         ctx_usable = valid_context or isinstance(regime_context, dict)
         if dur_sec is None and ctx_usable:
-            dur_sec = obj_attr(regime_context, "trend_duration_seconds") or obj_attr(regime_context, "resolved_duration_sec")
+            dur_sec = first_pos_float(
+                obj_attr(regime_context, "trend_duration_seconds"),
+                obj_attr(regime_context, "resolved_duration_sec"),
+                default=None,
+            )
         timeout_sec = safe_pos_float(margins.get("llm_timeout_sec"), 120.0)
         fallback = str(margins.get("llm_fallback") or "allow").strip().lower()
         llm_guard = _high_stake_guard.HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
@@ -151,15 +156,17 @@ def evaluate_high_stake_order_guard(
                 symbol, side, price, qty if qty is not None else 1.0,
                 notional_eur=computed_notional,
             )
-        g_scale = clean_scale(getattr(g_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
-        g_meta = getattr(g_dec, "metadata", None)
+        g_scale = clean_scale(obj_attr(g_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
+        g_meta = obj_attr(g_dec, "metadata", None)
         g_meta = g_meta if isinstance(g_meta, dict) else {}
         eval_notional = safe_pos_float(g_meta.get("evaluated_notional_eur"), computed_notional)
         is_cache_hit = bool(_parse_bool_flag(g_meta.get("cache_hit"), False))
-        g_allowed_bool = bool(_parse_bool_flag(g_dec.allowed, True))
+        g_allowed_bool = bool(_parse_bool_flag(obj_attr(g_dec, "allowed", False), False))
+        g_reason_str = str(obj_attr(g_dec, "reason", "") or "high_stake_guard")
+        g_brake = obj_attr(g_dec, "brake_action", BrakeAction.NONE)
         if valid_context:
             try:
-                g_tuple = (g_allowed_bool, g_dec.reason, g_scale)
+                g_tuple = (g_allowed_bool, g_reason_str, g_scale)
                 if not isinstance(decisions_map, dict):
                     decisions_map = {}
                 entry = decisions_map.get(cache_key, {})
@@ -178,29 +185,29 @@ def evaluate_high_stake_order_guard(
 
         ccy_sym = "€" if str(symbol or "").strip().upper().endswith("EUR") else "$"
         do_notify = _parse_bool_flag(notify_on_eval, True) if not isinstance(notify_on_eval, bool) else notify_on_eval
-        if not is_cache_hit and (do_notify or not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY):
+        if not is_cache_hit and (do_notify or not g_allowed_bool or g_brake == BrakeAction.DOWNSCALE_QTY):
             prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
             print(
-                f"{prefix} {side} {symbol} {ccy_sym}{computed_notional:.2f}: {g_dec.reason} "
-                f"(brake={g_dec.brake_action}, suggested_scale={g_scale})"
+                f"{prefix} {side} {symbol} {ccy_sym}{computed_notional:.2f}: {g_reason_str} "
+                f"(brake={g_brake}, suggested_scale={g_scale})"
             )
 
         if not is_cache_hit and do_notify and check_cooldown_gate(_LLM_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), side), resolve_now_ts(now)):
             try:
                 hs_tag = topic_spec("guard_high_stake").bracket_tag
                 scale_pct = round(g_scale * 100)
-                if not g_dec.allowed:
+                if not g_allowed_bool:
                     g_title = f"🛡 {hs_tag} BLOCK {side} {symbol}"
-                elif g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                elif g_brake == BrakeAction.DOWNSCALE_QTY:
                     g_title = f"🛡 {hs_tag} SCALE {scale_pct}% {side} {symbol}"
                 else:
                     g_title = f"🧭 {hs_tag} ACCEPT {side} {symbol}"
 
-                meta_reason = (getattr(g_dec, "metadata", None) or {}).get("gemini_reason")
+                meta_reason = g_meta.get("gemini_reason")
                 clean_reason = str(meta_reason or re.sub(
                     r"^(?:Gemini|LLM) (?:vetoed|approved|downscaled) high-stake (?:BUY|SELL):\s*",
                     "",
-                    g_dec.reason,
+                    g_reason_str,
                 )).strip()
 
                 px_clean = safe_pos_float(price, 0.0)
@@ -214,10 +221,10 @@ def evaluate_high_stake_order_guard(
                 pass
 
         if llm_mode == "enforce":
-            if not g_dec.allowed or g_scale <= 0.0:
-                return False, g_dec.reason, 0.0
+            if not g_allowed_bool or g_scale <= 0.0:
+                return False, g_reason_str, 0.0
             if g_scale < 1.0:
-                return True, g_dec.reason, g_scale
+                return True, g_reason_str, g_scale
         return True, "ok", 1.0
 
     cached_g_dec = _get_cached_gemini_field(

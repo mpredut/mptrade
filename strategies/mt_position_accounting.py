@@ -193,7 +193,25 @@ def _inst_provider(inst: Any = None) -> Optional[str]:
     return raw if isinstance(raw, str) else (getattr(raw, "name", None) or getattr(raw, "provider_label", None))
 
 
-_mt_attr = partial(resolve_patched_attr, modules=("monitortrades",))
+_ORIG_MT_ATTRS: dict[str, Any] = {
+    "order_retry": order_retry,
+    "order_guard": order_guard,
+    "restore_cancelled_orders": restore_cancelled_orders,
+    "check_order_filter_refusal": check_order_filter_refusal,
+    "resolve_assets": resolve_assets,
+    "round_provider_qty": round_provider_qty,
+}
+
+
+def _mt_attr(attr_name: str, current_val: Any) -> Any:
+    orig = _ORIG_MT_ATTRS.get(attr_name, current_val)
+    return resolve_patched_attr(
+        attr_name,
+        orig,
+        local_val=current_val,
+        defaults=(orig,),
+        modules=("monitortrades", __name__),
+    )
 
 
 def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:
@@ -204,6 +222,9 @@ def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:
         return _mt_attr("order_retry", order_retry).is_terminal_filter_refusal(str(reason))
     except Exception:
         return order_retry.is_terminal_filter_refusal(str(reason))
+
+
+_ORIG_MT_ATTRS["_is_terminal_dust_refusal"] = _is_terminal_dust_refusal
 
 
 def _is_untradable_dust(inst, symbol: str, sellable_qty: float, current_price: float, min_qty: float) -> bool:

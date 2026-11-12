@@ -34,6 +34,12 @@ from botcore import (
     first_pos_float,
     is_market_order,
     load_cli_env_stack,
+    parse_cli_float,
+    parse_cli_int,
+    parse_nonneg_cli_float,
+    parse_nonneg_cli_int,
+    parse_pos_cli_float,
+    parse_pos_cli_int,
     parse_ratio_or_pct,
     resolve_cli_env_path,
     temporary_environ,
@@ -83,13 +89,19 @@ from intelligence.macro.daemon_ssot import (
 import intelligence.macro.geopolitical_analyzer as geo_an_mod
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
 import intelligence.macro.geopolitical_guard as geo_gd_mod
+import intelligence.macro.lexicon_ssot as lex_ssot
 from intelligence.macro.lexicon_ssot import _tracked_equity_base_tickers
 from intelligence.macro.news_feed_collector import NewsFeedCollector
+import intelligence.macro_analyzer as macro_an_mod
 import intelligence.macro_sentiment_ssot as mss
 from intelligence.macro_sentiment_ssot import FearGreedSnapshot
 from intelligence.sentiment import llm_quota_router as lqr_mod
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
-from intelligence.sentiment.collectors.macro_telemetry_collector import MacroAndNewsSensorsCollector
+import intelligence.sentiment.collectors.macro_telemetry_collector as mtc_mod
+from intelligence.sentiment.collectors.macro_telemetry_collector import (
+    MacroAndNewsSensorsCollector,
+    MacroBenchmarksSnapshotCollector,
+)
 from intelligence.sentiment.collectors.portfolio_collector import (
     _load_open_order_timestamps,
     _resolve_ai_intents_and_known_order_ids,
@@ -133,6 +145,7 @@ from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_window_bounds,
 )
 from offline.runners import apply_proposals
+from orchestratorOS.admin import prune_llm_threads as plt_mod
 from orchestratorOS.agy import paths as agy_paths, ui_mirror as agy_ui_mirror
 from orchestratorOS.lib import technical_repair_ssot as tr_ssot
 from orchestratorOS.livecheck import os_resources_watchdog as wd
@@ -142,7 +155,7 @@ from order_lifecycle import TrackedOrderLifecycle
 import order_retry
 import priceAnalysis
 import pricewindow as pw
-from providers import binance_provider as bp_mod, order_id_context as oic
+from providers import base as pbase_mod, binance_provider as bp_mod, order_id_context as oic
 from providers.base import MarketDataProvider
 from providers.binance_provider import BinanceProvider
 from providers.execution_audit import (
@@ -187,7 +200,7 @@ from state_io import (
     read_tail_complete_lines_text,
     read_text_file,
 )
-from strategies import spot_engine as spot_eng_mod
+from strategies import mt_position_accounting as mt_pa_mod, spot_engine as spot_eng_mod
 from strategies.base_spot_mixin import BaseSpotMixin, parse_tp_ladder_env
 from strategies.replay_execution import ExecutionModel, select_eligible_intrabar_orders
 from strategies.replay_metrics import (
@@ -216,7 +229,7 @@ from tests.conftest import (
 import tradeall
 from trailing_core import TrailingAdapterBase
 import utils
-from verify_tools import monitor_night, ownership_inventory, portfolio_snapshot
+from verify_tools import check_cache_coherence, monitor_night, ownership_inventory, portfolio_snapshot
 import visuals.tradeall_observe as tobs
 
 
@@ -1597,7 +1610,7 @@ def test_hoisted_patch_seams_symbol_csv_and_observe_cli_border_cases(
         ["tradeall_observe.py", "--live-minutes", "nan"],
     ):
         monkeypatch.setattr(sys, "argv", bad_argv)
-        with pytest.raises(ValueError):
+        with pytest.raises((ValueError, SystemExit)):
             tobs.main()
 
 
@@ -2842,6 +2855,10 @@ def test_wave17_kalman_reset_string_price_short_trend_nan_bool_and_repo_zero_raw
                         hits.append((node.lineno, f"json.{node.func.attr}"))
                     elif node.func.attr in {"read_text", "write_text", "read_bytes", "write_bytes"}:
                         hits.append((node.lineno, f".{node.func.attr}"))
+                    elif node.func.attr == "add_argument":
+                        for kw in node.keywords:
+                            if kw.arg == "type" and isinstance(kw.value, ast.Name) and kw.value.id in {"float", "int"}:
+                                hits.append((node.lineno, f"add_argument(type={kw.value.id})"))
             if hits:
                 offenders[rel] = hits
     assert offenders == {}
@@ -3772,6 +3789,242 @@ def test_wave23_first_epoch_sec_timestamp_zero_shadow_quota_expiry_and_wf_cli_bo
     ):
         with pytest.raises(SystemExit):
             kraken_shadow.main(bad_shadow_argv)
+
+
+def test_wave24_cli_parsers_patch_seam_defaults_rtrade_recovery_and_prune_overflow(tmp_path, monkeypatch):
+    """Verify Wave 24 border cases: Level-1 SSOT CLI parsers, import-time defaults for resolve_patched_attr across 5 modules, rtrade _canonical_intent & recover_intent terminal state preservation, MacroAnalyzer & llm_order_guard & check_cache_coherence zero-string fallbacks, and prune_llm_threads retention_days overflow clamp."""
+
+    # 1. Level-1 SSOT CLI parsers & daemon CLI argument builders reject NaN/Inf/bool/non-positive
+    assert parse_cli_float("-1.5") == pytest.approx(-1.5)
+    assert parse_pos_cli_float("0.25") == pytest.approx(0.25)
+    assert parse_nonneg_cli_float("0") == pytest.approx(0.0)
+    assert parse_cli_int("-7") == -7
+    assert parse_pos_cli_int("12") == 12
+    assert parse_pos_cli_int("2.0") == 2
+    assert parse_nonneg_cli_int("0") == 0
+    for parser_fn, bad_inputs in (
+        (parse_cli_float, ("nan", "inf", "-inf", True, "abc")),
+        (parse_pos_cli_float, ("0", "-0.1", "nan", "inf", False)),
+        (parse_nonneg_cli_float, ("-0.01", "nan", "inf", True)),
+        (parse_cli_int, ("3.5", "nan", "inf", True)),
+        (parse_pos_cli_int, ("0", "-1", "2.5", "nan", False)),
+        (parse_nonneg_cli_int, ("-1", "1.5", "nan", True)),
+    ):
+        for raw_bad in bad_inputs:
+            with pytest.raises(argparse.ArgumentTypeError):
+                parser_fn(raw_bad)
+
+    ext_ap = add_external_telemetry_cli_args(argparse.ArgumentParser())
+    for bad_ext_argv in (["--ob-interval", "nan"], ["--ob-interval", "0"], ["--whale-interval", "-5"]):
+        with pytest.raises(SystemExit):
+            ext_ap.parse_args(bad_ext_argv)
+    macro_ap = add_macro_analyzer_cli_args(argparse.ArgumentParser())
+    for bad_macro_argv in (["--macro-llm-interval", "inf"], ["--advisor-interval", "0"]):
+        with pytest.raises(SystemExit):
+            macro_ap.parse_args(bad_macro_argv)
+
+    # 2. resolve_patched_attr import-time _ORIG_* defaults honor local module monkeypatches across all 5 modules
+    seen_mtc_urls: list[str] = []
+    monkeypatch.setattr(
+        mtc_mod,
+        "fetch_public_json",
+        lambda url, **_kw: seen_mtc_urls.append(str(url)) or {},
+    )
+    MacroBenchmarksSnapshotCollector().collect(
+        cachedb_dir=str(tmp_path), allow_network=True, persist=False
+    )
+    assert len(seen_mtc_urls) >= 1
+
+    assert lex_ssot._cfg_str is mss._ORIG_MACRO_CFG_ATTRS["_cfg_str"]
+    monkeypatch.setattr(
+        mss,
+        "_cfg_str",
+        lambda sec, key, fallback="", config_path=None: "3/4" if key == "r" else ("42" if key == "i" else "https://mock.feed/fg"),
+    )
+    assert mss._cfg_ratio("s", "r", 0.1) == pytest.approx(0.75)
+    assert mss._cfg_int("s", "i", 1) == 42
+    assert mss.get_fear_greed_endpoint_url() == "https://mock.feed/fg"
+
+    monkeypatch.setattr(
+        order_guard,
+        "get_weight_for_cash_permission_at_quant_time",
+        lambda sym, side: 0.42 if sym == "BTCUSDC" else None,
+    )
+    assert order_guard.resolve_trade_weight("BTCUSDC", "BUY") == pytest.approx(0.42)
+
+    assert "monitortrades" in sys.modules
+    monkeypatch.setattr(mt_pa_mod, "round_provider_qty", lambda _prov, _sym, q: round(q, 4))
+    monkeypatch.setattr(mt_pa_mod, "check_order_filter_refusal", lambda *_a, **_kw: "MOCK_FILTER_REFUSED")
+    ok_scaled, q_scaled = mt_pa_mod._validate_scaled_buy_qty(
+        SimpleNamespace(), "BTCUSDC", 60000.0, 1.0, 0.5, 0.01, "Re-entry"
+    )
+    assert ok_scaled is False and q_scaled == pytest.approx(0.5)
+
+    seen_ohlc_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pbase_mod,
+        "load_local_module",
+        lambda mdir, mname: (
+            seen_ohlc_calls.append((str(mdir), str(mname)))
+            or SimpleNamespace(fetch_ohlc_candles=lambda sym, interval=60, drop_incomplete=True, **kw: [{"close": 25.5}])
+        ),
+    )
+    assert KrakenProvider().fetch_ohlc_candles("HYPEEUR", interval=60) == [{"close": 25.5}]
+    assert len(seen_ohlc_calls) == 1
+
+    # 3. rtrade._LivePairVenue._canonical_intent & recover_intent terminal state preservation
+    persisted_snapshots: list[dict] = []
+    clock_box = [1_700_010_000.0]
+    venue = rtrade._LivePairVenue.__new__(rtrade._LivePairVenue)
+    venue.symbol = "TAOUSDC"
+    venue._recovery_clock = lambda: clock_box[0]
+    venue._intent_id = lambda pid, sd, kd: f"{pid}:{kd}:{sd}"
+    venue._persist_callback = lambda *_a, **_kw: (lambda snap: persisted_snapshots.append(dict(snap)))
+
+    pair_rec = {"pair_id": "p1", "symbol": "TAOUSDC", "start_side": "BUY", "qty": 1.5, "created_ts": 1_700_000_111.0}
+    canon = venue._canonical_intent(
+        pair_rec,
+        {"client_order_id": "cid-1", "side": "BUY", "kind": "limit", "created_at": "0"},
+    )
+    assert canon["created_at"] == pytest.approx(1_700_000_111.0)
+
+    # 3a. absence_confirmed_no_reuse must NOT be overwritten to horizon_exhausted when horizon elapses
+    absent_stored = {
+        "client_order_id": "cid-abs",
+        "side": "BUY",
+        "kind": "limit",
+        "recovery_state": "absence_confirmed_no_reuse",
+        "recovery_started_at": 1_700_000_000.0,
+    }
+    with pytest.raises(rtrade._IntentRecoveryPending, match="requires manual reconciliation"):
+        venue.recover_intent(pair_rec, absent_stored)
+    assert persisted_snapshots[-1]["recovery_state"] == "absence_confirmed_no_reuse"
+    assert "recovery_horizon_exhausted_at" not in persisted_snapshots[-1]
+
+    # 3b. First horizon hit sets recovery_horizon_exhausted_at=t1; subsequent tick t2 preserves t1 and raises manual reconciliation
+    exhaust_stored = {
+        "client_order_id": "cid-exh",
+        "side": "SELL",
+        "kind": "limit",
+        "recovery_started_at": 1_700_000_000.0,
+    }
+    with pytest.raises(rtrade._IntentRecoveryPending, match="recovery horizon is exhausted"):
+        venue.recover_intent(pair_rec, exhaust_stored)
+    first_persisted = dict(persisted_snapshots[-1])
+    assert first_persisted["recovery_state"] == "horizon_exhausted"
+    assert first_persisted["recovery_horizon_exhausted_at"] == pytest.approx(1_700_010_000.0)
+
+    clock_box[0] = 1_700_020_500.0
+    with pytest.raises(rtrade._IntentRecoveryPending, match="requires manual reconciliation"):
+        venue.recover_intent(pair_rec, first_persisted)
+    assert persisted_snapshots[-1]["recovery_state"] == "horizon_exhausted"
+    assert persisted_snapshots[-1]["recovery_horizon_exhausted_at"] == pytest.approx(1_700_010_000.0)
+
+    # 4. MacroAnalyzer, llm_order_guard, check_cache_coherence, & prune_llm_threads border cases
+    monkeypatch.setattr(
+        macro_an_mod._geo_analyzer,
+        "GeopoliticalThreatAnalyzer",
+        lambda **_kw: SimpleNamespace(_last_eval_ts=1_700_000_200_000),
+    )
+    monkeypatch.setattr(
+        macro_an_mod._sentiment_advisor,
+        "SentimentAdvisor",
+        lambda **_kw: SimpleNamespace(_cached_assessment={"ts": "0"}, _last_eval_ts=1_700_000_500_000),
+    )
+    ma_inst = macro_an_mod.MacroAnalyzer(cache_dir=str(tmp_path))
+    assert ma_inst._last_macro_llm_ts == pytest.approx(1_700_000_200.0)
+    assert ma_inst._last_advisor_ts == pytest.approx(1_700_000_500.0)
+
+    seen_hs_dur: list[Any] = []
+    allowed_flag_box: list[Any] = [True]
+    monkeypatch.setattr(
+        llm_order_guard._high_stake_guard,
+        "HighStakeGuard",
+        lambda **_kw: SimpleNamespace(
+            check=lambda _sym, _side, _px, _qty, **ckw: (
+                seen_hs_dur.append(ckw.get("dur_sec"))
+                or SimpleNamespace(allowed=allowed_flag_box[0], reason="veto_str_false", suggested_scale=1.0, metadata={})
+            )
+        ),
+    )
+    monkeypatch.setattr(llm_order_guard._high_stake_guard, "is_llm_guard_exempt", lambda: False)
+    hs_margins = make_test_margins(
+        intelligence_mode="enforce",
+        llm_guard_mode="enforce",
+        high_stake_min_notional_usd=500.0,
+        high_stake_min_notional_buy_usd=500.0,
+    )
+    ok_hs, _, _ = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="BTCUSDC",
+        side="BUY",
+        price=60000.0,
+        qty=0.02,
+        computed_notional=1200.0,
+        regime_context={"trend_duration_seconds": "0", "resolved_duration_sec": 3600.0},
+        valid_context=False,
+        cache_key=("BTCUSDC", "BUY"),
+        margins=hs_margins,
+        bypassed=set(),
+        now=1_700_000_000.0,
+        notify_on_eval=False,
+    )
+    assert ok_hs is True
+    assert seen_hs_dur == [pytest.approx(3600.0)]
+
+    allowed_flag_box[0] = "false"
+    ok_hs_false, reason_hs_false, scale_hs_false = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="BTCUSDC",
+        side="BUY",
+        price=60000.0,
+        qty=0.02,
+        computed_notional=1200.0,
+        regime_context={"trend_duration_seconds": "0", "resolved_duration_sec": 3600.0},
+        valid_context=False,
+        cache_key=("BTCUSDC", "BUY"),
+        margins=hs_margins,
+        bypassed=set(),
+        now=1_700_000_000.0,
+        notify_on_eval=False,
+    )
+    assert ok_hs_false is False and reason_hs_false == "veto_str_false" and scale_hs_false == 0.0
+
+    coh_dir = tmp_path / "coh_cachedb"
+    coh_dir.mkdir()
+    now_coh = time.time()
+    atomic_write_text(
+        str(coh_dir / "cache_short_trend.json"),
+        json.dumps({"items": {"BTCUSDC": {"trend": 1, "price": 62000.0}}, "fetchtime": {"BTCUSDC": now_coh * 1000.0}}),
+    )
+    atomic_write_text(
+        str(coh_dir / "cache_current_price.json"),
+        json.dumps({"items": {"BTCUSDC": {"price": 62000.0, "ts": "0"}}, "fetchtime": {"BTCUSDC": now_coh}}),
+    )
+    monkeypatch.setattr(check_cache_coherence, "CACHEDB", str(coh_dir))
+    monkeypatch.setattr(check_cache_coherence, "expected_symbols", lambda: ["BTCUSDC"])
+    assert check_cache_coherence.main() == 0
+
+    prune_store = tmp_path / "agy_store"
+    prune_store.mkdir()
+    db_file = Path(plt_mod.summaries_db(str(prune_store)))
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    with plt_mod.sqlite3.connect(str(db_file)) as sq_conn:
+        sq_conn.execute(
+            "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, title TEXT, preview TEXT, step_count INTEGER, last_modified_time TEXT)"
+        )
+        sq_conn.execute(
+            "INSERT INTO conversation_summaries VALUES ('cid-auto-1', 'default-cli-project', 'morning reconciliation', '', 2, '2026-01-01T00:00:00Z')"
+        )
+        sq_conn.commit()
+    monkeypatch.setattr(plt_mod, "sync_all_topic_titles", lambda *_a, **_kw: None)
+    monkeypatch.setattr(plt_mod, "get_active_topic_cids", lambda *_a, **_kw: set())
+    assert plt_mod.prune_old_cli_threads(
+        cli_base=str(prune_store),
+        retention_days=1e9,
+        max_threads=2.7,
+        dry_run=True,
+    ) == (0, 0)
+
+
 
 
 

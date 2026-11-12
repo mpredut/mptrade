@@ -53,6 +53,8 @@ from botcore import (  # noqa: E402
     exact_pos_int,
     load_shadow_environment,
     optional_env,
+    parse_cli_float,
+    parse_cli_int,
     prepare_shadow_runtime,
     required_env,
     safe_float,
@@ -374,10 +376,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Live shadow test: current vs pre-registered candidates (read-only)."
     )
-    ap.add_argument("--interval", type=int, default=240, help="minutes per bar; the live configuration needs 240")
-    ap.add_argument("--fee", type=float, default=0.26, help="fee per leg %%")
+    ap.add_argument("--interval", type=parse_cli_int, default=240, help="minutes per bar; the live configuration needs 240")
+    ap.add_argument("--fee", type=parse_cli_float, default=0.26, help="fee per leg %%")
     ap.add_argument("--pair", default=None, help="KRAKEN_PAIR from .env/config.env by default")
-    ap.add_argument("--loop", type=float, default=0.0, help="minutes between runs (0=single shot)")
+    ap.add_argument("--loop", type=parse_cli_float, default=0.0, help="minutes between runs (0=single shot)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
 

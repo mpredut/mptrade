@@ -21,8 +21,11 @@ if _ROOT_DIR not in sys.path:
 from botcore import (  # noqa: E402
     TOPIC_SPECS,
     _parse_bool_flag,
+    exact_nonneg_int,
     load_dotenv,
     optional_env,
+    parse_nonneg_cli_float,
+    parse_nonneg_cli_int,
     required_env,
     required_float_env,
     required_int_env,
@@ -219,7 +222,10 @@ def prune_old_cli_threads(
         retention_days = DEFAULT_RETENTION_DAYS
 
     now_utc = datetime.now(timezone.utc)
-    cutoff = now_utc - timedelta(days=retention_days)
+    try:
+        cutoff = now_utc - timedelta(days=retention_days)
+    except OverflowError:
+        cutoff = datetime.min.replace(tzinfo=timezone.utc)
     candidates, kept = _partition_prune_candidates(
         rows,
         protected=protected,
@@ -248,7 +254,7 @@ def prune_old_cli_threads(
 
     # Hard count cap so autonomous threads never approach agy's conversation eviction limit
     max_threads_i: Optional[int] = (
-        safe_nonneg_int(max_threads, default=DEFAULT_MAX_AUTONOMOUS_THREADS)
+        exact_nonneg_int(max_threads, default=DEFAULT_MAX_AUTONOMOUS_THREADS)
         if max_threads is not None
         else None
     )
@@ -306,7 +312,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Prune automated LLM threads from the agy-bot Antigravity store.")
     parser.add_argument("--clean-orphans", action="store_true",
                         help="Remove summary rows whose conversation file no longer exists.")
-    parser.add_argument("--days", type=float, default=DEFAULT_RETENTION_DAYS,
+    parser.add_argument("--days", type=parse_nonneg_cli_float, default=DEFAULT_RETENTION_DAYS,
                         help=f"Retention age in days (default: {DEFAULT_RETENTION_DAYS}).")
     parser.add_argument("--cli-base", type=str, default=None,
                         help="Antigravity store to prune (default: AGY_BOT_HOME store).")
@@ -314,7 +320,7 @@ def main() -> None:
                         help="Project name/ID to prune (default: AGY_PROJECT and agy's default project).")
     parser.add_argument("--all", action="store_true",
                         help="Prune all short threads older than retention in the project, not only automated ones.")
-    parser.add_argument("--max-threads", type=int, default=DEFAULT_MAX_AUTONOMOUS_THREADS,
+    parser.add_argument("--max-threads", type=parse_nonneg_cli_int, default=DEFAULT_MAX_AUTONOMOUS_THREADS,
                         help=f"Maximum automated threads to retain (default: {DEFAULT_MAX_AUTONOMOUS_THREADS}).")
     parser.add_argument("--dry-run", action="store_true", help="Simulate without modifying files or database.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
