@@ -297,7 +297,8 @@ def _run_once(
         )
         if not complete:
             q_sz = round(sz, strategy.sz_dec)
-            if q_sz <= 0.0 or q_sz >= orig_sz - dust_eps:
+            rem_sz = max(0.0, round(orig_sz - q_sz, strategy.sz_dec))
+            if q_sz <= 0.0 or q_sz >= orig_sz - dust_eps or rem_sz <= dust_eps:
                 q_sz = orig_sz
                 complete = True
                 order_dict["sz"] = 0.0
@@ -306,22 +307,12 @@ def _run_once(
                     fill_order["amount"] = orig_amt
                 fill_order["sz"] = orig_sz
             else:
-                rem_sz = max(0.0, round(orig_sz - q_sz, strategy.sz_dec))
-                if rem_sz <= dust_eps:
-                    q_sz = orig_sz
-                    complete = True
-                    order_dict["sz"] = 0.0
-                    if is_open:
-                        order_dict["amount"] = 0.0
-                        fill_order["amount"] = orig_amt
-                    fill_order["sz"] = orig_sz
-                else:
-                    order_dict["sz"] = rem_sz
-                    fill_order["sz"] = q_sz
-                    if is_open and orig_sz > 0:
-                        fill_amt = orig_amt * (q_sz / orig_sz)
-                        fill_order["amount"] = fill_amt
-                        order_dict["amount"] = max(0.0, orig_amt - fill_amt)
+                order_dict["sz"] = rem_sz
+                fill_order["sz"] = q_sz
+                if is_open and orig_sz > 0:
+                    fill_amt = orig_amt * (q_sz / orig_sz)
+                    fill_order["amount"] = fill_amt
+                    order_dict["amount"] = max(0.0, orig_amt - fill_amt)
             sz = q_sz
         return fill_order, sz, complete
 

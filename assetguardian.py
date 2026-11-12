@@ -1325,22 +1325,24 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         for t, _ in active_tiers
     )
 
+    def _reset_sell_campaign(growth_val=None):
+        _save_symbol_campaign(symbol, "sell", {})
+        return None, {}, growth_val
+
     if state:
         trough_price = _finite_float(state.get("trough_price"), positive=True)
         trough_ts = _finite_float(state.get("trough_ts"), positive=True)
         initial_qty = _finite_float(state.get("initial_qty"), positive=True)
         if trough_price is None or trough_ts is None or initial_qty is None:
             print(f"[{symbol}] Invalid SELL campaign; clear without submitting.")
-            _save_symbol_campaign(symbol, "sell", {})
-            return None, {}, None
+            return _reset_sell_campaign(None)
         growth = ((current_price - trough_price) / trough_price) * 100.0
         if growth <= SELL_REARM_GROWTH_PERCENT:
             print(
                 f"[{symbol}] SELL campaign rearmed: growth={growth:.4f}% <= "
                 f"{SELL_REARM_GROWTH_PERCENT:.4f}% against frozen trough "
                 f"{trough_price:.8f}.")
-            _save_symbol_campaign(symbol, "sell", {})
-            return None, {}, growth
+            return _reset_sell_campaign(growth)
         expected_remaining = max(
             0.0,
             initial_qty - safe_nonneg_float(state.get("total_filled_qty"), default=0.0),
@@ -1351,8 +1353,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
                 f"[{symbol}] Free balance increased from expected "
                 f"{expected_remaining:.8f} to {free_qty:.8f}; rearm SELL campaign "
                 "for the reconciled larger position.")
-            _save_symbol_campaign(symbol, "sell", {})
-            return None, {}, growth
+            return _reset_sell_campaign(growth)
     else:
         trough_price = _finite_float(minimum_row.get("price"), positive=True)
         trough_ts = _finite_float(minimum_row.get("timestamp"), positive=True)

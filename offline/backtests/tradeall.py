@@ -507,6 +507,11 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 except Exception:
                     pass
 
+            def _flush_text_buf(path: str, buf: list[str]) -> None:
+                if buf:
+                    append_text_line(path, "".join(buf))
+                    buf.clear()
+
             price_buf: list[str] = []
             decision_buf: list[str] = []
             broker._outcome_buf = []
@@ -538,8 +543,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                         broker.process_pending(symbol, ts, price)
                     price_buf.append(f"{ts}|{symbol}|{price}\n")
                     if speed != "fast" or len(price_buf) >= 2000:
-                        append_text_line(price_path, "".join(price_buf))
-                        price_buf.clear()
+                        _flush_text_buf(price_path, price_buf)
 
                     if not fast_kalman_only:
                         thr_small, thr_big = ta.PRICE_CHANGE_THRESHOLD_EUR, ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
@@ -597,12 +601,8 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                                          f"(BUY {broker.n_buy} / SELL {broker.n_sell})\n")
             finally:
                 broker.current_tick_price = None
-                if price_buf:
-                    append_text_line(price_path, "".join(price_buf))
-                    price_buf.clear()
-                if decision_buf:
-                    append_text_line(decision_path, "".join(decision_buf))
-                    decision_buf.clear()
+                _flush_text_buf(price_path, price_buf)
+                _flush_text_buf(decision_path, decision_buf)
                 broker.flush_outcomes()
                 broker._outcome_buf = None
             if n > 0:

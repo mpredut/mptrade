@@ -1231,11 +1231,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                         if not os.path.exists(self._previous_generation_path()):
                             raise
                         can_append = False
-                        candidate_cache, candidate_counts = (
-                            self._read_trade_snapshot_recovering_previous_locked(metadata)
-                        )
-                        records = []
-                else:
+                if not can_append:
                     candidate_cache, candidate_counts = (
                         self._read_trade_snapshot_recovering_previous_locked(metadata)
                     )

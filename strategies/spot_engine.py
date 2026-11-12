@@ -1339,11 +1339,7 @@ class Strategy(BaseSpotMixin):
                     return False
             self._cancel_orders("buy")
             self._cancel_orders("sell")
-            if self.s["orders"]:
-                if self.s["qty"] <= 1e-12:
-                    self._restore_reentry_state()
-                return True
-            if not self._place(
+            if self.s["orders"] or not self._place(
                 "buy", self._qty_for(self.p.trend_topup, price), price,
                 kind="TREND_ENTRY", amount=self.p.trend_topup,
             ):

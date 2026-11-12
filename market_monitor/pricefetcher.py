@@ -637,11 +637,14 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                     and any(self.price_factory.check_symbol_support(symbol).values())
                 ):
                     seen_bases.add(base_symbol)
-                    self.active_symbols.add(symbol)
-                    self.symbols.append(symbol)
-                    self.original_symbols.append(symbol)
+                    self._track_monitored_symbol(symbol)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             print(f"[Pricefetcher] Metadata cache ignored: {exc}")
+
+    def _track_monitored_symbol(self, symbol: str) -> None:
+        self.active_symbols.add(symbol)
+        self.symbols.append(symbol)
+        self.original_symbols.append(symbol)
 
     def _reload_from_disk(self):
         super()._reload_from_disk()
@@ -709,9 +712,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             if len(self.active_symbols) >= self.max_monitored_symbols:
                 print(f"[Pricefetcher] Limit reached: maximum {self.max_monitored_symbols} monitored coins")
                 return False
-            self.symbols.append(symbol)
-            self.original_symbols.append(symbol)
-            self.active_symbols.add(symbol)
+            self._track_monitored_symbol(symbol)
             if preferred_source:
                 self.symbol_preferred_source[symbol] = preferred_source
                 print(f"[Pricefetcher] {symbol} - preferred source: {preferred_source}")

@@ -297,14 +297,20 @@ class GeminiQuotaRouterMixin:
                 "last_alert_ts": safe_float(prev.get("last_alert_ts"), 0.0),
                 "last_alert_tier": str(prev.get("last_alert_tier") or "ok"),
             }
-            cls._QUOTA_MEM_CACHE = dict(snapshot)
-            try:
-                _save_json_state(state_path, snapshot)
-            except Exception:
-                pass
+            cls._cache_and_save_quota_state_locked(state_path, snapshot, _save_json_state)
 
         cls._maybe_notify_low_quota(snapshot)
         return snapshot
+
+    @classmethod
+    def _cache_and_save_quota_state_locked(
+        cls, state_path: str, snapshot: Dict[str, Any], save_fn: Any
+    ) -> None:
+        cls._QUOTA_MEM_CACHE = dict(snapshot)
+        try:
+            save_fn(state_path, snapshot)
+        except Exception:
+            pass
 
     @classmethod
     def filter_models_with_confirmed_credits(
@@ -373,11 +379,7 @@ class GeminiQuotaRouterMixin:
             data["runtime_exhausted"] = runtime_exhausted
             data.setdefault("checked_ts", now)
             data["available_credits"] = 0.0
-            cls._QUOTA_MEM_CACHE = dict(data)
-            try:
-                _save_json_state(state_path, data)
-            except Exception:
-                pass
+            cls._cache_and_save_quota_state_locked(state_path, data, _save_json_state)
             snapshot = dict(data)
         if snapshot is not None:
             cls._maybe_notify_low_quota(snapshot)
@@ -415,11 +417,7 @@ class GeminiQuotaRouterMixin:
                 state_path = cls._get_quota_state_path()
                 with cls._QUOTA_LOCK:
                     snapshot["last_alert_tier"] = "ok"
-                    cls._QUOTA_MEM_CACHE = dict(snapshot)
-                    try:
-                        _save_json_state(state_path, snapshot)
-                    except Exception:
-                        pass
+                    cls._cache_and_save_quota_state_locked(state_path, snapshot, _save_json_state)
             return
 
         if claude_rem <= warn_threshold and free_rem <= warn_threshold:
@@ -482,8 +480,4 @@ class GeminiQuotaRouterMixin:
             with cls._QUOTA_LOCK:
                 snapshot["last_alert_ts"] = now
                 snapshot["last_alert_tier"] = alert_tier
-                cls._QUOTA_MEM_CACHE = dict(snapshot)
-                try:
-                    _save_json_state(state_path, snapshot)
-                except Exception:
-                    pass
+                cls._cache_and_save_quota_state_locked(state_path, snapshot, _save_json_state)

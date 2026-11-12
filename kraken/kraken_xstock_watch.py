@@ -428,10 +428,14 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
             if not alloc:
                 log("  ! no price for the pair -- probe failed")
                 return 1
+            def _start_and_check_bot(verdict_key: str) -> int | None:
+                maybe_start_bot(st, alloc, desktop)
+                pid = st.get("bot_pid")
+                verdict[verdict_key] = _bot_alive(pid)
+                return pid
+
             log(f"  [trial] simulated allocation price: {alloc} (the current price)")
-            maybe_start_bot(st, alloc, desktop)                      # 3. bot started in paper mode
-            bot_pid = st.get("bot_pid")
-            verdict["bot started (PAPER)"] = _bot_alive(bot_pid)
+            bot_pid = _start_and_check_bot("bot started (PAPER)")      # 3. bot started in paper mode
             _save_state(st)
             log("  [trial] waiting 12s for it to adopt the position and place the paper TP...")
             time.sleep(12)
@@ -439,9 +443,7 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
                 os.kill(clean_pid, 15)                            # 4. watchdog
             time.sleep(1.0)
             verdict["bot death detected"] = not _bot_alive(bot_pid)
-            maybe_start_bot(st, alloc, desktop)
-            bot_pid = st.get("bot_pid")
-            verdict["bot restarted by watchdog"] = _bot_alive(bot_pid)
+            bot_pid = _start_and_check_bot("bot restarted by watchdog")
             tail = [ln.rstrip() for ln in read_text_lines(BOT_LOG)[-14:]]
             if tail:
                 log("  [drill] the bot's log (what it did with the 'allocation'):")

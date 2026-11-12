@@ -762,17 +762,18 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
         if resolved_max_trades is not None
         else require_int(_venue_cfg(name, "_max_daily_trades"), name="max_daily_trades", min_value=0)
     )
+    def _block_history_unavailable(detail: str) -> Tuple[bool, str]:
+        print(f"[DAILY-LIMIT] {order_type} {symbol}: {detail} -> BLOCKED")
+        return False, "history_unavailable"
+
     try:
         trades = provider.get_orders(symbol, order_type, DAILY_LIMIT_WINDOW_SEC)
     except ProviderError as exc:
-        print(f"[DAILY-LIMIT] {order_type} {symbol}: history unavailable ({exc}) -> BLOCKED")
-        return False, "history_unavailable"
+        return _block_history_unavailable(f"history unavailable ({exc})")
     except Exception as exc:
-        print(f"[DAILY-LIMIT] {order_type} {symbol}: history read failed ({exc}) -> BLOCKED")
-        return False, "history_unavailable"
+        return _block_history_unavailable(f"history read failed ({exc})")
     if trades is None:
-        print(f"[DAILY-LIMIT] {order_type} {symbol}: history unavailable -> BLOCKED")
-        return False, "history_unavailable"
+        return _block_history_unavailable("history unavailable")
     if len(trades) >= max_daily_trades:
         print(f"[DAILY-LIMIT] {order_type} {symbol}: {len(trades)} trades in 24h, "
               f"cap of {max_daily_trades}/24h -> BLOCKED")
@@ -1198,9 +1199,7 @@ def check_math_profit_reference(
                         return True
                 print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
                       f"found recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}%, threshold {prof_pct}%")
-                print(f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. "
-                      f"The {side} order is BLOCKED.")
-                return False
+                return _block_below_profit_threshold(side, diff, prof_pct)
             print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
                   f"recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}% >= {prof_pct}%. Permitted.")
             return True
@@ -1236,10 +1235,14 @@ def check_math_profit_reference(
     print(f"[GUARD] {side} {symbol} (mode={mode}): ref {ref} ({src}), price {px_val}, "
           f"diff {diff:.2f}%, threshold {prof_pct}%")
     if diff < prof_pct:
-        print(f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. "
-              f"The {side} order is BLOCKED.")
-        return False
+        return _block_below_profit_threshold(side, diff, prof_pct)
     return True
+
+
+def _block_below_profit_threshold(side: str, diff: float, prof_pct: float) -> bool:
+    print(f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. "
+          f"The {side} order is BLOCKED.")
+    return False
 
 
 def unpack_daily_limit_result(

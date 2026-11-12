@@ -1394,9 +1394,8 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                     k_items_map = k_items
                 if isinstance(k_sym := _first_variant_dict(k_items, sym_variants), dict):
                     if not is_unseeded_kalman_state(k_sym) or t_entry.get("kalman_vel") is None:
-                        t_entry["kalman_vel"] = k_sym.get("kalman_vel")
-                        t_entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
-                        t_entry["kalman_trend"] = k_sym.get("kalman_trend")
+                        for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
+                            t_entry[k_kal] = k_sym.get(k_kal)
                     if t_entry.get("vol_1h_pct") is None and (k_vol := safe_pos_float(k_sym.get("vol_1h_pct"), default=None)) is not None:
                         t_entry["vol_1h_pct"] = k_vol
             st_ts_t = safe_pos_float(t_entry.pop("_short_trend_ts", None), default=None)
