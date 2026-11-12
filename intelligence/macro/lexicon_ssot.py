@@ -267,12 +267,6 @@ def _is_noise_dynamic_keyword(term: Any, stopwords: Optional[Set[str]] = None) -
     return not words or any(w in sw or w in _NON_CRISIS_DYNAMIC_BIGRAM_WORDS for w in words)
 
 
-def _dynamic_keyword_has_crisis_stem(term: str, crisis_stems: Optional[Set[str]] = None) -> bool:
-    """Return True if at least one token in ``term`` matches a configured crisis stem."""
-    stems = crisis_stems if crisis_stems is not None else _get_crisis_stems_set()
-    return any(_token_matches_crisis_stem(w, stems) for w in re.findall(r"[a-zA-Z]{3,}", (term or "").lower()))
-
-
 def _is_excluded_non_crisis_attack_keyword(
     kw_clean: str,
     text_words: Set[str],
@@ -659,7 +653,7 @@ def filter_valid_severity_keywords(
                 or k_clean in dyn_acute_set
                 or (
                     not _is_noise_dynamic_keyword(k_clean, sw)
-                    and _dynamic_keyword_has_crisis_stem(k_clean, crisis_stems)
+                    and any(_token_matches_crisis_stem(w, crisis_stems) for w in re.findall(r"[a-zA-Z]{3,}", k_clean))
                 )
             ):
                 if k.strip() not in out:
@@ -1359,7 +1353,7 @@ def match_high_severity_keywords(
         for kw in get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts)
         if kw in norm_low
         and not _is_excluded_non_crisis_attack_keyword(kw, text_words, crisis_stems)
-        and (kw in seed_set or _dynamic_keyword_has_crisis_stem(kw, crisis_stems))
+        and (kw in seed_set or any(_token_matches_crisis_stem(w, crisis_stems) for w in re.findall(r"[a-zA-Z]{3,}", kw)))
         and re.search(r"\b" + re.escape(kw) + r"\b", norm_low)
     )
 

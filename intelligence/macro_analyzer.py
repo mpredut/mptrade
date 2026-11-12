@@ -347,12 +347,12 @@ class MacroAnalyzer:
                 results["geopolitical_updated"] = True
                 self._last_macro_llm_ts = current_ts
             else:
-                self._last_macro_llm_ts = self._compute_eval_retry_ts(
+                self._last_macro_llm_ts = compute_step_retry_ts(
                     self._last_macro_llm_ts,
                     current_ts,
-                    geo_interval,
-                    self.macro_llm_interval_sec,
-                    cached_geo,
+                    min(geo_interval or self.macro_llm_interval_sec, self.macro_llm_interval_sec)
+                    if self._last_macro_llm_ts <= 0.0 and cached_geo is None
+                    else (geo_interval or self.macro_llm_interval_sec),
                 )
             self.write_heartbeat(results)
 
@@ -401,12 +401,12 @@ class MacroAnalyzer:
                 results["advisor_updated"] = True
                 self._last_advisor_ts = current_ts
             else:
-                self._last_advisor_ts = self._compute_eval_retry_ts(
+                self._last_advisor_ts = compute_step_retry_ts(
                     self._last_advisor_ts,
                     current_ts,
-                    adv_interval,
-                    self.advisor_interval_sec,
-                    cached_adv,
+                    min(adv_interval or self.advisor_interval_sec, self.advisor_interval_sec)
+                    if self._last_advisor_ts <= 0.0 and cached_adv is None
+                    else (adv_interval or self.advisor_interval_sec),
                 )
             self.write_heartbeat(results)
 
@@ -424,21 +424,6 @@ class MacroAnalyzer:
             hb_msg="Macro analyzer cycle active (PID=%d, session=%s, adv_itv=%.0fs [%s], geo_itv=%.0fs [%s])",
             hb_args=(os.getpid(), session_ctx.session_key, adv_interval, adv_reason, geo_interval, geo_reason),
         )
-
-    @staticmethod
-    def _compute_eval_retry_ts(
-        last_ts: float,
-        current_ts: float,
-        eff_interval: float,
-        default_interval: float,
-        cached_assessment: Any,
-    ) -> float:
-        retry_itv = (
-            min(eff_interval or default_interval, default_interval)
-            if last_ts <= 0.0 and cached_assessment is None
-            else (eff_interval or default_interval)
-        )
-        return compute_step_retry_ts(last_ts, current_ts, retry_itv)
 
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
         """Write heartbeat metadata atomically to cachedb/ with fallback."""

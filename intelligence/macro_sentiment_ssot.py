@@ -781,20 +781,14 @@ def _clean_nonbool_str(val: Any, default: str = "") -> str:
     return str(val).strip() if (val is not None and not isinstance(val, bool) and str(val).strip()) else default
 
 
-def _iter_cached_section_dicts(cache_dir: str, option_key: str, now_ts: Optional[float]):
-    reader = resolve_read_json_cached()
-    eval_now = resolve_now_ts(now_ts)
-    for fname in get_cache_filenames(option_key):
-        path = os.path.join(cache_dir, fname)
-        yield path, reader, eval_now
-
-
 def load_cached_fear_greed_snapshot(
     cache_dir: str,
     now_ts: Optional[float] = None,
 ) -> Optional[FearGreedSnapshot]:
     """Load cached Fear & Greed snapshot using configured candidate filenames."""
-    for fg_path, reader, eval_now in _iter_cached_section_dicts(cache_dir, "fear_greed_files", now_ts):
+    reader, eval_now = resolve_read_json_cached(), resolve_now_ts(now_ts)
+    for fname in get_cache_filenames("fear_greed_files"):
+        fg_path = os.path.join(cache_dir, fname)
         try:
             fg_data = reader(fg_path)
             if not isinstance(fg_data, dict) or not fg_data:
@@ -847,7 +841,9 @@ def load_cached_market_breadth_snapshot(
             and s_clean.isascii()
         )
 
-    for mb_path, reader, eval_now in _iter_cached_section_dicts(cache_dir, "market_breadth_files", now_ts):
+    reader, eval_now = resolve_read_json_cached(), resolve_now_ts(now_ts)
+    for fname in get_cache_filenames("market_breadth_files"):
+        mb_path = os.path.join(cache_dir, fname)
         try:
             mb_data = reader(mb_path)
             if not isinstance(mb_data, dict) or not mb_data:

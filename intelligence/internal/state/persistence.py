@@ -162,20 +162,13 @@ _TREND_MEMO_MAX_ENTRIES = 128
 _TREND_MEMO_NONE = object()
 
 
-def _clone_trend_result(value):
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        out = dict(value)
-        if "blocks" in out and isinstance(out["blocks"], list):
-            out["blocks"] = list(out["blocks"])
-        return out
-    return value
-
-
 def _store_trend_memo(cache_key: tuple, value):
     lru_dict_put(_trend_memo_cache, cache_key, _TREND_MEMO_NONE if value is None else value, _TREND_MEMO_MAX_ENTRIES)
-    return _clone_trend_result(value)
+    return (
+        {**value, **({"blocks": list(value["blocks"])} if isinstance(value.get("blocks"), list) else {})}
+        if isinstance(value, dict)
+        else value
+    )
 
 
 def detect_long_term_trend(
@@ -322,7 +315,11 @@ def detect_long_term_trend(
     if cached is _TREND_MEMO_NONE:
         return None
     if cached is not None:
-        return _clone_trend_result(cached)
+        return (
+            {**cached, **({"blocks": list(cached["blocks"])} if isinstance(cached.get("blocks"), list) else {})}
+            if isinstance(cached, dict)
+            else cached
+        )
 
     window_sec = window_hours * 3600.0
     step_sec = step_hours * 3600.0

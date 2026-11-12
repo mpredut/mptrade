@@ -869,22 +869,18 @@ _JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
 _ORIG_GET_CACHEDB_DIR = get_cachedb_dir
 
 
-def _resolve_guard_cachedb_dir() -> str:
-    cdir_fn = resolve_patched_attr(
-        "get_cachedb_dir",
-        _ORIG_GET_CACHEDB_DIR,
-        local_val=get_cachedb_dir,
-        modules=("order_guard", "intelligence.internal.state.survival", "cachepaths"),
-        require_callable=True,
-    )
-    return str(cdir_fn())
-
-
 def _scan_cached_long_trend(symbol: str, parser: Callable[[Dict[str, Any]], Any]) -> Any:
     if not symbol or not isinstance(symbol, str):
         return None
     try:
-        p = str(resolve_cachedb_filepath(os.path.join(_resolve_guard_cachedb_dir(), CACHE_LONG_TREND_FILENAME)))
+        cdir_fn = resolve_patched_attr(
+            "get_cachedb_dir",
+            _ORIG_GET_CACHEDB_DIR,
+            local_val=get_cachedb_dir,
+            modules=("order_guard", "intelligence.internal.state.survival", "cachepaths"),
+            require_callable=True,
+        )
+        p = str(resolve_cachedb_filepath(os.path.join(str(cdir_fn()), CACHE_LONG_TREND_FILENAME)))
         data = read_json_dict_cached(p, _JSON_RECOVERING_MEMO, max_entries=32)
         entries = (
             lookup_symbol_cache_items(data, symbol, require_list=True, unwrap_items=True)
@@ -963,7 +959,15 @@ def _read_cached_price_history(
         return None
     win_sec = safe_pos_float(window_seconds, 7200.0)
     now_ts = resolve_now_ts(now)
-    cachedb_dir = _resolve_guard_cachedb_dir()
+    cachedb_dir = str(
+        resolve_patched_attr(
+            "get_cachedb_dir",
+            _ORIG_GET_CACHEDB_DIR,
+            local_val=get_cachedb_dir,
+            modules=("order_guard", "intelligence.internal.state.survival", "cachepaths"),
+            require_callable=True,
+        )()
+    )
     cutoff_ts = now_ts - win_sec
     history: List[Tuple[float, float]] = []
     cand_symbols = cache_symbol_variants(symbol, include_base=True)

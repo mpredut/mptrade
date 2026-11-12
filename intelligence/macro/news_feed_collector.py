@@ -328,15 +328,6 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         ]
         return self._make_snapshot(all_headlines, now, cache_dir, max_headlines=35)
 
-    @staticmethod
-    def _is_valid_pool_entry(v: Any, cutoff: float, max_ts: Optional[float] = None) -> bool:
-        if not (isinstance(v, tuple) and len(v) == 2 and hasattr(v[1], "title")):
-            return False
-        ts_f = normalize_epoch_sec(v[0], default=None)
-        if ts_f is None or ts_f < cutoff:
-            return False
-        return max_ts is None or ts_f <= max_ts
-
     def _prefer_newer_url_revision(
         self,
         cand_h: NewsHeadline,
@@ -471,7 +462,13 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         cleaned_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
         url_to_key: Dict[str, str] = {}
         for k, v in self._aggregated_pool.items():
-            if not self._is_valid_pool_entry(v, cutoff):
+            if not (
+                isinstance(v, tuple)
+                and len(v) == 2
+                and hasattr(v[1], "title")
+                and (ts_f := normalize_epoch_sec(v[0], default=None)) is not None
+                and ts_f >= cutoff
+            ):
                 continue
             ts_val, h_item = safe_float(v[0], 0.0), v[1]
             pub_ts = self._parse_recent_pub_date_ts(getattr(h_item, "pub_date", ""), now)
@@ -563,8 +560,12 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         active_values = [
             v
             for v in self._aggregated_pool.values()
-            if self._is_valid_pool_entry(v, cutoff, max_ts=now + 5.0)
+            if isinstance(v, tuple)
+            and len(v) == 2
+            and hasattr(v[1], "title")
             and hasattr(v[1], "is_high_severity")
+            and (ts_f := normalize_epoch_sec(v[0], default=None)) is not None
+            and cutoff <= ts_f <= now + 5.0
         ]
         return self._build_pool_snapshot(active_values, now, cache_dir)
 
