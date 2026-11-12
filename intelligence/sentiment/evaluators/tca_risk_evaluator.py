@@ -522,9 +522,6 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
         )
         ctx: Dict[str, Any] = {}
 
-        def _bellwether_rank(s: str, p: Dict[str, Any]) -> Tuple[int, int, int]:
-            return (1 if "USD" in compatible_quote_suffixes(s) else 0, 1 if s.endswith("USDC") or has_equity_suffix(s) else 0, len(p))
-
         by_base: Dict[str, Tuple[str, Dict[str, Any]]] = {}
         for sym, pinfo in sorted(prices_and_trends.items()):
             if (
@@ -533,7 +530,10 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                 and (b_canon := canonical_base_asset(sym))
             ):
                 prev = by_base.get(b_canon)
-                if prev is None or _bellwether_rank(sym, pinfo) > _bellwether_rank(prev[0], prev[1]):
+                if prev is None or (
+                    ("USD" in compatible_quote_suffixes(sym), sym.endswith("USDC"), len(pinfo))
+                    > ("USD" in compatible_quote_suffixes(prev[0]), prev[0].endswith("USDC"), len(prev[1]))
+                ):
                     by_base[b_canon] = (sym, pinfo)
 
         raw_horizon_keys = (

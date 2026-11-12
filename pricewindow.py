@@ -1229,10 +1229,6 @@ _vol_memo_cache: dict = {}
 _VOL_MEMO_MAX_ENTRIES = 128
 
 
-def _std_to_vol1h_pct(std: float, sample_rate_sec: float) -> float:
-    return 0.0 if std == 0.0 else round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
-
-
 def extract_sorted_2d_price_column(arr):
     """Extract the 1D price column from a 2D ``[ts, price, ...]`` numpy array, sorting by timestamp when unordered."""
     arr2 = arr[:, :2].astype(float, copy=False)
@@ -1323,7 +1319,7 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
         ):
             std = tbuf.log_return_std(blen - n, blen - 1)
             if std is not None:
-                return _std_to_vol1h_pct(std, sample_rate_sec)
+                return 0.0 if std == 0.0 else round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
 
     seq_sig = None
     if p0 is not None and pn is not None:
@@ -1393,7 +1389,7 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
         mean_r = sum(rets_py) / len(rets_py)
         std = math.sqrt(sum((r - mean_r) ** 2 for r in rets_py) / len(rets_py))
 
-    res = _std_to_vol1h_pct(std, sample_rate_sec)
+    res = 0.0 if std == 0.0 else round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
 
     if cache_key is not None:
         if len(_vol_memo_cache) > _VOL_MEMO_MAX_ENTRIES:

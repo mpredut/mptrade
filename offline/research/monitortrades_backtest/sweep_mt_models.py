@@ -369,10 +369,6 @@ def print_mt_buy_hold_footer(
     print_mt_sweep_row("Buy & Hold Benchmark", bh_cells, sum(vals), col_width=col_width)
 
 
-def _normalize_sweep_display_opts(col_width: int, include_buy_hold: bool) -> tuple[int, bool]:
-    return exact_pos_int(col_width, default=34) or 34, _parse_bool_flag(include_buy_hold, default=False)
-
-
 def run_mt_model_sweep_table(
     models,
     symbols: list[str],
@@ -384,7 +380,7 @@ def run_mt_model_sweep_table(
     include_buy_hold: bool = False,
 ) -> None:
     """Evaluate a list of ``(model_name, tape_fn)`` definitions across ``symbols`` and print a comparison table."""
-    width, inc_bh = _normalize_sweep_display_opts(col_width, include_buy_hold)
+    width, inc_bh = exact_pos_int(col_width, default=34) or 34, _parse_bool_flag(include_buy_hold, default=False)
     hdr = print_mt_sweep_header(title_col, symbols, col_width=width)
 
     bh_by_sym: dict[str, float] = {}
@@ -416,7 +412,7 @@ def run_streaming_mt_model_sweep(
 ) -> None:
     """Stream archive series symbol-by-symbol, evaluate ``models``, and print the comparison table."""
     use_dense = _parse_bool_flag(use_365, default=False)
-    width, inc_bh = _normalize_sweep_display_opts(col_width, include_buy_hold)
+    width, inc_bh = exact_pos_int(col_width, default=34) or 34, _parse_bool_flag(include_buy_hold, default=False)
     symbols: list[str] = []
     model_cells: list[list[str]] = [[] for _ in models]
     model_totals: list[float] = [0.0 for _ in models]

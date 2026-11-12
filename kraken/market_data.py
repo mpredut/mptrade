@@ -90,16 +90,12 @@ def fetch_ohlc_candles(
     return records
 
 
-def _is_kraken_error(exc: BaseException) -> bool:
-    return isinstance(exc, KrakenError) or exc.__class__.__name__ == "KrakenError"
-
-
 def get_price(client: KrakenClient, pair: str) -> float | None:
     """Return the latest pair price, e.g. HYPEUSD, or None when unavailable."""
     try:
         return client.last_price(pair)
     except Exception as e:
-        if not _is_kraken_error(e):
+        if not (isinstance(e, KrakenError) or e.__class__.__name__ == "KrakenError"):
             raise
         log(f"  ! the price of {pair} is unavailable: {e}")
         return None
@@ -130,7 +126,7 @@ def check_pair_listing(client: KrakenClient, pair: str) -> tuple[dict | None, bo
     try:
         info = client.pair_info(pair)
     except Exception as e:
-        if not _is_kraken_error(e):
+        if not (isinstance(e, KrakenError) or e.__class__.__name__ == "KrakenError"):
             raise
         is_unknown = "unknown asset pair" in str(e).lower()
         if not is_unknown:

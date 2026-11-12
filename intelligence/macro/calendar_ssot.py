@@ -431,10 +431,6 @@ _TAKER_CTX_RANKS = (
 )
 
 
-def _rank_taker_ratio_context(ctx: str) -> int:
-    return next((rank for pat, rank in _TAKER_CTX_RANKS if pat.search(ctx)), 2)
-
-
 def _coerce_cited_text(text: Any) -> str:
     if isinstance(text, (list, tuple)):
         parts: List[str] = []
@@ -494,7 +490,7 @@ def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Opti
             if target_hz_re.search(eff_ctx):
                 return val
             continue
-        rank = _rank_taker_ratio_context(eff_ctx)
+        rank = next((r for pat, r in _TAKER_CTX_RANKS if pat.search(eff_ctx)), 2)
         if rank > best_rank:
             best_rank = rank
             best_val = val
@@ -527,7 +523,7 @@ def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Opti
                 if target_hz_re.search(eff_sub_ctx):
                     return val
                 continue
-            rank = _rank_taker_ratio_context(eff_sub_ctx)
+            rank = next((r for pat, r in _TAKER_CTX_RANKS if pat.search(eff_sub_ctx)), 2)
             if rank > best_rank:
                 best_rank = rank
                 best_val = val
