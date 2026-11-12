@@ -451,11 +451,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 ta.TRADEALL_FIRE_SYMBOLS = list(dict.fromkeys([*orig_fire_symbols, symbol]))
             if kalman_primary:
                 _old_attempts = {"n": 0}
-                def _journal_only(order_type, symbol_, price_, qty_=None, motivation=None, **kw):
-                    _old_attempts["n"] += 1
-                    return None
-                ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: _journal_only(
-                    side_, symbol_, price_, qty_, **kw)
+                ta.mkt.place = lambda *_a, **_kw: _old_attempts.__setitem__("n", _old_attempts["n"] + 1)
             else:
                 ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: broker.place_order_smart(
                     side_, symbol_, price_, qty_, **kw)

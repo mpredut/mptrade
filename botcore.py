@@ -3060,22 +3060,21 @@ def compute_venue_nav_breakdown(
             2,
         )
 
-    def _resolve_pos_locked_usd(gp: dict) -> float:
-        sym_u = str(gp.get("symbol") or "").strip().upper()
-        if (live_px := _lookup_live_px(sym_u)) is not None and (
-            lb_live := safe_pos_float(gp.get("locked_base_qty"), None)
-        ) is not None:
-            return round(lb_live * live_px, 2)
-        return safe_nonneg_float(gp.get("locked_base_usd"), 0.0) or 0.0
-
     venue_pos_usd: dict[str, float] = {}
     grouped_positions_out: list[tuple[str, dict, float]] = []
     for (v_name, _), grp_list in grouped_pos.items():
         free_val_u = max((_resolve_pos_free_usd(gp) for gp in grp_list), default=0.0)
         locked_by_sym: dict[str, float] = {}
         for idx_g, gp in enumerate(grp_list):
-            s_g = str(gp.get("symbol") or f"SYM_{idx_g}").strip().upper()
-            locked_by_sym[s_g] = max(locked_by_sym.get(s_g, 0.0), _resolve_pos_locked_usd(gp))
+            sym_u = str(gp.get("symbol") or "").strip().upper()
+            s_g = sym_u or f"SYM_{idx_g}"
+            if (live_px := _lookup_live_px(sym_u)) is not None and (
+                lb_live := safe_pos_float(gp.get("locked_base_qty"), None)
+            ) is not None:
+                locked_usd = round(lb_live * live_px, 2)
+            else:
+                locked_usd = safe_nonneg_float(gp.get("locked_base_usd"), 0.0) or 0.0
+            locked_by_sym[s_g] = max(locked_by_sym.get(s_g, 0.0), locked_usd)
         val_u = free_val_u + sum(locked_by_sym.values())
         venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u
         grouped_positions_out.append((v_name, grp_list[0], val_u))

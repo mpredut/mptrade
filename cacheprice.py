@@ -823,18 +823,6 @@ class Cache365PriceManager(Cache24PriceManager):
         self._merge_max_nonneg_int_map(self.fetchtime_per_symbol, live_fetchtimes)
         self._merge_max_nonneg_int_map(self._rest_sync_cursor_per_symbol, live_rest_cursors)
 
-    def _write_unpersisted_memory_tail_locked(
-        self, target, original_cache, original_persisted_counts, *, min_ts_ms: int = 0
-    ) -> bool:
-        wrote = False
-        for symbol, items in original_cache.items():
-            start = min(max(0, original_persisted_counts.get(symbol, 0)), len(items))
-            for item in items[start:]:
-                if min_ts_ms <= 0 or self._entry_timestamp_ms(item) >= min_ts_ms:
-                    target.write(format_jsonl_bucket_line(symbol, item))
-                wrote = True
-        return wrote
-
     def _collect_live_delta_locked(
         self, snap_item_ids: set[int], *, min_ts_ms: int = 0
     ) -> dict[str, list]:
@@ -907,14 +895,15 @@ class Cache365PriceManager(Cache24PriceManager):
     def _write_unpersisted_and_live_delta(
         self, target, original_state, snap_item_ids: set[int], *, min_ts_ms=None
     ) -> bool:
-        wrote = bool(
-            self._write_unpersisted_memory_tail_locked(
-                target,
-                original_state[0],
-                original_state[1],
-                **(dict(min_ts_ms=min_ts_ms) if min_ts_ms is not None else {}),
-            )
-        )
+        wrote = False
+        eff_min_ts_ms = 0 if min_ts_ms is None else min_ts_ms
+        original_cache, original_persisted_counts = original_state[0], original_state[1]
+        for symbol, items in original_cache.items():
+            start = min(max(0, original_persisted_counts.get(symbol, 0)), len(items))
+            for item in items[start:]:
+                if eff_min_ts_ms <= 0 or self._entry_timestamp_ms(item) >= eff_min_ts_ms:
+                    target.write(format_jsonl_bucket_line(symbol, item))
+                wrote = True
         with self.lock:
             delta_by_sym = (
                 self._collect_live_delta_locked(snap_item_ids)

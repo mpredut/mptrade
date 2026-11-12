@@ -230,14 +230,11 @@ def _wrap_cached_ohlc_fn(
 ) -> Any:
     resolved_fn: Any = None if is_factory else raw_fn_or_factory
 
-    def _get_raw_fn() -> Any:
+    def _cached_ohlc(s_arg: str, interval_min: int) -> Any:
         nonlocal resolved_fn
         if resolved_fn is None and is_factory and callable(raw_fn_or_factory):
             resolved_fn = raw_fn_or_factory()
-        return resolved_fn
-
-    def _cached_ohlc(s_arg: str, interval_min: int) -> Any:
-        fn = _get_raw_fn()
+        fn = resolved_fn
         if not callable(fn):
             return None
         ck = (prov_key, id(fn), str(s_arg or "").strip().upper(), safe_pos_int(interval_min, default=1) or 1)

@@ -198,14 +198,6 @@ def _run_once(
         cash_refusals = 0
         original_place_buy = engine._place_buy
 
-        def _free_account_cash(cur_rate: float) -> float:
-            reserved = sum(
-                (o["qty"] * o["limit"] / cur_rate) * (1.0 + params.fx_fee_pct / 100.0)
-                for o in engine.s["orders"]
-                if str(o.get("side") or "").lower() == "buy"
-            )
-            return max(0.0, (cash or 0.0) - reserved)
-
         def _guarded_place_buy(amount: float, limit: float, kind: str = "ENTRY") -> bool:
             nonlocal cash_refusals
             lim_f = safe_pos_float(limit, default=None)
@@ -215,7 +207,12 @@ def _run_once(
                 qty_est = round((amt_f * fx_f) / lim_f, 2)
                 if qty_est > 0:
                     required = (qty_est * round(lim_f, 2) / fx_f) * (1.0 + params.fx_fee_pct / 100.0)
-                    if required > _free_account_cash(fx_f) + 1e-9:
+                    reserved = sum(
+                        (o["qty"] * o["limit"] / fx_f) * (1.0 + params.fx_fee_pct / 100.0)
+                        for o in engine.s["orders"]
+                        if str(o.get("side") or "").lower() == "buy"
+                    )
+                    if required > max(0.0, (cash or 0.0) - reserved) + 1e-9:
                         cash_refusals += 1
                         return False
             return original_place_buy(amount, limit, kind)

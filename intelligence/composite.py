@@ -165,20 +165,17 @@ class CompositeMarketIntelligence(OrderGuardEvaluatorBase):
                     return True
             return any(ln.lower() in bypassed for ln in legacy_names)
 
-        def _record_downscale(dec: GuardDecision) -> None:
-            nonlocal effective_scale, downscale_dec
-            s_val = clean_scale(getattr(dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
-            if s_val < effective_scale or downscale_dec is None:
-                effective_scale = min(effective_scale, s_val)
-                downscale_dec = GuardDecision.downscale(
-                    dec.guard_name, scale=effective_scale, reason=dec.reason, **dec.metadata
-                )
-
         def _apply_guard_dec(dec: GuardDecision) -> Optional[GuardDecision]:
+            nonlocal effective_scale, downscale_dec
             if not dec.allowed:
                 return dec
             if dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                _record_downscale(dec)
+                s_val = clean_scale(getattr(dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
+                if s_val < effective_scale or downscale_dec is None:
+                    effective_scale = min(effective_scale, s_val)
+                    downscale_dec = GuardDecision.downscale(
+                        dec.guard_name, scale=effective_scale, reason=dec.reason, **dec.metadata
+                    )
             return None
 
         grad_finite = safe_float(gradient, default=None)
