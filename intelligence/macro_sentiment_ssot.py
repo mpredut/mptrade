@@ -106,6 +106,7 @@ class MarketBreadthSnapshot:
 import botcore as _botcore
 from botcore import (
     _parse_bool_flag,
+    _prices_diverged,
     clean_nonempty_str,
     clean_scale,
     coerce_dict_maps,
@@ -360,12 +361,6 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
             _SORTED_TS_PX_MEMO.clear()
         _SORTED_TS_PX_MEMO[mkey] = pts
     return pts
-
-
-def _prices_diverged(px_a: Any, px_b: Any, threshold: float = 0.10) -> bool:
-    """Return True when two positive prices diverge by more than ``threshold`` relative to their minimum."""
-    a_f, b_f = safe_pos_float(px_a, default=0.0) or 0.0, safe_pos_float(px_b, default=0.0) or 0.0
-    return (abs(a_f - b_f) / min(a_f, b_f) > threshold) if (a_f > 0.0 and b_f > 0.0) else False
 
 
 def extract_high_severity_headlines_and_digest(

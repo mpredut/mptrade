@@ -372,24 +372,23 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
     try:
         order = method(**submit_kwargs, newClientOrderId=client_order_id)
     except BinanceAPIException as exc:
-        if post_only_flag and price_f is not None and MarketDataProvider._is_post_only_cross_refusal(exc):
-            retry_px = _step_binance_post_only_price(side, price_f, symbol, target_client, cache_permit=cache_permit)
-            if retry_px > 0.0 and retry_px != price_f:
-                print(
-                    f"[Binance] Post-only LIMIT_MAKER crossed book ({exc}); "
-                    f"stepping {side} {symbol} price {price} -> {retry_px}"
-                )
-                submit_kwargs["price"] = str(retry_px)
-                try:
-                    order = method(**submit_kwargs, newClientOrderId=client_order_id)
-                except BinanceAPIException as retry_exc:
-                    print(f"Binance {side} submission failed after post-only step-back: {retry_exc}")
-                    return None
-            else:
-                print(f"Binance {side} submission failed: {exc}")
-                return None
-        else:
+        retry_px = (
+            _step_binance_post_only_price(side, price_f, symbol, target_client, cache_permit=cache_permit)
+            if post_only_flag and price_f is not None and MarketDataProvider._is_post_only_cross_refusal(exc)
+            else 0.0
+        )
+        if not (retry_px > 0.0 and retry_px != price_f):
             print(f"Binance {side} submission failed: {exc}")
+            return None
+        print(
+            f"[Binance] Post-only LIMIT_MAKER crossed book ({exc}); "
+            f"stepping {side} {symbol} price {price} -> {retry_px}"
+        )
+        submit_kwargs["price"] = str(retry_px)
+        try:
+            order = method(**submit_kwargs, newClientOrderId=client_order_id)
+        except BinanceAPIException as retry_exc:
+            print(f"Binance {side} submission failed after post-only step-back: {retry_exc}")
             return None
     if order:
         oid_label = extract_order_id(order, default=None) or (

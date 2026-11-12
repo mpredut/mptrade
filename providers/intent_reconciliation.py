@@ -296,88 +296,57 @@ def reconcile_intents_from_execution_audit(
             updated = True
             continue
 
-        if not is_fill and ev in ("order_terminal", "order_terminal_retry") and (
+        is_cancel_terminal = not is_fill and ev in ("order_terminal", "order_terminal_retry") and (
             v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
             or l_stat in ("canceled", "cancelled", "expired", "rejected")
-        ):
+        )
+        if is_cancel_terminal:
             if st_up == "FAILED":
                 continue
-            norm_cancel = v_stat if v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED") else l_stat.upper()
-            exec_payload = {
-                "orderId": rec.get("order_id"),
-                "symbol": sym_val,
-                "side": side_u,
-                "executedQty": "0",
-                "cummulativeQuoteQty": "",
-                "status": norm_cancel,
-                "reconciled_from_audit": True,
-            }
-            if orig_q is not None:
-                exec_payload["origQty"] = str(orig_q)
-            if ev == "order_terminal":
-                if rec_ts_f is not None:
-                    exec_payload["terminal_ts"] = rec_ts_f
-                exec_payload["reconciled_terminal"] = True
-            intent["execution_payload"] = exec_payload
-            _record_intent_state(
-                intent,
-                "FAILED",
-                eff_ts,
-                action="RECONCILED_TERMINAL",
-                reason=norm_cancel,
-                order_id=rec.get("order_id"),
-                payload=exec_payload,
-            )
-            updated = True
-            continue
-
-        if is_fill:
+            raw_v_status = v_stat if v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED") else l_stat.upper()
+            target_state, action_lbl, reason_val = "FAILED", "RECONCILED_TERMINAL", raw_v_status
+            is_term = ev == "order_terminal"
+            exec_qty_s, quote_qty_s = "0", ""
+        elif is_fill:
             raw_v_status, is_term = _classify_audit_fill_state(ev, v_stat, l_stat)
+            target_state, reason_val = "EXECUTED", None
             action_lbl = "RECONCILED_PARTIAL" if raw_v_status == "PARTIALLY_FILLED" else "RECONCILED_EXECUTED"
-            exec_payload = {
-                "orderId": rec.get("order_id"),
-                "symbol": sym_val,
-                "side": side_u,
-                "executedQty": str(filled_qty) if filled_qty is not None else "",
-                "cummulativeQuoteQty": str(raw_cost) if raw_cost is not None else "",
-                "status": raw_v_status,
-                "reconciled_from_audit": True,
-            }
-            if orig_q is not None:
-                exec_payload["origQty"] = str(orig_q)
-            if f_px is not None:
-                exec_payload["price"] = f_px
-            if rec_ts_f is not None:
-                exec_payload["filled_at"] = rec_ts_f
-                if is_term:
-                    exec_payload["terminal_ts"] = rec_ts_f
-            if is_term:
-                exec_payload["reconciled_terminal"] = True
+            exec_qty_s = str(filled_qty) if filled_qty is not None else ""
+            quote_qty_s = str(raw_cost) if raw_cost is not None else ""
         else:
             raw_v_status = v_stat if v_stat in ("NEW", "OPEN", "RESTING", "PENDING", "WORKING") else "NEW"
-            action_lbl = "RECONCILED_ACCEPTED"
-            exec_payload = {
-                "orderId": rec.get("order_id"),
-                "symbol": sym_val,
-                "side": side_u,
-                "executedQty": "",
-                "cummulativeQuoteQty": "",
-                "status": raw_v_status,
-                "reconciled_from_audit": True,
-            }
-            if orig_q is not None:
-                exec_payload["origQty"] = str(orig_q)
-            if f_px is not None:
-                exec_payload["price"] = f_px
-            if rec_ts_f is not None:
-                exec_payload["accepted_at"] = rec_ts_f
+            target_state, action_lbl, reason_val = "EXECUTED", "RECONCILED_ACCEPTED", None
+            is_term = False
+            exec_qty_s = quote_qty_s = ""
+
+        exec_payload = {
+            "orderId": rec.get("order_id"),
+            "symbol": sym_val,
+            "side": side_u,
+            "executedQty": exec_qty_s,
+            "cummulativeQuoteQty": quote_qty_s,
+            "status": raw_v_status,
+            "reconciled_from_audit": True,
+        }
+        if orig_q is not None:
+            exec_payload["origQty"] = str(orig_q)
+        if not is_cancel_terminal and f_px is not None:
+            exec_payload["price"] = f_px
+        if rec_ts_f is not None:
+            if not is_cancel_terminal:
+                exec_payload["filled_at" if is_fill else "accepted_at"] = rec_ts_f
+            if is_term:
+                exec_payload["terminal_ts"] = rec_ts_f
+        if is_term:
+            exec_payload["reconciled_terminal"] = True
 
         intent["execution_payload"] = exec_payload
         _record_intent_state(
             intent,
-            "EXECUTED",
+            target_state,
             eff_ts,
             action=action_lbl,
+            **({"reason": reason_val} if reason_val is not None else {}),
             order_id=rec.get("order_id"),
             payload=exec_payload,
         )

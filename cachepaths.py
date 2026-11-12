@@ -1251,20 +1251,29 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _sync_cachepaths_reexports() -> None:
-    """Keep loaded re-export modules bound to active ``cachepaths`` callables across reload."""
-    for mod_name in ("botcore", "utils"):
+def sync_module_reexports(
+    source_globals: dict[str, object],
+    target_module_names: tuple[str, ...],
+    allowed_origins: tuple[str, ...],
+) -> None:
+    """Keep loaded re-export modules bound to active callables in ``source_globals`` across reload."""
+    for mod_name in target_module_names:
         reexport_mod = sys.modules.get(mod_name)
         if reexport_mod is None:
             continue
         for attr_name, attr_val in list(reexport_mod.__dict__.items()):
             if (
                 not attr_name.startswith("__")
-                and attr_name in globals()
+                and attr_name in source_globals
                 and callable(attr_val)
-                and getattr(attr_val, "__module__", None) == __name__
+                and getattr(attr_val, "__module__", None) in allowed_origins
             ):
-                setattr(reexport_mod, attr_name, globals()[attr_name])
+                setattr(reexport_mod, attr_name, source_globals[attr_name])
+
+
+def _sync_cachepaths_reexports() -> None:
+    """Keep loaded re-export modules bound to active ``cachepaths`` callables across reload."""
+    sync_module_reexports(globals(), ("botcore", "utils"), (__name__,))
 
 
 _sync_cachepaths_reexports()

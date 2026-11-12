@@ -351,14 +351,19 @@ class ProviderSsotBridgeMixin:
             name="unfilled_order_cancel_grace_sec",
         )
 
-    def _ssot_symbol_candidates(self, symbol: str) -> tuple[str, ...]:
+    @classmethod
+    def _ssot_symbol_candidates(cls, symbol: str, *, default_quote: str = "") -> tuple[str, ...]:
         """Return venue-scoped symbol keys to look up in SSOT cacheManager stores."""
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return ()
         raw_u = symbol.strip().upper()
         cleaned = clean_symbol_key(raw_u)
         parts = split_symbol_assets(raw_u)
-        canon = canonical_symbol_key(raw_u) if parts is not None else ""
+        canon = (
+            canonical_symbol_key(raw_u)
+            if parts is not None
+            else (f"{cleaned}{default_quote}" if (cleaned and default_quote) else "")
+        )
         return tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon) if c))
 
     def _allow_ssot_price_cache(self) -> bool:
@@ -439,20 +444,9 @@ class ProviderSsotBridgeMixin:
             require_callable=True,
         ) or is_shared_disk_cache_enabled
         eff_age = resolve_positive_max_age(max_age_sec, PRICE_FRESHNESS_MAX_AGE_SEC)
-        if (
-            in_live_fn()
-            or not shared_fn()
-            or eff_age is None
-            or isinstance(symbol, bool)
-            or not isinstance(symbol, str)
-            or not symbol.strip()
-        ):
+        candidates = cls._ssot_symbol_candidates(symbol, default_quote="USDC")
+        if in_live_fn() or not shared_fn() or eff_age is None or not candidates:
             return None
-        raw_u = symbol.strip().upper()
-        cleaned = clean_symbol_key(raw_u)
-        parts = split_symbol_assets(raw_u)
-        canon = canonical_symbol_key(raw_u) if parts is not None else (f"{cleaned}USDC" if cleaned else "")
-        candidates = tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon) if c))
         return cls.read_ssot_spot_price(candidates, max_age_sec=eff_age)
 
     @classmethod

@@ -613,16 +613,13 @@ def start_nonbinance_trend_poller(
                     getattr(cpm, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
                 )
                 now_ts = time.time()
-                if rth_gate_active and not is_symbol_market_open(s, now_ts):
-                    last_empty = empty_backoff_ts.get(s, 0.0)
-                    if s in rth_seeded or (last_empty > 0.0 and (now_ts - last_empty) < 300.0):
-                        _mark_symbol_ws_ts(s, now_ts)
-                        continue
-                elif rth_gate_active:
-                    last_empty = empty_backoff_ts.get(s, 0.0)
-                    if last_empty > 0.0 and (now_ts - last_empty) < 60.0:
-                        continue
-                if is_eq and s in rth_seeded and (now_ts - last_equity_poll_ts.get(s, 0.0)) < equity_min_gap_sec:
+                last_empty = empty_backoff_ts.get(s, 0.0)
+                market_open = not rth_gate_active or is_symbol_market_open(s, now_ts)
+                if rth_gate_active and market_open and last_empty > 0.0 and (now_ts - last_empty) < 60.0:
+                    continue
+                if (
+                    not market_open and (s in rth_seeded or (last_empty > 0.0 and (now_ts - last_empty) < 300.0))
+                ) or (is_eq and s in rth_seeded and (now_ts - last_equity_poll_ts.get(s, 0.0)) < equity_min_gap_sec):
                     _mark_symbol_ws_ts(s, now_ts)
                     continue
                 pending_polls.append((s, prov_name, is_eq))

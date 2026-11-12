@@ -400,6 +400,42 @@ class Cache24PriceManager(CachePriceManagerBase):
     def _on_stale_memory_detected_locked(self) -> None:
         self._reload_from_disk()
 
+    def _merge_ohlc_rows_locked(self, symbol: str, base_rows: list) -> list:
+        """Merge enriched 3-element OHLCV ``base_rows`` with pre/post-window in-memory ticks for ``symbol``."""
+        by_ts = {
+            ts_b: (list(r) if isinstance(r, tuple) else r)
+            for r in base_rows
+            if (ts_b := self._entry_timestamp_ms(r)) > 0
+        }
+        ohlc_ts_list = [
+            self._entry_timestamp_ms(r)
+            for r in base_rows
+            if isinstance(r, (list, tuple))
+            and len(r) >= 3
+            and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+        ]
+        first_ohlc_ts = min(ohlc_ts_list, default=0)
+        last_ohlc_ts = max(ohlc_ts_list, default=0)
+        for r in self.cache.get(symbol) or ():
+            ts_r = self._entry_timestamp_ms(r)
+            if ts_r <= 0:
+                continue
+            is_ohlc_r = (
+                isinstance(r, (list, tuple))
+                and len(r) >= 3
+                and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+            )
+            if not ohlc_ts_list or ts_r < first_ohlc_ts or ts_r >= last_ohlc_ts - 15 * 60 * 1000:
+                existing = by_ts.get(ts_r)
+                if existing is None or (
+                    is_ohlc_r
+                    and (not isinstance(existing, (list, tuple)) or len(existing) < 3)
+                ):
+                    by_ts[ts_r] = list(r) if isinstance(r, tuple) else r
+        merged_pts = [by_ts[k] for k in sorted(by_ts)]
+        self.cache[symbol] = merged_pts
+        return merged_pts
+
     def refresh_equity_ohlc_series(
         self,
         *,
@@ -463,38 +499,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                 continue
             if eff_pts:
                 with self.lock:
-                    by_ts = {
-                        self._entry_timestamp_ms(r): list(r)
-                        for r in eff_pts
-                        if self._entry_timestamp_ms(r) > 0
-                    }
-                    ohlc_ts_list = [
-                        self._entry_timestamp_ms(r)
-                        for r in eff_pts
-                        if isinstance(r, (list, tuple))
-                        and len(r) >= 3
-                        and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
-                    ]
-                    first_ohlc_ts = min(ohlc_ts_list, default=0)
-                    last_ohlc_ts = max(ohlc_ts_list, default=0)
-                    for r in self.cache.get(sym_eq) or ():
-                        ts_r = self._entry_timestamp_ms(r)
-                        if ts_r <= 0:
-                            continue
-                        is_ohlc_r = (
-                            isinstance(r, (list, tuple))
-                            and len(r) >= 3
-                            and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
-                        )
-                        if not ohlc_ts_list or ts_r < first_ohlc_ts or ts_r >= last_ohlc_ts - 15 * 60 * 1000:
-                            existing = by_ts.get(ts_r)
-                            if existing is None or (
-                                is_ohlc_r
-                                and (not isinstance(existing, (list, tuple)) or len(existing) < 3)
-                            ):
-                                by_ts[ts_r] = list(r) if isinstance(r, tuple) else r
-                    merged_pts = [by_ts[k] for k in sorted(by_ts)]
-                    self.cache[sym_eq] = merged_pts
+                    merged_pts = self._merge_ohlc_rows_locked(sym_eq, eff_pts)
                     last_pt_ts = (
                         self._entry_timestamp_ms(merged_pts[-1]) if merged_pts else eff_now_ms
                     ) or eff_now_ms
@@ -582,40 +587,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                     for r in disk_rows
                 ):
                     continue
-                by_ts = {
-                    self._entry_timestamp_ms(r): r
-                    for r in disk_rows
-                    if self._entry_timestamp_ms(r) > 0
-                }
-                ohlc_ts_list = [
-                    self._entry_timestamp_ms(r)
-                    for r in disk_rows
-                    if isinstance(r, (list, tuple))
-                    and len(r) >= 3
-                    and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
-                ]
-                first_ohlc_ts = min(ohlc_ts_list, default=0)
-                last_ohlc_ts = max(ohlc_ts_list, default=0)
-                for r in self.cache.get(s) or ():
-                    ts = self._entry_timestamp_ms(r)
-                    if ts <= 0:
-                        continue
-                    is_ohlc_r = (
-                        isinstance(r, (list, tuple))
-                        and len(r) >= 3
-                        and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
-                    )
-                    if ts < first_ohlc_ts or ts >= last_ohlc_ts - 15 * 60 * 1000:
-                        existing = by_ts.get(ts)
-                        if existing is None or (
-                            is_ohlc_r
-                            and (
-                                not isinstance(existing, (list, tuple))
-                                or len(existing) < 3
-                            )
-                        ):
-                            by_ts[ts] = r
-                self.cache[s] = [by_ts[k] for k in sorted(by_ts)]
+                self._merge_ohlc_rows_locked(s, disk_rows)
                 ft_cand = safe_pos_int(disk_ft.get(s), default=0) or 0
                 if ft_cand > safe_nonneg_int(self.fetchtime_per_symbol.get(s), default=0):
                     self.fetchtime_per_symbol[s] = ft_cand
@@ -1646,11 +1618,10 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
 
     def start_tick_fanout_server(self, sock_path: Optional[str] = None) -> Optional[str]:
         """Publish every fresh multi-venue tick over a non-blocking AF_UNIX stream socket."""
-        if not hasattr(socket, "AF_UNIX"):
-            return None
-        target_path = os.path.abspath(sock_path or self.tick_socket_path)
-        if len(target_path.encode("utf-8")) > 104:
-            print(f"[{self.cls_name}] tick socket path too long, skipping bind: {target_path}")
+        target_path = os.path.abspath(sock_path or self.tick_socket_path) if hasattr(socket, "AF_UNIX") else ""
+        if not target_path or len(target_path.encode("utf-8")) > 104:
+            if target_path:
+                print(f"[{self.cls_name}] tick socket path too long, skipping bind: {target_path}")
             return None
         with self._tick_ipc_lock:
             if self._tick_ipc_thread is not None and self._tick_ipc_thread.is_alive():
@@ -1840,8 +1811,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                     pass
 
     def shutdown(self, timeout=5.0):
-        eff_timeout = safe_nonneg_float(timeout, default=5.0)
-        deadline = _monotonic_time() + eff_timeout
+        deadline = _monotonic_time() + safe_nonneg_float(timeout, default=5.0)
         self.request_stop()
         stopped = super().shutdown(timeout=max(0.0, deadline - _monotonic_time()))
         for attr in ("_tick_ipc_thread", "_tick_sub_thread"):

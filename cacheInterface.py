@@ -1417,8 +1417,7 @@ class CacheManagerInterface(ABC):
         instances = list(cls._live_instances)
         for manager in instances:
             manager.request_stop()
-        eff_timeout = safe_nonneg_float(timeout, default=5.0)
-        deadline = _monotonic_time() + eff_timeout
+        deadline = _monotonic_time() + safe_nonneg_float(timeout, default=5.0)
         results = [
             manager.shutdown(timeout=max(0.0, deadline - _monotonic_time()))
             for manager in instances

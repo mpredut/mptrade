@@ -294,18 +294,16 @@ class GeminiClient(GeminiQuotaRouterMixin):
     @classmethod
     def _is_unrecognized_model_error(cls, proc: Optional[subprocess.CompletedProcess]) -> bool:
         """Return True when the CLI rejected the requested model slug as unknown or unavailable on the active tier."""
-        if proc is None or cls._is_cli_interrupted(proc):
-            return False
-        combined = cls._cli_error_text(proc)
-        return any(tok in combined for tok in cls._UNRECOGNIZED_MODEL_TOKENS)
+        combined = "" if (proc is None or cls._is_cli_interrupted(proc)) else cls._cli_error_text(proc)
+        return bool(combined) and any(tok in combined for tok in cls._UNRECOGNIZED_MODEL_TOKENS)
 
     @classmethod
     def _is_quota_or_credit_error(cls, proc: Optional[subprocess.CompletedProcess]) -> bool:
         """Return True when the CLI failed due to exhausted AI credits, quota, rate limits, or unrecognized model."""
-        if proc is None or cls._is_cli_interrupted(proc):
-            return False
-        combined = cls._cli_error_text(proc)
-        return any(
+        if cls._is_unrecognized_model_error(proc):
+            return True
+        combined = "" if (proc is None or cls._is_cli_interrupted(proc)) else cls._cli_error_text(proc)
+        return bool(combined) and any(
             tok in combined
             for tok in (
                 "credits balance is too low",
@@ -314,7 +312,6 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 "check quota",
                 "rate limit",
                 "too many requests",
-                *cls._UNRECOGNIZED_MODEL_TOKENS,
             )
         )
 

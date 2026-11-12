@@ -91,8 +91,7 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
             and callable(live_fn)
         ):
             tried_live_window = True
-            live_w = live_fn(symbol, fw, now=now)
-            if isinstance(live_w, dict):
+            if isinstance((live_w := live_fn(symbol, fw, now=now)), dict):
                 return live_w
         snap_fn = getattr(mgr, "get_fresh_snapshot", None)
         snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
@@ -116,8 +115,7 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
             )
             if not is_dyn_fresh:
                 if not tried_live_window and callable(live_fn):
-                    live_w = live_fn(symbol, fw, now=now)
-                    if isinstance(live_w, dict):
+                    if isinstance((live_w := live_fn(symbol, fw, now=now)), dict):
                         return live_w
                 if resolved is not snap:
                     return None

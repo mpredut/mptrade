@@ -9,6 +9,7 @@ from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence
 from botcore import (
     ClosedPriceSeries,
     _parse_bool_flag,
+    _prices_diverged as _yahoo_bar_prices_diverged,
     exact_int,
     exact_pos_int,
     normalize_epoch_sec,
@@ -527,14 +528,14 @@ def extract_trading_quote_pairs(
     data: Any, *, quote: str = "USDC", strict: bool = False
 ) -> tuple[set[str], set[str], dict[str, str]]:
     """Extract ``(trading_symbols, quote_pairs, pair_to_base)`` from an ``exchangeInfo`` payload."""
-    if not isinstance(data, Mapping):
-        if strict:
-            raise ValueError("exchangeInfo response must be a dict")
-        return set(), set(), {}
-    raw_symbols = data.get("symbols")
+    raw_symbols = data.get("symbols") if isinstance(data, Mapping) else None
     if not isinstance(raw_symbols, list):
         if strict:
-            raise ValueError("exchangeInfo symbols must be a list")
+            raise ValueError(
+                "exchangeInfo response must be a dict"
+                if not isinstance(data, Mapping)
+                else "exchangeInfo symbols must be a list"
+            )
         return set(), set(), {}
     want_quote = quote.strip().upper()
     trading_symbols: set[str] = set()
@@ -596,11 +597,6 @@ def extract_yahoo_chart_latest_price(payload: Any, *, decimals: Optional[int] = 
     if val is None:
         return None
     return round(val, decimals) if decimals is not None else val
-
-
-def _yahoo_bar_prices_diverged(px_a: Any, px_b: Any, threshold: float = 0.10) -> bool:
-    a_f, b_f = safe_pos_float(px_a, default=0.0) or 0.0, safe_pos_float(px_b, default=0.0) or 0.0
-    return (abs(a_f - b_f) / min(a_f, b_f) > threshold) if (a_f > 0.0 and b_f > 0.0) else False
 
 
 def normalize_yahoo_5d_chart_bars(

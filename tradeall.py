@@ -929,8 +929,7 @@ class TrendCoordinator:
             lock = getattr(self, "_lock", None)
             if lock is not None:
                 with lock:
-                    self._dirty[symbol] = False
-                    self._last_eval[symbol] = time.time()
+                    self._dirty[symbol], self._last_eval[symbol] = False, time.time()
             return None
         get_entry = getattr(self.current_price_mgr, "get_price", None)
         if callable(get_entry):
@@ -1033,8 +1032,7 @@ class TrendCoordinator:
             or cur_attempts != prev_attempts
         )
         with self._lock:
-            self._dirty[symbol] = False
-            self._last_eval[symbol] = time.time()
+            self._dirty[symbol], self._last_eval[symbol] = False, time.time()
         # Merge the complete snapshot into the cross-process store. Remove ``symbol``
         # because it is already supplied positionally.
         fields = {k: v for k, v in snapshot.items() if k != "symbol"}

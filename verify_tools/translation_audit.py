@@ -347,10 +347,7 @@ def cmd_pre_commit(args) -> int:
             print(f"[pre-commit] Auto-replaced Romanian diacritics with ASCII: {rel}")
             if not args.files:
                 subprocess.run(["git", "add", "--", path], cwd=_ROOT, check=False)
-        if is_diacritic_exempt(path):
-            continue
-        hits, _ = scan_file(path, args.min_score)
-        if not hits:
+        if is_diacritic_exempt(path) or not (hits := scan_file(path, args.min_score)[0]):
             continue
         total_hits += len(hits)
         print(f"\n=== {rel} ({len(hits)} Romanian block(s)) ===")

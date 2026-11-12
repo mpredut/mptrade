@@ -1584,6 +1584,7 @@ def test_multivenue_provider_routing_and_closed_rth_skip(monkeypatch, tmp_path):
     assert placed_calls[0][1].get("provider_name") == "kraken"
 
     # Closed RTH equity symbol skips evaluation cleanly without calling get_price or logging stale warnings.
+    monkeypatch.setattr(ta, "_kalman_ref", ta._kalman_ref)
     get_price_mock = MagicMock(side_effect=AssertionError("should not fetch price when RTH closed"))
     coord = ta.TrendCoordinator(
         symbols=["NVDA_US_EQ"],

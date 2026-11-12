@@ -31,7 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timezone
 from enum import Enum
@@ -57,6 +57,7 @@ from cachepaths import (
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
+    sync_module_reexports,
 )
 import state_io as _state_io
 
@@ -1487,13 +1488,19 @@ def extract_current_price_timestamp_sec(
     return ts_val, True
 
 
+def _prices_diverged(px_a: object, px_b: object, threshold: float = 0.10) -> bool:
+    """Return True when two positive prices diverge by more than ``threshold`` relative to their minimum."""
+    a_f, b_f = safe_pos_float(px_a, default=0.0) or 0.0, safe_pos_float(px_b, default=0.0) or 0.0
+    return (abs(a_f - b_f) / min(a_f, b_f) > threshold) if (a_f > 0.0 and b_f > 0.0) else False
+
+
 def summarize_current_price_cache_freshness(
     cp_payload: object,
     *,
     now_ts: float | None = None,
     max_age_sec: float = PRICE_FRESHNESS_MAX_AGE_SEC,
     market_open_fn: Callable[[str], bool] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Evaluate ``cache_current_price.json`` freshness against the unified SSOT threshold."""
     now_s = resolve_now_ts(now_ts)
     eff_max_age = safe_pos_float(max_age_sec, default=PRICE_FRESHNESS_MAX_AGE_SEC) or PRICE_FRESHNESS_MAX_AGE_SEC
@@ -3538,18 +3545,7 @@ _REEXPORT_MODULE_NAMES = (
 
 def _sync_reexport_modules() -> None:
     """Keep loaded re-export modules bound to the active ``botcore`` function objects."""
-    for mod_name in _REEXPORT_MODULE_NAMES:
-        reexport_mod = sys.modules.get(mod_name)
-        if reexport_mod is None:
-            continue
-        for attr_name, attr_val in list(reexport_mod.__dict__.items()):
-            if (
-                not attr_name.startswith("__")
-                and attr_name in globals()
-                and callable(attr_val)
-                and getattr(attr_val, "__module__", None) in (__name__, "cachepaths")
-            ):
-                setattr(reexport_mod, attr_name, globals()[attr_name])
+    sync_module_reexports(globals(), _REEXPORT_MODULE_NAMES, (__name__, "cachepaths"))
 
 
 _sync_reexport_modules()

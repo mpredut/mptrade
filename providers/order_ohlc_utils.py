@@ -103,7 +103,9 @@ def compute_post_only_maker_price(
     price: object,
     *,
     current_price: object = None,
+    fetch_current_price_fn: Optional[Callable[[], object]] = None,
     tick_size: object = 0.0,
+    tick_size_fn: Optional[Callable[[float], object]] = None,
     round_price_fn: Optional[Callable[[float], object]] = None,
     step_bps_ratio: float = 0.0005,
 ) -> float:
@@ -113,11 +115,18 @@ def compute_post_only_maker_price(
     if px_f is None or s_norm not in ("BUY", "SELL"):
         return safe_pos_float(price, default=0.0) or 0.0
     cur_px = safe_pos_float(current_price, default=None)
-    anchor = (min(px_f, cur_px) if s_norm == "BUY" else max(px_f, cur_px)) if cur_px else px_f
-    tick = safe_pos_float(tick_size, default=0.0) or 0.0
+    if cur_px is None and callable(fetch_current_price_fn):
+        try:
+            cur_px = safe_pos_float(fetch_current_price_fn(), default=None)
+        except Exception:
+            cur_px = None
+    is_buy = s_norm == "BUY"
+    anchor = (min(px_f, cur_px) if is_buy else max(px_f, cur_px)) if cur_px else px_f
+    raw_tick = tick_size_fn(anchor) if callable(tick_size_fn) else tick_size
+    tick = safe_pos_float(raw_tick, default=0.0) or 0.0
     ratio = safe_pos_float(step_bps_ratio, default=0.0005) or 0.0005
     cushion = max(tick, anchor * ratio)
-    raw_stepped = (anchor - cushion) if s_norm == "BUY" else (anchor + cushion)
+    raw_stepped = (anchor - cushion) if is_buy else (anchor + cushion)
     if raw_stepped <= 0.0:
         return px_f
 
@@ -132,23 +141,15 @@ def compute_post_only_maker_price(
     rounded = _round_cand(raw_stepped)
     if rounded <= 0.0:
         return px_f
-    if s_norm == "BUY" and rounded >= anchor:
+    if (rounded >= anchor) if is_buy else (rounded <= anchor):
         delta = tick if tick > 0.0 else anchor * ratio
-        cand = anchor - delta
+        cand = (anchor - delta) if is_buy else (anchor + delta)
         if cand <= 0.0:
             return px_f
         rounded = _round_cand(cand)
         if rounded <= 0.0:
             return px_f
-        if rounded >= anchor:
-            rounded = cand
-    elif s_norm == "SELL" and rounded <= anchor:
-        delta = tick if tick > 0.0 else anchor * ratio
-        cand = anchor + delta
-        rounded = _round_cand(cand)
-        if rounded <= 0.0:
-            return px_f
-        if rounded <= anchor:
+        if (rounded >= anchor) if is_buy else (rounded <= anchor):
             rounded = cand
     return rounded if rounded > 0.0 else px_f
 

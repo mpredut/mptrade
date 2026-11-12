@@ -503,8 +503,6 @@ class GeminiQuotaRouterMixin:
         buckets = snapshot.get("buckets")
         if not isinstance(buckets, dict) or not buckets:
             return
-        _read_json_dict = _gc_attr("read_json_dict", read_json_dict)
-        _save_json_state = _gc_attr("save_json_state", save_json_state)
         available_credits = safe_float(snapshot.get("available_credits"), 0.0)
         warn_threshold = max(
             0.0, min(0.5, safe_float(float_env("LLM_QUOTA_LOW_WARN_FRACTION", default=0.10), 0.10))
@@ -526,76 +524,71 @@ class GeminiQuotaRouterMixin:
             default=0.0,
         )
 
+        alert_updates: Dict[str, Any] = {}
         if available_credits > 0.0 or argon_rem > warn_threshold:
             if snapshot.get("last_alert_tier") not in (None, "", "ok"):
-                state_path = cls._get_quota_state_path()
-                with cls._quota_state_rmw_lock(state_path, _save_json_state):
-                    cur = _read_json_dict(state_path, default=None)
-                    merged = dict(cur) if isinstance(cur, dict) else dict(snapshot)
-                    merged["last_alert_tier"] = "ok"
-                    snapshot["last_alert_tier"] = "ok"
-                    cls._cache_and_save_quota_state_locked(state_path, merged, _save_json_state)
-            return
-
-        if claude_rem <= warn_threshold and flash_rem <= warn_threshold:
-            alert_tier, severity_rank = "all_exhausted", 3
-        elif claude_rem <= warn_threshold:
-            alert_tier, severity_rank = "all_paid_low", 2
+                alert_updates = {"last_alert_tier": "ok"}
         else:
-            alert_tier, severity_rank = "argon_low", 1
+            if claude_rem <= warn_threshold and flash_rem <= warn_threshold:
+                alert_tier, severity_rank = "all_exhausted", 3
+            elif claude_rem <= warn_threshold:
+                alert_tier, severity_rank = "all_paid_low", 2
+            else:
+                alert_tier, severity_rank = "argon_low", 1
 
-        rank_map = {"ok": 0, "argon_low": 1, "all_paid_low": 2, "all_exhausted": 3}
-        prev_tier = str(snapshot.get("last_alert_tier") or "ok")
-        prev_rank = rank_map.get(prev_tier, 0)
-        now = time.time()
-        last_alert_ts = normalize_epoch_sec(snapshot.get("last_alert_ts"), default=0.0) or 0.0
+            rank_map = {"ok": 0, "argon_low": 1, "all_paid_low": 2, "all_exhausted": 3}
+            prev_tier = str(snapshot.get("last_alert_tier") or "ok")
+            prev_rank = rank_map.get(prev_tier, 0)
+            now = time.time()
+            last_alert_ts = normalize_epoch_sec(snapshot.get("last_alert_ts"), default=0.0) or 0.0
 
-        if severity_rank <= prev_rank and last_alert_ts > 0.0 and 0.0 <= (now - last_alert_ts) < cooldown_sec:
-            return
+            if severity_rank <= prev_rank and last_alert_ts > 0.0 and 0.0 <= (now - last_alert_ts) < cooldown_sec:
+                return
 
-        try:
-            watchdog_common = importlib.import_module("orchestratorOS.lib.watchdog_common")
-        except Exception:
-            return
+            try:
+                watchdog_common = importlib.import_module("orchestratorOS.lib.watchdog_common")
+            except Exception:
+                return
 
-        ntfy_mocked = (
-            hasattr(watchdog_common.send_ntfy, "_mock_name")
-            or getattr(watchdog_common.send_ntfy, "__module__", "") != "orchestratorOS.lib.watchdog_common"
-        )
-        if (
-            not is_unmocked_llm_query_allowed()
-            and not ntfy_mocked
-            and not bool_env("LLM_FORCE_QUOTA_ALERT_TEST", default=False)
-        ):
-            return
+            ntfy_mocked = (
+                hasattr(watchdog_common.send_ntfy, "_mock_name")
+                or getattr(watchdog_common.send_ntfy, "__module__", "") != "orchestratorOS.lib.watchdog_common"
+            )
+            if (
+                not is_unmocked_llm_query_allowed()
+                and not ntfy_mocked
+                and not bool_env("LLM_FORCE_QUOTA_ALERT_TEST", default=False)
+            ):
+                return
 
-        title = (
-            "🛑 ERROR: AI LLM Quota Near Zero"
-            if argon_rem > 0.0
-            else "🛑 ERROR: AI LLM Paid Argon Quota Exhausted (0%)"
-        )
-        msg = (
-            f"Available credits: {available_credits:.0f} | "
-            f"gemini-4-argon (med/low/high): {argon_rem * 100:.0f}% | "
-            f"claude-sonnet-5-5 (paid fallback): {claude_rem * 100:.0f}% | "
-            f"gemini-3.8-flash (fallback): {flash_rem * 100:.0f}%. "
-            f"Automatic routing activated on first model with confirmed quota; "
-            f"immediate dynamic recovery to Argon upon top-up/reset."
-        )
-        dispatched = False
-        try:
-            watchdog_common.send_ntfy(title, msg)
-            dispatched = True
-        except Exception as exc:
-            logger.debug("Failed sending low-quota NTFY alert: %s", exc)
+            title = (
+                "🛑 ERROR: AI LLM Quota Near Zero"
+                if argon_rem > 0.0
+                else "🛑 ERROR: AI LLM Paid Argon Quota Exhausted (0%)"
+            )
+            msg = (
+                f"Available credits: {available_credits:.0f} | "
+                f"gemini-4-argon (med/low/high): {argon_rem * 100:.0f}% | "
+                f"claude-sonnet-5-5 (paid fallback): {claude_rem * 100:.0f}% | "
+                f"gemini-3.8-flash (fallback): {flash_rem * 100:.0f}%. "
+                f"Automatic routing activated on first model with confirmed quota; "
+                f"immediate dynamic recovery to Argon upon top-up/reset."
+            )
+            try:
+                watchdog_common.send_ntfy(title, msg)
+                alert_updates = {"last_alert_ts": now, "last_alert_tier": alert_tier}
+            except Exception as exc:
+                logger.debug("Failed sending low-quota NTFY alert: %s", exc)
 
-        if dispatched:
+        if alert_updates:
             state_path = cls._get_quota_state_path()
+            _read_json_dict, _save_json_state = (
+                _gc_attr("read_json_dict", read_json_dict),
+                _gc_attr("save_json_state", save_json_state),
+            )
             with cls._quota_state_rmw_lock(state_path, _save_json_state):
                 cur = _read_json_dict(state_path, default=None)
                 merged = dict(cur) if isinstance(cur, dict) else dict(snapshot)
-                merged["last_alert_ts"] = now
-                merged["last_alert_tier"] = alert_tier
-                snapshot["last_alert_ts"] = now
-                snapshot["last_alert_tier"] = alert_tier
+                merged.update(alert_updates)
+                snapshot.update(alert_updates)
                 cls._cache_and_save_quota_state_locked(state_path, merged, _save_json_state)

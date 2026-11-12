@@ -732,23 +732,12 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         current_price: Optional[float] = None,
     ) -> float:
         """Step ``price`` onto the passive Maker side of the spread after a post-only cross rejection."""
-        px_f = safe_pos_float(price, default=None)
-        s_norm = normalize_side(side)
-        if px_f is None or s_norm not in ("BUY", "SELL"):
-            return safe_pos_float(price, default=0.0) or 0.0
-        cur_px = safe_pos_float(current_price, default=None)
-        if cur_px is None:
-            try:
-                cur_px = safe_pos_float(self.get_current_price(symbol), default=None)
-            except Exception:
-                cur_px = None
-        anchor = (min(px_f, cur_px) if s_norm == "BUY" else max(px_f, cur_px)) if cur_px else px_f
-        tick = safe_pos_float(self.price_tick_size(symbol, reference_price=anchor), default=0.0) or 0.0
         return compute_post_only_maker_price(
-            s_norm,
-            px_f,
-            current_price=cur_px,
-            tick_size=tick,
+            side,
+            price,
+            current_price=current_price,
+            fetch_current_price_fn=lambda: self.get_current_price(symbol),
+            tick_size_fn=lambda anchor: self.price_tick_size(symbol, reference_price=anchor),
             round_price_fn=lambda p: self.round_price(symbol, p),
         )
 
