@@ -994,15 +994,6 @@ def _finalize_terminal_campaign_state(
     return state
 
 
-def _extract_terminal_pending_tier(symbol, state, kind_label: str):
-    pending = dict(state.get("pending") or {})
-    threshold = _finite_float(pending.get("threshold"), positive=True)
-    if threshold is None:
-        print(f"[{symbol}] Corrupt {kind_label}; preserve fail-closed.")
-        return None
-    return pending, threshold, _tier_key(threshold)
-
-
 def _extract_and_accumulate_terminal_tier(
     symbol,
     state: dict,
@@ -1013,10 +1004,12 @@ def _extract_and_accumulate_terminal_tier(
     *,
     include_cost_and_fee: bool = False,
 ) -> tuple[dict, dict, float, float, float, float, float] | None:
-    extracted = _extract_terminal_pending_tier(symbol, state, kind_label)
-    if extracted is None:
+    pending = dict(state.get("pending") or {})
+    threshold = _finite_float(pending.get("threshold"), positive=True)
+    if threshold is None:
+        print(f"[{symbol}] Corrupt {kind_label}; preserve fail-closed.")
         return None
-    pending, threshold, key = extracted
+    key = _tier_key(threshold)
     filled_qty = safe_nonneg_float(status.filled_qty, default=0.0)
     cost_val = safe_nonneg_float(status.cost, default=0.0)
     fee_val = safe_nonneg_float(status.fee, default=0.0)

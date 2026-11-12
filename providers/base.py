@@ -1045,13 +1045,6 @@ class MarketDataProvider(ABC):
         """Validate venue state and optionally return opaque submit authorization."""
         return None
 
-    def _is_live_order_enabled(self, env_key: str, folder: Optional[str] = None) -> bool:
-        """Resolve live-order gate from explicit ``self._live_enabled`` override or ``bool_env``."""
-        live_override = getattr(self, "_live_enabled", None)
-        if live_override is None:
-            return bool_env(env_key, folder)
-        return _parse_bool_flag(live_override, False)
-
     @classmethod
     def _resolve_live_orders_dir(cls) -> Optional[str]:
         dir_attr = getattr(cls, "_LIVE_ORDERS_DIR_ATTR", None)
@@ -1086,7 +1079,8 @@ class MarketDataProvider(ABC):
                 if getattr(type(self), "_LIVE_ORDERS_EXEC_READS_DIR", True)
                 else None
             )
-            return self._is_live_order_enabled(env_key, folder)
+            live_override = getattr(self, "_live_enabled", None)
+            return bool_env(env_key, folder) if live_override is None else _parse_bool_flag(live_override, False)
         return type(self)._venue_live_orders_enabled()
 
     @staticmethod

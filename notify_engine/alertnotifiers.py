@@ -223,13 +223,6 @@ def _positive_int_env(name: str, default: int) -> int:
     return val if (val is not None and val >= 0) else default
 
 
-def _resolve_gate_now(now: Optional[float]) -> float:
-    nf = safe_pos_float(now, default=None)
-    if nf is not None and nf < 32503680000.0:
-        return nf
-    return time.time()
-
-
 def _delivery_state_path() -> Path:
     configured = optional_env("NOTIFICATION_STATE_FILE")
     return Path(configured).expanduser() if configured else BASE_DIR / "logs/notification_delivery_state.json"
@@ -695,7 +688,8 @@ def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
 def _resolve_gate_context(
     now: Optional[float] = None, *, flag: Any = False
 ) -> tuple[float, bool, str, Path]:
-    now_ts = _resolve_gate_now(now)
+    nf = safe_pos_float(now, default=None)
+    now_ts = nf if (nf is not None and nf < 32503680000.0) else time.time()
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     return now_ts, _parse_bool_flag(flag, False), today, _delivery_state_path()
 

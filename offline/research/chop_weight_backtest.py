@@ -96,17 +96,6 @@ def _summarize_trade_outcomes(trades: List[Dict[str, Any]]) -> Tuple[int, int, f
     return wins, losses, win_rate, profit_factor
 
 
-def _validate_fee_pct(fee_pct: Any) -> float:
-    fee_f = (
-        safe_nonneg_float(fee_pct, default=None)
-        if isinstance(fee_pct, (int, float)) and not isinstance(fee_pct, bool)
-        else None
-    )
-    if fee_f is None or fee_f >= 1.0:
-        raise ValueError("fee_pct must be in [0, 1)")
-    return fee_f
-
-
 def _validate_backtest_step_balance_fee(
     step_seconds: Any,
     initial_balance: Any,
@@ -114,7 +103,13 @@ def _validate_backtest_step_balance_fee(
 ) -> Tuple[int, float, float]:
     step_i, _ = _req_pos_step_seconds(step_seconds)
     init_bal = _req_pos_num(initial_balance, "initial_balance")
-    fee_f = _validate_fee_pct(fee_pct)
+    fee_f = (
+        safe_nonneg_float(fee_pct, default=None)
+        if isinstance(fee_pct, (int, float)) and not isinstance(fee_pct, bool)
+        else None
+    )
+    if fee_f is None or fee_f >= 1.0:
+        raise ValueError("fee_pct must be in [0, 1)")
     return step_i, init_bal, fee_f
 
 

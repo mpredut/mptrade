@@ -81,15 +81,6 @@ def _normalize_funding_series(fund: list[tuple[int, float]] | None) -> tuple[lis
     return [item[0] for item in clean_fund], [item[1] for item in clean_fund]
 
 
-def _funding_rate_from_sorted(fund_ts: list[float], fund_rates: list[float], t_ms: int | float) -> float:
-    if not fund_ts:
-        return 0.0
-    t_val = _to_funding_ms(t_ms)
-    if t_val is None:
-        return 0.0
-    return _lookup_sorted_funding_ms(fund_ts, fund_rates, t_val)
-
-
 def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
     """Return the funding rate active at t_ms, using the most recent rate at or before t.
 
@@ -97,7 +88,10 @@ def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
     both direct replay callers (ms) and walk-forward evaluation contexts (s) match.
     """
     fund_ts, fund_rates = _normalize_funding_series(fund)
-    return _funding_rate_from_sorted(fund_ts, fund_rates, t_ms)
+    if not fund_ts:
+        return 0.0
+    t_val = _to_funding_ms(t_ms)
+    return 0.0 if t_val is None else _lookup_sorted_funding_ms(fund_ts, fund_rates, t_val)
 
 
 def _resolve_hl_strat_params(
