@@ -112,6 +112,11 @@ class MarketDataProvider(ABC):
         self.validate_symbol(symbol)
         return bool(symbol and not isinstance(symbol, bool) and str(symbol).strip())
 
+    @staticmethod
+    def _log_provider_balance_error(tag: str, label: str, asset: Any, exc: Exception) -> None:
+        print(f"[{tag}] {label} {asset}: {exc}")
+        return None
+
     def get_current_price(self, symbol: str) -> Optional[float]:
         """Return fresh current price for ``symbol`` (SSOT cache first when enabled, then venue transport)."""
         if not self._validate_nonempty_symbol(symbol):
@@ -328,15 +333,11 @@ class MarketDataProvider(ABC):
         if compute_weight_capped_qty_fn is not None:
             cls._policy_compute_weight_capped_qty_fn = staticmethod(compute_weight_capped_qty_fn)
 
-    @classmethod
-    def _ensure_order_guard_bindings(cls) -> None:
-        if cls._policy_weight_limit_fn is None or cls._policy_resolve_trade_weight_fn is None:
-            importlib.import_module("order_guard")
-
     @staticmethod
     def _bind_order_guard_hook(method_name: str, attr_name: str, fallback_attr: str):
         def _method(cls, *args: Any, **kwargs: Any) -> Any:
-            cls._ensure_order_guard_bindings()
+            if cls._policy_weight_limit_fn is None or cls._policy_resolve_trade_weight_fn is None:
+                importlib.import_module("order_guard")
             fn = resolve_patched_attr(
                 attr_name,
                 getattr(cls, fallback_attr, None),
@@ -864,30 +865,6 @@ class MarketDataProvider(ABC):
                 self.write_ssot_fills_cache(symbol, cache_file, rows)
         return rows
 
-    @staticmethod
-    def _parse_remote_trades_query(
-        symbol: Any, start_time_ms: Any = 0
-    ) -> Optional[tuple[str, float]]:
-        """Validate ``(symbol, start_time_ms)`` for ``fetch_remote_trades`` without raising on blank symbols."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
-            return None
-        start_ms = 0.0 if start_time_ms is None else safe_nonneg_float(start_time_ms, default=None)
-        if start_ms is None:
-            return None
-        return str(symbol).strip().upper(), start_ms
-
-    @staticmethod
-    def _filter_remote_trade_rows(rows: Any, start_ms: float) -> List[dict]:
-        """Return shallow copies of dict trade rows whose timestamp is ``>= start_ms``."""
-        if not isinstance(rows, list):
-            return []
-        return [
-            dict(r)
-            for r in rows
-            if isinstance(r, dict)
-            and (start_ms <= 0.0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
-        ]
-
     _REMOTE_TRADES_CLIENT_ATTR: Optional[str] = None
 
     @classmethod
@@ -912,13 +889,21 @@ class MarketDataProvider(ABC):
         """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
         if _parse_bool_flag(getattr(self, "_VALIDATE_REMOTE_TRADES_SYMBOL", True), default=True):
             self.validate_symbol(symbol)
-        if (parsed := self._parse_remote_trades_query(symbol, start_time_ms)) is None:
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             return []
-        sym_u, start_ms = parsed
-        return self._filter_remote_trade_rows(
-            self._remote_trade_rows_for_symbol(symbol, sym_u, start_ms, client=client),
-            start_ms,
-        )
+        start_ms = 0.0 if start_time_ms is None else safe_nonneg_float(start_time_ms, default=None)
+        if start_ms is None:
+            return []
+        sym_u = str(symbol).strip().upper()
+        rows = self._remote_trade_rows_for_symbol(symbol, sym_u, start_ms, client=client)
+        if not isinstance(rows, list):
+            return []
+        return [
+            dict(r)
+            for r in rows
+            if isinstance(r, dict)
+            and (start_ms <= 0.0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
+        ]
 
     def get_orders(
         self,

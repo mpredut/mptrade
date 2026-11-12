@@ -206,7 +206,12 @@ def mode_pre(force: bool = False) -> int:
     if known_cids:
         del_dir = os.path.join(BACKUPS, stamp, "deleted_in_ui")
 
-        def _retire_deleted_cid_artifacts(cid: str) -> None:
+        def _retire_db_to_deleted(db_path: str, name: str, cid: str) -> None:
+            nonlocal deleted
+            checkpoint_db(db_path)
+            os.makedirs(del_dir, exist_ok=True)
+            shutil.move(db_path, os.path.join(del_dir, name))
+            drop_wal_sidecars(db_path, force=False)
             ann_file = os.path.join(ANN, cid + ".pbtxt")
             if os.path.exists(ann_file):
                 try:
@@ -214,14 +219,6 @@ def mode_pre(force: bool = False) -> int:
                 except OSError:
                     pass
             shutil.rmtree(os.path.join(CLI, "brain", cid), ignore_errors=True)
-
-        def _retire_db_to_deleted(db_path: str, name: str, cid: str) -> None:
-            nonlocal deleted
-            checkpoint_db(db_path)
-            os.makedirs(del_dir, exist_ok=True)
-            shutil.move(db_path, os.path.join(del_dir, name))
-            drop_wal_sidecars(db_path, force=False)
-            _retire_deleted_cid_artifacts(cid)
             deleted += 1
 
         for p2 in sorted(glob.glob(os.path.join(glob.escape(D2), "*.db"))):

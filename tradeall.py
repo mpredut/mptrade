@@ -575,16 +575,13 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
     """Evaluate fast-momentum and short-term acceleration impulses on the small price window."""
     trend_state.check_trend_expiration()
 
-    def _advance_small_trend(direction: str) -> None:
+    def _advance_and_fire_small_window(is_up: bool, reason: str, log_prefix: str, log_detail: str):
+        direction, action = _dir_action(is_up)
+        print(f"[SMALL-WINDOW] {log_prefix} {action} {'surge' if is_up else 'plunge'}: {log_detail}")
         if trend_state.is_trend_up() if direction == "UP" else trend_state.is_trend_down():
             trend_state.confirm_trend()
         else:
             trend_state.start_trend(direction)
-
-    def _advance_and_fire_small_window(is_up: bool, reason: str, log_prefix: str, log_detail: str):
-        direction, action = _dir_action(is_up)
-        print(f"[SMALL-WINDOW] {log_prefix} {action} {'surge' if is_up else 'plunge'}: {log_detail}")
-        _advance_small_trend(direction)
         return _fire_trend_order(
             enable, symbol, trend_state, direction, action, current_price,
             reason, regime_ctx=regime_ctx,

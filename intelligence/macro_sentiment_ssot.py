@@ -660,26 +660,16 @@ def get_cache_filenames(group_key: str) -> Tuple[str, ...]:
     return split_csv(_cfg_str("cache_files", group_key))
 
 
-def _normalize_taxonomy(
-    value: Any,
-    tax_key: str,
-    alias_cfg_key: str,
-    default_idx: int,
-    fallback_str: str,
-    default: Optional[str] = None,
-) -> str:
-    allowed = _tax_tuple(tax_key)
-    fallback = default if (default and default in allowed) else (allowed[default_idx] if len(allowed) > default_idx else fallback_str)
-    cleaned = "" if isinstance(value, bool) else re.sub(r"[\s\-]+", "_", str(value or "").strip().upper())
-    return cleaned if cleaned in allowed else _parse_kv_map(_cfg_str("taxonomies", alias_cfg_key)).get(cleaned, fallback)
-
-
 def _bind_taxonomy_normalizer(
     tax_key: str, alias_cfg_key: str, default_idx: int, fallback_str: str
 ):
-    return lambda value, default=None, _t=tax_key, _a=alias_cfg_key, _i=default_idx, _f=fallback_str: (
-        _normalize_taxonomy(value, _t, _a, _i, _f, default)
-    )
+    def _normalizer(value: Any, default: Optional[str] = None) -> str:
+        allowed = _tax_tuple(tax_key)
+        fallback = default if (default and default in allowed) else (allowed[default_idx] if len(allowed) > default_idx else fallback_str)
+        cleaned = "" if isinstance(value, bool) else re.sub(r"[\s\-]+", "_", str(value or "").strip().upper())
+        return cleaned if cleaned in allowed else _parse_kv_map(_cfg_str("taxonomies", alias_cfg_key)).get(cleaned, fallback)
+
+    return _normalizer
 
 
 normalize_market_bias = _bind_taxonomy_normalizer("market_biases", "bias_aliases", 1, "NEUTRAL")

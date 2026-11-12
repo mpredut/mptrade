@@ -262,12 +262,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     _kalman_tracker_factory: Optional[Callable[..., Any]] = None
 
     @classmethod
-    def _resolve_kalman_tracker_factory(cls) -> Callable[..., Any]:
-        if callable(cls._kalman_tracker_factory):
-            return cls._kalman_tracker_factory
-        return KalmanStateTracker
-
-    @classmethod
     def live_window_relpath_for_symbol(cls, symbol: str) -> str:
         """Return the canonical relative path (``24trend/live_<SYM>.json``) for per-symbol live trend windows."""
         return os.path.join(cls.LIVE_TREND_SUBDIR, f"{cls.LIVE_FILE_PREFIX}{symbol}.{cls.LIVE_FILE_EXT}")
@@ -674,7 +668,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 k_tracker = getattr(self, "_kalman_tracker", None)
                 if k_tracker is None:
                     k_path = os.path.join(os.path.dirname(self.filename), self.KALMAN_TREND_FILENAME)
-                    tracker_cls = self._resolve_kalman_tracker_factory()
+                    tracker_cls = self._kalman_tracker_factory if callable(self._kalman_tracker_factory) else KalmanStateTracker
                     k_tracker = tracker_cls(state_path=k_path, compute_vol=False)
                     self._kalman_tracker = k_tracker
                 with getattr(w_big, "_lock", threading.RLock()) if w_big is not None else threading.RLock():
