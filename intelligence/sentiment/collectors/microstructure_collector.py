@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import glob as _glob
 import logging
+import math
 import os
 import time as _time
 from abc import ABC
@@ -15,6 +16,7 @@ from botcore import (
     is_offline_disk_cache_enabled,
     load_dotenv,
     safe_nonneg_float,
+    safe_pos_int,
 )
 from cachepaths import (
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,
@@ -238,7 +240,7 @@ def _wrap_cached_ohlc_fn(
         fn = _get_raw_fn()
         if not callable(fn):
             return None
-        ck = (prov_key, id(fn), str(s_arg or "").strip().upper(), int(interval_min))
+        ck = (prov_key, id(fn), str(s_arg or "").strip().upper(), safe_pos_int(interval_min, default=1) or 1)
         now_s = _time.time()
         hit = _FALLBACK_OHLC_SERIES_CACHE.get(ck)
         if hit is not None and 0.0 <= (now_s - hit[0]) < ttl_sec:
@@ -869,9 +871,13 @@ def upgrade_tpo_vp_from_ohlc(
                 p_vp = os.path.join(cache_dir, f"cache_ohlc_24h_{c_vp}.json")
                 if os.path.exists(p_vp) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
                     cand_vp = [
-                        [int(r[0]), float(r[1]), float(r[2])]
+                        [ts_i, px_f, vol_f]
                         for r in d_vp["points"]
-                        if isinstance(r, (list, tuple)) and len(r) >= 3 and (safe_pos_float(r[2], 0.0) or 0.0) > 0.0
+                        if isinstance(r, (list, tuple))
+                        and len(r) >= 3
+                        and (ts_i := safe_pos_int(r[0], default=None)) is not None
+                        and (px_f := safe_pos_float(r[1], default=None)) is not None
+                        and (vol_f := safe_pos_float(r[2], default=None)) is not None
                     ]
                     if len(cand_vp) >= 8 and (cand_vp[-1][0] - cand_vp[0][0]) >= 18 * 3600 * 1000:
                         pts_vp = cand_vp
@@ -881,16 +887,19 @@ def upgrade_tpo_vp_from_ohlc(
             if cur_px <= 0.0 or (vp_last_px > 0.0 and abs(cur_px - vp_last_px) / max(cur_px, vp_last_px) <= 0.015):
                 l24_b = safe_pos_float(m24.get("low_24h"), default=None)
                 h24_b = safe_pos_float(m24.get("high_24h"), default=None)
-                vp_pxs = [float(p[1]) for p in pts_vp if len(p) >= 2 and safe_pos_float(p[1], 0.0)]
+                vp_pxs = [px_v for p in pts_vp if len(p) >= 2 and (px_v := safe_pos_float(p[1], default=None)) is not None]
                 if (
                     l24_b is None
                     or h24_b is None
                     or (vp_pxs and min(vp_pxs) >= l24_b * 0.985 and max(vp_pxs) <= h24_b * 1.015)
                 ):
                     if l24_b is not None and h24_b is not None:
-                        pts_vp = [[p[0], min(h24_b, max(l24_b, float(p[1]))), *p[2:]] for p in pts_vp]
+                        pts_vp = [
+                            [p[0], min(h24_b, max(l24_b, safe_pos_float(p[1], default=l24_b) or l24_b)), *p[2:]]
+                            for p in pts_vp
+                        ]
                     if cur_px > 0:
-                        pts_vp.append([int(now_ts * 1000), cur_px, 0.0])
+                        pts_vp.append([math.trunc(now_ts * 1000), cur_px, 0.0])
                     if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
                         for vp_clr_k in ("sec_poc_px", "hvn2_px", "lvn_px"):
                             m24.pop(vp_clr_k, None)
@@ -1468,7 +1477,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     and last_24_pt is not None
                     and last_24_px > 0.0
                     and last_24_pt[0] > 1e11
-                    and (int(eff_now * 1000) - last_24_pt[0]) <= 20 * 60 * 1000
+                    and (math.trunc(eff_now * 1000) - last_24_pt[0]) <= 20 * 60 * 1000
                     and not _prices_diverged(sym_px_cur, last_24_px, threshold=eq_div_thr)
                     and (
                         eff_t212_ts <= 0.0
@@ -1480,23 +1489,24 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 if _prices_diverged(sym_px_cur, last_24_px, threshold=eq_div_thr):
                     matched_series_24h = []
                 elif last_24_px > 0 and abs(sym_px_cur - last_24_px) > 1e-9:
-                    now_ms_24 = int(eff_now * 1000)
+                    now_ms_24 = math.trunc(eff_now * 1000)
                     if not is_eq_sym or (
                         last_24_pt is not None
                         and (now_ms_24 - last_24_pt[0]) <= 20 * 60 * 1000
                         and abs(sym_px_cur - last_24_px) / max(sym_px_cur, last_24_px) <= 0.005
                     ):
+                        t212_ms = math.trunc(eff_t212_ts * 1000)
                         eq_pt_ts_ms = (
-                            int(eff_t212_ts * 1000)
+                            t212_ms
                             if is_eq_sym
                             and sym in t212_seeded_from_cache
                             and eff_t212_ts > 0.0
                             and last_24_pt is not None
-                            and int(eff_t212_ts * 1000) > last_24_pt[0]
+                            and t212_ms > last_24_pt[0]
                             else now_ms_24
                         )
                         if is_eq_sym and last_24_pt is not None and (eq_pt_ts_ms - last_24_pt[0]) > 300 * 1000:
-                            eq_pt_ts_ms = int(last_24_pt[0] + 1000)
+                            eq_pt_ts_ms = math.trunc(last_24_pt[0] + 1000)
                         matched_series_24h = list(matched_series_24h) + [[eq_pt_ts_ms, sym_px_cur]]
             if sym_px_cur > 0 and arch_vals_7d:
                 if _prices_diverged(sym_px_cur, safe_float(arch_vals_7d[-1], 0.0), threshold=eq_div_thr):
@@ -1613,7 +1623,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         memo_chart is not None
                         or eq_rth_open
                         or raw_s24_last_ts_ms <= 0.0
-                        or (int(eff_now * 1000) - raw_s24_last_ts_ms) > 5 * 60 * 1000
+                        or (math.trunc(eff_now * 1000) - raw_s24_last_ts_ms) > 5 * 60 * 1000
                         or "chg_24h_pct" not in m24
                         or "chg_1h_pct" not in m24
                         or m24.get("vp_source") == "TPO"
@@ -1665,7 +1675,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                                 pts_24h and sym_px_cur > 0 and abs(sym_px_cur - pts_24h[-1][1]) / max(sym_px_cur, pts_24h[-1][1]) > 0.005
                             )
                             if px_diff_from_chart and rth_bar_fresh and not px_diverged_05pct:
-                                pts_24h = list(pts_24h) + [[int(pts_24h[-1][0] + 1000), round(sym_px_cur, 4)]]
+                                pts_24h = list(pts_24h) + [[math.trunc(pts_24h[-1][0] + 1000), round(sym_px_cur, 4)]]
                                 pts_24h_to_save = list(pts_24h)
                                 post_rth_series_replaced = False
                             elif px_diff_from_chart and px_diverged_05pct and len(pts_24h) >= 2:
@@ -1854,8 +1864,14 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         krk_ohlc_fn = _resolve_fallback_ohlc_fn(msym, inst_map)
                         if callable(krk_ohlc_fn):
                             ser_24h = _load_stitched_24h_ohlc_points(krk_ohlc_fn, msym, eff_now - 86400.0)
-                            if ref_px is not None and ser_24h and abs(ref_px - float(ser_24h[-1][1])) > 1e-9 and not _prices_diverged(ref_px, float(ser_24h[-1][1])):
-                                ser_24h.append([int(eff_now * 1000), ref_px])
+                            last_ser_px = safe_pos_float(ser_24h[-1][1], default=None) if ser_24h else None
+                            if (
+                                ref_px is not None
+                                and last_ser_px is not None
+                                and abs(ref_px - last_ser_px) > 1e-9
+                                and not _prices_diverged(ref_px, last_ser_px)
+                            ):
+                                ser_24h.append([math.trunc(eff_now * 1000), ref_px])
                             if len(vals_7d) < 2:
                                 vals_7d = _load_stitched_7d_ohlc_closes(krk_ohlc_fn, msym, eff_now, None, ref_px or 0.0)
                     except Exception:

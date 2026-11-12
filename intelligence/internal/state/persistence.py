@@ -12,7 +12,7 @@ import math
 from typing import Sequence
 import numpy as np
 
-from botcore import lru_dict_put, require_int, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import lru_dict_put, require_int, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from pricewindow import extract_sorted_2d_price_column
 
 
@@ -74,12 +74,13 @@ def calculate_mann_kendall(prices: Sequence[float]) -> tuple[int, float, float]:
         
     _, counts = np.unique(y, return_counts=True)
     var = (n * (n - 1) * (2 * n + 5) - (counts * (counts - 1) * (2 * counts + 5)).sum()) / 18.0
+    s_int = safe_int(s, default=0) or 0
     if var <= 0:
-        return int(s), 0.0, 1.0
+        return s_int, 0.0, 1.0
         
     z = (s - np.sign(s)) / math.sqrt(var)
     p = math.erfc(abs(z) / math.sqrt(2))
-    return int(s), float(z), float(p)
+    return s_int, safe_float(z, default=0.0) or 0.0, safe_float(p, default=1.0) or 0.0
 
 
 def calculate_hurst_exponent(prices: Sequence[float]) -> float | None:
@@ -115,12 +116,12 @@ def calculate_hurst_exponent(prices: Sequence[float]) -> float | None:
 
     lx = np.log(ks)
     ly = np.log(vs)
-    dev_x = lx - float(np.mean(lx))
-    var_x = float(np.dot(dev_x, dev_x))
+    dev_x = lx - (safe_float(np.mean(lx), default=0.0) or 0.0)
+    var_x = safe_float(np.dot(dev_x, dev_x), default=0.0) or 0.0
     if var_x <= 0.0:
         return None
-    slope = float(np.dot(dev_x, ly) / var_x)
-    return safe_float(slope / 2.0, default=None)
+    slope = safe_float(np.dot(dev_x, ly) / var_x, default=None)
+    return safe_float(slope / 2.0, default=None) if slope is not None else None
 
 
 def classify_hurst_regime(h: float | None, lo: float = 0.45, hi: float = 0.55) -> str:
@@ -142,13 +143,13 @@ def classify_hurst_regime(h: float | None, lo: float = 0.45, hi: float = 0.55) -
 def _fast_linear_regression_1d(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     """Compute OLS linear slope and intercept in O(N) without LAPACK/SVD matrix overhead."""
     dx = x - x[0]
-    mean_dx = float(np.mean(dx))
-    mean_y = float(np.mean(y))
+    mean_dx = safe_float(np.mean(dx), default=0.0) or 0.0
+    mean_y = safe_float(np.mean(y), default=0.0) or 0.0
     dev_x = dx - mean_dx
-    var_x = float(np.dot(dev_x, dev_x))
+    var_x = safe_float(np.dot(dev_x, dev_x), default=0.0) or 0.0
     if var_x == 0.0:
         return 0.0, mean_y
-    slope = float(np.dot(dev_x, y) / var_x)
+    slope = safe_float(np.dot(dev_x, y) / var_x, default=0.0) or 0.0
     intercept = mean_y - slope * mean_dx
     return slope, intercept
 
@@ -289,14 +290,15 @@ def detect_long_term_trend(
         timestamps = timestamps[order]
         prices = prices[order]
 
-    t_end, t_first = float(timestamps[-1]), float(timestamps[0])
-    p_first = float(prices[0])
-    p_mid = float(prices[n_pts // 2])
-    p_last = float(prices[-1])
-    p_penult = float(prices[-2])
-    p_sum = round(float(np.sum(prices)), 6)
-    t_sum = round(float(np.sum(timestamps)), 3)
-    pt_dot = round(float(np.dot(prices, timestamps - t_first)), 3)
+    t_end = safe_float(timestamps[-1], default=0.0) or 0.0
+    t_first = safe_float(timestamps[0], default=0.0) or 0.0
+    p_first = safe_float(prices[0], default=0.0) or 0.0
+    p_mid = safe_float(prices[n_pts // 2], default=0.0) or 0.0
+    p_last = safe_float(prices[-1], default=0.0) or 0.0
+    p_penult = safe_float(prices[-2], default=0.0) or 0.0
+    p_sum = round(safe_float(np.sum(prices), default=0.0) or 0.0, 6)
+    t_sum = round(safe_float(np.sum(timestamps), default=0.0) or 0.0, 3)
+    pt_dot = round(safe_float(np.dot(prices, timestamps - t_first), default=0.0) or 0.0, 3)
     cache_key = (
         n_pts,
         t_first,
@@ -327,8 +329,8 @@ def detect_long_term_trend(
 
     def slope_h(t_lo, t_hi):
         """Return hourly slope and index bounds for ``[t_lo,t_hi)``, or None for a gap."""
-        lo = int(np.searchsorted(timestamps, t_lo, "left"))
-        hi = int(np.searchsorted(timestamps, t_hi, "left"))
+        lo = safe_int(np.searchsorted(timestamps, t_lo, "left"), default=0) or 0
+        hi = safe_int(np.searchsorted(timestamps, t_hi, "left"), default=0) or 0
         if hi - lo < min_points_per_window:
             return None, (lo, hi)
         x, y = timestamps[lo:hi], prices[lo:hi]
@@ -344,7 +346,7 @@ def detect_long_term_trend(
         _, _, p_mk = calculate_mann_kendall(prices[cur_idx[0]:cur_idx[1]])
         if p_mk > mk_alpha:
             return _store_trend_memo(cache_key, None)
-    current_sign = float(np.sign(cur))
+    current_sign = 1.0 if cur > 0.0 else -1.0
 
     blocks = [cur_idx]
     consecutive, noise = 1, 0
@@ -356,7 +358,9 @@ def detect_long_term_trend(
         if s is None:
             break
         if np.sign(s) == current_sign:
-            if noise > 0 and (float(prices[cur_idx[1] - 1]) - float(prices[idx[0]])) * current_sign <= 0.0:
+            cur_hi_px = safe_float(prices[cur_idx[1] - 1], default=0.0) or 0.0
+            blk_lo_px = safe_float(prices[idx[0]], default=0.0) or 0.0
+            if noise > 0 and (cur_hi_px - blk_lo_px) * current_sign <= 0.0:
                 break
             blocks.append(idx)
             consecutive += 1
@@ -374,7 +378,7 @@ def detect_long_term_trend(
         return _store_trend_memo(cache_key, None)
 
     blocks = blocks[:confirm_pos + 1]
-    confirmed_start = float(timestamps[confirm_lo])
+    confirmed_start = safe_float(timestamps[confirm_lo], default=0.0) or 0.0
     duration_seconds = (t_end - confirmed_start) + detection_lag_hours * 3600.0
     duration_seconds = min(duration_seconds, t_end - t_first)
     trend_start_ts = t_end - duration_seconds
@@ -382,10 +386,10 @@ def detect_long_term_trend(
         return _store_trend_memo(cache_key, None)
     res = {
         "direction": "up" if current_sign > 0 else "down",
-        "start_timestamp": float(trend_start_ts),
-        "duration_seconds": float(duration_seconds),
-        "estimated_future_hours": float(duration_seconds / 3600.0 * 0.5),
-        "current_slope_h": float(cur),
+        "start_timestamp": trend_start_ts * 1.0,
+        "duration_seconds": duration_seconds * 1.0,
+        "estimated_future_hours": (duration_seconds / 3600.0 * 0.5) * 1.0,
+        "current_slope_h": safe_float(cur, default=0.0) or 0.0,
         "blocks": list(blocks),
     }
     return _store_trend_memo(cache_key, res)

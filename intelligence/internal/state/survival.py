@@ -44,6 +44,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
+    strict_ascii_int,
 )
 from cachepaths import (
     CACHE_LONG_TREND_FILENAME,
@@ -138,15 +139,17 @@ def block_slopes(ts, px, window_h, step_h):
     if w_h <= 0.0 or s_h <= 0.0:
         return np.array(out_t), np.array(out_s)
     w, s = w_h * 3600.0, s_h * 3600.0
-    t, t_end = float(ts[0]) + w, float(ts[-1])
+    t = (safe_float(ts[0], default=0.0) or 0.0) + w
+    t_end = safe_float(ts[-1], default=0.0) or 0.0
     while t <= t_end:
-        lo, hi = int(np.searchsorted(ts, t - w, "left")), int(np.searchsorted(ts, t, "right"))
+        lo = safe_nonneg_int(np.searchsorted(ts, t - w, "left"), default=0) or 0
+        hi = safe_nonneg_int(np.searchsorted(ts, t, "right"), default=0) or 0
         if hi - lo >= 5:
             dx = ts[lo:hi] - ts[lo]
-            dev_x = dx - float(np.mean(dx))
-            var_x = float(np.dot(dev_x, dev_x))
+            dev_x = dx - (safe_float(np.mean(dx), default=0.0) or 0.0)
+            var_x = safe_float(np.dot(dev_x, dev_x), default=0.0) or 0.0
             if var_x > 0.0:
-                sl = float(np.dot(dev_x, px[lo:hi]) / var_x)
+                sl = safe_float(np.dot(dev_x, px[lo:hi]) / var_x, default=0.0) or 0.0
                 out_t.append(t)
                 out_s.append(1.0 if sl > 0 else (-1.0 if sl < 0 else 0.0))
         t += s
@@ -192,7 +195,8 @@ def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
                 break
         if confirms >= mc:
             eps.append({"dir": "up" if sign > 0 else "down", "dur_h": (last_confirm - start) / 3600.0})
-        i = max(int(np.searchsorted(bt, last_confirm, "right")), i + 1)
+        next_i = safe_nonneg_int(np.searchsorted(bt, last_confirm, "right"), default=0) or 0
+        i = max(next_i, i + 1)
     return eps
 
 
@@ -229,7 +233,7 @@ def survival_report(durs_h: list[float], label: str, t_grid_days, horizon_h=24.0
         alive = d > t_h
         if alive.sum() < 10:
             break
-        p = float((d > t_h + hz).sum() / alive.sum())
+        p = safe_float((d > t_h + hz).sum() / alive.sum(), default=0.0) or 0.0
         cont[t_days] = p
     return cont
 
@@ -254,7 +258,8 @@ def verdict(cont: dict, mid: float) -> str:
             old.append(pf)
     if not young or not old:
         return "insufficient_data"
-    ym, om = float(np.mean(young)), float(np.mean(old))
+    ym = safe_float(np.mean(young), default=0.0) or 0.0
+    om = safe_float(np.mean(old), default=0.0) or 0.0
     if om >= ym - 0.05:
         return "VALIDATED: old trend continues as long as middle (Lindy)"
     return "INVALIDATED: old trends terminate faster than young trends"
@@ -269,7 +274,7 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
     if t_min_f > t_max_f:
         t_min_f, t_max_f = t_max_f, t_min_f
     empty_res = {
-        "T": int(round(prior_f)),
+        "T": round(prior_f),
         "n": 0,
         "w": 0.0,
         "median_d": None,
@@ -300,12 +305,13 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
     n = len(d)
     if n == 0:
         return empty_res
-    med, p90 = float(np.median(d)), float(np.percentile(d, 90))
+    med = safe_float(np.median(d), default=0.0) or 0.0
+    p90 = safe_float(np.percentile(d, 90), default=0.0) or 0.0
     t_emp = max(p90, 2.0 * med)
     w = n / (n + k_f)
     T = min(max(w * t_emp + (1 - w) * prior_f, t_min_f), t_max_f)
     return {
-        "T": int(round(T)),
+        "T": round(T),
         "n": n,
         "w": round(w, 2),
         "median_d": round(med, 1),
@@ -347,7 +353,7 @@ def estimate_T(
     prior_f = safe_pos_float(prior_T, default=14.0)
     ttl_f = safe_pos_float(ttl_days, default=7.0)
     fallback_res = {
-        "T": int(round(prior_f)),
+        "T": round(prior_f),
         "n": 0,
         "w": 0.0,
         "source_symbol": None,
@@ -406,7 +412,7 @@ def estimate_T(
         alive = d > t_days * 24.0
         if alive.sum() < 10:
             break
-        p_cont[str(t_days)] = round(float((d > (t_days + 1) * 24.0).sum() / alive.sum()), 3)
+        p_cont[str(t_days)] = round(safe_float((d > (t_days + 1) * 24.0).sum() / alive.sum(), default=0.0) or 0.0, 3)
 
     res["p_cont"] = p_cont
     res["source_symbol"] = used
@@ -552,15 +558,17 @@ def estimate_remaining_trend_hours(
             break
     weibull_rem_h = rem_d * 24.0
     if isinstance(p_cont, dict) and p_cont:
-        day_idx = max(1, int(math.floor(t_d)))
-        valid_days = [int(x) for x in p_cont if str(x).isdigit()]
+        day_idx = max(1, math.floor(t_d))
+        valid_days = [
+            d for x in p_cont if (d := strict_ascii_int(x, default=None, min_value=0)) is not None
+        ]
         if valid_days:
             target_d = min(day_idx, max(valid_days))
             p_vals = [
                 pf
                 for k_s, v in p_cont.items()
-                if str(k_s).isdigit()
-                and int(k_s) >= target_d
+                if (k_i := strict_ascii_int(k_s, default=None, min_value=0)) is not None
+                and k_i >= target_d
                 and (pf := safe_pos_float(v, default=0.0) or 0.0) > 0.05
                 and pf < 0.98
             ]
@@ -587,9 +595,9 @@ def format_duration(seconds: Any) -> str:
     sec_f = safe_pos_float(seconds, default=None)
     if sec_f is None:
         return "0m"
-    days = int(sec_f // 86400)
-    hours = int((sec_f % 86400) // 3600)
-    minutes = int((sec_f % 3600) // 60)
+    days = math.trunc(sec_f // 86400)
+    hours = math.trunc((sec_f % 86400) // 3600)
+    minutes = math.trunc((sec_f % 3600) // 60)
 
     parts = []
     if days > 0:
@@ -674,15 +682,15 @@ def get_trade_weight(
         )
         return np.array([0.0]), np.array([w_val])
 
-    t_steps = max(1, int(round(T)))
-    idx = max(0, min(int(trend_len), t_steps - 1))
+    t_steps = max(1, round(T))
+    idx = max(0, min(math.trunc(trend_len), t_steps - 1))
     t_full, w_full = gaussian_weights_from_idx(T=t_steps, idx=0)
     if len(w_full) == 0:
         _dbg_weight("[DEBUG] Zone 1: gaussian_weights_from_idx returned empty. return [0.05]")
         return np.array([0.0]), np.array([0.05])
     w01_full = w_full / w_full.max()
     if _parse_bool_flag(lindy_plateau, True):
-        peak_i = int(np.argmax(w01_full))
+        peak_i = safe_nonneg_int(np.argmax(w01_full), default=0) or 0
         w01_full = w01_full.copy()
         w01_full[peak_i:] = 1.0
     t_seq, w01 = t_full[idx:], w01_full[idx:]
@@ -798,9 +806,9 @@ def get_weight_for_cash_permission_at_quant_time(
         and dur_drift < 300.0
     ):
         cached_w = last_w.get(memo_key)
-        if cached_w is not None and len(cached_w) > 0 and not np.isnan(cached_w[0]):
+        if cached_w is not None and len(cached_w) > 0 and (cached_w0 := safe_float(cached_w[0], default=None)) is not None:
             print(f"not new timestamp (age={cache_age:.1f}s), use weight from mem cache.")
-            return float(cached_w[0])
+            return cached_w0
 
     if isinstance(est, dict):
         print(
@@ -835,9 +843,9 @@ def get_weight_for_cash_permission_at_quant_time(
         print(f"[{symbol}] w is empty, returning None")
         return None
 
-    current_weight = float(w[0])
-    if np.isnan(current_weight) or current_weight <= 0:
-        print(f"[{symbol}] Invalid weight: {current_weight}, returning None")
+    current_weight = safe_float(w[0], default=None)
+    if current_weight is None or current_weight <= 0:
+        print(f"[{symbol}] Invalid weight: {w[0]}, returning None")
         return None
 
     print(f"[{symbol}] first 5 weights: {w[:5]}")

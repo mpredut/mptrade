@@ -312,7 +312,15 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             sf = safe_pos_float(s, default=None)
             if sf is not None:
                 valid_secs.append(round(sf, 6))
-        self.window_seconds = sorted(valid_secs) if valid_secs else sorted(round(float(s), 6) for s in self.WINDOW_SECONDS)
+        self.window_seconds = (
+            sorted(valid_secs)
+            if valid_secs
+            else sorted(
+                round(sf, 6)
+                for s in self.WINDOW_SECONDS
+                if (sf := safe_pos_float(s, default=None)) is not None
+            )
+        )
         # Thresholds may be callable, keyed by window, keyed by symbol and window, or None.
         self._threshold_fn = self._build_threshold_fn(thresholds)
         self._live_windows = {}
@@ -427,11 +435,16 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             return thresholds
         small = self.window_seconds[0]
 
+        def _sec_key(sec):
+            sf = safe_pos_float(sec, default=None)
+            return round(sf, 6) if sf is not None else None
+
         def per_window_default(sec):
             # The smallest window uses SMALL; all others use BIG.
+            sk = _sec_key(sec)
             return (
                 self.PRICE_CHANGE_THRESHOLD_SMALL
-                if round(float(sec), 6) <= small
+                if (sk is not None and sk <= small)
                 else self.PRICE_CHANGE_THRESHOLD_BIG
             )
 
@@ -456,10 +469,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     for sym, d in thresholds.items()
                 }
                 return lambda sym, sec: tbl.get(sym, {}).get(
-                    round(float(sec), 6), per_window_default(sec)
+                    _sec_key(sec), per_window_default(sec)
                 )
             tbl = _parse_window_map(thresholds)
-            return lambda sym, sec: tbl.get(round(float(sec), 6), per_window_default(sec))
+            return lambda sym, sec: tbl.get(_sec_key(sec), per_window_default(sec))
 
         return lambda sym, sec: per_window_default(sec)
 
@@ -582,8 +595,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             gradient_recent=gradient_recent,
             epsilon=eps_primary,
             n_samples=len(pwin.prices),
-            window_seconds=float(primary),
-            sample_rate_sec=float(pwin.sample_rate_sec),
+            window_seconds=primary * 1.0,
+            sample_rate_sec=safe_pos_float(pwin.sample_rate_sec, default=1.0) or 1.0,
             current_price=current_price,
             ts=observed_at,
         )
@@ -608,7 +621,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         if w_big is not None:
             try:
                 with getattr(w_big, "_lock", threading.RLock()):
-                    eff_v1h_sr = float(w_big.sample_rate_sec)
+                    eff_v1h_sr = safe_pos_float(w_big.sample_rate_sec, default=1.0) or 1.0
                     n_big = len(w_big.prices)
                     v1h_prices = w_big.prices
                     if n_big >= 20:
@@ -636,9 +649,11 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                                 sub_1m: List[Tuple[float, float]] = []
                                 last_t_ms = -1e18
                                 for t_ms, px_v in zip(all_tbuf_ts, all_tbuf_px):
-                                    if (float(t_ms) - last_t_ms) >= 55000.0:
-                                        sub_1m.append((float(t_ms), float(px_v)))
-                                        last_t_ms = float(t_ms)
+                                    t_ms_f = safe_float(t_ms, default=None)
+                                    px_v_f = safe_pos_float(px_v, default=None)
+                                    if t_ms_f is not None and px_v_f is not None and (t_ms_f - last_t_ms) >= 55000.0:
+                                        sub_1m.append((t_ms_f, px_v_f))
+                                        last_t_ms = t_ms_f
                                 if len(sub_1m) >= 20:
                                     tail_1m = sub_1m[-60:]
                                     eff_v1h_sr = max(
@@ -665,7 +680,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     self._kalman_tracker = k_tracker
                 with getattr(w_big, "_lock", threading.RLock()) if w_big is not None else threading.RLock():
                     big_seq = list(w_big.prices) if w_big is not None else ()
-                    big_sr = float(w_big.sample_rate_sec) if w_big is not None else 1.0
+                    big_sr = (safe_pos_float(w_big.sample_rate_sec, default=1.0) or 1.0) if w_big is not None else 1.0
                 k_fields = k_tracker.update(
                     symbol,
                     observed_at,
@@ -699,12 +714,12 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             gradient_recent=gradient_recent,
             slope_small=slopes[self.window_seconds[0]],     # Smallest.
             slope_big=slopes[self.window_seconds[-1]],      # Largest.
-            slopes={f"{int(s)}": v for s, v in slopes.items()},
+            slopes={f"{math.trunc(s)}": v for s, v in slopes.items()},
             pos=primary_pos,
             epsilon=eps_primary,
             n_samples=len(pwin.prices),
-            window_seconds=float(primary),
-            sample_rate_sec=float(pwin.sample_rate_sec),
+            window_seconds=primary * 1.0,
+            sample_rate_sec=safe_pos_float(pwin.sample_rate_sec, default=1.0) or 1.0,
             vol_1h_pct=v1h,
             current_price=current_price,
             ts=observed_at,
@@ -786,7 +801,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 epsilon=eps,
                 trend_fast=(1 if g > 0 else -1 if g < 0 else 0),
                 current_price=price_f,
-                ts_fast=float(ts_int) / 1000.0,
+                ts_fast=ts_int / 1000.0,
             )
         except Exception as e:
             print(f"[{self.cls_name}] on_price_update {symbol}: {e}")
@@ -956,7 +971,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         latest_price = safe_pos_float(last_entry[1], default=None)
         if ts_f is None or latest_price is None:
             return None
-        newest_ts_ms = int(ts_f)
+        newest_ts_ms = math.trunc(ts_f)
         newest_ts_sec = newest_ts_ms / 1000.0
         age_sec = now_val - newest_ts_sec
         if not (-5.0 <= age_sec <= self.TREND_STALE_SEC):
@@ -1015,7 +1030,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             disk_entries = self._load_disk_cache24_entries(symbol)
             if not disk_entries:
                 return None
-            cutoff_ms = int((now_val - clamped) * 1000)
+            cutoff_ms = math.trunc((now_val - clamped) * 1000)
             a = bisect.bisect_left(disk_entries, cutoff_ms, key=lambda e: e[0])
             b = len(disk_entries) - 1
             return self._eval_and_persist_window_slice(
@@ -1036,7 +1051,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 all_entries = list(casefold_get(c24.cache, c24_sym, []))
             if len(all_entries) < 3:
                 return None
-            cutoff_ms = int((now_val - clamped) * 1000)
+            cutoff_ms = math.trunc((now_val - clamped) * 1000)
             a = bisect.bisect_left(all_entries, cutoff_ms, key=lambda e: e[0])
             b = len(all_entries) - 1
             return self._eval_and_persist_window_slice(
@@ -1070,7 +1085,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             sym_live = self._live_windows.setdefault(symbol, {})
             stored = dict(data)
             if last_tick_ts_ms is not None:
-                stored["_last_tick_ts_ms"] = int(last_tick_ts_ms)
+                tick_i = safe_nonneg_int(last_tick_ts_ms, default=None)
+                if tick_i is not None:
+                    stored["_last_tick_ts_ms"] = tick_i
             sym_live[w_key] = stored
             self._dirty_live_symbols.add(symbol)
             if flush and self.writer:
@@ -1109,7 +1126,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             ts_val = safe_pos_float(dyn.get("ts"), default=None)
             if ts_val is None:
                 return None
-            age = float(now) - ts_val
+            age = (safe_float(now, default=0.0) or 0.0) - ts_val
             if not (-5.0 <= age <= self.TREND_STALE_SEC):
                 return None
             if "current_price" in dyn and dyn.get("current_price") is not None:
@@ -1747,7 +1764,7 @@ class KalmanStateTracker:
         if ts_f is None or now_f is None or kt_f not in (-1.0, 0.0, 1.0):
             return None, 1e18
         age = now_f - ts_f
-        return (None, 1e18) if age < -60.0 else (int(kt_f), max(0.0, age))
+        return (None, 1e18) if age < -60.0 else (math.trunc(kt_f), max(0.0, age))
 
     @staticmethod
     def _grad_std(fed: list[float]) -> float:
@@ -1807,7 +1824,7 @@ class KalmanStateTracker:
         last_fed = self._last_fed.get(symbol, -1e18)
         if last_fed > ts:
             last_fed = -1e18
-        step_n = max(1, int(round(KALMAN_SAMPLE_SEC / max(sr_val, 0.1))))
+        step_n = max(1, round(KALMAN_SAMPLE_SEC / max(sr_val, 0.1)))
         if _has_seq_min_len(big_prices, 6) and step_n * 2 >= len(big_prices):
             step_n = max(1, (len(big_prices) - 1) // 2)
         step_dt = step_n * max(sr_val, 0.1)

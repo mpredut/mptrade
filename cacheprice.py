@@ -23,6 +23,7 @@ import bisect
 import builtins
 from collections import defaultdict, deque
 import concurrent.futures as _futures
+import math
 import os
 import sys
 import threading
@@ -496,7 +497,7 @@ class Cache24PriceManager(CachePriceManagerBase):
 
     def _trim_old_data(self, symbol):
         """Remove entries older than ``KEEP_HOURS`` efficiently on every tick."""
-        cutoff_ms = int((_now_time() - self.KEEP_HOURS * 3600) * 1000)
+        cutoff_ms = math.trunc((_now_time() - self.KEEP_HOURS * 3600) * 1000)
         with self.lock:
             entries = self.cache.get(symbol)
             if not entries or not isinstance(entries, list):
@@ -514,7 +515,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         sec_val = safe_pos_float(last_seconds, default=None)
         if sec_val is None:
             return []
-        cutoff_ms = int((_now_time() - sec_val) * 1000)
+        cutoff_ms = math.trunc((_now_time() - sec_val) * 1000)
         with self.lock:
             entries = casefold_get(self.cache, symbol, [])
             if not entries or not isinstance(entries, list):
@@ -541,10 +542,11 @@ class Cache24PriceManager(CachePriceManagerBase):
         if not target_path or not points:
             return
         disk_obj = existing_obj if isinstance(existing_obj, dict) else (read_json_dict(target_path) if os.path.exists(target_path) else {})
+        now_ms = math.trunc(now_ts * 1000)
         last_pt_ts = (
-            safe_pos_int(points[-1][0], default=int(now_ts * 1000)) or int(now_ts * 1000)
+            safe_pos_int(points[-1][0], default=now_ms) or now_ms
             if isinstance(points[-1], (list, tuple)) and points[-1]
-            else int(now_ts * 1000)
+            else now_ms
         )
         meta_path = meta_file_path(target_path)
         prev_meta = read_json_dict(meta_path) if os.path.exists(meta_path) else {}
@@ -570,7 +572,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         eff_ft_ts = max(
             (safe_pos_int(prev_ft.get(symbol), default=0) or 0) + 1,
             (safe_pos_int(prev_meta.get("max_ts"), default=0) or 0) + 1,
-            int(now_ts * 1000),
+            now_ms,
             last_pt_ts,
         )
         ft_map = {**prev_ft, symbol: eff_ft_ts}
@@ -586,7 +588,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                 "rest_sync_cursor": rc_map,
                 "counts": {**prev_cnts, symbol: len(points)},
                 "max_ts": max((safe_pos_int(v, default=0) or 0 for v in ft_map.values()), default=eff_ft_ts),
-                "saved_at": int(_now_time() * 1000),
+                "saved_at": math.trunc(_now_time() * 1000),
             },
         )
 
@@ -641,7 +643,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         if lh_f is None or lh_f > 24.0 or max_latest_age is None or not candidates:
             return None
         now_s = _now_time()
-        cutoff_ms = int((now_s - lh_f * 3600.0) * 1000)
+        cutoff_ms = math.trunc((now_s - lh_f * 3600.0) * 1000)
         for cand in candidates:
             c24_fname = cache_24_price_filename(cand)
             c24_path = (
@@ -879,7 +881,7 @@ class Cache365PriceManager(Cache24PriceManager):
         """Prune the full disk archive without holding ``self.lock`` during disk I/O."""
         if not self.save_state:
             return False
-        cutoff_ms = int((_now_time() - self.RETENTION_DAYS * 86400) * 1000)
+        cutoff_ms = math.trunc((_now_time() - self.RETENTION_DAYS * 86400) * 1000)
         if not os.path.exists(self.filename):
             return False
         changed = False
@@ -980,7 +982,7 @@ class Cache365PriceManager(Cache24PriceManager):
 
     def _rotate_disk_archive(self):
         """Archive an oversized file while retaining a complete-line tail without holding ``self.lock`` during disk I/O."""
-        archive = f"{self.filename}.{int(_now_time())}.archive"
+        archive = f"{self.filename}.{math.trunc(_now_time())}.archive"
         with self.lock:
             original_state = self._snapshot_memory_state_locked()
             (
@@ -1000,7 +1002,7 @@ class Cache365PriceManager(Cache24PriceManager):
             return False
         try:
             archive_size = os.path.getsize(archive)
-            keep_bytes = max(1, int(archive_size * self.ROTATE_KEEP_FRACTION))
+            keep_bytes = max(1, math.trunc(archive_size * self.ROTATE_KEEP_FRACTION))
             decoded_tail = read_tail_complete_lines_text(archive, keep_bytes)
             with atomic_text_writer(self.filename) as target:
                 target.write(decoded_tail)
@@ -1166,7 +1168,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         ts_val = (
             safe_pos_int(ts_ms, default=None)
             if ts_ms is not None
-            else int(_now_time() * 1000)
+            else math.trunc(_now_time() * 1000)
         )
         if price_val is None or ts_val is None or ts_val <= 0:
             return
@@ -1263,7 +1265,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             price_val = safe_pos_float(price, default=None)
             if price_val is None:
                 return []
-            ts_ms = int(_now_time() * 1000)
+            ts_ms = math.trunc(_now_time() * 1000)
             return [[ts_ms, price_val]]
         except Exception as e:
             print(f"[{self.cls_name}][Error] HTTP fetch {symbol}: {e}")
@@ -1308,7 +1310,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if len(samples) < 2:
             return None
         span = safe_pos_float(samples[-1] - samples[0], default=None)
-        if span is None or span < float(min_span_sec):
+        min_span_f = safe_nonneg_float(min_span_sec, default=None)
+        if span is None or min_span_f is None or span < min_span_f:
             return None
         return safe_pos_float(self.get_sample_rate(symbol, fallback=None), default=span / (len(samples) - 1))
 
@@ -1324,7 +1327,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             cached_price, last_ts = self.extract_price_and_ts(entries)
         if cached_price is None or last_ts is None:
             return None
-        observed_at = safe_pos_float(float(last_ts) / 1000.0, default=None)
+        last_ts_f = safe_pos_float(last_ts, default=None)
+        observed_at = safe_pos_float(last_ts_f / 1000.0, default=None) if last_ts_f is not None else None
         price = safe_pos_float(cached_price, default=None)
         if observed_at is None or price is None:
             return None
@@ -1360,7 +1364,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         with self.lock:
             target_sym = self._resolve_target_symbol_locked(symbol)
             entry, last_ts = self._cached_entry_for_symbol_locked(target_sym)
-        now_ms = int(_now_time() * 1000)
+        now_ms = math.trunc(_now_time() * 1000)
         age_ms = (now_ms - last_ts) if last_ts else None
         stale_threshold_ms = self.STALE_THRESHOLD_MS
         sym_mod = _cm_override("sym", sym)
@@ -1561,10 +1565,10 @@ def resolve_cached_symbol_price(
 ) -> float:
     """Resolve latest price for ``symbol`` from ``cachedb`` snapshots without importing intelligence collectors."""
     if isinstance(symbol, bool) or not isinstance(symbol, str):
-        return float("nan")
+        return math.nan
     sym_u = symbol.strip().upper()
     if not sym_u:
-        return float("nan")
+        return math.nan
     venue_norm = normalize_venue_name(str(venue or "")) or ""
     inst_is_eq = is_equity_venue_or_suffix(sym_u, venue_norm)
     inst_base = (
@@ -1675,7 +1679,7 @@ def resolve_cached_symbol_price(
         except Exception:
             pass
 
-    return float("nan")
+    return math.nan
 
 
 # -- Non-Binance Venue WebSocket Price Streams & Fallback Poller ---------------

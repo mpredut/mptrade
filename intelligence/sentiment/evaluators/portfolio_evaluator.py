@@ -257,16 +257,19 @@ def clip_open_lots_to_held_qty(
     total_qty: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Clip LIFO ``lots`` from the newest lot backward when total lot quantity exceeds ``held_qty * 1.02``."""
+    lots_list = list(lots) if isinstance(lots, Sequence) and not isinstance(lots, (str, bytes)) else []
+    held_f = safe_nonneg_float(held_qty, 0.0) or 0.0
+    tot_f = safe_nonneg_float(total_qty, None) if total_qty is not None else None
     tot_q = (
-        total_qty
-        if total_qty is not None
-        else sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in lots if isinstance(lt, dict))
+        tot_f
+        if tot_f is not None
+        else sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in lots_list if isinstance(lt, dict))
     )
-    if held_qty <= 1e-8 or tot_q <= held_qty * 1.02:
-        return list(lots)
+    if held_f <= 1e-8 or tot_q <= held_f * 1.02:
+        return lots_list
     clipped_rev: List[Dict[str, Any]] = []
-    rem_q = held_qty
-    for lt in reversed(lots):
+    rem_q = held_f
+    for lt in reversed(lots_list):
         if not isinstance(lt, dict) or rem_q <= 1e-8:
             continue
         lq = safe_pos_float(lt.get("qty"), 0.0) or 0.0

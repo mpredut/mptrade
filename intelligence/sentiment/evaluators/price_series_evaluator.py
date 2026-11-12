@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from botcore import (
     is_live_network_backfill_enabled,
     is_offline_disk_cache_enabled,
+    safe_int,
     safe_nonneg_float,
 )
 from pricewindow import KalmanTrend as _DefaultKalmanTrend
@@ -43,6 +44,10 @@ def round_opt_px(val: Any, decimals: int = 6) -> Optional[float]:
 
 def _auto_px_decimals(px: float, decimals: Optional[int] = None) -> int:
     return decimals if decimals is not None else (2 if px >= 100.0 else (4 if px >= 1.0 else 6))
+
+
+def _round_small_slope(val: float) -> float:
+    return ((safe_float(f"{val:.2e}", 0.0) or 0.0) if 0.0 < abs(val) < 1e-4 else round(val, 6)) + 0.0
 
 
 _BUCKET_5M_MEMO: Dict[Tuple[int, int, Any, Any, Any], Dict[int, float]] = {}
@@ -169,14 +174,14 @@ def compute_volume_profile_metrics(
 
         cur_px = samples[-1][0]
         low_px, high_px = min(p for p, _ in samples), max(p for p, _ in samples)
-        n_bins = max(8, min(64, int(num_bins)))
-        bin_w = (high_px - low_px) / float(n_bins) if high_px > low_px and low_px > 0.0 else 0.0
+        n_bins = max(8, min(64, safe_int(num_bins, default=24) or 24))
+        bin_w = (high_px - low_px) / (n_bins * 1.0) if high_px > low_px and low_px > 0.0 else 0.0
         if bin_w <= 0.0:
             return {}
 
         bin_vols, bin_px_sums, total_vol = [0.0] * n_bins, [0.0] * n_bins, 0.0
         for px_v, w_v in samples:
-            b_idx = min(n_bins - 1, max(0, int((px_v - low_px) / bin_w)))
+            b_idx = min(n_bins - 1, max(0, math.trunc((px_v - low_px) / bin_w)))
             bin_vols[b_idx] += w_v
             bin_px_sums[b_idx] += px_v * w_v
             total_vol += w_v
@@ -250,7 +255,8 @@ def compute_volume_profile_metrics(
                         poc_raw, hvn2_raw = hvn2_raw, poc_raw
                         poc_idx, hvn2_idx = hvn2_idx, poc_idx
                         hvn2_px = round(hvn2_raw, eff_dec_tmp)
-        target_vol = total_vol * max(0.50, min(0.90, float(value_area_pct)))
+        va_pct = safe_pos_float(value_area_pct, default=0.70) or 0.70
+        target_vol = total_vol * max(0.50, min(0.90, va_pct))
         acc_vol, val_idx, vah_idx = bin_vols[poc_idx], poc_idx, poc_idx
 
         while acc_vol < target_vol and (val_idx > 0 or vah_idx < n_bins - 1):
@@ -448,7 +454,7 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
             if mkey is not None and (cached_b := _BUCKET_5M_MEMO.get(mkey)) is not None:
                 return cached_b
             pts = _extract_sorted_ts_px(series)
-            bmap = {int(round(pt[0] / 300000.0)): pt[1] for pt in pts}
+            bmap = {round(pt[0] / 300000.0): pt[1] for pt in pts}
             if mkey is not None:
                 if len(_BUCKET_5M_MEMO) >= 32:
                     _BUCKET_5M_MEMO.clear()
@@ -535,7 +541,8 @@ def compute_swing_wave_metrics(
     if len(vals) < 2:
         return {}
 
-    cur_v, thr = vals[-1], max(0.5, float(reversal_pct)) / 100.0
+    rev_pct = safe_pos_float(reversal_pct, default=3.0) or 3.0
+    cur_v, thr = vals[-1], max(0.5, rev_pct) / 100.0
     pivots: list[Tuple[str, int, float]] = []
     direction, hi_px, hi_idx, lo_px, lo_idx = 0, vals[0], 0, vals[0], 0
 
@@ -854,7 +861,7 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
         target_t = t_now - win_sec
         if len(pts) >= 10:
             min_age_sec = 0.0 if win_sec <= 90.0 else (30.0 if (win_sec <= 222.0 and not has_sub3m_cadence) else win_sec * 0.5)
-            max_age_sec = 150.0 if win_sec <= 90.0 else (win_sec * 4.0 if win_sec < 9000.0 else float("inf"))
+            max_age_sec = 150.0 if win_sec <= 90.0 else (win_sec * 4.0 if win_sec < 9000.0 else math.inf)
             cands = [
                 pt for pt in pts[:-1]
                 if pt[0] not in seen_slope_ref_t and min_age_sec <= (t_now - pt[0]) <= max_age_sec
@@ -873,13 +880,13 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
         dt_min = max(win_min, (t_now - ref_t) / 60.0)
         if ref_p > 0 and dt_min > 0:
             raw_s = ((p_now - ref_p) / ref_p) / dt_min
-            slope_v = (float(f"{raw_s:.2e}") if 0.0 < abs(raw_s) < 1e-4 else round(raw_s, 6)) + 0.0
+            slope_v = _round_small_slope(raw_s)
             half_t = t_now - 0.5 * win_sec
             ref_t_h, ref_p_h = min(pts[:-1], key=lambda item: abs(item[0] - half_t))
             dt_min_h = max(0.5 * win_min, (t_now - ref_t_h) / 60.0)
             slope_half = (((p_now - ref_p_h) / ref_p_h) / dt_min_h) if (ref_p_h > 0 and dt_min_h > 0) else slope_v
             raw_g = 0.35 * slope_v + 0.65 * slope_half
-            g_v = (float(f"{raw_g:.2e}") if 0.0 < abs(raw_g) < 1e-4 else round(raw_g, 6)) + 0.0
+            g_v = _round_small_slope(raw_g)
             out[s_key] = slope_v
             if (ref_t_h != ref_t or win_sec >= 9000.0 or len(pts) < 10) and (
                 has_sub3m_cadence or (raw_g * raw_s > 0.0) or (abs(raw_s) <= 1e-12 and abs(raw_g) <= 1e-12)
@@ -897,14 +904,14 @@ def _extract_ohlc_series_points(
     ohlc_obj: Any,
     *,
     min_ts: float = 0.0,
-    max_ts: float = float("inf"),
+    max_ts: float = math.inf,
     require_positive_volume: bool = False,
 ) -> List[List[Any]]:
     """Extract `[ts_ms, close, (vol)]` rows from an OHLC series within `[min_ts, max_ts]`."""
     vols = getattr(ohlc_obj, "volumes", ()) or ()
     has_vols = isinstance(vols, (list, tuple)) and bool(vols)
     min_s = normalize_epoch_sec(min_ts, default=0.0, allow_zero=True) or 0.0
-    max_s = (normalize_epoch_sec(max_ts, default=float("inf")) or float("inf")) if math.isfinite(max_ts) else float("inf")
+    max_s = (normalize_epoch_sec(max_ts, default=math.inf) or math.inf) if math.isfinite(max_ts) else math.inf
     pts: List[List[Any]] = []
     for idx, (ts, px) in enumerate(zip(getattr(ohlc_obj, "timestamps", ()) or (), getattr(ohlc_obj, "closes", ()) or ())):
         ts_s, px_f = normalize_epoch_sec(ts, default=0.0) or 0.0, safe_pos_float(px, 0.0) or 0.0
@@ -912,7 +919,8 @@ def _extract_ohlc_series_points(
             v_f = safe_pos_float(vols[idx], 0.0) or 0.0 if (has_vols and idx < len(vols)) else 0.0
             if require_positive_volume and v_f <= 0.0:
                 continue
-            pts.append([int(round(ts_s * 1000.0)), px_f, v_f] if v_f > 0.0 else [int(round(ts_s * 1000.0)), px_f])
+            ts_ms_i = round(ts_s * 1000.0)
+            pts.append([ts_ms_i, px_f, v_f] if v_f > 0.0 else [ts_ms_i, px_f])
     pts.sort(key=lambda x: x[0])
     return pts
 
@@ -967,7 +975,7 @@ def _load_stitched_24h_ohlc_points(
                         filt = [
                             list(p)
                             for p in raw_pts
-                            if float(p[0]) >= cutoff_ms - 300000.0
+                            if (safe_float(p[0], default=-1e18) or -1e18) >= cutoff_ms - 300000.0
                             and (not require_positive_volume or (len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0))
                         ]
                         if len(filt) >= 8 and (filt[-1][0] - filt[0][0]) >= 18 * 3600 * 1000:
@@ -981,7 +989,7 @@ def _load_stitched_24h_ohlc_points(
     pts_all = _extract_ohlc_series_points(ohlc_fn(sym, 5), min_ts=cutoff_24h, require_positive_volume=False)
     pts_eff = [p for p in pts_all if len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0] if require_positive_volume else pts_all
     if not pts_eff or (pts_eff[-1][0] - pts_eff[0][0]) < 18 * 3600 * 1000:
-        first_s5_ts = (pts_eff[0][0] / 1000.0 - 300.0) if pts_eff else float("inf")
+        first_s5_ts = (pts_eff[0][0] / 1000.0 - 300.0) if pts_eff else math.inf
         older_15 = _extract_ohlc_series_points(
             ohlc_fn(sym, 15), min_ts=cutoff_24h, max_ts=first_s5_ts, require_positive_volume=False
         )
@@ -1127,7 +1135,7 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
                     ref_t_px = tape_ref_by_lbl.get(primary_lbl) or tape_ref_by_lbl.get(fallback_lbl)
                     if ref_t_px is not None and ref_t_px > 0.0 and abs(p_cur_15m - ref_t_px) > 1e-12:
                         raw_st = ((p_cur_15m - ref_t_px) / win_s_t) if has_eps_scale else (((p_cur_15m - ref_t_px) / ref_t_px) / win_m_t)
-                        pinfo[s_key_t] = (float(f"{raw_st:.2e}") if 0.0 < abs(raw_st) < 1e-4 else round(raw_st, 6)) + 0.0
+                        pinfo[s_key_t] = _round_small_slope(raw_st)
             if (
                 pinfo.get("gradient_recent_fast") is not None
                 and abs(safe_float(pinfo.get("gradient_recent_fast"), 0.0)) <= 1e-12
@@ -1236,7 +1244,7 @@ def _apply_24h_series_enrichment(
         stale_short_ts = bool(
             st_ts_e is not None
             and pts_s24_sorted
-            and (float(pts_s24_sorted[-1][0]) / 1000.0 - st_ts_e) > 600.0
+            and ((safe_float(pts_s24_sorted[-1][0], default=0.0) or 0.0) / 1000.0 - st_ts_e) > 600.0
         )
         if stale_short_ts:
             for k_st_clr in (
@@ -1290,7 +1298,7 @@ def _apply_24h_series_enrichment(
             has_dense_1h_bars = False
             vol_1h_inflated = False
             if len(all_pts_m) >= 10:
-                cutoff_1h_ms = float(all_pts_m[-1][0]) - 3600.0 * 1000.0
+                cutoff_1h_ms = (safe_float(all_pts_m[-1][0], default=0.0) or 0.0) - 3600.0 * 1000.0
                 last_t_ms = -1e18
                 for t_ms, px_v in all_pts_m:
                     if (t_ms - last_t_ms) >= 55000.0:
@@ -1320,8 +1328,14 @@ def _apply_24h_series_enrichment(
                 or stale_short_cache
                 or vol_1h_inflated
             ):
-                dt_s_m = max(60.0, (float(tail_pts_m[-1][0]) - float(tail_pts_m[0][0])) / (1000.0 * max(1, len(tail_pts_m) - 1)))
-                if (v1h_m := calculate_volatility_1h([float(r[1]) for r in tail_pts_m], dt_s_m)) is not None and v1h_m > 0:
+                t_span_ms = (safe_float(tail_pts_m[-1][0], default=0.0) or 0.0) - (
+                    safe_float(tail_pts_m[0][0], default=0.0) or 0.0
+                )
+                dt_s_m = max(60.0, t_span_ms / (1000.0 * max(1, len(tail_pts_m) - 1)))
+                tail_pxs_m = [
+                    px_r for r in tail_pts_m if (px_r := safe_pos_float(r[1], default=None)) is not None
+                ]
+                if (v1h_m := calculate_volatility_1h(tail_pxs_m, dt_s_m)) is not None and v1h_m > 0:
                     entry["vol_1h_pct"] = v1h_m
                     re_th_m, dca_th_m = adaptive_thresholds(v1h_m)
                     if re_th_m is not None and (
@@ -1743,9 +1757,9 @@ def normalize_yahoo_5d_chart_bars(
         pts_5d = sorted(
             (
                 (
-                    [int(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0]
+                    [math.trunc(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0]
                     if len(bar) >= 3
-                    else [int(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4)]
+                    else [math.trunc(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4)]
                 )
                 for bar in chart_res[1]
                 if isinstance(bar, (list, tuple))
@@ -1761,7 +1775,7 @@ def normalize_yahoo_5d_chart_bars(
         pts_5d = sorted(
             (
                 [
-                    int(ts_f if ts_f > 1e11 else ts_f * 1000),
+                    math.trunc(ts_f if ts_f > 1e11 else ts_f * 1000),
                     round(c_f, 4),
                     safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0,
                 ]
@@ -1773,8 +1787,8 @@ def normalize_yahoo_5d_chart_bars(
     if not pts_5d:
         return [], [], [], False, False, 0.0, 0
     chart_px = safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0
-    now_ms_i = int(now_ts * 1000)
-    raw_last_5d_ts = int(pts_5d[-1][0])
+    now_ms_i = math.trunc(now_ts * 1000)
+    raw_last_5d_ts = math.trunc(pts_5d[-1][0])
     if len(pts_5d) >= 10:
         for split_idx in range(len(pts_5d) - 1, max(4, len(pts_5d) - 4), -1):
             if (
@@ -1811,7 +1825,7 @@ def normalize_yahoo_5d_chart_bars(
                     break
     rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= (4 * 3600 * 1000 if eq_rth_open else 20 * 60 * 1000)
     chart_tick_fresh = (now_ms_i - raw_last_5d_ts) <= 20 * 60 * 1000
-    anchor_24h_ms = min(now_ms_i, int(pts_5d[-1][0])) if pts_5d else now_ms_i
+    anchor_24h_ms = min(now_ms_i, math.trunc(pts_5d[-1][0])) if pts_5d else now_ms_i
     cutoff_24h_ms = anchor_24h_ms - 86400 * 1000
     pts_24h_bars = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
     if pts_24h_bars and (pts_24h_bars[-1][0] - pts_24h_bars[0][0]) < 18 * 3600 * 1000:
@@ -2151,7 +2165,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             m24
             and s24_p1 is not None
             and (
-                (int(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000
+                (math.trunc(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000
                 or (sym_px_cur > 0 and abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005)
             )
         ):
@@ -2207,7 +2221,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             or (
                 matched_series_24h
                 and (last_eq_pt := _parse_ts_px_row(matched_series_24h[-1])) is not None
-                and (int(now_ts * 1000) - last_eq_pt[0]) > 20 * 60 * 1000
+                and (math.trunc(now_ts * 1000) - last_eq_pt[0]) > 20 * 60 * 1000
             )
         ):
             for k_stale_s in (

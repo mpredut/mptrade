@@ -1143,7 +1143,9 @@ def filter_and_normalize_open_orders(
     fallback_extract_oid: bool = False,
 ) -> dict:
     """Filter venue open orders by ``side`` and optional ``allowed_owners`` into a normalized dict keyed by scalar order ID."""
-    want_side = str(side or "").strip().upper()
+    want_side = normalize_side(side)
+    if want_side not in ("BUY", "SELL"):
+        return {}
     filtered_orders: dict = {}
     accepted_owner_map = None
     for order in (open_orders or ()):

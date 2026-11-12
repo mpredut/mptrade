@@ -19,6 +19,7 @@ import builtins
 from collections import defaultdict
 from datetime import datetime
 import json
+import math
 import os
 import threading
 from typing import Any, Optional, Sequence
@@ -579,7 +580,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     row_copy = dict(row)
                     if "id" in row_copy or ("tid" not in row_copy and "orderId" not in row_copy):
                         row_copy["id"] = clean_id
-                    row_copy["time"] = int(t_f)
+                    row_copy["time"] = math.trunc(t_f)
                     if "isBuyer" in row_copy and isinstance(row_copy["isBuyer"], str):
                         if (ib_b := _parse_bool_flag(row_copy["isBuyer"], default=None)) is not None:
                             row_copy["isBuyer"] = ib_b
@@ -1178,7 +1179,10 @@ class CacheTradeManager(CacheAccountManagerBase):
                     old_counts = dict(self._loaded_counts)
                     old_trade_ids = (
                         {
-                            str(symbol).upper(): {str(int(item["id"])) for item in items}
+                            str(symbol).upper(): {
+                                str(strict_ascii_int(item["id"], default=0))
+                                for item in items
+                            }
                             for symbol, items in self.cache.items()
                         }
                         if can_append
@@ -1194,7 +1198,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                         suffix_ids = defaultdict(set)
                         for symbol, item in records:
                             normalized_symbol = str(symbol).upper()
-                            trade_id = str(int(item["id"]))
+                            trade_id = str(strict_ascii_int(item["id"], default=0))
                             if (
                                 trade_id in old_trade_ids.get(normalized_symbol, set())
                                 or trade_id in suffix_ids[normalized_symbol]
@@ -1401,7 +1405,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 with self.lock:
                     metadata = self._load_versioned_account_meta()
                     self._read_trade_snapshot_strict(metadata)
-                    archive = f"{self.filename}.{int(_now_time())}.archive"
+                    archive = f"{self.filename}.{math.trunc(_now_time())}.archive"
                     snapshot_fn = _cm_override(
                         "atomic_snapshot_file", atomic_snapshot_file
                     )
@@ -1493,7 +1497,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     or str(item["symbol"]).upper() != str(symbol).upper()
                 ):
                     raise RuntimeError("invalid Trade row already in memory")
-                trade_id = str(int(item["id"]))
+                trade_id = str(strict_ascii_int(item["id"], default=0))
                 signature = _cache_integrity.trade_semantic_signature(item)
                 if trade_id in existing:
                     raise RuntimeError("duplicate immutable Trade ID in memory")
@@ -1507,7 +1511,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     or str(item["symbol"]).upper() != str(symbol).upper()
                 ):
                     raise RuntimeError("invalid incoming Trade row")
-                trade_id = str(int(item["id"]))
+                trade_id = str(strict_ascii_int(item["id"], default=0))
                 signature = _cache_integrity.trade_semantic_signature(item)
                 if trade_id in existing:
                     prev_sig, prev_idx, prev_item = existing[trade_id]
@@ -1531,7 +1535,12 @@ class CacheTradeManager(CacheAccountManagerBase):
             bucket.extend(unique)
             if len(bucket) - persisted_count > 1:
                 unpersisted_tail = bucket[persisted_count:]
-                unpersisted_tail.sort(key=lambda t: (int(t["time"]), int(t["id"])))
+                unpersisted_tail.sort(
+                    key=lambda t: (
+                        strict_ascii_int(t["time"], default=0) or 0,
+                        strict_ascii_int(t["id"], default=0) or 0,
+                    )
+                )
                 bucket[persisted_count:] = unpersisted_tail
             self._advance_symbol_fetchtime_locked(symbol)
 
@@ -1571,8 +1580,11 @@ class CacheTradeManager(CacheAccountManagerBase):
                         or trade["isBuyer"] != want_buyer
                     ):
                         continue
-                    key = (int(trade["time"]), int(trade["id"]))
-                    px_val = float(trade["price"])
+                    key = (
+                        strict_ascii_int(trade["time"], default=0) or 0,
+                        strict_ascii_int(trade["id"], default=0) or 0,
+                    )
+                    px_val = safe_pos_float(trade["price"], default=0.0) or 0.0
                 else:
                     if not self._is_valid_snapshot_item(trade):
                         continue
@@ -1592,7 +1604,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     px_val = extract_order_price(trade, default=None) or safe_pos_float(trade.get("price"), default=None)
                     if px_val is None:
                         continue
-                    key = (int(ts_ms), raw_id)
+                    key = (safe_nonneg_int(ts_ms, default=0) or 0, raw_id)
                 if latest_key is None or key > latest_key:
                     latest_key = key
                     latest_price = px_val
@@ -1640,7 +1652,7 @@ class CacheOrderManager(CacheAccountManagerBase):
         s = str(raw_fill_id).strip()
         if not s or not s.isascii() or not s.isdigit():
             return None
-        return str(int(s))
+        return s.lstrip("0") or "0"
 
     def _is_valid_item(self, trade):
         if not isinstance(trade, dict):
@@ -1884,7 +1896,7 @@ class CacheOrderManager(CacheAccountManagerBase):
         """Merge each immutable fill exactly once into its order aggregate."""
         if not new_items or not (new_items := self._coerce_item_list(new_items)):
             return
-        now_ms = int(_now_time() * 1000)
+        now_ms = math.trunc(_now_time() * 1000)
         with self.lock:
             bucket = self.cache.setdefault(symbol, [])
             candidate = [dict(item) for item in bucket]
@@ -1900,7 +1912,7 @@ class CacheOrderManager(CacheAccountManagerBase):
                     )
                 ):
                     raise RuntimeError("invalid Order row already in memory")
-                oid_key = str(int(item["orderId"]))
+                oid_key = str(strict_ascii_int(item["orderId"], default=0, min_value=1) or 0)
                 if oid_key in by_id:
                     raise RuntimeError(
                         f"duplicate Order aggregate ID {oid_key} in memory"
@@ -1931,7 +1943,11 @@ class CacheOrderManager(CacheAccountManagerBase):
                         raise RuntimeError("invalid incoming Order fill ID")
                 if not self._is_valid_item(incoming):
                     raise RuntimeError("invalid incoming Order row")
-                key = str(int(incoming["orderId"]))
+                oid_int = strict_ascii_int(incoming["orderId"], default=0, min_value=1) or 0
+                incoming_ts = strict_ascii_int(incoming["timestamp"], default=0, min_value=1) or 0
+                incoming_px = safe_pos_float(incoming["price"], default=0.0) or 0.0
+                incoming_qty = safe_pos_float(incoming["quantity"], default=0.0) or 0.0
+                key = str(oid_int)
                 if fill_id:
                     prev_owner = fill_owners.get(fill_id)
                     if prev_owner is not None and prev_owner != key:
@@ -1941,10 +1957,10 @@ class CacheOrderManager(CacheAccountManagerBase):
                 existing_index = by_id.get(key)
                 if existing_index is None:
                     by_id[key] = len(candidate)
-                    incoming["orderId"] = int(incoming["orderId"])
-                    incoming["price"] = float(incoming["price"])
-                    incoming["quantity"] = float(incoming["quantity"])
-                    incoming["timestamp"] = int(incoming["timestamp"])
+                    incoming["orderId"] = oid_int
+                    incoming["price"] = incoming_px
+                    incoming["quantity"] = incoming_qty
+                    incoming["timestamp"] = incoming_ts
                     incoming["side"] = str(incoming["side"]).upper()
                     if fill_id:
                         incoming["_fillIds"] = [fill_id]
@@ -1953,17 +1969,18 @@ class CacheOrderManager(CacheAccountManagerBase):
                     continue
 
                 existing = candidate[existing_index]
+                existing_ts = strict_ascii_int(existing["timestamp"], default=0, min_value=1) or 0
                 known_fill_id_list = [
                     self._normalize_fill_id(existing_fill_id)
                     for existing_fill_id in existing.get("_fillIds", [])
                 ]
                 legacy_cutoff = safe_nonneg_int(existing.get("_legacyCoveredThrough"), default=None)
                 if legacy_cutoff is None and "_fillIds" not in existing:
-                    legacy_cutoff = int(existing["timestamp"])
+                    legacy_cutoff = existing_ts
                 known_fill_ids = {*known_fill_id_list}
                 if fill_id and fill_id in known_fill_ids:
                     continue
-                if legacy_cutoff is not None and int(incoming["timestamp"]) <= legacy_cutoff:
+                if legacy_cutoff is not None and incoming_ts <= legacy_cutoff:
                     continue
                 if (
                     str(existing.get("side", "")).upper()
@@ -1972,24 +1989,22 @@ class CacheOrderManager(CacheAccountManagerBase):
                     raise RuntimeError(
                         f"{self.cls_name} received conflicting sides for order {key}"
                     )
-                previous_quantity = float(existing["quantity"])
-                additional_quantity = float(incoming["quantity"])
+                previous_quantity = safe_pos_float(existing["quantity"], default=0.0) or 0.0
+                additional_quantity = incoming_qty
                 total_quantity = previous_quantity + additional_quantity
+                existing_px = safe_pos_float(existing["price"], default=0.0) or 0.0
                 aggregate_price = (
-                    float(existing["price"]) * previous_quantity
-                    + float(incoming["price"]) * additional_quantity
+                    existing_px * previous_quantity
+                    + incoming_px * additional_quantity
                 ) / total_quantity
                 merged = dict(existing)
                 merged.update(incoming)
                 merged.update(
                     {
-                        "orderId": int(existing["orderId"]),
+                        "orderId": strict_ascii_int(existing["orderId"], default=0, min_value=1) or 0,
                         "price": round(aggregate_price, 8) or round(aggregate_price, 16),
                         "quantity": round(total_quantity, 8) or round(total_quantity, 16),
-                        "timestamp": max(
-                            int(existing["timestamp"]),
-                            int(incoming["timestamp"]),
-                        ),
+                        "timestamp": max(existing_ts, incoming_ts),
                         "side": str(existing["side"]).upper(),
                     }
                 )
@@ -1999,7 +2014,7 @@ class CacheOrderManager(CacheAccountManagerBase):
                     )
                     fill_owners[fill_id] = key
                 if legacy_cutoff is not None:
-                    merged["_legacyCoveredThrough"] = int(legacy_cutoff)
+                    merged["_legacyCoveredThrough"] = legacy_cutoff
                 candidate[existing_index] = merged
 
             if candidate != bucket:
@@ -2100,7 +2115,7 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             print(f"[{self.cls_name}][Error] Invalid total value: {total_usdc}")
             return []
 
-        now_sec = int(_now_time())
+        now_sec = math.trunc(_now_time())
         snapshot = {
             "timestamp": now_sec,
             "datetime_local": datetime.now().isoformat(timespec="seconds"),
@@ -2208,8 +2223,8 @@ def start_account_cache_daemon(
     ach = _cm_override("account_cache_health", account_cache_health)
     getter = cache_getter or _resolve_account_cache_getter()
     ach.enable_writer()
-    now_ms = int(_now_time() * 1000)
-    max_age_ms = int(ach.MAX_AGE_SEC * 1000)
+    now_ms = math.trunc(_now_time() * 1000)
+    max_age_ms = math.trunc(ach.MAX_AGE_SEC * 1000)
     for account_cache_name in ("BinanceOrder", "BinanceTrade"):
         acc_mgr = getter(account_cache_name)
         if isinstance(sync_started_set, set):
@@ -2448,7 +2463,7 @@ def run_kraken_trade_ws_loop(
     )
     last_flush_ms = [0]
     last_rest_sync_ms = [0]
-    rest_sync_interval_ms = int(
+    rest_sync_interval_ms = math.trunc(
         max(30.0, safe_pos_float(poll_interval, default=30.0) or 30.0) * 1000
     )
     if callable(heartbeat_fn):

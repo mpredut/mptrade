@@ -774,8 +774,8 @@ class Instrument:
 
             # 1. Provider-agnostic daily trade cap (30 orders / 24h per symbol and side).
             if not GUARD_REGISTRY["GO1"].is_bypassed(ctx.bypassed_guards):
-                ok, ctx.reason = order_guard.daily_limit_guard(
-                    self._provider, self.symbol, ctx.side_u
+                ok, ctx.reason = order_guard.unpack_daily_limit_result(
+                    order_guard.daily_limit_guard(self._provider, self.symbol, ctx.side_u)
                 )
                 if not ok:
                     return None

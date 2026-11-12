@@ -40,6 +40,8 @@ from botcore import (
     exact_nonneg_int,
     load_root_config,
     normalize_epoch_sec,
+    require_int,
+    require_pos_float,
     required_float_env,
     required_int_env,
     safe_nonneg_float,
@@ -90,9 +92,7 @@ P3B_BUY_DEFENSIVE_MAX_PENALTY = required_float_env("AG_P3B_BUY_DEFENSIVE_MAX_PEN
 
 def _progressive_tier_allocations(count, initial_allocation, *, mode="convex"):
     """Build monotonically increasing tier allocations starting at ``initial_allocation``."""
-    n = int(count)
-    if n <= 0:
-        raise ValueError("tier count must be >= 1")
+    n = require_int(count, "tier count", min_value=1, error_msg="tier count must be >= 1")
     if n == 1:
         return (1.0,)
     w0 = safe_pos_float(initial_allocation, default=None)
@@ -102,7 +102,7 @@ def _progressive_tier_allocations(count, initial_allocation, *, mode="convex"):
     if mode == "convex":
         deltas = [i * (i + 1) / 2.0 for i in range(n)]
     elif mode == "linear":
-        deltas = [float(i) for i in range(n)]
+        deltas = [i * 1.0 for i in range(n)]
     else:
         raise ValueError(f"unsupported progressive allocation mode: {mode!r}")
     delta_sum = sum(deltas)
@@ -122,14 +122,14 @@ def _build_dynamic_buy_tiers(thresholds=None, initial_allocation=None):
             (RECOVERY_RESET_PERCENT + 0.5 * NEAR_TRIGGER_DISTANCE_PCT)
             / max(1e-6, 1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT)
         )
-        first_thr = max(RECOVERY_RESET_PERCENT + 2.0 * NEAR_TRIGGER_DISTANCE_PCT, float(discount_floor))
+        first_thr = max(RECOVERY_RESET_PERCENT + 2.0 * NEAR_TRIGGER_DISTANCE_PCT, discount_floor * 1.0)
         computed = [round(first_thr, 4)]
         for idx in range(1, count):
             step = RECOVERY_RESET_PERCENT + (idx - 1) * (0.5 * NEAR_TRIGGER_DISTANCE_PCT)
             computed.append(round(computed[-1] + step, 4))
         ordered = tuple(computed)
     else:
-        ordered = tuple(sorted(float(t) for t in thresholds))
+        ordered = tuple(sorted(require_pos_float(t, "threshold") for t in thresholds))
     if initial_allocation is None:
         initial_allocation = min(PORTFOLIO_SELL_ALLOCATION, 1.0 / len(ordered))
     return tuple(zip(ordered, _progressive_tier_allocations(len(ordered), initial_allocation, mode="convex")))
@@ -138,8 +138,9 @@ def _build_dynamic_buy_tiers(thresholds=None, initial_allocation=None):
 BUY_TIERS = _build_dynamic_buy_tiers()
 _SELL_COUNT = max(2, round(1.0 / max(1e-6, PORTFOLIO_SELL_ALLOCATION)))
 _SELL_CORE_COUNT = max(2, round((1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) / max(1e-6, PORTFOLIO_SELL_ALLOCATION)))
-_SELL_FIRST_THR = float(
+_SELL_FIRST_THR = (
     math.ceil(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT / max(1e-6, 1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT))
+    * 1.0
 )
 _SELL_BREAKOUT_STEP = _SELL_FIRST_THR + 0.5 * NEAR_TRIGGER_DISTANCE_PCT
 _SELL_COMPUTED = [round(_SELL_FIRST_THR, 4)]
@@ -307,9 +308,10 @@ def _compute_symbol_volatility_multiplier(
 ):
     """Compute a bounded per-symbol 24h volatility multiplier around 1.0."""
     if bucket_sec is None:
-        bucket_sec = max(60.0, float(ORDER_MAX_AGE_SECONDS))
+        bucket_sec = max(60.0, (safe_pos_float(ORDER_MAX_AGE_SECONDS, default=60.0) or 60.0))
     if ref_step_pct is None:
-        buckets_per_window = max(1.0, (float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT) * 60.0) / bucket_sec)
+        ref_min_back = safe_pos_float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT, default=1440.0) or 1440.0
+        buckets_per_window = max(1.0, (ref_min_back * 60.0) / bucket_sec)
         ref_step_pct = (RECOVERY_RESET_PERCENT + 0.5 * NEAR_TRIGGER_DISTANCE_PCT) / math.sqrt(buckets_per_window)
     default_min, default_max = _volatility_mult_bounds()
     min_mult = default_min if min_mult is None else min_mult
@@ -328,7 +330,7 @@ def _compute_symbol_volatility_multiplier(
     )
     if len(ordered) < 60 or (ordered[-1][0] - ordered[0][0]) < 8.0 * bucket_sec:
         return 1.0
-    buckets = {int(ts // bucket_sec): px for ts, px in ordered}
+    buckets = {math.trunc(ts // bucket_sec): px for ts, px in ordered}
     bucket_prices = [buckets[k] for k in sorted(buckets)]
     if len(bucket_prices) < 8:
         return 1.0
@@ -357,7 +359,7 @@ def _symbol_volatility_mult(symbol):
 
 
 def _resolve_window_bounds(minutes_back: float) -> tuple[float, float]:
-    now_ts = float(time.time())
+    now_ts = time.time() * 1.0
     return now_ts, now_ts - minutes_back * 60.0
 
 
@@ -468,7 +470,7 @@ def _read_p3b_sentiment(path=None, now_ts=None):
         return None
 
     eval_ts = _finite_float(data.get("ts"), positive=True)
-    now_val = _finite_float(now_ts, positive=True) or float(time.time())
+    now_val = _finite_float(now_ts, positive=True) or (time.time() * 1.0)
     if eval_ts is None:
         return None
     age_sec = now_val - eval_ts
@@ -556,10 +558,13 @@ def _trigger_threshold_for_sell_tier(
       SELL_REARM_GROWTH_PERCENT + 2.0 (4.0%), preserving strict ordering above
       the hybrid tier.
     """
-    thr = safe_pos_float(canonical_threshold, default=float(SELL_TIERS[0][0]))
+    default_sell_thr = safe_pos_float(SELL_TIERS[0][0], default=1.0) or 1.0
+    thr = safe_pos_float(canonical_threshold, default=default_sell_thr) or default_sell_thr
     sm = safe_pos_float(sell_mult, default=1.0)
     vm = _clamp_volatility_mult(volatility_mult)
-    static_thresholds = {float(t) for t, _ in SELL_TIERS}
+    static_thresholds = {
+        tf for t, _ in SELL_TIERS if (tf := safe_pos_float(t, default=None)) is not None
+    }
     if thr not in static_thresholds and abs(thr - PORTFOLIO_ASSET_MIN_GROWTH_PERCENT) <= 1e-9:
         return max(SELL_REARM_GROWTH_PERCENT + 1.5, thr * sm)
     pg = _finite_float(portfolio_growth_pct)
@@ -570,7 +575,7 @@ def _trigger_threshold_for_sell_tier(
     )
     return max(
         SELL_REARM_GROWTH_PERCENT + 2.0,
-        thr * sm * float(pg_mult) * vm,
+        thr * sm * (pg_mult * 1.0) * vm,
     )
 
 
@@ -578,7 +583,8 @@ def _trigger_threshold_for_buy_tier(
     canonical_threshold, buy_mult=1.0, volatility_mult=1.0
 ):
     """Return effective drawdown trigger (%) for a canonical BUY tier."""
-    thr = safe_pos_float(canonical_threshold, default=float(BUY_TIERS[0][0]))
+    default_buy_thr = safe_pos_float(BUY_TIERS[0][0], default=1.0) or 1.0
+    thr = safe_pos_float(canonical_threshold, default=default_buy_thr) or default_buy_thr
     bm = safe_pos_float(buy_mult, default=1.0)
     vm = _clamp_volatility_mult(volatility_mult)
     return max(RECOVERY_RESET_PERCENT + 0.5, thr * bm * vm)
@@ -786,13 +792,14 @@ def _save_symbol_campaign(symbol, kind, campaign):
 def _trend_defer_ready(symbol, kind, side, threshold, state):
     """Non-blocking trend deferral, re-evaluated by the normal Guardian loop."""
     state = dict(state)
-    now = float(time.time())
+    now = time.time() * 1.0
+    thr_f = require_pos_float(threshold, "threshold")
     defer = state.get("trend_defer")
     if not isinstance(defer, dict):
         defer = {}
     same_intent = (
         str(defer.get("side") or "").upper() == str(side).upper()
-        and _finite_float(defer.get("threshold"), positive=True) == float(threshold)
+        and _finite_float(defer.get("threshold"), positive=True) == thr_f
     )
     started_at = (_finite_float(defer.get("started_at"), positive=True)
                   if same_intent else None)
@@ -810,13 +817,13 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
             started_at = now
             state["trend_defer"] = {
                 "side": str(side).upper(),
-                "threshold": float(threshold),
+                "threshold": thr_f,
                 "started_at": started_at,
             }
             _save_symbol_campaign(symbol, kind, state)
         elapsed = max(0.0, now - started_at)
         print(
-            f"[{symbol}] {side} tier {float(threshold):g}% deferred by "
+            f"[{symbol}] {side} tier {thr_f:g}% deferred by "
             f"short trend (GT_S): {elapsed:.1f}s elapsed; "
             "waiting for trend reversal without blocking sleep.")
         return False, state
@@ -918,14 +925,15 @@ def _complete_campaign_tier(symbol, kind, state, threshold):
 
 
 def _tier_key(threshold):
-    return f"{float(threshold):g}"
+    return f"{require_pos_float(threshold, 'threshold'):g}"
 
 
 def _buy_remaining_cash(state, threshold, allocation):
     initial_cash = _finite_float(state.get("initial_cash"), positive=True)
     if initial_cash is None:
         return None, None, None
-    target_cash = initial_cash * BUY_USE_CASH_RATIO * float(allocation)
+    alloc_f = require_pos_float(allocation, "allocation")
+    target_cash = initial_cash * BUY_USE_CASH_RATIO * alloc_f
     raw_spent_map = state.get("spent_quote_by_tier")
     spent_map = dict(raw_spent_map) if isinstance(raw_spent_map, dict) else {}
     prior_spent = max(0.0, _finite_float(spent_map.get(_tier_key(threshold))) or 0.0)
@@ -934,7 +942,9 @@ def _buy_remaining_cash(state, threshold, allocation):
 
 def _ag_client_order_id(kind, symbol, state, threshold, attempt):
     prefix, anchor_key = ("AGS", "trough_ts") if kind == "sell" else ("AGB", "peak_ts")
-    raw = f"assetguardian:{kind}:{symbol}:{state.get(anchor_key)}:{float(threshold):g}:{int(attempt)}"
+    thr_f = require_pos_float(threshold, "threshold")
+    att_i = require_int(attempt, "attempt", min_value=0)
+    raw = f"assetguardian:{kind}:{symbol}:{state.get(anchor_key)}:{thr_f:g}:{att_i}"
     return prefix + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:29]
 
 
@@ -1073,10 +1083,17 @@ def _record_terminal_sell(symbol, state, status):
     state, pending, threshold, tier_filled, filled_qty, cost_val, fee_val = accum
     allocation = _finite_float(pending.get("allocation"), positive=True)
     if allocation is None:
+        thr_f = safe_pos_float(threshold, default=0.0) or 0.0
         allocation = next(
-            (float(t_alloc) for t_thr, t_alloc in SELL_TIERS if abs(float(t_thr) - float(threshold)) <= 1e-9),
-            float(PORTFOLIO_SELL_ALLOCATION)
-            if abs(float(threshold) - float(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT)) <= 1e-9
+            (
+                alloc_v
+                for t_thr, t_alloc in SELL_TIERS
+                if (t_thr_f := safe_pos_float(t_thr, default=None)) is not None
+                and (alloc_v := safe_pos_float(t_alloc, default=None)) is not None
+                and abs(t_thr_f - thr_f) <= 1e-9
+            ),
+            (safe_pos_float(PORTFOLIO_SELL_ALLOCATION, default=None))
+            if abs(thr_f - (safe_pos_float(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, default=0.0) or 0.0)) <= 1e-9
             else None,
         )
     initial_qty = _finite_float(state.get("initial_qty"), positive=True)
@@ -1223,7 +1240,7 @@ def _resolve_blocking_sell_orders(symbol, open_sells):
     if non_rtrade:
         _rtrade_sell_block_since.pop(symbol, None)
         return open_sells
-    now = float(time.time())
+    now = time.time() * 1.0
     blocked_since = _rtrade_sell_block_since.get(symbol)
     if blocked_since is None or blocked_since > now:
         _rtrade_sell_block_since[symbol] = now
@@ -1273,9 +1290,9 @@ def _effective_sell_tiers(portfolio_growth_pct=None, sell_mult=1.0):
     tiers = list(SELL_TIERS)
     pg = _finite_float(portfolio_growth_pct)
     if pg is not None and pg >= _effective_portfolio_growth_threshold(sell_mult):
-        hybrid_thr = float(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT)
+        hybrid_thr = safe_pos_float(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, default=0.0) or 0.0
         if all(abs(t - hybrid_thr) > 1e-9 for t, _ in tiers):
-            tiers.append((hybrid_thr, float(PORTFOLIO_SELL_ALLOCATION)))
+            tiers.append((hybrid_thr, safe_pos_float(PORTFOLIO_SELL_ALLOCATION, default=0.0) or 0.0))
             tiers.sort()
     return tuple(tiers)
 
@@ -1577,7 +1594,8 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         f"(conf={p3b_conf:.2f},sell_x={sell_mult:.3f},buy_x={buy_mult:.3f})"
         if isinstance(p3b_assessment, dict) else "none(1.0x)"
     )
-    minutes_back_val = _finite_float(minutes_back, positive=True) or float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
+    default_min_back = safe_pos_float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT, default=1440.0) or 1440.0
+    minutes_back_val = _finite_float(minutes_back, positive=True) or default_min_back
     vol_mult = _symbol_volatility_mult(symbol)
     print(
         f"[{symbol}] price={current_price:.8f}, window_min/max="

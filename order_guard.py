@@ -1242,16 +1242,24 @@ def check_math_profit_reference(
     return True
 
 
-def unpack_daily_limit_result(limit_result: Any) -> Tuple[bool, float, Optional[int], str]:
-    """Unpack a boolean or ``(allowed, used_weight, limit, reason)`` tuple from ``check_daily_limit``."""
-    if isinstance(limit_result, tuple):
-        return (
-            bool(limit_result[0]),
-            float(limit_result[1]) if len(limit_result) > 1 else 0.0,
-            limit_result[2] if len(limit_result) > 2 else None,
-            str(limit_result[3]) if len(limit_result) > 3 else "",
-        )
-    return bool(limit_result), 0.0, None, ""
+def unpack_daily_limit_result(
+    limit_result: Any, default_reason: str = "daily_limit"
+) -> Tuple[bool, Optional[str]]:
+    """Unpack a boolean or ``(allowed, reason)`` tuple from ``daily_limit_guard``."""
+    if isinstance(limit_result, (tuple, list)):
+        if not limit_result:
+            return False, default_reason
+        allowed = bool(_parse_bool_flag(limit_result[0], default=False))
+        raw_reason: Any = None
+        if len(limit_result) >= 2:
+            if isinstance(limit_result[1], str) or len(limit_result) < 4:
+                raw_reason = limit_result[1]
+            else:
+                raw_reason = limit_result[3]
+        reason_str = str(raw_reason).strip() if raw_reason is not None else ""
+        return (True, reason_str or None) if allowed else (False, reason_str or default_reason)
+    allowed = bool(_parse_bool_flag(limit_result, default=False))
+    return (True, None) if allowed else (False, default_reason)
 
 
 def profit_guard(

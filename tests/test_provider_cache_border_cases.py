@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from datetime import datetime, timezone
+from decimal import Decimal
 import functools
 import importlib
 import json
@@ -12,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import threading
 import time
 from types import MethodType, SimpleNamespace
 from typing import Any
@@ -32,7 +35,7 @@ from botcore import (
     resolve_cli_env_path,
     temporary_environ,
 )
-from cacheaccount import CacheTradeManager
+from cacheaccount import CacheOrderManager, CacheTradeManager
 import cacheintegrity
 import cachepaths
 from cachepaths import (
@@ -83,9 +86,13 @@ import intelligence.macro_sentiment_ssot as mss
 from intelligence.macro_sentiment_ssot import FearGreedSnapshot
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
 from intelligence.sentiment.collectors.portfolio_collector import _resolve_ai_intents_and_known_order_ids
-from intelligence.sentiment.evaluators import microstructure_evaluator as me_mod
+from intelligence.sentiment.evaluators import (
+    microstructure_evaluator as me_mod,
+    price_series_evaluator as pse_mod,
+)
 from intelligence.sentiment.evaluators.microstructure_evaluator import evaluate_microstructure_cycle_deltas
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
+    clip_open_lots_to_held_qty,
     reconcile_fresh_lots_vwap,
     select_fresh_open_lots,
 )
@@ -130,6 +137,7 @@ from providers.order_ohlc_utils import (
     build_price_history_points,
     derive_venue_128bit_client_order_id,
     drop_incomplete_last_bar,
+    filter_and_normalize_open_orders,
     format_venue_intent_client_order_id,
     iter_expired_open_order_ids,
     resolve_ohlc_time_window_ms,
@@ -2674,5 +2682,132 @@ def test_wave16_bind_attr_call_duck_stubs_timed_filelock_feed_url_seams_and_swee
     assert len(priceAnalysis._bounded_plot_indices(10, True)) == 10
 
 
+def test_wave17_kalman_reset_string_price_short_trend_nan_bool_and_repo_zero_raw_casts() -> None:
+    """Wave 17: Kalman string/Decimal reset, short-trend NaN/bool guards, strict tier counts, VP/swing NaN defaults, and repo-wide zero raw open/float/int invariant."""
+    # 1. KalmanTrend._reset_state & update coerce numeric strings/Decimals cleanly while rejecting bool/NaN
+    kt = pw.KalmanTrend()
+    kt._reset_state("95000.0", "0.04", "1000.0")  # type: ignore[arg-type]
+    assert kt._x0 == pytest.approx(95000.0)
+    assert kt._p00 == pytest.approx(0.4)
+    assert kt._p11 == pytest.approx((95000.0 * 1e-3) ** 2)
+    assert kt.last_ts == pytest.approx(1000.0)
 
+    kt._reset_state(Decimal("96000.5"), Decimal("0.01"), Decimal("1005.0"))  # type: ignore[arg-type]
+    assert kt._x0 == pytest.approx(96000.5)
+    assert kt._p11 == pytest.approx((96000.5 * 1e-3) ** 2)
 
+    for bad_px in (True, False, math.nan, math.inf, "not-a-price"):
+        with pytest.raises(ValueError):
+            kt._reset_state(bad_px, 0.01, 1000.0)  # type: ignore[arg-type]
+
+    upd = kt.update(1010.0, "96100.0", "5.0")  # type: ignore[arg-type]
+    assert isinstance(upd["vel"], float) and kt.last_ts == pytest.approx(1010.0)
+
+    # 2. eval_short_trend_upward rejects bool/NaN payload values and sanitizes upward_epsilon_k
+    assert pw.eval_short_trend_upward({"growth_coefficient": True, "epsilon": 0.1}) is False
+    assert pw.eval_short_trend_upward({"growth_coefficient": math.nan, "slope_small": 5.0, "epsilon": 0.1}) is False
+    assert (
+        pw.eval_short_trend_upward(
+            {"growth_coefficient": 0.5, "epsilon": 1.0}, upward_epsilon_k=math.nan
+        )
+        is True
+    )
+    assert (
+        pw.eval_short_trend_upward(
+            {"growth_coefficient": 0.1, "epsilon": 1.0}, upward_epsilon_k=0.0
+        )
+        is True
+    )
+    assert (
+        pw.eval_short_trend_upward(
+            {"growth_coefficient": 0.1, "epsilon": 1.0}, upward_epsilon_k=True  # type: ignore[arg-type]
+        )
+        is False
+    )
+
+    # 3. AssetGuardian tier/campaign helpers reject bool and fractional integer inputs
+    for bad_cnt in (True, False, 0, -2, 2.9, "2.5"):
+        with pytest.raises(ValueError):
+            ag._progressive_tier_allocations(bad_cnt, 0.2)
+    with pytest.raises(ValueError):
+        ag._build_dynamic_buy_tiers(thresholds=[True, 5.0])
+    with pytest.raises(ValueError):
+        ag._ag_client_order_id("buy", "BTCUSDC", {"peak_ts": 100}, 4.0, True)
+
+    # 4. Volume profile, swing waves, cache sample-rate span, fill-ID normalization, and survival day keys
+    pts_vp = [[1700000000000 + i * 300000, 100.0 + (i % 12), 10.0 + (i % 5)] for i in range(48)]
+    vp_ref = pse_mod.compute_volume_profile_metrics(pts_vp, num_bins=24, value_area_pct=0.70)
+    vp_bad_args = pse_mod.compute_volume_profile_metrics(
+        pts_vp, num_bins=True, value_area_pct=math.nan  # type: ignore[arg-type]
+    )
+    assert vp_ref and vp_bad_args == vp_ref
+
+    sw_series = [100.0, 104.5, 100.2, 106.0, 101.5]
+    assert pse_mod.compute_swing_wave_metrics(sw_series, reversal_pct=math.nan) == pse_mod.compute_swing_wave_metrics(
+        sw_series, reversal_pct=3.0
+    )
+
+    assert CacheOrderManager._normalize_fill_id("00042") == "42"
+    assert CacheOrderManager._normalize_fill_id("0000") == "0"
+    assert CacheOrderManager._normalize_fill_id(True) is None
+
+    c_cur = CacheCurrentPriceManager.__new__(CacheCurrentPriceManager)
+    c_cur.lock = threading.RLock()
+    c_cur._update_timestamps = {"BTCUSDC": pw.deque([100.0, 112.0])}
+    assert c_cur.get_sustained_sample_rate("BTCUSDC", min_span_sec=5.0) == pytest.approx(12.0)
+    assert c_cur.get_sustained_sample_rate("BTCUSDC", min_span_sec=math.nan) is None
+    assert c_cur.get_sustained_sample_rate("BTCUSDC", min_span_sec=True) is None  # type: ignore[arg-type]
+
+    st_mgr = CacheShortTrendManager.__new__(CacheShortTrendManager)
+    st_mgr.window_seconds = [222.0, 9000.0]
+    st_mgr.PRICE_CHANGE_THRESHOLD_SMALL = 0.2
+    st_mgr.PRICE_CHANGE_THRESHOLD_BIG = 1.0
+    thr_fn = st_mgr._build_threshold_fn({222.0: 0.15})
+    assert thr_fn("BTCUSDC", 222.0) == pytest.approx(0.15)
+    assert thr_fn("BTCUSDC", True) == pytest.approx(1.0)
+    assert thr_fn("BTCUSDC", None) == pytest.approx(1.0)
+
+    # 5. unpack_daily_limit_result 2-tuple contract & open-order/lot border guards
+    assert order_guard.unpack_daily_limit_result((True, None)) == (True, None)
+    assert order_guard.unpack_daily_limit_result((False, "daily_limit_exceeded")) == (False, "daily_limit_exceeded")
+    assert order_guard.unpack_daily_limit_result((False, None)) == (False, "daily_limit")
+    assert order_guard.unpack_daily_limit_result(()) == (False, "daily_limit")
+    assert order_guard.unpack_daily_limit_result("false") == (False, "daily_limit")
+    assert order_guard.unpack_daily_limit_result((False, 12.5, 10, "weight_cap")) == (False, "weight_cap")
+    assert filter_and_normalize_open_orders([{"orderId": "1", "price": "100", "origQty": "1"}], "") == {}
+    assert filter_and_normalize_open_orders([{"orderId": "1", "price": "100", "origQty": "1"}], True) == {}  # type: ignore[arg-type]
+    sample_lots = [{"qty": 1.0, "price": 100.0}, {"qty": 1.0, "price": 102.0}]
+    assert clip_open_lots_to_held_qty(sample_lots, math.nan) == sample_lots
+    assert clip_open_lots_to_held_qty(sample_lots, 1.0, total_qty=math.nan) == [{"qty": 1.0, "price": 102.0}]
+
+    # 6. Repo-wide invariant: zero raw open(), float(), or int() calls in any non-root Python module
+    repo_root = Path(botcore.__file__).resolve().parent
+    skip_dirs = {".git", "myenv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "cachedb", "node_modules"}
+    root_primitives = {
+        "botcore.py",
+        "cachepaths.py",
+        "state_io.py",
+        "log.py",
+        "orchestratorOS/agy/protobuf.py",
+    }
+    offenders: dict[str, list[tuple[int, str]]] = {}
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+        for fname in sorted(filenames):
+            if not fname.endswith(".py"):
+                continue
+            fpath = Path(dirpath) / fname
+            rel = fpath.relative_to(repo_root).as_posix()
+            if rel.startswith("tests/") or rel in root_primitives:
+                continue
+            mod_tree = ast.parse(read_text_file(str(fpath)), filename=rel)
+            hits = [
+                (node.lineno, node.func.id)
+                for node in ast.walk(mod_tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in {"open", "float", "int"}
+            ]
+            if hits:
+                offenders[rel] = hits
+    assert offenders == {}

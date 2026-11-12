@@ -31,6 +31,8 @@ from botcore import (
     normalize_epoch_sec,
     optional_env,
     pos_float_env,
+    require_finite_float,
+    require_nonneg_float,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -74,23 +76,22 @@ def eval_short_trend_upward(
     n_f = safe_float(data.get("n_samples"), default=None)
     if n_f is not None and (n_f - 1.0) > 10.0:
         scale = math.sqrt(10.0 / (n_f - 1.0))
-    noise_floor = eps * float(upward_epsilon_k) * scale
+    eps_k = safe_nonneg_float(upward_epsilon_k, default=UPWARD_EPSILON_K)
+    noise_floor = eps * (eps_k if eps_k is not None else UPWARD_EPSILON_K) * scale
 
     raw_gc = data.get("growth_coefficient")
     if raw_gc is not None:
-        gc = float(raw_gc)
+        gc = safe_float(raw_gc, default=0.0) or 0.0
         if gc != 0.0:
             return gc > noise_floor
-        raw_ft = data.get("final_trend", 0.0)
-        ft = float(0.0 if raw_ft is None else raw_ft)
+        ft = safe_float(data.get("final_trend"), default=0.0) or 0.0
         return eps == 0.0 and ft > 0
 
     raw_slope = data.get("gradient_recent")
     if raw_slope is None:
         raw_slope = data.get("slope_small", 0.0)
-    raw_gradient = data.get("final_trend", 0.0)
-    slope = float(0.0 if raw_slope is None else raw_slope)
-    gradient = float(0.0 if raw_gradient is None else raw_gradient)
+    slope = safe_float(raw_slope, default=0.0) or 0.0
+    gradient = safe_float(data.get("final_trend"), default=0.0) or 0.0
     if slope != 0.0:
         return slope > noise_floor
     return eps == 0.0 and gradient > 0
@@ -305,15 +306,17 @@ def step_wols_power_for_symbol(symbol: str | None = None) -> float:
     override = _env_or_estimator_power()
     if override is not None:
         return override
+    default_pwr = safe_nonneg_float(STEP_WOLS_POWER, default=DEFAULT_STEP_WOLS_POWER)
+    eff_default = default_pwr if default_pwr is not None else DEFAULT_STEP_WOLS_POWER
     if STEP_WOLS_POWER != DEFAULT_STEP_WOLS_POWER:
-        return max(0.0, float(STEP_WOLS_POWER))
+        return eff_default
     found = _lookup_symbol_param(symbol, _ensure_symbol_trend_caches()[0])
-    return found if found is not None else float(STEP_WOLS_POWER)
+    return found if found is not None else eff_default
 
 
 def _effective_step_wols_power(power, symbol: str | None = None) -> float:
     pwr = safe_nonneg_float(power, default=None)
-    return pwr if pwr is not None else float(step_wols_power_for_symbol(symbol))
+    return pwr if pwr is not None else (safe_nonneg_float(step_wols_power_for_symbol(symbol), default=DEFAULT_STEP_WOLS_POWER) or 0.0)
 
 
 def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None = None) -> float:
@@ -338,7 +341,8 @@ def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None
     k = np.arange(1, m + 1, dtype=np.float64)
     w = k ** pwr if pwr != 1.0 else k
     val = safe_float(np.dot(w, np.diff(arr)) / np.sum(w), default=None)
-    tol = 1e-10 * max(1.0, abs(float(arr[-1])))
+    last_f = safe_float(arr[-1], default=0.0) or 0.0
+    tol = 1e-10 * max(1.0, abs(last_f))
     return 0.0 if (val is None or abs(val) <= tol) else val
 
 
@@ -362,9 +366,10 @@ def _telescoped_mean_gradient(p, a: int, b: int, r: int) -> tuple[float, float]:
     n = b - a + 1
     sum_g_all = (p[b] - p[a]) + 0.5 * ((p[b] - p[b - 1]) + (p[a + 1] - p[a]))
     if n > r:
-        grad_recent = float(((p[b] - p[b - 1]) + (p[b] - p[b - r + 1]) + (p[b] - p[b - r])) / (2.0 * r))
+        raw_recent = ((p[b] - p[b - 1]) + (p[b] - p[b - r + 1]) + (p[b] - p[b - r])) / (2.0 * r)
+        grad_recent = safe_float(raw_recent, default=0.0) or 0.0
     else:
-        grad_recent = float(sum_g_all / n)
+        grad_recent = safe_float(sum_g_all / (n * 1.0), default=0.0) or 0.0
     return sum_g_all, grad_recent
 
 
@@ -390,9 +395,9 @@ class PriceTrendAnalyzer:
         x = np.arange(n)
         y = np.asarray(self.prices, dtype=float)
 
-        mean_y = float(np.mean(y))
+        mean_y = safe_float(np.mean(y), default=0.0) or 0.0
         dev_y = y - mean_y
-        ss_y = float(np.dot(dev_y, dev_y))
+        ss_y = safe_float(np.dot(dev_y, dev_y), default=0.0) or 0.0
         if ss_y == 0.0:
             print("Linear regression: prices are constant, the trend cannot be determined.")
             return None, None, None
@@ -400,7 +405,7 @@ class PriceTrendAnalyzer:
         mean_x = (n - 1) / 2.0
         var_x = n * (n * n - 1) / 12.0
         dev_x = x - mean_x
-        cov_xy = float(np.dot(dev_x, y))
+        cov_xy = safe_float(np.dot(dev_x, y), default=0.0) or 0.0
         slope = cov_xy / var_x
         intercept = mean_y - slope * mean_x
         r_value = cov_xy / np.sqrt(var_x * ss_y) if (var_x * ss_y) > 0 else 0.0
@@ -452,9 +457,9 @@ def instant_trend_from_prices(
     gradient_lst, _ = analyzer.calculate_gradient()
     recent_n = _effective_recent_n(window_seconds, sample_rate_sec)
     if len(gradient_lst) >= recent_n:
-        gradient_recent = float(np.mean(gradient_lst[-recent_n:]))
+        gradient_recent = safe_float(np.mean(gradient_lst[-recent_n:]), default=0.0) or 0.0
     else:
-        gradient_recent = float(np.mean(gradient_lst)) if len(gradient_lst) else 0.0
+        gradient_recent = (safe_float(np.mean(gradient_lst), default=0.0) or 0.0) if len(gradient_lst) else 0.0
     if abs(gradient_recent) <= 1e-12:
         gradient_recent = 0.0
     growth_coefficient = step_wols_slope(
@@ -464,7 +469,7 @@ def instant_trend_from_prices(
     noise_thr = 0.0
     if noise_gate_k > 0.0 and len(analyzer.prices) >= 3:
         grad_arr = np.array(gradient_lst) if len(gradient_lst) else np.gradient(np.array(analyzer.prices))
-        noise_thr = noise_gate_k * float(np.std(grad_arr))
+        noise_thr = noise_gate_k * (safe_nonneg_float(np.std(grad_arr), default=0.0) or 0.0)
     final_trend = 1 if growth_coefficient > noise_thr else (-1 if growth_coefficient < -noise_thr else 0)
     return final_trend, growth_coefficient, slope_full, gradient_recent
 
@@ -516,7 +521,7 @@ class IncrementalTrendBuffer:
             self.y_ref = y
         i = len(self.prices)
         k = self.offset + i
-        kf = float(k)
+        kf = k * 1.0
         dy = y - self.y_ref
         self.timestamps.append(ts_int)
         self.prices.append(y)
@@ -566,7 +571,8 @@ class IncrementalTrendBuffer:
             return 0.0
         p = self.prices
         pwr = _effective_step_wols_power(power, symbol)
-        ref_last = float(p[b])
+        ref_last = p[b] * 1.0
+        m_f = m * 1.0
 
         if m <= _STEP_WOLS_DIRECT_MAX_STEPS or pwr not in (1.0, 2.0, 3.0):
             f = np.asarray(p[a: b + 1], dtype=np.float64)
@@ -578,30 +584,30 @@ class IncrementalTrendBuffer:
             # sum_{k=1..m} k (y_{a+k} - y_{a+k-1}) = m * dy_b - sum_{r=0..m-1} dy_{a+r}
             y_ref = self.y_ref if self.y_ref is not None else 0.0
             a0, _, _ = self._raw_moment_range(a, b - 1)
-            total = float(m) * (ref_last - y_ref) - a0
-            s1 = 0.5 * float(m) * float(m + 1)
+            total = m_f * (ref_last - y_ref) - a0
+            s1 = 0.5 * m_f * (m_f + 1.0)
             val = safe_float(total / s1, default=None)
         elif pwr == 2.0:
             # O(1) Quadratic Abel summation:
             # sum_{k=1..m} k^2 (y_{a+k} - y_{a+k-1}) = m^2 dy_b - sum_{r=0..m-1} (2r + 1) dy_{a+r}
             y_ref = self.y_ref if self.y_ref is not None else 0.0
-            c = float(self.offset + a)
+            c = (self.offset + a) * 1.0
             a0, a1, _ = self._raw_moment_range(a, b - 1)
             sum_2r1 = 2.0 * a1 - (2.0 * c - 1.0) * a0
-            m2 = float(m) ** 2
+            m2 = m_f ** 2
             total = m2 * (ref_last - y_ref) - sum_2r1
-            s2 = (float(m) * float(m + 1) * float(2 * m + 1)) / 6.0
+            s2 = (m_f * (m_f + 1.0) * (2.0 * m_f + 1.0)) / 6.0
             val = safe_float(total / s2, default=None)
         else:
             # O(1) Cubic Abel summation (p=3):
             y_ref = self.y_ref if self.y_ref is not None else 0.0
-            c = float(self.offset + a)
+            c = (self.offset + a) * 1.0
             a0, a1, a2 = self._raw_moment_range(a, b - 1)
             sum_r2 = a2 - 2.0 * c * a1 + c * c * a0
             sum_r1 = a1 - c * a0
-            m3 = float(m) ** 3
+            m3 = m_f ** 3
             total = m3 * (ref_last - y_ref) - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
-            s3 = (0.5 * float(m) * float(m + 1)) ** 2
+            s3 = (0.5 * m_f * (m_f + 1.0)) ** 2
             val = safe_float(total / s3, default=None)
 
         tol = 1e-10 * max(1.0, abs(ref_last))
@@ -714,7 +720,7 @@ class IncrementalTrendBuffer:
             slope_full = 0.0
         else:
             cov_xy = s1_raw - (self.offset + a + 0.5 * (n - 1)) * s0
-            slope_full = float((12.0 * cov_xy) / (n * (n * n - 1)))
+            slope_full = safe_float((12.0 * cov_xy) / (n * (n * n - 1)), default=0.0) or 0.0
 
         recent_n = _effective_recent_n(window_seconds, sample_rate_sec)
         sum_g_all, gradient_recent = _telescoped_mean_gradient(p, a, b, recent_n)
@@ -733,7 +739,7 @@ class IncrementalTrendBuffer:
             sum_g2 = g0 * g0 + (self.pg2[b - 1] - self.pg2[a]) + gn * gn
             mean_g = sum_g_all / n
             var_g = max(0.0, sum_g2 / n - mean_g * mean_g)
-            epsilon = float(k_val * math.sqrt(var_g))
+            epsilon = (k_val * math.sqrt(var_g)) * 1.0
 
         noise_gate_k = max(0.0, float_env("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
         noise_thr = noise_gate_k * epsilon if noise_gate_k > 0.0 else 0.0
@@ -832,7 +838,7 @@ class PriceWindow:
         wsec = safe_pos_float(self.window_seconds, default=None)
         if wsec is None:
             return
-        new_size = max(10, int(wsec / rate_val))
+        new_size = max(10, math.trunc(wsec / rate_val))
         if new_size == self.window_size:
             return
         with self._lock:
@@ -884,7 +890,7 @@ class PriceWindow:
         entries = cache24.get_recent_entries(symbol, last_seconds=win_sec)
 
         sample_rate = cls._sample_rate_from_entries(entries)
-        window_size = max(10, int(win_sec / sample_rate))
+        window_size = max(10, math.trunc(win_sec / sample_rate))
 
         prices = [e[1] for e in entries if isinstance(e, (list, tuple)) and len(e) >= 2]
         pw = cls(symbol, window_size, sample_rate_sec=sample_rate, window_seconds=win_sec)
@@ -1012,7 +1018,7 @@ class PriceWindow:
 
         This inexpensive silent path supplies the fast per-tick buy/sell gate.
         """
-        r = max(2, int(self.recent_n))
+        r = max(2, safe_pos_int(self.recent_n, default=2) or 2)
         with self._lock:
             n = len(self.prices)
             if n < 2:
@@ -1022,7 +1028,7 @@ class PriceWindow:
                 _, val = _telescoped_mean_gradient(self._trend_buf.prices, blen - n, blen - 1, r)
             else:
                 _, val = _telescoped_mean_gradient(self.prices, 0, n - 1, r)
-        return float(val)
+        return safe_float(val, default=0.0) or 0.0
 
     def get_noise_epsilon(self, k: float = 1.0) -> float:
         """Noise threshold INFORMED by the volatility of the window:
@@ -1035,9 +1041,9 @@ class PriceWindow:
                 return 0.0
             if self._is_trend_buf_synced():
                 res = self._eval_synced_trend_buf()
-                return float(k_val * res[4])
+                return (k_val * res[4]) * 1.0
             prices = list(self.prices)
-        return float(k_val * self._std_of_gradient(prices))
+        return (k_val * self._std_of_gradient(prices)) * 1.0
 
     @staticmethod
     def _std_of_gradient(prices) -> float:
@@ -1094,7 +1100,7 @@ class PriceWindow:
         """
         rate = max(safe_pos_float(self.sample_rate_sec, default=1.0) or 1.0, 0.1)
         wf = safe_pos_float(window_sec, default=None)
-        n_samples = max(int(round(wf / rate)), 3) if wf is not None else None
+        n_samples = max(round(wf / rate), 3) if wf is not None else None
         with self._lock:
             n_win = len(self.prices)
             if n_win > 0 and self._is_trend_buf_synced():
@@ -1118,15 +1124,15 @@ class PriceWindow:
             if not np.all(np.isfinite(arr)):
                 return 0.0, 0.0
             dp = arr - p0
-            n_f = float(n)
+            n_f = n * 1.0
             mu = 0.5 * (n_f - 1.0)
             u = np.arange(n, dtype=np.float64) - mu
             v1 = (n_f * n_f - 1.0) / 12.0
             d1 = n_f * v1
             d2 = (n_f * (n_f * n_f - 1.0) * (n_f * n_f - 4.0)) / 180.0
             scale_pct = 100.0 / p0
-            c1 = scale_pct * float(np.dot(u, dp)) / d1
-            c2 = scale_pct * float(np.dot(u * u - v1, dp)) / d2
+            c1 = scale_pct * (safe_float(np.dot(u, dp), default=0.0) or 0.0) / d1
+            c2 = scale_pct * (safe_float(np.dot(u * u - v1, dp), default=0.0) or 0.0) / d2
             dt_min = rate / 60.0
             velocity = safe_float((c1 + c2 * (n_f - 1.0)) / dt_min, default=None)
             acceleration = safe_float((2.0 * c2) / (dt_min * dt_min), default=None)
@@ -1353,9 +1359,10 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
         except Exception:
             seq_sig = None
 
+    sr_key_val = safe_pos_float(sample_rate_sec, default=None)
     cache_key = (
-        (n, p0, pn, round(float(sample_rate_sec), 3), seq_sig)
-        if (p0 is not None and pn is not None and seq_sig is not None)
+        (n, p0, pn, round(sr_key_val, 3), seq_sig)
+        if (p0 is not None and pn is not None and sr_key_val is not None and seq_sig is not None)
         else None
     )
     if cache_key is not None:
@@ -1392,7 +1399,7 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
 
         # Single-ratio logarithm: ln(p[i+1] / p[i]) instead of 2 * log calls
         rets = np.log(p[1:] / p[:-1])
-        std = float(np.std(rets))
+        std = safe_nonneg_float(np.std(rets), default=0.0) or 0.0
     else:
         clean_p = [
             xf for x in prices
@@ -1464,13 +1471,16 @@ class KalmanTrend:
         self.trend = 0         # Last confirmed direction: -1, 0, or +1
 
     def _reset_state(self, price: float, R: float, ts: float) -> None:
-        self._x0 = float(price)
+        px_f = require_finite_float(price, "price")
+        r_f = require_nonneg_float(R, "R")
+        ts_f = require_finite_float(ts, "ts")
+        self._x0 = px_f
         self._x1 = 0.0
-        self._p00 = R * 10.0
+        self._p00 = r_f * 10.0
         self._p01 = self._p10 = 0.0
-        self._p11 = (price * 1e-3) ** 2
+        self._p11 = (px_f * 1e-3) ** 2
         self.x = [self._x0, self._x1]
-        self.last_ts = ts
+        self.last_ts = ts_f
 
     def update(self, ts: float, price: float, epsilon: Optional[float]) -> dict:
         """Run one predict/update step and return velocity and trend fields."""
