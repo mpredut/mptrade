@@ -110,6 +110,7 @@ from botcore import (
     clean_nonempty_str,
     clean_scale,
     coerce_dict_maps,
+    first_epoch_sec,
     is_live_network_backfill_enabled,
     load_ini_config,
     normalize_epoch_sec,
@@ -894,8 +895,7 @@ def load_cached_whale_telemetry(
             if safe_sym:
                 cand_w = reader(os.path.join(cache_dir, f"{prefix}{safe_sym}.json"))
                 if isinstance(cand_w, dict) and cand_w:
-                    ts_raw = cand_w.get("ts") if cand_w.get("ts") is not None else cand_w.get("timestamp")
-                    ts_v = normalize_epoch_sec(safe_pos_float(ts_raw, default=0.0) or 0.0, default=0.0, allow_zero=True) or 0.0
+                    ts_v = first_epoch_sec(cand_w.get("ts"), cand_w.get("timestamp"), default=0.0, allow_iso=True) or 0.0
                     if best_w is None or ts_v > best_ts:
                         best_w, best_ts = cand_w, ts_v
         if best_w is not None:

@@ -2071,6 +2071,16 @@ def normalize_epoch_sec(
     return f / 1000.0 if f >= 1e11 else f
 
 
+def first_epoch_sec(
+    *values: object, default: float | None = None, allow_iso: bool = False
+) -> float | None:
+    """Return the first strictly positive epoch-seconds timestamp among ``values``, skipping None/0/'0'/NaN/Inf/bool."""
+    for val in values:
+        if (ts_s := normalize_epoch_sec(val, default=None, allow_zero=False, allow_iso=allow_iso)) is not None:
+            return ts_s
+    return default
+
+
 def parse_epoch_price_pair(
     item: object, *, allow_zero_ts: bool = True
 ) -> tuple[float, float] | None:
@@ -2154,6 +2164,14 @@ def extract_timestamp_ms(order: object, default: int | None = None) -> int | Non
     """Extract and normalize an order/fill/tick timestamp in milliseconds from any venue shape."""
     if isinstance(order, (list, tuple)):
         return normalize_timestamp_ms(order[0], default=default) if order else default
+    pos_ms = _first_mapped(
+        order,
+        _TIMESTAMP_KEYS,
+        lambda v: ms if (ms := normalize_timestamp_ms(v, default=None)) is not None and ms > 0 else None,
+        None,
+    )
+    if pos_ms is not None:
+        return pos_ms
     return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_timestamp_ms(v, default=None), default)
 
 
@@ -2161,6 +2179,14 @@ def extract_timestamp_s(order: object, default: float | None = None) -> float | 
     """Extract and normalize an order/fill/tick timestamp in seconds from any venue shape."""
     if isinstance(order, (list, tuple)):
         return normalize_epoch_sec(order[0], default=default, allow_zero=True, allow_iso=True) if order else default
+    pos_s = _first_mapped(
+        order,
+        _TIMESTAMP_KEYS,
+        lambda v: normalize_epoch_sec(v, default=None, allow_zero=False, allow_iso=True),
+        None,
+    )
+    if pos_s is not None:
+        return pos_s
     return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_epoch_sec(v, allow_zero=True, allow_iso=True), default)
 
 

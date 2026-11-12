@@ -35,6 +35,7 @@ from strategies.spot_replay import (
 )
 from botcore import (
     exact_int,
+    exact_nonneg_int,
     exact_pos_int,
     float_env,
     load_layered_env_config,  # noqa: F401
@@ -503,10 +504,13 @@ def build_execution_model_from_args(
         value is not None for value in explicit_windows
     ):
         parser.error("--train, --validation and --test must be supplied together")
-    if any(value is not None and value <= 0 for value in (*explicit_windows, args.step)):
+    if any(
+        value is not None and exact_pos_int(value, default=None) is None
+        for value in (*explicit_windows, args.step)
+    ):
         parser.error("the walk-forward sizes must be positive")
     warmup = getattr(args, "warmup", None)
-    if isinstance(warmup, bool) or (warmup is not None and warmup < 0):
+    if warmup is not None and exact_nonneg_int(warmup, default=None) is None:
         parser.error("--warmup cannot be negative")
     try:
         return ExecutionModel(

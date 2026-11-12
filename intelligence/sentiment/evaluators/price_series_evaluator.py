@@ -702,8 +702,15 @@ def apply_short_trend_item(
                 break
     if entry.get("gradient_recent_fast") is not None and abs(safe_float(entry.get("gradient_recent_fast"), 0.0)) < 5e-8:
         for w_fb in (wins["90"], wins["222"]):
-            gf_fb = safe_float(w_fb.get("gradient_recent_fast") or w_fb.get("gradient_recent") or w_fb.get("slope_full"), default=None)
-            if gf_fb is not None and abs(gf_fb) >= 5e-8:
+            gf_fb = next(
+                (
+                    v
+                    for gk in ("gradient_recent_fast", "gradient_recent", "slope_full")
+                    if (v := safe_float(w_fb.get(gk), default=None)) is not None and abs(v) >= 5e-8
+                ),
+                None,
+            )
+            if gf_fb is not None:
                 entry["gradient_recent_fast"] = gf_fb
                 break
     if entry.get("epsilon") is not None and (safe_pos_float(entry.get("epsilon"), default=0.0) or 0.0) <= 1e-12:

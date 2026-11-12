@@ -1177,10 +1177,14 @@ class HyperliquidProvider(MarketDataProvider):
                 elif fee_token == "HYPE" and self._token != "HYPE":
                     hype_pair = c.resolve_spot_pair("HYPE")
                     hype_mid_f = safe_pos_float(
-                        (c.spot_mid(hype_pair) if hype_pair else None)
-                        or getattr(c, "mid", lambda _t: None)("HYPE"),
+                        c.spot_mid(hype_pair) if hype_pair else None,
                         default=None,
                     )
+                    if hype_mid_f is None:
+                        hype_mid_f = safe_pos_float(
+                            getattr(c, "mid", lambda _t: None)("HYPE"),
+                            default=None,
+                        )
                     if hype_mid_f is None:
                         raise ProviderError(
                             f"order_status({order_id}): cannot value HYPE fee in USDC"

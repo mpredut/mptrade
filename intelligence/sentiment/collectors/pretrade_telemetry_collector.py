@@ -1616,9 +1616,9 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 if sib_bd > 0.0 and abs(sib_bd - cur_bd) > 1.0:
                     if sib_m := load_symbol_microstructure(cachedb_dir, cand_u, _rj, ob=sib_ob_d):
                         sib_ob_ts = safe_pos_float(sib_m.pop("_ob_ts", None), default=0.0) or normalize_epoch_sec(
-                            safe_pos_float(sib_ob_d.get("ts"), default=0.0) or 0.0,
+                            sib_ob_d.get("ts"),
                             default=0.0,
-                        )
+                        ) or 0.0
                         sib_ob_mid = safe_pos_float(sib_m.get("ob_mid_price"), default=None)
                         sib_s24, _ = load_symbol_price_series(cachedb_dir, cand_u, current_price_items=cur_p_items)
                         sib_last_pt = _parse_ts_px_row(sib_s24[-1]) if sib_s24 else None

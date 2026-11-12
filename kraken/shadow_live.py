@@ -383,8 +383,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if exact_pos_int(args.interval, default=None) is None:
         ap.error("--interval must be a positive integer")
-    if safe_nonneg_float(args.fee, default=None) is None:
-        ap.error("--fee cannot be negative")
+    fee_val = safe_nonneg_float(args.fee, default=None)
+    if fee_val is None or fee_val >= 100.0:
+        ap.error("--fee cannot be negative" if fee_val is None else "--fee must be < 100")
+    loop_nonneg = safe_nonneg_float(args.loop, default=None)
+    if loop_nonneg is None:
+        ap.error("--loop cannot be negative")
 
     _load_runtime_config()
     pair = args.pair or required_env("KRAKEN_PAIR")
@@ -393,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[shadow_live] skipped: {reason}")
         return 0
 
-    loop_min = safe_pos_float(args.loop, default=0.0)
+    loop_min = safe_pos_float(loop_nonneg, default=0.0) or 0.0
     while True:
         try:
             snapshot(pair, args.interval, args.fee, quiet=args.quiet)

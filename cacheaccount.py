@@ -39,6 +39,7 @@ from botcore import (
     extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
+    first_epoch_sec,
     is_auto_start_websockets_enabled,
     is_live_network_backfill_enabled,
     log,
@@ -2020,12 +2021,12 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             out["venues_value_usd"] = av_inner["venues_usd"]
         if av_inner.get("portfolio_total_usd") is not None:
             out["portfolio_total_usd"] = av_inner.get("portfolio_total_usd")
-        av_ts_s = normalize_epoch_sec(
-            extract_timestamp_s(rec)
-            or extract_timestamp_s(av_inner)
-            or rec.get("t")
-            or av_inner.get("t")
-            or av_inner.get("datetime_local"),
+        av_ts_s = first_epoch_sec(
+            extract_timestamp_s(rec),
+            extract_timestamp_s(av_inner),
+            rec.get("t"),
+            av_inner.get("t"),
+            av_inner.get("datetime_local"),
             allow_iso=True,
         )
         eff_now_s = resolve_now_ts(now_ts)

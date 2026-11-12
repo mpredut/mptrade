@@ -27,6 +27,7 @@ from botcore import (
     env_values_map,
     exact_nonneg_int,
     exact_pos_int,
+    first_pos_float,
     load_local_module,
     normalize_epoch_sec,
     normalize_side,
@@ -958,7 +959,7 @@ class KrakenProvider(MarketDataProvider):
                     usdc_f = usdc or 0.0
                     if usdc_f >= 5.0:
                         eff_px = (
-                            safe_pos_float(submit_price or raw_price, default=None)
+                            first_pos_float(submit_price, raw_price)
                             or safe_pos_float(self.get_current_price(symbol), default=0.0)
                             or 0.0
                         )

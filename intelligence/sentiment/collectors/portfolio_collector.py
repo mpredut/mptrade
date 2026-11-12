@@ -9,6 +9,8 @@ import time as _time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from botcore import (
+    extract_timestamp_s,
+    first_epoch_sec,
     first_pos_float,
     is_live_network_backfill_enabled,
     load_key_value_conf,
@@ -230,9 +232,13 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
         if isinstance(k, str) and k.startswith("open_orders:") and isinstance(v, list):
             for oo_prev in v:
                 if isinstance(oo_prev, dict):
-                    c_ts = normalize_epoch_sec(oo_prev.get("created_ts"), default=None, allow_iso=True)
-                    if c_ts is None and (ms_v := normalize_timestamp_ms(oo_prev.get("time") or oo_prev.get("timestamp"), default=None)) is not None:
-                        c_ts = ms_v / 1000.0
+                    c_ts = first_epoch_sec(
+                        oo_prev.get("created_ts"),
+                        oo_prev.get("time"),
+                        oo_prev.get("timestamp"),
+                        extract_timestamp_s(oo_prev),
+                        allow_iso=True,
+                    )
                     if c_ts is not None and c_ts > 0.0:
                         for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
                             if kv := str(oo_prev.get(id_k) or "").strip():
@@ -240,13 +246,13 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
     if not cache_dir:
         return out
     for it in _load_cached_ai_intents_list(cache_dir):
-        it_ts = next(
-            (
-                ts_v
-                for ts_k in ("executed_ts", "executed_at", "timestamp", "created_at", "ts")
-                if (ts_v := normalize_epoch_sec(it.get(ts_k), default=None, allow_iso=True)) is not None
-            ),
-            None,
+        it_ts = first_epoch_sec(
+            it.get("executed_ts"),
+            it.get("executed_at"),
+            it.get("timestamp"),
+            it.get("created_at"),
+            it.get("ts"),
+            allow_iso=True,
         )
         if it_ts is not None:
             exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}

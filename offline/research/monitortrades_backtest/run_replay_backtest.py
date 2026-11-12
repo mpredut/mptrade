@@ -40,6 +40,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import (
     bool_env,
+    first_pos_float,
     load_ini_config,
     lru_dict_put,
     resolve_mem_bounded_worker_cap,
@@ -551,11 +552,13 @@ def run_symbol(
                         )
                         b_px, b_t, _ = _fast_get_relevant_trade(b_ords, "BUY", symbol=symbol)
                         s_px, s_t, _ = _fast_get_relevant_trade(s_ords, "SELL", symbol=symbol)
-                        active_avg_buy = safe_float(
-                            pos.get("active_average_buy_price")
-                            or pos.get("average_buy_price")
-                            or 0.0,
-                            0.0,
+                        active_avg_buy = (
+                            first_pos_float(
+                                pos.get("active_average_buy_price"),
+                                pos.get("average_buy_price"),
+                                default=0.0,
+                            )
+                            or 0.0
                         )
                         if _cfg_tp_ref == "average" and active_avg_buy > 0:
                             b_px = active_avg_buy

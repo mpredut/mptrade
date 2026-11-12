@@ -28,6 +28,9 @@ import botcore
 from botcore import (
     clean_scale,
     coerce_dict_maps,
+    extract_timestamp_ms,
+    extract_timestamp_s,
+    first_epoch_sec,
     first_pos_float,
     is_market_order,
     load_cli_env_stack,
@@ -35,7 +38,7 @@ from botcore import (
     resolve_cli_env_path,
     temporary_environ,
 )
-from cacheaccount import CacheOrderManager, CacheTradeManager
+from cacheaccount import CacheAssetValueManager, CacheOrderManager, CacheTradeManager
 import cacheintegrity
 import cachepaths
 from cachepaths import (
@@ -84,9 +87,13 @@ from intelligence.macro.lexicon_ssot import _tracked_equity_base_tickers
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 import intelligence.macro_sentiment_ssot as mss
 from intelligence.macro_sentiment_ssot import FearGreedSnapshot
+from intelligence.sentiment import llm_quota_router as lqr_mod
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
 from intelligence.sentiment.collectors.macro_telemetry_collector import MacroAndNewsSensorsCollector
-from intelligence.sentiment.collectors.portfolio_collector import _resolve_ai_intents_and_known_order_ids
+from intelligence.sentiment.collectors.portfolio_collector import (
+    _load_open_order_timestamps,
+    _resolve_ai_intents_and_known_order_ids,
+)
 from intelligence.sentiment.evaluators import (
     microstructure_evaluator as me_mod,
     price_series_evaluator as pse_mod,
@@ -117,7 +124,7 @@ import monitortrades as mt
 from notify_engine import alertnotifiers as alert_mod
 from offline.backtests import evaluation as bt_eval
 from offline.backtests.comparison import add_path_cli_args, add_report_output_cli_args
-from offline.backtests.evaluation import parse_intervals
+from offline.backtests.evaluation import build_execution_model_from_args, parse_intervals
 from offline.research import backtest_ranges, short_trend_estimator_benchmark as st_bench
 from offline.research.monitortrades_backtest import sweep_mt_models as smt
 from offline.research.monitortrades_backtest.run_replay_backtest import step_adaptive_trend_window
@@ -127,6 +134,7 @@ from offline.research.monitortrades_backtest.sweep_mt_models import (
 )
 from offline.runners import apply_proposals
 from orchestratorOS.agy import paths as agy_paths, ui_mirror as agy_ui_mirror
+from orchestratorOS.lib import technical_repair_ssot as tr_ssot
 from orchestratorOS.livecheck import os_resources_watchdog as wd
 from orchestratorOS.supervisor import prompt_sections as ps_mod
 import order_guard
@@ -2819,13 +2827,21 @@ def test_wave17_kalman_reset_string_price_short_trend_nan_bool_and_repo_zero_raw
             if rel.startswith("tests/") or rel in root_primitives:
                 continue
             mod_tree = ast.parse(read_text_file(str(fpath)), filename=rel)
-            hits = [
-                (node.lineno, node.func.id)
-                for node in ast.walk(mod_tree)
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in {"open", "float", "int"}
-            ]
+            hits: list[tuple[int, str]] = []
+            for node in ast.walk(mod_tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                if isinstance(node.func, ast.Name) and node.func.id in {"open", "float", "int"}:
+                    hits.append((node.lineno, node.func.id))
+                elif isinstance(node.func, ast.Attribute):
+                    if (
+                        isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "json"
+                        and node.func.attr in {"load", "loads", "dump", "dumps"}
+                    ):
+                        hits.append((node.lineno, f"json.{node.func.attr}"))
+                    elif node.func.attr in {"read_text", "write_text", "read_bytes", "write_bytes"}:
+                        hits.append((node.lineno, f".{node.func.attr}"))
             if hits:
                 offenders[rel] = hits
     assert offenders == {}
@@ -3617,6 +3633,146 @@ def test_wave22_first_pos_float_cli_bounds_replay_end_exit_and_string_zero_fallb
         {},
     )
     assert "fill_prob_1h_pct" in tca_orders[0]
+
+
+def test_wave23_first_epoch_sec_timestamp_zero_shadow_quota_expiry_and_wf_cli_bounds(tmp_path, monkeypatch):
+    # 1. SSOT botcore.first_epoch_sec skips None/0/'0'/NaN/Inf/bool and normalizes ms + ISO-8601
+    assert first_epoch_sec(None, 0, "0", "0.0", float("nan"), float("inf"), True, -10.0, 1_700_000_250_000) == 1_700_000_250.0
+    assert (
+        first_epoch_sec("0", "2026-01-15T15:00:00Z", allow_iso=True)
+        == datetime(2026, 1, 15, 15, 0, tzinfo=timezone.utc).timestamp()
+    )
+    assert first_epoch_sec("0", None, default=9.5) == 9.5
+
+    # 2. extract_timestamp_ms & extract_timestamp_s do not let unset 0/'0' shadow valid positive timestamps
+    assert extract_timestamp_ms({"time": 0, "updateTime": 1_700_000_123_000}) == 1_700_000_123_000
+    assert extract_timestamp_ms({"timestamp": "0", "transactTime": "1700000456000"}) == 1_700_000_456_000
+    assert extract_timestamp_ms({"time": 0}) == 0
+    iso_exec_s = datetime(2026, 1, 15, 15, 0, tzinfo=timezone.utc).timestamp()
+    assert extract_timestamp_s({"timestamp": "0", "dateExecuted": "2026-01-15T15:00:00Z"}) == pytest.approx(iso_exec_s)
+    assert extract_timestamp_s({"time": "0"}) == 0.0
+
+    # 3. CacheAssetValueManager, heartbeat resolver, and open-order timestamp loader skip string-zero "0"
+    av_summary = CacheAssetValueManager.extract_asset_value_summary(
+        {"t": "0", "i": {"total_value_usdc": 1200.0, "t": 1_700_000_000.0}},
+        now_ts=1_700_000_300.0,
+    )
+    assert av_summary["total_value_usdc_age_min"] == 5.0
+
+    hb_entry = tr_ssot._resolve_heartbeat_entry(
+        str(tmp_path / "missing.heartbeat"),
+        {"ts": "0", "timestamp": 1_700_000_240.0, "status": "ok"},
+        now_ts=1_700_000_300.0,
+        max_age=120.0,
+        allow_mtime_fallback=False,
+    )
+    assert hb_entry is not None and hb_entry["age_seconds"] == 60.0
+
+    oo_ts_map = _load_open_order_timestamps(
+        None,
+        {"open_orders:binance": [{"orderId": "oid-z1", "time": "0", "timestamp": 1_700_000_500_000}]},
+    )
+    assert oo_ts_map["oid-z1"] == 1_700_000_500.0
+
+    # 4. GeminiQuotaRouterMixin credits & OAuth token expiry (string-zero nested expiry + millisecond expiry)
+    assert (
+        lqr_mod.GeminiQuotaRouterMixin._extract_available_credits(
+            {"paidTier": {"id": "pro", "availableCredits": [{"remainingCredits": 0, "credits": 500}]}}
+        )
+        == 0.0
+    )
+    assert (
+        lqr_mod.GeminiQuotaRouterMixin._extract_available_credits(
+            {"paidTier": {"id": "pro", "availableCredits": [{"creditAmount": "0.0", "amount": "18.5"}]}}
+        )
+        == 18.5
+    )
+
+    bot_cli = tmp_path / "bot_cli"
+    ui_cli = tmp_path / "ui_cli"
+    bot_cli.mkdir()
+    ui_cli.mkdir()
+    now_now = time.time()
+    # bot_cli token has nested "expiry_timestamp": "0" trying to mask an expired millisecond timestamp
+    atomic_write_text(
+        str(bot_cli / "antigravity-oauth-token"),
+        json.dumps(
+            {
+                "token": {"access_token": "tok-expired-masked", "expiry_timestamp": "0"},
+                "expiry_timestamp": int((now_now - 3600.0) * 1000),
+            }
+        ),
+    )
+    atomic_write_text(
+        str(ui_cli / "antigravity-oauth-token"),
+        json.dumps(
+            {
+                "token": {"access_token": "tok-fresh-ms", "expiry_timestamp": int((now_now + 3600.0) * 1000)},
+            }
+        ),
+    )
+    seen_auth: list[str] = []
+    monkeypatch.setattr(lqr_mod, "_QUOTA_MEM_CACHE", {}, raising=False)
+    monkeypatch.setattr(lqr_mod.GeminiQuotaRouterMixin, "_QUOTA_MEM_CACHE", {})
+    monkeypatch.setattr(
+        lqr_mod.GeminiQuotaRouterMixin,
+        "_get_quota_state_path",
+        staticmethod(lambda: str(tmp_path / "quota_state.json")),
+    )
+    monkeypatch.setattr(lqr_mod, "resolve_bot_cli_base", lambda: str(bot_cli))
+    monkeypatch.setattr(lqr_mod, "resolve_ui_cli_base", lambda: str(ui_cli))
+    monkeypatch.setattr(
+        lqr_mod,
+        "fetch_json_post",
+        lambda url, **_kw: (
+            seen_auth.append(_kw.get("headers", {}).get("Authorization", ""))
+            or (
+                {"buckets": [{"modelId": "gemini-2.5-flash", "remainingFraction": 0.8}]}
+                if "retrieveUserQuota" in url
+                else {"paidTier": {"id": "t1", "availableCredits": []}}
+            )
+        ),
+    )
+    quota_snap = lqr_mod.GeminiQuotaRouterMixin.probe_live_model_quota(
+        bot_cli_base=str(bot_cli), force_refresh=True
+    )
+    assert quota_snap is not None
+    assert seen_auth and all(hdr == "Bearer tok-fresh-ms" for hdr in seen_auth)
+
+    # 5. build_execution_model_from_args & kraken/shadow_live CLI NaN/Inf/fractional/fee>=100 bounds
+    ap_wf = argparse.ArgumentParser()
+    base_ns = dict(
+        fee=0.25,
+        train=100,
+        validation=50,
+        test=50,
+        step=25,
+        warmup=10,
+        spread_bps=0.0,
+        market_slippage_bps=0.0,
+        partial_fill_ratio=1.0,
+        intrabar_policy="worst_case",
+    )
+    assert isinstance(build_execution_model_from_args(ap_wf, argparse.Namespace(**base_ns)), ExecutionModel)
+    for bad_wf_override in (
+        {"train": float("nan")},
+        {"step": float("inf")},
+        {"validation": 12.5},
+        {"warmup": float("nan")},
+        {"warmup": 2.5},
+    ):
+        with pytest.raises(SystemExit):
+            build_execution_model_from_args(ap_wf, argparse.Namespace(**{**base_ns, **bad_wf_override}))
+
+    for bad_shadow_argv in (
+        ["--fee", "100"],
+        ["--fee", "nan"],
+        ["--loop", "-1"],
+        ["--loop", "nan"],
+    ):
+        with pytest.raises(SystemExit):
+            kraken_shadow.main(bad_shadow_argv)
+
 
 
 

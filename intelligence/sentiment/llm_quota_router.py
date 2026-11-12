@@ -1,7 +1,6 @@
 """LLM quota probing, credit accounting, and dynamic model routing for GeminiClient."""
 from __future__ import annotations
 
-from functools import partial
 import importlib
 import logging
 import os
@@ -12,6 +11,8 @@ from typing import Any, Dict, Optional
 from botcore import (
     bool_env,
     fetch_json_post,
+    first_epoch_sec,
+    first_pos_float,
     float_env,
     is_cache_fresh,
     is_unmocked_llm_query_allowed,
@@ -32,7 +33,27 @@ QUOTA_API_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUs
 LOAD_ASSIST_API_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 AGY_QUOTA_USER_AGENT = "antigravity/1.4.12"
 
-_gc_attr = partial(resolve_patched_attr, modules=("intelligence.sentiment.gemini_client",))
+_ORIG_GC_DEFAULTS: Dict[str, Any] = {
+    "cache_path": cache_path,
+    "read_json_dict": read_json_dict,
+    "save_json_state": save_json_state,
+    "fetch_json_post": fetch_json_post,
+    "resolve_bot_cli_base": resolve_bot_cli_base,
+    "resolve_ui_cli_base": resolve_ui_cli_base,
+    "QUOTA_API_URL": QUOTA_API_URL,
+    "LOAD_ASSIST_API_URL": LOAD_ASSIST_API_URL,
+}
+
+
+def _gc_attr(attr_name: str, current_val: Any) -> Any:
+    orig = _ORIG_GC_DEFAULTS.get(attr_name, current_val)
+    return resolve_patched_attr(
+        attr_name,
+        orig,
+        local_val=current_val,
+        defaults=(orig,),
+        modules=("intelligence.sentiment.gemini_client", __name__),
+    )
 
 
 def canonical_rest_model(model_name: str) -> str:
@@ -142,12 +163,23 @@ class GeminiQuotaRouterMixin:
                 seen_tier_ids.add(tid)
             for item in credits_list:
                 if isinstance(item, dict):
-                    val = safe_float(
-                        item.get("creditAmount")
-                        or item.get("amount")
-                        or item.get("remainingCredits")
-                        or item.get("credits"),
-                        0.0,
+                    rem_f = (
+                        safe_float(item.get("remainingCredits"), default=None)
+                        if item.get("remainingCredits") is not None
+                        else None
+                    )
+                    val = (
+                        max(0.0, rem_f)
+                        if rem_f is not None
+                        else (
+                            first_pos_float(
+                                item.get("creditAmount"),
+                                item.get("amount"),
+                                item.get("credits"),
+                                default=0.0,
+                            )
+                            or 0.0
+                        )
                     )
                     if val > 0:
                         total += val
@@ -220,9 +252,14 @@ class GeminiQuotaRouterMixin:
                 continue
             nested_tok = tok_data.get("token") if isinstance(tok_data.get("token"), dict) else {}
             tok = str(nested_tok.get("access_token") or tok_data.get("access_token") or "").strip()
-            exp_ts = safe_float(
-                nested_tok.get("expiry_timestamp") or tok_data.get("expiry_timestamp"),
-                0.0,
+            exp_ts = (
+                first_epoch_sec(
+                    nested_tok.get("expiry_timestamp"),
+                    tok_data.get("expiry_timestamp"),
+                    default=0.0,
+                    allow_iso=True,
+                )
+                or 0.0
             )
             if tok and (exp_ts <= 0.0 or exp_ts > now + 10.0):
                 access_token = tok

@@ -718,7 +718,7 @@ def _resolve_non_static_prev_metric(
         for cand in reversed(h_list):
             if not isinstance(cand, dict) or (key == "whale_long_pct" and _is_unnormalized_zero_oi_whale_snap(cand)):
                 continue
-            cand_ts = normalize_epoch_sec(safe_pos_float(cand.get("ts"), default=0.0) or 0.0, default=0.0)
+            cand_ts = normalize_epoch_sec(cand.get("ts"), default=0.0) or 0.0
             if cand_ts > 0.0 and 180.0 <= (eff_now - cand_ts) <= 900.0:
                 cand_v = (
                     clean_scale(cand.get(key), default=None, allow_percent=True)

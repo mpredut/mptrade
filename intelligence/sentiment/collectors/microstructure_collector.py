@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from botcore import (
     coerce_dict_maps,
     extract_current_price_item,
+    first_epoch_sec,
+    first_pos_float,
     is_live_network_backfill_enabled,
     is_offline_disk_cache_enabled,
     load_dotenv,
@@ -473,8 +475,7 @@ def load_symbol_microstructure(
             if isinstance((d := read_json_fn(os.path.join(cache_dir, f"{prefix}{cand}.json"))), dict):
                 if not prefer_freshest:
                     return d, cand
-                ts_raw = d.get("ts") if d.get("ts") is not None else d.get("timestamp")
-                ts_v = normalize_epoch_sec(safe_pos_float(ts_raw, default=0.0) or 0.0, default=0.0)
+                ts_v = first_epoch_sec(d.get("ts"), d.get("timestamp"), default=0.0, allow_iso=True) or 0.0
                 if best_d is None or ts_v > best_ts:
                     best_d, best_cand, best_ts = d, cand, ts_v
         return best_d, best_cand
@@ -501,7 +502,7 @@ def load_symbol_microstructure(
         if (spread_bps := round_spread_bps(obj_attr(ob, "spread_bps"), best_bid=best_bid, best_ask=best_ask, mid_price=ob_mid)) is not None:
             m_info["spread_bps"] = spread_bps
         if ob_same_quote:
-            if (ob_ts_v := normalize_epoch_sec(safe_pos_float(obj_attr(ob, "ts"), default=0.0) or 0.0, default=0.0)) > 0.0:
+            if (ob_ts_v := (normalize_epoch_sec(obj_attr(ob, "ts"), default=0.0) or 0.0)) > 0.0:
                 m_info["_ob_ts"] = ob_ts_v
             for k_px, v_px in (("ob_mid_price", ob_mid), ("best_bid", best_bid), ("best_ask", best_ask)):
                 if v_px is not None:
@@ -565,9 +566,9 @@ def load_symbol_microstructure(
         if (safe_pos_float(m_info.get("oi_usd"), default=0.0) or 0.0) <= 0.0 and (
             wl_cur <= 0.0 or wl_cur >= 1.0
         ):
-            tr_ref = safe_pos_float(
-                m_info.get("taker_ratio_1h") or m_info.get("taker_buy_sell_ratio"),
-                default=None,
+            tr_ref = first_pos_float(
+                m_info.get("taker_ratio_1h"),
+                m_info.get("taker_buy_sell_ratio"),
             )
             if tr_ref is not None and tr_ref < 100.0:
                 wl_norm = round(tr_ref / (1.0 + tr_ref), 4)
@@ -1831,9 +1832,12 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                                 ob_ref_d = _rj(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{msym.upper()}.json"))
                                 if not isinstance(ob_ref_d, dict):
                                     ob_ref_d = _rj(os.path.join(cachedb_dir, "telemetry", f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{msym.upper()}.json"))
-                                ob_ref_ts = normalize_epoch_sec(
-                                    safe_pos_float((ob_ref_d if isinstance(ob_ref_d, dict) else {}).get("ts"), default=0.0) or 0.0,
-                                    default=0.0,
+                                ob_ref_ts = (
+                                    normalize_epoch_sec(
+                                        (ob_ref_d if isinstance(ob_ref_d, dict) else {}).get("ts"),
+                                        default=0.0,
+                                    )
+                                    or 0.0
                                 )
                             if ob_ref_ts > 0.0 and (eff_now - ob_ref_ts) > 120.0:
                                 sib_live_px = p_ref_px if p_ref_px > 0.0 else None

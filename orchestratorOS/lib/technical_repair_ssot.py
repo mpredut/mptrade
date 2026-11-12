@@ -28,6 +28,7 @@ from botcore import (
     build_heartbeat_payload,
     clean_json_value,
     exact_nonneg_int,
+    first_epoch_sec,
     load_ini_config,
     normalize_epoch_sec,
     obj_attr,
@@ -401,7 +402,10 @@ def gather_system_and_vpn_telemetry(
         pass
 
     sys_vpn["vpn_outage_active"] = os.path.exists("/var/lib/pia_selfheal/outage_since")
-    sys_vpn["internet_healthy"] = bool(sys_vpn.get("default_route_present", True) and not sys_vpn.get("vpn_outage_active", False))
+    sys_vpn["internet_healthy"] = bool(
+        _parse_bool_flag(sys_vpn.get("default_route_present", True), True)
+        and not _parse_bool_flag(sys_vpn.get("vpn_outage_active", False), False)
+    )
 
     rw_path = os.path.join(workspace_dir, ".resource_watchdog_state.json")
     rw_state = _resolve_repair_json_reader()(rw_path)
@@ -1173,7 +1177,7 @@ def _resolve_heartbeat_entry(
     prefer_mtime_when_stale: bool = False,
 ) -> Optional[Dict[str, Any]]:
     has_dict = isinstance(data, dict) and bool(data)
-    hb_ts = normalize_epoch_sec(data.get("ts") or data.get("timestamp"), default=None) if has_dict else None
+    hb_ts = first_epoch_sec(data.get("ts"), data.get("timestamp"), allow_iso=True) if has_dict else None
     mtime: Optional[float] = None
     if allow_mtime_fallback and os.path.exists(hb_path):
         try:

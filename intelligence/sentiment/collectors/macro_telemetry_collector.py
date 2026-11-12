@@ -14,6 +14,7 @@ from botcore import (
     _parse_bool_flag,
     extract_current_price_item,
     fetch_public_json,
+    first_epoch_sec,
     first_pos_float,
     is_live_network_backfill_enabled,
 )
@@ -274,7 +275,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                     if chg_24h <= -90.0 or not (lo_24_m * 0.90 <= (px / (1.0 + chg_24h / 100.0)) <= hi_24_m * 1.10):
                         chg_24h = None
                 if chg_24h is None or (ext_px is not None and safe_pos_float(meta.get("fulldayPrice"), default=None) is None and safe_float(meta.get("fulldayChangePercent"), default=None) is None):
-                    prev_close = safe_pos_float(meta.get("previousClose") or meta.get("chartPreviousClose"), default=None)
+                    prev_close = first_pos_float(meta.get("previousClose"), meta.get("chartPreviousClose"))
                     if prev_close is not None and pts_24h:
                         lo_24_b = min(p[1] for p in pts_24h)
                         hi_24_b = max(p[1] for p in pts_24h)
@@ -559,7 +560,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                 mb_cur.get("eth_btc_ratio") is None
                 or mb_cur.get("btc_vol_share_pct") is None
                 or (
-                    safe_float(mb_cur.get("total_symbols") or mb_cur.get("total_count"), 0.0) >= 5.0
+                    (first_pos_float(mb_cur.get("total_symbols"), mb_cur.get("total_count"), default=0.0) or 0.0) >= 5.0
                     and (len(mb_cur.get("top_gainers") or ()) < 3 or len(mb_cur.get("top_losers") or ()) < 3)
                 )
             )
@@ -646,22 +647,15 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                         exist_entry["matched_keywords"] = list(
                             dict.fromkeys([*(exist_entry.get("matched_keywords") or []), *(cand_entry.get("matched_keywords") or [])])
                         )
-                        had_sev = bool(
-                            exist_entry.get("is_high_severity")
-                            or cand_entry.get("is_high_severity")
-                            or exist_entry.get("_aged_high_sev_context")
-                            or cand_entry.get("_aged_high_sev_context")
-                        )
+                        e_sev = bool(_parse_bool_flag(exist_entry.get("is_high_severity"), False))
+                        c_sev = bool(_parse_bool_flag(cand_entry.get("is_high_severity"), False))
+                        e_aged = bool(_parse_bool_flag(exist_entry.get("_aged_high_sev_context"), False))
+                        c_aged = bool(_parse_bool_flag(cand_entry.get("_aged_high_sev_context"), False))
+                        had_sev = e_sev or c_sev or e_aged or c_aged
                         merged_ts = safe_pos_float(exist_entry.get("first_seen_ts"), default=0.0) or 0.0
                         merged_stale = merged_ts > 0.0 and now_ts > merged_ts and (now_ts - merged_ts) > 5400.0
-                        exist_entry["is_high_severity"] = False if merged_stale else bool(
-                            exist_entry.get("is_high_severity") or cand_entry.get("is_high_severity")
-                        )
-                        exist_entry["_aged_high_sev_context"] = bool(
-                            (merged_stale and had_sev)
-                            or exist_entry.get("_aged_high_sev_context")
-                            or cand_entry.get("_aged_high_sev_context")
-                        )
+                        exist_entry["is_high_severity"] = False if merged_stale else (e_sev or c_sev)
+                        exist_entry["_aged_high_sev_context"] = bool((merged_stale and had_sev) or e_aged or c_aged)
                         if merged_stale and had_sev:
                             for t_dup in (c_title, e_title):
                                 if t_dup:
@@ -901,7 +895,7 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
             if isinstance(last_ps := read_last_jsonl_dict(os.path.join(l_dir, "portfolio_snapshot.jsonl"), tail_bytes=4096), dict):
                 if isinstance(last_ps.get("hl"), dict):
                     hl_ro = dict(last_ps["hl"])
-                    ps_ts_s = normalize_epoch_sec(extract_timestamp_s(last_ps) or last_ps.get("t"), allow_iso=True)
+                    ps_ts_s = first_epoch_sec(extract_timestamp_s(last_ps), last_ps.get("t"), allow_iso=True)
                     eff_now_s = resolve_now_ts(now_ts)
                     if ps_ts_s is not None and eff_now_s is not None:
                         hl_ro["snapshot_age_min"] = round(max(0.0, eff_now_s - ps_ts_s) / 60.0, 1)
