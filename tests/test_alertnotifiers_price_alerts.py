@@ -188,8 +188,7 @@ class PriceCheckerTests(TempDirTestCase):
         manager = DummyPriceManager(latest_price=136.3700, history=history)
         cfg = {"per_coin": {"SPCX": {"up_percent": 4.7, "down_percent": 3.0}}, "cooldown_minutes": 180}
 
-        tmp = str(self.tmp)
-        sf = os.path.join(tmp, "cache_watcher_all_price.cooldowns.json")
+        sf = os.path.join(self.tmp, "cache_watcher_all_price.cooldowns.json")
         checker1 = PriceChecker(manager, config=cfg, state_file=sf)
         alerts1 = checker1.check_symbol("SPCX")
         self.assertEqual(len(alerts1), 1)

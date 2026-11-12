@@ -332,12 +332,11 @@ class RiskAdjustedPromotionGateTest(TempDirTestCase):
             with self.assertRaisesRegex(ValueError, "cash must be a finite positive number"):
                 review("HEAD:kraken/config.env", "HEAD:kraken/config.env", bad_cash)
 
-        tmp = str(self.tmp)
-        state_file = Path(tmp) / ".state_HYPEUSD.json"
+        state_file = self.tmp / ".state_HYPEUSD.json"
         state_file.write_text("[]", encoding="utf-8")
-        alert_file = Path(tmp) / "alerts.json"
+        alert_file = self.tmp / "alerts.json"
         alert_file.write_text("[]", encoding="utf-8")
-        with patch.object(ps, "KRAKEN_DIR", tmp), patch.object(ps, "ALERT_STATE", str(alert_file)):
+        with patch.object(ps, "KRAKEN_DIR", self.tmp), patch.object(ps, "ALERT_STATE", str(alert_file)):
             self.assertIsNone(ps._load_state("HYPEUSD"))
             self.assertEqual(ps.run_alerts([]), [])
 

@@ -78,7 +78,7 @@ market_hours = 24x7
 """
 
     def test_missing_registry_fails_closed(self):
-        missing = str(self.tmp / "missing.conf")
+        missing = os.path.join(self.tmp, "missing.conf")
         with self.assertRaises(FileNotFoundError):
             load_instruments(missing, api=_Api())
 

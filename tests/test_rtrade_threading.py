@@ -684,8 +684,7 @@ class RTradeThreadingTest(TempDirTestCase):
             pair_precision=lambda _symbol: precision,
             preflight_order=lambda *args, **kwargs: None,
             submit_order=lambda *args, **kwargs: "M9")
-        audit_dir = str(self.tmp)
-        with _binance_mkt_env(executor, root=audit_dir, patch_place=False), \
+        with _binance_mkt_env(executor, root=self.tmp, patch_place=False), \
              patch.object(rtrade.mkt, "get_current_price", return_value=90.0), \
              patch.object(executor, "submit_order", wraps=executor.submit_order) as submit:
             venue = rtrade._LivePairVenue("TAOUSDC")

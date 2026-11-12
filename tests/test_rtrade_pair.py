@@ -1023,8 +1023,7 @@ class RTradeHeartbeatTest(TempDirTestCase):
         super().tearDown()
 
     def test_heartbeat_is_written_and_throttled_by_loop_progress(self):
-        tmp = str(self.tmp)
-        path = os.path.join(tmp, "rtrade.heartbeat")
+        path = os.path.join(self.tmp, "rtrade.heartbeat")
         with (
             patch.object(rtrade, "_RTRADE_HEARTBEAT_PATH", path),
             patch.object(rtrade, "_RTRADE_HEARTBEAT_INTERVAL_SEC", 30.0),
@@ -1151,15 +1150,14 @@ class RTradeHeartbeatTest(TempDirTestCase):
 
     def test_touch_module_heartbeat_and_harvest_fleet_heartbeats(self):
 
-        tmp = str(self.tmp)
-        (Path(tmp) / "system" / "heartbeat").mkdir(parents=True, exist_ok=True)
-        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp}, clear=False):
+        (self.tmp / "system" / "heartbeat").mkdir(parents=True, exist_ok=True)
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}, clear=False):
             ts1 = botcore.touch_module_heartbeat(
                 "cacheManager", interval_sec=30.0, force=True, now=500.0,
                 status={"ts": 1700000500.0}, symbols=["BTCUSDC", "TAOUSDC"],
             )
             self.assertEqual(ts1, 500.0)
-            hb_file = Path(tmp) / "system" / "heartbeat" / "cacheManager.heartbeat"
+            hb_file = self.tmp / "system" / "heartbeat" / "cacheManager.heartbeat"
             self.assertTrue(hb_file.exists())
             data = json.loads(hb_file.read_text(encoding="utf-8"))
             self.assertEqual(data["status"], "alive")
@@ -1177,11 +1175,11 @@ class RTradeHeartbeatTest(TempDirTestCase):
             self.assertEqual(data_after["status"], "alive")
 
             mtime = os.path.getmtime(str(hb_file))
-            active_hb, _ = harvest_heartbeats_and_state_files(tmp, tmp, mtime + 1500.0)
+            active_hb, _ = harvest_heartbeats_and_state_files(self.tmp, self.tmp, mtime + 1500.0)
             self.assertIn("cacheManager.heartbeat", active_hb)
             self.assertEqual(active_hb["cacheManager.heartbeat"]["status"], "alive")
 
-            log_file = Path(tmp) / "Kraken-trailing.log"
+            log_file = self.tmp / "Kraken-trailing.log"
             log_file.write_text("quiet stdout\n", encoding="utf-8")
             os.utime(str(log_file), (mtime - 3600.0, mtime - 3600.0))
             fresh, age_s, _, stale_path = botcore.evaluate_heartbeat_files_freshness(

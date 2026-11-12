@@ -135,16 +135,14 @@ class _WeightedBinanceProvider(_BinancePermitProvider):
 class InstrumentCachePreflightTest(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        root = str(self.tmp)
-
         self._old_outcome_dir = order_outcomes_log.ORDER_OUTCOMES_LOG_DIR
-        order_outcomes_log.ORDER_OUTCOMES_LOG_DIR = os.path.join(root, "outcomes")
+        order_outcomes_log.ORDER_OUTCOMES_LOG_DIR = os.path.join(self.tmp, "outcomes")
 
         self._old_queue_file = order_retry.QUEUE_FILE
         self._old_queue_lock = order_retry.LOCK_FILE
         self._old_retry_enabled = order_retry.RETRY_ENABLED
-        order_retry.QUEUE_FILE = os.path.join(root, "order_retry_queue.jsonl")
-        order_retry.LOCK_FILE = os.path.join(root, "order_retry_queue.lock")
+        order_retry.QUEUE_FILE = os.path.join(self.tmp, "order_retry_queue.jsonl")
+        order_retry.LOCK_FILE = os.path.join(self.tmp, "order_retry_queue.lock")
         order_retry.RETRY_ENABLED = True
 
     def tearDown(self):

@@ -640,14 +640,14 @@ class HLLauncherTest(TempDirTestCase):
     def setUp(self):
         super().setUp()
         self.original_here = self.module._HERE
-        self.module._HERE = str(self.tmp)
+        self.module._HERE = self.tmp
 
     def tearDown(self):
         self.module._HERE = self.original_here
         super().tearDown()
 
     def test_live_state_is_hyperliquid_scoped(self):
-        self.assertEqual(self.module.state_dir_for(False), str(self.tmp))
+        self.assertEqual(self.module.state_dir_for(False), self.tmp)
 
     def test_paper_state_is_created_and_separate_from_live(self):
         paper_dir = self.module.state_dir_for(True)

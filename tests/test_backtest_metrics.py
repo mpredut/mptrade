@@ -504,8 +504,7 @@ class OhlcDatasetContractTest(TempDirTestCase):
             align_previous_values([9], fx)
 
     def test_round_trip_is_canonical_and_hashed(self):
-        directory = str(self.tmp)
-        path = Path(directory) / "bars.csv"
+        path = self.tmp / "bars.csv"
         save_dataset(_dataset_rows(), path)
         loaded = load_dataset(path)
         self.assertEqual(loaded, validate_dataset(_dataset_rows(), interval_minutes=60))

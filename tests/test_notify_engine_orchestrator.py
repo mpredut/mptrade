@@ -836,11 +836,11 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         self.assertEqual(res_lines, ["2026-10-27 00:00:00 [ERROR] test error"])
 
         # 2. AutonomousAIReconciler & AutonomousIntentGateway: notify_enabled='false', mode=True rejection, non-dict submit/process_intent
-        rec = AutonomousAIReconciler(workspace_dir=str(self.tmp), mode="shadow", notify_enabled="false")  # type: ignore[arg-type]
+        rec = AutonomousAIReconciler(workspace_dir=self.tmp, mode="shadow", notify_enabled="false")  # type: ignore[arg-type]
         self.assertFalse(rec.notify_enabled)
         with self.assertRaises(ValueError):
-            AutonomousIntentGateway(workspace_dir=str(self.tmp), mode=True)  # type: ignore[arg-type]
-        gw = AutonomousIntentGateway(workspace_dir=str(self.tmp), mode="shadow", notify_enabled="false")  # type: ignore[arg-type]
+            AutonomousIntentGateway(workspace_dir=self.tmp, mode=True)  # type: ignore[arg-type]
+        gw = AutonomousIntentGateway(workspace_dir=self.tmp, mode="shadow", notify_enabled="false")  # type: ignore[arg-type]
         self.assertFalse(gw.notify_enabled)
         self.assertEqual(gw.process_intent(None), {})  # type: ignore[arg-type]
         self.assertIsNone(gw.submit(None, source="test", max_mode="shadow"))  # type: ignore[arg-type]
@@ -852,7 +852,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             f.write("{corrupt")
         with open(os.path.join(cachedb, "geopolitical_eval.json.previous"), "w", encoding="utf-8") as f:
             json.dump({"threat_level": "ELEVATED", "risk_score": 0.65, "summary": "recovered"}, f)
-        mon = FleetHealthMonitor(workspace_dir=str(self.tmp))
+        mon = FleetHealthMonitor(workspace_dir=self.tmp)
         sensors = mon.gather_sensor_status()
         self.assertEqual(sensors["geopolitical_threat"]["threat_level"], "ELEVATED")
         self.assertEqual(sensors["geopolitical_threat"]["risk_score"], 0.65)
@@ -1576,11 +1576,10 @@ class EmailMirrorTest(TempDirTestCase):
         ])
         self.assertEqual(b_exec_pair, "📦 Bulk (2): SELL ARBUSDC [binance:ai_executor]")
 
-        bash_tmp = str(self.tmp)
-        os.makedirs(os.path.join(bash_tmp, "logs"), exist_ok=True)
+        os.makedirs(os.path.join(self.tmp, "logs"), exist_ok=True)
         script = f"""
 set -euo pipefail
-ROOT="{bash_tmp}"
+ROOT="{self.tmp}"
 env_get() {{ echo "${{2:-}}"; }}
 source "{ROOT_DIR}/orchestratorOS/lib/os_notify.sh"
 send_os_email() {{ :; }}
@@ -1617,7 +1616,7 @@ send_os_ntfy "DEV CI Regression FAILED" "Commit ddddddd failed: fourth error" "h
 send_os_ntfy "DEV CI Regression RECOVERED" "Commit eeeeeee passed all tests" "default" "ntfy-error-test"
 """
         subprocess.run(["bash", "-c", script], check=True)
-        with open(os.path.join(bash_tmp, "out.txt"), "r", encoding="utf-8") as f:
+        with open(os.path.join(self.tmp, "out.txt"), "r", encoding="utf-8") as f:
             out_text = f.read()
         self.assertIn("TITLE=📦 Bulk (2): DEV CI Regression FAILED\n", out_text)
         self.assertIn("second error\n\n2. DEV CI Regression FAILED: Commit ccccccc failed: third error", out_text)

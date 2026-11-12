@@ -1786,8 +1786,7 @@ class AccountCacheReaderConfirmationTest(TempDirTestCase):
 
     def test_data_sync_mode_reader_resync_regressions(self):
         with self.subTest("non_append_trade_cache_get_last_opposite_fill_price_resyncs_disk_state"):
-            tmp_dir = str(self.tmp)
-            trade_file = os.path.join(tmp_dir, "cache_trade_kraken.json")
+            trade_file = os.path.join(self.tmp, "cache_trade_kraken.json")
             t1_ms = int((time.time() - 600) * 1000)
             t2_ms = int((time.time() - 60) * 1000)
             initial_snap = {
@@ -1841,8 +1840,7 @@ class AccountCacheReaderConfirmationTest(TempDirTestCase):
             self.assertEqual(mgr.get_last_opposite_fill_price("BTC", "SELL"), 61500.0)
 
         with self.subTest("short_trend_disk_reader_refreshes_stale_mem_from_disk_and_tracks_mode"):
-            tmp_dir = str(self.tmp)
-            st_file = os.path.join(tmp_dir, "cache_short_trend.json")
+            st_file = os.path.join(self.tmp, "cache_short_trend.json")
             now_ts = time.time()
             stale_ts = now_ts - 120.0
             with open(st_file, "w", encoding="utf-8") as fh:
@@ -1897,7 +1895,6 @@ class AccountCacheReaderConfirmationTest(TempDirTestCase):
             cm.CacheFactory.shutdown_all()
 
         with self.subTest("all_leaf_cache_classes_accept_data_sync_mode_and_readonly_preserves_previous"):
-            tmp_dir = str(self.tmp)
             for cls, fname in (
                 (cm.CacheOrderManager, "o.json"),
                 (cm.CacheAssetValueManager, "av.jsonl"),
@@ -1906,13 +1903,13 @@ class AccountCacheReaderConfirmationTest(TempDirTestCase):
                 (cm.Cache365PriceManager, "p365.jsonl"),
                 (cm.CacheLongTrendManager, "lt.json"),
             ):
-                p = os.path.join(tmp_dir, fname)
+                p = os.path.join(self.tmp, fname)
                 inst = cls(9999, ["BTC"], p, data_sync_mode="disk_reader")
                 self.assertEqual(inst.data_sync_mode, "disk_reader")
                 self.assertTrue(inst.read_only)
                 self.assertFalse(inst.save_state)
 
-            sp_path = os.path.join(tmp_dir, "sp_prev.jsonl")
+            sp_path = os.path.join(self.tmp, "sp_prev.jsonl")
             with open(sp_path, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps({"s": "BTC", "i": [1700000000000, 60000.0]}) + "\n")
             with open(sp_path + ".previous", "w", encoding="utf-8") as fh:

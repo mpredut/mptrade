@@ -424,8 +424,7 @@ class WalkForwardCompareTest(TempDirTestCase):
         with self.assertRaises(ValueError):
             periods_per_year(False)
 
-        tmp = str(self.tmp)
-        broker = BacktestBroker(tmp, lambda: 1000.0)
+        broker = BacktestBroker(self.tmp, lambda: 1000.0)
         self.assertIsNone(broker._execute("BUY", "BTCUSDC", 0.0))
         self.assertIsNone(broker._execute("BUY", "BTCUSDC", float("nan")))
         self.assertIsNone(broker._execute("BUY", "BTCUSDC", 100.0, qty=0.0))
