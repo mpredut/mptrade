@@ -632,7 +632,7 @@ def load_isolated_venue_cfg(
     )
 
 
-_VENUE_DIR_UNSET = object()
+_VENUE_DIR_UNSET = globals().get("_VENUE_DIR_UNSET") or object()
 
 
 def bind_isolated_venue_cfg_loader(

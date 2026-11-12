@@ -38,7 +38,7 @@ from cachepaths import (
 )
 
 T = TypeVar("T")
-_MISSING = object()
+_MISSING = globals().get("_MISSING") or object()
 JSONDecodeError = json.JSONDecodeError
 
 
@@ -69,8 +69,12 @@ def _json_dump_kwargs(
     return kwargs
 
 
-class StateReadError(RuntimeError):
-    """Persisted runtime state cannot be trusted."""
+_PREV_STATE_READ_ERROR = globals().get("StateReadError")
+if isinstance(_PREV_STATE_READ_ERROR, type) and issubclass(_PREV_STATE_READ_ERROR, RuntimeError):
+    StateReadError = _PREV_STATE_READ_ERROR
+else:
+    class StateReadError(RuntimeError):
+        """Persisted runtime state cannot be trusted."""
 
 
 def _fsync_parent_directory(path: str) -> None:
