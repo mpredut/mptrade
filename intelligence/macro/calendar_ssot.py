@@ -860,6 +860,7 @@ def compute_dynamic_geopolitical_interval(
                     (t_h := str(obj_attr(h, "title", None) or "").strip())
                     and t_h.lower() not in prev_lower
                     and not any(headlines_are_semantic_duplicates(t_h, pt) for pt in prev_titles)
+                    and not (0.0 < headline_effective_ts(h, ts) <= ts - 5400.0)
                 )
             )
         if threat_level in ("NORMAL", "ELEVATED"):

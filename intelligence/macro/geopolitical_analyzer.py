@@ -271,7 +271,10 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             all_high_sev_aged_90m
             and self._cached_assessment is not None
             and not self._cached_assessment.is_fallback
-            and self._cached_assessment.threat_level in ("ELEVATED", "CRITICAL_SHOCK")
+            and (
+                self._cached_assessment.threat_level in ("ELEVATED", "CRITICAL_SHOCK")
+                or (headline_digest and headline_digest.lower() != prev_digest_lower)
+            )
         )
         zero_high_sev_reset = bool(
             isinstance(raw_headlines, (list, tuple))

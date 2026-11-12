@@ -855,7 +855,7 @@ def upgrade_tpo_vp_from_ohlc(
         )
         if (len(pts_vp) < 8 or (pts_vp[-1][0] - pts_vp[0][0]) < 18 * 3600 * 1000) and cache_dir and os.path.isdir(cache_dir):
             for c_vp in cache_symbol_variants(sym, include_original=True, include_base=False, quotes=compatible_quote_suffixes(sym)):
-                p_vp = os.path.join(cache_dir, f"cache_ohlc_24h_{c_vp}.json")
+                p_vp = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_ohlc_24h_{c_vp}.json")))
                 if os.path.exists(p_vp) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
                     cand_vp = [
                         [ts_i, px_f, vol_f]

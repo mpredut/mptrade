@@ -87,6 +87,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     _apply_24h_series_enrichment,
     _compute_kalman_from_series,
     _compute_short_slopes_from_series,
+    _load_stitched_24h_ohlc_points,
     _parse_ts_px_row,
     _prices_diverged,
     apply_live_24trend_windows,
@@ -2146,6 +2147,27 @@ def refresh_pretrade_telemetry_caches(
             status["microstructure_refreshed"] = True
         except Exception:
             pass
+        if (
+            not is_eq_sym
+            and is_live_network_backfill_enabled()
+            and _rj is _default_read_json_cached
+            and ensure_fresh_symbol_microstructure is _ORIG_ENSURE_FRESH_SYMBOL_MICROSTRUCTURE
+        ):
+            sym_u = clean_symbol_key(sym_raw) or sym_raw.upper()
+            ohlc_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"cache_ohlc_24h_{sym_u}.json")))
+            if os.path.exists(ohlc_path) or os.path.exists(
+                str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{sym_u}.json")))
+            ):
+                try:
+                    _load_stitched_24h_ohlc_points(
+                        _resolve_fallback_ohlc_fn(sym_u),
+                        sym_u,
+                        eff_now - 86400.0,
+                        require_positive_volume=True,
+                        cache_dir=cachedb_dir,
+                    )
+                except Exception:
+                    pass
     try:
         vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
         if os.path.exists(vb_path) and isinstance(vb_d := _rj(vb_path), dict):
