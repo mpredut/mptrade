@@ -5,6 +5,7 @@
 
 # Core Tenets
 - **Single Source of Truth (SSOT) & Reuse-First:** Consolidate logic into canonical modules; generalize and reuse existing classes/primitives before creating new ones. Always import canonical SSOT modules directly (never legacy aliases).
+- **Pragmatic Simplicity (No Speculative Edge-Case Bloat):** Do not add defensive branches, extra state, or recovery plumbing for rare/theoretical edge cases (e.g., mid-write process kill, local disk-write failure, sub-millisecond race) if the guard costs more than 1 line of code. Keep the happy path and realistic venue/network failures simple and linear; if a low-probability corner case would require >1 line, skip it or ask the user first.
 - **Separation of Concerns (SoC) & 3-Tier Polymorphic Class Design:**
   - Keep files small, modular, and strictly isolated to a single domain responsibility across layers (*Core Primitives*, *Persistence/Cache*, *Transport/Providers*, *Order Gateway & Guards*, *Strategy & Exit Engine*, *Orchestration/Supervision*).
   - Follow a 3-tier polymorphic class hierarchy (Level 1 pure abstract base contract → Level 2 domain-specific abstract bases → Level 3 concrete venue-agnostic leaf classes registered in a declarative factory/registry).
