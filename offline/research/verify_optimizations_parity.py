@@ -65,13 +65,9 @@ def test_pricewindow_regression_parity(iterations: int = 10_000) -> None:
         analyzer = pw.PriceTrendAnalyzer(prices)
         line_opt, slope_opt, r_opt = analyzer.linear_regression_trend()
 
-        diff_s = abs(slope_base - slope_opt)
-        diff_b = abs(intercept_base - (line_opt[0]))
-        diff_r = abs(r_base - r_opt)
-
-        max_diff_slope = max(max_diff_slope, diff_s)
-        max_diff_intercept = max(max_diff_intercept, diff_b)
-        max_diff_r = max(max_diff_r, diff_r)
+        max_diff_slope = max(max_diff_slope, abs(slope_base - slope_opt))
+        max_diff_intercept = max(max_diff_intercept, abs(intercept_base - line_opt[0]))
+        max_diff_r = max(max_diff_r, abs(r_base - r_opt))
 
         assert np.isclose(slope_base, slope_opt, rtol=1e-11, atol=1e-12), f"Slope mismatch at iter {i}: {slope_base} vs {slope_opt}"
         assert np.isclose(r_base, r_opt, rtol=1e-11, atol=1e-12), f"R-value mismatch at iter {i}: {r_base} vs {r_opt}"
@@ -109,10 +105,10 @@ def test_priceanalysis_ols_parity(iterations: int = 10_000) -> None:
         # 2. Optimized implementation
         s_opt, b_opt = pa._fast_linear_regression_1d(timestamps, prices)
 
-        diff_s = abs(s_base - s_opt)
-        diff_b = abs(b_base - b_opt)
-        max_diff_slope = max(max_diff_slope, diff_s)
-        max_diff_intercept = max(max_diff_intercept, diff_b)
+        max_diff_slope, max_diff_intercept = (
+            max(max_diff_slope, abs(s_base - s_opt)),
+            max(max_diff_intercept, abs(b_base - b_opt)),
+        )
 
         assert np.isclose(s_base, s_opt, rtol=1e-10, atol=1e-11), f"Slope mismatch at iter {i}: {s_base} vs {s_opt}"
         assert np.isclose(b_base, b_opt, rtol=1e-9, atol=1e-10), f"Intercept mismatch at iter {i}: {b_base} vs {b_opt}"
@@ -159,11 +155,9 @@ def test_detect_long_term_trend_real_data() -> None:
                 assert res_memo is None
             else:
                 assert res_memo is not None
-                assert res_memo["direction"] == res_cold["direction"]
-                assert res_memo["start_timestamp"] == res_cold["start_timestamp"]
-                assert res_memo["duration_seconds"] == res_cold["duration_seconds"]
+                for k in ("direction", "start_timestamp", "duration_seconds", "blocks"):
+                    assert res_memo[k] == res_cold[k]
                 assert np.isclose(res_memo["current_slope_h"], res_cold["current_slope_h"], rtol=1e-12, atol=1e-12)
-                assert res_memo["blocks"] == res_cold["blocks"]
 
             print(
                 f"  -> PASSED for {sym} history: "

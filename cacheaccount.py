@@ -466,6 +466,15 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
             and isinstance(trade["isBuyer"], bool)
         )
 
+    def _is_file_newer_than_memory_locked(self) -> bool:
+        if self._persisted_max_ts() > self._mem_max_ts():
+            builtins.print(
+                f"[{self.cls_name}][resync] file newer than memory -> "
+                f"refusing to overwrite with stale data ({self.filename})"
+            )
+            return True
+        return False
+
     def _paginate_validated_trades(self, symbol, startTime, row_label: str = "trade"):
         """Paginate through venue trade fills and validate every returned fill row."""
         rows = MarketDataProvider.fetch_venue_remote_trades(
@@ -1044,11 +1053,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     "differs from this manager; refusing stale append"
                 )
                 return False
-            if self._persisted_max_ts() > self._mem_max_ts():
-                builtins.print(
-                    f"[{self.cls_name}][resync] file newer than memory -> "
-                    f"refusing to overwrite with stale data ({self.filename})"
-                )
+            if self._is_file_newer_than_memory_locked():
                 return False
             return self._save_account_trade_append_generation_locked()
 
@@ -1096,16 +1101,14 @@ class CacheTradeManager(CacheAccountManagerBase):
                     revision += 1
                 revision = max(1, revision)
                 version = _cache_integrity.trade_data_version(stream_id, revision)
-                fetchtime = dict(self.fetchtime_per_symbol)
-                rest_sync_cursor = dict(self._rest_sync_cursor_per_symbol)
                 metadata = self._account_meta_snapshot(
                     data_version=version,
                     stream_id=stream_id,
                     revision=revision,
                     committed_bytes=committed_bytes,
                     content_digest=content_digest,
-                    fetchtime=fetchtime,
-                    rest_sync_cursor=rest_sync_cursor,
+                    fetchtime=dict(self.fetchtime_per_symbol),
+                    rest_sync_cursor=dict(self._rest_sync_cursor_per_symbol),
                     counts=candidate_counts,
                 )
                 if not self._write_meta(metadata):
@@ -1756,11 +1759,7 @@ class CacheOrderManager(CacheAccountManagerBase):
                         "differs from this manager; refusing stale overwrite"
                     )
                     return False
-                if self._persisted_max_ts() > self._mem_max_ts():
-                    builtins.print(
-                        f"[{self.cls_name}][resync] file newer than memory -> "
-                        f"refusing to overwrite with stale data ({self.filename})"
-                    )
+                if self._is_file_newer_than_memory_locked():
                     return False
 
                 self._validate_account_rows_locked()

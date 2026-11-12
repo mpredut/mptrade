@@ -245,13 +245,15 @@ def main():
         f"{'=' * 110}\n  BACKTEST 2: OPPORTUNISTIC EXECUTION DELAY GATE (should_wait / GT_S) ON 222s PRIMARY WINDOW\n{'=' * 110}"
     )
 
-    for sym in symbols:
-        ts, px, src_label = _load_ts_px(sym)
-        if len(ts) == 0:
-            continue
-        stride = max(60, len(ts) // 25000) if src_label == "1s-dense" else max(5, len(ts) // 15000)
+    def _iter_loaded_symbol_signals(sym_list, window_sec: float, dense_div: int, sparse_div: int):
+        for s in sym_list:
+            ts_arr, px_arr, src_lbl = _load_ts_px(s)
+            if len(ts_arr) == 0:
+                continue
+            step_s = max(60, len(ts_arr) // dense_div) if src_lbl == "1s-dense" else max(5, len(ts_arr) // sparse_div)
+            yield s, ts_arr, px_arr, src_lbl, step_s, compute_exact_time_window_signals(ts_arr, px_arr, window_sec, s)
 
-        sig222 = compute_exact_time_window_signals(ts, px, 222.0, sym)
+    for sym, ts, px, src_label, stride, sig222 in _iter_loaded_symbol_signals(symbols, 222.0, 25000, 15000):
         gc = sig222["gc"]
         gr = sig222["gr"]
         leg = sig222["legacy"]
@@ -289,13 +291,9 @@ def main():
         f"\n\n{'=' * 110}\n  BACKTEST 3: 900s DYNAMIC WINDOW REGIME FILTER (rtrade.py / MarketRegimeEvaluator)\n{'=' * 110}"
     )
 
-    for sym in ["TAOUSDC", "BTCUSDC", "ARBUSDC", "HYPEUSD"]:
-        ts, px, src_label = _load_ts_px(sym)
-        if len(ts) == 0:
-            continue
-        stride = max(60, len(ts) // 20000) if src_label == "1s-dense" else max(5, len(ts) // 12000)
-
-        sig900 = compute_exact_time_window_signals(ts, px, 900.0, sym)
+    for sym, ts, px, src_label, stride, sig900 in _iter_loaded_symbol_signals(
+        ["TAOUSDC", "BTCUSDC", "ARBUSDC", "HYPEUSD"], 900.0, 20000, 12000
+    ):
         results, raw_s, scaled_s = evaluate_regime_900s(ts, px, sig900, horizon_sec=900.0, stride=stride)
         q50_raw, q90_raw, q99_raw = np.percentile(raw_s, [50, 90, 99]) if len(raw_s) else (0.0, 0.0, 0.0)
         q50_sc, q90_sc, q99_sc = np.percentile(scaled_s, [50, 90, 99]) if len(scaled_s) else (0.0, 0.0, 0.0)

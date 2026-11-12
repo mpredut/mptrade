@@ -177,13 +177,15 @@ def generate_markdown_report() -> str:
 
 
 def main():
-    if not os.path.isfile(CRYPTO_JSON):
-        print(f"ERROR: crypto ablation results not found at {CRYPTO_JSON}", file=sys.stderr)
+    def _abort(msg: str) -> None:
+        print(f"ERROR: {msg}", file=sys.stderr)
         sys.exit(1)
+
+    if not os.path.isfile(CRYPTO_JSON):
+        _abort(f"crypto ablation results not found at {CRYPTO_JSON}")
     raw_crypto = read_json_file(CRYPTO_JSON, default=[])
     if not isinstance(raw_crypto, list) or not any(_valid_ablation_row(r) for r in raw_crypto):
-        print(f"ERROR: no valid crypto ablation rows found in {CRYPTO_JSON}", file=sys.stderr)
-        sys.exit(1)
+        _abort(f"no valid crypto ablation rows found in {CRYPTO_JSON}")
     report_md = generate_markdown_report()
     out_file = os.path.join(OUT_DIR, "HYBRID_REENTRY_ABLATION_REPORT.md")
     atomic_write_text(out_file, report_md)

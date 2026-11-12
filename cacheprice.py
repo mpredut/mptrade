@@ -870,6 +870,37 @@ class Cache365PriceManager(Cache24PriceManager):
                     0, self._persisted_counts.get(symbol, 0) - overflow
                 )
 
+    def _snapshot_memory_state_with_item_ids_locked(self):
+        original_state = self._snapshot_memory_state_locked()
+        snap_item_ids = {
+            id(item) for items in original_state[0].values() for item in items
+        }
+        return original_state, snap_item_ids
+
+    def _reload_and_merge_live_delta_locked(
+        self,
+        snap_item_ids: set[int],
+        original_fetchtimes,
+        original_rest_cursors,
+        *,
+        min_ts_ms=None,
+    ):
+        post_delta = (
+            self._collect_live_delta_locked(snap_item_ids)
+            if min_ts_ms is None
+            else self._collect_live_delta_locked(snap_item_ids, min_ts_ms=min_ts_ms)
+        )
+        self._reload_and_merge_timestamps_locked(original_fetchtimes, original_rest_cursors)
+        self._merge_live_delta_locked(post_delta)
+        return post_delta
+
+    def _rollback_memory_state_with_live_delta_locked(
+        self, original_state, snap_item_ids: set[int]
+    ):
+        post_delta = self._collect_live_delta_locked(snap_item_ids)
+        self._restore_memory_state_locked(original_state)
+        self._merge_live_delta_locked(post_delta)
+
     def maintain_append_persist(self):
         """Prune the full disk archive without holding ``self.lock`` during disk I/O."""
         if not self.save_state:
@@ -883,18 +914,13 @@ class Cache365PriceManager(Cache24PriceManager):
         snap_item_ids: set[int] = set()
         try:
             with self.lock:
-                original_state = self._snapshot_memory_state_locked()
+                original_state, snap_item_ids = self._snapshot_memory_state_with_item_ids_locked()
                 (
                     original_cache,
                     original_persisted_counts,
                     original_fetchtimes,
                     original_rest_cursors,
                 ) = original_state
-                snap_item_ids = {
-                    id(item)
-                    for items in original_cache.values()
-                    for item in items
-                }
 
             backup_path = self.filename + ".maint_backup"
             snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
@@ -928,13 +954,12 @@ class Cache365PriceManager(Cache24PriceManager):
                             changed = True
 
             with self.lock:
-                post_delta = self._collect_live_delta_locked(
-                    snap_item_ids, min_ts_ms=cutoff_ms
+                post_delta = self._reload_and_merge_live_delta_locked(
+                    snap_item_ids,
+                    original_fetchtimes,
+                    original_rest_cursors,
+                    min_ts_ms=cutoff_ms,
                 )
-                self._reload_and_merge_timestamps_locked(
-                    original_fetchtimes, original_rest_cursors
-                )
-                self._merge_live_delta_locked(post_delta)
                 if changed:
                     if not self._write_meta(self._build_basic_meta_locked(self._persisted_counts)):
                         self._restore_memory_state_locked(original_state)
@@ -954,9 +979,7 @@ class Cache365PriceManager(Cache24PriceManager):
             return True
         except OSError as exc:
             with self.lock:
-                post_delta = self._collect_live_delta_locked(snap_item_ids)
-                self._restore_memory_state_locked(original_state)
-                self._merge_live_delta_locked(post_delta)
+                self._rollback_memory_state_with_live_delta_locked(original_state, snap_item_ids)
                 if backup_path is not None and os.path.exists(backup_path):
                     try:
                         self._restore_previous_generation(backup_path)
@@ -977,16 +1000,13 @@ class Cache365PriceManager(Cache24PriceManager):
         """Archive an oversized file while retaining a complete-line tail without holding ``self.lock`` during disk I/O."""
         archive = f"{self.filename}.{math.trunc(_now_time())}.archive"
         with self.lock:
-            original_state = self._snapshot_memory_state_locked()
+            original_state, snap_item_ids = self._snapshot_memory_state_with_item_ids_locked()
             (
                 original_cache,
                 original_persisted_counts,
                 original_fetchtimes,
                 original_rest_cursors,
             ) = original_state
-            snap_item_ids = {
-                id(item) for items in original_cache.values() for item in items
-            }
         try:
             snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
             snapshot_fn(self.filename, archive)
@@ -1008,11 +1028,9 @@ class Cache365PriceManager(Cache24PriceManager):
                         for item in extra_items:
                             target.write(format_jsonl_bucket_line(symbol, item))
             with self.lock:
-                post_delta = self._collect_live_delta_locked(snap_item_ids)
-                self._reload_and_merge_timestamps_locked(
-                    original_fetchtimes, original_rest_cursors
+                self._reload_and_merge_live_delta_locked(
+                    snap_item_ids, original_fetchtimes, original_rest_cursors
                 )
-                self._merge_live_delta_locked(post_delta)
                 meta_ok = self._write_meta(self._build_basic_meta_locked(self._persisted_counts))
         except Exception as exc:
             builtins.print(
@@ -1021,9 +1039,7 @@ class Cache365PriceManager(Cache24PriceManager):
             meta_ok = False
         if not meta_ok:
             with self.lock:
-                post_delta = self._collect_live_delta_locked(snap_item_ids)
-                self._restore_memory_state_locked(original_state)
-                self._merge_live_delta_locked(post_delta)
+                self._rollback_memory_state_with_live_delta_locked(original_state, snap_item_ids)
                 try:
                     self._restore_previous_generation(archive)
                 except OSError as restore_err:

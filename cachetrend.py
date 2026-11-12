@@ -1885,10 +1885,11 @@ class KalmanStateTracker:
         else:
             k = self._last_kfields.get(symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0})
 
+        v1h = None
+        should_store_vol = False
         if precomputed_vol_1h_pct is not None:
             v1h = safe_nonneg_float(precomputed_vol_1h_pct, default=None)
-            self._last_vol_time[symbol] = ts
-            self._last_vol_fields[symbol] = v1h
+            should_store_vol = True
         elif self.compute_vol:
             # Throttle heavy volatility & log-return computation on big_prices (thousands of points)
             last_vol_t = self._last_vol_time.get(symbol, -1e18)
@@ -1896,12 +1897,12 @@ class KalmanStateTracker:
                 last_vol_t = -1e18
             if (ts - last_vol_t) >= 2.0 or (ts - last_fed >= KALMAN_SAMPLE_SEC):
                 v1h = pw.calculate_volatility_1h(big_prices, big_sample_rate)
-                self._last_vol_time[symbol] = ts
-                self._last_vol_fields[symbol] = v1h
+                should_store_vol = True
             else:
                 v1h = self._last_vol_fields.get(symbol)
-        else:
-            v1h = None
+        if should_store_vol:
+            self._last_vol_time[symbol] = ts
+            self._last_vol_fields[symbol] = v1h
         fields = self._build_fields(k, v1h)
         prev_st = self._state.get(symbol)
         if (

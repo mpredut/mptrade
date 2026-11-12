@@ -38,20 +38,22 @@ def _ts_sec(r) -> float:
     return sec if sec is not None and sec > 0.0 else 0.0
 
 
+def _die(msg: str) -> None:
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
 def main(argv: list[str] | None = None):
     args = sys.argv[1:] if argv is None else list(argv)
     if len(args) < 2:
-        print("Usage: slice_dense_archive.py <symbol> <days> [out_path]", file=sys.stderr)
-        sys.exit(1)
+        _die("Usage: slice_dense_archive.py <symbol> <days> [out_path]")
     try:
         symbol = validate_bt_cli_token(args[0], "symbol").upper()
     except ValueError:
-        print(f"[slice] invalid symbol={args[0]!r}", file=sys.stderr)
-        sys.exit(1)
+        _die(f"[slice] invalid symbol={args[0]!r}")
     days = safe_pos_float(args[1], default=None)
     if days is None:
-        print(f"[slice] invalid days={args[1]!r}", file=sys.stderr)
-        sys.exit(1)
+        _die(f"[slice] invalid days={args[1]!r}")
     out = args[2] if len(args) > 2 else cache_path(
         f"cache_24_price_slice_{symbol}_{days:g}d.jsonl")
     src = next(
@@ -63,8 +65,7 @@ def main(argv: list[str] | None = None):
         cache_path(cache_365_price_filename(symbol)),
     )
     if not os.path.isfile(src):
-        print(f"[slice] {src} missing", file=sys.stderr)
-        sys.exit(1)
+        _die(f"[slice] {src} missing")
 
     total_rows = 0
     last_ts = 0.0
@@ -75,8 +76,7 @@ def main(argv: list[str] | None = None):
             if t > last_ts:
                 last_ts = t
     if total_rows == 0:
-        print(f"[slice] {src} empty/missing", file=sys.stderr)
-        sys.exit(1)
+        _die(f"[slice] {src} empty/missing")
 
     cutoff = last_ts - days * 86400.0
     sliced: list[dict] = []

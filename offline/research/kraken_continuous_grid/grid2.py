@@ -81,29 +81,26 @@ def select(asset):
     bars, ohlc, _ = grid.load_asset(asset)
     steps = []
     fee_r = 0.26 / 100.0
-    for t in range(WARM + TRAIN, len(bars) - TEST + 1, TEST):
-        train_slice = bars[t - TRAIN:t]
-        train_warm = bars[t - TRAIN - WARM:t - TRAIN]
-        train_cache = {}
-        train = {}
+
+    def _eval_select_set(slice_bars, warm_bars):
+        cache = {}
+        out = {}
         for c in SELECT_SET:
             p, pk = ALL[c]
             k = (repr(p), bool(pk))
-            if k not in train_cache:
-                train_cache[k] = replay(train_slice, train_warm, p, pk, 0.26)
-            train[c] = train_cache[k]
+            if k not in cache:
+                cache[k] = replay(slice_bars, warm_bars, p, pk, 0.26)
+            out[c] = cache[k]
+        return out
+
+    for t in range(WARM + TRAIN, len(bars) - TEST + 1, TEST):
+        train = _eval_select_set(bars[t - TRAIN:t], bars[t - TRAIN - WARM:t - TRAIN])
         score = {c: _risk_adjusted_score(r["ret"], r["dd"], dd_floor=5.0) for c, r in train.items()}
         best = max(score, key=score.get)
-        oos_slice = bars[t:t + TEST]
-        oos_warm = bars[t - WARM:t]
-        oos_cache = {}
-        oos = {}
-        for c in SELECT_SET:
-            p, pk = ALL[c]
-            k = (repr(p), bool(pk))
-            if k not in oos_cache:
-                oos_cache[k] = replay(oos_slice, oos_warm, p, pk, 0.26)["ret"]
-            oos[c] = oos_cache[k]
+        oos = {
+            c: r["ret"]
+            for c, r in _eval_select_set(bars[t:t + TEST], bars[t - WARM:t]).items()
+        }
         p0 = safe_pos_float(ohlc[t][3], 0.0)
         p1 = safe_float(ohlc[t + TEST - 1][3], 0.0)
         bh_pct = (((p1 * (1.0 - fee_r)) / (p0 * (1.0 + fee_r))) - 1.0) * 100.0 if p0 > 0 else 0.0
@@ -114,9 +111,10 @@ def select(asset):
 
 def task(args):
     try:
-        if args[0] == "select":
-            t0 = time.time(); r = select(args[1]); r["secs"] = round(time.time() - t0, 1); return r
-        t0 = time.time(); r = views(*args[1:]); r["secs"] = round(time.time() - t0, 1); return r
+        t0 = time.time()
+        r = select(args[1]) if args[0] == "select" else views(*args[1:])
+        r["secs"] = round(time.time() - t0, 1)
+        return r
     except Exception:
         return {"kind": "error", "args": list(args), "error": traceback.format_exc()}
 
