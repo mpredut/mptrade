@@ -87,6 +87,7 @@ from state_io import (
     atomic_text_writer,
     atomic_write_json,
     discard_generation_file,
+    generation_file_lock,
     meta_file_path,
     parse_json_payload,
     read_json_dict,
@@ -561,10 +562,18 @@ class CacheTradeManager(CacheAccountManagerBase):
         return str(cache_path(fname))
 
     @classmethod
-    def load_sanitized_trade_snapshot(cls, path: Optional[str] = None, *, venue: str = "kraken") -> dict:
+    def load_sanitized_trade_snapshot(
+        cls,
+        path: Optional[str] = None,
+        *,
+        venue: str = "kraken",
+        repair_files: bool = False,
+    ) -> dict:
         """Load and sanitize a venue JSON trade snapshot ``{'items': ..., 'fetchtime': ...}`` with ``.previous`` recovery."""
         target = str(path) if path else cls.resolve_cache_filepath(venue=venue)
-        loaded = read_json_dict(target, default=None, recover_previous=True)
+        loaded = read_json_dict(
+            target, default=None, recover_previous=True, repair_files=repair_files
+        )
         if (
             isinstance(loaded, dict)
             and isinstance(loaded.get("items"), dict)
@@ -649,9 +658,13 @@ class CacheTradeManager(CacheAccountManagerBase):
         ]
 
     @staticmethod
-    def _load_venue_snapshot_dict(cache_file: str, *, create: bool = False) -> Optional[dict]:
+    def _load_venue_snapshot_dict(
+        cache_file: str, *, create: bool = False, repair_files: bool = False
+    ) -> Optional[dict]:
         """Load a venue trade snapshot ``{'items': {...}, 'fetchtime': {...}}`` (or initialize one when ``create=True``)."""
-        data = read_json_dict_recovering(str(cache_file), default=None)
+        data = read_json_dict_recovering(
+            str(cache_file), default=None, repair_files=repair_files
+        )
         if (
             isinstance(data, dict)
             and isinstance(data.get("items"), dict)
@@ -810,6 +823,50 @@ class CacheTradeManager(CacheAccountManagerBase):
         return changed
 
     @classmethod
+    def _merge_venue_fills_snapshot_locked(
+        cls,
+        cache_file: str,
+        fills_by_symbol: dict,
+        *,
+        now_ms: Optional[int] = None,
+        is_snapshot: bool = False,
+        touch_symbols=None,
+        touch_create_missing: bool = False,
+        sanitize_venue: Optional[str] = None,
+        indent: Optional[int] = None,
+        force_save: bool = False,
+    ) -> dict:
+        """Atomically load, merge, touch, and persist a venue trade snapshot under ``.generation.lock``."""
+        target_path = str(cache_file)
+        with generation_file_lock(target_path):
+            cache_obj = (
+                cls.load_sanitized_trade_snapshot(
+                    target_path, venue=sanitize_venue, repair_files=True
+                )
+                if sanitize_venue
+                else cls._load_venue_snapshot_dict(
+                    target_path, create=True, repair_files=True
+                )
+            )
+            changed = cls.merge_venue_fills_into_dict(
+                cache_obj,
+                fills_by_symbol,
+                now_ms=now_ms,
+                is_snapshot=is_snapshot,
+                touch_symbols=None,
+            )
+            if touch_symbols and cls.touch_venue_ws_fetchtimes_in_dict(
+                cache_obj,
+                now_ms,
+                symbols=touch_symbols,
+                create_missing=touch_create_missing,
+            ):
+                changed = True
+            if changed or is_snapshot or force_save or not os.path.exists(target_path):
+                save_json_state(target_path, cache_obj, indent=indent)
+            return cache_obj
+
+    @classmethod
     def merge_venue_fills_snapshot(
         cls,
         cache_file: str,
@@ -818,25 +875,57 @@ class CacheTradeManager(CacheAccountManagerBase):
         now_ms: Optional[int] = None,
         is_snapshot: bool = False,
         touch_symbols=None,
+        touch_create_missing: bool = False,
+        sanitize_venue: Optional[str] = None,
+        indent: Optional[int] = None,
     ) -> bool:
         """Merge ``{symbol: [fill_dict, ...]}`` into a shared SSOT trade cache file (`items` + `fetchtime`)."""
         if not cache_file or not isinstance(fills_by_symbol, dict):
             return False
         if not fills_by_symbol and not touch_symbols and not is_snapshot:
             return False
-        target_path = str(cache_file)
         try:
-            cache_obj = cls._load_venue_snapshot_dict(target_path, create=True)
-            changed = cls.merge_venue_fills_into_dict(
-                cache_obj,
+            cls._merge_venue_fills_snapshot_locked(
+                str(cache_file),
                 fills_by_symbol,
                 now_ms=now_ms,
                 is_snapshot=is_snapshot,
                 touch_symbols=touch_symbols,
+                touch_create_missing=touch_create_missing,
+                sanitize_venue=sanitize_venue,
+                indent=indent,
             )
-            if changed or is_snapshot or not os.path.exists(target_path):
-                save_json_state(target_path, cache_obj)
             return True
+        except Exception:
+            return False
+
+    @classmethod
+    def touch_venue_fills_snapshot(
+        cls,
+        cache_file: str,
+        now_ms=None,
+        *,
+        symbols=None,
+        create_missing: bool = False,
+        indent: Optional[int] = None,
+    ) -> bool:
+        """Atomically refresh ``fetchtime`` across active WS symbols under ``.generation.lock``."""
+        if not cache_file:
+            return False
+        target_path = str(cache_file)
+        try:
+            with generation_file_lock(target_path):
+                loaded = cls._load_venue_snapshot_dict(
+                    target_path, create=create_missing, repair_files=True
+                )
+                if loaded is None:
+                    return False
+                touched = cls.touch_venue_ws_fetchtimes_in_dict(
+                    loaded, now_ms, symbols=symbols, create_missing=create_missing
+                )
+                if touched or (create_missing and not os.path.exists(target_path)):
+                    save_json_state(target_path, loaded, indent=indent)
+                return touched
         except Exception:
             return False
 
@@ -879,37 +968,41 @@ class CacheTradeManager(CacheAccountManagerBase):
         """Expire ``fetchtime`` for ``symbol`` in the shared SSOT trade cache after order execution."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
             return
+        target_path = str(cache_file)
         try:
-            data = read_json_dict_recovering(str(cache_file), default=None)
-            if not isinstance(data, dict) or not isinstance(data.get("fetchtime"), dict):
-                return
-            keys = set(
-                cls.matching_snapshot_keys(
-                    data["fetchtime"],
-                    symbol,
-                    match_fn=match_fn,
-                    candidate_keys=candidate_keys,
+            with generation_file_lock(target_path):
+                data = read_json_dict_recovering(
+                    target_path, default=None, repair_files=True
                 )
-            )
-            if isinstance(data.get("items"), dict):
-                item_cf = {
-                    k.casefold()
-                    for k in cls.matching_snapshot_keys(
-                        data["items"],
+                if not isinstance(data, dict) or not isinstance(data.get("fetchtime"), dict):
+                    return
+                keys = set(
+                    cls.matching_snapshot_keys(
+                        data["fetchtime"],
                         symbol,
                         match_fn=match_fn,
                         candidate_keys=candidate_keys,
                     )
-                }
-                keys.update(
-                    k
-                    for k in data["fetchtime"]
-                    if isinstance(k, str) and k.casefold() in item_cf
                 )
-            for k in keys:
-                data["fetchtime"].pop(k, None)
-            if keys:
-                save_json_state(str(cache_file), data)
+                if isinstance(data.get("items"), dict):
+                    item_cf = {
+                        k.casefold()
+                        for k in cls.matching_snapshot_keys(
+                            data["items"],
+                            symbol,
+                            match_fn=match_fn,
+                            candidate_keys=candidate_keys,
+                        )
+                    }
+                    keys.update(
+                        k
+                        for k in data["fetchtime"]
+                        if isinstance(k, str) and k.casefold() in item_cf
+                    )
+                for k in keys:
+                    data["fetchtime"].pop(k, None)
+                if keys:
+                    save_json_state(target_path, data)
         except Exception:
             pass
 
@@ -2295,12 +2388,12 @@ def attach_hyperliquid_user_fills_bridge(
         try:
             with ws_stream._lock:
                 symbols = ws_stream._symbols
-            cache_file = _resolve_fills_cache_file()
-            loaded = CacheTradeManager._load_venue_snapshot_dict(cache_file)
-            if loaded is not None and CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
-                loaded, ts_ms, symbols=symbols, create_missing=False
-            ):
-                save_json_state(cache_file, loaded)
+            CacheTradeManager.touch_venue_fills_snapshot(
+                _resolve_fills_cache_file(),
+                ts_ms,
+                symbols=symbols,
+                create_missing=False,
+            )
             ws_stream._last_fills_touch_ms = ts_ms
         except Exception:
             pass
@@ -2336,9 +2429,6 @@ def run_kraken_trade_poll_loop(
     if (kr_prov_cls := MarketDataProvider.resolve_venue_provider_class("kraken")) is None:
         raise RuntimeError("Kraken provider class is not registered")
 
-    cache = CacheTradeManager.load_sanitized_trade_snapshot(
-        cache_file, venue="kraken"
-    )
     init_bo = safe_pos_float(backoff_init, default=5.0) or 5.0
     max_bo = safe_pos_float(backoff_max, default=60.0) or 60.0
     poll_s = safe_nonneg_float(poll_interval, default=30.0) or 0.0
@@ -2350,10 +2440,14 @@ def run_kraken_trade_poll_loop(
             by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
                 client, pairs=pairs, lookback_sec=lookback_sec
             )
-            CacheTradeManager.merge_venue_fills_into_dict(
-                cache, by_sym, is_snapshot=True
+            cache = CacheTradeManager._merge_venue_fills_snapshot_locked(
+                cache_file,
+                by_sym,
+                is_snapshot=True,
+                sanitize_venue="kraken",
+                indent=1,
+                force_save=True,
             )
-            save_json_state(cache_file, cache, indent=1)
             log(
                 f"[kraken_cache][poll] {sum(len(v) for v in cache['items'].values())} fills "
                 f"for {list(cache['items'].keys())}"
@@ -2415,9 +2509,6 @@ def run_kraken_trade_ws_loop(
             stop_event=stop_event,
         )
 
-    cache = CacheTradeManager.load_sanitized_trade_snapshot(
-        cache_file, venue="kraken"
-    )
     last_flush_ms = [0]
     last_rest_sync_ms = [0]
     rest_sync_interval_ms = math.trunc(
@@ -2426,21 +2517,30 @@ def run_kraken_trade_ws_loop(
     if callable(heartbeat_fn):
         heartbeat_fn(force=True)
 
-    def _merge_rest(err_label: Optional[str] = None) -> None:
+    def _merge_rest(err_label: Optional[str] = None, *, now_ms: Optional[int] = None) -> Optional[dict]:
         try:
             by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
                 client, pairs=pairs, lookback_sec=lookback_sec
             )
-            CacheTradeManager.merge_venue_fills_into_dict(
-                cache, by_sym, is_snapshot=False
+            eff_ms = resolve_now_ms(now_ms)
+            merged = CacheTradeManager._merge_venue_fills_snapshot_locked(
+                cache_file,
+                by_sym,
+                now_ms=eff_ms,
+                is_snapshot=False,
+                touch_symbols=pairs,
+                touch_create_missing=True,
+                sanitize_venue="kraken",
+                indent=1,
+                force_save=True,
             )
-            if err_label is not None:
-                save_json_state(cache_file, cache, indent=1)
-                last_flush_ms[0] = last_rest_sync_ms[0] = resolve_now_ms()
+            last_flush_ms[0] = last_rest_sync_ms[0] = eff_ms
+            return merged
         except Exception as exc:
             if err_label is None:
                 raise
             log(f"[kraken_cache][ws] {err_label}: {exc}")
+            return None
 
     _merge_rest("REST seed failed")
 
@@ -2462,7 +2562,7 @@ def run_kraken_trade_ws_loop(
         now_ms = resolve_now_ms()
 
         fills_by_sym = kr_prov_cls.extract_ws_own_trades(data, pairs=pairs)
-        should_flush = should_hb = False
+        should_hb = False
         if fills_by_sym is None:
             kind, err_msg = kr_prov_cls.classify_ws_control_event(data)
             if kind == "error":
@@ -2473,29 +2573,43 @@ def run_kraken_trade_ws_loop(
                     pass
                 return
             if kind == "keepalive" and (now_ms - last_flush_ms[0]) >= 15_000:
+                rest_synced = False
                 if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
                     try:
-                        _merge_rest()
-                        last_rest_sync_ms[0] = now_ms
-                        log(
-                            f"[kraken_cache][ws] {sum(len(v) for v in cache['items'].values())} fills "
-                            f"for {list(cache['items'].keys())}"
-                        )
+                        merged = _merge_rest(now_ms=now_ms)
+                        if merged is not None:
+                            rest_synced = True
+                            log(
+                                f"[kraken_cache][ws] {sum(len(v) for v in merged['items'].values())} fills "
+                                f"for {list(merged['items'].keys())}"
+                            )
                     except Exception as exc:
                         log(
                             f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc}"
                         )
-                should_flush = last_rest_sync_ms[0] > 0
+                if not rest_synced and last_rest_sync_ms[0] > 0:
+                    CacheTradeManager.touch_venue_fills_snapshot(
+                        cache_file,
+                        now_ms=now_ms,
+                        symbols=pairs,
+                        create_missing=False,
+                        indent=1,
+                    )
+                    last_flush_ms[0] = now_ms
                 should_hb = True
         else:
-            changed = CacheTradeManager.merge_venue_fills_into_dict(
-                cache, fills_by_sym, now_ms=now_ms, is_snapshot=False
+            CacheTradeManager._merge_venue_fills_snapshot_locked(
+                cache_file,
+                fills_by_sym,
+                now_ms=now_ms,
+                is_snapshot=False,
+                touch_symbols=pairs,
+                touch_create_missing=False,
+                sanitize_venue="kraken",
+                indent=1,
             )
-            should_flush = should_hb = changed or (now_ms - last_flush_ms[0]) >= 15_000
-        if should_flush:
-            CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms=now_ms, symbols=pairs, create_missing=True)
-            save_json_state(cache_file, cache, indent=1)
             last_flush_ms[0] = now_ms
+            should_hb = True
         if should_hb and callable(heartbeat_fn):
             heartbeat_fn()
 

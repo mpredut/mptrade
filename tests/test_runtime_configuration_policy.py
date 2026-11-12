@@ -617,6 +617,186 @@ def test_cache_ownership_and_passive_reader_invariants():
     assert "read_snapshot(allow_network=False, persist=False)" in ownership_doc
     assert "cache_kalman_trend.json" in ownership_doc
     assert "KalmanStateTracker(read_only=True)" in ownership_doc
+    assert "cache_trade_kraken.json" in ownership_doc
+    assert "smart_stop_loss_state.json" in ownership_doc
+    assert "llm_topic_threads.json" in ownership_doc
+
+
+def test_cross_process_serialized_state_merges_preserve_sibling_entries(tmp_path, monkeypatch):
+    import json
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import cacheaccount
+    import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
+    from notify_engine import alertnotifiers
+    from notify_engine.server import NotificationServer
+    from orchestratorOS.agy import topics
+    from providers.base import MarketDataProvider
+    import providers.kraken_provider  # noqa: F401 - ensure kraken provider registered
+    from state_io import previous_generation_path
+
+    # 1. Item 3: Kraken poll loop & WS touch preserve sibling fills and post-order invalidation.
+    kr_cache = tmp_path / "cache_trade_kraken.json"
+    now_ms = 1_770_000_000_000
+    cacheaccount.CacheTradeManager.merge_venue_fills_snapshot(
+        str(kr_cache),
+        {"XBTUSD": [{"id": "fill_xbt_1", "orderId": "oid_xbt_1", "time": now_ms - 5000, "price": 90000.0, "qty": 0.01}]},
+        now_ms=now_ms - 1000,
+        is_snapshot=True,
+    )
+    stop_ev = threading.Event()
+    kr_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
+
+    def _fake_ledger_fills(_client, *, pairs, lookback_sec):
+        stop_ev.set()
+        return {
+            "TAOUSD": [
+                {"id": "fill_tao_1", "orderId": "oid_tao_1", "time": now_ms - 2000, "price": 420.0, "qty": 1.0}
+            ]
+        }
+
+    with patch.object(kr_cls, "fetch_ledger_fills_by_symbol", side_effect=_fake_ledger_fills):
+        cacheaccount.run_kraken_trade_poll_loop(
+            SimpleNamespace(),
+            cache_file=str(kr_cache),
+            pairs=["TAOUSD"],
+            poll_interval=0.01,
+            backoff_init=0.01,
+            backoff_max=0.05,
+            lookback_sec=3600.0,
+            stop_event=stop_ev,
+        )
+
+    merged_kr = json.loads(kr_cache.read_text(encoding="utf-8"))
+    assert "XBTUSD" in merged_kr["items"] and "TAOUSD" in merged_kr["items"]
+
+    # Invalidate TAOUSD fetchtime; WS keepalive touch with create_missing=False must NOT resurrect it.
+    cacheaccount.CacheTradeManager.invalidate_venue_fills_snapshot(
+        "TAOUSD", str(kr_cache), candidate_keys=("TAOUSD",)
+    )
+    cacheaccount.CacheTradeManager.touch_venue_fills_snapshot(
+        str(kr_cache),
+        now_ms=now_ms + 5000,
+        symbols=["TAOUSD", "XBTUSD"],
+        create_missing=False,
+    )
+    after_touch = json.loads(kr_cache.read_text(encoding="utf-8"))
+    assert "TAOUSD" not in after_touch["fetchtime"]
+    assert after_touch["fetchtime"]["XBTUSD"] == now_ms + 5000
+
+    # 2. Item 4: Delivery state .previous repair under lock + concurrent NotificationServer queue writes.
+    deliv_file = tmp_path / "notification_delivery_state.json"
+    deliv_file.write_text("{corrupt", encoding="utf-8")
+    deliv_prev = tmp_path / "notification_delivery_state.json.previous"
+    deliv_prev.write_text(
+        json.dumps({"schema_version": 1, "date_utc": "2026-11-12", "channels": {"ntfy": {"sent": 3}}}),
+        encoding="utf-8",
+    )
+    repaired_state = alertnotifiers._load_delivery_state(deliv_file, "2026-11-12")
+    assert repaired_state["channels"]["ntfy"]["sent"] == 3
+    assert json.loads(deliv_file.read_text(encoding="utf-8"))["channels"]["ntfy"]["sent"] == 3
+    assert not deliv_prev.exists()
+
+    q_file = tmp_path / "notify_queue.json"
+    monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(q_file))
+    srv = NotificationServer()
+    q_threads = [
+        threading.Thread(target=srv._enqueue_payload, args=("ntfy_webhook", {"title": f"msg-{idx}"}))
+        for idx in range(12)
+    ]
+    for t in q_threads:
+        t.start()
+    for t in q_threads:
+        t.join()
+    q_lines = [json.loads(ln) for ln in q_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert {item["title"] for item in q_lines} == {f"msg-{idx}" for idx in range(12)}
+
+    # 3. Item 5A: SmartStopLossGuard preserves sibling bot symbols across independent tracker resets.
+    ssl_file = tmp_path / "smart_stop_loss_state.json"
+    monkeypatch.setattr(ssl_guard, "_SMART_SL_STATE_FILE", str(ssl_file))
+    ssl_guard._GRACE_TRACKER.clear()
+    ssl_guard._GRACE_FILE_MEMO.clear()
+    ssl_guard._LOADED_STATE_FILE_KEY = None
+    now_sec = 1_770_000_100.0
+    whale_ok = SimpleNamespace(top_traders_long_pct=0.66, taker_buy_sell_ratio=1.10, divergence_regime="neutral")
+    ob_ok = SimpleNamespace(imbalance_ratio=0.75, largest_bid_wall_usd=600_000.0)
+    guard = ssl_guard.SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+
+    with patch.object(ssl_guard, "_send_ntfy_alert"):
+        exec_a, _, _ = guard.evaluate(
+            "BTCUSDC", 0.030, 0.029, now=now_sec, provider="binance",
+            whale_snapshot=whale_ok, orderbook_snapshot=ob_ok,
+        )
+        assert exec_a is False
+
+        # Simulate Process B starting with a stale in-memory tracker lacking BTCUSDC.
+        ssl_guard._GRACE_TRACKER.clear()
+        ssl_guard._GRACE_TRACKER["SOLUSDC"] = {"start_ts": now_sec - 10.0, "provider": "replay"}
+        exec_b, _, _ = guard.evaluate(
+            "ETHUSDC", 0.030, 0.029, now=now_sec + 2.0, provider="binance",
+            whale_snapshot=whale_ok, orderbook_snapshot=ob_ok,
+        )
+        assert exec_b is False
+
+        disk_ssl = json.loads(ssl_file.read_text(encoding="utf-8"))
+        assert "BTCUSDC" in disk_ssl and "ETHUSDC" in disk_ssl
+        assert "SOLUSDC" not in disk_ssl
+
+        # Process A clears BTCUSDC on recovery; ETHUSDC must survive on disk.
+        assert guard.on_recovered(
+            "BTCUSDC", 0.010, 0.029, now=now_sec + 15.0, provider="binance", batch=True
+        ) is True
+        ssl_guard._PENDING_RECOVERIES.clear()
+        disk_ssl_after = json.loads(ssl_file.read_text(encoding="utf-8"))
+        assert "BTCUSDC" not in disk_ssl_after
+        assert "ETHUSDC" in disk_ssl_after
+
+    ssl_guard._GRACE_TRACKER.clear()
+    ssl_guard._GRACE_FILE_MEMO.clear()
+    ssl_guard._LOADED_STATE_FILE_KEY = None
+
+    # 4. Item 5B: Concurrent record_topic_turn across distinct topics preserves every topic entry.
+    reg_file = tmp_path / "llm_topic_threads.json"
+    cli_dir = tmp_path / "cli_base"
+    cli_dir.mkdir(parents=True, exist_ok=True)
+    topic_keys = (
+        "macro_sentiment",
+        "macro_geopolitical",
+        "auto_cryptotrade_executor",
+        "auto_sharetrade_executor",
+        "guard_high_stake",
+    )
+    with patch.object(topics, "mirror_topic_thread_to_ui"), patch.object(
+        topics, "get_thread_step_count", return_value=(True, 4, 4)
+    ):
+        topic_threads = [
+            threading.Thread(
+                target=topics.record_topic_turn,
+                kwargs={
+                    "topic_key": tk,
+                    "conversation_id": f"cid-{tk}",
+                    "response_text": json.dumps({"decision": "HOLD", "summary": f"ok-{tk}"}),
+                    "cli_base": str(cli_dir),
+                    "max_history_entries": 10,
+                    "registry_path": str(reg_file),
+                },
+            )
+            for tk in topic_keys
+        ]
+        for t in topic_threads:
+            t.start()
+        for t in topic_threads:
+            t.join()
+
+    saved_reg = topics.load_topic_registry(str(reg_file))
+    assert set(saved_reg.keys()) == set(topic_keys)
+    for tk in topic_keys:
+        assert saved_reg[tk]["conversation_id"] == f"cid-{tk}"
+        assert saved_reg[tk]["turn_count"] == 1
+    assert not (tmp_path / previous_generation_path(reg_file.name)).exists()
+
 
 
 

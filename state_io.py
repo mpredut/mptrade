@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
@@ -830,6 +831,54 @@ def _sidecar_path(path: str, suffix: str) -> str:
 previous_generation_path = partial(_sidecar_path, suffix="previous")
 meta_file_path = partial(_sidecar_path, suffix="meta")
 generation_lock_path = partial(_sidecar_path, suffix="generation.lock")
+
+_GEN_THREAD_LOCKS_GUARD = threading.Lock()
+_GEN_THREAD_LOCKS: dict[str, threading.RLock] = {}
+_GEN_LOCK_TLS = threading.local()
+
+
+@contextlib.contextmanager
+def generation_file_lock(
+    path: str | os.PathLike[str],
+    *,
+    lock_path: str | os.PathLike[str] | None = None,
+) -> Iterator[str]:
+    """Acquire a thread-reentrant and cross-process ``flock`` around a read-modify-write state transaction."""
+    eff_lock = (
+        _resolve_target_path(lock_path, abspath=True)
+        if lock_path is not None
+        else os.path.abspath(generation_lock_path(_resolve_target_path(path)))
+    )
+    parent = os.path.dirname(eff_lock)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with _GEN_THREAD_LOCKS_GUARD:
+        tlock = _GEN_THREAD_LOCKS.get(eff_lock)
+        if tlock is None:
+            if len(_GEN_THREAD_LOCKS) > 512:
+                _GEN_THREAD_LOCKS.clear()
+            tlock = threading.RLock()
+            _GEN_THREAD_LOCKS[eff_lock] = tlock
+    held: set[tuple[int, str]] | None = getattr(_GEN_LOCK_TLS, "held", None)
+    if held is None:
+        held = set()
+        _GEN_LOCK_TLS.held = held
+    key = (os.getpid(), eff_lock)
+    with tlock:
+        if key in held:
+            yield eff_lock
+            return
+        with open(eff_lock, "a+", encoding="utf-8") as lock_handle:
+            if fcntl is not None:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            held.add(key)
+            try:
+                yield eff_lock
+            finally:
+                held.discard(key)
+                if fcntl is not None:
+                    with contextlib.suppress(OSError):
+                        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def discard_generation_file(

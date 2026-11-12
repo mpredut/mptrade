@@ -50,7 +50,7 @@ from intelligence.internal.guards.guard_decision import (
     resolve_hierarchical_guard_mode,
 )
 import notify_engine.alertnotifiers as _alertnotifiers
-from state_io import read_json_dict_cached, save_json_state
+from state_io import generation_file_lock, read_json_dict, read_json_dict_cached, save_json_state
 
 load_dotenv()
 
@@ -101,9 +101,31 @@ _GRACE_FILE_MEMO: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
 _LOADED_STATE_FILE_KEY: Optional[Tuple[Any, ...]] = None
 
 
+def _sanitize_grace_entries(data: Dict[str, Any], now_curr: float) -> Dict[str, Dict[str, Any]]:
+    min_valid_ts = 1_000_000_000.0 if now_curr > 1_000_000_000.0 else 0.0
+    out: Dict[str, Dict[str, Any]] = {}
+    for k, v in data.items():
+        if not isinstance(v, dict):
+            continue
+        sts_sec = normalize_epoch_sec(v.get("start_ts"), default=None)
+        if sts_sec is None:
+            continue
+        if min_valid_ts > 0.0:
+            if sts_sec <= min_valid_ts:
+                continue
+        elif sts_sec < 0.0:
+            continue
+        if not (-5.0 <= (now_curr - sts_sec) < 3600.0):
+            continue
+        norm_k = clean_guard_symbol_key(k)
+        if norm_k:
+            out[norm_k] = dict(v, start_ts=sts_sec)
+    return out
+
+
 def _load_grace_state(*, is_sim: bool = False, now_ts: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
     global _LOADED_STATE_FILE_KEY
-    if _GRACE_TRACKER or is_sim:
+    if is_sim:
         return _GRACE_TRACKER
     state_file = _effective_smart_sl_state_file()
     data = read_json_dict_cached(state_file, _GRACE_FILE_MEMO)
@@ -117,33 +139,76 @@ def _load_grace_state(*, is_sim: bool = False, now_ts: Optional[float] = None) -
         return _GRACE_TRACKER
     # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
     now_curr = resolve_now_ts(now_ts, allow_zero=True)
-    clean_data = {
-        norm_k: dict(v, start_ts=sts_sec)
-        for k, v in data.items()
-        if isinstance(v, dict)
-        and (sts_sec := normalize_epoch_sec(v.get("start_ts"), default=None)) is not None
-        and sts_sec > 1_000_000_000
-        and -5.0 <= (now_curr - sts_sec) < 3600.0
-        and (norm_k := clean_guard_symbol_key(k))
+    clean_data = _sanitize_grace_entries(data, now_curr)
+    sim_entries = {
+        k: v
+        for k, v in _GRACE_TRACKER.items()
+        if isinstance(v, dict) and _is_simulated_provider(v.get("provider"))
     }
     _GRACE_TRACKER.clear()
+    _GRACE_TRACKER.update(sim_entries)
     _GRACE_TRACKER.update(clean_data)
     _LOADED_STATE_FILE_KEY = file_key
     return _GRACE_TRACKER
 
 
-def _save_grace_state() -> None:
+def _save_grace_state(
+    *,
+    upsert: Optional[Dict[str, Dict[str, Any]]] = None,
+    remove: Tuple[str, ...] = (),
+    now_ts: Optional[float] = None,
+) -> None:
     global _LOADED_STATE_FILE_KEY
     state_file = _effective_smart_sl_state_file()
+    resolved_state_file = str(resolve_cachedb_filepath(state_file))
     try:
-        persisted = {
-            k: v
-            for k, v in _GRACE_TRACKER.items()
-            if isinstance(v, dict) and not _is_simulated_provider(v.get("provider"))
-        }
-        save_json_state(state_file, persisted, indent=2)
-        _GRACE_FILE_MEMO.clear()
-        _LOADED_STATE_FILE_KEY = (state_file, None) if not persisted else None
+        with generation_file_lock(resolved_state_file):
+            if upsert is not None or remove:
+                disk_raw = read_json_dict(
+                    resolved_state_file,
+                    default={},
+                    recover_previous=True,
+                    repair_files=True,
+                )
+                now_curr = resolve_now_ts(now_ts, allow_zero=True)
+                persisted = {
+                    k: v
+                    for k, v in _sanitize_grace_entries(
+                        disk_raw if isinstance(disk_raw, dict) else {}, now_curr
+                    ).items()
+                    if not _is_simulated_provider(v.get("provider"))
+                }
+                for rm_key in remove:
+                    norm_rm = clean_guard_symbol_key(rm_key) or rm_key
+                    persisted.pop(norm_rm, None)
+                for up_key, up_val in (upsert or {}).items():
+                    if isinstance(up_val, dict) and not _is_simulated_provider(up_val.get("provider")):
+                        norm_up = clean_guard_symbol_key(up_key) or up_key
+                        persisted[norm_up] = dict(up_val)
+            else:
+                persisted = {
+                    k: v
+                    for k, v in _GRACE_TRACKER.items()
+                    if isinstance(v, dict) and not _is_simulated_provider(v.get("provider"))
+                }
+            save_json_state(resolved_state_file, persisted, indent=2)
+            if upsert is not None or remove:
+                sim_entries = {
+                    k: v
+                    for k, v in _GRACE_TRACKER.items()
+                    if isinstance(v, dict) and _is_simulated_provider(v.get("provider"))
+                }
+                _GRACE_TRACKER.clear()
+                _GRACE_TRACKER.update(sim_entries)
+                _GRACE_TRACKER.update(persisted)
+            _GRACE_FILE_MEMO.clear()
+            cached = read_json_dict_cached(state_file, _GRACE_FILE_MEMO)
+            memo_entry = _GRACE_FILE_MEMO.get(resolved_state_file)
+            _LOADED_STATE_FILE_KEY = (
+                (state_file, memo_entry[0], id(cached))
+                if memo_entry is not None and isinstance(cached, dict)
+                else ((state_file, None) if not persisted else None)
+            )
     except Exception as e:
         logger.warning("Could not persist smart stop-loss state: %s", e)
 
@@ -154,7 +219,7 @@ def _clear_grace_entry(sym_key: str, *, is_sim: bool, now_ts: Optional[float] = 
         grace_info = tracker.pop(sym_key, None)
         is_sim_eff = is_sim or _is_simulated_provider(grace_info.get("provider") if isinstance(grace_info, dict) else None)
         if not is_sim_eff:
-            _save_grace_state()
+            _save_grace_state(remove=(sym_key,), now_ts=now_ts)
 
 
 def _is_simulated_provider(provider: Optional[str]) -> bool:
@@ -363,7 +428,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
             cp_clean, bp_clean = safe_float(current_price, 0.0), safe_float(buy_price, 0.0)
             prefix = "[SMART_SL_SHADOW]" if self.mode == "shadow" else "[SMART_SL_ENFORCE]"
             if active_grace is None:
-                tracker[sym_key] = {
+                new_entry = {
                     "start_ts": now_ts,
                     "initial_loss_pct": round(price_decrease * 100.0, 3),
                     "lost_threshold_pct": round(lost_threshold * 100.0, 3),
@@ -371,8 +436,9 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
                     "current_price": cp_clean if cp_clean > 0.0 else None,
                     "buy_price": bp_clean if bp_clean > 0.0 else None,
                 }
+                tracker[sym_key] = new_entry
                 if not is_sim:
-                    _save_grace_state()
+                    _save_grace_state(upsert={sym_key: new_entry}, now_ts=now_ts)
                 reason = (
                     f"suspected_wick_hunt (whales {top_long_pct*100:.1f}% long, taker_ratio={taker_ratio:.2f}, "
                     f"loss={price_decrease*100:.2f}%) -> grace granted for {self.grace_seconds:.0f}s"
@@ -411,7 +477,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
 
             tracker.pop(sym_key, None)
             if not is_sim:
-                _save_grace_state()
+                _save_grace_state(remove=(sym_key,), now_ts=now_ts)
             reason = f"grace_period_expired ({self.grace_seconds:.0f}s elapsed without bounce)"
             print(f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}: {reason} -> executing stop-loss")
 
@@ -442,7 +508,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
         batch: bool = True,
     ) -> bool:
         """Called when price decrease drops back below or equal to threshold."""
-        if not _GRACE_TRACKER and (_LOADED_STATE_FILE_KEY is not None or _is_simulated_provider(provider)):
+        if not _GRACE_TRACKER and _is_simulated_provider(provider):
             return False
         sym_key = clean_guard_symbol_key(symbol)
         if not sym_key:
@@ -455,7 +521,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
             return False
         is_sim = is_sim_call or _is_simulated_provider(grace_info.get("provider"))
         if not is_sim:
-            _save_grace_state()
+            _save_grace_state(remove=(sym_key,), now_ts=now_ts)
         if _is_buy_price_changed(grace_info.get("buy_price"), buy_price):
             return False
         price_decrease, lost_threshold = safe_float(price_decrease, 0.0), safe_float(lost_threshold, 0.0)

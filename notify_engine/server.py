@@ -26,6 +26,7 @@ from state_io import (
     atomic_write_text,
     decode_embedded_json_dict,
     encode_json_payload,
+    generation_file_lock,
     parse_json_payload,
     read_json_dict,
     read_text_lines,
@@ -160,17 +161,19 @@ class NotificationServer:
         try:
             payload = dict(data) if isinstance(data, dict) else {}
             payload["__orchestrator_intent__"] = intent_type
+            encoded = encode_json_payload(payload)
             max_q = _queue_max_items()
-            existing = (
-                [ln.strip() for ln in read_text_lines(self.queue_file, keepends=True, errors="replace") if ln.strip()]
-                if os.path.exists(self.queue_file)
-                else []
-            )
-            if len(existing) >= max_q:
-                logging.warning(f"Retry queue full ({len(existing)} >= {max_q}); dropping oldest notification.")
-                existing = existing[-(max_q - 1):] if max_q > 1 else []
-            existing.append(encode_json_payload(payload))
-            atomic_write_text(self.queue_file, "".join(ln + "\n" for ln in existing))
+            with generation_file_lock(self.queue_file):
+                existing = (
+                    [ln.strip() for ln in read_text_lines(self.queue_file, keepends=True, errors="replace") if ln.strip()]
+                    if os.path.exists(self.queue_file)
+                    else []
+                )
+                if len(existing) >= max_q:
+                    logging.warning(f"Retry queue full ({len(existing)} >= {max_q}); dropping oldest notification.")
+                    existing = existing[-(max_q - 1):] if max_q > 1 else []
+                existing.append(encoded)
+                atomic_write_text(self.queue_file, "".join(ln + "\n" for ln in existing))
         except Exception as e:
             logging.error(f"Failed to enqueue notification: {e}")
 
@@ -598,15 +601,15 @@ class NotificationServer:
             except Exception as e:
                 logging.error(f"Error flushing pending bulk notifications: {e}")
 
-            if not os.path.exists(self.queue_file):
-                continue
-            
             try:
-                lines = read_text_lines(self.queue_file, keepends=True, errors="replace")
+                with generation_file_lock(self.queue_file):
+                    if not os.path.exists(self.queue_file):
+                        continue
+                    lines = read_text_lines(self.queue_file, keepends=True, errors="replace")
                 if not lines:
                     continue
-                
-                read_count = len(lines)
+
+                snapshot_stripped = [ln.strip() for ln in lines if ln.strip()]
                 remaining = []
                 success_count = 0
                 queue_dirty = False
@@ -684,16 +687,26 @@ class NotificationServer:
                         
                 if queue_dirty or success_count > 0 or len(remaining) != len(lines):
                     # Preserve any notifications appended concurrently while network I/O ran
-                    newly_appended = []
-                    if os.path.exists(self.queue_file):
-                        cur_lines = read_text_lines(self.queue_file, keepends=True, errors="replace")
-                        if len(cur_lines) > read_count:
-                            newly_appended = [
-                                l.strip() for l in cur_lines[read_count:] if l.strip()
+                    with generation_file_lock(self.queue_file):
+                        newly_appended = []
+                        if os.path.exists(self.queue_file):
+                            cur_stripped = [
+                                l.strip()
+                                for l in read_text_lines(self.queue_file, keepends=True, errors="replace")
+                                if l.strip()
                             ]
-                    combined = (remaining + newly_appended)[-_queue_max_items():]
-                    content = "".join(r + "\n" for r in combined)
-                    atomic_write_text(self.queue_file, content)
+                            if cur_stripped[:len(snapshot_stripped)] == snapshot_stripped:
+                                newly_appended = cur_stripped[len(snapshot_stripped):]
+                            else:
+                                snap_pool = list(snapshot_stripped)
+                                for item_ln in cur_stripped:
+                                    if item_ln in snap_pool:
+                                        snap_pool.remove(item_ln)
+                                    else:
+                                        newly_appended.append(item_ln)
+                        combined = (remaining + newly_appended)[-_queue_max_items():]
+                        content = "".join(r + "\n" for r in combined)
+                        atomic_write_text(self.queue_file, content)
                     if success_count > 0:
                         logging.info(f"Flushed {success_count} delayed notifications from queue.")
 

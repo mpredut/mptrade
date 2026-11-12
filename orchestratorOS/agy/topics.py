@@ -51,7 +51,7 @@ from orchestratorOS.agy.ui_mirror import (
     mirror_topic_thread_to_ui,
     sync_topic_thread_from_ui,
 )
-from state_io import extract_json_object, read_json_dict, save_json_state
+from state_io import extract_json_object, generation_file_lock, read_json_dict, save_json_state
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 
@@ -71,8 +71,17 @@ def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
         return os.path.join(_ROOT_DIR, "cachedb", "llm_topic_threads.json")
 
 
-def load_topic_registry(registry_path: Optional[str] = None) -> Dict[str, dict]:
-    data = dict(read_json_dict(get_topic_registry_path(registry_path), default={}, recover_previous=True))
+def load_topic_registry(
+    registry_path: Optional[str] = None, *, repair_files: bool = False
+) -> Dict[str, dict]:
+    data = dict(
+        read_json_dict(
+            get_topic_registry_path(registry_path),
+            default={},
+            recover_previous=True,
+            repair_files=repair_files,
+        )
+    )
     for old_key, new_key in TOPIC_ALIASES.items():
         if old_key in data:
             old_entry = data.pop(old_key)
@@ -85,7 +94,8 @@ def load_topic_registry(registry_path: Optional[str] = None) -> Dict[str, dict]:
 def save_topic_registry(registry: Dict[str, dict], registry_path: Optional[str] = None) -> None:
     path = get_topic_registry_path(registry_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    save_json_state(path, registry, indent=2)
+    with generation_file_lock(path):
+        save_json_state(path, registry, indent=2)
 
 
 def get_active_topic_cids(registry_path: Optional[str] = None) -> Set[str]:
@@ -125,7 +135,7 @@ def sync_all_topic_titles(
     ui_base = resolve_ui_cli_base()
     reg = load_topic_registry(registry_path)
     updated = 0
-    changed_reg = False
+    updated_titles: Dict[str, str] = {}
     ui_loaded_titles = daemon_loaded_titles(ui_base) if ui_base and os.path.isdir(ui_base) else {}
     for key, entry in reg.items():
         if not isinstance(entry, dict) or key not in TOPIC_SPECS:
@@ -133,7 +143,7 @@ def sync_all_topic_titles(
         canonical = TOPIC_SPECS[key].title
         if entry.get("title") != canonical:
             entry["title"] = canonical
-            changed_reg = True
+            updated_titles[key] = canonical
         raw_cid = entry.get("conversation_id")
         cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
         if not cid:
@@ -182,8 +192,18 @@ def sync_all_topic_titles(
             pass
         mirror_topic_thread_to_ui(cid, canonical, bot_cli_base=base)
         updated += 1
-    if changed_reg:
-        save_topic_registry(reg, registry_path)
+    if updated_titles:
+        reg_path = get_topic_registry_path(registry_path)
+        with generation_file_lock(reg_path):
+            fresh_reg = load_topic_registry(registry_path, repair_files=True)
+            dirty = False
+            for key, canonical in updated_titles.items():
+                cur_entry = fresh_reg.get(key)
+                if isinstance(cur_entry, dict) and cur_entry.get("title") != canonical:
+                    cur_entry["title"] = canonical
+                    dirty = True
+            if dirty:
+                save_topic_registry(fresh_reg, registry_path)
     return updated
 
 
@@ -211,9 +231,11 @@ class TopicSession(NamedTuple):
 def _load_topic_entry(
     topic_key: str,
     registry_path: Optional[str] = None,
+    *,
+    repair_files: bool = False,
 ) -> tuple[str, Dict[str, Any], Optional[Dict[str, Any]]]:
     resolved = canonical_topic_key(topic_key)
-    reg = load_topic_registry(registry_path)
+    reg = load_topic_registry(registry_path, repair_files=repair_files)
     entry = reg.get(resolved)
     return resolved, reg, entry if isinstance(entry, dict) else None
 
@@ -289,22 +311,28 @@ def prepare_topic_session(
             if compacted_at > step_count:
                 compacted_at = 0
             return TopicSession(cid, "", (step_count - compacted_at) >= compact_steps_i)
-        if exists:
-            logger.info(
-                "Topic '%s' conversation %s reached %d steps (max %d); rotating to a fresh thread with rolling memory.",
-                resolved,
-                cid,
-                step_count,
-                max_steps_i,
+        reg_path = get_topic_registry_path(registry_path)
+        with generation_file_lock(reg_path):
+            _, reg, fresh_entry = _load_topic_entry(
+                resolved, registry_path, repair_files=True
             )
-            _rotate_topic_conversation(base, entry, cid, None)
-        else:
-            # Runtime resilience: the permanent thread vanished from the store; recreate it once with memory.
-            logger.warning("Topic '%s' conversation %s no longer exists; recreating the topic thread.", resolved, cid)
-            entry["conversation_id"] = None
-            entry["compacted_at_step"] = 0
-        reg[resolved] = entry
-        save_topic_registry(reg, registry_path)
+            eff_entry = fresh_entry if fresh_entry is not None else entry
+            if exists:
+                logger.info(
+                    "Topic '%s' conversation %s reached %d steps (max %d); rotating to a fresh thread with rolling memory.",
+                    resolved,
+                    cid,
+                    step_count,
+                    max_steps_i,
+                )
+                _rotate_topic_conversation(base, eff_entry, cid, None)
+            else:
+                # Runtime resilience: the permanent thread vanished from the store; recreate it once with memory.
+                logger.warning("Topic '%s' conversation %s no longer exists; recreating the topic thread.", resolved, cid)
+                eff_entry["conversation_id"] = None
+                eff_entry["compacted_at_step"] = 0
+            reg[resolved] = eff_entry
+            save_topic_registry(reg, registry_path)
 
     return TopicSession(None, format_topic_history_prefix(resolved, registry_path), False)
 
@@ -375,62 +403,64 @@ def record_topic_turn(
     if max_history_entries is None:
         max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
 
-    _, reg, entry = _load_topic_entry(resolved, registry_path)
-    if entry is None:
-        entry = {"topic_key": resolved, "turn_count": 0, "rolling_history": []}
-
-    clean_cid = conversation_id.strip() if isinstance(conversation_id, str) and conversation_id.strip() else None
-    raw_existing = entry.get("conversation_id")
-    existing_cid = raw_existing.strip() if isinstance(raw_existing, str) and raw_existing.strip() else None
-    if clean_cid and existing_cid and clean_cid != existing_cid and (
-        replace_conv or (not get_thread_step_count(existing_cid, base)[0] and get_thread_step_count(clean_cid, base)[0])
-    ):
-        _rotate_topic_conversation(base, entry, existing_cid, clean_cid)
-        existing_cid = clean_cid
-    elif not existing_cid and clean_cid:
-        entry["conversation_id"] = clean_cid
-        entry["compacted_at_step"] = 0
-        existing_cid = clean_cid
-    active_cid = existing_cid
-    if active_cid:
-        _, step_count, _ = get_thread_step_count(active_cid, base)
-        entry["step_count"] = step_count
-        if compacted and active_cid == clean_cid:
-            entry["compacted_at_step"] = step_count
-            entry["compaction_count"] = safe_nonneg_int(entry.get("compaction_count"), 0) + 1
-    entry["topic_key"] = resolved
-    entry["turn_count"] = safe_nonneg_int(entry.get("turn_count"), 0) + 1
-    entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
-    entry["title"] = spec.title
-
-    history = [h for h in entry.get("rolling_history") or [] if isinstance(h, dict)]
     condensed = condense_decision(response_text)
-    if condensed:
-        history.append({"utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), "summary": condensed})
-    if max_history_entries > 0:
-        if len(history) > max_history_entries:
-            action_quota = max(1, max_history_entries // 3)
-            action_idxs = [
-                idx for idx, item in enumerate(history)
-                if any(
-                    tok in str(item.get("summary") or "")
-                    for tok in ("BUY(", "BUY:", "SELL(", "SELL:", "decision=BUY", "decision=SELL")
-                )
-            ]
-            pinned = set(action_idxs[-action_quota:])
-            recent_quota = max(0, max_history_entries - len(pinned))
-            for idx in range(len(history) - 1, -1, -1):
-                if len(pinned) >= max_history_entries or recent_quota <= 0:
-                    break
-                if idx not in pinned:
-                    pinned.add(idx)
-                    recent_quota -= 1
-            history = [history[idx] for idx in sorted(pinned)]
-        entry["rolling_history"] = history
-    else:
-        entry["rolling_history"] = []
-    reg[resolved] = entry
-    save_topic_registry(reg, registry_path)
+    reg_path = get_topic_registry_path(registry_path)
+    with generation_file_lock(reg_path):
+        _, reg, entry = _load_topic_entry(resolved, registry_path, repair_files=True)
+        if entry is None:
+            entry = {"topic_key": resolved, "turn_count": 0, "rolling_history": []}
+
+        clean_cid = conversation_id.strip() if isinstance(conversation_id, str) and conversation_id.strip() else None
+        raw_existing = entry.get("conversation_id")
+        existing_cid = raw_existing.strip() if isinstance(raw_existing, str) and raw_existing.strip() else None
+        if clean_cid and existing_cid and clean_cid != existing_cid and (
+            replace_conv or (not get_thread_step_count(existing_cid, base)[0] and get_thread_step_count(clean_cid, base)[0])
+        ):
+            _rotate_topic_conversation(base, entry, existing_cid, clean_cid)
+            existing_cid = clean_cid
+        elif not existing_cid and clean_cid:
+            entry["conversation_id"] = clean_cid
+            entry["compacted_at_step"] = 0
+            existing_cid = clean_cid
+        active_cid = existing_cid
+        if active_cid:
+            _, step_count, _ = get_thread_step_count(active_cid, base)
+            entry["step_count"] = step_count
+            if compacted and active_cid == clean_cid:
+                entry["compacted_at_step"] = step_count
+                entry["compaction_count"] = safe_nonneg_int(entry.get("compaction_count"), 0) + 1
+        entry["topic_key"] = resolved
+        entry["turn_count"] = safe_nonneg_int(entry.get("turn_count"), 0) + 1
+        entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
+        entry["title"] = spec.title
+
+        history = [h for h in entry.get("rolling_history") or [] if isinstance(h, dict)]
+        if condensed:
+            history.append({"utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), "summary": condensed})
+        if max_history_entries > 0:
+            if len(history) > max_history_entries:
+                action_quota = max(1, max_history_entries // 3)
+                action_idxs = [
+                    idx for idx, item in enumerate(history)
+                    if any(
+                        tok in str(item.get("summary") or "")
+                        for tok in ("BUY(", "BUY:", "SELL(", "SELL:", "decision=BUY", "decision=SELL")
+                    )
+                ]
+                pinned = set(action_idxs[-action_quota:])
+                recent_quota = max(0, max_history_entries - len(pinned))
+                for idx in range(len(history) - 1, -1, -1):
+                    if len(pinned) >= max_history_entries or recent_quota <= 0:
+                        break
+                    if idx not in pinned:
+                        pinned.add(idx)
+                        recent_quota -= 1
+                history = [history[idx] for idx in sorted(pinned)]
+            entry["rolling_history"] = history
+        else:
+            entry["rolling_history"] = []
+        reg[resolved] = entry
+        save_topic_registry(reg, registry_path)
     if active_cid:
         try:
             bot_row = read_summary_row(base, active_cid)

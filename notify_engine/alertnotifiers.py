@@ -9,7 +9,7 @@ sys.modules.setdefault("alertnotifiers", sys.modules[__name__])
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from state_io import encode_json_payload, read_json_dict, save_json_state
+from state_io import encode_json_payload, generation_file_lock, read_json_dict, save_json_state
 from typing import Any, Optional
 
 # Import your modules
@@ -223,8 +223,13 @@ def _positive_int_env(name: str, default: int) -> int:
     return val if (val is not None and val >= 0) else default
 
 
+def _delivery_state_lock(path: Path):
+    return generation_file_lock(path, lock_path=path.with_suffix(path.suffix + ".lock"))
+
+
 def _load_delivery_state(path: Path, today: str) -> dict:
-    state = read_json_dict(path, default={}, recover_previous=True)
+    with _delivery_state_lock(path):
+        state = read_json_dict(path, default={}, recover_previous=True, repair_files=True)
     if not isinstance(state, dict) or not isinstance(state.get("channels"), dict):
         return {"schema_version": 1, "date_utc": today, "channels": {}}
     if state.get("date_utc") != today:
@@ -239,9 +244,10 @@ def _load_delivery_state(path: Path, today: str) -> dict:
 
 def _save_delivery_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    save_json_state(
-        path, state, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-    )
+    with _delivery_state_lock(path):
+        save_json_state(
+            path, state, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        )
 
 
 def _is_guard_alert(alerts: list[Any]) -> bool:
@@ -721,7 +727,7 @@ def pass_common_gate(
     gate_sec, topic_bulk_sec = _gate_and_topic_bulk_seconds()
     sim_window = max(gate_sec, topic_bulk_sec, _dedup_seconds(alerts_list, urgent))
 
-    with FileLock(path.with_suffix(path.suffix + ".lock")):
+    with _delivery_state_lock(path):
         state = _load_delivery_state(path, today)
         channel_state = _normalize_channel_state(state, channel, now_ts)
         if _is_ntfy_channel_blocked(channel, channel_state, now_ts):
@@ -854,7 +860,7 @@ def pop_due_bulk_batch(
     if not path.exists() and not path.with_name(path.name + ".previous").exists():
         return None
     gate_sec, topic_bulk_sec = _gate_and_topic_bulk_seconds()
-    with FileLock(path.with_suffix(path.suffix + ".lock")):
+    with _delivery_state_lock(path):
         state = _load_delivery_state(path, today)
         if channel not in state["channels"]:
             return None
@@ -903,7 +909,7 @@ def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) ->
     cfg_path = optional_env("NOTIFICATION_STATE_FILE")
     path = Path(cfg_path).expanduser() if cfg_path else BASE_DIR / "logs/notification_delivery_state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with FileLock(path.with_suffix(path.suffix + ".lock")):
+    with _delivery_state_lock(path):
         state = _load_delivery_state(path, today)
         channel_state = state["channels"].setdefault(channel, {})
         first = _claim_budget_warning(channel_state)
