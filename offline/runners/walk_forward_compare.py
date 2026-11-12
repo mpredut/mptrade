@@ -147,20 +147,25 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
             )
         return records
 
+    def _store_interval_dataset(
+        interval: int, frozen_spec: str, sha256_hex: str, raw_ws: Any
+    ) -> None:
+        records = _load_and_verify_frozen(frozen_spec, sha256_hex, interval)
+        window_sizes = raw_ws if isinstance(raw_ws, dict) else {}
+        warmup = safe_nonneg_int(window_sizes.get("signal_warmup_bars"), default=warmup_bars)
+        datasets[interval] = (records, window_sizes, warmup)
+
     if isinstance(report.get("intervals"), dict) and report["intervals"]:
         for interval_text, section in report["intervals"].items():
             interval = parse_interval_minutes(interval_text)
             if not isinstance(section, dict) or not isinstance(section.get("dataset"), dict):
                 raise ValueError(f"missing dataset metadata for {interval}m")
-            records = _load_and_verify_frozen(
+            _store_interval_dataset(
+                interval,
                 section["dataset"]["frozen_file"],
                 section["dataset"]["sha256"],
-                interval,
+                section.get("window_sizes") or section.get("windows"),
             )
-            raw_ws = section.get("window_sizes") or section.get("windows")
-            window_sizes = raw_ws if isinstance(raw_ws, dict) else {}
-            warmup = safe_nonneg_int(window_sizes.get("signal_warmup_bars"), default=warmup_bars)
-            datasets[interval] = (records, window_sizes, warmup)
     elif isinstance(report.get("dataset"), dict) and (
         isinstance(report.get("windows"), dict) or isinstance(report.get("window_sizes"), dict)
     ):
@@ -190,11 +195,12 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
                 frozen_spec = source.split("frozen file: ", 1)[1].strip()
         if not frozen_spec:
             raise ValueError(f"could not determine frozen dataset file path for {interval}m")
-        records = _load_and_verify_frozen(frozen_spec, dataset_meta["sha256"], interval)
-        raw_ws = report.get("windows") or report.get("window_sizes")
-        window_sizes = raw_ws if isinstance(raw_ws, dict) else {}
-        warmup = safe_nonneg_int(window_sizes.get("signal_warmup_bars"), default=warmup_bars)
-        datasets[interval] = (records, window_sizes, warmup)
+        _store_interval_dataset(
+            interval,
+            frozen_spec,
+            dataset_meta["sha256"],
+            report.get("windows") or report.get("window_sizes"),
+        )
     return datasets
 
 

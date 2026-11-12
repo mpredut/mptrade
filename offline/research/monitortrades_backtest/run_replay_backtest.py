@@ -485,6 +485,10 @@ def run_symbol(
                         n_seeds += 1
                     continue
 
+                def _maybe_log_progress() -> None:
+                    if from_disk and n_ticks % 20000 == 0:
+                        sys.stderr.write(f"[{symbol}] {n_ticks} ticks, seeds={n_seeds}\n")
+
                 if (
                     quiet
                     and provider._orders_version == _fast_ver
@@ -496,8 +500,7 @@ def run_symbol(
                     and symbol not in mt._PENDING_STOP_EXIT
                 ):
                     if not _fast_has_sells:
-                        if from_disk and n_ticks % 20000 == 0:
-                            sys.stderr.write(f"[{symbol}] {n_ticks} ticks, seeds={n_seeds}\n")
+                        _maybe_log_progress()
                         continue
                     reentry_st = mt._REENTRY_STATE.get(symbol)
                     if reentry_st is not None and reentry_st.get("sell_time") == _fast_sell_time:
@@ -521,8 +524,7 @@ def run_symbol(
                                 reentry_st["peak_bounce"] = max(reentry_st.get("peak_bounce", price), price)
                             if price > reentry_st["peak"]:
                                 reentry_st["peak"] = price
-                            if from_disk and n_ticks % 20000 == 0:
-                                sys.stderr.write(f"[{symbol}] {n_ticks} ticks, seeds={n_seeds}\n")
+                            _maybe_log_progress()
                             continue
 
                 mt.monitor_price_and_trade(inst, sbs=SBS, maxage_trade_s=maxage_s, now_fn=_now_fn)
@@ -538,11 +540,7 @@ def run_symbol(
                         b_ords = provider.get_orders(symbol, "BUY", maxage_s)
                         s_ords = provider.get_orders(symbol, "SELL", maxage_s)
                         min_ts = math.inf
-                        for o in b_ords:
-                            o_ts = safe_float(o["timestamp"], default=None)
-                            if o_ts is not None and o_ts < min_ts:
-                                min_ts = o_ts
-                        for o in s_ords:
+                        for o in (*b_ords, *s_ords):
                             o_ts = safe_float(o["timestamp"], default=None)
                             if o_ts is not None and o_ts < min_ts:
                                 min_ts = o_ts
@@ -588,8 +586,7 @@ def run_symbol(
                         ) if (s_ords and s_px) else math.inf
                         _fast_ver = cur_ver
 
-                if from_disk and n_ticks % 20000 == 0:
-                    sys.stderr.write(f"[{symbol}] {n_ticks} ticks, seeds={n_seeds}\n")
+                _maybe_log_progress()
             if cached_tape is None and len(recorded_tape) == len(series):
                 lru_dict_put(_TREND_TAPE_CACHE, tape_key, tuple(recorded_tape), max_entries=16)
             lru_dict_put(_LAST_HARD_TP_TOUCHED, tape_key, hard_tp_touched, max_entries=64)

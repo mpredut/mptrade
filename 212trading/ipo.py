@@ -152,6 +152,19 @@ def main() -> int:
                    body=f"LIMIT qty=0.5 @ 99 USD\n{ts}", source="trade", desktop=args.desktop)
         log("[TEST] Done.")
         return 0
+    def _submit_resolved_order(
+        ticker: str, px_f: float, invalid_msg: str, *, write_marker: bool = True
+    ) -> int:
+        qty_f = safe_pos_float(resolve_quantity(px_f, order_qty, order_budget_ron), default=None)
+        if qty_f is None:
+            log(invalid_msg)
+            return 1
+        ok = place_order_with_retry(
+            client, ticker, qty_f, px_f, order_validity,
+            order_dry, desktop=args.desktop, write_marker=write_marker,
+        )
+        return 0 if ok else 1
+
     if args.test_order:
         px_f = safe_pos_float(order_price, default=None)
         if px_f is None:
@@ -160,15 +173,7 @@ def main() -> int:
         if safe_pos_float(order_qty, default=None) is None and safe_pos_float(order_budget_ron, default=None) is None:
             log("! ORDER_QTY or ORDER_BUDGET_RON missing from .env")
             return 1
-        qty_f = safe_pos_float(resolve_quantity(px_f, order_qty, order_budget_ron), default=None)
-        if qty_f is None:
-            log("! invalid quantity")
-            return 1
-        ok = place_order_with_retry(
-            client, args.test_order, qty_f, px_f, order_validity,
-            order_dry, desktop=args.desktop, write_marker=False,
-        )
-        return 0 if ok else 1
+        return _submit_resolved_order(args.test_order, px_f, "! invalid quantity", write_marker=False)
     if args.test_strategy:
         log(f"[TEST STRATEGY] {args.test_strategy}  {'PAPER' if strat_dry else '⚠ REAL'}")
         Strategy(client, args.test_strategy, StratParams.from_env(),
@@ -229,13 +234,9 @@ def main() -> int:
             return 0
         px_f = safe_pos_float(order_price, default=None)
         if px_f is not None:
-            qty_f = safe_pos_float(resolve_quantity(px_f, order_qty, order_budget_ron), default=None)
-            if qty_f is None:
-                log("  ! invalid qty/budget — the order was NOT SENT")
-                return 1
-            ok = place_order_with_retry(client, t212_ticker, qty_f, px_f,
-                                        order_validity, order_dry, desktop=args.desktop)
-            return 0 if ok else 1
+            return _submit_resolved_order(
+                t212_ticker, px_f, "  ! invalid qty/budget — the order was NOT SENT"
+            )
         log("  ! neither STRAT_ENABLED nor ORDER_PRICE — nothing to trade.")
         return 1
     except KeyboardInterrupt:

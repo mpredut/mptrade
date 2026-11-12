@@ -54,22 +54,17 @@ def parse_fields(buf: bytes) -> List[Field]:
             raise ValueError("invalid field tag 0")
         if wire == 0:
             v, pos = dec_varint(buf, pos)
-        elif wire == 2:
-            n, pos = dec_varint(buf, pos)
+        elif wire in (1, 2, 5):
+            if wire == 2:
+                n, pos = dec_varint(buf, pos)
+                err_lbl = "length-delimited"
+            elif wire == 1:
+                n, err_lbl = 8, "fixed64"
+            else:
+                n, err_lbl = 4, "fixed32"
             if pos + n > len(buf):
-                raise ValueError("truncated length-delimited field")
-            v = buf[pos:pos + n]
-            pos += n
-        elif wire == 1:
-            if pos + 8 > len(buf):
-                raise ValueError("truncated fixed64 field")
-            v = buf[pos:pos + 8]
-            pos += 8
-        elif wire == 5:
-            if pos + 4 > len(buf):
-                raise ValueError("truncated fixed32 field")
-            v = buf[pos:pos + 4]
-            pos += 4
+                raise ValueError(f"truncated {err_lbl} field")
+            v, pos = buf[pos:pos + n], pos + n
         else:
             raise ValueError(f"unsupported wire type {wire}")
         out.append((tag, wire, v))

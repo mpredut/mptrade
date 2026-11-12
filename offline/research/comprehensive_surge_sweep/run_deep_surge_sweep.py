@@ -678,16 +678,20 @@ def main():
         lines.append(f"# Description: {top_cand['desc']}")
         sp = top_cand.get("strategy_params")
         if isinstance(sp, dict):
-            lines.append(f"STRAT_SURGE_GUARD={'true' if sp.get('surge_guard') else 'false'}")
-            lines.append(f"STRAT_SURGE_DYNAMIC={'true' if sp.get('surge_dynamic') else 'false'}")
-            lines.append(f"STRAT_SURGE_GAIN_PCT={sp.get('surge_gain_pct')}")
-            lines.append(f"STRAT_SURGE_MOVE_PCT={sp.get('surge_move_pct')}")
-            lines.append(f"STRAT_SURGE_EXIT_PULLBACK_PCT={sp.get('surge_exit_pullback_pct')}")
-            lines.append(f"STRAT_SURGE_WINDOW_HOURS={sp.get('surge_window_hours')}")
+            lines.extend([
+                f"STRAT_SURGE_GUARD={'true' if sp.get('surge_guard') else 'false'}",
+                f"STRAT_SURGE_DYNAMIC={'true' if sp.get('surge_dynamic') else 'false'}",
+                f"STRAT_SURGE_GAIN_PCT={sp.get('surge_gain_pct')}",
+                f"STRAT_SURGE_MOVE_PCT={sp.get('surge_move_pct')}",
+                f"STRAT_SURGE_EXIT_PULLBACK_PCT={sp.get('surge_exit_pullback_pct')}",
+                f"STRAT_SURGE_WINDOW_HOURS={sp.get('surge_window_hours')}",
+            ])
             if sp.get("surge_dynamic"):
-                lines.append(f"STRAT_SURGE_MIN_GAIN_PCT={sp.get('surge_min_gain_pct')}")
-                lines.append(f"STRAT_SURGE_MAX_GAIN_PCT={sp.get('surge_max_gain_pct')}")
-                lines.append(f"STRAT_SURGE_VOL_MULTIPLIER={sp.get('surge_vol_multiplier')}")
+                lines.extend([
+                    f"STRAT_SURGE_MIN_GAIN_PCT={sp.get('surge_min_gain_pct')}",
+                    f"STRAT_SURGE_MAX_GAIN_PCT={sp.get('surge_max_gain_pct')}",
+                    f"STRAT_SURGE_VOL_MULTIPLIER={sp.get('surge_vol_multiplier')}",
+                ])
             if sp.get("reentry_bear_bounce_pct") is not None:
                 lines.append(f"STRAT_REENTRY_BEAR_BOUNCE_PCT={sp.get('reentry_bear_bounce_pct')}")
     lines.append("```\n")

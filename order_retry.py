@@ -581,22 +581,20 @@ def enqueue(
                 if pair[1].get("last_failure_reason") in {"trend_deferred", "medium_trend_deferred"}
             ]
             candidates = deferred or pending
-            if not candidates:
-                print(
-                    f"[order_retry] queue full ({len(existing)}/{RETRY_MAX_QUEUE}); "
-                    f"cannot enqueue {side_u} {symbol} because every record is protected"
-                )
-                return None
             remove_count = len(existing) - RETRY_MAX_QUEUE + 1
+            if len(candidates) < remove_count:
+                reason_msg = (
+                    f"queue full ({len(existing)}/{RETRY_MAX_QUEUE}); "
+                    f"cannot enqueue {side_u} {symbol} because every record is protected"
+                    if not candidates
+                    else f"queue over capacity ({len(existing)}/{RETRY_MAX_QUEUE}); "
+                    f"cannot enqueue {side_u} {symbol} without evicting protected records"
+                )
+                print(f"[order_retry] {reason_msg}")
+                return None
             victims = sorted(
                 candidates, key=lambda pair: safe_nonneg_float(pair[1].get("created_ts"), default=0.0)
             )[:remove_count]
-            if len(victims) < remove_count:
-                print(
-                    f"[order_retry] queue over capacity ({len(existing)}/{RETRY_MAX_QUEUE}); "
-                    f"cannot enqueue {side_u} {symbol} without evicting protected records"
-                )
-                return None
             victim_ids = {id(item) for _, item in victims}
             existing = [item for item in existing if id(item) not in victim_ids]
             evicted = victims[0][1]

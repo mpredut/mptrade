@@ -718,12 +718,9 @@ def monitor_orders():
             touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
             time.sleep(MONITOR_OPEN_ORDER_INTERVAL)
 
-        except ProviderError as e:
-            print(f"Provider API error: {e}")
-            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
-            time.sleep(TIME_SLEEP_ERROR)
         except Exception as e:
-            print(f"Error: {e}")
+            err_prefix = "Provider API error" if isinstance(e, ProviderError) else "Error"
+            print(f"{err_prefix}: {e}")
             touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
             time.sleep(TIME_SLEEP_ERROR)
 

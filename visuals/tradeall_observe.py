@@ -999,11 +999,7 @@ setInterval(function() {{
                                                 os.path.join(directory, f"tradeall_live_{symbol}_state.png"))
                     except Exception as e:
                         print(f"[tradeall_observe] render error {symbol}: {e}")
-                monotonic_now = time.monotonic()
-                if monotonic_now - last_memory_trim >= MEMORY_TRIM_SECONDS:
-                    _release_unused_memory()
-                    last_memory_trim = monotonic_now
-                time.sleep(interval_sec)
+                last_memory_trim = _trim_memory_and_sleep(last_memory_trim, interval_sec)
         except KeyboardInterrupt:
             print("\n[tradeall_observe] stopped.")
         return
@@ -1101,13 +1097,18 @@ setInterval(function() {{
                 last_day = cycle_start
             if due_week:
                 last_week = cycle_start
-            monotonic_now = time.monotonic()
-            if monotonic_now - last_memory_trim >= MEMORY_TRIM_SECONDS:
-                _release_unused_memory()
-                last_memory_trim = monotonic_now
-            time.sleep(interval_sec)
+            last_memory_trim = _trim_memory_and_sleep(last_memory_trim, interval_sec)
     except KeyboardInterrupt:
         print("\n[tradeall_observe] stopped.")
+
+
+def _trim_memory_and_sleep(last_memory_trim: float, interval_sec: float) -> float:
+    monotonic_now = time.monotonic()
+    if monotonic_now - last_memory_trim >= MEMORY_TRIM_SECONDS:
+        _release_unused_memory()
+        last_memory_trim = monotonic_now
+    time.sleep(interval_sec)
+    return last_memory_trim
 
 
 if __name__ == "__main__":

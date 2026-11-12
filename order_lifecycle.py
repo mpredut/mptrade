@@ -413,6 +413,20 @@ class TrackedOrderLifecycle:
         self._record_status_and_persist(pending, status, persist, "order_terminal")
         return TrackedOrderResult("terminal", pending, status)
 
+    def _record_lifecycle_error(
+        self,
+        pending: dict,
+        persist: PersistPending,
+        err_key: str,
+        audit_event: str,
+        exc: Exception,
+        status=None,
+    ) -> TrackedOrderResult:
+        pending[err_key] = f"{exc.__class__.__name__}: {exc}"
+        persist(dict(pending))
+        self._audit(audit_event, pending, error_type=exc.__class__.__name__, error=str(exc))
+        return TrackedOrderResult("active", pending, status)
+
     def reconcile(self, intent: dict, *, persist: PersistPending) -> TrackedOrderResult:
         """Reconcile one pending intent against venue truth; never submit here."""
         pending = self._copy_and_validate_identity(intent)
@@ -437,14 +451,14 @@ class TrackedOrderLifecycle:
                     symbol, client_order_id, provider_name=self.provider_name
                 )
             except Exception as exc:
-                pending["lookup_error"] = f"{exc.__class__.__name__}: {exc}"
-                persist(dict(pending))
-                self._audit("lookup_error", pending, error_type=exc.__class__.__name__, error=str(exc))
+                active_res = self._record_lifecycle_error(
+                    pending, persist, "lookup_error", "lookup_error", exc
+                )
                 if self.retry_on_lookup_error:
                     persist(None)
                     self._audit("lookup_retryable", pending)
                     return TrackedOrderResult("retryable", pending)
-                return TrackedOrderResult("active", pending)
+                return active_res
             fields = self._order_fields(native)
             if not fields.get("order_id"):
                 misses = (safe_nonneg_int(pending.get("lookup_misses"), default=0) or 0) + 1
@@ -468,10 +482,9 @@ class TrackedOrderLifecycle:
         try:
             status = self.market_api.order_status(symbol, str(order_id), provider_name=self.provider_name)
         except Exception as exc:
-            pending["status_error"] = f"{exc.__class__.__name__}: {exc}"
-            persist(dict(pending))
-            self._audit("status_error", pending, error_type=exc.__class__.__name__, error=str(exc))
-            return TrackedOrderResult("active", pending)
+            return self._record_lifecycle_error(
+                pending, persist, "status_error", "status_error", exc
+            )
 
         pending.pop("status_error", None)
         if status.terminal:
@@ -496,10 +509,9 @@ class TrackedOrderLifecycle:
         try:
             self.market_api.cancel_order(symbol, str(order_id), provider_name=self.provider_name)
         except Exception as exc:
-            pending["cancel_error"] = f"{exc.__class__.__name__}: {exc}"
-            persist(dict(pending))
-            self._audit("cancel_ambiguous", pending, error_type=exc.__class__.__name__, error=str(exc))
-            return TrackedOrderResult("active", pending, status)
+            return self._record_lifecycle_error(
+                pending, persist, "cancel_error", "cancel_ambiguous", exc, status
+            )
 
         pending.pop("cancel_error", None)
         persist(dict(pending))
@@ -507,10 +519,9 @@ class TrackedOrderLifecycle:
         try:
             post_cancel = self.market_api.order_status(symbol, str(order_id), provider_name=self.provider_name)
         except Exception as exc:
-            pending["status_error"] = f"{exc.__class__.__name__}: {exc}"
-            persist(dict(pending))
-            self._audit("post_cancel_status_error", pending, error_type=exc.__class__.__name__, error=str(exc))
-            return TrackedOrderResult("active", pending, status)
+            return self._record_lifecycle_error(
+                pending, persist, "status_error", "post_cancel_status_error", exc, status
+            )
         if post_cancel.terminal:
             return self._persist_terminal(pending, post_cancel, persist)
         pending["last_status"] = post_cancel.status
