@@ -1095,17 +1095,18 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
         pinfo["recent_1h_low_px"] = round(r1h_new, eff_dec_b)
         b_struct = pinfo.get("bottom_structure_6h")
         if r1h_new <= p6h_lo and p_cur <= p6h_lo:
-            pinfo.pop("higher_low_vs_prior_pct", None)
-            pinfo.pop("reclaim_above_prior_low_pct", None)
+            for k_b in ("higher_low_vs_prior_pct", "reclaim_above_prior_low_pct"):
+                pinfo.pop(k_b, None)
             if ((p_cur / r1h_new) - 1.0) * 100.0 <= 2.5:
                 pinfo["bottom_structure_6h"] = "FRESH_6H_LOW_TEST"
             else:
                 for k_b in ("bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px"):
                     pinfo.pop(k_b, None)
         elif r1h_new < p6h_lo and p_cur > p6h_lo and b_struct in ("HIGHER_LOW_DOUBLE_BOTTOM", "LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST"):
-            pinfo["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
             pinfo.pop("higher_low_vs_prior_pct", None)
-            pinfo["reclaim_above_prior_low_pct"] = pct_delta(p_cur, p6h_lo)
+            pinfo.update(
+                {"bottom_structure_6h": "LIQUIDITY_SWEEP_RECLAIM", "reclaim_above_prior_low_pct": pct_delta(p_cur, p6h_lo)}
+            )
         elif b_struct == "HIGHER_LOW_DOUBLE_BOTTOM" or (
             b_struct == "FRESH_6H_LOW_TEST"
             and r1h_new >= p6h_lo
@@ -1114,9 +1115,10 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
                 or (r1h_new > p6h_lo and p_cur > r1h_new * 1.0005 and p_cur > p6h_lo * 1.001)
             )
         ):
-            pinfo["bottom_structure_6h"] = "HIGHER_LOW_DOUBLE_BOTTOM"
             pinfo.pop("reclaim_above_prior_low_pct", None)
-            pinfo["higher_low_vs_prior_pct"] = pct_delta(r1h_new, p6h_lo)
+            pinfo.update(
+                {"bottom_structure_6h": "HIGHER_LOW_DOUBLE_BOTTOM", "higher_low_vs_prior_pct": pct_delta(r1h_new, p6h_lo)}
+            )
     eff_dec_15m = _auto_px_decimals(p_cur)
     p_cur_15m = round(p_cur, eff_dec_15m)
     if isinstance(tape_15m := pinfo.get("recent_tape_15m"), list) and tape_15m:

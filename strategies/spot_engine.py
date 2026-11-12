@@ -809,19 +809,22 @@ class Strategy(BaseSpotMixin):
                 total_vol = 0.0 if status.filled_qty is None else safe_nonneg_float(status.filled_qty, default=None)
                 total_fee = 0.0 if status.fee is None else safe_float(status.fee, default=None)
                 ord_px = safe_pos_float(o.get("price"), default=None)
-                if total_vol is None or total_fee is None or ord_px is None:
-                    log(f"  ! [STRAT] status {o['txid']} has an invalid execution -- keeping the order")
-                    continue
-                if status.cost is None:
-                    total_cost = total_vol * ord_px
-                else:
-                    raw_cost = safe_nonneg_float(status.cost, default=None)
-                    total_cost = (total_vol * ord_px) if raw_cost == 0.0 and total_vol > 0 else raw_cost
-                if total_cost is None:
-                    log(f"  ! [STRAT] status {o['txid']} has an invalid execution -- keeping the order")
-                    continue
-                reported_price = safe_pos_float(total_cost / total_vol if total_vol > 0 else ord_px, default=None)
-                if reported_price is None:
+                raw_cost = safe_nonneg_float(status.cost, default=None)
+                total_cost = (
+                    None
+                    if (total_vol is None or ord_px is None)
+                    else (
+                        total_vol * ord_px
+                        if (status.cost is None or (raw_cost == 0.0 and total_vol > 0))
+                        else raw_cost
+                    )
+                )
+                reported_price = (
+                    None
+                    if (total_cost is None or total_vol is None)
+                    else safe_pos_float(total_cost / total_vol if total_vol > 0 else ord_px, default=None)
+                )
+                if total_vol is None or total_fee is None or ord_px is None or total_cost is None or reported_price is None:
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution -- keeping the order")
                     continue
 
@@ -1361,6 +1364,12 @@ class Strategy(BaseSpotMixin):
         self, price: float, clean_ts: float | None, had_persisted_reconcile: bool
     ) -> bool:
         """Synchronize strategy holdings with the venue balance when flagged; return True to stop step."""
+        def _finish_reconcile(result: bool, *, save: bool = True) -> bool:
+            self.s["ledger_reconcile_required"] = False
+            if save:
+                self._save()
+            return result
+
         held = self.s["qty"]
         try:
             precision = self.client.pair_precision(self.pair)
@@ -1413,13 +1422,8 @@ class Strategy(BaseSpotMixin):
                 ):
                     self.s[k] = defaults[k]
                 self._seed_post_exit_anchors(price, inferred_exit_kind, clean_ts if clean_ts is not None else self._now())
-                self.s["ledger_reconcile_required"] = False
-                self._save()
-            else:
-                self.s["ledger_reconcile_required"] = False
-                if had_persisted_reconcile:
-                    self._save()
-            return True
+                return _finish_reconcile(True)
+            return _finish_reconcile(True, save=had_persisted_reconcile)
         if ledger_qty + tolerance < held:
             log(
                 f"  ! [STRAT] LEDGER RECONCILE: state qty={held:.{self.vol_dec}f} -> "
@@ -1429,9 +1433,7 @@ class Strategy(BaseSpotMixin):
             self.s["qty"] = ledger_qty
             self.s["cost"] = (safe_nonneg_float(self.s.get("cost"), default=0.0) or 0.0) * ratio
             self.s["spent"] = (safe_nonneg_float(self.s.get("spent"), default=0.0) or 0.0) * ratio
-            self.s["ledger_reconcile_required"] = False
-            self._save()
-            return True
+            return _finish_reconcile(True)
         if (
             self.observe_only
             and open_sell_qty > 0.0
@@ -1443,9 +1445,7 @@ class Strategy(BaseSpotMixin):
                 self.s["qty"] = ledger_qty
                 self.s["cost"] = ledger_qty * avg_existing
                 self.s["spent"] = ledger_qty * avg_existing
-                self.s["ledger_reconcile_required"] = False
-                self._save()
-                return True
+                return _finish_reconcile(True)
         if self.observe_only and ledger_qty > held + tolerance and (ledger_qty - held) * price >= 5.0:
             log(
                 f"  ! [STRAT] LEDGER RECONCILE: external BUY on venue ({base}: "
@@ -1485,13 +1485,8 @@ class Strategy(BaseSpotMixin):
             else:
                 self.s["dca_buys"] = safe_nonneg_int(self.s.get("dca_buys"), default=0) + 1
             self.s["last_buy_price"] = fill_px
-            self.s["ledger_reconcile_required"] = False
-            self._save()
-            return True
-        self.s["ledger_reconcile_required"] = False
-        if had_persisted_reconcile:
-            self._save()
-        return False
+            return _finish_reconcile(True)
+        return _finish_reconcile(False, save=had_persisted_reconcile)
 
     # -- Step Pipeline Sub-Stages ----------------------------------------------
     def _step_sync_market(

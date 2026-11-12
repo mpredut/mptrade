@@ -253,32 +253,30 @@ def mode_pre(force: bool = False) -> int:
             continue
         if os.path.exists(p2):
             if same_file(p1, p2):
-                if checkpoint_db(p1):
+                if not checkpoint_db(p1):
+                    skipped += 1
+                    continue
+                os.remove(p1)
+                unlinked += 1
+            else:
+                # diverged copies: keep the newer in D2, back up the other one, never overwrite silently
+                diverged += 1
+                if os.stat(p1).st_mtime_ns > os.stat(p2).st_mtime_ns and checkpoint_db(p1) and checkpoint_db(p2):
+                    backup_file(p2, stamp)
+                    durable_replace_file(p1, p2)
+                elif checkpoint_db(p1):
+                    backup_file(p1, stamp)
                     os.remove(p1)
-                    drop_wal_sidecars(p1, force=False)
-                    unlinked += 1
                 else:
                     skipped += 1
-                continue
-            # diverged copies: keep the newer in D2, back up the other one, never overwrite silently
-            diverged += 1
-            if os.stat(p1).st_mtime_ns > os.stat(p2).st_mtime_ns and checkpoint_db(p1) and checkpoint_db(p2):
-                backup_file(p2, stamp)
-                durable_replace_file(p1, p2)
-                drop_wal_sidecars(p1, force=False)
-            elif checkpoint_db(p1):
-                backup_file(p1, stamp)
-                os.remove(p1)
-                drop_wal_sidecars(p1, force=False)
-            else:
+                    continue
+        else:
+            if not checkpoint_db(p1):
                 skipped += 1
-            continue
-        if not checkpoint_db(p1):
-            skipped += 1
-            continue
-        shutil.move(p1, p2)
+                continue
+            shutil.move(p1, p2)
+            moved += 1
         drop_wal_sidecars(p1, force=False)
-        moved += 1
 
     # leftover WAL/SHM sidecars on the real files
     for p2 in glob.glob(os.path.join(glob.escape(D2), "*.db")):

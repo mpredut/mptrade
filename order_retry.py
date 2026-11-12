@@ -736,16 +736,14 @@ def _record_order_and_client_ids(r: dict) -> list:
 
 def get_accepted_order_ttl_map() -> dict:
     """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
-    res = {}
-    for r in _safe_load_all():
-        lc = str(r.get("lifecycle") or "").lower()
-        if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
-            continue
-        ttl_val = safe_pos_float(r.get("ttl_sec"), default=None)
-        if ttl_val is not None:
-            for k in _record_order_and_client_ids(r):
-                res[k] = ttl_val
-    return res
+    return {
+        k: ttl_val
+        for r in _safe_load_all()
+        if (lc := str(r.get("lifecycle") or "").lower()) == "accepted"
+        or (lc == "submit_pending" and r.get("order_id") is None)
+        if (ttl_val := safe_pos_float(r.get("ttl_sec"), default=None)) is not None
+        for k in _record_order_and_client_ids(r)
+    }
 
 
 def _is_concrete_owner(owner: str) -> bool:

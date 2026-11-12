@@ -295,28 +295,25 @@ def prepare_topic_session(
     if cid:
         sync_topic_thread_from_ui(cid, bot_cli_base=base)
         exists, step_count, _ = get_thread_step_count(cid, base)
-        if exists:
-            if max_steps_i > 0 and step_count >= max_steps_i:
-                logger.info(
-                    "Topic '%s' conversation %s reached %d steps (max %d); rotating to a fresh thread with rolling memory.",
-                    resolved,
-                    cid,
-                    step_count,
-                    max_steps_i,
-                )
-                _rotate_topic_conversation(base, entry, cid, None)
-                reg[resolved] = entry
-                save_topic_registry(reg, registry_path)
-                return TopicSession(None, format_topic_history_prefix(resolved, registry_path), False)
+        if exists and (max_steps_i <= 0 or step_count < max_steps_i):
             compacted_at = safe_nonneg_int(entry.get("compacted_at_step"), 0)
             if compacted_at > step_count:
                 compacted_at = 0
-            since = step_count - compacted_at
-            return TopicSession(cid, "", since >= compact_steps_i)
-        # Runtime resilience: the permanent thread vanished from the store; recreate it once with memory.
-        logger.warning("Topic '%s' conversation %s no longer exists; recreating the topic thread.", resolved, cid)
-        entry["conversation_id"] = None
-        entry["compacted_at_step"] = 0
+            return TopicSession(cid, "", (step_count - compacted_at) >= compact_steps_i)
+        if exists:
+            logger.info(
+                "Topic '%s' conversation %s reached %d steps (max %d); rotating to a fresh thread with rolling memory.",
+                resolved,
+                cid,
+                step_count,
+                max_steps_i,
+            )
+            _rotate_topic_conversation(base, entry, cid, None)
+        else:
+            # Runtime resilience: the permanent thread vanished from the store; recreate it once with memory.
+            logger.warning("Topic '%s' conversation %s no longer exists; recreating the topic thread.", resolved, cid)
+            entry["conversation_id"] = None
+            entry["compacted_at_step"] = 0
         reg[resolved] = entry
         save_topic_registry(reg, registry_path)
 

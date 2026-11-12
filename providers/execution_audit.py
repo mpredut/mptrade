@@ -312,22 +312,24 @@ class AuditedStrategyExecutor:
             cache_permit=cache_permit,
         )
 
-    def _record_order_exception(
-        self, event: str, intent_id: str, symbol: str, order_id: str, exc: Exception,
-    ) -> None:
-        self.audit.record(
-            event, intent_id=intent_id, venue=self.name, symbol=symbol,
-            order_id=str(order_id), error_type=exc.__class__.__name__, error=str(exc),
-        )
+    def _call_executor_or_record(
+        self, fn, error_event: str, intent_id: str, symbol: str, order_id: str,
+    ):
+        try:
+            return fn(symbol, order_id)
+        except Exception as exc:
+            self.audit.record(
+                error_event, intent_id=intent_id, venue=self.name, symbol=symbol,
+                order_id=str(order_id), error_type=exc.__class__.__name__, error=str(exc),
+            )
+            raise
 
     def order_status_with_intent(self, intent_id: str, symbol: str,
                                  order_id: str) -> OrderStatus:
         intent_id = self._intent(symbol, order_id, intent_id)
-        try:
-            status = self._executor.order_status(symbol, order_id)
-        except Exception as exc:
-            self._record_order_exception("status_error", intent_id, symbol, order_id, exc)
-            raise
+        status = self._call_executor_or_record(
+            self._executor.order_status, "status_error", intent_id, symbol, order_id,
+        )
         fingerprint = (
             status.status, status.filled_qty, status.cost, status.fee,
             status.venue_status,
@@ -357,11 +359,9 @@ class AuditedStrategyExecutor:
             "cancel_requested", intent_id=intent_id, venue=self.name,
             symbol=symbol, order_id=str(order_id),
         )
-        try:
-            self._executor.cancel_order(symbol, order_id)
-        except Exception as exc:
-            self._record_order_exception("cancel_rejected", intent_id, symbol, order_id, exc)
-            raise
+        self._call_executor_or_record(
+            self._executor.cancel_order, "cancel_rejected", intent_id, symbol, order_id,
+        )
         self.audit.record(
             "cancel_accepted", intent_id=intent_id, venue=self.name,
             symbol=symbol, order_id=str(order_id),

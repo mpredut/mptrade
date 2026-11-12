@@ -447,11 +447,10 @@ def _is_unmodified_root_key(key: str) -> bool:
 
 def _set_dotenv_env_key(key: str, value: str, *, is_root: bool) -> None:
     os.environ[key] = value
+    (_ROOT_CONFIG_KEYS.add if is_root else _ROOT_CONFIG_KEYS.discard)(key)
     if is_root:
-        _ROOT_CONFIG_KEYS.add(key)
         _ROOT_CONFIG_VALUES[key] = value
     else:
-        _ROOT_CONFIG_KEYS.discard(key)
         _ROOT_CONFIG_VALUES.pop(key, None)
 
 

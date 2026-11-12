@@ -409,18 +409,15 @@ def _resolve_candidate_overrides(
     # Map shared spot trailing and classic-TP candidate keys onto Trading 212 StratParams.
     if "trail_pct" in valid_param_fields and "tp_trail_pct" not in valid_param_fields:
         if overrides.get("tp_trend_hold") is False:
-            overrides.pop("tp_trend_hold", None)
-            overrides.pop("tp_dynamic_flat", None)
-            overrides["tp_mdhtp_enabled"] = False
-            overrides["trail_pct"] = 0.0
+            for k in ("tp_trend_hold", "tp_dynamic_flat"):
+                overrides.pop(k, None)
+            overrides.update({"tp_mdhtp_enabled": False, "trail_pct": 0.0})
             if "tp_ladder" in valid_param_fields:
                 overrides["tp_ladder"] = []
         if "tp_trail_pct" in overrides and overrides.get("tp_trail_adaptive") is not True:
             trail_val = safe_nonneg_float(overrides.pop("tp_trail_pct"), default=0.0)
             overrides.pop("tp_trail_adaptive", None)
-            overrides["tp_mdhtp_enabled"] = False
-            overrides["enable_takeprofit"] = False
-            overrides["trail_pct"] = trail_val
+            overrides.update({"tp_mdhtp_enabled": False, "enable_takeprofit": False, "trail_pct": trail_val})
             if safe_pos_float(getattr(base_params, "trail_min_profit_pct", None), default=0.0) <= 0.0:
                 tp_pct = safe_pos_float(getattr(base_params, "takeprofit_pct", None), default=0.0)
                 if tp_pct > 0.0 and "trail_min_profit_pct" in valid_param_fields:

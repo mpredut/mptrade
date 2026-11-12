@@ -91,10 +91,10 @@ def per_bot(symbol):
             continue
         a = g[_bot(o.get("clientOrderId", ""))]
         side = extract_order_side(o)
-        if side == "BUY":
-            a["bq"] += eq; a["bv"] += cqq
-        elif side == "SELL":
-            a["sq"] += eq; a["sv"] += cqq
+        if side in ("BUY", "SELL"):
+            pfx = "b" if side == "BUY" else "s"
+            a[f"{pfx}q"] += eq
+            a[f"{pfx}v"] += cqq
     print(f"\n  {symbol} (the last {len(orders)} orders):")
     print(f"    {'source':<16}{'buy$':>9}{'sell$':>9}{'net_qty':>12}{'realized_own':>14}")
     for b, a in sorted(g.items(), key=lambda x: -(x[1]["bq"] + x[1]["sq"])):

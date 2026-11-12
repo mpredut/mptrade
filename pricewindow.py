@@ -325,8 +325,7 @@ def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None
     """
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return 0.0
-    pwr = safe_nonneg_float(power, default=None)
-    if pwr is None:
+    if (pwr := safe_nonneg_float(power, default=None)) is None:
         pwr = safe_nonneg_float(step_wols_power_for_symbol(symbol), default=DEFAULT_STEP_WOLS_POWER) or 0.0
     try:
         arr = np.asarray(prices, dtype=np.float64)
@@ -555,8 +554,7 @@ class IncrementalTrendBuffer:
         if m < 1:
             return 0.0
         p = self.prices
-        pwr = safe_nonneg_float(power, default=None)
-        if pwr is None:
+        if (pwr := safe_nonneg_float(power, default=None)) is None:
             pwr = safe_nonneg_float(step_wols_power_for_symbol(symbol), default=DEFAULT_STEP_WOLS_POWER) or 0.0
         ref_last = p[b] * 1.0
         m_f = m * 1.0

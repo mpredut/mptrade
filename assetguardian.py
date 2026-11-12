@@ -427,8 +427,7 @@ def _get_portfolio_growth_percent(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFA
     minutes_back = _finite_float(minutes_back, positive=True)
     if minutes_back is None:
         return None
-    now_ts = time.time() * 1.0
-    target_ts = now_ts - minutes_back * 60.0
+    target_ts = (now_ts := time.time() * 1.0) - minutes_back * 60.0
     rows = _read_total_asset_value_rows()
     valid = []
     for row in rows:

@@ -737,6 +737,12 @@ class Instrument:
             ctx.reason = "market_price_unavailable"
         return px
 
+    def _refuse_preflight(self, ctx: Any, reason: str, detail: str) -> None:
+        print(f"[{self.symbol}] {ctx.side_u} preflight refused: {detail}")
+        ctx.quantity_price = ctx.price
+        ctx.reason = reason
+        return None
+
     def _acquire_fresh_cache_permit(self, ctx: Any) -> Any:
         if not callable(ctx.preflight_order):
             raise SubmissionRefused("account_cache_not_fresh")
@@ -838,10 +844,7 @@ class Instrument:
             ):
                 price_f = safe_pos_float(ctx.price, default=None)
                 if price_f is None:
-                    print(f"[{self.symbol}] {ctx.side_u} preflight refused: price invalid {ctx.price!r}")
-                    ctx.quantity_price = ctx.price
-                    ctx.reason = "invalid_price"
-                    return None
+                    return self._refuse_preflight(ctx, "invalid_price", f"price invalid {ctx.price!r}")
                 ctx.price = price_f
 
             ctx.base_asset, ctx.quote_asset = resolve_assets(self.symbol, self.base, self.quote)
@@ -857,13 +860,9 @@ class Instrument:
                     kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
                     if kb_f is not None:
                         if kb_f <= 0:
-                            print(
-                                f"[{self.symbol}] {ctx.side_u} preflight refused: "
-                                f"balance_unavailable asset={target_asset}"
+                            return self._refuse_preflight(
+                                ctx, "balance_unavailable", f"balance_unavailable asset={target_asset}"
                             )
-                            ctx.quantity_price = ctx.price
-                            ctx.reason = "balance_unavailable"
-                            return None
                         ctx.known_balance = kb_f
                 except Exception:
                     ctx.known_balance = None

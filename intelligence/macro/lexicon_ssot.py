@@ -1315,15 +1315,14 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
 
 def is_off_topic_general_news_title(title: Any) -> bool:
     """Return True if a headline is sports/wildlife/entertainment/weather filler without macro or market relevance."""
-    if not isinstance(title, str) or not title.strip():
+    if not isinstance(title, str) or not title.strip() or has_financial_or_geopolitical_context(title):
         return False
     clean_low = _strip_headline_publisher_suffix(title).lower()
-    words = set(re.findall(r"[a-z]{3,}", clean_low))
-    if not words or has_financial_or_geopolitical_context(title):
+    if not (words := set(re.findall(r"[a-z]{3,}", clean_low))):
         return False
-    if _is_editorial_clickbait_or_advice_title(clean_low):
-        return True
-    return bool(words & (_SPORTS_CONTEXT_WORDS | _NON_CRISIS_ATTACK_CONTEXT_WORDS | _OFF_TOPIC_TABLOID_WORDS))
+    return _is_editorial_clickbait_or_advice_title(clean_low) or bool(
+        words & (_SPORTS_CONTEXT_WORDS | _NON_CRISIS_ATTACK_CONTEXT_WORDS | _OFF_TOPIC_TABLOID_WORDS)
+    )
 
 
 def headlines_are_semantic_duplicates(title_a: Any, title_b: Any) -> bool:

@@ -121,21 +121,17 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
         if ts_now > 0 and st.get("ts", 0) > 0 and (
             (ts_now - st["ts"]) >= self.window_seconds or st["ts"] > ts_now + 5.0
         ):
-            st["surge_active"] = False
-            st["peak"] = current_price
-            st["surge_start_px"] = current_price
-            st["ts"] = ts_now
+            st.update({"surge_active": False, "peak": current_price, "surge_start_px": current_price, "ts": ts_now})
 
         was_active = bool(st["surge_active"])
 
         # Update extreme (peak for BUY, trough for SELL) if current price extends an active move
-        if was_active:
-            if (side_u == "BUY" and current_price > st["peak"]) or (side_u == "SELL" and current_price < st["peak"]):
-                st["peak"] = current_price
-                st["ts"] = ts_now
-        else:
-            st["peak"] = current_price
-            st["ts"] = ts_now
+        if (
+            not was_active
+            or (side_u == "BUY" and current_price > st["peak"])
+            or (side_u == "SELL" and current_price < st["peak"])
+        ):
+            st["peak"], st["ts"] = current_price, ts_now
 
         # Check chronological directional move in rolling window if history provided
         if len(history_seq) >= 2:

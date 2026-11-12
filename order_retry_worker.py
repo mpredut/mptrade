@@ -1076,6 +1076,10 @@ def main():
         argparse.ArgumentParser(description=__doc__), ("--once", "a single step, then exit")
     ).parse_args()
 
+    def _log_queue_corruption(exc, prefix: str = "queue corruption; pass aborted") -> None:
+        _alert_queue_corruption(exc)
+        print(f"[order_retry] {prefix}: {exc}")
+
     if args.once:
         if not oq.RETRY_ENABLED:
             print("[order_retry] RETRY_ENABLED=false — nothing to do (--once).")
@@ -1084,8 +1088,7 @@ def main():
             print(f"[order_retry] single pass: {process_once(mkt)}")
             return 0
         except oq.RetryQueueCorruptionError as exc:
-            _alert_queue_corruption(exc)
-            print(f"[order_retry] queue corruption; pass aborted: {exc}")
+            _log_queue_corruption(exc)
             return 2
 
     single_instance("order_retry_worker")
@@ -1105,8 +1108,7 @@ def main():
                 "superseded trend-deferred record(s)"
             )
     except oq.RetryQueueCorruptionError as exc:
-        _alert_queue_corruption(exc)
-        print(f"[order_retry] startup consolidation aborted: {exc}")
+        _log_queue_corruption(exc, "startup consolidation aborted")
 
     print(f"[order_retry] start (poll={WORKER_POLL_SEC:.0f}s, interval={oq.RETRY_INTERVAL_SEC:.0f}s, TTL={oq.RETRY_TTL_SEC:.0f}s)")
     _touch_worker_hb({"retry_enabled": True}, force=True)
@@ -1118,8 +1120,7 @@ def main():
             if stats["attempted"] or stats["expired"] or stats["observed"]:
                 print(f"[order_retry] {stats}")
         except oq.RetryQueueCorruptionError as exc:
-            _alert_queue_corruption(exc)
-            print(f"[order_retry] queue corruption; pass aborted: {exc}")
+            _log_queue_corruption(exc)
         except Exception as exc:
             print(f"[order_retry] pass error (continuing): {exc}")
         _touch_worker_hb(last_stats if isinstance(last_stats, dict) else {"retry_enabled": True})
