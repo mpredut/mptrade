@@ -8,11 +8,11 @@ The provider client remains responsible for ending the network call.
 """
 
 import cacheManager as cm
+from tests.conftest import TempDirTestCase
 import cacheprice
 import concurrent.futures as futures
 import json
 import os
-import tempfile
 import time
 import unittest
 from binance_api.bapi_ws import BinancePriceStream, PublicPriceStreamBase
@@ -68,14 +68,16 @@ class _FakeApi:
         return self.price
 
 
-class TestFetchDeadline(unittest.TestCase):
+class TestFetchDeadline(TempDirTestCase):
     def setUp(self):
+        super().setUp()
         self.pool = futures.ThreadPoolExecutor(max_workers=2)
 
     def tearDown(self):
         if hasattr(self, "blocked_api"):
             self.blocked_api.hang = False
         self.pool.shutdown(wait=True, cancel_futures=True)
+        super().tearDown()
 
     def test_normal_fetch_returns_price(self):
         api = _FakeApi(hang=False, price=55.5)
@@ -147,7 +149,7 @@ class TestFetchDeadline(unittest.TestCase):
 
     def test_poller_marks_nonbinance_symbol_healthy_on_cpm(self):
         api = _FakeApi(hang=False, price=76.5)
-        tmp_dir = tempfile.mkdtemp()
+        tmp_dir = str(self.tmp)
         cpm = cm.CacheCurrentPriceManager(
             sync_ts=9999,
             symbols=["HYPEUSD"],
@@ -182,7 +184,7 @@ class TestFetchDeadline(unittest.TestCase):
     def test_hyperliquid_and_kraken_ws_streams_feed_cpm_and_suppress_rest_polling(self):
 
         api = _FakeApi(hang=False, price=99.9)
-        tmp_dir = tempfile.mkdtemp()
+        tmp_dir = str(self.tmp)
         cpm = cm.CacheCurrentPriceManager(
             sync_ts=9999,
             symbols=["HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"],
@@ -268,75 +270,75 @@ class TestFetchDeadline(unittest.TestCase):
 
     def test_hyperliquid_ws_user_fills_updates_ssot_trade_cache(self):
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache_file = os.path.join(tmpdir, "cache_trade_hyperliquid.json")
-            hl_ws = cm.HyperliquidPriceStream(
-                ["HYPEUSDC"],
-                user_address="0x1234567890abcdef1234567890abcdef12345678",
-                fills_cache_path=cache_file,
-            )
-            extra = hl_ws._build_extra_subscribe_payloads()
-            self.assertEqual(len(extra), 1)
-            self.assertEqual(
-                json.loads(extra[0]),
-                {
-                    "method": "subscribe",
-                    "subscription": {
-                        "type": "userFills",
-                        "user": "0x1234567890abcdef1234567890abcdef12345678",
-                    },
+        tmpdir = str(self.tmp)
+        cache_file = os.path.join(tmpdir, "cache_trade_hyperliquid.json")
+        hl_ws = cm.HyperliquidPriceStream(
+            ["HYPEUSDC"],
+            user_address="0x1234567890abcdef1234567890abcdef12345678",
+            fills_cache_path=cache_file,
+        )
+        extra = hl_ws._build_extra_subscribe_payloads()
+        self.assertEqual(len(extra), 1)
+        self.assertEqual(
+            json.loads(extra[0]),
+            {
+                "method": "subscribe",
+                "subscription": {
+                    "type": "userFills",
+                    "user": "0x1234567890abcdef1234567890abcdef12345678",
                 },
-            )
-            now_ms = int(time.time() * 1000)
-            hl_ws._process_message(
-                json.dumps(
-                    {
-                        "channel": "userFills",
-                        "data": {
-                            "isSnapshot": True,
-                            "user": "0x1234567890abcdef1234567890abcdef12345678",
-                            "fills": [
-                                {"coin": "@107", "oid": 101, "tid": 1, "side": "B", "px": "42.0", "sz": "2.0", "time": now_ms - 5000},
-                                {"coin": "HYPE", "oid": 999, "tid": 2, "side": "A", "px": "99.0", "sz": "10.0", "time": now_ms - 4000},
-                            ],
-                        },
-                    }
-                ),
-                now_ms=now_ms,
-            )
-            hl_ws._process_message(
-                json.dumps(
-                    {
-                        "channel": "userFills",
-                        "data": {
-                            "isSnapshot": False,
-                            "user": "0x1234567890abcdef1234567890abcdef12345678",
-                            "fills": [
-                                {"coin": "@107", "oid": 102, "tid": 3, "side": "A", "px": "44.5", "sz": "2.0", "time": now_ms - 1000},
-                            ],
-                        },
-                    }
-                ),
-                now_ms=now_ms + 100,
-            )
-            prov = HyperliquidProvider(token="HYPE")
-            prov._ssot_fills_cache_path = cache_file
-            prov._force_ssot_cache = True
-            orders = prov.get_orders("HYPEUSDC", None, 3600)
-            self.assertEqual(len(orders), 2)
-            self.assertEqual([o["orderId"] for o in orders], ["101", "102"])
-            self.assertEqual([o["side"] for o in orders], ["BUY", "SELL"])
+            },
+        )
+        now_ms = int(time.time() * 1000)
+        hl_ws._process_message(
+            json.dumps(
+                {
+                    "channel": "userFills",
+                    "data": {
+                        "isSnapshot": True,
+                        "user": "0x1234567890abcdef1234567890abcdef12345678",
+                        "fills": [
+                            {"coin": "@107", "oid": 101, "tid": 1, "side": "B", "px": "42.0", "sz": "2.0", "time": now_ms - 5000},
+                            {"coin": "HYPE", "oid": 999, "tid": 2, "side": "A", "px": "99.0", "sz": "10.0", "time": now_ms - 4000},
+                        ],
+                    },
+                }
+            ),
+            now_ms=now_ms,
+        )
+        hl_ws._process_message(
+            json.dumps(
+                {
+                    "channel": "userFills",
+                    "data": {
+                        "isSnapshot": False,
+                        "user": "0x1234567890abcdef1234567890abcdef12345678",
+                        "fills": [
+                            {"coin": "@107", "oid": 102, "tid": 3, "side": "A", "px": "44.5", "sz": "2.0", "time": now_ms - 1000},
+                        ],
+                    },
+                }
+            ),
+            now_ms=now_ms + 100,
+        )
+        prov = HyperliquidProvider(token="HYPE")
+        prov._ssot_fills_cache_path = cache_file
+        prov._force_ssot_cache = True
+        orders = prov.get_orders("HYPEUSDC", None, 3600)
+        self.assertEqual(len(orders), 2)
+        self.assertEqual([o["orderId"] for o in orders], ["101", "102"])
+        self.assertEqual([o["side"] for o in orders], ["BUY", "SELL"])
 
-            # Invalidating SSOT fills cache must not be resurrected by an allMids tick before a new fill arrives
-            prov.invalidate_ssot_fills_cache("HYPEUSDC", cache_file)
-            self.assertIsNone(prov.read_ssot_fills_cache("HYPEUSDC", cache_file, max_stale_sec=90.0))
-            hl_ws._last_fills_cache_touch_ms = 0
-            hl_ws._touch_fills_cache_if_needed(now_ms + 70_000)
-            self.assertIsNone(prov.read_ssot_fills_cache("HYPEUSDC", cache_file, max_stale_sec=90.0))
+        # Invalidating SSOT fills cache must not be resurrected by an allMids tick before a new fill arrives
+        prov.invalidate_ssot_fills_cache("HYPEUSDC", cache_file)
+        self.assertIsNone(prov.read_ssot_fills_cache("HYPEUSDC", cache_file, max_stale_sec=90.0))
+        hl_ws._last_fills_cache_touch_ms = 0
+        hl_ws._touch_fills_cache_if_needed(now_ms + 70_000)
+        self.assertIsNone(prov.read_ssot_fills_cache("HYPEUSDC", cache_file, max_stale_sec=90.0))
 
-            # Reconnect resets _fills_ws_seeded until a new isSnapshot=True message arrives
-            _ = hl_ws._build_extra_subscribe_payloads()
-            self.assertFalse(hl_ws._fills_ws_seeded)
+        # Reconnect resets _fills_ws_seeded until a new isSnapshot=True message arrives
+        _ = hl_ws._build_extra_subscribe_payloads()
+        self.assertFalse(hl_ws._fills_ws_seeded)
 
     def test_validate_ohlc_close_ts_sentinel_and_duplicate_ai_order_and_trailing_lookup(self):
 
@@ -418,7 +420,7 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertAlmostEqual(clamp_price_to_bbo_mid(None, "100.0", "101.0"), 100.5)
 
         # 3. is_real_ws_healthy must not fall through to _ws_default_event_ts when symbol ts is 0.0
-        tmp_dir = tempfile.mkdtemp()
+        tmp_dir = str(self.tmp)
         cpm = cm.CacheCurrentPriceManager(
             sync_ts=9999,
             symbols=["HYPEUSD"],

@@ -15,7 +15,6 @@ import re
 import smtplib
 import subprocess
 import sys
-import tempfile
 from collections import defaultdict
 from intelligence.sentiment.gemini_client import GeminiClient
 from market_monitor import alerts_config, new_coins_discovery as ncd
@@ -1284,8 +1283,8 @@ def _wd_proc(pid=10, ticks=100, rss=100, command="worker.py"):
     return {f"{pid}:1": {"pid": pid, "ticks": ticks, "rss_mb": rss, "command": command}}
 
 
-def test_alerts_only_after_sustained_cpu_use():
-    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+def test_alerts_only_after_sustained_cpu_use(tmp_path):
+    with mock.patch.object(wd, "STATE_FILE", str(tmp_path / "state")), \
             mock.patch.object(wd, "CONSECUTIVE", 3), mock.patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(ticks=100), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_wd_proc(ticks=160), cpu_count=1)
@@ -1295,8 +1294,8 @@ def test_alerts_only_after_sustained_cpu_use():
         alert.assert_called_once()
 
 
-def test_short_memory_spike_does_not_alert():
-    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+def test_short_memory_spike_does_not_alert(tmp_path):
+    with mock.patch.object(wd, "STATE_FILE", str(tmp_path / "state")), \
             mock.patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
             mock.patch.object(wd, "CONSECUTIVE", 3), mock.patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(rss=800), cpu_count=1)
@@ -1304,8 +1303,8 @@ def test_short_memory_spike_does_not_alert():
         alert.assert_not_called()
 
 
-def test_sustained_memory_use_alerts_and_then_recovers():
-    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+def test_sustained_memory_use_alerts_and_then_recovers(tmp_path):
+    with mock.patch.object(wd, "STATE_FILE", str(tmp_path / "state")), \
             mock.patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
             mock.patch.object(wd, "CONSECUTIVE", 2), mock.patch.object(wd, "RECOVERY_CHECKS", 2), \
             mock.patch.object(wd.wc, "send_ntfy") as alert:
@@ -1577,30 +1576,30 @@ class EmailMirrorTest(TempDirTestCase):
         ])
         self.assertEqual(b_exec_pair, "📦 Bulk (2): SELL ARBUSDC [binance:ai_executor]")
 
-        with tempfile.TemporaryDirectory() as bash_tmp:
-            os.makedirs(os.path.join(bash_tmp, "logs"), exist_ok=True)
-            script = f"""
+        bash_tmp = str(self.tmp)
+        os.makedirs(os.path.join(bash_tmp, "logs"), exist_ok=True)
+        script = f"""
 set -euo pipefail
 ROOT="{bash_tmp}"
 env_get() {{ echo "${{2:-}}"; }}
 source "{ROOT_DIR}/orchestratorOS/lib/os_notify.sh"
 send_os_email() {{ :; }}
 curl() {{
-    local title="" body=""
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            -H)
-                case "$2" in
-                    Title:\\ *) title="${{2#Title: }}" ;;
-                esac
-                shift 2
-                ;;
-            -d) body="$2"; shift 2 ;;
-            *) shift ;;
-        esac
-    done
-    printf 'TITLE=%s\\nBODY=%s\\n===\\n' "$title" "$body" >> "$ROOT/out.txt"
-    return 0
+local title="" body=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -H)
+            case "$2" in
+                Title:\\ *) title="${{2#Title: }}" ;;
+            esac
+            shift 2
+            ;;
+        -d) body="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+printf 'TITLE=%s\\nBODY=%s\\n===\\n' "$title" "$body" >> "$ROOT/out.txt"
+return 0
 }}
 export OS_NOTIFY_DEDUP_SECONDS=900
 export OS_NOTIFY_GATE_SECONDS=300
@@ -1617,12 +1616,12 @@ send_os_ntfy "DEV CI Regression FAILED" "Commit ccccccc failed: third error" "hi
 send_os_ntfy "DEV CI Regression FAILED" "Commit ddddddd failed: fourth error" "high" "ntfy-error-test"
 send_os_ntfy "DEV CI Regression RECOVERED" "Commit eeeeeee passed all tests" "default" "ntfy-error-test"
 """
-            subprocess.run(["bash", "-c", script], check=True)
-            with open(os.path.join(bash_tmp, "out.txt"), "r", encoding="utf-8") as f:
-                out_text = f.read()
-            self.assertIn("TITLE=📦 Bulk (2): DEV CI Regression FAILED\n", out_text)
-            self.assertIn("second error\n\n2. DEV CI Regression FAILED: Commit ccccccc failed: third error", out_text)
-            self.assertIn("TITLE=DEV CI Regression RECOVERED\nBODY=Commit eeeeeee passed all tests\n", out_text)
+        subprocess.run(["bash", "-c", script], check=True)
+        with open(os.path.join(bash_tmp, "out.txt"), "r", encoding="utf-8") as f:
+            out_text = f.read()
+        self.assertIn("TITLE=📦 Bulk (2): DEV CI Regression FAILED\n", out_text)
+        self.assertIn("second error\n\n2. DEV CI Regression FAILED: Commit ccccccc failed: third error", out_text)
+        self.assertIn("TITLE=DEV CI Regression RECOVERED\nBODY=Commit eeeeeee passed all tests\n", out_text)
 
         self.assertEqual(format_owner_tags("tradeall"), (" [tradeall]", " (tradeall)"))
         self.assertEqual(format_owner_tags("unspecified"), ("", ""))

@@ -9,6 +9,7 @@ and the change must be reviewed explicitly.
 from __future__ import annotations
 
 import json
+from tests.conftest import TempDirTestCase
 import monitortrades as mt
 import order_guard
 import order_retry
@@ -206,8 +207,9 @@ class PipelineApi:
         return self.provider if name.lower() == self.provider.name.lower() else None
 
 
-class MonitorTradesFinancialCharacterization(unittest.TestCase):
+class MonitorTradesFinancialCharacterization(TempDirTestCase):
     def setUp(self):
+        super().setUp()
         mt._hard_tp_last.clear()
         mt._SL_BOUNCE_STATE.clear()
         mt._TP_RIDE_STATE.clear()
@@ -221,6 +223,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         mt._SL_BOUNCE_STATE.clear()
         mt._TP_RIDE_STATE.clear()
         mt.clear_position_stats_cache()
+        super().tearDown()
 
     def run_tick(self, inst, *, trend_up=False, gain=0.10, loss=0.05, now=None):
         ts = now if now is not None else NOW
@@ -840,26 +843,26 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_get_symbol_volatility_1h_explicit_percentage_to_ratio_conversion(self):
         """Verify get_symbol_volatility_1h explicitly converts percentage to decimal ratio (no 100x blowup for vol < 0.10%)."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            state_data = {
-                "BTCUSDT": {"vol_1h_pct": 2.5},     # 2.5% normal vol -> ratio 0.025
-                "ETHUSDT": {"vol_1h_pct": 0.05},    # 0.05% low vol -> ratio 0.0005 (NOT 0.05!)
-                "USDCUSDT": {"vol_1h_pct": 0.0031}, # 0.0031% very low vol -> ratio 0.000031
-            }
-            with open(os.path.join(tmp_dir, "cache_kalman_trend.json"), "w", encoding="utf-8") as f:
-                json.dump(state_data, f)
+        tmp_dir = str(self.tmp)
+        state_data = {
+            "BTCUSDT": {"vol_1h_pct": 2.5},     # 2.5% normal vol -> ratio 0.025
+            "ETHUSDT": {"vol_1h_pct": 0.05},    # 0.05% low vol -> ratio 0.0005 (NOT 0.05!)
+            "USDCUSDT": {"vol_1h_pct": 0.0031}, # 0.0031% very low vol -> ratio 0.000031
+        }
+        with open(os.path.join(tmp_dir, "cache_kalman_trend.json"), "w", encoding="utf-8") as f:
+            json.dump(state_data, f)
 
-            with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
-                # 1. Normal volatility: 2.5% -> 0.025
-                self.assertAlmostEqual(mt.get_symbol_volatility_1h("BTCUSDT"), 0.025, places=6)
-                # 2. Low volatility < 0.10%: 0.05% -> 0.0005, MUST NOT return 0.05
-                vol_eth = mt.get_symbol_volatility_1h("ETHUSDT")
-                self.assertAlmostEqual(vol_eth, 0.0005, places=6)
-                self.assertNotAlmostEqual(vol_eth, 0.05, places=3)
-                # 3. Very low volatility: 0.0031% -> 0.000031
-                self.assertAlmostEqual(mt.get_symbol_volatility_1h("USDCUSDT"), 0.000031, places=6)
-                # 4. Unknown symbol returns None
-                self.assertIsNone(mt.get_symbol_volatility_1h("UNKNOWN"))
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
+            # 1. Normal volatility: 2.5% -> 0.025
+            self.assertAlmostEqual(mt.get_symbol_volatility_1h("BTCUSDT"), 0.025, places=6)
+            # 2. Low volatility < 0.10%: 0.05% -> 0.0005, MUST NOT return 0.05
+            vol_eth = mt.get_symbol_volatility_1h("ETHUSDT")
+            self.assertAlmostEqual(vol_eth, 0.0005, places=6)
+            self.assertNotAlmostEqual(vol_eth, 0.05, places=3)
+            # 3. Very low volatility: 0.0031% -> 0.000031
+            self.assertAlmostEqual(mt.get_symbol_volatility_1h("USDCUSDT"), 0.000031, places=6)
+            # 4. Unknown symbol returns None
+            self.assertIsNone(mt.get_symbol_volatility_1h("UNKNOWN"))
 
     def test_mdhtp_trend_riding_and_peak_tracking(self):
         """Verify MDHTP arms ride state and tracks higher highs while trend_up is True."""
@@ -1736,8 +1739,9 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(inst_clamp.placed[0]["kwargs"].get("bypass_guards"), {"all"})
 
 
-class TestMonitortradesExecutedTrades(unittest.TestCase):
+class TestMonitortradesExecutedTrades(TempDirTestCase):
     def setUp(self):
+        super().setUp()
         mt.reset_trades_monitor_state_for_test()
 
     def test_warmup_does_not_notify_historical_trades(self):
@@ -1876,43 +1880,43 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
             )
 
     def test_executed_trade_resolves_owner_from_execution_audit(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            audit_ts = 1700000100.0
-            audit = ExecutionAudit(directory=tmpdir, clock=lambda: audit_ts)
-            audit.record(
-                "submit_accepted",
-                intent_id="outbox-999111222",
-                venue="Binance",
-                symbol="BTCUSDC",
-                order_id="10739572358",
-                client_order_id="TA_OR_999111222_0",
-                kind="accel_surge_up",
-                side="sell",
-            )
-            initial_trades = []
-            new_trade = {
-                "symbol": "BTCUSDC",
-                "id": "5001",
-                "orderId": "10739572358",
-                "price": 76210.75,
-                "qty": 0.0007,
-                "time": int(audit_ts * 1000),
-                "isBuyer": False,
-            }
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": tmpdir}), \
-                 patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, [new_trade]]), \
-                 patch("notify_engine.alertnotifiers.notify") as mock_notify:
-                mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
-                mock_notify.assert_not_called()
+        tmpdir = str(self.tmp)
+        audit_ts = 1700000100.0
+        audit = ExecutionAudit(directory=tmpdir, clock=lambda: audit_ts)
+        audit.record(
+            "submit_accepted",
+            intent_id="outbox-999111222",
+            venue="Binance",
+            symbol="BTCUSDC",
+            order_id="10739572358",
+            client_order_id="TA_OR_999111222_0",
+            kind="accel_surge_up",
+            side="sell",
+        )
+        initial_trades = []
+        new_trade = {
+            "symbol": "BTCUSDC",
+            "id": "5001",
+            "orderId": "10739572358",
+            "price": 76210.75,
+            "qty": 0.0007,
+            "time": int(audit_ts * 1000),
+            "isBuyer": False,
+        }
+        with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": tmpdir}), \
+             patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, [new_trade]]), \
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
+            mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
+            mock_notify.assert_not_called()
 
-                mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
-                mock_notify.assert_called_once_with(
-                    title="SELL BTCUSDC@76210.75 [binance:tradeall]",
-                    body="FILLED ~53.35 USDC (qty: 0.0007, order: 10739572358)",
-                    source="monitortrades",
-                    symbol="BTCUSDC",
-                    price=76210.75,
-                )
+            mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
+            mock_notify.assert_called_once_with(
+                title="SELL BTCUSDC@76210.75 [binance:tradeall]",
+                body="FILLED ~53.35 USDC (qty: 0.0007, order: 10739572358)",
+                source="monitortrades",
+                symbol="BTCUSDC",
+                price=76210.75,
+            )
 
     def test_ws_trade_report_preserves_client_order_id(self):
         res = parse_trade_execution_report({

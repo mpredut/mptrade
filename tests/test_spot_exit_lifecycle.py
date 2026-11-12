@@ -5,7 +5,6 @@ import json
 import order_retry as oq
 import os
 import pytest
-import tempfile
 import time
 import unittest
 from binance_api import bapi as bapi_mod
@@ -772,7 +771,7 @@ def test_mhdsl_blocks_dca_during_bounce_deferral():
     assert not [c for c in executor.calls if c[0] == "submit_order" and c[2] == "buy"]
 
 
-def test_spot_engine_vol_1h_ratio_explicit_conversion():
+def test_spot_engine_vol_1h_ratio_explicit_conversion(tmp_path):
     engine, _ = make_mhdsl_engine()
 
     engine._trail_vol_1h = lambda: 0.05
@@ -785,26 +784,26 @@ def test_spot_engine_vol_1h_ratio_explicit_conversion():
     assert abs(ratio - 0.0008) < 1e-7 and src == "shadow_ticks"
 
     engine._shadow_vol_1h = lambda: None
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        with open(os.path.join(tmp_dir, "cache_kalman_trend.json"), "w", encoding="utf-8") as f:
-            json.dump({engine.pair.upper(): {"vol_1h_pct": 0.04}}, f)
-        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
-            ratio, src = engine._vol_1h_ratio()
-            assert abs(ratio - 0.0004) < 1e-7 and src == "cache"
+    tmp_dir = str(tmp_path)
+    with open(os.path.join(tmp_dir, "cache_kalman_trend.json"), "w", encoding="utf-8") as f:
+        json.dump({engine.pair.upper(): {"vol_1h_pct": 0.04}}, f)
+    with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
+        ratio, src = engine._vol_1h_ratio()
+        assert abs(ratio - 0.0004) < 1e-7 and src == "cache"
 
 
-def test_replay_mode_ignores_external_cached_volatility():
+def test_replay_mode_ignores_external_cached_volatility(tmp_path):
     engine, _ = make_mhdsl_engine()
     engine.replay_mode = True
     engine._trail_vol_1h = lambda: None
     engine._shadow_vol_1h = lambda: None
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        with open(os.path.join(tmp_dir, "cache_kalman_trend.json"), "w", encoding="utf-8") as f:
-            json.dump({engine.pair.upper(): {"vol_1h_pct": 5.0}}, f)
-        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
-            ratio, src = engine._vol_1h_ratio()
-            assert ratio == 0.0 and src == "default"
+    tmp_dir = str(tmp_path)
+    with open(os.path.join(tmp_dir, "cache_kalman_trend.json"), "w", encoding="utf-8") as f:
+        json.dump({engine.pair.upper(): {"vol_1h_pct": 5.0}}, f)
+    with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
+        ratio, src = engine._vol_1h_ratio()
+        assert ratio == 0.0 and src == "default"
 
 
 def test_mdhtp_not_in_tp_territory_clears_trail_peak():
