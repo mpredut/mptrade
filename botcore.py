@@ -3034,41 +3034,37 @@ def compute_venue_nav_breakdown(
         base_p = canonical_base_asset(p.get("base") or sym_raw) or sym_raw or f"IDX_{len(grouped_pos)}"
         grouped_pos.setdefault((v_name, f"EQ:{base_p}" if is_eq_p else base_p), []).append(p)
 
-    def _lookup_live_px(sym_u: str) -> float | None:
-        if not live_px_map or not sym_u:
-            return None
-        if sym_u in live_px_map:
-            return live_px_map[sym_u]
-        if has_equity_suffix(sym_u):
-            return None
-        for cand in cache_symbol_variants(sym_u, quotes=compatible_quote_suffixes(sym_u)):
-            if isinstance(cand, str) and not has_equity_suffix(cand) and cand in live_px_map:
-                return live_px_map[cand]
-        return None
-
-    def _resolve_pos_free_usd(gp: dict) -> float:
-        sym_u = str(gp.get("symbol") or "").strip().upper()
-        if (live_px := _lookup_live_px(sym_u)) is not None and (
-            fb_live := safe_nonneg_float(gp.get("free_base"), None)
-        ) is not None:
-            return round(fb_live * live_px, 2)
-        if (val_u := safe_nonneg_float(gp.get("value_usd"), None)) is not None:
-            return val_u
-        return round(
-            (safe_nonneg_float(gp.get("free_base"), 0.0) or 0.0)
-            * (safe_nonneg_float(gp.get("price"), 0.0) or 0.0),
-            2,
-        )
-
     venue_pos_usd: dict[str, float] = {}
     grouped_positions_out: list[tuple[str, dict, float]] = []
     for (v_name, _), grp_list in grouped_pos.items():
-        free_val_u = max((_resolve_pos_free_usd(gp) for gp in grp_list), default=0.0)
+        free_val_u = 0.0
         locked_by_sym: dict[str, float] = {}
         for idx_g, gp in enumerate(grp_list):
             sym_u = str(gp.get("symbol") or "").strip().upper()
+            live_px: float | None = None
+            if live_px_map and sym_u:
+                if sym_u in live_px_map:
+                    live_px = live_px_map[sym_u]
+                elif not has_equity_suffix(sym_u):
+                    for cand in cache_symbol_variants(sym_u, quotes=compatible_quote_suffixes(sym_u)):
+                        if isinstance(cand, str) and not has_equity_suffix(cand) and cand in live_px_map:
+                            live_px = live_px_map[cand]
+                            break
+            if live_px is not None and (
+                fb_live := safe_nonneg_float(gp.get("free_base"), None)
+            ) is not None:
+                gp_free_u = round(fb_live * live_px, 2)
+            elif (val_u := safe_nonneg_float(gp.get("value_usd"), None)) is not None:
+                gp_free_u = val_u
+            else:
+                gp_free_u = round(
+                    (safe_nonneg_float(gp.get("free_base"), 0.0) or 0.0)
+                    * (safe_nonneg_float(gp.get("price"), 0.0) or 0.0),
+                    2,
+                )
+            free_val_u = max(free_val_u, gp_free_u)
             s_g = sym_u or f"SYM_{idx_g}"
-            if (live_px := _lookup_live_px(sym_u)) is not None and (
+            if live_px is not None and (
                 lb_live := safe_pos_float(gp.get("locked_base_qty"), None)
             ) is not None:
                 locked_usd = round(lb_live * live_px, 2)

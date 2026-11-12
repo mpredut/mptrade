@@ -202,53 +202,50 @@ def _validate_tier_table(tiers, name: str, *, exact_sum: bool = False):
         raise ValueError(f"the {name} weights sum exceeds 1")
 
 
-def _validate_config():
-    if CHECK_INTERVAL_SECONDS <= 0:
-        raise ValueError("AG_CHECK_INTERVAL_SEC must be > 0")
-    if ASSET_REFERENCE_MINUTES_BACK_DEFAULT <= 0:
-        raise ValueError("AG_REFERENCE_MINUTES_BACK must be > 0")
-    if not 0 < BUY_USE_CASH_RATIO <= 1:
-        raise ValueError("AG_BUY_USE_CASH_RATIO must be in (0, 1]")
-    _validate_tier_table(BUY_TIERS, "AG_BUY_TIERS", exact_sum=False)
-    _validate_tier_table(SELL_TIERS, "AG_SELL_TIERS", exact_sum=True)
-    if SELL_REARM_GROWTH_PERCENT <= 0 or SELL_REARM_GROWTH_PERCENT >= SELL_TIERS[0][0]:
-        raise ValueError("AG_SELL_REARM_GROWTH_PCT must be > 0 and below the first SELL threshold")
-    if ORDER_MISSING_CONFIRMATIONS <= 0:
-        raise ValueError("AG_ORDER_MISSING_CONFIRMATIONS must be an integer and > 0")
-    for value, name in (
-        (ORDER_MAX_AGE_SECONDS, "AG_ORDER_MAX_AGE_SEC"),
-        (RECOVERY_RESET_PERCENT, "AG_RECOVERY_RESET_PCT"),
-        (NEAR_TRIGGER_SECONDS, "AG_NEAR_TRIGGER_SEC"),
-        (ACTIVE_TRIGGER_SECONDS, "AG_ACTIVE_TRIGGER_SEC"),
-        (NEAR_TRIGGER_DISTANCE_PCT, "AG_NEAR_TRIGGER_DISTANCE_PCT"),
-        (TREND_DEFER_MAX_SECONDS, "AG_TREND_DEFER_MAX_SEC"),
-        (PORTFOLIO_GROWTH_PERCENT, "AG_PORTFOLIO_GROWTH_PCT"),
-        (PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT"),
-        (RTRADE_BLOCK_CANCEL_SECONDS, "AG_RTRADE_BLOCK_CANCEL_SEC"),
-        (P3B_MAX_AGE_SECONDS, "AG_P3B_MAX_AGE_SEC"),
-    ):
-        if value <= 0:
-            raise ValueError(f"{name} must be finite and > 0")
-    for val, hi, name in (
-        (PORTFOLIO_SELL_ALLOCATION, 1.0, "AG_PORTFOLIO_SELL_ALLOCATION"),
-        (PORTFOLIO_SELL_MAX_DISCOUNT, 0.50, "AG_PORTFOLIO_SELL_MAX_DISCOUNT"),
-        (P3B_SELL_DEFENSIVE_MAX_DISCOUNT, 0.50, "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT"),
-        (P3B_BUY_ACCUMULATE_MAX_DISCOUNT, 0.50, "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT"),
-        (P3B_BUY_DEFENSIVE_MAX_PENALTY, 1.0, "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY"),
-    ):
-        if not 0 < val <= hi:
-            raise ValueError(f"{name} must be in (0, {hi:.2f}]" if hi < 1.0 else f"{name} must be in (0, 1.0]")
-    if PORTFOLIO_ASSET_MIN_GROWTH_PERCENT <= SELL_REARM_GROWTH_PERCENT:
-        raise ValueError("AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT must be above AG_SELL_REARM_GROWTH_PCT")
-    if not 0 < P3B_SELL_TRIM_MAX_DISCOUNT <= P3B_SELL_DEFENSIVE_MAX_DISCOUNT:
-        raise ValueError("AG_P3B_SELL_TRIM_MAX_DISCOUNT must be in (0, AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT]")
-    if SELL_TIERS[0][0] * (1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT) <= SELL_REARM_GROWTH_PERCENT:
-        raise ValueError("Compressed first SELL tier must remain above AG_SELL_REARM_GROWTH_PCT")
-    if BUY_TIERS[0][0] * (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) <= RECOVERY_RESET_PERCENT:
-        raise ValueError("Compressed first BUY tier must remain above AG_RECOVERY_RESET_PCT")
-
-
-_validate_config()
+if CHECK_INTERVAL_SECONDS <= 0:
+    raise ValueError("AG_CHECK_INTERVAL_SEC must be > 0")
+if ASSET_REFERENCE_MINUTES_BACK_DEFAULT <= 0:
+    raise ValueError("AG_REFERENCE_MINUTES_BACK must be > 0")
+if not 0 < BUY_USE_CASH_RATIO <= 1:
+    raise ValueError("AG_BUY_USE_CASH_RATIO must be in (0, 1]")
+_validate_tier_table(BUY_TIERS, "AG_BUY_TIERS", exact_sum=False)
+_validate_tier_table(SELL_TIERS, "AG_SELL_TIERS", exact_sum=True)
+if SELL_REARM_GROWTH_PERCENT <= 0 or SELL_REARM_GROWTH_PERCENT >= SELL_TIERS[0][0]:
+    raise ValueError("AG_SELL_REARM_GROWTH_PCT must be > 0 and below the first SELL threshold")
+if ORDER_MISSING_CONFIRMATIONS <= 0:
+    raise ValueError("AG_ORDER_MISSING_CONFIRMATIONS must be an integer and > 0")
+for _ag_val, _ag_name in (
+    (ORDER_MAX_AGE_SECONDS, "AG_ORDER_MAX_AGE_SEC"),
+    (RECOVERY_RESET_PERCENT, "AG_RECOVERY_RESET_PCT"),
+    (NEAR_TRIGGER_SECONDS, "AG_NEAR_TRIGGER_SEC"),
+    (ACTIVE_TRIGGER_SECONDS, "AG_ACTIVE_TRIGGER_SEC"),
+    (NEAR_TRIGGER_DISTANCE_PCT, "AG_NEAR_TRIGGER_DISTANCE_PCT"),
+    (TREND_DEFER_MAX_SECONDS, "AG_TREND_DEFER_MAX_SEC"),
+    (PORTFOLIO_GROWTH_PERCENT, "AG_PORTFOLIO_GROWTH_PCT"),
+    (PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT"),
+    (RTRADE_BLOCK_CANCEL_SECONDS, "AG_RTRADE_BLOCK_CANCEL_SEC"),
+    (P3B_MAX_AGE_SECONDS, "AG_P3B_MAX_AGE_SEC"),
+):
+    if _ag_val <= 0:
+        raise ValueError(f"{_ag_name} must be finite and > 0")
+for _ag_val, _ag_hi, _ag_name in (
+    (PORTFOLIO_SELL_ALLOCATION, 1.0, "AG_PORTFOLIO_SELL_ALLOCATION"),
+    (PORTFOLIO_SELL_MAX_DISCOUNT, 0.50, "AG_PORTFOLIO_SELL_MAX_DISCOUNT"),
+    (P3B_SELL_DEFENSIVE_MAX_DISCOUNT, 0.50, "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT"),
+    (P3B_BUY_ACCUMULATE_MAX_DISCOUNT, 0.50, "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT"),
+    (P3B_BUY_DEFENSIVE_MAX_PENALTY, 1.0, "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY"),
+):
+    if not 0 < _ag_val <= _ag_hi:
+        raise ValueError(f"{_ag_name} must be in (0, {_ag_hi:.2f}]" if _ag_hi < 1.0 else f"{_ag_name} must be in (0, 1.0]")
+del _ag_val, _ag_hi, _ag_name
+if PORTFOLIO_ASSET_MIN_GROWTH_PERCENT <= SELL_REARM_GROWTH_PERCENT:
+    raise ValueError("AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT must be above AG_SELL_REARM_GROWTH_PCT")
+if not 0 < P3B_SELL_TRIM_MAX_DISCOUNT <= P3B_SELL_DEFENSIVE_MAX_DISCOUNT:
+    raise ValueError("AG_P3B_SELL_TRIM_MAX_DISCOUNT must be in (0, AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT]")
+if SELL_TIERS[0][0] * (1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT) <= SELL_REARM_GROWTH_PERCENT:
+    raise ValueError("Compressed first SELL tier must remain above AG_SELL_REARM_GROWTH_PCT")
+if BUY_TIERS[0][0] * (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) <= RECOVERY_RESET_PERCENT:
+    raise ValueError("Compressed first BUY tier must remain above AG_RECOVERY_RESET_PCT")
 
 
 ORDER_LIFECYCLE = mkt.tracked_order_lifecycle(

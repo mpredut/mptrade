@@ -733,7 +733,8 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                     if s_i := str(it_ro.get("symbol") or "").strip().upper():
                         allowed_eq_ro_syms.add(s_i)
 
-            def _is_eq_ro_key(rk: str, rv: Any = None) -> bool:
+            filtered_ro = {}
+            for rk, rv in portfolio_summary["recent_orders"].items():
                 if isinstance(rv, dict) and rv.get("venue"):
                     is_eq = is_equity_venue(rv.get("venue"))
                 else:
@@ -744,13 +745,13 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                         is_eq = False if rk_up.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:")) else (rk_up in t212_sym_set)
                 if is_eq and want_t212 and allowed_eq_ro_syms:
                     rk_clean = str(rk).split(":", 1)[-1].strip().upper()
-                    return any(
+                    is_eq = any(
                         cand.upper() in allowed_eq_ro_syms
                         for cand in (rk_clean, *cache_symbol_variants(rk_clean, include_base=True))
                     )
-                return is_eq
-
-            _set_or_pop("recent_orders", {rk: rv for rk, rv in portfolio_summary["recent_orders"].items() if _is_eq_ro_key(rk, rv) == want_t212})
+                if is_eq == want_t212:
+                    filtered_ro[rk] = rv
+            _set_or_pop("recent_orders", filtered_ro)
         for list_key in ("tradable_positions", "recent_ai_intents", "active_retry_queue", "open_orders"):
             if isinstance(portfolio_summary.get(list_key), list):
                 _set_or_pop(list_key, [item for item in portfolio_summary[list_key] if _is_t212_venue(item)])

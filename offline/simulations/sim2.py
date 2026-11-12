@@ -39,12 +39,14 @@ def plot_graphs(price_window, full_prices):
 
 def main():
     full_prices = deque(maxlen=500)  # We keep up to 500 values.
-
-    def _on_tick(price_window, price):
-        full_prices.append(price)
-        plot_graphs(price_window, full_prices)
-
-    run_interactive_simulation(10, sleep_sec=1.2, on_tick_fn=_on_tick)
+    run_interactive_simulation(
+        10,
+        sleep_sec=1.2,
+        on_tick_fn=lambda price_window, price: (
+            full_prices.append(price),
+            plot_graphs(price_window, full_prices),
+        ),
+    )
 
 
 if __name__ == "__main__":

@@ -567,54 +567,21 @@ def _run_once(
     )
 
 
-def _to_spot_params(params: SpotStratParams | StratParams | dict, direction: str | None) -> SpotStratParams:
-    if direction is not None:
-        if isinstance(direction, bool) or str(direction).strip().lower() != "long":
-            raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {direction!r}")
-    if isinstance(params, SpotStratParams):
-        return params
-    if isinstance(params, StratParams):
-        if str(params.direction).strip().lower() != "long":
-            raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {params.direction!r}")
-        return SpotStratParams(
-            currency=params.currency,
-            entry_amount=params.entry_amount,
-            entry_discount_pct=params.entry_discount_pct,
-            dca_amount=params.dca_amount,
-            dca_drop_pct=params.dca_drop_pct,
-            check_minutes=params.check_minutes,
-            takeprofit_pct=params.takeprofit_pct,
-            max_budget=params.max_budget,
-            max_dca_buys=params.max_dca_buys,
-            enable_takeprofit=params.enable_takeprofit,
-            order_ttl_min=params.order_ttl_min,
-            stop_loss_pct=params.stop_loss_pct,
-            reentry_tolerance_pct=params.reentry_tolerance_pct,
-            sl_mhdsl_enabled=False,
-        )
-    if isinstance(params, dict):
-        if "direction" in params and params["direction"] is not None:
-            if isinstance(params["direction"], bool) or str(params["direction"]).strip().lower() != "long":
-                raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {params['direction']!r}")
-        hl_defaults = StratParams.from_dict(params, direction="long")
-        spot_defaults = {
-            "currency": hl_defaults.currency,
-            "entry_amount": hl_defaults.entry_amount,
-            "entry_discount_pct": hl_defaults.entry_discount_pct,
-            "dca_amount": hl_defaults.dca_amount,
-            "dca_drop_pct": hl_defaults.dca_drop_pct,
-            "check_minutes": hl_defaults.check_minutes,
-            "takeprofit_pct": hl_defaults.takeprofit_pct,
-            "max_budget": hl_defaults.max_budget,
-            "max_dca_buys": hl_defaults.max_dca_buys,
-            "enable_takeprofit": hl_defaults.enable_takeprofit,
-            "order_ttl_min": hl_defaults.order_ttl_min,
-            "stop_loss_pct": hl_defaults.stop_loss_pct,
-            "reentry_tolerance_pct": hl_defaults.reentry_tolerance_pct,
-            "sl_mhdsl_enabled": False,
-        }
-        return SpotStratParams.from_dict(params, defaults=spot_defaults)
-    raise ValueError(f"Unsupported spot params type: {type(params).__name__}")
+_HL_TO_SPOT_PARAM_FIELDS = (
+    "currency",
+    "entry_amount",
+    "entry_discount_pct",
+    "dca_amount",
+    "dca_drop_pct",
+    "check_minutes",
+    "takeprofit_pct",
+    "max_budget",
+    "max_dca_buys",
+    "enable_takeprofit",
+    "order_ttl_min",
+    "stop_loss_pct",
+    "reentry_tolerance_pct",
+)
 
 
 def make_hyperliquid_replay_adapter(
@@ -635,7 +602,32 @@ def make_hyperliquid_replay_adapter(
     if engine_norm not in ("perp", "spot"):
         raise ValueError(f"Unsupported Hyperliquid replay engine: {engine!r}")
     if engine_norm == "spot":
-        spot_params = _to_spot_params(params, direction)
+        if direction is not None and (isinstance(direction, bool) or str(direction).strip().lower() != "long"):
+            raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {direction!r}")
+        if isinstance(params, SpotStratParams):
+            spot_params = params
+        elif isinstance(params, StratParams):
+            if str(params.direction).strip().lower() != "long":
+                raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {params.direction!r}")
+            spot_params = SpotStratParams(
+                **{k: getattr(params, k) for k in _HL_TO_SPOT_PARAM_FIELDS},
+                sl_mhdsl_enabled=False,
+            )
+        elif isinstance(params, dict):
+            if params.get("direction") is not None and (
+                isinstance(params["direction"], bool) or str(params["direction"]).strip().lower() != "long"
+            ):
+                raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {params['direction']!r}")
+            hl_defaults = StratParams.from_dict(params, direction="long")
+            spot_params = SpotStratParams.from_dict(
+                params,
+                defaults={
+                    **{k: getattr(hl_defaults, k) for k in _HL_TO_SPOT_PARAM_FIELDS},
+                    "sl_mhdsl_enabled": False,
+                },
+            )
+        else:
+            raise ValueError(f"Unsupported spot params type: {type(params).__name__}")
         if bar_minutes is not None:
             bm = require_pos_float(bar_minutes, "bar_minutes")
             spot_params = scale_subbar_timeout_params(
