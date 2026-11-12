@@ -35,7 +35,7 @@ ensure_local_module_priority(_HERE, "ipo_common", "market_data")
 from cachepaths import has_equity_suffix, strip_equity_suffix
 from ipo_common import load_isolated_t212_cfg as _load_isolated_t212_cfg  # noqa: E402
 from market_data import parse_interval_minutes  # noqa: E402
-from providers.order_ohlc_utils import (
+from providers.ohlc_utils import (
     drop_incomplete_last_bar,
     extract_yahoo_chart_result_and_quote as _extract_yahoo_result_and_quote,
 )

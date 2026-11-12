@@ -1746,7 +1746,7 @@ def append_newer_24h_to_7d_vals(vals_7d: list, series_24h: list, arch_7d_end_ts:
     return vals_7d
 
 
-from providers.order_ohlc_utils import normalize_yahoo_5d_chart_bars
+from providers.ohlc_utils import normalize_yahoo_5d_chart_bars
 
 
 class TelemetryEvaluatorInterface(ABC):

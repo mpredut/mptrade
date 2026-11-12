@@ -43,17 +43,19 @@ from botcore import (
     split_csv,
 )
 from .base import MarketDataProvider
-from .order_ohlc_utils import (
+from .ohlc_utils import (
     ClosedPriceSeries,
-    build_open_order_entry,
     build_price_history_points,
+    require_pos_ohlc_interval,
+    series_to_historical_points,
+)
+from .order_ohlc_utils import (
+    build_open_order_entry,
     extract_order_fee,
     get_cached_pair_info,
     normalize_order,
     require_clean_order_id,
-    require_pos_ohlc_interval,
     resolve_market_flag,
-    series_to_historical_points,
 )
 from .strategy_executor import (
     OrderReconciliationCapabilities,

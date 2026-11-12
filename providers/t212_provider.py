@@ -34,10 +34,10 @@ from botcore import (
 )
 from cachepaths import CACHE_T212_TRADE_FILENAME, canonical_base_asset, same_canonical_base_asset
 from .base import MarketDataProvider
+from .ohlc_utils import candles_to_historical_points
 from .order_ohlc_utils import (
     aggregate_broker_history_fills,
     build_open_order_entry,
-    candles_to_historical_points,
     extract_broker_history_matches,
     extract_broker_order_ticker,
     iter_broker_history_order_fills,

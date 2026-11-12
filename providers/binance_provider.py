@@ -34,10 +34,13 @@ from .base import (
     MarketDataProvider,
     compute_fills_cost_basis,
 )
-from .order_ohlc_utils import (
+from .ohlc_utils import (
     ClosedPriceSeries,
-    build_open_order_entry,
+    candle_interval,
     candles_to_historical_points,
+)
+from .order_ohlc_utils import (
+    build_open_order_entry,
     clean_order_id,
     extract_order_fee,
     normalize_order,
@@ -57,7 +60,6 @@ from .strategy_executor import (
     PairPrecision,
     ProviderError,
     SubmissionRefused,
-    candle_interval,
 )
 
 # Binance imports reach WebSockets and local keys. Kraken and Hyperliquid must

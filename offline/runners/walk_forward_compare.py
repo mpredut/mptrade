@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 if str(RUNNER_DIR) not in sys.path:
     sys.path.append(str(RUNNER_DIR))
 
-from providers.order_ohlc_utils import parse_ohlc_interval_minutes as parse_interval_minutes
+from providers.ohlc_utils import parse_ohlc_interval_minutes as parse_interval_minutes
 from botcore import (
     _parse_bool_flag,
     safe_float,

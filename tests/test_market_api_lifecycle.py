@@ -26,22 +26,24 @@ from market_regime import ClosedPriceSeries, MarketRegimeService
 from notify_engine.server import _resolve_provider_label
 from offline.backtests import datasets as ds, evaluation as ev, execution as ex, metrics as mt
 from pathlib import Path
-from providers import market_api as ma, order_ohlc_utils, strategy_executor as sexec
+from providers import market_api as ma, ohlc_utils, order_ohlc_utils, strategy_executor as sexec
 from providers.base import ClosedPriceSeries as BaseClosedPriceSeries, MarketDataProvider
 from providers.binance_provider import BinanceProvider
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.intent_execution import resolve_intent_topic_tag
 from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi, _runtime_market_regime_snapshot, api
-from providers.order_ohlc_utils import (
+from providers.ohlc_utils import (
     ClosedPriceSeries as OhlcClosedPriceSeries,
     candles_to_historical_points,
-    extract_broker_order_ticker,
     extract_trading_quote_pairs,
     extract_yahoo_chart_latest_price,
     extract_yahoo_chart_result_and_quote,
-    normalize_broker_history_items,
     series_to_historical_points,
+)
+from providers.order_ohlc_utils import (
+    extract_broker_order_ticker,
+    normalize_broker_history_items,
 )
 from providers.ssot_bridge import ProviderSsotBridgeMixin
 from providers.venue_metadata import ProviderVenueMetadataMixin
@@ -494,7 +496,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "hyperliquid",
         "212trading",
     }
-    for base_mod_file in ("base.py", "ws_stream.py", "ssot_bridge.py", "venue_metadata.py"):
+    for base_mod_file in ("base.py", "ws_stream.py", "ssot_bridge.py", "venue_metadata.py", "ohlc_utils.py"):
         base_src = (root / "providers" / base_mod_file).read_text(encoding="utf-8")
         base_tree = ast.parse(base_src, filename=f"providers/{base_mod_file}")
         imported_roots = set()
@@ -519,6 +521,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "t212_provider.py",
         "replay_provider.py",
         "order_id_context.py",
+        "ohlc_utils.py",
         "order_ohlc_utils.py",
         "quantity.py",
         "strategy_executor.py",
@@ -814,8 +817,12 @@ def test_replay_execution_metrics_and_config_ssot_identity(monkeypatch, tmp_path
     assert ex.FeeModel is replay_execution.FeeModel
     assert ex.split_order_fill is replay_execution.split_order_fill
     assert ex.choose_intrabar_scenario is replay_execution.choose_intrabar_scenario
-    assert ex.validate_ohlc_bars is order_ohlc_utils.validate_ohlc_bars
-    assert ds.align_previous_values is order_ohlc_utils.align_previous_values
+    assert ex.validate_ohlc_bars is ohlc_utils.validate_ohlc_bars
+    assert ds.align_previous_values is ohlc_utils.align_previous_values
+    assert ohlc_utils.validate_ohlc_bars is order_ohlc_utils.validate_ohlc_bars
+    assert ohlc_utils.align_previous_values is order_ohlc_utils.align_previous_values
+    assert ohlc_utils.candle_interval is sexec.candle_interval
+    assert ohlc_utils.ProviderError is sexec.ProviderError
     assert mt.calculate_performance_metrics is replay_metrics.calculate_performance_metrics
     assert mt.round_metric is replay_metrics.round_metric
     assert mt.buy_hold_pct is replay_metrics.buy_hold_pct

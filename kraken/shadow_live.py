@@ -62,7 +62,7 @@ from botcore import (  # noqa: E402
     safe_nonneg_float,
     safe_pos_float,
 )
-from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
+from providers.ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies import spot_engine as strat, spot_replay as rp
 prepare_shadow_runtime(ROOT, HERE)
 from kraken.kraken_common import load_isolated_kraken_cfg  # noqa: E402

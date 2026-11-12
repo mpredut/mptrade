@@ -108,7 +108,7 @@ from providers.intent_state import (
     collect_known_ai_order_ids,
     extract_intent_notional,
 )
-from providers.order_ohlc_utils import extract_yahoo_chart_result_and_quote
+from providers.ohlc_utils import extract_yahoo_chart_result_and_quote
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
     read_json_recovering,

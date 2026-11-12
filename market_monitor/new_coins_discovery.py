@@ -19,7 +19,7 @@ from botcore import (
     stop_monitoring_thread,
 )
 from instrument_registry import casefold_get
-from providers.order_ohlc_utils import extract_trading_quote_pairs
+from providers.ohlc_utils import extract_trading_quote_pairs
 
 # ============================================
 # Global configuration

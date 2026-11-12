@@ -30,8 +30,11 @@ from cachepaths import (  # noqa: F401
 )
 import instrument_registry as _default_ir  # noqa: F401
 
-from .order_ohlc_utils import (  # noqa: F401
+from .ohlc_utils import (  # noqa: F401
     ClosedPriceSeries,
+    extract_yahoo_chart_result_and_quote,
+)
+from .order_ohlc_utils import (  # noqa: F401
     POST_ONLY_CROSS_TOKENS,
     VENUE_PROVIDER_SPECS,
     _ts_ms_to_s,
@@ -41,7 +44,6 @@ from .order_ohlc_utils import (  # noqa: F401
     extract_order_price,
     extract_timestamp_ms,
     extract_timestamp_s,
-    extract_yahoo_chart_result_and_quote,
     is_post_only_cross_refusal,
     normalize_side,
     normalize_timestamp_ms,

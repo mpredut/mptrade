@@ -41,7 +41,7 @@ from cacheManager import CacheFactory
 from cacheprice import CachePriceManagerBase
 import providers.market_api as _market_api
 from providers.market_api import api
-from providers.order_ohlc_utils import (
+from providers.ohlc_utils import (
     extract_trading_quote_pairs,
     extract_yahoo_chart_latest_price,
 )

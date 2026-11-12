@@ -33,7 +33,7 @@ finally:
         sys.modules["market_data"] = _prev_md
     else:
         sys.modules.pop("market_data", None)
-from providers.order_ohlc_utils import align_previous_values
+from providers.ohlc_utils import align_previous_values
 from providers.replay_provider import SimClock
 from strategies.replay_execution import (
     ExecutionModel,

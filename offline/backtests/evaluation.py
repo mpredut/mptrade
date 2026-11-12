@@ -47,7 +47,7 @@ from botcore import (
     safe_nonneg_float,
     split_csv,
 )
-from providers.order_ohlc_utils import normalize_record
+from providers.ohlc_utils import normalize_record
 
 
 Ohlc = list[tuple[float, float, float, float]]

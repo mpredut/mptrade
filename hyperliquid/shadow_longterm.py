@@ -38,7 +38,7 @@ from botcore import (  # noqa: E402
     required_env,
     safe_int,
 )
-from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
+from providers.ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE, KRAKEN_DIR)
 from kraken import shadow_live as shadow  # noqa: E402

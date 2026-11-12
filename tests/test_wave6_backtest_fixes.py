@@ -37,6 +37,7 @@ WAVE6_PURE_ASCII_FILES = (
     "212trading/backtest.py",
     "kraken/backtest.py",
     "offline/backtests/datasets.py",
+    "providers/ohlc_utils.py",
     "providers/order_ohlc_utils.py",
     "offline/backtests/evaluation.py",
     "offline/backtests/execution.py",

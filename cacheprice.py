@@ -106,7 +106,7 @@ from instrument_registry import (
 )
 import providers.market_api as _market_api
 from providers.base import MarketDataProvider
-from providers.order_ohlc_utils import normalize_yahoo_5d_chart_bars
+from providers.ohlc_utils import normalize_yahoo_5d_chart_bars
 from providers.ssot_bridge import live_price_fetch_context
 from providers.ws_stream import (
     PublicPriceStreamBase,

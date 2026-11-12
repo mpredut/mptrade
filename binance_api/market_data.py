@@ -14,7 +14,7 @@ import time
 import urllib.parse
 
 from botcore import _parse_bool_flag, fetch_public_json, safe_pos_float
-from providers.order_ohlc_utils import (
+from providers.ohlc_utils import (
     OHLC_INTERVALS_MIN_TO_STR,
     OHLC_INTERVALS_STR_TO_MIN,
     parse_ohlc_interval,

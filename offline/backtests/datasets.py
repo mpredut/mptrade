@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from botcore import exact_pos_int, safe_pos_float
-from providers.order_ohlc_utils import (
+from providers.ohlc_utils import (
     REQUIRED_FIELDS,
     align_previous_values,
     drop_incomplete_last_bar,

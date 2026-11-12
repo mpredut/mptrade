@@ -12,13 +12,13 @@ from typing import Any, Callable
 from botcore import (
     _parse_bool_flag,
     is_market_order,
+    normalize_side,
     require_finite_float,
     require_pos_float,
     safe_nonneg_float,
     safe_pos_float,
 )
-from providers.base import normalize_side
-from providers.order_ohlc_utils import validate_ohlc_bars
+from providers.ohlc_utils import validate_ohlc_bars
 
 _POLICIES = {"buy_first", "sell_first", "worst_case"}
 

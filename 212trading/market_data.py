@@ -33,7 +33,7 @@ from botcore import (
     safe_pos_float,
 )
 
-from providers.order_ohlc_utils import (
+from providers.ohlc_utils import (
     drop_incomplete_last_bar,
     extract_yahoo_chart_result_and_quote as _extract_yahoo_result_and_quote,
     parse_ohlc_interval_minutes,

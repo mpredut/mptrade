@@ -17,13 +17,13 @@ from typing import Callable, Optional, Protocol, runtime_checkable
 
 from botcore import (
     clean_order_id,
-    exact_int,
     exact_nonneg_int,
+    extract_order_id,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
-from .order_ohlc_utils import ProviderError, extract_order_id
+from .ohlc_utils import ProviderError, _CANDLE_INTERVALS, candle_interval  # noqa: F401
 
 
 class OrderNotFound(ProviderError):
@@ -171,21 +171,6 @@ class PairPrecision:
         if isinstance(self.base_asset, bool):
             raise ValueError(f"invalid base_asset in PairPrecision: {self.base_asset!r}")
         object.__setattr__(self, "base_asset", str(self.base_asset or "").strip())
-
-
-_CANDLE_INTERVALS = {
-    1: "1m", 5: "5m", 15: "15m", 60: "1h", 240: "4h", 1440: "1d",
-}
-
-
-def candle_interval(interval_min: int) -> str:
-    """Return the canonical venue interval or reject an unsupported horizon."""
-    minutes = exact_int(interval_min, default=None)
-    if minutes is None:
-        raise ProviderError(f"invalid candle interval: {interval_min!r}")
-    if minutes not in _CANDLE_INTERVALS:
-        raise ProviderError(f"unsupported candle interval: {interval_min!r} minutes")
-    return _CANDLE_INTERVALS[minutes]
 
 
 @dataclass(frozen=True)

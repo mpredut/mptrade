@@ -52,7 +52,7 @@ from botcore import (
     temporary_environ,
     touch_module_heartbeat,
 )
-from providers.order_ohlc_utils import extract_yahoo_chart_latest_price
+from providers.ohlc_utils import extract_yahoo_chart_latest_price
 from strategies.spot_engine import state_path_for
 from kraken.kraken_common import build_kraken_client, notify
 from kraken.kraken_client import KrakenClient, KrakenError

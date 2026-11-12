@@ -59,16 +59,19 @@ from cachepaths import (
 from instrument_registry import casefold_get
 from state_io import encode_json_payload
 from .base import MarketDataProvider
-from .order_ohlc_utils import (
+from .ohlc_utils import (
     ClosedPriceSeries,
-    build_open_order_entry,
     build_price_history_points,
+    candle_interval,
+    require_pos_ohlc_interval,
+    resolve_ohlc_time_window_ms,
+)
+from .order_ohlc_utils import (
+    build_open_order_entry,
     extract_order_fee,
     extract_orig_qty,
     require_int_order_id,
-    require_pos_ohlc_interval,
     resolve_market_flag,
-    resolve_ohlc_time_window_ms,
 )
 from .strategy_executor import (
     OrderReconciliationCapabilities,
@@ -76,7 +79,6 @@ from .strategy_executor import (
     PairPrecision,
     ProviderError,
     SubmissionRefused,
-    candle_interval,
 )
 
 # Repository root and hyperliquid directory for bare common/hl_client imports.

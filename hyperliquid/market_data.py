@@ -23,7 +23,7 @@ from botcore import (  # noqa: E402
     safe_nonneg_float,
     safe_pos_float,
 )
-from providers.order_ohlc_utils import (  # noqa: E402
+from providers.ohlc_utils import (  # noqa: E402
     OHLC_INTERVALS_MIN_TO_STR,
     parse_ohlc_interval,
     resolve_ohlc_time_window_ms,
