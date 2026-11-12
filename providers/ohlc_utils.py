@@ -530,14 +530,14 @@ def extract_trading_quote_pairs(
     """Extract ``(trading_symbols, quote_pairs, pair_to_base)`` from an ``exchangeInfo`` payload."""
     raw_symbols = data.get("symbols") if isinstance(data, Mapping) else None
     if not isinstance(raw_symbols, list):
-        if strict:
+        if _parse_bool_flag(strict, default=False):
             raise ValueError(
                 "exchangeInfo response must be a dict"
                 if not isinstance(data, Mapping)
                 else "exchangeInfo symbols must be a list"
             )
         return set(), set(), {}
-    want_quote = quote.strip().upper()
+    want_quote = "" if isinstance(quote, bool) else str(quote or "USDC").strip().upper()
     trading_symbols: set[str] = set()
     quote_pairs: set[str] = set()
     pair_to_base: dict[str, str] = {}

@@ -1273,7 +1273,11 @@ def sync_module_reexports(
 
 def _sync_cachepaths_reexports() -> None:
     """Keep loaded re-export modules bound to active ``cachepaths`` callables across reload."""
-    sync_module_reexports(globals(), ("botcore", "utils"), (__name__,))
+    sync_module_reexports(
+        globals(),
+        ("botcore", "utils", "state_io", "intelligence.macro_sentiment_ssot"),
+        (__name__,),
+    )
 
 
 _sync_cachepaths_reexports()

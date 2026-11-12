@@ -80,6 +80,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     reconcile_sibling_flow_and_liq_regimes,
     rescale_orderbook_walls_to_price,
 )
+from intelligence.sentiment.evaluators.portfolio_evaluator import compute_open_lots_vwap
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     _RTH_VP_ANCHOR_KEYS,
     _STALE_SHORT_24H_KEYS,
@@ -1829,20 +1830,9 @@ class RecentFillsExecutionStage(PretradePillarCollectorBase):
                 if (act_avg := safe_pos_float(fills.get("active_avg_buy_px"), default=None)) is not None:
                     sub_parts.append(f"Active Cycle Avg BUY={act_avg}")
                     if open_lots_f:
-                        rf_q = 0.0
-                        rf_cost = 0.0
-                        for flt in open_lots_f:
-                            if not isinstance(flt, dict):
-                                continue
-                            fq = safe_pos_float(flt.get("qty"), default=None)
-                            fpx = round_opt_px(flt.get("entry_px"), 6)
-                            if fq is not None and fpx is not None and fq > 0.0 and fpx > 0.0:
-                                rf_q += fq
-                                rf_cost += fq * fpx
-                        if rf_q > 0.0:
-                            rf_lifo_avg = round_opt_px(rf_cost / rf_q, 6)
-                            if rf_lifo_avg is not None and abs(rf_lifo_avg - act_avg) / act_avg >= 0.0025:
-                                sub_parts.append(f"Remaining LIFO Avg BUY={rf_lifo_avg}")
+                        rf_lifo_avg, _, _ = compute_open_lots_vwap(open_lots_f, ref_avg_px=act_avg, min_rel_diff=0.0025)
+                        if rf_lifo_avg is not None:
+                            sub_parts.append(f"Remaining LIFO Avg BUY={rf_lifo_avg}")
                 if (
                     (tac_avg := safe_pos_float(fills.get("tactical_avg_buy_px"), default=None)) is not None
                     and (act_avg is None or tac_avg < act_avg)

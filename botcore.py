@@ -1516,14 +1516,18 @@ def summarize_current_price_cache_freshness(
 
     all_ts: list[float] = [
         ts_ft
-        for v in ft_map.values()
-        if (ts_ft := (normalize_epoch_sec(v, default=0.0) or 0.0)) > 0.0
+        for k, v in ft_map.items()
+        if not isinstance(k, bool)
+        and (ts_ft := (normalize_epoch_sec(v, default=0.0) or 0.0)) > 0.0
+        and (now_s - ts_ft) >= -5.0
     ]
     open_ages: list[float] = []
     open_bounds: list[tuple[float, float]] = []
     any_open_invalid_or_missing_ts = False
 
     for sym_key, val in items_map.items():
+        if isinstance(sym_key, bool):
+            continue
         sym_str = str(sym_key or "").strip()
         if not sym_str:
             continue
@@ -1531,14 +1535,14 @@ def summarize_current_price_cache_freshness(
         if ft_val is None:
             ft_val = ft_lower.get(sym_str.casefold())
         ts_sec, valid_struct = extract_current_price_timestamp_sec(val, ft_val)
-        if ts_sec > 0.0:
+        if ts_sec > 0.0 and (now_s - ts_sec) >= -5.0:
             all_ts.append(ts_sec)
         px_val = extract_current_price_item(val) or 0.0
         is_eq = has_equity_suffix(sym_str)
         is_open = (
             (not is_eq or is_us_rth_open(now_s))
             if market_open_fn is None
-            else bool(market_open_fn(sym_str))
+            else _parse_bool_flag(market_open_fn(sym_str), default=False)
         )
         if not is_open:
             continue

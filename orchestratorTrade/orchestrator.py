@@ -1,5 +1,6 @@
 import asyncio
 from collections import defaultdict, deque
+import contextlib
 import hashlib
 import importlib
 import logging
@@ -297,16 +298,22 @@ class BotManager:
     async def shutdown(self):
         if getattr(self, "_shutting_down", False):
             task = getattr(self, "_shutdown_task", None)
-            if task is not None and task is not asyncio.current_task():
-                await task
-            return
+            if task is not None and task is not asyncio.current_task() and not task.done():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            if not self.processes:
+                return
         self._shutting_down = True
         self._shutdown_task = asyncio.current_task()
         logging.info("Shutting down all bots gracefully...")
         self.running = False
-        for name in self._ordered_process_names_reversed():
-            await self.stop_bot(name)
-            self.processes.pop(name, None)
+        try:
+            for name in self._ordered_process_names_reversed():
+                await self.stop_bot(name)
+                self.processes.pop(name, None)
+        finally:
+            if getattr(self, "_shutdown_task", None) is asyncio.current_task():
+                self._shutdown_task = None
 
     def _hash_file(self, filepath: str) -> str:
         data = read_bytes_file(filepath, default=None)

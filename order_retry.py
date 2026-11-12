@@ -1356,6 +1356,8 @@ def resolve_record_ttl(rec):
 
 def is_expired(rec, now=None):
     """Return true after active retry TTL or hard attempt limit."""
+    if not isinstance(rec, dict):
+        return True
     if (
         str(rec.get("lifecycle") or "submit_pending").lower() in {"accepted", "awaiting_cancel"}
         or is_possibly_submitted(rec)
@@ -1386,6 +1388,8 @@ def is_expired(rec, now=None):
 
 def is_due(rec, now=None):
     """Return true once the retry interval has elapsed since creation or last attempt."""
+    if not isinstance(rec, dict):
+        return False
     now_f = safe_float(time.time() if now is None else now, default=None)
     claim_until = safe_float(rec.get("claim_until", 0) or 0, default=None)
     created = safe_float(rec.get("created_ts", 0) or 0, default=None)
@@ -1430,13 +1434,14 @@ def price_gate_ok(rec, current_price, tol=None):
 
 def discard_refused_intent_records(intent_id: str) -> list[str]:
     """Discard queued records matching ``intent_id`` whose ``submission_state`` is ``refused``."""
-    if not intent_id:
+    iid_str = "" if isinstance(intent_id, bool) else str(intent_id or "").strip()
+    if not iid_str:
         return []
     rm_ids = [
         str(r["id"])
         for r in load_all()
         if isinstance(r, dict)
-        and str(r.get("intent_id") or "") == str(intent_id)
+        and str(r.get("intent_id") or "").strip() == iid_str
         and str(r.get("submission_state") or "").lower() == "refused"
         and r.get("id") is not None
     ]
@@ -1456,7 +1461,7 @@ def discard_superseded_symbol_records(
     cancel_fn_is_mock: bool = False,
 ) -> list[str]:
     """Discard superseded ``submit_pending`` / ``awaiting_cancel`` retry records for ``symbol``."""
-    sym_str = str(symbol or "").strip().upper()
+    sym_str = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
     if not sym_str:
         return []
     default_q = os.path.abspath(str(resolve_cachedb_filepath("order_retry_queue.jsonl")))

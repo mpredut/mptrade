@@ -286,6 +286,50 @@ def clip_open_lots_to_held_qty(
     return list(reversed(clipped_rev))
 
 
+def compute_open_lots_vwap(
+    lots: Any,
+    *,
+    held_qty: Optional[float] = None,
+    clip_to_held: bool = False,
+    min_lot_notional: float = 0.0,
+    ref_avg_px: Optional[float] = None,
+    min_rel_diff: float = 0.0,
+    min_coverage_ratio: float = 0.0,
+    decimals: int = 6,
+) -> tuple[Optional[float], float, float]:
+    """Compute remaining LIFO open-lots VWAP ``(vwap_px, total_qty, total_cost)`` with optional coverage & divergence gates."""
+    lots_seq = (
+        clip_open_lots_to_held_qty(lots, held_qty)
+        if clip_to_held and held_qty is not None and (safe_nonneg_float(held_qty, 0.0) or 0.0) > 0.0
+        else (list(lots) if isinstance(lots, Sequence) and not isinstance(lots, (str, bytes)) else [])
+    )
+    min_notional = safe_nonneg_float(min_lot_notional, 0.0) or 0.0
+    tot_q = 0.0
+    tot_cost = 0.0
+    for lt in lots_seq:
+        if not isinstance(lt, dict):
+            continue
+        lq = safe_pos_float(lt.get("qty"), None)
+        lpx = round_opt_px(lt.get("entry_px"), decimals)
+        if lq is not None and lpx is not None and lpx > 0.0 and lq * lpx >= min_notional:
+            tot_q += lq
+            tot_cost += lq * lpx
+    if tot_q <= 0.0 or tot_cost <= 0.0:
+        return None, 0.0, 0.0
+    if min_coverage_ratio > 0.0:
+        held_f = safe_nonneg_float(held_qty, 0.0) or 0.0
+        if held_f <= 0.0 or tot_q < held_f * min_coverage_ratio:
+            return None, tot_q, tot_cost
+    vwap_px = round_opt_px(tot_cost / tot_q, decimals)
+    if vwap_px is None or vwap_px <= 0.0:
+        return None, tot_q, tot_cost
+    if ref_avg_px is not None:
+        ref_f = safe_pos_float(ref_avg_px, None)
+        if ref_f is None or (min_rel_diff > 0.0 and abs(vwap_px - ref_f) / ref_f < min_rel_diff):
+            return None, tot_q, tot_cost
+    return vwap_px, tot_q, tot_cost
+
+
 def reconcile_fresh_lots_vwap(
     fills_or_ro: Dict[str, Any],
     open_lots: Any,
@@ -293,21 +337,17 @@ def reconcile_fresh_lots_vwap(
     held_qty: float,
 ) -> tuple[Optional[float], float]:
     """Recompute active VWAP on ``fills_or_ro`` when pruned ``fresh_lots`` match ``held_qty`` better than stale open lots."""
-    fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
+    fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots if isinstance(lt, dict))
     lots_seq = open_lots if isinstance(open_lots, list) else []
     if held_qty > 1e-8 and fresh_lots and len(fresh_lots) < len(lots_seq):
         unfiltered_q = safe_pos_float(fills_or_ro.get("active_cycle_rem_qty"), 0.0) or sum(
             safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in lots_seq if isinstance(lt, dict)
         )
         if fresh_q >= held_qty * 0.98 and unfiltered_q > held_qty * 1.15:
-            fresh_cost = sum(
-                (safe_pos_float(lt.get("qty"), 0.0) or 0.0) * (safe_pos_float(lt.get("entry_px"), 0.0) or 0.0)
-                for lt in fresh_lots
-            )
-            if fresh_cost > 0.0:
-                fresh_vwap = round(fresh_cost / fresh_q, 6)
+            fresh_vwap, vwap_q, _ = compute_open_lots_vwap(fresh_lots, decimals=6)
+            if fresh_vwap is not None:
                 fills_or_ro["active_avg_buy_px"] = fresh_vwap
-                fills_or_ro["active_cycle_rem_qty"] = round(fresh_q, 6)
+                fills_or_ro["active_cycle_rem_qty"] = round(vwap_q, 6)
                 if (tac_cur := safe_pos_float(fills_or_ro.get("tactical_avg_buy_px"), default=None)) is not None and abs(
                     tac_cur - fresh_vwap
                 ) <= max(1e-6, fresh_vwap * 1e-5):

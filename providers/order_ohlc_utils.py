@@ -122,7 +122,12 @@ def compute_post_only_maker_price(
             cur_px = None
     is_buy = s_norm == "BUY"
     anchor = (min(px_f, cur_px) if is_buy else max(px_f, cur_px)) if cur_px else px_f
-    raw_tick = tick_size_fn(anchor) if callable(tick_size_fn) else tick_size
+    raw_tick = tick_size
+    if callable(tick_size_fn):
+        try:
+            raw_tick = tick_size_fn(anchor)
+        except Exception:
+            raw_tick = tick_size
     tick = safe_pos_float(raw_tick, default=0.0) or 0.0
     ratio = safe_pos_float(step_bps_ratio, default=0.0005) or 0.0005
     cushion = max(tick, anchor * ratio)

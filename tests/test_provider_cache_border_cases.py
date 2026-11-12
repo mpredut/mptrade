@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 import functools
@@ -24,7 +25,7 @@ import pytest
 import account_cache_health as health
 import active_intents
 import assetguardian as ag
-from binance_api import bapi_placeorder, bapi_trades, bapi_ws_bridge, bapi_ws_normalize as ws_norm
+from binance_api import bapi_placeorder, bapi_trades, bapi_ws, bapi_ws_bridge, bapi_ws_normalize as ws_norm
 import botcore
 from botcore import (
     clean_scale,
@@ -51,6 +52,7 @@ from cacheaccount import (
     CacheTradeManager,
     start_account_cache_daemon,
 )
+import cacheInterface
 import cacheintegrity
 import cachepaths
 from cachepaths import (
@@ -113,6 +115,7 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MacroBenchmarksSnapshotCollector,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
+    BotRuntimeStatesCollector,
     _load_open_order_timestamps,
     _resolve_ai_intents_and_known_order_ids,
 )
@@ -123,6 +126,7 @@ from intelligence.sentiment.evaluators import (
 from intelligence.sentiment.evaluators.microstructure_evaluator import evaluate_microstructure_cycle_deltas
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     clip_open_lots_to_held_qty,
+    compute_open_lots_vwap,
     parse_venue_cycle_state,
     reconcile_fresh_lots_vwap,
     select_fresh_open_lots,
@@ -131,7 +135,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     OpenLimitOrdersTcaEvaluator,
     VenueFeeAndLimitsEvaluator,
 )
-from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, resolve_llm_guard_cache_ttl
 from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from kraken import (
     kraken_xstock_watch as xstock_watch,
@@ -190,6 +194,7 @@ from providers.kraken_provider import KrakenProvider
 from providers.ohlc_utils import (
     build_price_history_points,
     drop_incomplete_last_bar,
+    extract_trading_quote_pairs,
     resolve_ohlc_time_window_ms,
     validate_dataset,
     validate_ohlc_candle_bar,
@@ -5091,4 +5096,261 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
         ) is True
     refreshed_bals = state_io.read_json_dict(str(bcache_file), default={})
     assert refreshed_bals["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(125.0)
+
+
+def test_wave30_open_lots_vwap_short_trend_freshness_and_shutdown_border_cases(tmp_path, monkeypatch):
+    """Verify Wave 30 compute_open_lots_vwap SSOT, future-ts current-price freshness guard, cachepaths reload sync, short-trend bare-str & canonical _mem key, WS _cmd_queue cleanup, cancelled orchestrator shutdown recovery, and guard/retry border cases."""
+    now_s = 1_776_000_000.0
+    now_ms = math.trunc(now_s * 1000)
+
+    # 1. compute_open_lots_vwap SSOT & prompt_sections integration
+    assert compute_open_lots_vwap("not_a_lot_list") == (None, 0.0, 0.0)
+    assert compute_open_lots_vwap([{"qty": True, "entry_px": 100.0}]) == (None, 0.0, 0.0)
+    lots_sample = [
+        {"qty": 1.0, "entry_px": 100.0},
+        {"qty": 3.0, "entry_px": 120.0},
+    ]
+    vwap_val, tot_q, tot_cost = compute_open_lots_vwap(
+        lots_sample,
+        held_qty=2.0,
+        clip_to_held=True,
+        min_lot_notional=1.0,
+        ref_avg_px=110.0,
+        min_rel_diff=0.0025,
+        min_coverage_ratio=0.95,
+    )
+    assert vwap_val == pytest.approx(120.0)
+    assert tot_q == pytest.approx(2.0)
+    assert tot_cost == pytest.approx(240.0)
+    # Coverage gate rejects partial lot coverage < 95% of held_qty
+    assert (
+        compute_open_lots_vwap(
+            [{"qty": 0.5, "entry_px": 120.0}],
+            held_qty=2.0,
+            min_coverage_ratio=0.95,
+        )[0]
+        is None
+    )
+    cyc_line = ps_mod._format_venue_cycle_line(
+        "binance",
+        "SOLUSDC",
+        {
+            "qty": 2.0,
+            "avg_cost_px": 110.0,
+            "last_buy_price": 120.0,
+            "_spot_px": 126.0,
+            "_open_lots": lots_sample,
+        },
+    )
+    assert "lifo_rem_avg=120.0 (pnl_vs_lifo=+5.00%)" in cyc_line
+    ro_line = ps_mod._format_recent_order_line(
+        "SOLUSDC",
+        {
+            "active_avg_buy_px": 110.0,
+            "open_lots": [{"qty": 2.0, "entry_px": 120.0}],
+            "last_buy": {"price": 120.0, "qty": 2.0, "ts_ms": now_ms - 60_000},
+        },
+        now_ms,
+    )
+    assert "Remaining LIFO Avg BUY=120.0" in ro_line
+
+    # 2. summarize_current_price_cache_freshness rejects corrupted future timestamps and string "false" market_open_fn
+    stale_with_future_poison = {
+        "items": {
+            True: [[now_ms, 1.0]],
+            "BTCUSDC": [[math.trunc((now_s - 45.0) * 1000), 85000.0]],
+            "NVDA_US_EQ": [[math.trunc((now_s + 7200.0) * 1000), 130.0]],
+        },
+        "fetchtime": {
+            "BTCUSDC": now_s - 45.0,
+            "NVDA_US_EQ": now_s + 7200.0,
+        },
+    }
+    fresh_summary = botcore.summarize_current_price_cache_freshness(
+        stale_with_future_poison,
+        now_ts=now_s,
+        max_age_sec=3.0,
+        market_open_fn=lambda _sym: "false",
+    )
+    assert fresh_summary["ws_realtime_fresh"] is False
+    assert fresh_summary["freshest_age_seconds"] == pytest.approx(45.0)
+
+    # 3. cachepaths._sync_cachepaths_reexports updates state_io & macro_sentiment_ssot across reload
+    importlib.reload(cachepaths)
+    assert state_io.resolve_cachedb_filepath is cachepaths.resolve_cachedb_filepath
+    assert mss.cache_symbol_variants is cachepaths.cache_symbol_variants
+
+    # 4. CacheManagerInterface string bool flags & bool symbol coercion
+    assert cacheInterface.CacheManagerInterface.resolve_data_sync_mode(
+        "producer", config_read_only="false"
+    ) == ("producer", True, True)
+    with monkeypatch.context() as mp:
+        mp.setattr(cacheInterface.CacheManagerInterface, "_resolve_cache_manager_module", classmethod(lambda cls: None))
+        delegated, _, res_mode, save_f, start_p, eff_syms = (
+            cacheInterface.CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
+                "probe",
+                symbols=True,
+                data_sync_mode="live_reader",
+                config_read_only="false",
+            )
+        )
+        assert (delegated, res_mode, save_f, start_p, eff_syms) == (False, "live_reader", False, True, [])
+
+    # 5. CacheShortTrendManager bare-str candidate safety & canonical _mem key on clean disk reader
+    st_file = tmp_path / "cache_short_trend.json"
+    state_io.save_json_state(
+        str(st_file),
+        {
+            "A": {"ts": now_s, "trend": 0.05, "current_price": 135.0, "gradient_recent": 0.01},
+            "AVGO_US_EQ": {"ts": now_s, "trend": -0.02, "current_price": 182.0, "gradient_recent": -0.01},
+            "BTCUSDC": {"ts": now_s, "trend": 0.03, "current_price": 88000.0, "gradient_recent": 0.02},
+        },
+    )
+    assert CacheShortTrendManager.read_ssot_short_trend_file(str(st_file), "AVGO", now_s=now_s) is None
+    assert CacheShortTrendManager.read_ssot_short_trend_file(str(st_file), True, now_s=now_s) is None
+    avgo_snap = CacheShortTrendManager.read_ssot_short_trend_file(
+        str(st_file), ("AVGO", "AVGO_US_EQ"), now_s=now_s
+    )
+    assert avgo_snap is not None and avgo_snap["current_price"] == pytest.approx(182.0)
+
+    stm = CacheShortTrendManager(
+        ["BTCUSDC"],
+        filename=str(st_file),
+        data_sync_mode=CacheShortTrendManager.MODE_DISK_READER,
+    )
+    stm.writer = "false"
+    assert stm._is_clean_disk_reader() is True
+    assert stm.get_fresh_snapshot(True, now=now_s) is None
+    assert stm.get_fresh_snapshot("BTCUSDC", now=True) is None
+    fresh_btc = stm.get_fresh_snapshot("  btcusdc  ", now=now_ms)
+    assert fresh_btc is not None and fresh_btc["current_price"] == pytest.approx(88000.0)
+    assert "BTCUSDC" in stm._mem
+    assert "  btcusdc  " not in stm._mem
+
+    # 6. BinancePriceStream clears _cmd_queue on exit and populates _loop in _cmd_loop
+    ps_ws = bapi_ws.BinancePriceStream(symbols=["BTCUSDC"])
+    with monkeypatch.context() as mp:
+        async def _noop_connect():
+            ps_ws.request_stop()
+
+        mp.setattr(ps_ws, "_connect_and_run", _noop_connect)
+        ps_ws.start(daemon=True)
+        assert ps_ws.stop(timeout=1.5) is True
+    assert ps_ws._cmd_queue is None
+
+    # 7. BotManager.shutdown completes remaining reverse-order stops if first shutdown task is cancelled
+    orch_mod = importlib.import_module("orchestratorTrade.orchestrator")
+
+    async def _verify_cancelled_shutdown():
+        mgr = orch_mod.BotManager.__new__(orch_mod.BotManager)
+        mgr.bots = [{"name": "cacheManager"}, {"name": "tradeall"}, {"name": "rtrade"}]
+        mgr.processes = {n: SimpleNamespace(pid=i + 1) for i, n in enumerate(("cacheManager", "tradeall", "rtrade"))}
+        mgr.running = True
+        mgr._shutting_down = False
+        mgr._shutdown_task = None
+        stopped = []
+        entered_second = asyncio.Event()
+        allow_cancel = asyncio.Event()
+
+        async def _stop_bot(name, sig=None):
+            if name == "tradeall" and not entered_second.is_set():
+                entered_second.set()
+                await allow_cancel.wait()
+            stopped.append(name)
+
+        mgr.stop_bot = _stop_bot
+        t1 = asyncio.create_task(mgr.shutdown())
+        await entered_second.wait()
+        t2 = asyncio.create_task(mgr.shutdown())
+        await asyncio.sleep(0.01)
+        t1.cancel()
+        await t2
+        return stopped, dict(mgr.processes), mgr._shutdown_task
+
+    stopped_order, rem_procs, final_task = asyncio.run(_verify_cancelled_shutdown())
+    assert stopped_order == ["rtrade", "tradeall", "cacheManager"]
+    assert rem_procs == {}
+    assert final_task is None
+
+    # 8. LLM guard None cache entry, HighStakeGuard bool symbol, safe_to_discard="false", order_retry & maker step-back
+    assert HighStakeGuard()._resolve_currency_display(True) == ("$", "USD")
+    ctx_obj = SimpleNamespace(
+        symbol="BTCUSDC",
+        provider="binance",
+        _intelligence_decisions_by_key={("BUY", ()): None},
+    )
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            llm_order_guard._high_stake_guard,
+            "is_llm_guard_exempt",
+            lambda *_a, **_k: False,
+        )
+        mp.setattr(
+            llm_order_guard._high_stake_guard,
+            "HighStakeGuard",
+            lambda **_kw: SimpleNamespace(
+                check=lambda *_a, **_k: GuardDecision.allow(
+                    "HighStakeGuard", "ok", evaluated_notional_eur=1000.0, cache_hit=True
+                )
+            ),
+        )
+        ok_hs, _, scale_hs = llm_order_guard.evaluate_high_stake_order_guard(
+            symbol="BTCUSDC",
+            side="BUY",
+            price=88000.0,
+            qty=0.02,
+            computed_notional=1000.0,
+            regime_context=ctx_obj,
+            valid_context=True,
+            cache_key=("BUY", ()),
+            margins={"intelligence_guards_enabled": True, "llm_guard_mode": "enforce", "high_stake_min_notional_usd": 700.0},
+            bypassed=set(),
+            now=now_s,
+            notify_on_eval=False,
+        )
+    assert (ok_hs, scale_hs) == (True, 1.0)
+    assert isinstance(ctx_obj._intelligence_decisions_by_key[("BUY", ())], dict)
+
+    rt_dir = tmp_path / "rt_states"
+    rt_dir.mkdir()
+    rq_file = cachepaths.resolve_cachedb_filepath(str(rt_dir / "order_retry_queue.jsonl"))
+    os.makedirs(os.path.dirname(str(rq_file)), exist_ok=True)
+    atomic_write_text(
+        str(rq_file),
+        json.dumps(
+            {
+                "id": "rq1",
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.01,
+                "requested_price": 85000.0,
+                "lifecycle": "submit_pending",
+                "submission_state": "refused",
+                "safe_to_discard": "false",
+                "attempts": 6,
+                "last_failure_reason": "below_min_notional",
+                "expires_at_ts": now_s + 600.0,
+            }
+        )
+        + "\n",
+    )
+    rt_collected = BotRuntimeStatesCollector().collect(str(rt_dir), now_ts=now_s)
+    assert len(rt_collected.get("active_retry_queue", [])) == 1
+
+    assert order_retry.is_expired(None, now=now_s) is True
+    assert order_retry.is_due("bad_rec", now=now_s) is False
+    assert order_retry.discard_refused_intent_records(True) == []
+    assert order_retry.discard_superseded_symbol_records(True, "BUY") == []
+
+    stepped_px = compute_post_only_maker_price(
+        "BUY",
+        100.0,
+        current_price=100.0,
+        tick_size=0.01,
+        tick_size_fn=lambda _a: (_ for _ in ()).throw(RuntimeError("exchangeInfo down")),
+    )
+    assert 0.0 < stepped_px < 100.0
+    assert extract_trading_quote_pairs("invalid", quote=True, strict="false") == (set(), set(), {})
+
 

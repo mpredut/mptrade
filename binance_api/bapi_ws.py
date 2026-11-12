@@ -95,7 +95,10 @@ class BinancePriceStream(PublicPriceStreamBase):
     async def _main(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._cmd_queue = asyncio.Queue()   # Create it in the event loop that uses it.
-        await self._run_with_reconnect(self._connect_and_run)
+        try:
+            await self._run_with_reconnect(self._connect_and_run)
+        finally:
+            self._cmd_queue = None
 
     async def _connect_and_run(self) -> None:
         # Wait for symbols here rather than treating the wait as a session. This avoids
@@ -153,6 +156,8 @@ class BinancePriceStream(PublicPriceStreamBase):
                 continue
 
     async def _cmd_loop(self, ws) -> None:
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
         if self._cmd_queue is None:
             self._cmd_queue = asyncio.Queue()
         while not self._stop_event.is_set():

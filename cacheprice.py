@@ -1393,9 +1393,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 continue
             if self._ws_is_healthy(symbol):
                 continue
-            is_rth_sym = is_equity_venue(
-                self.provider_name_for(symbol) or ""
-            ) or is_equity_symbol(symbol)
+            is_rth_sym = self._is_equity_instrument(symbol)
             if is_rth_sym and is_rth_gate_enabled(
                 getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
             ):

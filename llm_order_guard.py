@@ -185,7 +185,8 @@ def evaluate_high_stake_order_guard(
                 g_tuple = (g_allowed_bool, g_reason_str, g_scale)
                 if not isinstance(decisions_map, dict):
                     decisions_map = {}
-                entry = decisions_map.get(cache_key, {})
+                raw_entry_cur = decisions_map.get(cache_key)
+                entry = dict(raw_entry_cur) if isinstance(raw_entry_cur, dict) else {}
                 entry["gemini_notional"] = eval_notional
                 entry["gemini_decision"] = g_tuple
                 decisions_map[cache_key] = entry

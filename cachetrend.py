@@ -1173,7 +1173,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     self._live_trend_file(cand),
                     default={},
                     recover_previous=True,
-                    repair_files=bool(self.writer),
+                    repair_files=_parse_bool_flag(self.writer, default=False),
                 ).get(w_key)
                 if isinstance(file_live, dict):
                     fresh = _check_fresh(file_live)
@@ -1489,7 +1489,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
     def _is_clean_disk_reader(self) -> bool:
         return (
-            not self.writer
+            not _parse_bool_flag(self.writer, default=False)
             and not self._computing
             and not self._mem_dirty
             and getattr(self, "data_sync_mode", self.MODE_DISK_READER) == self.MODE_DISK_READER
@@ -1500,20 +1500,29 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
         This is the shared public staleness check used by both trend and wait decisions.
         """
-        now = now if now is not None else time.time()
+        if isinstance(symbol, bool) or not str(symbol or "").strip():
+            return None
+        now = time.time() if now is None else normalize_epoch_sec(now, default=None)
+        if now is None:
+            return None
         if self._is_clean_disk_reader():
-            _, val = _find_by_symbol_variant(
+            matched_key, val = _find_by_symbol_variant(
                 self._read_file(), symbol, expected_type=dict
             )
             if isinstance(val, dict) and self._snapshot_is_usable(
                 val, now, self.TREND_STALE_SEC
             ):
+                store_key = (
+                    matched_key
+                    if isinstance(matched_key, str) and matched_key
+                    else str(symbol).strip().upper()
+                )
                 with self._lock:
                     cleaned_snap = {
                         k: v for k, v in val.items() if k not in _LEGACY_SNAP_KEYS
                     }
-                    self._mem[symbol] = cleaned_snap
-                    self._sync_symbol_cursor_from_snap(symbol, val)
+                    self._mem[store_key] = cleaned_snap
+                    self._sync_symbol_cursor_from_snap(store_key, val)
                 return dict(cleaned_snap)
             mem_snap = self.get_cached_memory_snapshot(symbol)
             if self._snapshot_is_usable(mem_snap, now, self.TREND_STALE_SEC):
@@ -1527,13 +1536,24 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     @staticmethod
     def read_ssot_short_trend_file(
         trend_path: str,
-        candidates: tuple[str, ...] | List[str],
+        candidates: tuple[str, ...] | List[str] | str,
         max_age_sec: float = SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
         *,
         now_s: Optional[float] = None,
     ) -> Optional[dict]:
         """Read a fresh short-trend snapshot for ``candidates`` from ``trend_path``."""
-        if not trend_path or (max_age := resolve_positive_max_age(max_age_sec, SHORT_TREND_FRESHNESS_MAX_AGE_SEC)) is None:
+        if (
+            not trend_path
+            or isinstance(candidates, (bool, bytes))
+            or (max_age := resolve_positive_max_age(max_age_sec, SHORT_TREND_FRESHNESS_MAX_AGE_SEC)) is None
+        ):
+            return None
+        cand_seq = (
+            (candidates,)
+            if isinstance(candidates, str)
+            else (candidates if isinstance(candidates, (list, tuple, set)) else ())
+        )
+        if not cand_seq:
             return None
         try:
             loaded = CacheManagerInterface._read_recovering_dict_and_items(
@@ -1543,8 +1563,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 return None
             _, items = loaded
             eff_now = resolve_now_ts(now_s)
-            for cand in candidates:
-                if not cand:
+            for cand in cand_seq:
+                if isinstance(cand, bool) or not isinstance(cand, str) or not cand.strip():
                     continue
                 snap = casefold_get(items, cand)
                 if not isinstance(snap, dict):

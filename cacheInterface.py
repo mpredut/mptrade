@@ -348,7 +348,11 @@ class CacheManagerInterface(ABC):
         eff_symbols = (
             (default_symbols() if callable(default_symbols) else default_symbols)
             if symbols is None
-            else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
+            else (
+                parse_symbol_list(symbols)
+                if isinstance(symbols, str)
+                else _coerce_symbol_list(symbols)
+            )
         )
         return False, None, resolved_mode, save_state_flag, start_periodic, eff_symbols
 
@@ -375,7 +379,7 @@ class CacheManagerInterface(ABC):
                 raise ValueError(
                     f"Invalid data_sync_mode {data_sync_mode!r}; expected one of {sorted(cls.VALID_SYNC_MODES)}"
                 )
-        if config_read_only:
+        if _parse_bool_flag(config_read_only, default=False):
             return cls.MODE_DISK_READER, False, False
         if norm_mode == cls.MODE_PRODUCER:
             return cls.MODE_PRODUCER, True, True
@@ -1341,7 +1345,8 @@ class CacheManagerInterface(ABC):
             self._stop_event.clear()
 
             def run():
-                if self._first_sleep and self._stop_event.wait(self.sync_ts):
+                first_wait = safe_nonneg_float(self.sync_ts, default=0.0) or 0.0
+                if self._first_sleep and self._stop_event.wait(first_wait):
                     return
                 maint_stagger = (
                     safe_nonneg_float(
@@ -1356,7 +1361,10 @@ class CacheManagerInterface(ABC):
                         sync_complete = False
                         if self._should_poll():
                             if (
-                                getattr(self, "_flush_before_poll", False)
+                                _parse_bool_flag(
+                                    getattr(self, "_flush_before_poll", False),
+                                    default=False,
+                                )
                                 and self.save_state
                                 and self._mem_max_ts() > self._persisted_max_ts()
                             ):
@@ -1382,11 +1390,14 @@ class CacheManagerInterface(ABC):
                         builtins.print(
                             f"[{self.cls_name}] synchronization error (continuing): {_e}"
                         )
-                    wait_sec = (
+                    raw_wait = (
                         self._next_sync_wait_sec()
                         if hasattr(self, "_next_sync_wait_sec")
                         else self.sync_ts
                     )
+                    wait_sec = safe_nonneg_float(raw_wait, default=0.05)
+                    if wait_sec is None:
+                        wait_sec = 0.05
                     if self._stop_event.wait(wait_sec):
                         break
 

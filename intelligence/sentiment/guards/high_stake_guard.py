@@ -521,7 +521,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         self.min_notional_usd = self.min_notional_eur = resolved_min
 
     def _resolve_currency_display(self, symbol: str) -> tuple[str, str]:
-        sym_u = str(symbol or "").strip().upper()
+        sym_u = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
         if sym_u.endswith("EUR"):
             return "€", "EUR"
         if has_equity_suffix(symbol, include_compact=True):
