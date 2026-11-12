@@ -18,7 +18,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from providers.order_ohlc_utils import extract_client_order_id
+from providers.order_id_context import extract_client_order_id
 
 
 def _is_positive_finite(val: Any) -> bool:

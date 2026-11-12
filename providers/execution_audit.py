@@ -57,7 +57,7 @@ from .intent_state import (
     validate_and_build_intent_dict,
 )
 from .ohlc_utils import ClosedPriceSeries, require_pos_ohlc_interval
-from .order_ohlc_utils import format_venue_intent_client_order_id
+from .order_id_context import format_venue_intent_client_order_id
 from .strategy_executor import (
     OrderStatus,
     ProviderError,

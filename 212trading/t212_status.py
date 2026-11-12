@@ -29,7 +29,7 @@ ensure_local_module_priority(_HERE, "ipo_common", "t212_client")
 from ipo_common import load_t212_environment  # noqa: E402
 from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
-from providers.order_ohlc_utils import (
+from providers.broker_history import (
     extract_broker_order_ticker as _order_ticker,
 )
 

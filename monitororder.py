@@ -9,10 +9,8 @@ from notify_engine import alertnotifiers as alert
 import instrument_registry as sym
 import pricewindow as pw
 from providers import order_id_context as rc
-from providers.order_ohlc_utils import (
-    extract_client_order_id,
-    extract_remaining_qty,
-)
+from providers.order_ohlc_utils import extract_remaining_qty
+extract_client_order_id = rc.extract_client_order_id
 from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
 api = mkt

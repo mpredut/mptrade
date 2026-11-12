@@ -47,11 +47,11 @@ from providers.ohlc_utils import (
     extract_yahoo_chart_result_and_quote,
     series_to_historical_points,
 )
-from providers.order_ohlc_utils import (
+from providers.broker_history import (
     extract_broker_order_ticker,
     normalize_broker_history_items,
-    parse_nonneg_order_field,
 )
+from providers.order_ohlc_utils import parse_nonneg_order_field
 from providers.ssot_bridge import ProviderSsotBridgeMixin
 from providers.venue_metadata import ProviderVenueMetadataMixin
 from providers import ws_stream
@@ -529,6 +529,8 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "ws_stream.py",
         "ssot_bridge.py",
         "venue_metadata.py",
+        "venue_ws_protocols.py",
+        "broker_history.py",
         "price_poller.py",
         "binance_provider.py",
         "hyperliquid_provider.py",
@@ -1094,20 +1096,28 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     }
     order_ohlc_reexports = {
         "ClosedPriceSeries",
+        "MANUAL_CID_PREFIXES",
         "OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES",
         "OHLC_INTERVALS_MIN_TO_STR",
         "OHLC_INTERVALS_STR_TO_MIN",
         "ProviderError",
         "REQUIRED_FIELDS",
+        "VENUE_PROVIDER_SPECS",
         "_CANDLE_INTERVALS",
         "_parse_epoch_or_iso_s",
         "_ts_ms_to_s",
+        "aggregate_broker_history_fills",
         "align_previous_values",
+        "all_venue_native_client_order_ids",
         "build_price_history_points",
         "candle_interval",
         "candles_to_historical_points",
         "clean_order_id",
+        "derive_venue_128bit_client_order_id",
         "drop_incomplete_last_bar",
+        "extract_broker_history_matches",
+        "extract_broker_order_ticker",
+        "extract_client_order_id",
         "extract_order_id",
         "extract_order_price",
         "extract_order_qty",
@@ -1117,6 +1127,10 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
         "extract_trading_quote_pairs",
         "extract_yahoo_chart_latest_price",
         "extract_yahoo_chart_result_and_quote",
+        "format_actor_tag",
+        "format_venue_intent_client_order_id",
+        "iter_broker_history_order_fills",
+        "normalize_broker_history_items",
         "normalize_record",
         "normalize_side",
         "normalize_timestamp_ms",
@@ -1125,6 +1139,9 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
         "parse_ohlc_interval_minutes",
         "require_pos_ohlc_interval",
         "resolve_ohlc_time_window_ms",
+        "resolve_order_actor",
+        "resolve_order_origin",
+        "resolve_venue_provider_class",
         "series_to_historical_points",
         "validate_dataset",
         "validate_ohlc_bars",
@@ -1566,6 +1583,67 @@ def test_venue_ws_protocols_three_tier_soc_and_provider_inheritance():
         {"channel": "allMids", "data": {"mids": {"@107": "35.25"}}},
         ["HYPEUSDC"],
     ) == {"HYPEUSDC": 35.25}
+
+
+def test_order_id_context_and_broker_history_soc_split():
+    from providers import broker_history, order_id_context as oic, order_ohlc_utils as oou
+
+    root = Path(__file__).resolve().parent.parent
+    for mod_name in ("order_id_context.py", "broker_history.py"):
+        mod_tree = ast.parse((root / "providers" / mod_name).read_text(encoding="utf-8"))
+        mod_imports = {
+            node.module
+            for node in ast.walk(mod_tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        assert "order_ohlc_utils" not in mod_imports
+        assert "providers.order_ohlc_utils" not in mod_imports
+        assert "base" not in mod_imports
+        assert "providers.base" not in mod_imports
+
+    # Canonical SSOT module ownership & identity
+    for fn_name in (
+        "extract_client_order_id",
+        "resolve_order_actor",
+        "resolve_order_origin",
+        "format_actor_tag",
+        "resolve_venue_provider_class",
+        "derive_venue_128bit_client_order_id",
+        "all_venue_native_client_order_ids",
+        "format_venue_intent_client_order_id",
+    ):
+        fn = getattr(oic, fn_name)
+        assert fn.__module__ == "providers.order_id_context"
+        assert getattr(oou, fn_name) is fn
+
+    for fn_name in (
+        "extract_broker_order_ticker",
+        "iter_broker_history_order_fills",
+        "extract_broker_history_matches",
+        "aggregate_broker_history_fills",
+        "normalize_broker_history_items",
+    ):
+        fn = getattr(broker_history, fn_name)
+        assert fn.__module__ == "providers.broker_history"
+        assert getattr(oou, fn_name) is fn
+
+    # Unified BOT_CID_SPEC_TABLE invariants (owner vs telemetry module disambiguation)
+    assert oic.resolve_order_owner("MO_SD_123") == "spot_dca"
+    assert oic.resolve_order_owner("SD_OR_123") == "spot_dca"
+    assert oic.resolve_order_owner("SD_123") == "spot_dca"
+    assert oic.resolve_order_owner("CW_1") == "watchdogfor_cacheandconfig"
+    assert oic.resolve_order_owner("CW") == "unknown"
+    assert oic.resolve_order_owner("and_xyz") == "manual"
+
+    assert oic.resolve_order_origin({"clientOrderId": "MO_SD_EXIT_12345678"}) == ("BOT", "trailing", "EXIT")
+    assert oic.resolve_order_origin({"clientOrderId": "SD_OR_TRAIL_12345678"}) == ("BOT", "trailing", "TRAIL")
+    assert oic.resolve_order_origin({"clientOrderId": "TRL_PEAK_99999999"}) == ("BOT", "trailing", "PEAK")
+    assert oic.resolve_order_origin({"clientOrderId": "TO_GRID_12345678"}) == ("BOT", "tradeall", "GRID")
+    assert oic.resolve_order_origin({"clientOrderId": "AGS999"}) == ("BOT", "assetguardian", "SL_PROTECT")
+    assert oic.resolve_order_origin({"clientOrderId": "AGB999"}) == ("BOT", "assetguardian", "BUY_TIER")
+    assert oic.resolve_order_origin({"clientOrderId": "and_abc"}) == ("BOT", "manual", None)
+    assert oic.format_actor_tag("BOT", "trailing", "EXIT") == "BOT(module=trailing, rule=EXIT)"
+
 
 
 

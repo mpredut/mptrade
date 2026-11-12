@@ -37,7 +37,8 @@ from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cache
 from providers import order_id_context as rc
 from providers.base import MarketDataProvider
 from providers.execution_audit import ExecutionAudit, find_order_audit_record
-from providers.order_ohlc_utils import extract_orig_qty, resolve_order_actor
+from providers.order_ohlc_utils import extract_orig_qty
+resolve_order_actor = rc.resolve_order_actor
 from providers.strategy_executor import OrderStatus
 from state_io import atomic_write_jsonl, parse_json_payload, parse_proc_stat_fields, read_text_file, read_text_lines
 

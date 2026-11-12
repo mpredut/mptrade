@@ -25,10 +25,8 @@ from guard_hierarchy import GUARD_REGISTRY
 import order_guard
 import order_retry
 from order_lifecycle import restore_cancelled_orders
-from providers.order_ohlc_utils import (
-    extract_remaining_qty,
-    resolve_order_actor,
-)
+from providers.order_id_context import resolve_order_actor
+from providers.order_ohlc_utils import extract_remaining_qty
 from providers.quantity import (
     check_order_filter_refusal,
     resolve_assets,

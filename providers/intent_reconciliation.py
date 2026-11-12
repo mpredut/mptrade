@@ -46,12 +46,14 @@ from .intent_state import (
     extract_intent_side,
     intent_venue_client_order_ids,
 )
+from .order_id_context import (
+    extract_client_order_id,
+    resolve_order_actor,
+)
 from .order_ohlc_utils import (
     _UNFILLED_ORDER_STATUSES,
-    extract_client_order_id,
     extract_executed_qty,
     extract_orig_qty,
-    resolve_order_actor,
 )
 
 

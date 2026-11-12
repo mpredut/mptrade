@@ -13,7 +13,7 @@ from botcore import (
     safe_pos_int,
 )
 from . import bapi as api, bapi_allorders as apiorders
-from providers.order_ohlc_utils import extract_client_order_id
+from providers.order_id_context import extract_client_order_id
 from providers.ssot_bridge import ProviderSsotBridgeMixin
 
 

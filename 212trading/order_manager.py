@@ -41,7 +41,7 @@ ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 from cachepaths import canonical_base_asset, same_canonical_base_asset as _t212_tickers_match
 from ipo_common import notify  # noqa: E402
 from market_data import get_price_usd, get_usd_ron  # noqa: E402
-from providers.order_ohlc_utils import extract_broker_order_ticker as _order_ticker
+from providers.broker_history import extract_broker_order_ticker as _order_ticker
 from state_io import encode_json_payload, load_json_state, save_json_state
 from t212_client import T212Client  # noqa: E402
 

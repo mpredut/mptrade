@@ -39,9 +39,9 @@ from cachepaths import (  # noqa: F401
 import instrument_registry as _default_ir  # noqa: F401
 
 from .ohlc_utils import extract_yahoo_chart_result_and_quote  # noqa: F401
+from .order_id_context import VENUE_PROVIDER_SPECS  # noqa: F401
 from .order_ohlc_utils import (  # noqa: F401
     POST_ONLY_CROSS_TOKENS,
-    VENUE_PROVIDER_SPECS,
     aggregate_fills_by_order_id,
     compute_post_only_maker_price,
     is_post_only_cross_refusal,

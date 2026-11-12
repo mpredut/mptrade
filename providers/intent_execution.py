@@ -32,11 +32,13 @@ from .intent_state import (
     is_non_fiat_btc_quote_instrument,
     normalize_intent_fields,
 )
-from .order_ohlc_utils import (
+from .order_id_context import (
     extract_client_order_id,
+    resolve_order_actor,
+)
+from .order_ohlc_utils import (
     extract_executed_qty,
     extract_orig_qty,
-    resolve_order_actor,
 )
 from .quantity import _floor_qty_decimals, round_provider_qty
 

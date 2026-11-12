@@ -24,10 +24,8 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import _LEGACY_KRAKEN_X_BASES, has_equity_suffix, normalize_venue_name
-from .order_ohlc_utils import (
-    extract_order_fee,
-    resolve_venue_provider_class,
-)
+from .order_id_context import resolve_venue_provider_class
+from .order_ohlc_utils import extract_order_fee
 
 logger = logging.getLogger(__name__)
 

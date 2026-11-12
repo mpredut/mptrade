@@ -51,10 +51,8 @@ from intelligence.internal.state.volatility import vol_pct_to_ratio
 from ipo_common import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, trend_slope_pct
 from t212_client import T212Client
-from providers.order_ohlc_utils import (
-    extract_broker_order_ticker as _order_ticker,
-    extract_orig_qty,
-)
+from providers.broker_history import extract_broker_order_ticker as _order_ticker
+from providers.order_ohlc_utils import extract_orig_qty
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider

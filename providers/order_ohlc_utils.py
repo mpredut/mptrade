@@ -1,8 +1,5 @@
-"""Stateless order, fill, client-order-ID, and broker-history normalization utilities."""
+"""Stateless order, fill, fee, post-only, and open-order normalization utilities."""
 
-import hashlib
-import importlib
-import math
 import re
 from typing import Any, Callable, List, Mapping, Optional
 
@@ -22,7 +19,6 @@ from botcore import (
     extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,  # noqa: F401
-    first_pos_float,
     normalize_epoch_sec,
     normalize_scalar_order_id,
     normalize_side,
@@ -35,6 +31,13 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import canonical_base_asset, normalize_venue_name, same_canonical_base_asset  # noqa: F401
+from .broker_history import (  # noqa: F401
+    aggregate_broker_history_fills,
+    extract_broker_history_matches,
+    extract_broker_order_ticker,
+    iter_broker_history_order_fills,
+    normalize_broker_history_items,
+)
 from .ohlc_utils import (  # noqa: F401
     OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES,
     OHLC_INTERVALS_MIN_TO_STR,
@@ -60,6 +63,18 @@ from .ohlc_utils import (  # noqa: F401
     validate_dataset,
     validate_ohlc_bars,
     validate_ohlc_candle_bar,
+)
+from .order_id_context import (  # noqa: F401
+    MANUAL_CID_PREFIXES,
+    VENUE_PROVIDER_SPECS,
+    all_venue_native_client_order_ids,
+    derive_venue_128bit_client_order_id,
+    extract_client_order_id,
+    format_actor_tag,
+    format_venue_intent_client_order_id,
+    resolve_order_actor,
+    resolve_order_origin,
+    resolve_venue_provider_class,
 )
 
 
@@ -290,97 +305,6 @@ def normalize_order(order: dict) -> dict:
     }
 
 
-_BOT_CID_PREFIX_MODULES: tuple[tuple[str, str], ...] = (
-    ("MO_MN", "manual"), ("MO_TA", "tradeall"), ("MO_MT", "monitortrades"), ("MO_RT", "rtrade"), ("MO_SD", "trailing"),
-    ("TA_OR", "tradeall"), ("MT_OR", "monitortrades"), ("AG_OR", "assetguardian"), ("RT_OR", "rtrade"),
-    ("SD_OR", "trailing"), ("MO_OR", "monitororder"), ("MN_OR", "manual"),
-    ("AGS", "assetguardian"), ("AGB", "assetguardian"), ("TRL", "trailing"),
-    ("TA", "tradeall"), ("TO", "tradeall"), ("MT", "monitortrades"), ("AG", "assetguardian"),
-    ("RT", "rtrade"), ("MO", "monitororder"), ("TS", "trailing"), ("SD", "trailing"), ("MN", "manual"),
-)
-MANUAL_CID_PREFIXES: tuple[str, ...] = ("and_", "ios_", "web_", "x-", "electron_")
-_GENERIC_CID_TOKENS = frozenset({"OR", "MAINTHREAD", "WORKER", "BOT", "ORDER", "RETRY", "OUTBOX"})
-_CLIENT_ORDER_ID_KEYS = ("clientOrderId", "client_order_id", "cloid", "cl_ord_id", "userref")
-
-
-def extract_client_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:
-    """Extract and normalize client order ID or user reference from any venue shape."""
-    return _first_mapped(order, _CLIENT_ORDER_ID_KEYS, clean_order_id, default)
-
-
-def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = None) -> str:
-    """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
-    if not isinstance(order, dict):
-        return "BOT"
-    explicit = str(order.get("actor") or "").strip().upper()
-    if explicit in ("AI", "BOT"):
-        return explicit
-    oid = extract_order_id(order, default="")
-    if oid and known_ai_order_ids and str(oid) in known_ai_order_ids:
-        return "AI"
-    raw_cid = (extract_client_order_id(order, default="") or "").upper()
-    if raw_cid.startswith("AI_") or (raw_cid and known_ai_order_ids and raw_cid.lower() in known_ai_order_ids):
-        return "AI"
-    return "BOT"
-
-
-def resolve_order_origin(
-    order: Any,
-    known_ai_order_ids: Optional[set[str]] = None,
-    audit_origin_map: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None,
-) -> tuple[str, Optional[str], Optional[str]]:
-    """Resolve ``(actor, module, rule)`` for an order or fill record."""
-    actor = resolve_order_actor(order, known_ai_order_ids)
-    if actor == "AI" or not isinstance(order, dict):
-        return actor, None, None
-
-    raw_mod = _first_mapped(order, ("module", "origin_module", "bot", "caller"), lambda v: str(v).strip() or None)
-    mod = raw_mod.lower() if raw_mod else None
-    rule = _first_mapped(order, ("rule", "decision_rule", "trigger_rule", "kind", "role", "motivation"), lambda v: str(v).strip() or None)
-    oid = extract_order_id(order, default="")
-    raw_cid = extract_client_order_id(order, default="") or ""
-
-    if isinstance(audit_origin_map, dict):
-        for lookup_key in (str(oid) if oid else "", raw_cid):
-            if lookup_key and lookup_key in audit_origin_map:
-                a_mod, a_rule = audit_origin_map[lookup_key]
-                mod = mod or a_mod
-                rule = rule or a_rule
-
-    if raw_cid:
-        cid_up = raw_cid.upper()
-        for pfx, bot_name in _BOT_CID_PREFIX_MODULES:
-            if cid_up.startswith(f"{pfx}_") or cid_up == pfx or (pfx in ("AGS", "AGB") and cid_up.startswith(pfx)):
-                mod = mod or bot_name
-                if not rule:
-                    if pfx in ("AGS", "AGB"):
-                        rule = "SL_PROTECT" if pfx == "AGS" else "BUY_TIER"
-                    else:
-                        rem = raw_cid[len(pfx):].lstrip("_-")
-                        tokens = [t for t in re.split(r"[_-]+", rem) if t and t.upper() not in _GENERIC_CID_TOKENS]
-                        if tokens:
-                            cand = (
-                                "_".join(tokens[:-1])
-                                if len(tokens) > 1 and (tokens[-1].isdigit() or len(tokens[-1]) >= 8)
-                                else tokens[0]
-                            )
-                            if not (len(cand) >= 8 and all(c in "0123456789abcdefABCDEF" for c in cand)) and not cand.isdigit():
-                                rule = cand.upper()
-                break
-        if mod is None and raw_cid.lower().startswith(MANUAL_CID_PREFIXES):
-            mod = "manual"
-    return "BOT", mod, rule
-
-
-def format_actor_tag(actor: Optional[str], module: Optional[str] = None, rule: Optional[str] = None) -> str:
-    """Format compact actor attribution string (e.g. ``'AI'`` or ``'BOT(module=assetguardian, rule=SL_PANIC)'``)."""
-    act_u = str(actor or "").strip().upper()
-    if act_u != "BOT":
-        return act_u or "BOT"
-    parts = [f"{k}={v}" for k, v in (("module", module), ("rule", rule)) if v]
-    return f"BOT({', '.join(parts)})" if parts else "BOT"
-
-
 def normalize_open_order(
     order: Any,
     *,
@@ -581,95 +505,6 @@ def format_strategy_execution_mode(
     return paper_label if _parse_bool_flag(dry_run, True) else real_label
 
 
-VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = {
-    "binance": ("providers.binance_provider", "BinanceProvider"),
-    "hyperliquid": ("providers.hyperliquid_provider", "HyperliquidProvider"),
-    "kraken": ("providers.kraken_provider", "KrakenProvider"),
-    "t212": ("providers.t212_provider", "T212Provider"),
-}
-
-
-def resolve_venue_provider_class(
-    venue: Any,
-    *,
-    provider: Any = None,
-    base_cls: Any = None,
-    specs: Optional[dict[str, tuple[str, str]]] = None,
-) -> Any:
-    """Resolve the concrete ``MarketDataProvider`` subclass for ``venue`` or ``provider``."""
-    spec_map = specs if isinstance(specs, dict) else VENUE_PROVIDER_SPECS
-    if not isinstance(venue, bool) and venue is not None:
-        if isinstance(venue, type) and (
-            (base_cls is not None and issubclass(venue, base_cls)) or hasattr(venue, "supports_symbol")
-        ):
-            return venue
-        if not isinstance(venue, (str, bytes)) and (
-            (base_cls is not None and isinstance(venue, base_cls)) or hasattr(type(venue), "supports_symbol")
-        ):
-            return type(venue)
-        spec = spec_map.get(normalize_venue_name(venue))
-        if spec is not None:
-            mod_path, cls_name = spec
-            resolved = getattr(importlib.import_module(mod_path), cls_name, None)
-            if resolved is not None:
-                return resolved
-    if provider is not None and not isinstance(provider, (str, bytes, bool)):
-        if isinstance(provider, type) and (
-            (base_cls is not None and issubclass(provider, base_cls)) or hasattr(provider, "supports_symbol")
-        ):
-            return provider
-        if (base_cls is not None and isinstance(provider, base_cls)) or hasattr(type(provider), "supports_symbol"):
-            return type(provider)
-    return None
-
-
-def derive_venue_128bit_client_order_id(venue: Any, client_order_id: Any) -> str:
-    """Map one durable client ID to the declarative 128-bit clientOrderId form for ``venue``."""
-    prov_cls = resolve_venue_provider_class(venue)
-    spec = getattr(prov_cls, "_CLIENT_ID_128BIT_SPEC", None) if prov_cls is not None else None
-    if spec is None:
-        raise ProviderError(f"Unsupported 128-bit client_order_id venue: {venue!r}")
-    venue_label, domain_prefix, exact_re, hex_prefix = spec
-    if isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset)):
-        raise ProviderError(f"{venue_label} client_order_id must contain 1-128 characters")
-    raw = clean_order_id(client_order_id) or ""
-    if not raw or len(raw) > 128:
-        raise ProviderError(f"{venue_label} client_order_id must contain 1-128 characters")
-    try:
-        encoded = raw.encode("ascii")
-    except UnicodeEncodeError as exc:
-        raise ProviderError(f"{venue_label} client_order_id must be ASCII") from exc
-    if exact_re.fullmatch(raw):
-        return raw.lower()
-    return hex_prefix + hashlib.sha256(domain_prefix + encoded).hexdigest()[:32]
-
-
-def all_venue_native_client_order_ids(client_order_id: Any) -> set[str]:
-    """Return the lowercase venue-native forms of one durable client ID across all registered venues."""
-    raw = clean_order_id(client_order_id)
-    if not raw:
-        return set()
-    out = {raw.lower()}
-    for venue_key in VENUE_PROVIDER_SPECS:
-        prov_cls = resolve_venue_provider_class(venue_key)
-        if getattr(prov_cls, "_CLIENT_ID_128BIT_SPEC", None) is None:
-            continue
-        try:
-            out.add(derive_venue_128bit_client_order_id(prov_cls, raw).lower())
-        except Exception:
-            pass
-    return out
-
-
-def format_venue_intent_client_order_id(venue: Any, token: str) -> Optional[str]:
-    """Format a 32-hex intent token into the venue's clientOrderId format (or ``None`` when unsupported)."""
-    if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
-        return None
-    prov_cls = resolve_venue_provider_class(venue)
-    fmt = getattr(prov_cls, "_INTENT_CLIENT_ID_FORMAT", None) if prov_cls is not None else None
-    return fmt.format(token=token.strip()) if isinstance(fmt, str) and fmt else None
-
-
 def require_clean_order_id(
     order_id: Any, err_prefix: str, *, str_only: bool = False, msg_suffix: str = "invalid order id"
 ) -> str:
@@ -846,133 +681,3 @@ def iter_expired_open_order_ids(
         if order_time > 0 and (now_s - order_time) > exp_s:
             expired_ids.append(order_id)
     return expired_ids
-
-
-def extract_broker_order_ticker(raw: Any) -> str:
-    """Extract ticker string from a flat or nested ``{'instrument': {'ticker': ...}}`` broker order."""
-    if not isinstance(raw, Mapping):
-        return ""
-    inst = raw.get("instrument")
-    inst_ticker = inst.get("ticker") if isinstance(inst, Mapping) else ""
-    return str(raw.get("ticker") or inst_ticker or "").strip()
-
-
-def iter_broker_history_order_fills(items: Any):
-    """Yield ``(order_id_str, order_dict, fill_obj)`` from broker order-history items."""
-    for item in items or []:
-        if not isinstance(item, dict):
-            continue
-        order = item.get("order") if isinstance(item.get("order"), dict) else item
-        if isinstance(order, dict) and (oid := extract_order_id(order)):
-            yield str(oid), order, item.get("fill")
-
-
-def extract_broker_history_matches(items: Any, target_oid: str) -> list[tuple[dict, Optional[dict]]]:
-    """Return ``[(order, fill), ...]`` entries matching ``target_oid`` from broker order-history items."""
-    return [
-        (order, fill)
-        for oid, order, fill in iter_broker_history_order_fills(items)
-        if oid == target_oid
-    ]
-
-
-def aggregate_broker_history_fills(matches: list[tuple[dict, Optional[dict]]]) -> dict:
-    """Aggregate one or more ``(order, fill)`` matches into a single enriched broker order dictionary."""
-    result = dict(matches[0][0])
-    total_qty = total_cost = total_fee = priced_qty = 0.0
-    fee_currencies = set()
-    latest_fill_ts_ms: Optional[int] = None
-    seen_fill_ids: set[str] = set()
-    for order, fill in matches:
-        cand_ts = extract_timestamp_ms(fill, default=None) or extract_timestamp_ms(order, default=None)
-        if cand_ts is not None and (latest_fill_ts_ms is None or cand_ts > latest_fill_ts_ms):
-            latest_fill_ts_ms = cand_ts
-        if not isinstance(fill, dict):
-            continue
-        fill_id = extract_order_id(fill)
-        if fill_id is not None:
-            if fill_id in seen_fill_ids:
-                continue
-            seen_fill_ids.add(fill_id)
-        qf = safe_float(fill.get("quantity"), default=None)
-        pf = safe_float(fill.get("price"), default=None)
-        if qf is None or pf is None:
-            continue
-        qty = abs(qf)
-        price = abs(pf)
-        total_qty += qty
-        if price > 0.0 and qty > 0.0:
-            total_cost += qty * price
-            priced_qty += qty
-        wallet = fill.get("walletImpact")
-        taxes = wallet.get("taxes") if isinstance(wallet, dict) else []
-        for tax in taxes or []:
-            if not isinstance(tax, dict):
-                continue
-            tqf = safe_float(tax.get("quantity"), default=None)
-            if tqf is None:
-                continue
-            tax_amt = abs(tqf)
-            if tax_amt <= 0.0:
-                continue
-            total_fee += tax_amt
-            raw_cur = tax.get("currency")
-            currency = raw_cur.strip().upper() if isinstance(raw_cur, str) else ""
-            if currency:
-                fee_currencies.add(currency)
-    if total_qty > 0:
-        result["filledQuantity"] = total_qty
-        result["filledValue"] = total_cost
-        if priced_qty > 0:
-            result["fillPrice"] = total_cost / priced_qty
-    result["fee"] = total_fee
-    if fee_currencies:
-        result["_feeCurrencies"] = sorted(fee_currencies)
-    if latest_fill_ts_ms is not None:
-        result["_timestamp_ms"] = latest_fill_ts_ms
-    return result
-
-
-def normalize_broker_history_items(items: Any) -> dict[str, list[dict]]:
-    """Group FILLED broker order-history items by ticker and orderId into canonical fill records."""
-    grouped: dict[str, list[tuple[dict, Optional[dict]]]] = {}
-    for oid, order, fill in iter_broker_history_order_fills(items):
-        if str(order.get("status") or "").strip().upper() == "FILLED":
-            grouped.setdefault(oid, []).append((order, fill if isinstance(fill, dict) else None))
-    by_symbol: dict[str, list[dict]] = {}
-    for oid, matches in grouped.items():
-        enriched = aggregate_broker_history_fills(matches)
-        ticker = extract_broker_order_ticker(enriched).upper()
-        if not ticker:
-            continue
-        raw_qty = safe_float(
-            enriched.get("orderedQuantity")
-            if enriched.get("orderedQuantity") is not None
-            else enriched.get("quantity"),
-            default=0.0,
-        )
-        side = normalize_side(enriched.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
-        qty = first_pos_float(enriched.get("filledQuantity"), abs(raw_qty))
-        px = first_pos_float(enriched.get("fillPrice"), enriched.get("limitPrice"))
-        ts_ms = enriched.get("_timestamp_ms")
-        if qty is None or px is None or ts_ms is None:
-            continue
-        cost = safe_pos_float(enriched.get("filledValue"), default=px * qty) or (px * qty)
-        fee = safe_nonneg_float(enriched.get("fee"), default=0.0) or 0.0
-        by_symbol.setdefault(ticker, []).append({
-            "symbol": ticker,
-            "orderId": str(oid),
-            "side": side,
-            "type": str(enriched.get("type") or "MARKET").strip().upper(),
-            "price": round(px, 6),
-            "qty": round(qty, 6),
-            "executedQty": round(qty, 6),
-            "cummulativeQuoteQty": round(cost, 4),
-            "fee": round(fee, 6),
-            "timestamp": math.trunc(ts_ms),
-            "time": math.trunc(ts_ms),
-            "status": "FILLED",
-        })
-    for sym_list in by_symbol.values():
-        sym_list.sort(key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
-    return by_symbol

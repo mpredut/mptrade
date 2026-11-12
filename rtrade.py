@@ -49,7 +49,7 @@ from order_retry import (
     is_terminal_filter_refusal,
     resolve_accepted_order,
 )
-from providers.order_ohlc_utils import extract_client_order_id
+from providers.order_id_context import extract_client_order_id
 from providers.execution_audit import AuditedStrategyExecutor
 from providers.market_api import api as mkt
 api = mkt

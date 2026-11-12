@@ -51,14 +51,16 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
 )
 from instrument_registry import casefold_get
 from providers.base import MarketDataProvider
+from providers.order_id_context import (
+    format_actor_tag,
+    resolve_order_origin,
+)
 from providers.order_ohlc_utils import (
     _EXEC_QTY_KEYS,
     _UNFILLED_ORDER_STATUSES,
     aggregate_fills_by_order_id,
     extract_executed_qty,
     extract_orig_qty,
-    format_actor_tag,
-    resolve_order_origin,
 )
 from providers.intent_state import extract_intent_order_type, extract_intent_side
 

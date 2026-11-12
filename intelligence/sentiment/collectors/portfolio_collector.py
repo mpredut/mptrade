@@ -79,10 +79,8 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
 from instrument_registry import casefold_get
 import order_retry as _oq
 from providers.base import MarketDataProvider
-from providers.order_ohlc_utils import (
-    normalize_open_order,
-    resolve_order_origin,
-)
+from providers.order_id_context import resolve_order_origin
+from providers.order_ohlc_utils import normalize_open_order
 from providers.intent_state import collect_known_ai_order_ids, intent_venue_client_order_ids
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
 from state_io import (

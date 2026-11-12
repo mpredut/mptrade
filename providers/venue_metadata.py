@@ -19,7 +19,7 @@ from cachepaths import (
 )
 import instrument_registry as _default_ir
 
-from .order_ohlc_utils import (
+from .order_id_context import (
     VENUE_PROVIDER_SPECS,
     derive_venue_128bit_client_order_id,
     resolve_venue_provider_class as _resolve_venue_provider_class,

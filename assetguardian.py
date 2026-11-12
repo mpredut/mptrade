@@ -6,8 +6,7 @@ import signal
 import threading
 import time
 
-from providers.order_id_context import resolve_order_owner
-from providers.order_ohlc_utils import extract_client_order_id
+from providers.order_id_context import extract_client_order_id, resolve_order_owner
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 api = mkt
 from providers.execution_audit import ExecutionAudit

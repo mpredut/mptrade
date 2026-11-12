@@ -47,7 +47,7 @@ import order_guard
 import order_retry
 import pricewindow as pw
 from providers.base import MarketDataProvider
-from providers.order_ohlc_utils import extract_client_order_id
+from providers.order_id_context import extract_client_order_id
 from providers.market_api import api as mkt
 apitrades = mkt
 from providers.quantity import check_order_filter_refusal, resolve_assets

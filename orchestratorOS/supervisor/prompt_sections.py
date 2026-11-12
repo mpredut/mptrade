@@ -59,7 +59,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from providers.order_ohlc_utils import format_actor_tag
+from providers.order_id_context import format_actor_tag
 
 
 def _age_sfx(d: Dict[str, Any], parens: bool = False) -> str:
