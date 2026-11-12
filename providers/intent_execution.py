@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional
 
 from botcore import (
     TOPIC_SPECS,
+    _parse_bool_flag,
     canonical_topic_key,
     clean_scale,
     extract_order_id,
@@ -492,26 +493,33 @@ def resolve_intent_execution_price(
     now_ts: float,
     log: Optional[Any] = None,
 ) -> tuple[bool, float, bool]:
-    """Validate and resolve MARKET or LIMIT execution price against live_price."""
+    """Validate and resolve spot LIMIT execution price against live_price (near-market for reversals/MARKET)."""
     order_type = extract_intent_order_type(intent)
     limit_px = extract_intent_limit_price(intent, default=None)
+    is_urgent_reversal = (
+        str(intent.get("urgency") or "").strip().upper() == "HIGH"
+        or _parse_bool_flag(intent.get("cancel_bot_open_orders"), False)
+    )
     if order_type == "LIMIT":
         if limit_px is None or limit_px <= 0 or limit_px < live_price * 0.50 or limit_px > live_price * 2.00:
-            fallback_mult = 0.995 if decision == "BUY" else 1.005
-            price = round(live_price * fallback_mult, 8)
-            if log:
-                log.warning(
-                    "[INTENT GATEWAY] Intent %s limit_price %r missing or out of [0.5x, 2.0x] bounds vs live $%.6g; "
-                    "using passive fallback $%.6g for %s",
-                    intent_id, limit_px, live_price, price, symbol,
-                )
-            append_intent_history(intent, {
-                "ts": now_ts,
-                "action": "FALLBACK_PASSIVE_LIMIT_PRICE",
-                "requested_limit_price": limit_px,
-                "fallback_limit_price": price,
-                "live_price": live_price,
-            })
+            if is_urgent_reversal:
+                price = live_price
+            else:
+                fallback_mult = 0.995 if decision == "BUY" else 1.005
+                price = round(live_price * fallback_mult, 8)
+                if log:
+                    log.warning(
+                        "[INTENT GATEWAY] Intent %s limit_price %r missing or out of [0.5x, 2.0x] bounds vs live $%.6g; "
+                        "using passive fallback $%.6g for %s",
+                        intent_id, limit_px, live_price, price, symbol,
+                    )
+                append_intent_history(intent, {
+                    "ts": now_ts,
+                    "action": "FALLBACK_PASSIVE_LIMIT_PRICE",
+                    "requested_limit_price": limit_px,
+                    "fallback_limit_price": price,
+                    "live_price": live_price,
+                })
         elif decision == "BUY" and limit_px > live_price:
             price = live_price
         elif decision == "SELL" and limit_px < live_price:
@@ -521,8 +529,9 @@ def resolve_intent_execution_price(
         intent["order_type"] = "LIMIT"
         intent["limit_price"] = price
         return True, price, True
-    intent["order_type"] = "MARKET"
-    return True, live_price, False
+    intent["order_type"] = "LIMIT"
+    intent["limit_price"] = live_price
+    return True, live_price, True
 
 
 def preflight_intent_and_resolve_price(

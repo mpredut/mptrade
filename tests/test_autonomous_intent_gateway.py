@@ -259,7 +259,11 @@ def test_process_intent_symmetric_buy_and_sell_bypass_all_profit_guards(temp_wor
     mock_inst.place.assert_called_once()
     kwargs = mock_inst.place.call_args.kwargs
     assert kwargs["side"] == side
-    assert kwargs["market"] is True
+    assert kwargs["market"] is False
+    assert kwargs["smart"] is False
+    assert kwargs["price"] == pytest.approx(79500.0)
+    assert processed["order_type"] == "LIMIT"
+    assert processed["limit_price"] == pytest.approx(79500.0)
     assert "force" not in kwargs
     assert "is_market" not in kwargs
     assert kwargs["enforce_business_minimum"] is False
@@ -984,11 +988,14 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
     assert "risk_score=0.96 | summary=Headline shock" in prompt
     assert "CONTRARIAN DIP ACCUMULATION (SCALE-IN)" in prompt
     assert "DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK" in prompt
+    assert "do NOT sell in the first few minutes after a bot fill unless structure genuinely breaks down" in prompt
+    assert "priced as close as possible to the current live market price" in prompt
     assert '"order_type": "MARKET" | "LIMIT"' in prompt
     assert "'order_type': 'LIMIT'" in prompt and "79850.0" in prompt
 
     # 6. When a bot's open order locks wallet liquidity so free_balance is 0, replace_open_orders=True
-    #    automatically cancels the locking bot order and re-clamps wallet balance so the AI can repair/reverse the trade.
+    #    automatically cancels the locking bot order and re-clamps wallet balance so the AI can repair/reverse the trade
+    #    using a near-market spot LIMIT order at live_price.
     locked_inst = MagicMock(symbol="BTCUSDC", base="BTC", quote="USDC", provider_name="binance")
     locked_inst._provider.name = "binance"
     locked_inst._provider.get_current_price.return_value = 80000.0
@@ -1018,6 +1025,11 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
         }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": locked_inst})
 
     assert rec_unlock["status"] == "EXECUTED"
+    assert rec_unlock["order_type"] == "LIMIT"
+    assert rec_unlock["limit_price"] == pytest.approx(80000.0)
+    assert locked_inst.place.call_args.kwargs["market"] is False
+    assert locked_inst.place.call_args.kwargs["smart"] is False
+    assert locked_inst.place.call_args.kwargs["price"] == pytest.approx(80000.0)
     assert rec_unlock["canceled_bot_open_orders"] == ["bot_locking_sell_99"]
     assert "bot_locking_sell_99" in rec_unlock["canceled_prior_open_orders"]
     locked_inst.cancel_order.assert_called_once_with("bot_locking_sell_99")
