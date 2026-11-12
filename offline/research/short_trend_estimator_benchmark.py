@@ -62,13 +62,17 @@ def _set_data_dir(path):
     D = path
 
 
-def _extract_valid_npz_arrays(z) -> tuple[np.ndarray, np.ndarray] | None:
-    raw_ts = z["ts"]
-    raw_px = z["px"]
-    if raw_ts.ndim != 1 or raw_px.ndim != 1 or len(raw_ts) != len(raw_px) or len(raw_ts) == 0:
+def _extract_valid_npz_arrays(path: str) -> tuple[np.ndarray, np.ndarray] | None:
+    try:
+        with np.load(path) as z:
+            raw_ts = z["ts"]
+            raw_px = z["px"]
+            if raw_ts.ndim != 1 or raw_px.ndim != 1 or len(raw_ts) != len(raw_px) or len(raw_ts) == 0:
+                return None
+            ts_arr = np.asarray(raw_ts, dtype=np.float64)
+            px_arr = np.asarray(raw_px, dtype=np.float64)
+    except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
         return None
-    ts_arr = np.asarray(raw_ts, dtype=np.float64)
-    px_arr = np.asarray(raw_px, dtype=np.float64)
     mask = np.isfinite(ts_arr) & (ts_arr >= 0.0) & np.isfinite(px_arr) & (px_arr > 0.0)
     if not np.any(mask):
         return None
@@ -106,16 +110,9 @@ def load_series(sym):
                 break
         if jsonl_path:
             break
-    def _try_load_npz_arrays(path: str):
-        try:
-            with np.load(path) as z:
-                return _extract_valid_npz_arrays(z)
-        except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
-            return None
-
     if not jsonl_path:
         for existing_npz in (npz_365, npz_sparse):
-            if os.path.exists(existing_npz) and (valid := _try_load_npz_arrays(existing_npz)) is not None:
+            if os.path.exists(existing_npz) and (valid := _extract_valid_npz_arrays(existing_npz)) is not None:
                 return valid
         return np.empty(0), np.empty(0)
     npz_target = npz_365 if chosen_prefix == "cache_365_price_" else npz_sparse
@@ -124,7 +121,7 @@ def load_series(sym):
             is_fresh_npz = os.path.getmtime(npz_target) >= os.path.getmtime(jsonl_path)
         except OSError:
             is_fresh_npz = False
-        if is_fresh_npz and (valid := _try_load_npz_arrays(npz_target)) is not None:
+        if is_fresh_npz and (valid := _extract_valid_npz_arrays(npz_target)) is not None:
             return valid
 
     valid_syms = set(sym_cands) | {sym}

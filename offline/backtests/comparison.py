@@ -171,16 +171,12 @@ def format_comparison_markdown(
         mean_ret = safe_float(summary.get("mean_return_pct") if isinstance(summary, Mapping) else None, default=None)
         return (cand_name != "live", mean_ret is None, -(mean_ret or 0.0), cand_name)
 
-    def _unpack_candidate_summary(item: Any) -> tuple[Mapping[str, Any], Mapping[str, Any], int, int]:
+    ordered = sorted(candidates.items(), key=_sort_key)
+    for name, item in ordered:
         item_dict = item if isinstance(item, Mapping) else {}
         summary = item_dict.get("summary") if isinstance(item_dict.get("summary"), Mapping) else {}
         pos_w = safe_nonneg_int(summary.get("positive_windows"), default=0)
         win_cnt = safe_nonneg_int(summary.get("window_count"), default=0)
-        return item_dict, summary, pos_w, win_cnt
-
-    ordered = sorted(candidates.items(), key=_sort_key)
-    for name, item in ordered:
-        item_dict, summary, pos_w, win_cnt = _unpack_candidate_summary(item)
         relative = item_dict.get("relative_to_live") if isinstance(item_dict.get("relative_to_live"), Mapping) else {}
         wins_l = safe_nonneg_int(relative.get("wins_vs_live"), default=0)
         ties_l = safe_nonneg_int(relative.get("ties_vs_live"), default=0)
@@ -213,7 +209,9 @@ def format_comparison_markdown(
             "|---:|---:|---:|---:|---:|",
         ])
         for fee, item in fee_stress.items():
-            _item_dict, summary, pos_w, win_cnt = _unpack_candidate_summary(item)
+            summary = item.get("summary") if isinstance(item, Mapping) and isinstance(item.get("summary"), Mapping) else {}
+            pos_w = safe_nonneg_int(summary.get("positive_windows"), default=0)
+            win_cnt = safe_nonneg_int(summary.get("window_count"), default=0)
             lines.append(
                 f"| {fee} | {format_number(summary.get('mean_return_pct'), True)} | "
                 f"{format_number(summary.get('worst_return_pct'), True)} | "

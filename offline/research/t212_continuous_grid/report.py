@@ -123,15 +123,14 @@ def generate_report(exp_dir=None):
             if not h and not dd:
                 continue
 
-            def _beats_live(asset, ret, itv):
-                live_row = live.get(asset) or {}
-                live_ret = g(live_row, itv, "ret")
-                if live_ret is None or ret is None:
-                    return False
-                return ret > (live_ret + 1e-9)
-
-            bl1 = sum(_beats_live(x[0], x[1], "1h") for x in h)
-            bl2 = sum(_beats_live(x[0], x[1], "1d") for x in dd)
+            bl1 = sum(
+                (lr := g(live.get(x[0]) or {}, "1h", "ret")) is not None and x[1] is not None and x[1] > (lr + 1e-9)
+                for x in h
+            )
+            bl2 = sum(
+                (lr := g(live.get(x[0]) or {}, "1d", "ret")) is not None and x[1] is not None and x[1] > (lr + 1e-9)
+                for x in dd
+            )
             h_rets = [x[1] for x in h if x[1] is not None]
             h_dds = [x[2] for x in h if x[2] is not None]
             dd_rets = [x[1] for x in dd if x[1] is not None]

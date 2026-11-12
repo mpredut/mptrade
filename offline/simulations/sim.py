@@ -81,19 +81,19 @@ class PriceWindow:
         # Increment the internal index.
         self.current_index += 1
 
-    def _deque_front(self, dq: deque):
-        if not dq:
-            return None, None
-        idx, val = dq[0]
-        return val, idx - (self.current_index - len(self.prices))
-
     def get_min(self):
         """Return the current low in the window and its relative position."""
-        return self._deque_front(self.min_deque)
+        if not self.min_deque:
+            return None, None
+        idx, val = self.min_deque[0]
+        return val, idx - (self.current_index - len(self.prices))
 
     def get_max(self):
         """Return the current high in the window and its relative position."""
-        return self._deque_front(self.max_deque)
+        if not self.max_deque:
+            return None, None
+        idx, val = self.max_deque[0]
+        return val, idx - (self.current_index - len(self.prices))
 
     def plot_window(self, *, label: str = 'Prices', clear_and_pause: bool = True, plt_mod=None):
         """Plot the values in the window and mark the low and the high."""
