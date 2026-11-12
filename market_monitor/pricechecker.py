@@ -168,28 +168,6 @@ class PriceChecker:
         self._thread = None
         self._running = False
 
-    def _build_cmc_url(self, symbol: str) -> str:
-        try:
-            base = get_base_symbol(symbol) or symbol
-            # Canonical major-coin slugs avoid symbol collisions in _all_listings.
-            canonical = _CANONICAL_CMC_SLUG.get((base or "").upper())
-            if canonical:
-                return f"https://coinmarketcap.com/currencies/{canonical}/"
-            candidate_symbols = [symbol, base]
-            for candidate in candidate_symbols:
-                if not candidate:
-                    continue
-                for platform in getattr(getattr(self.cachePriceAll, "price_factory", None), "_platforms", []):
-                    if getattr(platform, "platform_name", "") != "CoinMarketCap":
-                        continue
-                    listings = getattr(platform, "_all_listings", {})
-                    metadata = casefold_get(listings, candidate) if isinstance(listings, dict) else None
-                    if metadata and metadata.get("slug"):
-                        return f"https://coinmarketcap.com/currencies/{metadata['slug']}/"
-            return f"https://coinmarketcap.com/search/?q={quote(symbol)}"
-        except Exception:
-            return f"https://coinmarketcap.com/search/?q={quote(symbol)}"
-
     def _get_price_history_last_hours(self, symbol: str, hours: float):
         """Return compact validated (timestamp_ms, price, readable_time) tuples."""
         hours_f = safe_pos_float(hours, default=None)
@@ -314,16 +292,6 @@ class PriceChecker:
             "down_percent": safe_pos_float(raw.get("down_percent"), default=def_down),
         }
 
-    def _record_alert_sent(self, symbol: str, alert_type: str):
-        """Record that an alert was sent."""
-        self._last_alert_time[self._alert_key(symbol, alert_type)] = time.time()
-        if self.state_file:
-            try:
-                os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)
-                save_json_state(self.state_file, dict(self._last_alert_time), indent=2)
-            except Exception:
-                pass
-
     def check_symbol(self, symbol: str) -> List[PriceAlert]:
         """Check a symbol and return a list of alerts (0, 1, or 2)."""
         alerts = []
@@ -347,35 +315,29 @@ class PriceChecker:
 
         # Check for price increase (upper threshold)
         if not rth_closed_eq and up_percent >= up_threshold:
-            if self._should_send_alert(symbol, "up"):
-                alert = PriceAlert(
-                    symbol=symbol,
-                    alert_type="up",
-                    current_price=current_price,
-                    reference_price=stats["min_price"],
-                    reference_time=stats.get("min_price_timestamp_readable"),
-                    percent_change=up_percent,
-                    threshold=up_threshold,
-                    url=self._build_cmc_url(symbol)
-                )
-                alerts.append(alert)
-                self._record_alert_sent(symbol, "up")
+            self._maybe_append_price_alert(
+                alerts,
+                symbol,
+                "up",
+                current_price,
+                stats["min_price"],
+                stats.get("min_price_timestamp_readable"),
+                up_percent,
+                up_threshold,
+            )
 
         # Check for price decrease (lower threshold)
         if not rth_closed_eq and down_percent <= -down_threshold:
-            if self._should_send_alert(symbol, "down"):
-                alert = PriceAlert(
-                    symbol=symbol,
-                    alert_type="down",
-                    current_price=current_price,
-                    reference_price=stats["max_price"],
-                    reference_time=stats.get("max_price_timestamp_readable"),
-                    percent_change=down_percent,
-                    threshold=down_threshold,
-                    url=self._build_cmc_url(symbol)
-                )
-                alerts.append(alert)
-                self._record_alert_sent(symbol, "down")
+            self._maybe_append_price_alert(
+                alerts,
+                symbol,
+                "down",
+                current_price,
+                stats["max_price"],
+                stats.get("max_price_timestamp_readable"),
+                down_percent,
+                down_threshold,
+            )
 
         print(
             f"[Checker][{symbol}] Price: ${current_price:.4f} | "
@@ -385,6 +347,62 @@ class PriceChecker:
         )
 
         return alerts
+
+    def _maybe_append_price_alert(
+        self,
+        alerts: List[PriceAlert],
+        symbol: str,
+        alert_type: str,
+        current_price: float,
+        reference_price: float,
+        reference_time: object,
+        percent_change: float,
+        threshold: float,
+    ) -> None:
+        if self._should_send_alert(symbol, alert_type):
+            try:
+                cmc_url = f"https://coinmarketcap.com/search/?q={quote(symbol)}"
+                base = get_base_symbol(symbol) or symbol
+                canonical = _CANONICAL_CMC_SLUG.get((base or "").upper())
+                if canonical:
+                    cmc_url = f"https://coinmarketcap.com/currencies/{canonical}/"
+                else:
+                    for candidate in (symbol, base):
+                        if not candidate:
+                            continue
+                        found_slug = False
+                        for platform in getattr(getattr(self.cachePriceAll, "price_factory", None), "_platforms", []):
+                            if getattr(platform, "platform_name", "") != "CoinMarketCap":
+                                continue
+                            listings = getattr(platform, "_all_listings", {})
+                            metadata = casefold_get(listings, candidate) if isinstance(listings, dict) else None
+                            if metadata and metadata.get("slug"):
+                                cmc_url = f"https://coinmarketcap.com/currencies/{metadata['slug']}/"
+                                found_slug = True
+                                break
+                        if found_slug:
+                            break
+            except Exception:
+                cmc_url = f"https://coinmarketcap.com/search/?q={quote(symbol)}"
+            alerts.append(
+                PriceAlert(
+                    symbol=symbol,
+                    alert_type=alert_type,
+                    current_price=current_price,
+                    reference_price=reference_price,
+                    reference_time=reference_time,
+                    percent_change=percent_change,
+                    threshold=threshold,
+                    url=cmc_url,
+                )
+            )
+            self._last_alert_time[self._alert_key(symbol, alert_type)] = time.time()
+            if self.state_file:
+                try:
+                    os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)
+                    save_json_state(self.state_file, dict(self._last_alert_time), indent=2)
+                except Exception:
+                    pass
 
     def check_all_symbols(self) -> List[PriceAlert]:
         """Check all symbols in the watchlist."""

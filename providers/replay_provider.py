@@ -49,17 +49,13 @@ _BT_ENV_KEYS = (
 )
 
 
-def _noop_print(*_args, **_kwargs) -> None:
-    pass
-
-
 @contextlib.contextmanager
 def backtest_isolation_context(quiet: bool = False):
     """Temporarily set backtest/replay isolation env flags and optional print suppression."""
     quiet_b = _parse_bool_flag(quiet, default=False)
     prev_print = builtins.print
     if quiet_b:
-        builtins.print = _noop_print
+        builtins.print = lambda *_args, **_kwargs: None
     try:
         with temporary_environ(dict.fromkeys(_BT_ENV_KEYS, "1")):
             yield

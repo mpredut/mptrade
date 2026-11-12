@@ -1266,7 +1266,7 @@ def test_macroanalyzer_string_shadow_notify_previous_fallback_recovery_clock_ske
 
     itd = IntelligenceTelemetryDaemon(symbols=["BTCUSDC"], cache_dir=str(tmp_path), skip_macro=False, skip_external=True)
     itd._last_macro_ts = 99999.0
-    monkeypatch.setattr(itd, "update_macro", lambda force=False: True)
+    monkeypatch.setattr(itd, "update_macro", lambda force=False, **_kw: True)
     itd_res = itd.run_cycle(force=False, now=5000.0)
     assert itd_res["macro_updated"] is True
 

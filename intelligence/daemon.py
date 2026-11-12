@@ -124,18 +124,12 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         self._step_external_symbols(current_ts, force, results, bounded=False)
 
         if not self.skip_macro:
-            def _invoke_macro() -> bool:
-                try:
-                    return bool(self.update_macro(force=force, now=current_ts))
-                except TypeError:
-                    return bool(self.update_macro(force=force))
-
             run_scheduled_step(
                 self,
                 current_ts=current_ts,
                 ts_attr="_last_macro_ts",
                 interval_sec=self.macro_interval_sec,
-                fn=_invoke_macro,
+                fn=lambda: bool(self.update_macro(force=force, now=current_ts)),
                 force=force,
                 results=results,
                 result_key="macro_updated",
