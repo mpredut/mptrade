@@ -3547,7 +3547,7 @@ def _sync_reexport_modules() -> None:
                 not attr_name.startswith("__")
                 and attr_name in globals()
                 and callable(attr_val)
-                and getattr(attr_val, "__module__", None) == __name__
+                and getattr(attr_val, "__module__", None) in (__name__, "cachepaths")
             ):
                 setattr(reexport_mod, attr_name, globals()[attr_name])
 

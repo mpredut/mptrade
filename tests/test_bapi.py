@@ -1612,7 +1612,10 @@ def test_ws_event_loop_uvloop_and_orjson_fast_path():
     if _uvloop is not None:
         assert "uvloop" in observed_loops[0]
 
-    assert state_io._orjson is not None
+    import importlib.util
+
+    if importlib.util.find_spec("orjson") is not None:
+        assert state_io._orjson is not None
     parsed = state_io.parse_json_payload(b'{"s":"BTCUSDC","c":"88000.5"}')
     assert parsed == {"s": "BTCUSDC", "c": "88000.5"}
     bucket_line = state_io.format_jsonl_bucket_line("BTCUSDC", [1700000000000, 88000.5])
