@@ -544,14 +544,6 @@ class IncrementalTrendBuffer:
         prev_np = self.nonpos[-1] if i > 0 else 0
         self.nonpos.append(prev_np + (1 if y <= 0.0 else 0))
 
-    def _raw_moment_range(self, lo: int, hi: int):
-        """Return (sum dy, sum J*dy, sum J^2*dy) over buffer indices [lo, hi]."""
-        if lo > 0:
-            b0, b1, bk2 = self.p0[lo - 1], self.p1[lo - 1], self.pk2[lo - 1]
-        else:
-            b0, b1, bk2 = self.base_p0, self.base_p1, self.base_pk2
-        return self.p0[hi] - b0, self.p1[hi] - b1, self.pk2[hi] - bk2
-
     def step_wols_slope(
         self, a: int, b: int, sample_rate_sec=None, power=None, symbol: str | None = None
     ) -> float:
@@ -578,7 +570,8 @@ class IncrementalTrendBuffer:
         else:
             y_ref = self.y_ref if self.y_ref is not None else 0.0
             dy_last = ref_last - y_ref
-            a0, a1, a2 = self._raw_moment_range(a, b - 1)
+            b0, b1, bk2 = (self.p0[a - 1], self.p1[a - 1], self.pk2[a - 1]) if a > 0 else (self.base_p0, self.base_p1, self.base_pk2)
+            a0, a1, a2 = self.p0[b - 1] - b0, self.p1[b - 1] - b1, self.pk2[b - 1] - bk2
             if pwr == 1.0:
                 # O(1) Linear Abel summation:
                 # sum_{k=1..m} k (y_{a+k} - y_{a+k-1}) = m * dy_b - sum_{r=0..m-1} dy_{a+r}

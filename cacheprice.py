@@ -943,8 +943,7 @@ class Cache365PriceManager(Cache24PriceManager):
                 original_state, snap_item_ids = self._snapshot_memory_state_with_item_ids_locked()
 
             backup_path = self.filename + ".maint_backup"
-            snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
-            snapshot_fn(self.filename, backup_path)
+            self._snapshot_file_to(backup_path)
             with atomic_text_writer(self.filename) as target:
                 for line_out, keep in iter_jsonl_retention_lines(
                     backup_path,
@@ -1007,12 +1006,11 @@ class Cache365PriceManager(Cache24PriceManager):
 
     def _rotate_disk_archive(self):
         """Archive an oversized file while retaining a complete-line tail without holding ``self.lock`` during disk I/O."""
-        archive = f"{self.filename}.{math.trunc(_now_time())}.archive"
+        archive = self._archive_snapshot_path()
         with self.lock:
             original_state, snap_item_ids = self._snapshot_memory_state_with_item_ids_locked()
         try:
-            snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
-            snapshot_fn(self.filename, archive)
+            self._snapshot_file_to(archive)
         except OSError as exc:
             builtins.print(f"[{self.cls_name}][maintain] archiving failed: {exc}")
             return False
@@ -1038,12 +1036,7 @@ class Cache365PriceManager(Cache24PriceManager):
         if not meta_ok:
             with self.lock:
                 self._rollback_memory_state_with_live_delta_locked(original_state, snap_item_ids)
-                try:
-                    self._restore_previous_generation(archive)
-                except OSError as restore_err:
-                    builtins.print(
-                        f"[{self.cls_name}][maintain] failed to restore active file from {archive}: {restore_err}"
-                    )
+                self._restore_archive_after_failed_rotation_locked(archive)
             builtins.print(
                 f"[{self.cls_name}][maintain] rotation aborted; restored active file and in-memory state"
             )
@@ -1286,17 +1279,13 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     def _should_poll(self):
         return not self._ws_is_healthy()
 
-    def _timestamps_deque_locked(self, symbol: str):
-        if symbol in self._update_timestamps:
-            return self._update_timestamps.get(symbol)
-        sym_u, sym_clean = _norm_symbol_keys(symbol)
-        return casefold_get(self._update_timestamps, sym_u) or casefold_get(
-            self._update_timestamps, sym_clean
-        )
-
     def _sample_span_and_count(self, symbol: str) -> tuple[Optional[float], int]:
         with self.lock:
-            dq = self._timestamps_deque_locked(symbol)
+            if symbol in self._update_timestamps:
+                dq = self._update_timestamps.get(symbol)
+            else:
+                sym_u, sym_clean = _norm_symbol_keys(symbol)
+                dq = casefold_get(self._update_timestamps, sym_u) or casefold_get(self._update_timestamps, sym_clean)
             samples = list(dq) if dq else []
         if len(samples) < 2:
             return None, len(samples)

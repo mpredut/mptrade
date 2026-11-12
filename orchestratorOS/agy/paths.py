@@ -28,13 +28,6 @@ def expand_config_path(raw_path: str) -> str:
     return os.path.expanduser(os.path.expandvars(cleaned)) if cleaned else ""
 
 
-def _expand_or_env(override: Optional[str], env_key: str, *subpaths: str) -> str:
-    expanded = expand_config_path(override) if isinstance(override, (str, os.PathLike)) else ""
-    if expanded:
-        return expanded
-    base = expand_config_path(required_env(env_key))
-    return os.path.join(base, *subpaths) if subpaths else base
-
 
 _PATH_OVERRIDE_UNSET = object()
 
@@ -49,7 +42,11 @@ def _bind_env_path_resolver(env_key: str, *subpaths: str, override_kwarg: str):
                 raise TypeError(f"got multiple values for argument {override_kwarg!r}")
             override = kw[override_kwarg]
         eff_override = None if override is _PATH_OVERRIDE_UNSET else override
-        return _expand_or_env(eff_override, env_key, *subpaths)  # type: ignore[arg-type]
+        expanded = expand_config_path(eff_override) if isinstance(eff_override, (str, os.PathLike)) else ""
+        if expanded:
+            return expanded
+        base = expand_config_path(required_env(env_key))
+        return os.path.join(base, *subpaths) if subpaths else base
 
     return _resolver
 

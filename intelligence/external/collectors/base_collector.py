@@ -426,15 +426,12 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
     def _effective_cache_dir(self) -> Optional[str]:
         return resolve_cache_dir_path(self.cache_dir)
 
-    def _candidate_variants(self, symbol: str) -> List[Any]:
-        if self._QUOTE_ISOLATED:
-            quotes = compatible_quote_suffixes(symbol, default_usd=("USDC", "USDT", "USD", "FDUSD"))
-            return cache_symbol_variants(symbol, quotes=quotes)
-        return cache_symbol_variants(symbol)
-
     def _resolve_lookup_candidates(self, symbol: str, *, exact_only: bool = False) -> Tuple[str, List[Any]]:
         sym_clean = symbol.strip().upper()
-        return sym_clean, ([sym_clean] if exact_only else self._candidate_variants(symbol))
+        if exact_only:
+            return sym_clean, [sym_clean]
+        quotes = compatible_quote_suffixes(symbol, default_usd=("USDC", "USDT", "USD", "FDUSD")) if self._QUOTE_ISOLATED else None
+        return sym_clean, (cache_symbol_variants(symbol, quotes=quotes) if quotes is not None else cache_symbol_variants(symbol))
 
     def _lookup_cached(self, symbol: str, now: float, *, exact_only: bool = False) -> Tuple[Any, Any]:
         sym_clean, cands = self._resolve_lookup_candidates(symbol, exact_only=exact_only)
@@ -538,7 +535,18 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             if (eq_snap := fetch_fn(symbol, now)) is not None:
                 return eq_snap
         except Exception as eq_exc:
-            logger_inst.warning("Could not fetch %s for %s: %s", label, symbol, eq_exc)
+            return self._warn_and_fallback_stale(logger_inst, label, symbol, eq_exc, cached)
+        return self._fallback_stale(symbol, cached)
+
+    def _warn_and_fallback_stale(
+        self,
+        logger_inst: logging.Logger,
+        label: str,
+        symbol: str,
+        exc: Exception,
+        cached: Any,
+    ) -> Any:
+        logger_inst.warning("Could not fetch %s for %s: %s", label, symbol, exc)
         return self._fallback_stale(symbol, cached)
 
     def _prepare_fetch_or_equity(
