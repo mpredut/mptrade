@@ -12,7 +12,6 @@ import json
 import monitortrades as mt
 import order_guard
 import order_retry
-import order_retry as oq
 import order_retry_worker as orw
 import os
 import pytest
@@ -2232,7 +2231,7 @@ def test_scheduled_pilot__norm_params_key_distinguishes_bool_from_float_and_hand
 def test_infer_record_owner_ignores_boolean_parent_owner_kind_and__format_record_context_handles_iter123_s4():
     """[ITER123 #4] infer_record_owner ignores boolean parent_owner/kind and _format_record_context handles non-dict place_kwargs."""
     # 4. infer_record_owner ignores boolean parent_owner/kind and _format_record_context handles non-dict place_kwargs
-    assert oq.infer_record_owner({"parent_owner": True, "kind": "STOP", "place_kwargs": 123}) == "monitortrades"
+    assert order_retry.infer_record_owner({"parent_owner": True, "kind": "STOP", "place_kwargs": 123}) == "monitortrades"
     ctx_str = orw._format_record_context({"side": "BUY", "symbol": "BTCUSDC", "qty": 0.1, "place_kwargs": 123, "id": "rec-1"})
     assert "ID: rec-1" in ctx_str
 

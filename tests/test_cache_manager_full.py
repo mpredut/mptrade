@@ -1563,7 +1563,7 @@ class TestCacheFactory(unittest.TestCase):
 
 
 # ===============================================================================
-# 11. get_current_price_manager — singleton
+# 11. get_current_price_manager -- singleton
 # ===============================================================================
 class TestGetCurrentPriceManagerSingleton(_CurrentPriceResetTestCase):
 

@@ -260,7 +260,6 @@ from orchestratorOS.supervisor.autonomous_ai_reconciler import (
 )
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway, append_intent_history
 from orchestratorTrade.orchestrator import BotManager
-from pathlib import Path
 from pricewindow import IncrementalTrendBuffer, PriceWindow, instant_trend_from_prices
 from providers import (
     execution_audit as ea_mod,

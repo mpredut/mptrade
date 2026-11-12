@@ -43,7 +43,6 @@ from unittest.mock import MagicMock, patch
 from verify_tools.gen_alert_thresholds import FLOOR, thresholds_from_prices
 
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 SAMPLE_ALERTS_CONF = """

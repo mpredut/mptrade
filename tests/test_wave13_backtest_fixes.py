@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import builtins
-import dataclasses
 import math
 from pathlib import Path
 from types import SimpleNamespace

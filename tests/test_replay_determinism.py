@@ -34,7 +34,6 @@ from tests.conftest import load_venue_modules, make_spot_test_params
 from unittest.mock import MagicMock, patch
 
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _sample_ohlc(length: int = 40, base_price: float = 100.0) -> list[tuple[float, float, float, float]]:

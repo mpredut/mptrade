@@ -12,7 +12,6 @@ Validates that order_guard:
 
 import builtins
 import order_guard
-import os
 import time
 import unittest
 from market_regime import ClosedPriceSeries, MarketRegimeDecision, MarketRegimeService

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import ast
-import dataclasses
 import math
 import os
 from pathlib import Path
 import subprocess
-from types import SimpleNamespace
 
 import numpy as np
 import pytest

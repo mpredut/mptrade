@@ -5,7 +5,6 @@ margin); after a rise that anchor blocked every automated Binance buy for two we
 Switching it off for a venue must leave the SELL reference untouched."""
 
 import order_guard
-import os
 import unittest
 from external_order_guard import check_external_order_guards
 from instrument import Instrument
