@@ -730,19 +730,6 @@ class Instrument:
         return None
 
     # -- Order placement: dry or real after provider gates. --------------------
-    def _require_live_market_price(self, ctx: Any, label: str) -> Optional[float]:
-        px = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
-        if px is None:
-            print(f"[{self.symbol}] {ctx.side_u} {label}: current price unavailable")
-            ctx.reason = "market_price_unavailable"
-        return px
-
-    def _refuse_preflight(self, ctx: Any, reason: str, detail: str) -> None:
-        print(f"[{self.symbol}] {ctx.side_u} preflight refused: {detail}")
-        ctx.quantity_price = ctx.price
-        ctx.reason = reason
-        return None
-
     def _acquire_fresh_cache_permit(self, ctx: Any) -> Any:
         if not callable(ctx.preflight_order):
             raise SubmissionRefused("account_cache_not_fresh")
@@ -844,7 +831,9 @@ class Instrument:
             ):
                 price_f = safe_pos_float(ctx.price, default=None)
                 if price_f is None:
-                    return self._refuse_preflight(ctx, "invalid_price", f"price invalid {ctx.price!r}")
+                    print(f"[{self.symbol}] {ctx.side_u} preflight refused: price invalid {ctx.price!r}")
+                    ctx.quantity_price, ctx.reason = ctx.price, "invalid_price"
+                    return None
                 ctx.price = price_f
 
             ctx.base_asset, ctx.quote_asset = resolve_assets(self.symbol, self.base, self.quote)
@@ -860,17 +849,19 @@ class Instrument:
                     kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
                     if kb_f is not None:
                         if kb_f <= 0:
-                            return self._refuse_preflight(
-                                ctx, "balance_unavailable", f"balance_unavailable asset={target_asset}"
-                            )
+                            print(f"[{self.symbol}] {ctx.side_u} preflight refused: balance_unavailable asset={target_asset}")
+                            ctx.quantity_price, ctx.reason = ctx.price, "balance_unavailable"
+                            return None
                         ctx.known_balance = kb_f
                 except Exception:
                     ctx.known_balance = None
 
             ctx.quantity_price = ctx.price
             if ctx.is_market:
-                ctx.quantity_price = self._require_live_market_price(ctx, "MARKET BLOCKED")
+                ctx.quantity_price = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
                 if ctx.quantity_price is None:
+                    print(f"[{self.symbol}] {ctx.side_u} MARKET BLOCKED: current price unavailable")
+                    ctx.reason = "market_price_unavailable"
                     return None
 
             ctx.profit_window_ref = None
@@ -1204,10 +1195,10 @@ class Instrument:
             # Stage 5: Pre-dispatch Market Revalidation & Venue Submission.
             final_profit_check = not ctx.bypass_profit_guard and ctx.is_market
             if ctx.is_market and (final_profit_check or ctx.retry_constraint_supplied):
-                final_market_price = self._require_live_market_price(
-                    ctx, "MARKET BLOCKED at dispatch"
-                )
+                final_market_price = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
                 if final_market_price is None:
+                    print(f"[{self.symbol}] {ctx.side_u} MARKET BLOCKED at dispatch: current price unavailable")
+                    ctx.reason = "market_price_unavailable"
                     return None
                 if ctx.retry_constraint_supplied and not order_retry.is_retry_price_favorable(
                     ctx.side_u,

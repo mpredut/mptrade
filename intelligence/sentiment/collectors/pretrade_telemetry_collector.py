@@ -166,13 +166,6 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         return dict(self.data)
 
     @staticmethod
-    def _resolve_symbol_and_scope(symbol: Any) -> Tuple[str, str, str]:
-        sym_raw = str(symbol or "").strip()
-        canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
-        scope = "EQUITY" if is_equity_symbol(sym_raw) else "CRYPTO"
-        return sym_raw, canon_sym, scope
-
-    @staticmethod
     def _resolve_now_and_max_age(
         now_ts: Optional[float], max_age_sec: Optional[float]
     ) -> Tuple[float, float]:
@@ -193,7 +186,9 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         max_age_sec: Optional[float] = None,
     ) -> "PretradeTelemetrySnapshot":
         eff_now, eff_max_age = cls._resolve_now_and_max_age(now_ts, max_age_sec)
-        sym_raw, canon_sym, scope = cls._resolve_symbol_and_scope(symbol)
+        sym_raw = str(symbol or "").strip()
+        canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
+        scope = "EQUITY" if is_equity_symbol(sym_raw) else "CRYPTO"
         return cls(
             symbol=sym_raw,
             canonical_symbol=canon_sym,
@@ -255,7 +250,9 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
                 unavailable_reason=eff_unavail,
                 enforce_freshness=eff_enforce,
             )
-        sym_raw, canon_sym, scope = cls._resolve_symbol_and_scope(symbol)
+        sym_raw = str(symbol or "").strip()
+        canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
+        scope = "EQUITY" if is_equity_symbol(sym_raw) else "CRYPTO"
         if not isinstance(raw, Mapping):
             return cls.unavailable(
                 sym_raw,

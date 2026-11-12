@@ -634,18 +634,11 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                     and any(self.price_factory.check_symbol_support(symbol).values())
                 ):
                     seen_bases.add(base_symbol)
-                    self._track_monitored_symbol(symbol)
+                    self.active_symbols.add(symbol)
+                    self.symbols.append(symbol)
+                    self.original_symbols.append(symbol)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             print(f"[Pricefetcher] Metadata cache ignored: {exc}")
-
-    def _log_warn_and_return(self, detail: str, default):
-        print(f"[{self.cls_name}][Warn] {detail}")
-        return default
-
-    def _track_monitored_symbol(self, symbol: str) -> None:
-        self.active_symbols.add(symbol)
-        self.symbols.append(symbol)
-        self.original_symbols.append(symbol)
 
     def _reload_from_disk(self):
         super()._reload_from_disk()
@@ -692,7 +685,8 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             print(f"[Pricefetcher][{symbol}] ${price_val:.4f} (source: {platform_used})")
             return [[timestamp_ms, price_val]]
         except Exception as e:
-            return self._log_warn_and_return(f"{symbol}: {e}", [])
+            print(f"[{self.cls_name}][Warn] {symbol}: {e}")
+            return []
     
     def add_symbol(self, symbol: str, preferred_source: Optional[str] = None):
         if not (symbol := clean_nonempty_str(symbol)):
@@ -705,7 +699,9 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 return self._log_tagged_false("Pricefetcher", f"{symbol} ignored: asset {base_symbol} is already being monitored")
             if len(self.active_symbols) >= self.max_monitored_symbols:
                 return self._log_tagged_false("Pricefetcher", f"Limit reached: maximum {self.max_monitored_symbols} monitored coins")
-            self._track_monitored_symbol(symbol)
+            self.active_symbols.add(symbol)
+            self.symbols.append(symbol)
+            self.original_symbols.append(symbol)
             if preferred_source:
                 self.symbol_preferred_source[symbol] = preferred_source
                 print(f"[Pricefetcher] {symbol} - preferred source: {preferred_source}")
@@ -903,7 +899,8 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 self._persisted_counts = counts
                 return self._log_cache_saved_ok()
         except Exception as e:
-            return self._log_warn_and_return(f"Saving cache file {self.filename}: {e}", False)
+            print(f"[{self.cls_name}][Warn] Saving cache file {self.filename}: {e}")
+            return False
 
     def save_state_to_file_if_enabled(self):
         if not self.save_state:

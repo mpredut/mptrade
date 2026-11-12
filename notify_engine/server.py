@@ -148,14 +148,13 @@ class NotificationServer:
             logging.error(f"Failed to load rules.json: {e}")
             return []
 
-    def _resolve_topic(self, category: str) -> str:
-        return resolve_topic(category)
-
-    def _default_error_topic(self) -> str:
+    def _resolve_topic(self, category: str, default: str | None = None) -> str:
         try:
-            return self._resolve_topic("ERROR")
+            return resolve_topic(category)
         except Exception:
-            return "ntfy-error-1978"
+            if default is not None:
+                return default
+            raise
         
     def _enqueue_payload(self, intent_type: str, data: dict):
         try:
@@ -254,7 +253,7 @@ class NotificationServer:
         if batch:
             bulk_title, bulk_body, bulk_prio, bulk_topic = batch
             if not bulk_topic:
-                bulk_topic = self._default_error_topic()
+                bulk_topic = self._resolve_topic("ERROR", "ntfy-error-1978")
             with self._gated_dispatch_scope(skip_email=True):
                 if self._send_ntfy(bulk_title, bulk_body, bulk_prio, bulk_topic):
                     flushed = True
@@ -633,7 +632,7 @@ class NotificationServer:
                                 title = raw_t if raw_t.startswith("[DELAYED]") else f"[DELAYED] {raw_t}"
                                 msg = _clean_str(payload.get("message"))
                                 prio = _clean_str(payload.get("priority"), "default", strip=True)
-                                top = _clean_str(payload.get("topic"), strip=True) or self._default_error_topic()
+                                top = _clean_str(payload.get("topic"), strip=True) or self._resolve_topic("ERROR", "ntfy-error-1978")
                                 success = await asyncio.to_thread(
                                     self._send_ntfy, title, msg, prio, top, True,
                                 )

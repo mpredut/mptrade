@@ -122,13 +122,6 @@ def reset_trades_monitor_state_for_test():
     _trades_monitor_warmup_failed_symbols.clear()
 
 
-def _record_warmup_trade_ids(orders) -> None:
-    for t in (orders or ()):
-        tid = _extract_trade_uid(t)
-        if tid:
-            _notified_trade_ids.add(tid)
-
-
 def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=None):
     """Detect and notify newly executed trades on Binance centrally."""
     global _trades_monitor_initialized
@@ -137,7 +130,9 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
     if not _trades_monitor_initialized:
         for symbol in symbols_to_check:
             try:
-                _record_warmup_trade_ids(apitrades.get_trade_orders(None, symbol, maxage_trade_s))
+                for t in (apitrades.get_trade_orders(None, symbol, maxage_trade_s) or ()):
+                    if tid := _extract_trade_uid(t):
+                        _notified_trade_ids.add(tid)
                 _trades_monitor_warmup_failed_symbols.discard(symbol)
             except Exception as _e:
                 _trades_monitor_warmup_failed_symbols.add(symbol)
@@ -151,7 +146,9 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
             if not isinstance(orders, list):
                 orders = list(orders or [])
             if symbol in _trades_monitor_warmup_failed_symbols:
-                _record_warmup_trade_ids(orders)
+                for t in orders:
+                    if tid := _extract_trade_uid(t):
+                        _notified_trade_ids.add(tid)
                 _trades_monitor_warmup_failed_symbols.discard(symbol)
                 continue
             orders = sorted((t for t in orders if isinstance(t, dict)), key=lambda t: extract_timestamp_ms(t, default=0) or 0)
@@ -495,14 +492,6 @@ def _clear_smart_sl_exit(symbol: str, provider: Any = None):
         _smart_sl_guard.clear_smart_stop_loss(symbol, provider=_inst_provider(provider))
     except Exception:
         pass
-
-
-def _clear_reentry_and_last_exit_state(symbol: str, *, clear_done_sell_time: bool = False) -> None:
-    _REENTRY_STATE.pop(symbol, None)
-    _LAST_EXIT_KIND.pop(symbol, None)
-    if clear_done_sell_time:
-        _REENTRY_DONE_SELL_TIME.pop(symbol, None)
-    _save_mt_state()
 
 
 def _resolve_exit(
@@ -1292,7 +1281,9 @@ def _execute_reentry_buy(
         )
         if sell_t is not None:
             _REENTRY_DONE_SELL_TIME[symbol] = sell_t
-        _clear_reentry_and_last_exit_state(symbol)
+        _REENTRY_STATE.pop(symbol, None)
+        _LAST_EXIT_KIND.pop(symbol, None)
+        _save_mt_state()
         return True
     _restore_reentry_state(symbol, prev_reentry_state)
     return False
@@ -1404,7 +1395,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
     if trade_orders_buy and trade_orders_sell and buy_time > sell_time:
         if symbol in _REENTRY_STATE or symbol in _LAST_EXIT_KIND or symbol in _REENTRY_DONE_SELL_TIME:
-            _clear_reentry_and_last_exit_state(symbol, clear_done_sell_time=True)
+            _REENTRY_STATE.pop(symbol, None)
+            _LAST_EXIT_KIND.pop(symbol, None)
+            _REENTRY_DONE_SELL_TIME.pop(symbol, None)
+            _save_mt_state()
 
     if symbol in _PENDING_STOP_EXIT and _is_untradable_dust(inst, symbol, sellable_qty, current_price, min_qty):
         _resolve_exit(symbol, inst, dust_resolved=True)
