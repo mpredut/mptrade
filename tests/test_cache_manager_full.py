@@ -20,6 +20,7 @@ import cacheaccount
 import cacheintegrity
 import cachepaths as cp_paths
 import cacheprice
+import cachetrend
 import contextlib
 import gzip
 import inspect
@@ -3145,3 +3146,76 @@ def test_cache_modules_delegate_venue_ws_protocols_to_providers():
         None,
         None,
     )
+
+
+def test_daemon_main_mode_binds_single_producer_current_price_and_short_trend(monkeypatch, tmp_path):
+    """Ensure __main__ execution never splits WS live_reader from 30s HTTP producer."""
+    fake_ws = MagicMock()
+    monkeypatch.setattr(
+        cacheprice._bn_price_prov_cls,
+        "get_default_price_ws_manager",
+        classmethod(lambda _cls: fake_ws),
+    )
+    monkeypatch.setattr(
+        cm,
+        "tracked_price_instruments",
+        lambda role=None: (["BTCUSDC"], [], {}),
+    )
+    monkeypatch.setattr(
+        cacheprice,
+        "tracked_price_instruments",
+        lambda role=None: (["BTCUSDC"], [], {}),
+    )
+    monkeypatch.setattr(
+        cachetrend,
+        "tracked_price_instruments",
+        lambda role=None: (["BTCUSDC"], [], {}),
+    )
+    cp_file = str(tmp_path / "cache_current_price.json")
+    st_file = str(tmp_path / "cache_short_trend.json")
+    monkeypatch.setitem(cm.CacheFactory._CONFIG["CurrentPrice"], "filename", cp_file)
+    monkeypatch.setitem(cm.CacheFactory._CONFIG["ShortTrend"], "filename", st_file)
+
+    cm.CacheFactory.shutdown_all()
+    try:
+        # Simulate `python cacheManager.py` where sys.modules["__main__"] is cm and "cacheManager" is absent.
+        saved_cm = sys.modules.pop("cacheManager", None)
+        saved_main = sys.modules.get("__main__")
+        sys.modules["__main__"] = cm
+        try:
+            assert cm.CacheManagerInterface._resolve_cache_manager_module() is cm
+            ws_cpm = cacheprice.attach_default_price_ws_stream(
+                lambda **kw: cm.CacheFactory.get("CurrentPrice", **kw),
+                sync_ts=0.8,
+                data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+            )
+            loop_cpm = cm.get_cache_manager(
+                "CurrentPrice",
+                data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+            )
+            getter_cpm = cacheprice.get_current_price_manager()
+            st_mgr = cachetrend.get_short_trend_manager(
+                data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER
+            )
+
+            assert ws_cpm is loop_cpm
+            assert getter_cpm is ws_cpm
+            assert cm.CacheFactory._instances.get("CurrentPrice") is ws_cpm
+            assert cm.CacheManagerInterface.resolve_active_instance("CurrentPrice") is ws_cpm
+            assert ws_cpm.data_sync_mode == cm.CacheManagerInterface.MODE_PRODUCER
+            assert ws_cpm.save_state is True
+            assert ws_cpm.read_only is False
+            assert ws_cpm.sync_ts == pytest.approx(0.8)
+            assert ws_cpm._ws_manager is fake_ws
+            fake_ws.subscribe.assert_called_once_with(ws_cpm)
+
+            assert cm.CacheFactory._instances.get("ShortTrend") is st_mgr
+            assert st_mgr.data_sync_mode == cm.CacheManagerInterface.MODE_PRODUCER
+        finally:
+            if saved_main is not None:
+                sys.modules["__main__"] = saved_main
+            if saved_cm is not None:
+                sys.modules["cacheManager"] = saved_cm
+    finally:
+        cm.CacheFactory.shutdown_all()
+

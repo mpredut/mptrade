@@ -197,9 +197,30 @@ class CacheManagerInterface(ABC):
     DEDUP_WINDOW = CM_DEDUP_WINDOW
 
     _default_api_client: Any = None
+    _default_cache_factory: Any = None
 
-    @staticmethod
-    def resolve_active_instance(factory_key: str, *, reader_fn: Any = None) -> Any:
+    @classmethod
+    def bind_cache_factory(cls, factory: Any) -> None:
+        """Bind the canonical ``CacheFactory`` so ``__main__`` daemon mode resolves without split-brain."""
+        cls._default_cache_factory = factory
+
+    @classmethod
+    def _resolve_cache_manager_module(cls) -> Any:
+        """Return the loaded ``cacheManager`` module, including when executed directly as ``__main__``."""
+        cm_mod = sys.modules.get("cacheManager")
+        if cm_mod is not None:
+            return cm_mod
+        main_mod = sys.modules.get("__main__")
+        if (
+            main_mod is not None
+            and cls._default_cache_factory is not None
+            and getattr(main_mod, "CacheFactory", None) is cls._default_cache_factory
+        ):
+            return main_mod
+        return None
+
+    @classmethod
+    def resolve_active_instance(cls, factory_key: str, *, reader_fn: Any = None) -> Any:
         """Return an already-instantiated cache manager for ``factory_key`` (or from ``reader_fn``)."""
         if callable(reader_fn):
             try:
@@ -209,6 +230,9 @@ class CacheManagerInterface(ABC):
             except Exception:
                 pass
         cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
+        if cf is None:
+            cm_mod = cls._resolve_cache_manager_module()
+            cf = getattr(cm_mod, "CacheFactory", None) if cm_mod is not None else None
         instances = getattr(cf, "_instances", None)
         return instances.get(factory_key) if isinstance(instances, dict) else None
 
@@ -246,7 +270,7 @@ class CacheManagerInterface(ABC):
         config_read_only: bool = False,
     ) -> tuple[bool, Any, str, bool, bool, Any]:
         """Delegate cache reader/manager resolution to ``cacheManager`` or resolve mode and symbols."""
-        cm_mod = sys.modules.get("cacheManager")
+        cm_mod = cls._resolve_cache_manager_module()
         if cm_mod is not None:
             has_filename = filename is not None or default_filename is not None
             if cm_getter_name and getter_tag:

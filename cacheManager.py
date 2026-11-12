@@ -20,6 +20,7 @@ from __future__ import annotations
 import builtins
 import os
 import signal as _signal
+import sys
 import threading
 import time
 from typing import Optional
@@ -598,6 +599,7 @@ with CacheFactory._lock:
 
 
 # Inject readers and runtime services across the domain base classes and MarketDataProvider.
+CacheManagerInterface.bind_cache_factory(CacheFactory)
 bind_account_cache_getter(get_cache_manager)
 CachePriceManagerBase.bind_current_price_getter(get_current_price_manager)
 CacheTrendManagerBase.bind_service_getters(
@@ -617,6 +619,7 @@ if hasattr(MarketDataProvider, "bind_ssot_cache_readers"):
 
 
 if __name__ == "__main__":
+    sys.modules.setdefault("cacheManager", sys.modules[__name__])
     single_instance("cacheManager")
     start_account_cache_daemon(
         cache_getter=get_cache_manager,
@@ -635,8 +638,9 @@ if __name__ == "__main__":
     _trend_cpm = None
     try:
         _trend_cpm = attach_default_price_ws_stream(
-            get_current_price_manager,
+            lambda **kw: CacheFactory.get("CurrentPrice", **kw),
             sync_ts=0.8,
+            data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
         )
         if _nb_syms and _trend_cpm is not None:
             _nb_poller = _start_nonbinance_trend_poller(
@@ -655,7 +659,10 @@ if __name__ == "__main__":
             _arch_syms = tracked_price_instruments(role="archive")[0]
             cache = get_cache_manager(name, symbols=_arch_syms or None)
         else:
-            cache = get_cache_manager(name)
+            cache = get_cache_manager(
+                name,
+                data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
+            )
         interval = (
             cache.sync_ts
             if name == "CurrentPrice" and hasattr(cache, "sync_ts")
@@ -674,16 +681,22 @@ if __name__ == "__main__":
     try:
         if _trend_cpm is None:
             _trend_cpm = attach_default_price_ws_stream(
-                get_current_price_manager,
+                lambda **kw: CacheFactory.get("CurrentPrice", **kw),
                 sync_ts=0.8,
-                data_sync_mode="producer",
+                data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
             )
-        _trend_cache24 = CacheFactory.get("24Price")
+        _trend_cache24 = CacheFactory.get(
+            "24Price",
+            data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
+        )
         _trend_cache365 = CacheFactory._instances.get("365Price") or {}
         if isinstance(_trend_cache365, dict):
             for _c365 in _trend_cache365.values():
                 _trend_cpm.subscribe_price(_c365)
-        _trend_mgr = get_short_trend_manager(data_sync_mode="producer")
+        _trend_mgr = CacheFactory.get(
+            "ShortTrend",
+            data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
+        )
         _trend_mgr.start_computation(
             _trend_cache24, _trend_cpm, run_full_eval=True
         )

@@ -16,6 +16,7 @@ from state_io import read_json_dict  # noqa: E402
 
 CACHEDB = os.path.join(ROOT, "cachedb")
 STALE_S = 600.0  # More than 10 minutes without an update is STALE (instant trend refreshes every few seconds / 20s).
+CURRENT_PRICE_STREAM_STALE_S = 15.0  # Freshest tick across cache_current_price.json must reflect real-time WS producer (<15s), not 30s HTTP fallback.
 
 
 def expected_symbols():
@@ -86,6 +87,7 @@ def main() -> int:
     (cp_d,) = coerce_dict_maps(cp)
     items, fetchtime_map = coerce_dict_maps(cp_d.get("items", cp_d), cp_d.get("fetchtime"))
     print(f"-- cache_current_price.json: {sorted(k for k in items.keys() if k != 'fetchtime')}")
+    cp_ages = []
     for s in exp:
         entries = None
         matched_key = s
@@ -131,10 +133,16 @@ def main() -> int:
             continue
 
         age = (now - ts_sec_val) if ts_sec_val > 0 else 1e9
+        cp_ages.append(age)
         ok = -5.0 <= age < STALE_S and px_val > 0
         if not ok:
             problems.append(f"currentprice {s} age={age:.0f}s")
         print(f"   {s:10} age={age:6.0f}s price={px_val} -> {'OK' if ok else 'STALE'}")
+
+    stream_stale_limit = min(STALE_S, CURRENT_PRICE_STREAM_STALE_S)
+    if cp_ages and min(cp_ages) >= stream_stale_limit:
+        problems.append(f"currentprice_stream freshest_age={min(cp_ages):.1f}s>={stream_stale_limit:.0f}s")
+        print(f"   STREAM     freshest_age={min(cp_ages):.1f}s -> STALE (>{stream_stale_limit:.0f}s WS cadence threshold)")
 
     if problems:
         print(f"\nPROBLEMS ({len(problems)}): {problems}")

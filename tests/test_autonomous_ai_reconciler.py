@@ -8814,6 +8814,40 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations(tmp_path):
     assert rp.get_trades("TAOUSDC", 3600.0, authoritative=True) == []
 
 
+def test_current_price_realtime_cadence_surfaced_in_monitors(tmp_path, monkeypatch):
+    """Verify summarize_fleet_sensor_status and check_cache_coherence detect 30s HTTP fallback vs <15s WS cadence."""
+    now_s = 1_795_000_000.0
+    monkeypatch.setattr("orchestratorOS.lib.technical_repair_ssot.time.time", lambda: now_s)
+    cp_path = tmp_path / "cache_current_price.json"
+    cp_path.write_text(
+        json.dumps({"items": {"BTCUSDC": [[(now_s - 26.0) * 1000.0, 95000.0]]}, "fetchtime": {"BTCUSDC": (now_s - 26.0) * 1000.0}}),
+        encoding="utf-8",
+    )
+    sensors_stale = summarize_fleet_sensor_status(str(tmp_path))
+    assert sensors_stale["current_price_cache"]["symbols_count"] == 1
+    assert sensors_stale["current_price_cache"]["freshest_age_seconds"] == pytest.approx(26.0)
+    assert sensors_stale["current_price_cache"]["ws_realtime_fresh"] is False
+
+    st_path = tmp_path / "cache_short_trend.json"
+    st_path.write_text(
+        json.dumps({"items": {"BTCUSDC": {"ts": now_s - 2.0, "current_price": 95000.0, "gradient_recent": 0.01}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ccc, "CACHEDB", str(tmp_path))
+    monkeypatch.setattr(ccc, "expected_symbols", lambda: ["BTCUSDC"])
+    monkeypatch.setattr(ccc.time, "time", lambda: now_s)
+    assert ccc.main() == 1  # 26s old current_price fails <15s WS stream threshold
+
+    cp_path.write_text(
+        json.dumps({"items": {"BTCUSDC": [[(now_s - 0.8) * 1000.0, 95010.0]]}, "fetchtime": {"BTCUSDC": (now_s - 0.8) * 1000.0}}),
+        encoding="utf-8",
+    )
+    sensors_fresh = summarize_fleet_sensor_status(str(tmp_path))
+    assert sensors_fresh["current_price_cache"]["ws_realtime_fresh"] is True
+    assert ccc.main() == 0
+
+
+
 
 
 

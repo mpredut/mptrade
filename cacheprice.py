@@ -2244,7 +2244,7 @@ def get_current_price_manager(
     data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
 ) -> CacheCurrentPriceManager:
     """Return or lazily create the ``CacheCurrentPriceManager`` singleton (disk_reader by default)."""
-    cm_mod = sys.modules.get("cacheManager")
+    cm_mod = CacheManagerInterface._resolve_cache_manager_module()
     if cm_mod is not None:
         cm_fn = getattr(cm_mod, "get_current_price_manager", None)
         if callable(cm_fn) and getattr(cm_fn, "_is_ssot_current_price_getter", None) is not True:
