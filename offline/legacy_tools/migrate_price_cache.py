@@ -21,9 +21,8 @@ import time
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-from botcore import safe_int
+from botcore import extract_timestamp_ms, safe_int
 from cachepaths import get_cachedb_dir
-from providers.base import extract_timestamp_ms
 from state_io import atomic_write_json, atomic_write_text, durable_replace_file, encode_json_payload, read_json_dict, read_jsonl_dicts
 
 CACHE_DIR = get_cachedb_dir()

@@ -20,6 +20,7 @@ from botcore import (
     exact_int,
     exact_nonneg_int,
     exact_pos_int,
+    extract_order_id,
     load_dotenv,
     normalize_side,
     required_bool_env,
@@ -36,7 +37,7 @@ from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cache
 from providers import order_id_context as rc
 from providers.base import MarketDataProvider
 from providers.execution_audit import ExecutionAudit, find_order_audit_record
-from providers.order_ohlc_utils import extract_order_id, extract_orig_qty, resolve_order_actor
+from providers.order_ohlc_utils import extract_orig_qty, resolve_order_actor
 from providers.strategy_executor import OrderStatus
 from state_io import atomic_write_jsonl, parse_json_payload, parse_proc_stat_fields, read_text_file, read_text_lines
 

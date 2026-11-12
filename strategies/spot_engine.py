@@ -17,18 +17,14 @@ from typing import Callable
 
 from notify_engine.alertnotifiers import bind_notify
 from botcore import (
-    _parse_bool_flag, extract_timestamp_s, format_price_log, is_market_order, log, defined_env, normalize_epoch_sec,
+    _parse_bool_flag, clean_order_id, defined_env, extract_order_side, extract_timestamp_s,
+    format_price_log, is_market_order, log, normalize_epoch_sec, normalize_side,
     require_finite_float, require_int,
     required_float_env, required_int_env, required_bool_env,
     safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
-from providers.base import normalize_side
-from providers.order_ohlc_utils import (
-    clean_order_id,
-    extract_order_side,
-    extract_remaining_qty,
-)
+from providers.order_ohlc_utils import extract_remaining_qty
 from providers.execution_audit import intent_client_order_id
 from providers.strategy_executor import ProviderError
 from order_lifecycle import StrategyExecutorLifecycleApi, TrackedOrderLifecycle

@@ -54,6 +54,7 @@ from .order_ohlc_utils import (
     extract_order_fee,
     get_cached_pair_info,
     normalize_order,
+    parse_nonneg_order_field,
     require_clean_order_id,
     resolve_market_flag,
 )
@@ -1153,10 +1154,10 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(
                 f"order_status {order_id}: unknown Kraken status {raw_status!r}"
             )
-        filled_qty = safe_nonneg_float(info.get("vol_exec", 0.0), default=None)
-        cost = safe_nonneg_float(info.get("cost", 0.0), default=None)
-        fee = safe_nonneg_float(info.get("fee", 0.0), default=None)
-        orig_qty = safe_nonneg_float(info.get("vol", 0.0), default=None)
+        filled_qty = parse_nonneg_order_field(info.get("vol_exec"))
+        cost = parse_nonneg_order_field(info.get("cost"))
+        fee = parse_nonneg_order_field(info.get("fee"))
+        orig_qty = parse_nonneg_order_field(info.get("vol"))
         if None in (filled_qty, cost, fee, orig_qty):
             raise ProviderError(f"order_status {order_id}: invalid fill values")
         return OrderStatus(

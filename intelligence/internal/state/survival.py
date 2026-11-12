@@ -35,6 +35,7 @@ from botcore import (
     is_live_network_backfill_enabled,
     lru_dict_put,
     normalize_epoch_sec,
+    normalize_side,
     normalize_trend_direction,
     obj_attr,
     parse_pos_cli_float,
@@ -64,7 +65,6 @@ from cachepaths import (
 import cachetrend as ct
 from instrument_registry import is_equity_symbol
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
-from providers.base import normalize_side
 import providers.market_api as _market_api_mod
 from state_io import read_json_dict_cached, save_json_state
 

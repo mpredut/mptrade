@@ -44,6 +44,7 @@ if ROOT not in sys.path:
 from active_intents import build_active_intent_index
 from botcore import (
     lru_dict_put,
+    normalize_side,
     normalize_trend_direction,
     parse_cli_float,
     require_pos_float,
@@ -62,7 +63,6 @@ from state_io import (
     read_json_dict,
     read_tail_jsonl_dicts,
 )
-from providers.base import normalize_side
 from intelligence.internal.state.volatility import get_kalman_state_path
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
 from cachepaths import (

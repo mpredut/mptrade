@@ -25,6 +25,7 @@ from botcore import (
     exact_nonneg_int,
     format_notify_qty,
     normalize_epoch_sec,
+    normalize_side,
     required_float_env,
     resolve_now_ts,
     safe_float,
@@ -38,7 +39,6 @@ from botcore import (
 )
 from cachepaths import split_symbol_assets
 import order_retry as oq
-from providers.base import normalize_side
 from providers.execution_audit import ExecutionAudit
 from providers.market_api import api as mkt
 from providers.quantity import resolve_assets

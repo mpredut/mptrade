@@ -9,15 +9,8 @@ from notify_engine import alertnotifiers as alert
 import instrument_registry as sym
 import pricewindow as pw
 from providers import order_id_context as rc
-from providers.base import (
-    extract_order_id,
-    extract_order_price,
-    extract_timestamp_s,
-    normalize_side,
-)
 from providers.order_ohlc_utils import (
     extract_client_order_id,
-    extract_order_qty,
     extract_remaining_qty,
 )
 from cachepaths import split_symbol_assets
@@ -33,11 +26,16 @@ from botcore import (
     clean_upper_token,
     diff_percent,
     exact_nonneg_int,
+    extract_order_id,
+    extract_order_price,
+    extract_order_qty,
+    extract_timestamp_s,
     format_notify_price,
     format_notify_qty,
     format_price_log,
     load_dotenv,
     lru_dict_put,
+    normalize_side,
     required_float_env,
     required_int_env,
     safe_nonneg_float,

@@ -33,8 +33,7 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 # 23 Jul: SimClock extracted into providers/replay_clock.py (shared with
 # monitortrades -- see UNIFIED_BACKTEST_PLAN.md sec. 7/8), passed to
 # TrendState(now_fn=...) so that fast-forward is correct (A5).
-from botcore import lru_dict_put, resolve_now_ts, safe_int, safe_nonneg_float, safe_pos_float, sanitize_pipe_field
-from providers.base import normalize_side
+from botcore import lru_dict_put, normalize_side, resolve_now_ts, safe_int, safe_nonneg_float, safe_pos_float, sanitize_pipe_field
 from providers.replay_provider import SimClock, backtest_isolation_context  # noqa: F401
 from state_io import append_text_line, atomic_write_json, iter_jsonl_dicts, read_json_dict
 from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed

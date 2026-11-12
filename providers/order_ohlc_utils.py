@@ -153,6 +153,13 @@ def compute_post_only_maker_price(
     return rounded if rounded > 0.0 else px_f
 
 
+def parse_nonneg_order_field(raw: Any, *, allow_empty_str: bool = False) -> Optional[float]:
+    """Parse an optional venue order quantity/cost/fee field into a non-negative float (``None`` -> ``0.0``)."""
+    if raw is None or (allow_empty_str and raw == ""):
+        return 0.0
+    return safe_nonneg_float(raw, default=None)
+
+
 def extract_executed_qty(order: Any, default: float = 0.0) -> float:
     """Extract executed/filled quantity without falling back to origQty on unfilled/resting orders."""
     if not isinstance(order, dict):

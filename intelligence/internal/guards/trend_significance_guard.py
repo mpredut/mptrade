@@ -7,7 +7,7 @@ from Brownian noise (Mann-Kendall p-value > alpha) or executing momentum strateg
 from __future__ import annotations
 
 from typing import Sequence
-from botcore import obj_attr, safe_float, safe_nonneg_float
+from botcore import normalize_side, obj_attr, safe_float, safe_nonneg_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -20,7 +20,6 @@ from intelligence.internal.state.persistence import (
     calculate_hurst_exponent,
     classify_hurst_regime,
 )
-from providers.base import normalize_side
 
 
 class TrendSignificanceGuard(OrderGuardEvaluatorBase):

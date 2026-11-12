@@ -15,13 +15,13 @@ from typing import Any, Callable, Optional, Protocol
 
 from botcore import (
     _parse_bool_flag,
+    clean_order_id,
     exact_nonneg_int,
+    normalize_side,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
-from providers.base import normalize_side
-from providers.order_ohlc_utils import clean_order_id
 
 
 _MAX_LIMIT_REVISION = 1_000_000

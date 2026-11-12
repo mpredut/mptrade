@@ -28,6 +28,7 @@ from botcore import (
     build_heartbeat_payload,
     clean_json_value,
     exact_nonneg_int,
+    extract_order_id,
     first_epoch_sec,
     http_post_status,
     load_ini_config,
@@ -60,7 +61,6 @@ from intelligence.macro_sentiment_ssot import (
     read_first_cached_dict,
 )
 import notify_engine.alertnotifiers as _alertnotifiers
-from providers.base import extract_order_id
 from providers.intent_state import normalize_trading_decisions
 from state_io import (
     atomic_write_text,

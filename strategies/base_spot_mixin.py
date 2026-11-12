@@ -17,8 +17,8 @@ import time
 from typing import Any, Callable
 
 from botcore import (
-    _parse_bool_flag, are_close, exact_int, exact_nonneg_int, exact_pos_int, log,
-    lru_dict_put, normalize_epoch_sec, optional_env,
+    _parse_bool_flag, are_close, clean_order_id, exact_int, exact_nonneg_int, exact_pos_int, log,
+    lru_dict_put, normalize_epoch_sec, normalize_side, optional_env,
     required_bool_env, required_env, required_float_env, required_int_env,
     resolve_now_ts, safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
     split_csv, touch_module_heartbeat,
@@ -27,8 +27,7 @@ from intelligence.internal.state.volatility import (
     adaptive_thresholds, resolve_cached_volatility_1h,
     resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
 )
-from providers.base import MarketDataProvider, normalize_side
-from providers.order_ohlc_utils import clean_order_id
+from providers.base import MarketDataProvider
 from .position_exit_manager import PositionExitManager, PositionSnapshot, ReentrySnapshot, is_stop_exit_kind
 from .spot_rules import _iter_valid_shadow_prices
 from .state_store import (

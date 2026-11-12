@@ -12,12 +12,12 @@ from botcore import (
     clean_finite_floats,
     clean_order_id_str,
     normalize_epoch_sec,
+    normalize_side,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
 from cachepaths import normalize_venue_name
-from providers.base import normalize_side
 
 _opt_ts_sec = partial(normalize_epoch_sec, default=None, allow_zero=True)
 

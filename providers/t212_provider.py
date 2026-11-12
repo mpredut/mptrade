@@ -43,6 +43,7 @@ from .order_ohlc_utils import (
     iter_broker_history_order_fills,
     normalize_broker_history_items,
     normalize_order,
+    parse_nonneg_order_field,
     require_clean_order_id,
     resolve_market_flag,
 )
@@ -582,7 +583,7 @@ class T212Provider(MarketDataProvider):
         raw_fee = raw.get("fee") if raw.get("fee") is not None else raw.get("commission")
         fq_f = safe_float(0.0 if raw_fq is None else raw_fq, default=None)
         fv_f = safe_float(0.0 if raw_fv is None else raw_fv, default=None)
-        fee = safe_nonneg_float(0.0 if raw_fee is None else raw_fee, default=None)
+        fee = parse_nonneg_order_field(raw_fee)
         if fq_f is None or fv_f is None or fee is None:
             raise ProviderError(f"order_status({order_id}): invalid fill values")
         filled_qty = abs(fq_f)

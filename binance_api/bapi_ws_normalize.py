@@ -10,17 +10,15 @@ from botcore import (
     clean_order_id,
     exact_nonneg_int,
     exact_pos_int,
+    extract_order_price,
+    extract_order_side,
+    extract_timestamp_ms,
     resolve_now_ms,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
-from providers.order_ohlc_utils import (
-    extract_client_order_id,
-    extract_order_price,
-    extract_order_side,
-    extract_timestamp_ms,
-)
+from providers.order_ohlc_utils import extract_client_order_id
 
 
 def _is_positive_finite(val: Any) -> bool:

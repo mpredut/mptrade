@@ -8,6 +8,9 @@ from botcore import (
     TOPIC_SPECS,
     canonical_topic_key,
     clean_scale,
+    extract_order_id,
+    extract_order_price,
+    extract_order_side,
     format_notify_price,
     format_notify_qty,
     get_stale_cache_retry_delay_sec,
@@ -32,9 +35,6 @@ from .intent_state import (
 from .order_ohlc_utils import (
     extract_client_order_id,
     extract_executed_qty,
-    extract_order_id,
-    extract_order_price,
-    extract_order_side,
     extract_orig_qty,
     resolve_order_actor,
 )

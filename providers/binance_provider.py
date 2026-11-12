@@ -10,6 +10,7 @@ import botcore as cfg
 from botcore import (
     _parse_bool_flag,
     bind_module_importer,
+    clean_order_id,
     clean_upper_token,
     exact_pos_int,
     extract_order_id,
@@ -30,10 +31,7 @@ from cachepaths import (
 import instrument_registry as sym_reg
 from instrument_registry import casefold_get, venue_for_symbol
 
-from .base import (
-    MarketDataProvider,
-    compute_fills_cost_basis,
-)
+from .base import MarketDataProvider
 from .ohlc_utils import (
     ClosedPriceSeries,
     candle_interval,
@@ -41,9 +39,9 @@ from .ohlc_utils import (
 )
 from .order_ohlc_utils import (
     build_open_order_entry,
-    clean_order_id,
     extract_order_fee,
     normalize_order,
+    parse_nonneg_order_field,
     require_int_order_id,
     resolve_market_flag,
 )
@@ -51,6 +49,7 @@ from .quantity import (
     BinanceFilterError,
     BinanceOrderRules,
     binance_filter_refusal_reason,
+    compute_fills_cost_basis,
     decimal_places,
     fee_cap_quantity,
 )
@@ -102,12 +101,6 @@ _default_get_allorders, _get_allorders = _bind_bapi_getter("_get_allorders", "_a
 
 
 _get_placeorder = bind_module_importer("binance_api.bapi_placeorder")
-
-
-def _parse_nonneg_order_field(raw: Any) -> Optional[float]:
-    if raw is None or raw == "":
-        return 0.0
-    return safe_nonneg_float(raw, default=None)
 
 
 class BinanceProvider(MarketDataProvider):
@@ -295,9 +288,9 @@ class BinanceProvider(MarketDataProvider):
             raw_px, raw_orig, raw_exec = order.get("price"), order.get("origQty"), order.get("executedQty")
             if any(isinstance(v, bool) for v in (raw_px, raw_orig, raw_exec)):
                 raise ProviderError(f"open_orders({symbol}): boolean numeric field in order")
-            price_f = _parse_nonneg_order_field(raw_px)
-            orig_f = _parse_nonneg_order_field(raw_orig)
-            exec_f = _parse_nonneg_order_field(raw_exec)
+            price_f = parse_nonneg_order_field(raw_px, allow_empty_str=True)
+            orig_f = parse_nonneg_order_field(raw_orig, allow_empty_str=True)
+            exec_f = parse_nonneg_order_field(raw_exec, allow_empty_str=True)
             if None in (price_f, orig_f, exec_f):
                 raise ProviderError(f"open_orders({symbol}): invalid or negative numeric field in order")
             try:
@@ -673,9 +666,9 @@ class BinanceProvider(MarketDataProvider):
 
         if not isinstance(o, dict):
             raise ProviderError(f"order_status({order_id}): order payload is invalid")
-        executed_qty = _parse_nonneg_order_field(o.get("executedQty"))
-        cost_val = _parse_nonneg_order_field(o.get("cummulativeQuoteQty"))
-        orig_val = _parse_nonneg_order_field(o.get("origQty"))
+        executed_qty = parse_nonneg_order_field(o.get("executedQty"), allow_empty_str=True)
+        cost_val = parse_nonneg_order_field(o.get("cummulativeQuoteQty"), allow_empty_str=True)
+        orig_val = parse_nonneg_order_field(o.get("origQty"), allow_empty_str=True)
         if None in (executed_qty, cost_val, orig_val):
             raise ProviderError(f"order_status({order_id}): invalid fill values")
         fee = self._order_fee_quote(symbol, oid) if executed_qty > 0 else 0.0

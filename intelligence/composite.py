@@ -41,7 +41,7 @@ from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
 from intelligence.sentiment.guards.high_stake_guard import DEFAULT_MIN_NOTIONAL_USD, HighStakeGuard
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-from botcore import resolve_order_notional
+from botcore import normalize_side, resolve_order_notional
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     clean_symbol_key,
@@ -52,7 +52,6 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from instrument_registry import is_equity_symbol
-from providers.base import normalize_side
 
 
 @dataclass(frozen=True)

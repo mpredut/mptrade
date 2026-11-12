@@ -17,6 +17,8 @@ from botcore import (
     bind_attr_call,
     exact_int,
     exact_nonneg_int,
+    extract_order_id,
+    extract_order_price,
     first_epoch_sec,
     first_pos_float,
     format_price_log,
@@ -46,7 +48,6 @@ from order_retry import (
     is_terminal_filter_refusal,
     resolve_accepted_order,
 )
-from providers.base import extract_order_id, extract_order_price
 from providers.order_ohlc_utils import extract_client_order_id
 from providers.execution_audit import AuditedStrategyExecutor
 from providers.market_api import api as mkt

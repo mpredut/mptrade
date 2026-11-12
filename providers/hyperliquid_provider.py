@@ -70,6 +70,7 @@ from .order_ohlc_utils import (
     build_open_order_entry,
     extract_order_fee,
     extract_orig_qty,
+    parse_nonneg_order_field,
     require_int_order_id,
     resolve_market_flag,
 )
@@ -1181,9 +1182,9 @@ class HyperliquidProvider(MarketDataProvider):
                     raw_fee = fee_info["fee"]
                     fee_token = fee_info["fee_asset"]
                 else:
-                    raw_fee_val = f.get("fee") if f.get("fee") is not None else f.get("commission", 0.0)
-                    raw_fee = safe_nonneg_float(raw_fee_val if raw_fee_val is not None else 0.0, default=None)
-                    if isinstance(raw_fee_val, bool) or raw_fee is None:
+                    raw_fee_val = f.get("fee") if f.get("fee") is not None else f.get("commission")
+                    raw_fee = parse_nonneg_order_field(raw_fee_val)
+                    if raw_fee is None:
                         raise ProviderError(f"order_status({order_id}): invalid fee value")
                     raw_fee_token = f.get("feeToken") or f.get("feeAsset") or ""
                     fee_token = str(raw_fee_token).strip().upper() if isinstance(raw_fee_token, str) else ""
@@ -1213,12 +1214,8 @@ class HyperliquidProvider(MarketDataProvider):
                     raise ProviderError(
                         f"order_status({order_id}): unknown feeToken {fee_token!r}"
                     )
-            raw_orig_sz = order_payload.get("origSz")
-            raw_rem_sz = order_payload.get("sz")
-            if isinstance(raw_orig_sz, bool) or isinstance(raw_rem_sz, bool):
-                raise ProviderError(f"order_status({order_id}): invalid order sizes")
-            original = safe_nonneg_float(raw_orig_sz if raw_orig_sz is not None else 0.0, default=None)
-            remaining = safe_nonneg_float(raw_rem_sz if raw_rem_sz is not None else 0.0, default=None)
+            original = parse_nonneg_order_field(order_payload.get("origSz"))
+            remaining = parse_nonneg_order_field(order_payload.get("sz"))
             if (original is None or remaining is None
                     or any(safe_nonneg_float(v, default=None) is None for v in (filled, cost, fee))):
                 raise ProviderError(

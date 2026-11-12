@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from botcore import normalize_side
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -15,7 +16,6 @@ from intelligence.macro_sentiment_ssot import (
     normalize_threat_level,
     obj_attr,
 )
-from providers.base import normalize_side
 
 
 class GeopoliticalShockGuard(OrderGuardEvaluatorBase):

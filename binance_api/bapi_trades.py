@@ -2,15 +2,18 @@ import math
 import time
 
 # Repository imports.
-from botcore import clean_order_id, clean_upper_token, exact_nonneg_int, safe_nonneg_int
-from . import bapi as api, bapi_allorders as apiorders
-from providers.base import MarketDataProvider
-from providers.order_ohlc_utils import (
-    extract_client_order_id,
+from botcore import (
+    clean_order_id,
+    clean_upper_token,
+    exact_nonneg_int,
     extract_order_id,
     extract_order_side,
     extract_timestamp_ms,
+    safe_nonneg_int,
 )
+from . import bapi as api, bapi_allorders as apiorders
+from providers.base import MarketDataProvider
+from providers.order_ohlc_utils import extract_client_order_id
 
 
 def init_cache_trade_manager():

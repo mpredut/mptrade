@@ -13,6 +13,10 @@ from botcore import (
     clean_order_id,
     clean_upper_token,
     exact_pos_int,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -21,12 +25,6 @@ from botcore import (
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from providers.base import MarketDataProvider
-from providers.order_ohlc_utils import (
-    extract_order_price,
-    extract_order_qty,
-    extract_order_side,
-    extract_timestamp_ms,
-)
 
 
 from .bapi import (

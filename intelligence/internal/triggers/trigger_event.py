@@ -6,8 +6,7 @@ import time
 from typing import Any, Dict, Optional
 
 
-from botcore import StringEnum, normalize_epoch_sec, safe_pos_float
-from providers.base import normalize_side
+from botcore import StringEnum, normalize_epoch_sec, normalize_side, safe_pos_float
 
 
 class TriggerAction(StringEnum):

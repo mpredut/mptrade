@@ -30,11 +30,12 @@ from instrument_registry import (
     select_instruments,
 )
 import pricewindow as pw
-from providers.base import MarketDataProvider, extract_order_id
+from providers.base import MarketDataProvider
 from providers import order_id_context
 from providers.order_ohlc_utils import resolve_market_flag
 from botcore import (
     _parse_bool_flag,
+    extract_order_id,
     is_us_rth_open,
     normalize_side,
     obj_attr,

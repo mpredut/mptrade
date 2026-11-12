@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+from botcore import extract_timestamp_s
 from intelligence.macro.daemon_ssot import CachedHttpJsonCollector
 from intelligence.macro_sentiment_ssot import (
     FearGreedSnapshot,
@@ -17,7 +18,6 @@ from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
 )
-from providers.base import extract_timestamp_s
 
 logger = logging.getLogger("intelligence.sentiment.fear_greed")
 

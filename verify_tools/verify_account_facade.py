@@ -22,24 +22,20 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from binance_api import bapi as api, bapi_allorders as apiorders
-from providers.base import (
+from botcore import (
     extract_order_price,
-    extract_timestamp_ms,
-)
-from providers.order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
-    summarize_order_position,
+    extract_timestamp_ms,
+    safe_float,
 )
+from providers.order_ohlc_utils import summarize_order_position
 from providers.market_api import api as mkt                     # noqa: E402  (singleton facade)
 from providers.quantity import resolve_assets                   # noqa: E402
 from instrument_registry import symbols_for                     # noqa: E402
 
 MAXAGE = 17 * 24 * 3600   # like trade_watch.position (bot reference)
 SYMBOLS = symbols_for("binance")
-
-
-from botcore import safe_float
 
 
 def free_direct(base):

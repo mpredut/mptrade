@@ -17,17 +17,18 @@ ROOT = os.path.dirname(_HERE)                      # Repository root (parent of 
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import env_value, safe_nonneg_float, safe_nonneg_int, safe_pos_float
-from credentials import CredentialConfigurationError, kraken_credentials
-from providers.base import (
+from botcore import (
+    env_value,
     extract_order_price,
-    extract_timestamp_ms,
-)
-from providers.kraken_provider import KrakenProvider
-from providers.order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
+    extract_timestamp_ms,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
 )
+from credentials import CredentialConfigurationError, kraken_credentials
+from providers.kraken_provider import KrakenProvider
 from state_io import save_json_state
 
 KD = os.path.join(ROOT, 'kraken')

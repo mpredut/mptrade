@@ -27,6 +27,9 @@ from botcore import (  # noqa: E402
     are_close,
     clean_order_id,
     ensure_local_module_priority,
+    extract_order_id,
+    extract_order_price,
+    extract_order_side,
     first_pos_float,
     is_market_order,
     log as _log,
@@ -43,22 +46,18 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
 from typing import Any
-from cachepaths import canonical_base_asset
+from cachepaths import canonical_base_asset, same_canonical_base_asset as _t212_tickers_match
 from intelligence.internal.state.volatility import vol_pct_to_ratio
 from ipo_common import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, trend_slope_pct
 from t212_client import T212Client
-from providers.base import (
-    extract_order_id,
-    extract_order_price,
-)
 from providers.order_ohlc_utils import (
-    extract_order_side,
+    extract_broker_order_ticker as _order_ticker,
     extract_orig_qty,
 )
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
-from providers.t212_provider import T212Provider, _order_ticker, _t212_tickers_match
+from providers.t212_provider import T212Provider
 from strategies.base_spot_mixin import (
     BaseSpotMixin,
     SpotParamsMixin,

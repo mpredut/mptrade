@@ -44,6 +44,7 @@ from providers.ohlc_utils import (
 from providers.order_ohlc_utils import (
     extract_broker_order_ticker,
     normalize_broker_history_items,
+    parse_nonneg_order_field,
 )
 from providers.ssot_bridge import ProviderSsotBridgeMixin
 from providers.venue_metadata import ProviderVenueMetadataMixin
@@ -1111,8 +1112,36 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 and node.attr in ("environ", "getenv")
             ):
                 ssot_violations.append(f"{rel_s}:{lineno}: os.{node.attr}")
+            elif isinstance(node, ast.ImportFrom) and (
+                node.module == "providers.base"
+                or (rel_s.startswith("providers/") and node.level == 1 and node.module == "base")
+            ):
+                bad_names = [a.name for a in node.names if a.name != "MarketDataProvider"]
+                if bad_names:
+                    ssot_violations.append(f"{rel_s}:{lineno}: legacy re-export import from providers.base: {bad_names}")
+
+    for extra_dir in ("offline", "verify_tools"):
+        for p in sorted((root / extra_dir).rglob("*.py")):
+            rel_s = p.relative_to(root).as_posix()
+            if "__pycache__" in rel_s:
+                continue
+            tree = ast.parse(p.read_text(encoding="utf-8"), filename=rel_s)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "providers.base":
+                    bad_names = [a.name for a in node.names if a.name != "MarketDataProvider"]
+                    if bad_names:
+                        ssot_violations.append(
+                            f"{rel_s}:{getattr(node, 'lineno', 0)}: legacy re-export import from providers.base: {bad_names}"
+                        )
 
     assert ssot_violations == [], f"SSOT boundary violation(s) detected: {ssot_violations}"
+
+    assert parse_nonneg_order_field(None) == 0.0
+    assert parse_nonneg_order_field("") is None
+    assert parse_nonneg_order_field("", allow_empty_str=True) == 0.0
+    assert parse_nonneg_order_field("12.5") == 12.5
+    for bad_field in (True, False, -0.01, "nan", "inf", "abc"):
+        assert parse_nonneg_order_field(bad_field, allow_empty_str=True) is None, bad_field
 
     # Fiat-USD vs USD-stablecoin quote disambiguation (including false TUSD/BUSD stems)
     for fiat_sym in ("XBTUSD", "DOTUSD", "ARBUSD", "XAUTUSD", "TAOUSD", "TAO/USD"):

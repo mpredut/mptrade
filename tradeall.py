@@ -18,7 +18,6 @@ from instrument_registry import (
     tracked_price_instruments,
 )
 import order_lifecycle
-from providers.base import extract_order_id, normalize_side
 from cachepaths import clean_symbol_key, is_primary_stream_venue, split_symbol_assets
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
 api = mkt
@@ -39,11 +38,11 @@ from pricewindow import (  # noqa: F401 (re-export: test compat)
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
 from botcore import (PRICE_FRESHNESS_MAX_AGE_MS, PRICE_STREAM_POLL_INTERVAL_SEC,
-                     bind_attr_call, exact_nonneg_int, exact_pos_int, format_price_log,
-                     load_dotenv, normalize_epoch_sec, required_bool_env,
-                     required_float_env, required_int_env, resolve_now_ts, safe_float,
-                     safe_nonneg_float, safe_pos_float, sanitize_pipe_field, timeToHMS,
-                     touch_module_heartbeat)
+                     bind_attr_call, exact_nonneg_int, exact_pos_int, extract_order_id,
+                     format_price_log, load_dotenv, normalize_epoch_sec, normalize_side,
+                     required_bool_env, required_float_env, required_int_env, resolve_now_ts,
+                     safe_float, safe_nonneg_float, safe_pos_float, sanitize_pipe_field,
+                     timeToHMS, touch_module_heartbeat)
 load_dotenv()
 
 

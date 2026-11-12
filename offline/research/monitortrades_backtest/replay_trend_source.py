@@ -40,8 +40,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 import pricewindow as pw
-from botcore import float_env, normalize_epoch_sec, safe_float, safe_nonneg_float, safe_pos_float
-from providers.base import normalize_side
+from botcore import float_env, normalize_epoch_sec, normalize_side, safe_float, safe_nonneg_float, safe_pos_float
 
 # The default "instant" window -- identical today to WINDOW_SECONDS[0] in
 # cacheManager.CacheShortTrendManager (the window is_trend_up() relies on).

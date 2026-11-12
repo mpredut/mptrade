@@ -22,6 +22,7 @@ from botcore import (
     async_interruptible_sleep,
     is_worker_thread_alive,
     normalize_epoch_sec,
+    normalize_side,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -34,7 +35,6 @@ from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
 )
 from intelligence.macro_sentiment_ssot import parse_symbol_list
-from providers.base import normalize_side
 from providers.ws_stream import run_ws_event_loop
 from state_io import encode_json_payload, parse_json_payload
 

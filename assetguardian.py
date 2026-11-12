@@ -7,12 +7,7 @@ import threading
 import time
 
 from providers.order_id_context import resolve_order_owner
-from providers.base import (
-    extract_order_id,
-    extract_order_price,
-    extract_timestamp_s,
-)
-from providers.order_ohlc_utils import extract_client_order_id, extract_order_side
+from providers.order_ohlc_utils import extract_client_order_id
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 api = mkt
 from providers.execution_audit import ExecutionAudit
@@ -38,6 +33,10 @@ from botcore import (
     clamp_float,
     coerce_finite_float,
     exact_nonneg_int,
+    extract_order_id,
+    extract_order_price,
+    extract_order_side,
+    extract_timestamp_s,
     load_root_config,
     normalize_epoch_sec,
     require_int,

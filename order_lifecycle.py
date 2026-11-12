@@ -21,6 +21,10 @@ from botcore import (
     clean_order_id,
     coerce_finite_float,
     exact_pos_int,
+    extract_order_id,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
     load_dotenv,
     load_root_config,
     normalize_side,
@@ -36,10 +40,6 @@ from botcore import (
 from notify_engine import alertnotifiers as alert
 from providers.order_ohlc_utils import (
     POST_ONLY_CROSS_TOKENS,
-    extract_order_id,
-    extract_order_price,
-    extract_order_qty,
-    extract_order_side,
     extract_orig_qty,
     extract_remaining_qty,
 )

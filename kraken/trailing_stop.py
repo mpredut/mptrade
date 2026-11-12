@@ -38,6 +38,7 @@ if _HERE not in sys.path:
 
 from botcore import (  # noqa: E402
     _parse_bool_flag,
+    extract_order_side,
     format_price_log,
     load_dotenv,
     load_env_stack,
@@ -63,12 +64,9 @@ from trailing_core import (  # noqa: E402
     vwap_or_fallback,
 )
 from providers.execution_audit import AuditedStrategyExecutor  # noqa: E402
-from providers.order_ohlc_utils import extract_order_side
 from providers.kraken_provider import (  # noqa: E402
     KrakenProvider,
     _kraken_balance_asset_candidates,
-    kraken_pair_matches,
-    split_kraken_pair,
 )
 from order_lifecycle import (  # noqa: E402
     StrategyExecutorLifecycleApi,
@@ -79,7 +77,9 @@ from credentials import kraken_credentials  # noqa: E402
 from cachepaths import (  # noqa: E402
     CACHE_SHORT_TREND_FILENAME,
     cache_path,
+    kraken_pair_matches,
     resolve_venue_trailing_state_path,
+    split_kraken_pair,
 )
 from guard_hierarchy import normalize_bypassed_guards  # noqa: E402
 from instrument_registry import casefold_get, select_instruments  # noqa: E402

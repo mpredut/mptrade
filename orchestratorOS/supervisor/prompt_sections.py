@@ -15,7 +15,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, safe_float
+from botcore import _parse_bool_flag, normalize_timestamp_ms, safe_float
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -49,7 +49,6 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from providers.base import normalize_timestamp_ms
 from providers.order_ohlc_utils import format_actor_tag
 
 

@@ -51,7 +51,8 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
 )
 from cacheprice import resolve_ssot_price_from_cache
-from providers.base import MarketDataProvider, extract_yahoo_chart_result_and_quote
+from providers.base import MarketDataProvider
+from providers.ohlc_utils import extract_yahoo_chart_result_and_quote
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
 logger = logging.getLogger("intelligence.external.base_collector")

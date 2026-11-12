@@ -14,6 +14,7 @@ from botcore import (
     clean_json_value,
     clean_scale,
     conf_or_override,
+    extract_order_id,
     normalize_side,
     parse_notify_enabled_flag,
     safe_float,
@@ -31,7 +32,7 @@ from cachepaths import (
     symbol_quote_asset,
 )
 from state_io import generation_lock_path, load_json_state, save_json_state
-from .order_ohlc_utils import all_venue_native_client_order_ids, extract_order_id
+from .order_ohlc_utils import all_venue_native_client_order_ids
 
 _CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
 _NOTIONAL_KEYS: tuple[str, ...] = (

@@ -11,6 +11,10 @@ from typing import Any, Callable, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     clean_order_id_str,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
     normalize_side,
     obj_attr,
     require_pos_float,
@@ -22,10 +26,6 @@ from botcore import (
 from cachepaths import _LEGACY_KRAKEN_X_BASES, has_equity_suffix, normalize_venue_name
 from .order_ohlc_utils import (
     extract_order_fee,
-    extract_order_price,
-    extract_order_qty,
-    extract_order_side,
-    extract_timestamp_ms,
     resolve_venue_provider_class,
 )
 
