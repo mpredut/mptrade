@@ -617,11 +617,7 @@ class DummyGeminiClient:
 
 
 class _TempDirPath(str):
-    """Temporary directory path string that also exposes ``.name`` and ``.cleanup()`` like ``TemporaryDirectory``."""
-
-    @property
-    def name(self) -> str:
-        return str(self)
+    """Temporary directory path string that also exposes ``/`` and ``.cleanup()``."""
 
     def __truediv__(self, other: str) -> Path:
         return Path(str(self)) / other

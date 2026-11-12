@@ -55,7 +55,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         self.setUp()
 
     def _order_manager(self, items, fetchtime):
-        path = os.path.join(self.tmp.name, "orders.json")
+        path = os.path.join(self.tmp, "orders.json")
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump(
@@ -68,7 +68,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         )
 
     def _trade_manager(self, items, fetchtime):
-        path = os.path.join(self.tmp.name, "trades.jsonl")
+        path = os.path.join(self.tmp, "trades.jsonl")
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8") as handle:
                 for item in items:
@@ -395,13 +395,13 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             restarted.ensure_persisted_version(metadata["data_version"])
 
             archives = [
-                path for path in os.listdir(self.tmp.name)
+                path for path in os.listdir(self.tmp)
                 if path.startswith(os.path.basename(writer.filename) + ".")
                 and path.endswith(".archive.gz")
             ]
             self.assertEqual(1, len(archives))
             with gzip.open(
-                    os.path.join(self.tmp.name, archives[0]),
+                    os.path.join(self.tmp, archives[0]),
                     "rt", encoding="utf-8") as handle:
                 archived = [json.loads(line)["i"] for line in handle]
             self.assertEqual(trades, archived)
@@ -439,7 +439,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
                 self.assertEqual(old_meta, handle.read())
             self.assertFalse(os.path.exists(writer.filename + ".previous"))
             self.assertFalse(any(
-                ".archive" in path for path in os.listdir(self.tmp.name)
+                ".archive" in path for path in os.listdir(self.tmp)
             ))
 
             restarted = cm.CacheTradeManager(
@@ -898,7 +898,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         self.assertFalse(os.path.exists(writer.filename + ".previous"))
 
     def test_late_legacy_migrator_cannot_replace_winner_or_new_append(self):
-        path = os.path.join(self.tmp.name, "migration-race.jsonl")
+        path = os.path.join(self.tmp, "migration-race.jsonl")
         legacy_path = path[:-1]
         first = _trade(1, 1000)
         second = _trade(2, 2000)
@@ -980,7 +980,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
     def test_legacy_trade_data_handling(self):
         with self.subTest(msg="corrupt_legacy_trade_row_fails_closed"):
             self._reset_temp()
-            path = os.path.join(self.tmp.name, "corrupt-legacy.jsonl")
+            path = os.path.join(self.tmp, "corrupt-legacy.jsonl")
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(json.dumps(
                     {"s": "BTCUSDC", "i": _trade(1, 1000)},
@@ -998,7 +998,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         with self.subTest(msg="uncommitted_tail_is_recovered_by_exact_counts"):
             self._reset_temp()
             first = _trade(1, 1000)
-            path = os.path.join(self.tmp.name, "legacy-tail.jsonl")
+            path = os.path.join(self.tmp, "legacy-tail.jsonl")
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(json.dumps(
                     {"s": "BTCUSDC", "i": first},
@@ -1022,7 +1022,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
 
         with self.subTest(msg="equivalent_duplicate_ids_collapse"):
             self._reset_temp()
-            path = os.path.join(self.tmp.name, "legacy-duplicates.jsonl")
+            path = os.path.join(self.tmp, "legacy-duplicates.jsonl")
             first = {
                 **_trade("2", 2000),
                 "orderId": "2", "price": "100.0", "qty": "1.00",
@@ -1057,7 +1057,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
 
         with self.subTest(msg="conflicting_duplicate_id_fails_closed"):
             self._reset_temp()
-            path = os.path.join(self.tmp.name, "legacy-conflict.jsonl")
+            path = os.path.join(self.tmp, "legacy-conflict.jsonl")
             first = _trade(2, 2000)
             conflicting = {**first, "qty": "2"}
             with open(path, "w", encoding="utf-8") as handle:
@@ -1079,7 +1079,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
 
         with self.subTest(msg="semantically_invalid_legacy_tail_is_not_recoverable"):
             self._reset_temp()
-            path = os.path.join(self.tmp.name, "semantic-tail.jsonl")
+            path = os.path.join(self.tmp, "semantic-tail.jsonl")
             valid = _trade(1, 1000)
             invalid = {**_trade(2, 2000), "qty": "0"}
             with open(path, "w", encoding="utf-8") as handle:
@@ -1101,7 +1101,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
 
         with self.subTest(msg="invalid_legacy_full_json_migration_fails_closed"):
             self._reset_temp()
-            jsonl_path = os.path.join(self.tmp.name, "legacy-trades.jsonl")
+            jsonl_path = os.path.join(self.tmp, "legacy-trades.jsonl")
             legacy_path = jsonl_path[:-1]
             valid = _trade(1, 1000)
             invalid = {**_trade(2, 2000), "qty": "0"}
@@ -1233,7 +1233,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         self.assertEqual(1999, manager.fetchtime_per_symbol["BTCUSDC"])
         self.assertEqual(12999, manager.fetchtime_per_symbol["ETHUSDC"])
 
-        marker = os.path.join(self.tmp.name, "slow-cycle-health.json")
+        marker = os.path.join(self.tmp, "slow-cycle-health.json")
         with patch.object(
                 health, "_pid_started_at_ms", return_value=500):
             health.enable_writer(path=marker, pid=123, now_ms=1000)
@@ -1259,7 +1259,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         manager.symbols = ["BTCUSDC", "ETHUSDC"]
         manager.fetchtime_per_symbol["ETHUSDC"] = 1000
         manager._last_complete_sync_at_ms = 2000
-        marker = os.path.join(self.tmp.name, "failed-cycle-health.json")
+        marker = os.path.join(self.tmp, "failed-cycle-health.json")
         with patch.object(
                 health, "_pid_started_at_ms", return_value=500):
             health.enable_writer(path=marker, pid=123, now_ms=1000)
@@ -1460,9 +1460,9 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         trade_2 = _trade(2, t0 + 1000)
         trade_3 = _trade(3, t0 + 3000)
 
-        order_path = os.path.join(self.tmp.name, "orders_gap.json")
-        trade_path = os.path.join(self.tmp.name, "trades_gap.jsonl")
-        health_path = os.path.join(self.tmp.name, "health_gap.json")
+        order_path = os.path.join(self.tmp, "orders_gap.json")
+        trade_path = os.path.join(self.tmp, "trades_gap.jsonl")
+        health_path = os.path.join(self.tmp, "health_gap.json")
 
         with patch.object(
             cm.CacheOrderManager, "get_remote_items", return_value=[fill_1_order]

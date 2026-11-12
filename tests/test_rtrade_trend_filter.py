@@ -184,7 +184,7 @@ class ReaderProcessTrendTest(TempDirTestCase):
         self.cm = cm
         self.json = json
         self.reader = cm.CacheShortTrendManager(
-            ["TAOUSDC"], os.path.join(self.tmp.name, "trend_reader.json"))
+            ["TAOUSDC"], os.path.join(self.tmp, "trend_reader.json"))
         self._patches = [
             mock.patch.object(rtrade, "RTRADE_TREND_FILTER_ENABLED", True),
             mock.patch.object(rtrade, "RTRADE_TREND_FILTER_K", 2.0),
@@ -207,7 +207,7 @@ class ReaderProcessTrendTest(TempDirTestCase):
         entries = [[now_ms - (899 - i) * 1000, 300.0 + step * i + (0.05 if i % 2 else -0.05)]
                    for i in range(900)]
         writer = self.cm.CacheShortTrendManager(
-            ["TAOUSDC"], os.path.join(self.tmp.name, "trend_writer.json"), data_sync_mode="producer")
+            ["TAOUSDC"], os.path.join(self.tmp, "trend_writer.json"), data_sync_mode="producer")
         writer._cache24_managers = {
             "TAOUSDC": types.SimpleNamespace(
                 entries=entries,

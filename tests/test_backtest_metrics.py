@@ -143,8 +143,7 @@ _INI_CONFIGS = [os.path.join(ROOT, "instruments.conf")]
 class TestScanBacktestRanges(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        self._tmpdir = self.tmp
-        self._tmp = os.path.join(self._tmpdir, "backtest_ranges.conf")
+        self._tmp = os.path.join(self.tmp, "backtest_ranges.conf")
 
     def _write(self, content):
         with open(self._tmp, "w", encoding="utf-8") as f:
@@ -207,7 +206,7 @@ class TestScanBacktestRanges(TempDirTestCase):
 
     def test_missing_or_unannotated_returns_empty(self):
         cases = (
-            ("missing", os.path.join(self._tmpdir, "does_not_exist.conf"), None),
+            ("missing", os.path.join(self.tmp, "does_not_exist.conf"), None),
             ("unannotated", self._tmp, "mt.gain = 7.0\nmt.lost = 3.3\n"),
         )
         for label, path, content in cases:

@@ -1208,7 +1208,7 @@ class RTradePairStoreTest(TempDirTestCase):
 
     def setUp(self):
         super().setUp()
-        self.store = RTradePairStore(os.path.join(self.tmp.name, "pairs.json"))
+        self.store = RTradePairStore(os.path.join(self.tmp, "pairs.json"))
 
     def _assert_existing_invalid_store_is_preserved(self, payload):
         original = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -1345,7 +1345,7 @@ class RTradePairStoreTest(TempDirTestCase):
         self.assertEqual([rec["pair_id"] for rec in active], ["p1"])
 
     def test_terminal_history_is_bounded(self):
-        store = RTradePairStore(os.path.join(self.tmp.name, "bounded.json"), terminal_retention=2)
+        store = RTradePairStore(os.path.join(self.tmp, "bounded.json"), terminal_retention=2)
         for i in range(4):
             pair_id = f"t{i}"
             store.intent(pair_id, "BUY", 100.0, 1.0, f"CID_{pair_id}", symbol="TAOUSDC", start_side="BUY")

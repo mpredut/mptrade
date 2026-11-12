@@ -97,11 +97,11 @@ class ExecutionAuditTest(TempDirTestCase):
     def setUp(self):
         super().setUp()
         self.executor = _Executor()
-        self.audit = ExecutionAudit(self.tmp.name, clock=lambda: 1_700_000_000.0)
+        self.audit = ExecutionAudit(self.tmp, clock=lambda: 1_700_000_000.0)
         self.wrapped = AuditedStrategyExecutor(self.executor, self.audit, venue="Kraken")
 
     def _events(self):
-        paths = [os.path.join(self.tmp.name, name) for name in os.listdir(self.tmp.name)]
+        paths = [os.path.join(self.tmp, name) for name in os.listdir(self.tmp)]
         rows = []
         for path in paths:
             with open(path, encoding="utf-8") as handle:

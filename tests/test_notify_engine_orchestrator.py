@@ -1244,7 +1244,7 @@ class SendNtfyRetryTest(TempDirTestCase):
             "NTFY_URGENT_RESERVE": "20",
             "DISABLE_EXTERNAL_NOTIFICATIONS": "0",
             "NOTIFICATION_STATE_FILE": os.path.join(
-                self.tmp.name, "notifications.json",
+                self.tmp, "notifications.json",
             ),
         }, clear=False)
         self._env.start()

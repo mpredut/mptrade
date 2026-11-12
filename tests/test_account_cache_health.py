@@ -18,7 +18,7 @@ class BinanceAccountCacheHealthTest(TempDirTestCase):
     WRITER_STARTED_MS = NOW_MS - 5_000
     def setUp(self):
         super().setUp()
-        self.path = os.path.join(self.tmp.name, "health.json")
+        self.path = os.path.join(self.tmp, "health.json")
 
     def tearDown(self):
         health.disable_writer()

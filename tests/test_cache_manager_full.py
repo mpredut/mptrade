@@ -280,7 +280,7 @@ class TestCachePersistenceDurability(TempDirTestCase):
         suffix = "jsonl" if append_persist else "json"
         if filename is None:
             filename = _tmp_file(
-                self.tmp.name, f"durable_{len(os.listdir(self.tmp.name))}_{time.time_ns()}.{suffix}")
+                self.tmp, f"durable_{len(os.listdir(self.tmp))}_{time.time_ns()}.{suffix}")
         manager = ConcreteTestManager(
             9999,
             ["SYM"],
@@ -521,7 +521,7 @@ class TestAccountCacheHealthPublication(TempDirTestCase):
 
     def _make_manager(self, manager_class, symbols):
         filename = _tmp_file(
-            self.tmp.name, f"{manager_class.__name__}_health.json")
+            self.tmp, f"{manager_class.__name__}_health.json")
         if manager_class is cm.CacheTradeManager:
             with open(filename, "w", encoding="utf-8") as handle:
                 for index, symbol in enumerate(symbols, start=1):
