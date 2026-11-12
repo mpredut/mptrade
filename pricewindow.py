@@ -1457,12 +1457,7 @@ class KalmanTrend:
         self.gap_reset_sec = safe_pos_float(gap_reset_sec, default=GAP_RESET_SEC) or GAP_RESET_SEC
         self.x = None          # [level, velocity]
         self.P = None          # State covariance
-        self._x0 = 0.0
-        self._x1 = 0.0
-        self._p00 = 0.0
-        self._p01 = 0.0
-        self._p10 = 0.0
-        self._p11 = 0.0
+        self._x0 = self._x1 = self._p00 = self._p01 = self._p10 = self._p11 = 0.0
         self.last_ts = None
         self.trend = 0         # Last confirmed direction: -1, 0, or +1
 
@@ -1470,8 +1465,7 @@ class KalmanTrend:
         self._x0 = float(price)
         self._x1 = 0.0
         self._p00 = R * 10.0
-        self._p01 = 0.0
-        self._p10 = 0.0
+        self._p01 = self._p10 = 0.0
         self._p11 = (price * 1e-3) ** 2
         self.x = [self._x0, self._x1]
         self.last_ts = ts

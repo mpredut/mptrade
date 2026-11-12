@@ -117,12 +117,11 @@ def main() -> int:
             problems.append(f"currentprice {s} age={age:.0f}s")
         print(f"   {s:10} age={age:6.0f}s price={px_val} -> {'OK' if ok else 'STALE'}")
 
-    print()
     if problems:
-        print(f"PROBLEMS ({len(problems)}): {problems}")
-        return 1
-    print("OK — every cache is FRESH and coherent for all symbols")
-    return 0
+        print(f"\nPROBLEMS ({len(problems)}): {problems}")
+    else:
+        print("\nOK — every cache is FRESH and coherent for all symbols")
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":

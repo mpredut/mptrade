@@ -242,10 +242,7 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
     )
     if not folds:
         return {}
-    results = {}
-    fee_pct = 0.26
-    interval = 240
-    warmup_bars = 40
+    results, fee_pct, interval, warmup_bars = {}, 0.26, 240, 40
 
     live_candidate_windows = []
 
@@ -320,9 +317,8 @@ def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict])
     timestamps = [r["timestamp"] for r in records]
     if len(ohlc) < 2:
         return {}
-    results = {}
-    fee_pct = 0.26
-    interval = 240
+    results: dict[str, dict] = {}
+    fee_pct, interval = 0.26, 240
     if len(ohlc) > 40:
         kraken_replay.prewarm_trend_series(ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
 
@@ -376,27 +372,29 @@ def run_live_forward_shadow(
     )
     anchor_ts = safe_nonneg_int(round(anchor_raw), default=0) if anchor_raw is not None and anchor_raw >= 0.0 else 0
 
-    valid_bars = []
-    for b in full_bars:
-        if not isinstance(b, (list, tuple)) or len(b) < 5:
-            continue
-        ts_f = normalize_epoch_sec(b[0], default=None)
-        if ts_f is not None and ts_f < 0.0:
-            ts_f = None
-        o_f = safe_pos_float(b[1], default=None)
-        h_f = safe_pos_float(b[2], default=None)
-        l_f = safe_pos_float(b[3], default=None)
-        c_f = safe_pos_float(b[4], default=None)
+    def _parse_valid_ohlc_bar(raw_ts, raw_o, raw_h, raw_l, raw_c):
+        ts_f = normalize_epoch_sec(raw_ts, default=None)
+        if ts_f is None or ts_f < 0.0:
+            return None
+        o_f = safe_pos_float(raw_o, default=None)
+        h_f = safe_pos_float(raw_h, default=None)
+        l_f = safe_pos_float(raw_l, default=None)
+        c_f = safe_pos_float(raw_c, default=None)
         if (
-            ts_f is not None
-            and o_f is not None
-            and h_f is not None
-            and l_f is not None
-            and c_f is not None
+            None not in (o_f, h_f, l_f, c_f)
             and h_f >= max(o_f, l_f, c_f)
             and l_f <= min(o_f, h_f, c_f)
         ):
-            valid_bars.append((ts_f, o_f, h_f, l_f, c_f))
+            return (ts_f, o_f, h_f, l_f, c_f)
+        return None
+
+    valid_bars = [
+        bar
+        for b in full_bars
+        if isinstance(b, (list, tuple))
+        and len(b) >= 5
+        and (bar := _parse_valid_ohlc_bar(b[0], b[1], b[2], b[3], b[4])) is not None
+    ]
     pre_bars = [b for b in valid_bars if b[0] < anchor_ts]
     fwd_bars = [b for b in valid_bars if b[0] >= anchor_ts]
 
@@ -406,23 +404,10 @@ def run_live_forward_shadow(
     if not pre_bars and records:
         first_fwd_ts = fwd_bars[0][0] if fwd_bars else safe_nonneg_float(anchor_ts, default=0.0)
         for r in records:
-            if not isinstance(r, dict):
-                continue
-            r_ts = normalize_epoch_sec(r.get("timestamp"), default=None)
-            if r_ts is not None and r_ts < 0.0:
-                r_ts = None
-            r_o = safe_pos_float(r.get("open"), default=None)
-            r_h = safe_pos_float(r.get("high"), default=None)
-            r_l = safe_pos_float(r.get("low"), default=None)
-            r_c = safe_pos_float(r.get("close"), default=None)
-            if (
-                r_ts is not None
-                and r_ts < first_fwd_ts
-                and None not in (r_o, r_h, r_l, r_c)
-                and r_h >= max(r_o, r_l, r_c)
-                and r_l <= min(r_o, r_h, r_c)
-            ):
-                pre_bars.append((r_ts, r_o, r_h, r_l, r_c))
+            if isinstance(r, dict) and (
+                bar := _parse_valid_ohlc_bar(r.get("timestamp"), r.get("open"), r.get("high"), r.get("low"), r.get("close"))
+            ) is not None and bar[0] < first_fwd_ts:
+                pre_bars.append(bar)
         pre_bars.sort(key=lambda item: item[0])
 
     pre_by_ts = {b[0]: b for b in pre_bars}
@@ -450,9 +435,7 @@ def run_live_forward_shadow(
         print(f"Insufficient forward or full bars for shadow replay (fwd: {len(fwd_ohlc)}, full: {len(full_ohlc)})")
         return {}
 
-    results = {}
-    fee_pct = 0.26
-    interval = 240
+    results, (fee_pct, interval) = {}, (0.26, 240)
     if len(fwd_ohlc) + len(fwd_warmup) > 40:
         kraken_replay.prewarm_trend_series(
             fwd_warmup + fwd_ohlc, warmup=len(fwd_warmup), params=LIVE_PARAMS, bar_minutes=interval,

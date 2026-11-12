@@ -87,7 +87,7 @@ class SimClock:
         self.ts = require_finite_float(new_val, error_msg="SimClock timestamp must be a finite number, not bool/None")
 
     def __call__(self) -> float:
-        return self.ts
+        return self.value
 
 
 def load_price_series(

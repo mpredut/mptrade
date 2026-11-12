@@ -828,10 +828,14 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
     return True, state
 
 
-def _pop_key_and_save_campaign(symbol, kind, state: dict, key: str) -> dict:
-    state.pop(key, None)
+def _save_and_return_campaign(symbol, kind, state: dict) -> dict:
     _save_symbol_campaign(symbol, kind, state)
     return state
+
+
+def _pop_key_and_save_campaign(symbol, kind, state: dict, key: str) -> dict:
+    state.pop(key, None)
+    return _save_and_return_campaign(symbol, kind, state)
 
 
 def _clear_inactive_trend_defer(symbol, kind, state):
@@ -1140,8 +1144,7 @@ def _reuse_unaccepted_attempt(symbol, kind, state, pending):
             "intent_id": str(pending["intent_id"]),
             "reason": refusal_reason.strip(),
         }
-    _save_symbol_campaign(symbol, kind, state)
-    return state
+    return _save_and_return_campaign(symbol, kind, state)
 
 
 def _reconcile_pending_campaign(symbol, kind, state):

@@ -973,8 +973,7 @@ class HyperliquidProvider(MarketDataProvider):
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None) -> str:
         s_norm = self._validate_submit_order_side(symbol, side)
-        is_buy = s_norm == "BUY"
-        side = s_norm
+        side, is_buy = s_norm, s_norm == "BUY"
         # Safety: real orders require HL_LIVE_ORDERS due to spot/DN co-mingling.
         if not self.execution_enabled():
             raise ProviderError(f"HL_LIVE_ORDERS=false — refusing a real order on HL ({side} {symbol})")

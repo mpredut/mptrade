@@ -562,8 +562,16 @@ def _tax_tuple(key: str, *, lower: bool = False) -> Tuple[str, ...]:
     return split_csv(_cfg_str("taxonomies", key), lower=lower, upper=not lower)
 
 
-def get_cross_asset_regimes() -> Tuple[str, ...]:
-    return _tax_tuple("cross_asset_regimes")
+def _bind_tax_tuple_getter(name: str, key: str) -> Callable[[], Tuple[str, ...]]:
+    def _get() -> Tuple[str, ...]:
+        return _tax_tuple(key)
+
+    _get.__name__ = _get.__qualname__ = name
+    return _get
+
+
+get_cross_asset_regimes = _bind_tax_tuple_getter("get_cross_asset_regimes", "cross_asset_regimes")
+get_breadth_quote_suffixes = _bind_tax_tuple_getter("get_breadth_quote_suffixes", "breadth_quote_suffixes")
 
 
 _INIT_DERIVED_INTERVALS: Dict[str, float] = resolve_derived_telemetry_intervals()
@@ -646,10 +654,6 @@ def get_breadth_excluded_bases() -> Set[str]:
     except Exception:
         pass
     return out
-
-
-def get_breadth_quote_suffixes() -> Tuple[str, ...]:
-    return _tax_tuple("breadth_quote_suffixes")
 
 
 def get_cache_filenames(group_key: str) -> Tuple[str, ...]:
