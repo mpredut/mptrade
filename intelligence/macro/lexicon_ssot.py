@@ -694,11 +694,6 @@ def _strip_headline_publisher_suffix(title: str) -> str:
     return cleaned
 
 
-def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
-    fname = _cfg_str("cache_files", "dynamic_lexicon_file") or "macro_lexicon_collect.json"
-    return str(resolve_cachedb_filepath(os.path.join(cache_dir, fname) if cache_dir else cache_path(fname)))
-
-
 def _bigram_stem_signature(term: str) -> Tuple[str, ...]:
     """Return a canonical order-independent tuple of normalized stems for a lexicon phrase."""
     tokens = [_normalize_semantic_stem(w) for w in re.findall(r"[a-z]{3,}", (term or "").lower())]
@@ -708,10 +703,11 @@ def _bigram_stem_signature(term: str) -> Tuple[str, ...]:
 def _resolve_dynamic_lexicon_context(
     cache_dir: Optional[str] = None, now_ts: Optional[float] = None
 ) -> Tuple[float, float, str]:
+    fname = _cfg_str("cache_files", "dynamic_lexicon_file") or "macro_lexicon_collect.json"
     return (
         resolve_now_ts(now_ts),
         _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0),
-        _dynamic_lexicon_path(cache_dir),
+        str(resolve_cachedb_filepath(os.path.join(cache_dir, fname) if cache_dir else cache_path(fname))),
     )
 
 

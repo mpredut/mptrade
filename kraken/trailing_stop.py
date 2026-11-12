@@ -126,37 +126,25 @@ MIN_NOTIONAL_USD = required_float_env("KRAKEN_TRAILING_MIN_NOTIONAL_USD")
 TRAILING_MARKET = required_bool_env("KRAKEN_TRAILING_MARKET")
 
 # Optional environment overrides (e.g. ad-hoc tests or KRAKEN_TRAILING_<ASSET>_PAIR/PCT)
-def _apply_trailing_env_overrides(
-    pair_for: dict[str, str],
-    trail_pct: dict[str, float],
-    env: dict[str, str] | os._Environ[str] | None = None,
-    *,
-    default_trail_pct: float = DEFAULT_TRAIL_PCT,
-) -> None:
-    src = os.environ if env is None else env
-    reserved_pct_keys = {
-        "KRAKEN_TRAILING_DEFAULT_PCT",
-        "KRAKEN_TRAILING_REBUY_BOUNCE_PCT",
-        "KRAKEN_TRAILING_MIN_PROFIT_PCT",
-    }
-    for env_k, env_v in src.items():
-        if env_k.startswith("KRAKEN_TRAILING_") and env_k.endswith("_PAIR"):
-            asset = env_k[len("KRAKEN_TRAILING_"):-len("_PAIR")].strip().upper()
-            if asset and str(env_v or "").strip():
-                pair_for[asset] = required_env(env_k, src)
-                trail_pct.setdefault(asset, default_trail_pct)
-    for env_k in src:
-        if (
-            env_k.startswith("KRAKEN_TRAILING_")
-            and env_k.endswith("_PCT")
-            and env_k not in reserved_pct_keys
-        ):
-            asset = env_k[len("KRAKEN_TRAILING_"):-len("_PCT")].strip().upper()
-            if asset and asset in pair_for:
-                trail_pct[asset] = required_float_env(env_k, src)
-
-
-_apply_trailing_env_overrides(PAIR_FOR, TRAIL_PCT)
+for _env_k, _env_v in os.environ.items():
+    if _env_k.startswith("KRAKEN_TRAILING_") and _env_k.endswith("_PAIR"):
+        _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PAIR")].strip().upper()
+        if _asset and str(_env_v or "").strip():
+            PAIR_FOR[_asset] = required_env(_env_k, os.environ)
+            TRAIL_PCT.setdefault(_asset, DEFAULT_TRAIL_PCT)
+for _env_k in os.environ:
+    if (
+        _env_k.startswith("KRAKEN_TRAILING_")
+        and _env_k.endswith("_PCT")
+        and _env_k not in {
+            "KRAKEN_TRAILING_DEFAULT_PCT",
+            "KRAKEN_TRAILING_REBUY_BOUNCE_PCT",
+            "KRAKEN_TRAILING_MIN_PROFIT_PCT",
+        }
+    ):
+        _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PCT")].strip().upper()
+        if _asset and _asset in PAIR_FOR:
+            TRAIL_PCT[_asset] = required_float_env(_env_k, os.environ)
 
 
 class KrakenTrailing(TrailingAdapterBase):

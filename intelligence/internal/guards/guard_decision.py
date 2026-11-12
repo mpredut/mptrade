@@ -205,10 +205,22 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
                 )
             )
             now = args[3] if len(args) > 3 else kwargs.get("now")
-            side_norm, resolved_snapshot, early = self._prepare_external_guard_check(
-                symbol, side, snap, now=now, empty_reason=self._EMPTY_SNAPSHOT_REASON
-            )
-            return early if early is not None else self._evaluate_external_snapshot(side_norm, resolved_snapshot)
+            side_norm, early = self._require_buy_sell_side(side)
+            if early is not None:
+                return early
+            col = getattr(self, "collector", None)
+            if snap is None and col is not None:
+                if hasattr(self, "active_window_sec") and hasattr(col, "get_summary"):
+                    win_sec = getattr(self, "active_window_sec")
+                    try:
+                        snap = col.get_summary(symbol, window_sec=win_sec, now=now)
+                    except TypeError:
+                        snap = col.get_summary(symbol, window_sec=win_sec)
+                else:
+                    snap = fetch_guard_snapshot(col, symbol, now=now)
+            if snap is None:
+                return GuardDecision.allow(guard_name=self.cls_name, reason=self._EMPTY_SNAPSHOT_REASON)
+            return self._evaluate_external_snapshot(side_norm, snap)
         raise NotImplementedError(f"{type(self).__name__} must implement check() or evaluate()")
 
     def _require_buy_sell_side(
@@ -245,36 +257,6 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
         if early is not None:
             return early
         return self._evaluate_buy_sell_side(symbol, side_norm, *args, **kwargs)
-
-    def _prepare_external_guard_check(
-        self,
-        symbol: str,
-        side: str,
-        snapshot: Any = None,
-        *,
-        now: Optional[float] = None,
-        empty_reason: str = "no_snapshot",
-    ) -> tuple[str, Any, Optional[GuardDecision]]:
-        """Validate ``side`` and resolve ``self.collector`` snapshot, returning ``(side_norm, snapshot, early_decision)``."""
-        side_norm, early = self._require_buy_sell_side(side)
-        if early is not None:
-            return "", None, early
-        col = getattr(self, "collector", None)
-        if snapshot is None and col is not None:
-            if hasattr(self, "active_window_sec") and hasattr(col, "get_summary"):
-                win_sec = getattr(self, "active_window_sec")
-                try:
-                    snapshot = col.get_summary(symbol, window_sec=win_sec, now=now)
-                except TypeError:
-                    snapshot = col.get_summary(symbol, window_sec=win_sec)
-            else:
-                snapshot = fetch_guard_snapshot(col, symbol, now=now)
-        if snapshot is None:
-            return side_norm, None, GuardDecision.allow(
-                guard_name=self.cls_name,
-                reason=empty_reason,
-            )
-        return side_norm, snapshot, None
 
     _evaluate_external_snapshot = _bind_unimplemented_hook("_evaluate_external_snapshot")
 

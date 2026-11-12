@@ -108,27 +108,20 @@ MIN_EDGE_MARGIN_USD = _env_float("PILOT_MIN_EDGE_MARGIN_USD", 1.0)
 #   #4-5  gain/lost   (DONE 23 Jul: TAO mt.lost 4.9->5.25 applied)
 #   #16   maxage_days (28 Jul)
 #   #15   hardtp / hardtp_fraction (28 Jul; per-instrument, monitortrades.py:447)
-def _build_pilot_keys(conf_path=INSTRUMENTS_CONF):
-    """Derive pilot keys dynamically from instruments.conf (SSOT role.mt=yes)."""
-    keys = {}
-    mt_params = (
+PILOT_KEYS = {}
+for _spec in select_instruments(role="mt", path=INSTRUMENTS_CONF).values():
+    for _p in (
         "mt.gain",
         "mt.lost",
         "mt.maxage_days",
         "mt.hardtp",
         "mt.hardtp_fraction",
         "mt.hardtp_cooldown_h",
-    )
-    for spec in select_instruments(role="mt", path=conf_path).values():
-        for p in mt_params:
-            if p in spec.params:
-                keys[f"{spec.name}.{p}"] = (spec.symbol, spec.base, p)
-        if spec.has_role("trailing") and "trailing.pct" in spec.params:
-            keys[f"{spec.name}.trailing.pct"] = (spec.symbol, spec.base, "trailing.pct")
-    return keys
-
-
-PILOT_KEYS = _build_pilot_keys()
+    ):
+        if _p in _spec.params:
+            PILOT_KEYS[f"{_spec.name}.{_p}"] = (_spec.symbol, _spec.base, _p)
+    if _spec.has_role("trailing") and "trailing.pct" in _spec.params:
+        PILOT_KEYS[f"{_spec.name}.trailing.pct"] = (_spec.symbol, _spec.base, "trailing.pct")
 
 
 def _append_audit(entry):
