@@ -148,8 +148,8 @@ class AutonomousAIReconciler:
         include_fleet: bool = True,
         include_market_portfolio: bool = True,
         asset_scope: str = "all",
-        allow_network: bool = True,
-        persist: bool = True,
+        allow_network: bool = False,
+        persist: bool = False,
     ) -> TelemetrySensorSnapshot:
         """Reads passive telemetry, spot wallet balances, cycle states, and fills published to disk."""
         scope = (asset_scope or "all").strip().lower()
@@ -172,6 +172,20 @@ class AutonomousAIReconciler:
             snapshot.evaluated_at_ts = now_ts
             snapshot.age_sec = 0.0
             return snapshot
+
+        if not allow_network and not persist:
+            return MarketAndPortfolioSnapshotOrchestrator(start_sync=False).read_snapshot(
+                self.cache_dir,
+                "*",
+                snapshot=snapshot,
+                workspace_dir=self.workspace_dir,
+                logs_dirs=self.logs_dirs,
+                intent_gateway=self.intent_gateway,
+                scope=scope,
+                now_ts=now_ts,
+                read_json_fn=_read_json,
+                log=logger,
+            )
 
         return MarketAndPortfolioSnapshotOrchestrator(start_sync=allow_network).collect(
             self.cache_dir,

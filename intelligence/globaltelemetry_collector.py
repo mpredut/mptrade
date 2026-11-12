@@ -47,10 +47,20 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
     safe_pos_float,
 )
+from instrument import load_tradable_instruments
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
-from intelligence.sentiment.collectors.macro_telemetry_collector import collect_macro_benchmarks_snapshot
+from intelligence.sentiment.collectors.macro_telemetry_collector import (
+    InitialPricesAndTrendsCollector,
+    collect_macro_benchmarks_snapshot,
+)
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+from intelligence.sentiment.collectors.portfolio_collector import (
+    VenueTrailingMapsCollector,
+    harvest_tradable_positions_and_orders,
+)
 from intelligence.sentiment.collectors.pretrade_telemetry_collector import refresh_pretrade_telemetry_caches
+from intelligence.sentiment.evaluators.microstructure_evaluator import update_microstructure_cycle_deltas
 from state_io import save_json_state
 
 load_dotenv()
@@ -72,6 +82,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         fear_greed_interval_sec: Optional[float] = None,
         breadth_interval_sec: Optional[float] = None,
         macro_benchmarks_interval_sec: Optional[float] = None,
+        venue_balances_interval_sec: Optional[float] = None,
         skip_news: bool = False,
         skip_external: bool = False,
     ) -> None:
@@ -90,6 +101,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.breadth_interval_sec = safe_pos_float(breadth_interval_sec, derived["breadth_interval_sec"])
         self.macro_benchmarks_interval_sec = safe_pos_float(macro_benchmarks_interval_sec, derived["macro_benchmarks_interval_sec"])
         self.pretrade_caches_interval_sec = max(60.0, self.orderbook_interval_sec * 3.0)
+        self.venue_balances_interval_sec = safe_pos_float(venue_balances_interval_sec, self.pretrade_caches_interval_sec)
         self.skip_news = _parse_bool_flag(skip_news, False)
         parsed_syms = parse_symbol_list(symbols)
         self._explicit_symbols = bool(parsed_syms)
@@ -116,6 +128,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._last_breadth_ts: float = 0.0
         self._last_macro_benchmarks_ts: float = 0.0
         self._last_pretrade_caches_ts: float = 0.0
+        self._last_venue_balances_ts: float = 0.0
 
         self.heartbeat_path = os.path.join(self.cache_dir, "globaltelemetry_collector.heartbeat")
 
@@ -249,6 +262,67 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.warning("Failed refreshing pre-trade caches: %s", e)
         return False
 
+    def update_venue_balances(self, force: bool = False, now: Optional[float] = None) -> bool:
+        """Producer refresh of multi-venue spot balances, resting open orders (`venue_balances_state.json`), and cycle deltas."""
+        try:
+            eff_now = resolve_now_ts(self._resolve_step_now(now))
+            abs_cache_dir = os.path.abspath(str(self.cache_dir).rstrip("/\\"))
+            workspace_dir = (
+                os.path.dirname(abs_cache_dir)
+                if os.path.basename(abs_cache_dir).lower() == "cachedb"
+                else abs_cache_dir
+            )
+            has_inst_source = (
+                os.path.exists(os.path.join(workspace_dir, "instruments.conf"))
+                or os.path.exists(os.path.join(workspace_dir, "kraken", "config.env"))
+                or os.path.exists(os.path.join(workspace_dir, "hyperliquid", "config.env"))
+                or os.path.isdir(os.path.join(workspace_dir, "212trading"))
+            )
+            inst_map: Dict[str, Any] = {}
+            if has_inst_source:
+                inst_map = load_tradable_instruments(
+                    workspace_dir,
+                    only_workspace_conf=True,
+                    include_closed_rth=False,
+                    now_ts=eff_now,
+                    asset_scope="all",
+                )
+            prices_and_trends = InitialPricesAndTrendsCollector(start_sync=False).collect(self.cache_dir)
+            if inst_map:
+                trailing_map, trailing_by_venue = VenueTrailingMapsCollector(start_sync=False).collect(
+                    self.cache_dir, "*", workspace_dir=workspace_dir
+                )
+                gw_max_usd = pos_float_env("AUTONOMOUS_TRADING_MAX_NOTIONAL_USD", 2000.0)
+                harvest_tradable_positions_and_orders(
+                    inst_map,
+                    prices_and_trends,
+                    trailing_map,
+                    trailing_by_venue,
+                    gateway_max_usd=gw_max_usd,
+                    cache_dir=self.cache_dir,
+                    allow_network=True,
+                    persist=True,
+                    force_persist=True,
+                )
+            micro_map: Dict[str, Any] = {}
+            enrich_24h_and_microstructure(
+                self.cache_dir,
+                workspace_dir,
+                prices_and_trends,
+                micro_map,
+                {},
+                {},
+                eff_now,
+                allow_network=False,
+                persist=False,
+            )
+            if micro_map:
+                update_microstructure_cycle_deltas(self.cache_dir, micro_map, now_ts=eff_now, persist=True)
+            return True if (inst_map or micro_map or not has_inst_source) else False
+        except Exception as e:
+            logger.warning("Failed refreshing venue balances state: %s", e)
+        return False
+
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating telemetry whose scheduled interval has elapsed."""
         force, current_ts = normalize_cycle_args(force, now)
@@ -263,6 +337,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             breadth_updated=False,
             macro_benchmarks_updated=False,
             pretrade_caches_updated=False,
+            venue_balances_updated=False,
         )
 
         self.write_heartbeat(results)
@@ -278,6 +353,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 (True, "_last_breadth_ts", self.breadth_interval_sec, self.update_market_breadth, (force,), 15.0, "breadth", "breadth_updated", None),
                 (not self.skip_external, "_last_macro_benchmarks_ts", self.macro_benchmarks_interval_sec, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),
                 (not self.skip_external, "_last_pretrade_caches_ts", self.pretrade_caches_interval_sec, self.update_pretrade_caches, (force,), 18.0, "pretrade_caches", "pretrade_caches_updated", None),
+                (not self.skip_external, "_last_venue_balances_ts", self.venue_balances_interval_sec, self.update_venue_balances, (force,), 18.0, "venue_balances", "venue_balances_updated", None),
             )
             for enabled, ts_attr, itv_sec, fn, fn_args, timeout_s, lbl, res_key, on_done_cb in scheduled_tasks:
                 if enabled:
@@ -323,6 +399,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 "fear_greed": self.fear_greed_interval_sec,
                 "breadth": self.breadth_interval_sec,
                 "macro_benchmarks": getattr(self, "macro_benchmarks_interval_sec", None),
+                "venue_balances": getattr(self, "venue_balances_interval_sec", None),
             },
             logger_inst=logger,
         )

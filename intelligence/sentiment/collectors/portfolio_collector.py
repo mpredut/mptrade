@@ -9,6 +9,7 @@ import time as _time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from botcore import (
+    _parse_bool_flag,
     extract_timestamp_s,
     first_epoch_sec,
     first_pos_float,
@@ -784,6 +785,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         allow_empty_inst_recovery: bool = False,
         allow_network: bool = True,
         persist: bool = True,
+        force_persist: bool = False,
         **kwargs: Any,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
         inst_map = inst_map or {}
@@ -880,7 +882,16 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 prev_pos_px = safe_pos_float(prev_cached_pos.get("price"), default=0.0) or 0.0
                 prev_pos_ts = safe_pos_float(prev_cached_pos.get("ts"), default=None)
                 px_from_cached_pos = False
-                if allow_network and (px_f <= 0 or (is_eq_v and (base_free or 0.0) > 0 and is_live_network_backfill_enabled())):
+                if allow_network and (
+                    px_f <= 0
+                    or (
+                        is_eq_v
+                        and (
+                            _parse_bool_flag(force_persist, False)
+                            or ((base_free or 0.0) > 0 and is_live_network_backfill_enabled())
+                        )
+                    )
+                ):
                     try:
                         get_px_fn = getattr(inst._provider, "get_current_price", None)
                         if callable(get_px_fn) and (live_px := safe_pos_float(get_px_fn(sym), default=0.0) or 0.0) > 0:
@@ -888,6 +899,15 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     except Exception:
                         if px_f <= 0:
                             px, px_f = None, 0.0
+                elif (
+                    not allow_network
+                    and is_eq_v
+                    and prev_pos_px > 0
+                    and prev_pos_ts is not None
+                    and 0.0 <= (now_ts_oo - prev_pos_ts) <= 300.0
+                ):
+                    px = px_f = round(prev_pos_px, pos_px_dec)
+                    px_from_cached_pos = True
                 lookup_sym_p = ensure_equity_suffix(sym, is_equity=is_eq_v)
                 if px_f <= 0 and (px_f := resolve_symbol_price(lookup_sym_p, prices_and_trends, explicit_quote=None if is_eq_v else quote)) > 0:
                     px = px_f
@@ -1010,6 +1030,9 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                             order_ts_map=order_ts_map,
                         )
                     )
+                    ver_ts = safe_pos_float(cached_bals.get(f"open_orders_verified_ts:{v_norm}"), default=0.0) or 0.0
+                    if ver_ts > 0.0 and 0.0 <= (now_ts_oo - ver_ts) <= 300.0:
+                        live_open_ok_venues.add(v_norm)
         elif (allow_empty_inst_recovery or not allow_network) and cached_bals:
             gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
             for k, v in cached_bals.items():
@@ -1082,8 +1105,12 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                         )
                     )
 
+        verified_now = live_open_ok_venues - failed_open_venues
         if isinstance(verified_open_venues, set):
-            verified_open_venues.update(live_open_ok_venues - failed_open_venues)
+            verified_open_venues.update(verified_now)
+        if allow_network:
+            for v_ok in verified_now:
+                updated_bals[f"open_orders_verified_ts:{v_ok}"] = round(now_ts_oo, 3)
 
         if len(open_orders_list) > 1:
             deduped_open: List[Dict[str, Any]] = []
@@ -1117,9 +1144,16 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             gateway_max_usd=gateway_max_usd,
         )
 
-        if persist and allow_network and bcache_path and updated_bals and (is_live_network_backfill_enabled() or os.path.exists(bcache_path)):
+        if persist and allow_network and bcache_path and updated_bals and (
+            _parse_bool_flag(force_persist, False) or is_live_network_backfill_enabled() or os.path.exists(bcache_path)
+        ):
             try:
-                merged_bals = {**cached_bals, **updated_bals}
+                base_bals = {
+                    k: v
+                    for k, v in cached_bals.items()
+                    if not (k.startswith("open_orders_verified_ts:") and k.split(":", 1)[1] in failed_open_venues)
+                }
+                merged_bals = {**base_bals, **updated_bals}
                 if merged_bals != cached_bals:
                     os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
                     resolve_save_json_state(local_fn=save_json_state)(bcache_path, merged_bals, indent=2)
@@ -1725,6 +1759,7 @@ def harvest_tradable_positions_and_orders(
     allow_empty_inst_recovery: bool = False,
     allow_network: bool = True,
     persist: bool = True,
+    force_persist: bool = False,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
     """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
     return TelemetryCollectorFactory.create("portfolio_tradable_positions", start_sync=allow_network).collect(
@@ -1740,6 +1775,7 @@ def harvest_tradable_positions_and_orders(
         allow_empty_inst_recovery=allow_empty_inst_recovery,
         allow_network=allow_network,
         persist=persist,
+        force_persist=force_persist,
     )
 
 

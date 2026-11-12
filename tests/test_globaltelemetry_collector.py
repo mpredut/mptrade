@@ -1412,3 +1412,64 @@ def test_bare_equity_symbol_matches_suffixed_equity_in_pretrade_telemetry(tmp_pa
     assert t_bare.get("24h Volume Profile (POC / Value Area)") == t_eq.get("24h Volume Profile (POC / Value Area)")
 
 
+def test_global_telemetry_collector_publishes_venue_balances_and_cycle_deltas(tmp_path):
+    """GlobalTelemetryCollector owns periodic persistence of venue_balances_state.json and microstructure_cycle_history.json."""
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "instruments.conf").write_text("BTCUSDC binance\n", encoding="utf-8")
+
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+    save_json_state(
+        str(resolve_cachedb_filepath(str(cache_dir / "cache_current_price.json"))),
+        {"items": {"BTCUSDC": [[now_ms, 95000.0]]}, "fetchtime": {"BTCUSDC": now_ms}},
+    )
+    save_json_state(
+        str(resolve_cachedb_filepath(str(cache_dir / "orderbook_depth_BTCUSDC.json"))),
+        {
+            "symbol": "BTCUSDC",
+            "mid_price": 95000.0,
+            "bid_depth_usd": 120000.0,
+            "ask_depth_usd": 80000.0,
+            "imbalance_ratio": 0.20,
+            "largest_bid_wall_usd": 30000.0,
+            "largest_bid_wall_price": 94800.0,
+            "largest_ask_wall_usd": 25000.0,
+            "largest_ask_wall_price": 95200.0,
+            "ts": now_s,
+        },
+    )
+
+    btc_inst = MagicMock(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", params={})
+    btc_inst._provider.free_balance.side_effect = lambda asset: 0.25 if asset == "BTC" else 400.0
+    btc_inst._provider.get_current_price.return_value = 95000.0
+    btc_inst.open_orders.return_value = [
+        {"orderId": "77", "side": "SELL", "price": "96000.0", "origQty": "0.10", "executedQty": "0.0"}
+    ]
+
+    collector = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(cache_dir), skip_news=True)
+    with (
+        patch("intelligence.globaltelemetry_collector.load_tradable_instruments", return_value={"BIN_BTC": btc_inst}),
+        patch.object(collector, "_step_external_symbols"),
+        patch.object(collector, "update_fear_greed", return_value=True),
+        patch.object(collector, "update_market_breadth", return_value=True),
+        patch.object(collector, "update_macro_benchmarks", return_value=True),
+        patch.object(collector, "update_pretrade_caches", return_value=True),
+    ):
+        res = collector.run_cycle(force=True, now=now_s)
+
+    assert res["venue_balances_updated"] is True
+    bcache_path = resolve_cachedb_filepath(str(cache_dir / "venue_balances_state.json"))
+    assert os.path.exists(bcache_path)
+    with open(bcache_path, encoding="utf-8") as fh:
+        bals = json.load(fh)
+    assert bals["pos:binance:BTCUSDC"]["free_base"] == pytest.approx(0.25)
+    assert bals["cash:binance:USDC"]["free"] == pytest.approx(400.0)
+    assert len(bals["open_orders:binance:BTCUSDC"]) == 1
+    assert bals["open_orders_verified_ts:binance"] == pytest.approx(now_s, abs=5.0)
+
+    mhist_path = resolve_cachedb_filepath(str(cache_dir / "microstructure_cycle_history.json"))
+    assert os.path.exists(mhist_path)
+
+
+

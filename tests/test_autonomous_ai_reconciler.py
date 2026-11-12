@@ -219,6 +219,29 @@ def _reconciler(workspace, **kwargs):
     return AutonomousAIReconciler(workspace_dir=str(workspace), **kwargs)
 
 
+def _publish_venue_balances_for_test(reconciler, *, symbols=None):
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+
+    with patch(
+        "intelligence.globaltelemetry_collector.load_tradable_instruments",
+        side_effect=lambda *_a, **_kw: reconciler.intent_gateway.load_tradable_instruments(),
+    ):
+        col = GlobalTelemetryCollector(
+            symbols=symbols or [],
+            cache_dir=reconciler.cache_dir,
+            skip_external=True,
+        )
+        if symbols:
+            with (
+                patch.dict(os.environ, {"MPTRADE_ALLOW_LIVE_BACKFILL": "1"}),
+                patch(
+                    "intelligence.sentiment.collectors.pretrade_telemetry_collector._ensure_fresh_pretrade_microstructure"
+                ),
+            ):
+                col.update_pretrade_caches(force=True)
+        col.update_venue_balances(force=True)
+
+
 def test_reconciler_initialization_defaults(temp_env):
     workspace, cache_dir, _ = temp_env
     reconciler = _reconciler(workspace)
@@ -1271,6 +1294,7 @@ def test_harvest_and_synthesize_surfaces_active_avg_buy_tranches_and_open_orders
     reconciler = _reconciler(
         workspace, gemini_auditor=auditor, mode="shadow", notify_enabled=False, intent_gateway=gateway
     )
+    _publish_venue_balances_for_test(reconciler)
     sensors = reconciler.harvest_sensors_telemetry()
     ps = sensors.portfolio_summary
     assert ps["recent_orders"]["TAOUSDC"]["active_avg_buy_px"] == 255.0
@@ -1426,6 +1450,7 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     reconciler = _reconciler(
         workspace, gemini_auditor=auditor, mode="shadow", notify_enabled=False, intent_gateway=gateway
     )
+    _publish_venue_balances_for_test(reconciler)
     sensors = reconciler.harvest_sensors_telemetry()
     ps = sensors.portfolio_summary
     assert list(ps["hyperliquid_cycles"].keys()) == ["HYPEUSDC"]
@@ -2582,6 +2607,7 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     reconciler = _reconciler(
         tmp_path, mode="shadow", notify_enabled=False, gemini_auditor=auditor, intent_gateway=mock_gw
     )
+    _publish_venue_balances_for_test(reconciler)
     reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
     assert len(captured) == 1
     prompt_out = captured[0]
@@ -2742,6 +2768,7 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     reconciler = _reconciler(
         tmp_path, mode="shadow", notify_enabled=False, gemini_auditor=auditor, intent_gateway=mock_gw
     )
+    _publish_venue_balances_for_test(reconciler)
     reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
     crypto_prompt = captured_prompts[-1]
 
@@ -2784,7 +2811,9 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     fake_md = types.ModuleType("market_data")
     fake_md._chart = lambda sym, rng="5d", interval="5m": ({"regularMarketPrice": 214.0}, fake_bars)
     monkeypatch.setitem(os.sys.modules, "market_data", fake_md)
+    monkeypatch.setitem(os.sys.modules, "212trading.market_data", fake_md)
 
+    _publish_venue_balances_for_test(reconciler, symbols=["NVDA_US_EQ"])
     reconciler.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
     eq_prompt = captured_prompts[-1]
     assert "free_NVDA_US_EQ=0.21 ($45.04 USD)" in eq_prompt
@@ -2930,6 +2959,7 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
     reconciler = _reconciler(
         tmp_path, mode="shadow", notify_enabled=False, gemini_auditor=auditor, intent_gateway=mock_gw
     )
+    _publish_venue_balances_for_test(reconciler)
     reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
     full_prompt = auditor.last_prompt
     assert "vol_profile(POC=" in full_prompt
@@ -3221,6 +3251,7 @@ def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_
             }
         ],
     )
+    _publish_venue_balances_for_test(reconciler)
     sensors = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
     ps = sensors.portfolio_summary
 
@@ -3256,6 +3287,7 @@ def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_
 
     # 4. When no open orders exist on the exchange, Section 3C explicitly shows open_limit_orders: [] (none resting)
     mock_btc_inst.open_orders.return_value = []
+    _publish_venue_balances_for_test(reconciler)
     sensors_empty_oo = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
     assert sensors_empty_oo.portfolio_summary["open_limit_orders"] == []
     reconciler.synthesize_and_diagnose(
@@ -3350,6 +3382,7 @@ def test_bot_vs_ai_fill_attribution_and_reversal_prompt(temp_env):
             {"orderId": "ai_rest_1", "clientOrderId": "AI_123", "side": "BUY", "price": "77900.0", "origQty": "0.005", "executedQty": "0.0"},
         ],
     )
+    _publish_venue_balances_for_test(reconciler)
     sensors = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
     ro = sensors.portfolio_summary["recent_orders"]["BTCUSDC"]
     assert ro["last_action_side"] == "SELL"
@@ -8916,6 +8949,86 @@ def test_current_price_realtime_cadence_surfaced_in_monitors(tmp_path, monkeypat
     assert sensors_fresh["current_price_cache"]["ws_realtime_fresh"] is True
     assert sensors_fresh["current_price_cache"]["oldest_open_age_seconds"] == pytest.approx(1.1)
     assert ccc.main() == 0
+
+
+def test_supervisor_run_cycle_uses_passive_read_snapshot_without_mutating_telemetry_caches(tmp_path, monkeypatch) -> None:
+    """AutonomousAIReconciler defaults to read_snapshot(allow_network=False, persist=False) and never mutates producer caches."""
+    import inspect
+    from pathlib import Path
+    from cachepaths import resolve_cachedb_filepath
+
+    sig = inspect.signature(AutonomousAIReconciler.harvest_sensors_telemetry)
+    assert sig.parameters["allow_network"].default is False
+    assert sig.parameters["persist"].default is False
+
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+    save_json_state(
+        str(resolve_cachedb_filepath(str(cache_dir / "cache_current_price.json"))),
+        {"items": {"BTCUSDC": [[now_ms, 95000.0]]}, "fetchtime": {"BTCUSDC": now_ms}},
+    )
+    mb_path = Path(resolve_cachedb_filepath(str(cache_dir / "market_breadth_collect.json")))
+    save_json_state(str(mb_path), {"advance_ratio": 0.61, "regime": "BULLISH_BREADTH", "ts": now_s - 3600.0})
+    vb_path = Path(resolve_cachedb_filepath(str(cache_dir / "venue_balances_state.json")))
+    save_json_state(
+        str(vb_path),
+        {
+            "pos:binance:BTCUSDC": {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "base": "BTC",
+                "quote": "USDC",
+                "price": 95000.0,
+                "free_base": 0.5,
+                "value_usd": 47500.0,
+                "free_quote": 250.0,
+                "ts": now_s - 10.0,
+            },
+            "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 250.0},
+            "open_orders:binance:BTCUSDC": [],
+            "open_orders_verified_ts:binance": now_s - 10.0,
+        },
+    )
+    mb_before = mb_path.read_text(encoding="utf-8")
+    vb_before = vb_path.read_text(encoding="utf-8")
+
+    btc_inst = MagicMock(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", params={})
+    btc_inst._provider.free_balance.side_effect = AssertionError("Supervisor must not query live free_balance")
+    btc_inst.open_orders.side_effect = AssertionError("Supervisor must not query live open_orders")
+    monkeypatch.setattr(
+        MarketBreadthCollector,
+        "fetch",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("Supervisor must not fetch live market breadth")),
+    )
+
+    mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    mock_gw.load_tradable_instruments.return_value = {"BIN_BTC": btc_inst}
+    auditor = DummyGeminiClient({"summary": "ok", "market_trading_decisions": []})
+    reconciler = _reconciler(
+        tmp_path,
+        mode="shadow",
+        notify_enabled=False,
+        gemini_auditor=auditor,
+        intent_gateway=mock_gw,
+    )
+
+    snap = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
+    assert snap.source == "cachedb_read_only"
+    assert snap.market_breadth["advance_ratio"] == pytest.approx(0.61)
+    assert any(
+        p.get("symbol") == "BTCUSDC" and p.get("free_base") == pytest.approx(0.5)
+        for p in snap.portfolio_summary.get("tradable_positions", [])
+    )
+
+    reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
+    assert mb_path.read_text(encoding="utf-8") == mb_before
+    assert vb_path.read_text(encoding="utf-8") == vb_before
+    assert "free_BTC=0.5" in auditor.prompts[-1]
+
 
 
 
