@@ -73,16 +73,6 @@ class OrderTicket:
         self.active = _parse_bool_flag(self.active, default=False)
 
 
-def _coerce_dataclass_float_fields(
-    instance: Any, fields: tuple[str, ...], coercer: Callable[..., Optional[float]], err_msg: str
-) -> None:
-    for name in fields:
-        f = coercer(getattr(instance, name), default=None)
-        if f is None:
-            raise ValueError(err_msg)
-        object.__setattr__(instance, name, f)
-
-
 @dataclass(frozen=True)
 class OrderSnapshot:
     status: str = "open"       # open|closed|canceled|expired
@@ -95,9 +85,10 @@ class OrderSnapshot:
         if norm_status not in {"open", "closed", "canceled", "expired"}:
             raise ValueError(f"invalid rtrade order status: {self.status}")
         object.__setattr__(self, "status", norm_status)
-        _coerce_dataclass_float_fields(
-            self, ("filled_qty", "cost", "fee"), safe_nonneg_float, "invalid rtrade financial snapshot"
-        )
+        for name in ("filled_qty", "cost", "fee"):
+            if (f := safe_nonneg_float(getattr(self, name), default=None)) is None:
+                raise ValueError("invalid rtrade financial snapshot")
+            object.__setattr__(self, name, f)
 
 
 @dataclass(frozen=True)
@@ -112,15 +103,13 @@ class PairPolicy:
     price_decimals: int = 4
 
     def __post_init__(self):
-        _coerce_dataclass_float_fields(
-            self,
-            (
-                "adjustment_fraction", "quote_ttl_sec", "poll_sec", "fast_fill_ratio",
-                "min_edge_fraction", "shock_hard_stop_fraction", "hard_stop_fraction",
-            ),
-            safe_float,
-            "the rtrade policy must hold finite values",
-        )
+        for name in (
+            "adjustment_fraction", "quote_ttl_sec", "poll_sec", "fast_fill_ratio",
+            "min_edge_fraction", "shock_hard_stop_fraction", "hard_stop_fraction",
+        ):
+            if (f := safe_float(getattr(self, name), default=None)) is None:
+                raise ValueError("the rtrade policy must hold finite values")
+            object.__setattr__(self, name, f)
         if not 0 < self.adjustment_fraction < 1:
             raise ValueError("adjustment_fraction must be in (0, 1)")
         if self.quote_ttl_sec <= 0 or self.poll_sec <= 0:
@@ -197,8 +186,7 @@ def quote_prices(mid: float, adjustment_fraction: float,
     mid_f = safe_pos_float(mid, default=None)
     if mid_f is None:
         raise ValueError("mid must be positive")
-    adj_f = safe_float(adjustment_fraction, default=None)
-    if adj_f is None or not 0 < adj_f < 1:
+    if (adj_f := safe_float(adjustment_fraction, default=None)) is None or not 0 < adj_f < 1:
         raise ValueError("adjustment_fraction must be in (0, 1)")
     dec_i = _parse_nonneg_int(decimals, error_msg="decimals must be a non-negative integer")
     return round(mid_f * (1 - adj_f), dec_i), round(mid_f * (1 + adj_f), dec_i)
@@ -212,13 +200,11 @@ def anchored_exit_price(exit_side: str, fill_price: float, current_price: float,
     fill_f, cur_f = safe_pos_float(fill_price, default=None), safe_pos_float(current_price, default=None)
     if fill_f is None or cur_f is None:
         raise ValueError("the prices must be positive")
-    adj_f = safe_float(adjustment_fraction, default=None)
-    if adj_f is None or not 0 < adj_f < 1:
+    if (adj_f := safe_float(adjustment_fraction, default=None)) is None or not 0 < adj_f < 1:
         raise ValueError("adjustment_fraction must be in (0, 1)")
-    dec_i = _parse_nonneg_int(decimals, error_msg="decimals must be a non-negative integer")
-    edge_f = safe_float(min_edge_fraction, default=None)
-    if edge_f is None or not 0 <= edge_f < 1:
+    if (edge_f := safe_float(min_edge_fraction, default=None)) is None or not 0 <= edge_f < 1:
         raise ValueError("min_edge_fraction must be in [0, 1)")
+    dec_i = _parse_nonneg_int(decimals, error_msg="decimals must be a non-negative integer")
     if side == "SELL":
         return round(max(cur_f * (1 + adj_f), fill_f / (1 - edge_f)), dec_i)
     if side == "BUY":
@@ -583,16 +569,6 @@ class PairCoordinator:
     def _totals(self):
         return (*self._side_totals("BUY"), *self._side_totals("SELL"))
 
-    def _record_first_fill(self, now: float, buy_qty: float, sell_qty: float) -> None:
-        if self.first_fill_at is not None or (buy_qty <= 0 and sell_qty <= 0):
-            return
-        self.first_fill_at = now
-        self.first_fill_side = (
-            "BUY" if (buy_qty > 0 and sell_qty <= 0) else
-            "SELL" if (sell_qty > 0 and buy_qty <= 0) else "BOTH"
-        )
-        self.shock = max(0.0, now - self.started_at) <= self.policy.quote_ttl_sec * self.policy.fast_fill_ratio
-
     def _retry_terminal_hard_stop(self, net_qty: float) -> bool:
         """Submit one bounded new revision for a terminal stop remainder."""
         if abs(net_qty) <= 1e-8:
@@ -680,9 +656,6 @@ class PairCoordinator:
         if now is None:
             raise ValueError("the rtrade clock must be finite")
         bq, bc, sq, sc, net = self._totals_and_net(refresh=True)
-        if self.phase != "startup_recovery":
-            self._record_first_fill(now, bq, sq)
-
         if self.phase == "startup_recovery":
             if _is_recovery_pending(self.reason) and not self._recover_persisted_intents():
                 return self.outcome()
@@ -690,7 +663,11 @@ class PairCoordinator:
                 if ticket.active and self._cancel_and_reconcile(ticket)[1] is not None:
                     return self.outcome()
             bq, bc, sq, sc, net = self._totals_and_net()
-            self._record_first_fill(now, bq, sq)
+        if self.first_fill_at is None and (bq > 0 or sq > 0):
+            self.first_fill_at = now
+            self.first_fill_side = "BUY" if (bq > 0 and sq <= 0) else "SELL" if (sq > 0 and bq <= 0) else "BOTH"
+            self.shock = max(0.0, now - self.started_at) <= self.policy.quote_ttl_sec * self.policy.fast_fill_ratio
+        if self.phase == "startup_recovery":
             if abs(net) <= 1e-8:
                 if bq > 0 and sq > 0:
                     self.phase = "complete"

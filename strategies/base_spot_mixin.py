@@ -761,12 +761,6 @@ class BaseSpotMixin:
             if lvl_f not in sold:
                 sold.append(lvl_f)
 
-    def _all_tp_ladder_levels_sold(self) -> bool:
-        if not getattr(self.p, "tp_ladder", None):
-            return False
-        ladder_levels = {lvl for (lvl, _) in self.p.tp_ladder}
-        return bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
-
     # -- Percentage & Volatility-Scaled Sizing ---------------------------------
     def _effective_dca_amount(self) -> float:
         """Scale base DCA size by volatility when enabled, falling back during warm-up."""

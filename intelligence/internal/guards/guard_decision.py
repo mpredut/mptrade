@@ -290,8 +290,6 @@ class OrderGuardEvaluatorFactory(LazyPluginRegistryFactory):
         "order_guard",
     )
 
-    _ensure_default_evaluators_registered = LazyPluginRegistryFactory._ensure_defaults_registered
-
     @classmethod
     def create(cls, guard_id: str, **kwargs: Any) -> Any:
         evaluator_cls = cls._resolve_registered_class(guard_id)

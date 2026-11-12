@@ -479,14 +479,6 @@ class Strategy(BaseSpotMixin):
             order_doc["tranche_idx"] = tranche_idx
         return order_doc
 
-    def _adopt_pending_order(self, pending: dict) -> None:
-        order_id = clean_order_id(pending.get("order_id"))
-        if not order_id:
-            return
-        if not any(clean_order_id(order.get("txid")) == order_id for order in self.s["orders"]):
-            self.s["orders"].append(self._order_from_pending(pending))
-        self._persist_pending_state_slot("pending_intent", None)
-
     # -- Helpers ---------------------------------------------------------------
     def _dust_safe_qty(self, qty: float) -> float:
         """Leave one volume tick to tolerate a venue's rounded balance."""
@@ -637,7 +629,10 @@ class Strategy(BaseSpotMixin):
             txid = str(tracked.intent["order_id"])
             log(f"  [STRAT] {side.upper()} {kind} placed txid={txid} {vol} @ {price}")
             self._clear_placement_backoff(side, kind)
-            self._adopt_pending_order(tracked.intent)
+            if (order_id := clean_order_id(tracked.intent.get("order_id"))):
+                if not any(clean_order_id(order.get("txid")) == order_id for order in self.s["orders"]):
+                    self.s["orders"].append(self._order_from_pending(tracked.intent))
+                self._persist_pending_state_slot("pending_intent", None)
             return True
         except (ProviderError, RuntimeError, ValueError) as e:
             if self._insufficient_funds_error(e):
@@ -755,7 +750,10 @@ class Strategy(BaseSpotMixin):
                     log(f"  ! [STRAT] unreconciled pending intent ({exc}) -- not resending")
                 else:
                     if result.order_known:
-                        self._adopt_pending_order(result.intent)
+                        if (order_id := clean_order_id(result.intent.get("order_id"))):
+                            if not any(clean_order_id(order.get("txid")) == order_id for order in self.s["orders"]):
+                                self.s["orders"].append(self._order_from_pending(result.intent))
+                            self._persist_pending_state_slot("pending_intent", None)
                         log(f"  [STRAT] recovered intent {result.intent['side']} txid={result.intent['order_id']}")
                     elif result.outcome in {"absent", "retryable"}:
                         log("  [STRAT] intent absence confirmed -- the strategy may re-evaluate it")
@@ -916,10 +914,10 @@ class Strategy(BaseSpotMixin):
                 source=self.notification_source, price=price, desktop=self.desktop,
             )
             if final:
-                if (tr_i := safe_nonneg_int(o.get("tranche_idx"), default=None)) is not None:
-                    sold_lvls = self.s.setdefault("tp_sold_levels", [])
-                    if tr_i not in sold_lvls:
-                        sold_lvls.append(tr_i)
+                if (tr_i := safe_nonneg_int(o.get("tranche_idx"), default=None)) is not None and tr_i not in (
+                    sold_lvls := self.s.setdefault("tp_sold_levels", [])
+                ):
+                    sold_lvls.append(tr_i)
                 self._finalize_cycle_if_flat(o, price)
 
     def _finalize_cycle_if_flat(self, o: dict, price: float) -> None:
@@ -969,14 +967,6 @@ class Strategy(BaseSpotMixin):
         """Return True if an uptrend is identified via regime, trend_mode, or venue client."""
         return self._state_flag("trend_mode") or self._is_trend_direction(regime, "bull", ("up", "bull", "uptrend"))
 
-    def _log_and_request_stop_exit(self, price: float, header: str) -> bool:
-        if self._has_pending_market_exit():
-            return True
-        log(header)
-        if not self._request_market_exit(price, "STOP"):
-            log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
-        return True
-
     def _check_stop_loss(self, price: float) -> bool:
         """Close everything when unrealized loss crosses the anti-runaway threshold."""
         if (self.s.get("pending_exit") or {}).get("kind") == "STOP":
@@ -989,10 +979,11 @@ class Strategy(BaseSpotMixin):
 
         if not self.p.sl_mhdsl_enabled:
             if sr.hit_stop(avg, price, self.p.stop_loss_pct):
-                return self._log_and_request_stop_exit(
-                    price,
-                    f"  [SL] [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% -- SELLING EVERYTHING (cutting the loss)",
-                )
+                if not self._has_pending_market_exit():
+                    log(f"  [SL] [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% -- SELLING EVERYTHING (cutting the loss)")
+                    if not self._request_market_exit(price, "STOP"):
+                        log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
+                return True
             return False
         if not self._in_mhdsl_territory(loss_pct):
             return False
@@ -1004,10 +995,11 @@ class Strategy(BaseSpotMixin):
         )
         decision = self.exit_manager.evaluate_stop_loss(snapshot, custom_threshold=self.p.stop_loss_pct / 100.0)
         if decision.action == ExitAction.SELL and decision.should_exit:
-            return self._log_and_request_stop_exit(
-                price,
-                f"  [SL] [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) -- SELLING EVERYTHING",
-            )
+            if not self._has_pending_market_exit():
+                log(f"  [SL] [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) -- SELLING EVERYTHING")
+                if not self._request_market_exit(price, "STOP"):
+                    log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
+            return True
         if decision.action == ExitAction.HOLD:
             self._handle_mhdsl_hold_decision(decision)
         return False

@@ -370,12 +370,6 @@ def _strip_env_value_quotes_and_comment(val: str) -> str:
     return val.split("#", 1)[0].strip()
 
 
-def _reject_dotenv_line(strict: bool, message: str) -> None:
-    if strict:
-        raise ValueError(message)
-    return None
-
-
 def parse_dotenv_line(raw: str, *, strict: bool = False) -> tuple[str, str] | None:
     """Parse a single ``KEY=VALUE`` (or ``export KEY=VALUE``) line, stripping inline comments and outer quotes."""
     if not isinstance(raw, str):
@@ -386,13 +380,17 @@ def parse_dotenv_line(raw: str, *, strict: bool = False) -> tuple[str, str] | No
     eq_idx = line.find("=")
     hash_idx = line.find("#")
     if eq_idx == -1 or (hash_idx != -1 and hash_idx < eq_idx):
-        return _reject_dotenv_line(strict, f"Malformed configuration line missing '=': {raw.rstrip()!r}")
+        if strict:
+            raise ValueError(f"Malformed configuration line missing '=': {raw.rstrip()!r}")
+        return None
     key, _, val = line.partition("=")
     key = key.strip()
     if key.startswith("export") and (len(key) == 6 or key[6].isspace()):
         key = key[6:].strip()
     if not key:
-        return _reject_dotenv_line(strict, f"Empty configuration key in line: {raw.rstrip()!r}")
+        if strict:
+            raise ValueError(f"Empty configuration key in line: {raw.rstrip()!r}")
+        return None
     return key, _strip_env_value_quotes_and_comment(val)
 
 
@@ -1923,22 +1921,16 @@ class LazyPluginRegistryFactory:
         cls._registry[str(plugin_id)] = plugin_cls
 
     @classmethod
-    def _ensure_defaults_registered(cls) -> None:
-        if cls._defaults_loaded:
-            return
-        cls._defaults_loaded = True
-        for mod_name in getattr(cls, "_default_evaluator_modules", None) or cls._default_modules:
-            try:
-                __import__(mod_name)
-            except Exception:
-                pass
-
-    @classmethod
     def _resolve_registered_class(cls, plugin_id: str) -> type:
         key = str(plugin_id)
         plugin_cls = cls._registry.get(key)
-        if plugin_cls is None:
-            cls._ensure_defaults_registered()
+        if plugin_cls is None and not cls._defaults_loaded:
+            cls._defaults_loaded = True
+            for mod_name in getattr(cls, "_default_evaluator_modules", None) or cls._default_modules:
+                try:
+                    __import__(mod_name)
+                except Exception:
+                    pass
             plugin_cls = cls._registry.get(key)
         if plugin_cls is None:
             raise KeyError(f"Unknown {cls._unknown_id_label} id: {key}")

@@ -787,24 +787,20 @@ class TrailingAdapterBase:
         cur_rc_i = safe_nonneg_int(self._retry_counts.get(retry_key), 0)
         attempt_base = max(cur_rc_i, rc_act, att_val - 1)
 
-        def _bump_retry(clear_pending: bool = False):
-            new_count = attempt_base + 1
-            self._retry_counts[retry_key] = new_count
-            if isinstance(st, dict):
-                if not isinstance(st.get("retry_counts"), dict):
-                    st["retry_counts"] = {}
-                st["retry_counts"][action] = new_count
-                if clear_pending:
-                    persist(None)
-
-        if result.outcome in ("absent", "retryable", "refused"):
-            _bump_retry(clear_pending=True)
-        elif result.outcome == "terminal":
+        is_retry_outcome = result.outcome in ("absent", "retryable", "refused")
+        if is_retry_outcome or result.outcome == "terminal":
             filled = safe_nonneg_float(getattr(result.status, "filled_qty", 0.0), 0.0)
             req_qty = first_pos_float(pending.get("submitted_qty"), pending.get("requested_qty"), default=0.0) or 0.0
             st_name = str(getattr(result.status, "status", "") or "").lower()
-            if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
-                _bump_retry()
+            if is_retry_outcome or filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
+                new_count = attempt_base + 1
+                self._retry_counts[retry_key] = new_count
+                if isinstance(st, dict):
+                    if not isinstance(st.get("retry_counts"), dict):
+                        st["retry_counts"] = {}
+                    st["retry_counts"][action] = new_count
+                    if is_retry_outcome:
+                        persist(None)
             else:
                 self._retry_counts.pop(retry_key, None)
                 if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict):
@@ -865,7 +861,7 @@ class TrailingAdapterBase:
         return None
 
     def log_tick_error(self, arg) -> None:
-        self.log(f"  ! {self._LOG_TAG} cycle error ({arg}) -- continuing")
+        self.log("  ! " + f"{self._LOG_TAG} cycle error ({arg}) -- continuing")
 
     @staticmethod
     def _extract_order_result_status(result) -> tuple[str, str]:

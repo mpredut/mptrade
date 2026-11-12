@@ -68,15 +68,6 @@ def _derive_ws_quote_fill_price(event: dict[str, Any], last_quantity: float) -> 
     return 0.0
 
 
-def _extract_ws_symbol(event: Any) -> str | None:
-    if not isinstance(event, dict):
-        return None
-    raw_symbol = event.get("s")
-    if not raw_symbol or not isinstance(raw_symbol, str):
-        return None
-    return raw_symbol.strip().upper() or None
-
-
 def parse_order_execution_report(
     event: dict[str, Any],
     *,
@@ -87,7 +78,7 @@ def parse_order_execution_report(
     Returns ``None`` when the report is not a fill (e.g. ``NEW`` or ``CANCELED``
     without execution) or when required fields are malformed.
     """
-    if not (symbol := _extract_ws_symbol(event)):
+    if not isinstance(event, dict) or not isinstance(raw_sym := event.get("s"), str) or not (symbol := raw_sym.strip().upper()):
         return None
 
     # Cache only executed orders, matching get_filled_orders. NEW or terminal orders
@@ -157,7 +148,12 @@ def parse_trade_execution_report(
     Returns ``None`` when the report is not a trade fill or when required fields
     are invalid.
     """
-    if not isinstance(event, dict) or event.get("x") != "TRADE" or not (symbol := _extract_ws_symbol(event)):
+    if (
+        not isinstance(event, dict)
+        or event.get("x") != "TRADE"
+        or not isinstance(raw_sym := event.get("s"), str)
+        or not (symbol := raw_sym.strip().upper())
+    ):
         return None
 
     side = extract_order_side(event)
@@ -166,14 +162,13 @@ def parse_trade_execution_report(
         return None
     raw_trade_id = event.get("t")
     raw_order_id = event.get("i")
+    id_err: str | None = None
     if isinstance(raw_trade_id, bool) or isinstance(raw_order_id, bool):
-        builtins.print("[cacheManager][WS] rejected Trade report with boolean ID")
-        return None
-    if isinstance(raw_trade_id, (int, float)):
+        id_err = "boolean ID"
+    elif isinstance(raw_trade_id, (int, float)):
         raw_trade_id = exact_nonneg_int(raw_trade_id, default=None)
         if raw_trade_id is None:
-            builtins.print("[cacheManager][WS] rejected Trade report with invalid numeric trade ID")
-            return None
+            id_err = "invalid numeric trade ID"
     elif isinstance(raw_trade_id, str):
         raw_trade_id = _strip_int_str(raw_trade_id)
         if raw_trade_id is not None:
@@ -183,14 +178,15 @@ def parse_trade_execution_report(
                 or raw_trade_id.lower() in INVALID_SCALAR_STRINGS
                 or (num_tid is not None and (num_tid < 0 or not num_tid.is_integer()))
             ):
-                builtins.print("[cacheManager][WS] rejected Trade report with invalid trade ID")
-                return None
+                id_err = "invalid trade ID"
     elif raw_trade_id is not None:
-        builtins.print("[cacheManager][WS] rejected Trade report with non-scalar trade ID")
-        return None
-    raw_order_id = _normalize_ws_order_id(raw_order_id, strict_float=False)
-    if raw_trade_id is None and raw_order_id is None:
-        builtins.print("[cacheManager][WS] rejected Trade report with missing trade and order ID")
+        id_err = "non-scalar trade ID"
+    if id_err is None:
+        raw_order_id = _normalize_ws_order_id(raw_order_id, strict_float=False)
+        if raw_trade_id is None and raw_order_id is None:
+            id_err = "missing trade and order ID"
+    if id_err is not None:
+        builtins.print(f"[cacheManager][WS] rejected Trade report with {id_err}")
         return None
     ts_ms = extract_timestamp_ms(event)
     if ts_ms is None or ts_ms <= 0:

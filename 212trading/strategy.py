@@ -518,10 +518,10 @@ class Strategy(BaseSpotMixin):
 
     def _can_close_dust_cycle(self) -> bool:
         return bool(
-            self._all_tp_ladder_levels_sold()
+            not self.p.tp_ladder
+            or {lvl for (lvl, _) in self.p.tp_ladder}.issubset(set(self.s.get("tp_sold_levels", [])))
             or self._state_flag("sl_pending")
             or self._state_flag("sl_pending_exit")
-            or not self.p.tp_ladder
         )
 
     def _apply_fill(self, order: dict, qty: float, price: float) -> None:
@@ -676,18 +676,14 @@ class Strategy(BaseSpotMixin):
     def _reentry_pullback_labels(self, _sp_len: int) -> tuple[str, str]:
         return "fixed (fallback)", "vol"
 
-    def _reentry_sl_bounce_ratio(self) -> float:
-        p = self.p
-        return (
-            vol_pct_to_ratio(p.sl_rebuy_bounce_pct)
-            if p.sl_rebuy_enabled
-            else (0.015 if p.sl_mhdsl_enabled else 0.0)
-        )
-
     def _exit_config_overrides(self) -> dict[str, Any]:
         p = self.p
         return dict(
-            reentry_sl_bounce_pct=self._reentry_sl_bounce_ratio(),
+            reentry_sl_bounce_pct=(
+                vol_pct_to_ratio(p.sl_rebuy_bounce_pct)
+                if p.sl_rebuy_enabled
+                else (0.015 if p.sl_mhdsl_enabled else 0.0)
+            ),
             reentry_bear_gate_enabled=False,
             reentry_bear_bounce_pct=0.0,
             tp_trend_ride_enabled=p.tp_mdhtp_enabled,
@@ -744,7 +740,11 @@ class Strategy(BaseSpotMixin):
         _regime: Any,
     ) -> tuple[str | None, bool, bool]:
         last_kind = "STOP" if is_stop_exit else "TP"
-        mgr.config.reentry_sl_bounce_pct = self._reentry_sl_bounce_ratio()
+        mgr.config.reentry_sl_bounce_pct = (
+            vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct)
+            if self.p.sl_rebuy_enabled
+            else (0.015 if self.p.sl_mhdsl_enabled else 0.0)
+        )
         mgr.config.reentry_bear_gate_enabled = False
         mgr.config.reentry_bear_bounce_pct = 0.0
         trend_up, trend_down = bool(self.p.reentry_peak_relative), False
@@ -1296,12 +1296,13 @@ class Strategy(BaseSpotMixin):
             return False
         avg, loss_pct = sl_ctx
 
-        if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
-            if not self._in_mhdsl_territory(loss_pct):
-                self.s["sl_alerted"] = self.s["sl_pending"] = False
-                self.s.pop("sl_fail_until", None)
-                return False
+        use_mhdsl = self.exit_manager is not None and self.p.sl_mhdsl_enabled
+        if not (self._in_mhdsl_territory(loss_pct) if use_mhdsl else loss_pct >= self.p.stop_loss_pct):
+            self.s["sl_alerted"] = self.s["sl_pending"] = False
+            self.s.pop("sl_fail_until", None)
+            return False
 
+        if use_mhdsl:
             snapshot = self._create_position_snapshot(price, avg, self.s.get("qty", 0.0))
             sell_qty = snapshot.sellable_qty
             raw_pending_sl = self.s.get("sl_pending_exit")
@@ -1328,10 +1329,6 @@ class Strategy(BaseSpotMixin):
                 self._handle_mhdsl_hold_decision(decision)
             return False
 
-        if loss_pct < self.p.stop_loss_pct:
-            self.s["sl_alerted"] = self.s["sl_pending"] = False
-            self.s.pop("sl_fail_until", None)
-            return False
         if self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0):
             return False
         if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):

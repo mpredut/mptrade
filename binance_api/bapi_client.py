@@ -69,11 +69,6 @@ def _install_recvwindow_retry(cl):
     if not callable(orig_request) or getattr(cl, "_recvwindow_retry_installed", False):
         return
 
-    def _sanitize_exc(exc):
-        msg = getattr(exc, "message", None)
-        if isinstance(msg, str) and ("\n" in msg or "\r" in msg):
-            exc.message = " ".join(msg.split())
-
     def _request_with_recvwindow_retry(method, uri, signed, force_params=False, **kwargs):
         saved_data = dict(kwargs["data"]) if isinstance(kwargs.get("data"), dict) else None
         saved_kwargs = dict(kwargs)
@@ -86,7 +81,8 @@ def _install_recvwindow_retry(cl):
                 and getattr(exc, "status_code", None) in (500, 502, 503, 504)
             )
             if not (is_recvwindow or is_idempotent_5xx):
-                _sanitize_exc(exc)
+                if isinstance(msg := getattr(exc, "message", None), str) and ("\n" in msg or "\r" in msg):
+                    exc.message = " ".join(msg.split())
                 raise
             if is_recvwindow:
                 sync_time()
@@ -99,7 +95,8 @@ def _install_recvwindow_retry(cl):
             try:
                 return orig_request(method, uri, signed, force_params=force_params, **retry_kwargs)
             except Exception as retry_exc:
-                _sanitize_exc(retry_exc)
+                if isinstance(msg := getattr(retry_exc, "message", None), str) and ("\n" in msg or "\r" in msg):
+                    retry_exc.message = " ".join(msg.split())
                 raise
 
     cl._request = _request_with_recvwindow_retry
