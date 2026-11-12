@@ -46,7 +46,6 @@ from guard_hierarchy import (
     _validate_margins_cfg,
     _venue_cfg,
     is_category_bypassed,
-    is_intelligence_master_off,
     is_master_bypass,
     make_intel_cache_key,
     merge_guard_scale,
@@ -1241,6 +1240,18 @@ def check_math_profit_reference(
               f"The {side} order is BLOCKED.")
         return False
     return True
+
+
+def unpack_daily_limit_result(limit_result: Any) -> Tuple[bool, float, Optional[int], str]:
+    """Unpack a boolean or ``(allowed, used_weight, limit, reason)`` tuple from ``check_daily_limit``."""
+    if isinstance(limit_result, tuple):
+        return (
+            bool(limit_result[0]),
+            float(limit_result[1]) if len(limit_result) > 1 else 0.0,
+            limit_result[2] if len(limit_result) > 2 else None,
+            str(limit_result[3]) if len(limit_result) > 3 else "",
+        )
+    return bool(limit_result), 0.0, None, ""
 
 
 def profit_guard(

@@ -46,9 +46,7 @@ from cachepaths import resolve_venue_runtime_dir
 from .state_store import (
     state_path_for as _shared_state_path_for,
 )
-from .position_exit_manager import (
-    ExitAction, PositionExitManager,
-)
+from .position_exit_manager import ExitAction
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LEGACY_STATE_DIR = resolve_venue_runtime_dir("kraken", workspace_dir=_ROOT)

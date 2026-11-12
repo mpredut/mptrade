@@ -20,7 +20,6 @@ from collections import defaultdict
 from datetime import datetime
 import json
 import os
-import sys
 import threading
 from typing import Any, Optional, Sequence
 import uuid
@@ -44,7 +43,6 @@ from botcore import (
     log,
     normalize_epoch_sec,
     normalize_side,
-    parse_symbol_list,
     resolve_now_ms,
     resolve_now_ts,
     resolve_positive_max_age,

@@ -24,7 +24,6 @@ if _ROOT_DIR not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
-    is_interval_due,
     load_dotenv,
     pos_float_env,
     safe_nonneg_ts,

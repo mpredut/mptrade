@@ -15,8 +15,6 @@ from cachepaths import (
 )
 from instrument_registry import casefold_get
 from pricewindow import (
-    K_DCA_DEFAULT,
-    K_REENTRY_DEFAULT,
     _vol_memo_cache,
     adaptive_thresholds,
     calculate_volatility_1h,

@@ -56,7 +56,6 @@ from botcore import (
     FileLock,
     bool_env,
     float_env,
-    int_env,
     load_env_stack,
     load_ini_config,
     resolve_mem_bounded_worker_cap,

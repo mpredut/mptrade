@@ -35,7 +35,7 @@ from cachepaths import canonical_base_asset, legacy_filenames_for
 from state_io import iter_jsonl_dicts
 from .base import MarketDataProvider
 from .quantity import resolve_base_asset
-from .strategy_executor import PairPrecision, ProviderError, SubmissionRefused
+from .strategy_executor import PairPrecision, ProviderError
 
 
 _base_asset = resolve_base_asset

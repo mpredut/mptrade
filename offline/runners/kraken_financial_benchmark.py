@@ -27,7 +27,7 @@ from botcore import (  # noqa: E402
 from state_io import atomic_write_json, atomic_write_text, read_json_file  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
-from strategies.spot_replay import align_spot_interval_params, prepare_spot_interval_params  # noqa: E402
+from strategies.spot_replay import prepare_spot_interval_params  # noqa: E402
 from offline.backtests.comparison import add_path_cli_args, add_report_output_cli_args, format_number  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_sha256,

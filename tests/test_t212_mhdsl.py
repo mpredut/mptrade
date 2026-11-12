@@ -1,10 +1,8 @@
 """Unified tests for Trading 212 environment loading, MHDSL, MDHTP, and Hybrid Re-entry."""
 
-import atexit
 from tests.conftest import TempDirTestCase
 import json
 import os
-import tempfile
 import threading
 import time
 import unittest
@@ -683,14 +681,6 @@ _SPCX_ENV = (
 )
 
 
-def _tmp_env_file(content: str) -> str:
-    f = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
-    f.write(content)
-    f.close()
-    atexit.register(lambda p=f.name: os.unlink(p) if os.path.exists(p) else None)
-    return f.name
-
-
 class TestParseDotenv(TempDirTestCase):
     def test_returns_dict_without_environ(self):
         path = os.path.join(self.tmp, "uniq.env")
@@ -722,10 +712,16 @@ class TestFloatEnvDict(unittest.TestCase):
             del os.environ["TST_FLT_9"]
 
 
-class TestParamsIsolation(unittest.TestCase):
+class TestParamsIsolation(TempDirTestCase):
+    def _env_file(self, content: str, name: str) -> str:
+        path = os.path.join(self.tmp, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+
     def test_two_assets_with_different_parameters(self):
-        nv = parse_dotenv(_tmp_env_file(_NVDA_ENV))
-        sp = parse_dotenv(_tmp_env_file(_SPCX_ENV))
+        nv = parse_dotenv(self._env_file(_NVDA_ENV, "nvda.env"))
+        sp = parse_dotenv(self._env_file(_SPCX_ENV, "spcx.env"))
         pn = strategy.StratParams.from_env(nv)
         ps = strategy.StratParams.from_env(sp)
         self.assertEqual(pn.entry_amount, 100.0)
@@ -738,7 +734,7 @@ class TestParamsIsolation(unittest.TestCase):
         self.assertEqual(ps.reentry_drop_pct, 2.0)
 
     def test_inline_comment_in_check_minutes(self):
-        pn = strategy.StratParams.from_env(parse_dotenv(_tmp_env_file(_NVDA_ENV)))
+        pn = strategy.StratParams.from_env(parse_dotenv(self._env_file(_NVDA_ENV, "nvda.env")))
         self.assertEqual(pn.check_minutes, 0.4)
 
     def test_missing_environment_fails_instead_of_using_defaults(self):
