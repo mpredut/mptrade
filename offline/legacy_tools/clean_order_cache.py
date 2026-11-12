@@ -67,11 +67,8 @@ def main():
         print(f"  {sym}: total={len(lst)} | removed={len(lst) - len(keep)} | remaining={len(keep)}")
     print(f"TOTAL: {total} | to_remove={removed} | remaining={total - removed}")
 
-    if dry:
-        print("[DRY] nothing was written.")
-        return
-    if removed == 0:
-        print("Nothing to clean.")
+    if dry or removed == 0:
+        print("[DRY] nothing was written." if dry else "Nothing to clean.")
         return
 
     bak = ORDER_FILE + f".bak.{safe_int(time.time(), default=0)}"

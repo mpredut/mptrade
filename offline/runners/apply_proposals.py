@@ -90,14 +90,14 @@ def main(argv: list[str] | None = None):
     except Exception:  # noqa: BLE001
         pass
 
-    if bool_env("APPLY_DISABLED", default=False):
-        print("[apply] APPLY_DISABLED=true -- exiting without doing anything")
-        return
-
-    proposals = _read_proposals()
-    if not proposals:
-        branch_label = _configured_branch("backtest-proposals")
-        print(f"[apply] no proposal on branch {branch_label} -- nothing to do")
+    disabled = bool_env("APPLY_DISABLED", default=False)
+    proposals = [] if disabled else _read_proposals()
+    if disabled or not proposals:
+        print(
+            "[apply] APPLY_DISABLED=true -- exiting without doing anything"
+            if disabled
+            else f"[apply] no proposal on branch {_configured_branch('backtest-proposals')} -- nothing to do"
+        )
         return
 
     lock_path = optional_env("APPLY_PROPOSALS_LOCK") or "/tmp/mptrade_apply_proposals.lock"

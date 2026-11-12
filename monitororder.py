@@ -248,13 +248,14 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     order_type = order_type_u
 
     orders = api.get_open_orders(order_type, symbol)
-    if not orders or not isinstance(orders, dict):
-        print(f"For {symbol} there are no open {order_type} orders to begin with.")
-        return
-    
-    current_price = safe_pos_float(api.get_current_price(symbol), default=None)
-    if current_price is None:
-        print("Could not obtain the current price.")
+    has_orders = bool(orders and isinstance(orders, dict))
+    current_price = safe_pos_float(api.get_current_price(symbol), default=None) if has_orders else None
+    if not has_orders or current_price is None:
+        print(
+            f"For {symbol} there are no open {order_type} orders to begin with."
+            if not has_orders
+            else "Could not obtain the current price."
+        )
         return
     
     print(f"The current price : {format_price_log(current_price)}")

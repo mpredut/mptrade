@@ -103,16 +103,17 @@ def main():
     files = [f for f in files
              if not f.endswith(".bak")
              and os.path.basename(f)[len("cache_price_"):-len(".json")] not in EXCLUDE]
-    if not files:
-        print("There are no cache_price_*.json files to migrate.")
-        return
-    print(f"{'DRY RUN' if dry_run else 'MIGRATION'}: {len(files)} files\n")
+    print(
+        f"{'DRY RUN' if dry_run else 'MIGRATION'}: {len(files)} files\n"
+        if files
+        else "There are no cache_price_*.json files to migrate."
+    )
     for f in files:
         try:
             migrate_file(f, dry_run=dry_run)
         except Exception as e:
             print(f"[ERROR] {os.path.basename(f)}: {e}")
-    if not dry_run:
+    if files and not dry_run:
         print("\nDone. The .json files were renamed to .json.bak "
               "(delete them once you have checked the .jsonl).")
 

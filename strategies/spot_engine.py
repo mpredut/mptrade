@@ -1018,27 +1018,24 @@ class Strategy(BaseSpotMixin):
         """Adopt an existing account position instead of buying an entry."""
         if self.p.adopt_cost <= 0 or self._state_flag("adopted"):
             return
-        if self.s["qty"] > 1e-12 or self.s["orders"] or self.s["cycle"] != 1 or self.s["spent"] > 0:
-            log("  [STRAT] adopt: the state is not fresh -- NOT adopting (cycle in progress)")
-            return
-        qty = safe_nonneg_float(self.p.adopt_qty) or 0.0
-        if qty <= 0:
+        not_fresh = self.s["qty"] > 1e-12 or bool(self.s["orders"]) or self.s["cycle"] != 1 or self.s["spent"] > 0
+        qty: float | None = 0.0 if not_fresh else (safe_nonneg_float(self.p.adopt_qty) or 0.0)
+        if not not_fresh and qty <= 0:
             try:
                 precision = self.client.pair_precision(self.pair)
                 raw_bal = self.client.free_balance(precision.base_asset if precision else "")
             except ProviderError as e:
                 log(f"  ! [STRAT] adopt: cannot read the balance ({e})")
                 return
-            if raw_bal is None:
-                qty = 0.0
-            else:
-                clean_bal = safe_nonneg_float(raw_bal, None)
-                if clean_bal is None:
-                    log("  ! [STRAT] adopt: invalid balance on the base asset")
-                    return
-                qty = clean_bal
-        if qty <= 1e-12:
-            log("  [STRAT] adopt: balance 0 on the base asset -- waiting for the allocation")
+            qty = 0.0 if raw_bal is None else safe_nonneg_float(raw_bal, None)
+        if not_fresh or qty is None or qty <= 1e-12:
+            log(
+                "  [STRAT] adopt: the state is not fresh -- NOT adopting (cycle in progress)"
+                if not_fresh
+                else "  ! [STRAT] adopt: invalid balance on the base asset"
+                if qty is None
+                else "  [STRAT] adopt: balance 0 on the base asset -- waiting for the allocation"
+            )
             return
         if self.p.adopt_qty <= 0:
             qty = self._dust_safe_qty(qty)
@@ -1860,12 +1857,16 @@ class Strategy(BaseSpotMixin):
             return
         try:
             free_quote = self.client.free_balance(self.ccy)
+            clean_quote = safe_nonneg_float(free_quote, None)
+            if clean_quote is None:
+                raise ValueError("quote balance is not a finite non-negative number")
         except Exception as exc:
-            log(f"  [STRAT] DCA deferred: quote balance unavailable ({exc})")
-            return
-        clean_quote = safe_nonneg_float(free_quote, None)
-        if clean_quote is None:
-            log("  [STRAT] DCA deferred: quote balance is not a finite non-negative number")
+            msg = (
+                str(exc)
+                if isinstance(exc, ValueError) and str(exc) == "quote balance is not a finite non-negative number"
+                else f"quote balance unavailable ({exc})"
+            )
+            log(f"  [STRAT] DCA deferred: {msg}")
             return
         fee_rate_pct = safe_nonneg_float(getattr(self.client, "buy_fee_pct", None), default=0.0)
         affordable_quote = clean_quote / (1.0 + fee_rate_pct / 100.0) if fee_rate_pct > 0.0 else clean_quote

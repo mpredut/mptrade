@@ -235,12 +235,14 @@ def main():
     print(f"   cooldown {ac['cooldown_minutes']}min | lookback {ac['lookback_hours']}h | "
           f"price scan {cfg['price_scan_seconds']}s | new-coin scan {cfg['new_coins_scan_seconds']}s")
     print("=" * 70)
-
+    print(
+        "[OK] --check: the config is valid and the imports are OK. Exiting without starting the monitor."
+        if args.check
+        else "\nInitialising the price cache..."
+    )
     if args.check:
-        print("[OK] --check: the config is valid and the imports are OK. Exiting without starting the monitor.")
         return
 
-    print("\nInitialising the price cache...")
     cmc_key_for_cache = CMC_API_KEY if (cfg.get("discover_new_coins") and ALERT_NEW_COIN) else None
     cachePriceAll = create_cachePriceAll(cmc_api_key=cmc_key_for_cache,
                                          symbols=cfg["watch"], max_symbols=cfg["max_monitored"])

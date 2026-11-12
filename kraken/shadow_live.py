@@ -351,13 +351,14 @@ def _print_block(title: str, blk: dict) -> None:
     bh = blk.get("buyhold_pct")
     bh_s = f"{bh:+.2f}%" if bh is not None else "n/a"
     print(f"  [{title}] {blk['bars']} bars  buy&hold {bh_s}")
-    if not r:
-        print("    (not enough bars -- they are accumulating)")
-        return
-    cur = r.get("current", {}).get("total_pct", 0.0)
-    print(f"    {'config':<20} {'net%':>8} {'total%':>8} {'maxDD%':>8} "
-          f"{'cycles':>8} {'d_dec':>6}  vs current total")
-    for name, x in r.items():
+    print(
+        f"    {'config':<20} {'net%':>8} {'total%':>8} {'maxDD%':>8} "
+        f"{'cycles':>8} {'d_dec':>6}  vs current total"
+        if r
+        else "    (not enough bars -- they are accumulating)"
+    )
+    cur = r.get("current", {}).get("total_pct", 0.0) if r else 0.0
+    for name, x in (r or {}).items():
         diff = "" if name == "current" else f"{x['total_pct'] - cur:+.2f}pp"
         divergences = x.get("decision_divergences")
         divergence_text = "-" if divergences is None else str(divergences)

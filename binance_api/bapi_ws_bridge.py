@@ -290,14 +290,17 @@ def initialize_ws_bridge_once(
     enable_fn: Callable[[], Any] | None = None,
 ) -> None:
     """Idempotently start the user-data WebSocket bridge once per process."""
-    if sys.modules.get("_cacheManager_initialized"):
-        print("[cacheManager] Already initialized, skip.")
-        return
-    sys.modules["_cacheManager_initialized"] = True
-    try:
-        (enable_fn or enable_real_ws_event_sync)()
-    except BaseException:
-        sys.modules.pop("_cacheManager_initialized", None)
-        raise
-    print("⚙️ cacheManager: WS user-data bridge started (execution reports).")
+    already_init = bool(sys.modules.get("_cacheManager_initialized"))
+    if not already_init:
+        sys.modules["_cacheManager_initialized"] = True
+        try:
+            (enable_fn or enable_real_ws_event_sync)()
+        except BaseException:
+            sys.modules.pop("_cacheManager_initialized", None)
+            raise
+    print(
+        "[cacheManager] Already initialized, skip."
+        if already_init
+        else "⚙️ cacheManager: WS user-data bridge started (execution reports)."
+    )
 

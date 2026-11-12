@@ -429,7 +429,7 @@ class PriceChecker:
         if iv_f is None:
             raise ValueError("interval_seconds must be greater than zero")
         if self._running:
-            print("[Checker] Already running!")
+            print(f"[{self._MONITOR_LABEL}] Already running!")
             return
 
         self._running = True

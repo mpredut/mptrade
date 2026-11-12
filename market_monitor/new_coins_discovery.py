@@ -170,7 +170,7 @@ class CoinMarketCapSource(NewCoinsSource):
     
     def refresh(self):
         if not self.is_available():
-            print("[CMC Source] Missing API key!")
+            print(f"[{self.get_name()} Source] Missing API key!")
             return
         try:
             params = {'start': '1', 'limit': '2000', 'convert': 'USD', 'sort': 'date_added', 'sort_dir': 'desc'}
