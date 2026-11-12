@@ -446,16 +446,12 @@ GOLDEN_METRICS = {
 
 
 
-def _load_ohlc(n):
-    with open(DATASET, encoding="utf-8") as fh:
-        rows = list(csv.DictReader(fh))
-    return [(float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
-            for r in rows][:n]
 
 
 class BaseV2GoldenTest(unittest.TestCase):
     def _run_with_trace(self):
-        ohlc = _load_ohlc(BARS)
+        with open(DATASET, encoding="utf-8") as fh:
+            ohlc = [(float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"])) for r in csv.DictReader(fh)][:BARS]
         trace = []
         orig_place = strat.Strategy._place
 

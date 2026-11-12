@@ -217,12 +217,6 @@ class TestScanBacktestRanges(TempDirTestCase):
 
 
 class TestBacktestAnnotations(unittest.TestCase):
-    def _current_ini_value(self, path, full_key):
-        section, key = full_key.split(".", 1)
-        cp = configparser.ConfigParser()
-        cp.read(path)
-        return float(cp[section][key])
-
     def test_annotations_well_formed_and_live_in_range(self):
         seen_any = False
         for path in _INI_CONFIGS:
@@ -235,7 +229,10 @@ class TestBacktestAnnotations(unittest.TestCase):
                         vals = [float(v) for v in grid]
                     except ValueError as e:
                         self.fail(f"{full_key}: grid has non-numeric values ({grid}): {e}")
-                    current = self._current_ini_value(path, full_key)
+                    sec, key = full_key.split(".", 1)
+                    cp = configparser.ConfigParser()
+                    cp.read(path)
+                    current = float(cp[sec][key])
                     lo, hi = min(vals), max(vals)
                     self.assertTrue(
                         lo <= current <= hi,

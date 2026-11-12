@@ -104,20 +104,12 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         self.patcher.start()
         self.server = NotificationServer()
         self.dispatched = []
-        self.server._send_ntfy = self._record_send
+        self.server._send_ntfy = lambda title, message, priority, topic, is_retry=False: (self.dispatched.append({"title": title, "message": message, "priority": priority, "topic": topic}) or True)
 
     def tearDown(self):
         self.patcher.stop()
         super().tearDown()
 
-    def _record_send(self, title: str, message: str, priority: str, topic: str, is_retry: bool = False) -> bool:
-        self.dispatched.append({
-            "title": title,
-            "message": message,
-            "priority": priority,
-            "topic": topic,
-        })
-        return True
 
     def test_process_line_resilience(self):
         """Test pure JSON, timestamp-prefixed, bot-prefixed, and malformed lines."""
