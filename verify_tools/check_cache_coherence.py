@@ -36,6 +36,10 @@ def main() -> int:
     exp = expected_symbols()
     print(f"expected symbols: {exp}")
 
+    def _record_symbol_status(cache_label: str, sym: str, status: str) -> None:
+        problems.append(f"{cache_label} {status} {sym}")
+        print(f"   {sym:10} IS {status}")
+
     # 1. short trend
     raw_st = read_json_dict(os.path.join(CACHEDB, "cache_short_trend.json"), default=None, recover_previous=True) or {}
     it = raw_st.get("items") if isinstance(raw_st.get("items"), dict) else raw_st
@@ -48,8 +52,7 @@ def main() -> int:
                 e = cand_entry
                 break
         if not isinstance(e, dict) or not e:
-            problems.append(f"short_trend MISSING {s}")
-            print(f"   {s:10} IS MISSING")
+            _record_symbol_status("short_trend", s, "MISSING")
             continue
         ts_val = safe_pos_float(e.get("ts"), default=0.0)
         age = now - ts_val if ts_val > 0 else 1e9
@@ -79,8 +82,7 @@ def main() -> int:
                 matched_key = cand
                 break
         if entries is None or (isinstance(entries, (list, dict, str)) and not entries):
-            problems.append(f"currentprice MISSING {s}")
-            print(f"   {s:10} IS MISSING")
+            _record_symbol_status("currentprice", s, "MISSING")
             continue
 
         px_val = extract_current_price_item(entries) or 0.0
@@ -90,8 +92,7 @@ def main() -> int:
         if isinstance(entries, list):
             last_entry = entries[-1] if entries else None
             if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:
-                problems.append(f"currentprice INVALID {s}")
-                print(f"   {s:10} IS INVALID")
+                _record_symbol_status("currentprice", s, "INVALID")
                 continue
             ts_raw = last_entry[0]
         elif isinstance(entries, dict):
@@ -106,8 +107,7 @@ def main() -> int:
             ts_raw = ft_matched or ft_sym
 
         if px_val <= 0:
-            problems.append(f"currentprice INVALID {s}")
-            print(f"   {s:10} IS INVALID")
+            _record_symbol_status("currentprice", s, "INVALID")
             continue
 
         ts_sec_val = normalize_epoch_sec(ts_raw, default=0.0) or 0.0

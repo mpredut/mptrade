@@ -331,15 +331,16 @@ class Instrument:
         if order_kind is not None:
             kwargs["kind"] = order_kind
 
-        def _refuse_early(r: str):
+        def _refuse_early(r: str, msg: Optional[str] = None):
+            if msg:
+                print(msg)
             if outcome_context is not None:
                 outcome_context.update(accepted=False, reason=r, state="refused")
             return None
 
         side_u = normalize_side(side)
         if not side_u:
-            print(f"[{self.symbol}] {side!r} BLOCKED (pre-submit): invalid_side")
-            return None, _refuse_early("invalid_side")
+            return None, _refuse_early("invalid_side", f"[{self.symbol}] {side!r} BLOCKED (pre-submit): invalid_side")
 
         ctx = _PlaceContext(
             side_u=side_u,
@@ -442,8 +443,10 @@ class Instrument:
             _parse_bool_flag(getattr(self._provider, "supports_business_minimum", lambda: False)(), False)
         )
         if ctx.cache_permit is not None and not ctx.requires_permit:
-            print(f"[{self.symbol}] {side_u} BLOCKED (pre-submit): invalid_cache_permit_provider")
-            return None, _refuse_early("invalid_cache_permit_provider")
+            return None, _refuse_early(
+                "invalid_cache_permit_provider",
+                f"[{self.symbol}] {side_u} BLOCKED (pre-submit): invalid_cache_permit_provider",
+            )
         ctx.execution_enabled = getattr(self._provider, "execution_enabled", None)
         inst_live = self.param("execution", "live_enabled", None, bool)
         try:
@@ -457,13 +460,15 @@ class Instrument:
                 )
             )
         except Exception as exc:  # noqa: BLE001 - An unreadable gate must fail closed.
-            print(
-                f"[{self.symbol}] {side_u} BLOCKED (pre-submit): execution_gate_unavailable ({exc})"
+            return None, _refuse_early(
+                "execution_gate_unavailable",
+                f"[{self.symbol}] {side_u} BLOCKED (pre-submit): execution_gate_unavailable ({exc})",
             )
-            return None, _refuse_early("execution_gate_unavailable")
         if not provider_execution_enabled:
-            print(f"[{self.symbol}] {side_u} DRY: real provider execution is disabled")
-            return None, _refuse_early("execution_disabled")
+            return None, _refuse_early(
+                "execution_disabled",
+                f"[{self.symbol}] {side_u} DRY: real provider execution is disabled",
+            )
         if inst_live is not None and "live_enabled" not in kwargs:
             kwargs["live_enabled"] = provider_execution_enabled
         supports_validity = getattr(

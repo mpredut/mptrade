@@ -483,18 +483,18 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         if r_high > r_low > 0:
             out["alt_btc_pos_24h_pct"] = range_position_pct(r_cur, r_low, r_high) + 0.0
 
-        step = 3 if len(aligned) >= 18 else 1
-        rets_a, rets_b = [], []
-        for (bk0, a0, b0), (bk1, a1, b1) in zip(aligned, aligned[step:]):
-            if 0 < (bk1 - bk0) <= 48 and a0 > 0 and b0 > 0:
-                rets_a.append(a1 / a0 - 1.0)
-                rets_b.append(b1 / b0 - 1.0)
-        if len(rets_b) < 6 and step > 1:
-            rets_a, rets_b = [], []
-            for (bk0, a0, b0), (bk1, a1, b1) in zip(aligned, aligned[1:]):
+        def _step_returns(s: int) -> Tuple[list[float], list[float]]:
+            ra_list, rb_list = [], []
+            for (bk0, a0, b0), (bk1, a1, b1) in zip(aligned, aligned[s:]):
                 if 0 < (bk1 - bk0) <= 48 and a0 > 0 and b0 > 0:
-                    rets_a.append(a1 / a0 - 1.0)
-                    rets_b.append(b1 / b0 - 1.0)
+                    ra_list.append(a1 / a0 - 1.0)
+                    rb_list.append(b1 / b0 - 1.0)
+            return ra_list, rb_list
+
+        step = 3 if len(aligned) >= 18 else 1
+        rets_a, rets_b = _step_returns(step)
+        if len(rets_b) < 6 and step > 1:
+            rets_a, rets_b = _step_returns(1)
         if len(rets_b) >= 6:
             mean_a, mean_b = statistics.fmean(rets_a), statistics.fmean(rets_b)
             var_a, var_b = statistics.pvariance(rets_a, mu=mean_a), statistics.pvariance(rets_b, mu=mean_b)
@@ -547,29 +547,16 @@ def compute_swing_wave_metrics(
     direction, hi_px, hi_idx, lo_px, lo_idx = 0, vals[0], 0, vals[0], 0
 
     for idx, v in enumerate(vals[1:], start=1):
-        if direction == 0:
-            if v > hi_px:
-                hi_px, hi_idx = v, idx
-            if v < lo_px:
-                lo_px, lo_idx = v, idx
-            if lo_px > 0 and (v - lo_px) / lo_px >= thr and lo_idx < idx:
-                pivots.append(("LOW", lo_idx, lo_px))
-                direction, hi_px, hi_idx = 1, v, idx
-            elif hi_px > 0 and (hi_px - v) / hi_px >= thr and hi_idx < idx:
-                pivots.append(("HIGH", hi_idx, hi_px))
-                direction, lo_px, lo_idx = -1, v, idx
-        elif direction == 1:
-            if v >= hi_px:
-                hi_px, hi_idx = v, idx
-            elif hi_px > 0 and (hi_px - v) / hi_px >= thr:
-                pivots.append(("HIGH", hi_idx, hi_px))
-                direction, lo_px, lo_idx = -1, v, idx
-        else:
-            if v <= lo_px:
-                lo_px, lo_idx = v, idx
-            elif lo_px > 0 and (v - lo_px) / lo_px >= thr:
-                pivots.append(("LOW", lo_idx, lo_px))
-                direction, hi_px, hi_idx = 1, v, idx
+        if direction >= 0 and (v > hi_px if direction == 0 else v >= hi_px):
+            hi_px, hi_idx = v, idx
+        if direction <= 0 and (v < lo_px if direction == 0 else v <= lo_px):
+            lo_px, lo_idx = v, idx
+        if direction <= 0 and lo_px > 0 and (v - lo_px) / lo_px >= thr and lo_idx < idx:
+            pivots.append(("LOW", lo_idx, lo_px))
+            direction, hi_px, hi_idx = 1, v, idx
+        elif direction >= 0 and hi_px > 0 and (hi_px - v) / hi_px >= thr and hi_idx < idx:
+            pivots.append(("HIGH", hi_idx, hi_px))
+            direction, lo_px, lo_idx = -1, v, idx
 
     chain: list[Tuple[str, int, float]] = list(pivots)
     if direction == 1 and chain and chain[-1][2] > 0 and (hi_px - chain[-1][2]) / chain[-1][2] >= thr:
@@ -1033,17 +1020,19 @@ def _reconcile_major_swing_low(
         return
     maj_lo_new = round(min(maj_lo, p_cur, *([l24] if l24 is not None else [])), decimals)
     eff_sw_lo = safe_pos_float(target_dict.get("swing_low_px"), default=None)
-    if eff_sw_lo is not None and maj_lo_new >= eff_sw_lo - 1e-9:
-        for k in ("major_swing_low_px", "rally_from_major_low_pct"):
-            target_dict.pop(k, None)
-    elif eff_sw_lo is not None and abs(p_cur - eff_sw_lo) / max(p_cur, 1e-12) < 5e-4:
-        target_dict["swing_low_px"] = maj_lo_new
-        target_dict["rally_from_swing_low_pct"] = pct_delta(p_cur, maj_lo_new)
-        for k in ("major_swing_low_px", "rally_from_major_low_pct"):
-            target_dict.pop(k, None)
-    else:
+    promote_to_swing = (
+        eff_sw_lo is not None
+        and maj_lo_new < eff_sw_lo - 1e-9
+        and abs(p_cur - eff_sw_lo) / max(p_cur, 1e-12) < 5e-4
+    )
+    if eff_sw_lo is None or (maj_lo_new < eff_sw_lo - 1e-9 and not promote_to_swing):
         target_dict["major_swing_low_px"] = maj_lo_new
         target_dict["rally_from_major_low_pct"] = pct_delta(p_cur, maj_lo_new)
+        return
+    if promote_to_swing:
+        target_dict.update(swing_low_px=maj_lo_new, rally_from_swing_low_pct=pct_delta(p_cur, maj_lo_new))
+    for k in ("major_swing_low_px", "rally_from_major_low_pct"):
+        target_dict.pop(k, None)
 
 
 def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None:

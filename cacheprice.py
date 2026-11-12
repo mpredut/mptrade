@@ -1351,12 +1351,15 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             last_ts,
         )
 
-    def get_price(self, symbol: str):
+    def _resolve_and_load_cached_entry(self, symbol: str, now_ms: int):
         with self.lock:
             target_sym = self._resolve_target_symbol_locked(symbol)
             entry, last_ts = self._cached_entry_for_symbol_locked(target_sym)
+        return target_sym, entry, ((now_ms - last_ts) if last_ts else None)
+
+    def get_price(self, symbol: str):
         now_ms = math.trunc(_now_time() * 1000)
-        age_ms = (now_ms - last_ts) if last_ts else None
+        target_sym, entry, age_ms = self._resolve_and_load_cached_entry(symbol, now_ms)
         stale_threshold_ms = self.STALE_THRESHOLD_MS
         sym_mod = _cm_override("sym", sym)
         if (
@@ -1379,10 +1382,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 and not self.save_state
             ):
                 self.resync_mem_file()
-                with self.lock:
-                    target_sym = self._resolve_target_symbol_locked(symbol)
-                    entry, last_ts = self._cached_entry_for_symbol_locked(target_sym)
-                age_ms = (now_ms - last_ts) if last_ts else None
+                target_sym, entry, age_ms = self._resolve_and_load_cached_entry(symbol, now_ms)
         if (
             entry is None
             or age_ms is None

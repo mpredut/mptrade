@@ -140,6 +140,12 @@ class NewCoinsSource(ABC):
     def is_available(self) -> bool:
         return True
 
+    def _fetch_endpoint_json(self, path: str, *, headers=None, params=None):
+        url = path if path.startswith("http") else f"{self.base_url}/{path.lstrip('/')}"
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        response.raise_for_status()
+        return response.json()
+
 # ============================================
 # Source 1: CoinMarketCap
 # ============================================
@@ -164,9 +170,11 @@ class CoinMarketCapSource(NewCoinsSource):
             return
         try:
             params = {'start': '1', 'limit': '2000', 'convert': 'USD', 'sort': 'date_added', 'sort_dir': 'desc'}
-            response = requests.get("https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest", headers=self.headers, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
+            data = self._fetch_endpoint_json(
+                "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
+                headers=self.headers,
+                params=params,
+            )
             if isinstance(data, dict) and isinstance(data.get('data'), list):
                 self._cache = []
                 for coin in data['data']:
@@ -217,9 +225,7 @@ class CoinGeckoSource(NewCoinsSource):
     def refresh(self):
         try:
             time.sleep(1.2)
-            response = requests.get(f"{self.base_url}/coins/list", timeout=15)
-            response.raise_for_status()
-            data = response.json()
+            data = self._fetch_endpoint_json("coins/list")
             if not isinstance(data, list):
                 return
             self._cache = []
@@ -263,9 +269,7 @@ class BinanceNewListingsSource(NewCoinsSource):
     
     def refresh(self):
         try:
-            response = requests.get(f"{self.base_url}/exchangeInfo", timeout=15)
-            response.raise_for_status()
-            data = response.json()
+            data = self._fetch_endpoint_json("exchangeInfo")
             current_symbols = set()
             symbol_details = {}
             raw_symbols = data.get('symbols', []) if isinstance(data, dict) else []

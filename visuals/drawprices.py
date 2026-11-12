@@ -44,8 +44,12 @@ def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
         raw = raw_seq
     if not raw or not isinstance(raw, (list, tuple)):
         return []
+    return _iter_ts_price_pairs(raw)
+
+
+def _iter_ts_price_pairs(items) -> List[Tuple[int, float]]:
     out: List[Tuple[int, float]] = []
-    for item in raw:
+    for item in items or ():
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
         t_f = safe_float(item[0], default=None)
@@ -61,15 +65,8 @@ def to_series(cache_pairs: List[Tuple[int, float]]):
     if not cache_pairs:
         return np.array([]), np.array([]), []
     valid = []
-    for item in cache_pairs:
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
-            continue
-        t_f = safe_float(item[0], default=None)
-        p_val = safe_float(item[1], default=None)
-        if t_f is None or p_val is None:
-            continue
+    for t_val, p_val in _iter_ts_price_pairs(cache_pairs):
         try:
-            t_val = math.trunc(t_f)
             dt_val = datetime.fromtimestamp(t_val / 1000.0, timezone.utc).replace(tzinfo=None)
         except (TypeError, ValueError, OverflowError, OSError):
             continue

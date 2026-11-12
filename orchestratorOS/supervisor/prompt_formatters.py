@@ -213,8 +213,8 @@ def build_supervisor_prompt(
             f'"confidence": 0.90, "suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
         )
 
-    if spec.can_self_heal:
-        role_intro = (
+    role_intro, tool_rule, report_format_rule = (
+        (
             "You are the Lead SRE and Autonomous Technical Repair Supervisor for MPTrade.\n"
             "Your STRICT mandate is solely to detect functional system anomalies (bots, fleet modules, heartbeats), "
             "Linux OS resource issues, internet & VPN (wgpia0) connectivity failures, configuration errors, and "
@@ -222,30 +222,24 @@ def build_supervisor_prompt(
             "restarting/rebooting bots, modules, the trading fleet, VPN/DNS, or the entire Linux system.\n"
             "Do NOT analyze or report on market prices, trends/slopes, macro sentiment, portfolio balances, or active trading positions.\n\n"
             f"{context_str}\n\n"
-            "Perform an executive technical diagnostic and self-healing audit:\n" + "\n".join(tasks) + "\n\n"
-        )
-        tool_rule = (
+            "Perform an executive technical diagnostic and self-healing audit:\n" + "\n".join(tasks) + "\n\n",
             "- If you diagnose a reproducible code bug or configuration error and need to verify exact lines before proposing `code_remediation`, "
             "you MAY read the target file in the workspace so `search_block` matches verbatim. "
-            "Do NOT edit or modify workspace files directly with tools; propose all fixes exclusively in `code_remediation`.\n"
-        )
-        report_format_rule = (
+            "Do NOT edit or modify workspace files directly with tools; propose all fixes exclusively in `code_remediation`.\n",
             "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
             "  1) A concise, well-structured Markdown report in **Romanian** strictly covering technical & SRE health "
             "with the cycle timestamp in the main header (e.g. `### 🛠️ Raport Audit Sistem [HH:MM:SS EET]`) "
             "(bullet points for: Starea Flotei, Boților, Sistemului Linux & VPN (wgpia0) & Loguri, "
             "Conectivitate Internet & Audit Configurații, Erori Persistente Nerezolvate, și "
             "Acțiuni de Remediere Cod/Config & Reboot Boți/Module/Flotă/Sistem). "
-            "NU analiza și NU menționa prețuri de piață, pante, portofoliu, solduri sau poziții active!\n"
+            "NU analiza și NU menționa prețuri de piață, pante, portofoliu, solduri sau poziții active!\n",
         )
-    else:
-        role_intro = (
+        if spec.can_self_heal
+        else (
             "You are the Quantitative Autonomous Portfolio Manager and Trade Executor for MPTrade.\n"
             "Analyze the complete market telemetry, macro/geopolitical sensors, microstructure, spot wallet balances, and cycle states:\n\n"
             f"{context_str}\n\n"
-            "Evaluate the market context and formulate autonomous BUY/SELL trading decisions:\n" + "\n".join(tasks) + "\n\n"
-        )
-        tool_rule = (
+            "Evaluate the market context and formulate autonomous BUY/SELL trading decisions:\n" + "\n".join(tasks) + "\n\n",
             "- You have full, unrestricted access to everything in `cachedb/` (`cachedb/prices/`, `cachedb/trends/`, `cachedb/trends/24trend/`, "
             "`cachedb/telemetry/`, `cachedb/macro/`, `cachedb/orders/`, `cachedb/state/`) as a direct source of information for your trading decisions, "
             "as well as full freedom to query live market APIs (`providers.market_api`, `binance_api`, `kraken`, `hyperliquid`, `212trading`) "
@@ -254,14 +248,13 @@ def build_supervisor_prompt(
             "(`order_guard.py`, `order_guard.conf`, `instruments.conf`, `intelligence/`) run in parallel and may be inspected on demand if you wish, "
             "but consulting or following them is never required; if any bot executed an interim BUY or SELL (`by=BOT`) that you disagree with, "
             "you are fully empowered to immediately repair/reverse it with a counter-trade (`BUY` back what a bot wrongly sold, or `SELL` what a bot wrongly bought).\n"
-            "- Keep this thread focused on market analysis, portfolio management, and autonomous BUY/SELL execution across venues.\n"
-        )
-        report_format_rule = (
+            "- Keep this thread focused on market analysis, portfolio management, and autonomous BUY/SELL execution across venues.\n",
             "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
             "  1) A concise, well-structured Markdown report in **Romanian** with the cycle timestamp in the main header "
             "(e.g. `### ⏱️ Raport Execuție [HH:MM:SS EET]`), bullet points for: "
-            "Piața Live & Pante (Toate Monedele), Portofoliu, Solduri & Poziții Active, și Decizia AI de Tranzacționare / Răspuns la intervențiile din chat).\n"
+            "Piața Live & Pante (Toate Monedele), Portofoliu, Solduri & Poziții Active, și Decizia AI de Tranzacționare / Răspuns la intervențiile din chat).\n",
         )
+    )
 
     return (
         role_intro
