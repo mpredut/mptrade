@@ -348,8 +348,15 @@ def _run_once(
                 return liq_px
         return None
 
-    def _execute_liquidation(liq_px: float) -> None:
-        nonlocal fills, turnover_notional, liquidated
+    def _record_fill_and_closed_cycle(filled_sz: float, filled_px: float, cycle_before: int) -> None:
+        nonlocal fills, turnover_notional
+        turnover_notional += filled_sz * filled_px
+        fills += 1
+        if strategy.s.get("cycles_completed", 0) > cycle_before:
+            _record_closed_cycle()
+
+    def _execute_liquidation(liq_px: float, *, append_bar: bool = True) -> None:
+        nonlocal liquidated
         held_q = strategy.s["qty"]
         avg_now = strategy._avg() or liq_px
         strategy.s["orders"].clear()
@@ -358,11 +365,11 @@ def _run_once(
         strategy._apply_close(avg_now, liq_px, held_q)
         # Clamp residual float rounding so ruined account equity is absorbed at 0.0.
         strategy.s["realized_net"] = -(initial_capital + funding)
-        turnover_notional += held_q * liq_px
-        fills += 1
-        if strategy.s.get("cycles_completed", 0) > cycle_before:
-            _record_closed_cycle()
+        _record_fill_and_closed_cycle(held_q, liq_px, cycle_before)
         liquidated = True
+        if append_bar:
+            equity_curve.append(0.0)
+            exposure.append(False)
 
     for i in range(len(ohlc)):
         o = require_pos_float(ohlc[i][0], "open")
@@ -386,8 +393,6 @@ def _run_once(
             liq_open = _bankruptcy_price_if_breached(o)
             if liq_open is not None:
                 _execute_liquidation(liq_open)
-                equity_curve.append(0.0)
-                exposure.append(False)
                 continue
 
         # 2. Check active limit orders against the bar range
@@ -462,10 +467,7 @@ def _run_once(
                 avg = strategy._avg() or px
                 cycle_before = strategy.s.get("cycles_completed", 0)
                 strategy._apply_close(avg, px, sz)
-                turnover_notional += sz * px
-                fills += 1
-                if strategy.s.get("cycles_completed", 0) > cycle_before:
-                    _record_closed_cycle()
+                _record_fill_and_closed_cycle(sz, px, cycle_before)
 
         # 3. Intrabar Stop-Loss & Margin Wipeout Check (if held after limit fills)
         if strategy.s["qty"] > dust_eps:
@@ -484,23 +486,16 @@ def _run_once(
                         liq_sl = _bankruptcy_price_if_breached(exec_px)
                         if liq_sl is not None:
                             _execute_liquidation(liq_sl)
-                            equity_curve.append(0.0)
-                            exposure.append(False)
                             continue
                         held_qty = strategy.s["qty"]
                         cycle_before = strategy.s.get("cycles_completed", 0)
                         if strategy._check_stop_loss(exec_px):
-                            turnover_notional += held_qty * exec_px
-                            fills += 1
-                            if strategy.s.get("cycles_completed", 0) > cycle_before:
-                                _record_closed_cycle()
+                            _record_fill_and_closed_cycle(held_qty, exec_px, cycle_before)
 
             if strategy.s["qty"] > dust_eps:
                 liq_intrabar = _bankruptcy_price_if_breached(worst_px)
                 if liq_intrabar is not None:
                     _execute_liquidation(liq_intrabar)
-                    equity_curve.append(0.0)
-                    exposure.append(False)
                     continue
 
         # 4. TTL / Runaway price cancellation
@@ -539,7 +534,7 @@ def _run_once(
         current_equity = initial_capital + realized + funding + upnl - open_fee
         if current_equity <= 0.0:
             if qty > dust_eps:
-                _execute_liquidation(c)
+                _execute_liquidation(c, append_bar=False)
             else:
                 strategy.s["orders"].clear()
                 strategy.s["realized_net"] = -(initial_capital + funding)

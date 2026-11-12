@@ -230,26 +230,24 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         entry: Any, fallback_ts: Optional[float] = None
     ) -> Optional[tuple[int, float]]:
         """Parse a cached price entry (dict, ``[ts, px]``, or nested list) into ``(ts_ms, price)``."""
-        if isinstance(entry, dict):
-            ts_ms = extract_timestamp_ms(entry, default=None)
+        def _finalize_point(ts_ms: Optional[int], px_f: Optional[float]) -> Optional[tuple[int, float]]:
             if (ts_ms is None or ts_ms <= 0) and fallback_ts is not None:
                 ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
+            return (ts_ms, px_f) if ts_ms is not None and ts_ms > 0 and px_f is not None else None
+
+        if isinstance(entry, dict):
+            ts_ms = extract_timestamp_ms(entry, default=None)
             px_f = extract_current_price_item(entry)
             if px_f is None:
                 raw_px = entry.get("price") if entry.get("price") is not None else entry.get("px")
                 px_f = safe_pos_float(raw_px, default=None)
-            if ts_ms is not None and ts_ms > 0 and px_f is not None:
-                return ts_ms, px_f
-            return None
+            return _finalize_point(ts_ms, px_f)
         if isinstance(entry, (list, tuple)):
             if len(entry) >= 2 and not isinstance(entry[0], (list, tuple, dict)):
-                ts_ms = normalize_timestamp_ms(entry[0], default=None)
-                if (ts_ms is None or ts_ms <= 0) and fallback_ts is not None:
-                    ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
-                px_f = safe_pos_float(entry[1], default=None)
-                if ts_ms is not None and ts_ms > 0 and px_f is not None:
-                    return ts_ms, px_f
-                return None
+                return _finalize_point(
+                    normalize_timestamp_ms(entry[0], default=None),
+                    safe_pos_float(entry[1], default=None),
+                )
             for sub in reversed(entry):
                 if not isinstance(sub, (list, tuple, dict)):
                     continue
@@ -257,12 +255,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
                 if parsed is not None:
                     return parsed
             return None
-        px_f = extract_current_price_item(entry)
-        if px_f is not None and fallback_ts is not None:
-            ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
-            if ts_ms is not None and ts_ms > 0:
-                return ts_ms, px_f
-        return None
+        return _finalize_point(None, extract_current_price_item(entry))
 
     def rebuild_fetchtimes(self):
         return self._rebuild_symbol_entry_fetchtimes()
@@ -1288,32 +1281,30 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             self._update_timestamps, sym_clean
         )
 
-    def get_sample_rate(self, symbol: str, fallback: float = 1.0) -> float:
-        fb = safe_pos_float(fallback, default=1.0) or 1.0
+    def _sample_span_and_count(self, symbol: str) -> tuple[Optional[float], int]:
         with self.lock:
             dq = self._timestamps_deque_locked(symbol)
             samples = list(dq) if dq else []
         if len(samples) < 2:
-            return fb
-        span = safe_pos_float(samples[-1] - samples[0], default=None)
+            return None, len(samples)
+        return safe_pos_float(samples[-1] - samples[0], default=None), len(samples)
+
+    def get_sample_rate(self, symbol: str, fallback: float = 1.0) -> float:
+        fb = safe_pos_float(fallback, default=1.0) or 1.0
+        span, n_samples = self._sample_span_and_count(symbol)
         if span is None:
             return fb
-        return span / (len(samples) - 1)
+        return span / (n_samples - 1)
 
     def get_sustained_sample_rate(
         self, symbol: str, *, min_span_sec: float = 5.0
     ) -> Optional[float]:
         """Return observed sample rate when at least two ticks span ``>= min_span_sec``, else ``None``."""
-        with self.lock:
-            dq = self._timestamps_deque_locked(symbol)
-            samples = list(dq) if dq else []
-        if len(samples) < 2:
-            return None
-        span = safe_pos_float(samples[-1] - samples[0], default=None)
+        span, n_samples = self._sample_span_and_count(symbol)
         min_span_f = safe_nonneg_float(min_span_sec, default=None)
         if span is None or min_span_f is None or span < min_span_f:
             return None
-        return safe_pos_float(self.get_sample_rate(symbol, fallback=None), default=span / (len(samples) - 1))
+        return safe_pos_float(self.get_sample_rate(symbol, fallback=None), default=span / (n_samples - 1))
 
     def get_cached_price_observation(self, symbol: str, max_age_sec: float):
         max_age = safe_pos_float(max_age_sec, default=None)

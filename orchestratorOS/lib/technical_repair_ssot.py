@@ -477,6 +477,12 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
         return ts1 if (ts1 > ts0 and ts1 <= upper_ts + 300.0) else ts0
 
     pending_unstamped: List[str] = []
+    def _commit_parsed_dt(dt: datetime) -> float:
+        nonlocal day, prev_ts
+        day = dt.date()
+        prev_ts = _resolve_fold_ts(dt, prev_ts)
+        return prev_ts
+
     for line in reversed(lines):
         if not isinstance(line, str):
             continue
@@ -486,8 +492,7 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
             has_stamp_token = True
             try:
                 dt = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}", "%Y-%m-%d %H:%M:%S")
-                day, ts = dt.date(), _resolve_fold_ts(dt, prev_ts)
-                prev_ts = ts
+                ts = _commit_parsed_dt(dt)
             except ValueError:
                 pass
         elif g := _GLOG_TS_RE.match(line):
@@ -497,8 +502,7 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
                 dt = datetime(ref.year, mm, dd, hh, mi, ss)
                 if (dt - ref).total_seconds() > 86400:
                     dt = datetime(ref.year - 1, mm, dd, hh, mi, ss)
-                day, ts = dt.date(), _resolve_fold_ts(dt, prev_ts)
-                prev_ts = ts
+                ts = _commit_parsed_dt(dt)
             except ValueError:
                 pass
         elif (

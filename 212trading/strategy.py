@@ -508,6 +508,20 @@ class Strategy(BaseSpotMixin):
         log(f"  [STRAT] === cycle closed, restarting (cycle {nxt}) ===")
 
     # -- Fill Application ------------------------------------------------------
+    def _record_realized_sell_pnl(self, avg_px: float, sell_px: float, qty: float) -> tuple[float, float, float]:
+        gross, fee, net = _sell_pnl(avg_px, sell_px, qty, self.p.fx_fee_pct)
+        for state_k, delta in (("realized_pnl_usd", gross), ("realized_net_usd", net), ("fees_usd", fee)):
+            self.s[state_k] += delta
+        return gross, fee, net
+
+    def _can_close_dust_cycle(self) -> bool:
+        return bool(
+            self._all_tp_ladder_levels_sold()
+            or self.s.get("sl_pending")
+            or self.s.get("sl_pending_exit")
+            or not self.p.tp_ladder
+        )
+
     def _apply_fill(self, order: dict, qty: float, price: float) -> None:
         tag = "[PAPER] " if self.dry_run else ""
         if order["side"] == "BUY":
@@ -525,10 +539,7 @@ class Strategy(BaseSpotMixin):
         else:
             qty = min(qty, self.s["qty"])
             avg = self._avg() or price
-            gross, fee, net = _sell_pnl(avg, price, qty, self.p.fx_fee_pct)
-            self.s["realized_pnl_usd"] += gross
-            self.s["realized_net_usd"] += net
-            self.s["fees_usd"] += fee
+            gross, fee, net = self._record_realized_sell_pnl(avg, price, qty)
             self._release_sell_cost_basis(qty, avg)
             log(f"  [STRAT] {tag}SELL FILLED {qty} @ {price:.2f} USD  "
                 f"gross={gross:+.2f}  fee={fee:.2f}  net={net:+.2f} USD")
@@ -538,16 +549,10 @@ class Strategy(BaseSpotMixin):
                       f"Ntot{self.s['realized_net_usd']:+.2f}$ | cycle{self.s['cycle']} closed"),
                 source="T212", price=price, desktop=self.desktop,
             )
-            all_tp_sold = self._all_tp_ladder_levels_sold()
             is_flat = self.s["qty"] <= 1e-9
             is_dust_exit = (
                 self._is_dust(self.s["qty"], price)
-                and (
-                    all_tp_sold
-                    or self.s.get("sl_pending")
-                    or self.s.get("sl_pending_exit")
-                    or not self.p.tp_ladder
-                )
+                and self._can_close_dust_cycle()
             )
             if is_flat or is_dust_exit:
                 self._close_cycle(price, exit_kind=order.get("kind"))
@@ -1097,10 +1102,7 @@ class Strategy(BaseSpotMixin):
                 return False
             self._unconfirmed_zero_polls = 0
             sell_price = exact_price or price
-            gross, fee, net = _sell_pnl(prev_avg, sell_price, sold, self.p.fx_fee_pct)
-            self.s["realized_pnl_usd"] += gross
-            self.s["realized_net_usd"] += net
-            self.s["fees_usd"] += fee
+            gross, fee, net = self._record_realized_sell_pnl(prev_avg, sell_price, sold)
             self._sync_real_position_cost(real_qty, real_avg)
             self.s["last_sell_price"] = sell_price
             self.s["last_sell_ts"] = self._now()
@@ -1149,16 +1151,10 @@ class Strategy(BaseSpotMixin):
                 self._cancel_order(o)
 
         is_flat = real_qty <= 1e-9
-        all_tp_sold = self._all_tp_ladder_levels_sold()
         is_dust = self._is_dust(real_qty, real_avg or price)
         cycle_closed = (is_flat and prev_qty > 1e-9) or (
             prev_qty > 1e-9 and is_dust and not self._has_open("SELL")
-            and (
-                all_tp_sold
-                or self.s.get("sl_pending")
-                or self.s.get("sl_pending_exit")
-                or not self.p.tp_ladder
-            )
+            and self._can_close_dust_cycle()
         )
         if cycle_closed:
             exit_kind = (pending_for_fill or {}).get("kind") if isinstance(pending_for_fill, dict) else None
@@ -1261,6 +1257,12 @@ class Strategy(BaseSpotMixin):
             source="T212", price=price, desktop=self.desktop,
         )
 
+    def _reset_stop_loss_state(self) -> bool:
+        self.s["sl_alerted"] = False
+        self.s["sl_pending"] = False
+        self.s.pop("sl_fail_until", None)
+        return False
+
     def _check_stop_loss(self, price: float) -> bool:
         """Close the entire position when unrealized loss exceeds the threshold."""
         if self.p.stop_loss_pct <= 0:
@@ -1274,10 +1276,7 @@ class Strategy(BaseSpotMixin):
 
         if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
             if not self._in_mhdsl_territory(loss_pct):
-                self.s["sl_alerted"] = False
-                self.s["sl_pending"] = False
-                self.s.pop("sl_fail_until", None)
-                return False
+                return self._reset_stop_loss_state()
 
             snapshot = self._create_position_snapshot(price, avg, self.s.get("qty", 0.0))
             sell_qty = snapshot.sellable_qty
@@ -1306,10 +1305,7 @@ class Strategy(BaseSpotMixin):
             return False
 
         if loss_pct < self.p.stop_loss_pct:
-            self.s["sl_alerted"] = False
-            self.s["sl_pending"] = False
-            self.s.pop("sl_fail_until", None)
-            return False
+            return self._reset_stop_loss_state()
         if self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0):
             return False
         if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):

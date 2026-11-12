@@ -314,15 +314,20 @@ def _sort_events_by_ts(events: list[dict]) -> list[dict]:
     return events
 
 
+def _parse_pos_ts_price(ts, price) -> tuple[float | None, float | None]:
+    t_val = safe_pos_float(ts, default=None)
+    p_val = safe_pos_float(price, default=None)
+    return (t_val, p_val) if t_val is not None and p_val is not None else (None, None)
+
+
 def _parse_trend_start_rows(rows, symbol):
     events = []
     for row in rows:
         ts, sym_, event, state, old_state, price, prev_confirm = row[:7]
         if sym_ != symbol or event != "trend_start":
             continue
-        t_val = safe_pos_float(ts, default=None)
-        p_val = safe_pos_float(price, default=None)
-        if t_val is None or p_val is None:
+        t_val, p_val = _parse_pos_ts_price(ts, price)
+        if t_val is None:
             continue
         events.append({"ts": t_val, "state": state, "old_state": old_state,
                         "price": p_val, "prev_confirm_count": prev_confirm})
@@ -350,9 +355,8 @@ def _parse_order_event_rows(rows, symbol, *, filter_caller: bool = True):
         )
         if sym_ != symbol or (filter_caller and not is_ta_order):
             continue
-        t_val = safe_pos_float(ts, default=None)
-        p_val = safe_pos_float(price, default=None)
-        if t_val is None or p_val is None:
+        t_val, p_val = _parse_pos_ts_price(ts, price)
+        if t_val is None:
             continue
         events.append({
             "ts": t_val, "side": normalize_side(side) or side, "price": p_val,
@@ -373,11 +377,10 @@ def _parse_shadow_rows(rows, symbol):
         ts, sym_, signal, event, state, old_state, price, vel, vel_std = row[:9]
         if sym_ != symbol or event != "trend_start":
             continue
-        t_val = safe_pos_float(ts, default=None)
-        p_val = safe_pos_float(price, default=None)
+        t_val, p_val = _parse_pos_ts_price(ts, price)
         st_val = safe_int(state, default=None)
         ost_val = safe_int(old_state, default=None)
-        if st_val is None or ost_val is None or t_val is None or p_val is None:
+        if st_val is None or ost_val is None or t_val is None:
             continue
         events.append({"ts": t_val, "signal": signal, "state": st_val,
                         "old_state": ost_val, "price": p_val,
@@ -893,14 +896,18 @@ def main():
         else list(split_csv(args.symbols))
     )
 
+    def _load_symbol_backtest_series(directory: str, symbol: str):
+        price_ts, price_vals = load_backtest_price_samples(directory, symbol)
+        trend_events = load_backtest_trend_starts(directory, symbol)
+        order_events = load_backtest_order_events(directory, symbol)
+        all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
+        return price_ts, price_vals, trend_events, order_events, all_ts
+
     if args.backtest_dir and frame_hours is not None:
         directory = os.path.abspath(args.backtest_dir)
         chunk_sec = frame_hours * 3600
         for symbol in symbols:
-            price_ts, price_vals = load_backtest_price_samples(directory, symbol)
-            trend_events = load_backtest_trend_starts(directory, symbol)
-            order_events = load_backtest_order_events(directory, symbol)
-            all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
+            price_ts, price_vals, trend_events, order_events, all_ts = _load_symbol_backtest_series(directory, symbol)
             if not all_ts:
                 print(f"[tradeall_observe] {symbol}: no data for the frames yet")
                 paths = []
@@ -965,10 +972,7 @@ setInterval(function() {{
             while True:
                 for symbol in symbols:
                     try:
-                        price_ts, price_vals = load_backtest_price_samples(directory, symbol)
-                        trend_events = load_backtest_trend_starts(directory, symbol)
-                        order_events = load_backtest_order_events(directory, symbol)
-                        all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
+                        price_ts, price_vals, trend_events, order_events, all_ts = _load_symbol_backtest_series(directory, symbol)
                         if not all_ts:
                             window_start, window_end = time.time() - DAY_SECONDS, time.time()
                             label = "backtest (full replayed interval)"

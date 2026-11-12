@@ -374,23 +374,21 @@ class NotificationServer:
         else:
             alert_type = first.get("type") if isinstance(first, dict) else None
             has_alert_type = ("alert_type" in first) if isinstance(first, dict) else hasattr(first, "alert_type")
-            if alert_type == "price_alert" or has_alert_type:
+            if alert_type in ("price_alert", "new_coin_discovered") or has_alert_type:
+                is_new_coin = alert_type == "new_coin_discovered" and not has_alert_type
                 if len(alerts) == 1:
                     sym = obj_attr(first, "symbol", "N/A")
-                    atype = obj_attr(first, "alert_type", "alert")
-                    pchg = safe_float(obj_attr(first, "percent_change", 0.0), 0.0)
-                    dir_str = "▲" if atype == "up" else "▼"
-                    title = f"{sym} {dir_str} {pchg:+.2f}%"
+                    if is_new_coin:
+                        title = f"New Coin: {sym}"
+                    else:
+                        atype = obj_attr(first, "alert_type", "alert")
+                        pchg = safe_float(obj_attr(first, "percent_change", 0.0), 0.0)
+                        dir_str = "▲" if atype == "up" else "▼"
+                        title = f"{sym} {dir_str} {pchg:+.2f}%"
+                elif is_new_coin:
+                    title = AlertNotifier._format_new_coins_batch_title(alerts)
                 else:
                     title = AlertNotifier._format_price_alerts_batch_title(alerts)
-                body = AlertNotifier.format_batch_message(alerts)
-                source = obj_attr(first, "source") or "price_alert"
-            elif alert_type == "new_coin_discovered":
-                if len(alerts) == 1:
-                    sym = obj_attr(first, "symbol", "N/A")
-                    title = f"New Coin: {sym}"
-                else:
-                    title = AlertNotifier._format_new_coins_batch_title(alerts)
                 body = AlertNotifier.format_batch_message(alerts)
                 source = obj_attr(first, "source") or "price_alert"
             else:

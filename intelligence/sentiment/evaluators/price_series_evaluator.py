@@ -1025,6 +1025,27 @@ def _load_stitched_24h_ohlc_points(
     return res_pts
 
 
+def _reconcile_major_swing_low(
+    target_dict: Dict[str, Any], p_cur: float, l24: Optional[float], decimals: int
+) -> None:
+    maj_lo = safe_pos_float(target_dict.get("major_swing_low_px"), default=None)
+    if maj_lo is None or maj_lo <= 0.0:
+        return
+    maj_lo_new = round(min(maj_lo, p_cur, *([l24] if l24 is not None else [])), decimals)
+    eff_sw_lo = safe_pos_float(target_dict.get("swing_low_px"), default=None)
+    if eff_sw_lo is not None and maj_lo_new >= eff_sw_lo - 1e-9:
+        for k in ("major_swing_low_px", "rally_from_major_low_pct"):
+            target_dict.pop(k, None)
+    elif eff_sw_lo is not None and abs(p_cur - eff_sw_lo) / max(p_cur, 1e-12) < 5e-4:
+        target_dict["swing_low_px"] = maj_lo_new
+        target_dict["rally_from_swing_low_pct"] = pct_delta(p_cur, maj_lo_new)
+        for k in ("major_swing_low_px", "rally_from_major_low_pct"):
+            target_dict.pop(k, None)
+    else:
+        target_dict["major_swing_low_px"] = maj_lo_new
+        target_dict["rally_from_major_low_pct"] = pct_delta(p_cur, maj_lo_new)
+
+
 def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None:
     """Recalculate VP position, 24h/7d/15m range bounds, swing waves, and 6h bottom structure for live price `p_cur`."""
     if not isinstance(pinfo, dict) or p_cur <= 0.0:
@@ -1071,20 +1092,7 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
             pinfo["rally_from_swing_low_pct"] = pct_delta(p_cur, sw_lo_new)
         if sw_hi_new > 0.0:
             pinfo["pullback_from_swing_high_pct"] = pct_delta(p_cur, sw_hi_new)
-    if (maj_lo := safe_pos_float(pinfo.get("major_swing_low_px"), default=None)) is not None and maj_lo > 0.0:
-        maj_lo_new = round(min(maj_lo, p_cur, *([l24] if l24 is not None else [])), 6)
-        eff_sw_lo = safe_pos_float(pinfo.get("swing_low_px"), default=None)
-        if eff_sw_lo is not None and maj_lo_new >= eff_sw_lo - 1e-9:
-            pinfo.pop("major_swing_low_px", None)
-            pinfo.pop("rally_from_major_low_pct", None)
-        elif eff_sw_lo is not None and abs(p_cur - eff_sw_lo) / max(p_cur, 1e-12) < 5e-4:
-            pinfo["swing_low_px"] = maj_lo_new
-            pinfo["rally_from_swing_low_pct"] = pct_delta(p_cur, maj_lo_new)
-            pinfo.pop("major_swing_low_px", None)
-            pinfo.pop("rally_from_major_low_pct", None)
-        else:
-            pinfo["major_swing_low_px"] = maj_lo_new
-            pinfo["rally_from_major_low_pct"] = pct_delta(p_cur, maj_lo_new)
+    _reconcile_major_swing_low(pinfo, p_cur, l24, 6)
     r1h_lo = safe_pos_float(pinfo.get("recent_1h_low_px"), default=None)
     p6h_lo = safe_pos_float(pinfo.get("prior_6h_low_px"), default=None)
     if r1h_lo is not None and p6h_lo is not None and p6h_lo > 0.0:
@@ -1216,20 +1224,7 @@ def _apply_24h_series_enrichment(
                     entry["rally_from_swing_low_pct"] = pct_delta(cur_e_px, sw_lo_n)
                 if sw_hi_n > 0.0:
                     entry["pullback_from_swing_high_pct"] = pct_delta(cur_e_px, sw_hi_n)
-            if (maj_lo_e := safe_pos_float(entry.get("major_swing_low_px"), default=None)) is not None and maj_lo_e > 0.0:
-                maj_lo_en = round(min(maj_lo_e, cur_e_px, l24_e), eff_dec_7d)
-                eff_sw_lo_e = safe_pos_float(entry.get("swing_low_px"), default=None)
-                if eff_sw_lo_e is not None and maj_lo_en >= eff_sw_lo_e - 1e-9:
-                    entry.pop("major_swing_low_px", None)
-                    entry.pop("rally_from_major_low_pct", None)
-                elif eff_sw_lo_e is not None and abs(cur_e_px - eff_sw_lo_e) / max(cur_e_px, 1e-12) < 5e-4:
-                    entry["swing_low_px"] = maj_lo_en
-                    entry["rally_from_swing_low_pct"] = pct_delta(cur_e_px, maj_lo_en)
-                    entry.pop("major_swing_low_px", None)
-                    entry.pop("rally_from_major_low_pct", None)
-                else:
-                    entry["major_swing_low_px"] = maj_lo_en
-                    entry["rally_from_major_low_pct"] = pct_delta(cur_e_px, maj_lo_en)
+            _reconcile_major_swing_low(entry, cur_e_px, l24_e, eff_dec_7d)
     if entry.get("trend", 0) == 0 and "chg_1h_pct" in m24:
         c1h = safe_float(m24.get("chg_1h_pct"), 0.0)
         if c1h >= 0.25 or c1h <= -0.25:

@@ -214,16 +214,21 @@ def mode_pre(force: bool = False) -> int:
                     pass
             shutil.rmtree(os.path.join(CLI, "brain", cid), ignore_errors=True)
 
+        def _retire_db_to_deleted(db_path: str, name: str, cid: str) -> None:
+            nonlocal deleted
+            checkpoint_db(db_path)
+            os.makedirs(del_dir, exist_ok=True)
+            shutil.move(db_path, os.path.join(del_dir, name))
+            drop_wal_sidecars(db_path, force=False)
+            _retire_deleted_cid_artifacts(cid)
+            deleted += 1
+
         for p2 in sorted(glob.glob(os.path.join(glob.escape(D2), "*.db"))):
             name = os.path.basename(p2)
             cid = name[:-3]
             if cid in known_cids or cid in topic_cids:
                 continue
             p1 = os.path.join(D1, name)
-            checkpoint_db(p2)
-            os.makedirs(del_dir, exist_ok=True)
-            shutil.move(p2, os.path.join(del_dir, name))
-            drop_wal_sidecars(p2, force=False)
             if os.path.exists(p1):
                 checkpoint_db(p1)
                 try:
@@ -231,21 +236,14 @@ def mode_pre(force: bool = False) -> int:
                 except OSError:
                     pass
                 drop_wal_sidecars(p1, force=False)
-            _retire_deleted_cid_artifacts(cid)
-            deleted += 1
+            _retire_db_to_deleted(p2, name, cid)
         for p1 in sorted(glob.glob(os.path.join(glob.escape(D1), "*.db"))):
             if os.path.islink(p1):
                 continue
             name = os.path.basename(p1)
             cid = name[:-3]
-            if cid in known_cids or cid in topic_cids:
-                continue
-            checkpoint_db(p1)
-            os.makedirs(del_dir, exist_ok=True)
-            shutil.move(p1, os.path.join(del_dir, name))
-            drop_wal_sidecars(p1, force=False)
-            _retire_deleted_cid_artifacts(cid)
-            deleted += 1
+            if cid not in known_cids and cid not in topic_cids:
+                _retire_db_to_deleted(p1, name, cid)
 
     for name in sorted(os.listdir(D1)):
         if not name.endswith(".db"):
