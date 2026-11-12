@@ -1433,6 +1433,133 @@ def extract_current_price_item(item: object) -> float | None:
     return None
 
 
+def _load_price_freshness_policy() -> tuple[float, float]:
+    """Load and validate real-time price cadence and freshness SLA from root ``config.env``."""
+    cfg = parse_dotenv(_ROOT_CONFIG_PATH)
+    poll_raw = optional_env("CM_CURRENT_PRICE_POLL_SEC") or cfg.get("CM_CURRENT_PRICE_POLL_SEC")
+    max_age_raw = optional_env("CM_PRICE_FRESHNESS_MAX_AGE_SEC") or cfg.get("CM_PRICE_FRESHNESS_MAX_AGE_SEC")
+    poll_sec = required_float_env("CM_CURRENT_PRICE_POLL_SEC", {"CM_CURRENT_PRICE_POLL_SEC": poll_raw})
+    max_age_sec = required_float_env("CM_PRICE_FRESHNESS_MAX_AGE_SEC", {"CM_PRICE_FRESHNESS_MAX_AGE_SEC": max_age_raw})
+    if poll_sec <= 0.0:
+        raise ValueError("CM_CURRENT_PRICE_POLL_SEC must be positive")
+    if max_age_sec <= 0.0:
+        raise ValueError("CM_PRICE_FRESHNESS_MAX_AGE_SEC must be positive")
+    if poll_sec * 2.0 >= max_age_sec:
+        raise ValueError(
+            "CM_CURRENT_PRICE_POLL_SEC * 2.0 must be strictly less than CM_PRICE_FRESHNESS_MAX_AGE_SEC"
+        )
+    return poll_sec, max_age_sec
+
+
+CM_CURRENT_PRICE_POLL_SEC, CM_PRICE_FRESHNESS_MAX_AGE_SEC = _load_price_freshness_policy()
+PRICE_STREAM_POLL_INTERVAL_SEC: float = CM_CURRENT_PRICE_POLL_SEC
+PRICE_FRESHNESS_MAX_AGE_SEC: float = CM_PRICE_FRESHNESS_MAX_AGE_SEC
+PRICE_FRESHNESS_MAX_AGE_MS: int = int(round(PRICE_FRESHNESS_MAX_AGE_SEC * 1000.0))
+PRICE_WS_TIMEOUT_SEC: float = round(PRICE_FRESHNESS_MAX_AGE_SEC * 0.5, 3)
+PRICE_FALLBACK_HTTP_DEADLINE_SEC: float = round(PRICE_FRESHNESS_MAX_AGE_SEC * (2.0 / 3.0), 3)
+SHORT_TREND_FRESHNESS_MAX_AGE_SEC: float = round(PRICE_FRESHNESS_MAX_AGE_SEC * 5.0, 3)
+
+
+def extract_current_price_timestamp_sec(
+    entry: object,
+    *fallback_fetchtimes: object,
+) -> tuple[float, bool]:
+    """Extract ``(ts_epoch_sec, is_valid_structure)`` from a ``cache_current_price.json`` item."""
+    if isinstance(entry, list):
+        last_entry = entry[-1] if entry else None
+        if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:
+            return 0.0, False
+        return (normalize_epoch_sec(last_entry[0], default=0.0) or 0.0), True
+    if isinstance(entry, dict):
+        ts_val = (
+            first_epoch_sec(
+                entry.get("ts"),
+                entry.get("timestamp"),
+                entry.get("time"),
+                *fallback_fetchtimes,
+                default=0.0,
+                allow_iso=True,
+            )
+            or 0.0
+        )
+        return ts_val, True
+    ts_val = first_epoch_sec(*fallback_fetchtimes, default=0.0, allow_iso=True) or 0.0
+    return ts_val, True
+
+
+def summarize_current_price_cache_freshness(
+    cp_payload: object,
+    *,
+    now_ts: float | None = None,
+    max_age_sec: float = PRICE_FRESHNESS_MAX_AGE_SEC,
+    market_open_fn: Callable[[str], bool] | None = None,
+) -> dict[str, Any]:
+    """Evaluate ``cache_current_price.json`` freshness against the unified SSOT threshold."""
+    now_s = resolve_now_ts(now_ts)
+    eff_max_age = safe_pos_float(max_age_sec, default=PRICE_FRESHNESS_MAX_AGE_SEC) or PRICE_FRESHNESS_MAX_AGE_SEC
+    (cp_d,) = coerce_dict_maps(cp_payload)
+    has_items_envelope = isinstance(cp_d.get("items"), dict)
+    raw_items, ft_map = coerce_dict_maps(cp_d.get("items") if has_items_envelope else cp_d, cp_d.get("fetchtime"))
+    items_map = (
+        raw_items
+        if has_items_envelope
+        else {k: v for k, v in raw_items.items() if k not in ("fetchtime", "rest_sync_cursor", "timestamp")}
+    )
+    ft_lower = {str(k).casefold(): v for k, v in ft_map.items()}
+
+    all_ts: list[float] = [
+        ts_ft
+        for v in ft_map.values()
+        if (ts_ft := (normalize_epoch_sec(v, default=0.0) or 0.0)) > 0.0
+    ]
+    open_ages: list[float] = []
+    any_open_invalid_or_missing_ts = False
+
+    for sym_key, val in items_map.items():
+        sym_str = str(sym_key or "").strip()
+        if not sym_str:
+            continue
+        ft_val = ft_map.get(sym_key)
+        if ft_val is None:
+            ft_val = ft_lower.get(sym_str.casefold())
+        ts_sec, valid_struct = extract_current_price_timestamp_sec(val, ft_val)
+        if ts_sec > 0.0:
+            all_ts.append(ts_sec)
+        px_val = extract_current_price_item(val) or 0.0
+        is_open = (
+            (not has_equity_suffix(sym_str) or is_us_rth_open(now_s))
+            if market_open_fn is None
+            else bool(market_open_fn(sym_str))
+        )
+        if not is_open:
+            continue
+        if not valid_struct or px_val <= 0.0 or ts_sec <= 0.0:
+            any_open_invalid_or_missing_ts = True
+            continue
+        open_ages.append(now_s - ts_sec)
+
+    latest_ts = max(all_ts, default=0.0)
+    freshest_age = round(max(0.0, now_s - latest_ts), 2) if latest_ts > 0.0 else None
+    oldest_open_age = round(max(0.0, max(open_ages)), 2) if open_ages else None
+    fresh_ok = bool(
+        items_map
+        and not any_open_invalid_or_missing_ts
+        and freshest_age is not None
+        and freshest_age < eff_max_age
+        and (
+            not open_ages
+            or all(-5.0 <= age < eff_max_age for age in open_ages)
+        )
+    )
+    return {
+        "symbols_count": len(items_map),
+        "max_allowed_age_seconds": eff_max_age,
+        "freshest_age_seconds": freshest_age,
+        "oldest_open_age_seconds": oldest_open_age,
+        "ws_realtime_fresh": fresh_ok,
+    }
+
+
 _LOCAL_MODULE_LOCK = globals().get("_LOCAL_MODULE_LOCK") or threading.RLock()
 
 

@@ -7,6 +7,7 @@ import threading
 from typing import Any, List, Optional
 
 from botcore import (
+    PRICE_FRESHNESS_MAX_AGE_SEC,
     is_shared_disk_cache_enabled,
     require_nonneg_float,
     resolve_patched_attr,
@@ -395,9 +396,11 @@ class ProviderSsotBridgeMixin:
         ) or cache_path
         return cp_fn(filename)
 
-    def _cached_current_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
+    def _cached_current_price(
+        self, symbol: str, max_age_sec: float = PRICE_FRESHNESS_MAX_AGE_SEC
+    ) -> Optional[float]:
         """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
-        eff_age = resolve_positive_max_age(max_age_sec, 12.0)
+        eff_age = resolve_positive_max_age(max_age_sec, PRICE_FRESHNESS_MAX_AGE_SEC)
         if (
             eff_age is None
             or not (candidates := self._prepare_ssot_price_candidates(symbol))

@@ -21,6 +21,7 @@ import time
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from botcore import (
+    PRICE_FRESHNESS_MAX_AGE_SEC,
     TOPIC_ALIASES,
     TOPIC_SPECS,
     _parse_bool_flag,
@@ -42,6 +43,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
+    summarize_current_price_cache_freshness,
     topic_spec,
 )
 from cachepaths import (
@@ -1604,29 +1606,11 @@ def summarize_fleet_sensor_status(
     if mb := read_first_cached_dict(cachedb_dir, "market_breadth_files", "market_breadth_collect.json", "market_breadth_state.json", read_json_fn=_rj)[0]:
         sensors["market_breadth"] = safe_float(mb.get("advance_ratio"), default=None)
     if cp := read_first_cached_dict(cachedb_dir, "", "cache_current_price.json", read_json_fn=_rj)[0]:
-        now_ts = time.time()
-        ft_map = cp.get("fetchtime") if isinstance(cp.get("fetchtime"), dict) else {}
-        items_map = cp.get("items") if isinstance(cp.get("items"), dict) else {}
-        latest_ts = max(
-            (
-                *(normalize_epoch_sec(v, default=0.0) or 0.0 for v in ft_map.values()),
-                *(
-                    (normalize_epoch_sec(v[-1][0], default=0.0) or 0.0)
-                    if isinstance(v, list) and v and isinstance(v[-1], (list, tuple)) and len(v[-1]) >= 2
-                    else (first_epoch_sec(v.get("ts"), v.get("timestamp"), v.get("time"), default=0.0, allow_iso=True) or 0.0)
-                    if isinstance(v, dict)
-                    else 0.0
-                    for v in items_map.values()
-                ),
-            ),
-            default=0.0,
+        sensors["current_price_cache"] = summarize_current_price_cache_freshness(
+            cp,
+            now_ts=time.time(),
+            max_age_sec=PRICE_FRESHNESS_MAX_AGE_SEC,
         )
-        age_s = round(max(0.0, now_ts - latest_ts), 2) if latest_ts > 0.0 else None
-        sensors["current_price_cache"] = {
-            "symbols_count": len(items_map),
-            "freshest_age_seconds": age_s,
-            "ws_realtime_fresh": bool(age_s is not None and age_s <= 15.0),
-        }
 
     return sensors
 

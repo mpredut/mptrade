@@ -37,6 +37,8 @@ def test_market_alerts_and_hyperliquid_provider_use_shared_env_stack():
 def test_operational_thresholds_have_one_versioned_source():
     config = (ROOT / "config.env").read_text(encoding="utf-8")
     keys = {
+        "CM_CURRENT_PRICE_POLL_SEC",
+        "CM_PRICE_FRESHNESS_MAX_AGE_SEC",
         "WATCHDOG_STALE_MINUTES",
         "WATCHDOG_COOLDOWN_MINUTES",
         "WATCHDOG_FAST_PRICE_MINUTES",
@@ -61,6 +63,10 @@ def test_operational_thresholds_have_one_versioned_source():
 
     runtime_files = [
         path for path in [
+            ROOT / "cacheprice.py",
+            ROOT / "cacheManager.py",
+            ROOT / "orchestratorOS/lib/technical_repair_ssot.py",
+            ROOT / "verify_tools/check_cache_coherence.py",
             ROOT / "verify_tools/portfolio_snapshot.py",
             ROOT / "verify_tools/monitor_night.py",
         ] if path.exists()

@@ -639,14 +639,14 @@ if __name__ == "__main__":
     try:
         _trend_cpm = attach_default_price_ws_stream(
             lambda **kw: CacheFactory.get("CurrentPrice", **kw),
-            sync_ts=0.8,
+            sync_ts=CURRENT_PRICE_SYNC_INTERVAL_SEC,
             data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
         )
         if _nb_syms and _trend_cpm is not None:
             _nb_poller = _start_nonbinance_trend_poller(
                 _trend_cpm,
                 _nb_syms,
-                interval_sec=10,
+                interval_sec=CURRENT_PRICE_SYNC_INTERVAL_SEC,
                 provider_names=_nb_provider_names,
             )
     except Exception as _ws_init_err:
@@ -682,7 +682,7 @@ if __name__ == "__main__":
         if _trend_cpm is None:
             _trend_cpm = attach_default_price_ws_stream(
                 lambda **kw: CacheFactory.get("CurrentPrice", **kw),
-                sync_ts=0.8,
+                sync_ts=CURRENT_PRICE_SYNC_INTERVAL_SEC,
                 data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
             )
         _trend_cache24 = CacheFactory.get(
@@ -705,7 +705,7 @@ if __name__ == "__main__":
             _nb_poller = _start_nonbinance_trend_poller(
                 _trend_cpm,
                 _nb_syms,
-                interval_sec=10,
+                interval_sec=CURRENT_PRICE_SYNC_INTERVAL_SEC,
                 provider_names=_nb_provider_names,
             )
     except Exception as e:

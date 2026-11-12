@@ -32,7 +32,8 @@ from pricewindow import (  # noqa: F401 (re-export: test compat)
 # config.env before reading any environment variables below.
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
-from botcore import (bind_attr_call, exact_nonneg_int, exact_pos_int, format_price_log,
+from botcore import (PRICE_FRESHNESS_MAX_AGE_MS, PRICE_STREAM_POLL_INTERVAL_SEC,
+                     bind_attr_call, exact_nonneg_int, exact_pos_int, format_price_log,
                      load_dotenv, normalize_epoch_sec, required_bool_env,
                      required_float_env, required_int_env, resolve_now_ts, safe_float,
                      safe_nonneg_float, safe_pos_float, sanitize_pipe_field, timeToHMS,
@@ -40,7 +41,7 @@ from botcore import (bind_attr_call, exact_nonneg_int, exact_pos_int, format_pri
 load_dotenv()
 
 
-TIME_SLEEP_GET_PRICE = 0.8       # Nominal price-collection sleep interval in seconds.
+TIME_SLEEP_GET_PRICE = PRICE_STREAM_POLL_INTERVAL_SEC  # Nominal price-collection sleep interval in seconds.
 ORDER_EXPIRY_HOURS = required_float_env("TRADEALL_ORDER_EXPIRY_HOURS")
 EXP_TIME_BUY_ORDER = ORDER_EXPIRY_HOURS * 3600  # Configurable order expiration horizon.
 EXP_TIME_SELL_ORDER = EXP_TIME_BUY_ORDER
@@ -824,7 +825,7 @@ class TrendCoordinator:
             ts_ms, current_price = entry[0], entry[1]
             ts_ms_f = safe_float(ts_ms, default=None)
             max_age_ms = safe_float(
-                getattr(self.current_price_mgr, "STALE_THRESHOLD_MS", 5_000),
+                getattr(self.current_price_mgr, "STALE_THRESHOLD_MS", PRICE_FRESHNESS_MAX_AGE_MS),
                 default=None,
             )
             if ts_ms_f is None or max_age_ms is None:

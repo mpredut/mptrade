@@ -3997,7 +3997,7 @@ def test_batch31_intelligence_macro_gemini_parabolic_and_verify_tools_hardening(
         encoding="utf-8",
     )
     (cache_dir / "cache_current_price.json").write_text(
-        json.dumps({"items": {"BTCUSDC": [[now_s - 5.0, 65000.0]]}}),
+        json.dumps({"items": {"BTCUSDC": [[now_s - 1.5, 65000.0]]}}),
         encoding="utf-8",
     )
     assert ccc.main() == 0

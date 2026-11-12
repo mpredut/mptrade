@@ -32,6 +32,11 @@ from typing import Any, Callable, Optional
 import websockets as _websockets
 
 from botcore import (
+    PRICE_FALLBACK_HTTP_DEADLINE_SEC,
+    PRICE_FRESHNESS_MAX_AGE_MS,
+    PRICE_FRESHNESS_MAX_AGE_SEC,
+    PRICE_STREAM_POLL_INTERVAL_SEC,
+    PRICE_WS_TIMEOUT_SEC,
     _is_fresh_obs_ts,
     _parse_bool_flag,
     _ts_ms_to_s,
@@ -124,7 +129,7 @@ from state_io import (
     write_meta_json,
 )
 
-_NB_FETCH_DEADLINE_SEC = 8
+_NB_FETCH_DEADLINE_SEC = PRICE_FALLBACK_HTTP_DEADLINE_SEC
 
 load_dotenv()
 
@@ -1029,8 +1034,8 @@ class Cache365PriceManager(Cache24PriceManager):
 class CacheCurrentPriceManager(CachePriceManagerBase):
     """Maintain the latest timestamped price per symbol (Level 3, WebSocket-first with HTTP fallback)."""
 
-    WS_TIMEOUT_SEC = 15
-    STALE_THRESHOLD_MS = 5_000
+    WS_TIMEOUT_SEC = PRICE_WS_TIMEOUT_SEC
+    STALE_THRESHOLD_MS = PRICE_FRESHNESS_MAX_AGE_MS
     FREQ_WINDOW_SEC = 60
     DEFAULT_FILENAME = CACHE_CURRENT_PRICE_FILENAME
 
@@ -1053,6 +1058,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._ws_last_event_ts_value = 0.0
         self._ws_last_event_ts_per_symbol: dict = {}
         self._ws_stream_event_ts_per_symbol: dict = {}
+        self._delegated_poller_symbols: set[str] = set()
         self._update_timestamps: dict = defaultdict(deque)
         self._rth_empty_backoff_ts: dict = {}
         self._first_sleep = True
@@ -1189,7 +1195,12 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             existing_ts = (
                 self._entry_timestamp_ms(entries[0]) if entries else 0
             )
-        if existing_ts > 0 and (existing_ts - ts_ms) > self.STALE_THRESHOLD_MS:
+        ooo_limit_ms = (
+            self.STALE_THRESHOLD_MS
+            if self.is_real_ws_healthy(symbol)
+            else max(self.STALE_THRESHOLD_MS, 5_000)
+        )
+        if existing_ts > 0 and (existing_ts - ts_ms) > ooo_limit_ms:
             return
         now = _now_time()
         self._ws_last_event_ts_value = now
@@ -1202,7 +1213,12 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if not self.fetchtime_per_symbol:
             self._ensure_fetchtimes_initialized()
             self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+        delegated = getattr(self, "_delegated_poller_symbols", ())
         for symbol in list(self.symbols):
+            if delegated and (
+                symbol in delegated or str(symbol).strip().upper() in delegated
+            ):
+                continue
             if self._ws_is_healthy(symbol):
                 continue
             is_rth_sym = is_equity_venue(
@@ -1404,7 +1420,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         reader_fn: Any = None,
     ) -> Optional[float]:
         """Resolve a fresh current price for ``candidates`` from in-memory ``CacheCurrentPriceManager`` or ``price_path``."""
-        if (max_age := resolve_positive_max_age(max_age_sec, 12.0)) is None:
+        if (max_age := resolve_positive_max_age(max_age_sec, PRICE_FRESHNESS_MAX_AGE_SEC)) is None:
             return None
         if use_memory_manager:
             cpm = (
@@ -2007,14 +2023,21 @@ def _fetch_price_with_deadline(
 class _NonBinanceTrendPoller:
     """Own the non-Binance WebSocket streams, fallback poller thread, and executor lifecycle."""
 
-    def __init__(self, thread, pool, stop_event, ws_streams=None):
+    def __init__(self, thread, pool, stop_event, ws_streams=None, *, cpm=None, delegated_symbols=()):
         self.thread = thread
         self.pool = pool
         self.stop_event = stop_event
         self.ws_streams = tuple(ws_streams or ())
+        self._cpm = cpm
+        self._delegated_symbols = tuple(delegated_symbols or ())
 
     def request_stop(self) -> None:
         self.stop_event.set()
+        delegated = getattr(self._cpm, "_delegated_poller_symbols", None)
+        if isinstance(delegated, set):
+            for sym_key in self._delegated_symbols:
+                delegated.discard(sym_key)
+                delegated.discard(str(sym_key).strip().upper())
         for ws in self.ws_streams:
             try:
                 req_stop = getattr(ws, "request_stop", None)
@@ -2053,7 +2076,7 @@ class _NonBinanceTrendPoller:
 def _start_nonbinance_trend_poller(
     cpm,
     symbols,
-    interval_sec=10,
+    interval_sec=PRICE_STREAM_POLL_INTERVAL_SEC,
     fetch_deadline_sec=_NB_FETCH_DEADLINE_SEC,
     provider_names=None,
     *,
@@ -2080,6 +2103,11 @@ def _start_nonbinance_trend_poller(
             + ", ".join(missing)
         )
     cpm.bind_providers(bindings)
+    delegated_set = getattr(cpm, "_delegated_poller_symbols", None)
+    if isinstance(delegated_set, set):
+        for sym_item in symbols:
+            delegated_set.add(sym_item)
+            delegated_set.add(sym_item.upper())
 
     if start_ws is None:
         enable_ws = (
@@ -2127,6 +2155,8 @@ def _start_nonbinance_trend_poller(
     def run():
         rth_seeded: set[str] = set()
         empty_backoff_ts: dict[str, float] = {}
+        last_equity_poll_ts: dict[str, float] = {}
+        equity_min_gap_sec = max(safe_pos_float(interval_sec, default=0.8) or 0.8, 6.0)
         cpm_cache = getattr(cpm, "cache", None)
         extract_fn = getattr(cpm, "extract_price_and_ts", None)
         if isinstance(cpm_cache, dict) and callable(extract_fn):
@@ -2143,13 +2173,32 @@ def _start_nonbinance_trend_poller(
                 if stop_event.is_set() or (callable(ws_health_fn) and all(bool(ws_health_fn(s)) for s in symbols)):
                     break
                 stop_event.wait(0.1)
+
+        def _apply_fetched_price(sym_item: str, raw_px: Any, *, is_eq: bool) -> None:
+            pf = safe_pos_float(raw_px, default=None)
+            now_done = time.time()
+            if pf is not None:
+                rth_seeded.add(sym_item)
+                empty_backoff_ts.pop(sym_item, None)
+                if is_eq:
+                    last_equity_poll_ts[sym_item] = now_done
+                _mark_symbol_ws_ts(sym_item, now_done)
+                push_fn = getattr(cpm, "push_price", None)
+                if callable(push_fn):
+                    push_fn(sym_item, pf)
+            else:
+                empty_backoff_ts[sym_item] = now_done
+
         while not stop_event.is_set():
+            pending_polls: list[tuple[str, str, bool]] = []
             for s in symbols:
                 if stop_event.is_set():
                     break
                 ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
                 if callable(ws_health_fn) and bool(ws_health_fn(s)):
                     continue
+                prov_name = bindings[s.upper()]
+                is_eq = is_equity_venue(prov_name) or is_equity_symbol(s)
                 rth_gate_active = is_rth_gate_enabled(
                     getattr(cpm, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
                 )
@@ -2163,42 +2212,68 @@ def _start_nonbinance_trend_poller(
                     last_empty = empty_backoff_ts.get(s, 0.0)
                     if last_empty > 0.0 and (now_ts - last_empty) < 60.0:
                         continue
+                if is_eq and s in rth_seeded and (now_ts - last_equity_poll_ts.get(s, 0.0)) < equity_min_gap_sec:
+                    _mark_symbol_ws_ts(s, now_ts)
+                    continue
+                pending_polls.append((s, prov_name, is_eq))
+
+            if len(pending_polls) == 1:
+                s_one, prov_one, is_eq_one = pending_polls[0]
                 try:
                     p = _fetch_price_with_deadline(
                         cpm.market_api,
-                        s,
+                        s_one,
                         pool,
                         fetch_deadline_sec,
-                        provider_name=bindings[s.upper()],
+                        provider_name=prov_one,
                     )
-                    pf = safe_pos_float(p, default=None)
-                    if pf is not None:
-                        rth_seeded.add(s)
-                        empty_backoff_ts.pop(s, None)
-                        _mark_symbol_ws_ts(s, time.time())
-                        push_fn = getattr(cpm, "push_price", None)
-                        if callable(push_fn):
-                            push_fn(s, pf)
-                    else:
-                        empty_backoff_ts[s] = time.time()
+                    _apply_fetched_price(s_one, p, is_eq=is_eq_one)
                 except _futures.TimeoutError:
                     builtins.print(
-                        f"[NB-trend] {s}: fetch BLOCKED >{fetch_deadline_sec}s "
+                        f"[NB-trend] {s_one}: fetch BLOCKED >{fetch_deadline_sec}s "
                         f"(poll deadline -- probably DNS or the network) -- skipping, retrying next cycle"
                     )
                 except Exception as _e:
-                    builtins.print(f"[NB-trend] {s}: {_e}")
+                    builtins.print(f"[NB-trend] {s_one}: {_e}")
+            elif len(pending_polls) > 1:
+                fut_map = {}
+                for s_item, prov_item, is_eq_item in pending_polls:
+                    def _poll_item(_sym=s_item, _prov=prov_item):
+                        with live_price_fetch_context():
+                            return cpm.market_api.get_current_price(symbol=_sym, provider_name=_prov)
+                    fut_map[pool.submit(_poll_item)] = (s_item, is_eq_item)
+                done, not_done = _futures.wait(fut_map.keys(), timeout=fetch_deadline_sec)
+                for fut in done:
+                    s_done, is_eq_done = fut_map[fut]
+                    try:
+                        _apply_fetched_price(s_done, fut.result(), is_eq=is_eq_done)
+                    except Exception as _e:
+                        builtins.print(f"[NB-trend] {s_done}: {_e}")
+                for fut in not_done:
+                    fut.cancel()
+                    s_slow, _ = fut_map[fut]
+                    builtins.print(
+                        f"[NB-trend] {s_slow}: fetch BLOCKED >{fetch_deadline_sec}s "
+                        f"(poll deadline -- probably DNS or the network) -- skipping, retrying next cycle"
+                    )
             stop_event.wait(interval_sec)
 
     t = threading.Thread(target=run, name="NonBinanceTrendPoller", daemon=True)
     t.start()
-    return _NonBinanceTrendPoller(t, pool, stop_event, ws_streams=ws_streams)
+    return _NonBinanceTrendPoller(
+        t,
+        pool,
+        stop_event,
+        ws_streams=ws_streams,
+        cpm=cpm,
+        delegated_symbols=symbols,
+    )
 
 
 def attach_default_price_ws_stream(
     cpm_getter=None,
     *,
-    sync_ts: float = 0.8,
+    sync_ts: float = PRICE_STREAM_POLL_INTERVAL_SEC,
     data_sync_mode: str = CacheManagerInterface.MODE_DISK_READER,
 ) -> Optional[CacheCurrentPriceManager]:
     """Attach the default venue price WebSocket manager to ``CacheCurrentPriceManager``."""
@@ -2229,7 +2304,7 @@ def stop_price_ws_streams(shutdown_deadline: float) -> None:
 
 SPARSE_PRICE_SYNC_INTERVAL_SEC = 3 * 60
 PRICE_24_SYNC_INTERVAL_SEC = 30
-CURRENT_PRICE_SYNC_INTERVAL_SEC = 30
+CURRENT_PRICE_SYNC_INTERVAL_SEC = PRICE_STREAM_POLL_INTERVAL_SEC
 _READONLY_PRICE_LOCK = threading.RLock()
 _READONLY_PRICE_READERS: dict[str, Any] = {}
 

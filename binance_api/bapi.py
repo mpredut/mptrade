@@ -21,6 +21,7 @@ from .bapi_client import client
 from . import bapi_ws
 from providers import order_id_context as rc
 from providers.base import MarketDataProvider
+from providers.ssot_bridge import is_in_live_price_fetch
 from providers.order_ohlc_utils import (
     filter_and_normalize_open_orders,
     iter_expired_open_order_ids,
@@ -80,13 +81,14 @@ def get_current_price(symbol):
     """Return a bounded-age REST quote, failing closed after refresh failure."""
     if (symbol := clean_upper_token(symbol)) is None:
         return None
-    now = time.time()
-    cached_at_f = safe_float(cprice_time.get(symbol), default=None)
-    cached_f = safe_pos_float(cprice.get(symbol), default=None)
-    if cached_at_f is not None and cached_f is not None:
-        age = safe_nonneg_float(now - cached_at_f, default=None)
-        if age is not None and age < BINANCE_REST_PRICE_CACHE_TTL_SEC:
-            return cached_f
+    if not is_in_live_price_fetch():
+        now = time.time()
+        cached_at_f = safe_float(cprice_time.get(symbol), default=None)
+        cached_f = safe_pos_float(cprice.get(symbol), default=None)
+        if cached_at_f is not None and cached_f is not None:
+            age = safe_nonneg_float(now - cached_at_f, default=None)
+            if age is not None and age < BINANCE_REST_PRICE_CACHE_TTL_SEC:
+                return cached_f
 
     # A failed refresh returns None. It deliberately does not extend the timestamp
     # of an older quote, so repeated outages cannot keep stale data apparently fresh.

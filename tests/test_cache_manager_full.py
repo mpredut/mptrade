@@ -3219,3 +3219,62 @@ def test_daemon_main_mode_binds_single_producer_current_price_and_short_trend(mo
     finally:
         cm.CacheFactory.shutdown_all()
 
+
+def test_ws_drop_triggers_subsecond_http_fallback_and_bypasses_bapi_ttl(tmp_path, monkeypatch):
+    """When WS stops delivering ticks, HTTP fallback polls at <=0.8s (bypassing bapi TTL) to keep age <3.0s."""
+    import botcore
+    from binance_api import bapi
+    from providers.ssot_bridge import live_price_fetch_context
+
+    assert cacheprice.CURRENT_PRICE_SYNC_INTERVAL_SEC == pytest.approx(botcore.PRICE_STREAM_POLL_INTERVAL_SEC)
+    assert cacheprice.CacheCurrentPriceManager.WS_TIMEOUT_SEC == pytest.approx(botcore.PRICE_WS_TIMEOUT_SEC)
+    assert cacheprice.CacheCurrentPriceManager.STALE_THRESHOLD_MS == botcore.PRICE_FRESHNESS_MAX_AGE_MS
+
+    # Verify bapi.get_current_price bypasses in-memory TTL cache inside live_price_fetch_context.
+    bapi.cprice["BTCUSDC"] = 50000.0
+    bapi.cprice_time["BTCUSDC"] = time.time()
+    fake_client = MagicMock()
+    fake_client.get_symbol_ticker.return_value = {"price": "96500.0"}
+    monkeypatch.setattr(bapi, "client", fake_client)
+    try:
+        assert bapi.get_current_price("BTCUSDC") == pytest.approx(50000.0)
+        fake_client.get_symbol_ticker.assert_not_called()
+        with live_price_fetch_context():
+            assert bapi.get_current_price("BTCUSDC") == pytest.approx(96500.0)
+        fake_client.get_symbol_ticker.assert_called_once_with(symbol="BTCUSDC")
+    finally:
+        bapi.cprice.clear()
+        bapi.cprice_time.clear()
+
+    # Verify WS drop beyond WS_TIMEOUT_SEC (1.5s) flips _should_poll() -> True and refreshes <3.0s via HTTP.
+    api_mock = MagicMock()
+    api_mock.get_current_price.return_value = 97000.0
+    cpm = cacheprice.CacheCurrentPriceManager(
+        sync_ts=botcore.PRICE_STREAM_POLL_INTERVAL_SEC,
+        symbols=["BTCUSDC"],
+        filename=str(tmp_path / "cache_current_price.json"),
+        ws_manager=None,
+        api_client=api_mock,
+        market_api=api_mock,
+        data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+    )
+    now_s = time.time()
+    api_mock.get_current_price.reset_mock()
+    cpm.on_items_update("BTCUSDC", [[int(now_s * 1000), 96000.0]])
+    assert cpm._ws_is_healthy("BTCUSDC") is True
+    assert cpm._should_poll() is False
+
+    # Simulate WS silence for 1.6s (> 1.5s WS_TIMEOUT_SEC, still well below 3.0s SLA).
+    cpm._ws_last_event_ts_per_symbol["BTCUSDC"] = time.time() - (botcore.PRICE_WS_TIMEOUT_SEC + 0.1)
+    assert cpm._ws_is_healthy("BTCUSDC") is False
+    assert cpm._should_poll() is True
+    assert cpm.query_remote_and_update_cache() is True
+    assert cpm.save_state_to_file() is True
+    api_mock.get_current_price.assert_called_once_with(symbol="BTCUSDC")
+
+    persisted = json.loads((tmp_path / "cache_current_price.json").read_text(encoding="utf-8"))
+    summary = botcore.summarize_current_price_cache_freshness(persisted)
+    assert summary["ws_realtime_fresh"] is True
+    assert summary["freshest_age_seconds"] < botcore.PRICE_FRESHNESS_MAX_AGE_SEC
+
+

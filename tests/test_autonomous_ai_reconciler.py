@@ -2137,11 +2137,11 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
                 }
                 if str(path).endswith("cache_short_trend.json")
                 else {
-                    "fetchtime": {"BTCUSDC": now_s - 3, "HYPEUSDC": now_s - 4},
+                    "fetchtime": {"BTCUSDC": now_s - 1.2, "HYPEUSDC": now_s - 1.5},
                     "items": {
                         "BTCUSDC": 65000.0,
-                        "HYPEUSDC": {"price": 42.5, "ts": now_s - 4},
-                        "SPCX": [[(now_s - 2) * 1000.0, 12.3]],
+                        "HYPEUSDC": {"price": 42.5, "ts": now_s - 1.5},
+                        "SPCX": [[(now_s - 1.0) * 1000.0, 12.3]],
                     },
                 }
             ),
@@ -8815,35 +8815,106 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations(tmp_path):
 
 
 def test_current_price_realtime_cadence_surfaced_in_monitors(tmp_path, monkeypatch):
-    """Verify summarize_fleet_sensor_status and check_cache_coherence detect 30s HTTP fallback vs <15s WS cadence."""
-    now_s = 1_795_000_000.0
-    monkeypatch.setattr("orchestratorOS.lib.technical_repair_ssot.time.time", lambda: now_s)
-    cp_path = tmp_path / "cache_current_price.json"
-    cp_path.write_text(
-        json.dumps({"items": {"BTCUSDC": [[(now_s - 26.0) * 1000.0, 95000.0]]}, "fetchtime": {"BTCUSDC": (now_s - 26.0) * 1000.0}}),
-        encoding="utf-8",
-    )
-    sensors_stale = summarize_fleet_sensor_status(str(tmp_path))
-    assert sensors_stale["current_price_cache"]["symbols_count"] == 1
-    assert sensors_stale["current_price_cache"]["freshest_age_seconds"] == pytest.approx(26.0)
-    assert sensors_stale["current_price_cache"]["ws_realtime_fresh"] is False
+    """Verify summarize_fleet_sensor_status and check_cache_coherence enforce the unified <3.0s SSOT SLA."""
+    import botcore
 
+    # Friday 22:00 UTC (after US RTH close at 21:00 UTC) so RTH equities are closed while crypto is 24x7 open.
+    now_s = 1_700_258_400.0
+    monkeypatch.setattr("orchestratorOS.lib.technical_repair_ssot.time.time", lambda: now_s)
+    assert ccc.CURRENT_PRICE_STALE_S == pytest.approx(botcore.PRICE_FRESHNESS_MAX_AGE_SEC)
+    assert ccc.CURRENT_PRICE_STREAM_STALE_S == pytest.approx(botcore.PRICE_FRESHNESS_MAX_AGE_SEC)
+    assert ccc.SHORT_TREND_STALE_S == pytest.approx(botcore.SHORT_TREND_FRESHNESS_MAX_AGE_SEC)
+
+    cp_path = tmp_path / "cache_current_price.json"
     st_path = tmp_path / "cache_short_trend.json"
     st_path.write_text(
-        json.dumps({"items": {"BTCUSDC": {"ts": now_s - 2.0, "current_price": 95000.0, "gradient_recent": 0.01}}}),
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": {"ts": now_s - 2.0, "current_price": 95000.0, "gradient_recent": 0.01},
+                    "HYPEUSD": {"ts": now_s - 2.0, "current_price": 42.0, "gradient_recent": 0.02},
+                    "SPCX_US_EQ": {"ts": now_s - 7200.0, "current_price": 12.5, "gradient_recent": 0.0},
+                }
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(ccc, "CACHEDB", str(tmp_path))
-    monkeypatch.setattr(ccc, "expected_symbols", lambda: ["BTCUSDC"])
+    monkeypatch.setattr(ccc, "expected_symbols", lambda: ["BTCUSDC", "HYPEUSD", "SPCX_US_EQ"])
     monkeypatch.setattr(ccc.time, "time", lambda: now_s)
-    assert ccc.main() == 1  # 26s old current_price fails <15s WS stream threshold
 
+    # 1) 3.5s old price (>= 3.0s SSOT SLA) fails both technical_repair_ssot and check_cache_coherence.
     cp_path.write_text(
-        json.dumps({"items": {"BTCUSDC": [[(now_s - 0.8) * 1000.0, 95010.0]]}, "fetchtime": {"BTCUSDC": (now_s - 0.8) * 1000.0}}),
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [[(now_s - 3.5) * 1000.0, 95000.0]],
+                    "HYPEUSD": [[(now_s - 3.5) * 1000.0, 42.0]],
+                    "SPCX_US_EQ": [[(now_s - 7200.0) * 1000.0, 12.5]],
+                },
+                "fetchtime": {
+                    "BTCUSDC": (now_s - 3.5) * 1000.0,
+                    "HYPEUSD": (now_s - 3.5) * 1000.0,
+                    "SPCX_US_EQ": (now_s - 7200.0) * 1000.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    sensors_stale = summarize_fleet_sensor_status(str(tmp_path))
+    assert sensors_stale["current_price_cache"]["symbols_count"] == 3
+    assert sensors_stale["current_price_cache"]["max_allowed_age_seconds"] == pytest.approx(
+        botcore.PRICE_FRESHNESS_MAX_AGE_SEC
+    )
+    assert sensors_stale["current_price_cache"]["freshest_age_seconds"] == pytest.approx(3.5)
+    assert sensors_stale["current_price_cache"]["ws_realtime_fresh"] is False
+    assert ccc.main() == 1
+
+    # 2) Partial staleness: BTCUSDC is 0.5s fresh, but HYPEUSD is 3.4s stale -> BOTH monitors fail!
+    cp_path.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [[(now_s - 0.5) * 1000.0, 95010.0]],
+                    "HYPEUSD": [[(now_s - 3.4) * 1000.0, 42.1]],
+                    "SPCX_US_EQ": [[(now_s - 7200.0) * 1000.0, 12.5]],
+                },
+                "fetchtime": {
+                    "BTCUSDC": (now_s - 0.5) * 1000.0,
+                    "HYPEUSD": (now_s - 3.4) * 1000.0,
+                    "SPCX_US_EQ": (now_s - 7200.0) * 1000.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    sensors_partial = summarize_fleet_sensor_status(str(tmp_path))
+    assert sensors_partial["current_price_cache"]["freshest_age_seconds"] == pytest.approx(0.5)
+    assert sensors_partial["current_price_cache"]["oldest_open_age_seconds"] == pytest.approx(3.4)
+    assert sensors_partial["current_price_cache"]["ws_realtime_fresh"] is False
+    assert ccc.main() == 1
+
+    # 3) All open-market symbols < 3.0s fresh (closed RTH equity SPCX_US_EQ preserved from close) -> BOTH pass!
+    cp_path.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [[(now_s - 0.8) * 1000.0, 95010.0]],
+                    "HYPEUSD": [[(now_s - 1.1) * 1000.0, 42.2]],
+                    "SPCX_US_EQ": [[(now_s - 7200.0) * 1000.0, 12.5]],
+                },
+                "fetchtime": {
+                    "BTCUSDC": (now_s - 0.8) * 1000.0,
+                    "HYPEUSD": (now_s - 1.1) * 1000.0,
+                    "SPCX_US_EQ": (now_s - 7200.0) * 1000.0,
+                },
+            }
+        ),
         encoding="utf-8",
     )
     sensors_fresh = summarize_fleet_sensor_status(str(tmp_path))
     assert sensors_fresh["current_price_cache"]["ws_realtime_fresh"] is True
+    assert sensors_fresh["current_price_cache"]["oldest_open_age_seconds"] == pytest.approx(1.1)
     assert ccc.main() == 0
 
 

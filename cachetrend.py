@@ -26,6 +26,8 @@ from typing import Any, Callable, List, Optional, Tuple
 
 import pricewindow as pw
 from botcore import (
+    PRICE_FRESHNESS_MAX_AGE_SEC,
+    SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     _is_fresh_obs_ts,
     _parse_bool_flag,
     diff_percent,
@@ -269,11 +271,11 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     EPSILON_K         = 1.0     # Informed noise threshold: k * stddev(gradient).
     UPWARD_EPSILON_K  = pw.UPWARD_EPSILON_K  # Minimum growth_coefficient / epsilon ratio to confirm upward trend above noise.
     FAVORABLE_REL_EPS = 1e-5    # Price-relative fallback when epsilon is absent.
-    TREND_STALE_SEC   = 15.0    # Do not delay based on older snapshots.
+    TREND_STALE_SEC   = SHORT_TREND_FRESHNESS_MAX_AGE_SEC  # Derived from CM_PRICE_FRESHNESS_MAX_AGE_SEC SSOT.
     # Percentage thresholds are scale-invariant and configurable per window or symbol.
     PRICE_CHANGE_THRESHOLD_SMALL = diff_percent(60000, 60000 - 310)
     PRICE_CHANGE_THRESHOLD_BIG   = diff_percent(97000, 95000 - 377)
-    FULL_EVAL_INTERVAL_SEC = 3.0   # Cadence for expensive complete metrics.
+    FULL_EVAL_INTERVAL_SEC = PRICE_FRESHNESS_MAX_AGE_SEC   # Cadence for expensive complete metrics.
     FLUSH_INTERVAL_SEC     = 0.5   # Writer-only file flush cadence.
     # Every window is a slice of the same 24-hour Cache24 buffer. The smallest is primary.
     WINDOW_SECONDS = list(pw.DEFAULT_TREND_WINDOW_SECONDS)   # [3.7 min momentum, 2.5 hours trend]
@@ -1502,12 +1504,12 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     def read_ssot_short_trend_file(
         trend_path: str,
         candidates: tuple[str, ...] | List[str],
-        max_age_sec: float = 15.0,
+        max_age_sec: float = SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
         *,
         now_s: Optional[float] = None,
     ) -> Optional[dict]:
         """Read a fresh short-trend snapshot for ``candidates`` from ``trend_path``."""
-        if not trend_path or (max_age := resolve_positive_max_age(max_age_sec, 15.0)) is None:
+        if not trend_path or (max_age := resolve_positive_max_age(max_age_sec, SHORT_TREND_FRESHNESS_MAX_AGE_SEC)) is None:
             return None
         try:
             loaded = CacheManagerInterface._read_recovering_dict_and_items(

@@ -37,6 +37,7 @@ import sys
 import time
 
 from botcore import (
+    SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     _parse_bool_flag,
     clean_json_value,
     clean_upper_token,
@@ -754,7 +755,9 @@ class TrailingAdapterBase:
             cache_trend_path = self._module_attr("CACHE_TREND")
             if cache_trend_path:
                 snap = ct.CacheShortTrendManager.read_ssot_short_trend_file(
-                    str(cache_trend_path), [pair] + cache_symbol_variants(pair), max_age_sec=15.0
+                    str(cache_trend_path),
+                    [pair] + cache_symbol_variants(pair),
+                    max_age_sec=SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
                 )
             else:
                 snap = ct.get_short_trend_manager().get_fresh_snapshot(pair)
