@@ -178,6 +178,9 @@ import pricewindow as pw
 from providers import (
     base as pbase_mod,
     binance_provider as bp_mod,
+    broker_history as bh_mod,
+    intent_execution as ie_mod,
+    intent_reconciliation as ir_mod,
     market_api as mapi_mod,
     order_id_context as oic,
     ssot_bridge as sb_mod,
@@ -192,7 +195,11 @@ from providers.execution_audit import (
     summarize_recent_ai_intents,
 )
 from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
-from providers.intent_state import _resolve_clamped_intent_notional
+from providers.intent_state import (
+    _resolve_clamped_intent_notional,
+    collect_known_ai_order_ids,
+    validate_and_build_intent_dict,
+)
 from providers.kraken_provider import KrakenProvider
 from providers.ohlc_utils import (
     build_price_history_points,
@@ -211,6 +218,7 @@ from providers.order_ohlc_utils import (
     format_venue_intent_client_order_id,
     is_post_only_cross_refusal,
     iter_expired_open_order_ids,
+    normalize_open_order,
     parse_nonneg_order_field,
 )
 from providers.price_poller import (
@@ -5823,6 +5831,172 @@ def test_wave32_side_ssot_deferred_ticks_and_ws_protocol_border_cases(tmp_path, 
     assert hist_api.fetch_historical_ohlc_points("BTCUSDC", True) == []
     assert hist_api.fetch_historical_ohlc_points("BTCUSDC", 0) == []
     assert ohlc_calls == []
+
+
+def test_wave33_broker_history_order_context_and_intent_border_cases():
+    # 1. botcore extract_order_side (nested broker instrument), clamp_price_to_bbo_mid,
+    #    resolve_sustained_sample_rate, is_cache_fresh, and is_interval_due border cases.
+    assert botcore.extract_order_side({"instrument": {"ticker": "NVDA_US_EQ"}, "quantity": 2.5, "type": "MARKET"}) == "BUY"
+    assert botcore.extract_order_side({"instrument": {"ticker": "NVDA_US_EQ"}, "quantity": -2.5, "type": "MARKET"}) == "SELL"
+    assert botcore.clamp_price_to_bbo_mid(99.0, 100.0, 101.0, max_spread_ratio=None) == 100.5
+    assert botcore.clamp_price_to_bbo_mid(99.0, 100.0, 101.0, max_spread_ratio=float("nan")) == 100.5
+
+    cpm_stub = SimpleNamespace(lock=threading.RLock(), _update_timestamps={"BTCUSDC": [10.0, 16.0]})
+    assert botcore.resolve_sustained_sample_rate(cpm_stub, "BTCUSDC", min_span_sec=None) == 6.0
+    assert botcore.resolve_sustained_sample_rate(cpm_stub, "BTCUSDC", min_span_sec=float("nan")) == 6.0
+
+    assert botcore.is_cache_fresh(100.0, None, 30.0) is False
+    assert botcore.is_cache_fresh(100.0, float("nan"), 30.0) is False
+    assert botcore.is_cache_fresh(100.0, True, 30.0) is False
+    assert botcore.is_interval_due(None, 100.0, 30.0) is True
+    assert botcore.is_interval_due(float("nan"), 100.0, 30.0) is True
+    assert botcore.is_interval_due(True, 100.0, 30.0) is True
+
+    # 2. providers.broker_history & T212Provider.open_orders SSOT & border cases.
+    assert bh_mod.extract_broker_order_ticker({"ticker": True}) == ""
+    assert bh_mod.extract_broker_order_ticker({"instrument": {"ticker": 123}}) == ""
+    assert bh_mod.extract_broker_order_ticker({"instrument": {"ticker": " NVDA_US_EQ "}}) == "NVDA_US_EQ"
+    assert bh_mod.extract_broker_signed_qty_and_side({"orderedQuantity": True, "quantity": -5.0}) == (-5.0, "SELL")
+    assert bh_mod.extract_broker_signed_qty_and_side({"orderedQuantity": "", "filledQuantity": -2.0}) == (-2.0, "SELL")
+    assert list(bh_mod.iter_broker_history_order_fills(True)) == []
+    assert list(bh_mod.iter_broker_history_order_fills({"order": {"id": "1"}})) == []
+    assert bh_mod.extract_broker_history_matches([{"order": {"id": 12345}, "fill": None}], 12345) == [({"id": 12345}, None)]
+    assert bh_mod.extract_broker_history_matches([{"order": {"id": 12345}, "fill": None}], True) == []
+    assert bh_mod.aggregate_broker_history_fills([]) == {}
+    agg_neg_px = bh_mod.aggregate_broker_history_fills(
+        [({"id": "77", "status": "FILLED"}, {"id": "f1", "quantity": -2.0, "price": -1.0, "filledAt": 1700000000000})]
+    )
+    assert "filledQuantity" not in agg_neg_px
+
+    t212_prov = T212Provider.__new__(T212Provider)
+    t212_prov._client = lambda: SimpleNamespace(
+        list_active_orders=lambda: [
+            {
+                "id": 901,
+                "instrument": {"ticker": "NVDA_US_EQ"},
+                "orderedQuantity": True,
+                "quantity": -3.0,
+                "limitPrice": 145.5,
+                "status": "NEW",
+                "type": True,
+            }
+        ]
+    )
+    t212_open = t212_prov.open_orders("NVDA_US_EQ")
+    assert len(t212_open) == 1
+    assert t212_open[0]["side"] == "SELL"
+    assert t212_open[0]["origQty"] == 3.0
+    assert t212_open[0]["type"] == "LIMIT"
+
+    # 3. providers.order_id_context resolve_order_actor / resolve_order_origin border cases.
+    assert oic.resolve_order_actor({"orderId": "1"}, known_ai_order_ids="AI_intent_123") == "BOT"
+    assert oic.resolve_order_actor({"orderId": "1"}, known_ai_order_ids=True) == "BOT"
+    assert oic.resolve_order_actor({"cloid": "0xabcdef123456"}, known_ai_order_ids={"0xABCDEF123456"}) == "AI"
+    assert oic.resolve_order_origin({"bot": False, "rule": False, "clientOrderId": "AGS999"}) == (
+        "BOT",
+        "assetguardian",
+        "SL_PROTECT",
+    )
+    assert oic.resolve_order_origin(
+        {"cloid": "0xABCDEF"},
+        audit_origin_map={"0xabcdef": ("rtrade", "GRID"), "bad": None},
+    ) == ("BOT", "rtrade", "GRID")
+
+    # 4. providers.order_ohlc_utils normalize_open_order & filter_and_normalize_open_orders border cases.
+    norm_oo = normalize_open_order(
+        {"orderId": "55", "type": "LIMIT", "order_type": True, "symbol": True, "side": True, "price": 100.0, "origQty": 1.0}
+    )
+    assert norm_oo["side"] == ""
+    assert norm_oo["order_type"] == "LIMIT"
+    assert norm_oo["symbol"] == ""
+
+    hl_filtered = filter_and_normalize_open_orders(
+        [{"oid": 88, "side": "B", "limitPx": "38.0", "origSz": "2.0", "filledQty": "0.5", "cloid": "RT_1"}],
+        "BUY",
+        allowed_owners={"rtrade"},
+        rc_mod=oic,
+        fallback_extract_oid=True,
+    )
+    assert "88" in hl_filtered
+    assert hl_filtered["88"]["clientOrderId"] == "RT_1"
+    assert hl_filtered["88"]["executedQty"] == 0.5
+
+    # 5. providers.intent_state & intent_execution & intent_reconciliation border cases.
+    assert collect_known_ai_order_ids([], initial_ids="AI_intent_1") == {"AI_intent_1"}
+    assert collect_known_ai_order_ids([], initial_ids=True) == set()
+    assert _resolve_clamped_intent_notional({"suggested_notional_usd": 0.0, "notional_usd": 50.0}, 10.0, 100.0) is None
+    assert (
+        validate_and_build_intent_dict(
+            {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.50, "suggested_notional_usd": 100.0},
+            source="auto_cryptotrade_executor",
+            min_confidence=float("nan"),
+            min_notional_usd=10.0,
+            max_notional_usd=1000.0,
+            existing_intents=[],
+            now_ts=1700000000.0,
+        )
+        is None
+    )
+
+    assert ie_mod.resolve_intent_execution_price(
+        {"order_type": "MARKET"},
+        intent_id="i1",
+        decision="BUY",
+        symbol="BTCUSDC",
+        live_price=float("nan"),
+        now_ts=1700000000.0,
+    ) == (False, 0.0, False)
+
+    dup_inst = SimpleNamespace(
+        open_orders=lambda: [{"orderId": "777", "actor": "AI", "side": "BUY", "price": "70000.0", "origQty": "0.01", "executedQty": "0"}]
+    )
+    assert ie_mod.find_duplicate_ai_open_limit_order(dup_inst, "BUY", float("inf"), float("inf")) is None
+    assert ie_mod.find_duplicate_ai_open_limit_order(dup_inst, "BUY", True, 700.0) is None
+    assert (
+        ie_mod.find_duplicate_ai_open_limit_order(
+            dup_inst, "BUY", 70000.0, 50.0, require_notional_match="false"
+        )
+        == "777"
+    )
+
+    canceled_seen = []
+    cancel_inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        open_orders=lambda: [
+            {"orderId": "12345", "actor": "AI", "side": "BUY", "price": "70000.0", "origQty": "0.01"},
+            {"orderId": "99999", "actor": "BOT", "side": "BUY", "price": "69000.0", "origQty": "0.01"},
+        ],
+        cancel_order=lambda oid: canceled_seen.append(oid) or True,
+    )
+    cancel_inst.cancel_order._mock_name = "cancel_order"
+    assert (
+        ie_mod.cancel_existing_ai_open_orders(
+            cancel_inst,
+            "BUY",
+            include_bot_orders="false",
+            exclude_order_ids="12345",
+        )
+        == []
+    )
+    assert canceled_seen == []
+
+    det = ir_mod._resolve_intent_execution_details(
+        {
+            "intent_id": "i_rest",
+            "status": "EXECUTED",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "decision": "BUY",
+            "order_type": "LIMIT",
+            "timestamp": 1700000000.0,
+            "execution_payload": {"orderId": "500", "status": "NEW", "executedQty": "0"},
+        },
+        None,
+        lambda *_a, **_kw: 100.0,
+        open_orders=[],
+        verified_open_venues="binance",
+    )
+    assert det["exec_status"] == "OPEN_RESTING"
 
 
 

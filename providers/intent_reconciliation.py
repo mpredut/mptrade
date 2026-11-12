@@ -17,6 +17,7 @@ from botcore import (
     extract_order_side,
     first_pos_float,
     normalize_timestamp_ms,
+    resolve_now_ts,
     safe_float,
     safe_pos_float,
 )
@@ -440,15 +441,15 @@ def _resolve_intent_execution_details(
     exec_pay = i.get("execution_payload") if isinstance(i.get("execution_payload"), dict) else {}
     hist = i.get("history") if isinstance(i.get("history"), list) else []
     last_hist = hist[-1] if hist and isinstance(hist[-1], dict) else {}
-    exec_quote_notional = (
-        safe_pos_float(exec_pay.get("cummulativeQuoteQty"), default=None)
-        or safe_pos_float(exec_pay.get("cost"), default=None)
-        or safe_pos_float(exec_pay.get("filledValue"), default=None)
+    exec_quote_notional = first_pos_float(
+        exec_pay.get("cummulativeQuoteQty"),
+        exec_pay.get("cost"),
+        exec_pay.get("filledValue"),
     )
-    intent_order_notional = (
-        safe_pos_float(i.get("clamped_notional_usd"), default=None)
-        or safe_pos_float(last_hist.get("notional_usd"), default=None)
-        or extract_notional_fn(i, default=None)
+    intent_order_notional = first_pos_float(
+        i.get("clamped_notional_usd"),
+        last_hist.get("notional_usd"),
+        extract_notional_fn(i, default=None),
     )
     eff_notional = exec_quote_notional or intent_order_notional
     ts_raw: Any = None
@@ -615,7 +616,11 @@ def _resolve_intent_execution_details(
     )
     venue_open_verified = (
         verified_open_venues is None
-        or (bool(venue) and normalize_venue_name(venue) in verified_open_venues)
+        or (
+            bool(venue)
+            and isinstance(verified_open_venues, (set, frozenset, list, tuple))
+            and normalize_venue_name(venue) in verified_open_venues
+        )
     )
     if (
         is_unfilled_resting_limit
@@ -625,7 +630,7 @@ def _resolve_intent_execution_details(
         and ts_val > 0
     ):
         cancel_grace_sec = MarketDataProvider.resolve_unfilled_order_cancel_grace_sec()
-        if (now_ts - ts_val) > cancel_grace_sec:
+        if (resolve_now_ts(now_ts) - ts_val) > cancel_grace_sec:
             venue_st = "CANCELED_OR_EXPIRED"
     if (
         fill_px is None

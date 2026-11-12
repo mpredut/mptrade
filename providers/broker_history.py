@@ -4,10 +4,12 @@ import math
 from typing import Any, Mapping, Optional
 
 from botcore import (
+    clean_nonempty_str,
+    clean_order_id,
     extract_order_id,
+    extract_order_side,
     extract_timestamp_ms,
     first_pos_float,
-    normalize_side,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -19,13 +21,30 @@ def extract_broker_order_ticker(raw: Any) -> str:
     if not isinstance(raw, Mapping):
         return ""
     inst = raw.get("instrument")
-    inst_ticker = inst.get("ticker") if isinstance(inst, Mapping) else ""
-    return str(raw.get("ticker") or inst_ticker or "").strip()
+    inst_ticker = inst.get("ticker") if isinstance(inst, Mapping) else None
+    return clean_nonempty_str(raw.get("ticker")) or clean_nonempty_str(inst_ticker) or ""
+
+
+def extract_broker_signed_qty_and_side(order: Any) -> tuple[float, str]:
+    """Extract signed order quantity and canonical side (``'BUY'``/``'SELL'``) from a broker order dict."""
+    if not isinstance(order, Mapping):
+        return 0.0, "BUY"
+    raw_qty = 0.0
+    for key in ("orderedQuantity", "quantity", "filledQuantity"):
+        val = safe_float(order.get(key), default=None)
+        if val is not None and val != 0.0:
+            raw_qty = val
+            break
+    order_dict = order if isinstance(order, dict) else dict(order)
+    side = extract_order_side(order_dict) or ("SELL" if raw_qty < 0.0 else "BUY")
+    return raw_qty, side
 
 
 def iter_broker_history_order_fills(items: Any):
     """Yield ``(order_id_str, order_dict, fill_obj)`` from broker order-history items."""
-    for item in items or []:
+    if not isinstance(items, (list, tuple)):
+        return
+    for item in items:
         if not isinstance(item, dict):
             continue
         order = item.get("order") if isinstance(item.get("order"), dict) else item
@@ -35,21 +54,35 @@ def iter_broker_history_order_fills(items: Any):
 
 def extract_broker_history_matches(items: Any, target_oid: str) -> list[tuple[dict, Optional[dict]]]:
     """Return ``[(order, fill), ...]`` entries matching ``target_oid`` from broker order-history items."""
+    clean_target = clean_order_id(target_oid)
+    if not clean_target:
+        return []
     return [
         (order, fill)
         for oid, order, fill in iter_broker_history_order_fills(items)
-        if oid == target_oid
+        if oid == clean_target
     ]
 
 
 def aggregate_broker_history_fills(matches: list[tuple[dict, Optional[dict]]]) -> dict:
     """Aggregate one or more ``(order, fill)`` matches into a single enriched broker order dictionary."""
+    if (
+        not isinstance(matches, (list, tuple))
+        or not matches
+        or not isinstance(matches[0], (list, tuple))
+        or not matches[0]
+        or not isinstance(matches[0][0], Mapping)
+    ):
+        return {}
     result = dict(matches[0][0])
     total_qty = total_cost = total_fee = priced_qty = 0.0
     fee_currencies = set()
     latest_fill_ts_ms: Optional[int] = None
     seen_fill_ids: set[str] = set()
-    for order, fill in matches:
+    for entry in matches:
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            continue
+        order, fill = entry[0], entry[1]
         cand_ts = extract_timestamp_ms(fill, default=None) or extract_timestamp_ms(order, default=None)
         if cand_ts is not None and (latest_fill_ts_ms is None or cand_ts > latest_fill_ts_ms):
             latest_fill_ts_ms = cand_ts
@@ -61,11 +94,11 @@ def aggregate_broker_history_fills(matches: list[tuple[dict, Optional[dict]]]) -
                 continue
             seen_fill_ids.add(fill_id)
         qf = safe_float(fill.get("quantity"), default=None)
-        pf = safe_float(fill.get("price"), default=None)
+        pf = safe_nonneg_float(fill.get("price"), default=None)
         if qf is None or pf is None:
             continue
         qty = abs(qf)
-        price = abs(pf)
+        price = pf
         total_qty += qty
         if price > 0.0 and qty > 0.0:
             total_cost += qty * price
@@ -111,13 +144,7 @@ def normalize_broker_history_items(items: Any) -> dict[str, list[dict]]:
         ticker = extract_broker_order_ticker(enriched).upper()
         if not ticker:
             continue
-        raw_qty = safe_float(
-            enriched.get("orderedQuantity")
-            if enriched.get("orderedQuantity") is not None
-            else enriched.get("quantity"),
-            default=0.0,
-        )
-        side = normalize_side(enriched.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
+        raw_qty, side = extract_broker_signed_qty_and_side(enriched)
         qty = first_pos_float(enriched.get("filledQuantity"), abs(raw_qty))
         px = first_pos_float(enriched.get("fillPrice"), enriched.get("limitPrice"))
         ts_ms = enriched.get("_timestamp_ms")
@@ -129,7 +156,7 @@ def normalize_broker_history_items(items: Any) -> dict[str, list[dict]]:
             "symbol": ticker,
             "orderId": str(oid),
             "side": side,
-            "type": str(enriched.get("type") or "MARKET").strip().upper(),
+            "type": str(clean_nonempty_str(enriched.get("type")) or "MARKET").upper(),
             "price": round(px, 6),
             "qty": round(qty, 6),
             "executedQty": round(qty, 6),
@@ -148,6 +175,7 @@ __all__ = [
     "aggregate_broker_history_fills",
     "extract_broker_history_matches",
     "extract_broker_order_ticker",
+    "extract_broker_signed_qty_and_side",
     "iter_broker_history_order_fills",
     "normalize_broker_history_items",
 ]

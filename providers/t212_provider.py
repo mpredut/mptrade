@@ -21,6 +21,7 @@ from typing import Any, List, Optional
 from botcore import (
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     _parse_bool_flag,
+    clean_nonempty_str,
     clean_upper_token,
     env_values_map,
     extract_order_id,
@@ -39,6 +40,7 @@ from .broker_history import (
     aggregate_broker_history_fills,
     extract_broker_history_matches,
     extract_broker_order_ticker,
+    extract_broker_signed_qty_and_side,
     iter_broker_history_order_fills,
     normalize_broker_history_items,
 )
@@ -674,14 +676,11 @@ class T212Provider(MarketDataProvider):
             for o in raw_orders:
                 if not isinstance(o, dict) or not _t212_tickers_match(_order_ticker(o), symbol):
                     continue
-                status_u = str(o.get("status") or "NEW").strip().upper()
+                status_u = str(clean_nonempty_str(o.get("status")) or "NEW").upper()
                 if status_u in _STATUS_MAP:
                     continue
-                raw_ord_qty = o.get("orderedQuantity") if o.get("orderedQuantity") is not None else o.get("quantity")
-                raw_qty = safe_float(raw_ord_qty, default=0.0)
-                side = normalize_side(o.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
-                raw_px = next((o.get(k) for k in ("limitPrice", "stopPrice", "price") if o.get(k) is not None), None)
-                px = safe_pos_float(raw_px, default=None)
+                raw_qty, side = extract_broker_signed_qty_and_side(o)
+                px = first_pos_float(o.get("limitPrice"), o.get("stopPrice"), o.get("price"))
                 raw_exec_qty = o.get("filledQuantity") if o.get("filledQuantity") is not None else o.get("executedQty")
                 oid = extract_order_id(o)
                 if oid is None:
@@ -698,7 +697,7 @@ class T212Provider(MarketDataProvider):
                         extra={
                             "id": oid,
                             "symbol": symbol.strip().upper(),
-                            "type": str(o.get("type") or "LIMIT").strip().upper(),
+                            "type": str(clean_nonempty_str(o.get("type")) or "LIMIT").upper(),
                         },
                     )
                 )

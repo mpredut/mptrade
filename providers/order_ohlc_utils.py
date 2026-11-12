@@ -11,6 +11,7 @@ from botcore import (
     _parse_epoch_or_iso_s,  # noqa: F401
     _pos_abs_float,
     _ts_ms_to_s,  # noqa: F401
+    clean_nonempty_str,
     clean_order_id,
     exact_pos_int,
     extract_order_id,
@@ -337,19 +338,21 @@ def normalize_open_order(
         else ("NEW" if raw_status in ("OPEN", "PENDING", "WORKING", "RESTING", "") else raw_status)
     )
     descr = order.get("descr") if isinstance(order.get("descr"), dict) else {}
+    cand_type = clean_nonempty_str(order.get("type"))
     raw_otype = (
-        order.get("order_type")
-        or order.get("orderType")
-        or descr.get("ordertype")
-        or (order.get("type") if str(order.get("type") or "").strip().upper() not in ("BUY", "SELL", "B", "S", "") else "")
+        clean_nonempty_str(order.get("order_type"))
+        or clean_nonempty_str(order.get("orderType"))
+        or clean_nonempty_str(descr.get("ordertype"))
+        or (cand_type if (cand_type and cand_type.upper() not in ("BUY", "SELL", "B", "S")) else None)
         or "LIMIT"
     )
     actor, mod, rule = resolve_order_origin(order, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map)
+    sym_out = clean_nonempty_str(symbol) or (clean_nonempty_str(order.get("symbol")) or "").upper()
     rec = {
-        "venue": venue,
-        "symbol": symbol or str(order.get("symbol") or "").strip().upper(),
-        "side": extract_order_side(order) or str(order.get("side") or order.get("type") or "").upper(),
-        "order_type": str(raw_otype).strip().upper() or "LIMIT",
+        "venue": clean_nonempty_str(venue) or "",
+        "symbol": sym_out,
+        "side": extract_order_side(order) or normalize_side(order.get("side")),
+        "order_type": raw_otype.upper(),
         "order_id": str(oid) if oid is not None else None,
         "orderId": oid,
         "actor": actor,
@@ -607,7 +610,7 @@ def filter_and_normalize_open_orders(
     for order in (open_orders or ()):
         if not isinstance(order, dict) or extract_order_side(order) != want_side:
             continue
-        cid = clean_order_id(order.get("clientOrderId")) or ""
+        cid = extract_client_order_id(order, default="") or ""
         if (
             allowed_owners is not None
             and rc_mod is not None
@@ -630,11 +633,7 @@ def filter_and_normalize_open_orders(
             if not inferred or str(inferred).strip().lower() not in allowed_set:
                 continue
         original_qty = safe_nonneg_float(extract_orig_qty(order, default=0.0), default=0.0) or 0.0
-        raw_exec_qty = next(
-            (order.get(k) for k in ("executedQty", "z", "vol_exec") if order.get(k) is not None),
-            None,
-        )
-        executed_qty = safe_nonneg_float(raw_exec_qty, default=0.0)
+        executed_qty = _first_mapped(order, _EXEC_QTY_KEYS, _nonneg_abs_float, 0.0)
         remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
         ts_ms = extract_timestamp_ms(order, default=0) or 0
         ts_sec = safe_nonneg_ts(ts_ms, default=0.0)

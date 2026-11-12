@@ -11,7 +11,14 @@ import threading
 import time
 from typing import Any, Iterable, Optional, Union
 
-from botcore import _first_mapped, clean_order_id, extract_order_id, safe_nonneg_int, sanitize_identifier
+from botcore import (
+    _first_mapped,
+    clean_nonempty_str,
+    clean_order_id,
+    extract_order_id,
+    safe_nonneg_int,
+    sanitize_identifier,
+)
 from cachepaths import normalize_venue_name
 from .ohlc_utils import ProviderError
 
@@ -244,18 +251,33 @@ def order_matches_owner(client_order_id: Optional[str], allowed_owners: Union[st
     return False
 
 
+def _normalize_id_lookup_sets(ids: Any) -> tuple[set[str], set[str]]:
+    if ids is None or isinstance(ids, (bool, str, bytes, dict)) or not hasattr(ids, "__iter__"):
+        return set(), set()
+    exact_ids: set[str] = set()
+    lower_ids: set[str] = set()
+    for item in ids:
+        if item is not None and not isinstance(item, (bool, dict, list, tuple, set, frozenset)):
+            s = str(item).strip()
+            if s:
+                exact_ids.add(s)
+                lower_ids.add(s.lower())
+    return exact_ids, lower_ids
+
+
 def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = None) -> str:
     """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
     if not isinstance(order, dict):
         return "BOT"
-    explicit = str(order.get("actor") or "").strip().upper()
+    explicit = (clean_nonempty_str(order.get("actor")) or "").upper()
     if explicit in ("AI", "BOT"):
         return explicit
+    exact_ids, lower_ids = _normalize_id_lookup_sets(known_ai_order_ids)
     oid = extract_order_id(order, default="")
-    if oid and known_ai_order_ids and str(oid) in known_ai_order_ids:
+    if oid and exact_ids and (str(oid) in exact_ids or str(oid).lower() in lower_ids):
         return "AI"
     raw_cid = (extract_client_order_id(order, default="") or "").upper()
-    if raw_cid.startswith("AI_") or (raw_cid and known_ai_order_ids and raw_cid.lower() in known_ai_order_ids):
+    if raw_cid.startswith("AI_") or (raw_cid and lower_ids and raw_cid.lower() in lower_ids):
         return "AI"
     return "BOT"
 
@@ -270,20 +292,20 @@ def resolve_order_origin(
     if actor == "AI" or not isinstance(order, dict):
         return actor, None, None
 
-    raw_mod = _first_mapped(order, ("module", "origin_module", "bot", "caller"), lambda v: str(v).strip() or None)
+    raw_mod = _first_mapped(order, ("module", "origin_module", "bot", "caller"), clean_nonempty_str)
     mod = raw_mod.lower() if raw_mod else None
     rule = _first_mapped(
-        order, ("rule", "decision_rule", "trigger_rule", "kind", "role", "motivation"), lambda v: str(v).strip() or None
+        order, ("rule", "decision_rule", "trigger_rule", "kind", "role", "motivation"), clean_nonempty_str
     )
     oid = extract_order_id(order, default="")
     raw_cid = extract_client_order_id(order, default="") or ""
 
     if isinstance(audit_origin_map, dict):
-        for lookup_key in (str(oid) if oid else "", raw_cid):
-            if lookup_key and lookup_key in audit_origin_map:
-                a_mod, a_rule = audit_origin_map[lookup_key]
-                mod = mod or a_mod
-                rule = rule or a_rule
+        for lookup_key in (str(oid) if oid else "", raw_cid, raw_cid.lower()):
+            if lookup_key and isinstance(entry := audit_origin_map.get(lookup_key), (tuple, list)) and len(entry) >= 2:
+                a_mod, a_rule = entry[0], entry[1]
+                mod = mod or clean_nonempty_str(a_mod)
+                rule = rule or clean_nonempty_str(a_rule)
 
     if raw_cid:
         cid_up = raw_cid.upper()

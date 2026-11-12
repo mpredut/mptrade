@@ -341,17 +341,32 @@ def cancel_existing_ai_open_orders(
     canceled_ids: list[str] = []
     open_fn = getattr(inst, "open_orders", None)
     cancel_fn = getattr(inst, "cancel_order", None)
+    include_bots = bool(_parse_bool_flag(include_bot_orders, False))
+    match_any_side = bool(_parse_bool_flag(any_side, False))
     want_side = normalize_side(side)
-    if not callable(open_fn) or not callable(cancel_fn) or (not any_side and not want_side):
+    if not callable(open_fn) or not callable(cancel_fn) or (not match_any_side and not want_side):
         return canceled_ids
-    excluded = {str(x) for x in (exclude_order_ids or ()) if x}
+    if isinstance(exclude_order_ids, str):
+        excluded = {exclude_order_ids.strip()} if exclude_order_ids.strip() else set()
+    elif (
+        exclude_order_ids is not None
+        and not isinstance(exclude_order_ids, (bool, bytes, dict))
+        and hasattr(exclude_order_ids, "__iter__")
+    ):
+        excluded = {
+            str(x).strip()
+            for x in exclude_order_ids
+            if x is not None and not isinstance(x, bool) and str(x).strip()
+        }
+    else:
+        excluded = set()
     ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
     try:
-        for oo, oo_side, oid in _iter_matching_open_orders(open_fn(), want_side, any_side=any_side):
+        for oo, oo_side, oid in _iter_matching_open_orders(open_fn(), want_side, any_side=match_any_side):
             if oid and str(oid) in excluded:
                 continue
             is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
-            if not is_ai_order and not include_bot_orders:
+            if not is_ai_order and not include_bots:
                 continue
             if oid:
                 try:
@@ -386,8 +401,8 @@ def cancel_existing_ai_open_orders(
                 want_side,
                 canceled_ids=canceled_ids,
                 ai_order_ids=ai_oids,
-                include_bot_orders=include_bot_orders,
-                any_side=any_side,
+                include_bot_orders=include_bots,
+                any_side=match_any_side,
                 cancel_fn_is_mock=hasattr(cancel_fn, "_mock_name"),
             )
             if to_discard and log:
@@ -414,7 +429,10 @@ def find_duplicate_ai_open_limit_order(
     """Return the venue order ID of an unfilled AI open limit order at the same side, price (<= 1 bps), and (when required) notional (<= 5%)."""
     open_fn = getattr(inst, "open_orders", None)
     want_side = normalize_side(side)
-    if not callable(open_fn) or not want_side or not (limit_price and limit_price > 0) or not (notional_usd and notional_usd > 0):
+    lim_px = safe_pos_float(limit_price, default=None)
+    notional_f = safe_pos_float(notional_usd, default=None)
+    req_notional = bool(_parse_bool_flag(require_notional_match, True))
+    if not callable(open_fn) or not want_side or lim_px is None or notional_f is None:
         return None
     try:
         raw_open = open_fn()
@@ -424,7 +442,7 @@ def find_duplicate_ai_open_limit_order(
         if isinstance(intents, dict):
             intents = intents.get("intents")
         intent_notional_by_id: dict[str, tuple[float, float]] = {}
-        if require_notional_match and isinstance(intents, list):
+        if req_notional and isinstance(intents, list):
             for item in intents:
                 if not isinstance(item, dict):
                     continue
@@ -448,14 +466,14 @@ def find_duplicate_ai_open_limit_order(
             if extract_executed_qty(oo) > 0:
                 continue
             oo_px = extract_order_price(oo)
-            if oo_px <= 0 or abs(oo_px - limit_price) / limit_price > 1e-4:
+            if oo_px <= 0 or abs(oo_px - lim_px) / lim_px > 1e-4:
                 continue
             oo_qty = extract_orig_qty(oo)
-            oo_notional = oo_px * oo_qty
+            oo_notional = oo_px * oo_qty if oo_qty is not None else 0.0
             if oo_notional <= 0:
                 continue
-            if require_notional_match:
-                notional_ok = abs(oo_notional - notional_usd) <= max(1.0, 0.05 * max(notional_usd, oo_notional))
+            if req_notional:
+                notional_ok = abs(oo_notional - notional_f) <= max(1.0, 0.05 * max(notional_f, oo_notional))
                 if not notional_ok and intent_notional_by_id:
                     cid = extract_client_order_id(oo, default="")
                     prior_pair = (
@@ -470,7 +488,7 @@ def find_duplicate_ai_open_limit_order(
                     if prior_pair is not None:
                         p_sug, p_clamp = prior_pair
                         if (
-                            abs(p_sug - notional_usd) <= max(1.0, 0.05 * max(notional_usd, p_sug))
+                            abs(p_sug - notional_f) <= max(1.0, 0.05 * max(notional_f, p_sug))
                             and abs(oo_notional - p_clamp) <= max(1.0, 0.05 * max(p_clamp, oo_notional))
                         ):
                             notional_ok = True
@@ -494,6 +512,10 @@ def resolve_intent_execution_price(
     log: Optional[Any] = None,
 ) -> tuple[bool, float, bool]:
     """Validate and resolve spot LIMIT execution price against live_price (near-market for reversals/MARKET)."""
+    live_px = safe_pos_float(live_price, default=None)
+    dec_norm = normalize_side(decision)
+    if not isinstance(intent, dict) or live_px is None or dec_norm not in ("BUY", "SELL"):
+        return False, 0.0, False
     order_type = extract_intent_order_type(intent)
     limit_px = extract_intent_limit_price(intent, default=None)
     is_urgent_reversal = (
@@ -501,37 +523,37 @@ def resolve_intent_execution_price(
         or _parse_bool_flag(intent.get("cancel_bot_open_orders"), False)
     )
     if order_type == "LIMIT":
-        if limit_px is None or limit_px <= 0 or limit_px < live_price * 0.50 or limit_px > live_price * 2.00:
+        if limit_px is None or limit_px <= 0 or limit_px < live_px * 0.50 or limit_px > live_px * 2.00:
             if is_urgent_reversal:
-                price = live_price
+                price = live_px
             else:
-                fallback_mult = 0.995 if decision == "BUY" else 1.005
-                price = round(live_price * fallback_mult, 8)
+                fallback_mult = 0.995 if dec_norm == "BUY" else 1.005
+                price = round(live_px * fallback_mult, 8)
                 if log:
                     log.warning(
                         "[INTENT GATEWAY] Intent %s limit_price %r missing or out of [0.5x, 2.0x] bounds vs live $%.6g; "
                         "using passive fallback $%.6g for %s",
-                        intent_id, limit_px, live_price, price, symbol,
+                        intent_id, limit_px, live_px, price, symbol,
                     )
                 append_intent_history(intent, {
                     "ts": now_ts,
                     "action": "FALLBACK_PASSIVE_LIMIT_PRICE",
                     "requested_limit_price": limit_px,
                     "fallback_limit_price": price,
-                    "live_price": live_price,
+                    "live_price": live_px,
                 })
-        elif decision == "BUY" and limit_px > live_price:
-            price = live_price
-        elif decision == "SELL" and limit_px < live_price:
-            price = live_price
+        elif dec_norm == "BUY" and limit_px > live_px:
+            price = live_px
+        elif dec_norm == "SELL" and limit_px < live_px:
+            price = live_px
         else:
             price = limit_px
         intent["order_type"] = "LIMIT"
         intent["limit_price"] = price
         return True, price, True
     intent["order_type"] = "LIMIT"
-    intent["limit_price"] = live_price
-    return True, live_price, True
+    intent["limit_price"] = live_px
+    return True, live_px, True
 
 
 def preflight_intent_and_resolve_price(
@@ -552,20 +574,21 @@ def preflight_intent_and_resolve_price(
         _record_intent_state(intent, "REJECTED_INVALID_DECISION", now_ts, decision=decision)
         return False, intent_id, decision, symbol, venue, 0.0, None, 0.0, 0.0, False
 
+    min_conf = clean_scale(min_confidence, 1.0, allow_percent=True)
     confidence = clean_scale(intent.get("confidence"), 0.0, allow_percent=True)
     intent["confidence"] = confidence
-    if confidence < min_confidence:
+    if confidence < min_conf:
         if log:
             log.info(
                 "[INTENT GATEWAY] Intent %s rejected: confidence %.2f < %.2f",
-                intent_id, confidence, min_confidence,
+                intent_id, confidence, min_conf,
             )
         _record_intent_state(
             intent,
             "REJECTED_LOW_CONFIDENCE",
             now_ts,
             confidence=confidence,
-            min_confidence=min_confidence,
+            min_confidence=min_conf,
         )
         return False, intent_id, decision, symbol, venue, confidence, None, 0.0, 0.0, False
 

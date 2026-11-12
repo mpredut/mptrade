@@ -2590,11 +2590,13 @@ def extract_order_side(order: object) -> str:
             return "BUY" if parsed_b else "SELL"
         if isinstance(raw_buyer, str) and (b_norm := raw_buyer.strip().lower()) in ("b", "buy", "s", "sell"):
             return "BUY" if b_norm.startswith("b") else "SELL"
+    inst = order.get("instrument")
+    has_broker_hint = "ticker" in order or "limitPrice" in order or (isinstance(inst, dict) and "ticker" in inst)
     for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
         sq = safe_float(order.get(sq_key), default=0.0)
         if sq < 0.0:
             return "SELL"
-        if sq > 0.0 and (sq_key in ("signed_qty", "orderedQuantity") or "ticker" in order or "limitPrice" in order):
+        if sq > 0.0 and (sq_key in ("signed_qty", "orderedQuantity") or has_broker_hint):
             return "BUY"
     return ""
 
@@ -2667,11 +2669,12 @@ def clamp_price_to_bbo_mid(
     px_f = safe_pos_float(price, default=None) if not isinstance(price, bool) else None
     bid_f = safe_pos_float(bid, default=None) if not isinstance(bid, bool) else None
     ask_f = safe_pos_float(ask, default=None) if not isinstance(ask, bool) else None
+    max_ratio = safe_nonneg_float(max_spread_ratio, default=0.05)
     if (
         bid_f is not None
         and ask_f is not None
         and bid_f <= ask_f
-        and (ask_f - bid_f) / bid_f <= max_spread_ratio
+        and (ask_f - bid_f) / bid_f <= max_ratio
         and (px_f is None or px_f < bid_f or px_f > ask_f)
     ):
         return round((bid_f + ask_f) * 0.5, 8)
@@ -2684,9 +2687,10 @@ def resolve_sustained_sample_rate(
     """Resolve sustained sample rate from a current-price manager or compatible test double."""
     if cpm is None:
         return None
+    min_span_s = safe_nonneg_float(min_span_sec, default=5.0)
     if callable(getattr(type(cpm), "get_sustained_sample_rate", None)):
         return safe_pos_float(
-            cpm.get_sustained_sample_rate(symbol, min_span_sec=min_span_sec),
+            cpm.get_sustained_sample_rate(symbol, min_span_sec=min_span_s),
             default=None,
         )
     lock_obj = getattr(cpm, "lock", None)
@@ -2694,7 +2698,7 @@ def resolve_sustained_sample_rate(
         ts_map = getattr(cpm, "_update_timestamps", None)
         dq = ts_map.get(symbol) if isinstance(ts_map, dict) else None
         samples = list(dq) if dq else []
-    if len(samples) < 2 or (samples[-1] - samples[0]) < float(min_span_sec):
+    if len(samples) < 2 or (samples[-1] - samples[0]) < min_span_s:
         return None
     sr_fn = getattr(cpm, "get_sample_rate", None)
     if callable(sr_fn):
@@ -2710,9 +2714,12 @@ def is_cache_fresh(
     """Return True if cached state at ``last_ts`` is still within ``ttl_sec`` at ``now_ts``."""
     if _parse_bool_flag(force_refresh, False):
         return False
+    now_s = safe_nonneg_float(now_ts, None)
+    if now_s is None:
+        return False
     lt = safe_nonneg_float(last_ts, 0.0)
     ttl = safe_nonneg_float(ttl_sec, 0.0)
-    return lt > 0.0 and 0.0 <= (now_ts - lt) < ttl
+    return lt > 0.0 and 0.0 <= (now_s - lt) < ttl
 
 
 def is_interval_due(
@@ -2721,9 +2728,12 @@ def is_interval_due(
     """Return True if ``force`` is truthy or ``interval_sec`` has elapsed since ``last_ts``."""
     if _parse_bool_flag(force, False):
         return True
+    cur_s = safe_nonneg_float(current_ts, None)
+    if cur_s is None:
+        return True
     lt = safe_nonneg_float(last_ts, 0.0)
     itv = safe_nonneg_float(interval_sec, 0.0)
-    return not (0.0 <= (current_ts - lt) < itv)
+    return not (0.0 <= (cur_s - lt) < itv)
 
 
 def check_cooldown_gate(

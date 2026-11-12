@@ -120,7 +120,15 @@ def collect_known_ai_order_ids(
     initial_ids: Optional[set[str]] = None,
 ) -> set[str]:
     """Collect venue order IDs (``execution_payload`` / ``history``) and venue-native AI client IDs across intents."""
-    ai_oids: set[str] = set(initial_ids or ())
+    ai_oids: set[str] = set()
+    if isinstance(initial_ids, str):
+        if clean_s := initial_ids.strip():
+            ai_oids.add(clean_s)
+    elif initial_ids is not None and not isinstance(initial_ids, (bool, bytes, dict)) and hasattr(initial_ids, "__iter__"):
+        for item_id in initial_ids:
+            if item_id is not None and not isinstance(item_id, (bool, dict, list, tuple, set, frozenset)):
+                if clean_s := str(item_id).strip():
+                    ai_oids.add(clean_s)
     if isinstance(intents, dict):
         intents = intents.get("intents")
     if not isinstance(intents, list):
@@ -375,12 +383,13 @@ def validate_and_build_intent_dict(
         if log:
             log.warning("[INTENT GATEWAY] %s %s decision missing symbol/venue (no intent).", source, side)
         return None
+    min_conf = clean_scale(min_confidence, 1.0, allow_percent=True)
     confidence = clean_scale(decision.get("confidence"), 0.0, allow_percent=True)
-    if confidence < min_confidence:
+    if confidence < min_conf:
         if log:
             log.info(
                 "[INTENT GATEWAY] %s %s %s confidence %.2f < %.2f (no intent).",
-                source, side, symbol, confidence, min_confidence,
+                source, side, symbol, confidence, min_conf,
             )
         return None
     notional = _resolve_clamped_intent_notional(decision, min_notional_usd, max_notional_usd)
