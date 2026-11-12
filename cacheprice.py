@@ -19,6 +19,7 @@ from abc import ABC, abstractmethod
 import bisect
 import builtins
 from collections import defaultdict, deque
+import concurrent.futures as _futures
 import math
 import os
 import socket
@@ -29,6 +30,7 @@ from typing import Any, Callable, Optional
 
 from botcore import (
     FileLock,
+    PRICE_FALLBACK_HTTP_DEADLINE_SEC,
     PRICE_FRESHNESS_MAX_AGE_MS,
     PRICE_FRESHNESS_MAX_AGE_SEC,
     PRICE_STREAM_POLL_INTERVAL_SEC,
@@ -1192,6 +1194,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._delegated_poller_symbols: set[str] = set()
         self._update_timestamps: dict = defaultdict(deque)
         self._rth_empty_backoff_ts: dict = {}
+        self._last_http_poll_ts_per_symbol: dict[str, float] = {}
+        self._fallback_pool_lock = threading.Lock()
+        self._fallback_pool: Optional[_futures.ThreadPoolExecutor] = None
         self._first_sleep = True
         self._tick_ipc_lock = threading.Lock()
         self._tick_ipc_stop = threading.Event()
@@ -1201,7 +1206,15 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._tick_ipc_thread: Optional[threading.Thread] = None
         self._tick_sub_sock = None
         self._tick_sub_thread: Optional[threading.Thread] = None
-        self.market_api = market_api or _market_api.api
+        self.market_api = (
+            market_api
+            if market_api is not None
+            else (
+                api_client
+                if api_client is not None and callable(getattr(api_client, "get_current_price", None))
+                else _market_api.api
+            )
+        )
         self._provider_names = {}
         self.bind_providers(provider_names)
         super().__init__(
@@ -1381,11 +1394,43 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._ws_stream_event_ts_per_symbol[str(symbol).strip().upper()] = now
         self.push_price(symbol, price, ts_ms=ts_ms)
 
+    def _get_or_create_fallback_pool(self, worker_hint: int) -> _futures.ThreadPoolExecutor:
+        with self._fallback_pool_lock:
+            if self._fallback_pool is None:
+                self._fallback_pool = _futures.ThreadPoolExecutor(
+                    max_workers=max(2, min(6, worker_hint)),
+                    thread_name_prefix="CPFallbackFetch",
+                )
+            return self._fallback_pool
+
+    def _shutdown_fallback_pool(self) -> None:
+        with self._fallback_pool_lock:
+            pool = self._fallback_pool
+            self._fallback_pool = None
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+            try:
+                for th in list(getattr(pool, "_threads", ())):
+                    _futures.thread._threads_queues.pop(th, None)
+            except Exception:
+                pass
+
     def query_remote_and_update_cache(self):
         if not self.fetchtime_per_symbol:
             self._ensure_fetchtimes_initialized()
             self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
         delegated = getattr(self, "_delegated_poller_symbols", ())
+        is_live_daemon_poll = bool(
+            self.save_state
+            and self.market_api is _market_api.api
+            and is_live_network_backfill_enabled()
+            and not self._stop_event.is_set()
+        )
+        min_poll_gap = max(
+            0.45,
+            min(safe_pos_float(self.sync_ts, default=0.8) or 0.8, 0.75),
+        )
+        pending_polls: list[tuple[str, Any, bool]] = []
         for symbol in list(self.symbols):
             if delegated and (
                 symbol in delegated or str(symbol).strip().upper() in delegated
@@ -1408,15 +1453,58 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                         and self.extract_price_and_ts(existing_entries)[0] is not None
                     ):
                         continue
+            if is_live_daemon_poll and not is_rth_sym:
+                now_s = _now_time()
+                last_poll = self._last_http_poll_ts_per_symbol.get(symbol, 0.0)
+                if last_poll > 0.0 and 0.0 <= (now_s - last_poll) < min_poll_gap:
+                    with self.lock:
+                        _, cur_ts_ms = self.extract_price_and_ts(self.cache.get(symbol))
+                    if cur_ts_ms is not None and (now_s * 1000.0 - cur_ts_ms) < 1_800.0:
+                        continue
             startTime = self.fetchtime_per_symbol.get(
                 symbol, self.fallback_time_default
             )
-            new_items = self._fetch_and_apply_remote_items(symbol, startTime)
-            if is_rth_sym:
-                if not new_items:
-                    self._rth_empty_backoff_ts[symbol] = _now_time()
-                else:
-                    self._rth_empty_backoff_ts.pop(symbol, None)
+            pending_polls.append((symbol, startTime, is_rth_sym))
+
+        if not pending_polls:
+            return True
+
+        if not is_live_daemon_poll:
+            for symbol, startTime, is_rth_sym in pending_polls:
+                new_items = self._fetch_and_apply_remote_items(symbol, startTime)
+                if is_rth_sym:
+                    if not new_items:
+                        self._rth_empty_backoff_ts[symbol] = _now_time()
+                    else:
+                        self._rth_empty_backoff_ts.pop(symbol, None)
+            return True
+
+        pool = self._get_or_create_fallback_pool(len(pending_polls))
+        poll_deadline = min(
+            safe_pos_float(PRICE_FALLBACK_HTTP_DEADLINE_SEC, default=1.2) or 1.2,
+            1.2,
+        )
+        fut_map = {
+            pool.submit(self.get_remote_items, sym_item, st_item): (sym_item, st_item, is_rth_sym)
+            for sym_item, st_item, is_rth_sym in pending_polls
+        }
+        done, not_done = _futures.wait(fut_map.keys(), timeout=poll_deadline)
+        for fut in done:
+            sym_done, _, is_rth_done = fut_map[fut]
+            try:
+                new_items = fut.result()
+            except Exception as exc:
+                self._log_remote_fetch_error("HTTP fetch", sym_done, exc)
+                new_items = []
+            if new_items:
+                self._persist_items(sym_done, new_items)
+                self._last_http_poll_ts_per_symbol[sym_done] = _now_time()
+                if is_rth_done:
+                    self._rth_empty_backoff_ts.pop(sym_done, None)
+            elif is_rth_done:
+                self._rth_empty_backoff_ts[sym_done] = _now_time()
+        for fut in not_done:
+            fut.cancel()
         return True
 
     def get_remote_items(self, symbol, startTime):
@@ -1426,9 +1514,14 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 if provider_name is None:
                     price = self.market_api.get_current_price(symbol=symbol)
                 else:
-                    price = self.market_api.get_current_price(
-                        symbol=symbol, provider_name=provider_name
-                    )
+                    try:
+                        price = self.market_api.get_current_price(
+                            symbol=symbol, provider_name=provider_name
+                        )
+                    except TypeError:
+                        if self.market_api is _market_api.api:
+                            raise
+                        price = self.market_api.get_current_price(symbol=symbol)
             price_val = safe_pos_float(price, default=None)
             if price_val is None:
                 return []
@@ -1445,6 +1538,37 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
 
     def _should_poll(self):
         return not self._ws_is_healthy()
+
+    def _next_sync_wait_sec(self) -> float:
+        base_wait = safe_nonneg_float(self.sync_ts, default=0.8)
+        if base_wait is None:
+            base_wait = 0.8
+        if not self.save_state or base_wait > 5.0:
+            return base_wait
+        wait_sec = min(base_wait, 0.35)
+        now = _now_time()
+        delegated = getattr(self, "_delegated_poller_symbols", ())
+        for sym_item in list(self.symbols):
+            if delegated and (
+                sym_item in delegated or str(sym_item).strip().upper() in delegated
+            ):
+                continue
+            if self._is_equity_instrument(sym_item):
+                continue
+            sym_u, sym_clean = _norm_symbol_keys(sym_item)
+            last_ts = next(
+                (
+                    val
+                    for cand in (sym_item, sym_u, sym_clean)
+                    if cand and (val := self._ws_last_event_ts_per_symbol.get(cand)) is not None
+                ),
+                self._ws_default_event_ts,
+            )
+            if last_ts > 0.0:
+                rem = self.ws_timeout_sec_for(sym_item) - (now - last_ts)
+                if rem > 0.0:
+                    wait_sec = min(wait_sec, max(0.05, rem + 0.02))
+        return wait_sec
 
     def _sample_span_and_count(self, symbol: str) -> tuple[Optional[float], int]:
         with self.lock:
@@ -1812,6 +1936,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         deadline = _monotonic_time() + safe_nonneg_float(timeout, default=5.0)
         self.request_stop()
         stopped = super().shutdown(timeout=max(0.0, deadline - _monotonic_time()))
+        self._shutdown_fallback_pool()
         for attr in ("_tick_ipc_thread", "_tick_sub_thread"):
             th = getattr(self, attr, None)
             if th is not None and th is not threading.current_thread():
@@ -2141,7 +2266,7 @@ def stop_price_ws_streams(shutdown_deadline: float) -> None:
     """Stop the default venue price WebSocket manager and periodic clock resync thread."""
     if _bn_price_prov_cls is not None:
         _bn_price_prov_cls.stop_price_ws_manager(
-            timeout=min(0.3, max(0.05, shutdown_deadline - _monotonic_time()))
+            timeout=min(1.0, max(0.35, shutdown_deadline - _monotonic_time()))
         )
 
 

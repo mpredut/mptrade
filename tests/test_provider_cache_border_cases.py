@@ -5354,3 +5354,87 @@ def test_wave30_open_lots_vwap_short_trend_freshness_and_shutdown_border_cases(t
     assert extract_trading_quote_pairs("invalid", quote=True, strict="false") == (set(), set(), {})
 
 
+def test_cycle1_price_cache_ws_and_orchestrator_guards(tmp_path, monkeypatch):
+    """Verify api_client fallback binding, sub-0.35s producer flush wait, WS session cancellation, and hot-reload shutdown guard."""
+    import asyncio
+    from unittest.mock import MagicMock
+    import cacheManager as cm
+    from binance_api import bapi_ws
+    from orchestratorTrade import orchestrator as orch_mod
+
+    api_stub = MagicMock()
+    api_stub.get_current_price.return_value = 71234.5
+    cpm_path = str(tmp_path / "cp_stub.json")
+    cpm = cm.CacheCurrentPriceManager(
+        sync_ts=0.8,
+        symbols=["BTCUSDC"],
+        filename=cpm_path,
+        ws_manager=None,
+        api_client=api_stub,
+        data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+    )
+    try:
+        assert cpm.market_api is api_stub
+        assert cpm.cache["BTCUSDC"][0][1] == 71234.5
+        assert cpm._next_sync_wait_sec() == pytest.approx(0.35)
+        now_t = time.time()
+        cpm._ws_last_event_ts_per_symbol["BTCUSDC"] = now_t - 1.40
+        wait_near = cpm._next_sync_wait_sec()
+        assert 0.05 <= wait_near <= 0.16
+    finally:
+        cpm.shutdown(timeout=1.0)
+
+    ws_stream = bapi_ws.BinancePriceStream(symbols=["BTCUSDC"])
+    cancelled_flags = []
+
+    async def _slow_recv(_ws):
+        try:
+            await asyncio.sleep(10.0)
+        except asyncio.CancelledError:
+            cancelled_flags.append("recv")
+            raise
+
+    async def _slow_cmd(_ws):
+        try:
+            await asyncio.sleep(10.0)
+        except asyncio.CancelledError:
+            cancelled_flags.append("cmd")
+            raise
+
+    monkeypatch.setattr(ws_stream, "_recv_loop", _slow_recv)
+    monkeypatch.setattr(ws_stream, "_cmd_loop", _slow_cmd)
+
+    async def _exercise_session_cancel():
+        session_task = asyncio.create_task(ws_stream._session(object()))
+        await asyncio.sleep(0.02)
+        session_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await session_task
+
+    asyncio.run(_exercise_session_cancel())
+    assert set(cancelled_flags) == {"recv", "cmd"}
+
+    mgr = orch_mod.BotManager(MagicMock())
+    mgr.running = True
+    mgr._shutting_down = True
+    stop_calls = []
+
+    async def _unexpected_stop(name, sig=None):
+        stop_calls.append(name)
+
+    monkeypatch.setattr(mgr, "stop_bot", _unexpected_stop)
+
+    async def _exercise_hot_reload_abort():
+        orig_sleep = orch_mod.asyncio.sleep
+
+        async def _fast_sleep(_delay):
+            await orig_sleep(0.001)
+
+        monkeypatch.setattr(orch_mod.asyncio, "sleep", _fast_sleep)
+        await mgr._hot_reload_loop()
+
+    asyncio.run(_exercise_hot_reload_abort())
+    assert stop_calls == []
+
+
+

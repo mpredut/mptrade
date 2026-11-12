@@ -255,10 +255,11 @@ class BotManager:
                     except Exception:
                         pass
 
+                stop_timeout = 6.0 if name == "cacheManager" else 4.0
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=4.0)
+                    await asyncio.wait_for(proc.wait(), timeout=stop_timeout)
                 except (asyncio.TimeoutError, TimeoutError):
-                    logging.warning(f"Bot {name} did not exit within 4s, sending SIGKILL...")
+                    logging.warning(f"Bot {name} did not exit within {stop_timeout:g}s, sending SIGKILL...")
                     try:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                     except (ProcessLookupError, Exception):
@@ -397,6 +398,8 @@ class BotManager:
 
         while self.running:
             await asyncio.sleep(10)
+            if not self.running or getattr(self, "_shutting_down", False):
+                return
             changed_paths = []
             for path in list(hashes.keys()):
                 curr = self._hash_file(path)
@@ -422,12 +425,18 @@ class BotManager:
                 return
 
             await self._reload_runtime_modules_and_manifest()
+            if not self.running or getattr(self, "_shutting_down", False):
+                return
 
             self._reloading = True
             try:
                 for name in self._ordered_process_names_reversed():
+                    if not self.running or getattr(self, "_shutting_down", False):
+                        return
                     await self.stop_bot(name)
                     self.restart_backoff[name] = 0
+                if not self.running or getattr(self, "_shutting_down", False):
+                    return
                 # Start core cache writers immediately before releasing _reloading so
                 # trading bots never wake up before account/price cache writers are live.
                 for bot in self._ordered_bots_for_start():

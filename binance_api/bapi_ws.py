@@ -128,18 +128,20 @@ class BinancePriceStream(PublicPriceStreamBase):
         """
         recv_task = asyncio.create_task(self._recv_loop(ws))
         cmd_task  = asyncio.create_task(self._cmd_loop(ws))
-        done, pending = await asyncio.wait(
-            [recv_task, cmd_task], return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        done = set()
+        try:
+            done, _ = await asyncio.wait(
+                [recv_task, cmd_task], return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in (recv_task, cmd_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(recv_task, cmd_task, return_exceptions=True)
         for task in done:
-            exc = task.exception()
-            if exc and not self._stop_event.is_set():
-                logger.warning("Session task ended with: %s", exc)
+            if not task.cancelled():
+                exc = task.exception()
+                if exc and not self._stop_event.is_set():
+                    logger.warning("Session task ended with: %s", exc)
 
     async def _recv_loop(self, ws) -> None:
         while not self._stop_event.is_set():
