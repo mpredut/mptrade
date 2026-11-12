@@ -22,6 +22,8 @@ from botcore import (
     _parse_bool_flag,
     clean_upper_token,
     env_values_map,
+    extract_order_id,
+    extract_timestamp_ms,
     first_pos_float,
     folder_or_env_value,
     normalize_side,
@@ -31,11 +33,7 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import CACHE_T212_TRADE_FILENAME, canonical_base_asset, same_canonical_base_asset
-from .base import (
-    MarketDataProvider,
-    extract_order_id,
-    extract_timestamp_ms,
-)
+from .base import MarketDataProvider
 from .order_ohlc_utils import (
     aggregate_broker_history_fills,
     build_open_order_entry,

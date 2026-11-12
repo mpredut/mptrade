@@ -96,14 +96,14 @@ from instrument_registry import (
     tracked_price_instruments,
 )
 import providers.market_api as _market_api
-from providers.base import (
-    MarketDataProvider,
+from providers.base import MarketDataProvider
+from providers.ssot_bridge import live_price_fetch_context
+from providers.ws_stream import (
     PublicPriceStreamBase,
     WS_CLOSE_TIMEOUT,
     WS_PING_INTERVAL,
     WS_PING_TIMEOUT,
     WS_RECV_TIMEOUT,
-    live_price_fetch_context,
 )
 from state_io import (
     atomic_snapshot_file,

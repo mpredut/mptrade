@@ -40,7 +40,7 @@ from botcore import (  # noqa: E402
 _common_mod = load_local_module(_HERE, "common")
 from cachepaths import split_symbol_assets
 from instrument_registry import casefold_get
-from providers.base import mount_connect_retry
+from providers.ws_stream import mount_connect_retry
 from providers.order_ohlc_utils import resolve_ohlc_time_window_ms
 
 try:

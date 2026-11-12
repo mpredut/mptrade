@@ -47,7 +47,7 @@ from instrument import (
 )
 from instrument_registry import discover_tradable_specs, resolve_instrument_spec
 import notify_engine.alertnotifiers as _alertnotifiers
-from providers.execution_audit import (
+from providers.intent_reconciliation import (
     reconcile_intents_from_execution_audit,
 )
 from providers.intent_execution import (

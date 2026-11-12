@@ -11,6 +11,8 @@ from botcore import (
     bind_module_importer,
     clean_upper_token,
     exact_pos_int,
+    extract_order_id,
+    normalize_side,
     require_pos_float,
     resolve_patched_attr,
     safe_nonneg_float,
@@ -30,8 +32,6 @@ from instrument_registry import casefold_get, venue_for_symbol
 from .base import (
     MarketDataProvider,
     compute_fills_cost_basis,
-    extract_order_id,
-    normalize_side,
 )
 from .order_ohlc_utils import (
     ClosedPriceSeries,

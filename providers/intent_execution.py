@@ -14,7 +14,6 @@ from botcore import (
     normalize_side,
     safe_pos_float,
 )
-from cachepaths import is_equity_venue
 import notify_engine.alertnotifiers as _alertnotifiers
 from .base import MarketDataProvider
 from .intent_state import (
@@ -27,6 +26,7 @@ from .intent_state import (
     extract_intent_limit_price,
     extract_intent_order_type,
     intent_venue_client_order_ids,
+    is_non_fiat_btc_quote_instrument,
     normalize_intent_fields,
 )
 from .order_ohlc_utils import (
@@ -559,12 +559,7 @@ def preflight_intent_and_resolve_price(
         return False, intent_id, decision, symbol, venue, confidence, None, 0.0, 0.0, False
 
     inst = resolve_instrument_fn(symbol, venue=venue, instruments_map=instruments_map)
-    inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
-    inst_quote_u = str(getattr(inst, "quote", "") or "").strip().upper()
-    if not inst or (
-        not is_equity_venue(getattr(inst, "provider_name", ""))
-        and ((len(inst_sym_u) > 3 and inst_sym_u.endswith("BTC")) or inst_quote_u == "BTC")
-    ):
+    if not inst or is_non_fiat_btc_quote_instrument(inst):
         if log:
             log.warning(
                 "[INTENT GATEWAY] Intent %s rejected: unknown or non-fiat instrument %s on %s",

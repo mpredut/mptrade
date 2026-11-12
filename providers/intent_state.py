@@ -28,6 +28,7 @@ from cachepaths import (
     is_equity_venue_or_suffix,
     normalize_venue_name,
     resolve_cachedb_filepath,
+    symbol_quote_asset,
 )
 from state_io import generation_lock_path, load_json_state, save_json_state
 from .order_ohlc_utils import all_venue_native_client_order_ids, extract_order_id
@@ -328,6 +329,18 @@ def normalize_intent_fields(
     return intent_id, decision, symbol, venue
 
 
+def is_non_fiat_btc_quote_instrument(inst: Any) -> bool:
+    """Return True when ``inst`` is a crypto instrument quoted in BTC rather than fiat/stablecoin."""
+    if not inst:
+        return False
+    inst_prov = getattr(inst, "provider_name", None) or getattr(inst, "provider", "")
+    if is_equity_venue(inst_prov):
+        return False
+    inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
+    inst_quote_u = str(getattr(inst, "quote", "") or "").strip().upper()
+    return symbol_quote_asset(inst_sym_u) == "BTC" or inst_quote_u == "BTC"
+
+
 def validate_and_build_intent_dict(
     decision: dict[str, Any],
     *,
@@ -380,12 +393,7 @@ def validate_and_build_intent_dict(
     if callable(resolve_instrument_fn):
         inst = resolve_instrument_fn(symbol, venue)
         inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
-        inst_quote_u = str(getattr(inst, "quote", "") or "").strip().upper()
-        inst_prov = getattr(inst, "provider_name", None) or getattr(inst, "provider", "")
-        if not inst or (
-            not is_equity_venue(inst_prov)
-            and ((len(inst_sym_u) > 3 and inst_sym_u.endswith("BTC")) or inst_quote_u == "BTC")
-        ):
+        if not inst or is_non_fiat_btc_quote_instrument(inst):
             if log:
                 log.warning(
                     "[INTENT GATEWAY] %s %s %s on %s unknown, ambiguous, or non-fiat instrument (no intent).",
@@ -570,6 +578,7 @@ __all__ = [
     "extract_intent_side",
     "generate_unique_intent_id",
     "intent_venue_client_order_ids",
+    "is_non_fiat_btc_quote_instrument",
     "load_durable_intents_state",
     "normalize_intent_fields",
     "normalize_trading_decisions",

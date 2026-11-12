@@ -525,6 +525,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "execution_audit.py",
         "intent_state.py",
         "intent_execution.py",
+        "intent_reconciliation.py",
     )
     forbidden_upward_layers = {
         "cacheInterface",
@@ -1189,3 +1190,29 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     )
     assert pair_for == {"HYPE": "HYPEUSD", "SOL": "SOLUSD"}
     assert trail_pct == {"HYPE": 18.0, "SOL": 12.5}
+
+
+def test_intent_reconciliation_modularization_and_lazy_compat():
+    from pathlib import Path
+    import providers.execution_audit as ea
+    import providers.intent_execution as ie
+    import providers.intent_reconciliation as ir
+
+    root = Path(__file__).resolve().parent.parent
+    ea_tree = ast.parse((root / "providers" / "execution_audit.py").read_text(encoding="utf-8"))
+    ea_imports = {
+        node.module
+        for node in ast.walk(ea_tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert "intent_execution" not in ea_imports
+    assert "intent_reconciliation" not in ea_imports
+
+    assert ir.reconcile_intents_from_execution_audit.__module__ == "providers.intent_reconciliation"
+    assert ir.summarize_recent_ai_intents.__module__ == "providers.intent_reconciliation"
+    assert ir.build_last_cycle_execution_status.__module__ == "providers.intent_reconciliation"
+    assert ea.reconcile_intents_from_execution_audit is ir.reconcile_intents_from_execution_audit
+    assert ea.summarize_recent_ai_intents is ir.summarize_recent_ai_intents
+    assert ea.build_last_cycle_execution_status is ir.build_last_cycle_execution_status
+    assert ea.cancel_existing_ai_open_orders is ie.cancel_existing_ai_open_orders
+

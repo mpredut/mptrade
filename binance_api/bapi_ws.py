@@ -36,7 +36,7 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_int,
 )
-from providers.base import (
+from providers.ws_stream import (
     AsyncReconnectStreamBase,
     PublicPriceStreamBase,
     WS_CLOSE_TIMEOUT,
