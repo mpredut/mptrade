@@ -9,7 +9,6 @@ import inspect
 import json
 import os
 import sys
-import tempfile
 import threading
 import time
 import unittest
@@ -1711,8 +1710,9 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             )
 
 
-class AccountCacheReaderConfirmationTest(unittest.TestCase):
+class AccountCacheReaderConfirmationTest(TempDirTestCase):
     def setUp(self):
+        super().setUp()
         self._placeorder = placeorder
         self.trade_enabled = patch.object(
             placeorder.cfg, "is_trade_enabled", return_value=True)
@@ -1720,6 +1720,7 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
 
     def tearDown(self):
         self.trade_enabled.stop()
+        super().tearDown()
 
     @staticmethod
     def _status(order_version, trade_version, *, age=1.0):
@@ -1785,7 +1786,7 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
 
     def test_data_sync_mode_reader_resync_regressions(self):
         with self.subTest("non_append_trade_cache_get_last_opposite_fill_price_resyncs_disk_state"):
-            tmp_dir = tempfile.mkdtemp()
+            tmp_dir = str(self.tmp)
             trade_file = os.path.join(tmp_dir, "cache_trade_kraken.json")
             t1_ms = int((time.time() - 600) * 1000)
             t2_ms = int((time.time() - 60) * 1000)
@@ -1840,7 +1841,7 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
             self.assertEqual(mgr.get_last_opposite_fill_price("BTC", "SELL"), 61500.0)
 
         with self.subTest("short_trend_disk_reader_refreshes_stale_mem_from_disk_and_tracks_mode"):
-            tmp_dir = tempfile.mkdtemp()
+            tmp_dir = str(self.tmp)
             st_file = os.path.join(tmp_dir, "cache_short_trend.json")
             now_ts = time.time()
             stale_ts = now_ts - 120.0
@@ -1896,7 +1897,7 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
             cm.CacheFactory.shutdown_all()
 
         with self.subTest("all_leaf_cache_classes_accept_data_sync_mode_and_readonly_preserves_previous"):
-            tmp_dir = tempfile.mkdtemp()
+            tmp_dir = str(self.tmp)
             for cls, fname in (
                 (cm.CacheOrderManager, "o.json"),
                 (cm.CacheAssetValueManager, "av.jsonl"),

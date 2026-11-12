@@ -22,7 +22,6 @@ import pytest
 import random
 import shadow_signals
 import sys
-import tempfile
 import threading
 import time
 import unittest
@@ -252,7 +251,7 @@ class TestPriceTrendAnalyzer(unittest.TestCase):
 # PriceWindow -- sample_rate_sec + recent_n
 # ===========================================================================
 
-class TestPriceWindowSampleRate(unittest.TestCase):
+class TestPriceWindowSampleRate(TempDirTestCase):
 
     def test_sample_rate_initialization_and_update(self):
         with self.subTest(msg="default_sample_rate"):
@@ -308,8 +307,7 @@ class TestPriceWindowSampleRate(unittest.TestCase):
             self.assertEqual(pw.window_size, 50)
 
     def test_from_cache24_stores_window_seconds(self):
-        tmp = tempfile.mkdtemp()
-        mgr = _make_cache24_manager("BTCUSDT", _synthetic_entries(30), tmp)
+        mgr = _make_cache24_manager("BTCUSDT", _synthetic_entries(30), str(self.tmp))
         pw = ta.PriceWindow.from_cache24("BTCUSDT", 24.0, mgr)
         self.assertAlmostEqual(pw.window_seconds, 24.0)
 

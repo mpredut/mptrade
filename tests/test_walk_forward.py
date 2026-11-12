@@ -4,7 +4,6 @@ import dataclasses
 import json
 import math
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -353,22 +352,19 @@ class WalkForwardCompareTest(TempDirTestCase):
         self.assertIs(kraken_compare.main, walk_forward_compare.main)
 
     def test_load_report_supports_both_schemas(self):
+        report_path = Path(self.tmp) / "report.json"
         for payload in (
             {"schema_version": 1, "intervals": {"240": {}}},
             {"schema_version": 1, "dataset": {}, "windows": {}},
             {"schema_version": 1, "dataset": {}, "window_sizes": {}},
         ):
-            with tempfile.NamedTemporaryFile("w+", suffix=".json") as f:
-                json.dump(payload, f)
-                f.flush()
-                rep = _load_report(Path(f.name))
-                self.assertEqual(rep["schema_version"], 1)
+            report_path.write_text(json.dumps(payload), encoding="utf-8")
+            rep = _load_report(report_path)
+            self.assertEqual(rep["schema_version"], 1)
 
-        with tempfile.NamedTemporaryFile("w+", suffix=".json") as f:
-            json.dump({"schema_version": 2}, f)
-            f.flush()
-            with self.assertRaises(ValueError):
-                _load_report(Path(f.name))
+        report_path.write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            _load_report(report_path)
 
     def test_detect_venue_trading212_no_space_and_ticker(self):
         self.assertEqual(

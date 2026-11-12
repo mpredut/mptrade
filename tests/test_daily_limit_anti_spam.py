@@ -5,7 +5,6 @@ from tests.conftest import TempDirTestCase
 import order_guard
 import order_retry
 import os
-import tempfile
 import threading
 import time
 import unittest
@@ -149,8 +148,8 @@ class TestSymmetricDailyLimitGuard(TempDirTestCase):
     def test_kraken_get_orders_groups_multi_fill_orders_by_order_id(self):
         kp = KrakenProvider()
         now_ms = int(time.time() * 1000)
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
-            cache_path = tf.name
+        cache_path = os.path.join(self.tmp, "trades.json")
+        with open(cache_path, "w", encoding="utf-8") as tf:
             json.dump({
                 "items": {
                     "HYPEUSD": [
@@ -185,21 +184,17 @@ class TestSymmetricDailyLimitGuard(TempDirTestCase):
                 },
                 "fetchtime": {"HYPEUSD": now_ms},
             }, tf)
-        try:
-            with patch("providers.kraken_provider._KRAKEN_CACHE_FILE", cache_path):
-                orders = kp.get_orders("HYPEUSD", "BUY", 3600.0)
-            self.assertEqual(len(orders), 2)
-            # First order is VWAP of (40*2 + 43*1) / 3 = 41.0, qty=3.0, max timestamp
-            self.assertAlmostEqual(orders[0]["price"], 41.0)
-            self.assertAlmostEqual(orders[0]["qty"], 3.0)
-            self.assertEqual(orders[0]["timestamp"], now_ms - 9_000)
-            self.assertEqual(orders[0]["side"], "BUY")
-            # Second order
-            self.assertAlmostEqual(orders[1]["price"], 44.0)
-            self.assertAlmostEqual(orders[1]["qty"], 1.5)
-        finally:
-            if os.path.exists(cache_path):
-                os.remove(cache_path)
+        with patch("providers.kraken_provider._KRAKEN_CACHE_FILE", cache_path):
+            orders = kp.get_orders("HYPEUSD", "BUY", 3600.0)
+        self.assertEqual(len(orders), 2)
+        # First order is VWAP of (40*2 + 43*1) / 3 = 41.0, qty=3.0, max timestamp
+        self.assertAlmostEqual(orders[0]["price"], 41.0)
+        self.assertAlmostEqual(orders[0]["qty"], 3.0)
+        self.assertEqual(orders[0]["timestamp"], now_ms - 9_000)
+        self.assertEqual(orders[0]["side"], "BUY")
+        # Second order
+        self.assertAlmostEqual(orders[1]["price"], 44.0)
+        self.assertAlmostEqual(orders[1]["qty"], 1.5)
 
     def test_clock_skew_future_fill_timestamp_does_not_block_below_daily_cap(self):
         """A single fill whose exchange timestamp is slightly ahead of local host time (e.g. +200ms)

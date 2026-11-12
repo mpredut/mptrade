@@ -691,28 +691,22 @@ def _tmp_env_file(content: str) -> str:
     return f.name
 
 
-class TestParseDotenv(unittest.TestCase):
+class TestParseDotenv(TempDirTestCase):
     def test_returns_dict_without_environ(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+        path = os.path.join(self.tmp, "uniq.env")
+        with open(path, "w", encoding="utf-8") as f:
             f.write("FOO_UNIQ_123=bar\n")
-            path = f.name
-        try:
-            cfg = parse_dotenv(path)
-            self.assertEqual(cfg["FOO_UNIQ_123"], "bar")
-            self.assertNotIn("FOO_UNIQ_123", os.environ, "parse_dotenv must NOT touch os.environ")
-        finally:
-            os.unlink(path)
+        cfg = parse_dotenv(path)
+        self.assertEqual(cfg["FOO_UNIQ_123"], "bar")
+        self.assertNotIn("FOO_UNIQ_123", os.environ, "parse_dotenv must NOT touch os.environ")
 
     def test_it_strips_inline_comments(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+        path = os.path.join(self.tmp, "comments.env")
+        with open(path, "w", encoding="utf-8") as f:
             f.write("X=0.4  # check minutes\nY=\"quoted\"\n")
-            path = f.name
-        try:
-            cfg = parse_dotenv(path)
-            self.assertEqual(cfg["X"], "0.4")
-            self.assertEqual(cfg["Y"], "quoted")
-        finally:
-            os.unlink(path)
+        cfg = parse_dotenv(path)
+        self.assertEqual(cfg["X"], "0.4")
+        self.assertEqual(cfg["Y"], "quoted")
 
 
 class TestFloatEnvDict(unittest.TestCase):

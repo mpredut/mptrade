@@ -44,7 +44,6 @@ import shadow_signals
 import subprocess
 import symbols
 import sys
-import tempfile
 import threading
 import time
 import tradeall
@@ -554,26 +553,22 @@ class TestIntelligenceState(TempDirTestCase):
             "BADSYM": {"vol_1h_pct": -0.5},
             "ZEROSYM": {"vol_1h_pct": 0.0},
         }
-        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as f:
+        temp_path = os.path.join(self.tmp, "vol_state.json")
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f)
-            temp_path = f.name
 
-        try:
-            self.assertAlmostEqual(resolve_cached_volatility_1h("BTCUSDC", state_path=temp_path), 0.025)
-            self.assertAlmostEqual(resolve_cached_volatility_1h_pct("BTCUSDC", state_path=temp_path), 2.5)
-            self.assertAlmostEqual(resolve_cached_volatility_1h("BTCUSDT", state_path=temp_path), 0.025)
-            self.assertAlmostEqual(resolve_cached_volatility_1h_pct("BTCUSDT", state_path=temp_path), 2.5)
-            self.assertAlmostEqual(resolve_cached_volatility_1h("ETHUSDC", state_path=temp_path), 0.0005)
-            self.assertAlmostEqual(resolve_cached_volatility_1h_pct("ETHUSDC", state_path=temp_path), 0.05)
-            self.assertIsNone(resolve_cached_volatility_1h("BADSYM", state_path=temp_path))
-            self.assertIsNone(resolve_cached_volatility_1h_pct("BADSYM", state_path=temp_path))
-            self.assertIsNone(resolve_cached_volatility_1h("ZEROSYM", state_path=temp_path))
-            self.assertIsNone(resolve_cached_volatility_1h_pct("ZEROSYM", state_path=temp_path))
-            self.assertIsNone(resolve_cached_volatility_1h("NONEXISTENT", state_path=temp_path))
-            self.assertIsNone(resolve_cached_volatility_1h_pct("NONEXISTENT", state_path=temp_path))
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+        self.assertAlmostEqual(resolve_cached_volatility_1h("BTCUSDC", state_path=temp_path), 0.025)
+        self.assertAlmostEqual(resolve_cached_volatility_1h_pct("BTCUSDC", state_path=temp_path), 2.5)
+        self.assertAlmostEqual(resolve_cached_volatility_1h("BTCUSDT", state_path=temp_path), 0.025)
+        self.assertAlmostEqual(resolve_cached_volatility_1h_pct("BTCUSDT", state_path=temp_path), 2.5)
+        self.assertAlmostEqual(resolve_cached_volatility_1h("ETHUSDC", state_path=temp_path), 0.0005)
+        self.assertAlmostEqual(resolve_cached_volatility_1h_pct("ETHUSDC", state_path=temp_path), 0.05)
+        self.assertIsNone(resolve_cached_volatility_1h("BADSYM", state_path=temp_path))
+        self.assertIsNone(resolve_cached_volatility_1h_pct("BADSYM", state_path=temp_path))
+        self.assertIsNone(resolve_cached_volatility_1h("ZEROSYM", state_path=temp_path))
+        self.assertIsNone(resolve_cached_volatility_1h_pct("ZEROSYM", state_path=temp_path))
+        self.assertIsNone(resolve_cached_volatility_1h("NONEXISTENT", state_path=temp_path))
+        self.assertIsNone(resolve_cached_volatility_1h_pct("NONEXISTENT", state_path=temp_path))
 
         self.assertIsNone(resolve_cached_volatility_1h("BTCUSDC", state_path="/non/existent/path.json"))
         self.assertIsNone(resolve_cached_volatility_1h_pct("BTCUSDC", state_path="/non/existent/path.json"))

@@ -4,7 +4,6 @@ import io
 from tests.conftest import TempDirTestCase
 import log as mp_log
 import os
-import tempfile
 import time
 import unittest
 from intelligence.internal.guards.guard_decision import GuardDecision
@@ -62,13 +61,6 @@ max_new_coins = 8
 new_coins_scan_seconds = 3600
 price_scan_seconds = 60
 """
-
-
-def _tmp_conf(content: str) -> str:
-    path = os.path.join(tempfile.mkdtemp(prefix="alerts_conf_"), "alerts.conf")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return path
 
 
 class DummyCMCPlatform:
@@ -242,7 +234,7 @@ class PriceCheckerTests(TempDirTestCase):
                 factory.get_price("NONEXISTENTCOIN999")
 
 
-class TestNewCoinDictRobustness(unittest.TestCase):
+class TestNewCoinDictRobustness(TempDirTestCase):
     """New-coin alerts are dicts (not PriceAlert) -- they must not crash."""
 
     NEW_COIN = {
@@ -253,12 +245,12 @@ class TestNewCoinDictRobustness(unittest.TestCase):
     }
 
     def test_save_to_file_handles_new_coin_dict(self):
-        path = os.path.join(tempfile.mkdtemp(), "alerts.log")
+        path = os.path.join(self.tmp, "alerts.log")
         self.assertTrue(AlertNotifier.save_to_file(self.NEW_COIN, filename=path))
         self.assertIn("NEW COIN RWS", open(path, encoding="utf-8").read())
 
     def test_save_to_file_handles_bot_event_and_dict(self):
-        path = os.path.join(tempfile.mkdtemp(), "alerts.log")
+        path = os.path.join(self.tmp, "alerts.log")
         bot_event = {
             "type": "bot_event",
             "name": "TRADE_BUY",
@@ -283,7 +275,7 @@ class TestNewCoinDictRobustness(unittest.TestCase):
         self.assertIn("TAO", msg)
 
     def test_send_does_not_raise_on_dict(self):
-        path = os.path.join(tempfile.mkdtemp(), "test_alerts.log")
+        path = os.path.join(self.tmp, "test_alerts.log")
         AlertNotifier.send(self.NEW_COIN, enable_console=False, enable_file=True,
                            enable_email=False, enable_phone_webhook=False, filename=path)
         self.assertTrue(os.path.exists(path))
@@ -314,9 +306,16 @@ class TestNewCoinDictRobustness(unittest.TestCase):
         self.assertEqual(hdr.encode("latin-1").decode("utf-8"), "(1): 小蝌蚪")
 
 
-class TestAlertsConfigLoadAndResolve(unittest.TestCase):
+class TestAlertsConfigLoadAndResolve(TempDirTestCase):
+    def _write_conf(self, content: str, name: str = "alerts.conf") -> str:
+        path = os.path.join(self.tmp, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+
     def setUp(self):
-        self.cfg = load_config(_tmp_conf(SAMPLE_ALERTS_CONF))
+        super().setUp()
+        self.cfg = load_config(self._write_conf(SAMPLE_ALERTS_CONF))
         self.ac = self.cfg["alert_config"]
 
     def test_watch_and_sources(self):
@@ -339,7 +338,7 @@ class TestAlertsConfigLoadAndResolve(unittest.TestCase):
 
     def test_malformed_value_fails_closed(self):
         with self.assertRaises(ValueError):
-            load_config(_tmp_conf(SAMPLE_ALERTS_CONF.replace("lookback_hours = 24", "lookback_hours = bad")))
+            load_config(self._write_conf(SAMPLE_ALERTS_CONF.replace("lookback_hours = 24", "lookback_hours = bad"), "bad.conf"))
 
     def test_resolution_precedence(self):
         cases = (
@@ -360,7 +359,7 @@ class TestAlertsConfigLoadAndResolve(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing"):
             load_config("/does/not/exist.conf")
         with self.assertRaisesRegex(ValueError, "max_monitored"):
-            load_config(_tmp_conf(SAMPLE_ALERTS_CONF.replace("max_monitored = 20\n", "")))
+            load_config(self._write_conf(SAMPLE_ALERTS_CONF.replace("max_monitored = 20\n", ""), "missing_key.conf"))
 
 
 class TestAlertThresholdsModel(unittest.TestCase):
@@ -387,7 +386,7 @@ class TestAlertThresholdsModel(unittest.TestCase):
         self.assertIsNone(thresholds_from_prices([100, 101], window=24))
 
 
-class TestNewCoinsDiscovery(unittest.TestCase):
+class TestNewCoinsDiscovery(TempDirTestCase):
     def test_is_trackable_symbol(self):
         self.assertFalse(is_trackable_symbol("USDC"))
         self.assertFalse(is_trackable_symbol("BTC"))
@@ -462,7 +461,7 @@ class TestNewCoinsDiscovery(unittest.TestCase):
             self.assertEqual(factory.get_available_sources(), ["binance"])
 
     def test_cleanup_old_symbols_purges_inactive_symbol_added_time(self):
-        pf_path = os.path.join(tempfile.mkdtemp(prefix="pf_clean_"), "cache_watcher_all_price.json")
+        pf_path = os.path.join(self.tmp, "cache_watcher_all_price.json")
         with patch.object(pricefetcher, "PricePlatformFactory"):
             mgr = pricefetcher.CacheAllPriceFetcherManager(60, ["BTC"], pf_path, read_only=True)
             mgr.symbol_added_time["OLDCOIN"] = time.time() - 30 * 86400

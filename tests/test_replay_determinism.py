@@ -6,8 +6,6 @@ import json
 import monitortrades as mt
 import os
 import pytest
-import shutil
-import tempfile
 import time
 import unittest
 from binance_api.market_data import fetch_ohlc_candles, parse_interval_minutes
@@ -30,7 +28,7 @@ from strategies.position_exit_manager import (
 )
 from strategies.spot_engine import StratParams, Strategy
 from strategies.spot_replay import make_spot_replay_adapter, run_replay
-from tests.conftest import load_venue_modules, make_spot_test_params
+from tests.conftest import TempDirTestCase, load_venue_modules, make_spot_test_params
 from unittest.mock import MagicMock, patch
 
 
@@ -423,11 +421,9 @@ def _make_provider(prices, start_ts=1_000_000.0, step_s=60.0):
     return ReplayMarketDataProvider({SYMBOL: series})
 
 
-class TestLoadPriceSeries(unittest.TestCase):
+class TestLoadPriceSeries(TempDirTestCase):
     def test_parses_real_cache_format(self):
-        tmpdir = tempfile.mkdtemp(prefix="replay_series_")
-        self.addCleanup(lambda: shutil.rmtree(tmpdir, ignore_errors=True))
-        path = os.path.join(tmpdir, "price_series.jsonl")
+        path = os.path.join(self.tmp, "price_series.jsonl")
         with open(path, "w", encoding="utf-8") as f:
             f.write('{"s": "BTCUSDC", "i": [1756248610634, 111702.25]}\n')
             f.write('{"s": "TAOUSDC", "i": [1756248611000, 200.0]}\n')
