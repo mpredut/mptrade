@@ -216,12 +216,9 @@ class T212ReplayTest(unittest.TestCase):
 class T212StaleBuyTest(unittest.TestCase):
     """One TTL rule for a resting BUY, shared by live reconciliation and replay."""
 
-    def _engine(self, **overrides):
-        now = [1_000_000.0]
-        return _make_engine(clock=lambda: now[0], **overrides), now
-
     def test_buy_is_stale_compares_the_order_a_fresh_placement_would_make(self):
-        engine, now = self._engine(STRAT_ENTRY_DISCOUNT_PCT="5", STRAT_ORDER_TTL_MIN="3")
+        now = [1_000_000.0]
+        engine = _make_engine(clock=lambda: now[0], STRAT_ENTRY_DISCOUNT_PCT="5", STRAT_ORDER_TTL_MIN="3")
         order = {"side": "BUY", "limit": 95.0, "ts": now[0]}
         now[0] += 4 * 60
         # Unchanged price: a new order would be the same 95.00, so nothing to replace.

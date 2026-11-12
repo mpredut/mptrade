@@ -252,11 +252,8 @@ mt.gain=9
 
 
 class OwnershipInventoryTest(TempDirTestCase):
-    def _make_fixture(self) -> Path:
-        return _ownership_fixture(Path(self.tmp))
-
     def test_two_primary_kraken_owners_are_warning_but_trailing_is_protective(self):
-        root = self._make_fixture()
+        root = _ownership_fixture(Path(self.tmp))
         owners = build_inventory(root)
         overlap = next(
             item for item in find_overlaps(owners)
@@ -267,7 +264,7 @@ class OwnershipInventoryTest(TempDirTestCase):
         self.assertIn("kraken-trailing", overlap["owners"])
 
     def test_running_scope_omits_disabled_dn_and_non_running_trailing(self):
-        root = self._make_fixture()
+        root = _ownership_fixture(Path(self.tmp))
         owners = build_inventory(root, commands=["python3 kraken_bot.py", "python monitortrades.py"])
         dn = next(owner for owner in owners if owner.owner_id == "hyperliquid-dn")
         self.assertTrue(dn.configured)
@@ -280,7 +277,7 @@ class OwnershipInventoryTest(TempDirTestCase):
         self.assertNotIn("kraken-trailing", overlap["owners"])
 
     def test_running_scope_detects_owner_started_outside_manifest(self):
-        root = self._make_fixture()
+        root = _ownership_fixture(Path(self.tmp))
         owners = build_inventory(root, commands=["python3 hl_bot.py"])
         spot = next(owner for owner in owners if owner.owner_id == "hyperliquid-spot-dca")
         self.assertFalse(spot.configured)
@@ -288,7 +285,7 @@ class OwnershipInventoryTest(TempDirTestCase):
         self.assertTrue(spot.active(require_running=True))
 
     def test_explicit_monitortrades_account_removes_false_conflict(self):
-        root = self._make_fixture()
+        root = _ownership_fixture(Path(self.tmp))
         instruments = root / "instruments.conf"
         instruments.write_text(
             instruments.read_text(encoding="utf-8").replace(
@@ -306,7 +303,7 @@ class OwnershipInventoryTest(TempDirTestCase):
         self.assertEqual(warnings, [])
 
     def test_same_coordination_domain_is_informational_not_warning(self):
-        root = self._make_fixture()
+        root = _ownership_fixture(Path(self.tmp))
         _write_inv(root, "procs.conf", """
 tradeall.py|x||tradeall|||fleet
 monitortrades.py|x||monitortrades|||fleet
@@ -326,7 +323,7 @@ mt.gain=5
         self.assertEqual(overlap["primary_coordination_domains"], ["binance-order-pipeline"])
 
     def test_config_txt_trade_enabled_false_overrides_config_env_true(self):
-        root = self._make_fixture()
+        root = _ownership_fixture(Path(self.tmp))
         _write_inv(root, "config.env", "BINANCE_ACCOUNT_REF=binance-main\nTRADE_ENABLED=true\n")
         _write_inv(root, "config.txt", "trade_enabled=false\n")
         owners = build_inventory(root)

@@ -37,14 +37,6 @@ from unittest.mock import MagicMock, patch
 from visuals.drawprices import forecast_linear
 
 
-def _naive_step_wols(prices, power=None, symbol=None):
-    pwr = float(pw.step_wols_power_for_symbol(symbol) if power is None else power)
-    arr = np.asarray(prices, dtype=float)
-    m = len(arr) - 1
-    if m < 1:
-        return 0.0
-    k = np.arange(1, m + 1, dtype=float) ** pwr if pwr != 1.0 else np.arange(1, m + 1, dtype=float)
-    return float(np.dot(k, np.diff(arr)) / k.sum())
 
 
 class TestSymbolPowerResolution(unittest.TestCase):
@@ -74,7 +66,8 @@ class TestStepWolsGeneralization(unittest.TestCase):
         for pwr in (1.0, 2.0, 3.0):
             for sr in (1.0, 1.5, 17.0):
                 got = pw.step_wols_slope(prices, sr, power=pwr)
-                expected = _naive_step_wols(prices, power=pwr)
+                k = np.arange(1, len(prices), dtype=float) ** pwr
+                expected = float(np.dot(k, np.diff(prices)) / k.sum())
                 self.assertAlmostEqual(got, expected, places=9)
 
     def test_buffer_matches_reference_on_subslices_after_trim_and_long_windows(self):

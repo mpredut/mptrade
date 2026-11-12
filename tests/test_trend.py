@@ -172,20 +172,16 @@ class TestMannKendall(unittest.TestCase):
 
 
 class TestHurst(unittest.TestCase):
-    @staticmethod
-    def _series(phi: float, n: int = 2000, seed: int = 7):
-        rng = np.random.default_rng(seed)
-        r = np.zeros(n)
-        for i in range(1, n):
-            r[i] = phi * r[i - 1] + rng.normal(0, 0.01)
-        return 100 * np.exp(np.cumsum(r))
-
     def test_persistent_and_mean_reverting_regimes(self):
         cases = (("persistent", 0.6, lambda h: h > 0.55),
                  ("mean-reverting", -0.6, lambda h: h < 0.45))
         for label, phi, predicate in cases:
             with self.subTest(regime=label):
-                self.assertTrue(predicate(calculate_hurst_exponent(self._series(phi))))
+                rng = np.random.default_rng(7)
+                r = np.zeros(2000)
+                for i in range(1, 2000):
+                    r[i] = phi * r[i - 1] + rng.normal(0, 0.01)
+                self.assertTrue(predicate(calculate_hurst_exponent(100 * np.exp(np.cumsum(r)))))
 
     def test_short_series_returns_none(self):
         self.assertIsNone(calculate_hurst_exponent([100, 101, 102]))

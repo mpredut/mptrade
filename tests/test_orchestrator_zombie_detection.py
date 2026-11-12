@@ -3,7 +3,7 @@ import json
 import log as mp_log
 import os
 import time
-import unittest
+from unittest import IsolatedAsyncioTestCase
 from intelligence.macro.lexicon_ssot import discover_dynamic_terms_from_headlines
 from market_monitor.pricechecker import PriceChecker
 from market_monitor.pricefetcher import is_rth_equity_symbol
@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class OrchestratorZombieDetectionTest(TempDirTestCase, unittest.IsolatedAsyncioTestCase):
+class OrchestratorZombieDetectionTest(TempDirTestCase, IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.server = MagicMock()
         self.server._resolve_topic.return_value = "test-topic"
