@@ -363,10 +363,10 @@ def _attach_trailing_peak_to_position(
     fallback_dd: Any = None,
 ) -> None:
     """Attach trailing peak and drawdown to `pos_entry` when held base exceeds min notional, or defer to `pending_peaks_by_vs`."""
+    for k in ("trailing_peak", "dd_from_peak_pct"):
+        pos_entry.pop(k, None)
     peak_f = safe_pos_float(raw_peak, default=0.0) or 0.0
     if raw_peak is None or peak_f <= 0.0:
-        pos_entry.pop("trailing_peak", None)
-        pos_entry.pop("dd_from_peak_pct", None)
         return
     eff_peak = max(peak_f, px_f) if px_f > 0.0 else peak_f
     dd_pct = (round(((px_f - eff_peak) / eff_peak) * 100.0, 2) + 0.0) if px_f > 0.0 else fallback_dd
@@ -375,11 +375,8 @@ def _attach_trailing_peak_to_position(
     if has_held_base:
         pos_entry["trailing_peak"] = round(eff_peak, 6)
         pos_entry["dd_from_peak_pct"] = dd_pct
-    else:
-        pos_entry.pop("trailing_peak", None)
-        pos_entry.pop("dd_from_peak_pct", None)
-        if v_norm and sym:
-            pending_peaks_by_vs[(v_norm, sym)] = (round(eff_peak, 6), dd_pct)
+    elif v_norm and sym:
+        pending_peaks_by_vs[(v_norm, sym)] = (round(eff_peak, 6), dd_pct)
 
 
 def _iter_valid_tradable_positions(

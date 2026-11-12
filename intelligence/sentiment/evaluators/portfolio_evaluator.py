@@ -1175,8 +1175,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                         cyc["last_sell_price"] = round(ls_px, avg_dec)
                         _sync_exit_kind(cyc, ls_px, safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0)
                     if not has_non_dust_wallet and not buys_after:
-                        cyc.pop("pos_peak", None)
-                        cyc.pop("dd_from_peak_pct", None)
+                        _clear_pos_pair(cyc)
                 elif (
                     buys_after
                     and cyc_qty_cur > 1e-8
@@ -1191,6 +1190,11 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     elif len(buys_after) >= 2 and not cyc.get("dca_buys"):
                         cyc["dca_buys"] = len(buys_after) - 1
         return cyc_sell_ts_map
+
+
+def _clear_pos_pair(d: Dict[str, Any], k1: str = "pos_peak", k2: str = "dd_from_peak_pct") -> None:
+    for k in (k1, k2):
+        d.pop(k, None)
 
 
 class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
@@ -1260,8 +1264,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             min_notional_f = max(1.0, first_pos_float(pos.get("exchange_min_notional_usd"), pos.get("min_notional_usd"), default=1.0) or 1.0)
             is_flat_balance = held_cur >= 0.0 and (held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < min_notional_f))
             if is_flat_balance:
-                pos.pop("trailing_peak", None)
-                pos.pop("dd_from_peak_pct", None)
+                _clear_pos_pair(pos, "trailing_peak")
             last_side_ro = str(ro.get("last_action_side") or "").upper() if isinstance(ro, dict) else ""
             is_flat_after_exit = is_flat_balance and last_side_ro == "SELL"
             if isinstance(ro, dict):
@@ -1299,13 +1302,11 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                             ro["open_lots"] = fresh_lots
                             set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", fresh_vwap, pos_px_f, overwrite=True)
                             if "tactical_avg_buy_px" not in ro:
-                                pos.pop("tactical_avg_buy_px", None)
-                                pos.pop("pnl_vs_tactical_avg_pct", None)
+                                _clear_pos_pair(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct")
                             if (sw_cur := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None and abs(
                                 sw_cur - fresh_vwap
                             ) / max(fresh_vwap, 1e-9) < 0.002:
-                                pos.pop("swing_subcycle_avg_px", None)
-                                pos.pop("pnl_vs_swing_avg_pct", None)
+                                _clear_pos_pair(pos, "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct")
                     else:
                         pos.pop("open_lots", None)
                 low_buy_px = (
@@ -1386,24 +1387,20 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     is_flat_balance = held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < min_notional_f)
                     is_flat_after_exit = is_flat_balance and last_side_ro == "SELL"
                     if is_flat_balance:
-                        pos.pop("trailing_peak", None)
-                        pos.pop("dd_from_peak_pct", None)
+                        _clear_pos_pair(pos, "trailing_peak")
                     if pos_px_f > 0:
                         pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
                 cyc_has_open_qty = (cyc_qty > 1e-8) if cyc_qty is not None else (not is_flat_balance)
                 cyc_flat = is_flat_balance and not cyc_has_open_qty
                 if (is_flat_after_exit or cyc_flat) and not cyc.get("resting_orders"):
                     cyc.update({"qty": round(max(0.0, fb_cur), 6), "cost_usd": 0.0, "avg_cost_px": None, "dd_pct": None, "pnl_vs_avg_pct": None})
-                    cyc.pop("pos_peak", None)
-                    cyc.pop("dd_from_peak_pct", None)
+                    _clear_pos_pair(cyc)
                     _clear_flat_ro_and_pos_anchors(ro, pos, full_pos_clear=True)
                     if is_flat_after_exit and pos.get("last_sell_px") is not None:
                         cyc["last_sell_price"] = pos["last_sell_px"]
                 elif cyc_flat:
-                    pos.pop("trailing_peak", None)
-                    pos.pop("dd_from_peak_pct", None)
-                    cyc.pop("pos_peak", None)
-                    cyc.pop("dd_from_peak_pct", None)
+                    _clear_pos_pair(pos, "trailing_peak")
+                    _clear_pos_pair(cyc)
                 elif not is_flat_after_exit and cyc_has_open_qty:
                     cyc_avg = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"), cyc.get("last_buy_price"))
                     set_pos_anchor(

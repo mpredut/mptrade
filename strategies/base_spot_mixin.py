@@ -945,15 +945,20 @@ class BaseSpotMixin:
         adapt_drop, _ = adaptive_thresholds(vol, k_reentry=k_re)
         return (adapt_drop if adapt_drop is not None else k_re * vol), f"adaptive (vol_1h {vol:.2f}% x k={k_re})"
 
+    def _safe_call_vol_fn(self, vol_fn: Any, warn_prefix: str) -> float | None:
+        try:
+            return vol_fn()
+        except Exception as e:  # noqa: BLE001 -- observational failure must not stop trading.
+            self._log_msg(f"  {warn_prefix} ({e}) -- fallback to fixed")
+            return None
+
     def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
         """Return the dynamic volatility-scaled or fixed pullback threshold from peak."""
         if not self.p.reentry_pullback_adaptive:
             return self.p.reentry_pullback_pct, "fixed"
-        try:
-            vol = self._resolve_reentry_vol_1h_pct()
-        except Exception as e:
-            self._log_msg(f"  [REENTRY-PULLBACK-ADAPTIVE] calculation error ({e}) -- fallback to fixed")
-            vol = None
+        vol = self._safe_call_vol_fn(
+            self._resolve_reentry_vol_1h_pct, "[REENTRY-PULLBACK-ADAPTIVE] calculation error"
+        )
         sp_len = len(getattr(self, "_shadow_prices", None) or ())
         fallback_reason, vol_label = self._reentry_pullback_labels(sp_len)
         return compute_adaptive_reentry_pullback_pct(
@@ -967,11 +972,9 @@ class BaseSpotMixin:
         """Return the clamped volatility-adaptive or fixed trailing pullback."""
         if not getattr(self.p, "tp_trail_adaptive", False):
             return self.p.tp_trail_pct
-        try:
-            vol = self._trail_vol_1h()
-        except Exception as e:  # noqa: BLE001 -- observational failure must not stop trading.
-            self._log_msg(f"  [STRAT] adaptive trailing: OHLC unavailable ({e}) -- fallback to fixed")
-            vol = None
+        vol = self._safe_call_vol_fn(
+            self._trail_vol_1h, "[STRAT] adaptive trailing: OHLC unavailable"
+        )
         if vol is None:
             return self.p.tp_trail_pct
         return max(self.p.tp_trail_min, min(self.p.tp_trail_max, self.p.tp_trail_k * vol))

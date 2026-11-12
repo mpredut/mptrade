@@ -99,6 +99,22 @@ def inspect_fleet(json_output: bool = False):
     active_orders = []
     seen_order_keys: set[tuple[str, str, str]] = set()
     has_binance_open_orders = False
+    def _append_active_order(o: dict, venue: str, sym: str, default_status: object = None) -> None:
+        oid = extract_order_id(o)
+        if oid:
+            dedup_key = (venue, sym, oid)
+            if dedup_key in seen_order_keys:
+                return
+            seen_order_keys.add(dedup_key)
+        active_orders.append({
+            "venue": venue,
+            "symbol": sym,
+            "side": extract_order_side(o) or o.get("side"),
+            "price": extract_order_price(o, default=0.0) or 0.0,
+            "orig_qty": extract_orig_qty(o, default=0.0) or 0.0,
+            "status": o.get("status") or default_status,
+        })
+
     open_order_keys = [k for k in balances.keys() if isinstance(k, str) and k.startswith("open_orders:")]
     for k in open_order_keys:
         olist = balances.get(k)
@@ -110,22 +126,9 @@ def inspect_fleet(json_output: bool = False):
                 if isinstance(o, dict):
                     venue = str(o.get("venue") or default_venue).strip().lower() or default_venue
                     sym = str(o.get("symbol") or default_sym).strip()
-                    oid = extract_order_id(o)
                     if venue == "binance":
                         has_binance_open_orders = True
-                    if oid:
-                        dedup_key = (venue, sym, oid)
-                        if dedup_key in seen_order_keys:
-                            continue
-                        seen_order_keys.add(dedup_key)
-                    active_orders.append({
-                        "venue": venue,
-                        "symbol": sym,
-                        "side": extract_order_side(o) or o.get("side"),
-                        "price": extract_order_price(o, default=0.0) or 0.0,
-                        "orig_qty": extract_orig_qty(o, default=0.0) or 0.0,
-                        "status": o.get("status") or "NEW",
-                    })
+                    _append_active_order(o, venue, sym, "NEW")
     if not has_binance_open_orders and isinstance(orders_data, dict) and "items" in orders_data:
         items = orders_data["items"]
         if isinstance(items, dict):
@@ -133,21 +136,7 @@ def inspect_fleet(json_output: bool = False):
                 if isinstance(olist, list):
                     for o in olist:
                         if isinstance(o, dict) and o.get("status") in ("NEW", "OPEN", "PARTIALLY_FILLED"):
-                            sym_s = str(o.get("symbol") or sym).strip()
-                            oid = extract_order_id(o)
-                            if oid:
-                                dedup_key = ("binance", sym_s, oid)
-                                if dedup_key in seen_order_keys:
-                                    continue
-                                seen_order_keys.add(dedup_key)
-                            active_orders.append({
-                                "venue": "binance",
-                                "symbol": sym_s,
-                                "side": extract_order_side(o) or o.get("side"),
-                                "price": extract_order_price(o, default=0.0) or 0.0,
-                                "orig_qty": extract_orig_qty(o, default=0.0) or 0.0,
-                                "status": o.get("status"),
-                            })
+                            _append_active_order(o, "binance", str(o.get("symbol") or sym).strip())
 
     # 4. Market Telemetry, Sentiment & Health (Optional Enrichment)
     raw_sentiment = ssh_cat(cache_path("macro/sentiment_eval.json"))

@@ -744,14 +744,17 @@ def pass_common_gate(
         topic_last: dict[str, float] = channel_state["topic_last_ts"]
         pending_bulk: list[dict] = channel_state["pending_bulk"]
 
+        def _mark_seen_keys() -> None:
+            last_map[fingerprint] = now_ts
+            last_map[sim_key] = now_ts
+
         # 1. Coalesce if already queued in pending_bulk for the same topic
         for item in pending_bulk:
             if _canonical_topic_key(item.get("topic")) == t_key and (
                 item.get("sim_key") == sim_key or item.get("fingerprint") == fingerprint
             ):
                 item["count"] = exact_pos_int(item.get("count", 1), 1) + 1
-                last_map[fingerprint] = now_ts
-                last_map[sim_key] = now_ts
+                _mark_seen_keys()
                 _save_delivery_state(path, state)
                 return False, "similar_eliminated", False, None
 
@@ -819,8 +822,7 @@ def pass_common_gate(
             if q_reason is None:
                 pending_bulk.append(new_item)
                 q_reason = "buffered_for_bulk"
-                last_map[fingerprint] = now_ts
-                last_map[sim_key] = now_ts
+                _mark_seen_keys()
             _save_delivery_state(path, state)
             return False, q_reason, False, None
 
@@ -828,8 +830,7 @@ def pass_common_gate(
         same_topic_items = [it for it in pending_bulk if _canonical_topic_key(it.get("topic")) == t_key]
         channel_state["pending_bulk"] = [it for it in pending_bulk if _canonical_topic_key(it.get("topic")) != t_key]
         channel_state["sent"] = sent + 1
-        last_map[fingerprint] = now_ts
-        last_map[sim_key] = now_ts
+        _mark_seen_keys()
         channel_state["last_gate_ts"] = now_ts
         topic_last[t_key] = now_ts
         _save_delivery_state(path, state)

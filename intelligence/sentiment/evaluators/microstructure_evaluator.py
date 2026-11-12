@@ -1122,9 +1122,8 @@ def enrich_cross_venue_trends(
             else:
                 entry.pop("long_trend_est_rem_hours", None)
         else:
-            entry.pop("long_trend_dir", None)
-            entry.pop("long_trend_hours", None)
-            entry.pop("long_trend_est_rem_hours", None)
+            for k_lt in ("long_trend_dir", "long_trend_hours", "long_trend_est_rem_hours"):
+                entry.pop(k_lt, None)
             any_neutral_regime = bool(pa_map or long_map) and all(
                 v is None or (isinstance(v, list) and v and v[-1] is None)
                 for m in (pa_map, long_map)

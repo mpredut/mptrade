@@ -106,27 +106,26 @@ def load_series(sym):
                 break
         if jsonl_path:
             break
+    def _try_load_npz_arrays(path: str):
+        try:
+            with np.load(path) as z:
+                return _extract_valid_npz_arrays(z)
+        except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
+            return None
+
     if not jsonl_path:
         for existing_npz in (npz_365, npz_sparse):
-            if os.path.exists(existing_npz):
-                try:
-                    with np.load(existing_npz) as z:
-                        valid = _extract_valid_npz_arrays(z)
-                        if valid is not None:
-                            return valid
-                except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
-                    continue
+            if os.path.exists(existing_npz) and (valid := _try_load_npz_arrays(existing_npz)) is not None:
+                return valid
         return np.empty(0), np.empty(0)
     npz_target = npz_365 if chosen_prefix == "cache_365_price_" else npz_sparse
     if os.path.exists(npz_target):
         try:
-            if os.path.getmtime(npz_target) >= os.path.getmtime(jsonl_path):
-                with np.load(npz_target) as z:
-                    valid = _extract_valid_npz_arrays(z)
-                    if valid is not None:
-                        return valid
-        except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
-            pass
+            is_fresh_npz = os.path.getmtime(npz_target) >= os.path.getmtime(jsonl_path)
+        except OSError:
+            is_fresh_npz = False
+        if is_fresh_npz and (valid := _try_load_npz_arrays(npz_target)) is not None:
+            return valid
 
     valid_syms = set(sym_cands) | {sym}
     for r in read_jsonl_dicts(jsonl_path):

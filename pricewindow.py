@@ -999,8 +999,7 @@ class PriceWindow:
         """
         r = max(2, safe_pos_int(self.recent_n, default=2) or 2)
         with self._lock:
-            n = len(self.prices)
-            if n < 2:
+            if (n := len(self.prices)) < 2:
                 return 0.0
             if self._is_trend_buf_synced():
                 blen = len(self._trend_buf.prices)
@@ -1015,8 +1014,7 @@ class PriceWindow:
         It adapts by symbol and over time to distinguish real movement from noise."""
         k_val = safe_pos_float(k, default=1.0) or 1.0
         with self._lock:
-            n = len(self.prices)
-            if n < 3:
+            if len(self.prices) < 3:
                 return 0.0
             if self._is_trend_buf_synced():
                 res = self._eval_synced_trend_buf()

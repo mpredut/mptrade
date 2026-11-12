@@ -1438,18 +1438,21 @@ class Strategy(BaseSpotMixin):
                     is_market_order(o) and str(o.get("side", "")).upper() == "SELL" and o.get("kind") in ("TP", "SL")
                 )
 
+            def _clear_exit_intent(msg: str) -> bool:
+                log(msg)
+                self.s["tp_pending_exit"] = None
+                return True
+
             existing_exit = next((o for o in self.s.get("orders", []) if _is_market_exit(o)), None)
             if existing_exit:
                 for o in [o for o in list(self.s["orders"]) if not _is_market_exit(o)]:
                     self._cancel_order(o)
                 if self.s["qty"] <= 1e-6:
-                    log("  [STRAT] MDHTP exit: position closed — clearing exit intent")
-                    self.s["tp_pending_exit"] = None
-                else:
-                    log(
-                        f"  [STRAT] MDHTP exit: existing market exit order {existing_exit.get('id')} "
-                        "in progress — awaiting fill reconciliation"
-                    )
+                    return _clear_exit_intent("  [STRAT] MDHTP exit: position closed — clearing exit intent")
+                log(
+                    f"  [STRAT] MDHTP exit: existing market exit order {existing_exit.get('id')} "
+                    "in progress — awaiting fill reconciliation"
+                )
                 return True
 
             if not self._cancel_all_orders():
@@ -1469,24 +1472,26 @@ class Strategy(BaseSpotMixin):
             target_qty = fresh_held * sell_fraction if sell_fraction < 1.0 else fresh_held
             sell_qty = self._sellable_qty(target_qty, price)
             if sell_qty <= 0 or self._is_dust(sell_qty, price):
-                log("  [STRAT] MDHTP exit: no sellable quantity remaining — clearing exit intent")
-                self.s["tp_pending_exit"] = None
-                return True
+                return _clear_exit_intent("  [STRAT] MDHTP exit: no sellable quantity remaining — clearing exit intent")
 
             exit_px = round(price * 0.999, 2)
             if self._place_sell(sell_qty, exit_px, kind="TP", market=True):
                 if pending_exit.get("action") == ExitAction.PARTIAL_SELL.value and self.exit_manager is not None:
                     self.exit_manager.record_hard_tp(self.ticker, tick_time)
-                log(f"  [STRAT] MDHTP EXIT ({pending_exit.get('reason')}) -> reference {exit_px} ({sell_qty} shares)")
-                self.s["tp_pending_exit"] = None
-            else:
-                log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({pending_exit.get('reason')}) — intent retained for retry")
+                return _clear_exit_intent(
+                    f"  [STRAT] MDHTP EXIT ({pending_exit.get('reason')}) -> reference {exit_px} ({sell_qty} shares)"
+                )
+            log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({pending_exit.get('reason')}) — intent retained for retry")
             return True
 
-        if decision is not None and decision.reason == "not_in_tp_territory":
+        def _reset_trail_peak_and_sells() -> bool:
             self.s["trail_peak"] = None
             self._cancel_non_market_sells()
-        elif decision is not None and decision.action == ExitAction.HOLD:
+            return False
+
+        if decision is not None and decision.reason == "not_in_tp_territory":
+            return _reset_trail_peak_and_sells()
+        if decision is not None and decision.action == ExitAction.HOLD:
             if self.ticker in self.exit_manager.tp_ride_state:
                 ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
                 peak_px = safe_pos_float(ride_state.get("peak_price")) or price
@@ -1494,8 +1499,7 @@ class Strategy(BaseSpotMixin):
                 self._cancel_non_market_sells()
                 log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.2f})")
                 return True
-            self.s["trail_peak"] = None
-            self._cancel_non_market_sells()
+            return _reset_trail_peak_and_sells()
         return False
 
     def _dispatch_take_profit(self, price: float, avg: float | None, held: float) -> bool:
