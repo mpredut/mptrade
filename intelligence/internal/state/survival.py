@@ -66,7 +66,7 @@ import cachetrend as ct
 from instrument_registry import is_equity_symbol
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
 import providers.market_api as _market_api_mod
-from state_io import read_json_dict_cached, save_json_state
+from state_io import generation_file_lock, read_json_dict, read_json_dict_cached, save_json_state
 
 _DEFAULT_T_CACHE_FILE = cache_path(CACHE_T_TREND_FILENAME)
 T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
@@ -420,13 +420,21 @@ def estimate_T(
     res["source_symbol"] = used
     res["ts"] = time.time()
     cache_key = clean_sym_u if clean_sym_u else str(symbol or "")
-    if (safe_pos_float(res.get("n"), default=0.0) or 0.0) > 0 or not (
+    res_has_n = (safe_pos_float(res.get("n"), default=0.0) or 0.0) > 0
+    if res_has_n or not (
         isinstance(ent, dict) and (safe_pos_float(ent.get("n"), default=0.0) or 0.0) > 0
     ):
-        cache[cache_key] = res
         try:
-            save_json_state(t_cache_path, cache, indent=2)
-            _T_CACHE_FILE_MEMO.clear()
+            with generation_file_lock(t_cache_path):
+                disk_cache = read_json_dict(t_cache_path, default=None, repair_files=True)
+                merged_cache = dict(disk_cache) if isinstance(disk_cache, dict) else dict(cache)
+                disk_ent = merged_cache.get(cache_key)
+                if res_has_n or not (
+                    isinstance(disk_ent, dict) and (safe_pos_float(disk_ent.get("n"), default=0.0) or 0.0) > 0
+                ):
+                    merged_cache[cache_key] = res
+                    save_json_state(t_cache_path, merged_cache, indent=2)
+                    _T_CACHE_FILE_MEMO.clear()
         except OSError:
             pass
     return res

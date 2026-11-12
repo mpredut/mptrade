@@ -798,5 +798,152 @@ def test_cross_process_serialized_state_merges_preserve_sibling_entries(tmp_path
     assert not (tmp_path / previous_generation_path(reg_file.name)).exists()
 
 
+def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
+    import importlib
+    import json
+    import threading
+    import time
+    import numpy as np
+
+    import intelligence.internal.state.survival as surv
+    import intelligence.sentiment.collectors.microstructure_collector as mc
+    import intelligence.sentiment.evaluators.price_series_evaluator as pse
+    from providers.ssot_bridge import live_price_fetch_context
+    from providers.t212_provider import T212Provider
+    from state_io import save_json_state
+
+    # 1. Concurrent survival.estimate_T calls preserve sibling symbol entries on disk.
+    t_cache_file = tmp_path / "trend_survival_cache.json"
+    monkeypatch.setattr(surv, "T_CACHE_FILE", str(t_cache_file))
+    surv._T_CACHE_FILE_MEMO.clear()
+    barrier = threading.Barrier(2)
+
+    def _fake_fetch_klines(sym, days=540, interval="1h"):
+        barrier.wait(timeout=5.0)
+        n = 1200
+        ts = np.arange(n, dtype=float) * 3600.0
+        px = 100.0 + np.sin(np.arange(n, dtype=float) / 18.0) * 8.0 + (1.0 if "ETH" in sym else 0.0)
+        return ts, px
+
+    monkeypatch.setattr(surv, "fetch_klines", _fake_fetch_klines)
+    t_threads = [
+        threading.Thread(target=surv.estimate_T, args=("BTCUSDC",)),
+        threading.Thread(target=surv.estimate_T, args=("ETHUSDC",)),
+    ]
+    for th in t_threads:
+        th.start()
+    for th in t_threads:
+        th.join()
+
+    saved_t = json.loads(t_cache_file.read_text(encoding="utf-8"))
+    assert "BTCUSDC" in saved_t and "ETHUSDC" in saved_t
+    assert saved_t["BTCUSDC"]["n"] > 0 and saved_t["ETHUSDC"]["n"] > 0
+
+    # 2. _refresh_stale_t212_cached_positions merges touched T212 keys without clobbering concurrent crypto balances.
+    bals_file = tmp_path / "venue_balances_state.json"
+    now_s = time.time()
+    initial_bals = {
+        "pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "free": 2.0, "price": 120.0, "value_usd": 240.0, "ts": now_s - 600.0},
+        "cash:binance:USDC": {"free": 500.0, "ts": now_s - 600.0},
+    }
+    save_json_state(str(bals_file), initial_bals, indent=2)
+    stale_ram_copy = json.loads(json.dumps(initial_bals))
+    # Simulate portfolio_collector updating crypto cash on disk before microstructure_collector flushes its stale RAM copy.
+    updated_disk = dict(initial_bals)
+    updated_disk["cash:binance:USDC"] = {"free": 1250.0, "ts": now_s - 5.0}
+    updated_disk["pos:kraken:TAOUSD"] = {"symbol": "TAOUSD", "free": 1.5, "price": 400.0, "ts": now_s - 5.0}
+    save_json_state(str(bals_file), updated_disk, indent=2)
+
+    class _FakeT212Client:
+        def get_portfolio(self):
+            return [{"ticker": "NVDA_US_EQ", "currentPrice": 135.25}]
+
+    class _FakeT212Provider:
+        def _client(self):
+            return _FakeT212Client()
+
+    monkeypatch.setattr(mc._t212_prov_mod, "T212Provider", _FakeT212Provider)
+    monkeypatch.setattr(mc, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
+    assert mc._refresh_stale_t212_cached_positions(stale_ram_copy, str(bals_file), now_s, max_age_sec=180.0) is True
+    merged_bals = json.loads(bals_file.read_text(encoding="utf-8"))
+    assert merged_bals["pos:t212:NVDA_US_EQ"]["price"] == 135.25
+    assert merged_bals["pos:t212:NVDA_US_EQ"]["value_usd"] == 270.5
+    assert merged_bals["cash:binance:USDC"]["free"] == 1250.0
+    assert merged_bals["pos:kraken:TAOUSD"]["free"] == 1.5
+
+    # 3. _load_stitched_24h_ohlc_points resolves prices/ subdir and never overwrites fresh Cache24PriceManager equity OHLCV.
+    cdir_eq = tmp_path / "cachedb_eq"
+    (cdir_eq / "prices").mkdir(parents=True, exist_ok=True)
+    eq_ohlc_path = cdir_eq / "prices" / "cache_ohlc_24h_NVDA_US_EQ.json"
+    cm_pts = [[int((now_s - (24 - i) * 3600) * 1000), 130.0 + i * 0.25, 1000.0] for i in range(25)]
+    save_json_state(str(eq_ohlc_path), {"ts": now_s - 30.0, "symbol": "NVDA_US_EQ", "points": cm_pts})
+    pse._OHLC_24H_DISK_MEMO.clear()
+    # Even if forced to fetch (e.g. cold reader memo bypassed), writer check preserves fresh (<240s) equity OHLCV.
+    loaded_eq = pse._load_stitched_24h_ohlc_points(
+        None, "NVDA_US_EQ", now_s - 86400.0, cache_dir=str(cdir_eq)
+    )
+    assert len(loaded_eq) == len(cm_pts)
+    # Now simulate stale mtime on read check while Cache24PriceManager concurrently refreshes disk just before lock acquisition.
+    stale_check_cdir = tmp_path / "cachedb_race"
+    (stale_check_cdir / "prices").mkdir(parents=True, exist_ok=True)
+    race_path = stale_check_cdir / "prices" / "cache_ohlc_24h_NVDA_US_EQ.json"
+
+    def _racing_ohlc_fn(_sym, _iv):
+        save_json_state(str(race_path), {"ts": time.time(), "symbol": "NVDA_US_EQ", "points": cm_pts})
+        return [[int((now_s - (24 - i) * 3600) * 1000), 999.0, 500.0] for i in range(25)]
+
+    pse._load_stitched_24h_ohlc_points(_racing_ohlc_fn, "NVDA_US_EQ", now_s - 86400.0, cache_dir=str(stale_check_cdir))
+    saved_race = json.loads(race_path.read_text(encoding="utf-8"))
+    assert saved_race["points"][0][1] == 130.0
+
+    # 4. 212trading.market_data serves fresh SSOT equity price & 5m slope with 0 Yahoo HTTP calls,
+    #    while bypassing SSOT inside live_price_fetch_context() and for FX symbols.
+    assert T212Provider._SSOT_PRICE_MAX_AGE_SEC >= 15.0
+    md = importlib.import_module("212trading.market_data")
+    ssot_dir = tmp_path / "ssot_t212"
+    (ssot_dir / "prices").mkdir(parents=True, exist_ok=True)
+    now_ms = int(time.time() * 1000)
+    save_json_state(
+        str(ssot_dir / "prices" / "cache_current_price.json"),
+        {
+            "ts": time.time(),
+            "items": {"NVDA_US_EQ": [now_ms, 142.75]},
+            "fetchtime": {"NVDA_US_EQ": now_ms},
+        },
+    )
+    slope_pts = [[now_ms - (12 - i) * 300_000, 140.0 + i * 0.5, 1200.0] for i in range(13)]
+    save_json_state(
+        str(ssot_dir / "prices" / "cache_ohlc_24h_NVDA_US_EQ.json"),
+        {"ts": time.time(), "symbol": "NVDA_US_EQ", "points": slope_pts},
+    )
+    monkeypatch.setattr(md, "_SSOT_CACHE_DIR_OVERRIDE", str(ssot_dir))
+
+    # Ensure real _ORIG_HTTP_GET/_ORIG_CHART references remain intact while blocking any real network socket call.
+    import urllib.request
+
+    def _forbid_urlopen(*_a, **_kw):
+        raise AssertionError("Yahoo network HTTP must not be called when SSOT equity cache is fresh")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _forbid_urlopen)
+    assert md.get_price_usd("NVDA") == 142.75
+    slope_val = md.trend_slope_pct("NVDA", bars=12)
+    assert slope_val is not None and slope_val > 0.3
+
+    # Inside live_price_fetch_context() (cacheManager polling Yahoo), SSOT fast-path must be bypassed.
+    chart_calls = []
+
+    def _fake_chart(sym, rng="1d", interval="5m"):
+        chart_calls.append(sym)
+        return {"regularMarketPrice": 143.5}, [(int(time.time()), 143.5, 100.0)]
+
+    with live_price_fetch_context():
+        assert md._can_use_ssot_equity_cache("NVDA") is None
+    assert md._can_use_ssot_equity_cache("EURUSD=X") is None
+    monkeypatch.setattr(md, "_chart", _fake_chart)
+    assert md.get_price_usd("NVDA") == 143.5
+    assert chart_calls == ["NVDA"]
+
+
+
 
 

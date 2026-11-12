@@ -118,6 +118,7 @@ from state_io import (
     commit_file_and_meta,
     discard_generation_file,
     format_jsonl_bucket_line,
+    generation_file_lock,
     generation_lock_path,
     iter_jsonl_retention_lines,
     meta_file_path,
@@ -509,10 +510,11 @@ class Cache24PriceManager(CachePriceManagerBase):
                                 os.path.join(base_cachedb, f"cache_ohlc_24h_{sym_eq}.json")
                             )
                         )
-                        save_json_state(
-                            ohlc24_target,
-                            {"ts": eff_now, "symbol": sym_eq, "points": eff_pts},
-                        )
+                        with generation_file_lock(ohlc24_target):
+                            save_json_state(
+                                ohlc24_target,
+                                {"ts": eff_now, "symbol": sym_eq, "points": eff_pts},
+                            )
                     except Exception as exc:
                         print(f"[{self.cls_name}][Error] save cache_ohlc_24h {sym_eq}: {exc}")
                 any_refreshed = True

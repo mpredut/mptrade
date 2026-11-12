@@ -50,6 +50,7 @@ class ProviderSsotBridgeMixin:
     _FILLS_CACHE_DEFAULT_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_MAX_STALE_S: float = 60.0
     _USES_SSOT_MARKET_CACHE: bool = True
+    _SSOT_PRICE_MAX_AGE_SEC: Optional[float] = None
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
     _ssot_current_price_reader: Any = None
@@ -126,20 +127,22 @@ class ProviderSsotBridgeMixin:
         trade_cache_cls: Any = None,
     ) -> None:
         """Bind read-only SSOT cache getters and snapshot classes from ``cacheManager`` without upward imports."""
-        if current_price_reader is not None:
-            cls._ssot_current_price_reader = staticmethod(current_price_reader)
-        if cache_manager_getter is not None:
-            cls._ssot_cache_manager_getter = staticmethod(cache_manager_getter)
-        if short_trend_getter is not None:
-            cls._ssot_short_trend_getter = staticmethod(short_trend_getter)
-        if ensure_account_readers_fn is not None:
-            cls._ssot_ensure_account_readers_fn = staticmethod(ensure_account_readers_fn)
-        if current_price_cls is not None:
-            cls._ssot_current_price_cls = current_price_cls
-        if price24_cls is not None:
-            cls._ssot_price24_cls = price24_cls
-        if trade_cache_cls is not None:
-            cls._ssot_trade_cache_cls = trade_cache_cls
+        targets = (cls, ProviderSsotBridgeMixin) if cls is not ProviderSsotBridgeMixin else (cls,)
+        for tgt in targets:
+            if current_price_reader is not None:
+                tgt._ssot_current_price_reader = staticmethod(current_price_reader)
+            if cache_manager_getter is not None:
+                tgt._ssot_cache_manager_getter = staticmethod(cache_manager_getter)
+            if short_trend_getter is not None:
+                tgt._ssot_short_trend_getter = staticmethod(short_trend_getter)
+            if ensure_account_readers_fn is not None:
+                tgt._ssot_ensure_account_readers_fn = staticmethod(ensure_account_readers_fn)
+            if current_price_cls is not None:
+                tgt._ssot_current_price_cls = current_price_cls
+            if price24_cls is not None:
+                tgt._ssot_price24_cls = price24_cls
+            if trade_cache_cls is not None:
+                tgt._ssot_trade_cache_cls = trade_cache_cls
 
     @classmethod
     def _ensure_ssot_cache_bindings(cls) -> None:
@@ -450,39 +453,49 @@ class ProviderSsotBridgeMixin:
         parts = split_symbol_assets(raw_u)
         canon = canonical_symbol_key(raw_u) if parts is not None else (f"{cleaned}USDC" if cleaned else "")
         candidates = tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon) if c))
-        if not candidates:
+        return cls.read_ssot_spot_price(candidates, max_age_sec=eff_age)
+
+    @classmethod
+    def read_ssot_spot_price(
+        cls,
+        candidates: tuple[str, ...] | list[str],
+        *,
+        max_age_sec: float = PRICE_FRESHNESS_MAX_AGE_SEC,
+        price_cache_path: Optional[str] = None,
+    ) -> Optional[float]:
+        """Resolve a fresh spot price for ``candidates`` from ``CacheCurrentPriceManager`` / ``cache_current_price.json``."""
+        eff_age = resolve_positive_max_age(max_age_sec, PRICE_FRESHNESS_MAX_AGE_SEC)
+        if eff_age is None or not candidates:
             return None
         cls._ensure_ssot_cache_bindings()
-        cp_cls = cls._ssot_current_price_cls
-        if cp_cls is None:
+        if (cp_cls := cls._ssot_current_price_cls) is None:
             return None
-        return cp_cls.read_ssot_current_price_candidates(
-            candidates,
-            cls._resolve_cache_path(CACHE_CURRENT_PRICE_FILENAME),
-            eff_age,
-            use_memory_manager=True,
-            reader_fn=cls._ssot_current_price_reader,
+        price_path = (
+            str(price_cache_path)
+            if price_cache_path
+            else cls._resolve_cache_path(CACHE_CURRENT_PRICE_FILENAME)
         )
-
-    def _cached_current_price(
-        self, symbol: str, max_age_sec: float = PRICE_FRESHNESS_MAX_AGE_SEC
-    ) -> Optional[float]:
-        """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
-        eff_age = resolve_positive_max_age(max_age_sec, PRICE_FRESHNESS_MAX_AGE_SEC)
-        if (
-            eff_age is None
-            or not (candidates := self._prepare_ssot_price_candidates(symbol))
-            or (cp_cls := self._ssot_current_price_cls) is None
-        ):
-            return None
-        custom_path = getattr(self, "_ssot_price_cache_path", None)
-        price_path = str(custom_path) if custom_path else self._resolve_cache_path(CACHE_CURRENT_PRICE_FILENAME)
         return cp_cls.read_ssot_current_price_candidates(
             candidates,
             price_path,
             eff_age,
-            use_memory_manager=(custom_path is None),
-            reader_fn=self._ssot_current_price_reader,
+            use_memory_manager=(price_cache_path is None),
+            reader_fn=cls._ssot_current_price_reader,
+        )
+
+    def _cached_current_price(
+        self, symbol: str, max_age_sec: Optional[float] = None
+    ) -> Optional[float]:
+        """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
+        default_age = self._SSOT_PRICE_MAX_AGE_SEC or PRICE_FRESHNESS_MAX_AGE_SEC
+        eff_age = resolve_positive_max_age(default_age if max_age_sec is None else max_age_sec, default_age)
+        if eff_age is None or not (candidates := self._prepare_ssot_price_candidates(symbol)):
+            return None
+        custom_path = getattr(self, "_ssot_price_cache_path", None)
+        return self.read_ssot_spot_price(
+            candidates,
+            max_age_sec=eff_age,
+            price_cache_path=str(custom_path) if custom_path else None,
         )
 
     def _cached_price_history(

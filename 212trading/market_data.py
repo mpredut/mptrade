@@ -21,10 +21,13 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
+    SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     clean_nonempty_str,
     exact_pos_int,
     fetch_public_json,
     http_get,
+    is_cache_fresh,
+    is_shared_disk_cache_enabled,
     log,
     normalize_epoch_sec,
     safe_float,
@@ -32,7 +35,12 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-
+from cachepaths import (
+    CACHE_CURRENT_PRICE_FILENAME,
+    cache_path,
+    ensure_equity_suffix,
+    resolve_cachedb_filepath,
+)
 from providers.ohlc_utils import (
     drop_incomplete_last_bar,
     extract_yahoo_chart_result_and_quote as _extract_yahoo_result_and_quote,
@@ -40,7 +48,11 @@ from providers.ohlc_utils import (
     validate_dataset,
     validate_ohlc_candle_bar,
 )
-from state_io import parse_json_payload
+from providers.ssot_bridge import ProviderSsotBridgeMixin, is_in_live_price_fetch
+from state_io import parse_json_payload, read_json_dict_recovering
+
+_ORIG_HTTP_GET = http_get
+_SSOT_CACHE_DIR_OVERRIDE: str | None = None
 
 
 def parse_interval_minutes(value: str) -> int:
@@ -233,9 +245,68 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
         return None, []
 
 
+_ORIG_CHART = _chart
+
+
+def _can_use_ssot_equity_cache(sym: str) -> str | None:
+    if isinstance(sym, bool) or not isinstance(sym, str) or not (sym_u := sym.strip().upper()):
+        return None
+    if (
+        sym_u.endswith("=X")
+        or is_in_live_price_fetch()
+        or http_get is not _ORIG_HTTP_GET
+        or _chart is not _ORIG_CHART
+        or (_SSOT_CACHE_DIR_OVERRIDE is None and not is_shared_disk_cache_enabled())
+    ):
+        return None
+    return sym_u
+
+
+def _ssot_equity_price_usd(sym_u: str) -> float | None:
+    price_path = (
+        str(resolve_cachedb_filepath(os.path.join(_SSOT_CACHE_DIR_OVERRIDE, CACHE_CURRENT_PRICE_FILENAME)))
+        if _SSOT_CACHE_DIR_OVERRIDE
+        else None
+    )
+    return safe_pos_float(
+        ProviderSsotBridgeMixin.read_ssot_spot_price(
+            (ensure_equity_suffix(sym_u), sym_u),
+            max_age_sec=SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
+            price_cache_path=price_path,
+        ),
+        default=None,
+    )
+
+
+def _ssot_equity_ohlc_closes(sym_u: str) -> list[float]:
+    fname = f"cache_ohlc_24h_{ensure_equity_suffix(sym_u)}.json"
+    ohlc_path = (
+        str(resolve_cachedb_filepath(os.path.join(_SSOT_CACHE_DIR_OVERRIDE, fname)))
+        if _SSOT_CACHE_DIR_OVERRIDE
+        else str(cache_path(fname))
+    )
+    raw_doc = read_json_dict_recovering(ohlc_path)
+    if not isinstance(raw_doc, dict):
+        return []
+    doc_ts = safe_pos_float(raw_doc.get("ts"), default=None)
+    if doc_ts is None or not is_cache_fresh(doc_ts, time.time(), parse_interval_minutes("5m") * 60.0):
+        return []
+    pts = raw_doc.get("points")
+    if not isinstance(pts, list):
+        return []
+    return [
+        px
+        for p in pts
+        if isinstance(p, (list, tuple)) and len(p) >= 2 and (px := safe_pos_float(p[1], default=None)) is not None
+    ]
+
+
 def get_price_usd(sym: str) -> float | None:
     """Return current price for NVDA, SPCX, USDRON=X, etc.
-    Prefer the fresher final series bar and use regularMarketPrice only if absent."""
+    Prefer fresh SSOT cacheManager equity quotes when active, else Yahoo chart bars."""
+    if (sym_u := _can_use_ssot_equity_cache(sym)) is not None:
+        if (ssot_px := _ssot_equity_price_usd(sym_u)) is not None:
+            return ssot_px
     meta, bars = _chart(sym)
     if bars:
         return bars[-1][1]
@@ -274,6 +345,9 @@ def trend_slope_pct(sym: str, bars: int = 12) -> float | None:
     """Return short-term OLS trend slope over the last `bars` five-minute closes.
     Normalize as price percentage PER BAR; negative means downtrend. Return None with
     insufficient data. Used as a DCA gate like Binance/Kraken to avoid falling markets."""
+    if (sym_u := _can_use_ssot_equity_cache(sym)) is not None:
+        if (ssot_slope := compute_ols_slope_pct(_ssot_equity_ohlc_closes(sym_u), bars=bars)) is not None:
+            return ssot_slope
     _, bars_rows = _chart(sym)
     return compute_ols_slope_pct([c for (_, c, _) in bars_rows], bars=bars)
 

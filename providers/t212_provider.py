@@ -19,6 +19,7 @@ import time
 from typing import Any, List, Optional
 
 from botcore import (
+    SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     _parse_bool_flag,
     clean_upper_token,
     env_values_map,
@@ -110,6 +111,7 @@ class T212Provider(MarketDataProvider):
     _POSITION_PRICE_DECIMALS = 4
     _SUPPORTS_ORDER_VALIDITY = True
     _STRATEGY_HEARTBEAT_NAME = "T212-bot"
+    _SSOT_PRICE_MAX_AGE_SEC = SHORT_TREND_FRESHNESS_MAX_AGE_SEC
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_T212_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 86400.0 * 30
     _fills_match_fn = staticmethod(_t212_tickers_match)

@@ -16,7 +16,7 @@ from botcore import (
     safe_pos_int,
 )
 from pricewindow import KalmanTrend as _DefaultKalmanTrend
-from cachepaths import cache_path, canonical_base_asset
+from cachepaths import cache_path, canonical_base_asset, resolve_cachedb_filepath
 from instrument_registry import is_equity_symbol, is_symbol_market_open
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
@@ -29,7 +29,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_float,
     safe_pos_float,
 )
-from state_io import read_json_recovering, save_json_state
+from state_io import generation_file_lock, read_json_dict, read_json_recovering, save_json_state
 
 KalmanTrend: Any = None
 _OHLC_24H_DISK_MEMO: Dict[Tuple[str, int, int], List[List[Any]]] = {}
@@ -944,10 +944,11 @@ def _load_stitched_24h_ohlc_points(
     disk_fallback_pts: List[List[Any]] = []
     if sym_u and sym_u.replace("_", "").isalnum():
         try:
+            fname = f"cache_ohlc_24h_{sym_u}.json"
             cpath = (
-                os.path.join(cache_dir, f"cache_ohlc_24h_{sym_u}.json")
-                if cache_dir and os.path.exists(os.path.join(cache_dir, f"cache_ohlc_24h_{sym_u}.json"))
-                else str(cache_path(f"cache_ohlc_24h_{sym_u}.json"))
+                str(resolve_cachedb_filepath(os.path.join(cache_dir, fname)))
+                if cache_dir
+                else str(cache_path(fname))
             )
             can_read_disk = (
                 not callable(ohlc_fn)
@@ -999,10 +1000,15 @@ def _load_stitched_24h_ohlc_points(
         pts_all = older_15 + pts_all
     if cpath and len(pts_all) >= 8 and (pts_all[-1][0] - pts_all[0][0]) >= 18 * 3600 * 1000:
         try:
-            save_json_state(cpath, {"ts": _time.time(), "symbol": sym_u, "points": pts_all})
-            st_new = os.stat(cpath)
-            _OHLC_24H_DISK_MEMO[(cpath, st_new.st_mtime_ns, st_new.st_size)] = [list(p) for p in pts_all]
-            _LAST_OHLC_WRITER_ID_BY_PATH[cpath] = id(ohlc_fn)
+            with generation_file_lock(cpath):
+                now_w = _time.time()
+                cur_disk = read_json_dict(cpath, default=None, repair_files=True)
+                cur_ts = safe_pos_float(cur_disk.get("ts") if isinstance(cur_disk, dict) else None, default=0.0) or 0.0
+                if not (is_equity_symbol(sym_u) and cur_ts > 0.0 and (now_w - cur_ts) < 240.0):
+                    save_json_state(cpath, {"ts": now_w, "symbol": sym_u, "points": pts_all})
+                    st_new = os.stat(cpath)
+                    _OHLC_24H_DISK_MEMO[(cpath, st_new.st_mtime_ns, st_new.st_size)] = [list(p) for p in pts_all]
+                    _LAST_OHLC_WRITER_ID_BY_PATH[cpath] = id(ohlc_fn)
         except Exception:
             pass
     res_pts = (

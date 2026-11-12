@@ -159,6 +159,7 @@ from providers import t212_provider as _t212_prov_mod
 from providers.base import MarketDataProvider
 from providers.market_api import api as mkt
 from state_io import (
+    generation_file_lock,
     read_json_dict,
     read_json_dict_recovering as _default_read_json_cached,
     read_json_recovering,
@@ -771,6 +772,7 @@ def _refresh_stale_t212_cached_positions(
         if not isinstance(t212_rows, list):
             t212_rows = []
         t212_dirty = False
+        touched_keys: set[str] = set()
         seen_portfolio_tickers: set[str] = set()
 
         def _update_t212_pos_price(c_pos: Dict[str, Any], cur_px: float, *, ts_missing: bool) -> bool:
@@ -795,9 +797,11 @@ def _refresh_stale_t212_cached_positions(
             if rticker:
                 seen_portfolio_tickers.add(rticker)
             cur_px_r = safe_pos_float(row.get("currentPrice"), default=None)
-            if rticker and cur_px_r is not None and isinstance(c_pos := cached_bals.get(f"pos:t212:{rticker}"), dict):
+            tkey = f"pos:t212:{rticker}"
+            if rticker and cur_px_r is not None and isinstance(c_pos := cached_bals.get(tkey), dict):
                 if _update_t212_pos_price(c_pos, cur_px_r, ts_missing=safe_pos_float(c_pos.get("ts"), default=None) is None):
                     t212_dirty = True
+                    touched_keys.add(tkey)
         for bkey, c_pos in list(cached_bals.items()):
             if not (isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(c_pos, dict)):
                 continue
@@ -811,10 +815,28 @@ def _refresh_stale_t212_cached_positions(
                 cur_px_fb = MarketDataProvider.resolve_venue_public_price_usd("t212", rticker)
                 if cur_px_fb is not None and _update_t212_pos_price(c_pos, cur_px_fb, ts_missing=prev_c_ts <= 0.0):
                     t212_dirty = True
+                    touched_keys.add(bkey)
             except Exception:
                 pass
-        if t212_dirty:
-            save_json_state(bcache_path, cached_bals, indent=2)
+        if t212_dirty and bcache_path:
+            os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
+            with generation_file_lock(bcache_path):
+                disk_bals = read_json_dict(bcache_path, default=None, repair_files=True) if os.path.exists(bcache_path) else None
+                target_bals = dict(disk_bals) if isinstance(disk_bals, dict) else dict(cached_bals)
+                wrote_any = not isinstance(disk_bals, dict)
+                for tkey in touched_keys:
+                    new_entry = cached_bals.get(tkey)
+                    if not isinstance(new_entry, dict):
+                        continue
+                    cur_entry = target_bals.get(tkey)
+                    cur_ts = safe_pos_float(cur_entry.get("ts") if isinstance(cur_entry, dict) else None, default=0.0) or 0.0
+                    if cur_ts <= now_ts:
+                        merged_entry = dict(cur_entry) if isinstance(cur_entry, dict) else {}
+                        merged_entry.update(new_entry)
+                        target_bals[tkey] = merged_entry
+                        wrote_any = True
+                if wrote_any:
+                    save_json_state(bcache_path, target_bals, indent=2)
         return t212_dirty
     except Exception:
         return False

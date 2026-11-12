@@ -86,6 +86,8 @@ from providers.order_ohlc_utils import (
 from providers.intent_state import collect_known_ai_order_ids, intent_venue_client_order_ids
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
 from state_io import (
+    generation_file_lock,
+    read_json_dict,
     read_json_dict_recovering as _default_read_json_cached,
     read_json_file,
     read_json_recovering,
@@ -1146,15 +1148,23 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             _parse_bool_flag(force_persist, False) or is_live_network_backfill_enabled() or os.path.exists(bcache_path)
         ):
             try:
-                base_bals = {
-                    k: v
-                    for k, v in cached_bals.items()
-                    if not (k.startswith("open_orders_verified_ts:") and k.split(":", 1)[1] in failed_open_venues)
-                }
-                merged_bals = {**base_bals, **updated_bals}
-                if merged_bals != cached_bals:
-                    os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
-                    resolve_save_json_state(local_fn=save_json_state)(bcache_path, merged_bals, indent=2)
+                os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
+                with generation_file_lock(bcache_path):
+                    disk_bals = (
+                        read_json_dict(bcache_path, default=None, repair_files=True)
+                        if os.path.exists(bcache_path)
+                        and _rj_bals in (_default_read_json_cached, read_json_recovering, read_json_cached)
+                        else None
+                    )
+                    src_bals = disk_bals if isinstance(disk_bals, dict) else cached_bals
+                    base_bals = {
+                        k: v
+                        for k, v in src_bals.items()
+                        if not (k.startswith("open_orders_verified_ts:") and k.split(":", 1)[1] in failed_open_venues)
+                    }
+                    merged_bals = {**base_bals, **updated_bals}
+                    if merged_bals != src_bals:
+                        resolve_save_json_state(local_fn=save_json_state)(bcache_path, merged_bals, indent=2)
             except Exception:
                 pass
 
