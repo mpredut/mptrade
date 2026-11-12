@@ -907,7 +907,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 return valid_entries
 
             entries = read_recovering_previous(
-                c24_file, _read_c24, backup_path=backup_path
+                c24_file, _read_c24, backup_path=backup_path, repair_files=False
             )
             if os.path.exists(c24_file):
                 mtime = os.stat(c24_file).st_mtime_ns
@@ -1169,7 +1169,12 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         for cand in variants:
             if not isinstance(cand, str) or not cand:
                 continue
-            file_live = read_json_dict(self._live_trend_file(cand), default={}, recover_previous=True).get(w_key)
+            file_live = read_json_dict(
+                self._live_trend_file(cand),
+                default={},
+                recover_previous=True,
+                repair_files=bool(self.writer),
+            ).get(w_key)
             if isinstance(file_live, dict):
                 fresh = _check_fresh(file_live)
                 if fresh is not None:
@@ -1263,6 +1268,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     else data
                 ),
                 backup_path=backup_path,
+                repair_files=bool(self.writer),
             )
         except Exception:
             return {}

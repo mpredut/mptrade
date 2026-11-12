@@ -561,7 +561,12 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 print(f"  [MISSING] {symbol} -> NO PLATFORM SUPPORT!")
     
     def _load_symbol_metadata(self):
-        data = read_json_dict(self.filename, default=None, recover_previous=True)
+        data = read_json_dict(
+            self.filename,
+            default=None,
+            recover_previous=True,
+            repair_files=not getattr(self, "read_only", False),
+        )
         sym_meta = data.get("symbol_metadata") if isinstance(data, dict) else None
         if not isinstance(sym_meta, dict):
             return

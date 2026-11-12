@@ -456,27 +456,40 @@ def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
     atomic_write_text(str(p_cached_prev), '{"recovered": 42}')
     memo = {}
     assert read_json_dict_cached(p_cached, memo) == {"recovered": 42}
-    assert not p_cached_prev.exists()
+    assert p_cached_prev.exists()
+    assert p_cached.read_text(encoding="utf-8") == "{corrupt"
     assert read_json_dict_cached(p_cached, memo) == {"recovered": 42}
 
 
 def test_stage_previous_generation_and_concurrent_reader_race(tmp_path, monkeypatch):
+    from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc
+
     data_path = str(tmp_path / "cache_current_price.json")
     atomic_write_json(data_path, {"items": {"BTCUSDC": 70000.0}})
 
-    # 1. While writer has staged .previous via hardlink (before replacing data_path),
-    # a concurrent reader calling read_json_dict_recovering must not unlink .previous.
+    # 1. Passive snapshot readers (read_json_dict_recovering, pretrade_telemetry_collector)
+    # never unlink .previous when primary is valid (even on a new inode) and never overwrite
+    # primary when primary is invalid; only repair_files=True (producer) mutates disk.
     backup_path = stage_previous_generation(data_path)
     assert os.path.exists(backup_path)
     assert os.path.samefile(data_path, backup_path)
     assert read_json_dict_recovering(data_path) == {"items": {"BTCUSDC": 70000.0}}
     assert os.path.exists(backup_path)
 
-    # Once data_path is replaced with a new inode and left with a stale .previous,
-    # a subsequent read cleans up the stale .previous.
     atomic_write_json(data_path, {"items": {"BTCUSDC": 70100.0}})
     assert not os.path.samefile(data_path, backup_path)
     assert read_json_dict_recovering(data_path) == {"items": {"BTCUSDC": 70100.0}}
+    assert ptc.read_json_cached(data_path) == {"items": {"BTCUSDC": 70100.0}}
+    assert os.path.exists(backup_path)
+
+    atomic_write_text(data_path, "{corrupt_mid_write")
+    assert ptc.read_json_cached(data_path) == {"items": {"BTCUSDC": 70000.0}}
+    assert Path(data_path).read_text(encoding="utf-8") == "{corrupt_mid_write"
+    assert os.path.exists(backup_path)
+
+    # Authoritative producer recovery (repair_files=True) restores primary and cleans .previous.
+    assert read_json_dict_recovering(data_path, repair_files=True) == {"items": {"BTCUSDC": 70000.0}}
+    assert json.loads(Path(data_path).read_text(encoding="utf-8")) == {"items": {"BTCUSDC": 70000.0}}
     assert not os.path.exists(backup_path)
 
     # 2. If a concurrent reader unlinks destination immediately after os.replace inside

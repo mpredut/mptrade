@@ -554,7 +554,10 @@ class CacheManagerInterface(ABC):
         if os.path.exists(self.filename) or os.path.exists(backup_path):
             try:
                 data = read_json_dict(
-                    self.filename, backup_path=backup_path, recover_previous=True
+                    self.filename,
+                    backup_path=backup_path,
+                    recover_previous=True,
+                    repair_files=not self.read_only,
                 )
                 with self.lock:
                     self.cache = data.get("items", {})
@@ -858,7 +861,10 @@ class CacheManagerInterface(ABC):
         if os.path.exists(self.filename) or os.path.exists(backup_path):
             try:
                 data = read_json_dict(
-                    self.filename, backup_path=backup_path, recover_previous=True
+                    self.filename,
+                    backup_path=backup_path,
+                    recover_previous=True,
+                    repair_files=not self.read_only,
                 )
                 with self.lock:
                     items = data.get("items", {})
@@ -1015,14 +1021,20 @@ class CacheManagerInterface(ABC):
         )
 
     def _load_jsonl(self):
-        """Load generic JSONL state and recover ``.previous`` if interrupted."""
+        """Load generic JSONL state; repair ``.previous`` on disk only for producers."""
         legacy_metadata = self._read_optional_meta_dict()
         with self.lock:
             self.cache = {}
             had_invalid_line = False
-            backup_path = self._ensure_file_or_restore_previous_locked()
+            backup_path = (
+                self._previous_generation_path()
+                if self.read_only
+                else self._ensure_file_or_restore_previous_locked()
+            )
             if os.path.exists(self.filename):
                 self.cache, had_invalid_line = read_jsonl_bucket_map(self.filename)
+            elif self.read_only and os.path.exists(backup_path):
+                self.cache, had_invalid_line = read_jsonl_bucket_map(backup_path)
             self._legacy_jsonl_needs_rewrite = had_invalid_line
             if not self.read_only and not had_invalid_line and os.path.exists(backup_path):
                 discard_generation_file(backup_path)

@@ -378,6 +378,7 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
             self.filename,
             lambda candidate_path: reader_fn(metadata, path=candidate_path),
             backup_path=self._previous_generation_path(),
+            repair_files=not self.read_only,
         )
 
     def ensure_persisted_version(self, required_version):

@@ -681,6 +681,9 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         recovered = reader.get_snapshot("BTCUSDT")
         self.assertIsNotNone(recovered)
         self.assertEqual(recovered["gradient_recent"], 0.42)
+        self.assertTrue(os.path.exists(trend_file + ".previous"))
+        # Producer repairs primary file and cleans up .previous
+        self.assertEqual(writer._read_file()["BTCUSDT"]["gradient_recent"], 0.42)
         self.assertFalse(os.path.exists(trend_file + ".previous"))
 
     def test_short_trend_resync_mem_file_reloads_flat_snapshots(self):
@@ -713,7 +716,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         reader = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, data_sync_mode="disk_reader")
         loaded_entries = reader._load_disk_cache24_entries("BTCUSDT")
         self.assertEqual(len(loaded_entries), 15)
-        self.assertFalse(os.path.exists(c24_file + ".previous"))
+        self.assertTrue(os.path.exists(c24_file + ".previous"))
 
         sparse_file = os.path.join(self.tmp, "cache_sparse_price_BTCUSDT.jsonl")
         with open(sparse_file + ".previous", "w", encoding="utf-8") as fh:
@@ -726,7 +729,20 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
             read_only=True,
         )
         self.assertEqual(sparse_mgr.cache.get("BTCUSDT"), [[1700000000000, 60123.0]])
+        self.assertTrue(os.path.exists(sparse_file + ".previous"))
+        self.assertFalse(os.path.exists(sparse_file))
+
+        # Producer (read_only=False) restores missing primary from .previous and cleans up sidecar.
+        sparse_prod = cm.CacheSparsePriceManager(
+            sync_ts=9999,
+            symbols=["BTCUSDT"],
+            filename=sparse_file,
+            api_client=mock_api,
+            read_only=False,
+        )
+        self.assertEqual(sparse_prod.cache.get("BTCUSDT"), [[1700000000000, 60123.0]])
         self.assertFalse(os.path.exists(sparse_file + ".previous"))
+        self.assertTrue(os.path.exists(sparse_file))
 
     def test_cachetrend_first_import_order_has_no_circular_error(self):
         code = (
@@ -802,7 +818,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
                 read_only=True,
             )
             self.assertEqual(mgr.symbol_preferred_source.get("BTCUSDT"), "Binance")
-            self.assertFalse(os.path.exists(pf_file + ".previous"))
+            self.assertTrue(os.path.exists(pf_file + ".previous"))
 
             # Update disk metadata and verify _reload_from_disk refreshes symbol_metadata
             payload["symbol_metadata"]["preferred_source"]["BTCUSDT"] = "CoinGecko"

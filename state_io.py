@@ -884,10 +884,13 @@ def _read_json_dict_strict(path: str) -> dict[str, Any]:
 
 def _read_with_policy(
     path: str, reader_fn: Callable[[str], T], *,
-    default: Any = _MISSING, backup_path: str | None = None, recover_previous: bool = False,
+    default: Any = _MISSING, backup_path: str | None = None,
+    recover_previous: bool = False, repair_files: bool = False,
 ) -> T | Any:
     if recover_previous:
-        return read_recovering_previous(path, reader_fn, backup_path=backup_path, default=default)
+        return read_recovering_previous(
+            path, reader_fn, backup_path=backup_path, default=default, repair_files=repair_files
+        )
     try:
         return reader_fn(_resolve_target_path(path))
     except Exception:
@@ -897,20 +900,24 @@ def _read_with_policy(
 
 
 def read_json_file(
-    path: str, *, default: Any = _MISSING, backup_path: str | None = None, recover_previous: bool = False,
+    path: str, *, default: Any = _MISSING, backup_path: str | None = None,
+    recover_previous: bool = False, repair_files: bool = False,
 ) -> Any:
-    """Read and parse any UTF-8 JSON file, with optional ``.previous`` recovery or fallback ``default``."""
+    """Read and parse any UTF-8 JSON file, with optional ``.previous`` fallback/recovery or ``default``."""
     return _read_with_policy(
-        path, _read_json_file_strict, default=default, backup_path=backup_path, recover_previous=recover_previous
+        path, _read_json_file_strict, default=default, backup_path=backup_path,
+        recover_previous=recover_previous, repair_files=repair_files,
     )
 
 
 def read_json_dict(
-    path: str, *, default: Any = _MISSING, backup_path: str | None = None, recover_previous: bool = False,
+    path: str, *, default: Any = _MISSING, backup_path: str | None = None,
+    recover_previous: bool = False, repair_files: bool = False,
 ) -> dict[str, Any] | Any:
     """Read and parse a UTF-8 JSON file whose root value must be a ``dict``."""
     return _read_with_policy(
-        path, _read_json_dict_strict, default=default, backup_path=backup_path, recover_previous=recover_previous
+        path, _read_json_dict_strict, default=default, backup_path=backup_path,
+        recover_previous=recover_previous, repair_files=repair_files,
     )
 
 
@@ -958,7 +965,8 @@ def read_jsonl_dicts(path: str, *, strict: bool = False) -> list[dict[str, Any]]
 
 def read_text_file(
     path: str, *, default: Any = _MISSING, encoding: str = "utf-8", errors: str = "strict",
-    newline: str | None = None, backup_path: str | None = None, recover_previous: bool = False,
+    newline: str | None = None, backup_path: str | None = None,
+    recover_previous: bool = False, repair_files: bool = False,
 ) -> str | Any:
     """Read text from ``path`` (symmetric to ``atomic_write_text``), with optional fallback ``default``."""
     def _read_strict(candidate_path: str) -> str:
@@ -966,7 +974,8 @@ def read_text_file(
             return handle.read()
 
     return _read_with_policy(
-        path, _read_strict, default=default, backup_path=backup_path, recover_previous=recover_previous
+        path, _read_strict, default=default, backup_path=backup_path,
+        recover_previous=recover_previous, repair_files=repair_files,
     )
 
 
@@ -987,7 +996,8 @@ def read_text_lines(
 
 
 def read_bytes_file(
-    path: str, *, default: Any = _MISSING, backup_path: str | None = None, recover_previous: bool = False,
+    path: str, *, default: Any = _MISSING, backup_path: str | None = None,
+    recover_previous: bool = False, repair_files: bool = False,
 ) -> bytes | Any:
     """Read binary bytes from ``path`` (symmetric to ``atomic_write_bytes``), with optional fallback ``default``."""
     def _read_strict(candidate_path: str) -> bytes:
@@ -995,7 +1005,8 @@ def read_bytes_file(
             return handle.read()
 
     return _read_with_policy(
-        path, _read_strict, default=default, backup_path=backup_path, recover_previous=recover_previous
+        path, _read_strict, default=default, backup_path=backup_path,
+        recover_previous=recover_previous, repair_files=repair_files,
     )
 
 
@@ -1016,8 +1027,10 @@ def read_recovering_previous(
     backup_path: str | None = None,
     error_mapper: Callable[[BaseException], BaseException] | None = None,
     default: Any = _MISSING,
+    repair_files: bool = True,
 ) -> T:
-    """Read and validate ``path`` via ``read_fn``, recovering ``.previous`` if needed."""
+    """Read and validate ``path`` via ``read_fn``, falling back to ``.previous`` (and repairing on disk only when ``repair_files=True``)."""
+    repair = _parse_bool_flag(repair_files, True)
     if read_fn is json.loads:
         def _invoke(candidate_path: str) -> Any:
             with open(candidate_path, "r", encoding="utf-8") as handle:
@@ -1033,7 +1046,7 @@ def read_recovering_previous(
             _resolve_target_path(backup_path) if backup_path else previous_generation_path(target_path)
         )
         result = _invoke(target_path)
-        if os.path.exists(target_backup):
+        if repair and os.path.exists(target_backup):
             try:
                 is_staged = os.path.samefile(target_path, target_backup)
             except OSError:
@@ -1047,7 +1060,9 @@ def read_recovering_previous(
                 raise
             return default
         try:
-            _invoke(target_backup)
+            backup_result = _invoke(target_backup)
+            if not repair:
+                return backup_result
             restore_previous_generation(target_path, backup_path=target_backup)
             return _invoke(target_path)
         except Exception as recovery_exc:
@@ -1072,14 +1087,18 @@ def _stat_sig(path: str) -> tuple[int, int] | None:
         return None
 
 
-def read_json_recovering(path: str, *, default: Any = None) -> Any:
-    """Read and parse any UTF-8 JSON file with ``.previous`` recovery, returning ``default`` on error."""
-    return read_json_file(path, default=default, recover_previous=True)
+def read_json_recovering(
+    path: str, *, default: Any = None, repair_files: bool = False,
+) -> Any:
+    """Read and parse any UTF-8 JSON file with passive ``.previous`` fallback (or producer repair when ``repair_files=True``)."""
+    return read_json_file(path, default=default, recover_previous=True, repair_files=repair_files)
 
 
-def read_json_dict_recovering(path: str, *, default: Any = None) -> dict[str, Any] | Any:
-    """Read and parse a UTF-8 JSON dict file with ``.previous`` recovery, returning ``default`` on error."""
-    return read_json_dict(path, default=default, recover_previous=True)
+def read_json_dict_recovering(
+    path: str, *, default: Any = None, repair_files: bool = False,
+) -> dict[str, Any] | Any:
+    """Read and parse a UTF-8 JSON dict file with passive ``.previous`` fallback (or producer repair when ``repair_files=True``)."""
+    return read_json_dict(path, default=default, recover_previous=True, repair_files=repair_files)
 
 
 def read_json_dict_cached(
@@ -1087,7 +1106,7 @@ def read_json_dict_cached(
     memo: dict[str, tuple[tuple, dict[str, Any]]] | None = None,
     *, max_entries: int = 32,
 ) -> dict[str, Any] | None:
-    """Stat-memoized ``read_json_dict(..., default=None, recover_previous=True)`` checking both ``path`` and ``path.previous``."""
+    """Stat-memoized passive ``read_json_dict`` checking both ``path`` and ``path.previous`` without mutating disk."""
     try:
         resolved = _resolve_target_path(path)
     except Exception:
@@ -1103,7 +1122,9 @@ def read_json_dict_cached(
     if cached is not None and cached[0] == sig:
         return cached[1]
 
-    res = read_json_dict(resolved, default=None, backup_path=backup_path, recover_previous=True)
+    res = read_json_dict(
+        resolved, default=None, backup_path=backup_path, recover_previous=True, repair_files=False
+    )
     if isinstance(res, dict):
         if st_bak is not None:
             sig = (_stat_sig(resolved), _stat_sig(backup_path), id(read_recovering_previous), id(json.load))
