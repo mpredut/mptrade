@@ -3520,13 +3520,14 @@ def test_equity_rth_cadence_and_future_tick_hygiene(tmp_path, monkeypatch):
 def test_c24_nonblocking_ws_tick_during_snapshot_save_and_assetguardian_shutdown(tmp_path):
     """Verify Cache24PriceManager.on_price_update never blocks WS threads during save_state_to_file, deduplicates _before_snapshot_commit_locked, honors _initial_sync_delay_sec, and assetguardian.run_forever shuts down WS streams."""
     c24_path = tmp_path / "cache_24_price_BTCUSDC.json"
-    c24 = cacheprice.Cache24PriceManager(
-        30,
-        ["BTCUSDC"],
-        str(c24_path),
-        current_price_getter=lambda: None,
-        data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
-    )
+    with patch.object(cm, "get_current_price_manager", return_value=None):
+        c24 = cacheprice.Cache24PriceManager(
+            30,
+            ["BTCUSDC"],
+            str(c24_path),
+            current_price_getter=lambda: None,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
     base_ms = int(time.time() * 1000)
     c24.on_price_update("BTCUSDC", base_ms, 70000.0)
 
@@ -3589,20 +3590,21 @@ def test_c24_nonblocking_ws_tick_during_snapshot_save_and_assetguardian_shutdown
     ]
 
     # _initial_sync_delay_sec delays first periodic_sync iteration cleanly and stops immediately on shutdown
-    c24_stagger = cacheprice.Cache24PriceManager(
-        30,
-        ["BTCUSDC"],
-        str(tmp_path / "cache_24_stagger.json"),
-        current_price_getter=lambda: None,
-        data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
-    )
-    c24_stagger._initial_sync_delay_sec = 5.0
-    stagger_saves = []
-    with patch.object(c24_stagger, "_persist_periodic_state", side_effect=lambda sc: stagger_saves.append(sc)):
-        c24_stagger.periodic_sync(30, save_state=True)
-        time.sleep(0.05)
-        assert stagger_saves == []
-        assert c24_stagger.shutdown(timeout=1.0) is True
+    with patch.object(cm, "get_current_price_manager", return_value=None):
+        c24_stagger = cacheprice.Cache24PriceManager(
+            30,
+            ["BTCUSDC"],
+            str(tmp_path / "cache_24_stagger.json"),
+            current_price_getter=lambda: None,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        c24_stagger._initial_sync_delay_sec = 5.0
+        stagger_saves = []
+        with patch.object(c24_stagger, "_persist_periodic_state", side_effect=lambda sc: stagger_saves.append(sc)):
+            c24_stagger.periodic_sync(30, save_state=True)
+            time.sleep(0.05)
+            assert stagger_saves == []
+            assert c24_stagger.shutdown(timeout=1.0) is True
 
     # assetguardian.run_forever cleans up lazily-started WS streams on exit
     import assetguardian as ag
