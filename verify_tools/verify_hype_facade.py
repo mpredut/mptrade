@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""verify_hype_facade.py — DRY-RUN sanity check of the HYPE facade (Hyperliquid SPOT).
+"""verify_hype_facade.py -- DRY-RUN sanity check of the HYPE facade (Hyperliquid SPOT).
 
 Places ZERO real orders. Through the market_api facade (the `mkt` singleton) it checks:
   - symbol ROUTING: HYPEUSDC -> Hyperliquid; BTCUSDC/TAOUSDC -> Binance;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mailer.py — the single SMTP choke point for every email the fleet sends.
+"""mailer.py -- the single SMTP choke point for every email the fleet sends.
 
 Owns two things and nothing else:
   * Delivery: ``send_email(subject, body)`` over SMTP (STARTTLS), with cross-process
@@ -9,9 +9,9 @@ Owns two things and nothing else:
     unless a caller explicitly asks for email.
 
 Environment (``.env`` / ``config.env`` in the repository root):
-  SMTP_USERNAME / SMTP_PASSWORD / ALERT_TO_EMAIL  — required to send
-  SMTP_SERVER / SMTP_PORT                         — default smtp.gmail.com:587
-  DISABLE_EXTERNAL_NOTIFICATIONS                  — global kill switch
+  SMTP_USERNAME / SMTP_PASSWORD / ALERT_TO_EMAIL  -- required to send
+  SMTP_SERVER / SMTP_PORT                         -- default smtp.gmail.com:587
+  DISABLE_EXTERNAL_NOTIFICATIONS                  -- global kill switch
 
 CLI (used by the bash notifiers in orchestratorOS/):
   mailer.py [--topic TOPIC] SUBJECT BODY
@@ -119,7 +119,7 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
         _LAST_ERROR_IS_AUTH = True
         logging.warning(f"Email delivery skipped for {subject!r} (SMTP auth rejected): {e}")
         return False
-    except Exception as e:  # noqa: BLE001 — any SMTP/network failure is a soft failure
+    except Exception as e:  # noqa: BLE001 -- any SMTP/network failure is a soft failure
         logging.error(f"Email delivery failed for {subject!r}: {e}")
         return False
     logging.info(f"Dispatched email to {cfg['to']}: {subject}")

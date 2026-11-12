@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ipo_common.py — T212-specific runtime utilities (notify, environment layering, dual ET/Bucharest timestamp).
+ipo_common.py -- T212-specific runtime utilities (notify, environment layering, dual ET/Bucharest timestamp).
 Shared logging, .env, config, HTTP, and numeric coercion primitives live in root botcore.py.
 """
 from __future__ import annotations

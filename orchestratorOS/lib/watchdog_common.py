@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""watchdog_common.py — SHARED alerting infrastructure for the watchdogs
+"""watchdog_common.py -- SHARED alerting infrastructure for the watchdogs
 (watchdogfor_cache, watchdogfor_anomaly): loads the env, sends push (ntfy) + email,
 and keeps the cooldown state. Extracted from watchdogfor_cache to avoid duplication.
 
 Environment variables (from .env / config.env in the repository root):
-  PHONE_ALERT_URL / NTFY_TOPIC                    — push channel
-  SMTP_USERNAME / SMTP_PASSWORD / ALERT_TO_EMAIL  — email (optional)
-  SMTP_SERVER / SMTP_PORT                         — email server (default gmail:587)
+  PHONE_ALERT_URL / NTFY_TOPIC                    -- push channel
+  SMTP_USERNAME / SMTP_PASSWORD / ALERT_TO_EMAIL  -- email (optional)
+  SMTP_SERVER / SMTP_PORT                         -- email server (default gmail:587)
 """
 from pathlib import Path
 import sys

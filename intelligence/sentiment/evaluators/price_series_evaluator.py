@@ -615,7 +615,7 @@ def compute_swing_wave_metrics(
 
 
 def compute_7d_range_metrics(vals: list[float], decimals: Optional[int] = None) -> Dict[str, Any]:
-    """Compute 7-day range geometry (low, high, drawdown, bounce, span, position) and 3%–8% swing waves from a price series."""
+    """Compute 7-day range geometry (low, high, drawdown, bounce, span, position) and 3%-8% swing waves from a price series."""
     if not isinstance(vals, (list, tuple)):
         return {}
     clean_vals = _extract_ordered_prices(vals)

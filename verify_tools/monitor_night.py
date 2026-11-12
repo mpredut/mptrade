@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-monitor_night.py — overnight monitoring for the trading bots.
+monitor_night.py -- overnight monitoring for the trading bots.
 Runs through Paramiko from WSL and connects to the real server on port 32238.
 Output: per-process status, recent log errors, and actions taken.
 

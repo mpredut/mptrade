@@ -242,12 +242,12 @@ class CompositeMarketIntelligence(OrderGuardEvaluatorBase):
 
         is_eq_sym = is_equity_symbol(symbol)
 
-        # 6. Sentiment Extreme Greed Guard (GLLM2 — Crypto only)
+        # 6. Sentiment Extreme Greed Guard (GLLM2 -- Crypto only)
         if not is_eq_sym and fear_greed_snapshot is not None and not _is_bypassed("GLLM2", "greed_guard", "extremegreedguard"):
             if (veto := _apply_guard_dec(self.greed_guard.check(symbol, side, fear_greed_snapshot))) is not None:
                 return veto
 
-        # 7. Sentiment Panic Washout Guard (GLLM2 — Crypto only)
+        # 7. Sentiment Panic Washout Guard (GLLM2 -- Crypto only)
         if not is_eq_sym and (market_breadth_snapshot is not None or fear_greed_snapshot is not None) and not _is_bypassed("GLLM2", "panic_guard", "panicwashoutguard"):
             panic_dec = self.panic_guard.check(
                 symbol, side,

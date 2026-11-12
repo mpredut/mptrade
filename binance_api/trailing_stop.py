@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-trailing_stop.py — per-coin trailing stop for Binance holdings.
+trailing_stop.py -- per-coin trailing stop for Binance holdings.
 
 Why it exists: the historical AssetGuardian growth exit passed through
 place_safe_order(force=False) and apply_weight_limit. During an uptrend the

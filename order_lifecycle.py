@@ -520,7 +520,7 @@ class TrackedOrderLifecycle:
         return TrackedOrderResult("active", pending, post_cancel)
 
 
-# ─── Accepted Order Claim Persistence (formerly accepted_order_persistence.py) ───
+# --- Accepted Order Claim Persistence (formerly accepted_order_persistence.py) ---
 
 load_root_config()
 
@@ -635,7 +635,7 @@ def complete_accepted_claim(
     return False
 
 
-# ─── Order Outcomes Log (formerly order_outcomes_log.py) ───
+# --- Order Outcomes Log (formerly order_outcomes_log.py) ---
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ORDER_OUTCOMES_LOG_DIR = os.path.join(ROOT, "logger")
@@ -726,7 +726,7 @@ def log_order_outcome(
         print(f"[log_order_outcome] error writing outcomes log: {e}")
 
 
-# ─── Atomic Order Rollback (formerly order_rollback.py) ───
+# --- Atomic Order Rollback (formerly order_rollback.py) ---
 
 
 def extract_order_restore_params(order: dict) -> dict[str, Any]:
@@ -784,7 +784,7 @@ def restore_cancelled_orders(
     return restored
 
 
-# ─── Dynamic Reprice & Entry Offset Bounds (SSOT) ───
+# --- Dynamic Reprice & Entry Offset Bounds (SSOT) ---
 
 load_dotenv()
 

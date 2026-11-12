@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-common.py — Hyperliquid-specific runtime utilities (socket timeout, notify, local module loader).
+common.py -- Hyperliquid-specific runtime utilities (socket timeout, notify, local module loader).
 Shared logging, .env, config, and numeric coercion primitives live in root botcore.py.
 """
 from __future__ import annotations

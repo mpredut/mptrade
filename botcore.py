@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-botcore.py — SHARED SSOT core for bot utilities: logging, .env, HTTP, numeric coercion, and time.
+botcore.py -- SHARED SSOT core for bot utilities: logging, .env, HTTP, numeric coercion, and time.
 No external dependencies; standard library only.
 """
 from __future__ import annotations
@@ -126,9 +126,9 @@ class FileLock:
             self._fd = None
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # 1. NUMERIC COERCION & OBJECT SANITIZATION PRIMITIVES
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 
 
@@ -302,11 +302,11 @@ def format_notify_price(price: object, *, comma: bool = True) -> str:
     return raw
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # 2. CONFIGURATION & ENVIRONMENT SSOT (Loading, Parsing, Key-Value & Watcher)
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
-# ── 2.1. Dotenv / KEY=VALUE Parsing & Environment Stack Loading ──────────────
+# -- 2.1. Dotenv / KEY=VALUE Parsing & Environment Stack Loading --------------
 
 
 def _strip_env_value_quotes_and_comment(val: str) -> str:
@@ -623,7 +623,7 @@ def bind_isolated_venue_cfg_loader(
     return _loader
 
 
-# ── 2.2. INI (.conf) Parsing, Mtime Caching & Override Resolution ────────────
+# -- 2.2. INI (.conf) Parsing, Mtime Caching & Override Resolution ------------
 
 _INI_CONFIG_CACHE: dict[str, tuple[tuple[int, int, bool], configparser.ConfigParser]] = (
     globals().get("_INI_CONFIG_CACHE") or {}
@@ -677,7 +677,7 @@ def parse_notify_enabled_flag(notify_enabled: object, conf: dict[str, str], conf
     raise ValueError(f"Invalid {label} {raw!r}")
 
 
-# ── 2.3. Typed Environment & Key-Value Lookups ───────────────────────────────
+# -- 2.3. Typed Environment & Key-Value Lookups -------------------------------
 
 
 def _clean_env_str(val: object) -> str:
@@ -1042,7 +1042,7 @@ def add_paper_skip_wait_cli_args(
     return parser
 
 
-# ── 2.4. Global trade_enabled Configuration Cache & Hot-Reload Watcher ───────
+# -- 2.4. Global trade_enabled Configuration Cache & Hot-Reload Watcher -------
 
 config_cache: dict = {}
 _CONFIG_MTIME: tuple[float, float] = (-1.0, -1.0)
@@ -1105,9 +1105,9 @@ def is_trade_enabled() -> bool:
 load_config()
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # 3. HTTP TRANSPORT, APPROXIMATE MATH & MARKET HOURS
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 
 def http_request(
@@ -1221,7 +1221,7 @@ def fetch_json_post(
     return _urlopen_json(urllib.request.Request(clean_url, data=data, headers=req_headers), timeout)
 
 
-# ── DETERMINISTIC percentage-based approximate comparisons ───────────────────
+# -- DETERMINISTIC percentage-based approximate comparisons -------------------
 
 
 def _safe_float_pair(value1: object, value2: object) -> tuple[float | None, float | None]:
@@ -1261,9 +1261,9 @@ def is_us_rth_open(now_ts: float | None = None) -> bool:
     return ny_dt.weekday() < 5 and dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # 4. MODULE LOADING, HEARTBEATS, TIMESTAMPS & RUNTIME HELPERS
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 
 def extract_current_price_item(item: object) -> float | None:
@@ -2634,9 +2634,9 @@ def get_stale_cache_retry_delay_sec(override: float | None = None) -> float:
     return float(_RUNTIME_SERVICES.stale_cache_retry_delay_sec)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # 5. MERGED MODULE ALIAS REGISTRY (Backward-Compatible sys.modules Bindings)
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 
 def register_module_aliases(module_name: str, *aliases: str) -> None:
@@ -2743,9 +2743,9 @@ if not any(
     sys.meta_path.append(_MergedModuleAliasFinder())
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # 10. CANONICAL LLM TOPIC IDENTITY REGISTRY
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 
 @dataclass(frozen=True)

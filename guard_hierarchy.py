@@ -1,4 +1,4 @@
-"""guard_hierarchy.py — Canonical Object-Oriented Guard Hierarchy & SSOT Registry.
+"""guard_hierarchy.py -- Canonical Object-Oriented Guard Hierarchy & SSOT Registry.
 
 Implements the Separation of Concerns (SoC) for trading safety, quantitative limits,
 market microstructure intelligence, and LLM guards with mnemonic codes:

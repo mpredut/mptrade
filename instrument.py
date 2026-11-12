@@ -973,7 +973,7 @@ class Instrument:
                         )
                         ctx.reason = "trend_deferred"
                         return None
-                except Exception as e:  # noqa: BLE001 — Opportunistic gate.
+                except Exception as e:  # noqa: BLE001 -- Opportunistic gate.
                     print(f"[{self.symbol}] {ctx.side_u} trend gate unavailable: {e}")
 
             check_medium_trend = not GUARD_REGISTRY["GT_M"].is_bypassed(ctx.bypassed_guards)
@@ -1300,7 +1300,7 @@ class Instrument:
             ctx.submit_attempted = False
             print(f"[{self.symbol}] {ctx.side_u} BLOCKED (pre-submit): {ctx.reason}")
             return None
-        except Exception as e:  # noqa: BLE001 — Fail closed when guards cannot be verified.
+        except Exception as e:  # noqa: BLE001 -- Fail closed when guards cannot be verified.
             print(f"[{self.symbol}] {ctx.side_u} BLOCKED (fail-closed): {e}")
             ctx.reason = ctx.reason or "guard_check_failed"
             return None
@@ -1341,7 +1341,7 @@ class Instrument:
             inst, venue, symbol, price=price
         )
 
-    # ── params namespaced (mt.* / tradeall.* / rtrade.* / execution.*) ──────────
+    # -- params namespaced (mt.* / tradeall.* / rtrade.* / execution.*) ----------
     def param(self, consumer: str, key: str, default: Any = None,
               cast: Optional[Callable] = None) -> Any:
         """Return ``consumer.key`` or ``default`` when missing or conversion fails."""

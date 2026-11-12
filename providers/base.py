@@ -1382,7 +1382,7 @@ class MarketDataProvider(ABC):
             return list(closes) if closes is not None else []
         return []
 
-    # ── Agnostic SSOT cacheManager coupling (price, 24h history, short trend) ─
+    # -- Agnostic SSOT cacheManager coupling (price, 24h history, short trend) -
 
     def _ssot_symbol_candidates(self, symbol: str) -> tuple[str, ...]:
         """Return venue-scoped symbol keys to look up in SSOT cacheManager stores."""
@@ -1770,7 +1770,7 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
         return False
 
 
-# ── Shared Venue-Agnostic WebSocket Stream Primitives ─────────────────────────
+# -- Shared Venue-Agnostic WebSocket Stream Primitives -------------------------
 
 WS_RECV_TIMEOUT = 0.5
 WS_STOP_TIMEOUT = 8.0

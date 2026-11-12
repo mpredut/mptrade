@@ -717,7 +717,7 @@ class _LivePairVenue:
         try:
             self.executor.cancel_order(self.symbol, str(order_id))
             return True
-        except Exception as exc:  # noqa: BLE001 — the coordinator decides how to fail closed.
+        except Exception as exc:  # noqa: BLE001 -- the coordinator decides how to fail closed.
             print(f"[{self.symbol}] pair cancel {order_id} failed: {exc}")
             return False
 
@@ -1509,7 +1509,7 @@ class TradingBot:
                                 f"direction={start_side}-first active={len(active)}/{RTRADE_PAIR_MAX_ACTIVE_ROUNDS}"
                             )
                 time.sleep(RTRADE_PAIR_POLL_SEC)
-            except Exception as exc:  # noqa: BLE001 — retain rounds for reconciliation.
+            except Exception as exc:  # noqa: BLE001 -- retain rounds for reconciliation.
                 print(f"[{self.symbol}] pair coordinator error: {exc}")
                 time.sleep(RTRADE_PAIR_POLL_SEC)
 

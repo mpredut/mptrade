@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-trade_watch.py — quick view of the trade decision (TAO/BTC) for LIVE MONITORING.
+trade_watch.py -- quick view of the trade decision (TAO/BTC) for LIVE MONITORING.
 
 Reads UN-buffered signals (the source of truth, not the buffered log):
   - short trend from the cache manager (gradient_recent, in sync with cache_short_trend.json)

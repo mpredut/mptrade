@@ -1060,7 +1060,7 @@ def _touch_worker_hb(status, *, poll: float = WORKER_POLL_SEC, force: bool = Fal
 
 
 def main():
-    import log  # noqa: F401 — ensure stdout timestamps and daily logger file from startup
+    import log  # noqa: F401 -- ensure stdout timestamps and daily logger file from startup
 
     args = add_store_true_cli_args(
         argparse.ArgumentParser(description=__doc__), ("--once", "a single step, then exit")

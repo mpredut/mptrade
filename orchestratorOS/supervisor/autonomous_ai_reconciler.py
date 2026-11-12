@@ -65,7 +65,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
 from orchestratorOS.livecheck.fleet_health_monitor import harvest_fleet_and_system_telemetry
 from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
-import instrument as _instrument_preload  # noqa: F401 — preload with core modules to prevent mid-deploy split-commit lazy import races
+import instrument as _instrument_preload  # noqa: F401 -- preload with core modules to prevent mid-deploy split-commit lazy import races
 
 load_dotenv()
 
@@ -426,7 +426,7 @@ class AutonomousAIReconciler:
 
 def main() -> None:
     """CLI entry point for the cron-driven supervisor topics."""
-    import log  # noqa: F401 — ensure stdout/stderr mirroring to logger/autonomous_ai_reconciler_*.log from startup
+    import log  # noqa: F401 -- ensure stdout/stderr mirroring to logger/autonomous_ai_reconciler_*.log from startup
 
     valid_topics = sorted(
         {k for k, v in TOPIC_SPECS.items() if v.can_trade or v.can_self_heal} | set(TOPIC_ALIASES.keys())

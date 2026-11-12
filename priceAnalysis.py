@@ -57,7 +57,7 @@ load_dotenv()
 #   shm = shmu.shmConnectForWrite(shmu.shmname)   # At startup in __main__.
 #   shmu.shmWrite(shm, all_trends)                # In the loop after write_all_trends.
 #   ... finally: shm.close(); shm.unlink()        # At shutdown.
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 # Debug tracing for weight zones and slope tuning is off by default to keep fleet
 # logs clean. Enable PRICEANALYSIS_DEBUG when tuning.

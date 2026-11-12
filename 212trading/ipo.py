@@ -4,7 +4,7 @@
 # dependencies = []
 # ///
 """
-ipo.py — generic Trading 212 watcher and auto-trader for any symbol configured in .env.
+ipo.py -- generic Trading 212 watcher and auto-trader for any symbol configured in .env.
 
 Configure the instrument in .env; SPCX is no longer hard-coded:
     T212_TICKER=NVDA_US_EQ     exact required T212 instrument

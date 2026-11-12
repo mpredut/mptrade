@@ -326,7 +326,7 @@ class Strategy(BaseSpotMixin):
 
     # -- Currency & Helpers ----------------------------------------------------
     def _fx_to_usd(self, currency: str) -> float:
-        """How many USD in one unit of the given currency — generic for any Yahoo currency."""
+        """How many USD in one unit of the given currency -- generic for any Yahoo currency."""
         ccy = str(currency or "USD").strip().upper()
         if ccy == "USD":
             return 1.0

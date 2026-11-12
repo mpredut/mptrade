@@ -721,14 +721,14 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
     }
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# TrendCoordinator — event-driven + heartbeat.
+# ============================================================================
+# TrendCoordinator -- event-driven + heartbeat.
 #
 # The WS-to-Cache24 source updates windows autonomously. Each tick marks a symbol dirty;
 # evaluation occurs only after ``MIN_EVAL_INTERVAL_SEC`` has elapsed.
 #       - or MAX_EVAL_INTERVAL_SEC has elapsed (heartbeat prevents sparse evaluation)
 # Cached lookup is O(1), and the single-threaded loop prevents reentrant placement.
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 MIN_EVAL_INTERVAL_SEC = 1.5    # Floor: at most one evaluation per symbol every 1.5 seconds.
 MAX_EVAL_INTERVAL_SEC = 30.0   # Heartbeat ceiling: evaluate at least every 30 seconds.

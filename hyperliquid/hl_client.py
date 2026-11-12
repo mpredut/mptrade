@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-hl_client.py — Hyperliquid client built on the official SDK.
+hl_client.py -- Hyperliquid client built on the official SDK.
 
 Reads (unsigned Info API): prices, positions, open orders, and balances.
 Trading (Exchange API, EIP-712 agent-wallet signature): place and cancel orders.
@@ -178,7 +178,7 @@ def _force_timeout(api_obj, seconds: float = 30.0) -> None:
         # never replayed). Shrinks the "blind" ticks the systemd-resolved cache alone
         # cannot fully prevent.
         mount_connect_retry(sess)
-    except Exception:  # noqa: BLE001 — do not block startup if SDK internals change
+    except Exception:  # noqa: BLE001 -- do not block startup if SDK internals change
         pass
 
 

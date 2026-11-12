@@ -20,7 +20,7 @@ from botcore import (
 )
 
 
-# ── Versioned policy (overridable via configure()) ───────────────────────────
+# -- Versioned policy (overridable via configure()) ---------------------------
 
 _ROOT                     = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_LOG_FOLDER       = os.path.join(_ROOT, "logger")
@@ -70,7 +70,7 @@ def _get_caller_info() -> str:
     return "[unknown]"
 
 
-# ── Configuration state ───────────────────────────────────────────────────────
+# -- Configuration state -------------------------------------------------------
 
 _config_lock      = threading.Lock()
 _log_folder       = os.path.normpath(os.path.abspath(_DEFAULT_LOG_FOLDER))
@@ -87,7 +87,7 @@ def set_suppress_default_folder_writes(suppress: bool) -> None:
         _suppress_default_folder_writes = bool(suppress)
 
 
-# ── Background cleanup thread ─────────────────────────────────────────────────
+# -- Background cleanup thread -------------------------------------------------
 
 _cleanup_event = threading.Event()
 _cleanup_stop  = threading.Event()
@@ -180,7 +180,7 @@ _cleanup_thread.start()
 atexit.register(lambda: (_cleanup_stop.set(), _cleanup_event.set(), _cleanup_thread.join(timeout=5.0)))
 
 
-# ── Write counter & application name ──────────────────────────────────────────
+# -- Write counter & application name ------------------------------------------
 
 _write_counter = 0
 _counter_lock  = threading.Lock()
@@ -198,7 +198,7 @@ def _bump_counter() -> bool:
     return False
 
 
-# ── File handler setup ────────────────────────────────────────────────────────
+# -- File handler setup --------------------------------------------------------
 
 os.makedirs(_log_folder, exist_ok=True)
 _entry_script = sys.argv[0] if sys.argv and sys.argv[0] else __file__
@@ -296,7 +296,7 @@ _file_logger.addHandler(_handler)
 atexit.register(_handler.close)
 
 
-# ── Print / stderr overrides ──────────────────────────────────────────────────
+# -- Print / stderr overrides --------------------------------------------------
 
 PRINT_CONTEXT = threading.local()
 _print_lock = threading.RLock()
@@ -384,7 +384,7 @@ def _patched_stderr_writelines(lines) -> None:
         _patched_stderr_write(line)
 
 
-# ── One-time patch (double-import safe) ───────────────────────────────────────
+# -- One-time patch (double-import safe) ---------------------------------------
 
 _patch_lock = threading.Lock()
 

@@ -176,7 +176,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         self._price_subscribers = []
         super().__init__(*args, **kwargs)
 
-    # ── Subscriber pattern for forwarding prices ─────────────────────────────
+    # -- Subscriber pattern for forwarding prices -----------------------------
 
     def subscribe_price(self, subscriber) -> None:
         """Subscribe an object implementing ``on_price_update(symbol, ts_ms, price)``."""
@@ -1697,7 +1697,7 @@ def resolve_cached_symbol_price(
     return float("nan")
 
 
-# ── Non-Binance Venue WebSocket Price Streams & Fallback Poller ───────────────
+# -- Non-Binance Venue WebSocket Price Streams & Fallback Poller ---------------
 
 
 class _VenuePriceStreamBase(PublicPriceStreamBase, ABC):

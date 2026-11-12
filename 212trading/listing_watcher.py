@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-listing_watcher.py — GENERIC component that waits until an asset becomes tradable.
+listing_watcher.py -- GENERIC component that waits until an asset becomes tradable.
 
 Decoupled from the strategy and any specific asset. For ANY new IPO, listing, or
 reactivated ticker, wait for real volume or moving prices without mistaking a

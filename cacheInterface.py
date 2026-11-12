@@ -184,7 +184,7 @@ class CacheManagerInterface(ABC):
             return f"{cls.FILE_PREFIX}{symbol}.{cls.FILE_EXT}"
         return ""
 
-    # ── Periodically enforced retention and rotation policy for append caches ──
+    # -- Periodically enforced retention and rotation policy for append caches --
     RETENTION_DAYS = CM_RETENTION_DAYS
     MAX_FILE_BYTES = CM_APPEND_MAX_FILE_BYTES
     RETENTION_CHECK_INTERVAL_SEC = CM_RETENTION_CHECK_INTERVAL_SEC
@@ -369,7 +369,7 @@ class CacheManagerInterface(ABC):
             return {symbol: fallback_time for symbol in self.symbols}
         return last_times_per_sym
 
-    # ── Polymorphic persistence hooks for specialized subclasses ─────────────
+    # -- Polymorphic persistence hooks for specialized subclasses -------------
 
     def _on_stale_memory_detected_locked(self) -> None:
         """Hook invoked under ``self.lock`` when disk state is newer than memory."""
@@ -476,7 +476,7 @@ class CacheManagerInterface(ABC):
                 for s_sym, rebuilt_ft in self.fetchtime_per_symbol.items():
                     self._rest_sync_cursor_per_symbol.setdefault(s_sym, rebuilt_ft)
 
-    # ── Memory/disk resilience: freshness, overwrite guard, and resync ────────
+    # -- Memory/disk resilience: freshness, overwrite guard, and resync --------
     def _mem_max_ts(self):
         """Return memory freshness as the latest fetch time in milliseconds."""
         if not self.fetchtime_per_symbol:
@@ -738,7 +738,7 @@ class CacheManagerInterface(ABC):
         elif mem_ts > file_ts and self.save_state:
             self.save_state_to_file_if_enabled()
 
-    # ── JSONL append persistence for append-only caches ──────────────────────
+    # -- JSONL append persistence for append-only caches ----------------------
     def _resolve_legacy_json_for_jsonl_locked(self) -> Optional[str]:
         if os.path.exists(self.filename) or not self.filename.endswith(".jsonl"):
             return None

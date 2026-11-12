@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-t212_bot.py — UNIFIED Trading 212 bot: ONE process, multiple assets.
+t212_bot.py -- UNIFIED Trading 212 bot: ONE process, multiple assets.
 
 Replaces `ipo.py --profile X`, which used one process per asset. It discovers every
 config.<asset>.env file and starts one THREAD for each:
@@ -105,7 +105,7 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
             # unexpected stop, at which point verification and startup are retried.
             Strategy(client, ticker, StratParams.from_env(cfg), dry_run=strat_dry, observe_only=observe_only).run(stop=STOP)
             return
-        except Exception as e:  # noqa: BLE001 — resilience: one asset cannot terminate the process
+        except Exception as e:  # noqa: BLE001 -- resilience: one asset cannot terminate the process
             log(f"  ! [{label}] cycle error ({e.__class__.__name__}: {e}) — retrying in 60s")
             STOP.wait(60)
     log(f"  ⏹ [{label}] stopped")

@@ -185,7 +185,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 return None
 
             # Hyperliquid's default l2Book returns 20 fine tick levels (~0.02% around mid).
-            # Extend deeper levels within the ±1.5% band via aggregated nSigFigs=4 (and nSigFigs=3 if needed) while preserving top-of-book spread.
+            # Extend deeper levels within the +/-1.5% band via aggregated nSigFigs=4 (and nSigFigs=3 if needed) while preserving top-of-book spread.
             if (
                 hl_book_url
                 and self._preferred_url.get(symbol) == hl_book_url

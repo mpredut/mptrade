@@ -356,7 +356,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         self._lock = self.lock
         self._mem = self.cache
 
-    # ── CacheManagerInterface contract methods ───────────────────────────────
+    # -- CacheManagerInterface contract methods -------------------------------
     def load_state(self):
         """Hydrate metadata and heal interrupted commits without pre-priming reader memory."""
         migrate_legacy_filename_if_needed(self.filename)
@@ -464,7 +464,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
         return lambda sym, sec: per_window_default(sec)
 
-    # ── Writer: build windows and subscribe to Cache24 ───────────────────────
+    # -- Writer: build windows and subscribe to Cache24 -----------------------
     def start_computation(
         self, cache24_managers=None, current_price_mgr=None, run_full_eval=False
     ):
@@ -501,7 +501,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         for s in self.symbols:
             try:
                 c24 = cache24_managers[s]
-                current_price_mgr.subscribe_price(c24)          # CurrentPrice → Cache24
+                current_price_mgr.subscribe_price(c24)          # CurrentPrice -> Cache24
                 with getattr(c24, "lock", threading.RLock()):
                     raw_entries = list(getattr(c24, "cache", {}).get(s, []))
                 if raw_entries:
@@ -530,7 +530,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         if run_full_eval:
             self._start_full_eval_loop()
 
-    # ── Full metric calculation without trading logic ────────────────────────
+    # -- Full metric calculation without trading logic ------------------------
     def evaluate_full(self, symbol):
         wins = self.windows.get(symbol)
         ans  = self.analyzers.get(symbol)
@@ -758,7 +758,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         )
         self._full_eval_thread.start()
 
-    # ── Fast Cache24 subscriber channel: gradient and epsilon on every tick ───
+    # -- Fast Cache24 subscriber channel: gradient and epsilon on every tick ---
     def on_price_update(self, symbol, ts_ms, price):
         ts_int = safe_pos_int(ts_ms, default=None)
         price_f = safe_pos_float(price, default=None)
@@ -792,7 +792,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         except Exception as e:
             print(f"[{self.cls_name}] on_price_update {symbol}: {e}")
 
-    # ── Calculation API ──────────────────────────────────────────────────────
+    # -- Calculation API ------------------------------------------------------
     def _lookup_by_symbol_and_window(self, store: dict, symbol, seconds=None):
         _, mapping = _find_by_symbol_variant(store, symbol, expected_type=dict)
         mapping = mapping or {}
@@ -813,7 +813,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         win = self.get_window(symbol)
         return win.get_short_trend() if win else None
 
-    # ── Dynamic window & Historical Subslice (O(1) Prefix Sums + Persistence) ──
+    # -- Dynamic window & Historical Subslice (O(1) Prefix Sums + Persistence) --
     def _eval_entries_with_buffer(
         self, symbol, entries, a: int, b: int, window_seconds=None
     ):
@@ -1197,7 +1197,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         )
         return self._eval_upward_formula(snap)
 
-    # ── Transactional cross-process JSON store (via CacheManagerInterface) ────
+    # -- Transactional cross-process JSON store (via CacheManagerInterface) ----
     def save_state_to_file(self):
         """Transactionally commit ``cache_short_trend.json`` and its ``.meta`` sidecar."""
         try:
@@ -1458,7 +1458,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             except Exception:
                 pass
 
-    # ── Opportunistic-delay gate with informed epsilon ───────────────────────
+    # -- Opportunistic-delay gate with informed epsilon -----------------------
     def _epsilon(self, snap):
         eps = safe_pos_float(snap.get("epsilon"), default=None)
         if eps is not None:
@@ -1636,7 +1636,7 @@ class KalmanJournal:
                 os.makedirs(self.out_dir, exist_ok=True)
             cols = (ts, symbol, signal, "trend_start", state, old_state, price, vel, vel_std)
             append_text_line(self._path(), "|".join(sanitize_pipe_field(c) for c in cols))
-        except Exception as e:  # noqa: BLE001 — Logging must not stop the host.
+        except Exception as e:  # noqa: BLE001 -- Logging must not stop the host.
             print(f"[shadow_signals] error writing kalman journal: {e}")
 
 

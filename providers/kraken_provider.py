@@ -1065,7 +1065,7 @@ class KrakenProvider(MarketDataProvider):
             ) or {}
         except SubmissionRefused:
             raise
-        except Exception as e:  # noqa: BLE001 — Normalize venue errors.
+        except Exception as e:  # noqa: BLE001 -- Normalize venue errors.
             if self._is_definitive_refusal(e):
                 raise SubmissionRefused(f"submit_order {symbol} {s}: {e}") from e
             raise ProviderError(f"submit_order {symbol} {s}: {e}") from e

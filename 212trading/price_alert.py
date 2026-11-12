@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-price_alert.py — ntfy alert when a Yahoo asset price crosses a threshold.
+price_alert.py -- ntfy alert when a Yahoo asset price crosses a threshold.
 
 Generic and reusable for any symbol, with one cron-friendly check per run. State-file
 deduplication and hysteresis avoid spam. Off-hours use the stable latest close and do

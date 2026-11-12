@@ -2176,7 +2176,7 @@ CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
 )
 
 
-# ── Account reader synchronization, user-stream WS bridge & daemon lifecycle ──
+# -- Account reader synchronization, user-stream WS bridge & daemon lifecycle --
 
 _account_cache_getter = None
 

@@ -527,7 +527,7 @@ def main() -> int:
             _save_state(st)
         except KeyboardInterrupt:
             return 0
-        except Exception as e:  # noqa: BLE001 — resilience: retry network/DNS failures
+        except Exception as e:  # noqa: BLE001 -- resilience: retry network/DNS failures
             log(f"  ! cycle failed ({e.__class__.__name__}: {e}) — retrying on the next one")
         if args.once:
             return 0

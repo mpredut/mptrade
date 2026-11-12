@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""translation_audit.py — helper for the English translation of comments and docstrings.
+"""translation_audit.py -- helper for the English translation of comments and docstrings.
 
 Two steps: find what still has to be translated, then prove an edit touched nothing but
 prose. The bulk migration is finished; this stays as a guard against regressions.
@@ -88,7 +88,7 @@ SCAN_EXTS = (".py", ".sh", ".conf", ".env", ".example", ".md")
 _TOKEN_RE = re.compile(r'`+[^`]+`+|"[^"\n]+"|\([a-zA-Z0-9_]+\)|[a-zA-Z_][a-zA-Z0-9_]*(?:[-/][a-zA-Z0-9_$]+)*')
 
 
-# ── scan ──────────────────────────────────────────────────────────────────────
+# -- scan ----------------------------------------------------------------------
 
 def romanian_score(text: str) -> int:
     """Heuristic score: 99 when diacritics are present, else the Romanian word count."""
@@ -184,7 +184,7 @@ def cmd_scan(args) -> int:
     return 1 if total_hits else 0
 
 
-# ── verify ────────────────────────────────────────────────────────────────────
+# -- verify --------------------------------------------------------------------
 
 def code_fingerprint(source: str) -> str:
     tree = ast.parse(source)
@@ -262,7 +262,7 @@ def cmd_verify(args) -> int:
     return 1 if failures else 0
 
 
-# ── entry point ───────────────────────────────────────────────────────────────
+# -- entry point ---------------------------------------------------------------
 
 def main() -> int:
     parser = argparse.ArgumentParser(

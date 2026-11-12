@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-order_manager.py — SPCX order-placement logic:
+order_manager.py -- SPCX order-placement logic:
   * calculate quantity from a RON budget;
   * persist the exact intent before the non-idempotent POST;
   * perform one bounded submit/reconciliation step per invocation;

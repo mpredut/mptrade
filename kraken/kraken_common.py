@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-kraken_common.py — Kraken-specific notification binding.
+kraken_common.py -- Kraken-specific notification binding.
 Shared logging, .env, config, HTTP, and numeric coercion primitives live in root botcore.py.
 """
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Smart Liquidity-Aware Stop Loss Controller (Pillar 2 · Microstructure Flow).
+"""Smart Liquidity-Aware Stop Loss Controller (Pillar 2 - Microstructure Flow).
 
 Protects tight stop-loss orders (e.g. monitortrades.py <= 6.0%) from being wicked out
 at local bottoms by predatory stop-hunting and whale liquidity sweeps.

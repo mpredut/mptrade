@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""hl_bot.py — base v2 spot_dca engine on Hyperliquid SPOT via HyperliquidProvider.
+"""hl_bot.py -- base v2 spot_dca engine on Hyperliquid SPOT via HyperliquidProvider.
 
 The SAME engine as kraken_bot (DCA + take profit + trailing + stop), with only the
 venue changed. It trades only HYPE spot on HL. In provider-agnostic path B, the strategy

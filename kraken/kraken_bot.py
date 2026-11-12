@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-kraken_bot.py — Kraken Spot watcher and DCA/take-profit auto-trader.
+kraken_bot.py -- Kraken Spot watcher and DCA/take-profit auto-trader.
 
 The same flow as T212 ipo.py, adapted to Kraken. KRAKEN_PAIR configures the pair in
 .env. If a future pair is not listed yet, the bot WAITS until it appears before entry,

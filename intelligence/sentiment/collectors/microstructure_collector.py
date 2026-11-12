@@ -1018,9 +1018,9 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
 class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
     """Concrete composite loader (Level 3) that reads & merges artifacts produced by the ``CachePriceManagerBase`` hierarchy:
     - ``Cache24PriceManager`` (``cache_24_price_<SYM>.json``)
-    - ``Cache365PriceManager`` (``cache_365_price_<SYM>.jsonl`` — dense long-horizon archive)
-    - ``CacheSparsePriceManager`` (``cache_sparse_price_<SYM>.jsonl`` — sparse long-horizon archive)
-    - ``CacheCurrentPriceManager`` (``cache_current_price.json`` — live ticks)
+    - ``Cache365PriceManager`` (``cache_365_price_<SYM>.jsonl`` -- dense long-horizon archive)
+    - ``CacheSparsePriceManager`` (``cache_sparse_price_<SYM>.jsonl`` -- sparse long-horizon archive)
+    - ``CacheCurrentPriceManager`` (``cache_current_price.json`` -- live ticks)
     """
 
     cls_name = "CompositeSymbolPriceSeriesLoader"

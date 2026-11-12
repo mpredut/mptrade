@@ -1382,7 +1382,7 @@ def test_pia_common_ssot_and_bounded_wait_for_vpn(tmp_path):
     )
     assert r_isp.returncode == 0 and (time.monotonic() - t0) < 1.5
 
-    # 4. Bounded wall-clock wait when PIA is stuck in Connecting — exits 0 after AGY_VPN_WAIT_MAX_SEC
+    # 4. Bounded wall-clock wait when PIA is stuck in Connecting -- exits 0 after AGY_VPN_WAIT_MAX_SEC
     _write_bash_stub(fake_bin, "piactl", 'echo Connecting')
     _write_bash_stub(fake_bin, "ip", 'if [ "${1:-}" = "route" ]; then echo "1.1.1.1 via 192.168.0.1 dev ens18"; else exit 1; fi')
     t0 = time.monotonic()

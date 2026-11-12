@@ -54,7 +54,7 @@ def _load_state(pair: str) -> dict | None:
 def _kraken_price(pair: str):
     try:
         return mkt.get_current_price(pair, provider_name="kraken")
-    except Exception:  # noqa: BLE001 — the snapshot must not die on one missed price
+    except Exception:  # noqa: BLE001 -- the snapshot must not die on one missed price
         return None
 
 

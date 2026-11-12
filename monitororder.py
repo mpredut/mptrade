@@ -691,7 +691,7 @@ def warmup_open_orders():
 
 
 def monitor_orders():
-    import log  # noqa: F401 — ensure stdout timestamps and daily logger file from startup
+    import log  # noqa: F401 -- ensure stdout timestamps and daily logger file from startup
 
     # Warm up existing open orders so existing orders don't spam notifications on startup
     warmup_open_orders()

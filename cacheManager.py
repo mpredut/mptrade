@@ -1,17 +1,17 @@
 """Orchestration, singleton registry (``CacheFactory``), and daemon supervisor for the cache subsystem.
 
 The 3-tier polymorphic cache hierarchy is split across 5 focused modules:
-1. ``cacheInterface.py`` — Level 1 pure abstract contract: ``CacheManagerInterface(ABC)``
-2. ``cacheaccount.py``   — Level 2 ``CacheAccountManagerBase(CacheManagerInterface, ABC)``
+1. ``cacheInterface.py`` -- Level 1 pure abstract contract: ``CacheManagerInterface(ABC)``
+2. ``cacheaccount.py``   -- Level 2 ``CacheAccountManagerBase(CacheManagerInterface, ABC)``
                            + Level 3 ``CacheTradeManager``, ``CacheOrderManager``, ``CacheAssetValueManager``
-3. ``cacheprice.py``     — Level 2 ``CachePriceManagerBase(CacheManagerInterface, ABC)``
+3. ``cacheprice.py``     -- Level 2 ``CachePriceManagerBase(CacheManagerInterface, ABC)``
                            + Level 3 ``CacheSparsePriceManager``, ``Cache24PriceManager``,
                            ``Cache365PriceManager``, ``CacheCurrentPriceManager``
                            + Non-Binance price streams (``HyperliquidPriceStream``,
                            ``KrakenPriceStream``, ``_NonBinanceTrendPoller``)
-4. ``cachetrend.py``     — Level 2 ``CacheTrendManagerBase(CacheManagerInterface, ABC)``
+4. ``cachetrend.py``     -- Level 2 ``CacheTrendManagerBase(CacheManagerInterface, ABC)``
                            + Level 3 ``CacheLongTrendManager``, ``CacheShortTrendManager``
-5. ``cacheManager.py``   — ``CacheFactory`` registry, ``get_*_manager()`` accessors,
+5. ``cacheManager.py``   -- ``CacheFactory`` registry, ``get_*_manager()`` accessors,
                            and venue-agnostic daemon supervisor entrypoint.
 """
 

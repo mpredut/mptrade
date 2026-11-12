@@ -45,7 +45,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Matched against title.upper(). Bilingual ON PURPOSE, and it stays that way (owner's
 # decision, same reasoning as verify_tools/watchdogfor_anomaly.py): every alert title is
 # English today, but one written in Romanian by mistake would silently stop being urgent
-# — it would be routed to the routine topic and skip the email, with no error anywhere.
+# -- it would be routed to the routine topic and skip the email, with no error anywhere.
 # An extra tuple entry costs nothing; a missed liquidation alert costs money.
 _URGENT_MARKERS = (
     "🛑", "🛡", "LIQUID", "STOP-LOSS", "STOP_LOSS", "TRAILING", "FAILED",

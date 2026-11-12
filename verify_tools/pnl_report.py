@@ -55,7 +55,7 @@ def binance_symbol(symbol):
     return dict(realized=realized, unreal=unreal, pos=qty, cur=cur, n=len(fills), buys=buys, sells=sells)
 
 
-# ── PER-BOT ATTRIBUTION (from get_all_orders, by clientOrderId prefix) ──────────
+# -- PER-BOT ATTRIBUTION (from get_all_orders, by clientOrderId prefix) ----------
 # Separate PER-BOT activity (RT_/TA_/MT_/AG_) from MANUAL activity (and_/web_/x-).
 # realized_own covers only each bot's own round trip: min(buy_qty, sell_qty) times
 # (avg_sell - avg_buy). For bots that exchange inventory (tradeall buys TAO while

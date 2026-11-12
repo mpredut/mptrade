@@ -622,7 +622,7 @@ def resolve_instrument_spec(
     return None
 
 
-# ─── Binance Symbol Validation & Precision Helpers ───────────────────────────
+# --- Binance Symbol Validation & Precision Helpers ---------------------------
 
 
 class _DynamicSymbolsList(list):

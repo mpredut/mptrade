@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-binance_api/market_data.py — Binance public market data and OHLC candle fetching.
+binance_api/market_data.py -- Binance public market data and OHLC candle fetching.
 
 Provides canonical OHLC candle fetching from the public Binance REST API
 (https://api.binance.com/api/v3/klines) with pagination, cadence validation,
