@@ -1,6 +1,7 @@
 """LLM quota probing, credit accounting, and dynamic model routing for GeminiClient."""
 from __future__ import annotations
 
+import contextlib
 import importlib
 import logging
 import os
@@ -19,9 +20,10 @@ from botcore import (
     optional_env,
     resolve_patched_attr,
     safe_float,
+    safe_pos_float,
 )
 from cachepaths import cache_path
-from state_io import read_json_dict, save_json_state
+from state_io import generation_file_lock, read_json_dict, save_json_state
 
 _agy_paths = importlib.import_module("orchestratorOS.agy.paths")
 resolve_bot_cli_base = _agy_paths.resolve_bot_cli_base
@@ -307,7 +309,7 @@ class GeminiQuotaRouterMixin:
         except Exception as exc:
             logger.debug("Live LLM loadCodeAssist credit check failed (non-fatal): %s", exc)
 
-        with cls._QUOTA_LOCK:
+        with cls._quota_state_rmw_lock(state_path, _save_json_state):
             prev = _read_json_dict(state_path, default={})
             if not isinstance(prev, dict):
                 prev = {}
@@ -332,6 +334,14 @@ class GeminiQuotaRouterMixin:
 
         cls._maybe_notify_low_quota(snapshot)
         return snapshot
+
+    @classmethod
+    @contextlib.contextmanager
+    def _quota_state_rmw_lock(cls, state_path: str, save_fn: Any):
+        with cls._QUOTA_LOCK, (
+            generation_file_lock(state_path) if save_fn is save_json_state else contextlib.nullcontext()
+        ):
+            yield
 
     @classmethod
     def _cache_and_save_quota_state_locked(
@@ -385,14 +395,14 @@ class GeminiQuotaRouterMixin:
         if not cleaned:
             return
         now = time.time()
-        exp_until = now + max(15.0, safe_float(ttl_sec, default=120.0) or 120.0)
+        exp_until = now + max(15.0, safe_pos_float(ttl_sec, default=120.0))
         state_path, _read_json_dict, _save_json_state = (
             cls._get_quota_state_path(),
             _gc_attr("read_json_dict", read_json_dict),
             _gc_attr("save_json_state", save_json_state),
         )
         snapshot: Optional[Dict[str, Any]] = None
-        with cls._QUOTA_LOCK:
+        with cls._quota_state_rmw_lock(state_path, _save_json_state):
             data = _read_json_dict(state_path, default={})
             if not isinstance(data, dict):
                 data = {}
@@ -450,7 +460,7 @@ class GeminiQuotaRouterMixin:
         if available_credits > 0.0 or argon_rem > warn_threshold:
             if snapshot.get("last_alert_tier") not in (None, "", "ok"):
                 state_path = cls._get_quota_state_path()
-                with cls._QUOTA_LOCK:
+                with cls._quota_state_rmw_lock(state_path, _save_json_state):
                     snapshot["last_alert_tier"] = "ok"
                     cls._cache_and_save_quota_state_locked(state_path, snapshot, _save_json_state)
             return
@@ -509,7 +519,7 @@ class GeminiQuotaRouterMixin:
 
         if dispatched:
             state_path = cls._get_quota_state_path()
-            with cls._QUOTA_LOCK:
+            with cls._quota_state_rmw_lock(state_path, _save_json_state):
                 snapshot["last_alert_ts"] = now
                 snapshot["last_alert_tier"] = alert_tier
                 cls._cache_and_save_quota_state_locked(state_path, snapshot, _save_json_state)

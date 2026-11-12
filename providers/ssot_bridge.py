@@ -8,6 +8,7 @@ from typing import Any, List, Optional
 
 from botcore import (
     PRICE_FRESHNESS_MAX_AGE_SEC,
+    _parse_bool_flag,
     is_shared_disk_cache_enabled,
     require_nonneg_float,
     resolve_patched_attr,
@@ -367,11 +368,12 @@ class ProviderSsotBridgeMixin:
         ) or is_in_live_price_fetch
         if in_live_fn():
             return False
-        if getattr(self, "_ssot_cache_enabled", None) is False:
+        ssot_flag = _parse_bool_flag(getattr(self, "_ssot_cache_enabled", None), None)
+        if ssot_flag is False:
             return False
         has_explicit_ssot = bool(
-            getattr(self, "_ssot_cache_enabled", None) is True
-            or getattr(self, "_force_ssot_cache", False)
+            ssot_flag is True
+            or _parse_bool_flag(getattr(self, "_force_ssot_cache", False), False)
             or getattr(self, "_ssot_price_cache_path", None)
             or getattr(self, "_ssot_trend_cache_path", None)
             or getattr(self, "_ssot_24price_cache_dir", None)
@@ -415,6 +417,52 @@ class ProviderSsotBridgeMixin:
             require_callable=True,
         ) or cache_path
         return cp_fn(filename)
+
+    @classmethod
+    def read_passive_ssot_current_price(
+        cls, symbol: str, max_age_sec: float = PRICE_FRESHNESS_MAX_AGE_SEC
+    ) -> Optional[float]:
+        """Read fresh SSOT current price without instantiating a provider or triggering network I/O."""
+        in_live_fn = resolve_patched_attr(
+            "is_in_live_price_fetch",
+            is_in_live_price_fetch,
+            modules=("providers.base", __name__),
+            require_callable=True,
+        ) or is_in_live_price_fetch
+        shared_fn = resolve_patched_attr(
+            "is_shared_disk_cache_enabled",
+            is_shared_disk_cache_enabled,
+            modules=("providers.base", "botcore", __name__),
+            require_callable=True,
+        ) or is_shared_disk_cache_enabled
+        eff_age = resolve_positive_max_age(max_age_sec, PRICE_FRESHNESS_MAX_AGE_SEC)
+        if (
+            in_live_fn()
+            or not shared_fn()
+            or eff_age is None
+            or isinstance(symbol, bool)
+            or not isinstance(symbol, str)
+            or not symbol.strip()
+        ):
+            return None
+        raw_u = symbol.strip().upper()
+        cleaned = clean_symbol_key(raw_u)
+        parts = split_symbol_assets(raw_u)
+        canon = canonical_symbol_key(raw_u) if parts is not None else (f"{cleaned}USDC" if cleaned else "")
+        candidates = tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon) if c))
+        if not candidates:
+            return None
+        cls._ensure_ssot_cache_bindings()
+        cp_cls = cls._ssot_current_price_cls
+        if cp_cls is None:
+            return None
+        return cp_cls.read_ssot_current_price_candidates(
+            candidates,
+            cls._resolve_cache_path(CACHE_CURRENT_PRICE_FILENAME),
+            eff_age,
+            use_memory_manager=True,
+            reader_fn=cls._ssot_current_price_reader,
+        )
 
     def _cached_current_price(
         self, symbol: str, max_age_sec: float = PRICE_FRESHNESS_MAX_AGE_SEC

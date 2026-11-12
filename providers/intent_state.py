@@ -173,9 +173,9 @@ def _resolve_clamped_intent_notional(
         num = safe_float(cleaned, None)
         if num is None or num <= 0.0:
             return None
-        min_usd = safe_nonneg_float(min_notional_usd, default=0.0) or 0.0
-        max_usd = safe_nonneg_float(max_notional_usd, default=min_usd) or min_usd
-        return max(min_usd, min(num, max_usd))
+        min_usd = safe_nonneg_float(min_notional_usd, default=0.0)
+        max_usd = safe_nonneg_float(max_notional_usd, default=min_usd)
+        return max(min(min_usd, max_usd), min(num, max_usd))
     return None
 
 

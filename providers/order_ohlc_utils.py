@@ -73,6 +73,78 @@ def resolve_market_flag(force: Any = False, market: Any = False, **kwargs) -> bo
     return any(_parse_bool_flag(v, False) for v in (force, market, kwargs.get("market"), kwargs.get("force")))
 
 
+POST_ONLY_CROSS_TOKENS: tuple[str, ...] = (
+    "would immediately match",
+    "would have immediately matched",
+    "post only order",
+    "post-only order",
+    "eorder:post only",
+    "alo order",
+    "badalopx",
+)
+
+
+def is_post_only_cross_refusal(error: object) -> bool:
+    """Return True when a venue error indicates a post-only order would cross the book."""
+    text = str(error or "").lower()
+    return any(token in text for token in POST_ONLY_CROSS_TOKENS)
+
+
+def compute_post_only_maker_price(
+    side: object,
+    price: object,
+    *,
+    current_price: object = None,
+    tick_size: object = 0.0,
+    round_price_fn: Optional[Callable[[float], object]] = None,
+    step_bps_ratio: float = 0.0005,
+) -> float:
+    """Step ``price`` onto the passive Maker side of the spread after a post-only cross rejection."""
+    px_f = safe_pos_float(price, default=None)
+    s_norm = normalize_side(side)
+    if px_f is None or s_norm not in ("BUY", "SELL"):
+        return safe_pos_float(price, default=0.0) or 0.0
+    cur_px = safe_pos_float(current_price, default=None)
+    anchor = (min(px_f, cur_px) if s_norm == "BUY" else max(px_f, cur_px)) if cur_px else px_f
+    tick = safe_pos_float(tick_size, default=0.0) or 0.0
+    ratio = safe_pos_float(step_bps_ratio, default=0.0005) or 0.0005
+    cushion = max(tick, anchor * ratio)
+    raw_stepped = (anchor - cushion) if s_norm == "BUY" else (anchor + cushion)
+    if raw_stepped <= 0.0:
+        return px_f
+
+    def _round_cand(val: float) -> float:
+        if round_price_fn is None:
+            return val
+        r_raw = round_price_fn(val)
+        if isinstance(r_raw, (int, float)) and not isinstance(r_raw, bool) and r_raw <= 0.0:
+            return 0.0
+        return safe_pos_float(r_raw, default=val) or val
+
+    rounded = _round_cand(raw_stepped)
+    if rounded <= 0.0:
+        return px_f
+    if s_norm == "BUY" and rounded >= anchor:
+        delta = tick if tick > 0.0 else anchor * ratio
+        cand = anchor - delta
+        if cand <= 0.0:
+            return px_f
+        rounded = _round_cand(cand)
+        if rounded <= 0.0:
+            return px_f
+        if rounded >= anchor:
+            rounded = cand
+    elif s_norm == "SELL" and rounded <= anchor:
+        delta = tick if tick > 0.0 else anchor * ratio
+        cand = anchor + delta
+        rounded = _round_cand(cand)
+        if rounded <= 0.0:
+            return px_f
+        if rounded <= anchor:
+            rounded = cand
+    return rounded if rounded > 0.0 else px_f
+
+
 def extract_executed_qty(order: Any, default: float = 0.0) -> float:
     """Extract executed/filled quantity without falling back to origQty on unfilled/resting orders."""
     if not isinstance(order, dict):

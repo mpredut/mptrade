@@ -35,6 +35,7 @@ from botcore import (
 )
 from notify_engine import alertnotifiers as alert
 from providers.order_ohlc_utils import (
+    POST_ONLY_CROSS_TOKENS,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
@@ -100,11 +101,7 @@ _DEFINITIVE_REFUSAL_TOKENS = (
     "invalid arguments",
     "positions limit exceeded",
     "tick size check failed",
-    "would immediately match",
-    "would have immediately matched",
-    "post only order",
-    "post-only order",
-    "alo order",
+    *POST_ONLY_CROSS_TOKENS,
 )
 
 

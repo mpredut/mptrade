@@ -27,6 +27,7 @@ from . import bapi as api, bapi_allorders as apiorders
 from .bapi import _normalize_side
 from .bapi_client import client
 from providers.order_ohlc_utils import (
+    compute_post_only_maker_price,
     extract_order_id,
     extract_order_price,
     extract_order_side,
@@ -300,22 +301,27 @@ def _step_binance_post_only_price(side: str, price_f: float, symbol: str, target
     if tick_size <= 0.0:
         try:
             info = target_client.get_symbol_info(symbol)
-            tick_size = safe_pos_float(BinanceOrderRules.from_symbol_info(info).tick_size, default=0.0) or 0.0
+            if isinstance(info, dict):
+                tick_size = next(
+                    (
+                        t
+                        for row in (info.get("filters") or ())
+                        if isinstance(row, dict)
+                        and str(row.get("filterType") or "").strip() == "PRICE_FILTER"
+                        and (t := safe_pos_float(row.get("tickSize"), default=None)) is not None
+                    ),
+                    0.0,
+                )
         except Exception:
             tick_size = 0.0
-    cushion = max(tick_size, price_f * 0.0005)
-    raw_px = (price_f - cushion) if side == "BUY" else (price_f + cushion)
-    if raw_px <= 0.0:
-        return price_f
     dec = min(decimal_places(tick_size), 18) if tick_size > 0.0 else 8
-    rounded = round(raw_px, dec)
-    if side == "BUY" and rounded >= price_f:
-        delta = tick_size if tick_size > 0.0 else price_f * 0.0005
-        rounded = round(price_f - delta, dec)
-    elif side == "SELL" and rounded <= price_f:
-        delta = tick_size if tick_size > 0.0 else price_f * 0.0005
-        rounded = round(price_f + delta, dec)
-    return rounded if rounded > 0.0 else price_f
+    return compute_post_only_maker_price(
+        side,
+        price_f,
+        current_price=MarketDataProvider.read_passive_ssot_current_price(symbol),
+        tick_size=tick_size,
+        round_price_fn=lambda p: round(p, dec),
+    )
 
 
 def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,

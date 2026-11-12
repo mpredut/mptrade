@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 import threading
 import time
 from types import MethodType, SimpleNamespace
@@ -23,7 +24,7 @@ import pytest
 import account_cache_health as health
 import active_intents
 import assetguardian as ag
-from binance_api import bapi_trades, bapi_ws_bridge, bapi_ws_normalize as ws_norm
+from binance_api import bapi_placeorder, bapi_trades, bapi_ws_bridge, bapi_ws_normalize as ws_norm
 import botcore
 from botcore import (
     clean_scale,
@@ -67,6 +68,7 @@ import external_order_guard as eog
 import guard_hierarchy as gh
 from guard_hierarchy import preflight_intelligence_guard_entry
 from instrument import Instrument, _is_aborted
+from instrument_registry import has_workspace_instrument_sources
 from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
 from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
@@ -166,13 +168,17 @@ from providers.execution_audit import (
     summarize_recent_ai_intents,
 )
 from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
+from providers.intent_state import _resolve_clamped_intent_notional
 from providers.kraken_provider import KrakenProvider
 from providers.order_ohlc_utils import (
+    POST_ONLY_CROSS_TOKENS,
     build_price_history_points,
+    compute_post_only_maker_price,
     derive_venue_128bit_client_order_id,
     drop_incomplete_last_bar,
     filter_and_normalize_open_orders,
     format_venue_intent_client_order_id,
+    is_post_only_cross_refusal,
     iter_expired_open_order_ids,
     resolve_ohlc_time_window_ms,
     validate_dataset,
@@ -216,8 +222,10 @@ from strategies.replay_metrics import (
 )
 from strategies.spot_replay import (
     iter_end_of_replay_market_sell_orders,
+    params_require_trend_interval,
     post_exit_peak_step_scope,
     ratchet_post_exit_peak_sell_price,
+    required_replay_intervals,
     split_warmup_ohlc,
     summarize_grid_replay_metrics,
 )
@@ -4255,6 +4263,156 @@ def test_wave25_guard_decision_unpack_macro_zero_age_and_patch_seam_border_cases
     t212_strat.ccy = "USD"
     t212_strat.dry_run = True
     assert t212_strat._place_buy(100.0, 1e-308, "DCA") is False
+
+
+def test_wave26_post_only_ssot_tick_fanout_and_border_cases(monkeypatch, tmp_path):
+    """Wave 26: post-only SSOT maker step-back, AF_UNIX symbol variant fanout, RMW locks, and border flags."""
+    assert "eorder:post only" in POST_ONLY_CROSS_TOKENS
+    assert "badalopx" in POST_ONLY_CROSS_TOKENS
+    assert is_post_only_cross_refusal("EOrder:Post only order") is True
+    assert is_post_only_cross_refusal("Order failed: BadAloPx") is True
+    assert MarketDataProvider._is_post_only_cross_refusal("EOrder:Post only order") is True
+    assert compute_post_only_maker_price(
+        "BUY", 100.0, current_price=99.50, tick_size=0.01, round_price_fn=lambda p: round(p, 2)
+    ) == pytest.approx(99.45)
+    assert compute_post_only_maker_price(
+        "SELL", 100.0, current_price=100.50, tick_size=0.01, round_price_fn=lambda p: round(p, 2)
+    ) == pytest.approx(100.55)
+    assert compute_post_only_maker_price(
+        "BUY", 0.004, tick_size=0.0, round_price_fn=lambda p: round(p, 2)
+    ) == pytest.approx(0.004)
+
+    monkeypatch.setattr(MarketDataProvider, "read_passive_ssot_current_price", classmethod(lambda cls, _sym: 99.50))
+    dummy_bapi_cli = SimpleNamespace(
+        get_symbol_info=lambda _sym: {
+            "filters": [
+                {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+                {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+            ]
+        }
+    )
+    stepped_buy = bapi_placeorder._step_binance_post_only_price("BUY", 100.0, "TAOUSDC", dummy_bapi_cli)
+    assert stepped_buy == pytest.approx(99.45)
+
+    hlc_mod = load_venue_modules("hyperliquid", "hl_client")
+    hl_calls = []
+    hl_inst = hlc_mod.HLClient.__new__(hlc_mod.HLClient)
+    hl_inst._meta_cache = {"HYPE": {"name": "HYPE", "szDecimals": 2, "maxLeverage": 5}}
+    hl_inst.exchange = SimpleNamespace(
+        order=lambda coin, is_buy, sz, px, otype, reduce_only=False: (
+            hl_calls.append((coin, is_buy, sz, px, otype, reduce_only)),
+            (
+                {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "BadAloPx"}]}}}
+                if len(hl_calls) == 1
+                else {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 4242}}]}}}
+            ),
+        )[1]
+    )
+    monkeypatch.setattr(MarketDataProvider, "read_passive_ssot_current_price", classmethod(lambda cls, _sym: 24.50))
+    ok_hl, oid_hl, _ = hl_inst.place_limit("HYPE", True, 1.0, 25.0, post_only=True)
+    assert ok_hl is True and oid_hl == 4242 and len(hl_calls) == 2
+    assert hl_calls[1][3] < 24.50
+
+    ws_empty = tmp_path / "ws_empty"
+    ws_empty.mkdir()
+    assert has_workspace_instrument_sources(ws_empty) is False
+    assert has_workspace_instrument_sources(None) is False
+    (ws_empty / "212trading").mkdir()
+    assert has_workspace_instrument_sources(ws_empty, asset_scope="crypto") is False
+    assert has_workspace_instrument_sources(ws_empty, asset_scope="EQUITIES") is True
+    assert has_workspace_instrument_sources(ws_empty, asset_scope="all") is True
+
+    kal_path = tmp_path / "kalman_state_test.json"
+    tracker = cachetrend.KalmanStateTracker(state_path=str(kal_path), state_min_interval=0.0, read_only=False)
+    tracker._state["BTCUSDC"] = {"x": 60000.0, "v": 1.0, "P": [[1.0, 0.0], [0.0, 1.0]], "ts": 1700000000.0, "count": 5}
+    with state_io.generation_file_lock(str(kal_path)):
+        tracker._write_state(1700000010.0)
+    assert kal_path.exists()
+
+    with tempfile.TemporaryDirectory() as sock_dir:
+        sock_file = os.path.join(sock_dir, "ticks.sock")
+        prod_cpm = CacheCurrentPriceManager(
+            1,
+            symbols=["HYPE/USDC"],
+            filename=str(tmp_path / "prod_cp.json"),
+            data_sync_mode="disk_reader",
+        )
+        cons_cpm = CacheCurrentPriceManager(
+            1,
+            symbols=["HYPEUSDC"],
+            filename=str(tmp_path / "cons_cp.json"),
+            data_sync_mode="disk_reader",
+        )
+        try:
+            now_ms = math.trunc(time.time() * 1000)
+            prod_cpm.on_items_update("HYPE/USDC", [[now_ms, 38.75]])
+            bound = prod_cpm.start_tick_fanout_server(sock_file)
+            if bound is not None:
+                cons_cpm.start_local_tick_stream(sock_file)
+                deadline = time.monotonic() + 1.5
+                obs = None
+                while time.monotonic() < deadline:
+                    obs = cons_cpm.get_cached_price_observation("HYPEUSDC", 5.0)
+                    if obs is not None:
+                        break
+                    time.sleep(0.02)
+                assert obs is not None and obs[1] == pytest.approx(38.75)
+        finally:
+            cons_cpm.shutdown(timeout=1.0)
+            prod_cpm.shutdown(timeout=1.0)
+
+    assert _resolve_clamped_intent_notional({"notional_usd": 50.0}, 10.0, 0.0) == 0.0
+    assert _resolve_clamped_intent_notional({"notional_usd": 50.0}, 25.0, 15.0) == 15.0
+
+    liq_col = BybitLiquidationCollector(symbols=["BTCUSDT"])
+    join_timeouts = []
+    liq_col._thread = SimpleNamespace(is_alive=lambda: True, join=lambda timeout=None: join_timeouts.append(timeout))
+    liq_col.stop(timeout=0.0)
+    assert join_timeouts == [0.0]
+
+    dummy_prov = _TestMarketProvider("ssot_flag_probe")
+    dummy_prov._ssot_cache_enabled = "false"
+    assert dummy_prov._allow_ssot_price_cache() is False
+    dummy_prov._ssot_cache_enabled = None
+    dummy_prov._force_ssot_cache = "false"
+    dummy_prov._cli = SimpleNamespace()
+    assert dummy_prov._allow_ssot_price_cache() is False
+
+    str_false_params = SimpleNamespace(
+        trend_overlay="false",
+        dca_trend_brake="0",
+        reentry_hybrid_enabled="false",
+        surge_guard="true",
+        surge_window_hours=None,
+        surge_move_pct="nan",
+        surge_dynamic="false",
+        tp_dynamic_flat="false",
+        tp_trail_adaptive="false",
+        dca_vol_scale_k="0",
+        trend_interval=60,
+        tp_trail_vol_interval=15,
+        dca_vol_interval=15,
+    )
+    assert params_require_trend_interval(str_false_params) is False
+    assert required_replay_intervals(str_false_params) == set()
+
+    quota_state_file = tmp_path / "llm_quota_state.json"
+    monkeypatch.setattr(
+        lqr_mod.GeminiQuotaRouterMixin,
+        "_get_quota_state_path",
+        classmethod(lambda cls: str(quota_state_file)),
+    )
+    monkeypatch.setattr(
+        lqr_mod.GeminiQuotaRouterMixin,
+        "_maybe_notify_low_quota",
+        classmethod(lambda cls, _snap: None),
+    )
+    lqr_mod.GeminiQuotaRouterMixin._record_model_quota_exhausted("gpt-oss-120b-medium", ttl_sec=-10.0)
+    assert quota_state_file.exists()
+    assert Path(state_io.generation_lock_path(str(quota_state_file))).exists()
+    saved_quota = state_io.read_json_dict(str(quota_state_file), default={})
+    assert saved_quota["runtime_exhausted"]["gpt-oss-120b-medium"] > time.time() + 60.0
+
 
 
 

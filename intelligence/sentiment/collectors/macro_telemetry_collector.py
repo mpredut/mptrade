@@ -98,7 +98,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     apply_live_24trend_windows,
     apply_short_trend_item,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, has_workspace_instrument_sources
 from cacheprice import resolve_ssot_price_from_cache
 from providers.intent_reconciliation import (
     build_last_cycle_execution_status,
@@ -991,12 +991,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = [], [], {}, {}
         verified_open_venues: set[str] = set()
         load_tradable_fn = getattr(intent_gateway, "load_tradable_instruments", None)
-        has_inst_source = (
-            os.path.exists(os.path.join(workspace_dir, "instruments.conf"))
-            or os.path.exists(os.path.join(workspace_dir, "kraken", "config.env"))
-            or os.path.exists(os.path.join(workspace_dir, "hyperliquid", "config.env"))
-            or (scope == "equities" and os.path.isdir(os.path.join(workspace_dir, "212trading")))
-        )
+        has_inst_source = has_workspace_instrument_sources(workspace_dir, asset_scope=scope)
         should_harvest = False
         inst_map: Dict[str, Any] = {}
         allow_empty_recovery = False

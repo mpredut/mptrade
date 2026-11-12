@@ -48,6 +48,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+from instrument_registry import has_workspace_instrument_sources
 from providers.market_api import MarketDataProvider
 
 load_tradable_instruments = MarketDataProvider.load_tradable_instruments
@@ -274,12 +275,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 if os.path.basename(abs_cache_dir).lower() == "cachedb"
                 else abs_cache_dir
             )
-            has_inst_source = (
-                os.path.exists(os.path.join(workspace_dir, "instruments.conf"))
-                or os.path.exists(os.path.join(workspace_dir, "kraken", "config.env"))
-                or os.path.exists(os.path.join(workspace_dir, "hyperliquid", "config.env"))
-                or os.path.isdir(os.path.join(workspace_dir, "212trading"))
-            )
+            has_inst_source = has_workspace_instrument_sources(workspace_dir, asset_scope="all")
             inst_map: Dict[str, Any] = {}
             if has_inst_source:
                 inst_map = load_tradable_instruments(

@@ -32,14 +32,17 @@ import instrument_registry as _default_ir  # noqa: F401
 
 from .order_ohlc_utils import (  # noqa: F401
     ClosedPriceSeries,
+    POST_ONLY_CROSS_TOKENS,
     VENUE_PROVIDER_SPECS,
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
+    compute_post_only_maker_price,
     extract_order_id,
     extract_order_price,
     extract_timestamp_ms,
     extract_timestamp_s,
     extract_yahoo_chart_result_and_quote,
+    is_post_only_cross_refusal,
     normalize_side,
     normalize_timestamp_ms,
 )
@@ -687,13 +690,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
             return list(closes) if closes is not None else []
         return []
 
-    _POST_ONLY_CROSS_TOKENS = (
-        "would immediately match",
-        "would have immediately matched",
-        "post only order",
-        "post-only order",
-        "alo order",
-    )
+    _POST_ONLY_CROSS_TOKENS = POST_ONLY_CROSS_TOKENS
 
     _DEFINITIVE_REFUSAL_TOKENS = (
         "insufficient",
@@ -716,6 +713,8 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
     @classmethod
     def _is_post_only_cross_refusal(cls, error: object) -> bool:
         """Return True when a venue error indicates a post-only order would cross the book."""
+        if cls._POST_ONLY_CROSS_TOKENS is POST_ONLY_CROSS_TOKENS:
+            return is_post_only_cross_refusal(error)
         text = str(error or "").lower()
         return any(token in text for token in cls._POST_ONLY_CROSS_TOKENS)
 
@@ -745,22 +744,13 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
                 cur_px = None
         anchor = (min(px_f, cur_px) if s_norm == "BUY" else max(px_f, cur_px)) if cur_px else px_f
         tick = safe_pos_float(self.price_tick_size(symbol, reference_price=anchor), default=0.0) or 0.0
-        cushion = max(tick, anchor * 0.0005)
-        raw_stepped = (anchor - cushion) if s_norm == "BUY" else (anchor + cushion)
-        if raw_stepped <= 0.0:
-            return px_f
-        rounded = safe_pos_float(self.round_price(symbol, raw_stepped), default=raw_stepped) or raw_stepped
-        if s_norm == "BUY" and rounded >= anchor:
-            delta = tick if tick > 0.0 else anchor * 0.0005
-            rounded = safe_pos_float(self.round_price(symbol, anchor - delta), default=anchor - delta) or (anchor - delta)
-            if rounded >= anchor:
-                rounded = anchor - delta
-        elif s_norm == "SELL" and rounded <= anchor:
-            delta = tick if tick > 0.0 else anchor * 0.0005
-            rounded = safe_pos_float(self.round_price(symbol, anchor + delta), default=anchor + delta) or (anchor + delta)
-            if rounded <= anchor:
-                rounded = anchor + delta
-        return rounded if rounded > 0.0 else px_f
+        return compute_post_only_maker_price(
+            s_norm,
+            px_f,
+            current_price=cur_px,
+            tick_size=tick,
+            round_price_fn=lambda p: self.round_price(symbol, p),
+        )
 
     def fetch_historical_ohlc_points(
         self,

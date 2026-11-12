@@ -168,27 +168,28 @@ class _ReplayClient:
 def params_require_trend_interval(params) -> bool:
     """Return True if ``params`` enable any regime/trend policy requiring ``trend_interval`` bars."""
     surge_window_enabled = (
-        getattr(params, "surge_guard", False)
-        and getattr(params, "surge_window_hours", 0) > 0
-        and getattr(params, "surge_move_pct", 0) > 0
+        _parse_bool_flag(getattr(params, "surge_guard", False), False)
+        and safe_pos_float(getattr(params, "surge_window_hours", 0), default=0.0) > 0.0
+        and safe_pos_float(getattr(params, "surge_move_pct", 0), default=0.0) > 0.0
     )
     return bool(
-        getattr(params, "trend_overlay", False)
-        or getattr(params, "dca_trend_brake", False)
-        or getattr(params, "reentry_hybrid_enabled", False)
+        _parse_bool_flag(getattr(params, "trend_overlay", False), False)
+        or _parse_bool_flag(getattr(params, "dca_trend_brake", False), False)
+        or _parse_bool_flag(getattr(params, "reentry_hybrid_enabled", False), False)
         or surge_window_enabled
-        or getattr(params, "tp_dynamic_flat", False)
+        or _parse_bool_flag(getattr(params, "tp_dynamic_flat", False), False)
     )
 
 
 def required_replay_intervals(params) -> set[int]:
     """Return the set of bar intervals (in minutes) required by active policies on ``params``."""
     required = {safe_int(params.trend_interval, 0)} if params_require_trend_interval(params) else set()
-    if getattr(params, "tp_trail_adaptive", False) or (
-        getattr(params, "surge_guard", False) and getattr(params, "surge_dynamic", False)
+    if _parse_bool_flag(getattr(params, "tp_trail_adaptive", False), False) or (
+        _parse_bool_flag(getattr(params, "surge_guard", False), False)
+        and _parse_bool_flag(getattr(params, "surge_dynamic", False), False)
     ):
         required.add(safe_int(params.tp_trail_vol_interval, 0))
-    if getattr(params, "dca_vol_scale_k", 0):
+    if safe_pos_float(getattr(params, "dca_vol_scale_k", 0), default=0.0) > 0.0:
         required.add(safe_int(params.dca_vol_interval, 0))
     required.discard(0)
     return required

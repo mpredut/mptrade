@@ -1731,13 +1731,18 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                                 if len(parts) != 3:
                                     continue
                                 sym_raw, ts_s, px_s = parts
-                                sym_u = sym_raw.strip().upper()
+                                sym_u, sym_clean = _norm_symbol_keys(sym_raw)
                                 if not sym_u:
                                     continue
                                 configured = self.symbols
                                 canon_sym = (
                                     next(
-                                        (s for s in configured if str(s).strip().upper() == sym_u),
+                                        (
+                                            s
+                                            for s in configured
+                                            if (s_u := str(s).strip().upper()) == sym_u
+                                            or (sym_clean and clean_symbol_key(s_u) == sym_clean)
+                                        ),
                                         None,
                                     )
                                     if configured

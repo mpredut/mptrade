@@ -18,6 +18,7 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 import websockets
 
 from botcore import (
+    _parse_bool_flag,
     async_interruptible_sleep,
     is_worker_thread_alive,
     normalize_epoch_sec,
@@ -97,18 +98,19 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
         self._retry = WS_RETRY_INITIAL
 
     def start(self, name: str = "BybitLiquidationWS", daemon: bool = True) -> "BybitLiquidationCollector":
+        daemon_b = _parse_bool_flag(daemon, True)
         with self._start_lock:
             if self._thread and self._thread.is_alive():
                 return self
             self._stop.clear()
-            self._thread = threading.Thread(target=self._worker, name=name, daemon=daemon)
+            self._thread = threading.Thread(target=self._worker, name=name, daemon=daemon_b)
             self._thread.start()
         logger.info("Bybit liquidation collector started for %s", ",".join(self._symbols))
         return self
 
     def stop(self, timeout: float = 8.0) -> None:
         self._stop.set()
-        t_sec = safe_nonneg_float(timeout, default=8.0) or 8.0
+        t_sec = safe_nonneg_float(timeout, default=8.0)
         if (
             self._thread
             and self._thread.is_alive()

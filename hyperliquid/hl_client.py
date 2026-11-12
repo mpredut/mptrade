@@ -40,8 +40,13 @@ from botcore import (  # noqa: E402
 _common_mod = load_local_module(_HERE, "common")
 from cachepaths import split_symbol_assets
 from instrument_registry import casefold_get
+from providers.base import MarketDataProvider
 from providers.ws_stream import mount_connect_retry
-from providers.order_ohlc_utils import resolve_ohlc_time_window_ms
+from providers.order_ohlc_utils import (
+    compute_post_only_maker_price,
+    is_post_only_cross_refusal,
+    resolve_ohlc_time_window_ms,
+)
 
 try:
     import eth_account
@@ -522,13 +527,18 @@ class HLClient:
         except Exception as e:  # noqa: BLE001
             return False, None, str(e)
         ok, oid, msg = _parse_order_response(res, include_avg_px=True)
-        if not ok and post_only and any(
-            tok in str(msg or "").lower()
-            for tok in ("would immediately match", "would have immediately matched", "post only order", "post-only order", "alo order")
-        ):
-            retry_px = px * (0.9995 if is_buy else 1.0005)
+        if not ok and post_only and is_post_only_cross_refusal(msg):
+            sz_d = self.sz_decimals(coin)
+            retry_px = compute_post_only_maker_price(
+                "BUY" if is_buy else "SELL",
+                px,
+                current_price=MarketDataProvider.read_passive_ssot_current_price(coin),
+                round_price_fn=lambda p: _validate_and_round_order_params(
+                    sz, p, sz_d, is_perp=True
+                )[1],
+            )
             sz_r, px_r, err_r = _validate_and_round_order_params(
-                sz, retry_px, self.sz_decimals(coin), is_perp=True
+                sz, retry_px, sz_d, is_perp=True
             )
             if err_r is None and px_r != px:
                 log(

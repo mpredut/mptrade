@@ -26,7 +26,6 @@ from typing import Any, Callable, List, Optional, Tuple
 
 import pricewindow as pw
 from botcore import (
-    FileLock,
     PRICE_FRESHNESS_MAX_AGE_SEC,
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     _is_fresh_obs_ts,
@@ -75,7 +74,7 @@ from state_io import (
     atomic_write_json,
     discard_generation_file,
     durable_replace_file,
-    generation_lock_path,
+    generation_file_lock,
     meta_file_path,
     previous_generation_path,
     read_json_dict,
@@ -1721,8 +1720,7 @@ class KalmanStateTracker:
             if not has_new_symbols and (now - self._last_state_write) < self.state_min_interval:
                 return
             try:
-                os.makedirs(os.path.dirname(os.path.abspath(self.state_path)), exist_ok=True)
-                with FileLock(generation_lock_path(self.state_path)):
+                with generation_file_lock(self.state_path):
                     merged = dict(self._state)
                     if os.path.exists(self.state_path) or os.path.exists(previous_generation_path(self.state_path)):
                         existing = read_json_dict(

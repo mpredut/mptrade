@@ -440,6 +440,22 @@ def discover_t212_equities(workspace_dir: str) -> list[tuple[str, str, str, str]
     return out
 
 
+def has_workspace_instrument_sources(
+    workspace_dir: str | Path | None, *, asset_scope: str = "all"
+) -> bool:
+    """Return True when ``workspace_dir`` contains ``instruments.conf`` or per-venue config files for ``asset_scope``."""
+    if not isinstance(workspace_dir, (str, Path)) or not str(workspace_dir).strip():
+        return False
+    ws_dir = str(workspace_dir)
+    scope_norm = str(asset_scope or "all").strip().lower() if not isinstance(asset_scope, bool) else "all"
+    return bool(
+        os.path.exists(os.path.join(ws_dir, "instruments.conf"))
+        or os.path.exists(os.path.join(ws_dir, "kraken", "config.env"))
+        or os.path.exists(os.path.join(ws_dir, "hyperliquid", "config.env"))
+        or (scope_norm in ("all", "equities") and os.path.isdir(os.path.join(ws_dir, "212trading")))
+    )
+
+
 def discover_tradable_specs(
     workspace_dir: str | None = None,
     *,
