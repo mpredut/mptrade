@@ -22,7 +22,7 @@ import time
 import weakref
 from abc import ABC
 from datetime import date
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pricewindow as pw
 from botcore import (
@@ -582,6 +582,22 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         pwin = wins[primary]
         gradient, gc, slope_full, gradient_recent = pwin.get_short_trend()
         eps_primary = pwin.get_noise_epsilon(self.EPSILON_K)
+        kin_extra: Dict[str, float] = {}
+        try:
+            w_90_kin = wins.get(90) or pwin
+            if hasattr(w_90_kin, "calculate_acceleration") and len(getattr(w_90_kin, "prices", ())) >= 3:
+                v90_k, a90_k = w_90_kin.calculate_acceleration(window_sec=90.0)
+                if abs(v90_k) >= 1e-6 or abs(a90_k) >= 1e-6:
+                    kin_extra["vel_90s_pct_min"] = round(v90_k, 5)
+                    kin_extra["accel_90s_pct_min2"] = round(a90_k, 5)
+            w_5m_kin = wins.get(900) or pwin
+            if hasattr(w_5m_kin, "calculate_acceleration") and len(getattr(w_5m_kin, "prices", ())) >= 3:
+                v5m_k, a5m_k = w_5m_kin.calculate_acceleration(window_sec=300.0)
+                if abs(v5m_k) >= 1e-6 or abs(a5m_k) >= 1e-6:
+                    kin_extra["vel_5m_pct_min"] = round(v5m_k, 5)
+                    kin_extra["accel_5m_pct_min2"] = round(a5m_k, 5)
+        except Exception:
+            pass
         published_dyn = self._published_dynamic_windows(symbol, now=observed_at)
         primary_key = pw.dynamic_window_key(primary)
         published_dyn[primary_key] = dict(
@@ -595,6 +611,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             sample_rate_sec=safe_pos_float(pwin.sample_rate_sec, default=1.0) or 1.0,
             current_price=current_price,
             ts=observed_at,
+            **kin_extra,
         )
         with self._lock:
             live_sym = self._live_windows.setdefault(symbol, {})
@@ -720,6 +737,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             current_price=current_price,
             ts=observed_at,
             dynamic=published_dyn,
+            **kin_extra,
             **kalman_extra,
         )
 

@@ -96,6 +96,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_7d_range_metrics,
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
+    compute_series_kinematics,
     pct_delta,
     recalculate_live_price_geometry,
     round_opt_px,
@@ -1378,7 +1379,12 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                                 apply_live_24trend_windows(sib_t, l24_sib)
                                 sib_px = safe_pos_float(sib_t.get("price"), default=0.0) or 0.0
                                 if cur_px_est <= 0.0 or sib_px <= 0.0 or not _prices_diverged(cur_px_est, sib_px):
-                                    for k90 in ("slope_90s", "growth_90s", "trend_90s", "gradient_recent", "gradient_recent_fast"):
+                                    for k90 in (
+                                        "slope_90s", "growth_90s", "trend_90s",
+                                        "gradient_recent", "gradient_recent_fast",
+                                        "vel_90s_pct_min", "accel_90s_pct_min2",
+                                        "vel_5m_pct_min", "accel_5m_pct_min2",
+                                    ):
                                         if k90 == "trend_90s":
                                             if t_entry.get(k90) in (None, 0) and sib_t.get(k90) not in (None, 0):
                                                 t_entry[k90] = sib_t[k90]
@@ -1424,6 +1430,9 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                     "slope_15m", "growth_15m", "trend_15m",
                     "slope_2_5h", "growth_2_5h", "trend_2_5h",
                     "gradient_recent_fast", "gradient_recent",
+                    "vel_90s_pct_min", "accel_90s_pct_min2",
+                    "vel_5m_pct_min", "accel_5m_pct_min2",
+                    "vel_15m_pct_min", "accel_15m_pct_min2",
                     "vol_1h_pct",
                 ):
                     t_entry.pop(k_ov, None)
@@ -1439,7 +1448,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                     if t_entry.get(sk) is None or (s15_val == s25_val and sk in ("slope_3_7m", "slope_15m", "slope_2_5h")):
                         t_entry[sk] = sv
             if is_eq_sym and not eq_px_diverged_05pct and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
-                for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s"):
+                for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s", "vel_90s_pct_min", "accel_90s_pct_min2"):
                     t_entry.pop(k_stale_90, None)
             if (
                 is_eq_sym
@@ -1451,8 +1460,24 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                     "slope_90s", "growth_90s", "trend_90s",
                     "slope_3_7m", "growth_3_7m", "trend_3_7m",
                     "gradient_recent_fast",
+                    "vel_90s_pct_min", "accel_90s_pct_min2",
+                    "vel_5m_pct_min", "accel_5m_pct_min2",
                 ):
                     t_entry.pop(k_stale_s, None)
+            kv_z_base = safe_float(t_entry.get("kalman_vel"), default=None)
+            ks_z_base = safe_pos_float(t_entry.get("kalman_vel_std"), default=None)
+            if kv_z_base is not None and ks_z_base is not None and abs(kv_z_base) >= 1e-6 and 1e-6 < ks_z_base < 5.99:
+                t_entry["kalman_vel_z"] = round(kv_z_base / ks_z_base, 2)
+            if alt_series_24h and len(alt_series_24h) >= 3:
+                allow_90_kin = not is_eq_sym or eq_px_diverged_05pct or any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct"))
+                allow_5m_kin = not is_eq_sym or eq_px_diverged_05pct or (rth_fresh_eq and any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")))
+                for kk, kv_kin in compute_series_kinematics(alt_series_24h).items():
+                    if kk in ("vel_90s_pct_min", "accel_90s_pct_min2") and not allow_90_kin:
+                        continue
+                    if kk in ("vel_5m_pct_min", "accel_5m_pct_min2") and not allow_5m_kin:
+                        continue
+                    if t_entry.get(kk) is None:
+                        t_entry[kk] = kv_kin
         except Exception:
             pass
         if (not cur_px_est or cur_px_est <= 0.0) and (t_px_est := safe_pos_float(t_entry.get("price"), default=None)) is not None:
@@ -1756,6 +1781,20 @@ class PretradeDynamicSlopesFormatStage(PretradePillarCollectorBase):
             )
             else ", ".join(slope_parts)
         )
+        kin_seg: List[str] = []
+        for k_lbl, vk_name, ak_name in (
+            ("90s", "vel_90s_pct_min", "accel_90s_pct_min2"),
+            ("5m", "vel_5m_pct_min", "accel_5m_pct_min2"),
+            ("15m", "vel_15m_pct_min", "accel_15m_pct_min2"),
+        ):
+            vk_f = safe_float(t_entry.get(vk_name), default=None)
+            ak_f = safe_float(t_entry.get(ak_name), default=None)
+            if vk_f is not None and ak_f is not None and (abs(vk_f) >= 1e-6 or abs(ak_f) >= 1e-6):
+                kin_seg.append(f"{k_lbl}: vel={vk_f:+.4f}%/m, acc={ak_f:+.4f}%/m^2")
+        if kin_seg:
+            if (kz_f := safe_float(t_entry.get("kalman_vel_z"), default=None)) is not None and abs(kz_f) >= 0.01:
+                kin_seg.append(f"kalman_z={kz_f:+.2f}")
+            ctx.telemetry["Kinematic Velocity & Acceleration"] = " | ".join(kin_seg)
 
 
 class QuantitativeSeriesAndMicrostructureStage(PretradePillarCollectorBase):

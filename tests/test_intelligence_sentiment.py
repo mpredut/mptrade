@@ -10045,4 +10045,213 @@ def test_ai_data_coherence_and_quota_fingerprint_fixes(tmp_path, monkeypatch):
     assert acct_tier["seen_tokens"][-1] == "Bearer acct-B-ultra-tok"
 
 
+def test_kinematic_velocity_acceleration_and_impulse_wakeup(tmp_path, monkeypatch):
+    """Verify kinematic velocity/acceleration telemetry, unbiased prompt autonomy, and mid-cycle impulse wakeup."""
+    import botcore
+    from cachetrend import CacheShortTrendManager
+    from intelligence.globaltelemetry_collector import (
+        GlobalTelemetryCollector,
+        evaluate_kinematic_impulse_symbols,
+    )
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import LogEventSummary
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_series_kinematics
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section
+
+    now_s = 1_794_500_120.0  # offset = 120s into 360s cron cycle (valid mid-cycle window)
+    now_ms = int(now_s * 1000.0)
+
+    # 1. Analytical quadratic kinematics on accelerating crash vs decelerating bottom vs flat series
+    crash_series = []
+    for k in range(31):
+        tau_m = -5.0 + k * (5.0 / 30.0)  # -5.0 .. 0.0 minutes
+        t_ms = now_ms + int(tau_m * 60_000.0)
+        # Concave-down accelerating drop: y(tau) = 72000 * (1 - 0.0040*(tau+5)/5 - 0.0045*((tau+5)/5)^2)
+        u = (tau_m + 5.0) / 5.0
+        px = 72_000.0 * (1.0 - 0.0015 * u - 0.0055 * (u ** 2))
+        crash_series.append([t_ms, round(px, 4)])
+
+    kin_crash = compute_series_kinematics(crash_series)
+    assert kin_crash["vel_90s_pct_min"] < -0.20
+    assert kin_crash["accel_90s_pct_min2"] < -0.04
+    assert kin_crash["vel_5m_pct_min"] < -0.20
+    assert kin_crash["accel_5m_pct_min2"] < -0.04
+
+    bottom_series = []
+    for k in range(31):
+        tau_m = -5.0 + k * (5.0 / 30.0)
+        t_ms = now_ms + int(tau_m * 60_000.0)
+        # Concave-up decelerating bottom / V-turn: minimum around tau=-1.2m, curving upward by tau=0
+        px = 71_200.0 * (1.0 + 0.0005 * ((tau_m + 1.2) ** 2))
+        bottom_series.append([t_ms, round(px, 4)])
+
+    kin_bottom = compute_series_kinematics(bottom_series)
+    assert kin_bottom["accel_90s_pct_min2"] > 0.05
+    assert kin_bottom["accel_5m_pct_min2"] > 0.05
+
+    flat_series = [[now_ms - (30 - k) * 10_000, 72_000.0] for k in range(31)]
+    assert compute_series_kinematics(flat_series) == {}
+
+    # 2. CacheShortTrendManager publishes vel_90s/accel_90s and vel_5m/accel_5m
+    from types import SimpleNamespace
+    import pricewindow as pw
+
+    st_dir = tmp_path / "st_cache"
+    st_dir.mkdir(parents=True, exist_ok=True)
+    mgr = CacheShortTrendManager(
+        symbols=["BTCUSDC"],
+        filename=str(st_dir / "cache_short_trend.json"),
+        data_sync_mode="producer",
+    )
+    mgr.windows["BTCUSDC"] = {
+        sec: pw.PriceWindow("BTCUSDC", max(10, int(sec / 5.0)), sample_rate_sec=5.0)
+        for sec in mgr.window_seconds
+    }
+    mgr.analyzers["BTCUSDC"] = {sec: pw.WindowAnalyzer(w) for sec, w in mgr.windows["BTCUSDC"].items()}
+    last_px_obs = 72_500.0
+    for k in range(40):
+        t_obs = now_s - (39 - k) * 5.0
+        u = k / 39.0
+        last_px_obs = 72_500.0 * (1.0 - 0.0010 * u - 0.0050 * (u ** 2))
+        for w_obj in mgr.windows["BTCUSDC"].values():
+            w_obj.process_price(last_px_obs)
+    mgr.current_price_mgr = SimpleNamespace(
+        get_cached_price_observation=lambda _sym, _stale: (now_s, last_px_obs)
+    )
+    mgr.evaluate_full("BTCUSDC")
+    st_item = mgr._mem.get("BTCUSDC") or {}
+    assert st_item.get("vel_90s_pct_min") is not None and st_item["vel_90s_pct_min"] < 0.0
+    assert st_item.get("accel_90s_pct_min2") is not None and st_item["accel_90s_pct_min2"] < 0.0
+
+    # 3. Section 3A & Pre-trade Telemetry render kinematics(...) and kalman_z
+    sec_3a = "\n".join(
+        _format_market_prices_section(
+            {
+                "BTCUSDC": {
+                    "price": 71_492.0,
+                    "chg_5m_pct": -0.68,
+                    "chg_1h_pct": -1.42,
+                    "slope_90s": -0.00612,
+                    "slope_15m": -0.00215,
+                    "kalman_vel": -0.3412,
+                    "kalman_vel_std": 0.115,
+                    "vel_90s_pct_min": -0.4125,
+                    "accel_90s_pct_min2": -0.2240,
+                    "vel_5m_pct_min": -0.2650,
+                    "accel_5m_pct_min2": -0.0910,
+                }
+            }
+        )
+    )
+    assert "kinematics(vel_90s=-0.4125%/m, acc_90s=-0.2240%/m^2, vel_5m=-0.2650%/m, acc_5m=-0.0910%/m^2, kalman_z=-2.97)" in sec_3a
+
+    pt_dir = tmp_path / "pt_cache"
+    pt_dir.mkdir(parents=True, exist_ok=True)
+    (pt_dir / "cache_24_price_BTCUSDC.json").write_text(json.dumps(crash_series), encoding="utf-8")
+    (pt_dir / "cache_short_trend.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": {
+                        "current_price": crash_series[-1][1],
+                        "ts": now_s,
+                        "slopes": {"90": -0.0052, "222": -0.0041, "900": -0.0020},
+                        "vel_90s_pct_min": kin_crash["vel_90s_pct_min"],
+                        "accel_90s_pct_min2": kin_crash["accel_90s_pct_min2"],
+                        "vel_5m_pct_min": kin_crash["vel_5m_pct_min"],
+                        "accel_5m_pct_min2": kin_crash["accel_5m_pct_min2"],
+                        "kalman_vel": -0.28,
+                        "kalman_vel_std": 0.10,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_snap = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(pt_dir), now_ts=now_s, allow_network=False)
+    assert "Kinematic Velocity & Acceleration" in pt_snap
+    assert "90s: vel=-" in pt_snap["Kinematic Velocity & Acceleration"]
+    assert "acc=-" in pt_snap["Kinematic Velocity & Acceleration"]
+    assert "kalman_z=-2.80" in pt_snap["Kinematic Velocity & Acceleration"]
+
+    # 4. Unbiased symmetric autonomy prompt check
+    prompt_txt = build_supervisor_prompt(
+        TelemetrySensorSnapshot(prices_and_trends={"BTCUSDC": {"price": 71_500.0}}),
+        LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0),
+        botcore.topic_spec("auto_cryptotrade_executor"),
+        1.0,
+    )
+    assert "UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING" in prompt_txt
+    assert "even at breakeven or below cost basis" in prompt_txt
+    assert "kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)" in prompt_txt
+
+    # 5. Event-driven kinematic impulse wakeup (symmetric drop/spike, equity filter, cooldown & cron guards)
+    shocked_syms = evaluate_kinematic_impulse_symbols(
+        {
+            "BTCUSDC": {"vel_90s_pct_min": -0.31, "accel_90s_pct_min2": -0.19},
+            "BTCUSDT": {"vel_90s_pct_min": -0.32, "accel_90s_pct_min2": -0.20},
+            "TAOUSDC": {"vel_90s_pct_min": 0.29, "accel_90s_pct_min2": 0.18},  # symmetric upward breakout
+            "ETHUSDC": {"vel_90s_pct_min": -0.06, "accel_90s_pct_min2": -0.02},  # normal noise -> ignored
+            "NVDA_US_EQ": {"vel_90s_pct_min": -0.80, "accel_90s_pct_min2": -0.50},  # equity -> ignored
+        }
+    )
+    assert shocked_syms == ["BTCUSDC", "TAOUSDC"]
+
+    ws_dir = tmp_path / "ws"
+    c_dir = ws_dir / "cachedb"
+    (ws_dir / "orchestratorOS").mkdir(parents=True, exist_ok=True)
+    runner_sh = ws_dir / "orchestratorOS" / "run_python.sh"
+    runner_sh.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    c_dir.mkdir(parents=True, exist_ok=True)
+    (c_dir / "cache_short_trend.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": {
+                        "current_price": 72_300.0,
+                        "ts": now_s,
+                        "vel_90s_pct_min": -0.38,
+                        "accel_90s_pct_min2": -0.21,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AI_IMPULSE_TRIGGER_ENABLED", "true")
+    monkeypatch.setenv("AI_IMPULSE_COOLDOWN_SEC", "150")
+    orig_isfile = os.path.isfile
+    monkeypatch.setattr(
+        "os.path.isfile",
+        lambda p: True if str(p) in {"/usr/bin/flock", "/usr/bin/timeout", str(runner_sh)} else orig_isfile(p),
+    )
+    spawned_calls = []
+
+    class _DummyPopen:
+        def __init__(self, args, **kwargs):
+            spawned_calls.append((list(args), kwargs))
+
+    monkeypatch.setattr("intelligence.globaltelemetry_collector.subprocess.Popen", _DummyPopen)
+    gtc = GlobalTelemetryCollector(symbols=["BTCUSDC", "ETHUSDC"], cache_dir=str(c_dir), skip_external=True, skip_news=True)
+
+    # Near cron boundary (:05:30 -> 330s into 360s cycle, <45s before next cron) -> skipped
+    assert gtc.maybe_trigger_kinematic_ai_wakeup(now=1_794_500_000.0 - (1_794_500_000.0 % 360.0) + 330.0) is None
+    assert len(spawned_calls) == 0
+
+    # Valid mid-cycle offset (120s into 360s cycle) -> spawns detached flock wakeup
+    mid_ts = 1_794_500_000.0 - (1_794_500_000.0 % 360.0) + 120.0
+    fired = gtc.maybe_trigger_kinematic_ai_wakeup(now=mid_ts)
+    assert fired == ["BTCUSDC"]
+    assert len(spawned_calls) == 1
+    assert "--focus-symbols" in spawned_calls[0][0]
+    assert "BTCUSDC" in spawned_calls[0][0]
+
+    # Immediate repeat within 150s cooldown -> skipped
+    assert gtc.maybe_trigger_kinematic_ai_wakeup(now=mid_ts + 30.0) is None
+    assert len(spawned_calls) == 1
+
+
+
 

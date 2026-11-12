@@ -580,7 +580,12 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                             if sk in geom_anchor_keys:
                                 backfilled_geom = True
                         elif (
-                            sk in ("slope_90s", "growth_90s", "trend_90s", "gradient_recent", "gradient_recent_fast")
+                            sk in (
+                                "slope_90s", "growth_90s", "trend_90s",
+                                "gradient_recent", "gradient_recent_fast",
+                                "vel_90s_pct_min", "accel_90s_pct_min2",
+                                "vel_5m_pct_min", "accel_5m_pct_min2",
+                            )
                             and abs(safe_float(pinfo.get(sk), 0.0)) < 5e-8
                             and abs(safe_float(sv, 0.0)) >= 5e-8
                         ):
@@ -763,6 +768,26 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%")
         if (kv := safe_float(pinfo.get("kalman_vel"), None)) is not None and abs(kv) >= 1e-9:
             extras.append(f"kalman_vel={_fmt_slope_val(kv, 5)}")
+        kin_parts: List[str] = []
+        for k_lbl, v_key, a_key in (
+            ("90s", "vel_90s_pct_min", "accel_90s_pct_min2"),
+            ("5m", "vel_5m_pct_min", "accel_5m_pct_min2"),
+            ("15m", "vel_15m_pct_min", "accel_15m_pct_min2"),
+        ):
+            vk_v = safe_float(pinfo.get(v_key), None)
+            ak_v = safe_float(pinfo.get(a_key), None)
+            if vk_v is not None and ak_v is not None and (abs(vk_v) >= 1e-6 or abs(ak_v) >= 1e-6):
+                kin_parts.append(f"vel_{k_lbl}={vk_v:+.4f}%/m")
+                kin_parts.append(f"acc_{k_lbl}={ak_v:+.4f}%/m^2")
+        kz_v = safe_float(pinfo.get("kalman_vel_z"), None)
+        if kz_v is None and kv is not None and abs(kv) >= 1e-6:
+            ks_v = safe_pos_float(pinfo.get("kalman_vel_std"), None)
+            if ks_v is not None and 1e-6 < ks_v < 5.99:
+                kz_v = round(kv / ks_v, 2)
+        if kz_v is not None and abs(kz_v) >= 0.01 and kin_parts:
+            kin_parts.append(f"kalman_z={kz_v:+.2f}")
+        if kin_parts:
+            extras.append(f"kinematics({', '.join(kin_parts)})")
         if pinfo.get("long_trend_dir"):
             lt_str = f"long_trend={str(pinfo.get('long_trend_dir')).upper()}({pinfo.get('long_trend_hours')}h"
             if pinfo.get("long_trend_est_rem_hours") is not None:

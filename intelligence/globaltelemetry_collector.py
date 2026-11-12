@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,14 @@ from botcore import (
     load_dotenv,
     pos_float_env,
     safe_nonneg_ts,
+)
+from cachepaths import (
+    CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_SHORT_TREND_FILENAME,
+    canonical_base_asset,
+    clean_symbol_key,
+    has_crypto_quote_suffix,
+    resolve_cachedb_filepath,
 )
 from intelligence.macro.daemon_ssot import (
     ExternalTelemetryMixin,
@@ -45,10 +54,11 @@ from intelligence.macro_sentiment_ssot import (
     parse_symbol_list,
     resolve_derived_telemetry_intervals,
     resolve_now_ts,
+    safe_float,
     safe_pos_float,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
-from instrument_registry import has_workspace_instrument_sources
+from instrument_registry import has_workspace_instrument_sources, is_equity_symbol
 from providers.market_api import MarketDataProvider
 
 load_tradable_instruments = MarketDataProvider.load_tradable_instruments
@@ -64,11 +74,67 @@ from intelligence.sentiment.collectors.portfolio_collector import (
 )
 from intelligence.sentiment.collectors.pretrade_telemetry_collector import refresh_pretrade_telemetry_caches
 from intelligence.sentiment.evaluators.microstructure_evaluator import update_microstructure_cycle_deltas
-from state_io import save_json_state
+from state_io import open_append_text_file, read_json_dict_recovering, save_json_state
 
 load_dotenv()
 
 logger = logging.getLogger("intelligence.telemetry_collector")
+
+
+def evaluate_kinematic_impulse_symbols(
+    prices_and_trends: Dict[str, Any],
+    candidate_symbols: Optional[List[str]] = None,
+) -> List[str]:
+    """Identify non-equity crypto symbols experiencing an acute symmetric short-horizon price/kinematic shock."""
+    if not isinstance(prices_and_trends, dict) or not prices_and_trends:
+        return []
+    allowed_bases = {
+        canonical_base_asset(s)
+        for s in (candidate_symbols or ())
+        if s and not is_equity_symbol(s)
+    }
+    quote_rank = ("USDC", "USDT", "USD", "EUR")
+    best_by_base: Dict[str, tuple[int, str]] = {}
+    for raw_sym, pinfo in prices_and_trends.items():
+        if not isinstance(pinfo, dict):
+            continue
+        sym = clean_symbol_key(raw_sym)
+        if not sym or is_equity_symbol(sym) or not has_crypto_quote_suffix(sym):
+            continue
+        base = canonical_base_asset(sym)
+        if not base or (allowed_bases and base not in allowed_bases):
+            continue
+        c3m = safe_float(pinfo.get("chg_3m_pct"), default=None)
+        c5m = safe_float(pinfo.get("chg_5m_pct"), default=None)
+        v90 = safe_float(pinfo.get("vel_90s_pct_min"), default=None)
+        a90 = safe_float(pinfo.get("accel_90s_pct_min2"), default=None)
+        v5m = safe_float(pinfo.get("vel_5m_pct_min"), default=None)
+        shock = (
+            (c3m is not None and abs(c3m) >= 0.55)
+            or (c5m is not None and abs(c5m) >= 0.70)
+            or (
+                v90 is not None
+                and a90 is not None
+                and abs(v90) >= 0.22
+                and abs(a90) >= 0.14
+                and (v90 * a90) > 0.0
+            )
+            or (v90 is not None and abs(v90) >= 0.35)
+            or (
+                v5m is not None
+                and v90 is not None
+                and abs(v5m) >= 0.18
+                and abs(v90) >= 0.20
+                and (v5m * v90) > 0.0
+            )
+        )
+        if not shock:
+            continue
+        q_idx = next((idx for idx, q in enumerate(quote_rank) if sym.endswith(q)), len(quote_rank))
+        prev = best_by_base.get(base)
+        if prev is None or q_idx < prev[0]:
+            best_by_base[base] = (q_idx, sym)
+    return sorted(sym for _, sym in best_by_base.values())
 
 
 class GlobalTelemetryCollector(ExternalTelemetryMixin):
@@ -132,6 +198,9 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._last_macro_benchmarks_ts: float = 0.0
         self._last_pretrade_caches_ts: float = 0.0
         self._last_venue_balances_ts: float = 0.0
+        self._last_ai_impulse_ts: float = 0.0
+        self._last_ai_impulse_check_ts: float = 0.0
+        self._live_impulse_wakeup_enabled: bool = False
 
         self.heartbeat_path = os.path.join(self.cache_dir, "globaltelemetry_collector.heartbeat")
 
@@ -321,6 +390,98 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.warning("Failed refreshing venue balances state: %s", e)
         return False
 
+    def maybe_trigger_kinematic_ai_wakeup(self, now: Optional[float] = None) -> Optional[List[str]]:
+        """Spawn a non-blocking flock-guarded crypto AI evaluation on acute mid-cycle kinematic price shocks."""
+        try:
+            if not _parse_bool_flag(os.environ.get("AI_IMPULSE_TRIGGER_ENABLED", "true"), True):
+                return None
+            eff_now = resolve_now_ts(self._resolve_step_now(now))
+            cooldown_sec = pos_float_env("AI_IMPULSE_COOLDOWN_SEC", 150.0)
+            if self._last_ai_impulse_ts > 0.0 and 0.0 <= (eff_now - self._last_ai_impulse_ts) < cooldown_sec:
+                return None
+            cycle_offset = eff_now % 360.0
+            if cycle_offset < 20.0 or (360.0 - cycle_offset) < 45.0:
+                return None
+            eval_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "auto_cryptotrade_executor_eval.json")))
+            last_eval_ts = 0.0
+            if os.path.exists(eval_path):
+                try:
+                    mtime_val = safe_nonneg_ts(os.path.getmtime(eval_path), 0.0)
+                    if mtime_val <= eff_now + 5.0:
+                        last_eval_ts = max(last_eval_ts, mtime_val)
+                except OSError:
+                    pass
+                eval_doc = read_json_dict_recovering(eval_path)
+                if isinstance(eval_doc, dict):
+                    doc_ts = safe_nonneg_ts(eval_doc.get("ts"), 0.0)
+                    if doc_ts <= eff_now + 5.0:
+                        last_eval_ts = max(last_eval_ts, doc_ts)
+            if last_eval_ts > 0.0 and 0.0 <= (eff_now - last_eval_ts) < 65.0:
+                return None
+            st_doc = read_json_dict_recovering(
+                str(resolve_cachedb_filepath(os.path.join(self.cache_dir, CACHE_SHORT_TREND_FILENAME)))
+            )
+            cp_doc = read_json_dict_recovering(
+                str(resolve_cachedb_filepath(os.path.join(self.cache_dir, CACHE_CURRENT_PRICE_FILENAME)))
+            )
+            prices_and_trends = InitialPricesAndTrendsCollector(start_sync=False).collect(
+                self.cache_dir,
+                prices_data=cp_doc,
+                trends_data=st_doc,
+            )
+            shocked = evaluate_kinematic_impulse_symbols(prices_and_trends, candidate_symbols=self.symbols or None)
+            if not shocked:
+                return None
+            abs_cache_dir = os.path.abspath(str(self.cache_dir).rstrip("/\\"))
+            workspace_dir = (
+                os.path.dirname(abs_cache_dir)
+                if os.path.basename(abs_cache_dir).lower() == "cachedb"
+                else abs_cache_dir
+            )
+            runner_sh = os.path.join(workspace_dir, "orchestratorOS", "run_python.sh")
+            flock_bin = "/usr/bin/flock"
+            timeout_bin = "/usr/bin/timeout"
+            if not (os.path.isfile(runner_sh) and os.path.isfile(flock_bin) and os.path.isfile(timeout_bin)):
+                return None
+            focus_csv = ",".join(shocked)
+            save_json_state(
+                os.path.join(self.cache_dir, "kinematic_impulse_signal.json"),
+                {"ts": eff_now, "symbols": shocked},
+                indent=2,
+            )
+            log_path = os.path.join(workspace_dir, "logs", "auto_trade_executor.log")
+            out_fh = open_append_text_file(log_path)
+            try:
+                subprocess.Popen(
+                    [
+                        flock_bin,
+                        "-n",
+                        "logs/.auto_cryptotrade_executor.lock",
+                        timeout_bin,
+                        "240",
+                        "./orchestratorOS/run_python.sh",
+                        "orchestratorOS/supervisor/autonomous_ai_reconciler.py",
+                        "--topic-key",
+                        "auto_cryptotrade_executor",
+                        "--focus-symbols",
+                        focus_csv,
+                    ],
+                    cwd=workspace_dir,
+                    stdin=subprocess.DEVNULL,
+                    stdout=out_fh,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+            finally:
+                out_fh.close()
+            self._last_ai_impulse_ts = eff_now
+            logger.info("[IMPULSE WAKEUP] Triggered auto_cryptotrade_executor for kinematic shock on %s", focus_csv)
+            return shocked
+        except Exception as e:
+            logger.debug("Kinematic impulse wakeup check skipped: %s", e)
+            return None
+
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating telemetry whose scheduled interval has elapsed."""
         force, current_ts = normalize_cycle_args(force, now)
@@ -370,6 +531,13 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         result_key=res_key,
                         on_done=on_done_cb,
                     )
+            if (
+                not self.skip_external
+                and getattr(self, "_live_impulse_wakeup_enabled", False)
+                and (current_ts - getattr(self, "_last_ai_impulse_check_ts", 0.0)) >= 5.0
+            ):
+                self._last_ai_impulse_check_ts = current_ts
+                self.maybe_trigger_kinematic_ai_wakeup(now=current_ts)
         finally:
             self._active_cycle_ts = None
 
@@ -404,6 +572,10 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""
+        self._live_impulse_wakeup_enabled = _parse_bool_flag(
+            os.environ.get("AI_IMPULSE_TRIGGER_ENABLED", "true"),
+            True,
+        )
         run_daemon_loop(
             self,
             poll_interval_sec=poll_interval_sec,

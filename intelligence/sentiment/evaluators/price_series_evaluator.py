@@ -681,7 +681,11 @@ def apply_short_trend_item(
     wins = {wk: (dyn.get(wk) if isinstance(dyn.get(wk), dict) else {}) for wk, *_ in _WINDOW_TREND_SPECS}
     if wins["222"].get("slope_full") is None:
         wins["222"] = tinfo if tinfo.get("slope_full") is not None else (wins["90"] if wins["90"].get("slope_full") is not None else wins["222"])
-    if require_any_slope and not any(x.get("slope_full") is not None for x in (wins["222"], wins["900"], wins["9000"], tinfo)):
+    if (
+        require_any_slope
+        and not any(x.get("slope_full") is not None for x in (wins["222"], wins["900"], wins["9000"], tinfo))
+        and tinfo.get("vel_90s_pct_min") is None
+    ):
         return False
     cur_px = safe_pos_float(fallback_price, default=None) or safe_pos_float(tinfo.get("current_price"), default=None)
     if allow_price_update and safe_float(entry.get("price"), 0.0) <= 0 and cur_px is not None:
@@ -696,6 +700,24 @@ def apply_short_trend_item(
     for k in ("gradient_recent_fast", "epsilon", "vol_1h_pct"):
         if not require_any_slope or tinfo.get(k) is not None:
             entry[k] = tinfo.get(k)
+    for kk_kin in ("vel_90s_pct_min", "accel_90s_pct_min2", "vel_5m_pct_min", "accel_5m_pct_min2"):
+        kv_kin = safe_float(tinfo.get(kk_kin), default=None)
+        if kv_kin is None:
+            for w_k in (wins["222"], wins["90"], wins["900"]):
+                if (kv_fb := safe_float(w_k.get(kk_kin), default=None)) is not None:
+                    kv_kin = kv_fb
+                    break
+        if kv_kin is not None:
+            entry[kk_kin] = round(kv_kin, 5)
+    t_kv = safe_float(tinfo.get("kalman_vel"), default=None)
+    t_ks = safe_pos_float(tinfo.get("kalman_vel_std"), default=None)
+    if t_kv is not None and not (abs(t_kv) < 1e-12 and (t_ks is None or t_ks >= 5.99)):
+        if entry.get("kalman_vel") is None:
+            entry["kalman_vel"] = t_kv
+        if entry.get("kalman_vel_std") is None and t_ks is not None:
+            entry["kalman_vel_std"] = t_ks
+        if entry.get("kalman_trend") is None and tinfo.get("kalman_trend") is not None:
+            entry["kalman_trend"] = tinfo.get("kalman_trend")
     if abs(safe_float(entry.get("gradient_recent"), 0.0)) < 5e-8:
         for w_fb in (wins["222"], wins["90"], wins["900"]):
             if (gr_fb := safe_float(w_fb.get("gradient_recent"), default=None)) is not None and abs(gr_fb) >= 5e-8:
@@ -800,6 +822,11 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
             entry[g_key] = _resolve_window_metric_with_fallbacks(
                 w_dict.get("growth_coefficient"), w_dict.get("slope_full"), w_dict.get("gradient_recent"),
             )
+    for kk_kin in ("vel_90s_pct_min", "accel_90s_pct_min2", "vel_5m_pct_min", "accel_5m_pct_min2"):
+        for w_src in (w222, w90, w900, lt_win):
+            if isinstance(w_src, dict) and (kv_live := safe_float(w_src.get(kk_kin), default=None)) is not None:
+                entry[kk_kin] = round(kv_live, 5)
+                break
 
 
 def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any]]:
@@ -900,6 +927,78 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
             out[t_key] = 1 if win_move_bps >= 0.25 else (-1 if win_move_bps <= -0.25 else 0)
     if "slope_3_7m" in out:
         out["gradient_recent_fast"] = out["slope_3_7m"]
+    return out
+
+
+def _fit_quadratic_kinematics(
+    pts_ms_px: List[Tuple[float, float]],
+    *,
+    min_span_ms: float,
+) -> Optional[Tuple[float, float]]:
+    """Fit continuous-time quadratic OLS y(tau) = b0 + b1*tau + b2*tau^2 at tau=0 (%/min, %/min^2)."""
+    if len(pts_ms_px) < 3:
+        return None
+    dedup: List[Tuple[float, float]] = []
+    for t_ms, px_v in pts_ms_px:
+        if px_v <= 0.0:
+            continue
+        if dedup and abs(t_ms - dedup[-1][0]) < 1.0:
+            dedup[-1] = (t_ms, px_v)
+        else:
+            dedup.append((t_ms, px_v))
+    if len(dedup) < 3:
+        return None
+    t_start, p0 = dedup[0]
+    t_now, _ = dedup[-1]
+    span_ms = t_now - t_start
+    if p0 <= 0.0 or span_ms < min_span_ms:
+        return None
+    span_min = span_ms / 60000.0
+    if not any(-0.92 * span_min <= ((t_m - t_now) / 60000.0) <= -0.08 * span_min for t_m, _ in dedup[1:-1]):
+        return None
+    n_f = len(dedup) * 1.0
+    s1 = s2 = s3 = s4 = y0 = y1 = y2 = 0.0
+    for t_m, px_v in dedup:
+        tau = (t_m - t_now) / 60000.0
+        tau2 = tau * tau
+        yv = ((px_v - p0) / p0) * 100.0
+        s1 += tau
+        s2 += tau2
+        s3 += tau2 * tau
+        s4 += tau2 * tau2
+        y0 += yv
+        y1 += tau * yv
+        y2 += tau2 * yv
+    det = n_f * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s2 * s3) + s2 * (s1 * s3 - s2 * s2)
+    if abs(det) <= 1e-12 or not math.isfinite(det):
+        return None
+    vel = (n_f * (y1 * s4 - s3 * y2) - y0 * (s1 * s4 - s2 * s3) + s2 * (s1 * y2 - y1 * s2)) / det
+    beta2 = (n_f * (s2 * y2 - y1 * s3) - s1 * (s1 * y2 - y1 * s2) + y0 * (s1 * s3 - s2 * s2)) / det
+    acc = 2.0 * beta2
+    if not (math.isfinite(vel) and math.isfinite(acc)):
+        return None
+    if abs(vel) < 1e-6 and abs(acc) < 1e-6:
+        return None
+    return round(vel, 5), round(acc, 5)
+
+
+def compute_series_kinematics(series_24h: List[Any]) -> Dict[str, float]:
+    """Compute instantaneous velocity (%/min) and acceleration (%/min^2) across short horizons from a 24h series."""
+    pts = [pt for pt in _extract_sorted_ts_px(series_24h) if pt[1] > 0.0]
+    if len(pts) < 3:
+        return {}
+    now_ms = pts[-1][0]
+    out: Dict[str, float] = {}
+    pts_90s = [pt for pt in pts if pt[0] >= now_ms - 180000.0]
+    if (fit_90 := _fit_quadratic_kinematics(pts_90s, min_span_ms=45000.0)) is not None:
+        out["vel_90s_pct_min"], out["accel_90s_pct_min2"] = fit_90
+    pts_5m = [pt for pt in pts if pt[0] >= now_ms - 360000.0]
+    if (fit_5m := _fit_quadratic_kinematics(pts_5m, min_span_ms=120000.0)) is not None:
+        out["vel_5m_pct_min"], out["accel_5m_pct_min2"] = fit_5m
+    if not out:
+        pts_15m = [pt for pt in pts if pt[0] >= now_ms - 1080000.0]
+        if (fit_15m := _fit_quadratic_kinematics(pts_15m, min_span_ms=480000.0)) is not None:
+            out["vel_15m_pct_min"], out["accel_15m_pct_min2"] = fit_15m
     return out
 
 
@@ -1250,6 +1349,13 @@ def _apply_24h_series_enrichment(
             for kk, kv in k_fb.items():
                 if kv is not None and (entry.get(kk) is None or unseeded_kalman):
                     entry[kk] = kv
+    if (
+        (kv_fin := safe_float(entry.get("kalman_vel"), default=None)) is not None
+        and abs(kv_fin) >= 1e-6
+        and (ks_fin := safe_pos_float(entry.get("kalman_vel_std"), default=None)) is not None
+        and 1e-6 < ks_fin < 5.99
+    ):
+        entry["kalman_vel_z"] = round(kv_fin / ks_fin, 2)
     st_ts_e = safe_pos_float(entry.pop("_short_trend_ts", None), default=None)
     if series_24h:
         pts_s24_sorted = _extract_sorted_ts_px(series_24h)
@@ -1274,6 +1380,10 @@ def _apply_24h_series_enrichment(
                 "trend_2_5h",
                 "gradient_recent_fast",
                 "gradient_recent",
+                "vel_90s_pct_min",
+                "accel_90s_pct_min2",
+                "vel_5m_pct_min",
+                "accel_5m_pct_min2",
             ):
                 entry.pop(k_st_clr, None)
         s_2_5h = safe_float(entry.get("slope_2_5h"), default=None)
@@ -1284,6 +1394,10 @@ def _apply_24h_series_enrichment(
             and abs(s_2_5h - s_15m) < 1e-12
             and abs(safe_float(entry.get("growth_2_5h"), 0.0) - safe_float(entry.get("growth_15m"), 0.0)) < 1e-9
         )
+        if (entry.get("vel_90s_pct_min") is None and entry.get("vel_5m_pct_min") is None) or stale_short_cache:
+            for kk_s, kv_s in compute_series_kinematics(series_24h).items():
+                if entry.get(kk_s) is None or stale_short_cache:
+                    entry[kk_s] = kv_s
         if (entry.get("slope_3_7m") is None or stale_short_cache) and (s_fb := _compute_short_slopes_from_series(series_24h)):
             for sk, sv in s_fb.items():
                 if sv is None:
