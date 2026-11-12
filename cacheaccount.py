@@ -494,6 +494,10 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
                 )
         return rows
 
+    def _log_account_save_error(self, op_label: str, exc: Exception) -> bool:
+        print(f"[{self.cls_name}][Error] {op_label}: {exc}")
+        return False
+
 
 class CacheTradeManager(CacheAccountManagerBase):
     """Unified multi-venue trade fill cache (Level 3) supporting both versioned append-only JSONL (`append_persist=True`) and JSON snapshot dicts (`append_persist=False`)."""
@@ -1125,8 +1129,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 self._persisted_revision = previous_revision
                 self._persisted_committed_bytes = previous_boundary
                 self._persisted_content_digest = previous_digest
-                print(f"[{self.cls_name}][Error] append JSONL {self.filename}: {exc}")
-                return False
+                return self._log_account_save_error(f"append JSONL {self.filename}", exc)
 
     def _read_trade_records_strict(self, start, end, *, path=None):
         """Parse only the requested committed JSONL byte range."""
@@ -1389,8 +1392,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 return True
         except Exception as exc:
             self._legacy_jsonl_needs_rewrite = True
-            print(f"[{self.cls_name}][Error] compact JSONL {self.filename}: {exc}")
-            return False
+            return self._log_account_save_error(f"compact JSONL {self.filename}", exc)
 
     def _rotate_keep_latest(self):
         """Publish a compact Trade generation without moving canonical data first."""
@@ -1803,10 +1805,9 @@ class CacheOrderManager(CacheAccountManagerBase):
         except Exception as exc:
             with self.lock:
                 self._mark_account_cache_dirty_locked()
-            print(
-                f"[{self.cls_name}][Error] While saving the cache file {self.filename} / .tmp : {exc}"
+            return self._log_account_save_error(
+                f"While saving the cache file {self.filename} / .tmp ", exc
             )
-            return False
 
     def _reload_snapshot_from_disk(self):
         try:

@@ -1653,9 +1653,8 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                                 sib_k_vel is not None
                                 and (abs(sib_k_vel) < 1e-9 or (abs(sib_k_vel) < 1e-12 and (sib_k_std is None or sib_k_std >= 5.99)))
                             ) or sib_p_est.get("kalman_vel") is None:
-                                sib_p_est["kalman_vel"] = sib_k.get("kalman_vel")
-                                sib_p_est["kalman_vel_std"] = sib_k.get("kalman_vel_std")
-                                sib_p_est["kalman_trend"] = sib_k.get("kalman_trend")
+                                for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
+                                    sib_p_est[k_kal] = sib_k.get(k_kal)
                             if (sib_k_vol := safe_pos_float(sib_k.get("vol_1h_pct"), default=None)) is not None:
                                 sib_p_est["vol_1h_pct"] = sib_k_vol
                         if sib_s24 and (sib_m24 := compute_24h_price_metrics(sib_s24)):

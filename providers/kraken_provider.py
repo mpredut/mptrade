@@ -1293,14 +1293,13 @@ class KrakenProvider(MarketDataProvider):
         canon_sym = canonical_symbol_key(symbol)
         if canon_sym.endswith("EUR"):
             base_asset = normalize_cache_base_asset(canon_sym)
-            bin_eur_sym = f"{base_asset}EUR" if base_asset else canon_sym
-            krk_eur_pair = (
+            kraken_pair = (
                 "XBTEUR"
                 if base_asset == "BTC"
-                else ("XDGEUR" if base_asset == "DOGE" else bin_eur_sym)
+                else ("XDGEUR" if base_asset == "DOGE" else (f"{base_asset}EUR" if base_asset else canon_sym))
             )
-            return (f"https://api.kraken.com/0/public/Depth?pair={krk_eur_pair}&count=200",), ()
-        kraken_pair = resolve_kraken_lookup_symbol(symbol)
+        else:
+            kraken_pair = resolve_kraken_lookup_symbol(symbol)
         return (f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",), ()
 
     def fetch_historical_ohlc_points(

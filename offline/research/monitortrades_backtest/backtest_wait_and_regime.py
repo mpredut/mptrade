@@ -261,9 +261,11 @@ def main():
         sc = sig222["scale_inv"]
         noise_floor = 0.25 * sc * eps
 
-        print(f"\n--- {sym} ({src_label}, N={len(ts):,}, p={pw.step_wols_power_for_symbol(sym):.1f}, median m={safe_int(np.median(sig222['m']), default=0)}) ---")
-        print(f"{'Gate Policy (max_wait=30s)':<46} | {'BUY Wait%':>9} | {'SELL Wait%':>10} | {'AvgWait':>7} | {'BUY bps':>8} | {'SELL bps':>8} | {'RT Edge bps':>11}")
-        print("-" * 110)
+        print(
+            f"\n--- {sym} ({src_label}, N={len(ts):,}, p={pw.step_wols_power_for_symbol(sym):.1f}, median m={safe_int(np.median(sig222['m']), default=0)}) ---\n"
+            f"{'Gate Policy (max_wait=30s)':<46} | {'BUY Wait%':>9} | {'SELL Wait%':>10} | {'AvgWait':>7} | {'BUY bps':>8} | {'SELL bps':>8} | {'RT Edge bps':>11}\n"
+            + ("-" * 110)
+        )
 
         policies = [
             ("1. use_noise_gate=True (|gc|<=eps waits BUG)",
@@ -297,11 +299,13 @@ def main():
         results, raw_s, scaled_s = evaluate_regime_900s(ts, px, sig900, horizon_sec=900.0, stride=stride)
         q50_raw, q90_raw, q99_raw = np.percentile(raw_s, [50, 90, 99]) if len(raw_s) else (0.0, 0.0, 0.0)
         q50_sc, q90_sc, q99_sc = np.percentile(scaled_s, [50, 90, 99]) if len(scaled_s) else (0.0, 0.0, 0.0)
-        print(f"\n--- {sym} 900s Window ({src_label}, median m={safe_int(np.median(sig900['m']), default=0)}) ---")
-        print(f"    Unscaled |gc|/eps percentiles:         p50={q50_raw:.4f}, p90={q90_raw:.4f}, p99={q99_raw:.4f}")
-        print(f"    Scaled   |gc|/(eps*sc) percentiles:    p50={q50_sc:.4f}, p90={q90_sc:.4f}, p99={q99_sc:.4f}")
-        print(f"{'Regime Filter Policy':<40} | {'Sideways%':>9} | {'15m Move(SW)':>12} | {'15m Move(TR)':>12} | {'MaxAdv(SW)':>10} | {'MaxAdv(TR)':>10} | {'2-SidedFill%':>12}")
-        print("-" * 116)
+        print(
+            f"\n--- {sym} 900s Window ({src_label}, median m={safe_int(np.median(sig900['m']), default=0)}) ---\n"
+            f"    Unscaled |gc|/eps percentiles:         p50={q50_raw:.4f}, p90={q90_raw:.4f}, p99={q99_raw:.4f}\n"
+            f"    Scaled   |gc|/(eps*sc) percentiles:    p50={q50_sc:.4f}, p90={q90_sc:.4f}, p99={q99_sc:.4f}\n"
+            f"{'Regime Filter Policy':<40} | {'Sideways%':>9} | {'15m Move(SW)':>12} | {'15m Move(TR)':>12} | {'MaxAdv(SW)':>10} | {'MaxAdv(TR)':>10} | {'2-SidedFill%':>12}\n"
+            + ("-" * 116)
+        )
         for name, sw_pct, m_sw, m_tr, a_sw, a_tr, f_sw in results:
             print(f"{name:<40} | {sw_pct:>8.1f}% | {m_sw:>11.3f}% | {m_tr:>11.3f}% | {a_sw:>9.3f}% | {a_tr:>9.3f}% | {f_sw:>11.1f}%")
 

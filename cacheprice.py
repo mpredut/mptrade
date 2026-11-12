@@ -273,6 +273,10 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
                 return None
         return ts_val, price_val
 
+    def _log_remote_fetch_error(self, label: str, symbol: str, err: Exception) -> list:
+        print(f"[{self.cls_name}][Error] {label} {symbol}: {err}")
+        return []
+
     def get_remote_items(self, symbol, startTime):
         if (
             is_equity_symbol(symbol)
@@ -296,8 +300,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
                 return []
             entry = cpm.get_price(symbol)
         except Exception as e:
-            print(f"[{self.cls_name}][Error] get_price {symbol}: {e}")
-            return []
+            return self._log_remote_fetch_error("get_price", symbol, e)
 
         if not entry or entry[1] is None:
             return []
@@ -901,6 +904,29 @@ class Cache365PriceManager(Cache24PriceManager):
         self._restore_memory_state_locked(original_state)
         self._merge_live_delta_locked(post_delta)
 
+    def _write_unpersisted_and_live_delta(
+        self, target, original_state, snap_item_ids: set[int], *, min_ts_ms=None
+    ) -> bool:
+        wrote = bool(
+            self._write_unpersisted_memory_tail_locked(
+                target,
+                original_state[0],
+                original_state[1],
+                **(dict(min_ts_ms=min_ts_ms) if min_ts_ms is not None else {}),
+            )
+        )
+        with self.lock:
+            delta_by_sym = (
+                self._collect_live_delta_locked(snap_item_ids)
+                if min_ts_ms is None
+                else self._collect_live_delta_locked(snap_item_ids, min_ts_ms=min_ts_ms)
+            )
+            for symbol, extra_items in delta_by_sym.items():
+                for item in extra_items:
+                    target.write(format_jsonl_bucket_line(symbol, item))
+                    wrote = True
+        return wrote
+
     def maintain_append_persist(self):
         """Prune the full disk archive without holding ``self.lock`` during disk I/O."""
         if not self.save_state:
@@ -915,12 +941,6 @@ class Cache365PriceManager(Cache24PriceManager):
         try:
             with self.lock:
                 original_state, snap_item_ids = self._snapshot_memory_state_with_item_ids_locked()
-                (
-                    original_cache,
-                    original_persisted_counts,
-                    original_fetchtimes,
-                    original_rest_cursors,
-                ) = original_state
 
             backup_path = self.filename + ".maint_backup"
             snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
@@ -937,27 +957,16 @@ class Cache365PriceManager(Cache24PriceManager):
                         target.write(line_out)
                     else:
                         changed = True
-                if self._write_unpersisted_memory_tail_locked(
-                    target,
-                    original_cache,
-                    original_persisted_counts,
-                    min_ts_ms=cutoff_ms,
+                if self._write_unpersisted_and_live_delta(
+                    target, original_state, snap_item_ids, min_ts_ms=cutoff_ms
                 ):
                     changed = True
-                with self.lock:
-                    delta_by_sym = self._collect_live_delta_locked(
-                        snap_item_ids, min_ts_ms=cutoff_ms
-                    )
-                    for symbol, extra_items in delta_by_sym.items():
-                        for item in extra_items:
-                            target.write(format_jsonl_bucket_line(symbol, item))
-                            changed = True
 
             with self.lock:
                 post_delta = self._reload_and_merge_live_delta_locked(
                     snap_item_ids,
-                    original_fetchtimes,
-                    original_rest_cursors,
+                    original_state[2],
+                    original_state[3],
                     min_ts_ms=cutoff_ms,
                 )
                 if changed:
@@ -1001,12 +1010,6 @@ class Cache365PriceManager(Cache24PriceManager):
         archive = f"{self.filename}.{math.trunc(_now_time())}.archive"
         with self.lock:
             original_state, snap_item_ids = self._snapshot_memory_state_with_item_ids_locked()
-            (
-                original_cache,
-                original_persisted_counts,
-                original_fetchtimes,
-                original_rest_cursors,
-            ) = original_state
         try:
             snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
             snapshot_fn(self.filename, archive)
@@ -1019,17 +1022,12 @@ class Cache365PriceManager(Cache24PriceManager):
             decoded_tail = read_tail_complete_lines_text(archive, keep_bytes)
             with atomic_text_writer(self.filename) as target:
                 target.write(decoded_tail)
-                self._write_unpersisted_memory_tail_locked(
-                    target, original_cache, original_persisted_counts
+                self._write_unpersisted_and_live_delta(
+                    target, original_state, snap_item_ids
                 )
-                with self.lock:
-                    delta_by_sym = self._collect_live_delta_locked(snap_item_ids)
-                    for symbol, extra_items in delta_by_sym.items():
-                        for item in extra_items:
-                            target.write(format_jsonl_bucket_line(symbol, item))
             with self.lock:
                 self._reload_and_merge_live_delta_locked(
-                    snap_item_ids, original_fetchtimes, original_rest_cursors
+                    snap_item_ids, original_state[2], original_state[3]
                 )
                 meta_ok = self._write_meta(self._build_basic_meta_locked(self._persisted_counts))
         except Exception as exc:
@@ -1277,8 +1275,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             ts_ms = math.trunc(_now_time() * 1000)
             return [[ts_ms, price_val]]
         except Exception as e:
-            print(f"[{self.cls_name}][Error] HTTP fetch {symbol}: {e}")
-            return []
+            return self._log_remote_fetch_error("HTTP fetch", symbol, e)
 
     def _persist_items(self, symbol, new_items):
         price, ts_ms = self.extract_price_and_ts(new_items)

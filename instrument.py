@@ -405,30 +405,25 @@ class Instrument:
             or ctx.bypass_profit_guard
         )
 
+        def _revoke_disallowed_side_bypass(attr_name: str, guard_code: str, label: str, allowed_side: str) -> None:
+            print(f"[GUARD] {ctx.side_u} {self.symbol}: {label} ignored; is allowed only for {allowed_side}")
+            revoke_guard_bypass(ctx.bypassed_guards, guard_code)
+            setattr(ctx, attr_name, False)
+
         if (
             ctx.bypass_math_ref
             and not ctx.bypass_profit_guard
             and ctx.side_u != "BUY"
             and not ctx.allow_math_reference_sell
         ):
-            print(
-                f"[GUARD] {ctx.side_u} {self.symbol}: bypass math_profit/math_reference "
-                "ignored; is allowed only for BUY"
-            )
-            revoke_guard_bypass(ctx.bypassed_guards, "G_PROF")
-            ctx.bypass_math_ref = False
+            _revoke_disallowed_side_bypass("bypass_math_ref", "G_PROF", "bypass math_profit/math_reference", "BUY")
         if (
             ctx.bypass_quantity_policy
             and not ctx.bypass_profit_guard
             and ctx.side_u != "SELL"
             and ctx.caller_module != "assetguardian"
         ):
-            print(
-                f"[GUARD] {ctx.side_u} {self.symbol}: bypass_quantity_policy "
-                "ignored; is allowed only for SELL"
-            )
-            revoke_guard_bypass(ctx.bypassed_guards, "G_QLIMIT1")
-            ctx.bypass_quantity_policy = False
+            _revoke_disallowed_side_bypass("bypass_quantity_policy", "G_QLIMIT1", "bypass_quantity_policy", "SELL")
 
         ctx.wait_for_trend = _parse_bool_flag(kwargs.pop("wait_for_trend", True), True)
         ctx.abort_if = kwargs.pop("abort_if", None)

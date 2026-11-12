@@ -146,6 +146,10 @@ class NewCoinsSource(ABC):
         response.raise_for_status()
         return response.json()
 
+    def _record_refresh_complete(self, label: str, detail: str) -> None:
+        print(f"[{label} Source] {detail}")
+        self._last_refresh = time.time()
+
 # ============================================
 # Source 1: CoinMarketCap
 # ============================================
@@ -204,8 +208,7 @@ class CoinMarketCapSource(NewCoinsSource):
                             "slug": slug,
                             "url": f"https://coinmarketcap.com/currencies/{slug}/" if slug else ""
                         })
-                print(f"[CMC Source] Loaded {len(self._cache)} coins")
-                self._last_refresh = time.time()
+                self._record_refresh_complete("CMC", f"Loaded {len(self._cache)} coins")
         except Exception as e:
             print(f"[CMC Source] Error: {e}")
 
@@ -243,8 +246,7 @@ class CoinGeckoSource(NewCoinsSource):
                         "change_24h": None, "change_7d": None,
                         "url": f"https://www.coingecko.com/en/coins/{coin.get('id', '')}"
                     })
-            print(f"[CoinGecko Source] Loaded {len(self._cache)} coins")
-            self._last_refresh = time.time()
+            self._record_refresh_complete("CoinGecko", f"Loaded {len(self._cache)} coins")
         except Exception as e:
             print(f"[CoinGecko Source] Error: {e}")
 
