@@ -37,6 +37,7 @@ from offline.backtests.evaluation import (
     add_walk_forward_cli_args,
     build_and_save_interval_baseline_report,
     build_execution_model_from_args,
+    ensure_cli_output_dir,
     load_venue_replay_module,
     parse_cli_float,
     parse_cli_int,
@@ -44,6 +45,7 @@ from offline.backtests.evaluation import (
     parse_intervals,
     parse_optional_lookback_days,
     validate_bt_cli_token,
+    validate_cli_fee_pct,
 )
 from offline.runners.fetch_hyperliquid_candles import _hl_md, resolve_spot_pair
 from providers.hyperliquid_provider import HyperliquidProvider
@@ -115,11 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         if direction not in ("long", "short"):
             parser.error(f"Invalid direction: {direction!r}")
         fee_pct = args.fee if args.fee is not None else required_float_env("HL_FEE_PCT", env=cfg)
-        fee_val = safe_nonneg_float(fee_pct, default=None)
-        if fee_val is None:
-            parser.error("--fee cannot be negative")
-        if fee_val >= 100.0:
-            parser.error("--fee must be < 100")
+        validate_cli_fee_pct(parser, fee_pct)
 
         if args.engine == "spot":
             strat_params = SpotStratParams.from_env(env=cfg)
@@ -130,8 +128,7 @@ def main(argv: list[str] | None = None) -> int:
 
         execution = build_execution_model_from_args(parser, args)
         dataset_map = parse_dataset_specs(args.dataset)
-        output_dir = args.output_dir.expanduser().resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = ensure_cli_output_dir(args.output_dir)
 
         summary_by_interval = {}
         for interval in args.intervals:

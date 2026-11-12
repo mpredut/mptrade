@@ -26,6 +26,7 @@ from offline.backtests.datasets import (
 from offline.backtests.evaluation import (
     add_walk_forward_cli_args,
     build_and_save_interval_baseline_report,
+    ensure_cli_output_dir,
     extract_cfg_float,
     extract_cfg_int,
     parse_cli_int,
@@ -112,10 +113,8 @@ def main(argv: list[str] | None = None) -> int:
                     "order_ttl_min": 60.0,
                 })
         supplied_datasets = parse_dataset_specs(args.dataset)
-        output_dir = args.output_dir.expanduser().resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
-        dataset_dir = output_dir / "datasets"
-        dataset_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = ensure_cli_output_dir(args.output_dir)
+        dataset_dir = ensure_cli_output_dir(output_dir / "datasets")
 
         summary_by_interval = {}
 

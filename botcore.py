@@ -2048,6 +2048,16 @@ def clean_scale(
     return f if 0.0 <= f <= 1.0 else default
 
 
+def parse_iso_datetime_utc(raw: str) -> datetime | None:
+    """Parse an ISO-8601 string (supporting trailing ``Z``/``z``) into a timezone-aware UTC ``datetime``."""
+    try:
+        iso_s = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+        dt = datetime.fromisoformat(iso_s)
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    except Exception:
+        return None
+
+
 def normalize_epoch_sec(
     val: object, default: float | None = None, *, allow_zero: bool = False, allow_iso: bool = False
 ) -> float | None:
@@ -2056,19 +2066,24 @@ def normalize_epoch_sec(
     if f is None and allow_iso and isinstance(val, str):
         s = val.strip()
         if len(s) >= 10 and ("-" in s or "T" in s):
-            try:
-                iso_s = s[:-1] + "+00:00" if s.endswith(("Z", "z")) else s
-                dt = datetime.fromisoformat(iso_s)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
+            if (dt := parse_iso_datetime_utc(s)) is not None:
                 ts_s = dt.timestamp()
                 if (ts_s >= 0.0) if allow_zero else (ts_s > 0.0):
                     f = ts_s
-            except Exception:
-                f = None
     if f is None:
         return default
     return f / 1000.0 if f >= 1e11 else f
+
+
+def parse_epoch_price_pair(
+    item: object, *, allow_zero_ts: bool = True
+) -> tuple[float, float] | None:
+    """Parse a 2-element ``(ts, price)`` list/tuple into ``(epoch_sec, positive_price)`` or ``None``."""
+    if not isinstance(item, (list, tuple)) or len(item) < 2:
+        return None
+    t = normalize_epoch_sec(item[0], default=None, allow_zero=allow_zero_ts)
+    p = safe_pos_float(item[1], default=None)
+    return (t, p) if (t is not None and p is not None) else None
 
 
 def safe_nonneg_ts(val: object, default: float = 0.0) -> float:

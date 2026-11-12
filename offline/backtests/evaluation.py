@@ -471,16 +471,31 @@ def parse_optional_lookback_days(
     return lookback_days
 
 
+def validate_cli_fee_pct(
+    parser: argparse.ArgumentParser, raw_fee: object
+) -> float:
+    """Validate that ``raw_fee`` is a non-negative float strictly below 100%."""
+    fee_val = safe_nonneg_float(raw_fee, default=None)
+    if fee_val is None:
+        parser.error("--fee cannot be negative")
+    if fee_val >= 100.0:
+        parser.error("--fee must be < 100")
+    return fee_val
+
+
+def ensure_cli_output_dir(output_dir: Path) -> Path:
+    """Expand, resolve, and create ``output_dir`` (with parents)."""
+    resolved = output_dir.expanduser().resolve()
+    resolved.mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
 def build_execution_model_from_args(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> ExecutionModel:
     """Validate walk-forward window CLI flags and construct ExecutionModel."""
     if hasattr(args, "fee") and args.fee is not None:
-        fee_val = safe_nonneg_float(args.fee, default=None)
-        if fee_val is None:
-            parser.error("--fee cannot be negative")
-        if fee_val >= 100.0:
-            parser.error("--fee must be < 100")
+        validate_cli_fee_pct(parser, args.fee)
     explicit_windows = (args.train, args.validation, args.test)
     if any(isinstance(value, bool) for value in (*explicit_windows, args.step)):
         parser.error("the walk-forward sizes must be positive")

@@ -1125,11 +1125,11 @@ def _can_pass_buy_quantity_policy(
             print(f"[{symbol}] Post-STOP re-entry deferred before AI guard: qty {final_qty} refused by filter ({refusal})")
             return False
         if not below_sell and callable(getattr(provider, "get_orders", None)):
-            dl_res = order_guard.daily_limit_guard(provider, symbol, "BUY", bypass_guards=reentry_bg)
-            dl_ok = dl_res[0] if isinstance(dl_res, tuple) else bool(dl_res)
-            dl_reason = dl_res[1] if isinstance(dl_res, tuple) and len(dl_res) > 1 else "daily_limit"
+            dl_ok, dl_reason = order_guard.unpack_daily_limit_result(
+                order_guard.daily_limit_guard(provider, symbol, "BUY", bypass_guards=reentry_bg)
+            )
             if not dl_ok:
-                print(f"[{symbol}] Post-STOP re-entry deferred before AI guard: {dl_reason or 'daily_limit'}")
+                print(f"[{symbol}] Post-STOP re-entry deferred before AI guard: {dl_reason}")
                 return False
         if not below_sell:
             intel_ok, intel_reason, intel_scale = order_guard.check_intelligence_guards(

@@ -380,13 +380,13 @@ class KrakenTrailing(TrailingAdapterBase):
         normalized_bypass = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if "all" not in normalized_bypass:
             if callable(getattr(self.executor, "get_orders", None)):
-                dl_res = order_guard.daily_limit_guard(
-                    self.executor, pair, side.upper(), bypass_guards=bypass_guards,
+                dl_ok, dl_reason = order_guard.unpack_daily_limit_result(
+                    order_guard.daily_limit_guard(
+                        self.executor, pair, side.upper(), bypass_guards=bypass_guards,
+                    )
                 )
-                dl_ok = dl_res[0] if isinstance(dl_res, tuple) else bool(dl_res)
-                dl_reason = dl_res[1] if isinstance(dl_res, tuple) and len(dl_res) > 1 else "daily_limit"
                 if not dl_ok:
-                    intent["refusal_reason"] = dl_reason or "daily_limit"
+                    intent["refusal_reason"] = dl_reason
                     persist(None)
                     return TrackedOrderResult(outcome="refused", intent=intent, status=None)
             allowed, reason, suggested_scale = order_guard.check_intelligence_guards(

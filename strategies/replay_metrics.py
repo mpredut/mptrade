@@ -398,6 +398,22 @@ def run_tp_drop_sl_sweep(
     return rows
 
 
+def resolve_cli_ohlc_and_timestamps(
+    fetch_candles,
+    default_sentinel,
+    records_fn,
+    *fetch_args,
+):
+    """Fetch ``(ohlc, timestamps)`` from ``records_fn()`` when ``fetch_candles`` is unpatched, else call ``fetch_candles``."""
+    if fetch_candles is default_sentinel:
+        records = records_fn()
+        return (
+            [(r["open"], r["high"], r["low"], r["close"]) for r in records],
+            [r["timestamp"] for r in records],
+        )
+    return fetch_candles(*fetch_args), None
+
+
 def run_cli_single_or_sweep_backtest(
     mode: str,
     base: dict,

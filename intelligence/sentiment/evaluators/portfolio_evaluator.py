@@ -5,7 +5,7 @@ from abc import ABC
 import math
 import os
 import time as _time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from cachepaths import (
     cache_symbol_variants,
@@ -248,6 +248,35 @@ def select_fresh_open_lots(
             if len(ext_rev) > len(fresh_lots):
                 fresh_lots = list(reversed(ext_rev))
     return fresh_lots, newest_lot_ts
+
+
+def clip_open_lots_to_held_qty(
+    lots: Sequence[Dict[str, Any]],
+    held_qty: float,
+    *,
+    total_qty: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Clip LIFO ``lots`` from the newest lot backward when total lot quantity exceeds ``held_qty * 1.02``."""
+    tot_q = (
+        total_qty
+        if total_qty is not None
+        else sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in lots if isinstance(lt, dict))
+    )
+    if held_qty <= 1e-8 or tot_q <= held_qty * 1.02:
+        return list(lots)
+    clipped_rev: List[Dict[str, Any]] = []
+    rem_q = held_qty
+    for lt in reversed(lots):
+        if not isinstance(lt, dict) or rem_q <= 1e-8:
+            continue
+        lq = safe_pos_float(lt.get("qty"), 0.0) or 0.0
+        if lq <= 0.0:
+            continue
+        take_q = round(min(lq, rem_q), 6)
+        if take_q > 1e-8:
+            clipped_rev.append({**lt, "qty": take_q})
+            rem_q -= take_q
+    return list(reversed(clipped_rev))
 
 
 def reconcile_fresh_lots_vwap(

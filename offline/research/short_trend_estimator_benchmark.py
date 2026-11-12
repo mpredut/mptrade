@@ -42,6 +42,7 @@ from botcore import (
     int_env,
     normalize_epoch_sec,
     optional_env,
+    parse_epoch_price_pair,
     safe_float,
     safe_int,
     safe_pos_float,
@@ -133,14 +134,9 @@ def load_series(sym):
     for r in read_jsonl_dicts(jsonl_path):
         if r.get("s") not in valid_syms:
             continue
-        item = r.get("i")
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
-            continue
-        t = normalize_epoch_sec(item[0], default=None, allow_zero=True)
-        p = safe_pos_float(item[1], default=None)
-        if t is not None and p is not None:
-            ts.append(t)
-            px.append(p)
+        if (parsed := parse_epoch_price_pair(r.get("i"))) is not None:
+            ts.append(parsed[0])
+            px.append(parsed[1])
     if not ts:
         return np.empty(0), np.empty(0)
     ts, px = np.asarray(ts, dtype=np.float64), np.asarray(px, dtype=np.float64)

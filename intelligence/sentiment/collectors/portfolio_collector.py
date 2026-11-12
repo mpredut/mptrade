@@ -53,6 +53,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     _first_variant_dict,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
+    clip_open_lots_to_held_qty,
     enrich_positions_with_orders_and_cycles,
     extract_symbol_recent_fills,
     parse_venue_cycle_state,
@@ -1298,21 +1299,9 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
             fresh_lots, _ = select_fresh_open_lots(open_lots_raw, held_qty=held_cur_f)
             if fresh_lots:
                 _, fresh_q = reconcile_fresh_lots_vwap(fills, open_lots_raw, fresh_lots, held_cur_f)
-                if held_cur_f > 1e-8 and fresh_q > held_cur_f * 1.02:
-                    clipped_rev: List[Dict[str, Any]] = []
-                    rem_q = held_cur_f
-                    for lt in reversed(fresh_lots):
-                        if rem_q <= 1e-8:
-                            continue
-                        lq = safe_pos_float(lt.get("qty"), 0.0) or 0.0
-                        if lq <= 0.0:
-                            continue
-                        take_q = round(min(lq, rem_q), 6)
-                        if take_q > 1e-8:
-                            clipped_rev.append({**lt, "qty": take_q})
-                            rem_q -= take_q
-                    fresh_lots = list(reversed(clipped_rev))
-                fills["open_lots"] = fresh_lots
+                fills["open_lots"] = clip_open_lots_to_held_qty(
+                    fresh_lots, held_cur_f, total_qty=fresh_q
+                )
         return fills
 
 

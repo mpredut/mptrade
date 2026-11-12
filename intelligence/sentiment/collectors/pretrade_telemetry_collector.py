@@ -75,6 +75,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
     is_ob_mid_fresher_than_series,
+    is_unseeded_kalman_state,
     reconcile_sibling_flow_and_liq_regimes,
     rescale_orderbook_walls_to_price,
 )
@@ -1392,12 +1393,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                 if isinstance(k_items, dict):
                     k_items_map = k_items
                 if isinstance(k_sym := _first_variant_dict(k_items, sym_variants), dict):
-                    k_vel = safe_float(k_sym.get("kalman_vel"), default=None)
-                    k_std = safe_float(k_sym.get("kalman_vel_std"), default=None)
-                    if not (
-                        k_vel is not None
-                        and (abs(k_vel) < 1e-9 or (abs(k_vel) < 1e-12 and (k_std is None or k_std >= 5.99)))
-                    ) or t_entry.get("kalman_vel") is None:
+                    if not is_unseeded_kalman_state(k_sym) or t_entry.get("kalman_vel") is None:
                         t_entry["kalman_vel"] = k_sym.get("kalman_vel")
                         t_entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
                         t_entry["kalman_trend"] = k_sym.get("kalman_trend")

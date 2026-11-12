@@ -17,6 +17,7 @@ from botcore import (
     fetch_public_bytes,
     normalize_epoch_sec,
     obj_attr,
+    parse_iso_datetime_utc,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -233,11 +234,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         try:
             dt = email.utils.parsedate_to_datetime(s)
         except Exception:
-            try:
-                iso_s = (s[:-1] + "+00:00") if s.endswith(("Z", "z")) else s
-                dt = datetime.fromisoformat(iso_s)
-            except Exception:
-                dt = None
+            dt = parse_iso_datetime_utc(s)
         if dt is not None:
             try:
                 if dt.tzinfo is None:

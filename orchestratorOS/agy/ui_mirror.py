@@ -33,6 +33,7 @@ from orchestratorOS.agy.summary_store import (
     delete_threads,
     drop_wal_sidecars,
     get_thread_step_count,
+    iter_sqlite_user_table_columns,
     read_summary_row,
     summaries_db,
     upsert_summary_row_dict,
@@ -222,16 +223,7 @@ def mirror_topic_thread_to_ui(
                             shutil.copy2(dst_db, tmp_db)
                             gconn = sqlite3.connect(tmp_db)
                             try:
-                                tables = [
-                                    r[0]
-                                    for r in gconn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                                    if isinstance(r[0], str) and r[0] and not r[0].startswith("sqlite_")
-                                ]
-                                for tbl in tables:
-                                    cols = [r[1] for r in gconn.execute(f"PRAGMA table_info(`{tbl}`)").fetchall()]
-                                    if not cols:
-                                        continue
-                                    col_sql = ",".join(f"`{c}`" for c in cols)
+                                for tbl, cols, col_sql in iter_sqlite_user_table_columns(gconn):
                                     rows = gconn.execute(f"SELECT rowid, {col_sql} FROM `{tbl}`").fetchall()
                                     for r_row in rows:
                                         rid = r_row[0]

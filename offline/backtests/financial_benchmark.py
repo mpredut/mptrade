@@ -9,7 +9,10 @@ from typing import Iterable
 
 from cachepaths import normalize_venue_name
 from offline.backtests.execution import ExecutionModel, FeeModel
-from offline.backtests.walk_forward import summarize_test_windows
+from offline.backtests.walk_forward import (
+    summarize_test_windows,
+    validate_window_required_fields,
+)
 from botcore import (
     clean_finite_floats,
     safe_float,
@@ -211,12 +214,7 @@ def aggregate_financial_windows(
         "key", "return_pct", "max_drawdown_pct", "buy_hold_return_pct",
         "cycles", "fills", "metrics",
     }
-    for window in windows:
-        if not isinstance(window, dict):
-            raise ValueError(f"incomplete financial window: {sorted(required)}")
-        missing = required.difference(window)
-        if missing:
-            raise ValueError(f"incomplete financial window: {sorted(missing)}")
+    validate_window_required_fields(windows, required, "incomplete financial window")
 
     summary = summarize_test_windows(windows)
     metrics = [window["metrics"] if isinstance(window.get("metrics"), dict) else {} for window in windows]

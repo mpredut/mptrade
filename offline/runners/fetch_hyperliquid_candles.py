@@ -20,6 +20,7 @@ from botcore import exact_int, exact_pos_int, safe_int
 from state_io import atomic_write_bytes, atomic_write_json
 from offline.backtests.datasets import canonical_bytes, dataset_metadata
 from offline.backtests.evaluation import (
+    ensure_cli_output_dir,
     load_venue_module,
     parse_intervals,
     parse_optional_lookback_days,
@@ -136,8 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(spot_meta, dict):
             raise RuntimeError("invalid spotMeta response")
         coin = resolve_spot_pair(args.token, args.quote, spot_meta)
-        output_dir = args.output_dir.expanduser().resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = ensure_cli_output_dir(args.output_dir)
 
         manifest = {
             "schema_version": 1,

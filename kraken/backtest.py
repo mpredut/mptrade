@@ -26,6 +26,7 @@ from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     create_backtest_cli_parser,
     parse_bt_cli_int,
+    resolve_cli_ohlc_and_timestamps,
     run_cli_single_or_sweep_backtest,
     validate_bt_cli_token,
 )
@@ -181,13 +182,13 @@ def main() -> int:
     except (ValueError, KeyError, OSError) as exc:
         print(f"! config error: {exc}"); return 1
     try:
-        if fetch_candles is _DEFAULT_FETCH_CANDLES:
-            records = fetch_ohlc_candles(pair_tok, args.interval, drop_incomplete=True)
-            ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
-            timestamps = [r["timestamp"] for r in records]
-        else:
-            ohlc = fetch_candles(pair_tok, args.interval)
-            timestamps = None
+        ohlc, timestamps = resolve_cli_ohlc_and_timestamps(
+            fetch_candles,
+            _DEFAULT_FETCH_CANDLES,
+            lambda: fetch_ohlc_candles(pair_tok, args.interval, drop_incomplete=True),
+            pair_tok,
+            args.interval,
+        )
     except Exception as e:  # noqa: BLE001
         print(f"! data error: {e}"); return 1
 

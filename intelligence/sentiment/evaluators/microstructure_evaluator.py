@@ -935,6 +935,19 @@ def update_microstructure_cycle_deltas(
     return mhist
 
 
+def is_unseeded_kalman_state(
+    mapping: Any, *, treat_none_as_unseeded: bool = False
+) -> bool:
+    """Return True when a Kalman state dictionary is unseeded or cold-initialized."""
+    if not isinstance(mapping, dict):
+        return treat_none_as_unseeded
+    vel = safe_float(mapping.get("kalman_vel"), default=None)
+    if vel is None:
+        return treat_none_as_unseeded
+    std = safe_float(mapping.get("kalman_vel_std"), default=None)
+    return abs(vel) < 1e-9 or (abs(vel) < 1e-12 and (std is None or std >= 5.99))
+
+
 def enrich_cross_venue_trends(
     prices_and_trends: Dict[str, Any],
     trends_data: Any,
@@ -1036,19 +1049,9 @@ def enrich_cross_venue_trends(
                         break
 
         if isinstance(kalman_data, dict) and isinstance(k_sym := _first_variant_dict(kalman_data, cand_keys), dict):
-            k_vel = safe_float(k_sym.get("kalman_vel"), default=None)
-            k_std = safe_float(k_sym.get("kalman_vel_std"), default=None)
-            is_unseeded_cold_kalman = k_vel is not None and (
-                abs(k_vel) < 1e-9 or (abs(k_vel) < 1e-12 and (k_std is None or k_std >= 5.99))
-            )
-            cur_e_vel = safe_float(entry.get("kalman_vel"), default=None)
-            cur_e_std = safe_float(entry.get("kalman_vel_std"), default=None)
-            cur_is_unseeded = (
-                cur_e_vel is None
-                or abs(cur_e_vel) < 1e-9
-                or (abs(cur_e_vel) < 1e-12 and (cur_e_std is None or cur_e_std >= 5.99))
-            )
-            if cur_is_unseeded and (not is_unseeded_cold_kalman or cur_e_vel is None):
+            is_unseeded_cold_kalman = is_unseeded_kalman_state(k_sym)
+            cur_is_unseeded = is_unseeded_kalman_state(entry, treat_none_as_unseeded=True)
+            if cur_is_unseeded and (not is_unseeded_cold_kalman or safe_float(entry.get("kalman_vel"), default=None) is None):
                 entry["kalman_vel"], entry["kalman_vel_std"], entry["kalman_trend"] = (
                     k_sym.get("kalman_vel"), k_sym.get("kalman_vel_std"), k_sym.get("kalman_trend")
                 )

@@ -27,7 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import normalize_epoch_sec, parse_symbol_list, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import normalize_epoch_sec, parse_epoch_price_pair, parse_symbol_list, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_path, canonical_base_asset
 from instrument_registry import symbols_for
 from intelligence.internal.state.survival import get_trade_weight
@@ -123,12 +123,10 @@ def _clean_sorted_price_samples(raw_series: Any) -> List[Tuple[float, float]]:
     needs_sort = False
     prev_t: Optional[float] = None
     for item in raw_series or ():
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
+        parsed = parse_epoch_price_pair(item)
+        if parsed is None:
             continue
-        t = normalize_epoch_sec(item[0], default=None, allow_zero=True)
-        p = safe_pos_float(item[1], default=None)
-        if t is None or p is None:
-            continue
+        t, p = parsed
         if prev_t is not None and t < prev_t:
             needs_sort = True
         prev_t = t

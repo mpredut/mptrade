@@ -34,6 +34,9 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     enrich_microstructure_cvd,
     reconcile_sibling_flow_and_liq_regimes,
 )
+from intelligence.sentiment.evaluators.portfolio_evaluator import (
+    clip_open_lots_to_held_qty,
+)
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     _build_vp_position_dict,
     _compute_horizon_range_dict,
@@ -1148,22 +1151,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         held_pos_q = (safe_float(pos.get("free_base"), 0.0) or 0.0) + (
             safe_float(pos.get("locked_base_qty"), 0.0) or 0.0
         )
-        eff_lots = open_lots[-4:]
-        tot_lot_q = sum(safe_float(lt.get("qty"), 0.0) or 0.0 for lt in eff_lots if isinstance(lt, dict))
-        if held_pos_q > 0.0 and tot_lot_q > held_pos_q * 1.02:
-            clipped_rev: List[Dict[str, Any]] = []
-            rem_q = held_pos_q
-            for lt in reversed(eff_lots):
-                if not isinstance(lt, dict) or rem_q <= 1e-8:
-                    continue
-                lq = safe_float(lt.get("qty"), 0.0) or 0.0
-                if lq <= 0.0:
-                    continue
-                take_q = round(min(lq, rem_q), 6)
-                if take_q > 1e-8:
-                    clipped_rev.append({**lt, "qty": take_q})
-                    rem_q -= take_q
-            eff_lots = list(reversed(clipped_rev))
+        eff_lots = clip_open_lots_to_held_qty(open_lots[-4:], held_pos_q)
         lot_parts: List[str] = []
         valid_lots: List[Tuple[float, float, float]] = []
         min_net_pct = max(0.20, (taker_bps or 10.0) * 2.0 / 100.0)

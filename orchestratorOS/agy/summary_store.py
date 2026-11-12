@@ -262,6 +262,21 @@ def _resolve_existing_conversation_db(cli_base: str, cid: str) -> Optional[tuple
     return (clean_cid, db_path) if os.path.exists(db_path) else None
 
 
+def iter_sqlite_user_table_columns(conn) -> list[tuple[str, list[str], str]]:
+    """Return ``[(table_name, cols, col_sql), ...]`` for all non-system SQLite tables."""
+    out: list[tuple[str, list[str], str]] = []
+    tables = [
+        r[0]
+        for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        if isinstance(r[0], str) and r[0] and not r[0].startswith("sqlite_")
+    ]
+    for tbl in tables:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info(`{tbl}`)").fetchall()]
+        if cols:
+            out.append((tbl, cols, ",".join(f"`{c}`" for c in cols)))
+    return out
+
+
 def snapshot_conversation_state(cli_base: str, cid: str) -> Optional[dict]:
     """Capture a lightweight in-memory rollback checkpoint of ``<cid>.db`` and its summary row."""
     resolved = _resolve_existing_conversation_db(cli_base, cid)
@@ -272,15 +287,7 @@ def snapshot_conversation_state(cli_base: str, cid: str) -> Optional[dict]:
     try:
         conn = sqlite3.connect(db_path, timeout=10)
         try:
-            tables = [
-                r[0]
-                for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                if isinstance(r[0], str) and r[0] and not r[0].startswith("sqlite_")
-            ]
-            for tbl in tables:
-                cols = [r[1] for r in conn.execute(f"PRAGMA table_info(`{tbl}`)").fetchall()]
-                if not cols:
-                    continue
+            for tbl, cols, _ in iter_sqlite_user_table_columns(conn):
                 if "idx" in cols:
                     max_idx = conn.execute(f"SELECT MAX(idx) FROM `{tbl}`").fetchone()[0]
                     tail_row = (

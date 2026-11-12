@@ -73,6 +73,18 @@ _nonneg_finite_number = _bind_named_validator(safe_nonneg_float, "non-negative f
 _nonneg_exact_int = _bind_named_validator(exact_nonneg_int, "non-negative integer")
 
 
+def validate_window_required_fields(
+    windows: Iterable, required: set[str], error_prefix: str
+) -> None:
+    """Ensure every item in ``windows`` is a dict containing all ``required`` keys."""
+    for window in windows:
+        if not isinstance(window, dict):
+            raise ValueError(f"{error_prefix}: {sorted(required)}")
+        missing = required.difference(window)
+        if missing:
+            raise ValueError(f"{error_prefix}: {sorted(missing)}")
+
+
 def summarize_test_windows(windows: list[dict]) -> dict:
     """Aggregate comparable TEST windows without hiding the worst regime.
 
@@ -88,12 +100,9 @@ def summarize_test_windows(windows: list[dict]) -> dict:
     required = {
         "return_pct", "max_drawdown_pct", "buy_hold_return_pct", "cycles", "fills",
     }
-    for window in windows:
-        if not isinstance(window, dict):
-            raise ValueError(f"missing fields in the TEST window: {sorted(required)}")
-        missing = required.difference(window)
-        if missing:
-            raise ValueError(f"missing fields in the TEST window: {sorted(missing)}")
+    validate_window_required_fields(
+        windows, required, "missing fields in the TEST window"
+    )
 
     returns = [_finite_number(window["return_pct"], "return_pct") for window in windows]
     drawdowns = [_nonneg_finite_number(window["max_drawdown_pct"], "max_drawdown_pct") for window in windows]
