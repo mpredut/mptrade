@@ -1084,8 +1084,11 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             sym_live[w_key] = stored
             self._dirty_live_symbols.add(symbol)
             if flush and self.writer:
-                self._write_live_symbol_file(symbol)
-                self._dirty_live_symbols.discard(symbol)
+                self._flush_live_symbol_file(symbol)
+
+    def _flush_live_symbol_file(self, symbol: str) -> None:
+        self._write_live_symbol_file(symbol)
+        self._dirty_live_symbols.discard(symbol)
 
     def _write_live_symbol_file(self, symbol: str):
         """Persist cachedb/24trend/live_<SYMBOL>.json with clean window-keyed entries only."""
@@ -1241,8 +1244,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     if symbol in self._dirty_live_symbols or not os.path.exists(
                         self._live_trend_file(symbol)
                     ):
-                        self._write_live_symbol_file(symbol)
-                        self._dirty_live_symbols.discard(symbol)
+                        self._flush_live_symbol_file(symbol)
                 return True
         except Exception as e:
             print(f"[{self.cls_name}] write failure for {self.filename}: {e}")

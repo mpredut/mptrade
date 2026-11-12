@@ -1000,8 +1000,7 @@ class KrakenProvider(MarketDataProvider):
                     symbol, s, qty, submit_price, ordertype=ordertype, validate=True,
                     cl_ord_id=cl_ord_id)
             except Exception as e:  # noqa: BLE001
-                print(f"[Kraken][DRY] validate {symbol}: {e}")
-                return None
+                return self._log_provider_balance_error("Kraken][DRY", "validate", symbol, e)
         try:
             print(f"[Kraken][LIVE] {side} {symbol} qty={qty} @ {price}")
             res = self._execute_kraken_live_order(

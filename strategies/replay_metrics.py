@@ -568,6 +568,43 @@ def validate_bt_cli_token(
     return tok
 
 
+def print_bt_cli_error(message: Any, *, emit=print) -> int:
+    """Emit a ``! <message>`` CLI error line and return exit status ``1``."""
+    emit(f"! {message}")
+    return 1
+
+
+def validate_common_backtest_cli_bounds(
+    *,
+    budget: float,
+    entry: float,
+    dca: float,
+    maxdca: int,
+    fee: float,
+    sl: float,
+    disc: float,
+    tp: float,
+    drop: float,
+    pct_label: str = "fee/sl/disc",
+    extra_nonneg: Sequence[float] = (),
+    extra_pct_lt_100: Sequence[float] = (),
+) -> str | None:
+    """Validate common backtest CLI numeric bounds, returning an error message or ``None``."""
+    if budget <= 0:
+        return "budget must be > 0"
+    if entry <= 0 or dca <= 0:
+        return "entry and dca must be > 0"
+    if maxdca < 0:
+        return "maxdca must be >= 0"
+    if fee < 0 or sl < 0 or disc < 0 or any(v < 0 for v in extra_nonneg):
+        return f"{pct_label} must be >= 0"
+    if fee >= 100.0 or sl >= 100.0 or disc >= 100.0 or any(v >= 100.0 for v in extra_pct_lt_100):
+        return f"{pct_label} must be < 100"
+    if tp <= 0 or drop <= 0:
+        return "tp and drop must be > 0"
+    return None
+
+
 __all__ = [
     "add_common_backtest_cli_args",
     "buy_hold_pct",
@@ -577,11 +614,13 @@ __all__ = [
     "parse_bt_cli_float",
     "parse_bt_cli_int",
     "print_ascii_table_header",
+    "print_bt_cli_error",
     "print_single_backtest_report",
     "round_metric",
     "run_cli_single_or_sweep_backtest",
     "run_tp_drop_sl_sweep",
     "validate_bt_cli_token",
+    "validate_common_backtest_cli_bounds",
     "validate_replay_metrics",
     "write_markdown_report",
 ]

@@ -26,9 +26,11 @@ from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     create_backtest_cli_parser,
     parse_bt_cli_float,
+    print_bt_cli_error,
     resolve_cli_ohlc_and_timestamps,
     run_cli_single_or_sweep_backtest,
     validate_bt_cli_token,
+    validate_common_backtest_cli_bounds,
 )
 from strategies.spot_replay import scale_subbar_timeout_params
 from botcore import (
@@ -220,12 +222,10 @@ def main() -> int:
         range_tok = validate_bt_cli_token(args.range, "--range")
         interval_tok = validate_bt_cli_token(args.interval, "--interval")
     except ValueError as exc:
-        print(f"! {exc}")
-        return 1
+        return print_bt_cli_error(exc)
     cfg_file = os.path.join(T212_DIR, f"config.{profile}.env")
     if not os.path.exists(cfg_file):
-        print(f"! profile config not found: {cfg_file}")
-        return 1
+        return print_bt_cli_error(f"profile config not found: {cfg_file}")
     try:
         cfg = _load_isolated_t212_cfg(os.path.join(T212_DIR, ".env"), profile_file=cfg_file)
         budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET", cfg)
@@ -245,8 +245,7 @@ def main() -> int:
         else:
             maxdca, entry = parse_max_dca_buys_env(cfg, budget, entry, dca)
     except (ValueError, KeyError, OSError) as exc:
-        print(f"! config error: {exc}")
-        return 1
+        return print_bt_cli_error(f"config error: {exc}")
 
     sl_mhdsl = args.mhdsl if args.mhdsl is not None else (
         _parse_bool_flag(cfg.get("STRAT_SL_MHDSL_ENABLED"), default=False)
@@ -259,19 +258,24 @@ def main() -> int:
 
     bar_min = interval_minutes(interval_tok)
     if bar_min is None:
-        print(f"! unsupported interval: {interval_tok}"); return 1
-    if budget <= 0:
-        print("! budget must be > 0"); return 1
-    if entry <= 0 or dca <= 0:
-        print("! entry and dca must be > 0"); return 1
-    if maxdca < 0:
-        print("! maxdca must be >= 0"); return 1
-    if fee < 0 or sl < 0 or disc < 0 or trail_pct < 0 or trail_min_profit < 0:
-        print("! fee/sl/disc/trail parameters must be >= 0"); return 1
-    if fee >= 100.0 or sl >= 100.0 or disc >= 100.0 or trail_pct >= 100.0:
-        print("! fee/sl/disc/trail parameters must be < 100"); return 1
-    if tp <= 0 or drop <= 0:
-        print("! tp and drop must be > 0"); return 1
+        return print_bt_cli_error(f"unsupported interval: {interval_tok}")
+    if (
+        bounds_err := validate_common_backtest_cli_bounds(
+            budget=budget,
+            entry=entry,
+            dca=dca,
+            maxdca=maxdca,
+            fee=fee,
+            sl=sl,
+            disc=disc,
+            tp=tp,
+            drop=drop,
+            pct_label="fee/sl/disc/trail parameters",
+            extra_nonneg=(trail_pct, trail_min_profit),
+            extra_pct_lt_100=(trail_pct,),
+        )
+    ) is not None:
+        return print_bt_cli_error(bounds_err)
     try:
         ohlc, timestamps = resolve_cli_ohlc_and_timestamps(
             fetch_candles,
@@ -282,7 +286,7 @@ def main() -> int:
             interval_tok,
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"! data error: {exc}"); return 1
+        return print_bt_cli_error(f"data error: {exc}")
     base = dict(entry=entry, dca=dca, disc=disc, drop=drop,
                 tp=tp, maxdca=maxdca, budget=budget, fee=fee, sl=sl,
                 sym=sym, bar_minutes=bar_min,

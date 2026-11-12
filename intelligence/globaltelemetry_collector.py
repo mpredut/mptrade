@@ -140,15 +140,23 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.warning("Failed updating RSS news feed: %s", e)
         return False
 
+    def _fetch_step_collector_with_now(
+        self, collector: Any, force: bool, now: Optional[float]
+    ) -> tuple[Any, float]:
+        eff_now = self._resolve_step_now(now)
+        now_val = resolve_now_ts(eff_now)
+        snap = self._call_collector_fetch(
+            collector,
+            force_refresh=_parse_bool_flag(force, False),
+            now_ts=eff_now,
+        )
+        return snap, now_val
+
     def update_fear_greed(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch Crypto Fear & Greed Index and persist snapshot to cachedb/."""
         try:
-            eff_now = self._resolve_step_now(now)
-            now_val = resolve_now_ts(eff_now)
-            snap = self._call_collector_fetch(
-                self.fear_greed_collector,
-                force_refresh=_parse_bool_flag(force, False),
-                now_ts=eff_now,
+            snap, now_val = self._fetch_step_collector_with_now(
+                self.fear_greed_collector, force, now
             )
             if snap:
                 idx_ts = safe_nonneg_ts(getattr(snap, "timestamp", None), now_val) or now_val
@@ -176,12 +184,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def update_market_breadth(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch Binance 24h market breadth and persist snapshot to cachedb/."""
         try:
-            eff_now = self._resolve_step_now(now)
-            now_val = resolve_now_ts(eff_now)
-            breadth = self._call_collector_fetch(
-                self.breadth_collector,
-                force_refresh=_parse_bool_flag(force, False),
-                now_ts=eff_now,
+            breadth, now_val = self._fetch_step_collector_with_now(
+                self.breadth_collector, force, now
             )
             if breadth:
                 raw_gainers = getattr(breadth, "top_gainers", None) or ()

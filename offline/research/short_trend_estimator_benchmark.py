@@ -378,9 +378,7 @@ def evaluate(sym):
                     continue
                 t0 = ts[ix]
                 j = ix
-                while j < seg_bound - 1 and ts[j] - t0 < 240 and sgn[j] != want:
-                    if ts[j + 1] - t0 > 245.0:
-                        break
+                while j < seg_bound - 1 and ts[j] - t0 < 240 and sgn[j] != want and ts[j + 1] - t0 <= 245.0:
                     j += 1
                 lags.append(min(240.0, ts[j] - t0))
             # GT_S BUY on dips: wait while falling (sig < 0)
@@ -393,9 +391,7 @@ def evaluate(sym):
                 t0, p0, peak, j = ts[i], px[i], px[i], i
                 while j < seg_bound - 1 and ts[j] - t0 < 360:
                     peak = max(peak, px[j])
-                    if sig[j] <= 0 or (peak - px[j]) / peak * 1e4 >= 20.0:
-                        break
-                    if ts[j + 1] - t0 > 365.0:
+                    if sig[j] <= 0 or (peak - px[j]) / peak * 1e4 >= 20.0 or ts[j + 1] - t0 > 365.0:
                         break
                     j += 1
                 ride.append((px[j] - p0) / p0 * 1e4)

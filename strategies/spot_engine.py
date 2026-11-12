@@ -963,6 +963,14 @@ class Strategy(BaseSpotMixin):
         """Return True if an uptrend is identified via regime, trend_mode, or venue client."""
         return self._state_flag("trend_mode") or self._is_trend_direction(regime, "bull", ("up", "bull", "uptrend"))
 
+    def _log_and_request_stop_exit(self, price: float, header: str) -> bool:
+        if self._has_pending_market_exit():
+            return True
+        log(header)
+        if not self._request_market_exit(price, "STOP"):
+            log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
+        return True
+
     def _check_stop_loss(self, price: float) -> bool:
         """Close everything when unrealized loss crosses the anti-runaway threshold."""
         if (self.s.get("pending_exit") or {}).get("kind") == "STOP":
@@ -975,12 +983,10 @@ class Strategy(BaseSpotMixin):
 
         if not self.p.sl_mhdsl_enabled:
             if sr.hit_stop(avg, price, self.p.stop_loss_pct):
-                if self._has_pending_market_exit():
-                    return True
-                log(f"  [SL] [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% -- SELLING EVERYTHING (cutting the loss)")
-                if not self._request_market_exit(price, "STOP"):
-                    log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
-                return True
+                return self._log_and_request_stop_exit(
+                    price,
+                    f"  [SL] [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% -- SELLING EVERYTHING (cutting the loss)",
+                )
             return False
         if not self._in_mhdsl_territory(loss_pct):
             return False
@@ -992,12 +998,10 @@ class Strategy(BaseSpotMixin):
         )
         decision = self.exit_manager.evaluate_stop_loss(snapshot, custom_threshold=self.p.stop_loss_pct / 100.0)
         if decision.action == ExitAction.SELL and decision.should_exit:
-            if self._has_pending_market_exit():
-                return True
-            log(f"  [SL] [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) -- SELLING EVERYTHING")
-            if not self._request_market_exit(price, "STOP"):
-                log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
-            return True
+            return self._log_and_request_stop_exit(
+                price,
+                f"  [SL] [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) -- SELLING EVERYTHING",
+            )
         if decision.action == ExitAction.HOLD:
             self._handle_mhdsl_hold_decision(decision)
         return False

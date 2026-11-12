@@ -26,9 +26,11 @@ from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     create_backtest_cli_parser,
     parse_bt_cli_int,
+    print_bt_cli_error,
     resolve_cli_ohlc_and_timestamps,
     run_cli_single_or_sweep_backtest,
     validate_bt_cli_token,
+    validate_common_backtest_cli_bounds,
 )
 from botcore import (
     add_store_true_cli_args,
@@ -159,28 +161,30 @@ def main() -> int:
     try:
         pair_tok = validate_bt_cli_token(args.pair, "--pair", allow_slash=True).upper()
     except ValueError as exc:
-        print(f"! {exc}"); return 1
+        return print_bt_cli_error(exc)
     if args.interval <= 0:
-        print("! interval must be > 0"); return 1
-    if args.budget <= 0:
-        print("! budget must be > 0"); return 1
-    if args.entry <= 0 or args.dca <= 0:
-        print("! entry and dca must be > 0"); return 1
-    if args.maxdca < 0:
-        print("! maxdca must be >= 0"); return 1
-    if args.fee < 0 or args.sl < 0 or args.disc < 0:
-        print("! fee/sl/disc must be >= 0"); return 1
-    if args.fee >= 100.0 or args.sl >= 100.0 or args.disc >= 100.0:
-        print("! fee/sl/disc must be < 100"); return 1
-    if args.tp <= 0 or args.drop <= 0:
-        print("! tp and drop must be > 0"); return 1
+        return print_bt_cli_error("interval must be > 0")
+    if (
+        bounds_err := validate_common_backtest_cli_bounds(
+            budget=args.budget,
+            entry=args.entry,
+            dca=args.dca,
+            maxdca=args.maxdca,
+            fee=args.fee,
+            sl=args.sl,
+            disc=args.disc,
+            tp=args.tp,
+            drop=args.drop,
+        )
+    ) is not None:
+        return print_bt_cli_error(bounds_err)
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop,
                 tp=args.tp, maxdca=args.maxdca, budget=args.budget, fee=args.fee,
                 sl=args.sl, interval=args.interval)
     try:
         _bt_params(base)
     except (ValueError, KeyError, OSError) as exc:
-        print(f"! config error: {exc}"); return 1
+        return print_bt_cli_error(f"config error: {exc}")
     try:
         ohlc, timestamps = resolve_cli_ohlc_and_timestamps(
             fetch_candles,
@@ -190,7 +194,7 @@ def main() -> int:
             args.interval,
         )
     except Exception as e:  # noqa: BLE001
-        print(f"! data error: {e}"); return 1
+        return print_bt_cli_error(f"data error: {e}")
 
     engine = "live engine (faithful)"
     return run_cli_single_or_sweep_backtest(

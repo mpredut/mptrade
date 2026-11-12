@@ -196,8 +196,7 @@ class T212Provider(MarketDataProvider):
                 if isinstance(e, ProviderError):
                     raise
                 raise ProviderError(f"portfolio({symbol}): {e}") from e
-            print(f"[T212] portfolio {symbol}: {e}")
-            return None
+            return self._log_provider_balance_error("T212", "portfolio", symbol, e)
 
     # -- Market data. ----------------------------------------------------------
     @classmethod
@@ -650,8 +649,7 @@ class T212Provider(MarketDataProvider):
         except SubmissionRefused:
             raise
         except Exception as e:  # noqa: BLE001
-            print(f"[T212] place_order {symbol}: {e}")
-            return None
+            return self._log_provider_balance_error("T212", "place_order", symbol, e)
 
     # -- StrategyExecutor contract. -------------------------------------------
     def submit_order(self, symbol: str, side: str, qty: float,

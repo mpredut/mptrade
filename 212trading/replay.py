@@ -391,9 +391,10 @@ def _run_once(
             exposure.append(qty > 1e-9)
 
         final_rate = fx_rates[-1]
-        last_close = require_pos_float(ohlc[-1][3], "last_close")
-        settled_end_exit = False
-        for order in iter_end_of_replay_market_sell_orders(engine.s["orders"], engine.s["qty"], qty_eps=1e-9):
+        last_close, end_exit_orders = iter_end_of_replay_market_sell_orders(
+            ohlc, engine.s["orders"], engine.s["qty"], qty_eps=1e-9
+        )
+        for order in end_exit_orders:
             held_before = engine.s["qty"]
             if held_before <= 1e-9:
                 break
@@ -412,8 +413,6 @@ def _run_once(
                 mark_tp_level=True,
                 remove_before_apply=True,
             )
-            settled_end_exit = True
-        if settled_end_exit:
             rem_qty, rem_upnl, rem_open_fee = _current_upnl_and_open_fee(last_close, final_rate)
             overwrite_tail_equity_and_exposure(
                 equity_curve,
