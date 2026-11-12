@@ -317,9 +317,6 @@ def process_once(mkt, now=None):
     now = resolve_now_ts(now)
     snapshot = oq.load_validated()
 
-    def _record_lifecycle_and_symbol(r: dict):
-        return str(r.get("lifecycle") or "submit_pending").lower(), r.get("symbol")
-
     to_retry, to_observe, to_reconcile_cancel, live_producer_reconciliation, expired = [], [], [], [], []
     skipped_price = 0
     quarantined = 0
@@ -327,7 +324,7 @@ def process_once(mkt, now=None):
         if oq.is_expired(r, now):
             expired.append(r)
             continue
-        lifecycle, symbol = _record_lifecycle_and_symbol(r)
+        lifecycle, symbol = str(r.get("lifecycle") or "submit_pending").lower(), r.get("symbol")
         if str(r.get("submission_state") or "").lower() == "producer_claimed":
             if safe_float(r.get("claim_until"), default=0.0) > now:
                 continue
@@ -405,7 +402,7 @@ def process_once(mkt, now=None):
             return None
 
     for r in claimed:
-        lifecycle, symbol = _record_lifecycle_and_symbol(r)
+        lifecycle, symbol = str(r.get("lifecycle") or "submit_pending").lower(), r.get("symbol")
         provider_name = _provider_name(mkt, r)
         if lifecycle == "awaiting_cancel":
             replaced_order_id = str(r.get("replaces_order_id") or "")

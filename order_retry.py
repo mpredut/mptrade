@@ -330,10 +330,6 @@ _TRADEALL_KIND_PREFIXES = (
 )
 
 
-def _is_tradeall_kind(kind_s: str) -> bool:
-    return kind_s == "trend_signal" or kind_s.startswith(_TRADEALL_KIND_PREFIXES)
-
-
 def _sanitize_place_kwargs(place_kwargs) -> dict:
     return {
         k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
@@ -444,7 +440,7 @@ def enqueue(
             prefix = "MO_MN_OR" if parent_owner == "manual" else ("MO_TA_OR" if parent_owner == "tradeall" else "MO_OR")
         elif kind_s in {"STOP", "TP"}:
             prefix = "MT_OR"
-        elif _is_tradeall_kind(kind_s):
+        elif kind_s == "trend_signal" or kind_s.startswith(_TRADEALL_KIND_PREFIXES):
             prefix = "TA_OR"
         elif kind_s.lower().startswith("assetguardian"):
             prefix = "AG_OR"
@@ -806,7 +802,7 @@ def infer_record_owner(rec: dict) -> str:
         return "monitororder"
     if kind in {"STOP", "TP", "SL", "REENTRY"}:
         return "monitortrades"
-    if _is_tradeall_kind(kind) or kind in {"INITIAL", "TREND", "ADD", "DCA", "CYCLE_SELL", "CYCLE_BUY"}:
+    if kind.startswith(_TRADEALL_KIND_PREFIXES) or kind in {"trend_signal", "INITIAL", "TREND", "ADD", "DCA", "CYCLE_SELL", "CYCLE_BUY"}:
         return "tradeall"
     if kind.lower().startswith("assetguardian") or "asset_guardian" in kind.lower():
         return "assetguardian"

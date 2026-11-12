@@ -52,11 +52,6 @@ WS_RETRY_MAX = 60.0
 STABLE_SESSION_SEC = 60.0
 
 
-def _normalize_liq_side(raw_side: Any) -> Optional[str]:
-    norm = normalize_side(raw_side)
-    return "LONG" if norm == "BUY" else ("SHORT" if norm == "SELL" else None)
-
-
 @dataclass(frozen=True)
 class LiquidationSummary:
     """Aggregated liquidation metrics for a time window."""
@@ -202,7 +197,7 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
         sym_norm = clean_symbol_key(symbol)
         if not sym_norm:
             return
-        side_norm = _normalize_liq_side(side)
+        side_norm = "LONG" if (norm_s := normalize_side(side)) == "BUY" else ("SHORT" if norm_s == "SELL" else None)
         if side_norm is None:
             return
         now = normalize_epoch_sec(ts) if ts is not None else time.time()
@@ -256,7 +251,7 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
             notional_f = safe_pos_float(notional, default=None)
             if notional_f is None:
                 continue
-            side_norm = side if side in ("LONG", "SHORT") else _normalize_liq_side(side)
+            side_norm = side if side in ("LONG", "SHORT") else ("LONG" if (norm_s := normalize_side(side)) == "BUY" else ("SHORT" if norm_s == "SELL" else None))
             if side_norm not in ("LONG", "SHORT"):
                 continue
             last_ts = max(last_ts, ts_f)

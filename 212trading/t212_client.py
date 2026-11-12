@@ -435,18 +435,9 @@ class T212Client:
         target_path = str(explicit_path) if explicit_path else str(cache_path(CACHE_T212_TRADE_FILENAME))
         T212Provider.merge_ssot_fills_cache(target_path, by_symbol)
 
-    def _fresh_hist_cache_locked(self, ttl: float, *, require_list: bool = False):
-        hc = getattr(self, "_hist_cache", None)
-        if not hc or (time.monotonic() - hc[0]) >= ttl:
-            return None
-        if require_list and not isinstance(hc[1], list):
-            return None
-        return hc[1]
-
     def _hist_matches_from_cache(self, target_oid: str, ttl: float) -> list[tuple[dict, dict | None]]:
-        with self._lock:
-            items = self._fresh_hist_cache_locked(ttl)
-            return T212Provider._extract_history_matches(items, target_oid) if items is not None else []
+        items = self._fresh_hist_cache(ttl)
+        return T212Provider._extract_history_matches(items, target_oid) if items is not None else []
 
     def _store_shared_hist_cache(self, s_age: float, s_val: list) -> None:
         with self._lock:
@@ -504,7 +495,12 @@ class T212Client:
 
     def _fresh_hist_cache(self, ttl: float, *, require_list: bool = False) -> list | None:
         with self._lock:
-            return self._fresh_hist_cache_locked(ttl, require_list=require_list)
+            hc = getattr(self, "_hist_cache", None)
+            if not hc or (time.monotonic() - hc[0]) >= ttl:
+                return None
+            if require_list and not isinstance(hc[1], list):
+                return None
+            return hc[1]
 
     def _fetch_order_history_locked(self) -> list | None:
         """Fetch latest 50 order history entries under ``_fetch_lock`` and persist caches."""

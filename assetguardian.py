@@ -828,21 +828,14 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
     return True, state
 
 
-def _save_and_return_campaign(symbol, kind, state: dict) -> dict:
-    _save_symbol_campaign(symbol, kind, state)
-    return state
-
-
-def _pop_key_and_save_campaign(symbol, kind, state: dict, key: str) -> dict:
-    state.pop(key, None)
-    return _save_and_return_campaign(symbol, kind, state)
-
-
 def _clear_inactive_trend_defer(symbol, kind, state):
     """Reset the trend_defer clock when its tier signal is no longer crossed."""
     if not isinstance(state, dict) or "trend_defer" not in state:
         return state
-    return _pop_key_and_save_campaign(symbol, kind, dict(state), "trend_defer")
+    updated = dict(state)
+    updated.pop("trend_defer", None)
+    _save_symbol_campaign(symbol, kind, updated)
+    return updated
 
 
 def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
@@ -980,7 +973,8 @@ def _finalize_terminal_campaign_state(
         "terminal_ts": time.time(),
     })
     state["terminal_orders"] = terminal
-    _pop_key_and_save_campaign(symbol, kind, state, "pending")
+    state.pop("pending", None)
+    _save_symbol_campaign(symbol, kind, state)
     print(
         f"[{symbol}] {kind.upper()} tier terminal: threshold={threshold:g}% status={status.status} "
         f"orderId={pending.get('order_id')} filled={filled_qty:.8f} cost={cost_val:.8f} fee={fee_val:.8f}"
@@ -1147,7 +1141,8 @@ def _reuse_unaccepted_attempt(symbol, kind, state, pending):
             "intent_id": str(pending["intent_id"]),
             "reason": refusal_reason.strip(),
         }
-    return _save_and_return_campaign(symbol, kind, state)
+    _save_symbol_campaign(symbol, kind, state)
+    return state
 
 
 def _reconcile_pending_campaign(symbol, kind, state):

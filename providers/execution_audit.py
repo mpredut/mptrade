@@ -154,16 +154,12 @@ _DEFAULT_AUDIT_DIR = os.path.join(
 )
 
 
-def _resolve_audit_dir(directory: Optional[str] = None) -> str:
-    return directory or optional_env("EXECUTION_AUDIT_DIR") or _DEFAULT_AUDIT_DIR
-
-
 class ExecutionAudit:
     """Best-effort JSONL writer shared by Kraken, T212, HL, and Binance."""
 
     def __init__(self, directory: Optional[str] = None,
                  clock: Callable[[], float] = time.time):
-        self.directory = _resolve_audit_dir(directory)
+        self.directory = directory or optional_env("EXECUTION_AUDIT_DIR") or _DEFAULT_AUDIT_DIR
         self._clock = clock
 
     def record(self, event: str, *, intent_id: str, venue: str, symbol: str,
@@ -529,7 +525,7 @@ def find_order_audit_record(
     target_cid = clean_order_id(client_order_id)
     if not target_oid and not target_cid:
         return None
-    eff_dir = _resolve_audit_dir(audit_dir)
+    eff_dir = audit_dir or optional_env("EXECUTION_AUDIT_DIR") or _DEFAULT_AUDIT_DIR
     if not os.path.isdir(eff_dir):
         return None
     target_sym = canonical_symbol_key(symbol) if symbol and not isinstance(symbol, bool) else ""
