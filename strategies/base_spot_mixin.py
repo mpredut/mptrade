@@ -721,6 +721,14 @@ class BaseSpotMixin:
             return True
         return self._cancel_order(o)
 
+    def _log_and_cancel_stale_buy(
+        self, o: dict, id_key: str, side_label: str, dash: str = "--"
+    ) -> None:
+        self._log_msg(
+            f"  [STRAT] {side_label} {o[id_key]} unfilled, the price rose {dash} cancelling and re-placing"
+        )
+        self._cancel_order(o)
+
     def _seed_post_exit_anchors(
         self, price: float, exit_kind: str | None, exit_ts: float, *, include_sl_low: bool = True
     ) -> None:

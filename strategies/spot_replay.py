@@ -49,6 +49,20 @@ def _silent(*_args, **_kwargs):
     return None
 
 
+def record_closed_cycle_pnl(
+    realized_net: float,
+    cycle_net_start: float,
+    trade_pnls: list[float],
+    wins: int,
+) -> tuple[float, int]:
+    """Append the closed cycle PnL to ``trade_pnls`` and return ``(new_cycle_net_start, new_wins)``."""
+    cycle_pnl = realized_net - cycle_net_start
+    trade_pnls.append(cycle_pnl)
+    if cycle_pnl > 0.0:
+        wins += 1
+    return realized_net, wins
+
+
 def build_replay_summary(
     *,
     realized: float,
@@ -369,11 +383,9 @@ def _run_once(
         def _record_sell_outcome() -> None:
             nonlocal wins, cycle_net_start
             if strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
-                cycle_pnl = strategy.s["realized_net"] - cycle_net_start
-                trade_pnls.append(cycle_pnl)
-                if cycle_pnl > 0.0:
-                    wins += 1
-                cycle_net_start = strategy.s["realized_net"]
+                cycle_net_start, wins = record_closed_cycle_pnl(
+                    strategy.s["realized_net"], cycle_net_start, trade_pnls, wins
+                )
 
         def _settle_order_fill(
             order_to_remove: dict | None,

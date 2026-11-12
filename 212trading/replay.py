@@ -46,7 +46,11 @@ from strategies.replay_execution import (
     validate_ohlc_bars,
 )
 from strategies.replay_metrics import round_metric
-from strategies.spot_replay import build_replay_summary, scale_subbar_timeout_params
+from strategies.spot_replay import (
+    build_replay_summary,
+    record_closed_cycle_pnl,
+    scale_subbar_timeout_params,
+)
 
 
 def equity_periods_per_year(interval_minutes: float) -> float:
@@ -189,8 +193,7 @@ def _run_once(
         )
         engine._shadow_prices.extend(warmup_shadow)
         engine._save = lambda: None
-        cash = require_pos_float(initial_cash, "initial_cash") if initial_cash is not None else None
-        min_cash = cash
+        cash = min_cash = require_pos_float(initial_cash, "initial_cash") if initial_cash is not None else None
         cash_refusals = 0
         original_place_buy = engine._place_buy
 
@@ -283,11 +286,9 @@ def _run_once(
                 open_buy_fee_account = 0.0
             cur_cycle = engine.s.get("cycle", 1)
             if cur_cycle > prev_cycle:
-                cycle_pnl = realized_net_account - cycle_net_start
-                trade_pnls.append(cycle_pnl)
-                if cycle_pnl > 0.0:
-                    wins += 1
-                cycle_net_start = realized_net_account
+                cycle_net_start, wins = record_closed_cycle_pnl(
+                    realized_net_account, cycle_net_start, trade_pnls, wins
+                )
                 prev_cycle = cur_cycle
             fills += 1
             turnover_account += sell_notional_account

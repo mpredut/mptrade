@@ -1099,6 +1099,21 @@ class CacheManagerInterface(ABC):
             keep_n = max(1, math.trunc(len(items) * self.ROTATE_KEEP_FRACTION))
             self.cache[symbol] = items[-keep_n:]
 
+    def _archive_snapshot_path(self) -> str:
+        return f"{self.filename}.{math.trunc(_now_time())}.archive"
+
+    def _snapshot_file_to(self, target_path: str) -> None:
+        snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
+        snapshot_fn(self.filename, target_path)
+
+    def _restore_archive_after_failed_rotation_locked(self, archive: str) -> None:
+        try:
+            self._restore_previous_generation(archive)
+        except OSError as restore_err:
+            builtins.print(
+                f"[{self.cls_name}][maintain] failed to restore active file from {archive}: {restore_err}"
+            )
+
     def _finalize_rotation(self, archive: str) -> bool:
         archive = self._compress_and_prune_archive(archive)
         builtins.print(
@@ -1110,10 +1125,9 @@ class CacheManagerInterface(ABC):
     def _rotate_keep_latest(self):
         """Archive the current file and retain each symbol's latest configured fraction."""
         with self.lock:
-            archive = f"{self.filename}.{math.trunc(_now_time())}.archive"
-            snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
+            archive = self._archive_snapshot_path()
             try:
-                snapshot_fn(self.filename, archive)
+                self._snapshot_file_to(archive)
             except OSError as e:
                 builtins.print(f"[{self.cls_name}][maintain] archiving failed: {e}")
                 return False
@@ -1129,12 +1143,7 @@ class CacheManagerInterface(ABC):
                 compacted = False
             if not compacted:
                 self._restore_memory_state_locked(original_state)
-                try:
-                    self._restore_previous_generation(archive)
-                except OSError as restore_err:
-                    builtins.print(
-                        f"[{self.cls_name}][maintain] failed to restore active file from {archive}: {restore_err}"
-                    )
+                self._restore_archive_after_failed_rotation_locked(archive)
                 builtins.print(
                     f"[{self.cls_name}][maintain] rotation aborted; restored active file and in-memory state"
                 )

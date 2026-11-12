@@ -201,8 +201,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
                         return hl_tel
                 except Exception:
                     pass
-            logger.warning("Could not fetch derivatives telemetry for %s: %s", symbol, e)
-            return self._fallback_stale(symbol, cached)
+            return self._warn_and_fallback_stale(logger, "derivatives telemetry", symbol, e, cached)
 
 
 TelemetryCollectorFactory.register(DerivativesTelemetryCollector.COLLECTOR_ID, DerivativesTelemetryCollector)

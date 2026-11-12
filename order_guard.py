@@ -54,6 +54,7 @@ from guard_hierarchy import (
     preflight_intelligence_guard_entry,
     resolve_effective_bypass_guards,
     resolve_high_stake_min_notional_usd,
+    set_regime_context_attrs,
     validate_guard_mode_cfg,
     validate_profit_guard_mode_cfg,
 )
@@ -841,12 +842,18 @@ def _update_context_intel_cache(
             if dur_sec is not None:
                 entry["trend_duration_seconds"] = dur_sec
             decisions_map[cache_key] = entry
-            object.__setattr__(regime_context, "_intelligence_decisions_by_key", decisions_map)
-            object.__setattr__(regime_context, "_intelligence_decision_key", cache_key)
-            object.__setattr__(regime_context, "_intelligence_decision", decision)
-            object.__setattr__(regime_context, "_intelligence_notional", notional)
-            if dur_sec is not None:
-                object.__setattr__(regime_context, "_intelligence_trend_duration_seconds", dur_sec)
+            set_regime_context_attrs(
+                regime_context,
+                _intelligence_decisions_by_key=decisions_map,
+                _intelligence_decision_key=cache_key,
+                _intelligence_decision=decision,
+                _intelligence_notional=notional,
+                **(
+                    {"_intelligence_trend_duration_seconds": dur_sec}
+                    if dur_sec is not None
+                    else {}
+                ),
+            )
         elif cache_key in decisions_map:
             if notional is not None:
                 entry["notional"] = notional

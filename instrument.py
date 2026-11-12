@@ -448,11 +448,7 @@ class Instrument:
             provider_execution_enabled = (
                 bool(_parse_bool_flag(inst_live, False))
                 if inst_live is not None
-                else (
-                    True
-                    if not callable(ctx.execution_enabled)
-                    else bool(_parse_bool_flag(ctx.execution_enabled(), False))
-                )
+                else self._is_execution_gate_enabled(ctx.execution_enabled)
             )
         except Exception as exc:  # noqa: BLE001 - An unreadable gate must fail closed.
             return None, _refuse_early(
@@ -740,11 +736,23 @@ class Instrument:
         return permit
 
     @staticmethod
-    def _check_abort_and_execution_gate(ctx: Any) -> bool:
+    def _is_execution_gate_enabled(exec_fn: Any) -> bool:
+        if not callable(exec_fn):
+            return True
+        raw_val = exec_fn()
+        return bool(
+            _parse_bool_flag(
+                raw_val,
+                False if isinstance(raw_val, str) else bool(raw_val),
+            )
+        )
+
+    @classmethod
+    def _check_abort_and_execution_gate(cls, ctx: Any) -> bool:
         if _is_aborted(ctx.abort_if):
             ctx.reason = "aborted_by_caller"
             return False
-        if callable(ctx.execution_enabled) and not _parse_bool_flag(ctx.execution_enabled(), False):
+        if not cls._is_execution_gate_enabled(ctx.execution_enabled):
             raise SubmissionRefused("execution_disabled")
         return True
 

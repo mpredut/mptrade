@@ -1155,8 +1155,7 @@ class Strategy(BaseSpotMixin):
                 continue
             o.pop("lookup_misses", None)
             if self._buy_is_stale(o, price):
-                log(f"  [STRAT] BUY {o['id']} unfilled, the price rose — cancelling and re-placing")
-                self._cancel_order(o)
+                self._log_and_cancel_stale_buy(o, "id", "BUY", "—")
 
         is_flat = real_qty <= 1e-9
         is_dust = self._is_dust(real_qty, real_avg or price)

@@ -1406,11 +1406,8 @@ class CacheTradeManager(CacheAccountManagerBase):
                 with self.lock:
                     metadata = self._load_versioned_account_meta()
                     self._read_trade_snapshot_strict(metadata)
-                    archive = f"{self.filename}.{math.trunc(_now_time())}.archive"
-                    snapshot_fn = _cm_override(
-                        "atomic_snapshot_file", atomic_snapshot_file
-                    )
-                    snapshot_fn(self.filename, archive)
+                    archive = self._archive_snapshot_path()
+                    self._snapshot_file_to(archive)
                     original_state = self._snapshot_memory_state_locked()
                     original_dirty = self._account_cache_dirty
                     original_needs_rewrite = self._legacy_jsonl_needs_rewrite

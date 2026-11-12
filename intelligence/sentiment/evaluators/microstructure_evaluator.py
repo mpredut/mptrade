@@ -947,13 +947,39 @@ _SIBLING_BOTTOM_KEYS: frozenset[str] = frozenset({
 })
 
 
+def sibling_structure_presence(
+    pinfo: Dict[str, Any],
+    sib_pinfo: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, bool]:
+    """Return ``(has_own_vp, has_own_bottom)`` for ``pinfo`` before sibling telemetry merge."""
+    has_own_vp = pinfo.get("poc_px") is not None
+    has_own_bottom = pinfo.get("bottom_structure_6h") is not None
+    if not has_own_bottom and isinstance(sib_pinfo, dict) and pinfo.get("chg_6h_pct") is not None:
+        p_l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
+        p_l24 = safe_pos_float(pinfo.get("low_24h"), default=None)
+        s_r1h = safe_pos_float(sib_pinfo.get("recent_1h_low_px"), default=None)
+        s_p6h = safe_pos_float(sib_pinfo.get("prior_6h_low_px"), default=None)
+        if (p_l15 is not None and s_r1h is not None and s_r1h > p_l15 + 1e-9) or (
+            p_l24 is not None
+            and s_r1h is not None
+            and s_p6h is not None
+            and min(s_r1h, s_p6h) < p_l24 - 1e-9
+        ):
+            has_own_bottom = True
+    return has_own_vp, has_own_bottom
+
+
 def should_skip_sibling_telemetry_key(
     key: str,
     *,
-    has_own_vp: bool,
-    has_own_bottom: bool,
+    has_own_vp: bool = False,
+    has_own_bottom: bool = False,
+    pinfo: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Return True when ``key`` belongs to volume-profile or 6h-bottom structure already present on the primary symbol."""
+    if isinstance(pinfo, dict):
+        has_own_vp = pinfo.get("poc_px") is not None
+        has_own_bottom = pinfo.get("bottom_structure_6h") is not None
     return (has_own_vp and key in _SIBLING_VP_KEYS) or (has_own_bottom and key in _SIBLING_BOTTOM_KEYS)
 
 
@@ -1244,20 +1270,7 @@ def sync_sibling_symbol_telemetry(
                     pinfo["price"] = sib_pinfo["price"]
                     p_px = s_px
                 px_diverged = (not cand_same_quote_family) or _prices_diverged(p_px, s_px)
-                has_own_vp = pinfo.get("poc_px") is not None
-                has_own_bottom = pinfo.get("bottom_structure_6h") is not None
-                if not has_own_bottom and pinfo.get("chg_6h_pct") is not None:
-                    p_l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
-                    p_l24 = safe_pos_float(pinfo.get("low_24h"), default=None)
-                    s_r1h = safe_pos_float(sib_pinfo.get("recent_1h_low_px"), default=None)
-                    s_p6h = safe_pos_float(sib_pinfo.get("prior_6h_low_px"), default=None)
-                    if (p_l15 is not None and s_r1h is not None and s_r1h > p_l15 + 1e-9) or (
-                        p_l24 is not None
-                        and s_r1h is not None
-                        and s_p6h is not None
-                        and min(s_r1h, s_p6h) < p_l24 - 1e-9
-                    ):
-                        has_own_bottom = True
+                has_own_vp, has_own_bottom = sibling_structure_presence(pinfo, sib_pinfo)
                 for k, v in sib_pinfo.items():
                     if v is None or k == "price" or (px_diverged and k in range_bound_keys):
                         continue

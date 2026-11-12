@@ -42,6 +42,7 @@ from guard_hierarchy import (
     merge_guard_scale,
     preflight_intelligence_guard_entry,
     resolve_high_stake_min_notional_usd,
+    set_regime_context_attrs,
     validate_guard_mode_cfg,
 )
 from instrument_registry import is_equity_symbol
@@ -165,10 +166,13 @@ def evaluate_high_stake_order_guard(
                 entry["gemini_notional"] = eval_notional
                 entry["gemini_decision"] = g_tuple
                 decisions_map[cache_key] = entry
-                object.__setattr__(regime_context, "_intelligence_decisions_by_key", decisions_map)
-                object.__setattr__(regime_context, "_gemini_decision_key", cache_key)
-                object.__setattr__(regime_context, "_gemini_evaluated_notional", eval_notional)
-                object.__setattr__(regime_context, "_gemini_decision", g_tuple)
+                set_regime_context_attrs(
+                    regime_context,
+                    _intelligence_decisions_by_key=decisions_map,
+                    _gemini_decision_key=cache_key,
+                    _gemini_evaluated_notional=eval_notional,
+                    _gemini_decision=g_tuple,
+                )
             except Exception:
                 pass
 

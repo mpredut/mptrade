@@ -681,8 +681,7 @@ class Strategy(BaseSpotMixin):
             and age > self.p.order_ttl_min
             and price > o["price"] * 1.003
         ):
-            log(f"  [STRAT] buy {o['txid']} unfilled, the price rose -- cancelling and re-placing")
-            self._cancel_order(o)
+            self._log_and_cancel_stale_buy(o, "txid", "buy", "--")
 
     def _has_pending_market_exit(self) -> bool:
         return any(o["side"] == "sell" and is_market_order(o) for o in self.s["orders"])

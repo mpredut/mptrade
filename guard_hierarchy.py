@@ -923,3 +923,9 @@ def merge_guard_scale(
     if new_scale < 1.0 and new_scale <= effective_scale:
         return new_scale, new_reason
     return effective_scale, active_reason
+
+
+def set_regime_context_attrs(regime_context: Any, **attrs: Any) -> None:
+    """Assign attributes onto a (potentially frozen) ``regime_context`` object via ``object.__setattr__``."""
+    for attr_name, val in attrs.items():
+        object.__setattr__(regime_context, attr_name, val)

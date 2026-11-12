@@ -475,8 +475,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                     return hl_snap
             except Exception:
                 pass
-            logger.warning("Could not fetch whale positioning for %s: %s", symbol, e)
-            return self._fallback_stale(symbol, cached)
+            return self._warn_and_fallback_stale(logger, "whale positioning", symbol, e, cached)
 
     def _fetch_hyperliquid_whale_fallback(
         self,

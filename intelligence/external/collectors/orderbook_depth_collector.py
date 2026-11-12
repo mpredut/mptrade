@@ -269,8 +269,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             )
             return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:
-            logger.warning("Could not fetch orderbook depth for %s: %s", symbol, e)
-            return self._fallback_stale(symbol, cached)
+            return self._warn_and_fallback_stale(logger, "orderbook depth", symbol, e, cached)
 
     def _fetch_equity_orderbook(self, symbol: str, now: float) -> Optional[OrderbookSnapshot]:
         """Build an equity OrderbookSnapshot from Nasdaq L1 quote and Yahoo 5m volume-by-price liquidity."""
