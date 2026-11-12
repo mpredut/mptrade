@@ -22,6 +22,7 @@ from cachepaths import (
     normalize_cache_base_asset,
     resolve_binance_lookup_symbol,
     split_symbol_assets,
+    symbol_quote_asset,
 )
 import instrument_registry as sym_reg
 from instrument_registry import casefold_get, venue_for_symbol
@@ -477,12 +478,13 @@ class BinanceProvider(MarketDataProvider):
     @classmethod
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         canon_sym = canonical_symbol_key(symbol)
-        if canon_sym.endswith("EUR"):
-            base_asset = normalize_cache_base_asset(canon_sym)
+        quote_asset = symbol_quote_asset(canon_sym)
+        base_asset = normalize_cache_base_asset(canon_sym)
+        if quote_asset == "EUR":
             bin_eur_sym = f"{base_asset}EUR" if base_asset else canon_sym
             return (f"https://api.binance.com/api/v3/depth?symbol={bin_eur_sym}&limit=500",), ()
         lookup_sym = resolve_binance_lookup_symbol(symbol)
-        usdc_sym = f"{normalize_cache_base_asset(canon_sym)}USDC" if canon_sym.endswith(("USD", "USDC")) else ""
+        usdc_sym = f"{base_asset}USDC" if (base_asset and quote_asset in ("USD", "USDC")) else ""
         spot_urls = (
             (
                 f"https://api.binance.com/api/v3/depth?symbol={usdc_sym}&limit=500",

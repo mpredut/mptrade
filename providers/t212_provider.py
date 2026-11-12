@@ -30,15 +30,20 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import CACHE_T212_TRADE_FILENAME, canonical_base_asset
+from cachepaths import CACHE_T212_TRADE_FILENAME, canonical_base_asset, same_canonical_base_asset
 from .base import (
     MarketDataProvider,
     extract_order_id,
     extract_timestamp_ms,
 )
 from .order_ohlc_utils import (
+    aggregate_broker_history_fills,
     build_open_order_entry,
     candles_to_historical_points,
+    extract_broker_history_matches,
+    extract_broker_order_ticker,
+    iter_broker_history_order_fills,
+    normalize_broker_history_items,
     normalize_order,
     require_clean_order_id,
     resolve_market_flag,
@@ -80,17 +85,8 @@ def _definitive_submit_failure(status: int, payload) -> bool:
     return "rejected" in str(payload or "").lower()
 
 
-def _t212_tickers_match(sym_a: object, sym_b: object) -> bool:
-    """Return whether two T212 ticker strings refer to the same equity instrument."""
-    base_a = canonical_base_asset(sym_a)
-    base_b = canonical_base_asset(sym_b)
-    return bool(base_a and base_a == base_b)
-
-
-def _order_ticker(raw: dict) -> str:
-    inst = raw.get("instrument")
-    inst_ticker = inst.get("ticker") if isinstance(inst, dict) else ""
-    return str(raw.get("ticker") or inst_ticker or "").strip()
+_t212_tickers_match = same_canonical_base_asset
+_order_ticker = extract_broker_order_ticker
 
 
 class T212Provider(MarketDataProvider):
@@ -240,123 +236,10 @@ class T212Provider(MarketDataProvider):
             print(f"[T212] get_current_price fallback {symbol}: {e}")
         return None
 
-    @staticmethod
-    def _iter_history_order_fills(items):
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            order = item.get("order") if isinstance(item.get("order"), dict) else item
-            if isinstance(order, dict) and (oid := extract_order_id(order)):
-                yield str(oid), order, item.get("fill")
-
-    @classmethod
-    def _extract_history_matches(cls, items, target_oid: str) -> list[tuple[dict, Optional[dict]]]:
-        return [
-            (order, fill)
-            for oid, order, fill in cls._iter_history_order_fills(items)
-            if oid == target_oid
-        ]
-
-    @staticmethod
-    def _aggregate_history_fills(matches: list[tuple[dict, Optional[dict]]]) -> dict:
-        result = dict(matches[0][0])
-        total_qty = total_cost = total_fee = priced_qty = 0.0
-        fee_currencies = set()
-        latest_fill_ts_ms: Optional[int] = None
-        seen_fill_ids: set[str] = set()
-        for order, fill in matches:
-            cand_ts = extract_timestamp_ms(fill, default=None) or extract_timestamp_ms(order, default=None)
-            if cand_ts is not None and (latest_fill_ts_ms is None or cand_ts > latest_fill_ts_ms):
-                latest_fill_ts_ms = cand_ts
-            if not isinstance(fill, dict):
-                continue
-            fill_id = extract_order_id(fill)
-            if fill_id is not None:
-                if fill_id in seen_fill_ids:
-                    continue
-                seen_fill_ids.add(fill_id)
-            qf = safe_float(fill.get("quantity"), default=None)
-            pf = safe_float(fill.get("price"), default=None)
-            if qf is None or pf is None:
-                continue
-            qty = abs(qf)
-            price = abs(pf)
-            total_qty += qty
-            if price > 0.0 and qty > 0.0:
-                total_cost += qty * price
-                priced_qty += qty
-            wallet = fill.get("walletImpact")
-            taxes = wallet.get("taxes") if isinstance(wallet, dict) else []
-            for tax in taxes or []:
-                if not isinstance(tax, dict):
-                    continue
-                tqf = safe_float(tax.get("quantity"), default=None)
-                if tqf is None:
-                    continue
-                tax_amt = abs(tqf)
-                if tax_amt <= 0.0:
-                    continue
-                total_fee += tax_amt
-                raw_cur = tax.get("currency")
-                currency = raw_cur.strip().upper() if isinstance(raw_cur, str) else ""
-                if currency:
-                    fee_currencies.add(currency)
-        if total_qty > 0:
-            result["filledQuantity"] = total_qty
-            result["filledValue"] = total_cost
-            if priced_qty > 0:
-                result["fillPrice"] = total_cost / priced_qty
-        result["fee"] = total_fee
-        if fee_currencies:
-            result["_feeCurrencies"] = sorted(fee_currencies)
-        if latest_fill_ts_ms is not None:
-            result["_timestamp_ms"] = latest_fill_ts_ms
-        return result
-
-    @classmethod
-    def normalize_history_items(cls, items: list) -> dict[str, list[dict]]:
-        """Group FILLED T212 history items by ticker and orderId into canonical cache_trade_t212 records."""
-        grouped: dict[str, list[tuple[dict, Optional[dict]]]] = {}
-        for oid, order, fill in cls._iter_history_order_fills(items):
-            if str(order.get("status") or "").strip().upper() == "FILLED":
-                grouped.setdefault(oid, []).append((order, fill if isinstance(fill, dict) else None))
-        by_symbol: dict[str, list[dict]] = {}
-        for oid, matches in grouped.items():
-            enriched = cls._aggregate_history_fills(matches)
-            ticker = _order_ticker(enriched).upper()
-            if not ticker:
-                continue
-            raw_qty = safe_float(
-                enriched.get("orderedQuantity")
-                if enriched.get("orderedQuantity") is not None
-                else enriched.get("quantity"),
-                default=0.0,
-            )
-            side = normalize_side(enriched.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
-            qty = first_pos_float(enriched.get("filledQuantity"), abs(raw_qty))
-            px = first_pos_float(enriched.get("fillPrice"), enriched.get("limitPrice"))
-            ts_ms = enriched.get("_timestamp_ms")
-            if qty is None or px is None or ts_ms is None:
-                continue
-            cost = safe_pos_float(enriched.get("filledValue"), default=px * qty) or (px * qty)
-            fee = safe_nonneg_float(enriched.get("fee"), default=0.0) or 0.0
-            by_symbol.setdefault(ticker, []).append({
-                "symbol": ticker,
-                "orderId": str(oid),
-                "side": side,
-                "type": str(enriched.get("type") or "MARKET").strip().upper(),
-                "price": round(px, 6),
-                "qty": round(qty, 6),
-                "executedQty": round(qty, 6),
-                "cummulativeQuoteQty": round(cost, 4),
-                "fee": round(fee, 6),
-                "timestamp": math.trunc(ts_ms),
-                "time": math.trunc(ts_ms),
-                "status": "FILLED",
-            })
-        for sym_list in by_symbol.values():
-            sym_list.sort(key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
-        return by_symbol
+    _iter_history_order_fills = staticmethod(iter_broker_history_order_fills)
+    _extract_history_matches = staticmethod(extract_broker_history_matches)
+    _aggregate_history_fills = staticmethod(aggregate_broker_history_fills)
+    normalize_history_items = staticmethod(normalize_broker_history_items)
 
     _REMOTE_TRADES_CLIENT_ATTR = "refresh_order_history"
     _VALIDATE_REMOTE_TRADES_SYMBOL = False

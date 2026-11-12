@@ -73,7 +73,7 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
         except BinanceAPIException as api_err:
             err_msg = str(api_err)
             if getattr(api_err, "code", None) == -1003 or "too much request weight" in err_msg.lower():
-                print(f"[paginate_my_trades] rate limit → backoff 60s: {err_msg}")
+                print(f"[paginate_my_trades] rate limit -> backoff 60s: {err_msg}")
                 time.sleep(60)
                 continue
             print(f"[paginate_my_trades] {symbol}: {api_err}")

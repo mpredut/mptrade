@@ -301,6 +301,6 @@ def initialize_ws_bridge_once(
     print(
         "[cacheManager] Already initialized, skip."
         if already_init
-        else "⚙️ cacheManager: WS user-data bridge started (execution reports)."
+        else "cacheManager: WS user-data bridge started (execution reports)."
     )
 

@@ -49,6 +49,7 @@ from cachepaths import (
     canonical_symbol_key,
     normalize_cache_base_asset,
     split_symbol_assets,
+    symbol_quote_asset,
 )
 from instrument_registry import casefold_get
 from state_io import encode_json_payload
@@ -940,7 +941,7 @@ class HyperliquidProvider(MarketDataProvider):
     @classmethod
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         canon_sym = canonical_symbol_key(symbol)
-        if canon_sym.endswith("EUR"):
+        if symbol_quote_asset(canon_sym) == "EUR":
             return (), ()
         hl_coin = normalize_cache_base_asset(canon_sym)
         if not hl_coin:
@@ -974,7 +975,7 @@ class HyperliquidProvider(MarketDataProvider):
         side, is_buy = s_norm, s_norm == "BUY"
         # Safety: real orders require HL_LIVE_ORDERS due to spot/DN co-mingling.
         if not self.execution_enabled():
-            raise ProviderError(f"HL_LIVE_ORDERS=false — refusing a real order on HL ({side} {symbol})")
+            raise ProviderError(f"HL_LIVE_ORDERS=false -- refusing a real order on HL ({side} {symbol})")
         pair = self._pair()
         if pair is None:
             raise ProviderError(
@@ -1043,7 +1044,7 @@ class HyperliquidProvider(MarketDataProvider):
         if avail_f + tolerance < required:
             raise ProviderError(
                 f"preflight_order({symbol}) {kind or 'BUY'}: insufficient USDC balance "
-                f"({avail_f:.8f} < {required:.8f}) — the order was not sent"
+                f"({avail_f:.8f} < {required:.8f}) -- the order was not sent"
             )
 
     def order_by_client_id(self, symbol: str, client_order_id: str):

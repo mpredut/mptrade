@@ -78,6 +78,7 @@ from cachepaths import (
     resolve_kraken_lookup_symbol,
     split_kraken_pair,
     split_symbol_assets,
+    symbol_quote_asset,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
 from instrument_registry import casefold_get, symbols_for
@@ -1287,15 +1288,8 @@ class KrakenProvider(MarketDataProvider):
     @classmethod
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         canon_sym = canonical_symbol_key(symbol)
-        if canon_sym.endswith("EUR"):
-            base_asset = normalize_cache_base_asset(canon_sym)
-            kraken_pair = (
-                "XBTEUR"
-                if base_asset == "BTC"
-                else ("XDGEUR" if base_asset == "DOGE" else (f"{base_asset}EUR" if base_asset else canon_sym))
-            )
-        else:
-            kraken_pair = resolve_kraken_lookup_symbol(symbol)
+        quote = "EUR" if symbol_quote_asset(canon_sym) == "EUR" else "USD"
+        kraken_pair = resolve_kraken_lookup_symbol(canon_sym, quote=quote) or canon_sym
         return (f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",), ()
 
     def fetch_historical_ohlc_points(

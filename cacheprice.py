@@ -2184,7 +2184,7 @@ def _start_nonbinance_trend_poller(
                 except _futures.TimeoutError:
                     builtins.print(
                         f"[NB-trend] {s}: fetch BLOCKED >{fetch_deadline_sec}s "
-                        f"(poll deadline — probably DNS or the network) — skipping, retrying next cycle"
+                        f"(poll deadline -- probably DNS or the network) -- skipping, retrying next cycle"
                     )
                 except Exception as _e:
                     builtins.print(f"[NB-trend] {s}: {_e}")

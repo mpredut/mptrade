@@ -30,10 +30,10 @@ from providers.base import (
     extract_order_price,
 )
 from providers.order_ohlc_utils import (
+    extract_broker_order_ticker as _order_ticker,
     extract_order_qty,
     extract_order_side,
 )
-from providers.t212_provider import _order_ticker
 
 
 def _retry(fn, tries=4, pause=2):

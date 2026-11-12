@@ -41,6 +41,7 @@ from cachepaths import (
     is_equity_venue_or_suffix,
     matches_asset_scope,
     normalize_venue_name,
+    same_canonical_base_asset,
 )
 from instrument_registry import casefold_get
 from state_io import append_jsonl_record, read_jsonl_dicts
@@ -858,7 +859,7 @@ def _resolve_intent_execution_details(
             if (oo_venue or oo_sym) and (venue or symbol) and oo_is_eq != is_eq_intent:
                 continue
             if oo_sym and symbol and (
-                canonical_base_asset(oo_sym) != canonical_base_asset(symbol)
+                not same_canonical_base_asset(oo_sym, symbol)
                 or compatible_quote_suffixes(oo_sym) != compatible_quote_suffixes(symbol)
             ):
                 continue

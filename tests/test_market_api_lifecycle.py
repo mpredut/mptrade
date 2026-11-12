@@ -15,7 +15,10 @@ from cachepaths import (
     is_readonly_xstock_symbol,
     is_usd_stablecoin_pair,
     matches_asset_scope,
+    resolve_kraken_lookup_symbol,
+    same_canonical_base_asset,
     strip_equity_suffix,
+    symbol_quote_asset,
     uses_cycle_state_files,
 )
 from collections import defaultdict
@@ -33,8 +36,10 @@ from providers.market_api import MarketApi, _runtime_market_regime_snapshot, api
 from providers.order_ohlc_utils import (
     ClosedPriceSeries as OhlcClosedPriceSeries,
     candles_to_historical_points,
+    extract_broker_order_ticker,
     extract_yahoo_chart_latest_price,
     extract_yahoo_chart_result_and_quote,
+    normalize_broker_history_items,
 )
 from providers.replay_provider import ReplayMarketDataProvider
 from providers.strategy_executor import (
@@ -564,18 +569,34 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "hyperliquid/market_data.py",
     )
     forbidden_transport_layers = forbidden_upward_layers | {"offline"}
+    forbidden_transport_provider_targets = {
+        "providers.market_api",
+        "providers.binance_provider",
+        "providers.kraken_provider",
+        "providers.hyperliquid_provider",
+        "providers.t212_provider",
+        "providers.replay_provider",
+    }
     for vmod_rel in venue_transport_modules:
         bmod_src = (root / vmod_rel).read_text(encoding="utf-8")
         bmod_tree = ast.parse(bmod_src, filename=vmod_rel)
         bmod_roots = set()
+        bmod_full_imports = set()
         for node in ast.walk(bmod_tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     bmod_roots.add(alias.name.split(".")[0])
+                    bmod_full_imports.add(alias.name)
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 bmod_roots.add(node.module.split(".")[0])
+                bmod_full_imports.add(node.module)
+                for alias in node.names:
+                    bmod_full_imports.add(f"{node.module}.{alias.name}")
         assert not (bmod_roots & forbidden_transport_layers), (
             f"Upward DAG violation in {vmod_rel}: {bmod_roots & forbidden_transport_layers}"
+        )
+        assert not (bmod_full_imports & forbidden_transport_provider_targets), (
+            f"Transport-to-adapter DAG violation in {vmod_rel}: {bmod_full_imports & forbidden_transport_provider_targets}"
         )
 
     facade_src = (root / "providers" / "market_api.py").read_text(encoding="utf-8")
@@ -935,6 +956,18 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     assert strip_equity_suffix("NVDA_US_EQ") == "NVDA"
     assert strip_equity_suffix("BRK/B_US_EQ") == "BRK/B"
     assert strip_equity_suffix("AAPL_EQ") == "AAPL"
+    assert strip_equity_suffix("VOD_L_EQ", base_only=True) == "VOD"
+    assert strip_equity_suffix("BRK/B_US_EQ", base_only=True) == "BRK/B"
+    assert same_canonical_base_asset("XBTUSD", "BTCUSDC") is True
+    assert same_canonical_base_asset("SPCX_US_EQ", "SPCX") is True
+    assert same_canonical_base_asset("ETHUSDC", "BTCUSDC") is False
+    assert symbol_quote_asset("XBTEUR") == "EUR"
+    assert symbol_quote_asset("EURUSDC") == "USDC"
+    assert symbol_quote_asset("BTCUSDC") == "USDC"
+    assert resolve_kraken_lookup_symbol("BTCUSDC", quote="EUR") == "XBTEUR"
+    assert resolve_kraken_lookup_symbol("DOGEUSDC", quote="EUR") == "XDGEUR"
+    assert extract_broker_order_ticker({"instrument": {"ticker": "NVDA_US_EQ"}}) == "NVDA_US_EQ"
+    assert normalize_broker_history_items([]) == {}
     yh_payload = {
         "chart": {
             "result": [

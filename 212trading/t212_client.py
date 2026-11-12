@@ -39,8 +39,18 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import CACHE_T212_TRADE_FILENAME, STALE_STAGING_MAX_AGE_SEC, cache_path
-from providers.t212_provider import T212Provider
+from cachepaths import (
+    CACHE_T212_TRADE_FILENAME,
+    STALE_STAGING_MAX_AGE_SEC,
+    cache_path,
+    same_canonical_base_asset,
+)
+from providers.base import MarketDataProvider
+from providers.order_ohlc_utils import (
+    aggregate_broker_history_fills,
+    extract_broker_history_matches,
+    normalize_broker_history_items,
+)
 from state_io import (
     atomic_write_json,
     cleanup_stale_staging_siblings,
@@ -422,15 +432,15 @@ class T212Client:
         explicit_path = getattr(self, "_trade_cache_path", None)
         if not explicit_path and not is_shared_disk_cache_enabled(getattr(self, "_enable_shared_disk_cache", None)):
             return
-        by_symbol = T212Provider.normalize_history_items(items)
+        by_symbol = normalize_broker_history_items(items)
         if not by_symbol:
             return
         target_path = str(explicit_path) if explicit_path else str(cache_path(CACHE_T212_TRADE_FILENAME))
-        T212Provider.merge_ssot_fills_cache(target_path, by_symbol)
+        MarketDataProvider.merge_ssot_fills_cache(target_path, by_symbol)
 
     def _hist_matches_from_cache(self, target_oid: str, ttl: float) -> list[tuple[dict, dict | None]]:
         items = self._fresh_hist_cache(ttl)
-        return T212Provider._extract_history_matches(items, target_oid) if items is not None else []
+        return extract_broker_history_matches(items, target_oid) if items is not None else []
 
     def _store_shared_hist_cache(self, s_age: float, s_val: list) -> None:
         with self._lock:
@@ -455,7 +465,7 @@ class T212Client:
                     if not matches:
                         s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", self._pf_ttl)
                         if s_hit and isinstance(s_val, list):
-                            s_matches = T212Provider._extract_history_matches(s_val, target_oid)
+                            s_matches = extract_broker_history_matches(s_val, target_oid)
                             if s_matches:
                                 self._store_shared_hist_cache(s_age, s_val)
                                 matches = s_matches
@@ -465,19 +475,19 @@ class T212Client:
                             s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache("_hist_cache", 600.0)
                             if s_fb_hit and isinstance(s_fb_val, list):
                                 self._record_shared_cache_fail("_hist_cache")
-                                matches = T212Provider._extract_history_matches(s_fb_val, target_oid)
+                                matches = extract_broker_history_matches(s_fb_val, target_oid)
                             if not matches:
                                 matches = self._hist_matches_from_cache(target_oid, 600.0)
                             if not matches:
                                 return None
                         else:
-                            matches = T212Provider._extract_history_matches(items, target_oid)
+                            matches = extract_broker_history_matches(items, target_oid)
         if not matches:
             return False
 
         # History uses {order, fill}, and one order may have several fills. Return
         # the client's order shape enriched with actual aggregate execution data.
-        result = T212Provider._aggregate_history_fills(matches)
+        result = aggregate_broker_history_fills(matches)
         result.pop("_timestamp_ms", None)
         return result
 
@@ -552,14 +562,11 @@ class T212Client:
         if not isinstance(items, list):
             s_hit, s_val, _ = self._read_shared_cache("_hist_cache", 86400.0)
             items = s_val if (s_hit and isinstance(s_val, list)) else []
-        by_sym = T212Provider.normalize_history_items(items)
-        sym_orders = by_sym.get(tkr)
-        if not sym_orders:
-            base_prefix = tkr.split("_", 1)[0]
-            for k, v in by_sym.items():
-                if k.split("_", 1)[0] == base_prefix:
-                    sym_orders = v
-                    break
+        by_sym = normalize_broker_history_items(items)
+        sym_orders = by_sym.get(tkr) or next(
+            (v for k, v in by_sym.items() if same_canonical_base_asset(tkr, k)),
+            None,
+        )
         if not sym_orders:
             return None
         target_side = normalize_side(side) if (isinstance(side, str) and side.strip()) else None

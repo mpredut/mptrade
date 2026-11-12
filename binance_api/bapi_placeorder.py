@@ -180,7 +180,7 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     )):
         raise SubmissionRefused("invalid_weight_policy_result")
 
-    print(f"apply_weight_limit → {order_type} {symbol}, "
+    print(f"apply_weight_limit -> {order_type} {symbol}, "
           f"Available qty {available_qty:.8f}, Weight {weight}, "
           f"Traded in 24h {traded_value:.2f} USDC, "
           f"Max trade allowed (24h): {max_trade_value:.2f} USDC, "

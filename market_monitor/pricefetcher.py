@@ -444,7 +444,7 @@ class StockYahooPricePlatform(PricePlatformInterface):
         try:
             if not isinstance(symbol, str) or not symbol.strip():
                 return None
-            sym_y = strip_equity_suffix(symbol).split("_", 1)[0]
+            sym_y = strip_equity_suffix(symbol, base_only=True)
             url = self._YAHOO.format(sym=quote(sym_y, safe="")) + "?range=1d&interval=5m"
             return extract_yahoo_chart_latest_price(
                 self._fetch_json_get(url, headers=self._UA, timeout=10), decimals=4

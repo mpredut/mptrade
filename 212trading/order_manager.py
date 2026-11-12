@@ -36,12 +36,11 @@ from botcore import (  # noqa: E402
 )
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
-from cachepaths import canonical_base_asset
+from cachepaths import canonical_base_asset, same_canonical_base_asset as _t212_tickers_match
 from ipo_common import notify  # noqa: E402
 from market_data import get_price_usd, get_usd_ron  # noqa: E402
 from providers.base import extract_order_id
-from providers.order_ohlc_utils import extract_order_side
-from providers.t212_provider import _order_ticker, _t212_tickers_match
+from providers.order_ohlc_utils import extract_broker_order_ticker as _order_ticker, extract_order_side
 from state_io import encode_json_payload, load_json_state, save_json_state
 from t212_client import T212Client  # noqa: E402
 

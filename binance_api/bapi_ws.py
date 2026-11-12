@@ -369,7 +369,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
             resp = parse_json_payload(await asyncio.wait_for(ws.recv(), timeout=10))
             if not isinstance(resp, dict) or resp.get("status") != 200:
                 raise RuntimeError(f"login failed: {resp}")     # The base reconnect loop applies backoff.
-            logger.info("[WS] ✅ Login OK")
+            logger.info("[WS] Login OK")
             # Do not reset backoff here. The reconnect loop does so only after a stable
             # session, protecting the connection rate limit from reconnect storms.
 

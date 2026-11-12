@@ -608,16 +608,16 @@ def ensure_equity_suffix(symbol: object, *, is_equity: bool = True, suffix: str 
     return f"{s}{suffix}" if s else symbol
 
 
-def strip_equity_suffix(symbol: object) -> str:
+def strip_equity_suffix(symbol: object, *, base_only: bool = False) -> str:
     """Return uppercase ``symbol`` stripped of trailing ``_US_EQ`` or ``_EQ`` equity suffixes."""
     if isinstance(symbol, bool) or not isinstance(symbol, str):
         return ""
     s = symbol.strip().upper()
     if s.endswith("_US_EQ"):
-        return s[:-6]
-    if s.endswith("_EQ"):
-        return s[:-3]
-    return s
+        s = s[:-6]
+    elif s.endswith("_EQ"):
+        s = s[:-3]
+    return s.split("_", 1)[0] if base_only else s
 
 
 def filter_asset_class_variants(
@@ -784,6 +784,19 @@ def canonical_base_asset(symbol: object) -> str:
     return _CANONICAL_BASE_ALIASES.get(base, base)
 
 
+def same_canonical_base_asset(sym_a: object, sym_b: object) -> bool:
+    """Return True when both symbols resolve to the same non-empty canonical base asset."""
+    base_a = canonical_base_asset(sym_a)
+    base_b = canonical_base_asset(sym_b)
+    return bool(base_a and base_a == base_b)
+
+
+def symbol_quote_asset(symbol: object) -> str:
+    """Return the uppercase quote asset of ``symbol`` (e.g. ``BTCUSDC`` -> ``USDC``, ``XBTEUR`` -> ``EUR``), or ``''``."""
+    parts = split_symbol_assets(symbol)
+    return parts[1] if parts is not None else ""
+
+
 def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     """Split a spot/equity pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD, SPCX_US_EQ, SPCXx.T) into ``(base, quote)``."""
     if isinstance(symbol, bool) or not isinstance(symbol, str):
@@ -865,16 +878,17 @@ def resolve_binance_lookup_symbol(symbol: object) -> str:
     return f"{base}USDT" if base else (s.replace("USDC", "USDT") if "USDC" in s else s)
 
 
-def resolve_kraken_lookup_symbol(symbol: object) -> str:
-    """Resolve any venue symbol to its canonical Kraken public ``<BASE>USD`` / ``XBTUSD`` lookup pair."""
+def resolve_kraken_lookup_symbol(symbol: object, quote: str = "USD") -> str:
+    """Resolve any venue symbol to its canonical Kraken public ``<BASE><QUOTE>`` / ``XBT<QUOTE>`` lookup pair."""
     base = canonical_base_asset(symbol)
     if not base:
         return ""
+    q = quote.strip().upper() if isinstance(quote, str) and not isinstance(quote, bool) and quote.strip() else "USD"
     if base == "BTC":
-        return "XBTUSD"
+        return f"XBT{q}"
     if base == "DOGE":
-        return "XDGUSD"
-    return f"{base}USD"
+        return f"XDG{q}"
+    return f"{base}{q}"
 
 
 _KRAKEN_QUOTES = (

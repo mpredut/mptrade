@@ -43,6 +43,7 @@ from cachepaths import (
     clean_symbol_key,
     normalize_venue_name,
     split_symbol_assets,
+    symbol_quote_asset,
 )
 import instrument_registry as _default_ir
 
@@ -1500,7 +1501,7 @@ class MarketDataProvider(ABC):
     ) -> tuple[tuple[str, ...], str]:
         """Return ``(ordered_depth_urls, hl_book_url)`` across registered venue providers."""
         canon_sym = canonical_symbol_key(symbol)
-        if canon_sym.endswith("EUR"):
+        if symbol_quote_asset(canon_sym) == "EUR":
             eur_urls: list[str] = []
             for v_key in cls._VENUE_PROVIDER_SPECS:
                 prov_cls = cls.resolve_venue_provider_class(v_key)
