@@ -26,6 +26,7 @@ from botcore import (  # noqa: F401
     load_local_module,
     normalize_side,
     normalize_timestamp_ms,
+    opposite_side,
     require_pos_float,
     resolve_patched_attr,
     safe_nonneg_float,
@@ -670,7 +671,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         ot_norm = normalize_side(order_type)
         if ot_norm not in ("BUY", "SELL"):
             return None
-        opposite = "SELL" if ot_norm == "BUY" else "BUY"
+        opposite = opposite_side(ot_norm)
         eff_since_s = safe_nonneg_float(since_s, default=90.0 * 24.0 * 3600.0)
         fills = self.get_orders(symbol, opposite, eff_since_s)
         if fills is None:

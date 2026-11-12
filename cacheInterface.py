@@ -517,6 +517,9 @@ class CacheManagerInterface(ABC):
     def _on_stale_memory_detected_locked(self) -> None:
         """Hook invoked under ``self.lock`` when disk state is newer than memory."""
 
+    def _before_state_persist_locked(self) -> None:
+        """Hook invoked under ``self.lock`` at the start of ``_save_state_to_file_impl``."""
+
     def _before_snapshot_commit_locked(self, persisted_max_ts: int) -> None:
         """Hook invoked under ``self.lock`` before writing a full JSON snapshot."""
 
@@ -817,6 +820,7 @@ class CacheManagerInterface(ABC):
 
     def _save_state_to_file_impl(self) -> bool:
         with self.lock:
+            self._before_state_persist_locked()
             persisted_max_ts = self._persisted_max_ts()
             pre_commit_merged = False
             if (

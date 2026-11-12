@@ -18,6 +18,8 @@ from botcore import (
     clean_order_id,
     exact_nonneg_int,
     normalize_side,
+    opposite_side,
+    require_buy_sell_side,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -226,9 +228,7 @@ class PairCoordinator:
             raise ValueError("rtrade qty must be finite and positive")
         self.qty = qty_f
         self.policy = policy
-        self.start_side = "" if start_side is None or isinstance(start_side, bool) else normalize_side(start_side)
-        if self.start_side not in {"BUY", "SELL"}:
-            raise ValueError("start_side must be BUY or SELL")
+        self.start_side = require_buy_sell_side(start_side, name="start_side")
         self.clock = clock
         self.sleeper = sleeper
         self.pair_id_factory = pair_id_factory
@@ -277,7 +277,7 @@ class PairCoordinator:
 
         prices = {"BUY": buy_price, "SELL": sell_price}
         first_side = self.start_side
-        second_side = "SELL" if first_side == "BUY" else "BUY"
+        second_side = opposite_side(first_side)
         try:
             first = self.venue.place_limit(
                 first_side, prices[first_side], self.qty, self.pair_id,

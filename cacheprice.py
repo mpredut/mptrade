@@ -304,13 +304,13 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         try:
             cpm = getattr(self, "_current_price_mgr", None)
             if cpm is None:
-                default_getter = (
-                    getattr(self, "_current_price_getter", None)
-                    or self._default_current_price_getter
-                )
-                get_cpm = _cm_override("get_current_price_manager", default_getter)
-                if callable(get_cpm):
-                    cpm = get_cpm()
+                explicit_getter = getattr(self, "_current_price_getter", None)
+                if callable(explicit_getter):
+                    cpm = explicit_getter()
+                else:
+                    get_cpm = _cm_override("get_current_price_manager", self._default_current_price_getter)
+                    if callable(get_cpm):
+                        cpm = get_cpm()
             if cpm is None:
                 return []
             entry = cpm.get_price(symbol)
@@ -548,6 +548,7 @@ class Cache24PriceManager(CachePriceManagerBase):
     def _persist_periodic_state(self, sync_complete):
         if self.save_state and not self.append_persist:
             with self.lock:
+                self._drain_deferred_price_ticks_locked()
                 persisted_max_ts = self._persisted_max_ts()
                 mem_max_ts = self._mem_max_ts()
                 if (
@@ -647,6 +648,9 @@ class Cache24PriceManager(CachePriceManagerBase):
         for sym_k, batch in grouped.items():
             self.update_cache_per_symbol(sym_k, batch)
             self._trim_old_data(sym_k)
+
+    def _before_state_persist_locked(self) -> None:
+        self._drain_deferred_price_ticks_locked()
 
     def _after_state_persisted(self) -> None:
         with self._deferred_ticks_lock:
@@ -1133,6 +1137,7 @@ class Cache365PriceManager(Cache24PriceManager):
         snap_item_ids: set[int] = set()
         try:
             with self.lock:
+                self._drain_deferred_price_ticks_locked()
                 original_state, snap_item_ids = self._snapshot_memory_state_with_item_ids_locked()
 
             backup_path = self.filename + ".maint_backup"

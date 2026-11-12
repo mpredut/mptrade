@@ -62,6 +62,7 @@ from cachepaths import (
     is_equity_venue_or_suffix,
     iter_venue_cycle_state_files,
 )
+import cacheprice
 from cacheprice import (
     Cache24PriceManager,
     Cache365PriceManager,
@@ -180,6 +181,7 @@ from providers import (
     market_api as mapi_mod,
     order_id_context as oic,
     ssot_bridge as sb_mod,
+    venue_ws_protocols as vwp_mod,
 )
 from providers.base import MarketDataProvider
 from providers.binance_provider import BinanceProvider
@@ -196,6 +198,7 @@ from providers.ohlc_utils import (
     build_price_history_points,
     drop_incomplete_last_bar,
     extract_trading_quote_pairs,
+    normalize_yahoo_5d_chart_bars,
     resolve_ohlc_time_window_ms,
     validate_dataset,
     validate_ohlc_candle_bar,
@@ -5669,6 +5672,158 @@ def test_wave31_kinematic_ssot_and_impulse_border_cases(tmp_path, monkeypatch):
     gtc._last_ai_impulse_check_ts = eval_now + 3600.0
     gtc.run_cycle(force=False, now=eval_now)
     assert wakeup_check_ts == [eval_now]
+
+
+def test_wave32_side_ssot_deferred_ticks_and_ws_protocol_border_cases(tmp_path, monkeypatch):
+    """Verify Wave 32 side SSOT primitives, deferred tick drain before persist, and WS/OHLC/quote border cases."""
+    # 1. Canonical botcore.require_buy_sell_side & opposite_side SSOT.
+    assert order_guard.opposite_side is botcore.opposite_side
+    assert botcore.require_buy_sell_side(" bid ") == "BUY"
+    assert botcore.require_buy_sell_side("short") == "SELL"
+    assert botcore.opposite_side("LONG") == "SELL"
+    assert botcore.opposite_side(" ask ") == "BUY"
+    for bad_side in (None, True, False, "", "HOLD", 123):
+        with pytest.raises(ValueError):
+            botcore.require_buy_sell_side(bad_side)
+        with pytest.raises(ValueError):
+            botcore.opposite_side(bad_side)
+
+    # 2. Cache24PriceManager drains _deferred_price_ticks BEFORE snapshot commit and periodic disk-reload check.
+    c24_path = tmp_path / "cache_24_price_BTCUSDC.json"
+    base_ms = math.trunc(time.time() * 1000.0) - 60_000
+    state_io.save_json_state(
+        str(c24_path),
+        {"items": {"BTCUSDC": [[base_ms, 70000.0]]}, "fetchtime": {"BTCUSDC": base_ms}},
+    )
+    c24 = Cache24PriceManager(
+        60.0,
+        symbols=["BTCUSDC"],
+        filename=str(c24_path),
+        data_sync_mode="producer",
+    )
+    assert c24.save_state_to_file() is True
+
+    # Simulate a contended lock from another thread so on_price_update buffers into _deferred_price_ticks.
+    contended_done = threading.Event()
+    tick_buffered = threading.Event()
+
+    def _push_under_contention():
+        c24.on_price_update("BTCUSDC", base_ms + 10_000, 70125.0)
+        tick_buffered.set()
+
+    with c24.lock:
+        worker = threading.Thread(target=_push_under_contention)
+        worker.start()
+        assert tick_buffered.wait(timeout=2.0)
+        worker.join(timeout=2.0)
+        assert len(c24._deferred_price_ticks) == 1
+        contended_done.set()
+    assert contended_done.is_set()
+
+    # Even if an external enrichment wrote base_ms + 5_000 on disk (> old mem base_ms, < deferred base_ms + 10_000),
+    # _persist_periodic_state must drain the deferred tick first and persist base_ms + 10_000 rather than reloading stale disk!
+    Cache24PriceManager.persist_external_ohlc_series(
+        str(c24_path),
+        "BTCUSDC",
+        [[base_ms, 70000.0, 12.0], [base_ms + 5_000, 70050.0, 15.0]],
+        (base_ms + 5_000) / 1000.0,
+    )
+    monkeypatch.setattr(cacheprice, "is_live_network_backfill_enabled", lambda *_a, **_kw: False)
+    assert c24._persist_periodic_state(True) is True
+    persisted_doc = state_io.read_json_dict(str(c24_path))
+    persisted_rows = persisted_doc["items"]["BTCUSDC"]
+    assert persisted_rows[-1][:2] == [base_ms + 10_000, 70125.0]
+    c24.shutdown(timeout=0.5)
+
+    # 3. cachepaths.ensure_quote_suffix & crypto_quote_priority_rank border cases.
+    assert cachepaths.ensure_quote_suffix(True, "USDC") == ""
+    assert cachepaths.ensure_quote_suffix("USDC", "USDC") == "USDC"
+    assert cachepaths.ensure_quote_suffix("BTCUSDT", "USDC") == "BTCUSDT"
+    assert cachepaths.ensure_quote_suffix("NVDA_US_EQ", "USDC") == "NVDA_US_EQ"
+    assert cachepaths.ensure_quote_suffix("hype", "usdc") == "HYPEUSDC"
+    assert cachepaths.crypto_quote_priority_rank("NVDA_US_EQ") == 4
+    assert cachepaths.crypto_quote_priority_rank("BTCEUR", ["eur", "usdc"]) == 0
+
+    # 4. VenueWsProtocolInterface / KrakenWsLedgerMixin / HyperliquidWsMixin border cases.
+    krk_ws = vwp_mod.KrakenWsLedgerMixin
+    assert krk_ws.match_configured_pair("XBTUSD", pairs=[]) is None
+    assert krk_ws.match_configured_pair("XBTUSD", pairs=True) is None
+    assert krk_ws.match_configured_pair("XXBTZUSD", pairs="BTCUSD") == "BTCUSD"
+    assert krk_ws.match_configured_pair("XXBTZUSD", pairs=["xbt/usd"]) == "xbt/usd"
+    assert krk_ws.parse_ws_public_ticker_message([42, {"c": ["70000.0"]}, "ticker", True])[0] == "ignore"
+
+    private_calls = []
+    dummy_krk_client = SimpleNamespace(_private=lambda *a, **kw: private_calls.append((a, kw)) or {})
+    assert krk_ws.fetch_ledger_fills_by_symbol(dummy_krk_client, pairs=[]) == {}
+    assert krk_ws.fetch_ledger_fills_by_symbol(dummy_krk_client, pairs=True) == {}
+    assert private_calls == []
+
+    hl_ws = vwp_mod.HyperliquidWsMixin
+    hl_env = {"channel": "allMids", "data": {"mids": {"H": "0.05", "@107": "38.5"}}}
+    assert hl_ws.extract_ws_all_mids_prices(hl_env, "HYPEUSDC") == {"HYPEUSDC": 38.5}
+    assert hl_ws.extract_ws_all_mids_prices(hl_env, True) == {}
+    assert hl_ws.resolve_ws_user_address(True, resolve_env=False) is None
+    assert hl_ws.build_ws_user_fills_subscriptions(True) == ()
+    hl_fills_out = hl_ws.extract_ws_user_fills(
+        {"isSnapshot": "true", "fills": [{"coin": "@107", "px": "38.5", "sz": "1.0"}]},
+        "HYPEUSDC",
+        candidate_mids_fn=hl_ws.resolve_ws_spot_keys,
+    )
+    assert hl_fills_out == (True, {"HYPEUSDC": [{"coin": "@107", "px": "38.5", "sz": "1.0"}]})
+
+    # 5. normalize_yahoo_5d_chart_bars handles [None] quote, None now_ts, string bools, and corrupt raw_series_24h rows.
+    empty_q = normalize_yahoo_5d_chart_bars(
+        {"indicators": {"quote": [None]}, "timestamp": [1700000000]},
+        [],
+        None,
+        eq_rth_open="false",
+    )
+    assert empty_q == ([], [], [], False, False, 0.0, 0)
+
+    bar_now_s = 1700000300.0
+    chart_dict = {
+        "timestamp": [bar_now_s - 600.0, bar_now_s - 300.0, bar_now_s],
+        "indicators": {"quote": [{"close": [100.0, 100.2, 100.4], "volume": [1000, None, 1200]}]},
+    }
+    corrupt_raw_24 = [[None, 100.3], [math.trunc((bar_now_s + 1.0) * 1000.0), True], [math.trunc((bar_now_s + 2.0) * 1000.0), 100.45]]
+    pts_5d, _, pts_24h, rth_fresh, _, _, _ = normalize_yahoo_5d_chart_bars(
+        chart_dict,
+        corrupt_raw_24,
+        bar_now_s,
+        eq_rth_open="false",
+    )
+    assert len(pts_5d) == 3 and rth_fresh is True
+    assert pts_24h[-1] == [math.trunc((bar_now_s + 2.0) * 1000.0), 100.45]
+
+    # 6. ProviderSsotBridgeMixin.write_ssot_fills_cache & MarketApi cache-flag/OHLC border guards.
+    bridge_dummy = KrakenProvider.__new__(KrakenProvider)
+    assert bridge_dummy.write_ssot_fills_cache("XBTUSD", str(tmp_path / "fills.json"), True) is False
+    assert bridge_dummy.write_ssot_fills_cache("XBTUSD", str(tmp_path / "fills.json"), {"id": "1"}) is False
+
+    dispatched = []
+    mapi_mod.MarketApi._dispatch_with_cache_flags(
+        lambda *a, **kw: dispatched.append((a, kw)) or [],
+        "BTCUSDC",
+        86400.0,
+        authoritative="false",
+        publish_cache="0",
+    )
+    assert dispatched == [(("BTCUSDC", 86400.0), {})]
+
+    ohlc_calls = []
+    hist_prov = SimpleNamespace(
+        name="binance",
+        _ASSET_SCOPE="crypto",
+        _HISTORICAL_OHLC_PRIORITY=1,
+        supports_symbol=lambda _s: True,
+        fetch_historical_ohlc_points=lambda s, d, interval="1h": ohlc_calls.append((s, d, interval)) or [(1.0, 100.0)] * 60,
+    )
+    hist_api = mapi_mod.MarketApi([hist_prov])
+    assert hist_api.fetch_historical_ohlc_points(True, 30) == []
+    assert hist_api.fetch_historical_ohlc_points("BTCUSDC", True) == []
+    assert hist_api.fetch_historical_ohlc_points("BTCUSDC", 0) == []
+    assert ohlc_calls == []
+
 
 
 

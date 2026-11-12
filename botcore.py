@@ -2872,6 +2872,19 @@ def normalize_side(side: object, *, require_str: bool = False) -> str:
     return ""
 
 
+def require_buy_sell_side(side: object, *, name: str = "side") -> str:
+    """Normalize ``side`` to ``'BUY'`` or ``'SELL'``, raising ``ValueError`` otherwise."""
+    norm = normalize_side(side)
+    if norm not in ("BUY", "SELL"):
+        raise ValueError(f"Invalid {name} {side!r}: {name} must be BUY or SELL (expected 'BUY' or 'SELL')")
+    return norm
+
+
+def opposite_side(side: object) -> str:
+    """Return the opposite order side (``'SELL'`` for ``'BUY'``, ``'BUY'`` for ``'SELL'``)."""
+    return "SELL" if require_buy_sell_side(side, name="order_type") == "BUY" else "BUY"
+
+
 def clean_order_id(val: object) -> str | None:
     """Validate and normalize a scalar venue order ID to a non-empty string (or ``None``)."""
     if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):

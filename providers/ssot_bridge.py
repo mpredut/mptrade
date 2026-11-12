@@ -681,6 +681,8 @@ class ProviderSsotBridgeMixin:
 
     def write_ssot_fills_cache(self, symbol: str, cache_file: str, fills: List[dict]) -> bool:
         """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
+        if fills is not None and not isinstance(fills, (list, tuple)):
+            return False
         tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
         if tm_cls is None:
             return False

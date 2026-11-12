@@ -17,6 +17,7 @@ from botcore import (
     extract_timestamp_ms,
     normalize_side,
     obj_attr,
+    require_buy_sell_side,
     require_pos_float,
     safe_float,
     safe_int,
@@ -199,13 +200,6 @@ def resolve_base_asset(symbol: str) -> str:
     return resolve_assets(symbol)[0]
 
 
-def _require_buy_sell_side(side: str) -> str:
-    norm = normalize_side(side)
-    if norm not in {"BUY", "SELL"}:
-        raise ValueError("side must be BUY or SELL")
-    return norm
-
-
 def balance_cap_quantity(
     free_balance: Callable[[str], Optional[float]],
     symbol: str,
@@ -216,7 +210,7 @@ def balance_cap_quantity(
     quote: Optional[str] = None,
 ) -> tuple[Optional[float], Optional[str]]:
     base, quote = resolve_assets(symbol, base, quote)
-    side = _require_buy_sell_side(side)
+    side = require_buy_sell_side(side)
     asset = base if side == "SELL" else quote
     if not asset:
         return None, asset
@@ -542,7 +536,7 @@ def decide_quantity(
     known_balance: Optional[float] = None,
     **kwargs,
 ) -> QuantityDecision:
-    side = _require_buy_sell_side(side)
+    side = require_buy_sell_side(side)
     if requested_qty is None:
         requested = math.inf
     else:

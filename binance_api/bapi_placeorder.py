@@ -16,6 +16,8 @@ from botcore import (
     extract_order_price,
     extract_order_side,
     load_dotenv,
+    opposite_side,
+    require_buy_sell_side,
     require_finite_float,
     required_float_env,
     required_int_env,
@@ -405,10 +407,7 @@ def _last_opposite_fill_price_api(symbol, order_type):
     This covers a new symbol or an unpopulated cache. Raise on API errors so the caller
     fails closed; return ``None`` only when Binance confirms no opposite fill exists.
     """
-    side = "" if order_type is None or isinstance(order_type, bool) else str(_normalize_side(order_type))
-    if side not in {"BUY", "SELL"}:
-        raise ValueError(f"Invalid order_type: {order_type!r}")
-    want_side = "BUY" if side == "SELL" else "SELL"
+    want_side = opposite_side(require_buy_sell_side(order_type, name="order_type"))
     for tr in reversed(client.get_my_trades(symbol=symbol, limit=200) or ()):
         if not isinstance(tr, dict):
             continue
@@ -428,7 +427,7 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
     order_type = str(_normalize_side(order_type or "")).strip().upper()
     if order_type not in {"BUY", "SELL"}:
         return
-    opp_side = "SELL" if order_type == "BUY" else "BUY"
+    opp_side = opposite_side(order_type)
     try:
         open_kw = {"strict": True}
         if allowed_owners is not None:

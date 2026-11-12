@@ -61,6 +61,15 @@ class VenueWsProtocolInterface(ABC):
         """Serialize a WebSocket control or subscription dictionary via ``state_io``."""
         return encode_json_payload(payload)
 
+    @staticmethod
+    def _iter_symbol_items(items: object) -> tuple[str, ...]:
+        if isinstance(items, str):
+            s = items.strip()
+            return (s,) if s else ()
+        if not isinstance(items, (list, tuple, set, frozenset)):
+            return ()
+        return tuple(s for x in items if isinstance(x, str) and (s := x.strip()))
+
 
 class KrakenWsLedgerMixin(VenueWsProtocolInterface):
     """Level-2 Kraken v1 public/private WebSocket framing and Ledgers fill pairing."""
@@ -82,16 +91,20 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
     @classmethod
     def match_configured_pair(cls, symbol: object, *, pairs=None) -> Optional[str]:
         """Resolve a raw or WS Kraken pair to its configured ``pairs`` entry (or canonical key if ``'*'`` is enabled)."""
-        if not isinstance(symbol, str):
+        if isinstance(symbol, bool) or not isinstance(symbol, str):
             return None
         raw = symbol.strip().upper()
         if not raw:
             return None
-        if pairs and "*" not in pairs:
-            for configured in pairs:
-                if configured == raw or kraken_pair_matches(configured, raw):
-                    return configured
-            return None
+        if pairs is not None:
+            norm_pairs = cls._iter_symbol_items(pairs)
+            if not norm_pairs:
+                return None
+            if "*" not in norm_pairs:
+                for configured in norm_pairs:
+                    if configured.upper() == raw or kraken_pair_matches(configured, raw):
+                        return configured
+                return None
         return kraken_pair_key(raw) or raw
 
     @staticmethod
@@ -235,11 +248,13 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
             return ("ignore", None, None)
         if not isinstance(msg, list) or len(msg) < 4:
             return ("ignore", None, None)
-        if msg[-2] != "ticker" or not isinstance(msg[1], dict):
+        if msg[-2] != "ticker" or not isinstance(msg[1], dict) or not isinstance(msg[-1], str):
             return ("ignore", None, None)
-        raw_label = str(msg[-1] or "")
+        raw_label = msg[-1].strip()
+        if not raw_label:
+            return ("ignore", None, None)
         s_sym = resolve_symbol_fn(raw_label) if callable(resolve_symbol_fn) else raw_label
-        if not s_sym:
+        if not isinstance(s_sym, str) or not s_sym.strip():
             return ("ignore", None, None)
         ticker = msg[1]
         c_raw = ticker.get("c")
@@ -374,13 +389,16 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
         )
         if lb_sec is None:
             return {}
+        norm_pairs = cls._iter_symbol_items(pairs) if pairs is not None else None
+        if norm_pairs is not None and not norm_pairs:
+            return {}
         now_s = time.time()
         start_s = max(0, math.trunc(now_s - min(lb_sec, now_s)))
         res = client._private("Ledgers", {"start": start_s}, fresh=True)
         fills = cls.ledger_to_fills((res or {}).get("ledger", {}) or {})
-        by_sym: dict[str, list[dict]] = {s: [] for s in (pairs or ()) if s and s != "*"}
+        by_sym: dict[str, list[dict]] = {s: [] for s in (norm_pairs or ()) if s != "*"}
         for f in fills:
-            matched_sym = cls.match_configured_pair(f.get("symbol"), pairs=pairs)
+            matched_sym = cls.match_configured_pair(f.get("symbol"), pairs=norm_pairs)
             if matched_sym is None:
                 continue
             f_copy = dict(f)
@@ -465,7 +483,7 @@ class HyperliquidWsMixin(VenueWsProtocolInterface):
             return None
         key_fn = candidate_mids_fn or cls.resolve_ws_spot_keys
         out: dict[str, float] = {}
-        for s_sym in symbols or ():
+        for s_sym in cls._iter_symbol_items(symbols):
             px = None
             for k in key_fn(s_sym):
                 raw_val = casefold_get(mids, k)
@@ -485,8 +503,8 @@ class HyperliquidWsMixin(VenueWsProtocolInterface):
         resolve_env: Optional[bool] = None,
     ) -> Optional[str]:
         """Resolve the Hyperliquid account address for ``userFills`` WebSocket subscriptions."""
-        addr = user_address
-        if addr is None and is_live_network_backfill_enabled(resolve_env):
+        addr = user_address if isinstance(user_address, str) else None
+        if user_address is None and is_live_network_backfill_enabled(resolve_env):
             hl_dir = (
                 resolve_patched_attr(
                     "_HL_DIR",
@@ -498,14 +516,14 @@ class HyperliquidWsMixin(VenueWsProtocolInterface):
             addr = folder_or_env_value(
                 hl_dir, "HL_ACCOUNT_ADDRESS", strip_comments=True
             )
-        return str(addr or "").strip() or None
+        return addr.strip() if isinstance(addr, str) and addr.strip() else None
 
     @classmethod
     def build_ws_user_fills_subscriptions(
         cls, user_address: Optional[str]
     ) -> tuple[str, ...]:
         """Encode the Hyperliquid ``userFills`` WebSocket subscription payload tuple."""
-        addr = str(user_address or "").strip()
+        addr = user_address.strip() if isinstance(user_address, str) else ""
         if not addr:
             return ()
         return (
@@ -538,7 +556,7 @@ class HyperliquidWsMixin(VenueWsProtocolInterface):
             return None
         is_snapshot = bool(_parse_bool_flag(data.get("isSnapshot"), False)) if isinstance(data, dict) else False
         fills_by_symbol: dict[str, list[dict]] = {}
-        for s_sym in symbols or ():
+        for s_sym in cls._iter_symbol_items(symbols):
             spot_coins = {
                 k.upper()
                 for k in candidate_mids_fn(s_sym)

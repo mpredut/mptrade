@@ -902,21 +902,39 @@ def is_usd_compatible_pair(symbol: object) -> bool:
 
 
 def ensure_quote_suffix(symbol: object, default_quote: str = "USDC") -> str:
-    """Append ``default_quote`` when ``symbol`` is a bare uppercase token lacking that quote suffix."""
+    """Append ``default_quote`` when ``symbol`` is a bare uppercase token lacking a quote suffix."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return ""
+    if has_equity_suffix(symbol, include_compact=True):
+        return symbol.strip().upper()
     sym = clean_symbol_key(symbol)
-    q = clean_symbol_key(default_quote) or "USDC"
     if not sym:
         return ""
-    return sym if symbol_quote_asset(sym) == q else f"{sym}{q}"
+    q = clean_symbol_key(default_quote) if isinstance(default_quote, str) and not isinstance(default_quote, bool) else ""
+    q = q or "USDC"
+    if sym == q or symbol_quote_asset(sym):
+        return sym
+    return f"{sym}{q}"
 
 
 def crypto_quote_priority_rank(
     symbol: object,
     quote_order: tuple[str, ...] = ("USDC", "USDT", "USD", "EUR"),
 ) -> int:
-    """Return 0-based priority rank of ``symbol``'s resolved quote asset within ``quote_order``."""
+    """Return 0-based priority rank of ``symbol``'s resolved crypto quote asset within ``quote_order``."""
+    order = (
+        quote_order
+        if isinstance(quote_order, tuple) and all(isinstance(x, str) and x == x.strip().upper() for x in quote_order)
+        else tuple(
+            x.strip().upper()
+            for x in (quote_order if isinstance(quote_order, (list, tuple, set, frozenset)) else ())
+            if isinstance(x, str) and x.strip()
+        )
+    )
+    if has_equity_suffix(symbol, include_compact=True):
+        return len(order)
     q = symbol_quote_asset(symbol)
-    return quote_order.index(q) if q in quote_order else len(quote_order)
+    return order.index(q) if q in order else len(order)
 
 
 def canonical_symbol_key(symbol: object) -> str:

@@ -27,6 +27,8 @@ from botcore import (
     extract_timestamp_s,
     normalize_side,
     obj_attr,
+    opposite_side,
+    require_buy_sell_side,
     require_int,
     require_nonneg_float,
     resolve_now_ts,
@@ -128,27 +130,15 @@ def resolve_caller_module(
         return None
 
 
-def _require_buy_sell_side(order_type: str) -> str:
-    side = normalize_side(order_type)
-    if side not in ("BUY", "SELL"):
-        raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
-    return side
-
-
-def opposite_side(order_type: str) -> str:
-    """Return the opposite order side ('SELL' for 'BUY', 'BUY' for 'SELL')."""
-    return "SELL" if _require_buy_sell_side(order_type) == "BUY" else "BUY"
-
-
 def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
     """Compute signed favorable profit percentage of `price` relative to `ref_price` symmetrically."""
-    side = _require_buy_sell_side(order_type)
+    side = require_buy_sell_side(order_type, name="order_type")
     return value_diff_to_percent(ref_price, price) if side == "BUY" else value_diff_to_percent(price, ref_price)
 
 
 def select_extreme_reference(prices, order_type: str, *, strict: bool = True):
     """Select the directional extreme reference symmetrically for BUY and SELL."""
-    side = _require_buy_sell_side(order_type)
+    side = require_buy_sell_side(order_type, name="order_type")
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return None
     try:
@@ -176,9 +166,7 @@ def get_profit_guard_mode_cfg(
     if reference_mode is not None:
         return validate_profit_guard_mode_cfg(reference_mode)
 
-    side_u = normalize_side(order_type)
-    if side_u not in ("BUY", "SELL"):
-        raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    side_u = require_buy_sell_side(order_type, name="order_type")
     side_l = side_u.lower()
 
     venue = normalize_venue_name(provider_name, default="").strip().lower()
@@ -366,9 +354,7 @@ def get_dynamic_window_sec_cfg(
     - Adverse trend (BUY in bear / SELL in bull): 48h - 168h (configured via dynamic_window_adverse_h)
     - Flat / unknown trend: 12h - 48h (configured via dynamic_window_flat_h)
     """
-    side = "BUY" if (order_type is None or order_type == "") else normalize_side(order_type)
-    if side not in ("BUY", "SELL"):
-        raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    side = "BUY" if (order_type is None or order_type == "") else require_buy_sell_side(order_type, name="order_type")
 
     m = _load_margins()
     favorable_h = safe_pos_float(m.get("dynamic_window_favorable_h"), 2.0)
@@ -718,7 +704,7 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     provider.get_orders supplies 24-hour traded value. The shared quantity decision must
     supply the side-aware balance, which this guard does not re-read. Return the smaller
     of requested and permitted quantity. Errors propagate so the caller fails closed."""
-    side = _require_buy_sell_side(order_type)
+    side = require_buy_sell_side(order_type, name="order_type")
     provider_name = normalize_venue_name(provider, default="")
     weight = resolve_trade_weight(symbol, side, provider_name)
     recent = provider.get_orders(symbol, side, 86400)

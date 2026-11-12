@@ -25,11 +25,13 @@ from botcore import (
     extract_timestamp_ms,
     lru_dict_put,
     normalize_side,
+    require_buy_sell_side,
     require_finite_float,
     require_pos_float,
     safe_int,
     safe_nonneg_float,
     safe_pos_float,
+    safe_pos_int,
 )
 from cachepaths import (
     has_equity_suffix,
@@ -275,7 +277,12 @@ class MarketApi:
         interval: str = "1h",
     ) -> list[tuple[float, float]]:
         """Return historical ``(epoch_sec, close_price)`` OHLC points across configured venue providers."""
-        sym_u = str(symbol or "").strip().upper()
+        if isinstance(symbol, bool) or not isinstance(symbol, str):
+            return []
+        sym_u = symbol.strip().upper()
+        days_i = safe_pos_int(days, default=None)
+        if not sym_u or days_i is None:
+            return []
         is_eq = is_equity_symbol(sym_u)
         target_scope = "equities" if is_eq else "crypto"
         query_sym = sym_u if is_eq else symbol
@@ -290,11 +297,11 @@ class MarketApi:
         )
         if not candidates:
             return []
-        pts = candidates[0].fetch_historical_ohlc_points(query_sym, days, interval=interval)
+        pts = candidates[0].fetch_historical_ohlc_points(query_sym, days_i, interval=interval)
         if not is_eq and len(pts) < 50 and len(candidates) > 1 and botcore.is_live_network_backfill_enabled():
             for fallback_prov in candidates[1:]:
                 try:
-                    fb_pts = fallback_prov.fetch_historical_ohlc_points(query_sym, days, interval=interval)
+                    fb_pts = fallback_prov.fetch_historical_ohlc_points(query_sym, days_i, interval=interval)
                     if len(fb_pts) >= 50:
                         pts = fb_pts
                         break
@@ -314,8 +321,10 @@ class MarketApi:
         authoritative: bool = False,
         publish_cache: bool = False,
     ) -> List[dict]:
-        if authoritative or publish_cache:
-            return fn(*args, authoritative=authoritative, publish_cache=publish_cache)
+        auth_b = bool(_parse_bool_flag(authoritative, False))
+        pub_b = bool(_parse_bool_flag(publish_cache, False))
+        if auth_b or pub_b:
+            return fn(*args, authoritative=auth_b, publish_cache=pub_b)
         return fn(*args)
 
     def get_orders(
@@ -493,11 +502,7 @@ class MarketApi:
     def _validate_open_order_side_and_symbol(
         self, order_type: str, symbol: str, *, provider_name=None
     ) -> str:
-        side = normalize_side(order_type)
-        if side not in ("BUY", "SELL"):
-            raise ValueError(
-                f"Invalid order_type '{order_type}'. It must be either 'BUY' or 'SELL'."
-            )
+        side = require_buy_sell_side(order_type, name="order_type")
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             raise ValueError(f"Invalid symbol '{symbol}'.")
         provider = self._provider_explicit_or_routed(symbol, provider_name)

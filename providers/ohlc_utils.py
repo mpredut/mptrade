@@ -16,6 +16,7 @@ from botcore import (
     normalize_epoch_sec,
     require_finite_float,
     require_int,
+    resolve_now_ts,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -760,8 +761,13 @@ def normalize_yahoo_5d_chart_bars(
             key=lambda pt: pt[0],
         )
     elif isinstance(chart_res, dict):
-        q_obj = ((chart_res.get("indicators") or {}).get("quote") or [{}])[0]
-        vols = q_obj.get("volume") or []
+        ind_obj = chart_res.get("indicators")
+        q_list = ind_obj.get("quote") if isinstance(ind_obj, dict) else None
+        q_obj = q_list[0] if isinstance(q_list, list) and q_list and isinstance(q_list[0], dict) else {}
+        raw_vols = q_obj.get("volume")
+        vols = raw_vols if isinstance(raw_vols, (list, tuple)) else ()
+        ts_seq = chart_res.get("timestamp")
+        cl_seq = q_obj.get("close")
         pts_5d = sorted(
             (
                 [
@@ -769,15 +775,21 @@ def normalize_yahoo_5d_chart_bars(
                     round(c_f, 4),
                     safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0,
                 ]
-                for idx, (ts, c) in enumerate(zip(chart_res.get("timestamp") or [], q_obj.get("close") or []))
+                for idx, (ts, c) in enumerate(
+                    zip(
+                        ts_seq if isinstance(ts_seq, (list, tuple)) else (),
+                        cl_seq if isinstance(cl_seq, (list, tuple)) else (),
+                    )
+                )
                 if (ts_f := safe_pos_float(ts, default=None)) is not None and (c_f := safe_pos_float(c, default=None)) is not None
             ),
             key=lambda pt: pt[0],
         )
     if not pts_5d:
         return [], [], [], False, False, 0.0, 0
+    rth_open = bool(_parse_bool_flag(eq_rth_open, False))
     chart_px = safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0
-    now_ms_i = math.trunc(now_ts * 1000)
+    now_ms_i = math.trunc(resolve_now_ts(now_ts) * 1000.0)
     raw_last_5d_ts = math.trunc(pts_5d[-1][0])
     if len(pts_5d) >= 10:
         for split_idx in range(len(pts_5d) - 1, max(4, len(pts_5d) - 4), -1):
@@ -808,13 +820,13 @@ def normalize_yahoo_5d_chart_bars(
                 if tail_gap_idx is None:
                     break
                 tail_span_ms = pts_5d[-1][0] - pts_5d[tail_gap_idx][0]
-                tail_is_live = (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
+                tail_is_live = -300_000 <= (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
                 if tail_span_ms < 15 * 60 * 1000 and not tail_is_live:
                     pts_5d = pts_5d[:tail_gap_idx]
                 else:
                     break
-    rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= (4 * 3600 * 1000 if eq_rth_open else 20 * 60 * 1000)
-    chart_tick_fresh = (now_ms_i - raw_last_5d_ts) <= 20 * 60 * 1000
+    rth_bar_fresh = -300_000 <= (now_ms_i - pts_5d[-1][0]) <= (4 * 3600 * 1000 if rth_open else 20 * 60 * 1000)
+    chart_tick_fresh = -300_000 <= (now_ms_i - raw_last_5d_ts) <= 20 * 60 * 1000
     anchor_24h_ms = min(now_ms_i, math.trunc(pts_5d[-1][0])) if pts_5d else now_ms_i
     cutoff_24h_ms = anchor_24h_ms - 86400 * 1000
     pts_24h_bars = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
@@ -825,7 +837,7 @@ def normalize_yahoo_5d_chart_bars(
     if len(pts_24h_bars) < 10:
         pts_24h_bars = list(pts_5d[-78:])
     pts_24h = list(pts_24h_bars)
-    if rth_bar_fresh and raw_series_24h and pts_24h:
+    if rth_bar_fresh and isinstance(raw_series_24h, (list, tuple)) and raw_series_24h and pts_24h:
         last_bar_ts = pts_24h[-1][0]
         recent_bar_pxs = [
             b[1]
@@ -836,15 +848,17 @@ def normalize_yahoo_5d_chart_bars(
             recent_bar_pxs.append(pts_24h_bars[-2][1])
         bar_win_lo = min(recent_bar_pxs) if recent_bar_pxs else pts_24h[-1][1]
         bar_win_hi = max(recent_bar_pxs) if recent_bar_pxs else pts_24h[-1][1]
-        upper_sub5m_ms = (now_ms_i + 5000) if eq_rth_open else min(now_ms_i + 5000, last_bar_ts + 300 * 1000)
+        upper_sub5m_ms = (now_ms_i + 5000) if rth_open else min(now_ms_i + 5000, last_bar_ts + 300 * 1000)
         recent_sub5m = [
-            pt
+            [pt_ts, pt_px]
             for pt in raw_series_24h
             if isinstance(pt, (list, tuple))
             and len(pt) >= 2
-            and last_bar_ts - 15 * 60 * 1000 <= pt[0] <= upper_sub5m_ms
-            and not _yahoo_bar_prices_diverged(pt[1], pts_24h[-1][1])
-            and (pt[0] >= last_bar_ts or (bar_win_lo * 0.995 <= pt[1] <= bar_win_hi * 1.005))
+            and (pt_ts := safe_pos_int(pt[0], default=None)) is not None
+            and (pt_px := safe_pos_float(pt[1], default=None)) is not None
+            and last_bar_ts - 15 * 60 * 1000 <= pt_ts <= upper_sub5m_ms
+            and not _yahoo_bar_prices_diverged(pt_px, pts_24h[-1][1])
+            and (pt_ts >= last_bar_ts or (bar_win_lo * 0.995 <= pt_px <= bar_win_hi * 1.005))
         ]
         if recent_sub5m:
             by_ts = {pt[0]: pt for pt in pts_24h}
