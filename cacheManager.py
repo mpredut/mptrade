@@ -7,8 +7,6 @@ The 3-tier polymorphic cache hierarchy is split across 5 focused modules:
 3. ``cacheprice.py``     -- Level 2 ``CachePriceManagerBase(CacheManagerInterface, ABC)``
                            + Level 3 ``CacheSparsePriceManager``, ``Cache24PriceManager``,
                            ``Cache365PriceManager``, ``CacheCurrentPriceManager``
-                           + Non-Binance price streams (``HyperliquidPriceStream``,
-                           ``KrakenPriceStream``, ``_NonBinanceTrendPoller``)
 4. ``cachetrend.py``     -- Level 2 ``CacheTrendManagerBase(CacheManagerInterface, ABC)``
                            + Level 3 ``CacheLongTrendManager``, ``CacheShortTrendManager``
 5. ``cacheManager.py``   -- ``CacheFactory`` registry, ``get_*_manager()`` accessors,
@@ -71,12 +69,9 @@ from cacheprice import (
     CacheCurrentPriceManager,
     CachePriceManagerBase,
     CacheSparsePriceManager,
-    HyperliquidPriceStream,
-    KrakenPriceStream,
     PRICE_24_SYNC_INTERVAL_SEC,
     SPARSE_PRICE_SYNC_INTERVAL_SEC,
     _READONLY_PRICE_READERS,
-    _start_nonbinance_trend_poller,
     attach_default_price_ws_stream,
     get_24_price_manager,
     get_current_price_manager,
@@ -99,6 +94,11 @@ from cachetrend import (
 import instrument_registry as sym
 from instrument_registry import tracked_price_instruments
 from providers.base import MarketDataProvider
+from providers.price_poller import (
+    HyperliquidPriceStream,
+    KrakenPriceStream,
+    start_nonbinance_trend_poller as _start_nonbinance_trend_poller,
+)
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer,

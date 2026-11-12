@@ -496,7 +496,14 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "hyperliquid",
         "212trading",
     }
-    for base_mod_file in ("base.py", "ws_stream.py", "ssot_bridge.py", "venue_metadata.py", "ohlc_utils.py"):
+    for base_mod_file in (
+        "base.py",
+        "ws_stream.py",
+        "ssot_bridge.py",
+        "venue_metadata.py",
+        "ohlc_utils.py",
+        "price_poller.py",
+    ):
         base_src = (root / "providers" / base_mod_file).read_text(encoding="utf-8")
         base_tree = ast.parse(base_src, filename=f"providers/{base_mod_file}")
         imported_roots = set()
@@ -515,6 +522,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "ws_stream.py",
         "ssot_bridge.py",
         "venue_metadata.py",
+        "price_poller.py",
         "binance_provider.py",
         "hyperliquid_provider.py",
         "kraken_provider.py",
@@ -990,6 +998,11 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     assert issubclass(MarketDataProvider, ProviderSsotBridgeMixin)
     assert issubclass(MarketDataProvider, ProviderVenueMetadataMixin)
     assert issubclass(ws_stream.PublicPriceStreamBase, ws_stream.AsyncReconnectStreamBase)
+    from providers import price_poller
+    assert issubclass(price_poller.VenuePriceStreamBase, ws_stream.PublicPriceStreamBase)
+    assert price_poller.HyperliquidPriceStream.__module__ == "providers.price_poller"
+    assert price_poller.KrakenPriceStream.__module__ == "providers.price_poller"
+    assert price_poller.start_nonbinance_trend_poller.__module__ == "providers.price_poller"
     sample_series = ClosedPriceSeries((101.5, 102.0), 60, 1700003600, (1700000000, 1700003600))
     assert series_to_historical_points(sample_series) == [(1700000000.0, 101.5), (1700003600.0, 102.0)]
     all_t, usdc_p, p2b = extract_trading_quote_pairs(
