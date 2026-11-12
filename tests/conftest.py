@@ -87,6 +87,9 @@ _tracked_t212_runtime_env = Path(_botcore_init._REPO_ROOT) / "212trading" / "run
 if _tracked_t212_runtime_env.is_file():
     shutil.copyfile(_tracked_t212_runtime_env, Path(_t212_cfg_tmp.name) / "runtime.env")
 from providers import market_api as _mkt_mod, t212_provider as _t212_prov_mod  # noqa: E402
+import monitortrades as _mt_init  # noqa: E402
+import order_retry as _order_retry_init  # noqa: E402
+from notify_engine import mailer as _mailer_init  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -108,22 +111,18 @@ def _isolate_cachedb_dir(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def _sink_smtp(monkeypatch):
     """Never reach a real SMTP server, even in tests that re-enable notifications."""
-    from notify_engine import mailer
-
     sent = []
-    monkeypatch.setattr(mailer, "_smtp_send", lambda msg, cfg: sent.append(msg))
+    monkeypatch.setattr(_mailer_init, "_smtp_send", lambda msg, cfg: sent.append(msg))
     return sent
 
 
 @pytest.fixture(autouse=True)
 def _isolate_order_retry_queue(tmp_path, monkeypatch):
     """Keep every test away from the ignored operational retry outbox."""
-    import order_retry
-
     monkeypatch.setattr(
-        order_retry, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
+        _order_retry_init, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
     monkeypatch.setattr(
-        order_retry, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
+        _order_retry_init, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
 
 
 @pytest.fixture(autouse=True)
@@ -750,10 +749,8 @@ def restore_strategy_step():
 @pytest.fixture(autouse=True)
 def _isolate_monitortrades_state(tmp_path, monkeypatch):
     """Keep every test away from the shared monitortrades state file (cachedb/mt_state.json)."""
-    import monitortrades as mt
-
     monkeypatch.setattr(
-        mt, "_MT_STATE_FILE", str(tmp_path / "mt_state.json"))
+        _mt_init, "_MT_STATE_FILE", str(tmp_path / "mt_state.json"))
 
 
 @pytest.fixture(scope="session", autouse=True)
