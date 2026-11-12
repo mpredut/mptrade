@@ -102,14 +102,9 @@ class BacktestBroker:
         else:
             append_text_line(self.path, line)
 
-    @staticmethod
-    def _normalize_buy_sell(order_type) -> str | None:
-        side = normalize_side(order_type)
-        return side if side in ("BUY", "SELL") else None
-
     def _execute(self, order_type, symbol, price, qty=None, motivation=None):
         """The real P&L accounting (no gate) -- used directly or after waiting."""
-        if (order_type := self._normalize_buy_sell(order_type)) is None or (
+        if (order_type := normalize_side(order_type)) not in ("BUY", "SELL") or (
             req_price := safe_pos_float(price, default=None)
         ) is None:
             return None
@@ -155,7 +150,7 @@ class BacktestBroker:
         return {"orderId": oid, "backtest": True}   # Positive int orderId for live track_and_place_order parity.
 
     def place_order_smart(self, order_type, symbol, price, qty=None, motivation=None, **kwargs):
-        if (order_type := self._normalize_buy_sell(order_type)) is None or (
+        if (order_type := normalize_side(order_type)) not in ("BUY", "SELL") or (
             order_type != "BUY" and self.pos_qty <= 1e-12
         ):
             return None

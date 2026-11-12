@@ -739,19 +739,12 @@ class MarketRegimeService:
             raise ValueError("invalid closed-candle timestamp")
         return val_f
 
-    def _ttl_for(self, decision) -> float:
-        return self.cache_ttl_sec if getattr(decision, "fresh", False) else self.negative_cache_ttl_sec
-
     @staticmethod
     def _validate_positive_interval(interval_min, err_msg: str) -> int:
         im_i = None if isinstance(interval_min, bool) else exact_pos_int(interval_min, default=None)
         if im_i is None:
             raise ValueError(err_msg)
         return im_i
-
-    @staticmethod
-    def _horizon_window_needed_samples(window_seconds: float, interval_min: int) -> int:
-        return max(3, safe_pos_int(math.ceil(window_seconds / (interval_min * 60.0)), default=3) or 3)
 
     def _evaluate_provider_source(self, provider, symbol: str, *,
                                   interval_min=1, window_seconds=900.0):
@@ -773,7 +766,7 @@ class MarketRegimeService:
                 c_ts = safe_float(cached[0], default=None)
                 cached_dec = cached[1]
                 if c_ts is not None and cached_dec is not None:
-                    ttl = self._ttl_for(cached_dec)
+                    ttl = self.cache_ttl_sec if getattr(cached_dec, "fresh", False) else self.negative_cache_ttl_sec
                     if ttl > 0 and 0.0 <= cache_now - c_ts <= ttl:
                         self._cache.move_to_end(key)
                         return cached[1:]
@@ -782,7 +775,7 @@ class MarketRegimeService:
             series = self._closed_series(provider, symbol, interval_min)
             raw_closes = tuple(series.closes)
             raw_timestamps = tuple(series.timestamps or ())
-            needed = self._horizon_window_needed_samples(window_seconds, interval_min)
+            needed = max(3, safe_pos_int(math.ceil(window_seconds / (interval_min * 60.0)), default=3) or 3)
             closes = raw_closes[-needed:]
             if not raw_timestamps:
                 observed_at = (
@@ -814,7 +807,7 @@ class MarketRegimeService:
             )
         except Exception as exc:  # Unavailable data remains explicit unknown.
             decision = self.evaluator.unknown(f"source_error:{exc.__class__.__name__}")
-        if self._ttl_for(decision) > 0:
+        if (self.cache_ttl_sec if getattr(decision, "fresh", False) else self.negative_cache_ttl_sec) > 0:
             with self._lock:
                 lru_dict_put(
                     self._cache, key, (cache_now, decision, observed_at, continuous), self.cache_max,
@@ -836,7 +829,7 @@ class MarketRegimeService:
         _parsed, interval, window_seconds = cls._resolve_horizon_window(
             horizon, interval_min=interval_min
         )
-        return cls._horizon_window_needed_samples(window_seconds, interval)
+        return max(3, safe_pos_int(math.ceil(window_seconds / (interval * 60.0)), default=3) or 3)
 
     _EVAL_CLOSES_CACHE: OrderedDict = OrderedDict()
     _EVAL_CLOSES_LOCK: threading.Lock = threading.Lock()

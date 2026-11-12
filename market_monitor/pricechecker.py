@@ -250,13 +250,9 @@ class PriceChecker:
             "newest_time": self._readable_time(newest_entry),
         }
 
-    @staticmethod
-    def _alert_key(symbol: str, alert_type: str) -> str:
-        return f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
-
     def _should_send_alert(self, symbol: str, alert_type: str) -> bool:
         """Check whether we can send a new alert (spam prevention)."""
-        key = self._alert_key(symbol, alert_type)
+        key = f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
         now = time.time()
         lf = safe_nonneg_float(self._last_alert_time.get(key, 0.0), default=None)
         if lf is not None and lf <= now:
@@ -396,7 +392,7 @@ class PriceChecker:
                     url=cmc_url,
                 )
             )
-            self._last_alert_time[self._alert_key(symbol, alert_type)] = time.time()
+            self._last_alert_time[f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"] = time.time()
             if self.state_file:
                 try:
                     os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)

@@ -36,12 +36,6 @@ class RiskAdjustedThresholds:
     require_more_drawdown_wins_than_losses: bool = True
 
 
-def _window_sort_key(key: object) -> tuple[int, int | str]:
-    if isinstance(key, int) and not isinstance(key, bool):
-        return (0, key)
-    return (1, str(key))
-
-
 def _identity(report: dict) -> tuple:
     if not isinstance(report, dict):
         return (None,) * 9
@@ -184,7 +178,7 @@ def evaluate_promotion(
     ):
         deltas = [
             _diff(cand_windows[key].get("return_pct"), base_windows[key].get("return_pct"))
-            for key in sorted(base_windows, key=_window_sort_key)
+            for key in sorted(base_windows, key=lambda k: (0, k) if isinstance(k, int) and not isinstance(k, bool) else (1, str(k)))
         ]
         all_deltas_finite = all(math.isfinite(d) for d in deltas)
         wins, ties, losses, active_windows, sign_pvalue = _count_delta_outcomes(deltas)
@@ -264,7 +258,7 @@ def evaluate_risk_adjusted_promotion(
 
         drawdown_improvements = [
             _diff(base_windows[key].get("max_drawdown_pct"), cand_windows[key].get("max_drawdown_pct"))
-            for key in sorted(base_windows, key=_window_sort_key)
+            for key in sorted(base_windows, key=lambda k: (0, k) if isinstance(k, int) and not isinstance(k, bool) else (1, str(k)))
         ]
         all_dd_finite = all(math.isfinite(d) for d in drawdown_improvements)
         wins, ties, losses, active_windows, sign_pvalue = _count_delta_outcomes(

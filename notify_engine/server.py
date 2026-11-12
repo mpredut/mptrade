@@ -97,11 +97,6 @@ _TRAILING_VENUE_TAG_RE = re.compile(
 )
 
 
-def _prefix_delayed(val: Any, default: str = "Alert") -> str:
-    s = _clean_str(val, default, strip=True)
-    return s if s.startswith("[DELAYED]") else f"[DELAYED] {s}"
-
-
 def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
     bot_str = _clean_str(bot_name)
     src_str = _clean_str(source)
@@ -180,10 +175,6 @@ class NotificationServer:
         except Exception as e:
             logging.error(f"Failed to enqueue notification: {e}")
 
-    @staticmethod
-    def _ntfy_gate_accepted() -> bool:
-        return getattr(_GATED_DISPATCH_TLS, "last_gate_reason", "") in _GATE_ACCEPTED_REASONS
-
     def _apply_ntfy_gate(
         self,
         title: str,
@@ -251,7 +242,7 @@ class NotificationServer:
     ) -> bool:
         gated = self._apply_ntfy_gate(title, body, priority, topic, alerts, urgent=urgent)
         if gated is None:
-            return self._ntfy_gate_accepted()
+            return getattr(_GATED_DISPATCH_TLS, "last_gate_reason", "") in _GATE_ACCEPTED_REASONS
         out_title, out_body, out_prio, out_topic = gated
         with self._gated_dispatch_scope(orig_email=(title, body)):
             return self._send_ntfy(out_title, out_body, out_prio, out_topic)
@@ -299,7 +290,7 @@ class NotificationServer:
                 title, message, priority, topic_str, urgent=(priority == "urgent"), skip_email=skip_email
             )
             if gated is None:
-                return self._ntfy_gate_accepted()
+                return getattr(_GATED_DISPATCH_TLS, "last_gate_reason", "") in _GATE_ACCEPTED_REASONS
             title, message, priority, topic_str = gated
 
         # ERROR / DEADMAN topics are mirrored to email (policy: notify_engine.mailer).
@@ -638,7 +629,8 @@ class NotificationServer:
                         success = False
                         if intent == "ntfy_webhook":
                             if "title" in payload:
-                                title = _prefix_delayed(payload.get("title"))
+                                raw_t = _clean_str(payload.get("title"), "Alert", strip=True)
+                                title = raw_t if raw_t.startswith("[DELAYED]") else f"[DELAYED] {raw_t}"
                                 msg = _clean_str(payload.get("message"))
                                 prio = _clean_str(payload.get("priority"), "default", strip=True)
                                 top = _clean_str(payload.get("topic"), strip=True) or self._default_error_topic()
@@ -655,7 +647,8 @@ class NotificationServer:
                             else:
                                 success = True
                         elif intent == "email":
-                            subj = _prefix_delayed(payload.get("subject"))
+                            raw_s = _clean_str(payload.get("subject"), "Alert", strip=True)
+                            subj = raw_s if raw_s.startswith("[DELAYED]") else f"[DELAYED] {raw_s}"
                             emsg = _clean_str(payload.get("message"))
                             success = await asyncio.to_thread(
                                 self._send_email, subj, emsg, True,

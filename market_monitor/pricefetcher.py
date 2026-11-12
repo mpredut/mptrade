@@ -82,14 +82,11 @@ class PricePlatformInterface(ABC):
         if load_now:
             self._load_symbols()
 
-    def _can_refresh_symbols(self) -> bool:
-        return self._refresh_interval > 0 and bool(getattr(self, "api_key", True))
-
     def _load_symbols(self):
         pass
 
     def refresh_symbols(self):
-        if self._can_refresh_symbols() and time.time() - self._last_refresh > self._refresh_interval:
+        if self._refresh_interval > 0 and bool(getattr(self, "api_key", True)) and time.time() - self._last_refresh > self._refresh_interval:
             self._load_symbols()
 
     def get_available_symbols(self) -> Set[str]:
@@ -97,7 +94,7 @@ class PricePlatformInterface(ABC):
         return getattr(self, "_supported_symbols", set()).copy()
 
     def supports_symbol(self, symbol: str) -> bool:
-        if not self._can_refresh_symbols() or not isinstance(symbol, str) or not symbol.strip():
+        if self._refresh_interval <= 0 or not bool(getattr(self, "api_key", True)) or not isinstance(symbol, str) or not symbol.strip():
             return False
         self.refresh_symbols()
         symbols_set = getattr(self, "_supported_symbols", set())
@@ -114,6 +111,12 @@ class PricePlatformInterface(ABC):
         print(f"[{tag}] Warning for {symbol}: {exc}")
         return None
 
+    @staticmethod
+    def _fetch_json_get(url: str, *, timeout: float = 10, **kwargs):
+        resp = requests.get(url, timeout=timeout, **kwargs)
+        resp.raise_for_status()
+        return resp.json()
+
 
 class BinancePricePlatform(PricePlatformInterface):
     platform_name = "Binance"
@@ -129,9 +132,7 @@ class BinancePricePlatform(PricePlatformInterface):
     
     def _load_symbols(self):
         try:
-            response = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            data = self._fetch_json_get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
             if not isinstance(data, dict):
                 raise ValueError("Binance exchangeInfo response must be a dict")
             raw_symbols = data.get("symbols")
@@ -334,12 +335,10 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         try:
             headers = {'X-CMC_PRO_API_KEY': self.api_key, 'Accept': 'application/json'}
             params = {'limit': 5000, 'convert': 'USD'}
-            response = requests.get(
+            data = self._fetch_json_get(
                 "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
                 headers=headers, params=params, timeout=15
             )
-            response.raise_for_status()
-            data = response.json()
             if not isinstance(data, dict) or not isinstance(data.get('data'), list):
                 raise ValueError("CoinMarketCap listings response must contain a data list")
             self._supported_symbols.clear()
@@ -404,12 +403,10 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             lookup_symbol = symbol if symbol in self._supported_symbols else get_base_symbol(symbol)
             headers = {'X-CMC_PRO_API_KEY': self.api_key, 'Accept': 'application/json'}
             params = {'symbol': lookup_symbol, 'convert': 'USD'}
-            response = requests.get(
+            data = self._fetch_json_get(
                 self._base_url,
                 headers=headers, params=params, timeout=10
             )
-            response.raise_for_status()
-            data = response.json()
             price = self._extract_usd_price(lookup_symbol, data)
             if price is not None:
                 print(f"[CMCPlatform] {symbol} = ${price}")
@@ -449,9 +446,9 @@ class StockYahooPricePlatform(PricePlatformInterface):
                 return None
             sym_y = strip_equity_suffix(symbol).split("_", 1)[0]
             url = self._YAHOO.format(sym=quote(sym_y, safe="")) + "?range=1d&interval=5m"
-            resp = requests.get(url, headers=self._UA, timeout=10)
-            resp.raise_for_status()
-            return extract_yahoo_chart_latest_price(resp.json(), decimals=4)
+            return extract_yahoo_chart_latest_price(
+                self._fetch_json_get(url, headers=self._UA, timeout=10), decimals=4
+            )
         except Exception as e:
             return self._log_platform_price_warning("YahooPlatform", symbol, e)
 
