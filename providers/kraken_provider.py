@@ -990,8 +990,7 @@ class KrakenProvider(MarketDataProvider):
             client_order_id = kwargs.get("client_order_id")
             cl_ord_id = self.derive_client_order_id(client_order_id) if client_order_id is not None else None
         except (SubmissionRefused, ProviderError) as exc:
-            print(f"[Kraken] {exc}")
-            return None
+            return self._log_provider_balance_error("Kraken", "", None, exc)
         if not live:
             print(f"[Kraken][DRY] would place {side} {symbol} qty={qty} @ {price} "
                   f"(real orders are disabled; set KRAKEN_LIVE_ORDERS=true)")

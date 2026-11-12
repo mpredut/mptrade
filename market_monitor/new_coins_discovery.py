@@ -578,14 +578,18 @@ class NewCoinsMonitor:
             }
         return summary
 
+    @staticmethod
+    def _log_monitor_false(message: str) -> bool:
+        print(f"[NewCoinsMonitor] {message}")
+        return False
+
     def add_new_coin_to_watchlist(self, coin_info: Dict, auto_add_thresholds: Optional[Dict] = None):
         """
         Add a newly discovered coin to the price watchlist.
         The filters are informational only - the coin is added regardless.
         """
         if not self.price_monitor:
-            print("[NewCoinsMonitor] No price_monitor available")
-            return False
+            return self._log_monitor_false("No price_monitor available")
         if not isinstance(coin_info, dict) or not coin_info.get('symbol') or isinstance(coin_info.get('symbol'), bool):
             return False
 
@@ -595,17 +599,14 @@ class NewCoinsMonitor:
         source = coin_info.get('source', 'unknown')
 
         if not is_trackable_symbol(symbol, name=coin_info.get('name', ''), slug=coin_info.get('slug', '')):
-            print(f"[NewCoinsMonitor] Invalid symbol: {symbol}")
-            return False
+            return self._log_monitor_false(f"Invalid symbol: {symbol}")
 
         if hasattr(self.price_monitor, 'original_symbols') and symbol in self.price_monitor.original_symbols:
-            print(f"[NewCoinsMonitor] {symbol} is already in the watchlist")
-            return False
+            return self._log_monitor_false(f"{symbol} is already in the watchlist")
         raw_max_wl = getattr(self.price_monitor, 'max_monitored_symbols', MAX_NEW_COINS_TO_TRACK)
         max_watchlist_symbols = safe_pos_int(raw_max_wl, default=MAX_NEW_COINS_TO_TRACK) or MAX_NEW_COINS_TO_TRACK
         if hasattr(self.price_monitor, 'active_symbols') and len(self.price_monitor.active_symbols) >= max_watchlist_symbols:
-            print(f"[NewCoinsMonitor] Watchlist limit reached: maximum {max_watchlist_symbols} coins")
-            return False
+            return self._log_monitor_false(f"Watchlist limit reached: maximum {max_watchlist_symbols} coins")
 
         # Informational thresholds only; they do not block the add operation
         default_thresholds = {

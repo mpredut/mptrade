@@ -335,8 +335,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     if mkt.cancel_order(symbol, oid_str) is False:
                         print(f"[MONITORORDER] Cancel returned False for expired order {order_id}; will retry next cycle.")
                         continue
-                    initial_prices.pop(order_id, None)
-                    initial_prices.pop(oid_str, None)
+                    _clear_initial_order_price(initial_prices, order_id, oid_str)
                     try:
                         order_retry.resolve_accepted_order(symbol, oid_str)
                     except Exception:
@@ -550,8 +549,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     replacement_claim, "success" if status.terminal else "release"
                 )
                 if status.terminal:
-                    initial_prices.pop(order_id, None)
-                    initial_prices.pop(oid_str, None)
+                    _clear_initial_order_price(initial_prices, order_id, oid_str)
                 print(
                     f"Order {order_id} reconciled as {venue_status or 'UNKNOWN'}; "
                     "no replacement is submitted."
@@ -563,8 +561,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             activation = order_retry.activate_claimed_replacement(
                 replacement_claim, quantity)
             if activation == "resolved":
-                initial_prices.pop(order_id, None)
-                initial_prices.pop(oid_str, None)
+                _clear_initial_order_price(initial_prices, order_id, oid_str)
                 continue
             if activation != "activated":
                 print(
@@ -653,8 +650,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     failure_reason=failure_reason,
                     submission_state=submission_state)
                 if terminal_pre_submit_refusal:
-                    initial_prices.pop(order_id, None)
-                    initial_prices.pop(oid_str, None)
+                    _clear_initial_order_price(initial_prices, order_id, oid_str)
                     print(
                         f"The {order_type} replacement was refused before submit "
                         f"after old order {order_id} was canceled; the stale "
@@ -669,6 +665,11 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     for tracked_set in (_notified_placed_order_ids, _notified_expired_order_ids, _derived_replacement_order_ids):
         if len(tracked_set) > MAX_TRACKED_ORDER_IDS:
             tracked_set.trim(5000)
+
+
+def _clear_initial_order_price(initial_prices: dict, order_id: object, oid_str: str) -> None:
+    initial_prices.pop(order_id, None)
+    initial_prices.pop(oid_str, None)
 
 
 def warmup_open_orders():

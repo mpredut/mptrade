@@ -116,7 +116,10 @@ class MarketDataProvider(ABC):
     def _log_provider_balance_error(
         tag: str, label: str, asset: Any, exc: Exception, *, fmt: str = "[{tag}] {label} {asset}: {exc}"
     ) -> None:
-        print(fmt.format(tag=tag, label=label, asset=asset, exc=exc))
+        if not label and asset is None:
+            print(f"[{tag}] {exc}")
+        else:
+            print(fmt.format(tag=tag, label=label, asset=asset, exc=exc))
         return None
 
     def get_current_price(self, symbol: str) -> Optional[float]:

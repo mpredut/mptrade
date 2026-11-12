@@ -791,8 +791,7 @@ class HyperliquidProvider(MarketDataProvider):
                 caller="place_order",
             )
         except ProviderError as exc:
-            print(f"[HL] {exc}")
-            return None
+            return self._log_provider_balance_error("HL", "", None, exc)
 
         if not live:
             print(f"[HL][DRY] would place {side} {symbol} qty={qty} @ {submit_px} "

@@ -703,14 +703,11 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         with self.lock:
             base_symbol = get_base_symbol(symbol)
             if symbol in self.active_symbols:
-                print(f"[Pricefetcher] {symbol} is already in the watchlist")
-                return False
+                return self._log_tagged_false("Pricefetcher", f"{symbol} is already in the watchlist")
             if any(get_base_symbol(active_symbol) == base_symbol for active_symbol in self.active_symbols):
-                print(f"[Pricefetcher] {symbol} ignored: asset {base_symbol} is already being monitored")
-                return False
+                return self._log_tagged_false("Pricefetcher", f"{symbol} ignored: asset {base_symbol} is already being monitored")
             if len(self.active_symbols) >= self.max_monitored_symbols:
-                print(f"[Pricefetcher] Limit reached: maximum {self.max_monitored_symbols} monitored coins")
-                return False
+                return self._log_tagged_false("Pricefetcher", f"Limit reached: maximum {self.max_monitored_symbols} monitored coins")
             self._track_monitored_symbol(symbol)
             if preferred_source:
                 self.symbol_preferred_source[symbol] = preferred_source

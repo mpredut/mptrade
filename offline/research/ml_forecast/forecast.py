@@ -294,21 +294,26 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--loop must be >= 0")
     loop_min = safe_pos_float(loop_nonneg, default=None)
 
+    def _warn_and_should_exit_loop(msg: str) -> bool:
+        print(msg, file=sys.stderr)
+        if loop_min is None:
+            return True
+        time.sleep(loop_min * 60)
+        return False
+
     while True:
         ts, px = fetch_klines(symbol, days)
         if len(px) < WARMUP + HORIZON_H + 100:
-            print(f"! insufficient history ({len(px)} candles)", file=sys.stderr)
-            if loop_min is None:
+            if _warn_and_should_exit_loop(f"! insufficient history ({len(px)} candles)"):
                 return 1
-            time.sleep(loop_min * 60)
             continue
         X, y_dir, y_mag = build_dataset(px, ts=ts)
         print(f"[{symbol}] {len(px)} 1h candles -> {len(X)} samples, horizon {HORIZON_H}h")
         if len(X) == 0:
-            print(f"! no valid contiguous samples for {symbol}; refusing to overwrite {args.out}", file=sys.stderr)
-            if loop_min is None:
+            if _warn_and_should_exit_loop(
+                f"! no valid contiguous samples for {symbol}; refusing to overwrite {args.out}"
+            ):
                 return 1
-            time.sleep(loop_min * 60)
             continue
         rep = walk_forward(X, y_dir, y_mag)
         print(f"  Direction accuracy on {rep['n_test']} UNSEEN hours:")
@@ -317,13 +322,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.forecast:
             out = live_forecast(px, X, y_dir, y_mag, rep, symbol, ts=ts)
             if out.get("gap_detected"):
-                print(
-                    f"! latest {WARMUP}h window has timestamp gap for {symbol}; refusing to overwrite {args.out}",
-                    file=sys.stderr,
-                )
-                if loop_min is None:
+                if _warn_and_should_exit_loop(
+                    f"! latest {WARMUP}h window has timestamp gap for {symbol}; refusing to overwrite {args.out}"
+                ):
                     return 1
-                time.sleep(loop_min * 60)
                 continue
             os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
             atomic_write_json(args.out, out, indent=2)

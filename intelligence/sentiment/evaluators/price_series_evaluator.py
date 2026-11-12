@@ -1122,9 +1122,9 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
             pinfo["bottom_structure_6h"] = "HIGHER_LOW_DOUBLE_BOTTOM"
             pinfo.pop("reclaim_above_prior_low_pct", None)
             pinfo["higher_low_vs_prior_pct"] = pct_delta(r1h_new, p6h_lo)
+    eff_dec_15m = _auto_px_decimals(p_cur)
+    p_cur_15m = round(p_cur, eff_dec_15m)
     if isinstance(tape_15m := pinfo.get("recent_tape_15m"), list) and tape_15m:
-        eff_dec_15m = _auto_px_decimals(p_cur)
-        p_cur_15m = round(p_cur, eff_dec_15m)
         tape_copy = list(tape_15m)
         if isinstance(tape_copy[-1], str) and tape_copy[-1].startswith("now:"):
             now_s = f"{p_cur_15m:.{eff_dec_15m}f}".rstrip("0").rstrip(".")
@@ -1167,8 +1167,6 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
     l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
     h15 = safe_pos_float(pinfo.get("high_15m"), default=None)
     if l15 is not None and h15 is not None:
-        eff_dec_15m = _auto_px_decimals(p_cur)
-        p_cur_15m = round(p_cur, eff_dec_15m)
         l15_new, h15_new = round(min(l15, p_cur_15m), eff_dec_15m), round(max(h15, p_cur_15m), eff_dec_15m)
         pinfo["low_15m"], pinfo["high_15m"] = l15_new, h15_new
         if h15_new > l15_new > 0:

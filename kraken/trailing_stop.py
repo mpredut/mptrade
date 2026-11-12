@@ -360,6 +360,11 @@ class KrakenTrailing(TrailingAdapterBase):
 
         normalized_bypass = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if "all" not in normalized_bypass:
+            def _refuse_intent(refusal_reason: object) -> TrackedOrderResult:
+                intent["refusal_reason"] = refusal_reason
+                persist(None)
+                return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+
             if callable(getattr(self.executor, "get_orders", None)):
                 dl_ok, dl_reason = order_guard.unpack_daily_limit_result(
                     order_guard.daily_limit_guard(
@@ -367,24 +372,18 @@ class KrakenTrailing(TrailingAdapterBase):
                     )
                 )
                 if not dl_ok:
-                    intent["refusal_reason"] = dl_reason
-                    persist(None)
-                    return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+                    return _refuse_intent(dl_reason)
             allowed, reason, suggested_scale = order_guard.check_intelligence_guards(
                 self.executor, pair, side.upper(), price,
                 qty=qty,
                 bypass_guards=bypass_guards,
             )
             if not allowed:
-                intent["refusal_reason"] = reason
-                persist(None)
-                return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+                return _refuse_intent(reason)
             if side.upper() == "BUY" and suggested_scale is not None:
                 scale_f = safe_float(suggested_scale, default=None)
                 if scale_f is None or scale_f <= 0.0:
-                    intent["refusal_reason"] = f"downscaled_to_zero:{reason}"
-                    persist(None)
-                    return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+                    return _refuse_intent(f"downscaled_to_zero:{reason}")
                 if scale_f < 1.0:
                     qty_f = require_pos_float(qty, "qty")
                     scaled_qty = qty_f * scale_f
@@ -401,15 +400,11 @@ class KrakenTrailing(TrailingAdapterBase):
                     min_q = safe_nonneg_float(raw_min_q, default=0.0)
                     sq_pos = safe_pos_float(scaled_qty, default=None)
                     if sq_pos is None or (min_q > 0 and sq_pos < min_q):
-                        intent["refusal_reason"] = f"downscaled_below_min_qty:{reason}"
-                        persist(None)
-                        return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+                        return _refuse_intent(f"downscaled_below_min_qty:{reason}")
                     price_f = safe_pos_float(price, default=0.0)
                     min_notional = safe_nonneg_float(getattr(self.core, "min_notional", 0.0), default=0.0)
                     if min_notional > 0.0 and price_f > 0.0 and sq_pos * price_f < min_notional:
-                        intent["refusal_reason"] = f"downscaled_below_min_notional:{reason}"
-                        persist(None)
-                        return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+                        return _refuse_intent(f"downscaled_below_min_notional:{reason}")
                     qty = sq_pos
                     intent["requested_qty"] = qty
                     intent["submitted_qty"] = qty

@@ -363,6 +363,12 @@ def _strip_env_value_quotes_and_comment(val: str) -> str:
     return val.split("#", 1)[0].strip()
 
 
+def _reject_dotenv_line(strict: bool, message: str) -> None:
+    if strict:
+        raise ValueError(message)
+    return None
+
+
 def parse_dotenv_line(raw: str, *, strict: bool = False) -> tuple[str, str] | None:
     """Parse a single ``KEY=VALUE`` (or ``export KEY=VALUE``) line, stripping inline comments and outer quotes."""
     if not isinstance(raw, str):
@@ -373,17 +379,13 @@ def parse_dotenv_line(raw: str, *, strict: bool = False) -> tuple[str, str] | No
     eq_idx = line.find("=")
     hash_idx = line.find("#")
     if eq_idx == -1 or (hash_idx != -1 and hash_idx < eq_idx):
-        if strict:
-            raise ValueError(f"Malformed configuration line missing '=': {raw.rstrip()!r}")
-        return None
+        return _reject_dotenv_line(strict, f"Malformed configuration line missing '=': {raw.rstrip()!r}")
     key, _, val = line.partition("=")
     key = key.strip()
     if key.startswith("export") and (len(key) == 6 or key[6].isspace()):
         key = key[6:].strip()
     if not key:
-        if strict:
-            raise ValueError(f"Empty configuration key in line: {raw.rstrip()!r}")
-        return None
+        return _reject_dotenv_line(strict, f"Empty configuration key in line: {raw.rstrip()!r}")
     return key, _strip_env_value_quotes_and_comment(val)
 
 

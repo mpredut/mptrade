@@ -360,6 +360,11 @@ def _resolve_window_bounds(minutes_back: float) -> tuple[float, float]:
     return now_ts, now_ts - minutes_back * 60.0
 
 
+def _log_symbol_and_return(symbol: str, message: str, ret_val=False):
+    print(f"[{symbol}] {message}")
+    return ret_val
+
+
 def _get_symbol_window_extrema(symbol, current_price,
                                minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     """Return validated per-symbol price minimum/maximum for the rolling window."""
@@ -367,8 +372,7 @@ def _get_symbol_window_extrema(symbol, current_price,
     minutes_back = _finite_float(minutes_back, positive=True)
     current_price = _finite_float(current_price, positive=True)
     if minutes_back is None or current_price is None:
-        print(f"[{symbol}] Invalid price/cache window; skip evaluation.")
-        return None
+        return _log_symbol_and_return(symbol, "Invalid price/cache window; skip evaluation.", None)
     now_ts, target_ts = _resolve_window_bounds(minutes_back)
 
     local = _local_price_samples.setdefault(symbol, [])
@@ -393,8 +397,7 @@ def _get_symbol_window_extrema(symbol, current_price,
 
     print(f"[DEBUG] {symbol} candidate price rows: {len(normalized)}")
     if len(normalized) < 2:
-        print(f"[{symbol}] Insufficient per-asset price baseline; skip evaluation.")
-        return None
+        return _log_symbol_and_return(symbol, "Insufficient per-asset price baseline; skip evaluation.", None)
     vol_mult = _compute_symbol_volatility_multiplier(normalized)
     eval_row = _last_evaluation.setdefault(
         symbol,
@@ -590,7 +593,9 @@ def _trigger_threshold_for_buy_tier(
 _LAST_SUBMIT_OUTCOME: dict = {}
 
 
-def _refuse_submit(reason: str, ret_val=None):
+def _refuse_submit(reason: str, ret_val=None, message: str | None = None):
+    if message is not None:
+        print(message)
     _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason=reason)
     return ret_val
 
@@ -602,24 +607,21 @@ def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
         base_asset, _ = resolve_assets(symbol)
         provider = mkt.provider_by_name("binance")
         if provider is None:
-            print(f"[{symbol}] Binance provider unavailable; skip SELL fail-closed.")
-            return _refuse_submit("provider_unavailable", None)
+            return _refuse_submit(
+                "provider_unavailable", None, f"[{symbol}] Binance provider unavailable; skip SELL fail-closed."
+            )
         free_qty = _finite_float(provider.free_balance(base_asset), positive=True)
         requested_qty = _finite_float(qty, positive=True)
         price = _finite_float(current_price, positive=True)
     except Exception as e:
-        print(f"ERROR preparing SELL for {symbol}: {e}")
-        return _refuse_submit("prepare_error", None)
+        return _refuse_submit("prepare_error", None, f"ERROR preparing SELL for {symbol}: {e}")
     if free_qty is None:
-        print(f"[{symbol}] No valid free {base_asset} balance; skip SELL.")
-        return _refuse_submit("no_free_balance", None)
+        return _refuse_submit("no_free_balance", None, f"[{symbol}] No valid free {base_asset} balance; skip SELL.")
     if requested_qty is None or price is None:
-        print(f"[{symbol}] Invalid SELL price/quantity; skip SELL.")
-        return _refuse_submit("invalid_price_or_qty", None)
+        return _refuse_submit("invalid_price_or_qty", None, f"[{symbol}] Invalid SELL price/quantity; skip SELL.")
     qty_to_sell = min(requested_qty, free_qty)
     if qty_to_sell <= 0:
-        print(f"[{symbol}] SELL tier has no reconciled free quantity.")
-        return _refuse_submit("zero_qty", None)
+        return _refuse_submit("zero_qty", None, f"[{symbol}] SELL tier has no reconciled free quantity.")
     try:
         order = mkt.place(
             symbol, "SELL", price, qty_to_sell,
@@ -650,35 +652,30 @@ def buy_with_all_cash(
         _, quote_asset = resolve_assets(buy_symbol)
         cash_ratio = _finite_float(cash_ratio, positive=True)
         if cash_ratio is None or cash_ratio > 1:
-            print(f" Invalid cash ratio for buy: {cash_ratio}")
-            return _refuse_submit("invalid_cash_ratio", False)
+            return _refuse_submit("invalid_cash_ratio", False, f" Invalid cash ratio for buy: {cash_ratio}")
         provider = mkt.provider_by_name("binance")
         if provider is None:
-            print(f"[{buy_symbol}] Binance provider unavailable; skip BUY fail-closed.")
-            return _refuse_submit("provider_unavailable", False)
+            return _refuse_submit(
+                "provider_unavailable", False, f"[{buy_symbol}] Binance provider unavailable; skip BUY fail-closed."
+            )
         free_cash = _finite_float(provider.free_balance(quote_asset), positive=True)
         current_price = _finite_float(api.get_current_price(buy_symbol), positive=True)
     except Exception as e:
-        print(f"ERROR preparing buy for {buy_symbol}: {e}")
-        return _refuse_submit("prepare_error", False)
+        return _refuse_submit("prepare_error", False, f"ERROR preparing buy for {buy_symbol}: {e}")
     print(f"[DEBUG] buy check symbol={buy_symbol}, quote={quote_asset}, free_cash={free_cash}, current_price={current_price}")
 
     if free_cash is None:
-        print(f" No valid available {quote_asset} balance; skip buy fail-closed.")
-        return _refuse_submit("no_free_cash", False)
+        return _refuse_submit("no_free_cash", False, f" No valid available {quote_asset} balance; skip buy fail-closed.")
     if current_price is None:
-        print(f" Invalid current price for {buy_symbol}.")
-        return _refuse_submit("invalid_price", False)
+        return _refuse_submit("invalid_price", False, f" Invalid current price for {buy_symbol}.")
 
     requested_cash = free_cash * cash_ratio if cash_amount is None else _finite_float(cash_amount, positive=True)
     if requested_cash is None:
-        print(" Invalid requested cash amount for buy.")
-        return _refuse_submit("invalid_requested_cash", False)
+        return _refuse_submit("invalid_requested_cash", False, " Invalid requested cash amount for buy.")
     cash_to_use = min(requested_cash, free_cash * BUY_USE_CASH_RATIO)
     qty = cash_to_use / current_price
     if qty <= 0:
-        print(" Computed qty <= 0. Skip buy.")
-        return _refuse_submit("zero_qty", False)
+        return _refuse_submit("zero_qty", False, " Computed qty <= 0. Skip buy.")
 
     print(
         f" BUY trigger active -> symbol={buy_symbol}, using {cash_to_use:.6f} {quote_asset} "
@@ -1522,8 +1519,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     )
     evaluation.update(growth=None, drawdown=None, pending_tier=False)
     if symbol not in TRACKED_SYMBOLS:
-        print(f"[{symbol}] Invalid AssetGuardian symbol; skip evaluation.")
-        return False
+        return _log_symbol_and_return(symbol, "Invalid AssetGuardian symbol; skip evaluation.")
 
     for kind in ("sell", "buy"):
         campaign = _symbol_campaign(symbol, kind)
@@ -1538,19 +1534,16 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
 
     current_price = _finite_float(api.get_current_price(symbol), positive=True)
     if current_price is None:
-        print(f"[{symbol}] Current price unavailable; skip evaluation.")
-        return False
+        return _log_symbol_and_return(symbol, "Current price unavailable; skip evaluation.")
     extrema = _get_symbol_window_extrema(symbol, current_price, minutes_back=minutes_back)
     if not extrema:
-        print(f"[{symbol}] No per-asset baseline for the last {minutes_back}m.")
-        return False
+        return _log_symbol_and_return(symbol, f"No per-asset baseline for the last {minutes_back}m.")
 
     minimum_row, maximum_row = extrema
     minimum_price = _finite_float(minimum_row.get("price"), positive=True)
     maximum_price = _finite_float(maximum_row.get("price"), positive=True)
     if minimum_price is None or maximum_price is None:
-        print(f"[{symbol}] Invalid per-asset baseline.")
-        return False
+        return _log_symbol_and_return(symbol, "Invalid per-asset baseline.")
 
     rolling_growth_percent = ((current_price - minimum_price) / minimum_price) * 100.0
     drawdown_percent = ((current_price - maximum_price) / maximum_price) * 100.0
@@ -1621,12 +1614,10 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     _, quote_asset = resolve_assets(symbol)
     free_cash = _finite_float(provider.free_balance(quote_asset), positive=True) if provider else None
     if free_cash is None:
-        print(f"[{symbol}] No valid {quote_asset} balance for staged BUY.")
-        return False
+        return _log_symbol_and_return(symbol, f"No valid {quote_asset} balance for staged BUY.")
     tier, campaign = _campaign_tier(symbol, abs(drawdown_percent), maximum_row, free_cash, p3b_assessment=p3b_assessment)
     if tier is None:
-        print(f"[{symbol}] No uncompleted BUY tier at current drawdown.")
-        return False
+        return _log_symbol_and_return(symbol, "No uncompleted BUY tier at current drawdown.")
     threshold, allocation = tier
     evaluation["pending_tier"] = True
     if _finite_float(campaign.get("initial_cash"), positive=True) is None:
@@ -1635,8 +1626,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         return False
     cash_amount, target_cash, prior_spent = _buy_remaining_cash(campaign, threshold, allocation)
     if cash_amount is None:
-        print(f"[{symbol}] Invalid BUY tier budget; preserve fail-closed.")
-        return False
+        return _log_symbol_and_return(symbol, "Invalid BUY tier budget; preserve fail-closed.")
     if cash_amount <= max(1e-9, target_cash * 0.02):
         _complete_campaign_tier(symbol, "buy", campaign, threshold)
         print(f"[{symbol}] BUY tier -{threshold:.2f}% already funded by terminal partials ({prior_spent:.6f} quote); mark complete.")
