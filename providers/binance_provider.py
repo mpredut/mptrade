@@ -235,13 +235,6 @@ class BinanceProvider(MarketDataProvider):
                     break
             raw_rows = list(bucket) if isinstance(bucket, (list, tuple)) else []
 
-        def _valid_binance_fill(row: dict) -> bool:
-            row_sym = str(row.get("symbol") or "").strip().upper() if isinstance(row.get("symbol"), str) else ""
-            return bool(
-                manager._is_valid_item(row)
-                and (row_sym == symbol or (sym_canon and canonical_symbol_key(row_sym) == sym_canon))
-            )
-
         return compute_fills_cost_basis(
             raw_rows,
             held_qty,
@@ -249,7 +242,13 @@ class BinanceProvider(MarketDataProvider):
             base_asset=spec.base,
             quote_asset=spec.quote,
             require_explicit_fee_asset=True,
-            validate_row_fn=_valid_binance_fill,
+            validate_row_fn=lambda row: bool(
+                manager._is_valid_item(row)
+                and (
+                    (row_sym := str(row.get("symbol") or "").strip().upper() if isinstance(row.get("symbol"), str) else "") == symbol
+                    or (sym_canon and canonical_symbol_key(row_sym) == sym_canon)
+                )
+            ),
         )
 
     def open_orders(self, symbol: str) -> List[dict]:

@@ -733,21 +733,23 @@ def get_weight_for_cash_permission_at_quant_time(
     if isinstance(T_quanta, bool) or isinstance(quant_seconds, bool):
         return None
 
+    def _log_none(msg: str) -> None:
+        print(msg)
+        return None
+
     lt_mgr = ct.get_long_trend_manager()
     if hasattr(lt_mgr, "resync_mem_file"):
         lt_mgr.resync_mem_file()
     all_trend_data = lt_mgr.cache
     items = lookup_symbol_cache_items(all_trend_data, symbol)
     if not items:
-        print(f"Symbol {symbol} is not present in the trends that were read.")
-        return None
+        return _log_none(f"Symbol {symbol} is not present in the trends that were read.")
 
     trend = scan_latest_long_trend_value(
         items, lambda e: e if e.get("duration_seconds") is not None else None
     )
     if trend is None:
-        print(f" No trend in cache for symbol {symbol}.")
-        return None
+        return _log_none(f" No trend in cache for symbol {symbol}.")
 
     est = None
     if T_quanta is None:
@@ -780,8 +782,7 @@ def get_weight_for_cash_permission_at_quant_time(
     t_quanta_f = safe_pos_float(T_quanta, default=None)
     quant_sec_f = safe_pos_float(quant_seconds, default=None)
     if dur_sec is None or t_quanta_f is None or quant_sec_f is None:
-        print(f"[{symbol}] duration_seconds/T_quanta invalid, return None")
-        return None
+        return _log_none(f"[{symbol}] duration_seconds/T_quanta invalid, return None")
 
     direction = normalize_trend_direction(trend.get("direction"), default=None)
     if direction is None:
@@ -822,8 +823,7 @@ def get_weight_for_cash_permission_at_quant_time(
 
     trend_len_quanta = dur_sec / quant_sec_f
     if safe_pos_float(trend_len_quanta, default=None) is None:
-        print(f"[{symbol}] duration_seconds invalid, return None")
-        return None
+        return _log_none(f"[{symbol}] duration_seconds invalid, return None")
 
     _tw_fn = resolve_patched_attr(
         "get_trade_weight",
@@ -840,13 +840,11 @@ def get_weight_for_cash_permission_at_quant_time(
     )
 
     if len(w) == 0:
-        print(f"[{symbol}] w is empty, returning None")
-        return None
+        return _log_none(f"[{symbol}] w is empty, returning None")
 
     current_weight = safe_float(w[0], default=None)
     if current_weight is None or current_weight <= 0:
-        print(f"[{symbol}] Invalid weight: {w[0]}, returning None")
-        return None
+        return _log_none(f"[{symbol}] Invalid weight: {w[0]}, returning None")
 
     print(f"[{symbol}] first 5 weights: {w[:5]}")
     print(f"Sum of all {len(w)} weights = {w.sum():.4f}")
@@ -980,41 +978,6 @@ def _read_cached_price_history(
         px = safe_pos_float(px_raw, default=None)
         return (ts_sec, px) if (ts_sec is not None and px is not None) else None
 
-    def _extract_valid_ticks(raw_items: Any) -> None:
-        if isinstance(raw_items, list) and len(raw_items) > 512:
-            first_tick = next((t for x in raw_items[:16] if (t := _parse_tick(x)) is not None), None)
-            last_tick = next((t for x in reversed(raw_items[-16:]) if (t := _parse_tick(x)) is not None), None)
-            iter_seq = raw_items if (first_tick and last_tick and first_tick[0] > last_tick[0]) else reversed(raw_items)
-            tail_buf: List[Tuple[float, float]] = []
-            older_streak = 0
-            for item in iter_seq:
-                parsed = _parse_tick(item)
-                if parsed is None:
-                    continue
-                ts_sec, px = parsed
-                if ts_sec < cutoff_ts:
-                    older_streak += 1
-                    if older_streak >= 64:
-                        break
-                    continue
-                older_streak = 0
-                if ts_sec <= (now_ts + 5.0):
-                    tail_buf.append((ts_sec, px))
-            tail_buf.reverse()
-            if len(tail_buf) > 1 and any(tail_buf[i][0] > tail_buf[i + 1][0] for i in range(len(tail_buf) - 1)):
-                tail_buf.sort(key=lambda pair: pair[0])
-            history.extend(tail_buf)
-            return
-
-        for item in raw_items or []:
-            parsed = _parse_tick(item)
-            if parsed is not None:
-                ts_sec, px = parsed
-                if cutoff_ts <= ts_sec <= (now_ts + 5.0):
-                    history.append((ts_sec, px))
-        if len(history) > 1 and any(history[i][0] > history[i + 1][0] for i in range(len(history) - 1)):
-            history.sort(key=lambda pair: pair[0])
-
     p24_paths = list(dict.fromkeys(
         str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_24_price_filename(cand))))
         for cand in cand_symbols
@@ -1031,7 +994,38 @@ def _read_cached_price_history(
                 if isinstance(data, list)
                 else lookup_symbol_cache_items(data, su, cand_keys=cand_symbols, require_list=True, unwrap_items=True)
             )
-            _extract_valid_ticks(raw_items)
+            if isinstance(raw_items, list) and len(raw_items) > 512:
+                first_tick = next((t for x in raw_items[:16] if (t := _parse_tick(x)) is not None), None)
+                last_tick = next((t for x in reversed(raw_items[-16:]) if (t := _parse_tick(x)) is not None), None)
+                iter_seq = raw_items if (first_tick and last_tick and first_tick[0] > last_tick[0]) else reversed(raw_items)
+                tail_buf: List[Tuple[float, float]] = []
+                older_streak = 0
+                for item in iter_seq:
+                    parsed = _parse_tick(item)
+                    if parsed is None:
+                        continue
+                    ts_sec, px = parsed
+                    if ts_sec < cutoff_ts:
+                        older_streak += 1
+                        if older_streak >= 64:
+                            break
+                        continue
+                    older_streak = 0
+                    if ts_sec <= (now_ts + 5.0):
+                        tail_buf.append((ts_sec, px))
+                tail_buf.reverse()
+                if len(tail_buf) > 1 and any(tail_buf[i][0] > tail_buf[i + 1][0] for i in range(len(tail_buf) - 1)):
+                    tail_buf.sort(key=lambda pair: pair[0])
+                history.extend(tail_buf)
+            else:
+                for item in raw_items or []:
+                    parsed = _parse_tick(item)
+                    if parsed is not None:
+                        ts_sec, px = parsed
+                        if cutoff_ts <= ts_sec <= (now_ts + 5.0):
+                            history.append((ts_sec, px))
+                if len(history) > 1 and any(history[i][0] > history[i + 1][0] for i in range(len(history) - 1)):
+                    history.sort(key=lambda pair: pair[0])
             if history:
                 break
         except Exception:

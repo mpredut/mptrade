@@ -252,24 +252,6 @@ def _run_once(
     f_ts = fund_ts or []
     f_rates = fund_rates or []
 
-    def _bar_funding_rate_sum(t_ms_raw: int | float | None) -> float:
-        if not f_ts:
-            return 0.0
-        t_val = _to_funding_ms(t_ms_raw)
-        if t_val is None:
-            return 0.0
-        if eff_bar_minutes <= 60.0 or t_val < 0:
-            return _lookup_sorted_funding_ms(f_ts, f_rates, t_val) * (eff_bar_minutes / 60.0)
-        rem_hours = eff_bar_minutes / 60.0
-        acc = 0.0
-        hour_idx = 0
-        while rem_hours > 1e-9:
-            weight = min(1.0, rem_hours)
-            acc += _lookup_sorted_funding_ms(f_ts, f_rates, t_val + hour_idx * 3_600_000.0) * weight
-            rem_hours -= weight
-            hour_idx += 1
-        return acc
-
     def _record_closed_cycle() -> None:
         nonlocal cycle_net_start, cycle_funding_start, net_wins
         cycle_pnl = (strategy.s["realized_net"] - cycle_net_start) + (funding - cycle_funding_start)
@@ -373,7 +355,21 @@ def _run_once(
         # 1. Funding on held perpetuals at bar open notional: shorts receive funding; longs pay it.
         qty = strategy.s["qty"]
         if qty > dust_eps and f_ts:
-            f = _bar_funding_rate_sum(t_ms) * qty * o
+            t_val = _to_funding_ms(t_ms)
+            if t_val is None:
+                bar_f_rate = 0.0
+            elif eff_bar_minutes <= 60.0 or t_val < 0:
+                bar_f_rate = _lookup_sorted_funding_ms(f_ts, f_rates, t_val) * (eff_bar_minutes / 60.0)
+            else:
+                rem_hours = eff_bar_minutes / 60.0
+                bar_f_rate = 0.0
+                hour_idx = 0
+                while rem_hours > 1e-9:
+                    weight = min(1.0, rem_hours)
+                    bar_f_rate += _lookup_sorted_funding_ms(f_ts, f_rates, t_val + hour_idx * 3_600_000.0) * weight
+                    rem_hours -= weight
+                    hour_idx += 1
+            f = bar_f_rate * qty * o
             funding += (f if strategy.sign < 0 else -f)
             liq_open = _bankruptcy_price_if_breached(o)
             if liq_open is not None:

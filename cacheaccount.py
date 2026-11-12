@@ -997,12 +997,6 @@ class CacheTradeManager(CacheAccountManagerBase):
             return self._save_jsonl_append()
         return super()._save_state_to_file_impl()
 
-    def _verify_migrated_trade_snapshot_locked(self) -> None:
-        metadata = self._load_versioned_account_meta(optional=False)
-        if metadata is None:
-            raise ValueError("versioned Trade metadata was not created")
-        self._read_trade_snapshot_strict(metadata)
-
     def _migrate_legacy_json_if_needed(self):
         """Migrate legacy ``.json`` Trade cache under the generation lock."""
         with self._generation_lock():
@@ -1011,7 +1005,10 @@ class CacheTradeManager(CacheAccountManagerBase):
     def _migrate_legacy_json_generation_locked(self):
         return self._migrate_legacy_json_with_compactor(
             self._compact_account_trade_jsonl_generation_locked,
-            post_compact_fn=self._verify_migrated_trade_snapshot_locked,
+            post_compact_fn=lambda: self._read_trade_snapshot_strict(
+                self._load_versioned_account_meta(optional=False)
+                or (_ for _ in ()).throw(ValueError("versioned Trade metadata was not created"))
+            ),
             skip_if_read_only=False,
             read_json_fn=read_json_dict,
         )

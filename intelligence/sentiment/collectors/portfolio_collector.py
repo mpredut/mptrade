@@ -413,30 +413,6 @@ def _apply_open_orders_locked_balances(
         (pv, ps): pos_item for pos_item, pv, ps in _iter_valid_tradable_positions(tradable_positions)
     }
 
-    def _resolve_pos_sym_and_quote(oo_v: str, oo_sym: str) -> tuple[str, str]:
-        inst_oo = inst_by_sym.get(f"{oo_v}:{oo_sym}") or inst_by_sym.get(oo_sym)
-        matched_pos = pos_by_vs.get((oo_v, oo_sym))
-        resolved_sym = oo_sym
-        if matched_pos is None:
-            oo_canon = canonical_symbol_key(oo_sym)
-            oo_base = canonical_base_asset(oo_sym)
-            for (pv, ps), p_obj in pos_by_vs.items():
-                if pv != oo_v:
-                    continue
-                if (oo_canon and canonical_symbol_key(ps) == oo_canon) or (
-                    MarketDataProvider.uses_bare_base_order_symbols(oo_v) and oo_base and canonical_base_asset(ps) == oo_base
-                ):
-                    matched_pos = p_obj
-                    resolved_sym = ps
-                    if inst_oo is None:
-                        inst_oo = inst_by_sym.get(f"{oo_v}:{ps}") or inst_by_sym.get(ps)
-                    break
-        inst_q = str(getattr(inst_oo, "quote", "") or getattr(inst_oo, "quote_asset", "") or "").strip().upper() if inst_oo is not None else ""
-        pos_q = str((matched_pos or {}).get("quote") or (matched_pos or {}).get("quote_asset") or "").strip().upper()
-        _, parsed_q = resolve_assets(oo_sym, None, None)
-        eff_q = inst_q or pos_q or str(parsed_q or "").strip().upper() or MarketDataProvider.resolve_venue_default_quote(oo_v, fallback="USD")
-        return resolved_sym, eff_q
-
     locked_quote_by_vq: Dict[tuple[str, str], float] = {}
     locked_quote_by_vs: Dict[tuple[str, str], float] = {}
     locked_base_by_vs: Dict[tuple[str, str], float] = {}
@@ -459,7 +435,27 @@ def _apply_open_orders_locked_balances(
                 oo_item["dist_from_spot_pct"] = round(((oo_px - spot_oo) / spot_oo) * 100.0, 2)
         if not oo_v or not oo_sym or oo_rem <= 0.0:
             continue
-        oo_pos_sym, oo_q_u = _resolve_pos_sym_and_quote(oo_v, oo_sym)
+        inst_oo = inst_by_sym.get(f"{oo_v}:{oo_sym}") or inst_by_sym.get(oo_sym)
+        matched_pos = pos_by_vs.get((oo_v, oo_sym))
+        oo_pos_sym = oo_sym
+        if matched_pos is None:
+            oo_canon = canonical_symbol_key(oo_sym)
+            oo_base = canonical_base_asset(oo_sym)
+            for (pv, ps), p_obj in pos_by_vs.items():
+                if pv != oo_v:
+                    continue
+                if (oo_canon and canonical_symbol_key(ps) == oo_canon) or (
+                    MarketDataProvider.uses_bare_base_order_symbols(oo_v) and oo_base and canonical_base_asset(ps) == oo_base
+                ):
+                    matched_pos = p_obj
+                    oo_pos_sym = ps
+                    if inst_oo is None:
+                        inst_oo = inst_by_sym.get(f"{oo_v}:{ps}") or inst_by_sym.get(ps)
+                    break
+        inst_q = str(getattr(inst_oo, "quote", "") or getattr(inst_oo, "quote_asset", "") or "").strip().upper() if inst_oo is not None else ""
+        pos_q = str((matched_pos or {}).get("quote") or (matched_pos or {}).get("quote_asset") or "").strip().upper()
+        _, parsed_q = resolve_assets(oo_sym, None, None)
+        oo_q_u = inst_q or pos_q or str(parsed_q or "").strip().upper() or MarketDataProvider.resolve_venue_default_quote(oo_v, fallback="USD")
         if oo_side == "BUY" and oo_px > 0.0:
             locked_notional = oo_rem * oo_px
             locked_quote_by_vq[(oo_v, oo_q_u)] = locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + locked_notional

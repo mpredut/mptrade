@@ -648,16 +648,19 @@ class Strategy(BaseSpotMixin):
 
     def _cancel_order(self, o: dict) -> bool:
         """Request cancellation without forgetting the order before terminal confirmation."""
-        def _do_cancel(order: dict) -> None:
-            cancel_with_intent = getattr(type(self.client), "cancel_order_with_intent", None)
-            if callable(cancel_with_intent):
-                cancel_with_intent(
+        cancel_with_intent = getattr(type(self.client), "cancel_order_with_intent", None)
+        return self._cancel_tracked_order(
+            o,
+            "txid",
+            (
+                lambda order: cancel_with_intent(
                     self.client, order.get("intent_id") or f"legacy-{self.pair}-{order['txid']}", self.pair, order["txid"]
                 )
-            else:
-                self.client.cancel_order(self.pair, order["txid"])
-
-        return self._cancel_tracked_order(o, "txid", _do_cancel, log_prefix="cancelled")
+            )
+            if callable(cancel_with_intent)
+            else (lambda order: self.client.cancel_order(self.pair, order["txid"])),
+            log_prefix="cancelled",
+        )
 
     def _cancel_orders(self, side: str | None = None, *, exclude_market: bool = False) -> bool:
         """Request cancellation of selected orders; return False if any request fails."""
