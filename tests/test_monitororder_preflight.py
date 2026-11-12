@@ -1,7 +1,7 @@
 import json
 import os
 from types import SimpleNamespace
-from unittest import mock
+from unittest.mock import patch
 
 import monitororder
 import order_retry_worker
@@ -28,7 +28,7 @@ class MonitorOrderPreflightTest(TempDirTestCase):
             self.tmp, "order_retry_queue.lock")
         monitororder.order_retry.RETRY_ENABLED = True
         monitororder.order_retry.RETRY_DEDUP = False
-        self._filter_patcher = mock.patch.object(
+        self._filter_patcher = patch.object(
             monitororder.mkt, "order_filter_refusal", return_value=None)
         self.filter_check = self._filter_patcher.start()
 
@@ -59,20 +59,20 @@ class MonitorOrderPreflightTest(TempDirTestCase):
                 orders = {101: {"price": 100.0, "quantity": 2.0}}
 
                 with (
-                    mock.patch.object(
+                    patch.object(
                         monitororder.api, "get_open_orders",
                         return_value=orders),
-                    mock.patch.object(
+                    patch.object(
                         monitororder.api, "get_current_price",
                         return_value=100.0),
-                    mock.patch.object(
+                    patch.object(
                         monitororder, "are_close", return_value=True),
-                    mock.patch.object(
+                    patch.object(
                         monitororder.mkt, "preflight_order") as preflight,
-                    mock.patch.object(
+                    patch.object(
                         monitororder.api, "cancel_order") as cancel,
-                    mock.patch.object(monitororder.mkt, "place") as place,
-                    mock.patch("builtins.print"),
+                    patch.object(monitororder.mkt, "place") as place,
+                    patch("builtins.print"),
                 ):
                     monitororder.monitor_open_orders_by_type(
                         "BTCUSDC", "SELL")
@@ -96,19 +96,19 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         orders = {101: {"price": 100.0, "quantity": 2.0}}
 
         with (
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "get_open_orders", return_value=orders),
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder, "are_close", return_value=True),
-            mock.patch.object(
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(
                 monitororder.mkt,
                 "preflight_order",
                 side_effect=SubmissionRefused("account_cache_not_fresh"),
             ) as preflight,
-            mock.patch.object(monitororder.api, "cancel_order") as cancel,
-            mock.patch.object(monitororder.mkt, "place") as place,
-            mock.patch("builtins.print"),
+            patch.object(monitororder.api, "cancel_order") as cancel,
+            patch.object(monitororder.mkt, "place") as place,
+            patch("builtins.print"),
         ):
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
 
@@ -134,21 +134,21 @@ class MonitorOrderPreflightTest(TempDirTestCase):
                     if isinstance(preflight_result, Exception)
                     else {"return_value": preflight_result})
                 with (
-                    mock.patch.object(
+                    patch.object(
                         monitororder.api, "get_open_orders",
                         return_value=orders),
-                    mock.patch.object(
+                    patch.object(
                         monitororder.api, "get_current_price",
                         return_value=100.0),
-                    mock.patch.object(
+                    patch.object(
                         monitororder, "are_close", return_value=True),
-                    mock.patch.object(
+                    patch.object(
                         monitororder.mkt, "preflight_order",
                         **preflight_kwargs),
-                    mock.patch.object(
+                    patch.object(
                         monitororder.api, "cancel_order") as cancel,
-                    mock.patch.object(monitororder.mkt, "place") as place,
-                    mock.patch("builtins.print"),
+                    patch.object(monitororder.mkt, "place") as place,
+                    patch("builtins.print"),
                 ):
                     monitororder.monitor_open_orders_by_type(
                         "BTCUSDC", "SELL")
@@ -175,22 +175,22 @@ class MonitorOrderPreflightTest(TempDirTestCase):
             return {"orderId": 202}
 
         with (
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "get_open_orders", return_value=orders),
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder, "are_close", return_value=True),
-            mock.patch.object(
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(
                 monitororder.mkt, "preflight_order", side_effect=preflight),
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "cancel_order", side_effect=cancel),
-            mock.patch.object(
+            patch.object(
                 monitororder.mkt, "order_status",
                 return_value=OrderStatus(
                     status="canceled", filled_qty=0.0, cost=0.0, fee=0.0,
                     venue_status="CANCELED")),
-            mock.patch.object(monitororder.mkt, "place", side_effect=place),
-            mock.patch("builtins.print"),
+            patch.object(monitororder.mkt, "place", side_effect=place),
+            patch("builtins.print"),
         ):
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
 
@@ -220,24 +220,24 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         permit = object()
         orders = {101: {"price": 100.0, "quantity": 2.0}}
         with (
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "get_open_orders", return_value=orders),
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder, "are_close", return_value=True),
-            mock.patch.object(
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(
                 monitororder.mkt, "preflight_order", return_value=permit),
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "cancel_order", return_value=False),
-            mock.patch.object(
+            patch.object(
                 monitororder.mkt, "order_status",
                 return_value=OrderStatus(
                     status="canceled", filled_qty=0.0, cost=0.0, fee=0.0,
                     venue_status="CANCELED")),
-            mock.patch.object(
+            patch.object(
                 monitororder.mkt, "place",
                 return_value={"orderId": 202}) as place,
-            mock.patch("builtins.print"),
+            patch("builtins.print"),
         ):
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
 
@@ -255,25 +255,25 @@ class MonitorOrderPreflightTest(TempDirTestCase):
             "remainingQty": 2.0,
         }}
         with (
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "get_open_orders", return_value=orders),
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder, "are_close", return_value=True),
-            mock.patch.object(
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(
                 monitororder.mkt, "preflight_order",
                 return_value=permit) as preflight,
-            mock.patch.object(
+            patch.object(
                 monitororder.api, "cancel_order", return_value=True),
-            mock.patch.object(
+            patch.object(
                 monitororder.mkt, "order_status",
                 return_value=OrderStatus(
                     status="canceled", filled_qty=0.75, cost=75.0, fee=0.01,
                     venue_status="CANCELED")),
-            mock.patch.object(
+            patch.object(
                 monitororder.mkt, "place",
                 return_value={"orderId": 202}) as place,
-            mock.patch("builtins.print"),
+            patch("builtins.print"),
         ):
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
 
@@ -286,20 +286,20 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         orders = {101: {"price": 100.0, "quantity": 2.0}}
         place_kwargs = {"side_effect": place_side_effect} if place_side_effect is not None else {"return_value": place_return}
         with (
-            mock.patch.object(monitororder.api, "get_open_orders", return_value=orders),
-            mock.patch.object(monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder, "are_close", return_value=True),
-            mock.patch.object(monitororder.mkt, "preflight_order", return_value=permit or object()),
-            mock.patch.object(monitororder.api, "cancel_order", return_value=True) as cancel_order,
-            mock.patch.object(
+            patch.object(monitororder.api, "get_open_orders", return_value=orders),
+            patch.object(monitororder.api, "get_current_price", return_value=100.0),
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(monitororder.mkt, "preflight_order", return_value=permit or object()),
+            patch.object(monitororder.api, "cancel_order", return_value=True) as cancel_order,
+            patch.object(
                 monitororder.mkt,
                 "order_status",
                 return_value=OrderStatus(
                     status="canceled", filled_qty=0.0, cost=0.0, fee=0.0, venue_status="CANCELED"
                 ),
             ),
-            mock.patch.object(monitororder.mkt, "place", **place_kwargs) as place,
-            mock.patch("builtins.print"),
+            patch.object(monitororder.mkt, "place", **place_kwargs) as place,
+            patch("builtins.print"),
         ):
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
         return cancel_order, place

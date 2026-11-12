@@ -14,7 +14,7 @@ from providers.market_api import BinanceProvider, MarketApi
 from qlimit_order_guard import check_qlimit2_order_guards
 from tests.conftest import DummySpotExecutionProvider, make_test_margins
 from types import SimpleNamespace
-from unittest import mock
+from unittest.mock import patch
 
 
 def _Provider(name, last_fill=216.28, *, free_bal=10000.0):
@@ -38,14 +38,14 @@ _margins = lambda **overrides: make_test_margins(strip_venue_refs=True, **overri
 
 class BuyReferenceSwitchTest(unittest.TestCase):
     def test_buy_reference_off_lets_a_buy_above_old_sells_through(self):
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
             provider = _Provider("binance")
             # TAO on 24 Sep: lowest sell of the window 216.28, price ~293.
             self.assertTrue(order_guard.profit_guard(
                 provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
 
     def test_sell_reference_stays_active_when_buy_reference_is_off(self):
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
             provider = _Provider("binance")
             # Highest buy 276.0: a SELL below it (plus margin) is still refused.
             self.assertFalse(order_guard.profit_guard(
@@ -54,40 +54,40 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                 provider, "TAOUSDC", "SELL", 290.0, 1.15, window_ref=276.0))
 
     def test_other_venues_keep_the_buy_reference(self):
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
             self.assertFalse(order_guard.profit_guard(
                 _Provider("kraken"), "HYPEUSD", "BUY", 93.0, 1.15, window_ref=56.66))
             self.assertNotEqual(order_guard.get_profit_guard_mode_cfg("kraken", "BUY"), "off")
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY"), "off")
 
     def test_unreadable_value_raises_value_error(self):
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="maybe")):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="maybe")):
             with self.assertRaises(ValueError):
                 order_guard.get_profit_guard_mode_cfg("binance", "BUY")
 
     def test_repository_config_sets_binance_buy_reference_dynamic(self):
-        with mock.patch.object(order_guard, "_MARGINS", None):
+        with patch.object(order_guard, "_MARGINS", None):
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY"), "dynamic")
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("kraken", "BUY"), "strict")
 
     def test_dynamic_mode_bypasses_in_bull_trend_and_enforces_in_bear_or_flat(self):
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
             provider = _Provider("binance")
             # In confirmed BULL trend: BUY above old sell reference is permitted
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
+            with patch.object(order_guard, "_symbol_trend", return_value="bull"):
                 self.assertTrue(order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
             # In BEAR trend: BUY above old sell reference is blocked for defense
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="bear"):
+            with patch.object(order_guard, "_symbol_trend", return_value="bear"):
                 self.assertFalse(order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
             # In FLAT/UNKNOWN trend: defensive guard is maintained
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="unknown"):
+            with patch.object(order_guard, "_symbol_trend", return_value="unknown"):
                 self.assertFalse(order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
 
     def test_provider_as_string_and_case_insensitivity(self):
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
             # Both string name and Provider object with various casings must work
             self.assertTrue(order_guard.profit_guard("binance", "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
             self.assertTrue(order_guard.profit_guard("Binance", "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
@@ -95,19 +95,19 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("Binance", "BUY"), "off")
 
     def test_missing_default_buy_reference_in_margins_raises_key_error(self):
-        with mock.patch.object(order_guard, "_MARGINS", {"binance": 1.15}):
+        with patch.object(order_guard, "_MARGINS", {"binance": 1.15}):
             with self.assertRaises(KeyError):
                 order_guard.get_profit_guard_mode_cfg("binance", "BUY")
             with self.assertRaises(KeyError):
                 order_guard.get_profit_guard_mode_cfg("kraken", "BUY")
 
     def test_real_binance_provider_integration(self):
-        with mock.patch.object(order_guard, "_MARGINS", None):
+        with patch.object(order_guard, "_MARGINS", None):
             provider = BinanceProvider()
             self.assertEqual(order_guard.get_profit_guard_mode_cfg(provider.name, "BUY"), "dynamic")
             # Keep the real provider/config routing, but isolate its history I/O.
-            with mock.patch.object(provider, "get_orders", return_value=[]) as history, \
-                    mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
+            with patch.object(provider, "get_orders", return_value=[]) as history, \
+                    patch.object(order_guard, "_symbol_trend", return_value="bull"):
                 self.assertTrue(order_guard.profit_guard(provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
                 history.assert_called_with(
                     "TAOUSDC", "SELL", order_guard.get_dynamic_window_sec_cfg("TAOUSDC"))
@@ -129,56 +129,56 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         inst = Instrument(name="TAO", symbol="TAOUSDC", provider="binance", base="TAO", quote="USDC", api=MarketApi([p]))
 
         # Exercise reference routing without live trend discovery on a cold cache.
-        with mock.patch.object(order_guard, "_symbol_trend", return_value="unknown"):
+        with patch.object(order_guard, "_symbol_trend", return_value="unknown"):
             # With binance_buy_reference = off: BUY at 293 (above past sell 216.28) is accepted
-            with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
+            with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
                 res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False, caller_owns_retry=True)
                 self.assertIsNotNone(res)
                 self.assertEqual(len(p.placed), 1)
 
             # With binance_buy_reference = strict: BUY at 293 (above past sell 216.28) is refused by profit_guard
             p.placed.clear()
-            with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="strict")):
+            with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="strict")):
                 res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False, caller_owns_retry=True)
                 self.assertIsNone(res)
                 self.assertEqual(len(p.placed), 0)
 
     def test_dynamic_window_scaling_by_trend(self):
         # Favorable: 8h (BUY in bull / SELL in bear), Flat: 24h, Adverse: 72h (BUY in bear / SELL in bull)
-        with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
+        with patch.object(order_guard, "_symbol_trend", return_value="bull"):
             self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 8.0 * 3600.0)
             self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 72.0 * 3600.0)
             self.assertEqual(order_guard.get_window_cfg("binance", "TAOUSDC", "BUY"), 8.0 * 3600.0)
 
-        with mock.patch.object(order_guard, "_symbol_trend", return_value="bear"):
+        with patch.object(order_guard, "_symbol_trend", return_value="bear"):
             self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 72.0 * 3600.0)
             self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 8.0 * 3600.0)
             self.assertEqual(order_guard.get_window_cfg("binance", "TAOUSDC", "BUY"), 72.0 * 3600.0)
 
-        with mock.patch.object(order_guard, "_symbol_trend", return_value="flat"):
+        with patch.object(order_guard, "_symbol_trend", return_value="flat"):
             self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 24.0 * 3600.0)
             self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 24.0 * 3600.0)
             self.assertEqual(order_guard.get_window_cfg("binance", "TAOUSDC", "BUY"), 24.0 * 3600.0)
 
-        with mock.patch.object(order_guard, "_symbol_trend", return_value="unknown"):
+        with patch.object(order_guard, "_symbol_trend", return_value="unknown"):
             self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 24.0 * 3600.0)
             self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 24.0 * 3600.0)
 
     def test_dynamic_window_bounds_clamping(self):
         # Configured extreme values are safely clamped into user-defined bands
-        with mock.patch.object(order_guard, "_MARGINS", _margins(dynamic_window_favorable_h=1.0, dynamic_window_adverse_h=500.0)):
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
+        with patch.object(order_guard, "_MARGINS", _margins(dynamic_window_favorable_h=1.0, dynamic_window_adverse_h=500.0)):
+            with patch.object(order_guard, "_symbol_trend", return_value="bull"):
                 self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 4.0 * 3600.0)  # clamped to min 4h
                 self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 168.0 * 3600.0)  # clamped to max 168h
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="bear"):
+            with patch.object(order_guard, "_symbol_trend", return_value="bear"):
                 self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 168.0 * 3600.0)  # clamped to max 168h (7d)
                 self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 4.0 * 3600.0)  # clamped to min 4h
 
     def test_dynamic_window_protects_against_recent_top_and_permits_pullback(self):
         # Recent sell at 290.0 within 8h bull window
         provider = _OrdersProvider([{"price": 290.0, "qty": 1.0, "timestamp": 1000.0}])
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
+            with patch.object(order_guard, "_symbol_trend", return_value="bull"):
                 # BUY at 293.0 is higher than recent sell 290.0 -> BLOCKED (protects from buying top)
                 self.assertFalse(order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=290.0))
@@ -188,8 +188,8 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_dynamic_window_ancient_sell_expires_in_bull_trend(self):
         provider = _OrdersProvider(last_fill=216.28)
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
+            with patch.object(order_guard, "_symbol_trend", return_value="bull"):
                 # window_ref is None because no orders in 8h -> permitted without 14-day lockup
                 self.assertTrue(order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=None))
@@ -199,23 +199,23 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_dynamic_window_bear_market_holds_long_defensive_memory(self):
         provider = _OrdersProvider([{"price": 300.0, "qty": 1.0, "timestamp": 1000.0}])
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="bear"):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
+            with patch.object(order_guard, "_symbol_trend", return_value="bear"):
                 # BUY at 298.0 against 300.0 sell is only 0.67% diff < 1.15% -> BLOCKED
                 self.assertFalse(order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 298.0, 1.15, window_ref=300.0))
 
     def test_dynamic_window_ancient_sell_expires_in_flat_trend(self):
         provider = _OrdersProvider(last_fill=216.28)
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="flat"):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
+            with patch.object(order_guard, "_symbol_trend", return_value="flat"):
                 # In flat trend (24h window), 10-day-old anchor 216.28 is outside 24h -> BUY at 298 is permitted!
                 self.assertTrue(order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 298.0, 1.15, window_ref=216.28))
 
     def test_sell_orders_never_use_short_dynamic_window(self):
         # On SELL with static mode ('strict'), get_window_cfg returns full venue window (e.g. 336h kraken)
-        with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
+        with patch.object(order_guard, "_symbol_trend", return_value="bull"):
             kraken_sell_win = order_guard.get_window_cfg("kraken", "HYPEUSD", "SELL")
             self.assertEqual(kraken_sell_win, 336.0 * 3600.0)
 
@@ -228,8 +228,8 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         """Mathematical failure must return False without executing intelligence or macro shadow checks."""
         provider = _Provider("binance", last_fill=216.28)
 
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="strict")):
-            with mock.patch.object(order_guard, "check_intelligence_guards", return_value=(True, "ok", 1.0)) as mock_intel:
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="strict")):
+            with patch.object(order_guard, "check_intelligence_guards", return_value=(True, "ok", 1.0)) as mock_intel:
                 # BUY at 293 with sell anchor 216.28 -> mathematically unprofitable (diff = -35% < 1.15%)
                 allowed = order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28
@@ -241,8 +241,8 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         """Mathematically valid orders must skip heavy intelligence evaluation when qty is None or <= 0."""
         provider = _Provider("binance", last_fill=300.0)
 
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="strict")):
-            with mock.patch.object(order_guard, "check_intelligence_guards", return_value=(True, "ok", 1.0)) as mock_intel:
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="strict")):
+            with patch.object(order_guard, "check_intelligence_guards", return_value=(True, "ok", 1.0)) as mock_intel:
                 # Mathematically profitable: BUY 280 vs sell anchor 300 (diff 6.67% >= 1.15%)
                 allowed_none = order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 280.0, 1.15, window_ref=300.0, qty=None
@@ -290,7 +290,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         )
         ref = order_guard.window_reference(provider, "HYPEUSD", "SELL", 14 * 86400)
         self.assertEqual(ref, 90.0)
-        with mock.patch.object(order_guard, "_MARGINS", _margins()):
+        with patch.object(order_guard, "_MARGINS", _margins()):
             # Selling at 100.0 (+11.1% above active 90.0 BUY) is permitted
             self.assertTrue(
                 order_guard.profit_guard(provider, "HYPEUSD", "SELL", 100.0, 1.15, window_ref=ref)
@@ -318,7 +318,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         self.assertEqual(ref_hybrid, 237.1)
         self.assertEqual(ref_last, 237.1)
         provider = _Provider("binance", last_fill=213.2)
-        with mock.patch.object(order_guard, "_MARGINS", _margins()):
+        with patch.object(order_guard, "_MARGINS", _margins()):
             # Selling at 226.2 (above harvested 213.2, but below remaining 237.1 lot) must be blocked
             self.assertFalse(
                 order_guard.profit_guard(
@@ -335,7 +335,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         """Even on venues with window_h > 0, both BUY and SELL orders in static modes
         with no opposite fill inside the window fall back symmetrically to last_opposite_fill."""
         provider = _Provider("kraken", last_fill=200.0)
-        with mock.patch.object(order_guard, "_MARGINS", _margins(kraken_window_h=336.0)):
+        with patch.object(order_guard, "_MARGINS", _margins(kraken_window_h=336.0)):
             # Selling at 190.0 below last_fill 200.0 must be blocked even when window_ref is None
             self.assertFalse(
                 order_guard.profit_guard(provider, "HYPEUSD", "SELL", 190.0, 1.15, window_ref=None)
@@ -356,8 +356,8 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         and a newer SELL at 300.0 exists inside dyn_window_s, dynamic mode must use min(recent_prices)=300.0."""
         # Inside the 8h/24h dynamic window, only the 300.0 sell exists
         provider = _OrdersProvider([{"price": 300.0, "qty": 1.0, "timestamp": 5000.0}])
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="flat"):
+        with patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
+            with patch.object(order_guard, "_symbol_trend", return_value="flat"):
                 # Caller passes 14-day min sell window_ref=216.28, but inside dynamic window min sell is 300.0.
                 # Buying at 280.0 (+6.67% below 300.0 >= 1.15%) must be PERMITTED!
                 self.assertTrue(
@@ -407,7 +407,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         # - Blocked under 'strict' (300.0) and 'average' (285.0)
         # - Permitted under 'last' (270.0) and 'hybrid' (270.0)
         # - Selling at 268.0 (in loss vs both average and last) is still BLOCKED even under 'hybrid'!
-        with mock.patch.object(order_guard, "_MARGINS", _margins()):
+        with patch.object(order_guard, "_MARGINS", _margins()):
             self.assertFalse(
                 order_guard.profit_guard(p_down, "TAOUSDC", "SELL", 281.1, 1.15, reference_mode="strict")
             )
@@ -485,7 +485,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         # - Blocked under 'strict' (270.0) and 'average' (285.0)
         # - Permitted under 'last' (300.0) and 'hybrid' (300.0)
         # - Rebuying at 302.0 (in loss vs both average and last) is still BLOCKED even under 'hybrid'!
-        with mock.patch.object(order_guard, "_MARGINS", _margins()):
+        with patch.object(order_guard, "_MARGINS", _margins()):
             self.assertFalse(
                 order_guard.profit_guard(p_up, "TAOUSDC", "BUY", 290.0, 1.15, reference_mode="strict")
             )
@@ -539,7 +539,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             tradeall_buy_reference="average",
             rtrade_sell_reference="off",
         )
-        with mock.patch.object(order_guard, "_MARGINS", custom_margins):
+        with patch.object(order_guard, "_MARGINS", custom_margins):
             # Provider-level resolution
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY"), "dynamic")
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "SELL"), "average")
@@ -623,7 +623,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_repository_config_sets_tradeall_symmetric_hybrid_reference(self):
         """Verify live order_guard.conf sets symmetric hybrid BUY/SELL reference for tradeall."""
-        with mock.patch.object(order_guard, "_MARGINS", None):
+        with patch.object(order_guard, "_MARGINS", None):
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY", module="tradeall"), "hybrid")
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "SELL", module="tradeall"), "hybrid")
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY", module="monitortrades"), "dynamic")
@@ -631,7 +631,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_resolve_caller_module_preserves_lineage_across_outbox_and_repricer(self):
         """Ensure outbox retries (TA_OR) and monitororder repricing (MO_TA_) retain module identity."""
-        with mock.patch.object(oic, "get_process_name", return_value="ORW"):
+        with patch.object(oic, "get_process_name", return_value="ORW"):
             self.assertIsNone(order_guard.resolve_caller_module(None))
             self.assertEqual(order_guard.resolve_caller_module(None, prefix="TA_OR"), "tradeall")
             self.assertEqual(order_guard.resolve_caller_module(None, client_order_id="TA_OR_abc123"), "tradeall")

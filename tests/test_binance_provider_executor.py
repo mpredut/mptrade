@@ -1,7 +1,7 @@
 """Verify the BinanceProvider StrategyExecutor contract with a fake API."""
 from decimal import Decimal
 import unittest
-from unittest import mock
+from unittest.mock import patch
 
 import pytest
 
@@ -80,13 +80,13 @@ class FakeBapi:
 class BinanceExecutorContractTest(unittest.TestCase):
     def setUp(self):
         self.fake = FakeBapi()
-        self._patch = mock.patch.object(market_api, "_bapi", self.fake)
+        self._patch = patch.object(market_api, "_bapi", self.fake)
         self._patch.start()
         self.placeorder = bapi_placeorder
-        self._trade_enabled_patch = mock.patch.object(
+        self._trade_enabled_patch = patch.object(
             bapi_placeorder.cfg, "is_trade_enabled", return_value=True,
         )
-        self._freshness_patch = mock.patch.object(
+        self._freshness_patch = patch.object(
             bapi_placeorder.account_cache_health, "require_fresh_account_cache",
             return_value=bapi_placeorder.account_cache_health.CacheHealthStatus(
                 ready=True, reason="ok", order_age_sec=1.0,
@@ -97,7 +97,7 @@ class BinanceExecutorContractTest(unittest.TestCase):
         )
         self._trade_enabled_patch.start()
         self.freshness_gate = self._freshness_patch.start()
-        self._reader_patch = mock.patch(
+        self._reader_patch = patch(
             "cacheManager.ensure_account_cache_readers")
         self.reader_gate = self._reader_patch.start()
         self.p = BinanceProvider()

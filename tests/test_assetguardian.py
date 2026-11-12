@@ -12,7 +12,7 @@ from llm_order_guard import check_llm_order_guards
 from providers.strategy_executor import OrderStatus
 from qlimit_order_guard import resolve_cached_gaussian_horizon
 from types import SimpleNamespace
-from unittest import mock
+from unittest.mock import Mock, patch
 
 
 
@@ -42,18 +42,18 @@ class AssetGuardianTest(unittest.TestCase):
     def test_config_validation(self):
         with self.subTest(msg="test_required_config_rejects_missing_and_empty_values"):
             key = "AG_REQUIRED_CONFIG_REGRESSION_TEST"
-            with mock.patch.dict(os.environ, {}, clear=False):
+            with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(key, None)
                 with self.assertRaisesRegex(ValueError, key):
                     required_env(key)
             for value in ("", "   ", "\t"):
-                with self.subTest(value=value), mock.patch.dict(os.environ, {key: value}):
+                with self.subTest(value=value), patch.dict(os.environ, {key: value}):
                     with self.assertRaisesRegex(ValueError, key):
                         required_env(key)
 
         with self.subTest(msg="test_required_numeric_config_has_no_implicit_fallback"):
             key = "AG_REQUIRED_NUMERIC_REGRESSION_TEST"
-            with mock.patch.dict(os.environ, {}, clear=False):
+            with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(key, None)
                 with self.assertRaisesRegex(ValueError, key):
                     ag.required_float_env(key)
@@ -62,7 +62,7 @@ class AssetGuardianTest(unittest.TestCase):
             env = {name: "1" for name in ag.REQUIRED_CONFIG_KEYS}
             env["AG_CHECK_INTERVAL_SEC"] = ""
             env["AG_BUY_USE_CASH_RATIO"] = "   "
-            with mock.patch.dict(os.environ, env, clear=True):
+            with patch.dict(os.environ, env, clear=True):
                 with self.assertRaises(ValueError) as raised:
                     ag.validate_required_env_keys(ag.REQUIRED_CONFIG_KEYS, label="AssetGuardian")
             message = str(raised.exception)
@@ -99,25 +99,25 @@ class AssetGuardianTest(unittest.TestCase):
 
 
     def setUp(self):
-        state_patch = mock.patch.object(ag, "STATE", MemoryState())
+        state_patch = patch.object(ag, "STATE", MemoryState())
         state_patch.start()
         self.addCleanup(state_patch.stop)
-        self.sell_provider = mock.Mock()
+        self.sell_provider = Mock()
         self.sell_provider.open_orders.return_value = []
         self._real_trend_defer_ready = ag._trend_defer_ready
-        self._trend_patch = mock.patch.object(
+        self._trend_patch = patch.object(
             ag, "_trend_defer_ready",
             side_effect=lambda _symbol, _kind, _side, _threshold, state:
                 (True, state),
         )
         self._trend_patch.start()
         self.addCleanup(self._trend_patch.stop)
-        self._asset_val_patch = mock.patch.object(
+        self._asset_val_patch = patch.object(
             ag, "_read_total_asset_value_rows", return_value=[]
         )
         self._asset_val_patch.start()
         self.addCleanup(self._asset_val_patch.stop)
-        self._p3b_patch = mock.patch.object(
+        self._p3b_patch = patch.object(
             ag, "_read_p3b_sentiment", return_value=None
         )
         self._p3b_patch.start()
@@ -139,8 +139,8 @@ class AssetGuardianTest(unittest.TestCase):
                 [(now - 60) * 1000, 110],
                 [(now - 30) * 1000, 100],
             ]
-            with mock.patch.object(ag, "_read_symbol_price_rows", return_value=rows), \
-                 mock.patch.object(ag.time, "time", return_value=now):
+            with patch.object(ag, "_read_symbol_price_rows", return_value=rows), \
+                 patch.object(ag.time, "time", return_value=now):
                 minimum, maximum = ag._get_symbol_window_extrema("TAOUSDC", 105, 10)
             self.assertEqual(minimum["price"], 90.0)
             self.assertEqual(maximum["price"], 110.0)
@@ -156,8 +156,8 @@ class AssetGuardianTest(unittest.TestCase):
                 [(now - 30) * 1000, 100],
                 [(now - 20) * 1000, 120],
             ]
-            with mock.patch.object(ag, "_read_symbol_price_rows", return_value=rows), \
-                 mock.patch.object(ag.time, "time", return_value=now):
+            with patch.object(ag, "_read_symbol_price_rows", return_value=rows), \
+                 patch.object(ag.time, "time", return_value=now):
                 minimum, maximum = ag._get_symbol_window_extrema("TAOUSDC", 110, 10)
             self.assertEqual(minimum["price"], 100.0)
             self.assertEqual(maximum["price"], 120.0)
@@ -168,17 +168,17 @@ class AssetGuardianTest(unittest.TestCase):
                 {"timestamp": 1, "price": 224.0},
                 {"timestamp": 2, "price": 242.0},
             )
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 1000.0
             state = MemoryState()
-            with mock.patch.object(ag.api, "get_current_price", return_value=225.0), \
-                 mock.patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
-                 mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(
+            with patch.object(ag.api, "get_current_price", return_value=225.0), \
+                 patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
+                 patch.object(ag, "STATE", state), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(
                      ag, "buy_with_all_cash",
                      return_value={"orderId": 701, "status": "NEW"}) as buy, \
-                 mock.patch.object(ag, "sell_asset") as sell:
+                 patch.object(ag, "sell_asset") as sell:
                 self.assertTrue(ag.evaluate_symbol("TAOUSDC"))
             buy.assert_called_once()
             self.assertEqual(buy.call_args.kwargs["buy_symbol"], "TAOUSDC")
@@ -192,7 +192,7 @@ class AssetGuardianTest(unittest.TestCase):
 
         with self.subTest(msg="test_two_asset_replay_routes_only_tao_drawdown_to_tao"):
             state = MemoryState()
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 1000.0
             prices = {"BTCUSDC": 100.0, "TAOUSDC": 225.0}
             extrema = {
@@ -205,17 +205,17 @@ class AssetGuardianTest(unittest.TestCase):
                     {"timestamp": 2, "price": 242.0},
                 ),
             }
-            with mock.patch.object(
+            with patch.object(
                     ag.api, "get_current_price", side_effect=lambda symbol: prices[symbol]), \
-                 mock.patch.object(
+                 patch.object(
                      ag, "_get_symbol_window_extrema",
                      side_effect=lambda symbol, *_args, **_kwargs: extrema[symbol]), \
-                 mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(
+                 patch.object(ag, "STATE", state), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(
                      ag, "buy_with_all_cash",
                      return_value={"orderId": 702, "status": "NEW"}) as buy, \
-                 mock.patch.object(ag, "sell_asset") as sell:
+                 patch.object(ag, "sell_asset") as sell:
                 self.assertTrue(ag.evaluate_and_maybe_sell_or_buy(
                     symbols=("BTCUSDC", "TAOUSDC")))
             buy.assert_called_once()
@@ -229,16 +229,16 @@ class AssetGuardianTest(unittest.TestCase):
                 {"timestamp": 2, "price": 110.0},
             )
             state = MemoryState()
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 10.0
             provider.open_orders.return_value = []
-            with mock.patch.object(ag.api, "get_current_price", return_value=109.5), \
-                 mock.patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
-                 mock.patch.object(ag, "_get_portfolio_growth_percent", return_value=0.0), \
-                 mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag, "_submit_sell_tier", return_value=True) as submit, \
-                 mock.patch.object(ag, "buy_with_all_cash") as buy:
+            with patch.object(ag.api, "get_current_price", return_value=109.5), \
+                 patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
+                 patch.object(ag, "_get_portfolio_growth_percent", return_value=0.0), \
+                 patch.object(ag, "STATE", state), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag, "_submit_sell_tier", return_value=True) as submit, \
+                 patch.object(ag, "buy_with_all_cash") as buy:
                 self.assertTrue(ag.evaluate_symbol("TAOUSDC"))
             tier = submit.call_args.kwargs["tier"]
             self.assertEqual(tier, (9.0, 0.12, 1.2))
@@ -248,20 +248,20 @@ class AssetGuardianTest(unittest.TestCase):
             buy.assert_not_called()
 
         with self.subTest(msg="test_nonfinite_current_price_cannot_trigger_any_order"):
-            with mock.patch.object(ag.api, "get_current_price", return_value=float("inf")), \
-                 mock.patch.object(ag, "sell_asset") as sell, \
-                 mock.patch.object(ag, "buy_with_all_cash") as buy:
+            with patch.object(ag.api, "get_current_price", return_value=float("inf")), \
+                 patch.object(ag, "sell_asset") as sell, \
+                 patch.object(ag, "buy_with_all_cash") as buy:
                 self.assertFalse(ag.evaluate_symbol("TAOUSDC"))
             sell.assert_not_called()
             buy.assert_not_called()
 
         with self.subTest(msg="test_insufficient_price_baseline_cannot_trigger_any_order"):
             now = 2_000_000
-            with mock.patch.object(ag, "_read_symbol_price_rows", return_value=[]), \
-                 mock.patch.object(ag.time, "time", return_value=now), \
-                 mock.patch.object(ag.api, "get_current_price", return_value=225.0), \
-                 mock.patch.object(ag, "sell_asset") as sell, \
-                 mock.patch.object(ag, "buy_with_all_cash") as buy:
+            with patch.object(ag, "_read_symbol_price_rows", return_value=[]), \
+                 patch.object(ag.time, "time", return_value=now), \
+                 patch.object(ag.api, "get_current_price", return_value=225.0), \
+                 patch.object(ag, "sell_asset") as sell, \
+                 patch.object(ag, "buy_with_all_cash") as buy:
                 self.assertFalse(ag.evaluate_symbol("TAOUSDC"))
             sell.assert_not_called()
             buy.assert_not_called()
@@ -279,7 +279,7 @@ class AssetGuardianTest(unittest.TestCase):
                 },
             })
             maximum = {"timestamp": 2, "price": 242}
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 tao_tier, _ = ag._campaign_tier("TAOUSDC", 8, maximum, 650)
                 btc_tier, _ = ag._campaign_tier("BTCUSDC", 8, maximum, 650)
                 root = ag._load_state_root()
@@ -298,7 +298,7 @@ class AssetGuardianTest(unittest.TestCase):
                     }
                 },
             })
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 tier, campaign = ag._campaign_tier(
                     "TAOUSDC", 10.5, {"timestamp": 3, "price": 250}, 500)
             self.assertEqual(tier, (10.0, 0.30))
@@ -320,7 +320,7 @@ class AssetGuardianTest(unittest.TestCase):
                 },
             })
             maximum = {"timestamp": 2, "price": 324.1}
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 shallow, _ = ag._campaign_tier("TAOUSDC", 9.6, maximum, 1000)
                 middle, _ = ag._campaign_tier("TAOUSDC", 10.5, maximum, 1000)
                 deepest, _ = ag._campaign_tier("TAOUSDC", 14.2, maximum, 1000)
@@ -336,7 +336,7 @@ class AssetGuardianTest(unittest.TestCase):
                 "initial_cash": 1000,
                 "completed_tiers": [7],
             })
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 root = ag._load_state_root()
                 tier, campaign = ag._campaign_tier(
                     ag.LEGACY_BUY_SYMBOL, 8,
@@ -353,16 +353,16 @@ class AssetGuardianTest(unittest.TestCase):
                 {"timestamp": 1, "price": 224.0},
                 {"timestamp": 2, "price": 242.0},
             )
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 1000.0
-            with mock.patch.object(ag.api, "get_current_price", return_value=225.0), \
-                 mock.patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
-                 mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(
+            with patch.object(ag.api, "get_current_price", return_value=225.0), \
+                 patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
+                 patch.object(ag, "STATE", state), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(
                      ag, "buy_with_all_cash",
                      return_value={"orderId": 703, "status": "NEW"}) as buy, \
-                 mock.patch.object(
+                 patch.object(
                      ag.mkt, "order_status",
                      return_value=OrderStatus("open", 0.0, 0.0, 0.0)):
                 self.assertTrue(ag.evaluate_symbol("TAOUSDC"))
@@ -375,13 +375,13 @@ class AssetGuardianTest(unittest.TestCase):
                 {"timestamp": 1, "price": 224.0},
                 {"timestamp": 2, "price": 242.0},
             )
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 1000.0
-            with mock.patch.object(ag.api, "get_current_price", return_value=225.0), \
-                 mock.patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
-                 mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag, "buy_with_all_cash", return_value=False):
+            with patch.object(ag.api, "get_current_price", return_value=225.0), \
+                 patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
+                 patch.object(ag, "STATE", state), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag, "buy_with_all_cash", return_value=False):
                 self.assertFalse(ag.evaluate_symbol("TAOUSDC"))
                 self.assertEqual(ag._next_check_seconds(), ag.ACTIVE_TRIGGER_SECONDS)
             self.assertEqual(
@@ -395,22 +395,22 @@ class AssetGuardianTest(unittest.TestCase):
             ag._last_evaluation["TAOUSDC"] = {
                 "growth": 0.0, "drawdown": -8.5, "pending_tier": False,
             }
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 self.assertEqual(ag._next_check_seconds(), ag.NEAR_TRIGGER_SECONDS)
 
         with self.subTest(msg="test_evaluator_accepts_at_most_one_order_per_cycle"):
-            with mock.patch.object(ag, "evaluate_symbol", side_effect=[True, True]) as evaluate:
+            with patch.object(ag, "evaluate_symbol", side_effect=[True, True]) as evaluate:
                 self.assertTrue(ag.evaluate_and_maybe_sell_or_buy(
                     symbols=("BTCUSDC", "TAOUSDC")))
             self.assertEqual(evaluate.call_count, 1)
 
     def test_buy_campaign_lifecycle_and_reconciliation(self):
         with self.subTest(msg="test_guardian_owns_retry_for_buy"):
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 1000.0
-            with mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag.api, "get_current_price", return_value=100.0), \
-                 mock.patch.object(ag.mkt, "place", return_value={"orderId": 7}) as place:
+            with patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag.api, "get_current_price", return_value=100.0), \
+                 patch.object(ag.mkt, "place", return_value={"orderId": 7}) as place:
                 self.assertTrue(ag.buy_with_all_cash("TAOUSDC", cash_ratio=0.5))
             self.assertTrue(place.call_args.kwargs["caller_owns_retry"])
             self.assertEqual(
@@ -421,9 +421,9 @@ class AssetGuardianTest(unittest.TestCase):
             self.assertEqual(place.call_args.kwargs["motivation"],
                              "assetguardian_drawdown_buy")
             self.assertEqual(place.call_args.args[0], "TAOUSDC")
-            with mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag.api, "get_current_price", return_value=100.0), \
-                 mock.patch.object(ag.mkt, "place", return_value={"orderId": 8}) as place_guarded:
+            with patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag.api, "get_current_price", return_value=100.0), \
+                 patch.object(ag.mkt, "place", return_value={"orderId": 8}) as place_guarded:
                 self.assertTrue(ag.buy_with_all_cash("TAOUSDC", cash_ratio=0.5, respect_guard=True))
             self.assertEqual(place_guarded.call_args.kwargs["bypass_guards"], {"G_QLIMIT1"})
 
@@ -435,11 +435,11 @@ class AssetGuardianTest(unittest.TestCase):
                 "initial_cash": 1000.0,
                 "completed_tiers": [],
             }
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(
                      ag, "buy_with_all_cash",
                      return_value={"orderId": 710, "status": "NEW", "origQty": "1.5"}), \
-                 mock.patch.object(ag.mkt, "order_status") as status:
+                 patch.object(ag.mkt, "order_status") as status:
                 accepted = ag._submit_buy_tier(
                     "TAOUSDC", 225.0, 348.25, (7.0, 0.35), campaign)
 
@@ -462,8 +462,8 @@ class AssetGuardianTest(unittest.TestCase):
                     },
                 }}},
             })
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(
                      ag.mkt, "order_status",
                      return_value=OrderStatus("closed", 1.5, 337.5, 0.4)):
                 campaign = ag._symbol_campaign("TAOUSDC", "buy")
@@ -487,8 +487,8 @@ class AssetGuardianTest(unittest.TestCase):
                     },
                 }}},
             })
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(
                      ag.mkt, "order_status",
                      return_value=OrderStatus("canceled", 0.5, 112.5, 0.2)):
                 campaign = ag._symbol_campaign("TAOUSDC", "buy")
@@ -510,9 +510,9 @@ class AssetGuardianTest(unittest.TestCase):
                 "initial_cash": 1000.0,
                 "completed_tiers": [],
             }
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag, "buy_with_all_cash", return_value=None), \
-                 mock.patch.object(ag.mkt, "order_by_client_id", return_value=None):
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag, "buy_with_all_cash", return_value=None), \
+                 patch.object(ag.mkt, "order_by_client_id", return_value=None):
                 self.assertFalse(ag._submit_buy_tier(
                     "TAOUSDC", 225.0, 348.25, (7.0, 0.35), campaign))
                 buy_state = ag._symbol_campaign("TAOUSDC", "buy")
@@ -553,15 +553,15 @@ class AssetGuardianTest(unittest.TestCase):
                 {"timestamp": 1.0, "price": 224.0},
                 {"timestamp": 2.0, "price": 242.0},
             )
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 1000.0
             provider.open_orders.return_value = []
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.mkt, "order_by_client_id", return_value=None), \
-                 mock.patch.object(ag.api, "get_current_price", return_value=225.0), \
-                 mock.patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag.mkt, "order_by_client_id", return_value=None), \
+                 patch.object(ag.api, "get_current_price", return_value=225.0), \
+                 patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(
                      ag, "buy_with_all_cash",
                      return_value={"orderId": 713, "status": "NEW"}) as buy:
                 accepted = ag.evaluate_symbol("TAOUSDC")
@@ -579,33 +579,33 @@ class AssetGuardianTest(unittest.TestCase):
                 "version": 3,
                 "symbols": {"TAOUSDC": {"buy": {"completed_tiers": []}}},
             })
-            manager = mock.Mock()
+            manager = Mock()
             manager.should_wait.return_value = True
             initial = {"completed_tiers": []}
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.cm, "get_short_trend_manager", return_value=manager), \
-                 mock.patch.object(ag.time, "time", return_value=1000.0), \
-                 mock.patch.object(ag.time, "sleep") as sleep:
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag.cm, "get_short_trend_manager", return_value=manager), \
+                 patch.object(ag.time, "time", return_value=1000.0), \
+                 patch.object(ag.time, "sleep") as sleep:
                 ready1, deferred = self._real_trend_defer_ready(
                     "TAOUSDC", "buy", "BUY", 7.0, initial)
             # Even after TREND_DEFER_MAX_SECONDS, while should_wait (GT_S) is True,
             # AssetGuardian must keep deferring and never bypass GT_S on a timer.
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.cm, "get_short_trend_manager", return_value=manager), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag.cm, "get_short_trend_manager", return_value=manager), \
+                 patch.object(
                      ag.time, "time",
                      return_value=1000.0 + ag.TREND_DEFER_MAX_SECONDS + 1), \
-                 mock.patch.object(ag.time, "sleep") as sleep2:
+                 patch.object(ag.time, "sleep") as sleep2:
                 ready2, still_deferred = self._real_trend_defer_ready(
                     "TAOUSDC", "buy", "BUY", 7.0, deferred)
             # Once should_wait becomes False (trend turns favorable), it releases immediately.
             manager.should_wait.return_value = False
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.cm, "get_short_trend_manager", return_value=manager), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag.cm, "get_short_trend_manager", return_value=manager), \
+                 patch.object(
                      ag.time, "time",
                      return_value=1000.0 + ag.TREND_DEFER_MAX_SECONDS + 5), \
-                 mock.patch.object(ag.time, "sleep") as sleep3:
+                 patch.object(ag.time, "sleep") as sleep3:
                 ready3, released = self._real_trend_defer_ready(
                     "TAOUSDC", "buy", "BUY", 7.0, still_deferred)
 
@@ -620,10 +620,10 @@ class AssetGuardianTest(unittest.TestCase):
 
     def test_sell_campaign_initialization_and_constraints(self):
         with self.subTest(msg="test_guardian_owns_retry_for_asset_specific_sell"):
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 0.5
-            with mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag.mkt, "place", return_value={"orderId": 8}) as place:
+            with patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag.mkt, "place", return_value={"orderId": 8}) as place:
                 order = ag.sell_asset(
                     "TAOUSDC", qty=0.2, current_price=250.0,
                     client_order_id="AGS_test", tier_threshold=15.0)
@@ -638,8 +638,8 @@ class AssetGuardianTest(unittest.TestCase):
 
         with self.subTest(msg="test_sell_campaign_freezes_trough_and_initial_quantity"):
             state = MemoryState()
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag, "SELL_TIERS", ((15.0, 0.30), (25.0, 0.30), (35.0, 0.40))):
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag, "SELL_TIERS", ((15.0, 0.30), (25.0, 0.30), (35.0, 0.40))):
                 tier1, campaign, growth1 = ag._sell_campaign_tier(
                     "TAOUSDC", 115.0, {"timestamp": 10, "price": 100.0}, 10.0,
                     self.sell_provider)
@@ -657,8 +657,8 @@ class AssetGuardianTest(unittest.TestCase):
 
         with self.subTest(msg="test_sell_jump_crosses_only_one_incomplete_tier_at_a_time"):
             state = MemoryState()
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag, "SELL_TIERS", ((15.0, 0.30), (25.0, 0.30), (35.0, 0.40))):
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag, "SELL_TIERS", ((15.0, 0.30), (25.0, 0.30), (35.0, 0.40))):
                 tier1, campaign, _ = ag._sell_campaign_tier(
                     "TAOUSDC", 136.0, {"timestamp": 10, "price": 100.0}, 10.0,
                     self.sell_provider)
@@ -683,7 +683,7 @@ class AssetGuardianTest(unittest.TestCase):
                     "initial_qty": 10.0, "completed_tiers": [15.0],
                 }}},
             })
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 tier, campaign, growth = ag._sell_campaign_tier(
                     "TAOUSDC", 102.0,
                     {"timestamp": 20, "price": 80.0}, 7.0,
@@ -696,11 +696,11 @@ class AssetGuardianTest(unittest.TestCase):
 
         with self.subTest(msg="test_existing_exchange_sell_blocks_new_campaign_and_duplicate"):
             state = MemoryState()
-            provider = mock.Mock()
+            provider = Mock()
             provider.open_orders.return_value = [
                 {"orderId": "orphan-1", "side": "SELL", "status": "NEW"}
             ]
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 tier, campaign, growth = ag._sell_campaign_tier(
                     "TAOUSDC", 115.0, {"timestamp": 10, "price": 100.0}, 10.0,
                     provider)
@@ -719,11 +719,11 @@ class AssetGuardianTest(unittest.TestCase):
                 "version": 3,
                 "symbols": {"TAOUSDC": {"sell": existing}},
             })
-            provider = mock.Mock()
+            provider = Mock()
             provider.open_orders.return_value = [
                 {"orderId": "locked-1", "side": "SELL", "status": "NEW"}
             ]
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 tier, campaign, growth = ag._sell_campaign_tier(
                     "TAOUSDC", 126.0, {"timestamp": 10, "price": 100.0}, 0.0,
                     provider)
@@ -742,11 +742,11 @@ class AssetGuardianTest(unittest.TestCase):
                     "total_filled_qty": 3.0,
                 }}},
             })
-            provider = mock.Mock()
+            provider = Mock()
             provider.open_orders.return_value = [
                 {"orderId": "other-2", "side": "SELL", "status": "NEW"}
             ]
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 tier, campaign, growth = ag._sell_campaign_tier(
                     "TAOUSDC", 126.0, {"timestamp": 20, "price": 110.0}, 7.0,
                     provider)
@@ -764,7 +764,7 @@ class AssetGuardianTest(unittest.TestCase):
                     "total_filled_qty": 3.0,
                 }}},
             })
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 tier, campaign, growth = ag._sell_campaign_tier(
                     "TAOUSDC", 126.0, {"timestamp": 20, "price": 110.0}, 8.0,
                     self.sell_provider)
@@ -787,8 +787,8 @@ class AssetGuardianTest(unittest.TestCase):
                     },
                 }}},
             })
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(
                      ag.mkt, "order_status",
                      return_value=OrderStatus("open", 1.0, 115.0, 0.1)):
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
@@ -816,13 +816,13 @@ class AssetGuardianTest(unittest.TestCase):
                 OrderStatus("open", 1.0, 115.0, 0.1),
                 OrderStatus("canceled", 1.0, 115.0, 0.1),
             )
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(
                      ag.time, "time",
                      return_value=created_at + ag.ORDER_MAX_AGE_SECONDS + 1), \
-                 mock.patch.object(
+                 patch.object(
                      ag.mkt, "order_status", side_effect=statuses) as status_call, \
-                 mock.patch.object(ag.mkt, "cancel_order") as cancel:
+                 patch.object(ag.mkt, "cancel_order") as cancel:
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
                 campaign, outcome = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
 
@@ -848,12 +848,12 @@ class AssetGuardianTest(unittest.TestCase):
                     },
                 }}},
             })
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.time, "time", return_value=created_at + 30), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag.time, "time", return_value=created_at + 30), \
+                 patch.object(
                      ag.mkt, "order_status",
                      return_value=OrderStatus("open", 0.0, 0.0, 0.0)), \
-                 mock.patch.object(ag.mkt, "cancel_order") as cancel:
+                 patch.object(ag.mkt, "cancel_order") as cancel:
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
                 campaign, outcome = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
 
@@ -875,14 +875,14 @@ class AssetGuardianTest(unittest.TestCase):
                     },
                 }}},
             })
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(
                      ag.time, "time",
                      return_value=created_at + ag.ORDER_MAX_AGE_SECONDS + 1), \
-                 mock.patch.object(
+                 patch.object(
                      ag.mkt, "order_status",
                      return_value=OrderStatus("open", 0.0, 0.0, 0.0)), \
-                 mock.patch.object(
+                 patch.object(
                      ag.mkt, "cancel_order", side_effect=RuntimeError("timeout")) as cancel:
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
                 campaign, outcome1 = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
@@ -905,8 +905,8 @@ class AssetGuardianTest(unittest.TestCase):
                     },
                 }}},
             })
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(
                      ag.mkt, "order_status",
                      return_value=OrderStatus("closed", 3.0, 345.0, 0.2)):
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
@@ -929,9 +929,9 @@ class AssetGuardianTest(unittest.TestCase):
                     },
                 }}},
             })
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag, "SELL_TIERS", ((15.0, 0.30), (25.0, 0.30), (35.0, 0.40))), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag, "SELL_TIERS", ((15.0, 0.30), (25.0, 0.30), (35.0, 0.40))), \
+                 patch.object(
                      ag.mkt, "order_status",
                      return_value=OrderStatus("canceled", 1.0, 115.0, 0.1)):
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
@@ -956,10 +956,10 @@ class AssetGuardianTest(unittest.TestCase):
                     },
                 }}},
             })
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(
                      ag.mkt, "order_by_client_id", return_value={"orderId": 80}), \
-                 mock.patch.object(
+                 patch.object(
                      ag.mkt, "order_status",
                      return_value=OrderStatus("open", 0.0, 0.0, 0.0)):
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
@@ -971,14 +971,14 @@ class AssetGuardianTest(unittest.TestCase):
 
         with self.subTest(msg="test_submit_acceptance_without_fill_remains_pending"):
             state = MemoryState()
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 tier, campaign, _ = ag._sell_campaign_tier(
                     "TAOUSDC", 115.0, {"timestamp": 10, "price": 100.0}, 10.0,
                     self.sell_provider)
-                with mock.patch.object(
+                with patch.object(
                         ag, "sell_asset",
                         return_value={"orderId": 81, "status": "NEW", "origQty": "3"}), \
-                     mock.patch.object(
+                     patch.object(
                          ag.mkt, "order_status",
                          return_value=OrderStatus("open", 0.0, 0.0, 0.0)):
                     self.assertTrue(ag._submit_sell_tier(
@@ -993,13 +993,13 @@ class AssetGuardianTest(unittest.TestCase):
 
         with self.subTest(msg="test_locally_refused_sell_clears_pending_and_reuses_attempt"):
             state = MemoryState()
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 10.0
 
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.api, "get_current_price", return_value=225.0), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag.mkt, "place", side_effect=_refuse_place):
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag.api, "get_current_price", return_value=225.0), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag.mkt, "place", side_effect=_refuse_place):
                 tier, campaign, _ = ag._sell_campaign_tier(
                     "TAOUSDC", 115.0, {"timestamp": 10, "price": 100.0}, 10.0,
                     self.sell_provider)
@@ -1018,13 +1018,13 @@ class AssetGuardianTest(unittest.TestCase):
                 "initial_cash": 1000.0,
                 "completed_tiers": [],
             }
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 1000.0
 
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.api, "get_current_price", return_value=225.0), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag.mkt, "place", side_effect=_refuse_place):
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag.api, "get_current_price", return_value=225.0), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag.mkt, "place", side_effect=_refuse_place):
                 self.assertFalse(ag._submit_buy_tier(
                     "TAOUSDC", 225.0, 348.25, (7.0, 0.35), campaign))
                 buy_state = ag._symbol_campaign("TAOUSDC", "buy")
@@ -1039,16 +1039,16 @@ class AssetGuardianTest(unittest.TestCase):
                 {"timestamp": 2, "price": 281.2},
             )
             state = MemoryState()
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 10.0
             provider.open_orders.return_value = []
-            with mock.patch.object(ag.api, "get_current_price", return_value=281.1), \
-                 mock.patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
-                 mock.patch.object(ag, "_get_portfolio_growth_percent", return_value=2.96), \
-                 mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag, "_submit_sell_tier", return_value=True) as submit, \
-                 mock.patch.object(ag, "buy_with_all_cash") as buy:
+            with patch.object(ag.api, "get_current_price", return_value=281.1), \
+                 patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
+                 patch.object(ag, "_get_portfolio_growth_percent", return_value=2.96), \
+                 patch.object(ag, "STATE", state), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag, "_submit_sell_tier", return_value=True) as submit, \
+                 patch.object(ag, "buy_with_all_cash") as buy:
                 self.assertTrue(ag.evaluate_symbol("TAOUSDC"))
             tier = submit.call_args.kwargs["tier"]
             self.assertEqual(tier, (4.1, 0.20, 2.0))
@@ -1060,23 +1060,23 @@ class AssetGuardianTest(unittest.TestCase):
                 {"timestamp": 2, "price": 281.2},
             )
             state = MemoryState()
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 10.0
             provider.open_orders.return_value = []
-            with mock.patch.object(ag.api, "get_current_price", return_value=281.1), \
-                 mock.patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
-                 mock.patch.object(ag, "_get_portfolio_growth_percent", return_value=0.8), \
-                 mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag, "_submit_sell_tier") as submit, \
-                 mock.patch.object(ag, "buy_with_all_cash") as buy:
+            with patch.object(ag.api, "get_current_price", return_value=281.1), \
+                 patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
+                 patch.object(ag, "_get_portfolio_growth_percent", return_value=0.8), \
+                 patch.object(ag, "STATE", state), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag, "_submit_sell_tier") as submit, \
+                 patch.object(ag, "buy_with_all_cash") as buy:
                 self.assertFalse(ag.evaluate_symbol("TAOUSDC"))
             submit.assert_not_called()
             buy.assert_not_called()
 
         with self.subTest(msg="test_rtrade_blocking_sell_order_retries_first_then_cancels_after_grace_timeout"):
             state = MemoryState()
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 10.0
             rtrade_order = {
                 "orderId": 716499872,
@@ -1086,9 +1086,9 @@ class AssetGuardianTest(unittest.TestCase):
             }
             provider.open_orders.return_value = [rtrade_order]
             ag._rtrade_sell_block_since.clear()
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.time, "time", return_value=1000.0), \
-                 mock.patch.object(ag.mkt, "cancel_order") as cancel:
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag.time, "time", return_value=1000.0), \
+                 patch.object(ag.mkt, "cancel_order") as cancel:
                 tier1, _, _ = ag._sell_campaign_tier(
                     "TAOUSDC", 110.0, {"timestamp": 10, "price": 100.0}, 10.0, provider)
             self.assertIsNone(tier1)
@@ -1100,11 +1100,11 @@ class AssetGuardianTest(unittest.TestCase):
             def _cancel_side_effect(*_args, **_kwargs):
                 provider.open_orders.return_value = []
 
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(
+            with patch.object(ag, "STATE", state), \
+                 patch.object(
                      ag.time, "time",
                      return_value=1000.0 + ag.RTRADE_BLOCK_CANCEL_SECONDS + 1.0), \
-                 mock.patch.object(
+                 patch.object(
                      ag.mkt, "cancel_order", side_effect=_cancel_side_effect) as cancel2:
                 tier2, _, _ = ag._sell_campaign_tier(
                     "TAOUSDC", 110.0, {"timestamp": 10, "price": 100.0}, 10.0, provider)
@@ -1115,7 +1115,7 @@ class AssetGuardianTest(unittest.TestCase):
         with self.subTest(msg="test_terminal_buy_and_sell_tolerate_none_or_nan_cost_and_fee"):
             state = MemoryState()
             raw_status = SimpleNamespace(status="canceled", filled_qty=None, cost=None, fee=float("nan"))
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 buy_camp = ag._record_terminal_buy(
                     "TAOUSDC",
                     {"pending": {"threshold": 7.0, "order_id": "b1", "client_order_id": "AGB_1"}},
@@ -1135,7 +1135,7 @@ class AssetGuardianTest(unittest.TestCase):
 
         with self.subTest(msg="test_dust_remainder_after_99pct_partial_fill_completes_buy_and_sell_tiers"):
             state = MemoryState()
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 buy_camp = ag._record_terminal_buy(
                     "TAOUSDC",
                     {
@@ -1177,7 +1177,7 @@ class AssetGuardianTest(unittest.TestCase):
                 {"timestamp": 2, "price": 282.0},
             )
             state = MemoryState()
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 10.0
             provider.open_orders.return_value = []
             defensive_p3b = {
@@ -1187,14 +1187,14 @@ class AssetGuardianTest(unittest.TestCase):
                 "confidence": 1.0,
                 "ts": 1000.0,
             }
-            with mock.patch.object(ag.api, "get_current_price", return_value=281.82), \
-                 mock.patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
-                 mock.patch.object(ag, "_get_portfolio_growth_percent", return_value=0.2), \
-                 mock.patch.object(ag, "_read_p3b_sentiment", return_value=defensive_p3b), \
-                 mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag, "_submit_sell_tier", return_value=True) as submit, \
-                 mock.patch.object(ag, "buy_with_all_cash") as buy:
+            with patch.object(ag.api, "get_current_price", return_value=281.82), \
+                 patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
+                 patch.object(ag, "_get_portfolio_growth_percent", return_value=0.2), \
+                 patch.object(ag, "_read_p3b_sentiment", return_value=defensive_p3b), \
+                 patch.object(ag, "STATE", state), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag, "_submit_sell_tier", return_value=True) as submit, \
+                 patch.object(ag, "buy_with_all_cash") as buy:
                 self.assertTrue(ag.evaluate_symbol("TAOUSDC"))
             tier = submit.call_args.kwargs["tier"]
             # Canonical tier 9.0 is returned (not 4.5), preserving SSOT tier accounting.
@@ -1203,8 +1203,8 @@ class AssetGuardianTest(unittest.TestCase):
 
             # Once canonical tier 9.0 is completed, even if P3B returns to HOLD (1.0x) and
             # growth reaches +9.5%, tier 9.0 is not repeated; next tier is 12.0.
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag, "_read_p3b_sentiment", return_value=None):
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag, "_read_p3b_sentiment", return_value=None):
                 sell_camp = ag._symbol_campaign("TAOUSDC", "sell")
                 ag._complete_campaign_tier("TAOUSDC", "sell", sell_camp, 9.0)
                 next_tier, _, _ = ag._sell_campaign_tier(
@@ -1256,7 +1256,7 @@ class AssetGuardianTest(unittest.TestCase):
                 "confidence": 1.0,
                 "ts": 1000.0,
             }
-            with mock.patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state):
                 # At -7.5% drawdown, DEFENSIVE requires 7.0 * 1.35 = 9.45% -> no BUY yet
                 tier_def, _ = ag._campaign_tier(
                     "TAOUSDC", 7.5, maximum, 1000.0, p3b_assessment=defensive_p3b)
@@ -1285,7 +1285,7 @@ class AssetGuardianTest(unittest.TestCase):
                 (0.12, 0.16, 0.20, 0.24, 0.28),
             )
             # Verify tiers recalculate dynamically when underlying config bounds change
-            with mock.patch.object(ag, "RECOVERY_RESET_PERCENT", 4.0):
+            with patch.object(ag, "RECOVERY_RESET_PERCENT", 4.0):
                 self.assertEqual(
                     ag._build_dynamic_buy_tiers(),
                     ((8.0, 0.20), (12.0, 0.30), (17.0, 0.50)),
@@ -1374,15 +1374,15 @@ class AssetGuardianTest(unittest.TestCase):
 
         with self.subTest(msg="test_persisted_last_refusal_deduplicates_audit_across_restart"):
             state = MemoryState()
-            provider = mock.Mock()
+            provider = Mock()
             provider.free_balance.return_value = 10.0
 
-            audit_mock = mock.Mock()
-            with mock.patch.object(ag, "STATE", state), \
-                 mock.patch.object(ag.api, "get_current_price", return_value=115.0), \
-                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
-                 mock.patch.object(ag.mkt, "place", side_effect=_make_refuse_place("profit_guard")), \
-                 mock.patch.object(ag.ORDER_LIFECYCLE, "audit", audit_mock):
+            audit_mock = Mock()
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag.api, "get_current_price", return_value=115.0), \
+                 patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 patch.object(ag.mkt, "place", side_effect=_make_refuse_place("profit_guard")), \
+                 patch.object(ag.ORDER_LIFECYCLE, "audit", audit_mock):
                 ag.ORDER_LIFECYCLE._last_refusal_by_intent.clear()
                 tier, campaign, _ = ag._sell_campaign_tier(
                     "TAOUSDC", 115.0, {"timestamp": 10, "price": 100.0}, 10.0,

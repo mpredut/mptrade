@@ -5,7 +5,7 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
-from unittest import mock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -135,7 +135,7 @@ class ExecutionAuditTest(TempDirTestCase):
         self.assertEqual(self.executor.calls[0][-1], client_id)
 
     def test_correlation_caches_are_lru_bounded(self):
-        with mock.patch.object(execution_audit_module, "_CACHE_MAX", 2):
+        with patch.object(execution_audit_module, "_CACHE_MAX", 2):
             for index in range(3):
                 order_id = f"OID-{index}"
                 self.wrapped._remember("ABC", order_id, f"intent-{index}")
@@ -436,7 +436,7 @@ class ExecutionCalibrationTest(TempDirTestCase):
         prov = hlp_mod.HyperliquidProvider("HYPE")
         prov._spot_pair = "@107"
         prov._fills_cache_file = lambda: fills_cache
-        fake_client = mock.MagicMock()
+        fake_client = MagicMock()
         fake_client.info.user_fills.return_value = [
             {
                 "coin": "@107",
@@ -448,7 +448,7 @@ class ExecutionCalibrationTest(TempDirTestCase):
             }
         ]
         prov._hl = lambda: fake_client
-        with mock.patch.dict(os.environ, {"HL_ACCOUNT_ADDRESS": "0xabc"}, clear=False):
+        with patch.dict(os.environ, {"HL_ACCOUNT_ADDRESS": "0xabc"}, clear=False):
             orders = prov.get_orders("HYPEUSDC", "BUY", 3600.0)
             self.assertEqual(len(orders), 1)
             self.assertFalse(os.path.exists(fills_cache))

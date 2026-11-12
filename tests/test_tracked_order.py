@@ -1,7 +1,7 @@
 """Adversarial tests for the generic persistent tracked-order lifecycle."""
 import copy
 import unittest
-from unittest import mock
+from unittest.mock import Mock
 
 from providers.strategy_executor import OrderStatus, SubmissionOutcome, SubmissionRefused
 from order_lifecycle import (
@@ -161,7 +161,7 @@ class TrackedOrderLifecycleTest(unittest.TestCase):
 
     def test_lost_submit_response_recovers_by_client_id_without_resubmit(self):
         self.api.lookup = {"orderId": 8, "status": "NEW", "origQty": "3"}
-        submit = mock.Mock(return_value=None)
+        submit = Mock(return_value=None)
 
         result = self.lifecycle.submit(
             self.intent(), persist=self.store.persist, submit=submit)
@@ -175,7 +175,7 @@ class TrackedOrderLifecycleTest(unittest.TestCase):
         self.assertEqual(len(self.api.status_calls), 1)
 
     def test_submit_does_not_poll_or_wait_for_terminal_status(self):
-        submit = mock.Mock(
+        submit = Mock(
             return_value={"orderId": "no-poll", "status": "FILLED"})
 
         result = self.lifecycle.submit(
@@ -275,7 +275,7 @@ class TrackedOrderLifecycleTest(unittest.TestCase):
         self.assertEqual(self.api.cancel_calls, [])
 
     def test_persist_failure_before_submit_prevents_external_side_effect(self):
-        submit = mock.Mock()
+        submit = Mock()
 
         def broken_persist(_value):
             raise OSError("disk full")
@@ -304,7 +304,7 @@ class TrackedOrderLifecycleTest(unittest.TestCase):
 
     def test_repeated_identical_pre_submit_refusals_suppress_duplicate_audit_events(self):
         audited = []
-        audit = mock.Mock()
+        audit = Mock()
         audit.record.side_effect = lambda ev, **kw: audited.append((ev, kw))
         lifecycle = TrackedOrderLifecycle(
             self.api, provider_name="binance", venue="Binance",

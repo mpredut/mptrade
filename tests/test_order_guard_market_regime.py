@@ -16,7 +16,7 @@ import time
 import unittest
 from market_regime import ClosedPriceSeries, MarketRegimeDecision, MarketRegimeService
 from types import SimpleNamespace
-from unittest import mock
+from unittest.mock import MagicMock, patch
 
 
 class _MockVenueProvider:
@@ -291,7 +291,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             ("no_sources", None),
             ("snapshot_error", failing_snapshot_resolver),
         )
-        with mock.patch("builtins.__import__", side_effect=reject_hidden_market_sources):
+        with patch("builtins.__import__", side_effect=reject_hidden_market_sources):
             for case, resolver in cases:
                 with self.subTest(case=case):
                     decision = order_guard.symbol_regime(
@@ -335,7 +335,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             ("bull", bull_snap, True),
             ("bear", bear_snap, False),
         )
-        with mock.patch.object(order_guard, "_MARGINS", margins):
+        with patch.object(order_guard, "_MARGINS", margins):
             for regime, snapshot, expected in cases:
                 with self.subTest(regime=regime):
                     context = order_guard.symbol_regime_context(
@@ -380,8 +380,8 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             now=self.now,
             snapshot_resolver=snapshot_resolver,
         )
-        with mock.patch.object(order_guard, "_MARGINS", margins), \
-                mock.patch.object(order_guard, "_symbol_trend") as trend:
+        with patch.object(order_guard, "_MARGINS", margins), \
+                patch.object(order_guard, "_symbol_trend") as trend:
             window_s = order_guard.get_window_cfg(
                 provider, "TAOUSDC", "BUY", regime_context=context,
             )
@@ -413,7 +413,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
 
         def mock_provider(provider):
             called["provider"] += 1
-            return mock.MagicMock(name="mock_provider")
+            return MagicMock(name="mock_provider")
 
         decision = order_guard.symbol_regime(
             "BTCUSDT",
@@ -458,8 +458,8 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             mock_decision, evaluated_at=self.now, symbol="TAOUSDC", provider="binance"
         )
 
-        with mock.patch.object(order_guard, "_MARGINS", margins), \
-                mock.patch.object(order_guard, "_symbol_trend") as mock_trend:
+        with patch.object(order_guard, "_MARGINS", margins), \
+                patch.object(order_guard, "_symbol_trend") as mock_trend:
             allowed = order_guard.profit_guard(
                 _MockVenueProvider(),
                 "TAOUSDC",
@@ -483,7 +483,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "intelligence_guards_mode": "shadow",
             "weibull_exhaustion_policy": "veto",
         }
-        with mock.patch.object(order_guard, "_MARGINS", margins_shadow):
+        with patch.object(order_guard, "_MARGINS", margins_shadow):
             # Trend duration 15 days (> P90)
             ok, reason, scale = order_guard.check_intelligence_guards(
                 "binance", "BTCUSDC", "BUY", 85000.0, trend_duration_seconds=15 * 86400
@@ -499,7 +499,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "intelligence_guards_mode": "enforce",
             "weibull_exhaustion_policy": "veto",
         }
-        with mock.patch.object(order_guard, "_MARGINS", margins_enforce_veto):
+        with patch.object(order_guard, "_MARGINS", margins_enforce_veto):
             ok, reason, scale = order_guard.check_intelligence_guards(
                 "binance", "BTCUSDC", "BUY", 85000.0, trend_duration_seconds=15 * 86400
             )
@@ -515,7 +515,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "weibull_exhaustion_policy": "downscale",
             "weibull_exhausted_scale": 0.25,
         }
-        with mock.patch.object(order_guard, "_MARGINS", margins_enforce_scale):
+        with patch.object(order_guard, "_MARGINS", margins_enforce_scale):
             ok, reason, scale = order_guard.check_intelligence_guards(
                 "binance", "BTCUSDC", "BUY", 85000.0, trend_duration_seconds=15 * 86400
             )
@@ -582,8 +582,8 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             dec, evaluated_at=self.now, symbol="BTCUSDC", provider="binance"
         )
 
-        with mock.patch.object(order_guard, "_MARGINS", margins), \
-                mock.patch.object(order_guard, "_symbol_trend", return_value="bear") as mock_trend:
+        with patch.object(order_guard, "_MARGINS", margins), \
+                patch.object(order_guard, "_symbol_trend", return_value="bear") as mock_trend:
             allowed = order_guard.profit_guard(
                 provider,
                 "TAOUSDC",
@@ -616,7 +616,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertEqual(reason_btc, "btc_blocked")
 
         # Check for ETHUSDT: mismatched symbol MUST NOT reuse BTC's memoized decision
-        with mock.patch.object(
+        with patch.object(
             order_guard,
             "_load_margins",
             return_value={
