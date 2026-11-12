@@ -117,8 +117,6 @@ from verify_tools import (
 )
 from visuals import drawprices, tradeall_observe as tao
 
-_margins = make_test_margins
-
 
 # =====================================================================
 # Pillar 1: Internal Order Guard Tests
@@ -152,7 +150,7 @@ def test_internal_order_guards_off():
         symbol="BTCUSDC",
         side="BUY",
         price=60000.0,
-        margins=_margins(internal_guard_mode="off", intelligence_guards_mode="off"),
+        margins=make_test_margins(internal_guard_mode="off", intelligence_guards_mode="off"),
     )
     assert allowed is True
     assert reason == "intelligence_guards_off"
@@ -166,7 +164,7 @@ def test_internal_parabolic_surge_guard():
         (200.0, 52000.0),
         (300.0, 65000.0),
     ]
-    margins = _margins(
+    margins = make_test_margins(
         internal_guard_mode="enforce",
         intelligence_guards_mode="enforce",
         parabolic_surge_pct=10.0,
@@ -227,7 +225,7 @@ def test_external_microstructure_large_sell_whale_support_defer():
         ts=time.time(),
     )
 
-    margins = _margins(
+    margins = make_test_margins(
         orderbook_wall_guard_mode="enforce",
         whale_guard_mode="off",
         funding_guard_mode="off",
@@ -262,7 +260,7 @@ def test_external_microstructure_orderbook_wall_veto():
         ts=time.time(),
     )
 
-    margins = _margins(
+    margins = make_test_margins(
         orderbook_wall_guard_mode="enforce",
         whale_guard_mode="off",
         funding_guard_mode="off",
@@ -292,7 +290,7 @@ def test_external_microstructure_funding_crowding_downscale():
         ts=time.time(),
     )
 
-    margins = _margins(
+    margins = make_test_margins(
         funding_guard_mode="enforce",
         whale_guard_mode="off",
         orderbook_wall_guard_mode="off",
@@ -355,7 +353,7 @@ def test_intelligence_geopolitical_veto_in_enforce_mode():
         ts=time.time(),
     )
 
-    margins = _margins(
+    margins = make_test_margins(
         geopolitical_guard_mode="enforce",
         whale_guard_mode="off",
         orderbook_wall_guard_mode="off",
@@ -386,7 +384,7 @@ def test_intelligence_geopolitical_downscale_in_enforce_mode():
         ts=time.time(),
     )
 
-    margins = _margins(
+    margins = make_test_margins(
         geopolitical_guard_mode="enforce",
         whale_guard_mode="off",
         orderbook_wall_guard_mode="off",
@@ -431,7 +429,7 @@ def test_geopolitical_guard_off():
     allowed, reason, scale = check_geopolitical_order_guards(
         symbol="BTCUSDC",
         side="BUY",
-        margins=_margins(geopolitical_guard_mode="off"),
+        margins=make_test_margins(geopolitical_guard_mode="off"),
     )
     assert allowed is True
     assert reason == "geopolitical_guard_off"
@@ -452,7 +450,7 @@ def test_geopolitical_shock_veto_enforce():
         allowed, reason, scale = check_geopolitical_order_guards(
             symbol="BTCUSDC",
             side="BUY",
-            margins=_margins(geopolitical_guard_mode="enforce"),
+            margins=make_test_margins(geopolitical_guard_mode="enforce"),
         )
         assert allowed is False
         assert "veto_critical_geopolitical_shock" in reason
@@ -473,7 +471,7 @@ def test_geopolitical_shock_downscale_enforce():
         allowed, reason, scale = check_geopolitical_order_guards(
             symbol="BTCUSDC",
             side="BUY",
-            margins=_margins(geopolitical_guard_mode="enforce"),
+            margins=make_test_margins(geopolitical_guard_mode="enforce"),
         )
         assert allowed is True
         assert "downscale_elevated_geopolitical_risk" in reason
@@ -510,7 +508,7 @@ def test_geopolitical_elevated_absorbed_by_market(tmp_path):
         allowed, reason, scale = check_geopolitical_order_guards(
             symbol="BTCUSDC",
             side="BUY",
-            margins=_margins(geopolitical_guard_mode="enforce"),
+            margins=make_test_margins(geopolitical_guard_mode="enforce"),
             now=now_s,
         )
         assert allowed is True
@@ -654,7 +652,7 @@ def test_internal_guard_mode_off_does_not_disable_other_pillars(monkeypatch):
     monkeypatch.setattr(
         order_guard,
         "_load_margins",
-        lambda: _margins(internal_guard_mode="off", intelligence_guards_mode="enforce"),
+        lambda: make_test_margins(internal_guard_mode="off", intelligence_guards_mode="enforce"),
     )
     allowed, reason, scale = check_intelligence_guards(
         provider="binance",
@@ -723,7 +721,7 @@ def test_weibull_does_not_overlap_gaussian_horizon_and_computes_weibull_survival
     monkeypatch.setattr(order_guard, "_resolve_trend_duration", lambda _s: 10.3 * 86400)
     monkeypatch.setattr(order_guard, "_resolve_trend_direction", lambda _s, **_k: "bear")
     monkeypatch.setattr(qlimit_order_guard, "resolve_cached_gaussian_horizon", lambda _s, **_k: (6.6, 3.0, 11.2))
-    m = _margins(
+    m = make_test_margins(
         internal_guard_mode="enforce",
         weibull_exhaustion_policy="downscale",
         weibull_exhausted_scale=0.25,

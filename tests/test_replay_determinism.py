@@ -302,13 +302,14 @@ class ReplayDeterminismTest(unittest.TestCase):
 SYMBOL = "ZZZTESTUSDC"
 
 
-def _sample_params() -> StratParams:
-    return make_spot_test_params(
-        currency="USDT",
-        takeprofit_pct=1.0,
-        max_dca_buys=2,
-        check_minutes=1.0,
-    )
+def _sample_params(**overrides) -> StratParams:
+    return make_spot_test_params(**{
+        "currency": "USDT",
+        "takeprofit_pct": 1.0,
+        "max_dca_buys": 2,
+        "check_minutes": 1.0,
+        **overrides,
+    })
 
 
 def test_interval_parsing():
@@ -406,8 +407,7 @@ def test_cross_venue_alignment_matrix():
     bn_res = bn_adapter(ohlc, ())
     validate_replay_metrics(bn_res)
 
-    kr_params = _sample_params()
-    kr_params.currency = "USD"
+    kr_params = _sample_params(currency="USD")
     kr_adapter = make_spot_replay_adapter(kr_params, fee_pct=0.25, bar_minutes=60.0)
     kr_res = kr_adapter(ohlc, ())
     validate_replay_metrics(kr_res)

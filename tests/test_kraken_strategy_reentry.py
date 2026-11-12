@@ -14,7 +14,6 @@ Coverage:
   - The re-entry block in step(): uses the EFFECTIVE threshold (not always the fixed one).
 """
 import random
-import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -22,16 +21,7 @@ import botcore
 from market_regime import MarketRegimeDecision
 from providers.strategy_executor import PairPrecision
 from strategies import spot_engine as strat, spot_rules as sr
-from tests.conftest import make_spot_test_params
-
-
-
-# Keep the synthetic state file out of kraken/, next to the live pair states.
-_STATE_DIR = tempfile.TemporaryDirectory(prefix="test_reentry_state_")
-
-
-def tearDownModule():
-    _STATE_DIR.cleanup()
+from tests.conftest import make_spot_live_test_params, make_spot_test_params
 
 
 def _make_strategy(tmp_pair="TESTPAIR_REENTRY", **param_overrides):
@@ -42,10 +32,12 @@ def _make_strategy(tmp_pair="TESTPAIR_REENTRY", **param_overrides):
         "takeprofit_pct": 1.9, "max_budget": 1000.0, "max_dca_buys": 10,
         "stop_loss_pct": 0.0, "reentry_drop_pct": 2.2, **param_overrides,
     })
-    return strat.Strategy(
+    strategy = strat.Strategy(
         client, tmp_pair, params, dry_run=True,
-        initial_state=strat._new_state(), state_dir=_STATE_DIR.name,
+        initial_state=strat._new_state(),
     )
+    strategy._save = lambda: None
+    return strategy
 
 
 class TestEffectiveReentryDropPct(unittest.TestCase):
@@ -1059,23 +1051,15 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
 def _make_overlay_strategy(*, replay_mode=False, **overrides):
     client = MagicMock()
     client.pair_precision.return_value = PairPrecision(2, 6, 0.01, "TEST")
-    defaults = dict(
-        currency="USD", entry_amount=100.0, entry_discount_pct=0.2,
-        dca_amount=50.0, dca_drop_pct=2.0, check_minutes=2.0,
-        takeprofit_pct=5.0, max_budget=1000.0, max_dca_buys=10,
-        enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=12.5,
-        adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=0.0,
-        reentry_tolerance_pct=0.0, reentry_adaptive=False,
-        reentry_sl_bounce_pct=1.5, tp_tranches=[], trend_overlay=True,
-        trend_sma_n=2, trend_interval=240, regime_min_samples=3,
-        trend_topup=400.0, trend_trail_pct=5.0, trend_exit_break=False,
-    )
-    defaults.update(overrides)
-    params = strat.StratParams(**defaults)
+    params = make_spot_live_test_params(**{
+        "reentry_drop_pct": 0.0, "trend_overlay": True,
+        "trend_sma_n": 2, "trend_interval": 240, "regime_min_samples": 3,
+        "trend_topup": 400.0, "trend_trail_pct": 5.0, "trend_exit_break": False,
+        **overrides,
+    })
     strategy = strat.Strategy(
         client, "TESTPAIR_OVERLAY", params, dry_run=True,
         initial_state=strat._new_state(), replay_mode=replay_mode,
-        state_dir=_STATE_DIR.name,
     )
     strategy._save = lambda: None
     return strategy

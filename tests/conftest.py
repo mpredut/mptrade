@@ -220,10 +220,10 @@ def make_spot_test_params(**overrides):
 
 def make_spot_live_test_params(**overrides):
     """Build a live-reconciliation ``strategies.spot_engine.StratParams`` test instance with overrides."""
-    return make_spot_test_params(
-        takeprofit_pct=5.0, max_budget=1000.0, max_dca_buys=10,
-        reentry_drop_pct=2.2, reentry_tolerance_pct=0.0, **overrides,
-    )
+    return make_spot_test_params(**{
+        "takeprofit_pct": 5.0, "max_budget": 1000.0, "max_dca_buys": 10,
+        "reentry_drop_pct": 2.2, "reentry_tolerance_pct": 0.0, **overrides,
+    })
 
 
 _DEFAULT_MARGINS_SNAPSHOT: dict | None = None
