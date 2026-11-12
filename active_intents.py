@@ -68,13 +68,6 @@ def _first(row: dict, *names):
     return None
 
 
-def _resolve_symbol_and_venue(payload: dict, inherited: dict, owner: str) -> tuple[str | None, str]:
-    symbol = _first(payload, "symbol", "ticker", "pair") or _first(inherited, "symbol", "ticker", "pair")
-    raw_venue = _first(payload, "provider_name", "venue") or _first(inherited, "venue") or owner.split("_", 1)[0]
-    venue = normalize_venue_name(str(raw_venue)) or str(raw_venue)
-    return (None if symbol is None else str(symbol), str(venue))
-
-
 def _intent_row(row: dict, *, owner: str, source: str, location: str, inherited: dict) -> dict | None:
     if _parse_bool_flag(row.get("active"), True) is False:
         return None
@@ -107,7 +100,9 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str, inherited:
         status = str(ts_val).strip().lower()
     if status in _TERMINAL:
         return None
-    symbol, venue = _resolve_symbol_and_venue(row, inherited, owner)
+    raw_sym = _first(row, "symbol", "ticker", "pair") or _first(inherited, "symbol", "ticker", "pair")
+    raw_venue = _first(row, "provider_name", "venue") or _first(inherited, "venue") or owner.split("_", 1)[0]
+    symbol, venue = (None if raw_sym is None else str(raw_sym)), str(normalize_venue_name(str(raw_venue)) or raw_venue)
     return {
         "intent_id": str(intent_id),
         "owner": owner,
@@ -159,7 +154,9 @@ def _extract_exposure(payload: dict, *, owner: str, source: str, inherited: dict
     qty_val = safe_float(payload.get("qty"), default=None)
     if qty_val is None or abs(qty_val) < 1e-9:
         return None
-    symbol, venue = _resolve_symbol_and_venue(payload, inherited, owner)
+    raw_sym = _first(payload, "symbol", "ticker", "pair") or _first(inherited, "symbol", "ticker", "pair")
+    raw_venue = _first(payload, "provider_name", "venue") or _first(inherited, "venue") or owner.split("_", 1)[0]
+    symbol, venue = (None if raw_sym is None else str(raw_sym)), str(normalize_venue_name(str(raw_venue)) or raw_venue)
     return {
         "owner": owner,
         "venue": venue,

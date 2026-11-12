@@ -143,12 +143,6 @@ class MacroAnalyzer:
         self._effective_advisor_reason = "init"
         self.heartbeat_path = os.path.join(self.cache_dir, "macro_analyzer.heartbeat")
 
-    def _load_news_snapshot(self, eval_now: float, explicit_now: Optional[float] = None) -> Any:
-        """Load passive news feed pool snapshot from cache_dir without network I/O."""
-        cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
-        nc = _news_collector.NewsFeedCollector(history_file=cand_path, start_sync=False)
-        return _call_with_optional_kwarg(nc.get_pool_snapshot, opt_key="now_ts", opt_val=eval_now, include_opt=explicit_now is not None)
-
     def _maybe_notify_assessment(
         self,
         *,
@@ -186,7 +180,9 @@ class MacroAnalyzer:
         force = _parse_bool_flag(force, False)
         try:
             eval_now = resolve_now_ts(now)
-            news_snap = self._load_news_snapshot(eval_now, explicit_now=now)
+            cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
+            nc = _news_collector.NewsFeedCollector(history_file=cand_path, start_sync=False)
+            news_snap = _call_with_optional_kwarg(nc.get_pool_snapshot, opt_key="now_ts", opt_val=eval_now, include_opt=now is not None)
             assessment = _call_with_optional_kwarg(
                 self.geopolitical_analyzer.assess,
                 news_snap,
@@ -310,7 +306,8 @@ class MacroAnalyzer:
         news_snap = None
         cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
         if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
-            news_snap = self._load_news_snapshot(current_ts, explicit_now=now)
+            nc = _news_collector.NewsFeedCollector(history_file=cand_path, start_sync=False)
+            news_snap = _call_with_optional_kwarg(nc.get_pool_snapshot, opt_key="now_ts", opt_val=current_ts, include_opt=now is not None)
 
         headlines_changed = False
         last_digest = str(getattr(self.geopolitical_analyzer, "_last_headlines_digest", "") or "")

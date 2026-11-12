@@ -1005,19 +1005,12 @@ def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:
     return out
 
 
-def _extract_benchmark_items(data: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(data, dict):
-        return None
-    items = data.get("items") if isinstance(data.get("items"), dict) else data
-    return items if isinstance(items, dict) else {}
-
-
 def _extract_equity_benchmark_changes(
     data: Any,
 ) -> Optional[tuple[Dict[str, Any], List[float], List[float]]]:
-    items = _extract_benchmark_items(data)
-    if items is None:
+    if not isinstance(data, dict):
         return None
+    items = data.get("items") if isinstance(data.get("items"), dict) else data
     eq_24h: List[float] = []
     eq_1h: List[float] = []
     for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
@@ -1142,9 +1135,9 @@ def compute_cross_asset_regime(
 
 def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
     """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / VIX / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface)."""
-    items = _extract_benchmark_items(data)
-    if items is None:
+    if not isinstance(data, dict):
         return ""
+    items = data.get("items") if isinstance(data.get("items"), dict) else data
     specs = get_macro_benchmark_specs()
     extra_keys: frozenset[str] = frozenset({
         "equity_regime",

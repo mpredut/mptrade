@@ -57,13 +57,6 @@ _SYNC_FIELDS = {
 }
 
 
-def _resolve_health_path(path: Optional[str]) -> str:
-    target = HEALTH_PATH if path is None else os.fspath(path)
-    if target == _DEFAULT_HEALTH_PATH:
-        return cache_path(CACHE_ACCOUNT_HEALTH_FILENAME)
-    return str(resolve_cachedb_filepath(target))
-
-
 @dataclass(frozen=True)
 class CacheHealthStatus:
     """Validated health result returned to every Binance trading process."""
@@ -118,7 +111,8 @@ def enable_writer(*, path: Optional[str] = None, pid: Optional[int] = None, now_
     global _writer_enabled, _writer_path, _writer_state
     timestamp = resolve_now_ms(now_ms)
     with _writer_lock:
-        _writer_path = _resolve_health_path(path)
+        target_p = HEALTH_PATH if path is None else os.fspath(path)
+        _writer_path = cache_path(CACHE_ACCOUNT_HEALTH_FILENAME) if target_p == _DEFAULT_HEALTH_PATH else str(resolve_cachedb_filepath(target_p))
         writer_pid = exact_pos_int(pid, default=None) or os.getpid()
         process_started_at_ms = _pid_started_at_ms(writer_pid)
         if _PROCESS_IDENTITY_REQUIRED and process_started_at_ms is None:
@@ -243,7 +237,8 @@ def inspect_health(
     future_tolerance_sec: float = 5.0,
 ) -> CacheHealthStatus:
     """Validate the shared snapshot without trusting mtime or defaults."""
-    eff_path = _resolve_health_path(path)
+    target_p = HEALTH_PATH if path is None else os.fspath(path)
+    eff_path = cache_path(CACHE_ACCOUNT_HEALTH_FILENAME) if target_p == _DEFAULT_HEALTH_PATH else str(resolve_cachedb_filepath(target_p))
     try:
         state = read_json_dict(eff_path)
         if state.get("schema_version") != SCHEMA_VERSION:

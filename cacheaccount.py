@@ -967,13 +967,6 @@ class CacheTradeManager(CacheAccountManagerBase):
     def _is_valid_item(trade):
         return CacheAccountManagerBase._is_valid_trade_fill_row(trade)
 
-    @staticmethod
-    def _is_valid_snapshot_item(item) -> bool:
-        return isinstance(item, dict) and (
-            extract_order_price(item, default=None) is not None
-            or safe_pos_float(item.get("price"), default=None) is not None
-        )
-
     def _persisted_max_ts(self) -> float:
         meta_ts = super()._persisted_max_ts()
         if self.append_persist or not os.path.exists(self.filename):
@@ -1465,7 +1458,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                         by_key[k] = item
                 changed = False
                 for item in new_items:
-                    if not self._is_valid_snapshot_item(item):
+                    if not isinstance(item, dict) or (extract_order_price(item, default=None) is None and safe_pos_float(item.get("price"), default=None) is None):
                         continue
                     k = self.fill_dedup_key(item) or ("idx", len(by_key))
                     if by_key.get(k) != item:
@@ -1574,7 +1567,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     )
                     px_val = safe_pos_float(trade["price"], default=0.0) or 0.0
                 else:
-                    if not self._is_valid_snapshot_item(trade):
+                    if not isinstance(trade, dict) or (extract_order_price(trade, default=None) is None and safe_pos_float(trade.get("price"), default=None) is None):
                         continue
                     tr_sym = clean_symbol_key(trade.get("symbol") or symbol)
                     if tr_sym and sym_clean and tr_sym != sym_clean and tr_sym not in cand_clean_set:
