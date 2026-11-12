@@ -1508,7 +1508,7 @@ def is_ob_mid_fresher_than_series(
     if (ob_ts_sec * 1000.0 - last_series_pt[0]) <= 60_000.0:
         return False
     check_px = ref_flat_px if (ref_flat_px is not None and ref_flat_px > 0.0) else cur_px
-    return (now_ts - ob_ts_sec) <= 300.0 or abs(check_px - last_series_pt[1]) <= 1e-6
+    return -5.0 <= (now_ts - ob_ts_sec) <= 300.0 or abs(check_px - last_series_pt[1]) <= 1e-6
 
 
 class MicrostructureEvaluatorBase(TelemetryEvaluatorInterface, ABC):

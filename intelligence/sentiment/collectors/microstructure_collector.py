@@ -753,7 +753,7 @@ def _refresh_stale_t212_cached_positions(
         except Exception:
             return False
     t212_ts_vals = [
-        safe_pos_float(bval.get("ts"), default=0.0) or 0.0
+        normalize_epoch_sec(bval.get("ts"), default=0.0) or 0.0
         for bkey, bval in cached_bals.items()
         if isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(bval, dict)
     ]
@@ -761,7 +761,7 @@ def _refresh_stale_t212_cached_positions(
         return False
     min_t212_ts = min(t212_ts_vals)
     max_t212_ts = max(t212_ts_vals)
-    if max_t212_ts <= 0.0 or (now_ts - max(min_t212_ts, _LAST_T212_PORTFOLIO_POLL_TS)) < max_age_sec:
+    if max_t212_ts <= 0.0 or 0.0 <= (now_ts - max(min_t212_ts, _LAST_T212_PORTFOLIO_POLL_TS)) < max_age_sec:
         return False
     try:
         _LAST_T212_PORTFOLIO_POLL_TS = now_ts
@@ -808,8 +808,8 @@ def _refresh_stale_t212_cached_positions(
             rticker = str(c_pos.get("symbol") or bkey.split(":", 2)[-1]).strip().upper()
             if not rticker or rticker in seen_portfolio_tickers:
                 continue
-            prev_c_ts = safe_pos_float(c_pos.get("ts"), default=0.0) or 0.0
-            if (now_ts - prev_c_ts) < max_age_sec:
+            prev_c_ts = normalize_epoch_sec(c_pos.get("ts"), default=0.0) or 0.0
+            if prev_c_ts > 0.0 and 0.0 <= (now_ts - prev_c_ts) < max_age_sec:
                 continue
             try:
                 cur_px_fb = MarketDataProvider.resolve_venue_public_price_usd("t212", rticker)
@@ -829,8 +829,8 @@ def _refresh_stale_t212_cached_positions(
                     if not isinstance(new_entry, dict):
                         continue
                     cur_entry = target_bals.get(tkey)
-                    cur_ts = safe_pos_float(cur_entry.get("ts") if isinstance(cur_entry, dict) else None, default=0.0) or 0.0
-                    if cur_ts <= now_ts:
+                    cur_ts = normalize_epoch_sec(cur_entry.get("ts") if isinstance(cur_entry, dict) else None, default=0.0) or 0.0
+                    if cur_ts <= now_ts or (cur_ts - now_ts) > 60.0:
                         merged_entry = dict(cur_entry) if isinstance(cur_entry, dict) else {}
                         merged_entry.update(new_entry)
                         target_bals[tkey] = merged_entry

@@ -641,13 +641,13 @@ class T212Client:
         with self._lock:
             c = getattr(self, attr, None)
             now = time.monotonic()
-            eff_ttl = self._pf_ttl if ttl is None else ttl
-            if c and (now - c[0]) < eff_ttl:
+            eff_ttl = safe_nonneg_float(self._pf_ttl if ttl is None else ttl, default=self._pf_ttl)
+            if c and 0.0 <= (now - c[0]) < eff_ttl:
                 return True, c[1]
-            fail_ts = self._fetch_fail.get(attr, 0.0)
-            if (now - fail_ts) < self._pf_ttl:
+            fail_ts = self._fetch_fail.get(attr)
+            if fail_ts is not None and 0.0 <= (now - fail_ts) < self._pf_ttl:
                 stale_limit = max(600.0, eff_ttl * 100.0)
-                return True, (c[1] if (c and (now - c[0]) < stale_limit) else None)
+                return True, (c[1] if (c and 0.0 <= (now - c[0]) < stale_limit) else None)
             return False, None
 
     def _read_cached(

@@ -2292,7 +2292,7 @@ def start_account_cache_daemon(
             if hasattr(acc_mgr, "get_persisted_sync_state")
             else ("", 0)
         )
-        if ver and sync_ms > 0 and (now_ms - sync_ms) <= max_age_ms:
+        if ver and sync_ms > 0 and -5_000 <= (now_ms - sync_ms) <= max_age_ms:
             ach.record_successful_sync(
                 account_cache_name, ver, now_ms=sync_ms
             )

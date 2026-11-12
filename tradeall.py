@@ -1,3 +1,4 @@
+import contextlib
 import math
 import os
 import signal as _signal
@@ -38,7 +39,7 @@ from pricewindow import (  # noqa: F401 (re-export: test compat)
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
 from botcore import (PRICE_FRESHNESS_MAX_AGE_MS, PRICE_STREAM_POLL_INTERVAL_SEC,
-                     bind_attr_call, exact_nonneg_int, exact_pos_int, extract_order_id,
+                     _parse_bool_flag, bind_attr_call, exact_nonneg_int, exact_pos_int, extract_order_id,
                      format_price_log, load_dotenv, normalize_epoch_sec, normalize_side,
                      required_bool_env, required_float_env, required_int_env, resolve_now_ts,
                      safe_float, safe_nonneg_float, safe_pos_float, sanitize_pipe_field,
@@ -890,36 +891,32 @@ class TrendCoordinator:
     REGIME_CTX_MEMO_TTL_SEC = 1.0
 
     def _resolve_regime_context(self, symbol: str):
+        sym_key = (
+            self._resolve_symbol(symbol)
+            if hasattr(self, "_canonical_symbols")
+            else ("" if isinstance(symbol, bool) or not isinstance(symbol, str) else symbol.strip().upper())
+        ) or symbol
         lock = getattr(self, "_lock", None)
+        ttl = safe_nonneg_float(getattr(self, "REGIME_CTX_MEMO_TTL_SEC", 1.0), default=1.0)
         now_mono = time.monotonic()
-        if lock is not None:
-            with lock:
-                memo = getattr(self, "_regime_ctx_memo", None)
-                if memo is None:
-                    memo = {}
-                    self._regime_ctx_memo = memo
-                cached = memo.get(symbol)
-        else:
+        with lock or contextlib.nullcontext():
             memo = getattr(self, "_regime_ctx_memo", None)
-            if memo is None:
+            if not isinstance(memo, dict):
                 memo = {}
                 self._regime_ctx_memo = memo
-            cached = memo.get(symbol)
+            cached = memo.get(sym_key)
         if cached is not None:
             cached_mono, cached_ctx = cached
-            if 0.0 <= (now_mono - cached_mono) < self.REGIME_CTX_MEMO_TTL_SEC:
+            if 0.0 <= (now_mono - cached_mono) < ttl:
                 return cached_ctx
         try:
-            regime_ctx = mkt.market_regime_context(symbol, **_provider_kw(symbol))
+            regime_ctx = mkt.market_regime_context(sym_key, **_provider_kw(sym_key))
         except Exception as e:
-            print(f"[TrendCoordinator] Error resolving regime context for {symbol}: {e}")
+            print(f"[TrendCoordinator] Error resolving regime context for {sym_key}: {e}")
             return None
-        if regime_ctx is not None and bool(getattr(regime_ctx, "fresh", False)):
-            if lock is not None:
-                with lock:
-                    memo[symbol] = (now_mono, regime_ctx)
-            else:
-                memo[symbol] = (now_mono, regime_ctx)
+        if regime_ctx is not None and ttl > 0.0 and _parse_bool_flag(getattr(regime_ctx, "fresh", False), False):
+            with lock or contextlib.nullcontext():
+                memo[sym_key] = (now_mono, regime_ctx)
         return regime_ctx
 
     def evaluate(self, symbol):

@@ -11,6 +11,7 @@ import time
 from typing import Any, Dict, Optional
 
 from botcore import (
+    _parse_bool_flag,
     bool_env,
     fetch_json_post,
     first_epoch_sec,
@@ -18,9 +19,11 @@ from botcore import (
     float_env,
     is_cache_fresh,
     is_unmocked_llm_query_allowed,
+    normalize_epoch_sec,
     optional_env,
     resolve_patched_attr,
     safe_float,
+    safe_nonneg_int,
     safe_pos_float,
 )
 from cachepaths import cache_path
@@ -95,7 +98,7 @@ class GeminiQuotaRouterMixin:
         """Return an ordered, deduplicated sequence of models to attempt (primary -> fallbacks)."""
         selected = (primary_model.strip() if isinstance(primary_model, str) and primary_model.strip() else None) or self.model
         candidates = [selected]
-        custom_fb = getattr(self, "_custom_fallbacks", False)
+        custom_fb = _parse_bool_flag(getattr(self, "_custom_fallbacks", False), False)
         if selected.endswith("-low") and not custom_fb:
             for fb in self.fallback_models:
                 if fb and fb not in candidates and fb.endswith("-low"):
@@ -116,8 +119,9 @@ class GeminiQuotaRouterMixin:
         quota_snapshot: Optional[Dict[str, Any]] = None,
     ) -> list[str]:
         """Return ordered models for in-place /compact summarization (fast low-cost Gemini Flash model first)."""
-        remaining = [m for m in models_to_try[attempt_idx:] if m]
-        if getattr(self, "_custom_fallbacks", False):
+        idx = safe_nonneg_int(attempt_idx, default=0)
+        remaining = [m for m in models_to_try[idx:] if m]
+        if _parse_bool_flag(getattr(self, "_custom_fallbacks", False), False):
             return remaining
         preferred_compact = optional_env("LLM_COMPACT_MODEL", "gemini-3.8-flash-low")
         allowed = set(remaining)
@@ -134,7 +138,7 @@ class GeminiQuotaRouterMixin:
             if rem_m and rem_m not in compact_chain:
                 compact_chain.append(rem_m)
         snap = quota_snapshot
-        if snap is None and attempt_idx > 0 and isinstance(getattr(self, "_QUOTA_MEM_CACHE", None), dict):
+        if snap is None and idx > 0 and isinstance(getattr(self, "_QUOTA_MEM_CACHE", None), dict):
             snap = self._QUOTA_MEM_CACHE
         if isinstance(snap, dict) and compact_chain:
             now = time.time()
@@ -443,9 +447,12 @@ class GeminiQuotaRouterMixin:
         model_unrecognized: bool = False,
     ) -> None:
         """Record a runtime quota/credit error or model unavailability and trigger low-quota alert check."""
-        cleaned = str(model_name or "").strip()
+        if isinstance(model_name, bool) or not isinstance(model_name, str):
+            return
+        cleaned = model_name.strip()
         if not cleaned:
             return
+        unrec = _parse_bool_flag(model_unrecognized, False)
         now = time.time()
         exp_until = now + max(15.0, safe_pos_float(ttl_sec, default=120.0))
         state_path, _read_json_dict, _save_json_state = (
@@ -466,7 +473,7 @@ class GeminiQuotaRouterMixin:
             )
             affected = (
                 (cleaned,)
-                if model_unrecognized
+                if unrec
                 else (
                     cls._SHARED_GEMINI_POOL_MODELS
                     if cleaned in cls._SHARED_GEMINI_POOL_MODELS
@@ -479,13 +486,13 @@ class GeminiQuotaRouterMixin:
             data["buckets"] = buckets
             data["runtime_exhausted"] = runtime_exhausted
             data.setdefault("checked_ts", now)
-            if model_unrecognized:
+            if unrec:
                 data.setdefault("available_credits", 0.0)
             else:
                 data["available_credits"] = 0.0
             cls._cache_and_save_quota_state_locked(state_path, data, _save_json_state)
             snapshot = dict(data)
-        if not model_unrecognized and snapshot is not None:
+        if not unrec and snapshot is not None:
             cls._maybe_notify_low_quota(snapshot)
 
     @classmethod
@@ -496,6 +503,7 @@ class GeminiQuotaRouterMixin:
         buckets = snapshot.get("buckets")
         if not isinstance(buckets, dict) or not buckets:
             return
+        _read_json_dict = _gc_attr("read_json_dict", read_json_dict)
         _save_json_state = _gc_attr("save_json_state", save_json_state)
         available_credits = safe_float(snapshot.get("available_credits"), 0.0)
         warn_threshold = max(
@@ -506,27 +514,27 @@ class GeminiQuotaRouterMixin:
         )
 
         argon_rem = max(
-            safe_float(buckets.get("gemini-4-argon-medium"), 0.0),
-            safe_float(buckets.get("gemini-4-argon-low"), 0.0),
-            safe_float(buckets.get("gemini-4-argon-high"), 0.0),
+            (safe_float(buckets.get(m), 0.0) for m in cls._ARGON_POOL_MODELS),
+            default=0.0,
         )
         claude_rem = max(
             safe_float(buckets.get("claude-sonnet-5-5-medium"), 0.0),
             safe_float(buckets.get("claude-sonnet-5-5-low"), 0.0),
         )
         flash_rem = max(
-            safe_float(buckets.get("gemini-3.8-flash-high"), 0.0),
-            safe_float(buckets.get("gemini-3.8-flash-medium"), 0.0),
-            safe_float(buckets.get("gemini-3.8-flash-low"), 0.0),
-            safe_float(buckets.get("gemini-3.8-flash-tiered"), 0.0),
+            (safe_float(buckets.get(m), 0.0) for m in (*cls._FLASH_POOL_MODELS, "gemini-3.8-flash-tiered")),
+            default=0.0,
         )
 
         if available_credits > 0.0 or argon_rem > warn_threshold:
             if snapshot.get("last_alert_tier") not in (None, "", "ok"):
                 state_path = cls._get_quota_state_path()
                 with cls._quota_state_rmw_lock(state_path, _save_json_state):
+                    cur = _read_json_dict(state_path, default=None)
+                    merged = dict(cur) if isinstance(cur, dict) else dict(snapshot)
+                    merged["last_alert_tier"] = "ok"
                     snapshot["last_alert_tier"] = "ok"
-                    cls._cache_and_save_quota_state_locked(state_path, snapshot, _save_json_state)
+                    cls._cache_and_save_quota_state_locked(state_path, merged, _save_json_state)
             return
 
         if claude_rem <= warn_threshold and flash_rem <= warn_threshold:
@@ -540,9 +548,9 @@ class GeminiQuotaRouterMixin:
         prev_tier = str(snapshot.get("last_alert_tier") or "ok")
         prev_rank = rank_map.get(prev_tier, 0)
         now = time.time()
-        last_alert_ts = safe_float(snapshot.get("last_alert_ts"), 0.0)
+        last_alert_ts = normalize_epoch_sec(snapshot.get("last_alert_ts"), default=0.0) or 0.0
 
-        if severity_rank <= prev_rank and (now - last_alert_ts) < cooldown_sec:
+        if severity_rank <= prev_rank and last_alert_ts > 0.0 and 0.0 <= (now - last_alert_ts) < cooldown_sec:
             return
 
         try:
@@ -584,6 +592,10 @@ class GeminiQuotaRouterMixin:
         if dispatched:
             state_path = cls._get_quota_state_path()
             with cls._quota_state_rmw_lock(state_path, _save_json_state):
+                cur = _read_json_dict(state_path, default=None)
+                merged = dict(cur) if isinstance(cur, dict) else dict(snapshot)
+                merged["last_alert_ts"] = now
+                merged["last_alert_tier"] = alert_tier
                 snapshot["last_alert_ts"] = now
                 snapshot["last_alert_tier"] = alert_tier
-                cls._cache_and_save_quota_state_locked(state_path, snapshot, _save_json_state)
+                cls._cache_and_save_quota_state_locked(state_path, merged, _save_json_state)

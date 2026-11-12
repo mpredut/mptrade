@@ -465,7 +465,16 @@ class ProviderSsotBridgeMixin:
     ) -> Optional[float]:
         """Resolve a fresh spot price for ``candidates`` from ``CacheCurrentPriceManager`` / ``cache_current_price.json``."""
         eff_age = resolve_positive_max_age(max_age_sec, PRICE_FRESHNESS_MAX_AGE_SEC)
-        if eff_age is None or not candidates:
+        norm_cands = (
+            (candidates,)
+            if isinstance(candidates, str)
+            else (
+                ()
+                if isinstance(candidates, (bool, bytes, bytearray)) or not hasattr(candidates, "__iter__")
+                else tuple(c for c in candidates if not isinstance(c, bool) and isinstance(c, str) and c.strip())
+            )
+        )
+        if eff_age is None or not norm_cands:
             return None
         cls._ensure_ssot_cache_bindings()
         if (cp_cls := cls._ssot_current_price_cls) is None:
@@ -476,7 +485,7 @@ class ProviderSsotBridgeMixin:
             else cls._resolve_cache_path(CACHE_CURRENT_PRICE_FILENAME)
         )
         return cp_cls.read_ssot_current_price_candidates(
-            candidates,
+            norm_cands,
             price_path,
             eff_age,
             use_memory_manager=(price_cache_path is None),
@@ -487,7 +496,11 @@ class ProviderSsotBridgeMixin:
         self, symbol: str, max_age_sec: Optional[float] = None
     ) -> Optional[float]:
         """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
-        default_age = self._SSOT_PRICE_MAX_AGE_SEC or PRICE_FRESHNESS_MAX_AGE_SEC
+        default_age = (
+            PRICE_FRESHNESS_MAX_AGE_SEC
+            if self._SSOT_PRICE_MAX_AGE_SEC is None
+            else self._SSOT_PRICE_MAX_AGE_SEC
+        )
         eff_age = resolve_positive_max_age(default_age if max_age_sec is None else max_age_sec, default_age)
         if eff_age is None or not (candidates := self._prepare_ssot_price_candidates(symbol)):
             return None

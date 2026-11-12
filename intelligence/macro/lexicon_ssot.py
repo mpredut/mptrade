@@ -25,7 +25,7 @@ from intelligence.macro_sentiment_ssot import (
     _cfg_str,
     load_macro_intelligence_config,
 )
-from state_io import read_json_dict_cached, save_json_state
+from state_io import generation_file_lock, read_json_dict, read_json_dict_cached, save_json_state
 
 logger = logging.getLogger(__name__)
 
@@ -723,7 +723,7 @@ def _extract_valid_dynamic_entries(
             pruned = True
             continue
         ts = normalize_epoch_sec(v.get("ts"), default=0.0) or 0.0
-        if ts <= 0.0 or (now - ts) > ttl:
+        if ts <= 0.0 or not (-60.0 <= (now - ts) <= ttl):
             pruned = True
             continue
         raw_valid.append((ts, idx, k_clean, dict(v, ts=ts)))
@@ -779,7 +779,7 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
                 continue
             ts = normalize_epoch_sec(meta.get("ts") if isinstance(meta, dict) else meta, default=0.0) or 0.0
             tier = str(meta.get("tier", "high")).lower() if isinstance(meta, dict) else "high"
-            if ts > 0.0 and (now - ts) <= ttl:
+            if ts > 0.0 and -60.0 <= (now - ts) <= ttl:
                 valid_rows.append((ts, idx, t_clean, tier))
         valid_rows.sort(key=lambda r: (-r[0], r[1]))
         high_seen: Dict[str, None] = {}
@@ -820,38 +820,43 @@ def update_dynamic_lexicon(
 ) -> Dict[str, Tuple[str, ...]]:
     """Persist newly discovered crisis terms into ``cachedb/macro_lexicon_collect.json``."""
     now, ttl, path = _resolve_dynamic_lexicon_context(cache_dir, now_ts)
-
+    high_seq = (new_high_terms,) if isinstance(new_high_terms, str) else (new_high_terms or ())
+    acute_seq = (new_acute_terms,) if isinstance(new_acute_terms, str) else (new_acute_terms or ())
     stopwords = _get_stopwords_set()
-    raw = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
-    existing_entries, sig_to_key, changed = _extract_valid_dynamic_entries(
-        raw.get("entries") if isinstance(raw, dict) else None, now, ttl, stopwords
-    )
-    for raw_t, tier_override in (
-        *[(t, None) for t in new_high_terms],
-        *[(a, "acute") for a in new_acute_terms],
-    ):
-        t = re.sub(r"\s+", " ", str(raw_t or "").strip().lower())
-        if _is_noise_dynamic_keyword(t, stopwords):
-            continue
-        sig = _bigram_stem_signature(t) or (t,)
-        prev_key = sig_to_key.get(sig, t)
-        prev_entry = existing_entries.get(prev_key, {})
-        prev_tier = str(prev_entry.get("tier", "high")).lower()
-        prev_ts = safe_float(prev_entry.get("ts"), 0.0)
-        if tier_override:
-            tier = tier_override
-        elif prev_tier == "acute" and prev_ts > 0.0 and (now - prev_ts) <= 3600.0:
-            tier = "acute"
-        else:
-            tier = "high"
-        if prev_key != t and prev_key in existing_entries:
-            existing_entries.pop(prev_key, None)
-        sig_to_key[sig] = t
-        existing_entries[t] = {"ts": now, "tier": tier, "source": source}
-        changed = True
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with generation_file_lock(path):
+        raw = read_json_dict(path, default=None, repair_files=True) if os.path.exists(path) else None
+        existing_entries, sig_to_key, changed = _extract_valid_dynamic_entries(
+            raw.get("entries") if isinstance(raw, dict) else None, now, ttl, stopwords
+        )
+        for raw_t, tier_override in (
+            *[(t, None) for t in high_seq],
+            *[(a, "acute") for a in acute_seq],
+        ):
+            if isinstance(raw_t, bool) or not isinstance(raw_t, str):
+                continue
+            t = re.sub(r"\s+", " ", raw_t.strip().lower())
+            if _is_noise_dynamic_keyword(t, stopwords):
+                continue
+            sig = _bigram_stem_signature(t) or (t,)
+            prev_key = sig_to_key.get(sig, t)
+            prev_entry = existing_entries.get(prev_key, {})
+            prev_tier = str(prev_entry.get("tier", "high")).lower()
+            prev_ts = normalize_epoch_sec(prev_entry.get("ts"), default=0.0) or 0.0
+            if tier_override:
+                tier = tier_override
+            elif prev_tier == "acute" and prev_ts > 0.0 and -60.0 <= (now - prev_ts) <= 3600.0:
+                tier = "acute"
+            else:
+                tier = "high"
+            if prev_key != t and prev_key in existing_entries:
+                existing_entries.pop(prev_key, None)
+            sig_to_key[sig] = t
+            existing_entries[t] = {"ts": now, "tier": tier, "source": source}
+            changed = True
 
-    if changed:
-        _save_and_invalidate_dynamic_lexicon(path, now, existing_entries)
+        if changed:
+            _save_and_invalidate_dynamic_lexicon(path, now, existing_entries)
 
     return load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now)
 
@@ -862,21 +867,24 @@ def demote_dynamic_acute_terms(
 ) -> bool:
     """Demote dynamically discovered ``acute`` terms to ``high`` once threat is not CRITICAL_SHOCK."""
     now, ttl, path = _resolve_dynamic_lexicon_context(cache_dir, now_ts)
-    raw = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
-    if not isinstance(raw, dict) or not isinstance(raw.get("entries"), dict):
+    if not os.path.exists(path):
         return False
+    with generation_file_lock(path):
+        raw = read_json_dict(path, default=None, repair_files=True)
+        if not isinstance(raw, dict) or not isinstance(raw.get("entries"), dict):
+            return False
 
-    cleaned_entries, _, changed = _extract_valid_dynamic_entries(
-        raw["entries"], now, ttl, _get_stopwords_set()
-    )
-    for entry in cleaned_entries.values():
-        if str(entry.get("tier", "high")).lower() == "acute":
-            entry["tier"] = "high"
-            changed = True
+        cleaned_entries, _, changed = _extract_valid_dynamic_entries(
+            raw["entries"], now, ttl, _get_stopwords_set()
+        )
+        for entry in cleaned_entries.values():
+            if str(entry.get("tier", "high")).lower() == "acute":
+                entry["tier"] = "high"
+                changed = True
 
-    if changed:
-        _save_and_invalidate_dynamic_lexicon(path, now, cleaned_entries)
-    return changed
+        if changed:
+            _save_and_invalidate_dynamic_lexicon(path, now, cleaned_entries)
+        return changed
 
 
 def _get_active_lexicon_terms(

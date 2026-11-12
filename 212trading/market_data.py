@@ -22,15 +22,16 @@ if _ROOT not in sys.path:
 
 from botcore import (
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
+    _is_fresh_obs_ts,
     _parse_bool_flag,
     clean_nonempty_str,
     exact_pos_int,
     fetch_public_json,
     http_get,
-    is_cache_fresh,
     is_shared_disk_cache_enabled,
     log,
     normalize_epoch_sec,
+    resolve_now_ts,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -263,6 +264,19 @@ def _can_use_ssot_equity_cache(sym: str) -> str | None:
     return sym_u
 
 
+def _equity_ssot_candidates(sym_u: str, *, include_bare: bool = True) -> tuple[str, ...]:
+    raw = (
+        ensure_equity_suffix(sym_u),
+        ensure_equity_suffix(sym_u, suffix="_EQ"),
+        *(
+            (sym_u,)
+            if include_bare
+            else ()
+        ),
+    )
+    return tuple(dict.fromkeys(c for c in raw if c))
+
+
 def _ssot_equity_price_usd(sym_u: str) -> float | None:
     price_path = (
         str(resolve_cachedb_filepath(os.path.join(_SSOT_CACHE_DIR_OVERRIDE, CACHE_CURRENT_PRICE_FILENAME)))
@@ -271,7 +285,7 @@ def _ssot_equity_price_usd(sym_u: str) -> float | None:
     )
     return safe_pos_float(
         ProviderSsotBridgeMixin.read_ssot_spot_price(
-            (ensure_equity_suffix(sym_u), sym_u),
+            _equity_ssot_candidates(sym_u, include_bare=True),
             max_age_sec=SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
             price_cache_path=price_path,
         ),
@@ -280,26 +294,32 @@ def _ssot_equity_price_usd(sym_u: str) -> float | None:
 
 
 def _ssot_equity_ohlc_closes(sym_u: str) -> list[float]:
-    fname = f"cache_ohlc_24h_{ensure_equity_suffix(sym_u)}.json"
-    ohlc_path = (
-        str(resolve_cachedb_filepath(os.path.join(_SSOT_CACHE_DIR_OVERRIDE, fname)))
-        if _SSOT_CACHE_DIR_OVERRIDE
-        else str(cache_path(fname))
-    )
-    raw_doc = read_json_dict_recovering(ohlc_path)
-    if not isinstance(raw_doc, dict):
-        return []
-    doc_ts = safe_pos_float(raw_doc.get("ts"), default=None)
-    if doc_ts is None or not is_cache_fresh(doc_ts, time.time(), parse_interval_minutes("5m") * 60.0):
-        return []
-    pts = raw_doc.get("points")
-    if not isinstance(pts, list):
-        return []
-    return [
-        px
-        for p in pts
-        if isinstance(p, (list, tuple)) and len(p) >= 2 and (px := safe_pos_float(p[1], default=None)) is not None
-    ]
+    now_s = resolve_now_ts()
+    ttl_s = parse_interval_minutes("5m") * 60.0
+    for eq_sym in _equity_ssot_candidates(sym_u, include_bare=False):
+        fname = f"cache_ohlc_24h_{eq_sym}.json"
+        ohlc_path = (
+            str(resolve_cachedb_filepath(os.path.join(_SSOT_CACHE_DIR_OVERRIDE, fname)))
+            if _SSOT_CACHE_DIR_OVERRIDE
+            else str(cache_path(fname))
+        )
+        raw_doc = read_json_dict_recovering(ohlc_path)
+        if not isinstance(raw_doc, dict):
+            continue
+        doc_ts = normalize_epoch_sec(raw_doc.get("ts"), default=None)
+        if doc_ts is None or not _is_fresh_obs_ts(doc_ts, now_s, ttl_s):
+            continue
+        pts = raw_doc.get("points")
+        if not isinstance(pts, list):
+            continue
+        closes = [
+            px
+            for p in pts
+            if isinstance(p, (list, tuple)) and len(p) >= 2 and (px := safe_pos_float(p[1], default=None)) is not None
+        ]
+        if closes:
+            return closes
+    return []
 
 
 def get_price_usd(sym: str) -> float | None:

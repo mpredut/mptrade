@@ -87,7 +87,7 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
         if (
             fw is not None
             and isinstance(getattr(mgr, "_cache24_managers", None), dict)
-            and not bool(getattr(mgr, "writer", False))
+            and not botcore._parse_bool_flag(getattr(mgr, "writer", False), False)
             and callable(live_fn)
         ):
             tried_live_window = True

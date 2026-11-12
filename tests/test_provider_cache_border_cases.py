@@ -45,7 +45,12 @@ from botcore import (
     resolve_cli_env_path,
     temporary_environ,
 )
-from cacheaccount import CacheAssetValueManager, CacheOrderManager, CacheTradeManager
+from cacheaccount import (
+    CacheAssetValueManager,
+    CacheOrderManager,
+    CacheTradeManager,
+    start_account_cache_daemon,
+)
 import cacheintegrity
 import cachepaths
 from cachepaths import (
@@ -102,6 +107,7 @@ from intelligence.macro_sentiment_ssot import FearGreedSnapshot
 from intelligence.sentiment import llm_quota_router as lqr_mod
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
 import intelligence.sentiment.collectors.macro_telemetry_collector as mtc_mod
+import intelligence.sentiment.collectors.microstructure_collector as mc_mod
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MacroAndNewsSensorsCollector,
     MacroBenchmarksSnapshotCollector,
@@ -163,7 +169,13 @@ from order_lifecycle import TrackedOrderLifecycle
 import order_retry
 import priceAnalysis
 import pricewindow as pw
-from providers import base as pbase_mod, binance_provider as bp_mod, order_id_context as oic
+from providers import (
+    base as pbase_mod,
+    binance_provider as bp_mod,
+    market_api as mapi_mod,
+    order_id_context as oic,
+    ssot_bridge as sb_mod,
+)
 from providers.base import MarketDataProvider
 from providers.binance_provider import BinanceProvider
 from providers.execution_audit import (
@@ -4780,12 +4792,303 @@ def test_wave28_spot_params_bool_ssot_ohlc_drop_incomplete_and_border_cases(tmp_
     assert "ob_mid=101.0" in "\n".join(sec3b)
 
 
+def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_path, monkeypatch):
+    """Verify Wave 29 bare-str SSOT price candidate safety, now_s RAM/disk parity, _SSOT_PRICE_MAX_AGE_SEC=0.0, T212 _EQ SSOT lookup & boot monotonic _peek_cached, LLM quota RMW merge & string flags, dynamic lexicon RMW lock & clock-skew bounds, and account/OHLC/T212 future-ts guards."""
+    # 1. cachepaths.ensure_equity_suffix strips whitespace & honors is_equity="false"; cache_*_price_filename rejects bool
+    assert cachepaths.ensure_equity_suffix("  NVDA_US_EQ  ") == "NVDA_US_EQ"
+    assert cachepaths.ensure_equity_suffix("  VODl_EQ  ") == "VODl_EQ"
+    assert cachepaths.ensure_equity_suffix("BTCUSDC", is_equity="false") == "BTCUSDC"
+    assert cachepaths.cache_24_price_filename(True) == "cache_24_price_.json"
+    assert cachepaths.cache_365_price_filename(False) == "cache_365_price_.jsonl"
+    assert cachepaths.cache_sparse_price_filename(True) == "cache_sparse_price_.jsonl"
 
+    # 2. read_ssot_spot_price & read_ssot_current_price_candidates do not split bare strings into single-letter tickers ("A", "V") and honor now_s in RAM
+    cp_file = tmp_path / "cache_current_price.json"
+    now_s = time.time()
+    now_ms = math.trunc(now_s * 1000)
+    state_io.save_json_state(
+        str(cp_file),
+        {
+            "items": {"A": [[now_ms, 130.0]], "AVGO_US_EQ": [[now_ms, 185.5]], "ASML_EQ": [[now_ms, 920.0]]},
+            "fetchtime": {"A": now_s, "AVGO_US_EQ": now_s, "ASML_EQ": now_s},
+        },
+    )
+    assert (
+        CacheCurrentPriceManager.read_ssot_current_price_candidates(
+            "AVGO",
+            str(cp_file),
+            max_age_sec=30.0,
+            now_s=now_s,
+            use_memory_manager="false",
+        )
+        is None
+    )
+    assert (
+        sb_mod.ProviderSsotBridgeMixin.read_ssot_spot_price(
+            "AVGO",
+            max_age_sec=30.0,
+            price_cache_path=str(cp_file),
+        )
+        is None
+    )
+    assert sb_mod.ProviderSsotBridgeMixin.read_ssot_spot_price(
+        "AVGO_US_EQ",
+        max_age_sec=30.0,
+        price_cache_path=str(cp_file),
+    ) == pytest.approx(185.5)
 
+    ram_cpm = CacheCurrentPriceManager(
+        sync_ts=9999,
+        symbols=["TAOUSDC"],
+        filename=str(cp_file),
+        ws_manager=None,
+        read_only=True,
+        data_sync_mode=CacheCurrentPriceManager.MODE_LIVE_READER,
+    )
+    try:
+        ram_now = time.time()
+        ram_cpm.on_items_update("TAOUSDC", [[math.trunc(ram_now * 1000), 299.25]])
+        assert CacheCurrentPriceManager.read_ssot_current_price_candidates(
+            ("TAOUSDC",),
+            str(cp_file),
+            max_age_sec=5.0,
+            now_s=ram_now + 1.0,
+            use_memory_manager=True,
+            memory_manager=ram_cpm,
+        ) == pytest.approx(299.25)
+        # Advancing deterministic now_s past max_age_sec invalidates stale RAM tick without patching _now_time
+        assert (
+            CacheCurrentPriceManager.read_ssot_current_price_candidates(
+                ("TAOUSDC",),
+                str(cp_file),
+                max_age_sec=5.0,
+                now_s=ram_now + 20.0,
+                use_memory_manager=True,
+                memory_manager=ram_cpm,
+            )
+            is None
+        )
+    finally:
+        ram_cpm.shutdown(timeout=0.5)
 
+    # 3. ProviderSsotBridgeMixin._cached_current_price honors _SSOT_PRICE_MAX_AGE_SEC = 0.0 (no zero-swallowing or)
+    prov_zero = _TestMarketProvider("probe_zero")
+    prov_zero._USES_SSOT_MARKET_CACHE = True
+    prov_zero._SSOT_PRICE_MAX_AGE_SEC = 0.0
+    prov_zero._ssot_price_cache_path = str(cp_file)
+    assert prov_zero._cached_current_price("AVGO_US_EQ") is None
 
+    # 4. 212trading/market_data resolves _EQ non-US equity SSOT price & ms-timestamp OHLC; T212Client._peek_cached handles boot monotonic < _pf_ttl
+    t212_md = load_venue_modules("212trading", "market_data")
+    t212_cli_mod = load_venue_modules("212trading", "t212_client")
+    eq_dir = tmp_path / "eq_cachedb"
+    eq_dir.mkdir()
+    real_now = time.time()
+    real_now_ms = math.trunc(real_now * 1000)
+    state_io.save_json_state(
+        str(cachepaths.resolve_cachedb_filepath(str(eq_dir / "cache_current_price.json"))),
+        {
+            "items": {"ASML_EQ": [[real_now_ms, 915.25]]},
+            "fetchtime": {"ASML_EQ": real_now},
+        },
+    )
+    ohlc_pts = [[real_now_ms - (11 - i) * 300_000, 900.0 + i * 1.5, 100.0] for i in range(12)]
+    state_io.save_json_state(
+        str(cachepaths.resolve_cachedb_filepath(str(eq_dir / "cache_ohlc_24h_ASML_EQ.json"))),
+        {"ts": real_now_ms, "symbol": "ASML_EQ", "points": ohlc_pts},
+    )
+    with monkeypatch.context() as mp:
+        mp.setattr(t212_md, "_SSOT_CACHE_DIR_OVERRIDE", str(eq_dir))
+        assert t212_md.get_price_usd("ASML") == pytest.approx(915.25)
+        slope_asml = t212_md.trend_slope_pct("ASML", bars=12)
+        assert slope_asml is not None and slope_asml > 0.0
 
+    cli_stub = t212_cli_mod.T212Client.__new__(t212_cli_mod.T212Client)
+    cli_stub._lock = threading.Lock()
+    cli_stub._pf_ttl = 5.0
+    cli_stub._fetch_fail = {}
+    cli_stub._pf_cache = None
+    with monkeypatch.context() as mp:
+        mp.setattr(t212_cli_mod.time, "monotonic", lambda: 1.5)
+        assert cli_stub._peek_cached("_pf_cache", None) == (False, None)
+        cli_stub._fetch_fail["_pf_cache"] = 1.0
+        assert cli_stub._peek_cached("_pf_cache", None) == (True, None)
 
+    # 5. market_api writer="false", rtrade._init_live_price_tick_stream dedup, and TrendCoordinator._resolve_regime_context ttl=0
+    w90 = {"growth_coefficient": 0.25, "gradient_recent": 0.25, "epsilon": 0.01, "window_seconds": 90.0, "ts": real_now}
+    mgr_stub = SimpleNamespace(
+        _cache24_managers={"TAOUSDC": object()},
+        writer="false",
+        get_short_trend_for_window=lambda sym, w, now=None: w90 if sym == "TAOUSDC" else None,
+        get_fresh_snapshot=lambda *_a, **_kw: None,
+    )
+    with monkeypatch.context() as mp:
+        mp.setattr(MarketDataProvider, "get_ssot_short_trend_manager", classmethod(lambda _cls: mgr_stub))
+        mp.setattr(pw, "fast_trend_window_for_symbol", lambda _s: 90.0)
+        assert mapi_mod._runtime_market_regime_snapshot("TAOUSDC", now=real_now) is w90
 
+    cpm_stub = SimpleNamespace(symbols=["TAOUSDC"], started=0)
+    cpm_stub.start_local_tick_stream = lambda: setattr(cpm_stub, "started", cpm_stub.started + 1)
+    with monkeypatch.context() as mp:
+        mp.setattr(rtrade, "get_current_price_manager", lambda **_kw: cpm_stub)
+        rtrade._init_live_price_tick_stream("  taousdc  ")
+        rtrade._init_live_price_tick_stream(True)  # type: ignore[arg-type]
+    assert cpm_stub.symbols == ["TAOUSDC"] and cpm_stub.started == 2
 
+    tc_stub = tradeall.TrendCoordinator.__new__(tradeall.TrendCoordinator)
+    tc_stub._regime_ctx_memo = "corrupt"
+    tc_stub.REGIME_CTX_MEMO_TTL_SEC = 10.0
+    reg_calls = []
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            tradeall.mkt,
+            "market_regime_context",
+            lambda s, **_kw: (
+                reg_calls.append(s)
+                or SimpleNamespace(regime="bull", fresh=("false" if len(reg_calls) == 1 else True))
+            ),
+        )
+        assert tc_stub._resolve_regime_context("  btcusdc ").regime == "bull"
+        assert tc_stub._resolve_regime_context("BTCUSDC").regime == "bull"
+        assert tc_stub._resolve_regime_context("btcusdc").regime == "bull"
+    assert reg_calls == ["BTCUSDC", "BTCUSDC"]
+
+    # 6. GeminiQuotaRouterMixin string _custom_fallbacks, model_unrecognized="false", bool model_name rejection, and non-clobbering alert merge
+    router = lqr_mod.GeminiQuotaRouterMixin()
+    router.model = "gemini-4-argon-high"
+    router.fallback_models = ("gemini-4-argon-medium", "gemini-3.8-flash-medium", "gemini-3.8-flash-low")
+    router._custom_fallbacks = "false"  # type: ignore[assignment]
+    cands_hi = router.get_model_candidates("gemini-4-argon-high")
+    assert "gemini-3.8-flash-high" in cands_hi
+    assert router.get_compact_model_candidates(cands_hi, attempt_idx=None)[0] == "gemini-3.8-flash-low"  # type: ignore[arg-type]
+
+    q_path = tmp_path / "llm_quota_status.json"
+    with monkeypatch.context() as mp:
+        mp.setattr(lqr_mod.GeminiQuotaRouterMixin, "_get_quota_state_path", staticmethod(lambda: str(q_path)))
+        mp.setattr(lqr_mod.GeminiQuotaRouterMixin, "_maybe_notify_low_quota", classmethod(lambda *_a, **_kw: None))
+        lqr_mod.GeminiQuotaRouterMixin._record_model_quota_exhausted(True)  # type: ignore[arg-type]
+        assert not q_path.exists()
+        lqr_mod.GeminiQuotaRouterMixin._record_model_quota_exhausted(
+            "gemini-4-argon-medium",
+            ttl_sec=60.0,
+            model_unrecognized="false",  # type: ignore[arg-type]
+        )
+        saved_q = state_io.read_json_dict(str(q_path), default={})
+        assert saved_q["buckets"].get("gemini-4-argon-low") == 0.0
+        # Recovery alert reset preserves concurrent runtime_exhausted keys written to disk
+        saved_q["last_alert_tier"] = "argon_low"
+        saved_q["runtime_exhausted"]["claude-sonnet-5-5-medium"] = real_now + 300.0
+        state_io.save_json_state(str(q_path), saved_q)
+    with monkeypatch.context() as mp:
+        mp.setattr(lqr_mod.GeminiQuotaRouterMixin, "_get_quota_state_path", staticmethod(lambda: str(q_path)))
+        lqr_mod.GeminiQuotaRouterMixin._maybe_notify_low_quota(
+            {
+                "available_credits": 10.0,
+                "buckets": {"gemini-4-argon-medium": 1.0},
+                "last_alert_tier": "argon_low",
+                "runtime_exhausted": {},
+            }
+        )
+        merged_q = state_io.read_json_dict(str(q_path), default={})
+        assert merged_q["last_alert_tier"] == "ok"
+        assert merged_q["runtime_exhausted"].get("claude-sonnet-5-5-medium") == pytest.approx(real_now + 300.0)
+
+    # 7. Dynamic lexicon bare-str guard, future-ts pruning, and account/OHLC/T212 future-ts guards
+    lex_dir = tmp_path / "lex_cache"
+    lex_dir.mkdir()
+    lex_path = cachepaths.resolve_cachedb_filepath(str(lex_dir / "macro_lexicon_collect.json"))
+    state_io.save_json_state(
+        str(lex_path),
+        {
+            "updated_ts": real_now,
+            "entries": {
+                "future ghost shock": {"ts": real_now + 86400.0, "tier": "acute", "source": "corrupt"},
+            },
+        },
+    )
+    lex_res = lex_ssot.update_dynamic_lexicon(
+        "banking crisis",
+        cache_dir=str(lex_dir),
+        now_ts=real_now,
+    )
+    assert "banking crisis" in lex_res["high_severity_terms"]
+    assert "future ghost shock" not in lex_res["high_severity_terms"]
+    assert all(len(term) > 1 for term in lex_res["high_severity_terms"])
+
+    recorded_syncs = []
+    ach_stub = SimpleNamespace(
+        MAX_AGE_SEC=60.0,
+        enable_writer=lambda: None,
+        record_successful_sync=lambda name, ver, now_ms=0: recorded_syncs.append((name, ver, now_ms)),
+    )
+    fut_mgr = SimpleNamespace(get_persisted_sync_state=lambda: ("v1", real_now_ms + 3_600_000))
+    with monkeypatch.context() as mp:
+        mp.setattr("cacheaccount.account_cache_health", ach_stub)
+        mp.setattr("cacheaccount._bapi_ws_bridge.initialize_ws_bridge_once", lambda: None)
+        mp.setattr("cacheaccount.is_live_network_backfill_enabled", lambda: False)
+        start_account_cache_daemon(cache_getter=lambda _n: fut_mgr)
+    assert recorded_syncs == []
+
+    # Corrupted future equity OHLC ts on disk does not block stitched 24h recovery write
+    ohlc_fut_dir = tmp_path / "ohlc_fut"
+    ohlc_fut_dir.mkdir()
+    ohlc_fut_file = cachepaths.resolve_cachedb_filepath(str(ohlc_fut_dir / "cache_ohlc_24h_NVDA_US_EQ.json"))
+    state_io.save_json_state(str(ohlc_fut_file), {"ts": real_now + 86400.0, "symbol": "NVDA_US_EQ", "points": []})
+    stitched = pse_mod._load_stitched_24h_ohlc_points(
+        lambda _s, _iv: SimpleNamespace(
+            timestamps=[real_now - (20 - i) * 3600.0 for i in range(21)],
+            closes=[120.0 + i * 0.5 for i in range(21)],
+            volumes=[50.0 for _ in range(21)],
+        ),
+        "NVDA_US_EQ",
+        cutoff_24h=real_now - 86400.0,
+        cache_dir=str(ohlc_fut_dir),
+    )
+    assert len(stitched) >= 8
+    saved_ohlc = state_io.read_json_dict(str(ohlc_fut_file), default={})
+    assert len(saved_ohlc.get("points", [])) >= 8
+
+    # microstructure_evaluator.is_ob_mid_fresher_than_series rejects future ob_ts_sec > now_ts + 5s when price differs
+    assert (
+        me_mod.is_ob_mid_fresher_than_series(
+            100.0,
+            100.01,
+            real_now + 120.0,
+            real_now,
+            (real_now_ms - 120_000.0, 99.5),
+            is_exact_ob_sym=True,
+        )
+        is False
+    )
+
+    # microstructure_collector._refresh_stale_t212_cached_positions recovers corrupted future/ms position ts
+    bcache_file = tmp_path / "venue_balances_state.json"
+    bals_doc = {
+        "pos:t212:NVDA_US_EQ": {
+            "symbol": "NVDA_US_EQ",
+            "free": 2.0,
+            "price": 100.0,
+            "ts": real_now + 7200.0,
+        }
+    }
+    state_io.save_json_state(str(bcache_file), bals_doc)
+    with monkeypatch.context() as mp:
+        mp.setattr(mc_mod, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
+        mp.setattr(
+            mc_mod._t212_prov_mod,
+            "T212Provider",
+            lambda: SimpleNamespace(
+                _client=lambda: SimpleNamespace(
+                    get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "currentPrice": 125.0}]
+                )
+            ),
+        )
+        assert mc_mod._refresh_stale_t212_cached_positions(
+            bals_doc,
+            str(bcache_file),
+            now_ts=real_now,
+            max_age_sec=60.0,
+        ) is True
+    refreshed_bals = state_io.read_json_dict(str(bcache_file), default={})
+    assert refreshed_bals["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(125.0)
 

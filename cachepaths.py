@@ -47,19 +47,19 @@ CACHE_365_PRICE_EXT = ".jsonl"
 
 def cache_sparse_price_filename(symbol: object) -> str:
     """Return canonical on-disk filename for a sparse long-horizon price archive (`cache_sparse_price_<SYM>.jsonl`)."""
-    sym = str(symbol or "").strip().upper()
+    sym = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
     return f"{CACHE_SPARSE_PRICE_PREFIX}{sym}{CACHE_SPARSE_PRICE_EXT}"
 
 
 def cache_24_price_filename(symbol: object) -> str:
     """Return canonical on-disk filename for a 24h dense price series (`cache_24_price_<SYM>.json`)."""
-    sym = str(symbol or "").strip().upper()
+    sym = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
     return f"{CACHE_24_PRICE_PREFIX}{sym}{CACHE_24_PRICE_EXT}"
 
 
 def cache_365_price_filename(symbol: object, *, ext: str = CACHE_365_PRICE_EXT) -> str:
     """Return canonical on-disk filename for a 365d dense price archive (`cache_365_price_<SYM>.jsonl`)."""
-    sym = str(symbol or "").strip().upper()
+    sym = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
     return f"{CACHE_365_PRICE_PREFIX}{sym}{ext}"
 
 
@@ -608,10 +608,11 @@ def ensure_equity_suffix(symbol: object, *, is_equity: bool = True, suffix: str 
     """Append ``suffix`` when ``is_equity`` is True and ``symbol`` lacks an equity suffix."""
     if isinstance(symbol, bool) or not isinstance(symbol, str):
         return ""
-    if not is_equity or has_equity_suffix(symbol):
-        return symbol
-    s = symbol.strip().upper()
-    return f"{s}{suffix}" if s else symbol
+    raw = symbol.strip()
+    if not _parse_bool_flag(is_equity, True) or has_equity_suffix(raw):
+        return raw
+    s = raw.upper()
+    return f"{s}{suffix}" if s else raw
 
 
 def strip_equity_suffix(symbol: object, *, base_only: bool = False) -> str:

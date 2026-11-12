@@ -938,7 +938,7 @@ def _load_stitched_24h_ohlc_points(
 ) -> List[List[Any]]:
     """Load 5m OHLC points since `cutoff_24h` and prepend older 15m OHLC points when span < 18h."""
     allow_offline_disk = is_offline_disk_cache_enabled()
-    sym_u = str(sym or "").strip().upper()
+    sym_u = "" if isinstance(sym, bool) else str(sym or "").strip().upper()
     cutoff_ms = (normalize_epoch_sec(cutoff_24h, default=0.0, allow_zero=True) or 0.0) * 1000.0
     cpath = ""
     disk_fallback_pts: List[List[Any]] = []
@@ -1003,8 +1003,8 @@ def _load_stitched_24h_ohlc_points(
             with generation_file_lock(cpath):
                 now_w = _time.time()
                 cur_disk = read_json_dict(cpath, default=None, repair_files=True)
-                cur_ts = safe_pos_float(cur_disk.get("ts") if isinstance(cur_disk, dict) else None, default=0.0) or 0.0
-                if not (is_equity_symbol(sym_u) and cur_ts > 0.0 and (now_w - cur_ts) < 240.0):
+                cur_ts = normalize_epoch_sec(cur_disk.get("ts") if isinstance(cur_disk, dict) else None, default=None)
+                if not (is_equity_symbol(sym_u) and cur_ts is not None and -5.0 <= (now_w - cur_ts) < 240.0):
                     save_json_state(cpath, {"ts": now_w, "symbol": sym_u, "points": pts_all})
                     st_new = os.stat(cpath)
                     _OHLC_24H_DISK_MEMO[(cpath, st_new.st_mtime_ns, st_new.st_size)] = [list(p) for p in pts_all]

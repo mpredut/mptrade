@@ -45,6 +45,7 @@ from botcore import (
     is_rth_gate_enabled,
     is_us_rth_open,
     load_dotenv,
+    normalize_epoch_sec,
     normalize_timestamp_ms,
     parse_symbol_list,
     required_float_env,
@@ -1426,7 +1427,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
             ):
                 now_s = _now_time()
-                if (now_s - self._rth_empty_backoff_ts.get(symbol, 0.0)) < 60.0:
+                if (last_eb := self._rth_empty_backoff_ts.get(symbol, 0.0)) > 0.0 and 0.0 <= (now_s - last_eb) < 60.0:
                     continue
                 if not is_us_rth_open(now_s):
                     with self.lock:
@@ -1503,7 +1504,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return None
         return safe_pos_float(self.get_sample_rate(symbol, fallback=None), default=span / (n_samples - 1))
 
-    def get_cached_price_observation(self, symbol: str, max_age_sec: float):
+    def get_cached_price_observation(
+        self, symbol: str, max_age_sec: float, *, now_s: Optional[float] = None
+    ):
         max_age = safe_pos_float(max_age_sec, default=None)
         if max_age is None:
             raise ValueError("max_age_sec must be finite and positive")
@@ -1520,7 +1523,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         price = safe_pos_float(cached_price, default=None)
         if observed_at is None or price is None:
             return None
-        age = _now_time() - observed_at
+        eff_now = _now_time() if now_s is None else resolve_now_ts(now_s)
+        age = eff_now - observed_at
         if age < -5.0 or age > max_age:
             return None
         return observed_at, price
@@ -1875,7 +1879,19 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         """Resolve a fresh current price for ``candidates`` from in-memory ``CacheCurrentPriceManager`` or ``price_path``."""
         if (max_age := resolve_positive_max_age(max_age_sec, PRICE_FRESHNESS_MAX_AGE_SEC)) is None:
             return None
-        if use_memory_manager:
+        norm_cands = (
+            (candidates,)
+            if isinstance(candidates, str)
+            else (
+                ()
+                if isinstance(candidates, (bool, bytes, bytearray)) or not hasattr(candidates, "__iter__")
+                else tuple(c for c in candidates if not isinstance(c, bool) and isinstance(c, str) and c.strip())
+            )
+        )
+        if not norm_cands:
+            return None
+        eff_now = resolve_now_ts(now_s)
+        if _parse_bool_flag(use_memory_manager, True):
             cpm = (
                 memory_manager
                 if memory_manager is not None
@@ -1896,12 +1912,19 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 == os.path.abspath(str(resolve_cachedb_filepath(price_path)))
             )
             if cpm is not None and cpm_matches_path and hasattr(cpm, "get_cached_price_observation"):
-                for cand in candidates:
+                for cand in norm_cands:
                     try:
-                        obs = cpm.get_cached_price_observation(cand, max_age)
+                        obs = (
+                            cpm.get_cached_price_observation(cand, max_age, now_s=now_s)
+                            if now_s is not None and isinstance(cpm, cls)
+                            else cpm.get_cached_price_observation(cand, max_age)
+                        )
                         if obs is not None:
+                            obs_ts = normalize_epoch_sec(obs[0], default=None) if now_s is not None else None
                             px = safe_pos_float(obs[1], default=None)
-                            if px is not None:
+                            if px is not None and (
+                                now_s is None or _is_fresh_obs_ts(obs_ts, eff_now, max_age)
+                            ):
                                 return px
                     except Exception:
                         continue
@@ -1916,8 +1939,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             data, items = loaded
             fetchtime_map = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
             file_ts = extract_timestamp_s(data, default=None)
-            eff_now = resolve_now_ts(now_s)
-            for cand in candidates:
+            for cand in norm_cands:
                 raw_entry = casefold_get(items, cand)
                 if raw_entry is None:
                     continue
@@ -2211,6 +2233,7 @@ def get_current_price_manager(
         inst = _READONLY_PRICE_READERS.get("CurrentPrice")
         if (
             inst is not None
+            and getattr(inst, "_is_default_symbol_reader", True)
             and symbols is None
             and not provider_names
             and ws_manager is None
@@ -2227,7 +2250,15 @@ def get_current_price_manager(
         eff_symbols = (
             default_symbols
             if symbols is None
-            else (parse_symbol_list(symbols) if isinstance(symbols, str) else list(symbols))
+            else (
+                parse_symbol_list(symbols)
+                if isinstance(symbols, str)
+                else (
+                    []
+                    if isinstance(symbols, (bool, bytes, bytearray)) or not hasattr(symbols, "__iter__")
+                    else [s.strip() for s in symbols if not isinstance(s, bool) and isinstance(s, str) and s.strip()]
+                )
+            )
         )
         eff_providers = default_providers if (provider_names is None and default_providers) else provider_names
         eff_read_only = (
@@ -2244,9 +2275,14 @@ def get_current_price_manager(
             read_only=eff_read_only,
             data_sync_mode=resolved_mode,
         )
+        is_default_reader = bool(symbols is None and not provider_names)
+        inst._is_default_symbol_reader = is_default_reader
         if ws_manager is None and (
-            (symbols is None and not provider_names)
-            or resolved_mode == CacheManagerInterface.MODE_LIVE_READER
+            is_default_reader
+            or (
+                resolved_mode == CacheManagerInterface.MODE_LIVE_READER
+                and _READONLY_PRICE_READERS.get("CurrentPrice") is None
+            )
         ):
             _READONLY_PRICE_READERS["CurrentPrice"] = inst
         return inst
