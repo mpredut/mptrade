@@ -47,9 +47,12 @@ def analyze_drops_with_distribution(df, show_plot: bool = False):
     if show_plot and drops:
         # Plot the drop distribution
         plt.hist(drops, bins=50, edgecolor='black')
-        plt.title('Distribution of percentage drops in 120 minutes')
-        plt.xlabel('Drop percentage')
-        plt.ylabel('Frequency')
+        for fn, lbl in (
+            (plt.title, 'Distribution of percentage drops in 120 minutes'),
+            (plt.xlabel, 'Drop percentage'),
+            (plt.ylabel, 'Frequency'),
+        ):
+            fn(lbl)
         plt.show()
 
     count_drops_5 = sum(1 for drop in drops if drop >= 5)

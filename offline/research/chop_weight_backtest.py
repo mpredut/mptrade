@@ -207,6 +207,16 @@ def _build_kalman_and_mean_rev_triggers(
     )
 
 
+def _should_tp_or_sl_exit(
+    asset_qty: float, entry_price: float, price: float, tp_pct: float, stop_pct: float
+) -> bool:
+    """Return whether open position PnL crosses the take-profit or stop-loss threshold."""
+    if asset_qty > 0 and entry_price > 0:
+        pnl_pct = (price - entry_price) / entry_price
+        return pnl_pct >= tp_pct or pnl_pct <= -stop_pct
+    return False
+
+
 def _precompute_chop_bar_tape(
     symbol: str,
     sampled: List[Tuple[float, float]],
@@ -379,8 +389,7 @@ def run_single_simulation(
     trades: List[Dict[str, Any]] = []
 
     for bar in tape:
-        t = bar["t"]
-        p = bar["p"]
+        t, p = bar["t"], bar["p"]
         current_trend = bar["current_trend"]
         trend_start_ts = bar["trend_start_ts"]
         btc_regime = bar["btc_regime"]
@@ -392,13 +401,9 @@ def run_single_simulation(
         )
 
         want_buy = bar["entry_signal"] or (asset_qty == 0 and bar["pullback_signal"])
-        want_sell = bool(bar["exit_signal"]) and asset_qty > 0
-
-        # Take Profit & Stop Loss
-        if asset_qty > 0 and entry_price > 0:
-            pnl_pct = (p - entry_price) / entry_price
-            if pnl_pct >= tp_pct or pnl_pct <= -stop_pct:
-                want_sell = True
+        want_sell = (bool(bar["exit_signal"]) and asset_qty > 0) or _should_tp_or_sl_exit(
+            asset_qty, entry_price, p, tp_pct, stop_pct
+        )
 
         # Execute SELL
         if want_sell and asset_qty > 0:

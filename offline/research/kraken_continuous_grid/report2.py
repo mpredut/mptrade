@@ -101,8 +101,7 @@ def _generate_report_with_status(exp_dir: str | None = None) -> tuple[list[str],
                  f"{rank}/{len(cands) + 1} | {beat_cnt}/{len(s)} | {top} |")
     if sel:
         L.append("\n**Sum over all assets and steps** (higher is better):\n")
-        L.append("| strategy | OOS sum % |")
-        L.append("|---|---|")
+        _append_markdown_table_header(L, None, "| strategy | OOS sum % |", 2)
         for c, v in sorted(tot.items(), key=lambda kv: -kv[1]):
             L.append(f"| {'SELECTOR' if c == '__selector__' else c} | {v:+.1f} |")
 

@@ -113,8 +113,10 @@ class MarketDataProvider(ABC):
         return bool(symbol and not isinstance(symbol, bool) and str(symbol).strip())
 
     @staticmethod
-    def _log_provider_balance_error(tag: str, label: str, asset: Any, exc: Exception) -> None:
-        print(f"[{tag}] {label} {asset}: {exc}")
+    def _log_provider_balance_error(
+        tag: str, label: str, asset: Any, exc: Exception, *, fmt: str = "[{tag}] {label} {asset}: {exc}"
+    ) -> None:
+        print(fmt.format(tag=tag, label=label, asset=asset, exc=exc))
         return None
 
     def get_current_price(self, symbol: str) -> Optional[float]:

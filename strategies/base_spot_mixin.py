@@ -627,6 +627,10 @@ class BaseSpotMixin:
         self._save()
         return not self._state_write_failed
 
+    def _step_and_save(self, price: float) -> None:
+        self.step(price)
+        self._save()
+
     # -- Position, Fill Accounting & Order Helpers -----------------------------
     def _state_flag(self, key: str, default: bool = False) -> bool:
         """Read a boolean or nullable-dict state slot from ``self.s`` safely (treating ``'false'``/``'0'`` as False)."""
@@ -1347,8 +1351,7 @@ class BaseSpotMixin:
                     if self.reconcile(price) is False:
                         _delay()
                         continue
-                    self.step(price)
-                    self._save()
+                    self._step_and_save(price)
                 except Exception as e:  # noqa: BLE001 -- RESILIENCE: network/API down -> retry
                     self._log_msg(f"  ! [STRAT] error ({e.__class__.__name__}: {e}) -- retrying")
                     _delay()

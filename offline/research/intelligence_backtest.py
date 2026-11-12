@@ -31,6 +31,7 @@ from offline.research.chop_weight_backtest import (
     _downsample_price_series,
     _req_pos_num,
     _req_pos_step_seconds,
+    _should_tp_or_sl_exit,
     _summarize_trade_outcomes,
     _update_equity_drawdown,
     _validate_backtest_step_balance_fee,
@@ -299,8 +300,7 @@ def run_intelligence_backtest(
 
         for bar_idx, bar in enumerate(tape):
             median_days, p90_days = survival_schedule[bar_idx]
-            t = bar["t"]
-            p = bar["p"]
+            t, p = bar["t"], bar["p"]
             n_roll = bar["n_roll"]
             k_out = bar["k_out"]
             k_event = bar["k_event"]
@@ -316,16 +316,8 @@ def run_intelligence_backtest(
 
             # Signal resolution:
             want_buy = False
-            want_sell = False
+            want_sell = _should_tp_or_sl_exit(asset_qty, entry_price, p, 0.035, 0.040)
             is_mean_reversion = False
-
-            # Take-Profit & Stop-Loss protection (matching monitortrades / swing bot)
-            if asset_qty > 0 and entry_price > 0:
-                pnl_pct = (p - entry_price) / entry_price
-                if pnl_pct >= 0.035:  # +3.5% Take Profit
-                    want_sell = True
-                elif pnl_pct <= -0.040:  # -4.0% Risk Stop
-                    want_sell = True
 
             if k_event and k_event.action.value == "ENTRY" and k_event.side.value == "BUY":
                 want_buy = True

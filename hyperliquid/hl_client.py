@@ -283,6 +283,11 @@ class HLClient:
                         return adec_i
         raise HLError(f"Missing size precision metadata for {coin}")
 
+    @staticmethod
+    def _log_read_failure(label: str, exc: Exception, default=None):
+        log(f"  ! {label} failed: {exc}")
+        return default
+
     def _mid_for_key(self, key: str, label: str) -> float | None:
         if (key := clean_nonempty_str(key)) is None:
             return None
@@ -292,8 +297,7 @@ class HLClient:
                 return None
             return safe_pos_float(casefold_get(mids, key), None)
         except Exception as e:  # noqa: BLE001
-            log(f"  ! {label}({key}) failed: {e}")
-            return None
+            return self._log_read_failure(f"{label}({key})", e)
 
     mid = bind_attr_call("_mid_for_key", label="mid")
 
@@ -369,8 +373,7 @@ class HLClient:
         try:
             return self.open_orders_strict(coin)
         except Exception as e:  # noqa: BLE001
-            log(f"  ! open_orders failed: {e}")
-            return []
+            return self._log_read_failure("open_orders", e, [])
 
     # ----- SPOT + funding reads -----------------------------------------------
     def resolve_spot_pair(self, token: str) -> str | None:
@@ -424,7 +427,7 @@ class HLClient:
                 ):
                     return safe_float(ctxs[i].get("funding"), None)
         except Exception as e:  # noqa: BLE001
-            log(f"  ! funding_rate({coin_clean}) failed: {e}")
+            return self._log_read_failure(f"funding_rate({coin_clean})", e)
         return None
 
     def candles(self, coin: str, interval: str = "1h", lookback_hours: int = 60) -> list[dict]:
@@ -439,8 +442,7 @@ class HLClient:
             res = self.info.candles_snapshot(coin, interval, start, end)
             return [x for x in res if isinstance(x, dict)] if isinstance(res, list) else []
         except Exception as e:  # noqa: BLE001
-            log(f"  ! candles({coin}) failed: {e}")
-            return []
+            return self._log_read_failure(f"candles({coin})", e, [])
 
     def spot_order(self, pair: str, is_buy: bool, sz: float, px: float,
                    sz_decimals: int = 2,

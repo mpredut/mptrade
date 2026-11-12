@@ -10,6 +10,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import load_local_module, optional_env, safe_float
 from offline.research.kraken_continuous_grid.report import (
+    _append_markdown_table_header,
     _finalize_markdown_report,
     _fmt_num as _fmt_cell,
     load_grid_results_partitioned,
@@ -73,9 +74,12 @@ def generate_report(exp_dir=None):
     for profile, home in HOME.items():
         variants = sorted({v for (p, v) in by if p == profile and v is not None})
         live = by.get((profile, "live"), {})
-        L.append(f"\n## Profile `{profile}` on its own asset ({home})\n")
-        L.append("| variant | 1h ret | 1h DD | 1h in market % | 1h cycles | 1d ret | 1d DD | w90 mean | w90 pos % |")
-        L.append("|---|---|---|---|---|---|---|---|---|")
+        _append_markdown_table_header(
+            L,
+            f"Profile `{profile}` on its own asset ({home})",
+            "| variant | 1h ret | 1h DD | 1h in market % | 1h cycles | 1d ret | 1d DD | w90 mean | w90 pos % |",
+            9,
+        )
         items = []
         for v in variants:
             r = by[(profile, v)].get(home)
@@ -105,9 +109,12 @@ def generate_report(exp_dir=None):
                 f"{_fmt_cell(wm, '+.2f')} | {_fmt_cell(wp, '.0f')} |"
             )
 
-        L.append(f"\n## Profile `{profile}` on the other assets (generalisation)\n")
-        L.append("| variant | beats live 1h | positive 1h | 1h median ret | 1h median DD | beats live 1d | positive 1d | 1d median ret | 1d median DD |")
-        L.append("|---|---|---|---|---|---|---|---|---|")
+        _append_markdown_table_header(
+            L,
+            f"Profile `{profile}` on the other assets (generalisation)",
+            "| variant | beats live 1h | positive 1h | 1h median ret | 1h median DD | beats live 1d | positive 1d | 1d median ret | 1d median DD |",
+            9,
+        )
         items = []
         for v in variants:
             d = {a: r for a, r in by[(profile, v)].items() if a != home}

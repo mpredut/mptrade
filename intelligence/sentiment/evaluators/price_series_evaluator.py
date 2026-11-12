@@ -1674,13 +1674,10 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
     prev_t, is_sorted = -1.0, True
     for row in series_24h:
         if (pt := _parse_ts_px_row(row)) is not None:
-            if pt[0] < prev_t:
-                is_sorted = False
+            is_sorted = is_sorted and pt[0] >= prev_t
             prev_t = pt[0]
-            if len(row) >= 3 and (vol_v := safe_pos_float(row[2], default=None)) is not None:
-                cleaned_24h.append([pt[0], pt[1], vol_v])
-            else:
-                cleaned_24h.append([pt[0], pt[1]])
+            vol_v = safe_pos_float(row[2], default=None) if len(row) >= 3 else None
+            cleaned_24h.append([pt[0], pt[1], vol_v] if vol_v is not None else [pt[0], pt[1]])
     if not is_sorted:
         cleaned_24h.sort(key=lambda x: x[0])
     if len(cleaned_24h) < 2:

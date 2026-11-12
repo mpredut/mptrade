@@ -413,8 +413,9 @@ class HyperliquidProvider(MarketDataProvider):
                         return max(total - hold, 0.0)
             return 0.0
         except Exception as e:  # noqa: BLE001
-            print(f"[HL] free_balance({asset}) failed: {e}")
-            return None
+            return self._log_provider_balance_error(
+                "HL", "free_balance", asset, e, fmt="[{tag}] {label}({asset}) failed: {exc}"
+            )
 
     def _require_hl_client_and_pair(
         self,

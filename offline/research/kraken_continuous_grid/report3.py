@@ -11,6 +11,7 @@ if ROOT not in sys.path:
 from botcore import safe_float
 from offline.research.kraken_continuous_grid import grid2
 from offline.research.kraken_continuous_grid.report import (
+    _append_markdown_table_header,
     _bind_report_generator,
     _finalize_markdown_report,
     _fmt_num,
@@ -29,10 +30,13 @@ def _generate_report_with_status(exp_dir: str | None = None) -> tuple[list[str],
          "Return and max drawdown as % of 3900 USD over the whole history per asset; "
          "`neg` = assets with a loss; `min cash` = lowest free cash seen (median over assets).\n"]
     for fee in ("0.26", "0.4"):
-        L.append(f"\n## Fee {fee}% per leg\n")
-        L.append("| config | beat live | neg | ret med % | ret min % | ret max % | DD med % | DD max % | "
-                 "ret/DD med | refused buys med | min cash med |")
-        L.append("|---|---|---|---|---|---|---|---|---|---|---|")
+        _append_markdown_table_header(
+            L,
+            f"Fee {fee}% per leg",
+            "| config | beat live | neg | ret med % | ret min % | ret max % | DD med % | DD max % | "
+            "ret/DD med | refused buys med | min cash med |",
+            11,
+        )
         items = []
         for cfg, d in by.items():
             if not assets or not all(a in d for a in assets):

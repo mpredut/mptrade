@@ -432,8 +432,7 @@ class T212Provider(MarketDataProvider):
             try:
                 cli = self._client()
             except Exception as e:
-                print(f"[T212] balance {asset}: {e}")
-                return None
+                return self._log_provider_balance_error("T212", "balance", asset, e)
             get_cash_fn = getattr(cli, "get_cash", None)
             if not callable(get_cash_fn):
                 return None

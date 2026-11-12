@@ -740,7 +740,7 @@ class Strategy(BaseSpotMixin):
                         log("  [STRAT] price unavailable"); time.sleep(sleep_sec); continue
                     if self.reconcile(price) is False:
                         time.sleep(sleep_sec); continue
-                    self.step(price); self._save()
+                    self._step_and_save(price)
                     avg = self._avg()
                     pos = f"qty={self.s['qty']:.6f} avg={avg:.4f}" if avg else "qty=0 (waiting for an entry)"
                     log(f"  [STRAT] price={price:.4f} [{self.p.direction}]  {pos}  "
