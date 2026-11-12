@@ -592,15 +592,19 @@ def test_cache_ownership_and_passive_reader_invariants():
     assert sup_sig.parameters["allow_network"].default is False
     assert sup_sig.parameters["persist"].default is False
 
-    # 4. GlobalTelemetryCollector preserves strict acyclic layering (never imports orchestratorTrade/orchestratorOS).
-    gtc_tree = ast.parse((ROOT / "intelligence/globaltelemetry_collector.py").read_text(encoding="utf-8"))
-    imported_roots = set()
-    for node in ast.walk(gtc_tree):
-        if isinstance(node, ast.Import):
-            imported_roots.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported_roots.add(node.module.split(".")[0])
-    assert not (imported_roots & {"orchestratorTrade", "orchestratorOS"})
+    # 4. GlobalTelemetryCollector and cacheprice preserve strict acyclic layering.
+    for rel_path, forbidden_roots in (
+        ("intelligence/globaltelemetry_collector.py", {"orchestratorTrade", "orchestratorOS"}),
+        ("cacheprice.py", {"intelligence", "orchestratorTrade", "orchestratorOS"}),
+    ):
+        mod_tree = ast.parse((ROOT / rel_path).read_text(encoding="utf-8"))
+        imported_roots = set()
+        for node in ast.walk(mod_tree):
+            if isinstance(node, ast.Import):
+                imported_roots.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_roots.add(node.module.split(".")[0])
+        assert not (imported_roots & forbidden_roots), f"{rel_path} imported {imported_roots & forbidden_roots}"
 
     # 5. Canonical docs record the cache/tick/ownership invariants.
     cache_doc = (ROOT / "docs/CACHE_ARCHITECTURE_MAP.md").read_text(encoding="utf-8")
@@ -611,6 +615,8 @@ def test_cache_ownership_and_passive_reader_invariants():
     assert "current_price_ticks.sock" in tradeall_doc
     assert "confirm_interval_sec" in tradeall_doc
     assert "read_snapshot(allow_network=False, persist=False)" in ownership_doc
+    assert "cache_kalman_trend.json" in ownership_doc
+    assert "KalmanStateTracker(read_only=True)" in ownership_doc
 
 
 

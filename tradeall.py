@@ -808,7 +808,9 @@ class TrendCoordinator:
         # KALMAN_PRIMARY_SYMBOLS. Guard setup and calls so a failure cannot stop trading.
         try:
             self._kalman_state = shadow_signals.KalmanStateTracker(
-                state_path=get_kalman_state_path())
+                state_path=get_kalman_state_path(),
+                read_only=True,
+            )
             global _kalman_ref
             _kalman_ref = self._kalman_state   # _fire_order's gate reads this signal.
             print(f"[KALMAN-GATE] active, modes={KALMAN_MODES}")

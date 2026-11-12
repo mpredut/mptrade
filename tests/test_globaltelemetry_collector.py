@@ -687,12 +687,14 @@ def test_pretrade_telemetry_read_write_separation_and_explicit_snapshot_contract
     assert seen_fetch_kwargs == [{"allow_network": False, "now": now_ts}]
 
     # 5. Producer refresh_pretrade_telemetry_caches / GlobalTelemetryCollector.update_pretrade_caches performs refresh
+    #    for microstructure and T212 positions while leaving equity 24h/5d OHLCV series ownership to cacheManager.
     status = refresh_pretrade_telemetry_caches("NVDA_US_EQ", cachedb_dir=temp_cache_dir, now_ts=now_ts)
     assert status["microstructure_refreshed"] is True
     assert status["t212_positions_refreshed"] is True
+    assert status["equity_chart_refreshed"] is False
     assert "microstructure" in network_calls
     assert "t212_refresh" in network_calls
-    assert "yahoo_chart" in network_calls
+    assert "yahoo_chart" not in network_calls
 
 
 def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts(temp_cache_dir: str):

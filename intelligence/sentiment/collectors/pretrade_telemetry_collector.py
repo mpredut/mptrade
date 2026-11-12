@@ -2121,7 +2121,7 @@ def refresh_pretrade_telemetry_caches(
     *,
     now_ts: Optional[float] = None,
 ) -> Dict[str, bool]:
-    """Producer-only function refreshing pre-trade caches (microstructure, T212 position prices, Yahoo 5d equity chart)."""
+    """Producer-only function refreshing pre-trade caches (microstructure and T212 position prices; equity OHLCV series is owned by cacheManager)."""
     orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator, start_sync=True)
     if cachedb_dir == "cachedb":
         cachedb_dir = get_cachedb_dir()
@@ -2146,27 +2146,6 @@ def refresh_pretrade_telemetry_caches(
             status["microstructure_refreshed"] = True
         except Exception:
             pass
-        if is_eq_sym and is_live_network_backfill_enabled():
-            try:
-                sym_u_eq = sym_raw.upper()
-                alt_series_24h, _ = load_symbol_price_series(cachedb_dir, sym_u_eq, include_7d=False)
-                eq_rth_open = bool(is_symbol_market_open(sym_u_eq, eff_now))
-                memo_chart_eq = _EQ_YAHOO_CHART_MEMO.get(sym_u_eq)
-                memo_ttl_eq = 240.0 if (eq_rth_open or memo_chart_eq is None) else 1800.0
-                memo_fresh = bool(memo_chart_eq is not None and 0.0 <= (eff_now - memo_chart_eq[0]) < memo_ttl_eq)
-                pts_5d_eq, _, _, _, _, _, _ = TelemetryCollectorFactory.get_yahoo_chart_collector().collect(
-                    cachedb_dir,
-                    sym_u_eq,
-                    raw_series_24h=list(alt_series_24h),
-                    now_ts=eff_now,
-                    eq_rth_open=eq_rth_open,
-                    memo_chart=memo_chart_eq,
-                    memo_chart_fresh=memo_fresh,
-                    persist=True,
-                )
-                status["equity_chart_refreshed"] = bool(pts_5d_eq)
-            except Exception:
-                pass
     try:
         vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
         if os.path.exists(vb_path) and isinstance(vb_d := _rj(vb_path), dict):

@@ -895,64 +895,6 @@ def upgrade_tpo_vp_from_ohlc(
         pass
 
 
-def _persist_refreshed_equity_chart_cache(
-    cache_dir: str,
-    sym: str,
-    p24_eq_path: str,
-    pts_24h_to_save: list,
-    pts_24h_bars: list,
-    pts_5d: list,
-    raw_matched_series_24h: list,
-    rth_bar_fresh: bool,
-    now_ts: float,
-) -> None:
-    if not (cache_dir and os.path.isdir(cache_dir) and is_live_network_backfill_enabled()):
-        return
-    try:
-        _ensure_cacheprice_classes_bound()
-        eff_p24_pts = pts_24h_to_save or pts_24h_bars
-        p24_target = p24_eq_path or str(
-            resolve_cachedb_filepath(os.path.join(cache_dir, Cache24PriceManager.disk_filename_for_symbol(sym)))
-        )
-        disk_p24_obj = read_json_dict(p24_target) if (p24_target and os.path.exists(p24_target)) else {}
-        disk_p24_rows = _extract_cached_items_series(disk_p24_obj, (sym,)) if isinstance(disk_p24_obj, dict) else []
-        check_rows = disk_p24_rows or raw_matched_series_24h
-        check_last_pt = _parse_ts_px_row(check_rows[-1]) if check_rows else None
-        eff_last_pt = _parse_ts_px_row(eff_p24_pts[-1]) if eff_p24_pts else None
-        raw_ohlc_cnt = sum(1 for p in check_rows if isinstance(p, (list, tuple)) and len(p) >= 3)
-        new_ohlc_cnt = sum(1 for p in eff_p24_pts if isinstance(p, (list, tuple)) and len(p) >= 3)
-        if eff_p24_pts and (
-            len(check_rows) < 10
-            or raw_ohlc_cnt < new_ohlc_cnt
-            or check_last_pt is None
-            or (
-                eff_last_pt is not None
-                and (eff_last_pt[0] > check_last_pt[0] or abs(eff_last_pt[1] - check_last_pt[1]) > 1e-4)
-            )
-            or (
-                not rth_bar_fresh
-                and raw_ohlc_cnt == 0
-                and any(isinstance(p, (list, tuple)) and len(p) < 3 for p in check_rows)
-            )
-        ):
-            Cache24PriceManager.persist_external_ohlc_series(
-                p24_target,
-                sym,
-                eff_p24_pts,
-                now_ts,
-                existing_obj=disk_p24_obj if isinstance(disk_p24_obj, dict) else None,
-            )
-        if pts_24h_to_save or pts_24h_bars:
-            ohlc24_target = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_ohlc_24h_{sym}.json")))
-            save_json_state(ohlc24_target, {"ts": now_ts, "symbol": sym, "points": pts_24h_to_save or pts_24h_bars})
-        p365_jsonl_path = str(
-            resolve_cachedb_filepath(os.path.join(cache_dir, Cache365PriceManager.disk_filename_for_symbol(sym)))
-        )
-        Cache365PriceManager.seed_initial_archive_if_missing(p365_jsonl_path, sym, pts_5d)
-    except Exception:
-        pass
-
-
 class PriceSeriesCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for price-series cache collectors (24h, 365d, sparse, watcher, live, Yahoo 5d)."""
 
@@ -961,7 +903,7 @@ class PriceSeriesCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
 
 
 class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
-    """Concrete collector (Level 3) for Yahoo 5d/5m equity chart backfill and disk persistence."""
+    """Concrete collector (Level 3) for read-only Yahoo 5d/5m equity chart normalization when disk caches are absent or cold."""
 
     cls_name = "EquityYahoo5dChartCollector"
 
@@ -995,20 +937,7 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
             )
             if is_live_network_backfill_enabled():
                 _EQ_YAHOO_CHART_MEMO[symbol] = (eff_now, chart_res)
-        res = normalize_yahoo_5d_chart_bars(chart_res, raw_s24, eff_now, eq_rth_open=eq_rth_open)
-        if persist and (res[0] or res[2]):
-            _persist_refreshed_equity_chart_cache(
-                cachedb_dir,
-                symbol,
-                p24_eq_path,
-                list(res[2]),
-                list(res[1]),
-                list(res[0]),
-                raw_s24,
-                res[3],
-                eff_now,
-            )
-        return res
+        return normalize_yahoo_5d_chart_bars(chart_res, raw_s24, eff_now, eq_rth_open=eq_rth_open)
 
 
 class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
@@ -1699,10 +1628,6 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                                     pt_map[sym].pop(k_7d_opt, None)
                                 pt_map[sym].update(compute_7d_range_metrics(vals_5d, decimals=4))
                                 active_7d_vals = list(vals_5d)
-                            if persist:
-                                _persist_refreshed_equity_chart_cache(
-                                    cachedb_dir, sym, p24_eq_path, pts_24h_to_save, pts_24h_bars, pts_5d, raw_matched_series_24h, rth_bar_fresh, eff_now
-                                )
                     except Exception:
                         pass
             if m24:

@@ -828,11 +828,12 @@ class CacheManagerInterface(ABC):
                 "rest_sync_cursor": metadata["rest_sync_cursor"],
             }
             write_json_fn = _cm_override("atomic_write_json", atomic_write_json)
-            if not self._commit_file_and_meta_locked(
-                lambda: write_json_fn(self.filename, payload, indent=1),
-                metadata,
-            ):
-                return False
+            with self._generation_lock():
+                if not self._commit_file_and_meta_locked(
+                    lambda: write_json_fn(self.filename, payload, indent=1),
+                    metadata,
+                ):
+                    return False
             self._last_disk_sync_max_ts = max(
                 self._persisted_max_ts(), self._mem_max_ts()
             )

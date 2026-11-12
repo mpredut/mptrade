@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional
 import websockets as _websockets
 
 from botcore import (
+    FileLock,
     PRICE_FALLBACK_HTTP_DEADLINE_SEC,
     PRICE_FRESHNESS_MAX_AGE_MS,
     PRICE_FRESHNESS_MAX_AGE_SEC,
@@ -78,6 +79,7 @@ from cachepaths import (
     cache_24_price_filename,
     cache_path,
     cache_symbol_variants,
+    cachedb_root_for_file,
     canonical_base_asset,
     canonical_symbol_key,
     clean_symbol_key,
@@ -104,6 +106,7 @@ from instrument_registry import (
 )
 import providers.market_api as _market_api
 from providers.base import MarketDataProvider
+from providers.order_ohlc_utils import normalize_yahoo_5d_chart_bars
 from providers.ssot_bridge import live_price_fetch_context
 from providers.ws_stream import (
     PublicPriceStreamBase,
@@ -115,10 +118,13 @@ from providers.ws_stream import (
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer,
+    atomic_write_json,
     atomic_write_jsonl,
     canonical_json_key,
+    commit_file_and_meta,
     discard_generation_file,
     format_jsonl_bucket_line,
+    generation_lock_path,
     iter_jsonl_retention_lines,
     meta_file_path,
     parse_json_payload,
@@ -354,6 +360,8 @@ class Cache24PriceManager(CachePriceManagerBase):
     FILE_PREFIX = CACHE_24_PRICE_PREFIX
     FILE_EXT = "json"
     _filter_fetchtimes_to_symbols = True
+    EQUITY_OHLC_RTH_REFRESH_SEC = 240.0
+    EQUITY_OHLC_OFF_RTH_REFRESH_SEC = 1800.0
 
     def __init__(
         self,
@@ -367,6 +375,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         current_price_mgr=None,
         data_sync_mode: Optional[str] = None,
     ):
+        self._last_eq_ohlc_refresh_ts: dict[str, float] = {}
         super().__init__(
             sync_ts,
             symbols,
@@ -396,6 +405,137 @@ class Cache24PriceManager(CachePriceManagerBase):
     def _on_stale_memory_detected_locked(self) -> None:
         self._reload_from_disk()
 
+    def refresh_equity_ohlc_series(
+        self,
+        *,
+        now_ts: Optional[float] = None,
+        force: bool = False,
+    ) -> bool:
+        """Refresh 5d/5m OHLCV bars in ``cacheManager`` for equity symbols and publish ``cache_ohlc_24h_<SYM>.json`` + ``365Price`` seed."""
+        if self.read_only or self.append_persist:
+            return False
+        eq_symbols = [s for s in self.symbols if is_equity_symbol(s)]
+        if not eq_symbols:
+            return False
+        eff_now = resolve_now_ts(now_ts)
+        eff_now_ms = math.trunc(eff_now * 1000.0)
+        refresh_map = getattr(self, "_last_eq_ohlc_refresh_ts", None)
+        if not isinstance(refresh_map, dict):
+            refresh_map = {}
+            self._last_eq_ohlc_refresh_ts = refresh_map
+        base_cachedb = (
+            cachedb_root_for_file(self.filename)
+            if self.filename
+            else ""
+        ) or (os.path.dirname(os.path.abspath(self.filename)) if self.filename else "")
+        any_refreshed = False
+        for sym_eq in eq_symbols:
+            with self.lock:
+                cur_rows = list(self.cache.get(sym_eq) or ())
+            has_pos_vol_ohlc = any(
+                isinstance(r, (list, tuple))
+                and len(r) >= 3
+                and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+                for r in cur_rows
+            )
+            eq_rth_open = bool(is_symbol_market_open(sym_eq, eff_now))
+            min_interval = (
+                self.EQUITY_OHLC_RTH_REFRESH_SEC
+                if (eq_rth_open or len(cur_rows) < 10 or not has_pos_vol_ohlc)
+                else self.EQUITY_OHLC_OFF_RTH_REFRESH_SEC
+            )
+            last_ref = refresh_map.get(sym_eq, -1e18)
+            if not force and 0.0 <= (eff_now - last_ref) < min_interval:
+                continue
+            try:
+                chart_res = _market_api.api.fetch_intraday_chart(
+                    canonical_base_asset(sym_eq) or sym_eq,
+                    rng="5d",
+                    interval="5m",
+                )
+                pts_5d, pts_24h_bars, pts_24h, _, _, _, _ = normalize_yahoo_5d_chart_bars(
+                    chart_res,
+                    cur_rows,
+                    eff_now,
+                    eq_rth_open=eq_rth_open,
+                )
+            except Exception as exc:
+                print(f"[{self.cls_name}][Error] equity OHLC refresh {sym_eq}: {exc}")
+                continue
+            refresh_map[sym_eq] = eff_now
+            eff_pts = list(pts_24h or pts_24h_bars)
+            if not eff_pts and not pts_5d:
+                continue
+            if eff_pts:
+                with self.lock:
+                    by_ts = {
+                        self._entry_timestamp_ms(r): list(r)
+                        for r in eff_pts
+                        if self._entry_timestamp_ms(r) > 0
+                    }
+                    ohlc_ts_list = [
+                        self._entry_timestamp_ms(r)
+                        for r in eff_pts
+                        if isinstance(r, (list, tuple))
+                        and len(r) >= 3
+                        and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+                    ]
+                    first_ohlc_ts = min(ohlc_ts_list, default=0)
+                    last_ohlc_ts = max(ohlc_ts_list, default=0)
+                    for r in self.cache.get(sym_eq) or ():
+                        ts_r = self._entry_timestamp_ms(r)
+                        if ts_r <= 0:
+                            continue
+                        is_ohlc_r = (
+                            isinstance(r, (list, tuple))
+                            and len(r) >= 3
+                            and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+                        )
+                        if not ohlc_ts_list or ts_r < first_ohlc_ts or ts_r >= last_ohlc_ts - 15 * 60 * 1000:
+                            existing = by_ts.get(ts_r)
+                            if existing is None or (
+                                is_ohlc_r
+                                and (not isinstance(existing, (list, tuple)) or len(existing) < 3)
+                            ):
+                                by_ts[ts_r] = list(r) if isinstance(r, tuple) else r
+                    merged_pts = [by_ts[k] for k in sorted(by_ts)]
+                    self.cache[sym_eq] = merged_pts
+                    last_pt_ts = (
+                        self._entry_timestamp_ms(merged_pts[-1]) if merged_pts else eff_now_ms
+                    ) or eff_now_ms
+                    prev_ft = safe_nonneg_int(self.fetchtime_per_symbol.get(sym_eq), default=0) or 0
+                    new_ft = max(prev_ft + 1, eff_now_ms, last_pt_ts)
+                    self.fetchtime_per_symbol[sym_eq] = new_ft
+                    self._rest_sync_cursor_per_symbol[sym_eq] = (
+                        safe_pos_int(self._rest_sync_cursor_per_symbol.get(sym_eq), default=new_ft) or new_ft
+                    )
+                self._trim_old_data(sym_eq)
+                if base_cachedb:
+                    try:
+                        ohlc24_target = str(
+                            resolve_cachedb_filepath(
+                                os.path.join(base_cachedb, f"cache_ohlc_24h_{sym_eq}.json")
+                            )
+                        )
+                        save_json_state(
+                            ohlc24_target,
+                            {"ts": eff_now, "symbol": sym_eq, "points": eff_pts},
+                        )
+                    except Exception as exc:
+                        print(f"[{self.cls_name}][Error] save cache_ohlc_24h {sym_eq}: {exc}")
+                any_refreshed = True
+            if pts_5d and base_cachedb:
+                try:
+                    p365_target = str(
+                        resolve_cachedb_filepath(
+                            os.path.join(base_cachedb, Cache365PriceManager.disk_filename_for_symbol(sym_eq))
+                        )
+                    )
+                    Cache365PriceManager.seed_initial_archive_if_missing(p365_target, sym_eq, pts_5d)
+                except Exception as exc:
+                    print(f"[{self.cls_name}][Error] seed 365Price {sym_eq}: {exc}")
+        return any_refreshed
+
     def _persist_periodic_state(self, sync_complete):
         if self.save_state and not self.append_persist:
             with self.lock:
@@ -406,8 +546,14 @@ class Cache24PriceManager(CachePriceManagerBase):
                     and mem_max_ts <= self._last_disk_sync_max_ts
                 ):
                     self._reload_from_disk()
-                    self._publish_periodic_sync_health(sync_complete, True)
-                    return True
+                    if not (
+                        is_live_network_backfill_enabled()
+                        and any(is_equity_symbol(s) for s in self.symbols)
+                    ):
+                        self._publish_periodic_sync_health(sync_complete, True)
+                        return True
+            if is_live_network_backfill_enabled():
+                self.refresh_equity_ohlc_series()
         return super()._persist_periodic_state(sync_complete)
 
     def _before_snapshot_commit_locked(self, persisted_max_ts: int) -> None:
@@ -541,59 +687,73 @@ class Cache24PriceManager(CachePriceManagerBase):
         *,
         existing_obj: Optional[dict] = None,
     ) -> None:
-        """Persist externally refreshed 24h OHLCV series into ``cache_24_price_<SYM>.json`` and advance ``.meta`` ``max_ts``."""
+        """Persist 24h OHLCV series into ``cache_24_price_<SYM>.json`` and ``.meta`` transactionally under ``.generation.lock``."""
         if not target_path or not points:
             return
-        disk_obj = existing_obj if isinstance(existing_obj, dict) else (read_json_dict(target_path) if os.path.exists(target_path) else {})
-        now_ms = math.trunc(now_ts * 1000)
-        last_pt_ts = (
-            safe_pos_int(points[-1][0], default=now_ms) or now_ms
-            if isinstance(points[-1], (list, tuple)) and points[-1]
-            else now_ms
-        )
-        meta_path = meta_file_path(target_path)
-        prev_meta = read_json_dict(meta_path) if os.path.exists(meta_path) else {}
-        prev_ft = (
-            prev_meta.get("fetchtime")
-            if isinstance(prev_meta.get("fetchtime"), dict)
-            else (
-                disk_obj.get("fetchtime")
-                if isinstance(disk_obj, dict) and isinstance(disk_obj.get("fetchtime"), dict)
-                else {}
+        os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+        with FileLock(generation_lock_path(target_path)):
+            disk_obj = (
+                existing_obj
+                if isinstance(existing_obj, dict)
+                else (
+                    read_json_dict(target_path, recover_previous=True, repair_files=True)
+                    if (os.path.exists(target_path) or os.path.exists(previous_generation_path(target_path)))
+                    else {}
+                )
             )
-        )
-        prev_rc = (
-            prev_meta.get("rest_sync_cursor")
-            if isinstance(prev_meta.get("rest_sync_cursor"), dict)
-            else (
-                disk_obj.get("rest_sync_cursor")
-                if isinstance(disk_obj, dict) and isinstance(disk_obj.get("rest_sync_cursor"), dict)
-                else {}
+            now_ms = math.trunc(now_ts * 1000)
+            last_pt_ts = (
+                safe_pos_int(points[-1][0], default=now_ms) or now_ms
+                if isinstance(points[-1], (list, tuple)) and points[-1]
+                else now_ms
             )
-        )
-        prev_cnts = prev_meta.get("counts") if isinstance(prev_meta.get("counts"), dict) else {}
-        eff_ft_ts = max(
-            (safe_pos_int(prev_ft.get(symbol), default=0) or 0) + 1,
-            (safe_pos_int(prev_meta.get("max_ts"), default=0) or 0) + 1,
-            now_ms,
-            last_pt_ts,
-        )
-        ft_map = {**prev_ft, symbol: eff_ft_ts}
-        rc_map = {**prev_rc, symbol: safe_pos_int(prev_rc.get(symbol), default=eff_ft_ts) or eff_ft_ts}
-        save_json_state(
-            target_path,
-            {"items": {symbol: points}, "fetchtime": ft_map, "rest_sync_cursor": rc_map},
-        )
-        write_meta_json(
-            target_path,
-            {
+            meta_path = meta_file_path(target_path)
+            prev_meta = read_json_dict(meta_path) if os.path.exists(meta_path) else {}
+            prev_ft = (
+                prev_meta.get("fetchtime")
+                if isinstance(prev_meta.get("fetchtime"), dict)
+                else (
+                    disk_obj.get("fetchtime")
+                    if isinstance(disk_obj, dict) and isinstance(disk_obj.get("fetchtime"), dict)
+                    else {}
+                )
+            )
+            prev_rc = (
+                prev_meta.get("rest_sync_cursor")
+                if isinstance(prev_meta.get("rest_sync_cursor"), dict)
+                else (
+                    disk_obj.get("rest_sync_cursor")
+                    if isinstance(disk_obj, dict) and isinstance(disk_obj.get("rest_sync_cursor"), dict)
+                    else {}
+                )
+            )
+            prev_cnts = prev_meta.get("counts") if isinstance(prev_meta.get("counts"), dict) else {}
+            eff_ft_ts = max(
+                (safe_pos_int(prev_ft.get(symbol), default=0) or 0) + 1,
+                (safe_pos_int(prev_meta.get("max_ts"), default=0) or 0) + 1,
+                now_ms,
+                last_pt_ts,
+            )
+            ft_map = {**prev_ft, symbol: eff_ft_ts}
+            rc_map = {**prev_rc, symbol: safe_pos_int(prev_rc.get(symbol), default=eff_ft_ts) or eff_ft_ts}
+            payload = {"items": {symbol: points}, "fetchtime": ft_map, "rest_sync_cursor": rc_map}
+            meta_payload = {
                 "fetchtime": ft_map,
                 "rest_sync_cursor": rc_map,
                 "counts": {**prev_cnts, symbol: len(points)},
                 "max_ts": max((safe_pos_int(v, default=0) or 0 for v in ft_map.values()), default=eff_ft_ts),
                 "saved_at": math.trunc(_now_time() * 1000),
-            },
-        )
+            }
+
+            def _write_meta_ok() -> bool:
+                write_meta_json(target_path, meta_payload)
+                return True
+
+            commit_file_and_meta(
+                target_path,
+                lambda: atomic_write_json(target_path, payload, indent=1),
+                _write_meta_ok,
+            )
 
     @staticmethod
     def read_ssot_24price_entries(

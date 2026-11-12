@@ -1404,5 +1404,130 @@ def normalize_broker_history_items(items: Any) -> dict[str, list[dict]]:
     return by_symbol
 
 
+def _yahoo_bar_prices_diverged(px_a: Any, px_b: Any, threshold: float = 0.10) -> bool:
+    a_f, b_f = safe_pos_float(px_a, default=0.0) or 0.0, safe_pos_float(px_b, default=0.0) or 0.0
+    return (abs(a_f - b_f) / min(a_f, b_f) > threshold) if (a_f > 0.0 and b_f > 0.0) else False
+
+
+def normalize_yahoo_5d_chart_bars(
+    chart_res: Any,
+    raw_series_24h: list,
+    now_ts: float,
+    *,
+    eq_rth_open: bool = False,
+) -> tuple[list[list[Any]], list[list[Any]], list[list[Any]], bool, bool, float, int]:
+    """Parse Yahoo 5d/5m chart payload, prune off-RTH zero-vol tail gaps, slice 24h window, and stitch sub-5m ticks."""
+    pts_5d: list[list[Any]] = []
+    if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
+        pts_5d = sorted(
+            (
+                (
+                    [math.trunc(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0]
+                    if len(bar) >= 3
+                    else [math.trunc(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4)]
+                )
+                for bar in chart_res[1]
+                if isinstance(bar, (list, tuple))
+                and len(bar) >= 2
+                and (ts_f := safe_pos_float(bar[0], default=None)) is not None
+                and (px_f := safe_pos_float(bar[1], default=None)) is not None
+            ),
+            key=lambda pt: pt[0],
+        )
+    elif isinstance(chart_res, dict):
+        q_obj = ((chart_res.get("indicators") or {}).get("quote") or [{}])[0]
+        vols = q_obj.get("volume") or []
+        pts_5d = sorted(
+            (
+                [
+                    math.trunc(ts_f if ts_f > 1e11 else ts_f * 1000),
+                    round(c_f, 4),
+                    safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0,
+                ]
+                for idx, (ts, c) in enumerate(zip(chart_res.get("timestamp") or [], q_obj.get("close") or []))
+                if (ts_f := safe_pos_float(ts, default=None)) is not None and (c_f := safe_pos_float(c, default=None)) is not None
+            ),
+            key=lambda pt: pt[0],
+        )
+    if not pts_5d:
+        return [], [], [], False, False, 0.0, 0
+    chart_px = safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0
+    now_ms_i = math.trunc(now_ts * 1000)
+    raw_last_5d_ts = math.trunc(pts_5d[-1][0])
+    if len(pts_5d) >= 10:
+        for split_idx in range(len(pts_5d) - 1, max(4, len(pts_5d) - 4), -1):
+            if (
+                (pts_5d[split_idx][0] - pts_5d[split_idx - 1][0]) > 2 * 3600 * 1000
+                and (pts_5d[-1][0] - pts_5d[split_idx][0]) < 15 * 60 * 1000
+            ):
+                pts_5d = pts_5d[:split_idx]
+                break
+        last_pos_v_idx = max(
+            (
+                idx_v
+                for idx_v, pt_v in enumerate(pts_5d)
+                if len(pt_v) >= 3 and (safe_pos_float(pt_v[2], default=0.0) or 0.0) > 0.0
+            ),
+            default=-1,
+        )
+        if 4 <= last_pos_v_idx < len(pts_5d) - 1:
+            while len(pts_5d) - 1 > last_pos_v_idx:
+                tail_gap_idx = next(
+                    (
+                        zv_idx
+                        for zv_idx in range(len(pts_5d) - 1, last_pos_v_idx, -1)
+                        if (pts_5d[zv_idx][0] - pts_5d[zv_idx - 1][0]) > 20 * 60 * 1000
+                    ),
+                    None,
+                )
+                if tail_gap_idx is None:
+                    break
+                tail_span_ms = pts_5d[-1][0] - pts_5d[tail_gap_idx][0]
+                tail_is_live = (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
+                if tail_span_ms < 15 * 60 * 1000 and not tail_is_live:
+                    pts_5d = pts_5d[:tail_gap_idx]
+                else:
+                    break
+    rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= (4 * 3600 * 1000 if eq_rth_open else 20 * 60 * 1000)
+    chart_tick_fresh = (now_ms_i - raw_last_5d_ts) <= 20 * 60 * 1000
+    anchor_24h_ms = min(now_ms_i, math.trunc(pts_5d[-1][0])) if pts_5d else now_ms_i
+    cutoff_24h_ms = anchor_24h_ms - 86400 * 1000
+    pts_24h_bars = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
+    if pts_24h_bars and (pts_24h_bars[-1][0] - pts_24h_bars[0][0]) < 18 * 3600 * 1000:
+        older_bars = [pt for pt in pts_5d if pt[0] < cutoff_24h_ms]
+        if older_bars:
+            pts_24h_bars = [older_bars[-1], *pts_24h_bars]
+    if len(pts_24h_bars) < 10:
+        pts_24h_bars = list(pts_5d[-78:])
+    pts_24h = list(pts_24h_bars)
+    if rth_bar_fresh and raw_series_24h and pts_24h:
+        last_bar_ts = pts_24h[-1][0]
+        recent_bar_pxs = [
+            b[1]
+            for b in pts_24h_bars
+            if isinstance(b, (list, tuple)) and len(b) >= 2 and b[0] >= last_bar_ts - 15 * 60 * 1000
+        ]
+        if len(pts_24h_bars) >= 2 and isinstance(pts_24h_bars[-2], (list, tuple)) and len(pts_24h_bars[-2]) >= 2:
+            recent_bar_pxs.append(pts_24h_bars[-2][1])
+        bar_win_lo = min(recent_bar_pxs) if recent_bar_pxs else pts_24h[-1][1]
+        bar_win_hi = max(recent_bar_pxs) if recent_bar_pxs else pts_24h[-1][1]
+        upper_sub5m_ms = (now_ms_i + 5000) if eq_rth_open else min(now_ms_i + 5000, last_bar_ts + 300 * 1000)
+        recent_sub5m = [
+            pt
+            for pt in raw_series_24h
+            if isinstance(pt, (list, tuple))
+            and len(pt) >= 2
+            and last_bar_ts - 15 * 60 * 1000 <= pt[0] <= upper_sub5m_ms
+            and not _yahoo_bar_prices_diverged(pt[1], pts_24h[-1][1])
+            and (pt[0] >= last_bar_ts or (bar_win_lo * 0.995 <= pt[1] <= bar_win_hi * 1.005))
+        ]
+        if recent_sub5m:
+            by_ts = {pt[0]: pt for pt in pts_24h}
+            for r_pt in recent_sub5m:
+                by_ts.setdefault(r_pt[0], r_pt)
+            pts_24h = [by_ts[k] for k in sorted(by_ts)]
+    return pts_5d, pts_24h_bars, pts_24h, rth_bar_fresh, chart_tick_fresh, chart_px, raw_last_5d_ts
+
+
 
 

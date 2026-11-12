@@ -220,6 +220,9 @@ def _reconciler(workspace, **kwargs):
 
 
 def _publish_venue_balances_for_test(reconciler, *, symbols=None):
+    from cachepaths import resolve_cachedb_filepath
+    from cacheprice import Cache24PriceManager
+    from instrument_registry import is_equity_symbol
     from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
 
     with patch(
@@ -232,6 +235,24 @@ def _publish_venue_balances_for_test(reconciler, *, symbols=None):
             skip_external=True,
         )
         if symbols:
+            for sym_item in symbols:
+                if is_equity_symbol(sym_item):
+                    p24_target = str(
+                        resolve_cachedb_filepath(
+                            os.path.join(
+                                reconciler.cache_dir,
+                                Cache24PriceManager.disk_filename_for_symbol(sym_item),
+                            )
+                        )
+                    )
+                    eq_mgr = Cache24PriceManager(
+                        30,
+                        [sym_item],
+                        p24_target,
+                        data_sync_mode="producer",
+                    )
+                    if eq_mgr.refresh_equity_ohlc_series(force=True):
+                        eq_mgr.save_state_to_file()
             with (
                 patch.dict(os.environ, {"MPTRADE_ALLOW_LIVE_BACKFILL": "1"}),
                 patch(

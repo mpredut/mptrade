@@ -517,3 +517,51 @@ def test_shadow_runtime_require_shadow_interval_rejects_float_or_non_positive_ex
         require_shadow_interval(60.0, 60, "test")
     with pytest.raises(ValueError):
         require_shadow_interval(0, 0, "test")
+
+
+def test_kalman_state_tracker_read_only_seeds_passively_and_never_writes_disk_or_journal(tmp_path):
+    """KalmanStateTracker(read_only=True) in tradeall loads initial state passively, updates RAM transitions, and never mutates disk or journal."""
+    state_file = tmp_path / "cache_kalman_trend.json"
+    prev_file = tmp_path / "cache_kalman_trend.json.previous"
+    seed_payload = {
+        "BTCUSDC": {
+            "kalman_trend": -1,
+            "kalman_vel": -12.0,
+            "kalman_vel_std": 2.0,
+            "ts": 1000.0,
+            "price": 90000.0,
+        }
+    }
+    state_file.write_text("{corrupt", encoding="utf-8")
+    prev_file.write_text(json.dumps(seed_payload), encoding="utf-8")
+
+    sim_now = [1005.0]
+    ro_tracker = KalmanStateTracker(
+        state_path=str(state_file),
+        now_fn=lambda: sim_now[0],
+        compute_vol=False,
+        read_only=True,
+    )
+    assert ro_tracker.read_only is True
+    assert ro_tracker.journal is None
+    assert ro_tracker.current_trend("BTCUSDC") == (-1, 5.0)
+    # Passive reader must NOT repair/delete .previous or overwrite primary file
+    assert prev_file.exists()
+    assert state_file.read_text(encoding="utf-8") == "{corrupt"
+
+    # Feed upward price ramp in memory; trend transitions in RAM with zero disk/journal writes
+    for idx in range(40):
+        ts_step = 1010.0 + idx * 10.0
+        sim_now[0] = ts_step
+        fields = ro_tracker.update(
+            "BTCUSDC",
+            ts_step,
+            90000.0 + idx * 150.0,
+            epsilon=5.0,
+        )
+    sim_now[0] += 5.0
+    assert fields["kalman_trend"] == 1
+    assert ro_tracker.current_trend("BTCUSDC") == (1, 5.0)
+    assert prev_file.exists()
+    assert state_file.read_text(encoding="utf-8") == "{corrupt"
+

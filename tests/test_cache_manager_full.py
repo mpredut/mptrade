@@ -3286,3 +3286,53 @@ def test_ws_drop_triggers_subsecond_http_fallback_and_bypasses_bapi_ttl(tmp_path
     assert summary["freshest_age_seconds"] < botcore.PRICE_FRESHNESS_MAX_AGE_SEC
 
 
+def test_cache24pricemanager_producer_refreshes_equity_ohlc_and_seeds_365price(tmp_path):
+    """Cache24PriceManager(MODE_PRODUCER) acts as uniform single producer for equity 24h/5d OHLCV caches."""
+    prices_dir = tmp_path / "prices"
+    prices_dir.mkdir(parents=True, exist_ok=True)
+    p24_file = prices_dir / "cache_24_price_NVDA_US_EQ.json"
+    now_ts = float(int(time.time()))
+    bars_5d = [
+        [int((now_ts - (30 - i) * 300) * 1000), round(170.0 + i * 0.25, 4), 1000.0 + i * 10.0]
+        for i in range(31)
+    ]
+    fake_chart = ("NVDA", bars_5d)
+
+    with (
+        patch("providers.market_api.api.fetch_intraday_chart", return_value=fake_chart) as mock_chart,
+        patch("cacheprice.is_symbol_market_open", return_value=True),
+    ):
+        mgr = cm.Cache24PriceManager(
+            30,
+            ["NVDA_US_EQ"],
+            str(p24_file),
+            current_price_getter=lambda *_a, **_kw: None,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        # Live sub-5m tick arrives before OHLC refresh; refresh stitches/retains it without losing 3-element OHLCV bars
+        mgr.on_price_update("NVDA_US_EQ", int((now_ts + 2) * 1000), 178.15)
+        assert mgr.refresh_equity_ohlc_series(now_ts=now_ts, force=True) is True
+        assert mgr.save_state_to_file() is True
+        mock_chart.assert_called_once_with("NVDA", rng="5d", interval="5m")
+
+        # Subsequent non-forced call within throttle interval skips network I/O
+        assert mgr.refresh_equity_ohlc_series(now_ts=now_ts + 30.0, force=False) is False
+        assert mock_chart.call_count == 1
+
+    persisted_p24 = json.loads(p24_file.read_text(encoding="utf-8"))
+    rows = persisted_p24["items"]["NVDA_US_EQ"]
+    assert any(len(r) >= 3 and r[2] > 0 for r in rows)
+    assert rows[-1][:2] == [int((now_ts + 2) * 1000), 178.15]
+    assert (prices_dir / "cache_24_price_NVDA_US_EQ.json.meta").exists()
+    assert (prices_dir / "cache_24_price_NVDA_US_EQ.json.generation.lock").exists()
+
+    ohlc_24_path = prices_dir / "cache_ohlc_24h_NVDA_US_EQ.json"
+    p365_path = prices_dir / "cache_365_price_NVDA_US_EQ.jsonl"
+    assert ohlc_24_path.exists()
+    assert p365_path.exists()
+    ohlc_payload = json.loads(ohlc_24_path.read_text(encoding="utf-8"))
+    assert ohlc_payload["symbol"] == "NVDA_US_EQ"
+    assert len(ohlc_payload["points"]) >= 30
+
+
+
