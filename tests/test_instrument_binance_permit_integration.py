@@ -1,24 +1,22 @@
 """End-to-end regressions for Instrument's Binance submit-permit plumbing."""
 
 import contextlib
-import os
-import sys
-import unittest
-from unittest.mock import Mock, patch
-
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from binance_api import bapi_placeorder as placeorder
-from account_cache_health import CacheHealthStatus
-from instrument import Instrument
 import instrument as instrument_module
 import order_guard
 import order_retry
 import order_retry_worker
+import os
+import unittest
+from account_cache_health import CacheHealthStatus
+from binance_api import bapi_placeorder as placeorder
+from instrument import Instrument
 from providers import market_api
 from providers.market_api import BinanceProvider, MarketApi
 from tests.conftest import TempDirTestCase
+from unittest.mock import Mock, patch
+
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class _FakeClient:

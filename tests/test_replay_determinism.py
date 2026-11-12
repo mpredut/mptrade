@@ -1,30 +1,27 @@
 """Tests verifying backtest and replay determinism, wall-clock immunity, and cache isolation."""
+
 from __future__ import annotations
 
 import json
+import monitortrades as mt
 import os
+import pytest
 import shutil
-import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
 from binance_api.market_data import fetch_ohlc_candles, parse_interval_minutes
-from botcore import load_local_module
 from instrument import Instrument
-import monitortrades as mt
 from offline.backtests import tradeall as tb
 from offline.backtests.evaluation import evaluate_segment, evaluate_walk_forward
 from offline.backtests.metrics import validate_replay_metrics
 from providers.market_api import MarketApi
-from providers.replay_provider import ReplayMarketDataProvider, SimClock, _base_asset, load_price_series
+from providers.replay_provider import (
+    ReplayMarketDataProvider,
+    SimClock,
+    _base_asset,
+    load_price_series,
+)
 from strategies.position_exit_manager import (
     PositionExitConfig,
     PositionExitManager,
@@ -33,7 +30,11 @@ from strategies.position_exit_manager import (
 )
 from strategies.spot_engine import StratParams, Strategy
 from strategies.spot_replay import make_spot_replay_adapter, run_replay
-from tests.conftest import make_spot_test_params
+from tests.conftest import load_venue_modules, make_spot_test_params
+from unittest.mock import MagicMock, patch
+
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _sample_ohlc(length: int = 40, base_price: float = 100.0) -> list[tuple[float, float, float, float]]:
@@ -251,8 +252,7 @@ class ReplayDeterminismTest(unittest.TestCase):
 
     def test_t212_strategy_replay_cache_immunity(self):
         """T212 strategy in replay mode must isolate from external volatility cache."""
-        t212_dir = os.path.join(ROOT, "212trading")
-        mod = load_local_module(t212_dir, "strategy", module_key="t212_strat_test", reload=True)
+        mod = load_venue_modules("212trading", "strategy")
 
         client = MagicMock()
         client.get_order.return_value = None

@@ -1,17 +1,17 @@
-from types import SimpleNamespace
+import market_regime as mr
+import pricewindow as pw
+import pytest
 import unittest
-
 from market_regime import (
     ClosedPriceSeries,
     MarketRegimeContext,
     MarketRegimeDecision,
-    MarketRegimeEvidence,
     MarketRegimeEvaluator,
+    MarketRegimeEvidence,
     MarketRegimeHorizon,
     MarketRegimeService,
 )
-import market_regime as mr
-import pytest
+from types import SimpleNamespace
 
 
 class _OhlcClosesProvider:
@@ -397,7 +397,6 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
             self.assertTrue(decision.fallback_used)
 
     def test_cross_venue_symbol_and_power_normalization(self):
-        import pricewindow as pw
         bull = self.evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
         ctx = MarketRegimeContext.from_decision(
             bull, evaluated_at=1000.0, symbol="BTC-USDC", provider="BinanceSpot"

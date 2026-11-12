@@ -5,25 +5,24 @@ pipeline is redesigned.  They use no network, real cache, credentials or exchang
 client.  A failure during refactoring means that the financial behaviour changed
 and the change must be reviewed explicitly.
 """
+
 from __future__ import annotations
 
 import json
+import monitortrades as mt
+import order_guard
+import order_retry
+import order_retry as oq
+import order_retry_worker as orw
 import os
-import sys
+import pytest
+import rtrade
 import tempfile
 import time
-from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-import pytest
-
 from binance_api.bapi_ws_normalize import parse_trade_execution_report
 from instrument import Instrument
-import monitortrades as mt
+from intelligence.external.guards.smart_stop_loss_guard import _GRACE_TRACKER
 from offline.research.monitortrades_backtest import (
     replay_trend_source as rts,
     run_replay_backtest as rrb,
@@ -34,27 +33,18 @@ from offline.research.monitortrades_backtest.run_replay_backtest import (
     _series_cache_key,
     prewarm_trend_series,
 )
-from offline.research.monitortrades_backtest.scheduled_pilot import (
-    _edge,
-    safe_float as sp_safe_f,
-)
-import order_guard
-import order_retry as oq
-import order_retry_worker as orw
+from offline.research.monitortrades_backtest.scheduled_pilot import _edge, safe_float as sp_safe_f
 from providers.base import MarketDataProvider
 from providers.execution_audit import ExecutionAudit
 from providers.quantity import QuantityDecision
-import rtrade
-from strategies.mt_position_accounting import (
-    _infer_mt_exit_kind,
-    _update_mt_reentry_state,
-)
-from strategies.position_exit_manager import (
-    ExitAction,
-    ExitDecision,
-    PositionSnapshot,
-)
+from strategies.mt_position_accounting import _infer_mt_exit_kind, _update_mt_reentry_state
+from strategies.position_exit_manager import ExitAction, ExitDecision, PositionSnapshot
 from tests.conftest import DummySpotExecutionProvider
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 NOW = 2_000_000_000.0
@@ -1174,7 +1164,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_smart_sl_grace_cleared_on_exit(self):
         """Smart-SL grace tracker entries must be cleaned up when an exit executes."""
-        from intelligence.external.guards.smart_stop_loss_guard import _GRACE_TRACKER
         inst = FakeInstrument(
             price=95.0,
             free=4.0,
@@ -1615,7 +1604,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
                 place=lambda side, px, q, **kw: placed_calls.append((side, px, q, kw)) or {"orderId": "tp_restored"},
             )
 
-            import order_retry
             with patch.object(order_retry, "resolve_accepted_order", side_effect=lambda s, o: resolved_ids.append((s, o)) or True):
                 cancelled = mt._cancel_resting_tp_orders(fake_tp_inst, sym)
             self.assertEqual(len(cancelled), 1)

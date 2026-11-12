@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests for detect_long_term_trend (priceAnalysis) — the cases that produced
+Tests for detect_long_term_trend (priceAnalysis) -- the cases that produced
 incorrect reports (e.g. TAO: 4 days of drop reported as trend UP).
 
   python -m pytest tests/test_trend.py -v
@@ -8,25 +8,25 @@ incorrect reports (e.g. TAO: 4 days of drop reported as trend UP).
 
 from __future__ import annotations
 
-import os
-import sys
-import unittest
-
+import importlib
+import json
 import numpy as np
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from intelligence.internal.state.persistence import (  # noqa: E402
+import order_guard
+import os
+import priceAnalysis as pa
+import tempfile
+import time
+import unittest
+from intelligence.internal.state import survival as surv
+from intelligence.internal.state.persistence import (
     calculate_hurst_exponent,
     calculate_mann_kendall,
     classify_hurst_regime,
 )
+from intelligence.internal.state.survival import hybrid_T
 from priceAnalysis import detect_long_term_trend, get_trade_weight
-import order_guard
-import json
-import tempfile
-import time
 from unittest.mock import patch
-import priceAnalysis as pa
+
 
 H = 3600.0
 
@@ -60,7 +60,7 @@ class TestTAOCase(unittest.TestCase):
         d = down(96)                                  # 4 days fall
         b = up(24, start=d[-1], rate=0.25)            # 24h bounce
         r = run(*series(d, b))
-        self.assertIsNone(r, "the 24h bounce is NOT a coherent UP trend — it must be None")
+        self.assertIsNone(r, "the 24h bounce is NOT a coherent UP trend -- it must be None")
 
     def test_a_sustained_2_day_bounce_becomes_an_up_trend_with_the_right_duration(self):
         d = down(96)
@@ -265,7 +265,6 @@ class TestTrendLagOnDecline(unittest.TestCase):
         self.assertLess(self.px[i], self.px[self.peak_i], "the price really did fall")
         self.assertEqual(direction_at(self.ts, self.px, i), "up",
                          "the bug demonstrated: it is falling but still reports 'up'")
-
 
 
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -492,7 +491,6 @@ class TestZone(unittest.TestCase):
 
 class TestEstimateT(unittest.TestCase):
     def test_hybrid_t_estimation(self):
-        from intelligence.internal.state.survival import hybrid_T
 
         with self.subTest(msg="many episodes dominate empirical"):
             durs = [72.0] * 100 + [160.0] * 20
@@ -555,8 +553,6 @@ class TestUnifiedWeightResolution(unittest.TestCase):
         self.assertEqual(res["direction"], "up")
 
     def test_equity_fetch_klines_and_rth_gap_bridging(self):
-        import importlib
-        from intelligence.internal.state import survival as surv
 
         md = importlib.import_module("212trading.market_data")
         # Simulate 5 trading days of RTH 1h bars (7 bars/day with 17.5h overnight gaps and a 65h weekend gap)

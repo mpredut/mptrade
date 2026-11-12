@@ -9,18 +9,15 @@ Validates that order_guard:
     * Sideways / Flat / Unknown: 12h - 48h (default 24h)
 - Safely maps 'sideways' regime to 'flat' for backward compatibility.
 """
+
 import builtins
+import order_guard
 import os
-import sys
 import time
 import unittest
+from market_regime import ClosedPriceSeries, MarketRegimeDecision, MarketRegimeService
 from types import SimpleNamespace
 from unittest import mock
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import order_guard
-from market_regime import MarketRegimeDecision, MarketRegimeService, ClosedPriceSeries
 
 
 class _MockVenueProvider:

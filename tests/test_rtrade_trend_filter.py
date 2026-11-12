@@ -2,21 +2,21 @@
 makes the spread bot stand aside when the asset is clearly trending (|gradient_recent| >
 K*epsilon) AND when the trend signal is unavailable (fail-CLOSED on no data), plus a kill
 switch. A fake cacheManager is injected into sys.modules (imported lazily in the functions)."""
+
+import cacheManager as cm
 import json
 import os
+import rtrade
 import sys
 import time
 import types
 import unittest
+from tests.conftest import TempDirTestCase
 from unittest import mock
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-import cacheManager as cm
-import rtrade
-from tests.conftest import TempDirTestCase
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class _RTradeTrendBase(unittest.TestCase):

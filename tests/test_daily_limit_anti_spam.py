@@ -1,23 +1,21 @@
 """Unit tests for symmetric GO1 (30 filled orders / 24h) and Kraken multi-fill aggregation."""
 
 import json
-import os
-import sys
-import tempfile
-import time
-import unittest
-from types import SimpleNamespace
-from unittest.mock import patch
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from providers.market_api import MarketApi, MarketDataProvider
-from providers.kraken_provider import KrakenProvider
 import order_guard
 import order_retry
-from instrument import Instrument
+import os
+import tempfile
 import threading
+import time
+import unittest
+from instrument import Instrument
+from providers.base import aggregate_fills_by_order_id
 from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import KrakenProvider
+from providers.market_api import MarketApi, MarketDataProvider
+from providers.strategy_executor import ProviderError
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class FakeProvider(MarketDataProvider):
@@ -212,7 +210,6 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
             self.assertIsNone(reason)
 
     def test_hyperliquid_multi_fill_aggregation_by_oid(self):
-        from providers.base import aggregate_fills_by_order_id
         now_ms = int(time.time() * 1000)
         raw_fills = [
             {"coin": "@107", "side": "B", "px": "40.0", "sz": "2.0", "time": now_ms - 4000, "oid": 999001},
@@ -348,7 +345,6 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
     def test_hyperliquid_order_status_does_not_use_unrelated_fill_price_for_hype_fee(self):
         """When self._token != 'HYPE' and feeToken == 'HYPE', order_status must not
         fall back to the non-HYPE token's fill_price if HYPE mid price is unavailable."""
-        from providers.strategy_executor import ProviderError
 
         fake_hl_info = SimpleNamespace(
             query_order_by_oid=lambda addr, oid: {

@@ -3,25 +3,19 @@
 With the reference on, a BUY must sit below the lowest sell of the window (minus the
 margin); after a rise that anchor blocked every automated Binance buy for two weeks.
 Switching it off for a venue must leave the SELL reference untouched."""
+
+import order_guard
 import os
-import sys
-from types import SimpleNamespace
 import unittest
+from external_order_guard import check_external_order_guards
+from instrument import Instrument
+from llm_order_guard import check_geopolitical_order_guards, check_llm_order_guards
+from providers import order_id_context as oic
+from providers.market_api import BinanceProvider, MarketApi
+from qlimit_order_guard import check_qlimit2_order_guards
+from tests.conftest import DummySpotExecutionProvider, make_test_margins
+from types import SimpleNamespace
 from unittest import mock
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from external_order_guard import check_external_order_guards  # noqa: E402
-from instrument import Instrument  # noqa: E402
-from llm_order_guard import (  # noqa: E402
-    check_geopolitical_order_guards,
-    check_llm_order_guards,
-)
-import order_guard  # noqa: E402
-from providers import order_id_context as oic  # noqa: E402
-from providers.market_api import BinanceProvider, MarketApi  # noqa: E402
-from qlimit_order_guard import check_qlimit2_order_guards  # noqa: E402
-from tests.conftest import DummySpotExecutionProvider, make_test_margins  # noqa: E402
 
 
 def _Provider(name, last_fill=216.28, *, free_bal=10000.0):

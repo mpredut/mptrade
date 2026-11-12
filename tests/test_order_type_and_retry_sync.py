@@ -1,23 +1,24 @@
 """Tests for order type normalization, retry worker quantity synchronization, and zombie recovery."""
-import os
-import sys
-import unittest
-from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import order_lifecycle
 import order_retry as oq
 import order_retry_worker as worker
-from providers.kraken_provider import KrakenProvider
-from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
+import os
+import unittest
 from binance_api import bapi_placeorder as po
 from instrument import Instrument
+from providers.base import extract_order_id
+from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi
+from providers.order_ohlc_utils import extract_orig_qty
+from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
 from tests.conftest import DummySpotExecutionProvider, TempDirTestCase
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class _BaseReconcilingMkt:
@@ -260,8 +261,6 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
 
     def test_kraken_and_hyperliquid_order_by_client_id_quantity_sync(self):
         """Verify that extract_orig_qty and extract_order_id work across all venue shapes."""
-        from providers.base import extract_order_id
-        from providers.order_ohlc_utils import extract_orig_qty
 
         # Kraken shape (txid list + vol)
         kraken_order = {"txid": ["O-KRAK-1"], "status": "open", "vol": 2.5}
@@ -304,7 +303,6 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
         self.assertEqual(fields["submit_status"], "PARTIALLY_FILLED")
         self.assertEqual(fields["submitted_qty"], 3.5)
         self.assertEqual(fields["submitted_price"], 105.0)
-
 
 
 if __name__ == "__main__":

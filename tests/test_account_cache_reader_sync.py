@@ -1,5 +1,9 @@
 """Focused tests for cross-process Binance account-cache reader versions."""
 
+import account_cache_health as health
+import cacheManager as cm
+import cacheaccount
+import cacheintegrity
 import gzip
 import inspect
 import json
@@ -8,26 +12,21 @@ import sys
 import tempfile
 import threading
 import time
-from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, call, patch
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-import account_cache_health as health
 from binance_api import (
     bapi_allorders as allorders,
     bapi_placeorder as placeorder,
     bapi_trades as trades_mod,
     bapi_ws_bridge,
 )
-import cacheaccount
-import cacheintegrity
-import cacheManager as cm
 from providers.strategy_executor import SubmissionRefused
 from state_io import stage_previous_generation
 from tests.conftest import TempDirTestCase
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
+
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 def _order(order_id, timestamp):

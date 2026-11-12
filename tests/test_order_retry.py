@@ -2,24 +2,20 @@
 
 All queue files are isolated in a temporary directory.
 """
-from decimal import Decimal
-import glob
-import os
-import subprocess
-import sys
-import time
-from types import SimpleNamespace
-import unittest
-from unittest.mock import patch
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import pytest
 
 import active_intents
+import glob
 import instrument as inst_mod
 import order_lifecycle as ol
 import order_retry as oq
+import os
+import pytest
+import state_io as sio
+import subprocess
+import sys
+import time
+import unittest
+from decimal import Decimal
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
 from providers.market_api import MarketApi
 from providers.quantity import QuantityDecision
@@ -30,8 +26,9 @@ from providers.strategy_executor import (
     SubmissionOutcome,
 )
 from shadow_signals import KalmanStateTracker
-import state_io as sio
 from tests.conftest import DummySpotExecutionProvider, TempDirTestCase
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class OrderRetryStoreTest(TempDirTestCase):

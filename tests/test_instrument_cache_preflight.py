@@ -1,26 +1,23 @@
 """Regression coverage for the shared account-cache submission preflight."""
 
 import glob
-import os
-import sys
-import threading
-from types import SimpleNamespace
-from unittest.mock import patch
-
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-from instrument import Instrument
-from binance_api import bapi_placeorder as placeorder
 import order_guard
 import order_lifecycle as order_outcomes_log
 import order_retry
 import order_retry_worker
+import os
 import priceAnalysis as pa
+import threading
+from binance_api import bapi_placeorder as placeorder
+from instrument import Instrument
 from providers.base import MarketDataProvider
 from providers.strategy_executor import SubmissionRefused
 from tests.conftest import SingleProviderApi as _Api, TempDirTestCase, make_transient_complete_claim
+from types import SimpleNamespace
+from unittest.mock import patch
+
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class _StaleCacheProvider(MarketDataProvider):

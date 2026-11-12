@@ -1,18 +1,21 @@
-import copy
-import os
-import unittest
-from unittest import mock
-
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
 import assetguardian as ag
-from botcore import required_env
-from providers.strategy_executor import OrderStatus
+import copy
 import json
 import order_guard
+import os
 import pytest
 import time
+import unittest
+from botcore import required_env
+from external_order_guard import check_external_order_guards
+from llm_order_guard import check_llm_order_guards
+from providers.strategy_executor import OrderStatus
+from qlimit_order_guard import resolve_cached_gaussian_horizon
 from types import SimpleNamespace
+from unittest import mock
+
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class MemoryState:
@@ -1399,9 +1402,6 @@ class AssetGuardianTest(unittest.TestCase):
                 self.assertEqual(audit_mock.record.call_count, 2)
 
 
-
-
-
 if __name__ == "__main__":
     unittest.main()
 
@@ -1512,9 +1512,6 @@ def test_assetguardian__sell_campaign_tier_does_not_double_subtract_already_fill
 
 def test_assetguardian__p3b_threshold_multipliers_unions_caller_bypass_guards_with_venue_bypass_guards_iter23_s1(tmp_path, monkeypatch):
     """[ITER23 #1] assetguardian._p3b_threshold_multipliers unions caller bypass_guards with venue bypass_guards & check_external_order_guards & check_llm_order_guards honor intelligence_guards_mode='off'."""
-    from external_order_guard import check_external_order_guards
-    from llm_order_guard import check_llm_order_guards
-    from qlimit_order_guard import resolve_cached_gaussian_horizon
     # 1. assetguardian._p3b_threshold_multipliers unions caller bypass_guards with venue bypass_guards
     orig_margins = dict(order_guard._load_margins())
     monkeypatch.setattr(

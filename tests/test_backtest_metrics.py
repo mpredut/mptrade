@@ -1,15 +1,11 @@
 import configparser
 import json
 import math
+import numpy as np
 import os
-from pathlib import Path
-import sys
+import pytest
 import tempfile
 import unittest
-
-import numpy as np
-import pytest
-
 from offline.backtests.comparison import (
     dominates,
     format_comparison_markdown,
@@ -26,18 +22,26 @@ from offline.backtests.datasets import (
     save_dataset,
     validate_dataset,
 )
-from offline.backtests.execution import ExecutionModel, FeeModel, choose_intrabar_scenario, split_order_fill
+from offline.backtests.execution import (
+    ExecutionModel,
+    FeeModel,
+    choose_intrabar_scenario,
+    split_order_fill,
+)
 from offline.backtests.hype_candidates import financial_priority_candidates, hype_240_candidates
 from offline.backtests.metrics import (
     calculate_performance_metrics,
     format_performance_summary,
     validate_replay_metrics,
 )
-from offline.research import chop_weight_backtest as cwb
+from offline.research import (
+    chop_weight_backtest as cwb,
+    short_trend_estimator_benchmark as st_bench,
+)
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.kraken_continuous_grid import grid as kgrid, grid3, report, report2, report3
-import offline.research.short_trend_estimator_benchmark as st_bench
 from offline.research.t212_continuous_grid import grid as tgrid
+from pathlib import Path
 from tests.conftest import TempDirTestCase
 
 
@@ -131,10 +135,7 @@ class PerformanceMetricsTest(unittest.TestCase):
             validate_replay_metrics(invalid_currency)
 
 
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
 
 
 _INI_CONFIGS = [os.path.join(ROOT, "instruments.conf")]
@@ -240,9 +241,9 @@ class TestBacktestAnnotations(unittest.TestCase):
                     lo, hi = min(vals), max(vals)
                     self.assertTrue(
                         lo <= current <= hi,
-                        f"{full_key}: LIVE value {current} left grid interval [{lo}, {hi}] {grid} — stale grid?",
+                        f"{full_key}: LIVE value {current} left grid interval [{lo}, {hi}] {grid} -- stale grid?",
                     )
-        self.assertTrue(seen_any, "no # BACKTEST annotation found — is scan or config broken?")
+        self.assertTrue(seen_any, "no # BACKTEST annotation found -- is scan or config broken?")
 
 
 def test_win_stats_empty():
@@ -315,8 +316,6 @@ def test_t212_grid_peak_reentry_fallback_for_zero_drop_profile():
 # ---------------------------------------------------------------------------
 # Consolidated from tests/test_comparison.py & tests/test_backtest_datasets.py
 # ---------------------------------------------------------------------------
-
-
 
 
 def test_relative_to_baseline_scoring():

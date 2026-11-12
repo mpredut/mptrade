@@ -2,16 +2,23 @@
 
 import copy
 import json
+import order_retry as oq
 import os
-import sys
+import pytest
 import tempfile
 import time
 import unittest
-from unittest.mock import MagicMock, patch
-
-import pytest
-import strategies.spot_engine as se
-from strategies import spot_rules
+from binance_api import bapi as bapi_mod
+from market_regime import MarketRegimeDecision
+from offline.backtests.execution import ExecutionModel
+from providers.execution_audit import (
+    _resolve_intent_execution_details,
+    cancel_existing_ai_open_orders,
+)
+from providers.order_ohlc_utils import extract_remaining_qty
+from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError
+from providers.t212_provider import T212Provider
+from strategies import spot_engine as se, spot_replay as srep, spot_rules
 from strategies.position_exit_manager import (
     ExitAction,
     PositionExitConfig,
@@ -28,24 +35,14 @@ from strategies.spot_engine import (
     _parse_tranches,
     clean_order_id,
 )
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-import binance_api.bapi as bapi_mod
-import order_retry as oq
-import strategies.spot_replay as srep
-from market_regime import MarketRegimeDecision
-from offline.backtests.execution import ExecutionModel
-from providers.execution_audit import _resolve_intent_execution_details, cancel_existing_ai_open_orders
-from providers.order_ohlc_utils import extract_remaining_qty
-from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError
-from providers.t212_provider import T212Provider
 from strategies.spot_replay import run_replay
 from test_kraken_strategy_provider_live import FakeExecutor, _strategy
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 @pytest.fixture(autouse=True)
@@ -96,7 +93,7 @@ def _make_guard_strategy(**overrides):
     return s
 
 
-# ─── Adversarial Exit Lifecycle ─────────────────────────────────────────────
+# --- Adversarial Exit Lifecycle ---------------------------------------------
 
 def test_market_exit_waits_for_terminal_cancels_and_uses_racing_fill():
     for mode in ["stop", "trailing", "overlay"]:
@@ -276,7 +273,7 @@ def test_exit_request_round_trips_through_real_state_store(tmp_path):
     assert len(s) == 1 and s[0][6] == "STOP"
 
 
-# ─── Surge Profit Floor Protection ──────────────────────────────────────────
+# --- Surge Profit Floor Protection ------------------------------------------
 
 def surge_position(overlay=False):
     engine, executor = positioned(
@@ -403,7 +400,7 @@ def test_unavailable_cost_basis_blocks_a_pending_profit_exit():
         assert submits(executor) == []
 
 
-# ─── Intent-Aware Profit-Floor Guard & DCA Partial Funding ──────────────────
+# --- Intent-Aware Profit-Floor Guard & DCA Partial Funding ------------------
 
 class ProfitFloorGuardTest(unittest.TestCase):
     def test_profit_floor_guard_behaviors(self):
@@ -511,7 +508,7 @@ class DcaPartialFillTest(unittest.TestCase):
             self.assertLessEqual(o["vol"] * o["price"], 50.0)
 
 
-# ─── MDHTP Integration in SpotEngine ────────────────────────────────────────
+# --- MDHTP Integration in SpotEngine ----------------------------------------
 
 def make_mdhtp_engine(*, mdhtp_enabled: bool = True, takeprofit_pct: float = 5.0, **params):
     defaults = dict(
@@ -621,8 +618,7 @@ def test_mdhtp_intrabar_high_arms_and_exits_on_same_bar_pullback():
     assert engine.pair not in engine.exit_manager.tp_ride_state
 
 
-
-# ─── MHDSL Integration in SpotEngine ────────────────────────────────────────
+# --- MHDSL Integration in SpotEngine ----------------------------------------
 
 def make_mhdsl_engine(*, mhdsl_enabled: bool = True, stop_loss_pct: float = 10.0, **params):
     defaults = dict(

@@ -1,20 +1,18 @@
 """Unit tests for the orchestratorOS.agy modules (paths, protobuf, topics, UI mirror)."""
-from datetime import datetime, timezone
+
 import json
 import os
-import sqlite3
-import time
-from types import SimpleNamespace
-
 import pytest
-
-from orchestratorOS.agy import (
-    paths,
-    protobuf,
-    summary_store,
-    topics,
-    ui_mirror,
-)
+import sqlite3
+import subprocess
+import time
+from binance_api import bapi_placeorder as bp
+from datetime import datetime, timezone
+from intelligence.sentiment import gemini_client as gc
+from intelligence.sentiment.gemini_client import GeminiClient, _ORIG_SUBPROCESS_RUN, _ROOT_DIR
+from orchestratorOS.admin import agy_store_fix as asf, prune_llm_threads
+from orchestratorOS.admin.prune_llm_threads import _parse_bool_flag, prune_old_cli_threads
+from orchestratorOS.agy import paths, protobuf, summary_store, topics, ui_mirror
 from orchestratorOS.agy.paths import visible_conversations_dir
 from orchestratorOS.agy.protobuf import (
     drop_entries,
@@ -42,13 +40,11 @@ from orchestratorOS.agy.topics import (
     topic_spec,
 )
 from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
+from providers.hyperliquid_provider import HyperliquidProvider
+from providers.strategy_executor import SubmissionRefused
 from tests.conftest import setup_isolated_agy_stores
-from intelligence.sentiment import gemini_client as gc
-from intelligence.sentiment.gemini_client import GeminiClient, _ORIG_SUBPROCESS_RUN, _ROOT_DIR
-from orchestratorOS.admin import agy_store_fix as asf, prune_llm_threads
-from orchestratorOS.admin.prune_llm_threads import _parse_bool_flag, prune_old_cli_threads
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-import subprocess
 
 
 def _cli_ok(cmd, response: str, cid: str | None = None) -> subprocess.CompletedProcess:
@@ -221,8 +217,6 @@ class TestTopics:
         mock_record.assert_called_once()
         assert mock_record.call_args.kwargs["compacted"] is True
         assert "Nominal 5m cycle" in mock_record.call_args.kwargs["response_text"]
-
-
 
 
 _SUMMARY_SCHEMAS = {
@@ -462,9 +456,6 @@ class TestMirrorTopicThreadToUi:
         assert os.path.exists(protected_db_file)
 
     def test_bapi_submit_permit_normalizes_symbol_and_side_and_hl_none_price_uses_ioc(self, monkeypatch):
-        from binance_api import bapi_placeorder as bp
-        from providers.hyperliquid_provider import HyperliquidProvider
-        from providers.strategy_executor import SubmissionRefused
 
         fake_status = SimpleNamespace(
             order_cache_version="v1",

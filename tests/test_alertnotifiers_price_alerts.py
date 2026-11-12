@@ -1,13 +1,31 @@
 from __future__ import annotations
 
 import io
+import log as mp_log
 import os
-import sys
 import tempfile
 import time
-from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.sentiment.guards.post_stop_reentry_guard import (
+    PostStopReentryGuard,
+    clear_post_stop_reentry_cache,
+)
+from market_monitor import pricefetcher
+from market_monitor.alerts_config import load_config, resolve
+from market_monitor.new_coins_discovery import (
+    DexScreenerSource,
+    NewCoinsFactory,
+    NewCoinsMonitor,
+    is_trackable_symbol,
+)
+from market_monitor.pricechecker import PriceAlert, PriceChecker
+from market_monitor.pricefetcher import (
+    BinancePricePlatform,
+    CacheAllPriceFetcherManager,
+    HyperliquidPricePlatform,
+    PricePlatformFactory,
+)
 from notify_engine import alertnotifiers as an
 from notify_engine.alertnotifiers import (
     AlertNotifier,
@@ -19,36 +37,13 @@ from notify_engine.alertnotifiers import (
     pop_due_bulk_batch,
     synthesize_bulk_notifications,
 )
+from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+from verify_tools.gen_alert_thresholds import FLOOR, thresholds_from_prices
+
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "verify_tools"))
-
-from gen_alert_thresholds import FLOOR, thresholds_from_prices  # noqa: E402
-from intelligence.internal.guards.guard_decision import GuardDecision  # noqa: E402
-from intelligence.sentiment.guards.post_stop_reentry_guard import (  # noqa: E402
-    PostStopReentryGuard,
-    clear_post_stop_reentry_cache,
-)
-import log as mp_log  # noqa: E402
-from market_monitor import pricefetcher  # noqa: E402
-from market_monitor.alerts_config import load_config, resolve  # noqa: E402
-from market_monitor.new_coins_discovery import (  # noqa: E402
-    DexScreenerSource,
-    NewCoinsFactory,
-    NewCoinsMonitor,
-    is_trackable_symbol,
-)
-from market_monitor.pricechecker import PriceAlert, PriceChecker  # noqa: E402
-from market_monitor.pricefetcher import (  # noqa: E402
-    BinancePricePlatform,
-    CacheAllPriceFetcherManager,
-    HyperliquidPricePlatform,
-    PricePlatformFactory,
-)
-from orchestratorOS.lib.technical_repair_ssot import (  # noqa: E402
-    harvest_log_anomalies_from_dirs,
-)
 
 
 SAMPLE_ALERTS_CONF = """
@@ -248,7 +243,7 @@ class PriceCheckerTests(unittest.TestCase):
 
 
 class TestNewCoinDictRobustness(unittest.TestCase):
-    """New-coin alerts are dicts (not PriceAlert) — they must not crash."""
+    """New-coin alerts are dicts (not PriceAlert) -- they must not crash."""
 
     NEW_COIN = {
         "type": "new_coin_discovered", "source": "coinmarketcap",

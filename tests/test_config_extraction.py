@@ -1,5 +1,5 @@
 """
-CONSOLIDATED tests for extracting the constants into config files (28 Jul —
+CONSOLIDATED tests for extracting the constants into config files (28 Jul --
 unified from 4 nearly identical files: test_{tradeall,monitortrades,rtrade,
 assetguardian}_config_extraction.py, ~56 sparse tests -> table-driven here).
 
@@ -12,33 +12,35 @@ The intent is PRESERVED in full for the legacy modules and strict for AssetGuard
     the live loop on import), dead code removed (monitortrades SYMBOL_PARAMS),
     BUY/SELL asymmetry preserved (rtrade).
 """
-import importlib
-import os
-import sys
-import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-import botcore
-import tradeall as ta
-import monitortrades as mt
-import rtrade as rt
 import assetguardian as ag
-from dataclasses import replace
+import botcore
+import importlib
 import json
-from pathlib import Path
-import tempfile
-from types import SimpleNamespace
-from unittest.mock import patch
+import monitortrades as mt
+import os
 import pytest
-from botcore import parse_dotenv
-from providers.strategy_executor import PairPrecision
+import rtrade as rt
 import strategies
+import tempfile
+import tradeall as ta
+import unittest
+from botcore import parse_dotenv
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
+from offline.runners.spot_profile_review import revision_params
+from pathlib import Path
+from providers.strategy_executor import PairPrecision
 from strategies import spot_engine
 from strategies.spot_engine import StratParams
 from tests.conftest import make_spot_live_test_params
-from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
+from types import SimpleNamespace
+from unittest.mock import patch
+
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+
 
 # Computed values (identical to what the original files did).
 _PC_SMALL = botcore.diff_percent(60000, 60000 - 310)
@@ -263,7 +265,7 @@ class TestModuleSpecifics(unittest.TestCase):
 
     def test_monitortrades_dead_symbol_params_removed(self):
         # SYMBOL_PARAMS (the per-symbol lines from monitortrades.conf) was parsed but
-        # never read — the real source is instruments.conf. Removed.
+        # never read -- the real source is instruments.conf. Removed.
         self.assertFalse(hasattr(mt, "SYMBOL_PARAMS"))
 
     def test_monitortrades_global_hardtp_fallbacks_loaded(self):
@@ -277,15 +279,11 @@ class TestModuleSpecifics(unittest.TestCase):
         self.assertNotEqual(rt.RTRADE_BUY_NORMAL_HOURS, rt.RTRADE_SELL_NORMAL_HOURS)
 
 
-
-
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = {venue: parse_dotenv(str(ROOT / venue / "config.env")) for venue in ("kraken", "hyperliquid")}
 REQUIRED_KEYS = sorted(
     key for key in PROFILES["kraken"] if key.startswith("STRAT_") and key != "STRAT_EXECUTE"
 ) + ["STRATEGY_MODE", "SHADOW_K_REENTRY"]
-
-
 
 
 def _Executor():
@@ -371,7 +369,6 @@ def test_versioned_profiles_preserve_effective_values_and_environment():
 
 
 def test_versioned_profile_is_isolated_from_the_calling_environment():
-    from offline.runners.spot_profile_review import revision_params
     config = (ROOT / "hyperliquid/config.env").read_text()
     with patch.dict(os.environ, STRAT_ENTRY="999999"), patch(
             "offline.runners.spot_profile_review.subprocess.run",
@@ -445,7 +442,6 @@ def test_sweep_refuses_missing_datasets(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("fail_control", [False, True])
 def test_sweep_report_is_complete_and_records_effective_policy(tmp_path, monkeypatch, fail_control):
-    from concurrent.futures import ThreadPoolExecutor
 
     profile = ROOT / "hyperliquid/config.env"
     params = sweep.load_base_params(profile)

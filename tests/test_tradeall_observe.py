@@ -1,17 +1,18 @@
+import cacheManager as cm
+import datetime
 import json
 import os
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock
-
 import pytest
-from matplotlib import pyplot as plt
-
-from visuals import tradeall_observe as observe
 import tempfile
+import tradeall
 import unittest
+from matplotlib import pyplot as plt
+from pathlib import Path
+from state_io import read_tail_lines
+from types import SimpleNamespace
 from unittest import mock
-import cacheManager as cm
+from unittest.mock import Mock
+from visuals import tradeall_observe as observe
 
 
 @pytest.fixture(autouse=True)
@@ -210,7 +211,6 @@ def test_render_failure_does_not_leak_matplotlib_figures(tmp_path, monkeypatch):
 
 
 def test_load_order_events_recognizes_tradeall_via_market_api_and_filters_other_callers(tmp_path, monkeypatch):
-    import datetime
     today = datetime.datetime.now().date()
     log_file = tmp_path / f"order_outcomes_{today.isoformat()}.log"
     monkeypatch.setattr(observe, "LOGGER_DIR", str(tmp_path))
@@ -292,7 +292,6 @@ def test_write_html_generates_summary_bar(tmp_path, monkeypatch):
 
 
 def test_kalman_gate_blocks_handles_unmapped_symbols():
-    import tradeall
     blocked, mode, trend = tradeall._kalman_gate_blocks("NON_EXISTENT_COIN", "BUY")
     assert blocked is False
     assert mode == "off"
@@ -302,7 +301,6 @@ def test_kalman_gate_blocks_handles_unmapped_symbols():
 # ---------------------------------------------------------------------------
 # Cache365PriceManager long-archive persistence & maintenance tests
 # ---------------------------------------------------------------------------
-
 
 
 class TestArchiverLifecycle(unittest.TestCase):
@@ -481,7 +479,6 @@ class TestArchiverLifecycle(unittest.TestCase):
             self.assertEqual(manager._persisted_counts.get("BTCUSDC"), len(manager.cache.get("BTCUSDC", [])))
             with open(target_jsonl + ".meta", "w", encoding="utf-8") as handle:
                 handle.write("[]")
-            from state_io import read_tail_lines
             manager._load_jsonl()
             self.assertGreaterEqual(manager.fetchtime_per_symbol.get("BTCUSDC", 0), now_ms + 1000)
             self.assertEqual(read_tail_lines(target_jsonl, True), [])
@@ -566,7 +563,5 @@ class TestArchiverLifecycle(unittest.TestCase):
                 os.rmdir(tmp_dir)
             except OSError:
                 pass
-
-
 
 

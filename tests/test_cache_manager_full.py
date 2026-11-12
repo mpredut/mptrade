@@ -13,44 +13,49 @@ Coverage:
   - get_current_price_manager (singleton)
   - WebSocket health functions
 """
+
 import ast
+import cacheManager as cm
+import cacheaccount
+import cacheintegrity
+import cachepaths as cp_paths
+import cacheprice
 import contextlib
 import gzip
 import inspect
 import io
 import json
 import os
-from pathlib import Path
+import priceAnalysis as pa
+import pytest
+import rtrade
 import sys
 import tempfile
 import threading
 import time
-from types import SimpleNamespace
+import tradeall
 import unittest
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-import cacheaccount
-import cacheintegrity
-import cachepaths as cp_paths
-from cachepaths import normalize_cache_base_asset
-import cacheprice
+from binance_api import bapi_ws, bapi_ws_bridge, bapi_ws_normalize
+from cachepaths import (
+    compute_venue_nav_breakdown,
+    migrate_legacy_filename_if_needed,
+    normalize_cache_base_asset,
+)
 from cachetrend import CacheShortTrendManager, _short_trend_symbol_variants
 from market_monitor import pricefetcher
+from market_monitor.pricefetcher import CacheAllPriceFetcherManager
 from orchestratorOS.livecheck import os_resources_watchdog
-import priceAnalysis as pa
-from providers.base import (
-    AsyncReconnectStreamBase,
-    MarketDataProvider,
-    PublicPriceStreamBase,
-)
+from pathlib import Path
+from providers.base import AsyncReconnectStreamBase, MarketDataProvider, PublicPriceStreamBase
 from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import KrakenProvider
 from providers.quantity import venue_adjust_partial_sell_quantity
 from providers.t212_provider import T212Provider
-import rtrade
 from state_io import read_json_dict, save_json_state
-import tradeall
+from tests.conftest import TempDirTestCase
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
@@ -63,11 +68,6 @@ sys.modules.setdefault("bapi", mock_api)
 sys.modules.setdefault("bapi_trades", MagicMock())
 sys.modules.setdefault("bapi_allorders", MagicMock())
 
-from binance_api import bapi_ws, bapi_ws_bridge, bapi_ws_normalize
-import cacheManager as cm
-from providers.kraken_provider import KrakenProvider
-from tests.conftest import TempDirTestCase
-
 
 class _CurrentPriceResetTestCase(TempDirTestCase):
     def setUp(self):
@@ -78,9 +78,9 @@ class _CurrentPriceResetTestCase(TempDirTestCase):
         cm.CacheFactory.remove("CurrentPrice")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # Concrete helper for testing the abstract interface.
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class ConcreteTestManager(cm.CacheManagerInterface):
     """Provide a minimal CacheManagerInterface implementation for tests."""
     def __init__(self, sync_ts, symbols, filename, append_mode=True, api_client=None,
@@ -105,12 +105,12 @@ def _write_cache_file(fname, items_dict, fetchtime_dict=None):
         json.dump({"items": items_dict, "fetchtime": fetchtime_dict or {}}, f)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 1. CacheManagerInterface
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestCacheManagerInterface(TempDirTestCase):
 
-    # ── load_state ────────────────────────────────────────────────────────────
+    # -- load_state ------------------------------------------------------------
 
     def test_load_state_behaviors(self):
         with self.subTest("load from existing file"):
@@ -147,7 +147,7 @@ class TestCacheManagerInterface(TempDirTestCase):
                 prices = [e[1] for e in mgr.cache.get("SYM", [])]
             self.assertIn(77.0, prices)
 
-    # ── save_state_to_file_if_enabled ─────────────────────────────────────────
+    # -- save_state_to_file_if_enabled -----------------------------------------
 
     def test_save_state_behaviors(self):
         with self.subTest("save disabled by default"):
@@ -177,7 +177,7 @@ class TestCacheManagerInterface(TempDirTestCase):
             self.assertTrue(os.path.exists(fname))
             self.assertFalse(os.path.exists(fname + ".tmp"))
 
-    # ── update_cache_per_symbol ───────────────────────────────────────────────
+    # -- update_cache_per_symbol -----------------------------------------------
 
     def test_update_cache_per_symbol_behaviors(self):
         with self.subTest("append mode extends"):
@@ -225,7 +225,7 @@ class TestCacheManagerInterface(TempDirTestCase):
             with mgr.lock:
                 self.assertIn(123.0, [e[1] for e in mgr.cache.get("SYM", [])])
 
-    # ── filter_new_items and query_remote ─────────────────────────────────────
+    # -- filter_new_items and query_remote -------------------------------------
 
     def test_filter_and_remote_query_behaviors(self):
         with self.subTest("filter_new_items removes duplicates"):
@@ -272,9 +272,9 @@ class TestCacheManagerInterface(TempDirTestCase):
                 self.assertIn(5.0, [e[1] for e in mgr.cache.get("SYM2", [])])
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 2. Cache persistence durability
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestCachePersistenceDurability(TempDirTestCase):
     """Keep durable rows, cursors, and metadata on one coherent snapshot."""
 
@@ -410,9 +410,9 @@ class TestCachePersistenceDurability(TempDirTestCase):
                     self.assertEqual(data["fetchtime"], metadata["fetchtime"])
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 2. CacheTradeManager
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestCacheTradeManager(TempDirTestCase):
 
     def _make(self):
@@ -467,9 +467,9 @@ class TestCacheTradeManager(TempDirTestCase):
             self.assertFalse(ws_item["isBuyer"])
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 3. CacheOrderManager
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestCacheOrderManager(TempDirTestCase):
 
     def _make(self):
@@ -650,9 +650,9 @@ class TestAccountCacheHealthPublication(TempDirTestCase):
             publish.assert_not_called()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 4. CacheSparsePriceManager (renamed from CachePriceManager, 21 Jul)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestCacheSparsePriceManager(_CurrentPriceResetTestCase):
 
     def _make(self, price=50000.0):
@@ -736,9 +736,9 @@ class TestCacheSparsePriceManager(_CurrentPriceResetTestCase):
                 self.assertEqual(mgr.get_remote_items("BTC", 0), [[now_ms + 1, 52000.0]])
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 5. Cache24PriceManager
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestCache24PriceManager(_CurrentPriceResetTestCase):
 
     def _make(self):
@@ -829,9 +829,9 @@ class TestCache24PriceManager(_CurrentPriceResetTestCase):
                 self.assertEqual(mgr.get_remote_items("BTC", 0), [[now_ms + 1, 52000.0]])
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 6. CacheLongTrendManager
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestCacheLongTrendManager(TempDirTestCase):
 
     def _make(self):
@@ -909,9 +909,9 @@ class TestCacheLongTrendManager(TempDirTestCase):
             self.assertFalse(mgr.append_mode)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 7. CacheAssetValueManager
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestCacheAssetValueManager(TempDirTestCase):
 
     def _make(self, total_value=1000.0):
@@ -1009,7 +1009,6 @@ class TestCacheAssetValueManager(TempDirTestCase):
             self.assertEqual(items_live[0]["venues_usd"]["t212"], 121.5)
             self.assertEqual(items_live[0]["portfolio_total_usd"], 3071.5)
 
-            from cachepaths import compute_venue_nav_breakdown
             with open(vb_path, encoding="utf-8") as handle:
                 vb_loaded = json.load(handle)
             eq_only = compute_venue_nav_breakdown(venue_balances_state=vb_loaded, scope="equities")
@@ -1032,9 +1031,9 @@ class TestCacheAssetValueManager(TempDirTestCase):
             self.assertEqual(cr_remarked["venues_usd"], {"kraken": 1500.0})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 8. CacheCurrentPriceManager
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestCacheCurrentPriceManager(_CurrentPriceResetTestCase):
 
     def _make(self, price=50000.0, provider_names=None):
@@ -1048,7 +1047,7 @@ class TestCacheCurrentPriceManager(_CurrentPriceResetTestCase):
             provider_names=provider_names,
         ), api_mock
 
-    # ── on_items_update ───────────────────────────────────────────────────────
+    # -- on_items_update -------------------------------------------------------
 
     def test_on_items_update_behaviors(self):
         with self.subTest("stores price and marks ws event"):
@@ -1094,7 +1093,7 @@ class TestCacheCurrentPriceManager(_CurrentPriceResetTestCase):
                 entries = mgr.cache["BTC"]
             self.assertEqual(entries[0], [now_ms, 60000.0])
 
-    # ── get_price / get_price_value ───────────────────────────────────────────
+    # -- get_price / get_price_value -------------------------------------------
 
     def test_fresh_price_read_apis_use_cached_value(self):
         mgr, api_mock = self._make()
@@ -1209,7 +1208,7 @@ class TestCacheCurrentPriceManager(_CurrentPriceResetTestCase):
                 mgr.get_cached_price_observation("BTC", max_age_sec=10.0))
             api_mock.get_current_price.assert_not_called()
 
-    # ── subscribe_price / unsubscribe_price ───────────────────────────────────
+    # -- subscribe_price / unsubscribe_price -----------------------------------
 
     def test_subscribe_price_behaviors(self):
         with self.subTest("registration lifecycle"):
@@ -1263,7 +1262,7 @@ class TestCacheCurrentPriceManager(_CurrentPriceResetTestCase):
             mgr.on_items_update("BTC", [[int(time.time() * 1000), 1.0]])
             sub.on_price_update.assert_not_called()
 
-    # ── WS health ─────────────────────────────────────────────────────────────
+    # -- WS health -------------------------------------------------------------
 
     def test_ws_health_from_event_age(self):
         mgr, _ = self._make()
@@ -1322,9 +1321,9 @@ class TestCacheCurrentPriceManager(_CurrentPriceResetTestCase):
         self.assertEqual(entries[0][1], 58000.0)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 9. WS health functions
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestWsHealthFunctions(unittest.TestCase):
 
     def setUp(self):
@@ -1367,9 +1366,9 @@ class TestWsHealthFunctions(unittest.TestCase):
                 self.bws.WS_ONLY_MODE = False
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 10. CacheFactory / get_cache_manager
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestCacheFactory(unittest.TestCase):
 
     def setUp(self):
@@ -1563,9 +1562,9 @@ class TestCacheFactory(unittest.TestCase):
             self.assertEqual(plt.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"])
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # 11. get_current_price_manager — singleton
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 class TestGetCurrentPriceManagerSingleton(_CurrentPriceResetTestCase):
 
     def test_get_current_price_manager_singleton_and_ws_wiring(self):
@@ -1631,7 +1630,6 @@ class TestGetCurrentPriceManagerSingleton(_CurrentPriceResetTestCase):
 
     def test_every_factory_manager_accepts_read_only(self):
         """CacheFactory passes read_only to every class it builds, including PriceMulti."""
-        from market_monitor.pricefetcher import CacheAllPriceFetcherManager
 
         classes = [config["class"] for config in cm.CacheFactory._CONFIG.values()]
         classes.append(CacheAllPriceFetcherManager)
@@ -2046,7 +2044,6 @@ class TestAtomicWrite(TempDirTestCase):
                 self.assertEqual(json.load(f), {"v": "old"})   # Previous content remains intact.
 
         with self.subTest("legacy filename migration and sidecars"):
-            from cachepaths import migrate_legacy_filename_if_needed
 
             mig_dir = tempfile.mkdtemp(dir=self.tmp)
             cases = [
@@ -3150,11 +3147,5 @@ def test_cache_modules_delegate_venue_ws_protocols_to_providers():
         None,
         None,
     )
-
-
-
-
-
-
 
 

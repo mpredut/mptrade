@@ -1,37 +1,51 @@
 """Unified unit tests for Binance API (bapi, bapi_ws, bapi_trades, bapi_allorders, bapi_placeorder)."""
 
+import cacheManager as cm
+import instrument_registry as sym_mod
+import json
+import monitortrades as mt_mod
+import order_guard
 import os
+import pricewindow as pw
+import providers.market_api as market_api_mod
+import pytest
 import sys
+import threading
 import time
 import types
 import unittest
-from unittest import mock
-from unittest.mock import MagicMock, patch
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-from binance_api import bapi, bapi_allorders, bapi_client, bapi_placeorder, bapi_trades, bapi_ws, bapi_ws_bridge as ws_bridge, bapi_ws_normalize, market_data as b_md, trailing_stop
+from binance_api import (
+    bapi,
+    bapi_allorders,
+    bapi_client,
+    bapi_placeorder,
+    bapi_trades,
+    bapi_ws,
+    bapi_ws_bridge as ws_bridge,
+    bapi_ws_normalize,
+    market_data as b_md,
+    trailing_stop,
+)
 from binance_api.bapi_ws import (
     BinanceAccountStream,
     BinancePriceStream,
     WS_USERDATA_KEEPALIVE_SEC,
     WS_USERDATA_LOSS_TIMEOUT_SEC,
 )
-from binance_api.bapi_ws_normalize import (
-    parse_order_execution_report,
-    parse_trade_execution_report,
-)
+from binance_api.bapi_ws_normalize import parse_order_execution_report, parse_trade_execution_report
 from binance_api.trailing_stop import TrailingStop
+from decimal import Decimal
 from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
 from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
-import instrument_registry as sym_mod
-import monitortrades as mt_mod
-import order_guard
 from order_lifecycle import extract_order_restore_params
-import pricewindow as pw
-import providers.market_api as market_api_mod
+from providers.base import extract_order_price, extract_timestamp_ms, extract_timestamp_s
 from providers.market_api import BinanceProvider, MarketApi
+from providers.order_ohlc_utils import (
+    extract_order_qty,
+    extract_order_side,
+    extract_remaining_qty,
+    normalize_order,
+)
 from providers.quantity import (
     BinanceFilterError,
     BinanceOrderRules,
@@ -41,28 +55,22 @@ from providers.quantity import (
     decimal_places,
     resolve_assets,
 )
-from providers.order_ohlc_utils import (
-    extract_order_qty,
-    extract_order_side,
-    extract_remaining_qty,
-    normalize_order,
-)
 from providers.replay_provider import ReplayMarketDataProvider
-from types import SimpleNamespace
-import cacheManager as cm
-import json
-import pytest
-import threading
-from decimal import Decimal
-from providers.base import extract_order_price, extract_timestamp_ms, extract_timestamp_s
 from providers.strategy_executor import ProviderError, SubmissionRefused
 from tests.conftest import DummySpotExecutionProvider, MockHttpResponse
+from types import SimpleNamespace
+from unittest import mock
+from unittest.mock import MagicMock, patch
+
+
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+
 
 SYMBOL = "BTCUSDC"
 TAO_SYMBOL = "TAOUSDC"
 
 
-# ─── WebSocket & UserData Stream ────────────────────────────────────────────
+# --- WebSocket & UserData Stream --------------------------------------------
 
 class BapiWsShutdownHandlingTests(unittest.TestCase):
     def test_shutdown_errors_are_detected(self):
@@ -143,7 +151,7 @@ class TestWSBaseAndUserData(unittest.TestCase):
         self.assertTrue(seen.get("unhealthy"))
 
 
-# ─── Trades Reader ──────────────────────────────────────────────────────────
+# --- Trades Reader ----------------------------------------------------------
 
 class _SnapshotLock:
     def __init__(self, manager):
@@ -201,7 +209,7 @@ class BapiTradesReaderTest(unittest.TestCase):
             self.assertEqual(result[0]["price"], 100.5)
 
 
-# ─── REST Price Cache ───────────────────────────────────────────────────────
+# --- REST Price Cache -------------------------------------------------------
 
 class BinanceRestPriceCacheTest(unittest.TestCase):
     def setUp(self):
@@ -257,7 +265,7 @@ class BinanceRestPriceCacheTest(unittest.TestCase):
             self.assertEqual(101.0, bapi.get_current_price(SYMBOL))
 
 
-# ─── AllOrders & Trade Pagination ───────────────────────────────────────────
+# --- AllOrders & Trade Pagination -------------------------------------------
 
 class TestPaginateMyTrades(unittest.TestCase):
     def test_single_page_one_call(self):
@@ -335,7 +343,7 @@ class TestCachedOrders(unittest.TestCase):
         self.assertEqual(manager.cache[SYMBOL][0]["price"], 999.0)
 
 
-# ─── PlaceOrder Helpers & WS Price Validation ───────────────────────────────
+# --- PlaceOrder Helpers & WS Price Validation -------------------------------
 
 class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
     def test_lowercase_order_type_and_aggregate_trades_and_ws_price_validation(self):
@@ -618,7 +626,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             self.assertEqual(bapi._convert_to_usdc("USD", 25.0), 25.0)
         self.assertEqual(bapi._normalize_side("long"), "BUY")
         self.assertEqual(bapi._normalize_side("short"), "SELL")
-
 
 
 if __name__ == "__main__":
