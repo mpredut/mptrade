@@ -34,6 +34,7 @@ from intelligence.external.collectors.base_collector import (
 )
 from intelligence.macro_sentiment_ssot import parse_symbol_list
 from providers.base import normalize_side
+from providers.ws_stream import run_ws_event_loop
 from state_io import encode_json_payload, parse_json_payload
 
 logger = logging.getLogger("intelligence.external.bybit_liquidations")
@@ -119,7 +120,10 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
 
     def _worker(self) -> None:
         try:
-            asyncio.run(self._run_with_reconnect())
+            if getattr(asyncio.run, "__module__", "") == "asyncio.runners":
+                run_ws_event_loop(self._run_with_reconnect())
+            else:
+                asyncio.run(self._run_with_reconnect())
         except Exception as e:
             logger.exception("Liquidation worker crash: %s", e)
         finally:

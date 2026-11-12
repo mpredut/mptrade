@@ -105,7 +105,8 @@ def _install_recvwindow_retry(cl):
 
 def _install_post_only_limit_maker(cl):
     """Route limit orders on ``cl`` through ``ORDER_TYPE_LIMIT_MAKER`` (Post-Only) by default."""
-    if getattr(cl, "_post_only_limit_installed", False) or not callable(getattr(cl, "create_order", None)):
+    create_fn = getattr(cl, "create_order", None)
+    if getattr(cl, "_post_only_limit_installed", False) or not callable(create_fn):
         return
 
     def _order_limit_maker(timeInForce=Client.TIME_IN_FORCE_GTC, **params):
@@ -115,7 +116,7 @@ def _install_post_only_limit_maker(cl):
             params.pop("timeInForce", None)
         else:
             params.update({"type": getattr(cl, "ORDER_TYPE_LIMIT", "LIMIT"), "timeInForce": timeInForce})
-        return cl.create_order(**params)
+        return create_fn(**params)
 
     cl.order_limit = _order_limit_maker
     cl._post_only_limit_installed = True

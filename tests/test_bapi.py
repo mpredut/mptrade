@@ -1595,3 +1595,27 @@ def test_binance_post_only_limit_maker_and_step_back_retry(monkeypatch):
     assert float(submitted_prices[0]) == 100.0
     assert float(submitted_prices[1]) < 100.0
 
+
+def test_ws_event_loop_uvloop_and_orjson_fast_path():
+    """Verify run_ws_event_loop uses uvloop when installed and state_io uses orjson for bytes/str payloads."""
+    import asyncio
+    import state_io
+    from providers.ws_stream import _uvloop, run_ws_event_loop
+
+    observed_loops = []
+
+    async def _probe():
+        observed_loops.append(type(asyncio.get_running_loop()).__module__)
+
+    run_ws_event_loop(_probe())
+    assert len(observed_loops) == 1
+    if _uvloop is not None:
+        assert "uvloop" in observed_loops[0]
+
+    assert state_io._orjson is not None
+    parsed = state_io.parse_json_payload(b'{"s":"BTCUSDC","c":"88000.5"}')
+    assert parsed == {"s": "BTCUSDC", "c": "88000.5"}
+    bucket_line = state_io.format_jsonl_bucket_line("BTCUSDC", [1700000000000, 88000.5])
+    assert bucket_line == '{"s":"BTCUSDC","i":[1700000000000,88000.5]}\n'
+
+

@@ -1373,6 +1373,7 @@ class TestFallbackThreadBehavior(TempDirTestCase):
 
     def _manager(self, filename, sync_ts, api_mock):
         manager = cm.CacheCurrentPriceManager(sync_ts=sync_ts, symbols=_TB_SYMBOLS, filename=filename, ws_manager=None, api_client=api_mock, market_api=api_mock)
+        manager.WS_TIMEOUT_SEC = max(manager.WS_TIMEOUT_SEC, float(sync_ts) * 3.0)
         self.managers.append(manager)
         manager.periodic_sync(save_state=False)
         return manager

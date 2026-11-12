@@ -1482,5 +1482,7 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     )
 
 
-MarketDataProvider.bind_instrument_class(Instrument)
+MarketDataProvider.bind_instrument_class(
+    Instrument, load_tradable_instruments_fn=load_tradable_instruments
+)
 

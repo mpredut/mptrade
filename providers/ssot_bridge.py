@@ -64,6 +64,7 @@ class ProviderSsotBridgeMixin:
     _policy_resolve_trade_weight_fn: Any = None
     _policy_compute_weight_capped_qty_fn: Any = None
     _bound_instrument_cls: Any = None
+    _bound_load_tradable_instruments_fn: Any = None
     _bound_tracked_order_lifecycle_cls: Any = None
     _retry_discard_refused_intent_fn: Any = None
     _retry_discard_superseded_symbol_fn: Any = None
@@ -72,10 +73,29 @@ class ProviderSsotBridgeMixin:
     _telemetry_intervals_resolver: Any = None
 
     @classmethod
-    def bind_instrument_class(cls, instrument_cls: Any) -> None:
-        """Bind the ``Instrument`` gateway class from the higher Order Gateway layer."""
+    def bind_instrument_class(
+        cls, instrument_cls: Any, *, load_tradable_instruments_fn: Any = None
+    ) -> None:
+        """Bind the ``Instrument`` gateway class and loader from the higher Order Gateway layer."""
         if instrument_cls is not None:
             cls._bound_instrument_cls = instrument_cls
+        if callable(load_tradable_instruments_fn):
+            cls._bound_load_tradable_instruments_fn = staticmethod(load_tradable_instruments_fn)
+
+    @classmethod
+    def load_tradable_instruments(cls, *args: Any, **kwargs: Any) -> dict:
+        """Invoke the bound ``instrument.load_tradable_instruments`` loader without upward static imports."""
+        if cls._bound_load_tradable_instruments_fn is None:
+            importlib.import_module("instrument")
+        fn = resolve_patched_attr(
+            "load_tradable_instruments",
+            cls._bound_load_tradable_instruments_fn,
+            modules=("instrument",),
+            require_callable=True,
+        )
+        if fn is None:
+            raise RuntimeError("load_tradable_instruments is not bound")
+        return fn(*args, **kwargs)
 
     @classmethod
     def resolve_instrument_class(cls) -> Any:

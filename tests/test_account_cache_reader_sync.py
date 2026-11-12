@@ -1656,7 +1656,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
                 read_only=True,
             )
             restarted_reader.ensure_persisted_version(v1)
-            self.assertFalse(
+            self.assertTrue(
                 os.path.exists(writer._previous_generation_path())
             )
             self.assertEqual(
@@ -1665,6 +1665,9 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             )
             restarted_writer = cm.CacheOrderManager(
                 3600, ["BTCUSDC"], writer.filename, api_client=cm.api
+            )
+            self.assertFalse(
+                os.path.exists(writer._previous_generation_path())
             )
             self.assertEqual(
                 [int(o["orderId"]) for o in restarted_writer.cache["BTCUSDC"]],
@@ -1700,11 +1703,20 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
                 )
             self.assertTrue(os.path.exists(writer._previous_generation_path()))
 
-            # Live reader ensure_persisted_version must recover .previous and advance to v2.
+            # Live reader ensure_persisted_version must recover .previous in memory passively,
+            # and producer restart repairs disk and cleans up .previous.
             reader.ensure_persisted_version(certified_version)
-            self.assertFalse(os.path.exists(writer._previous_generation_path()))
+            self.assertTrue(os.path.exists(writer._previous_generation_path()))
             self.assertEqual(
                 [int(t["id"]) for t in reader.cache["BTCUSDC"]],
+                [1, 2],
+            )
+            restarted_trade_writer = cm.CacheTradeManager(
+                3600, ["BTCUSDC"], writer.filename, api_client=cm.api
+            )
+            self.assertFalse(os.path.exists(writer._previous_generation_path()))
+            self.assertEqual(
+                [int(t["id"]) for t in restarted_trade_writer.cache["BTCUSDC"]],
                 [1, 2],
             )
 

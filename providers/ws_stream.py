@@ -9,6 +9,11 @@ from typing import Callable, Dict, Optional, Set
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 
+try:
+    import uvloop as _uvloop
+except ImportError:  # pragma: no cover
+    _uvloop = None
+
 from botcore import (
     _parse_bool_flag,
     async_interruptible_sleep,
@@ -75,6 +80,15 @@ WS_RETRY_MAX = 60.0
 _ws_logger = logging.getLogger("providers.ws")
 
 
+def run_ws_event_loop(coro) -> None:
+    """Run ``coro`` on a ``uvloop`` event loop when available, falling back to ``asyncio.run``."""
+    loop_factory = getattr(_uvloop, "new_event_loop", None)
+    if callable(loop_factory) and getattr(asyncio.run, "__module__", "") == "asyncio.runners":
+        asyncio.run(coro, loop_factory=loop_factory)
+    else:
+        asyncio.run(coro)
+
+
 class AsyncReconnectStreamBase(ABC):
     """Shared thread, asyncio loop, reconnect backoff, and clean shutdown for venue WebSocket streams."""
 
@@ -135,7 +149,7 @@ class AsyncReconnectStreamBase(ABC):
 
     def _thread_worker(self) -> None:
         try:
-            asyncio.run(self._run_with_reconnect(self._connect_and_run))
+            run_ws_event_loop(self._run_with_reconnect(self._connect_and_run))
         except (asyncio.CancelledError, Exception) as exc:
             if not isinstance(exc, asyncio.CancelledError) and not self._is_shutdown_error(exc):
                 _ws_logger.exception("WS thread crashed: %s", exc)

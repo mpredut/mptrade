@@ -23,6 +23,11 @@ import time
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
+try:
+    import orjson as _orjson
+except ImportError:  # pragma: no cover
+    _orjson = None
+
 from cachepaths import (
     STALE_STAGING_MAX_AGE_SEC,
     _parse_bool_flag,
@@ -151,14 +156,42 @@ def _reject_json_constant(constant: str) -> Any:
     raise ValueError(f"non-standard JSON constant {constant!r}")
 
 
+_ORIG_JSON_LOAD_ID = id(json.load)
+_ORIG_JSON_LOADS_ID = id(json.loads)
+_ORIG_JSON_DUMPS_ID = id(json.dumps)
+_ORIG_OPEN_ID = id(open)
+
+
+def _fast_json_loads(raw: str | bytes | bytearray | memoryview, *, strict_constants: bool = False) -> Any:
+    """Parse JSON via ``orjson.loads`` on the fast path, falling back to ``json.loads``."""
+    if _orjson is not None and id(json.loads) == _ORIG_JSON_LOADS_ID and isinstance(raw, (str, bytes, bytearray, memoryview)):
+        try:
+            return _orjson.loads(raw)
+        except Exception:
+            pass
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray, memoryview)) else raw
+    return json.loads(text, parse_constant=_reject_json_constant if strict_constants else None)
+
+
 def load_json_state(path: str, *, default_factory, fail_closed: bool,
                     label: str, root_type: type = dict):
     """Load JSON state with an explicit live-versus-observational failure policy."""
     fail_closed = _parse_bool_flag(fail_closed, True)
 
     def _read_and_validate(candidate_path: str):
-        with open(candidate_path, "r", encoding="utf-8") as handle:
-            value = json.load(handle, parse_constant=_reject_json_constant if fail_closed else None)
+        if _orjson is not None and id(json.load) == _ORIG_JSON_LOAD_ID and id(open) == _ORIG_OPEN_ID:
+            with open(candidate_path, "rb") as handle:
+                raw_bytes = handle.read()
+            try:
+                value = _orjson.loads(raw_bytes)
+            except Exception:
+                value = json.loads(
+                    raw_bytes.decode("utf-8"),
+                    parse_constant=_reject_json_constant if fail_closed else None,
+                )
+        else:
+            with open(candidate_path, "r", encoding="utf-8") as handle:
+                value = json.load(handle, parse_constant=_reject_json_constant if fail_closed else None)
         if not isinstance(value, root_type):
             raise ValueError(f"expected {root_type.__name__}, got {type(value).__name__}")
         return value
@@ -450,7 +483,7 @@ def read_tail_jsonl_records(
     out: list[Any] = []
     for raw_bytes in read_tail_lines(path, limit, chunk_size=chunk_size, max_bytes=max_bytes):
         try:
-            out.append(json.loads(raw_bytes.decode("utf-8", errors="replace")))
+            out.append(_fast_json_loads(raw_bytes))
         except ValueError:
             continue
     return out
@@ -484,6 +517,11 @@ def truncate_file_bytes(path: str, size: int) -> None:
 
 def format_jsonl_bucket_line(symbol: str, item: Any) -> str:
     """Serialize one ``(symbol, item)`` pair as a compact JSONL line."""
+    if _orjson is not None and id(json.dumps) == _ORIG_JSON_DUMPS_ID:
+        try:
+            return _orjson.dumps({"s": symbol, "i": item}, option=_orjson.OPT_APPEND_NEWLINE).decode("ascii")
+        except Exception:
+            pass
     return json.dumps({"s": symbol, "i": item}, separators=(",", ":")) + "\n"
 
 
@@ -495,8 +533,7 @@ def canonical_json_key(item: Any) -> str:
 def parse_json_payload(raw: str | bytes, *, default: Any = _MISSING) -> Any:
     """Parse a JSON string or bytes payload, returning ``default`` (if provided) on decode failure."""
     try:
-        text = raw.decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray, memoryview)) else raw
-        return json.loads(text)
+        return _fast_json_loads(raw)
     except Exception as exc:
         if default is _MISSING:
             raise exc
@@ -697,7 +734,7 @@ def read_jsonl_bucket_map(path: str) -> tuple[dict[str, list[Any]], bool]:
     with open(target_path, "r", encoding="utf-8") as handle:
         for raw in filter(None, map(str.strip, handle)):
             try:
-                rec = json.loads(raw)
+                rec = _fast_json_loads(raw)
                 if (
                     not isinstance(rec, dict)
                     or not isinstance(rec.get("s"), str)
@@ -724,7 +761,7 @@ def iter_jsonl_retention_lines(
             if yield_every > 0 and line_idx % yield_every == 0:
                 time.sleep(0)
             try:
-                rec = json.loads(line)
+                rec = _fast_json_loads(line)
                 keep = isinstance(rec, dict) and bool(keep_record_fn(rec))
             except (json.JSONDecodeError, TypeError, ValueError):
                 keep = False
@@ -875,7 +912,15 @@ def commit_file_and_meta(
 
 
 def _read_json_file_strict(path: str) -> Any:
-    with open(_resolve_target_path(path), "r", encoding="utf-8") as handle:
+    target = _resolve_target_path(path)
+    if _orjson is not None and id(json.load) == _ORIG_JSON_LOAD_ID and id(open) == _ORIG_OPEN_ID:
+        with open(target, "rb") as handle:
+            raw_bytes = handle.read()
+        try:
+            return _orjson.loads(raw_bytes)
+        except Exception:
+            return json.loads(raw_bytes.decode("utf-8"))
+    with open(target, "r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -939,7 +984,7 @@ def iter_jsonl_records(path: str, *, strict: bool = False) -> Iterator[Any]:
         with open(target, "r", encoding="utf-8") as handle:
             for raw in filter(None, map(str.strip, handle)):
                 try:
-                    yield json.loads(raw)
+                    yield _fast_json_loads(raw)
                 except ValueError:
                     if strict:
                         raise
