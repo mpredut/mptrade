@@ -1319,11 +1319,6 @@ def build_last_cycle_execution_status(
     else:
         cycle_intents = [scoped_intents[-1]]
 
-    def _intent_sym_key(intent_obj: dict[str, Any]) -> tuple[str, str, tuple[str, ...], str]:
-        return _intent_venue_symbol_side_key(
-            intent_obj.get("venue"), intent_obj.get("symbol"), extract_intent_side(intent_obj)
-        )
-
     def _build_status_rec(det: dict[str, Any]) -> dict[str, Any]:
         rec: dict[str, Any] = {
             "venue": det["venue"],
@@ -1370,7 +1365,7 @@ def build_last_cycle_execution_status(
         if det["order_id"] is not None:
             seen_oids.add(str(det["order_id"]))
         if _is_open_resting_detail(det):
-            seen_sym_keys.add(_intent_sym_key(i))
+            seen_sym_keys.add(_intent_venue_symbol_side_key(i.get("venue"), i.get("symbol"), extract_intent_side(i)))
         out.append(_build_status_rec(det))
 
     if isinstance(open_orders, list) and open_orders:
@@ -1389,7 +1384,7 @@ def build_last_cycle_execution_status(
             if det is None:
                 continue
             oid_str = str(det["order_id"]) if det["order_id"] is not None else None
-            s_key = _intent_sym_key(i)
+            s_key = _intent_venue_symbol_side_key(i.get("venue"), i.get("symbol"), extract_intent_side(i))
             if oid_str is not None:
                 if oid_str in seen_oids:
                     continue

@@ -41,9 +41,6 @@ class PriceWindow:
         while dq and dq[0][0] < min_valid_index:
             dq.popleft()
 
-    def _evict_expired(self, dq: deque) -> None:
-        self._evict_before(dq, self.current_index - self.window_size + 1)
-
     def normalize_indices(self):
         """Normalise the indices when max_index is reached."""
         window_start = max(0, self.current_index - len(self.prices))
@@ -71,11 +68,12 @@ class PriceWindow:
             self.prices.popleft()
 
         # Handling of the current low and high.
-        self._evict_expired(self.min_deque)
+        min_valid_idx = self.current_index - self.window_size + 1
+        self._evict_before(self.min_deque, min_valid_idx)
         while self.min_deque and self.min_deque[-1][1] > px:
             self.min_deque.pop()
         self.min_deque.append((self.current_index, px))
-        self._evict_expired(self.max_deque)
+        self._evict_before(self.max_deque, min_valid_idx)
         while self.max_deque and self.max_deque[-1][1] <= px:
             self.max_deque.pop()
         self.max_deque.append((self.current_index, px))

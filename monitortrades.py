@@ -497,12 +497,6 @@ def _clear_smart_sl_exit(symbol: str, provider: Any = None):
         pass
 
 
-def _clear_sl_and_tp_ride_state(symbol: str) -> None:
-    _SL_BOUNCE_STATE.pop(symbol, None)
-    _SL_EPISODE_STATE.pop(symbol, None)
-    _TP_RIDE_STATE.pop(symbol, None)
-
-
 def _clear_reentry_and_last_exit_state(symbol: str, *, clear_done_sell_time: bool = False) -> None:
     _REENTRY_STATE.pop(symbol, None)
     _LAST_EXIT_KIND.pop(symbol, None)
@@ -519,7 +513,9 @@ def _resolve_exit(symbol: str, inst: Any = None, kind: Optional[str] = None, cle
     _REENTRY_DONE_SELL_TIME.pop(symbol, None)
     if _parse_bool_flag(clear_pending, default=True):
         _PENDING_STOP_EXIT.pop(symbol, None)
-        _clear_sl_and_tp_ride_state(symbol)
+        _SL_BOUNCE_STATE.pop(symbol, None)
+        _SL_EPISODE_STATE.pop(symbol, None)
+        _TP_RIDE_STATE.pop(symbol, None)
     _clear_smart_sl_exit(symbol, inst)
     _save_mt_state()
 
@@ -737,12 +733,6 @@ def _restore_pending_exit_state(symbol: str, pending_stop: dict):
             _hard_tp_last.pop(symbol, None)
 
 
-def _resolve_dust_pending_stop_exit(symbol: str, inst: Any) -> bool:
-    print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty/min_notional.")
-    _resolve_exit(symbol, inst)
-    return False
-
-
 def _is_pending_exit_active(
     symbol: str, inst, sellable_qty: float, min_qty: float, current_time_s: float, current_price: float = 0.0
 ) -> bool:
@@ -751,7 +741,9 @@ def _is_pending_exit_active(
     if not pending_stop:
         return False
     if _is_untradable_dust(inst, symbol, sellable_qty, current_price, min_qty):
-        return _resolve_dust_pending_stop_exit(symbol, inst)
+        print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty/min_notional.")
+        _resolve_exit(symbol, inst)
+        return False
 
     active_sell_exists = False
     p_cid = extract_client_order_id(pending_stop, default=None)
@@ -1409,7 +1401,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             _clear_reentry_and_last_exit_state(symbol, clear_done_sell_time=True)
 
     if symbol in _PENDING_STOP_EXIT and _is_untradable_dust(inst, symbol, sellable_qty, current_price, min_qty):
-        _resolve_dust_pending_stop_exit(symbol, inst)
+        print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty/min_notional.")
+        _resolve_exit(symbol, inst)
 
     position_closed_by_sell = (
         bool(trade_orders_sell)
@@ -1420,7 +1413,9 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     if position_closed_by_sell and (
         symbol in _SL_BOUNCE_STATE or symbol in _SL_EPISODE_STATE or symbol in _TP_RIDE_STATE
     ):
-        _clear_sl_and_tp_ride_state(symbol)
+        _SL_BOUNCE_STATE.pop(symbol, None)
+        _SL_EPISODE_STATE.pop(symbol, None)
+        _TP_RIDE_STATE.pop(symbol, None)
         _save_mt_state()
 
     if trade_orders_buy and not position_closed_by_sell:

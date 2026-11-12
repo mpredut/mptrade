@@ -105,9 +105,12 @@ class ReplayTrendSource:
         """Feed the symbol's window with ONE new replay tick. It must be
         called for EVERY tick, BEFORE reading is_trend_up() for the same moment
         -- otherwise the signal sees prices from the replay's future (look-ahead)."""
-        if (win := self._windows.get(symbol)) is None or (parsed := _parse_advance_tick(ts, price)) is None:
+        if (
+            (win := self._windows.get(symbol)) is None
+            or (ts_f := normalize_epoch_sec(ts, default=None, allow_zero=True)) is None
+            or (px_f := safe_pos_float(price, default=None)) is None
+        ):
             return
-        ts_f, px_f = parsed
         prev = self._prev_ts.get(symbol)
         if prev is not None and ts_f < prev:
             return
@@ -227,12 +230,6 @@ SMALL_TIMEOUT_RANGE_SEC = (14.0, 11 * 60.0)   # 14s - 11 min (29 Jul)
 UPWARD_EPSILON_K = 0.25
 
 
-def _parse_advance_tick(ts: float, price: float) -> Optional[Tuple[float, float]]:
-    ts_f = normalize_epoch_sec(ts, default=None, allow_zero=True)
-    px_f = safe_pos_float(price, default=None)
-    return (ts_f, px_f) if ts_f is not None and px_f is not None else None
-
-
 def _should_wait_for_gradient(
     side_str: str,
     g: float,
@@ -290,9 +287,12 @@ class DynamicReplayTrendSource:
         self._buf: Dict[str, deque] = {s: deque() for s in symbols}   # [(ts, price), ...] ascending
 
     def advance(self, symbol: str, ts: float, price: float) -> None:
-        if (buf := self._buf.get(symbol)) is None or (parsed := _parse_advance_tick(ts, price)) is None:
+        if (
+            (buf := self._buf.get(symbol)) is None
+            or (ts_f := normalize_epoch_sec(ts, default=None, allow_zero=True)) is None
+            or (px_f := safe_pos_float(price, default=None)) is None
+        ):
             return
-        ts_f, px_f = parsed
         if buf and ts_f < buf[-1][0]:
             return
         buf.append((ts_f, px_f))

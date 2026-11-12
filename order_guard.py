@@ -1202,7 +1202,8 @@ def check_math_profit_reference(
                 if diff < prof_pct:
                     print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
                           f"found recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}%, threshold {prof_pct}%")
-                    return _block_below_profit_threshold(side, diff, prof_pct)
+                    print(f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. The {side} order is BLOCKED.")
+                    return False
             print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
                   f"recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}% >= {prof_pct}%. Permitted.")
             return True
@@ -1238,14 +1239,9 @@ def check_math_profit_reference(
     print(f"[GUARD] {side} {symbol} (mode={mode}): ref {ref} ({src}), price {px_val}, "
           f"diff {diff:.2f}%, threshold {prof_pct}%")
     if diff < prof_pct:
-        return _block_below_profit_threshold(side, diff, prof_pct)
+        print(f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. The {side} order is BLOCKED.")
+        return False
     return True
-
-
-def _block_below_profit_threshold(side: str, diff: float, prof_pct: float) -> bool:
-    print(f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. "
-          f"The {side} order is BLOCKED.")
-    return False
 
 
 def unpack_daily_limit_result(
