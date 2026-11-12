@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import io
 from tests.conftest import TempDirTestCase
 import log as mp_log

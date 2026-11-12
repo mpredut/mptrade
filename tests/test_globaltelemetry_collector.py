@@ -1,7 +1,5 @@
 """Unit tests for GlobalTelemetryCollector."""
 
-from __future__ import annotations
-
 import botcore
 import external_order_guard as eog
 import json

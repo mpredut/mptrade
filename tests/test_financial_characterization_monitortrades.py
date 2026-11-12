@@ -6,8 +6,6 @@ client.  A failure during refactoring means that the financial behaviour changed
 and the change must be reviewed explicitly.
 """
 
-from __future__ import annotations
-
 import json
 import monitortrades as mt
 import order_guard

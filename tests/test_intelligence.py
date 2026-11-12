@@ -1,6 +1,4 @@
 """Comprehensive unit tests for the intelligence package (triggers, guards, state, daemon, and backtest)."""
-from __future__ import annotations
-
 import assetguardian as ag
 import binance_api.bapi_allorders as bapi_allorders
 import botcore

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """tests/test_research_and_backtest_robustness.py -- Regression tests for research runners, backtesting, and reporting robustness."""
 
-from __future__ import annotations
-
 import active_intents
 import argparse
 import assetguardian

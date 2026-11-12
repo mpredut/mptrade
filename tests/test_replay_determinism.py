@@ -1,7 +1,5 @@
 """Tests verifying backtest and replay determinism, wall-clock immunity, and cache isolation."""
 
-from __future__ import annotations
-
 import json
 import monitortrades as mt
 import os

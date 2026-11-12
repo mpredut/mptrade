@@ -1,7 +1,5 @@
 """Regression tests for border and edge cases across providers and SSOT cache managers."""
 
-from __future__ import annotations
-
 import argparse
 import ast
 from datetime import datetime, timezone

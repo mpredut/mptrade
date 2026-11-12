@@ -2,8 +2,6 @@
 log.py intent bypass, and test-environment isolation.
 """
 
-from __future__ import annotations
-
 import asyncio
 import io
 import json

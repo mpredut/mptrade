@@ -1,6 +1,4 @@
 """Unit tests for AutonomousAIReconciler and FleetHealthMonitor."""
-from __future__ import annotations
-
 import assetguardian as ag
 import base64
 import importlib

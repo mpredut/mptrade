@@ -1,6 +1,4 @@
 """Unit tests for AutonomousIntentGateway in orchestratorTrade."""
-from __future__ import annotations
-
 from datetime import datetime, timezone
 import json
 import math

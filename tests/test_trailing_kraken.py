@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Tests for the Kraken trailing_stop (no real API, no money)."""
-from __future__ import annotations
-
 import ast
 from contextlib import redirect_stdout
 import io

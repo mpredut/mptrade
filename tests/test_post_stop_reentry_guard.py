@@ -11,8 +11,6 @@ Verifies:
 8. End-to-end integration with monitortrades.py post-stop bounce flow.
 """
 
-from __future__ import annotations
-
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 

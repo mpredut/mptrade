@@ -6,8 +6,6 @@ incorrect reports (e.g. TAO: 4 days of drop reported as trend UP).
   python -m pytest tests/test_trend.py -v
 """
 
-from __future__ import annotations
-
 import importlib
 import json
 import numpy as np
