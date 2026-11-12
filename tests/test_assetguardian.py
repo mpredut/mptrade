@@ -15,7 +15,6 @@ from types import SimpleNamespace
 from unittest import mock
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class MemoryState:

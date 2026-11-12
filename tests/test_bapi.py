@@ -5,7 +5,6 @@ import instrument_registry as sym_mod
 import json
 import monitortrades as mt_mod
 import order_guard
-import os
 import pricewindow as pw
 import providers.market_api as market_api_mod
 import pytest
@@ -63,7 +62,6 @@ from unittest import mock
 from unittest.mock import MagicMock, patch
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 SYMBOL = "BTCUSDC"

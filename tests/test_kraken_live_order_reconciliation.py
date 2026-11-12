@@ -16,7 +16,6 @@ from providers.strategy_executor import OrderStatus, PairPrecision, ProviderErro
 from strategies import spot_engine as strat
 from tests.conftest import make_spot_live_test_params
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CONFIG_ENV = parse_dotenv(os.path.join(ROOT, "kraken", "config.env"))
 

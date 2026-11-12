@@ -6,7 +6,6 @@ import botcore
 import json
 import math
 import order_guard as _order_guard
-import os
 import pytest
 import subprocess
 import sys
@@ -54,7 +53,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class CustomProvider(MarketDataProvider):

@@ -35,7 +35,6 @@ from verify_tools.ownership_inventory import _python_symbols
 
 
 ROOT = Path(__file__).resolve().parents[1]
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 NUMERIC_MT_KEYS = [

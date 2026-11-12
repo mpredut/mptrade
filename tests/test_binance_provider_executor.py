@@ -1,6 +1,5 @@
 """Verify the BinanceProvider StrategyExecutor contract with a fake API."""
 from decimal import Decimal
-import os
 import unittest
 from unittest import mock
 
@@ -22,7 +21,6 @@ from providers.strategy_executor import (
 )
 from providers.t212_provider import T212Provider
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class FakeClient:

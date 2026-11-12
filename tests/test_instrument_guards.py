@@ -20,7 +20,6 @@ import order_retry as oq
 import order_retry_worker as worker
 import os
 import pytest
-import tempfile
 import threading
 import time
 import unittest
@@ -51,13 +50,13 @@ from strategies.position_exit_manager import (
 )
 from tests.conftest import (
     DummySpotExecutionProvider,
+    TempDirTestCase,
     make_test_regime_context as _build_test_context,
 )
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 SYMBOL = "ZZZFAKEUSD"
@@ -215,11 +214,13 @@ class _ZeroPolicyProvider(_FakeProvider):
         return 0.0
 
 
-class InstrumentGuardsTestCase(unittest.TestCase):
+class InstrumentGuardsTestCase(TempDirTestCase):
     def setUp(self):
-        self._tmp = tempfile.mkdtemp()
+        super().setUp()
+        self._tmp = str(self.tmp)
         # Isolate the outcome journal and execution audit from the production logger directory.
-        self._log_tmp = tempfile.mkdtemp()
+        self._log_tmp = os.path.join(self._tmp, "logs")
+        os.makedirs(self._log_tmp, exist_ok=True)
         self._orig_log_dir = outcomes_log.ORDER_OUTCOMES_LOG_DIR
         outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._log_tmp
         self._orig_exec_audit_dir = _inst_mod._EXECUTION_AUDIT.directory
@@ -242,6 +243,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
     def tearDown(self):
         outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._orig_log_dir
         _inst_mod._EXECUTION_AUDIT.directory = self._orig_exec_audit_dir
+        super().tearDown()
 
     def _inst(self, provider, params=None):
         api = MarketApi([provider])

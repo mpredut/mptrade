@@ -46,7 +46,6 @@ from providers.strategy_executor import (
 )
 from tests.conftest import TempDirTestCase, load_venue_modules
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 (

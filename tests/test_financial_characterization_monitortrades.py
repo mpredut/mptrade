@@ -43,7 +43,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 NOW = 2_000_000_000.0

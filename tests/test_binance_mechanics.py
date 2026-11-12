@@ -3,12 +3,10 @@
 The network and dispatch functions are fully mocked. Coverage includes the
 guards_internally=False route through the provider-neutral Instrument pipeline.
 """
-import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 mock_bapi = MagicMock()
 sys.modules.setdefault("bapi", mock_bapi)

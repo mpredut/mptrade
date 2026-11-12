@@ -39,7 +39,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 # Computed values (identical to what the original files did).

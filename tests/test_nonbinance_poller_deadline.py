@@ -27,7 +27,6 @@ from trailing_core import TrailingAdapterBase
 from types import SimpleNamespace
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class _StubCpm:

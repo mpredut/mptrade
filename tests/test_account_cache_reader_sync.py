@@ -26,7 +26,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 def _order(order_id, timestamp):

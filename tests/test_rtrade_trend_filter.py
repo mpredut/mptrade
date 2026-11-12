@@ -16,7 +16,6 @@ from unittest import mock
 from unittest.mock import patch
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class _RTradeTrendBase(unittest.TestCase):

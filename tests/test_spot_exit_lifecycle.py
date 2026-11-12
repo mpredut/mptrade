@@ -41,7 +41,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 @pytest.fixture(autouse=True)

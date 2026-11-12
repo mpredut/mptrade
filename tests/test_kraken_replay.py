@@ -19,7 +19,6 @@ from offline.backtests.execution import FeeModel
 from strategies import spot_replay as rp
 from tests.conftest import load_venue_modules, make_spot_test_params
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 strat = rp._strat
 

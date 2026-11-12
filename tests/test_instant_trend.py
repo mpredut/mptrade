@@ -37,7 +37,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 mock_api = MagicMock()
 mock_api.get_current_price = MagicMock(return_value=60000.0)

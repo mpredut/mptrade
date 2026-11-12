@@ -16,7 +16,6 @@ from tests.conftest import TempDirTestCase
 from unittest.mock import Mock, patch
 
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class _FakeClient:

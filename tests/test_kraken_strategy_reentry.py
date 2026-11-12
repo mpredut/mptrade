@@ -13,7 +13,6 @@ Coverage:
     warm-up (<20 points); adaptive once there is enough history.
   - The re-entry block in step(): uses the EFFECTIVE threshold (not always the fixed one).
 """
-import os
 import random
 import tempfile
 import unittest
@@ -24,7 +23,6 @@ from market_regime import MarketRegimeDecision
 from providers.strategy_executor import PairPrecision
 from strategies import spot_engine as strat, spot_rules as sr
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 # Keep the synthetic state file out of kraken/, next to the live pair states.

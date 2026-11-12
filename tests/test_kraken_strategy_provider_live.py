@@ -19,7 +19,6 @@ from providers.strategy_executor import (
 from strategies import spot_engine as strat
 from tests.conftest import make_spot_test_params
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class FakeExecutor:

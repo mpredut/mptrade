@@ -42,7 +42,6 @@ from providers.strategy_executor import (
 from providers.t212_provider import T212Provider
 from tests.conftest import load_venue_modules
 
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 class FakeClient:
