@@ -563,16 +563,14 @@ class Strategy(BaseSpotMixin):
     def _place_buy(self, amount: float, limit: float, kind: str) -> bool:
         lim_f = safe_pos_float(limit, None)
         amt_f = safe_pos_float(amount, None)
-        if lim_f is None or amt_f is None or round(lim_f, 2) <= 0:
-            log("  ! [STRAT] invalid BUY amount/limit — skipping")
+        fx_f = safe_pos_float(self.fx_to_usd, None)
+        usd = safe_pos_float(amt_f * fx_f, default=None) if (amt_f is not None and fx_f is not None) else None
+        qty = round(usd / lim_f, 2) if (usd is not None and lim_f is not None) else 0.0
+        invalid_buy = lim_f is None or amt_f is None or round(lim_f, 2) <= 0
+        if invalid_buy or qty <= 0:
+            log("  ! [STRAT] invalid BUY amount/limit — skipping" if invalid_buy else "  ! [STRAT] qty 0 — skipping")
             return False
         limit, amount = lim_f, amt_f
-        fx_f = safe_pos_float(self.fx_to_usd, None)
-        usd = safe_pos_float(amount * fx_f, default=None) if fx_f is not None else None
-        qty = round(usd / limit, 2) if usd is not None else 0.0
-        if qty <= 0:
-            log("  ! [STRAT] qty 0 — skipping")
-            return False
         if self.dry_run:
             log(f"  [STRAT] [PAPER] placing BUY {kind} {qty} @ {limit:.2f} USD (~{amount:.0f} {self.ccy})")
             self.s["orders"].append({
@@ -605,13 +603,19 @@ class Strategy(BaseSpotMixin):
         market = bool(_parse_bool_flag(market, False))
         qty_f = safe_pos_float(qty, None)
         lim_f = safe_pos_float(limit, None)
-        if qty_f is None or lim_f is None or round(lim_f, 2) <= 0:
-            log("  ! [STRAT] invalid SELL qty/limit — sending no order")
+        invalid_sell = qty_f is None or lim_f is None or round(lim_f, 2) <= 0
+        qty = round(qty_f, 2) if qty_f is not None else 0.0
+        if invalid_sell or qty <= 0:
+            log(
+                "  ! [STRAT] "
+                + (
+                    "invalid SELL qty/limit — sending no order"
+                    if invalid_sell
+                    else "SELL qty 0 after rounding — keeping the dust, sending no order"
+                )
+            )
             return False
-        limit, qty = lim_f, round(qty_f, 2)
-        if qty <= 0:
-            log("  ! [STRAT] SELL qty 0 after rounding — keeping the dust, sending no order")
-            return False
+        limit = lim_f
         level = safe_pos_float(level, None)
         tag = f"+{level:g}%" if level is not None else ""
         if self.dry_run:
@@ -639,20 +643,18 @@ class Strategy(BaseSpotMixin):
             if "selling-equity-not-owned" not in message:
                 return not definitive
             _m = re.search(r'owned["\']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)', message)
+            _owned = safe_nonneg_float(_m.group(1), default=None) if _m is not None else None
             if _m is None:
                 log("  ! [STRAT] selling-not-owned without the owned quantity — NOT resetting the position")
-                return False
-            _owned = safe_nonneg_float(_m.group(1), default=None)
-            if _owned is None:
-                return False
-            if _owned <= 1e-6:
-                log("  ! [STRAT] T212 confirms owned=0 — resetting the state (position closed/sold)")
-                exit_px = safe_pos_float(self.s.get("last_sell_price")) or limit
-                self._close_cycle(exit_px, exit_kind=kind)
-                self.s["locked_zero_until"] = self._now() + 300
-                self._save()
-            else:
-                log(f"  ! [STRAT] selling-not-owned but owned={_owned} (free<order) — NOT resetting the position")
+            elif _owned is not None:
+                if _owned <= 1e-6:
+                    log("  ! [STRAT] T212 confirms owned=0 — resetting the state (position closed/sold)")
+                    exit_px = safe_pos_float(self.s.get("last_sell_price")) or limit
+                    self._close_cycle(exit_px, exit_kind=kind)
+                    self.s["locked_zero_until"] = self._now() + 300
+                    self._save()
+                else:
+                    log(f"  ! [STRAT] selling-not-owned but owned={_owned} (free<order) — NOT resetting the position")
             return False
         order_type = "MARKET" if market else f"@ {limit:.2f}"
         log(f"  [STRAT] SELL {kind}{tag} placed id={outcome.order_id} {qty:.2f} {order_type}")
@@ -1454,11 +1456,12 @@ class Strategy(BaseSpotMixin):
                 log("  ! [STRAT] MDHTP exit deferred: at least one order could not be cancelled")
                 return True
             pending_orders = [o for o in self.s["orders"] if not _is_market_exit(o)]
-            if pending_orders:
-                log(f"  [STRAT] MDHTP exit deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
-                return True
-            if self.s.get("pending_submit"):
-                log("  [STRAT] MDHTP exit deferred: waiting for pending submit to reconcile")
+            if pending_orders or self.s.get("pending_submit"):
+                log(
+                    f"  [STRAT] MDHTP exit deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation"
+                    if pending_orders
+                    else "  [STRAT] MDHTP exit deferred: waiting for pending submit to reconcile"
+                )
                 return True
 
             fresh_held = self.s["qty"]

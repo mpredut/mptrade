@@ -204,10 +204,10 @@ def _atomic_stream_writer(
             shutil.copymode(destination, temporary)
         os.replace(temporary, destination)
         _fsync_parent_directory(destination)
-    except BaseException:
+    except BaseException as exc:
         handle.close()
         discard_generation_file(temporary)
-        raise
+        raise exc
     finally:
         cleanup_stale_staging_siblings(
             directory, prefix, exclude_name=os.path.basename(temporary), suffix=".tmp"

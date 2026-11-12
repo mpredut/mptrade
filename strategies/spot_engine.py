@@ -1488,15 +1488,16 @@ class Strategy(BaseSpotMixin):
     ) -> tuple[float, float, float, float, float | None] | None:
         """Stage 1: Validate market price, sync venue ledger, record shadow ticks, and check adoption."""
         clean_price = safe_pos_float(price, None)
-        if clean_price is None:
-            log("  ! [STRAT] invalid price -- deferring step")
+        if clean_price is None or self.s.get("pending_intent"):
+            log(
+                "  ! [STRAT] invalid price -- deferring step"
+                if clean_price is None
+                else "  [STRAT] pre-submit intent in reconciliation -- deferring new decisions"
+            )
             return None
         price = clean_price
         if high is not None:
             high = safe_pos_float(high, None)
-        if self.s.get("pending_intent"):
-            log("  [STRAT] pre-submit intent in reconciliation -- deferring new decisions")
-            return None
         clean_ts = normalize_epoch_sec(timestamp, default=None, allow_zero=True)
         had_persisted_reconcile = self._state_flag("ledger_reconcile_required")
         if self.observe_only:

@@ -290,7 +290,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
         log(f"  [ORDER] lost response recovered: id={record['order_id']}")
         return "waiting"
     if len(matches) > 1:
-        log("  ! [ORDER] several T212 orders match the intent — keeping it pending")
+        log("  ! [ORDER] " + "several T212 orders match the intent — keeping it pending")
         return "waiting"
 
     pf_outcome = _confirm_fill_from_portfolio(
@@ -338,26 +338,27 @@ def place_order_with_retry(
     it eligible for a later invocation. There is no in-process retry loop.
     """
 
-    if (ticker := clean_nonempty_str(ticker)) is None:
-        log("  ! [ORDER] ticker invalid")
-        return False
-    if (validity := clean_upper_token(validity)) is None:
-        log("  ! [ORDER] validity invalid")
-        return False
-    if validity == "GTC":
-        validity = "GOOD_TILL_CANCEL"
-    if validity not in {"DAY", "GOOD_TILL_CANCEL"}:
-        log(f"  ! [ORDER] validity invalid: {validity!r}")
-        return False
     qty_f = safe_pos_float(quantity, default=None)
     price_f = safe_pos_float(limit_price, default=None)
     retry_delay_f = safe_nonneg_float(retry_delay, default=None)
-    if qty_f is None or price_f is None or retry_delay_f is None:
-        log("  ! [ORDER] invalid numeric parameters: bool not allowed")
-        return False
-    qty_r, price_r = round(qty_f, 2), round(price_f, 2)
-    if qty_r <= 0 or price_r <= 0:
-        log("  ! [ORDER] qty/price/retry_delay must be finite and valid")
+    qty_r = round(qty_f, 2) if qty_f is not None else 0.0
+    price_r = round(price_f, 2) if price_f is not None else 0.0
+    param_err: str | None = None
+    if (ticker := clean_nonempty_str(ticker)) is None:
+        param_err = "  ! [ORDER] ticker invalid"
+    elif (validity := clean_upper_token(validity)) is None:
+        param_err = "  ! [ORDER] validity invalid"
+    else:
+        if validity == "GTC":
+            validity = "GOOD_TILL_CANCEL"
+        if validity not in {"DAY", "GOOD_TILL_CANCEL"}:
+            param_err = f"  ! [ORDER] validity invalid: {validity!r}"
+        elif qty_f is None or price_f is None or retry_delay_f is None:
+            param_err = "  ! [ORDER] invalid numeric parameters: bool not allowed"
+        elif qty_r <= 0 or price_r <= 0:
+            param_err = "  ! [ORDER] qty/price/retry_delay must be finite and valid"
+    if param_err is not None:
+        log(param_err)
         return False
 
     # Current price is informational only; do not change the user-selected limit.
@@ -371,7 +372,7 @@ def place_order_with_retry(
 
     if dry_run:
         log(f"  [ORDER] [DRY-RUN] LIMIT BUY {ticker}  qty={qty_r}  @ {price_r} USD  validity={validity}")
-        log("  [ORDER] Dry run — the order was NOT SENT. Set ORDER_EXECUTE=true in .env.")
+        log("  [ORDER] " + "Dry run — the order was NOT SENT. Set ORDER_EXECUTE=true in .env.")
         return True
 
     marker_path = _marker_path(ticker, test=not write_marker)
@@ -392,7 +393,7 @@ def place_order_with_retry(
                 info = poll_order_until_terminal(client, legacy_id, ticker, desktop)
                 record["last_status"] = info.get("status") if isinstance(info, dict) else None
                 _persist_marker(record, marker_path)
-            log("  [ORDER] an existing legacy marker — not duplicating the order")
+            log(f"  [ORDER] an existing legacy marker (v{ver_i}) — not duplicating the order")
             return True
         rec_qty_f = safe_pos_float(record.get("qty"), -1.0)
         rec_lim_f = safe_pos_float(record.get("limit_price"), -1.0)
@@ -403,15 +404,16 @@ def place_order_with_retry(
             and abs(rec_qty_f - qty_r) <= 0.011
             and abs(rec_lim_f - price_r) <= 0.011
         )
-        if not same_intent:
-            log("  ! [ORDER] another intent already exists in the marker — NOT overwriting")
-            return False
         lifecycle = str(record.get("lifecycle") or "").strip().lower()
+        if not same_intent or lifecycle in {"canceled", "cancelled", "expired"}:
+            log(
+                "  ! [ORDER] another intent already exists in the marker — NOT overwriting"
+                if not same_intent
+                else f"  [ORDER] the intent is terminal ({lifecycle}); not resending it"
+            )
+            return False
         if lifecycle == "filled":
             return True
-        if lifecycle in {"canceled", "cancelled", "expired"}:
-            log(f"  [ORDER] the intent is terminal ({lifecycle}); not resending it")
-            return False
         outcome = _reconcile_record(
             client, record, marker_path, now=now,
             retry_delay=retry_delay_f, desktop=desktop,
@@ -427,7 +429,7 @@ def place_order_with_retry(
     else:
         before_qty = _portfolio_qty(client, ticker)
         if before_qty is None:
-            log("  ! [ORDER] the T212 portfolio is unavailable — NOT sending")
+            log("  ! [ORDER] " + "the T212 portfolio is unavailable — NOT sending")
             return False
         record = {
             "version": 2,
@@ -445,12 +447,11 @@ def place_order_with_retry(
             "next_retry_at": now,
         }
         active_matches = _matching_active_orders(client, record)
-        if active_matches is None:
-            log("  ! [ORDER] the active T212 orders are unavailable — NOT sending")
-            return False
-        if active_matches:
+        if active_matches is None or active_matches:
             log(
-                "  ! [ORDER] an active order with the same ticker/side/qty/price already exists; "
+                "  ! [ORDER] the active T212 orders are unavailable — NOT sending"
+                if active_matches is None
+                else "  ! [ORDER] an active order with the same ticker/side/qty/price already exists; "
                 "not claiming it and NOT sending another"
             )
             return False
@@ -486,10 +487,9 @@ def place_order_with_retry(
             record["venue_order_ids"] = history if str(oid) in history else [*history, str(oid)]
         _persist_marker(record, marker_path)
         log(f"  [ORDER] submit response: id={oid}  status={venue_status or 'UNKNOWN'}")
-        if lifecycle in {"canceled", "expired"}:
-            return False
-        if lifecycle == "submit_pending":
-            log("  ! [ORDER] order rejected; the intent stays queued for reconciliation/retry")
+        if lifecycle in {"canceled", "expired", "submit_pending"}:
+            if lifecycle == "submit_pending":
+                log("  ! [ORDER] order rejected; the intent stays queued for reconciliation/retry")
             return False
         notify(title=f"T212 order accepted: {ticker} [order_manager]",
                body=f"LIMIT {ticker} qty={qty_r} @ {price_r} USD\nid={oid}",

@@ -430,8 +430,8 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
                     if version and version != loaded_version:
                         if not dirty or file_ts >= mem_ts:
                             self.ensure_persisted_version(version)
-                    return
-                self.resync_mem_file()
+                else:
+                    self.resync_mem_file()
                 return
             except account_cache_health.AccountCacheNotReady as exc:
                 if _attempt == 0:

@@ -177,7 +177,7 @@ def run_wf(pair, interval, segments=4):
     try:
         ohlc = fetch_candles(pair, interval)
     except Exception as e:  # noqa: BLE001
-        print("ERROR:", e); return
+        print("ERROR: " + str(e)); return
     n = len(ohlc); seg = max(1, n // segments)
     print(f"=== WALK-FORWARD {pair} interval={interval}m ({n} bars, {segments} segments) ===")
     print(f"{'segment':<9} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  winner")

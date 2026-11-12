@@ -44,7 +44,7 @@ def send_ntfy(title, message):
         or None
     )
     if not url:
-        print("[watchdog] no PHONE_ALERT_URL/NTFY_TOPIC_ERROR — skipping the push")
+        print("[watchdog] " + "no PHONE_ALERT_URL/NTFY_TOPIC_ERROR — skipping the push")
         return False
     event = make_bot_event_alert(title, message, "watchdog", url=None)
     ok = AlertNotifier.send_phone_webhook_batch([event], webhook_url=url)
