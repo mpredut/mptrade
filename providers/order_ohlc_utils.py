@@ -465,7 +465,9 @@ def aggregate_fills_by_order_id(
                 "timestamp": item["timestamp"],
             }
             if st_item := item.get("status"):
-                entry["status"] = "PARTIALLY_FILLED" if (item["qty"] > 0 and st_item in _UNFILLED_ORDER_STATUSES) else st_item
+                entry["status"] = st_item
+                if item["qty"] > 0 and st_item in _UNFILLED_ORDER_STATUSES:
+                    entry["executedQty"] = item["qty"]
             if item.get("clientOrderId"):
                 entry["clientOrderId"] = item["clientOrderId"]
             res.append(entry)

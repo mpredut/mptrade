@@ -1356,6 +1356,12 @@ def test_t212_history_retains_partial_fills_on_cancelled_and_expired_orders(tmp_
     assert buys[0]["status"] == "CANCELLED"
     assert len(sells) == 1 and sells[0]["orderId"] == "1003" and sells[0]["qty"] == pytest.approx(1.0)
     assert sells[0]["status"] == "EXPIRED"
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
+
+    portfolio_fills = extract_symbol_recent_fills(buys + sells, symbol="NVDA_US_EQ")
+    assert portfolio_fills is not None
+    assert portfolio_fills["last_buy"]["qty"] == pytest.approx(1.0)
+    assert portfolio_fills["last_sell"]["qty"] == pytest.approx(1.0)
     assert prov.last_opposite_fill("NVDA_US_EQ", "BUY", since_s=3600.0) == pytest.approx(155.25)
     assert not fills_cache.exists()
 
