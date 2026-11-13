@@ -116,8 +116,9 @@ def build_replay_summary(
     extra_fields: dict | None = None,
 ) -> dict:
     """Calculate standardized performance metrics and build the rounded replay summary dict."""
-    if periods_per_year is None and bar_minutes:
-        periods_per_year = 365.0 * 24 * 60 / bar_minutes
+    bm_f = safe_pos_float(bar_minutes, default=None)
+    if periods_per_year is None and bm_f is not None:
+        periods_per_year = 365.0 * 24 * 60 / bm_f
     performance = calculate_performance_metrics(
         equity_curve,
         initial_capital=initial_capital,
@@ -189,7 +190,7 @@ def required_replay_intervals(params) -> set[int]:
         and _parse_bool_flag(getattr(params, "surge_dynamic", False), False)
     ):
         required.add(safe_int(params.tp_trail_vol_interval, 0))
-    if safe_pos_float(getattr(params, "dca_vol_scale_k", 0), default=0.0) > 0.0:
+    if safe_float(getattr(params, "dca_vol_scale_k", 0.0), default=0.0) != 0.0:
         required.add(safe_int(params.dca_vol_interval, 0))
     required.discard(0)
     return required
@@ -208,17 +209,23 @@ def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
         raise ValueError(
             f"regime-aware policies require bar_minutes to equal trend_interval ({params.trend_interval} minutes); resampling is not implemented"
         )
-    if (params.tp_trail_adaptive or (params.surge_guard and params.surge_dynamic)) and (
+    adaptive_or_surge_dyn = _parse_bool_flag(getattr(params, "tp_trail_adaptive", False), False) or (
+        _parse_bool_flag(getattr(params, "surge_guard", False), False)
+        and _parse_bool_flag(getattr(params, "surge_dynamic", False), False)
+    )
+    if adaptive_or_surge_dyn and (
         bm_val is None or bm_val != safe_float(params.tp_trail_vol_interval, default=-1.0)
     ):
         raise ValueError(
             f"adaptive trailing or surge requires bar_minutes to equal tp_trail_vol_interval ({params.tp_trail_vol_interval} minute)"
         )
-    if params.dca_vol_scale_k and (bm_val is None or bm_val != safe_float(params.dca_vol_interval, default=-1.0)):
+    if safe_float(getattr(params, "dca_vol_scale_k", 0.0), default=0.0) != 0.0 and (
+        bm_val is None or bm_val != safe_float(params.dca_vol_interval, default=-1.0)
+    ):
         raise ValueError(
             f"dca_vol_scale_k requires bar_minutes to equal dca_vol_interval ({params.dca_vol_interval} minute)"
         )
-    if params.reentry_adaptive and bm_val is None:
+    if _parse_bool_flag(getattr(params, "reentry_adaptive", False), False) and bm_val is None:
         raise ValueError("reentry_adaptive requires bar_minutes for the time-based volatility")
 
 
@@ -769,12 +776,13 @@ def ratchet_post_exit_peak_sell_price(
     require_tp_kind: bool = False,
 ) -> None:
     """Ratchet ``state["last_sell_price"]`` up to the highest close since a post-TP flat state."""
-    if not isinstance(state, dict) or safe_float(state.get("qty"), 0.0) > qty_eps:
+    eps_f = safe_nonneg_float(qty_eps, default=1e-9)
+    if not isinstance(state, dict) or safe_float(state.get("qty"), 0.0) > eps_f:
         return
     raw_sl_rb = state.get("sl_rebuy")
     if bool(raw_sl_rb) if isinstance(raw_sl_rb, dict) else bool(_parse_bool_flag(raw_sl_rb, False)):
         return
-    if require_tp_kind and state.get("last_exit_kind") != "TP":
+    if _parse_bool_flag(require_tp_kind, False) and state.get("last_exit_kind") != "TP":
         return
     p_f = safe_pos_float(price, 0.0)
     lsp_f = safe_pos_float(state.get("last_sell_price"), 0.0)

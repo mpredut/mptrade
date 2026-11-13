@@ -10,7 +10,8 @@ import botcore as cfg
 from botcore import (
     bind_module_importer,
     clean_order_id,
-    clean_upper_token,
+    clean_scalar_str,
+    clean_upper_scalar,
     ClosedPriceSeries,
     exact_pos_int,
     extract_order_id,
@@ -141,8 +142,8 @@ class BinanceProvider(MarketDataProvider):
         if not super()._allow_ssot_price_cache():
             return False
         if (
-            getattr(self, "_ssot_cache_enabled", None) is True
-            or getattr(self, "_force_ssot_cache", False)
+            _parse_bool_flag(getattr(self, "_ssot_cache_enabled", None), False)
+            or _parse_bool_flag(getattr(self, "_force_ssot_cache", False), False)
             or getattr(self, "_ssot_price_cache_path", None)
         ):
             return True
@@ -163,9 +164,8 @@ class BinanceProvider(MarketDataProvider):
         return None
 
     def supports_symbol(self, symbol: str) -> bool:
-        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
+        if (sym_norm := clean_upper_scalar(symbol)) is None:
             return False
-        sym_norm = symbol.strip().upper()
         split = split_symbol_assets(sym_norm)
         if split is None or split[1] != "USDC":
             return False
@@ -231,7 +231,7 @@ class BinanceProvider(MarketDataProvider):
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Use current immutable fills, not order aggregates or a BUY-only average."""
         since_s = require_pos_float(since_s, "since_s")
-        if (symbol := clean_upper_token(symbol)) is None:
+        if (symbol := clean_upper_scalar(symbol)) is None:
             return None
         sym_canon = canonical_symbol_key(symbol)
         spec = self.resolve_venue_instrument_spec(self.name, symbol)
@@ -260,7 +260,7 @@ class BinanceProvider(MarketDataProvider):
             validate_row_fn=lambda row: bool(
                 manager._is_valid_item(row)
                 and (
-                    (row_sym := str(row.get("symbol") or "").strip().upper() if isinstance(row.get("symbol"), str) else "") == symbol
+                    (row_sym := clean_upper_scalar(row.get("symbol")) or "") == symbol
                     or (sym_canon and canonical_symbol_key(row_sym) == sym_canon)
                 )
             ),
@@ -300,13 +300,13 @@ class BinanceProvider(MarketDataProvider):
                 build_open_order_entry(
                     order,
                     order_id=str(oid_int),
-                    side=normalize_side(raw_side) or str(raw_side or "").strip().upper(),
+                    side=normalize_side(raw_side) or (clean_upper_scalar(raw_side) or ""),
                     price=price_f,
                     orig_qty=orig_f,
                     executed_qty=exec_f,
                     client_order_id=clean_order_id(order.get("clientOrderId")),
                     has_explicit_coid=True,
-                    status=str(raw_status or "NEW").strip().upper(),
+                    status=clean_upper_scalar(raw_status) or "NEW",
                 )
             )
         return normalized
@@ -352,7 +352,7 @@ class BinanceProvider(MarketDataProvider):
     def validate_order_state(self, expected_state):
         """Refuse when policy checks raced with a newer account-cache snapshot."""
         current_state = self.prepare_order_state()
-        if current_state != tuple(expected_state or ()):
+        if not isinstance(expected_state, (list, tuple)) or current_state != tuple(expected_state):
             raise SubmissionRefused("account_cache_snapshot_changed")
         return current_state
 
@@ -389,7 +389,7 @@ class BinanceProvider(MarketDataProvider):
                     "permit_requested_price": (
                         price if permit_requested_price is None and not is_market else permit_requested_price
                     ),
-                    "kind": kwargs.get("kind") or kwargs.get("motivation"),
+                    "kind": clean_scalar_str(kwargs.get("kind")) or clean_scalar_str(kwargs.get("motivation")),
                 }
             )
         return _po.place_order_mechanics(side, symbol, price, qty, **mechanics_kwargs)
@@ -680,7 +680,7 @@ class BinanceProvider(MarketDataProvider):
         raw_venue_status = o.get("status")
         if isinstance(raw_venue_status, bool):
             raise ProviderError(f"order_status({order_id}): invalid order status")
-        venue_status = str(raw_venue_status or "").strip().upper()
+        venue_status = clean_upper_scalar(raw_venue_status) or ""
         return OrderStatus(
             status=st_map.get(venue_status, "open"),
             filled_qty=executed_qty,
@@ -719,18 +719,19 @@ class BinanceProvider(MarketDataProvider):
     @classmethod
     def stop_price_ws_manager(cls, timeout: float) -> None:
         """Stop the Binance price WebSocket manager and periodic clock resync thread."""
+        eff_timeout = safe_nonneg_float(timeout, default=5.0)
         try:
             bws_mgr = getattr(importlib.import_module("binance_api.bapi_ws"), "bapi_ws_manager", None)
         except Exception:
             bws_mgr = None
         if bws_mgr is not None and hasattr(bws_mgr, "stop"):
             try:
-                bws_mgr.stop(timeout=timeout)
+                bws_mgr.stop(timeout=eff_timeout)
             except Exception:
                 pass
         try:
             importlib.import_module("binance_api.bapi_client").stop_periodic_resync(
-                timeout=timeout
+                timeout=eff_timeout
             )
         except Exception:
             pass

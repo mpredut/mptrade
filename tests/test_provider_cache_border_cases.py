@@ -230,9 +230,13 @@ from providers.ohlc_utils import (
     build_price_history_points,
     drop_incomplete_last_bar,
     extract_trading_quote_pairs,
+    extract_yahoo_chart_latest_price,
     normalize_yahoo_5d_chart_bars,
+    parse_ohlc_interval_minutes,
+    require_ohlc_symbol,
     resolve_ohlc_time_window_ms,
     validate_dataset,
+    validate_ohlc_bars,
     validate_ohlc_candle_bar,
 )
 from providers.order_ohlc_utils import (
@@ -306,15 +310,21 @@ from strategies.replay_execution import (
     unpack_ohlc_bar,
 )
 from strategies.replay_metrics import (
+    buy_hold_pct,
     calculate_performance_metrics,
     print_ascii_table_header,
     print_single_backtest_report,
+    round_metric,
     run_cli_single_or_sweep_backtest,
     run_tp_drop_sl_sweep,
+    validate_bt_cli_token,
     validate_common_backtest_cli_bounds,
+    validate_replay_metrics,
     write_markdown_report,
 )
 from strategies.spot_replay import (
+    _validate_replay,
+    build_replay_summary,
     iter_end_of_replay_market_sell_orders,
     params_require_trend_interval,
     post_exit_peak_step_scope,
@@ -7268,6 +7278,236 @@ def test_wave41_broker_replay_ws_poller_exec_and_mt_accounting_border_cases(tmp_
         last_exit_kind_map=exit_map,
     )
     assert inferred_stop == "STOP" and exit_map["BTCUSDC"] == "STOP"
+
+
+def test_wave42_scalar_ssot_replay_metrics_spot_replay_ohlc_binance_and_t212_border_cases(monkeypatch, tmp_path):
+    """Wave 42: clean_scalar_str/clean_upper_scalar SSOT, replay_metrics, spot_replay, ohlc_utils, binance_provider, and t212_provider border cases."""
+    # 1. botcore.clean_scalar_str / clean_upper_scalar & order_ohlc_utils.normalize_open_order scalar hygiene.
+    assert botcore.clean_scalar_str("  abc_1 ") == "abc_1"
+    assert botcore.clean_upper_scalar("  abc_1 ") == "ABC_1"
+    for bad_scalar in ("", "   ", "null", "NONE", "NaN", "-inf", "+infinity", True, False, None, 123):
+        assert botcore.clean_scalar_str(bad_scalar) is None
+        assert botcore.clean_upper_scalar(bad_scalar) is None
+
+    norm_open = normalize_open_order(
+        {"orderId": 77, "price": "100.0", "origQty": "2.0", "executedQty": "0", "status": "null", "side": "BUY", "symbol": "null"},
+        venue="none",
+        symbol="null",
+    )
+    assert norm_open is not None
+    assert norm_open["status"] == "NEW"
+    assert norm_open["venue"] == ""
+    assert norm_open["symbol"] == ""
+
+    # 2. strategies/replay_metrics: round_metric bool/invalid decimals, Mapping rejection, validate_replay_metrics & validate_bt_cli_token.
+    assert round_metric(1.234567891234, decimals=True) == round(1.234567891234, 10)  # type: ignore[arg-type]
+    assert round_metric(1.234567891234, decimals=-3) == round(1.234567891234, 10)
+    with pytest.raises(ValueError, match="cannot be empty"):
+        calculate_performance_metrics({100.0: "x"}, initial_capital=100.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="iterable of booleans"):
+        calculate_performance_metrics([100.0, 105.0], initial_capital=100.0, exposure={True: 1})  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="iterable of finite numbers"):
+        calculate_performance_metrics([100.0, 105.0], initial_capital=100.0, trade_pnls={5.0: "x"})  # type: ignore[arg-type]
+    assert buy_hold_pct({"a": 100.0, "b": 120.0}) == 0.0  # type: ignore[arg-type]
+
+    valid_summary = build_replay_summary(
+        realized=5.0,
+        net=4.5,
+        fees=0.5,
+        total=4.5,
+        final_upnl=0.0,
+        cycles=1,
+        wins=1,
+        open_qty=0.0,
+        fills=2,
+        ambiguous_bars=0,
+        initial_capital=100.0,
+        account_currency="USD",
+        equity_curve=[100.0, 104.5],
+        exposure=[True],
+        trade_pnls=[4.5],
+        turnover_notional=200.0,
+        bar_minutes="60",  # type: ignore[arg-type]
+    )
+    validate_replay_metrics(valid_summary)
+    assert valid_summary["annualized_return_pct"] is not None
+    summary_bad_bm = build_replay_summary(
+        realized=0.0,
+        net=0.0,
+        fees=0.0,
+        total=0.0,
+        final_upnl=0.0,
+        cycles=0,
+        wins=0,
+        open_qty=0.0,
+        fills=0,
+        ambiguous_bars=0,
+        initial_capital=100.0,
+        account_currency="USD",
+        equity_curve=[100.0, 100.0],
+        exposure=[False],
+        trade_pnls=[],
+        turnover_notional=0.0,
+        bar_minutes=float("nan"),
+    )
+    assert summary_bad_bm["annualized_return_pct"] is None
+    for bad_cur in ("   ", "null", "NONE"):
+        with pytest.raises(AssertionError, match="account_currency"):
+            validate_replay_metrics({**valid_summary, "account_currency": bad_cur})
+    for bad_tok in ("null", "none", "NaN"):
+        with pytest.raises(ValueError, match="invalid symbol"):
+            validate_bt_cli_token(bad_tok)
+    with pytest.raises(ValueError, match="invalid symbol"):
+        validate_bt_cli_token("BTC/USDC", allow_slash="false")  # type: ignore[arg-type]
+    assert validate_bt_cli_token("BTC/USDC", allow_slash="true") == "BTC/USDC"  # type: ignore[arg-type]
+
+    # 3. strategies/spot_replay: _validate_replay string-false flags & ratchet_post_exit_peak_sell_price require_tp_kind="false".
+    params_str_false = SimpleNamespace(
+        trend_overlay="false",
+        dca_trend_brake="false",
+        reentry_hybrid_enabled="false",
+        surge_guard="false",
+        surge_dynamic="false",
+        tp_dynamic_flat="false",
+        tp_trail_adaptive="false",
+        dca_vol_scale_k="0",
+        reentry_adaptive="false",
+        trend_interval=60,
+        tp_trail_vol_interval=60,
+        dca_vol_interval=60,
+    )
+    _validate_replay([(100.0, 102.0, 99.0, 101.0)], params_str_false, bar_minutes=None)
+    params_neg_k = SimpleNamespace(**{**params_str_false.__dict__, "dca_vol_scale_k": -1.0, "dca_vol_interval": 240})
+    assert required_replay_intervals(params_neg_k) == {240}
+    st_peak = {"qty": 0.0, "sl_rebuy": False, "last_exit_kind": "STOP", "last_sell_price": 100.0}
+    ratchet_post_exit_peak_sell_price(st_peak, 108.0, require_tp_kind="false")  # type: ignore[arg-type]
+    assert st_peak["last_sell_price"] == pytest.approx(108.0)
+
+    # 4. providers/ohlc_utils: require_ohlc_symbol, build_price_history_points, parse_ohlc_interval_minutes, validate_ohlc_bars, extract_trading_quote_pairs & extract_yahoo_chart_latest_price.
+    with pytest.raises(ValueError, match="invalid symbol"):
+        require_ohlc_symbol("null")
+    assert require_ohlc_symbol(" btc ", upper="false") == "btc"  # type: ignore[arg-type]
+    pts_ms = build_price_history_points(
+        [(1700000000000, 50.0)], lambda r: r[0], lambda r: r[1], cutoff_s="1600000000000", ts_in_seconds="false"  # type: ignore[arg-type]
+    )
+    assert pts_ms == [{"timestamp": 1700000000000, "price": 50.0}]
+    assert parse_ohlc_interval_minutes(60, reject_float="false", require_unit_suffix="false") == 60  # type: ignore[arg-type]
+    validate_ohlc_bars([(100.0, 101.0, 99.0, 105.0, 999.0)], exact_len_4="false", check_envelope="false")  # type: ignore[arg-type]
+    tr_syms, q_pairs, p2b = extract_trading_quote_pairs(
+        {
+            "symbols": [
+                {"symbol": "null", "baseAsset": "BTC", "quoteAsset": "USDC", "status": "TRADING"},
+                {"symbol": "ETHUSDC", "baseAsset": "none", "quoteAsset": "USDC", "status": "TRADING"},
+                {"symbol": "SOLUSDC", "baseAsset": "SOL", "quoteAsset": "USDC", "status": "TRADING"},
+            ]
+        },
+        quote="null",
+    )
+    assert tr_syms == {"ETHUSDC", "SOLUSDC"}
+    assert q_pairs == {"ETHUSDC", "SOLUSDC"}
+    assert p2b == {"SOLUSDC": "SOL"}
+    yahoo_payload = {"chart": {"result": [{"indicators": {"quote": [{"close": [123.456]}]}}]}}
+    assert extract_yahoo_chart_latest_price(yahoo_payload, decimals=True) == pytest.approx(123.456)  # type: ignore[arg-type]
+    assert extract_yahoo_chart_latest_price(yahoo_payload, decimals=2) == pytest.approx(123.46)
+
+    # 5. providers/binance_provider: _allow_ssot_price_cache string flags, supports_symbol/position_cost_basis scalar hygiene, open_orders status="null", validate_order_state non-sequence, place_order kind="null", stop_price_ws_manager timeout.
+    bp = BinanceProvider(live_enabled=False)
+    monkeypatch.setattr(MarketDataProvider, "_allow_ssot_price_cache", lambda self: True)
+    monkeypatch.setattr(bp_mod, "_get_bapi", lambda: SimpleNamespace())
+    bp._force_ssot_cache = "false"  # type: ignore[attr-defined]
+    assert bp._allow_ssot_price_cache() is False
+    bp._ssot_cache_enabled = "true"  # type: ignore[attr-defined]
+    assert bp._allow_ssot_price_cache() is True
+    assert bp.supports_symbol("null") is False
+    assert bp.position_cost_basis("null", 1.0, 3600.0) is None
+
+    monkeypatch.setattr(
+        bp_mod,
+        "_get_bapi",
+        lambda: SimpleNamespace(
+            client=SimpleNamespace(
+                get_open_orders=lambda symbol: [
+                    {"orderId": 99, "price": "10.0", "origQty": "1.0", "executedQty": "0.0", "side": "BUY", "status": "null"}
+                ]
+            )
+        ),
+    )
+    assert bp.open_orders("BTCUSDC")[0]["status"] == "NEW"
+
+    monkeypatch.setattr(bp, "prepare_order_state", lambda: ("1", "2"))
+    for bad_expected in ("12", True, {"1": "2"}):
+        with pytest.raises(SubmissionRefused, match="account_cache_snapshot_changed"):
+            bp.validate_order_state(bad_expected)
+    assert bp.validate_order_state(["1", "2"]) == ("1", "2")
+
+    captured_po_kw: dict[str, Any] = {}
+    monkeypatch.setattr(
+        bp_mod,
+        "_get_placeorder",
+        lambda: SimpleNamespace(place_order_mechanics=lambda *a, **kw: (captured_po_kw.update(kw) or {"orderId": 11})),
+    )
+    bp.place_order("BTCUSDC", "BUY", 100.0, 1.0, cache_permit="p1", kind="null", motivation="reentry_buy")
+    assert captured_po_kw["kind"] == "reentry_buy"
+
+    seen_timeouts: list[float] = []
+    monkeypatch.setattr(
+        bapi_ws,
+        "bapi_ws_manager",
+        SimpleNamespace(stop=lambda timeout=0.0: seen_timeouts.append(timeout)),
+        raising=False,
+    )
+    BinanceProvider.stop_price_ws_manager(float("nan"))
+    assert seen_timeouts == [5.0]
+
+    # 6. providers/t212_provider: scalar hygiene on _position/free_balance/pair_precision/_send_order/open_orders/order_status & string-false flags on get_orders/_fills_from_api.
+    t212_calls = {"portfolio": 0}
+    t212_cli = SimpleNamespace(
+        get_portfolio=lambda: (t212_calls.__setitem__("portfolio", t212_calls["portfolio"] + 1) or [{"ticker": "NVDA_US_EQ", "quantity": 2.0, "averagePrice": 120.0}]),
+        refresh_order_history=lambda max_age_sec=0.0: [],
+        list_active_orders=lambda: [
+            {"id": "88", "ticker": "NVDA_US_EQ", "status": "null", "type": "none", "orderedQuantity": 1.0, "limitPrice": 115.0}
+        ],
+        get_order_status=lambda _oid: {
+            "id": "88",
+            "ticker": "NVDA_US_EQ",
+            "status": "FILLED",
+            "filledQuantity": 1.0,
+            "filledValue": 115.0,
+            "fee": 0.15,
+            "currency": "null",
+            "_feeCurrencies": ["null"],
+        },
+    )
+    t212 = T212Provider(client=t212_cli, live_enabled=True, order_validity="null")
+    monkeypatch.setattr(t212, "_fills_cache_file", lambda: None)
+    assert t212.free_balance("null") is None
+    assert t212.pair_precision("null") is None
+    assert t212.open_orders("null") == []
+    assert t212_calls["portfolio"] == 0
+    with pytest.raises(ProviderError, match="invalid symbol"):
+        t212._position("null", strict="true")  # type: ignore[arg-type]
+    with pytest.raises(ProviderError, match="invalid T212 symbol"):
+        t212._send_order("null", "BUY", 1.0, 100.0, market=False)
+    with pytest.raises(ProviderError, match="T212_ORDER_VALIDITY is mandatory"):
+        t212._send_order("NVDA_US_EQ", "BUY", 1.0, 100.0, market=False, order_validity="null")
+
+    super_called = {"n": 0}
+    monkeypatch.setattr(
+        MarketDataProvider,
+        "get_orders",
+        lambda self, *a, **kw: (super_called.__setitem__("n", super_called["n"] + 1) or [{"side": "BUY"}]),
+    )
+    orders_nvda = t212.get_orders("NVDA_US_EQ", "BUY", 3600.0, authoritative="false", publish_cache="false")  # type: ignore[arg-type]
+    assert super_called["n"] == 0 and len(orders_nvda) == 1
+
+    active_nvda = t212.open_orders("NVDA_US_EQ")
+    assert len(active_nvda) == 1
+    assert active_nvda[0]["status"] == "NEW"
+    assert active_nvda[0]["type"] == "LIMIT"
+
+    st_nvda = t212.order_status("null", "88")
+    assert st_nvda.status == "closed" and st_nvda.fee == pytest.approx(0.15)
+
 
 
 

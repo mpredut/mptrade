@@ -11,6 +11,8 @@ from botcore import (
     ClosedPriceSeries,
     _parse_bool_flag,
     _prices_diverged as _yahoo_bar_prices_diverged,
+    clean_scalar_str,
+    clean_upper_scalar,
     exact_int,
     exact_pos_int,
     normalize_epoch_sec,
@@ -98,10 +100,10 @@ def require_pos_ohlc_interval(symbol: object, interval_min: Any) -> int:
 
 def require_ohlc_symbol(symbol: Any, *, label: str = "symbol", upper: bool = False) -> str:
     """Validate a non-empty string OHLC symbol/pair/coin identifier or raise ``ValueError``."""
-    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+    cleaned = clean_scalar_str(symbol)
+    if cleaned is None:
         raise ValueError(f"invalid {label} ({label} must be a non-empty string): {symbol!r}")
-    cleaned = symbol.strip()
-    return cleaned.upper() if upper else cleaned
+    return cleaned.upper() if _parse_bool_flag(upper, False) else cleaned
 
 
 def extract_kraken_ohlc_rows(result_map: Any, *, drop_incomplete: bool = True) -> list:
@@ -154,13 +156,15 @@ def build_price_history_points(
     """Extract, filter, and sort ascending ``{'timestamp': ms, 'price': float}`` rows."""
     if not isinstance(rows, (list, tuple)):
         return []
+    in_sec = _parse_bool_flag(ts_in_seconds, False)
+    cut_f = safe_float(cutoff_s, default=None) if cutoff_s is not None else None
     out: List[dict] = []
     for row in rows:
         t_f = safe_pos_float(extract_ts(row), default=None)
         p_f = safe_pos_float(extract_px(row), default=None)
-        if t_f is None or p_f is None or (cutoff_s is not None and t_f < cutoff_s):
+        if t_f is None or p_f is None or (cut_f is not None and t_f < cut_f):
             continue
-        scaled_ts = safe_pos_float(t_f * 1000.0 if ts_in_seconds else t_f, default=None)
+        scaled_ts = safe_pos_float(t_f * 1000.0 if in_sec else t_f, default=None)
         if scaled_ts is None:
             continue
         ts_ms = safe_pos_int(round(scaled_ts), default=None)
@@ -181,7 +185,10 @@ def parse_ohlc_interval_minutes(
     venue_label: str = "OHLC",
 ) -> int:
     """Parse an OHLC interval (integer minutes or string e.g. '1h', '60') into positive integer minutes."""
-    if require_unit_suffix and not isinstance(interval, str):
+    req_suffix = _parse_bool_flag(require_unit_suffix, False)
+    allow_mult = _parse_bool_flag(allow_unit_multiplier, False)
+    no_float = _parse_bool_flag(reject_float, False)
+    if req_suffix and not isinstance(interval, str):
         raise ValueError(f"invalid {venue_label} interval: {interval!r}; examples: 5m, 1h, 1d")
     if isinstance(interval, bool):
         raise ValueError(f"interval must be positive integer or string, not bool: {interval}")
@@ -194,16 +201,16 @@ def parse_ohlc_interval_minutes(
                 alias = alias.lower()
             if alias in lookup:
                 return lookup[alias]
-        if allow_unit_multiplier and len(cleaned) >= 2:
+        if allow_mult and len(cleaned) >= 2:
             num_part, unit = cleaned[:-1], cleaned[-1].lower()
             if num_part.isascii() and num_part.isdigit() and unit in _OHLC_UNIT_MULTIPLIERS:
                 minutes = (exact_int(num_part, default=0) or 0) * _OHLC_UNIT_MULTIPLIERS[unit]
                 if minutes <= 0:
                     raise ValueError(
-                        "the interval must be positive" if require_unit_suffix else f"interval must be positive: {interval}"
+                        "the interval must be positive" if req_suffix else f"interval must be positive: {interval}"
                     )
                 return minutes
-        if require_unit_suffix:
+        if req_suffix:
             raise ValueError(f"invalid {venue_label} interval: {interval!r}; examples: 5m, 1h, 1d")
         digits = cleaned[1:] if cleaned.startswith("+") else cleaned
         if digits.isascii() and digits.isdigit():
@@ -212,7 +219,7 @@ def parse_ohlc_interval_minutes(
                 raise ValueError(f"interval must be positive: {interval}")
             return val
         raise ValueError(f"unsupported {venue_label} interval: {interval}")
-    if reject_float and isinstance(interval, float):
+    if no_float and isinstance(interval, float):
         raise ValueError(f"invalid interval={interval!r}: unsupported {venue_label} interval")
     val_i = exact_pos_int(interval, default=None)
     if val_i is None:
@@ -251,6 +258,9 @@ def resolve_ohlc_time_window_ms(
     strict_numeric_types: bool = False,
 ) -> tuple[int, int, int, float]:
     """Validate and resolve ``(now_ms, final_start, final_end, timeout_f)`` for OHLC candle fetches."""
+    strict_num = _parse_bool_flag(strict_numeric_types, False)
+    def_days = safe_pos_int(default_lookback_days, default=30) or 30
+
     def _valid_num(val: Any, name: str, *, pos: bool = True, scale_ms: float = 1.0) -> float:
         f = (safe_pos_float if pos else safe_nonneg_float)(val, default=None)
         scaled_i = (
@@ -259,7 +269,7 @@ def resolve_ohlc_time_window_ms(
             else 1
         )
         if f is None or scaled_i is None or (
-            strict_numeric_types and not isinstance(val, (int, float))
+            strict_num and not isinstance(val, (int, float))
         ):
             kind = "positive" if pos else "non-negative"
             raise ValueError(f"invalid OHLC window parameters: {name} must be finite and {kind}: {val!r}")
@@ -279,7 +289,7 @@ def resolve_ohlc_time_window_ms(
         span_ms = safe_pos_int(_valid_num(lookback_hours, "lookback_hours", scale_ms=3600 * 1000) * 3600 * 1000, default=0) or 0
         final_start = max(0, final_end - span_ms)
     else:
-        final_start = max(0, final_end - default_lookback_days * 86400 * 1000)
+        final_start = max(0, final_end - def_days * 86400 * 1000)
     if final_start >= final_end:
         raise ValueError(f"start_ms ({final_start}) must be before end_ms ({final_end})")
     return now_ms, final_start, final_end, timeout_f
@@ -480,8 +490,10 @@ def validate_ohlc_bars(
     """Validate a non-empty sequence of OHLC bars."""
     if not isinstance(ohlc, (list, tuple)) or not ohlc:
         raise ValueError("ohlc cannot be empty")
+    exact_4 = _parse_bool_flag(exact_len_4, False)
+    chk_env = _parse_bool_flag(check_envelope, True)
     for idx, row in enumerate(ohlc):
-        if not isinstance(row, (list, tuple)) or (len(row) != 4 if exact_len_4 else len(row) < 4):
+        if not isinstance(row, (list, tuple)) or (len(row) != 4 if exact_4 else len(row) < 4):
             raise ValueError(f"invalid OHLC bar at index {idx}")
         if any(isinstance(row[i], bool) for i in range(4)):
             raise ValueError(f"OHLC bar at index {idx} contains bool")
@@ -493,7 +505,7 @@ def validate_ohlc_bars(
         o_f, h_f, l_f, c_f = vals[0], vals[1], vals[2], vals[3]
         if (
             h_f < l_f
-            or (check_envelope and (h_f < max(o_f, c_f) or l_f > min(o_f, c_f)))
+            or (chk_env and (h_f < max(o_f, c_f) or l_f > min(o_f, c_f)))
         ):
             raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
 
@@ -591,21 +603,17 @@ def extract_trading_quote_pairs(
                 else "exchangeInfo symbols must be a list"
             )
         return set(), set(), {}
-    want_quote = "" if isinstance(quote, bool) else str(quote or "USDC").strip().upper()
+    want_quote = "" if not (quote is None or isinstance(quote, str)) else (clean_upper_scalar(quote) or "USDC")
     trading_symbols: set[str] = set()
     quote_pairs: set[str] = set()
     pair_to_base: dict[str, str] = {}
     for info in raw_symbols:
         if not isinstance(info, Mapping):
             continue
-        raw_sym = info.get("symbol")
-        raw_base = info.get("baseAsset")
-        raw_quote = info.get("quoteAsset")
-        raw_status = info.get("status")
-        sym = raw_sym.strip().upper() if isinstance(raw_sym, str) else ""
-        base = raw_base.strip().upper() if isinstance(raw_base, str) else ""
-        q_asset = raw_quote.strip().upper() if isinstance(raw_quote, str) else ""
-        status = raw_status.strip().upper() if isinstance(raw_status, str) else ""
+        sym = clean_upper_scalar(info.get("symbol")) or ""
+        base = clean_upper_scalar(info.get("baseAsset")) or ""
+        q_asset = clean_upper_scalar(info.get("quoteAsset")) or ""
+        status = clean_upper_scalar(info.get("status")) or ""
         if not sym or status != "TRADING":
             continue
         trading_symbols.add(sym)
@@ -641,16 +649,17 @@ def extract_yahoo_chart_latest_price(payload: Any, *, decimals: Optional[int] = 
     result, _, _, quote = extract_yahoo_chart_result_and_quote(payload)
     if result is None:
         return None
+    dec_i = safe_nonneg_int(decimals, default=None) if decimals is not None else None
     raw_closes = quote.get("close")
     if isinstance(raw_closes, Sequence) and not isinstance(raw_closes, (str, bytes)):
         for c in reversed(raw_closes):
             if (cf := safe_pos_float(c, default=None)) is not None:
-                return round(cf, decimals) if decimals is not None else cf
+                return round(cf, dec_i) if dec_i is not None else cf
     meta = result.get("meta")
     val = safe_pos_float(meta.get("regularMarketPrice") if isinstance(meta, Mapping) else None, default=None)
     if val is None:
         return None
-    return round(val, decimals) if decimals is not None else val
+    return round(val, dec_i) if dec_i is not None else val
 
 
 def extract_yahoo_intraday_chart_bars(

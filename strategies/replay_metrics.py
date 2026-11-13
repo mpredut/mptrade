@@ -15,6 +15,7 @@ from typing import Any
 
 from botcore import (
     _parse_bool_flag,
+    clean_scalar_str,
     exact_int,
     exact_nonneg_int,
     parse_cli_float as parse_bt_cli_float,
@@ -31,7 +32,7 @@ from state_io import atomic_write_text
 def round_metric(value: object, decimals: int = 10) -> object:
     """Round a finite numeric metric to ``decimals`` places, returning ``value`` unchanged otherwise."""
     vf = safe_float(value, default=None) if isinstance(value, (int, float)) else None
-    return round(vf, decimals) if vf is not None else value
+    return round(vf, safe_nonneg_int(decimals, default=10)) if vf is not None else value
 
 
 def _coerce_finite_number_list(
@@ -41,7 +42,7 @@ def _coerce_finite_number_list(
         if not allow_none:
             raise ValueError(f"{name} cannot be empty")
         return []
-    if isinstance(values, (str, bytes, bool)):
+    if isinstance(values, (str, bytes, bool, Mapping)):
         raise ValueError(
             f"{name} cannot be empty" if not allow_none else f"{name} must be an iterable of finite numbers"
         )
@@ -161,7 +162,7 @@ def calculate_performance_metrics(
         tail_size = max(1, min(len(periodic_returns), ceil_tail))
         cvar = statistics.fmean(sorted(periodic_returns)[:tail_size])
 
-    if exposure is not None and isinstance(exposure, (str, bytes, bool)):
+    if exposure is not None and isinstance(exposure, (str, bytes, bool, Mapping)):
         raise ValueError("exposure must be an iterable of booleans")
     exposure_flags: list[bool] = []
     for value in ([] if exposure is None else exposure):
@@ -231,7 +232,7 @@ def format_performance_summary(m: dict, indent: str = "  ") -> list[str]:
 
 def buy_hold_pct(ohlc_or_closes: Sequence) -> float:
     """Compute percentage buy-and-hold return across an OHLC bar sequence or close series."""
-    if not ohlc_or_closes or isinstance(ohlc_or_closes, (str, bytes, bool)):
+    if not ohlc_or_closes or isinstance(ohlc_or_closes, (str, bytes, bool, Mapping)):
         return 0.0
     first, last = ohlc_or_closes[0], ohlc_or_closes[-1]
     if isinstance(first, (list, tuple)) or isinstance(last, (list, tuple)):
@@ -466,7 +467,7 @@ def validate_replay_metrics(result: dict) -> None:
             raise AssertionError(f"Missing required metric key: {key}")
         val = result[key]
         if key == "account_currency":
-            if not isinstance(val, str) or not val:
+            if clean_scalar_str(val) is None:
                 raise AssertionError(f"account_currency must be a non-empty string, got {val!r}")
         elif key in ("cycles", "fills"):
             if isinstance(val, bool) or not isinstance(val, int) or val < 0:
@@ -523,16 +524,16 @@ def validate_bt_cli_token(
     """Validate a symbol/coin/profile/range/interval CLI token against path traversal and control chars."""
     if not isinstance(value, str) or isinstance(value, bool):
         raise ValueError(f"{label} must be a non-empty string")
-    tok = value.strip()
+    tok = clean_scalar_str(value)
     if (
-        not tok
+        tok is None
         or tok.startswith("-")
         or ".." in tok
         or "\\" in tok
         or any(ch.isspace() or ord(ch) < 32 for ch in tok)
     ):
         raise ValueError(f"invalid {label}: {value!r}")
-    if allow_slash:
+    if _parse_bool_flag(allow_slash, False):
         if tok.startswith("/") or tok.endswith("/") or tok.count("/") > 1:
             raise ValueError(f"invalid {label}: {value!r}")
     elif "/" in tok:

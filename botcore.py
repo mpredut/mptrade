@@ -237,6 +237,12 @@ def clean_non_bool_str(val: object) -> str:
     return "" if (val is None or isinstance(val, bool)) else str(val).strip()
 
 
+INVALID_SCALAR_STRINGS = frozenset((
+    "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity",
+    "none", "null",
+))
+
+
 def clean_nonempty_str(val: object) -> str | None:
     """Return ``val.strip()`` when ``val`` is a non-empty string, else ``None``."""
     return s if isinstance(val, str) and (s := val.strip()) else None
@@ -245,6 +251,16 @@ def clean_nonempty_str(val: object) -> str | None:
 def clean_upper_token(val: object) -> str | None:
     """Return ``val.strip().upper()`` when ``val`` is a non-empty string, else ``None``."""
     return s.upper() if (s := clean_nonempty_str(val)) is not None else None
+
+
+def clean_scalar_str(val: object) -> str | None:
+    """Return ``val.strip()`` when ``val`` is a non-empty string not in ``INVALID_SCALAR_STRINGS``, else ``None``."""
+    return s if (s := clean_nonempty_str(val)) is not None and s.lower() not in INVALID_SCALAR_STRINGS else None
+
+
+def clean_upper_scalar(val: object) -> str | None:
+    """Return ``val.strip().upper()`` when ``val`` is a valid scalar string, else ``None``."""
+    return s.upper() if (s := clean_scalar_str(val)) is not None else None
 
 
 def obj_attr(obj: object, key: str, default: object = None) -> object:
@@ -2876,10 +2892,6 @@ _TREND_UP_TOKENS = frozenset(("up", "bull", "uptrend", "bullish"))
 _TREND_DOWN_TOKENS = frozenset(("down", "bear", "downtrend", "bearish"))
 _BUY_SIDE_TOKENS = frozenset(("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"))
 _SELL_SIDE_TOKENS = frozenset(("A", "S", "SELL", "SOLD", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"))
-INVALID_SCALAR_STRINGS = frozenset((
-    "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity",
-    "none", "null",
-))
 _INVALID_OID_STRINGS = INVALID_SCALAR_STRINGS | frozenset(("0", "0.0", "-0", "+0", "+0.0", "-0.0"))
 
 

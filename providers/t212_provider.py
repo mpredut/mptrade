@@ -21,8 +21,8 @@ from typing import Any, List, Optional
 from botcore import (
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     _parse_bool_flag,
-    clean_nonempty_str,
-    clean_upper_token,
+    clean_scalar_str,
+    clean_upper_scalar,
     env_values_map,
     extract_order_id,
     extract_timestamp_ms,
@@ -178,7 +178,7 @@ class T212Provider(MarketDataProvider):
     def _position(self, symbol: str, *, strict: bool = False) -> Optional[dict]:
         """Return the portfolio position for the ticker, or None."""
         strict = _parse_bool_flag(strict, False)
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        if (target_sym := clean_upper_scalar(symbol)) is None:
             if strict:
                 raise ProviderError(f"portfolio({symbol}): invalid symbol")
             return None
@@ -186,10 +186,9 @@ class T212Provider(MarketDataProvider):
             port = self._client().get_portfolio()
             if port is None or not isinstance(port, list):
                 raise ProviderError("the T212 portfolio is unavailable")
-            target_sym = str(symbol).strip().upper()
             dicts = [p for p in port if isinstance(p, dict)]
             return (
-                next((p for p in dicts if str(p.get("ticker", "")).strip().upper() == target_sym), None)
+                next((p for p in dicts if clean_upper_scalar(p.get("ticker")) == target_sym), None)
                 or next((p for p in dicts if _t212_tickers_match(p.get("ticker", ""), target_sym)), None)
             )
         except Exception as e:  # noqa: BLE001
@@ -272,8 +271,9 @@ class T212Provider(MarketDataProvider):
 
     def _fills_from_api(self, symbol: str, *, publish_cache: bool = False) -> List[dict]:
         """Fetch recent T212 order history and return normalized fills for ``symbol``."""
-        if (sym_u := clean_upper_token(symbol)) is None:
+        if (sym_u := clean_upper_scalar(symbol)) is None:
             return []
+        pub_cache = _parse_bool_flag(publish_cache, False)
         cache_file = self._fills_cache_file()
         try:
             cli = self._client()
@@ -281,7 +281,7 @@ class T212Provider(MarketDataProvider):
             items = None
             if callable(refresh_fn):
                 if (
-                    (publish_cache or getattr(self, "_ssot_fills_cache_path", None))
+                    (pub_cache or getattr(self, "_ssot_fills_cache_path", None))
                     and cache_file
                     and not getattr(cli, "_trade_cache_path", None)
                 ):
@@ -289,7 +289,7 @@ class T212Provider(MarketDataProvider):
                 items = refresh_fn(max_age_sec=0.0)
             if isinstance(items, list):
                 by_sym = self.normalize_history_items(items) if items else {}
-                if publish_cache and cache_file:
+                if pub_cache and cache_file:
                     to_publish = dict(by_sym)
                     if not any(k.upper() == sym_u or _t212_tickers_match(symbol, k) for k in to_publish):
                         to_publish[sym_u] = []
@@ -312,9 +312,8 @@ class T212Provider(MarketDataProvider):
     # -- Account. --------------------------------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:
         # Under the common contract, errors become None rather than a valid zero.
-        if not isinstance(asset, str) or not asset.strip():
+        if (asset_u := clean_upper_scalar(asset)) is None:
             return None
-        asset_u = asset.strip().upper()
         if asset_u in {"USD", "RON", "EUR"}:
             try:
                 cli = self._client()
@@ -385,13 +384,15 @@ class T212Provider(MarketDataProvider):
         if side is not None:
             if isinstance(side, bool) or normalize_side(side) not in ("BUY", "SELL"):
                 return []
-        if authoritative or publish_cache or self._fills_cache_file():
+        auth = _parse_bool_flag(authoritative, False)
+        pub = _parse_bool_flag(publish_cache, False)
+        if auth or pub or self._fills_cache_file():
             cached_orders = super().get_orders(
                 symbol,
                 side,
                 since_val,
-                authoritative=authoritative,
-                publish_cache=publish_cache,
+                authoritative=auth,
+                publish_cache=pub,
             )
             if cached_orders:
                 return cached_orders
@@ -434,9 +435,9 @@ class T212Provider(MarketDataProvider):
     def _send_order(self, symbol: str, side: str, qty: float,
                     price: Optional[float], *, market: bool,
                     order_validity: Optional[str] = None) -> tuple[int, dict]:
-        if not isinstance(symbol, str) or not symbol.strip():
+        if (sym_clean := clean_scalar_str(symbol)) is None:
             raise ProviderError(f"invalid T212 symbol: {symbol!r}")
-        symbol = symbol.strip()
+        symbol = sym_clean
         signed = self._signed_qty(side, qty)
         if _parse_bool_flag(market, False):
             status, data = self._client().place_market_order(symbol, signed, extended_hours=False)
@@ -474,9 +475,8 @@ class T212Provider(MarketDataProvider):
                 )
             )
         )
-        if not isinstance(configured, str) or not configured.strip():
+        if (validity := clean_upper_scalar(configured)) is None:
             raise ProviderError("T212_ORDER_VALIDITY is mandatory for limit orders")
-        validity = configured.strip().upper()
         if validity not in {"DAY", "GOOD_TILL_CANCEL"}:
             raise ProviderError(f"T212_ORDER_VALIDITY invalid: {validity!r}")
         return self._client().place_limit_order(symbol, signed, price_f, validity=validity)
@@ -572,11 +572,11 @@ class T212Provider(MarketDataProvider):
             raise ProviderError(f"order_status({order_id}): the order is unavailable")
 
         ticker = _order_ticker(raw)
-        expected_symbol = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
+        expected_symbol = clean_scalar_str(symbol) or ""
         if ticker and expected_symbol and not _t212_tickers_match(ticker, expected_symbol):
             raise ProviderError(f"order_status({order_id}): ticker {ticker!r}, expected {symbol!r}")
 
-        venue_status = str(raw.get("status") or "").strip().upper()
+        venue_status = clean_upper_scalar(raw.get("status")) or ""
         normalized = "open" if venue_status in _OPEN_STATUSES else _STATUS_MAP.get(venue_status)
         if normalized is None:
             raise ProviderError(f"order_status({order_id}): unknown T212 status {venue_status!r}")
@@ -596,12 +596,11 @@ class T212Provider(MarketDataProvider):
 
         raw_fee_cur = raw.get("_feeCurrencies")
         fee_currencies = {
-            currency.strip().upper()
+            cur_u
             for currency in (raw_fee_cur if isinstance(raw_fee_cur, (list, tuple, set, frozenset)) else [])
-            if isinstance(currency, str) and currency.strip()
+            if (cur_u := clean_upper_scalar(currency)) is not None
         }
-        raw_order_cur = raw.get("currency")
-        order_currency = raw_order_cur.strip().upper() if isinstance(raw_order_cur, str) else ""
+        order_currency = clean_upper_scalar(raw.get("currency")) or ""
         if fee and order_currency and fee_currencies != {order_currency}:
             raise ProviderError(
                 f"order_status({order_id}): fee {sorted(fee_currencies)} "
@@ -662,7 +661,7 @@ class T212Provider(MarketDataProvider):
 
     def open_orders(self, symbol: str) -> List[dict]:
         """Return active open orders on Trading 212 matching ``symbol``."""
-        if not isinstance(symbol, str) or not symbol.strip():
+        if (sym_clean := clean_scalar_str(symbol)) is None:
             return []
         try:
             cli = self._client()
@@ -674,9 +673,9 @@ class T212Provider(MarketDataProvider):
                 raise ProviderError(f"open_orders({symbol}): active orders unavailable")
             out: List[dict] = []
             for o in raw_orders:
-                if not isinstance(o, dict) or not _t212_tickers_match(_order_ticker(o), symbol):
+                if not isinstance(o, dict) or not _t212_tickers_match(_order_ticker(o), sym_clean):
                     continue
-                status_u = str(clean_nonempty_str(o.get("status")) or "NEW").upper()
+                status_u = clean_upper_scalar(o.get("status")) or "NEW"
                 if status_u in _STATUS_MAP:
                     continue
                 raw_qty, side = extract_broker_signed_qty_and_side(o)
@@ -696,8 +695,8 @@ class T212Provider(MarketDataProvider):
                         status=status_u,
                         extra={
                             "id": oid,
-                            "symbol": symbol.strip().upper(),
-                            "type": str(clean_nonempty_str(o.get("type")) or "LIMIT").upper(),
+                            "symbol": sym_clean.upper(),
+                            "type": clean_upper_scalar(o.get("type")) or "LIMIT",
                         },
                     )
                 )
@@ -719,7 +718,7 @@ class T212Provider(MarketDataProvider):
         return md._chart(sym_clean, rng=rng, interval=interval)
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
-        if not isinstance(symbol, str) or not symbol.strip():
+        if (sym_clean := clean_scalar_str(symbol)) is None:
             return None
         # The live client rounds price and quantity to two decimals. Metadata does
         # not publish tickSize/minQty, so the contract reflects actual mechanics.
@@ -727,5 +726,5 @@ class T212Provider(MarketDataProvider):
             price_decimals=_PRICE_DECIMALS,
             volume_decimals=_VOLUME_DECIMALS,
             order_min=_ORDER_MIN,
-            base_asset=symbol.strip(),
+            base_asset=sym_clean,
         )
