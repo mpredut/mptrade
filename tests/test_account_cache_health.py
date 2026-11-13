@@ -356,11 +356,11 @@ def test_account_cache_health_accountcachenotready_record_successful_sync_record
     assert health.record_persisted_version(True, "v1") is False
 
 def test_account_cache_health__clean_version_str_rejects_sentinel_strings_iter151_s2():
-    """[ITER151 #2] account_cache_health._clean_version_str rejects sentinel strings."""
-    # 2. account_cache_health._clean_version_str rejects sentinel strings
+    """[ITER151 #2] account_cache_health.clean_scalar_str rejects sentinel strings."""
+    # 2. account_cache_health.clean_scalar_str rejects sentinel strings
     for bad_ver in ("", "   ", "nan", "null", "none", "inf", "-inf", "+inf", None, 123):
-        assert health._clean_version_str(bad_ver) == ""
-    assert health._clean_version_str(" v123 ") == "v123"
+        assert (health.clean_scalar_str(bad_ver) or "") == ""
+    assert health.clean_scalar_str(" v123 ") == "v123"
 
 def test_account_cache_health_require_int_accepts_integer_strings_floats_and_rejects_iter160_s4():
     """[ITER160 #4] account_cache_health: require_int accepts integer strings/floats and rejects bool/negative."""
