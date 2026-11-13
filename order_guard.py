@@ -19,7 +19,9 @@ import math
 import statistics
 from botcore import (
     _parse_bool_flag,
+    clean_scalar_str,
     clean_scale,
+    clean_upper_scalar,
     exact_nonneg_int,
     extract_order_price,
     extract_order_qty,
@@ -104,26 +106,20 @@ def resolve_caller_module(
     client_order_id: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve canonical module identity from explicit module, order lineage prefix, or process name."""
-    if module and not isinstance(module, bool):
-        m_raw = str(module).strip()
-        if m_raw:
-            m_up = m_raw.upper()
-            if m_up in _PROCESS_TO_MODULE:
-                return _PROCESS_TO_MODULE[m_up]
-            m_low = m_raw.lower()
-            if m_low == "asset_guardian":
-                return "assetguardian"
-            return m_low
-    if (client_order_id and not isinstance(client_order_id, bool)) or (prefix and not isinstance(prefix, bool)):
-        try:
-            for candidate in (client_order_id, prefix):
-                if not candidate or isinstance(candidate, bool):
-                    continue
-                owner = _order_id_ctx.resolve_order_owner(candidate)
+    if (m_raw := clean_scalar_str(module)) is not None:
+        m_up = m_raw.upper()
+        if m_up in _PROCESS_TO_MODULE:
+            return _PROCESS_TO_MODULE[m_up]
+        m_low = m_raw.lower()
+        return "assetguardian" if m_low == "asset_guardian" else m_low
+    for candidate in (client_order_id, prefix):
+        if (cand_s := clean_scalar_str(candidate)) is not None:
+            try:
+                owner = _order_id_ctx.resolve_order_owner(cand_s)
                 if owner in _KNOWN_GUARD_MODULES:
                     return owner
-        except Exception:
-            pass
+            except Exception:
+                pass
     try:
         return _PROCESS_TO_MODULE.get(_order_id_ctx.get_process_name())
     except Exception:
@@ -180,7 +176,7 @@ def get_profit_guard_mode_cfg(
         mod_key = f"{mod}_{side_l}_reference"
         if mod_key not in m:
             raise KeyError(f"Missing required module config key {mod_key!r} in order_guard.conf")
-        mod_val = str(m[mod_key]).strip().lower()
+        mod_val = (clean_scalar_str(m[mod_key]) or "").lower()
         if mod_val != "venue":
             return validate_profit_guard_mode_cfg(mod_val)
 
@@ -1059,7 +1055,7 @@ def _evaluate_intelligence_guards_raw(
         return early
     _, side, m, bypassed, parabolic_only_bypass, weibull_only_bypass = pre
 
-    sym_u = symbol.strip().upper() if isinstance(symbol, str) else ""
+    sym_u = clean_upper_scalar(symbol) or ""
     if any(fake in sym_u for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE")):
         return True, "test_symbol_exempt", 1.0
 
@@ -1255,7 +1251,7 @@ def unpack_daily_limit_result(
                 raw_reason = limit_result[1]
             else:
                 raw_reason = limit_result[3]
-        reason_str = str(raw_reason).strip() if raw_reason is not None else ""
+        reason_str = clean_scalar_str(raw_reason) or ""
         return (True, reason_str or None) if allowed else (False, reason_str or default_reason)
     allowed = bool(_parse_bool_flag(limit_result, default=False))
     return (True, None) if allowed else (False, default_reason)

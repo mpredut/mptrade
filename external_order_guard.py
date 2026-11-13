@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
+    clean_scalar_str,
     clean_scale,
     format_notify_price,
     normalize_side,
@@ -181,7 +182,7 @@ def check_external_order_guards(
         lambda: fcg.FundingCrowdingGuard(
             max_long_funding_rate=m["funding_max_long_rate"],
             min_short_funding_rate=m["funding_min_short_rate"],
-            crowding_policy=str(m["funding_crowding_policy"] or "").strip().lower(),
+            crowding_policy=(clean_scalar_str(m["funding_crowding_policy"]) or "").lower(),
             crowded_scale=m["funding_crowded_scale"],
         ),
         "telemetry", "FUNDING", "funding", log_scale=True,
@@ -245,8 +246,8 @@ def evaluate_whale_spread_flow(
         if raw_oi is None:
             raw_oi = obj_attr(snap, "oi_1h_chg_pct")
         oi_pct = safe_float(raw_oi, default=0.0) or 0.0
-        raw_reg = obj_attr(snap, "divergence_regime") or obj_attr(snap, "div_regime")
-        div_regime = str(raw_reg or "").strip().lower()
+        raw_reg = clean_scalar_str(obj_attr(snap, "divergence_regime")) or clean_scalar_str(obj_attr(snap, "div_regime"))
+        div_regime = (raw_reg or "").lower()
         if side_u == "BUY":
             if 0.0 < ratio < 0.80:
                 return True, f"taker_sell_dominance (ratio={ratio:.2f} < 0.80)"

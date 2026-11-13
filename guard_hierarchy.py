@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from botcore import (
     bool_env,
+    clean_scalar_str,
     clean_scale,
     normalize_side,
     parse_dotenv,
@@ -396,9 +397,9 @@ def normalize_bypassed_guards(
 
 def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
     """Remove a specific guard from an expanded bypass set while preserving sibling category tokens."""
-    if not isinstance(bypassed, set) or not code or isinstance(code, bool):
+    code_str = clean_scalar_str(code)
+    if not isinstance(bypassed, set) or not code_str:
         return
-    code_str = str(code).strip()
     g = GUARD_REGISTRY.get(code_str.upper())
     if g is None:
         code_low = code_str.lower()
@@ -410,7 +411,7 @@ def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
         return
 
     # Normalize existing tokens in-place to lowercase so case-insensitive matches are cleanly removed
-    lowered_existing = {str(t).strip().lower() for t in bypassed if t is not None and not isinstance(t, bool)}
+    lowered_existing = {ts.lower() for t in bypassed if (ts := clean_scalar_str(t)) is not None}
     bypassed.clear()
     bypassed.update(lowered_existing)
 
@@ -456,7 +457,7 @@ def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
 
 def is_category_bypassed(category: str, bypassed: set[str]) -> bool:
     """Return True when every guard in the given category is bypassed."""
-    cat_norm = "" if isinstance(category, bool) else str(category or "").strip().lower()
+    cat_norm = (clean_scalar_str(category) or "").lower()
     cat_key = _CATEGORY_SHORTCUTS.get(cat_norm, cat_norm)
     guards = GUARD_CATEGORIES.get(cat_key)
     return bool(guards) and all(g.is_bypassed(bypassed) for g in guards)
@@ -616,9 +617,10 @@ _DISCRETE_POLICY_SETS: Dict[str, frozenset] = {
 
 
 def _validate_discrete_cfg(val: Any, valid_set: Any, label: str) -> str:
-    if not isinstance(val, str):
+    raw = clean_scalar_str(val)
+    if raw is None:
         raise ValueError(f"Invalid {label} {val!r}; must be a string in {sorted(valid_set)}")
-    mode = val.strip().lower()
+    mode = raw.lower()
     if mode not in valid_set:
         raise ValueError(f"Invalid {label} {val!r}; must be one of {sorted(valid_set)}")
     return mode
@@ -699,7 +701,7 @@ def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
     for key, val in m.items():
         if key.endswith("_buy_reference") or key.endswith("_sell_reference"):
             if key in _MODULE_REFERENCE_KEYS:
-                sval = str(val).strip().lower() if isinstance(val, str) else None
+                sval = (clean_scalar_str(val) or "").lower() or None
                 if sval != "venue":
                     validate_profit_guard_mode_cfg(val)
             else:
@@ -852,7 +854,7 @@ def _venue_cfg(
 ) -> Any:
     """Resolve ``<venue><suffix>`` with fallback to ``default<suffix>`` from ``order_guard.conf``."""
     m = margins if isinstance(margins, dict) else _load_margins()
-    venue = (normalize_venue_name(provider_name, default="") or str(provider_name or "")).strip().lower()
+    venue = normalize_venue_name(provider_name, default="") or (clean_scalar_str(provider_name) or "").lower()
     venue_key = f"{venue}{suffix}" if venue else ""
     default_key = f"default{suffix}"
     if venue_key and venue_key in m:
@@ -922,7 +924,7 @@ def merge_guard_scale(
     eff_s = clean_scale(effective_scale, default=1.0)
     cand_s = clean_scale(new_scale, default=1.0)
     if cand_s < 1.0 and cand_s <= eff_s:
-        return cand_s, (new_reason if isinstance(new_reason, str) and new_reason.strip() else active_reason)
+        return cand_s, (clean_scalar_str(new_reason) or active_reason)
     return eff_s, active_reason
 
 

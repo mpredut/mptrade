@@ -78,6 +78,7 @@ import external_order_guard as eog
 import guard_hierarchy as gh
 from guard_hierarchy import preflight_intelligence_guard_entry
 from instrument import Instrument, _is_aborted, resolve_instrument_live_price
+import instrument_registry as ireg
 from instrument_registry import has_workspace_instrument_sources
 from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
 from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
@@ -8130,6 +8131,228 @@ def test_wave46_cachepaths_state_io_cacheintegrity_and_factory_border_cases(monk
     cm.CacheFactory._resync_readonly_consumer_instance("24Price", {"BTCUSDC": fake_mgr}, symbols="BTCUSDC")
     cm.CacheFactory._resync_readonly_consumer_instance("24Price", {"BTCUSDC": fake_mgr}, symbols=True)
     assert resynced == ["BTCUSDC"]
+
+
+def test_wave47_order_gateway_guards_registry_and_retry_scalar_border_cases(monkeypatch, tmp_path):
+    """Verify Wave 47 scalar SSOT adoption and border-case hardening across Layer-4 instrument_registry, instrument, guard_hierarchy, order_guard, llm/qlimit/external guards, order_retry, and order_retry_worker."""
+
+    # 1. instrument_registry scalar hygiene across InstrumentSpec, load_registry, venue_for_symbol, and discovery.
+    sample_spec = ireg.InstrumentSpec(
+        name="TEST_BTC",
+        provider="binance",
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        enabled=True,
+        isolation="own_ledger",
+        market_hours="24x7",
+        params={"trailing.pct": "1.5"},
+    )
+    for bad_ov in (None, "", "   ", True, False, "null", "none", "nan", "inf", 123):
+        pol_spec = sample_spec.with_execution_policy(order_validity=bad_ov)  # type: ignore[arg-type]
+        assert "execution.order_validity" not in pol_spec.params
+    assert sample_spec.with_execution_policy(order_validity=" day ").params["execution.order_validity"] == "DAY"
+    assert ireg.InstrumentSpec.parse_param({"trailing.pct": "1.5"}, "null", "pct", default="d") == "d"
+    assert ireg.InstrumentSpec.parse_param({"trailing.pct": "1.5"}, "trailing", "none", default="d") == "d"
+
+    for bad_reg_path in (True, False, 123, "null", "none", "nan", Path("null")):
+        with pytest.raises(ValueError, match="Invalid registry path"):
+            ireg.load_registry(bad_reg_path)
+    for bad_role in (True, 123, "null", "none"):
+        with pytest.raises(ValueError, match="Unknown instrument role"):
+            ireg.select_instruments(role=bad_role)
+    for bad_sym in (None, True, False, "null", "none", "nan", "inf", ["HYPEUSD"], 123):
+        assert ireg.venue_for_symbol(bad_sym, default="binance") == "binance"
+        assert ireg.is_equity_symbol(bad_sym) is False
+    assert ireg.is_equity_symbol("'null'") is False
+
+    ws_dir = tmp_path / "ws_disc"
+    (ws_dir / "hyperliquid").mkdir(parents=True)
+    atomic_write_text(str(ws_dir / "hyperliquid" / "config.env"), "HL_LIVE_ORDERS=true\nHL_SPOT_TOKEN=none\n")
+    assert ireg.discover_hyperliquid_spot(str(ws_dir)) == [("HYPEUSDC", "HYPE", "USDC")]
+    (ws_dir / "212trading").mkdir(parents=True)
+    atomic_write_text(str(ws_dir / "212trading" / "config.nvda.env"), "T212_TICKER=null\nSTRAT_PAIR=NVDA_US_EQ\n")
+    assert ireg.discover_t212_equities(str(ws_dir)) == [("T212_NVDA", "NVDA_US_EQ", "NVDA_US_EQ", "USD")]
+    assert ireg.has_workspace_instrument_sources("null") is False
+    discovered = ireg.discover_tradable_specs(
+        str(ws_dir),
+        only_workspace_conf=True,
+        include_closed_rth=True,
+        asset_scope=True,  # type: ignore[arg-type]
+    )
+    assert "HYPERLIQUID_HYPE" in discovered and "T212_NVDA" in discovered
+
+    # 2. instrument, guard_hierarchy, order_guard, external_order_guard, and llm_order_guard scalar hygiene.
+    inst_mod = importlib.import_module("instrument")
+    assert inst_mod._accepted_order_payload({"orderId": "101", "status": "null"}) is True
+    assert inst_mod._accepted_order_payload({"orderId": "101", "status": "REJECTED"}) is False
+
+    placed_kwargs: list[dict] = []
+    guarded_prov = SimpleNamespace(
+        name="t212",
+        validate_symbol=lambda _s: None,
+        execution_enabled=lambda: True,
+        supports_order_validity=lambda: True,
+        guards_internally=lambda: True,
+        place_order=lambda sym, side, px, qty, **kw: (placed_kwargs.append(dict(kw)), {"orderId": "501"})[1],
+    )
+    fake_api = SimpleNamespace(provider_by_name=lambda _n: guarded_prov)
+    inst_obj = Instrument(
+        name="T212_NVDA",
+        provider="t212",
+        symbol="NVDA_US_EQ",
+        base="NVDA",
+        quote="USD",
+        params={"execution.live_enabled": "true", "execution.order_validity": "null"},
+        api=fake_api,
+    )
+    assert inst_obj.place("BUY", 120.0, 1.0) == {"orderId": "501"}
+    assert len(placed_kwargs) == 1 and "order_validity" not in placed_kwargs[0]
+
+    bp_set: set = {"G_PROF", "G_QLIMIT1", "null", "none", True, 123}  # type: ignore[assignment]
+    gh.revoke_guard_bypass(bp_set, "null")
+    gh.revoke_guard_bypass(bp_set, "G_PROF")
+    assert "g_prof" not in bp_set and "g_qlimit1" in bp_set and "null" not in bp_set and "none" not in bp_set
+    for bad_cfg in ("null", "none", "nan", True, 123):
+        with pytest.raises(ValueError):
+            gh._validate_discrete_cfg(bad_cfg, {"off", "shadow", "enforce"}, "guard_mode")
+    test_margins = {"default_window_h": 24.0, "binance_window_h": 12.0}
+    for bad_prov in (True, "null", "none", ["binance"], {"v": "binance"}):
+        assert gh._venue_cfg(bad_prov, "_window_h", margins=test_margins) == 24.0
+    assert gh.merge_guard_scale(0.8, "whale_guard", 0.5, "null") == (0.5, "whale_guard")
+    assert gh.merge_guard_scale(0.8, "whale_guard", 0.5, True) == (0.5, "whale_guard")  # type: ignore[arg-type]
+
+    assert order_guard.resolve_caller_module("null", client_order_id="null", prefix="TA_OR") == "tradeall"
+    assert order_guard.unpack_daily_limit_result((False, "null")) == (False, "daily_limit")
+    assert order_guard.unpack_daily_limit_result((False, True)) == (False, "daily_limit")
+    assert order_guard.unpack_daily_limit_result((True, "none")) == (True, None)
+
+    monkeypatch.setattr(
+        eog,
+        "get_whale_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda *_a, **_kw: SimpleNamespace(
+                taker_buy_sell_ratio=1.0,
+                oi_1h_chg_pct=2.5,
+                divergence_regime="null",
+                div_regime="aggressive_shorting",
+            )
+        ),
+    )
+    blocked_flow, flow_reason = eog.evaluate_whale_spread_flow("BTCUSDC", "BUY", enforced=True)
+    assert blocked_flow is True and "aggressive_shorting_divergence" in flow_reason
+
+    cached_ctx = SimpleNamespace(
+        _intelligence_decisions_by_key={
+            gh.make_intel_cache_key("BUY", set()): {
+                "gemini_notional": 1000.0,
+                "gemini_decision": (False, "null", 0.0),
+            }
+        }
+    )
+    hs_ok, hs_reason, hs_scale = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="BTCUSDC",
+        side="BUY",
+        price=100.0,
+        qty=10.0,
+        computed_notional=1000.0,
+        regime_context=cached_ctx,
+        valid_context=True,
+        cache_key=gh.make_intel_cache_key("BUY", set()),
+        margins={
+            "intelligence_guards_mode": "enforce",
+            "llm_guard_mode": "enforce",
+            "high_stake_min_notional_usd": 700.0,
+            "llm_fallback": "null",
+        },
+        bypassed=set(),
+        notify_on_eval=False,
+    )
+    assert (hs_ok, hs_reason, hs_scale) == (False, "high_stake_guard", 0.0)
+
+    # 3. order_retry & order_retry_worker durable outbox scalar border cases.
+    q_file = tmp_path / "order_retry_queue.jsonl"
+    l_file = tmp_path / "order_retry_queue.lock"
+    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(order_retry, "LOCK_FILE", str(l_file))
+    monkeypatch.setattr(order_retry, "RETRY_ENABLED", True)
+
+    for bad_qsym in (None, True, False, "null", "none", "nan", "___", ["BTCUSDC"], {"s": "BTCUSDC"}, 123):
+        assert order_retry._canonical_queue_symbol(bad_qsym) == ""
+        assert order_retry.enqueue(bad_qsym, "BUY", 1.0, now=1000.0) is None
+
+    base_rec = {
+        "id": "rec_valid_1",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "qty": 1.0,
+        "created_ts": 1000.0,
+        "revision": 0,
+        "lifecycle": "submit_pending",
+    }
+    assert order_retry.valid_record(base_rec) is True
+    assert order_retry.valid_record({**base_rec, "lifecycle": " accepted ", "order_id": "999"}) is True
+    for bad_id in (None, "", "0", "null", "none", "nan", True, ["rec1"], {"id": "rec1"}):
+        assert order_retry.valid_record({**base_rec, "id": bad_id}) is False
+    for bad_sym_val in (None, "", "null", "none", "nan", "___", True, ["BTCUSDC"], 123):
+        assert order_retry.valid_record({**base_rec, "symbol": bad_sym_val}) is False
+    for bad_lc in ("null", "none", True, 123, ["submit_pending"]):
+        assert order_retry.valid_record({**base_rec, "lifecycle": bad_lc}) is False
+
+    enq_id = order_retry.enqueue(
+        "BTCUSDC",
+        "BUY",
+        1.5,
+        place_kwargs={"owner": "null", "prefix": "none"},
+        now=1000.0,
+        failure_reason="null",
+        provider_name="none",
+        intent_id="null",
+        kind="none",
+    )
+    assert isinstance(enq_id, str) and enq_id
+    stored = order_retry.get(enq_id)
+    assert stored is not None
+    assert stored["prefix"] == "OR"
+    assert stored["provider_name"] is None
+    assert stored["kind"] is None
+    assert stored["last_failure_reason"] is None
+    assert stored["intent_id"] == f"outbox-{enq_id}"
+
+    assert order_retry.claim([{"bad": 1}, "null", "0"], now=1005.0) == []
+    assert order_retry.discard([{"bad": 1}, "null", "0"]) == []
+    assert order_retry.producer_claim_owner_state(None) == "unknown"
+    assert order_retry.producer_claim_owner_state({"producer_pid": 1, "producer_process_start_id": "null"}) == "unknown"
+    assert (
+        order_retry.infer_record_owner(
+            {
+                "parent_owner": "null",
+                "client_order_id": "none",
+                "intent_id": "null",
+                "kind": "null",
+                "place_kwargs": {"parent_owner": ["bad"], "kind": "STOP"},
+            }
+        )
+        == "monitortrades"
+    )
+
+    fake_mkt = SimpleNamespace(provider_name_for=lambda sym: "kraken" if sym == "HYPEUSD" else None)
+    assert order_retry_worker._provider_name(fake_mkt, {"symbol": "HYPEUSD", "provider_name": "none"}) == "kraken"
+    assert order_retry_worker._provider_name(fake_mkt, {"symbol": "null", "provider_name": "null"}) is None
+    assert order_retry_worker._normalize_bypass_set("G_PROF, null, none") == {"G_PROF"}
+    assert order_retry_worker._normalize_bypass_set(["G_PROF", "null", "none", 123, {"x": 1}]) == {"G_PROF"}
+    for bad_disp in (None, True, "null", "none", "nan"):
+        assert order_retry_worker._resolve_display_assets(bad_disp) == ("?", "USD")
+    ctx_summary = order_retry_worker._format_record_context(
+        {"side": "null", "symbol": "none", "provider_name": "null", "last_failure_reason": "null"}
+    )
+    assert "? \u00b7 ROUTED" in ctx_summary and "reason=none" in ctx_summary
+
+    digest = order_retry_worker.IncidentDigest(tmp_path / "giveup_digest.json", 60.0)
+    for bad_sid in ("null", "none", "nan", 123, ["s1"]):
+        with pytest.raises(ValueError, match="invalid notification digest event"):
+            digest.collect([{"labels": {"symbol": "BTCUSDC"}, "quantity": 1.0, "sample_id": bad_sid}], now=1000.0)
+
 
 
 

@@ -17,8 +17,9 @@ from typing import Iterable, Optional
 from botcore import (
     FileLock,
     _parse_bool_flag,
-    clean_non_bool_str as _clean_str,
     clean_order_id,
+    clean_scalar_str,
+    clean_upper_scalar,
     exact_int,
     exact_nonneg_int,
     exact_pos_int,
@@ -85,7 +86,7 @@ TERMINAL_FILTER_REFUSAL_SUBSTRINGS = (
 
 def is_terminal_filter_refusal(reason) -> bool:
     """Return whether unchanged order data can never pass its venue filters."""
-    value = str(reason or "")
+    value = clean_scalar_str(reason) or ""
     low = value.lower()
     return (
         value in TERMINAL_FILTER_REFUSAL_REASONS
@@ -97,19 +98,30 @@ def is_terminal_filter_refusal(reason) -> bool:
 POSSIBLY_SUBMITTED_REASONS = frozenset({"", "submit_pending", "submit_ambiguous", "response_without_order_id"})
 
 
+def _record_lifecycle(rec: object, default: str = "submit_pending") -> str:
+    if not isinstance(rec, dict):
+        return ""
+    raw = rec.get("lifecycle")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    return s.lower() if (s := clean_scalar_str(raw)) is not None else ""
+
+
 def submission_requires_reconciliation(rec) -> bool:
     """Return whether a persisted intent might already have reached its venue."""
-    submission_state = str(rec.get("submission_state") or "").strip().lower()
+    if not isinstance(rec, dict):
+        return False
+    submission_state = (clean_scalar_str(rec.get("submission_state")) or "").lower()
     if submission_state == "refused":
         return False
     if submission_state in {"producer_claimed", "unknown"}:
         return True
-    return str(rec.get("last_failure_reason") or "").strip().lower() in POSSIBLY_SUBMITTED_REASONS
+    return (clean_scalar_str(rec.get("last_failure_reason")) or "").lower() in POSSIBLY_SUBMITTED_REASONS
 
 
 def is_possibly_submitted(rec):
     """Return whether an intent may already exist at its configured venue."""
-    if str(rec.get("lifecycle") or "submit_pending").lower() != "submit_pending":
+    if _record_lifecycle(rec) != "submit_pending":
         return False
     return submission_requires_reconciliation(rec)
 
@@ -143,8 +155,10 @@ def _process_start_identity(pid):
 
 def producer_claim_owner_state(record):
     """Return alive, dead, mismatched, or unknown for a producer claim."""
+    if not isinstance(record, dict):
+        return "unknown"
     pid_i = safe_pos_int(record.get("producer_pid"), default=None)
-    start_identity = str(record.get("producer_process_start_id") or "").strip()
+    start_identity = clean_scalar_str(record.get("producer_process_start_id"))
     if pid_i is None or not start_identity:
         return "unknown"
     try:
@@ -218,28 +232,26 @@ def _read_nolock(*, validate=False):
 
 def _client_order_id(record_id, revision, prefix="OR"):
     """Return a Binance-compatible stable ID for one queued intent revision."""
+    rec_id_s = clean_order_id(record_id) or "00000000"
     rev_str = str(exact_nonneg_int(revision, default=0))
     max_pfx_len = max(1, 36 - 1 - 8 - 1 - len(rev_str))
-    pfx = str(prefix or "OR").strip().rstrip("_")[:max_pfx_len].rstrip("_") or "OR"
+    raw_pfx = clean_scalar_str(prefix) or "OR"
+    pfx = raw_pfx.rstrip("_")[:max_pfx_len].rstrip("_") or "OR"
     overhead = len(pfx) + 1 + len(rev_str) + 1
     hash_len = max(8, min(24, 36 - overhead))
-    return f"{pfx}_{record_id[:hash_len]}_{rev_str}"[:36]
+    return f"{pfx}_{rec_id_s[:hash_len]}_{rev_str}"[:36]
 
 
 def valid_record(rec):
     """Return whether a persisted record is safe to evaluate or submit."""
-    if (
-        not isinstance(rec, dict)
-        or isinstance(rec.get("id"), bool)
-        or isinstance(rec.get("symbol"), bool)
-    ):
+    if not isinstance(rec, dict):
         return False
     qty = safe_pos_float(rec.get("qty"), default=None)
     created = safe_pos_float(rec.get("created_ts"), default=None)
     revision = exact_int(rec.get("revision", 0), default=-1)
     if qty is None or created is None or revision < 0:
         return False
-    lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
+    lifecycle = _record_lifecycle(rec)
     lifecycle_ok = lifecycle in {"awaiting_cancel", "submit_pending", "accepted"}
     if lifecycle == "accepted" and extract_order_id(rec.get("order_id")) is None:
         lifecycle_ok = False
@@ -249,11 +261,10 @@ def valid_record(rec):
             or safe_pos_float(rec.get("replaces_original_qty"), default=None) is None
         ):
             lifecycle_ok = False
-    side_raw = rec.get("side")
-    side_u = normalize_side(side_raw) if not isinstance(side_raw, bool) else ""
+    side_u = normalize_side(rec.get("side"), require_str=True)
     return bool(
-        str(rec.get("id") or "").strip()
-        and str(rec.get("symbol") or "").strip()
+        clean_order_id(rec.get("id"))
+        and _canonical_queue_symbol(rec.get("symbol"))
         and side_u in {"BUY", "SELL"}
         and lifecycle_ok
     )
@@ -267,18 +278,15 @@ _CONSOLIDATED_DEFERRAL_REASONS = frozenset({
 
 
 def _canonical_queue_symbol(sym) -> str:
-    if isinstance(sym, bool):
-        return ""
-    raw = str(sym or "").strip()
-    if not raw:
-        return ""
-    return canonical_symbol_key(raw) or raw.upper()
+    raw = clean_upper_scalar(sym)
+    return canonical_symbol_key(raw) if raw else ""
 
 
 def _same_deferred_stream(left, right):
     """Return whether two pending pre-submit deferrals represent one current intent."""
     if any(
-        str(item.get("lifecycle") or "submit_pending").lower() != "submit_pending"
+        not isinstance(item, dict)
+        or _record_lifecycle(item) != "submit_pending"
         or item.get("last_failure_reason") not in _CONSOLIDATED_DEFERRAL_REASONS
         for item in (left, right)
     ):
@@ -290,13 +298,15 @@ def _same_deferred_stream(left, right):
     right_sym = _canonical_queue_symbol(right.get("symbol"))
     left_pk = left.get("place_kwargs") if isinstance(left.get("place_kwargs"), dict) else {}
     right_pk = right.get("place_kwargs") if isinstance(right.get("place_kwargs"), dict) else {}
-    left_kind = str(left.get("kind") or left_pk.get("kind") or "").strip() or None
-    right_kind = str(right.get("kind") or right_pk.get("kind") or "").strip() or None
+    left_kind = clean_scalar_str(left.get("kind")) or clean_scalar_str(left_pk.get("kind"))
+    right_kind = clean_scalar_str(right.get("kind")) or clean_scalar_str(right_pk.get("kind"))
+    left_side = normalize_side(left.get("side"))
     return bool(
         provider_matches
         and left_sym
         and left_sym == right_sym
-        and str(left.get("side") or "").strip().upper() == str(right.get("side") or "").strip().upper()
+        and left_side in {"BUY", "SELL"}
+        and left_side == normalize_side(right.get("side"))
         and left_kind == right_kind
     )
 
@@ -309,11 +319,11 @@ _PRIOR_VENUE_EVIDENCE_KEYS = (
 
 def _has_prior_venue_evidence(rec):
     """Return whether a record may represent an order or terminal remainder."""
-    if str(rec.get("lifecycle") or "submit_pending").lower() != "submit_pending":
+    if _record_lifecycle(rec) != "submit_pending":
         return True
     if any(rec.get(key) not in (None, "", [], {}) for key in _PRIOR_VENUE_EVIDENCE_KEYS):
         return True
-    if str(rec.get("last_failure_reason") or "").strip().lower().startswith("terminal_"):
+    if (clean_scalar_str(rec.get("last_failure_reason")) or "").lower().startswith("terminal_"):
         return True
     for key in ("delivered_qty", "filled_qty", "filled_cost", "filled_fee"):
         value = rec.get(key)
@@ -344,7 +354,7 @@ def _set_safe_to_discard(rec, eligible):
 
 def _safe_to_evict_for_capacity(rec):
     """Return whether capacity pressure may safely discard this record."""
-    if str(rec.get("lifecycle") or "submit_pending").lower() != "submit_pending" or any(
+    if _record_lifecycle(rec) != "submit_pending" or any(
         key in rec for key in ("claim_token", "claim_revision", "claim_until")
     ):
         return False
@@ -380,7 +390,7 @@ def enqueue(
     """Persist a submission or a pre-cancel replacement under the queue lock."""
     if not RETRY_ENABLED:
         return None
-    lifecycle = str(lifecycle or "").lower()
+    lifecycle = (clean_scalar_str(lifecycle) or "").lower()
     if lifecycle not in {"submit_pending", "awaiting_cancel"}:
         return None
     clean_rep_oid = extract_order_id(replaces_order_id) if lifecycle == "awaiting_cancel" else None
@@ -400,22 +410,20 @@ def enqueue(
     else:
         producer_pid = None
         producer_process_start_id = None
-    if (
-        not isinstance(symbol, str)
-        or any(
-            isinstance(x, bool)
-            for x in (
-                symbol, side, qty, now, created_ts, attempts,
-                last_attempt_ts, intent_id, provider_name, kind, failure_reason,
-            )
+    if any(
+        isinstance(x, bool)
+        for x in (
+            symbol, side, qty, now, created_ts, attempts,
+            last_attempt_ts, intent_id, provider_name, kind, failure_reason,
         )
     ):
         return None
-    symbol = symbol.strip()
+    symbol = clean_scalar_str(symbol)
+    sym_key = _canonical_queue_symbol(symbol)
     now_f = safe_pos_float(time.time() if now is None else now, default=None)
     side_u = normalize_side(side)
     qty_f = safe_pos_float(qty, default=None)
-    if not symbol or side_u not in {"BUY", "SELL"} or qty_f is None or now_f is None:
+    if not symbol or not sym_key or side_u not in {"BUY", "SELL"} or qty_f is None or now_f is None:
         return None
     qty, now = qty_f, now_f
     cts = safe_pos_float(now if created_ts is None else created_ts, default=None)
@@ -425,24 +433,28 @@ def enqueue(
         return None
     attempts, last_attempt_ts = attempts_i, last_attempt_f
     record_id = uuid.uuid4().hex
+    prov_clean = clean_scalar_str(provider_name)
+    kind_clean = clean_scalar_str(kind)
+    iid_clean = clean_order_id(intent_id)
+    fail_clean = clean_scalar_str(failure_reason)
     placement = {
         k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
         for k, v in dict(place_kwargs or {}).items()
     }
-    prefix = placement.get("prefix") or (
-        f"{placement.get('owner')}_OR" if placement.get("owner") else None
+    owner_clean = clean_scalar_str(placement.get("owner"))
+    prefix = clean_scalar_str(placement.get("prefix")) or (
+        f"{owner_clean}_OR" if owner_clean else None
     )
-    eff_kind = kind if kind is not None else placement.get("kind")
+    eff_kind = kind_clean or clean_scalar_str(placement.get("kind"))
     if not prefix and eff_kind:
-        kind_s = str(eff_kind).strip()
-        if "monitor_order_replace" in kind_s:
-            parent_owner = placement.get("parent_owner")
+        parent_owner = (clean_scalar_str(placement.get("parent_owner")) or "").lower()
+        if "monitor_order_replace" in eff_kind:
             prefix = "MO_MN_OR" if parent_owner == "manual" else ("MO_TA_OR" if parent_owner == "tradeall" else "MO_OR")
-        elif kind_s in {"STOP", "TP"}:
+        elif eff_kind in {"STOP", "TP"}:
             prefix = "MT_OR"
-        elif kind_s == "trend_signal" or kind_s.startswith(_TRADEALL_KIND_PREFIXES):
+        elif eff_kind == "trend_signal" or eff_kind.startswith(_TRADEALL_KIND_PREFIXES):
             prefix = "TA_OR"
-        elif kind_s.lower().startswith("assetguardian"):
+        elif eff_kind.lower().startswith("assetguardian"):
             prefix = "AG_OR"
     prefix = prefix or "OR"
     placement.setdefault("client_order_id", _client_order_id(record_id, 0, prefix=prefix))
@@ -454,13 +466,13 @@ def enqueue(
     ref_price = safe_pos_float(ref_price, default=None)
     rec = {
         "id": record_id, "prefix": prefix,
-        "intent_id": str(intent_id or f"outbox-{record_id}"),
-        "provider_name": None if provider_name is None else str(provider_name),
-        "symbol": symbol, "side": side_u, "kind": None if kind is None else str(kind),
+        "intent_id": iid_clean or f"outbox-{record_id}",
+        "provider_name": prov_clean,
+        "symbol": symbol, "side": side_u, "kind": kind_clean,
         "qty": qty, "requested_qty_total": qty, "delivered_qty": 0.0,
         "place_kwargs": placement, "requested_price": requested_price, "ref_price": ref_price,
         "created_ts": cts, "attempts": attempts, "last_attempt_ts": last_attempt_ts,
-        "last_failure_reason": str(failure_reason) if failure_reason is not None else None,
+        "last_failure_reason": fail_clean,
         "ttl_started_ts": cts, "revision": 0, "lifecycle": lifecycle,
     }
     if custom_ttl is not None:
@@ -484,25 +496,23 @@ def enqueue(
         rec["submission_state"] = "producer_claimed"
         rec["producer_pid"] = producer_pid
         rec["producer_process_start_id"] = producer_process_start_id
-    provider_key = normalize_venue_name(provider_name)
-    sym_key = _canonical_queue_symbol(symbol)
+    provider_key = normalize_venue_name(prov_clean)
     with _locked_queue() as existing:
         if lifecycle == "awaiting_cancel":
             for item in existing:
                 if (
-                    str(item.get("lifecycle") or "").lower() == "awaiting_cancel"
+                    _record_lifecycle(item, default="") == "awaiting_cancel"
                     and normalize_venue_name(item.get("provider_name")) == provider_key
                     and _canonical_queue_symbol(item.get("symbol")) == sym_key
-                    and str(item.get("side") or "").upper() == side_u
-                    and (extract_order_id(item.get("replaces_order_id")) or str(item.get("replaces_order_id") or ""))
-                    == clean_rep_oid
+                    and normalize_side(item.get("side")) == side_u
+                    and extract_order_id(item.get("replaces_order_id")) == clean_rep_oid
                 ):
                     return item.get("id")
         if (
             lifecycle == "submit_pending"
             and (
-                failure_reason in {"trend_deferred", "medium_trend_deferred"}
-                or (not RETRY_DEDUP and failure_reason in _CONSOLIDATED_DEFERRAL_REASONS)
+                fail_clean in {"trend_deferred", "medium_trend_deferred"}
+                or (not RETRY_DEDUP and fail_clean in _CONSOLIDATED_DEFERRAL_REASONS)
             )
         ):
             superseded = [
@@ -514,7 +524,7 @@ def enqueue(
                 existing = [item for item in existing if id(item) not in superseded_ids]
                 print(
                     f"[order_retry] consolidated {len(superseded)} older "
-                    f"deferred ({failure_reason}) {side_u} {symbol} record(s) into the latest intent"
+                    f"deferred ({fail_clean}) {side_u} {symbol} record(s) into the latest intent"
                 )
         if RETRY_DEDUP and lifecycle == "submit_pending" and _producer_lease_sec is None:
             for e in existing:
@@ -523,8 +533,8 @@ def enqueue(
                 e_provider = normalize_venue_name(e.get("provider_name"))
                 if (
                     _canonical_queue_symbol(e.get("symbol")) == sym_key
-                    and (e.get("side") or "").upper() == side_u
-                    and str(e.get("lifecycle") or "submit_pending").lower() == "submit_pending"
+                    and normalize_side(e.get("side")) == side_u
+                    and _record_lifecycle(e) == "submit_pending"
                     and (not provider_key or not e_provider or provider_key == e_provider)
                 ):
                     e["requested_price"] = requested_price
@@ -535,7 +545,12 @@ def enqueue(
                         k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
                         for k, v in dict(place_kwargs or {}).items()
                     }
-                    pfx = e.get("prefix") or refreshed_kwargs.get("prefix") or prefix or "OR"
+                    pfx = (
+                        clean_scalar_str(e.get("prefix"))
+                        or clean_scalar_str(refreshed_kwargs.get("prefix"))
+                        or prefix
+                        or "OR"
+                    )
                     refreshed_kwargs.setdefault(
                         "client_order_id", _client_order_id(e.get("id", record_id), revision, prefix=pfx)
                     )
@@ -550,14 +565,14 @@ def enqueue(
                         safe_nonneg_float(last_attempt_ts, default=0.0) or 0.0,
                     )
                     previous_reason = e.get("last_failure_reason")
-                    next_reason = str(failure_reason) if failure_reason is not None else None
+                    next_reason = fail_clean
                     _shift_ttl_after_deferral(
                         e, previous_reason, next_reason, prev_attempts, prev_last_ts, now,
                     )
                     e["last_failure_reason"] = next_reason
-                    e["provider_name"] = None if provider_name is None else str(provider_name)
-                    e["intent_id"] = str(intent_id or e.get("intent_id") or f"outbox-{e.get('id', record_id)}")
-                    e["kind"] = None if kind is None else str(kind)
+                    e["provider_name"] = prov_clean
+                    e["intent_id"] = iid_clean or clean_order_id(e.get("intent_id")) or f"outbox-{e.get('id', record_id)}"
+                    e["kind"] = kind_clean
                     e["lifecycle"] = "submit_pending"
                     if custom_ttl is not None:
                         e["ttl_sec"] = custom_ttl
@@ -732,7 +747,7 @@ def _safe_load_all() -> list:
 def _active_order_keys(r: dict) -> tuple[str, ...]:
     if not isinstance(r, dict):
         return ()
-    lc = str(r.get("lifecycle") or "").strip().lower()
+    lc = _record_lifecycle(r, default="")
     if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
         return ()
     return tuple(
@@ -753,12 +768,12 @@ def get_accepted_order_ttl_map() -> dict:
     }
 
 
-def _is_concrete_owner(owner: str) -> bool:
+def _is_concrete_owner(owner: object) -> bool:
+    s = clean_scalar_str(owner)
     return bool(
-        owner
-        and not isinstance(owner, bool)
-        and owner not in {"unknown", "unspecified", "order_retry"}
-        and not str(owner).startswith("alt:")
+        s
+        and s.lower() not in {"unknown", "unspecified", "order_retry"}
+        and not s.lower().startswith("alt:")
     )
 
 
@@ -768,14 +783,18 @@ def infer_record_owner(rec: dict) -> str:
         return "unspecified"
     raw_place_kw = rec.get("place_kwargs")
     placement = dict(raw_place_kw) if isinstance(raw_place_kw, dict) else {}
-    parent_owner = (_clean_str(rec.get("parent_owner")) or _clean_str(placement.get("parent_owner"))).lower()
+    parent_owner = (
+        clean_scalar_str(rec.get("parent_owner"))
+        or clean_scalar_str(placement.get("parent_owner"))
+        or ""
+    ).lower()
     if _is_concrete_owner(parent_owner):
         return parent_owner
     owner = "unspecified"
     cid = (
-        _clean_str(rec.get("client_order_id"))
-        or _clean_str(placement.get("client_order_id"))
-        or _clean_str(rec.get("prefix"))
+        clean_order_id(rec.get("client_order_id"))
+        or clean_order_id(placement.get("client_order_id"))
+        or clean_scalar_str(rec.get("prefix"))
     )
     if cid:
         try:
@@ -784,7 +803,7 @@ def infer_record_owner(rec: dict) -> str:
             owner = "unspecified"
     if _is_concrete_owner(owner):
         return owner
-    iid = _clean_str(rec.get("intent_id"))
+    iid = clean_order_id(rec.get("intent_id"))
     if iid:
         try:
             iid_owner = rc.resolve_order_owner(iid)
@@ -798,7 +817,7 @@ def infer_record_owner(rec: dict) -> str:
             return "spot_dca"
         if iid.startswith("trailing:"):
             return "trailing_stop"
-    kind = _clean_str(rec.get("kind")) or _clean_str(placement.get("kind"))
+    kind = clean_scalar_str(rec.get("kind")) or clean_scalar_str(placement.get("kind")) or ""
     if "monitor_order_replace" in kind:
         return "monitororder"
     if kind in {"STOP", "TP", "SL", "REENTRY"}:
@@ -851,7 +870,7 @@ def resolve_tracked_order_owner(
     owner_map = accepted_owner_map if isinstance(accepted_owner_map, dict) else get_accepted_order_owner_map()
     for key in (oid_str, cid_str):
         if key and key in owner_map:
-            mapped = _clean_str(owner_map.get(key))
+            mapped = clean_scalar_str(owner_map.get(key)) or ""
             if _is_concrete_owner(mapped):
                 return mapped
     if oid_str or cid_str:
@@ -870,16 +889,14 @@ def resolve_tracked_order_owner(
 
 def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
     """Return active accepted order_ids for ``symbol`` belonging to logical ``owner``."""
-    if isinstance(symbol, bool) or isinstance(owner, bool):
-        return []
     target_sym = _canonical_queue_symbol(symbol)
-    target_owner = str(owner or "").strip().lower()
+    target_owner = (clean_scalar_str(owner) or "").lower()
     if not target_sym or not target_owner:
         return []
     out = []
     for r in _safe_load_all():
         if (
-            str(r.get("lifecycle") or "").lower() == "accepted"
+            _record_lifecycle(r, default="") == "accepted"
             and _canonical_queue_symbol(r.get("symbol")) == target_sym
         ):
             oid_str = extract_order_id(r.get("order_id"))
@@ -922,11 +939,12 @@ def consolidate_deferred_streams():
 
 def get(record_id):
     """Return one current queue record by ID under lock, or ``None``."""
-    if not record_id or isinstance(record_id, bool):
+    target_id = clean_order_id(record_id)
+    if not target_id:
         return None
     with _locked_queue() as existing:
         for rec in existing:
-            if rec.get("id") == record_id:
+            if clean_order_id(rec.get("id")) == target_id:
                 return dict(rec)
     return None
 
@@ -960,7 +978,7 @@ def _append_order_history(rec, *, observed_at, status=None):
 
 def claim(ids, now=None, lease_sec=None):
     """Lease entries without removing them, making crash recovery deterministic."""
-    if ids is None or isinstance(ids, (str, bytes, bool)) or not (ids := {i for i in ids if not isinstance(i, bool) and i}):
+    if ids is None or isinstance(ids, (str, bytes, bool, dict)) or not (ids := _clean_id_set(ids)):
         return []
     now = resolve_now_ts(now)
     lease_f = safe_pos_float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec, default=None)
@@ -970,11 +988,11 @@ def claim(ids, now=None, lease_sec=None):
     token = uuid.uuid4().hex
     with _locked_queue() as existing:
         for rec in existing:
-            if rec.get("id") not in ids or safe_float(rec.get("claim_until"), default=0.0) > now:
+            if clean_order_id(rec.get("id")) not in ids or safe_float(rec.get("claim_until"), default=0.0) > now:
                 continue
             revision = max(0, exact_int(rec.get("revision"), 0))
             placement = dict(rec.get("place_kwargs") or {})
-            pfx = rec.get("prefix") or placement.get("prefix") or "OR"
+            pfx = clean_scalar_str(rec.get("prefix")) or clean_scalar_str(placement.get("prefix")) or "OR"
             placement.setdefault("client_order_id", _client_order_id(rec.get("id", ""), revision, prefix=pfx))
             rec["place_kwargs"] = placement
             rec["revision"] = revision
@@ -1318,9 +1336,9 @@ def discard_expired(snapshots, now=None):
 
 def discard(ids):
     """Atomically remove records by ID without submitting them (expiry/give-up)."""
-    if ids is None or isinstance(ids, (str, bytes, bool)) or not (ids := {i for i in ids if not isinstance(i, bool) and i}):
+    if ids is None or isinstance(ids, (str, bytes, bool, dict)) or not (ids := _clean_id_set(ids)):
         return []
-    return _remove_matching_locked(lambda rec: rec.get("id") in ids)
+    return _remove_matching_locked(lambda rec: clean_order_id(rec.get("id")) in ids)
 
 
 def resolve(symbol, side):
@@ -1329,12 +1347,14 @@ def resolve(symbol, side):
         return 0
     target_sym = _canonical_queue_symbol(symbol)
     side_u = normalize_side(side)
+    if not target_sym or side_u not in {"BUY", "SELL"}:
+        return 0
     return len(
         _remove_matching_locked(
             lambda rec: (
                 _canonical_queue_symbol(rec.get("symbol")) == target_sym
-                and str(rec.get("side") or "").strip().upper() == side_u
-                and str(rec.get("lifecycle") or "submit_pending").lower() == "submit_pending"
+                and normalize_side(rec.get("side")) == side_u
+                and _record_lifecycle(rec) == "submit_pending"
             )
         )
     )
@@ -1367,7 +1387,7 @@ def resolve_record_ttl(rec):
         custom_ttl = safe_pos_float(rec.get("ttl_sec"), default=None)
         if custom_ttl is not None:
             return min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
-        if _clean_str(rec.get("kind")).startswith(_FAST_IMPULSE_KIND_PREFIXES):
+        if (clean_scalar_str(rec.get("kind")) or "").startswith(_FAST_IMPULSE_KIND_PREFIXES):
             raw_kw = rec.get("place_kwargs")
             kw_hours = safe_pos_float(raw_kw.get("hours") if isinstance(raw_kw, dict) else None, default=None)
             fast_ttl = kw_hours * 3600.0 if kw_hours is not None else 1800.0
@@ -1380,7 +1400,7 @@ def is_expired(rec, now=None):
     if not isinstance(rec, dict):
         return True
     if (
-        str(rec.get("lifecycle") or "submit_pending").lower() in {"accepted", "awaiting_cancel"}
+        _record_lifecycle(rec) in {"accepted", "awaiting_cancel"}
         or is_possibly_submitted(rec)
     ):
         return False
@@ -1400,7 +1420,7 @@ def is_expired(rec, now=None):
         if expires_at is None or now_f > expires_at:
             return True
     effective_ttl = resolve_record_ttl(rec)
-    if _clean_str(rec.get("kind")).startswith(_FAST_IMPULSE_KIND_PREFIXES) and (now_f - created) > effective_ttl:
+    if (clean_scalar_str(rec.get("kind")) or "").startswith(_FAST_IMPULSE_KIND_PREFIXES) and (now_f - created) > effective_ttl:
         return True
     if is_non_failure_deferral(rec.get("last_failure_reason")):
         return False
@@ -1431,7 +1451,7 @@ def is_due(rec, now=None):
     created = _opt_nonneg_ts(rec, "created_ts")
     if now_f is None or claim_until is None or created is None:
         return False
-    lifecycle = str(rec.get("lifecycle") or "submit_pending").strip().lower()
+    lifecycle = _record_lifecycle(rec)
     if lifecycle in {"accepted", "awaiting_cancel"}:
         last_st = _opt_nonneg_ts(rec, "last_status_ts")
         acc_ts = _opt_nonneg_ts(rec, "accepted_ts")
@@ -1478,7 +1498,7 @@ def discard_refused_intent_records(intent_id: str) -> list[str]:
         for r in load_all()
         if isinstance(r, dict)
         and clean_order_id(r.get("intent_id")) == iid_str
-        and str(r.get("submission_state") or "").strip().lower() == "refused"
+        and (clean_scalar_str(r.get("submission_state")) or "").lower() == "refused"
         and (rid := clean_order_id(r.get("id")))
     ]
     if rm_ids:
@@ -1523,7 +1543,7 @@ def discard_superseded_symbol_records(
         if rec_oid and rec_oid in canceled_set:
             to_discard.append(rec_id)
             continue
-        lc = str(rec.get("lifecycle") or "submit_pending").strip().lower()
+        lc = _record_lifecycle(rec)
         if lc not in ("submit_pending", "awaiting_cancel"):
             continue
         rec_side = normalize_side(rec.get("side"))

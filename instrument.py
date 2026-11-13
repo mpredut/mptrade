@@ -38,6 +38,7 @@ from botcore import (
     _parse_bool_flag,
     clean_order_id,
     clean_scalar_str,
+    clean_upper_scalar,
     extract_order_id,
     is_us_rth_open,
     normalize_side,
@@ -69,7 +70,7 @@ def _accepted_order_payload(payload):
     """Return whether a provider payload proves venue acceptance, never fill."""
     if not isinstance(payload, dict):
         return False
-    if str(payload.get("status") or "").upper() in {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"}:
+    if (clean_upper_scalar(payload.get("status")) or "") in {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"}:
         return False
     return extract_order_id(payload) is not None
 
@@ -477,9 +478,8 @@ class Instrument:
             kwargs["live_enabled"] = provider_execution_enabled
         supports_validity = self._provider_bool_cap("supports_order_validity", fallback_base=True)
         if supports_validity and "order_validity" not in kwargs:
-            inst_validity = self.param("execution", "order_validity")
-            if isinstance(inst_validity, str) and inst_validity.strip():
-                kwargs["order_validity"] = inst_validity.strip().upper()
+            if (inst_validity := clean_upper_scalar(self.param("execution", "order_validity"))) is not None:
+                kwargs["order_validity"] = inst_validity
         if self._provider_bool_cap("guards_internally"):
             if ctx.retry_constraint_supplied:
                 return None, _refuse_early("retry_price_constraint_unsupported")
@@ -491,7 +491,7 @@ class Instrument:
         cas_f = safe_pos_float(kwargs.pop("applied_scale", None), default=None)
         ctx.caller_applied_scale = cas_f if (cas_f is not None and cas_f < 1.0) else 1.0
         ctx.applied_scale = ctx.caller_applied_scale
-        ctx.is_monitor_replace = "monitor_order_replace" in str(order_kind or "")
+        ctx.is_monitor_replace = "monitor_order_replace" in (clean_scalar_str(order_kind) or "")
         ctx.profit_margin = safe_float(caller_profit_margin, default=None)
         ctx.retry_kwargs = {
             **ctx.kwargs,
@@ -1005,19 +1005,17 @@ class Instrument:
 
             if not ctx.reason:
                 check_medium_trend = not GUARD_REGISTRY["GT_M"].is_bypassed(ctx.bypassed_guards)
-                medium_trend_action = (
-                    ctx.medium_trend_action_cfg.strip().lower()
-                    if isinstance(ctx.medium_trend_action_cfg, str)
-                    else None
-                )
+                medium_trend_action = (clean_scalar_str(ctx.medium_trend_action_cfg) or "").lower() or None
                 gt2_context = ctx.regime_context
                 if check_medium_trend and gt2_context is None and medium_trend_action in {"defer", "scale"}:
                     gt2_context = self._resolve_regime_context()
                     if gt2_context is not None and ctx.regime_context is None:
                         ctx.regime_context = gt2_context
                 if check_medium_trend and gt2_context is not None:
-                    raw_reg = obj_attr(gt2_context, "regime") or obj_attr(gt2_context, "resolved_trend")
-                    resolved_regime = raw_reg.strip().lower() if isinstance(raw_reg, str) else None
+                    raw_reg = clean_scalar_str(obj_attr(gt2_context, "regime")) or clean_scalar_str(
+                        obj_attr(gt2_context, "resolved_trend")
+                    )
+                    resolved_regime = raw_reg.lower() if raw_reg is not None else None
                     adverse_medium_trend = order_guard.is_adverse_trend(ctx.side_u, resolved_regime)
                     if medium_trend_action == "defer" and adverse_medium_trend:
                         regime_label = (

@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
+    clean_scalar_str,
     clean_scale,
     obj_attr,
     resolve_patched_attr,
@@ -104,7 +105,7 @@ def check_qlimit2_order_guards(
 
     surge_pct = m["parabolic_surge_pct"]
     pullback_pct = m["parabolic_pullback_pct"]
-    exhaust_policy = str(m["weibull_exhaustion_policy"] or "").strip().lower()
+    exhaust_policy = (clean_scalar_str(m["weibull_exhaustion_policy"]) or "").lower()
     exhaust_scale = m["weibull_exhausted_scale"]
     exhaust_p90 = m["weibull_p90_days"]
 

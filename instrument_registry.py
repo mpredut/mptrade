@@ -30,7 +30,9 @@ from botcore import (
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
+    clean_scalar_str,
     clean_symbol_key,
+    clean_upper_scalar,
     compatible_quote_suffixes,
     filter_candidates_by_asset_class,
     has_equity_suffix,
@@ -94,14 +96,14 @@ class InstrumentSpec:
     params: dict
 
     def has_role(self, role):
-        role_norm = str(role or "").strip().casefold() if not isinstance(role, bool) else ""
+        role_norm = (clean_scalar_str(role) or "").casefold()
         if role_norm not in ROLES:
             raise ValueError(f"Unknown instrument role: {role!r}")
         key = f"role.{role_norm}"
         return _boolean(_required(self.params, key, self.name), key, self.name)
 
     def setting(self, key):
-        key_norm = str(key or "").strip().casefold() if not isinstance(key, bool) else ""
+        key_norm = (clean_scalar_str(key) or "").casefold()
         return _required(self.params, key_norm, self.name)
 
     def number(self, key):
@@ -130,9 +132,10 @@ class InstrumentSpec:
         cast: Optional[Callable] = None,
     ) -> Any:
         """Return ``consumer.key`` from ``params`` or ``default`` when missing or conversion fails."""
-        if isinstance(consumer, bool) or isinstance(key, bool) or not isinstance(params, dict):
+        c_str, k_str = clean_scalar_str(consumer), clean_scalar_str(key)
+        if not c_str or not k_str or not isinstance(params, dict):
             return default
-        v = casefold_get(params, f"{str(consumer or '').strip()}.{str(key or '').strip()}")
+        v = casefold_get(params, f"{c_str}.{k_str}")
         if v is None or cast is None:
             return default if v is None else v
         if cast is bool:
@@ -166,17 +169,21 @@ class InstrumentSpec:
         updated = dict(self.params or {})
         if live_enabled is not None:
             updated["execution.live_enabled"] = "true" if live_enabled else "false"
-        if order_validity is not None and str(order_validity).strip():
-            updated["execution.order_validity"] = str(order_validity).strip().upper()
+        if (ov_clean := clean_upper_scalar(order_validity)) is not None:
+            updated["execution.order_validity"] = ov_clean
         return replace(self, params=updated)
 
 
 def load_registry(path=None):
     """Validate the complete registry before returning any instrument (cached by mtime_ns + size)."""
-    if isinstance(path, bool):
+    if isinstance(path, bool) or (path is not None and not isinstance(path, (str, os.PathLike))):
         raise ValueError(f"Invalid registry path: {path!r}")
+    if isinstance(path, os.PathLike):
+        path = os.fspath(path)
     if isinstance(path, str):
-        path = path.strip() or None
+        if path.strip() and clean_scalar_str(path) is None:
+            raise ValueError(f"Invalid registry path: {path!r}")
+        path = clean_scalar_str(path)
     path = Path(path) if path is not None else DEFAULT_PATH
     st = path.stat()
     cache_key = (str(path.resolve()), st.st_mtime_ns, st.st_size)
@@ -233,8 +240,8 @@ def select_instruments(provider=None, role=None, *, path=None, only_enabled=True
     prov_norm = None if provider is None else normalize_venue_name(provider)
     if provider is not None and not prov_norm:
         raise ValueError(f"Invalid provider: {provider!r}")
-    role_norm = str(role or "").strip().casefold() if (role is not None and not isinstance(role, bool)) else None
-    if role is not None and (isinstance(role, bool) or role_norm not in ROLES):
+    role_norm = (clean_scalar_str(role) or "").casefold() if role is not None else None
+    if role is not None and role_norm not in ROLES:
         raise ValueError(f"Unknown instrument role: {role!r}")
     if only_enabled is None or (isinstance(only_enabled, float) and safe_float(only_enabled, default=None) is None):
         only_enabled_b = True
@@ -257,9 +264,7 @@ def symbols_for(provider=None, role=None, *, path=None):
 
 def venue_for_symbol(symbol: object, *, path=None, default: str = "binance") -> str:
     """Resolve the SSOT configured venue ('binance', 'kraken', 'hyperliquid', 't212') for ``symbol``."""
-    if not isinstance(symbol, str) or isinstance(symbol, bool):
-        return default
-    raw_sym = symbol.strip().upper()
+    raw_sym = clean_upper_scalar(symbol)
     if not raw_sym:
         return default
     if is_equity_symbol(raw_sym, path=path):
@@ -276,10 +281,10 @@ def venue_for_symbol(symbol: object, *, path=None, default: str = "binance") -> 
             for inst in specs:
                 if enabled_only and not getattr(inst, "enabled", True):
                     continue
-                inst_sym = str(getattr(inst, "symbol", "") or "").strip().upper()
-                inst_prov = getattr(inst, "provider", None)
-                if inst_prov and (inst_sym in (canon_sym, raw_sym) or clean_symbol_key(inst_sym) == canon_sym):
-                    return normalize_venue_name(inst_prov) or str(inst_prov).strip().lower()
+                inst_sym = clean_upper_scalar(getattr(inst, "symbol", None)) or ""
+                inst_prov = clean_scalar_str(getattr(inst, "provider", None))
+                if inst_prov and inst_sym and (inst_sym in (canon_sym, raw_sym) or clean_symbol_key(inst_sym) == canon_sym):
+                    return normalize_venue_name(inst_prov) or inst_prov.lower()
     except Exception:
         pass
     if canon_sym in ("HYPEUSD", "TAOUSD", "ADAUSD", "XBTUSD", "XXBTZUSD", "XDGUSD", "XXDGZUSD"):
@@ -302,10 +307,8 @@ _DEFAULT_RESOLVED_PATH = str(DEFAULT_PATH.resolve())
 
 def is_equity_symbol(symbol: object, *, path=None) -> bool:
     """Return True if ``symbol`` represents an equity/RTH instrument (by suffix or ``instruments.conf`` SSOT)."""
-    if not isinstance(symbol, str) or isinstance(symbol, bool):
-        return False
-    sym_u = symbol.strip().strip("'\"").upper()
-    if not sym_u:
+    raw_s = clean_scalar_str(symbol)
+    if not raw_s or not (sym_u := clean_upper_scalar(raw_s.strip("'\""))):
         return False
     if has_equity_suffix(sym_u):
         return True
@@ -368,8 +371,7 @@ def tracked_price_instruments(role=None, *, path=None):
 
 
 def _str_attr(item, name: str) -> str:
-    val = getattr(item, name, None)
-    return val.strip() if isinstance(val, str) else ""
+    return clean_scalar_str(getattr(item, name, None)) or ""
 
 
 def _candidate_venue(item) -> str:
@@ -391,8 +393,8 @@ def binance_symbols(path=None):
 def discover_kraken_cache_pairs(workspace_dir: str) -> list[tuple[str, str, str]]:
     """Read KRAKEN_TRADABLE_PAIRS (or fallback KRAKEN_CACHE_PAIRS / instruments.conf), excluding read-only xStocks."""
     kv = parse_dotenv(os.path.join(workspace_dir, "kraken", "config.env"), upper_keys=True)
-    raw_pairs = str(kv.get("KRAKEN_TRADABLE_PAIRS") or kv.get("KRAKEN_CACHE_PAIRS") or "")
-    if not raw_pairs.strip():
+    raw_pairs = clean_scalar_str(kv.get("KRAKEN_TRADABLE_PAIRS")) or clean_scalar_str(kv.get("KRAKEN_CACHE_PAIRS")) or ""
+    if not raw_pairs:
         ws_inst_conf = os.path.join(workspace_dir, "instruments.conf")
         if os.path.exists(ws_inst_conf):
             try:
@@ -420,7 +422,7 @@ def discover_hyperliquid_spot(workspace_dir: str) -> list[tuple[str, str, str]]:
     kv = parse_dotenv(cfg_path, upper_keys=True)
     if not _parse_bool_flag(kv.get("HL_LIVE_ORDERS"), False):
         return []
-    token = str(kv.get("HL_SPOT_TOKEN") or "HYPE").strip().upper()
+    token = clean_upper_scalar(kv.get("HL_SPOT_TOKEN")) or "HYPE"
     return [(f"{token}USDC", token, "USDC")] if token else []
 
 
@@ -433,7 +435,7 @@ def discover_t212_equities(workspace_dir: str) -> list[tuple[str, str, str, str]
     seen: set[str] = set()
     for cfg_path in sorted(glob.glob(os.path.join(glob.escape(t212_dir), "config.*.env"))):
         kv = parse_dotenv(cfg_path, upper_keys=True)
-        ticker = str(kv.get("T212_TICKER") or kv.get("STRAT_PAIR") or "").upper()
+        ticker = clean_upper_scalar(kv.get("T212_TICKER")) or clean_upper_scalar(kv.get("STRAT_PAIR")) or ""
         if ticker and ticker not in seen:
             seen.add(ticker)
             out.append((f"T212_{strip_equity_suffix(ticker)}", ticker, ticker, "USD"))
@@ -444,10 +446,9 @@ def has_workspace_instrument_sources(
     workspace_dir: str | Path | None, *, asset_scope: str = "all"
 ) -> bool:
     """Return True when ``workspace_dir`` contains ``instruments.conf`` or per-venue config files for ``asset_scope``."""
-    if not isinstance(workspace_dir, (str, Path)) or not str(workspace_dir).strip():
+    if not isinstance(workspace_dir, (str, Path)) or not (ws_dir := clean_scalar_str(os.fspath(workspace_dir))):
         return False
-    ws_dir = str(workspace_dir)
-    scope_norm = str(asset_scope or "all").strip().lower() if not isinstance(asset_scope, bool) else "all"
+    scope_norm = (clean_scalar_str(asset_scope) or "all").lower()
     return bool(
         os.path.exists(os.path.join(ws_dir, "instruments.conf"))
         or os.path.exists(os.path.join(ws_dir, "kraken", "config.env"))
@@ -467,9 +468,13 @@ def discover_tradable_specs(
     base_specs: dict | None = None,
 ) -> dict:
     """Discover enabled ``InstrumentSpec`` items across Binance, Kraken, Hyperliquid, and Trading212 without binding providers."""
-    ws_dir = workspace_dir or os.path.dirname(os.path.abspath(__file__))
+    ws_dir = (
+        clean_scalar_str(os.fspath(workspace_dir))
+        if isinstance(workspace_dir, (str, Path))
+        else None
+    ) or os.path.dirname(os.path.abspath(__file__))
     rth_check = is_rth_open_fn or is_us_rth_open
-    scope = (asset_scope or "all").strip().lower()
+    scope = (clean_scalar_str(asset_scope) or "all").lower()
     ws_inst_conf = os.path.join(ws_dir, "instruments.conf")
     if base_specs is not None:
         raw_map = dict(base_specs)
@@ -583,7 +588,7 @@ def resolve_instrument_spec(
     if instruments_map is None:
         instruments_map = discover_tradable_specs(workspace_dir)
 
-    raw_sym_u = str(symbol or "").strip().upper()
+    raw_sym_u = clean_upper_scalar(symbol) or ""
     sym_norm = clean_symbol_key(symbol)
     if not sym_norm or isinstance(venue, bool) or is_readonly_xstock_symbol(symbol):
         return None
@@ -684,7 +689,7 @@ __getattr__ = _resolve_dynamic_symbol_attr
 
 def _normalize_ordertype(order_type):
     if isinstance(order_type, str):
-        return normalize_side(order_type) or order_type.strip().upper()
+        return normalize_side(order_type) or (clean_upper_scalar(order_type) or "")
     return order_type
 
 

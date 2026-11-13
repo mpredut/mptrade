@@ -21,7 +21,9 @@ from typing import Any, Dict, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
+    clean_scalar_str,
     clean_scale,
+    clean_upper_scalar,
     first_pos_float,
     format_notify_price,
     normalize_epoch_sec,
@@ -146,7 +148,7 @@ def evaluate_high_stake_order_guard(
                 default=None,
             )
         timeout_sec = safe_pos_float(margins.get("llm_timeout_sec"), 120.0)
-        fallback = str(margins.get("llm_fallback") or "allow").strip().lower()
+        fallback = (clean_scalar_str(margins.get("llm_fallback")) or "allow").lower()
         try:
             llm_guard = _high_stake_guard.HighStakeGuard(
                 min_notional_eur=min_notional,
@@ -220,11 +222,11 @@ def evaluate_high_stake_order_guard(
                 else:
                     g_title = f"🧭 {hs_tag} ACCEPT {side} {symbol}"
 
-                meta_reason = g_meta.get("gemini_reason")
-                clean_reason = str(meta_reason or re.sub(
+                meta_reason = clean_scalar_str(g_meta.get("gemini_reason"))
+                clean_reason = (meta_reason or re.sub(
                     r"^(?:Gemini|LLM) (?:vetoed|approved|downscaled) high-stake (?:BUY|SELL):\s*",
                     "",
-                    g_reason_str,
+                    str(g_reason_str or ""),
                 )).strip()
 
                 px_clean = safe_pos_float(price, 0.0)
@@ -251,7 +253,7 @@ def evaluate_high_stake_order_guard(
     if isinstance(cached_g_dec, (tuple, list)) and len(cached_g_dec) == 3 and llm_mode == "enforce":
         g_allowed, g_reason, raw_g_scale = cached_g_dec
         g_scale = clean_scale(raw_g_scale, default=1.0, allow_percent=True)
-        reason_clean = g_reason.strip() if isinstance(g_reason, str) and g_reason.strip() else "high_stake_guard"
+        reason_clean = clean_scalar_str(g_reason) or "high_stake_guard"
         if not _parse_bool_flag(g_allowed, True) or g_scale <= 0.0:
             return False, reason_clean, 0.0
         if g_scale < 1.0:
@@ -300,7 +302,7 @@ def check_geopolitical_order_guards(
         if cached_geo is not None:
             now_ts = resolve_now_ts(now)
             geo_ts = normalize_epoch_sec(obj_attr(cached_geo, "ts", None), allow_iso=True) or 0.0
-            geo_level = str(obj_attr(cached_geo, "threat_level", "NORMAL") or "NORMAL").upper()
+            geo_level = clean_upper_scalar(obj_attr(cached_geo, "threat_level", "NORMAL")) or "NORMAL"
             market_absorbed = False
             if geo_level == "ELEVATED" and geo_ts > 0.0 and (now_ts - geo_ts) >= 1800.0:
                 try:
@@ -312,13 +314,15 @@ def check_geopolitical_order_guards(
                     sa_data, _ = _mss.read_first_cached_dict(cdir, "sentiment_advisor_files", "sentiment_eval.json")
                     if isinstance(sa_data, dict):
                         sa_ts = normalize_epoch_sec(sa_data.get("ts"), allow_iso=True) or 0.0
-                        sa_action = str(
-                            sa_data.get("recommended_action") or sa_data.get("recommended_posture") or ""
-                        ).upper()
+                        sa_action = (
+                            clean_upper_scalar(sa_data.get("recommended_action"))
+                            or clean_upper_scalar(sa_data.get("recommended_posture"))
+                            or ""
+                        )
                         if (
                             sa_ts > 0.0
                             and 0.0 <= (now_ts - sa_ts) <= 7200.0
-                            and str(sa_data.get("market_bias") or "").upper() != "BEARISH"
+                            and (clean_upper_scalar(sa_data.get("market_bias")) or "") != "BEARISH"
                             and sa_action == "ACCUMULATE"
                         ):
                             market_absorbed = True
@@ -330,7 +334,7 @@ def check_geopolitical_order_guards(
                             else 0.0
                         )
                         if isinstance(mb_data, dict) and mb_ts > 0.0 and 0.0 <= (now_ts - mb_ts) <= 1800.0:
-                            ca_reg = str(mb_data.get("cross_asset_regime") or "").upper()
+                            ca_reg = clean_upper_scalar(mb_data.get("cross_asset_regime")) or ""
                             target_decouple = (
                                 "EQUITY_BULLISH_DECOUPLING"
                                 if is_equity_symbol(symbol)

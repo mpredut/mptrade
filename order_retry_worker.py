@@ -21,9 +21,9 @@ from botcore import (
     FileLock,
     _parse_bool_flag,
     add_store_true_cli_args,
-    clean_nonempty_str,
     clean_order_id,
-    clean_upper_token,
+    clean_scalar_str,
+    clean_upper_scalar,
     exact_nonneg_int,
     format_notify_qty,
     normalize_epoch_sec,
@@ -139,12 +139,12 @@ _ALERTED_TERMINALS = _PersistentQuarantineSet("terminal")
 
 def _normalize_bypass_set(raw_bg) -> set[str]:
     if isinstance(raw_bg, str):
-        return set(split_csv(raw_bg))
+        return {tok for s in split_csv(raw_bg) if (tok := clean_scalar_str(s)) is not None}
     if isinstance(raw_bg, (list, tuple, set, frozenset)):
         return {
-            str(s).strip()
+            tok
             for s in raw_bg
-            if s is not None and not isinstance(s, bool) and str(s).strip()
+            if (tok := clean_scalar_str(s)) is not None
         }
     return set()
 
@@ -187,12 +187,12 @@ def _reconcile_client_order(mkt, symbol, client_order_id, *, provider_name=None)
 
 
 def _provider_name(mkt, record):
-    if isinstance(record, dict) and (configured := clean_nonempty_str(record.get("provider_name"))):
+    if isinstance(record, dict) and (configured := clean_scalar_str(record.get("provider_name"))):
         return configured
     resolver = getattr(mkt, "provider_name_for", None)
-    if callable(resolver) and isinstance(record, dict):
+    if callable(resolver) and isinstance(record, dict) and (sym := clean_scalar_str(record.get("symbol"))):
         try:
-            if resolved := clean_nonempty_str(resolver(record.get("symbol"))):
+            if resolved := clean_scalar_str(resolver(sym)):
                 return resolved
         except Exception:
             pass
@@ -274,10 +274,10 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
     )
     total_ttl = safe_pos_float(effective_ttl, default=302400.0)
     age_progress = min(1.0, max(0.0, age_sec / total_ttl))
-    side_u = normalize_side(r.get("side")) or str(r.get("side") or "").upper()
+    side_u = normalize_side(r.get("side")) or (clean_upper_scalar(r.get("side")) or "")
 
     retry_stage = "standard"
-    eff_kind = str(r.get("kind") or kwargs.get("kind") or "").strip()
+    eff_kind = clean_scalar_str(r.get("kind")) or clean_scalar_str(kwargs.get("kind")) or ""
     is_replace = "monitor_order_replace" in eff_kind
     if is_replace:
         kwargs["wait_for_trend"] = _parse_bool_flag(kwargs.get("wait_for_trend"), True)
@@ -311,8 +311,8 @@ def process_once(mkt, now=None):
         if oq.is_expired(r, now):
             expired.append(r)
             continue
-        lifecycle, symbol = str(r.get("lifecycle") or "submit_pending").lower(), r.get("symbol")
-        if str(r.get("submission_state") or "").lower() == "producer_claimed":
+        lifecycle, symbol = (clean_scalar_str(r.get("lifecycle")) or "submit_pending").lower(), r.get("symbol")
+        if (clean_scalar_str(r.get("submission_state")) or "").lower() == "producer_claimed":
             if safe_float(r.get("claim_until"), default=0.0) > now:
                 continue
             owner_state = oq.producer_claim_owner_state(r)
@@ -394,7 +394,7 @@ def process_once(mkt, now=None):
             return None
 
     for r in claimed:
-        lifecycle, symbol = str(r.get("lifecycle") or "submit_pending").lower(), r.get("symbol")
+        lifecycle, symbol = (clean_scalar_str(r.get("lifecycle")) or "submit_pending").lower(), r.get("symbol")
         provider_name = _provider_name(mkt, r)
         if lifecycle == "awaiting_cancel":
             replaced_order_id = clean_order_id(r.get("replaces_order_id")) or ""
@@ -550,8 +550,8 @@ def process_once(mkt, now=None):
             skipped_price += 1
             continue
 
-        prev_failure_reason = str(r.get("last_failure_reason") or "").strip()
-        prev_submission_state = str(r.get("submission_state") or "").strip().lower()
+        prev_failure_reason = clean_scalar_str(r.get("last_failure_reason")) or ""
+        prev_submission_state = (clean_scalar_str(r.get("submission_state")) or "").lower()
         side_u, age_sec, age_progress, retry_stage = _prepare_retry_placement_kwargs(r, kwargs, provider_name, now)
         outcome_context = {}
         kwargs["_outcome_context"] = outcome_context
@@ -652,9 +652,9 @@ def process_once(mkt, now=None):
 
 def _resolve_display_assets(symbol):
     """Return (base_asset, quote_asset) for human-readable alert formatting."""
-    if (sym := clean_upper_token(symbol)) is None:
+    if (sym := clean_upper_scalar(symbol)) is None:
         return "?", "USD"
-    split = split_symbol_assets(symbol)
+    split = split_symbol_assets(sym)
     base, quote = split if split is not None else resolve_assets(sym)
     return (base or sym), (quote or "USD")
 
@@ -679,14 +679,9 @@ def _concrete_record_owner(rec) -> str:
 def _format_record_context(rec, *, include_lease=False):
     """Build a structured summary of order time, base asset qty/price, and quote value."""
     raw_side = rec.get("side")
-    side = (
-        normalize_side(raw_side)
-        or (raw_side.strip().upper() if isinstance(raw_side, str) and raw_side.strip() else "?")
-    )
-    raw_sym = rec.get("symbol")
-    symbol = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else "?"
-    raw_prov = rec.get("provider_name")
-    provider = raw_prov.strip().upper() if isinstance(raw_prov, str) and raw_prov.strip() else "ROUTED"
+    side = normalize_side(raw_side) or clean_upper_scalar(raw_side) or "?"
+    symbol = clean_scalar_str(rec.get("symbol")) or "?"
+    provider = clean_upper_scalar(rec.get("provider_name")) or "ROUTED"
     base_asset, quote_asset = _resolve_display_assets(symbol)
     qty_val = safe_pos_float(rec.get("qty"), default=0.0)
     req_px = safe_pos_float(rec.get("requested_price"), default=None)
@@ -704,12 +699,7 @@ def _format_record_context(rec, *, include_lease=False):
     created_str = _format_ts(rec.get("created_ts"))
     last_attempt_str = _format_ts(rec.get("last_attempt_ts"))
     attempts = safe_int(rec.get("attempts"), 0)
-    raw_reason = rec.get("last_failure_reason")
-    last_reason = (
-        str(raw_reason).strip()
-        if raw_reason is not None and not isinstance(raw_reason, bool) and str(raw_reason).strip()
-        else "none"
-    )
+    last_reason = clean_scalar_str(rec.get("last_failure_reason")) or "none"
     time_parts = [f"Created: {created_str}"]
     if last_attempt_str != "N/A":
         time_parts.append(f"Last attempt: {last_attempt_str}")
@@ -881,13 +871,13 @@ class IncidentDigest:
                     del groups[key]
                     changed = True
             for event in events:
+                sample_id = clean_scalar_str(event.get("sample_id")) if isinstance(event, dict) else None
                 if (
                     not isinstance(event, dict)
                     or "labels" not in event
                     or "quantity" not in event
                     or isinstance(event.get("quantity"), bool)
-                    or isinstance(event.get("sample_id"), bool)
-                    or not str(event.get("sample_id") or "").strip()
+                    or sample_id is None
                 ):
                     raise ValueError("invalid notification digest event")
                 labels = event["labels"]
@@ -907,7 +897,7 @@ class IncidentDigest:
                 })
                 if group["count"] == 0:
                     group["first_ts"] = now
-                    group["sample_id"] = str(event["sample_id"]).strip()
+                    group["sample_id"] = sample_id
                 group["last_ts"] = now
                 group["count"] += 1
                 group["quantity"] += quantity
@@ -967,16 +957,16 @@ def _alert_giveups(records, now):
             owner_lbl = _concrete_record_owner(rec) or "unknown"
             events.append({
                 "labels": {
-                    "provider": str(rec.get("provider_name") or "routed"),
-                    "symbol": str(rec.get("symbol")),
-                    "side": str(rec.get("side")),
-                    "kind": str(rec.get("kind") or place_kw.get("kind") or "unspecified"),
+                    "provider": clean_scalar_str(rec.get("provider_name")) or "routed",
+                    "symbol": clean_scalar_str(rec.get("symbol")) or "unknown",
+                    "side": clean_scalar_str(rec.get("side")) or "unknown",
+                    "kind": clean_scalar_str(rec.get("kind")) or clean_scalar_str(place_kw.get("kind")) or "unspecified",
                     "owner": owner_lbl,
-                    "reason": str(rec.get("last_failure_reason") or "unspecified"),
+                    "reason": clean_scalar_str(rec.get("last_failure_reason")) or "unspecified",
                     "expiry": reason,
                 },
                 "quantity": rec.get("qty", 0.0),
-                "sample_id": rec.get("intent_id") or rec.get("id") or "unknown",
+                "sample_id": clean_scalar_str(rec.get("intent_id")) or clean_scalar_str(rec.get("id")) or "unknown",
                 "attempts": attempts_val,
                 "price": rec.get("requested_price") if rec.get("requested_price") is not None else rec.get("ref_price"),
                 "created_ts": rec.get("created_ts"),
