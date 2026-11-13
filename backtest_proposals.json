@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-11-13T03:30:33+00:00",
+    "ts": "2026-11-13T12:39:31+00:00",
     "full_key": "BINANCE_BTC.mt.lost",
     "section": "BINANCE_BTC",
     "key": "mt.lost",
@@ -8,13 +8,13 @@
     "current_on_dev": 2.6281,
     "winner_value": 2.3,
     "margin_vs_current": {
-      "half1": 88.07,
-      "half2": 18.07
+      "half1": 80.97,
+      "half2": 18.08
     },
-    "dev_commit": "6acfe39c"
+    "dev_commit": "0a1351ad"
   },
   {
-    "ts": "2026-11-13T03:30:33+00:00",
+    "ts": "2026-11-13T12:39:31+00:00",
     "full_key": "BINANCE_ARB.mt.lost",
     "section": "BINANCE_ARB",
     "key": "mt.lost",
@@ -23,8 +23,8 @@
     "winner_value": 3.5,
     "margin_vs_current": {
       "half1": 15.05,
-      "half2": 34.18
+      "half2": 103.72
     },
-    "dev_commit": "6acfe39c"
+    "dev_commit": "0a1351ad"
   }
 ]
