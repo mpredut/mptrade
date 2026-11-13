@@ -7,7 +7,7 @@ import hashlib
 import os
 from typing import Any, Callable, Iterable
 
-from botcore import safe_pos_int, strict_ascii_int
+from botcore import clean_scalar_str, clean_upper_scalar, safe_pos_int, strict_ascii_int
 from state_io import (
     JSONDecodeError,
     append_bytes_at_boundary,
@@ -26,7 +26,7 @@ class AccountCacheNotReady(RuntimeError):
     """The shared account-cache snapshot cannot authorize a live submit or strict read."""
 
     def __init__(self, reason: str):
-        self.reason = reason.strip() if isinstance(reason, str) and reason.strip() else "account_cache_not_fresh"
+        self.reason = clean_scalar_str(reason) or "account_cache_not_fresh"
         super().__init__(self.reason)
 
 
@@ -42,7 +42,7 @@ def normalize_timestamp_map(
         raise ValueError(error_message or f"invalid {label}")
     normalized: dict[str, int] = {}
     for symbol, value in mapping.items():
-        if not isinstance(symbol, str) or not symbol.strip() or not _is_strict_int(value):
+        if clean_scalar_str(symbol) is None or not _is_strict_int(value):
             raise ValueError(error_message or f"invalid {label} entry")
         normalized[symbol] = value
     return normalized
@@ -58,7 +58,7 @@ def snapshot_data_version(items: dict[str, Any]) -> str:
 
 def trade_data_version(stream_id: str, revision: int) -> str:
     """Format a monotonic ``<stream_id>:<revision>`` version string for Trade JSONL."""
-    if not isinstance(stream_id, str) or not stream_id.strip() or not _is_strict_int(revision):
+    if clean_scalar_str(stream_id) is None or not _is_strict_int(revision):
         raise ValueError("invalid Trade stream revision")
     return f"{stream_id}:{revision}"
 
@@ -105,9 +105,9 @@ def trade_semantic_signature(item: dict[str, Any]) -> tuple[Any, ...]:
         raw_qty = item["qty"]
     except KeyError as exc:
         raise ValueError("invalid Trade row field type") from exc
+    sym_u = clean_upper_scalar(raw_sym)
     if (
-        not isinstance(raw_sym, str)
-        or not raw_sym.strip()
+        sym_u is None
         or not isinstance(raw_buyer, bool)
         or isinstance(raw_price, bool)
         or isinstance(raw_qty, bool)
@@ -123,7 +123,7 @@ def trade_semantic_signature(item: dict[str, Any]) -> tuple[Any, ...]:
         raise ValueError("invalid Trade price or qty") from exc
     if not (price_dec.is_finite() and qty_dec.is_finite()):
         raise ValueError("non-finite Trade price or qty")
-    return (raw_sym.strip().upper(), trade_id_int, order_id_int, price_dec, qty_dec, time_int, raw_buyer)
+    return (sym_u, trade_id_int, order_id_int, price_dec, qty_dec, time_int, raw_buyer)
 
 
 def dedupe_trade_items_by_id(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -152,7 +152,7 @@ def counts_for_records(records: Iterable[tuple[str, Any]]) -> dict[str, int]:
     except TypeError:
         return {}
     for entry in iterator:
-        if isinstance(entry, (tuple, list)) and len(entry) == 2 and isinstance(entry[0], str) and entry[0]:
+        if isinstance(entry, (tuple, list)) and len(entry) == 2 and clean_scalar_str(entry[0]) is not None:
             counts[entry[0]] += 1
     return dict(counts)
 
@@ -164,7 +164,7 @@ def nonzero_counts(counts: dict[str, int]) -> dict[str, int]:
     return {
         symbol: c_int
         for symbol, count in counts.items()
-        if isinstance(symbol, str) and symbol and (c_int := safe_pos_int(count, default=0)) > 0
+        if clean_scalar_str(symbol) is not None and (c_int := safe_pos_int(count, default=0)) > 0
     }
 
 
@@ -193,6 +193,8 @@ def build_account_meta_snapshot(
     schema_version: int = CACHE_META_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     """Build a schema v2 ``.meta`` manifest dictionary for an account cache."""
+    if clean_scalar_str(data_version) is None or not isinstance(counts, dict):
+        raise ValueError("invalid cache manifest data_version or counts")
     normalized_fetchtime = normalize_timestamp_map(fetchtime, error_message="invalid cache manifest fetchtime")
     normalized_rest_cursor = _normalize_cursor_map(
         rest_sync_cursor, normalized_fetchtime, error_message="invalid cache manifest rest_sync_cursor"
@@ -206,8 +208,7 @@ def build_account_meta_snapshot(
     }
     if committed_bytes is not None:
         if (
-            not isinstance(stream_id, str)
-            or not stream_id.strip()
+            clean_scalar_str(stream_id) is None
             or not _is_strict_int(revision)
             or not _is_strict_int(committed_bytes)
         ):
@@ -249,7 +250,7 @@ def load_versioned_account_meta_file(
         version = metadata["data_version"]
         fetchtime = metadata["fetchtime"]
         counts = metadata["counts"]
-        if not isinstance(version, str) or not version:
+        if clean_scalar_str(version) is None:
             raise ValueError("missing data version")
         if required_version is not None and version != required_version:
             raise ValueError("cache marker and manifest versions differ")
@@ -273,8 +274,7 @@ def load_versioned_account_meta_file(
             committed_bytes = metadata["committed_bytes"]
             content_digest = metadata["content_digest"]
             if (
-                not isinstance(stream_id, str)
-                or not stream_id
+                clean_scalar_str(stream_id) is None
                 or not _is_strict_int(revision, 1)
                 or not _is_strict_int(committed_bytes, 0)
                 or trade_data_version(stream_id, revision) != version
@@ -318,7 +318,7 @@ def read_trade_records_range_strict(
             record = parse_json_payload(line.decode("utf-8"))
             if (
                 not isinstance(record, dict)
-                or not isinstance(record.get("s"), str)
+                or clean_scalar_str(record.get("s")) is None
                 or not isinstance(record.get("i"), dict)
                 or not is_valid_item_fn(record["i"])
                 or str(record["i"]["symbol"]).upper() != str(record["s"]).upper()
@@ -421,7 +421,7 @@ def read_legacy_trade_jsonl_strict(
             rec = parse_json_payload(raw)
             if (
                 not isinstance(rec, dict)
-                or not isinstance(rec.get("s"), str)
+                or clean_scalar_str(rec.get("s")) is None
                 or not isinstance(rec.get("i"), dict)
                 or not is_valid_item_fn(rec["i"])
                 or str(rec["i"]["symbol"]).upper() != str(rec["s"]).upper()
@@ -461,9 +461,11 @@ def read_legacy_trade_jsonl_strict(
 def _validate_order_items_map(
     items: Any, is_valid_item_fn: Callable[[dict[str, Any]], bool] | None = None
 ) -> dict[str, int]:
+    if not isinstance(items, dict):
+        raise ValueError("invalid Order cache items")
     for symbol, orders in items.items():
         if (
-            not isinstance(symbol, str)
+            clean_scalar_str(symbol) is None
             or not isinstance(orders, list)
             or (is_valid_item_fn is not None and any(not is_valid_item_fn(o) for o in orders))
         ):
@@ -550,8 +552,10 @@ def validate_account_cache_state(
         normalize_timestamp_map(
             rest_sync_cursor_per_symbol, error_message=f"invalid {cls_name} cache rest_sync_cursor"
         )
+    if not isinstance(cache, dict):
+        raise ValueError(f"invalid {cls_name} cache bucket")
     for symbol, items in cache.items():
-        if not isinstance(symbol, str) or not isinstance(items, list):
+        if clean_scalar_str(symbol) is None or not isinstance(items, list):
             raise ValueError(f"invalid {cls_name} cache bucket")
         order_ids: set[str] = set()
         fill_owners: dict[str, str] = {}
@@ -567,7 +571,10 @@ def validate_account_cache_state(
                 if order_id in order_ids:
                     raise ValueError(f"duplicate Order aggregate ID {order_id}")
                 order_ids.add(order_id)
-                for fill_id in item.get("_fillIds", []):
+                raw_fill_ids = item.get("_fillIds", [])
+                if not isinstance(raw_fill_ids, (list, tuple)):
+                    raise ValueError(f"invalid {cls_name} cache row")
+                for fill_id in raw_fill_ids:
                     fill_key = str(_strict_int_field(fill_id))
                     previous_order = fill_owners.get(fill_key)
                     if previous_order is not None:

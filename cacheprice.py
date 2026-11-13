@@ -63,6 +63,7 @@ from botcore import (
 from cacheInterface import (
     CacheManagerInterface,
     _cm_override,
+    _coerce_symbol_list,
     _monotonic_time,
     _norm_symbol_keys,
     _now_time,
@@ -2542,15 +2543,7 @@ def get_current_price_manager(
         eff_symbols = (
             default_symbols
             if symbols is None
-            else (
-                parse_symbol_list(symbols)
-                if isinstance(symbols, str)
-                else (
-                    []
-                    if isinstance(symbols, (bool, bytes, bytearray)) or not hasattr(symbols, "__iter__")
-                    else [s.strip() for s in symbols if not isinstance(s, bool) and isinstance(s, str) and s.strip()]
-                )
-            )
+            else (parse_symbol_list(symbols) if isinstance(symbols, str) else _coerce_symbol_list(symbols))
         )
         eff_providers = default_providers if (provider_names is None and default_providers) else provider_names
         eff_read_only = (

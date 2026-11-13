@@ -43,7 +43,9 @@ import cacheintegrity as _cache_integrity
 import cachepaths
 from cachepaths import (
     EXACT_LEGACY_FILENAMES,
+    clean_scalar_str,
     clean_symbol_key,
+    clean_upper_scalar,
     migrate_legacy_filename_if_needed,
 )
 from state_io import (
@@ -135,21 +137,28 @@ def _sleep_time(seconds: float) -> None:
 
 def _norm_symbol_keys(symbol) -> tuple[str, str]:
     """Return ``(uppercase_trimmed, delimiter_stripped_key)`` for ``symbol``."""
-    sym_u = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
+    sym_u = (
+        ""
+        if symbol is None or isinstance(symbol, (bool, bytes, bytearray, dict, list, tuple, set, frozenset))
+        else (clean_upper_scalar(symbol if isinstance(symbol, str) else str(symbol)) or "")
+    )
     return sym_u, clean_symbol_key(sym_u)
 
 
 def _coerce_symbol_list(symbols) -> list[str]:
     """Normalize a single symbol string or iterable into a clean list of symbol strings."""
     if isinstance(symbols, str):
-        return [symbols.strip()] if symbols.strip() else []
-    if symbols is None or isinstance(symbols, (bool, bytes)):
+        clean_s = clean_scalar_str(symbols)
+        return [clean_s] if clean_s is not None else []
+    if symbols is None or isinstance(symbols, (bool, bytes, bytearray, dict)):
         return []
     try:
         return [
-            str(s).strip()
+            clean_s
             for s in symbols
-            if s is not None and not isinstance(s, bool) and str(s).strip()
+            if s is not None
+            and not isinstance(s, (bool, bytes, bytearray, dict, list, tuple, set, frozenset))
+            and (clean_s := clean_scalar_str(s if isinstance(s, str) else str(s))) is not None
         ]
     except TypeError:
         return []
@@ -184,8 +193,9 @@ class CacheManagerInterface(ABC):
         """Return the canonical cache filename for ``symbol`` owned by this concrete cache class."""
         if cls.DEFAULT_FILENAME:
             return cls.DEFAULT_FILENAME
-        if cls.FILE_PREFIX and cls.FILE_EXT:
-            return f"{cls.FILE_PREFIX}{symbol}.{cls.FILE_EXT}"
+        clean_sym = clean_scalar_str(symbol)
+        if cls.FILE_PREFIX and cls.FILE_EXT and clean_sym is not None:
+            return f"{cls.FILE_PREFIX}{clean_sym}.{cls.FILE_EXT}"
         return ""
 
     # -- Periodically enforced retention and rotation policy for append caches --
@@ -239,7 +249,7 @@ class CacheManagerInterface(ABC):
 
     @staticmethod
     def _resync_readonly_reader(inst: Any) -> Any:
-        if getattr(inst, "read_only", False) and hasattr(inst, "resync_mem_file"):
+        if _parse_bool_flag(getattr(inst, "read_only", False), False) and hasattr(inst, "resync_mem_file"):
             try:
                 inst.resync_mem_file()
             except Exception:
@@ -375,7 +385,8 @@ class CacheManagerInterface(ABC):
         if data_sync_mode is None:
             norm_mode = cls.MODE_DISK_READER
         else:
-            norm_mode = str(data_sync_mode).strip().lower()
+            raw_mode = clean_scalar_str(data_sync_mode)
+            norm_mode = raw_mode.lower() if raw_mode is not None else ""
             if norm_mode not in cls.VALID_SYNC_MODES:
                 raise ValueError(
                     f"Invalid data_sync_mode {data_sync_mode!r}; expected one of {sorted(cls.VALID_SYNC_MODES)}"
@@ -535,8 +546,10 @@ class CacheManagerInterface(ABC):
 
     def _should_compact_before_append_locked(self) -> bool:
         """Return whether ``_save_jsonl_append`` should compact because memory shrank."""
+        if not isinstance(self.cache, dict):
+            return False
         return any(
-            self._persisted_counts.get(symbol, 0) > len(items)
+            isinstance(items, (list, tuple)) and self._persisted_counts.get(symbol, 0) > len(items)
             for symbol, items in self.cache.items()
         )
 

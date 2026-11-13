@@ -74,6 +74,7 @@ from cachepaths import (
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
+    clean_scalar_str,
     clean_symbol_key,
     is_primary_stream_venue,
     normalize_venue_name,
@@ -122,6 +123,13 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
     _default_api_client = api
     _is_trade_account_cache = False
     _is_order_account_cache = False
+    VENUE_FILENAMES: dict[str, str] = {}
+
+    @classmethod
+    def disk_filename(cls, venue: str = "binance") -> str:
+        """Return the canonical on-disk filename for ``venue``."""
+        v_key = normalize_venue_name(venue, default="binance") or "binance"
+        return str(cls.VENUE_FILENAMES.get(v_key, cls.DEFAULT_FILENAME) or "")
     _persisted_data_version = ""
     _persisted_stream_id = ""
     _persisted_revision = 0
@@ -525,7 +533,8 @@ class CacheTradeManager(CacheAccountManagerBase):
         v_norm = normalize_venue_name(venue)
         if v_norm in cls.VENUE_FILENAMES:
             return v_norm
-        base_f = os.path.basename(str(filename or "")).lower()
+        clean_fname = clean_scalar_str(os.fspath(filename)) if isinstance(filename, (str, os.PathLike)) else None
+        base_f = os.path.basename(clean_fname or "").lower()
         for cand_v, cand_f in cls.VENUE_FILENAMES.items():
             if base_f == cand_f.lower() or f"_{cand_v}." in base_f:
                 return cand_v
@@ -535,7 +544,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 if isinstance(symbols, str)
                 else (next(iter(symbols), None) if isinstance(symbols, (list, tuple, set)) else None)
             )
-            if isinstance(first_sym, str) and first_sym.strip():
+            if clean_scalar_str(first_sym) is not None:
                 return cls.venue_for_symbol(first_sym)
         return "binance"
 
@@ -548,17 +557,12 @@ class CacheTradeManager(CacheAccountManagerBase):
             return default
 
     @classmethod
-    def disk_filename(cls, venue: str = "binance") -> str:
-        """Return the canonical on-disk filename for ``venue``."""
-        v_key = cls._normalize_trade_venue(venue)
-        return str(cls.VENUE_FILENAMES.get(v_key, cls.DEFAULT_FILENAME) or "")
-
-    @classmethod
     def resolve_cache_filepath(cls, cache_dir: Optional[str] = None, *, venue: str = "binance") -> str:
         """Resolve the canonical on-disk path for ``venue``'s trade cache file."""
         fname = cls.disk_filename(venue)
-        if cache_dir:
-            return str(resolve_cachedb_filepath(os.path.join(str(cache_dir), fname)))
+        clean_dir = clean_scalar_str(os.fspath(cache_dir)) if isinstance(cache_dir, (str, os.PathLike)) else None
+        if clean_dir:
+            return str(resolve_cachedb_filepath(os.path.join(clean_dir, fname)))
         return str(cache_path(fname))
 
     @classmethod
@@ -570,7 +574,8 @@ class CacheTradeManager(CacheAccountManagerBase):
         repair_files: bool = False,
     ) -> dict:
         """Load and sanitize a venue JSON trade snapshot ``{'items': ..., 'fetchtime': ...}`` with ``.previous`` recovery."""
-        target = str(path) if path else cls.resolve_cache_filepath(venue=venue)
+        clean_path = clean_scalar_str(os.fspath(path)) if isinstance(path, (str, os.PathLike)) else None
+        target = clean_path if clean_path else cls.resolve_cache_filepath(venue=venue)
         loaded = read_json_dict(
             target, default=None, recover_previous=True, repair_files=repair_files
         )
@@ -1718,12 +1723,6 @@ class CacheOrderManager(CacheAccountManagerBase):
     _is_order_account_cache = True
     DEFAULT_FILENAME = CACHE_BINANCE_ORDER_FILENAME
     VENUE_FILENAMES: dict[str, str] = {"binance": CACHE_BINANCE_ORDER_FILENAME}
-
-    @classmethod
-    def disk_filename(cls, venue: str = "binance") -> str:
-        """Return the canonical on-disk Order cache filename for ``venue``."""
-        v_key = normalize_venue_name(venue, default="binance") or "binance"
-        return str(cls.VENUE_FILENAMES.get(v_key, cls.DEFAULT_FILENAME) or "")
 
     def __init__(
         self,
@@ -2900,8 +2899,12 @@ def get_trade_manager(
     data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
 ) -> CacheTradeManager:
     """Return the venue ``CacheTradeManager`` singleton without importing ``cacheManager`` in read-only consumers."""
-    v_norm = normalize_venue_name(venue) or "binance"
-    cache_name = _VENUE_TRADE_CACHE_NAMES.get(v_norm)
+    v_norm = (
+        "binance"
+        if (venue is None or (isinstance(venue, str) and not venue.strip()))
+        else normalize_venue_name(venue)
+    )
+    cache_name = _VENUE_TRADE_CACHE_NAMES.get(v_norm or "")
     if cache_name is None:
         raise ValueError(f"Unsupported trade cache venue: {venue!r}")
     is_non_binance = not is_primary_stream_venue(v_norm)

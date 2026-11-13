@@ -1315,7 +1315,7 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 and node.value.startswith("cache_ohlc_24h_")
             ):
                 ssot_violations.append(f"{rel_s}:{lineno}: hardcoded cache_ohlc_24h_ filename prefix")
-            elif rel_s != "botcore.py" and (
+            elif rel_s not in ("botcore.py", "cachepaths.py") and (
                 (isinstance(node, ast.Name) and node.id == "INVALID_SCALAR_STRINGS")
                 or (isinstance(node, ast.Attribute) and node.attr == "INVALID_SCALAR_STRINGS")
             ):

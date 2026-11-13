@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover
 from cachepaths import (
     STALE_STAGING_MAX_AGE_SEC,
     _parse_bool_flag,
+    clean_scalar_str,
     exact_nonneg_int,
     exact_pos_int,
     resolve_cachedb_filepath,
@@ -47,7 +48,7 @@ def _resolve_target_path(path: Any, *, abspath: bool = False) -> str:
     if path is None or isinstance(path, (bool, int, float, bytes)):
         raise TypeError("path must be a valid filesystem path")
     raw = os.fspath(path)
-    if not isinstance(raw, str) or not raw.strip():
+    if clean_scalar_str(raw) is None:
         raise ValueError("path must not be empty")
     resolved = str(resolve_cachedb_filepath(raw))
     return os.path.abspath(resolved) if abspath else resolved
@@ -300,6 +301,8 @@ def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
 def atomic_write_jsonl(path: str, items: Any, *, ensure_ascii: bool = True,
                        default: Any = None) -> None:
     """Serialize an iterable of JSON-encodable objects to a JSONL file through ``atomic_text_writer``."""
+    if items is not None and (isinstance(items, (bool, str, bytes, bytearray, dict)) or not hasattr(items, "__iter__")):
+        raise TypeError("items must be an iterable of JSON records")
     kwargs = _json_dump_kwargs(ensure_ascii=ensure_ascii, default=default, include_format_opts=False)
     with atomic_text_writer(path) as handle:
         for item in (items or ()):
@@ -742,11 +745,11 @@ def read_jsonl_bucket_map(path: str) -> tuple[dict[str, list[Any]], bool]:
                 rec = _fast_json_loads(raw)
                 if (
                     not isinstance(rec, dict)
-                    or not isinstance(rec.get("s"), str)
+                    or (sym := clean_scalar_str(rec.get("s"))) is None
                     or rec.get("i") is None
                 ):
                     raise ValueError("invalid JSONL record")
-                cache.setdefault(rec["s"], []).append(rec["i"])
+                cache.setdefault(sym, []).append(rec["i"])
             except Exception:
                 had_invalid_line = True
                 continue

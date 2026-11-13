@@ -49,28 +49,62 @@ CACHE_OHLC_24H_PREFIX = "cache_ohlc_24h_"
 CACHE_OHLC_24H_EXT = ".json"
 
 
+INVALID_SCALAR_STRINGS = frozenset((
+    "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity",
+    "none", "null",
+))
+
+
+def clean_non_bool_str(val: object) -> str:
+    """Return ``str(val).strip()`` unless ``val`` is ``None`` or a ``bool``, in which case return ``''``."""
+    return "" if (val is None or isinstance(val, bool)) else str(val).strip()
+
+
+def clean_nonempty_str(val: object) -> str | None:
+    """Return ``val.strip()`` when ``val`` is a non-empty string, else ``None``."""
+    return s if isinstance(val, str) and (s := val.strip()) else None
+
+
+def clean_upper_token(val: object) -> str | None:
+    """Return ``val.strip().upper()`` when ``val`` is a non-empty string, else ``None``."""
+    return s.upper() if (s := clean_nonempty_str(val)) is not None else None
+
+
+def clean_scalar_str(val: object) -> str | None:
+    """Return ``val.strip()`` when ``val`` is a non-empty string not in ``INVALID_SCALAR_STRINGS``, else ``None``."""
+    return s if (s := clean_nonempty_str(val)) is not None and s.lower() not in INVALID_SCALAR_STRINGS else None
+
+
+def clean_upper_scalar(val: object) -> str | None:
+    """Return ``val.strip().upper()`` when ``val`` is a valid scalar string, else ``None``."""
+    return s.upper() if (s := clean_scalar_str(val)) is not None else None
+
+
+def _clean_cache_symbol(symbol: object) -> str:
+    if symbol is None or isinstance(symbol, (bool, bytes, bytearray, dict, list, tuple, set, frozenset)):
+        return ""
+    return clean_upper_scalar(symbol if isinstance(symbol, str) else str(symbol)) or ""
+
+
 def cache_sparse_price_filename(symbol: object) -> str:
     """Return canonical on-disk filename for a sparse long-horizon price archive (`cache_sparse_price_<SYM>.jsonl`)."""
-    sym = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
-    return f"{CACHE_SPARSE_PRICE_PREFIX}{sym}{CACHE_SPARSE_PRICE_EXT}"
+    return f"{CACHE_SPARSE_PRICE_PREFIX}{_clean_cache_symbol(symbol)}{CACHE_SPARSE_PRICE_EXT}"
 
 
 def cache_24_price_filename(symbol: object) -> str:
     """Return canonical on-disk filename for a 24h dense price series (`cache_24_price_<SYM>.json`)."""
-    sym = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
-    return f"{CACHE_24_PRICE_PREFIX}{sym}{CACHE_24_PRICE_EXT}"
+    return f"{CACHE_24_PRICE_PREFIX}{_clean_cache_symbol(symbol)}{CACHE_24_PRICE_EXT}"
 
 
 def cache_365_price_filename(symbol: object, *, ext: str = CACHE_365_PRICE_EXT) -> str:
     """Return canonical on-disk filename for a 365d dense price archive (`cache_365_price_<SYM>.jsonl`)."""
-    sym = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
-    return f"{CACHE_365_PRICE_PREFIX}{sym}{ext}"
+    eff_ext = clean_scalar_str(ext) or CACHE_365_PRICE_EXT
+    return f"{CACHE_365_PRICE_PREFIX}{_clean_cache_symbol(symbol)}{eff_ext}"
 
 
 def cache_ohlc_24h_filename(symbol: object) -> str:
     """Return canonical on-disk filename for a 24h 5m OHLCV series (`cache_ohlc_24h_<SYM>.json`)."""
-    sym = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
-    return f"{CACHE_OHLC_24H_PREFIX}{sym}{CACHE_OHLC_24H_EXT}"
+    return f"{CACHE_OHLC_24H_PREFIX}{_clean_cache_symbol(symbol)}{CACHE_OHLC_24H_EXT}"
 
 
 EXACT_LEGACY_FILENAMES = {
@@ -479,9 +513,8 @@ def migrate_legacy_filename_if_needed(filepath: str) -> None:
 def get_cachedb_dir() -> str:
     """Return the canonical cachedb directory path honoring MPTRADE_CACHEDB_DIR and BINANCE_CACHE_DIR."""
     for env_key in ("MPTRADE_CACHEDB_DIR", "BINANCE_CACHE_DIR"):
-        raw = os.environ.get(env_key)
-        if raw and raw.strip():
-            return raw.strip()
+        if clean_dir := clean_scalar_str(os.environ.get(env_key)):
+            return clean_dir
     return os.path.join(_ROOT, "cachedb")
 
 
@@ -705,9 +738,11 @@ def _strip_kraken_asset_suffixes(token: str) -> str:
 
 def clean_symbol_key(symbol: object) -> str:
     """Return uppercase alphanumeric symbol key stripped of '/', '-', '_'."""
-    if symbol is None or isinstance(symbol, bool):
+    raw_u = _clean_cache_symbol(symbol)
+    if not raw_u:
         return ""
-    return str(symbol).strip().upper().replace("/", "").replace("-", "").replace("_", "")
+    stripped = raw_u.replace("/", "").replace("-", "").replace("_", "")
+    return clean_upper_scalar(stripped) or ""
 
 
 def normalize_cache_base_asset(symbol: object) -> str:
@@ -718,10 +753,8 @@ def normalize_cache_base_asset(symbol: object) -> str:
     preserving the stablecoin pair ``USDCUSDT`` intact. Returns ``""`` for
     non-string or blank inputs.
     """
-    if not isinstance(symbol, str):
-        return ""
-    raw = symbol.strip()
-    if not raw:
+    raw = clean_scalar_str(symbol)
+    if raw is None:
         return ""
     if clean_symbol_key(raw) == "USDCUSDT":
         return "USDCUSDT"
@@ -748,8 +781,8 @@ def normalize_cache_base_asset(symbol: object) -> str:
     if (len(s) == 5 and s.startswith("X") and s.endswith("Z") and s[:-1] in _LEGACY_KRAKEN_X_BASES) or s in {"XBTZ", "XDGZ"}:
         s = s[:-1]
     if s in _LEGACY_KRAKEN_X_BASES:
-        return s[1:]
-    return s
+        s = s[1:]
+    return clean_upper_scalar(s) or ""
 
 
 def normalize_venue_name(venue: object, default: str | None = "") -> str | None:
@@ -759,11 +792,11 @@ def normalize_venue_name(venue: object, default: str | None = "") -> str | None:
     """
     if venue is None or isinstance(venue, bool):
         return default
-    if not isinstance(venue, str):
-        venue = getattr(venue, "name", None)
-        if isinstance(venue, bool) or not isinstance(venue, str):
-            return default
-    v = venue.strip().lower().replace("-", "_").replace(" ", "_")
+    raw_venue = venue if isinstance(venue, str) else getattr(venue, "name", None)
+    clean_v = clean_scalar_str(raw_venue)
+    if clean_v is None:
+        return default
+    v = clean_v.lower().replace("-", "_").replace(" ", "_")
     return _VENUE_ALIASES.get(v, v) if v else default
 
 
@@ -828,14 +861,15 @@ def symbol_quote_asset(symbol: object) -> str:
 
 def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     """Split a spot/equity pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD, SPCX_US_EQ, SPCXx.T) into ``(base, quote)``."""
-    if isinstance(symbol, bool) or not isinstance(symbol, str):
+    raw = clean_scalar_str(symbol)
+    if raw is None:
         return None
-    raw = symbol.strip()
     sym_u = clean_symbol_key(raw)
     if not sym_u:
         return None
     if (sym_u.endswith("USEQ") and len(sym_u) > 4) or (raw.upper().endswith("_EQ") and len(sym_u) > 2):
-        return normalize_cache_base_asset(raw), "USD"
+        base = normalize_cache_base_asset(raw)
+        return (base, "USD") if base else None
     for quote in (*CACHE_QUOTE_SUFFIXES, "BTC", "ETH"):
         if _is_false_tusd_or_busd_match(sym_u, quote):
             continue
@@ -846,11 +880,14 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
                 base_raw = raw[: -len(quote)].strip(" -_/")
             else:
                 base_raw = sym_u[: -len(quote)]
-            return normalize_cache_base_asset(base_raw), quote
+            base = normalize_cache_base_asset(base_raw)
+            return (base, quote) if base else None
     if sym_u.endswith(("X.T", ".T", ".F", ".S")) and len(sym_u) > 3:
-        return normalize_cache_base_asset(raw), "USD"
+        base = normalize_cache_base_asset(raw)
+        return (base, "USD") if base else None
     if _has_xstock_lowercase_x(raw):
-        return normalize_cache_base_asset(raw[:-1]), "USD"
+        base = normalize_cache_base_asset(raw[:-1])
+        return (base, "USD") if base else None
     return None
 
 
@@ -999,11 +1036,11 @@ _KRAKEN_QUOTES = (
 
 def split_kraken_pair(value: object) -> tuple[str, str]:
     """Split a Kraken pair or bare asset into ``(canonical_base, canonical_quote)``."""
-    if not isinstance(value, str):
+    raw = clean_scalar_str(value)
+    if raw is None:
         return "", ""
-    raw = value.strip()
     key = "".join(ch for ch in raw.upper() if ch.isalnum())
-    if not key:
+    if not key or clean_upper_scalar(key) is None:
         return "", ""
     quote = next(
         (cand for cand in _KRAKEN_QUOTES if key.endswith(cand) and len(key) > len(cand)),
@@ -1017,7 +1054,9 @@ def split_kraken_pair(value: object) -> tuple[str, str]:
         base_raw = raw[: -len(quote)].strip(" -_/")
     else:
         base_raw = key[: -len(quote)]
-    base = canonical_base_asset(base_raw) or "".join(ch for ch in base_raw.upper() if ch.isalnum())
+    base = canonical_base_asset(base_raw) or (clean_upper_scalar("".join(ch for ch in base_raw.upper() if ch.isalnum())) or "")
+    if not base:
+        return "", ""
     if quote == "XBT":
         quote = "BTC"
     return base, quote
@@ -1070,13 +1109,15 @@ def cachedb_root_for_file(filepath: object) -> str:
 def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) -> str | None:
     """Build the disk snapshot path ``<cache_dir>/<prefix>_<SAFE_SYMBOL>.json`` for a symbol collector."""
     eff_dir = resolve_cache_dir_path(cache_dir)
-    if not eff_dir or not isinstance(symbol, str) or not symbol.strip():
+    raw_sym = clean_scalar_str(symbol)
+    clean_pfx = clean_scalar_str(prefix)
+    if not eff_dir or raw_sym is None or clean_pfx is None:
         return None
-    raw_u = symbol.strip().upper()
-    safe_sym = raw_u if (has_equity_suffix(raw_u) and raw_u.replace("_", "").isalnum()) else clean_symbol_key(symbol)
+    raw_u = raw_sym.upper()
+    safe_sym = raw_u if (has_equity_suffix(raw_u) and raw_u.replace("_", "").isalnum()) else clean_symbol_key(raw_sym)
     if not safe_sym:
         return None
-    return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")))
+    return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{clean_pfx}_{safe_sym}.json")))
 
 
 VENUE_RUNTIME_DIR_MAP: dict[str, str] = {

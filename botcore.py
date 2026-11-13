@@ -37,12 +37,18 @@ from datetime import datetime, time as dt_time, timezone
 from enum import Enum
 from zoneinfo import ZoneInfo
 from cachepaths import (
+    INVALID_SCALAR_STRINGS,
     _coerce_int,
     _parse_bool_flag,
     cache_path,
     cache_symbol_variants,
     canonical_base_asset,
     clean_finite_floats,
+    clean_non_bool_str,
+    clean_nonempty_str,
+    clean_scalar_str,
+    clean_upper_scalar,
+    clean_upper_token,
     compatible_quote_suffixes,
     exact_int,
     exact_nonneg_int,
@@ -230,37 +236,6 @@ def require_int(
     if parsed is None or (min_value is not None and parsed < min_value):
         raise ValueError(error_msg or f"invalid {name}")
     return parsed
-
-
-def clean_non_bool_str(val: object) -> str:
-    """Return ``str(val).strip()`` unless ``val`` is ``None`` or a ``bool``, in which case return ``''``."""
-    return "" if (val is None or isinstance(val, bool)) else str(val).strip()
-
-
-INVALID_SCALAR_STRINGS = frozenset((
-    "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity",
-    "none", "null",
-))
-
-
-def clean_nonempty_str(val: object) -> str | None:
-    """Return ``val.strip()`` when ``val`` is a non-empty string, else ``None``."""
-    return s if isinstance(val, str) and (s := val.strip()) else None
-
-
-def clean_upper_token(val: object) -> str | None:
-    """Return ``val.strip().upper()`` when ``val`` is a non-empty string, else ``None``."""
-    return s.upper() if (s := clean_nonempty_str(val)) is not None else None
-
-
-def clean_scalar_str(val: object) -> str | None:
-    """Return ``val.strip()`` when ``val`` is a non-empty string not in ``INVALID_SCALAR_STRINGS``, else ``None``."""
-    return s if (s := clean_nonempty_str(val)) is not None and s.lower() not in INVALID_SCALAR_STRINGS else None
-
-
-def clean_upper_scalar(val: object) -> str | None:
-    """Return ``val.strip().upper()`` when ``val`` is a valid scalar string, else ``None``."""
-    return s.upper() if (s := clean_scalar_str(val)) is not None else None
 
 
 def obj_attr(obj: object, key: str, default: object = None) -> object:
@@ -2783,7 +2758,7 @@ _CSV_SPLIT_RE = re.compile(r"[,\n]+")
 
 def split_csv(raw: str | None, *, lower: bool = False, upper: bool = False) -> tuple[str, ...]:
     """Split comma- or newline-delimited strings into a deduplicated tuple of stripped tokens."""
-    if not raw:
+    if not isinstance(raw, str) or not raw:
         return ()
     seen: dict[str, None] = {}
     for part in _CSV_SPLIT_RE.split(raw):
@@ -2796,9 +2771,10 @@ def split_csv(raw: str | None, *, lower: bool = False, upper: bool = False) -> t
 def parse_symbol_list(symbols: object) -> list[str]:
     """Normalize comma-separated string or iterable of symbols into uppercase list."""
     if isinstance(symbols, str):
-        return list(split_csv(symbols, upper=True))
-    raw = symbols if isinstance(symbols, (list, tuple, set, frozenset)) else ()
-    return [s.strip().upper() for s in raw if isinstance(s, str) and s.strip()]
+        return [tok for raw_tok in split_csv(symbols, upper=True) if (tok := clean_upper_scalar(raw_tok)) is not None]
+    if symbols is None or isinstance(symbols, (bool, bytes, bytearray, dict)) or not hasattr(symbols, "__iter__"):
+        return []
+    return list(dict.fromkeys(tok for s in symbols if (tok := clean_upper_scalar(s)) is not None))
 
 
 def validate_required_env_keys(

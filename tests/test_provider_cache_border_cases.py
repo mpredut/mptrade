@@ -47,9 +47,11 @@ from botcore import (
     temporary_environ,
 )
 from cacheaccount import (
+    CacheAccountManagerBase,
     CacheAssetValueManager,
     CacheOrderManager,
     CacheTradeManager,
+    get_trade_manager,
     start_account_cache_daemon,
 )
 import cacheInterface
@@ -7995,6 +7997,140 @@ def test_wave45_ws_stream_intent_state_execution_reconciliation_and_scalar_hygie
         health.enable_writer(path="null")
     assert ws_norm.parse_order_execution_report({"s": "null", "x": "TRADE", "X": "FILLED"}) is None
     assert ws_norm.parse_trade_execution_report({"s": "null", "x": "TRADE", "S": "BUY"}) is None
+
+
+def test_wave46_cachepaths_state_io_cacheintegrity_and_factory_border_cases(monkeypatch, tmp_path):
+    """Verify Wave 46 SSOT scalar lifting into cachepaths and border-case hardening across state_io, cacheintegrity, cacheInterface, cacheaccount, cachetrend, and CacheFactory."""
+
+    # 1. cachepaths & botcore scalar SSOT + symbol/venue/path sanitization.
+    assert botcore.clean_scalar_str is cachepaths.clean_scalar_str
+    assert botcore.clean_upper_scalar is cachepaths.clean_upper_scalar
+    assert botcore.split_csv(True) == ()  # type: ignore[arg-type]
+    assert botcore.parse_symbol_list(" nvda , null, tsla\nNVDA , none ") == ["NVDA", "TSLA"]
+    assert botcore.parse_symbol_list(["btcusdc", "BTCUSDC", "null", True, {"bad": 1}]) == ["BTCUSDC"]  # type: ignore[list-item]
+    assert botcore.parse_symbol_list({"BTCUSDC": 1}) == []
+
+    for bad_sym in (None, True, False, "null", "none", "nan", "inf", math.nan, math.inf, ["BTC"], {"a": 1}):
+        assert cachepaths.clean_symbol_key(bad_sym) == ""
+        assert cachepaths.normalize_cache_base_asset(bad_sym) == ""
+        assert cachepaths.split_symbol_assets(bad_sym) is None
+        assert cachepaths.cache_24_price_filename(bad_sym) == "cache_24_price_.json"
+        assert cachepaths.cache_sparse_price_filename(bad_sym) == "cache_sparse_price_.jsonl"
+        assert cachepaths.cache_365_price_filename(bad_sym, ext="null") == "cache_365_price_.jsonl"
+        assert cachepaths.cache_ohlc_24h_filename(bad_sym) == "cache_ohlc_24h_.json"
+    assert cachepaths.normalize_cache_base_asset("null/USDC") == ""
+    assert cachepaths.split_symbol_assets("null/USDC") is None
+    assert cachepaths.split_symbol_assets("_/USDC") is None
+    assert cachepaths.split_kraken_pair("null") == ("", "")
+    assert cachepaths.split_kraken_pair("null/USD") == ("", "")
+    assert cachepaths.normalize_venue_name("null") == ""
+    assert cachepaths.normalize_venue_name("none", default="binance") == "binance"
+    assert cachepaths.telemetry_cache_file_path(str(tmp_path), "orderbook_depth", "null") is None
+    assert cachepaths.telemetry_cache_file_path(str(tmp_path), "null", "BTCUSDC") is None
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", "null")
+    monkeypatch.setenv("BINANCE_CACHE_DIR", str(tmp_path / "valid_cdb"))
+    assert cachepaths.get_cachedb_dir() == str(tmp_path / "valid_cdb")
+
+    # 2. state_io._resolve_target_path, atomic_write_jsonl, and read_jsonl_bucket_map border cases.
+    for bad_path in ("", "   ", "null", "none", "nan", Path("null")):
+        with pytest.raises(ValueError, match="path must not be empty"):
+            state_io.save_json_state(bad_path, {"ok": 1})  # type: ignore[arg-type]
+        assert state_io.read_json_dict(bad_path, default={}) == {}  # type: ignore[arg-type]
+    jsonl_file = str(tmp_path / "bucket.jsonl")
+    for bad_items in (True, "abc", b"abc", {"a": 1}, 123):
+        with pytest.raises(TypeError, match="iterable"):
+            state_io.atomic_write_jsonl(jsonl_file, bad_items)
+    atomic_write_text(
+        jsonl_file,
+        '{"s":"null","i":{"x":1}}\n{"s":"BTCUSDC","i":{"x":2}}\n',
+    )
+    bmap, had_bad = state_io.read_jsonl_bucket_map(jsonl_file)
+    assert bmap == {"BTCUSDC": [{"x": 2}]} and had_bad is True
+
+    # 3. cacheintegrity scalar & _fillIds hardening.
+    assert cacheintegrity.AccountCacheNotReady("null").reason == "account_cache_not_fresh"
+    with pytest.raises(ValueError):
+        cacheintegrity.normalize_timestamp_map({"null": 1})
+    with pytest.raises(ValueError):
+        cacheintegrity.trade_data_version("null", 1)
+    with pytest.raises(ValueError):
+        cacheintegrity.trade_semantic_signature(
+            {"symbol": "null", "id": 1, "orderId": 2, "time": 3, "isBuyer": True, "price": "10", "qty": "1"}
+        )
+    assert cacheintegrity.counts_for_records([("null", {"a": 1}), ("BTCUSDC", {"a": 2})]) == {"BTCUSDC": 1}
+    assert cacheintegrity.nonzero_counts({"null": 3, "BTCUSDC": 2}) == {"BTCUSDC": 2}
+    with pytest.raises(ValueError):
+        cacheintegrity.build_account_meta_snapshot(data_version="null", fetchtime={}, counts={})
+    with pytest.raises(ValueError):
+        cacheintegrity._validate_order_items_map("not-a-dict")
+    with pytest.raises(ValueError):
+        cacheintegrity._validate_order_items_map({"null": []})
+    for bad_fills in (None, "12", {1: 2}, True):
+        with pytest.raises(ValueError, match="invalid CacheOrderManager cache row"):
+            cacheintegrity.validate_account_cache_state(
+                cls_name="CacheOrderManager",
+                is_trade_cache=False,
+                is_order_cache=True,
+                cache={"BTCUSDC": [{"symbol": "BTCUSDC", "orderId": 10, "_fillIds": bad_fills}]},
+                fetchtime_per_symbol={"BTCUSDC": 100},
+                rest_sync_cursor_per_symbol={},
+                is_valid_item_fn=lambda row: isinstance(row, dict),
+            )
+
+    # 4. cacheInterface, cacheaccount, cachetrend, and CacheFactory border cases.
+    assert cacheInterface._norm_symbol_keys("null") == ("", "")
+    assert cacheInterface._norm_symbol_keys(["BTCUSDC"]) == ("", "")
+    assert cacheInterface._coerce_symbol_list({"BTCUSDC": 1}) == []
+    assert cacheInterface._coerce_symbol_list(["BTCUSDC", "null", None, True, ["X"], "SPCXx.T"]) == [
+        "BTCUSDC",
+        "SPCXx.T",
+    ]
+    assert Cache24PriceManager.disk_filename_for_symbol("null") == ""
+    assert Cache24PriceManager.disk_filename_for_symbol("") == ""
+    assert CacheCurrentPriceManager.disk_filename_for_symbol("") == "cache_current_price.json"
+    for bad_mode in ("null", "none", True, 123):
+        with pytest.raises(ValueError, match="Invalid data_sync_mode"):
+             cacheInterface.CacheManagerInterface.resolve_data_sync_mode(bad_mode)  # type: ignore[arg-type]
+
+    assert "disk_filename" in CacheAccountManagerBase.__dict__
+    assert "disk_filename" not in CacheTradeManager.__dict__
+    assert "disk_filename" not in CacheOrderManager.__dict__
+    assert CacheTradeManager.disk_filename("kraken") == "cache_trade_kraken.json"
+    assert CacheOrderManager.disk_filename("binance") == "cache_order_binance.json"
+    for bad_venue in ("null", "none", True, 123, "unknown_venue"):
+        with pytest.raises(ValueError, match="Unsupported trade cache venue"):
+            get_trade_manager(bad_venue)  # type: ignore[arg-type]
+
+    for bad_live_sym in ("", "   ", "null", True):
+        with pytest.raises(ValueError, match="Invalid live trend symbol"):
+            CacheShortTrendManager.live_window_relpath_for_symbol(bad_live_sym)  # type: ignore[arg-type]
+    st_mgr = CacheShortTrendManager(
+        ["BTCUSDC"],
+        filename=str(tmp_path / "cache_short_trend.json"),
+        window_seconds=True,
+        data_sync_mode="disk_reader",
+    )
+    assert len(st_mgr.window_seconds) >= 1
+
+    cm = importlib.import_module("cacheManager")
+    for bad_reg in ("", "null", "none", True):
+        with pytest.raises(ValueError, match="non-empty string"):
+            cm.CacheFactory.register(bad_reg, CacheOrderManager, sync_ts=60)  # type: ignore[arg-type]
+    for bad_get in ("", "null", True, ["unhashable"], {"bad": 1}):
+        with pytest.raises(ValueError, match="Unknown cache type"):
+            cm.CacheFactory.get(bad_get)
+        assert cm.CacheFactory.remove(bad_get) is True
+    resynced: list[str] = []
+    fake_mgr = SimpleNamespace(
+        data_sync_mode="disk_reader",
+        read_only=True,
+        save_state=False,
+        resync_mem_file=lambda: resynced.append("BTCUSDC"),
+    )
+    cm.CacheFactory._resync_readonly_consumer_instance("24Price", {"BTCUSDC": fake_mgr}, symbols="BTCUSDC")
+    cm.CacheFactory._resync_readonly_consumer_instance("24Price", {"BTCUSDC": fake_mgr}, symbols=True)
+    assert resynced == ["BTCUSDC"]
+
 
 
 

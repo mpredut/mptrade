@@ -65,6 +65,7 @@ from cachepaths import (
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
+    clean_scalar_str,
     migrate_legacy_filename_if_needed,
     resolve_cachedb_filepath,
 )
@@ -267,7 +268,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     @classmethod
     def live_window_relpath_for_symbol(cls, symbol: str) -> str:
         """Return the canonical relative path (``24trend/live_<SYM>.json``) for per-symbol live trend windows."""
-        return os.path.join(cls.LIVE_TREND_SUBDIR, f"{cls.LIVE_FILE_PREFIX}{symbol}.{cls.LIVE_FILE_EXT}")
+        clean_sym = clean_scalar_str(symbol)
+        if clean_sym is None:
+            raise ValueError(f"Invalid live trend symbol: {symbol!r}")
+        return os.path.join(cls.LIVE_TREND_SUBDIR, f"{cls.LIVE_FILE_PREFIX}{clean_sym}.{cls.LIVE_FILE_EXT}")
 
     EPSILON_K         = 1.0     # Informed noise threshold: k * stddev(gradient).
     UPWARD_EPSILON_K  = pw.UPWARD_EPSILON_K  # Minimum growth_coefficient / epsilon ratio to confirm upward trend above noise.
@@ -301,8 +305,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         # Sort N window durations so index zero is primary.
         if isinstance(window_seconds, (int, float, str)) and not isinstance(window_seconds, bool):
             secs = [window_seconds]
+        elif window_seconds is None or isinstance(window_seconds, (bool, bytes, bytearray, dict)) or not hasattr(window_seconds, "__iter__"):
+            secs = list(self.WINDOW_SECONDS)
         else:
-            secs = list(window_seconds) if window_seconds else list(self.WINDOW_SECONDS)
+            secs = list(window_seconds) or list(self.WINDOW_SECONDS)
         valid_secs = []
         for s in secs:
             sf = safe_pos_float(s, default=None)

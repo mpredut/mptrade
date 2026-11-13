@@ -25,6 +25,7 @@ from typing import Optional
 
 from botcore import (
     _parse_bool_flag,
+    clean_scalar_str,
     load_dotenv,
     safe_nonneg_float,
     single_instance,
@@ -141,13 +142,14 @@ class CacheFactory:
         **extra_kwargs,
     ) -> dict:
         """Register or update a domain cache implementation in ``CacheFactory``."""
-        if not isinstance(name, str) or not name.strip():
+        clean_name = clean_scalar_str(name)
+        if clean_name is None:
             raise ValueError("CacheFactory registration name must be a non-empty string")
         if not callable(sync_ts):
             interval_val = sync_ts
             sync_ts = lambda _v=interval_val: _v
         if filename is None:
-            venue_arg = extra_kwargs.get("venue")
+            venue_arg = clean_scalar_str(extra_kwargs.get("venue"))
             disk_fn = getattr(manager_class, "disk_filename", None)
             if venue_arg and callable(disk_fn):
                 filename = disk_fn(venue_arg)
@@ -168,7 +170,7 @@ class CacheFactory:
             entry["ext"] = ext
         entry.update(extra_kwargs)
         with cls._lock:
-            cls._CONFIG[name] = entry
+            cls._CONFIG[clean_name] = entry
         return entry
 
     @staticmethod
@@ -182,7 +184,7 @@ class CacheFactory:
         if name in ("CurrentPrice", "ShortTrend") or instance is None:
             return
         if isinstance(instance, dict) and symbols is not None:
-            wanted = {str(s).strip().upper() for s in symbols if s}
+            wanted = {s.upper() for s in _coerce_symbol_list(symbols)}
             managers = [
                 mgr
                 for sym_key, mgr in instance.items()
@@ -246,6 +248,10 @@ class CacheFactory:
         resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(
             data_sync_mode
         )
+        clean_name = clean_scalar_str(name)
+        if clean_name is None:
+            raise ValueError(f"Unknown cache type: {name}")
+        name = clean_name
         if start_periodic_sync is not None and name != "ShortTrend":
             start_periodic = _parse_bool_flag(start_periodic_sync, default=start_periodic)
         if (
@@ -254,7 +260,7 @@ class CacheFactory:
             and resolved_mode == CacheManagerInterface.MODE_DISK_READER
         ):
             resolved_mode = CacheManagerInterface.MODE_LIVE_READER
-        if isinstance(symbols, str):
+        if symbols is not None:
             symbols = _coerce_symbol_list(symbols)
         inst = cls._instances.get(name)
         if (
@@ -494,6 +500,10 @@ class CacheFactory:
     @classmethod
     def remove(cls, name, timeout=5.0):
         """Remove a singleton cleanly after stopping all threads it owns."""
+        clean_name = clean_scalar_str(name)
+        if clean_name is None:
+            return True
+        name = clean_name
         with cls._lock:
             value = cls._instances.get(name)
             cls._sync_started.discard(name)
