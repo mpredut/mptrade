@@ -70,7 +70,7 @@ _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
     "academic", "alaska", "alaskan", "alaskans", "appreciation", "assistance",
     "asu", "bags", "bills", "bird", "birds", "broadcasting", "cabin", "cabins",
     "cambodia", "centcom", "concentration", "consortium", "counterpunch",
-    "cruise", "cruises", "decider", "declassified", "disney", "dreading",
+    "cruise", "cruises", "decider", "declassified", "disney", "drama", "dreading",
     "episode", "episodes", "explained", "finale", "forever", "french", "fries",
     "greenland", "hbo", "heating", "holocaust", "hulu", "journalist",
     "journalists", "liberators", "memorial", "mosquito", "mosquitoes",
@@ -109,7 +109,7 @@ _SINGLE_STOCK_EARNINGS_CONTEXT_WORDS: frozenset[str] = frozenset({
 })
 
 _BROAD_MARKET_INDEX_CONTEXT_WORDS: frozenset[str] = frozenset({
-    "bitcoin", "crypto", "dax", "dow", "equities", "ftse", "futures", "global",
+    "bitcoin", "crypto", "dax", "dow", "equities", "ftse", "futures",
     "index", "indices", "market", "markets", "nasdaq", "nikkei", "sp500", "stocks",
     "treasury",
 })
@@ -205,24 +205,24 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "already", "amid", "answered", "app", "apparently", "appears", "apps",
     "arrested", "article", "articles", "baseball", "bat", "belgium", "below",
     "bernie", "bill", "blame", "blamed", "blames", "blaming", "bondi", "boy", "brake",
-    "breaking", "briefing", "bus", "calls", "car", "carried", "carries",
+    "breaking", "briefing", "brooklyn", "building", "bus", "calls", "car", "carried", "carries",
     "cascade", "caused", "ceasefire", "chip", "commentary", "concede",
     "concedes", "concern", "concerns", "conduct", "conducted", "conducts", "continue", "continued",
     "continues", "contagion", "cost", "costs", "county", "criticize", "criticized", "criticizes",
     "damaged", "deadly", "debunked", "deepening", "defend", "defended", "defends", "defensive", "digested", "discourse",
-    "discount", "discounts", "downscale", "efforts", "eight", "elevated",
+    "discount", "discounts", "downscale", "efforts", "eight", "elevate", "elevated", "elevates",
     "end", "error", "essay", "essays", "eve", "evident", "exceptionally", "exists", "expert",
     "experts", "expiration", "explained", "exposes", "faces", "facing",
     "fallout", "false", "fare", "features", "five", "fleet", "florida", "follow", "followed", "following", "follows",
-    "forced", "four", "fresh", "functioning", "funding", "golf", "harward", "headlines", "heighten",
+    "forced", "four", "fresh", "functioning", "funding", "general", "golf", "harward", "headlines", "heighten",
     "highlight", "highlights", "history", "horrific", "household", "households", "humanitarian", "hurt", "identified", "intel",
     "institute", "intercepted", "introduces", "investigation", "involvement", "island", "jet", "join",
-    "keyword", "kinetic", "landing", "later", "latest", "likely", "limited", "lingering", "links",
+    "keyword", "kills", "kinetic", "landing", "later", "latest", "leadership", "likely", "limited", "lingering", "links",
     "liquidation", "liquidations", "liv", "localized", "long", "loser",
     "losers", "losses", "macro", "media", "members", "michigan", "midterm", "midterms",
     "mobile", "moderate", "monroe", "mounting", "mutual", "narrative", "nine", "non", "normal",
-    "noting", "official", "officials", "old", "one", "ongoing", "orderly", "outlook",
-    "peacefully", "persistent", "physical", "plane", "plant", "playbook", "played", "plunge",
+    "noting", "nyc", "official", "officials", "old", "one", "ongoing", "orderly", "outlook",
+    "partial", "peacefully", "persistent", "physical", "plane", "plant", "playbook", "played", "plunge",
     "plunged", "plunges", "plunging", "political", "poses", "position", "possible", "post", "posture",
     "potential", "prices", "processed", "progress", "prolongation", "pursues",
     "qeshm", "questions", "rather", "readiness", "recent", "record", "reflect",
@@ -235,17 +235,24 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "tech", "techspot", "ten", "tenerife", "tension", "tensions", "three", "timeline", "trace",
     "traced", "train", "trains", "truck", "trump", "two", "uganda",
     "unabsorbed", "unanticipated", "uncertainty", "underscore", "underscores", "unpriced", "veto",
-    "victim", "victims", "volatility", "volunteer", "vow", "vowed", "vows", "wave", "waves", "widespread",
+    "victim", "victims", "vietnam", "volatility", "volunteer", "vow", "vowed", "vows", "wave", "waves", "widespread",
     "withdrawing", "workers", "worse", "wrap",
 })
 
 
 def _extract_contiguous_token_runs(text: str, stopwords: Set[str]) -> List[List[str]]:
     """Split ``text`` into contiguous runs of >=3-char non-stopword/non-noise alphabetic tokens."""
+    eq_kws = set(split_csv(_cfg_str("feeds", "equity_entity_keywords"), lower=True))
     runs: List[List[str]] = []
     cur: List[str] = []
     for raw_tok in re.findall(r"[a-z]+|[^\s\w]+|\d+", (text or "").lower()):
-        if raw_tok.isalpha() and len(raw_tok) >= 3 and raw_tok not in stopwords and raw_tok not in _NON_CRISIS_DYNAMIC_BIGRAM_WORDS:
+        if (
+            raw_tok.isalpha()
+            and len(raw_tok) >= 3
+            and raw_tok not in stopwords
+            and raw_tok not in _NON_CRISIS_DYNAMIC_BIGRAM_WORDS
+            and raw_tok not in eq_kws
+        ):
             cur.append(raw_tok)
         elif cur:
             runs.append(cur)
@@ -263,8 +270,11 @@ def _is_noise_dynamic_keyword(term: Any, stopwords: Optional[Set[str]] = None) -
     sw = stopwords if stopwords is not None else _get_stopwords_set()
     if len(t) < 4 or t in _NOISE_LEXICON_PHRASES or t in sw:
         return True
+    eq_kws = set(split_csv(_cfg_str("feeds", "equity_entity_keywords"), lower=True))
     words = re.findall(r"[a-zA-Z]{2,}", t)
-    return not words or any(w in sw or w in _NON_CRISIS_DYNAMIC_BIGRAM_WORDS for w in words)
+    return not words or any(
+        w in sw or w in _NON_CRISIS_DYNAMIC_BIGRAM_WORDS or w in eq_kws for w in words
+    )
 
 
 def _is_excluded_non_crisis_attack_keyword(
@@ -293,7 +303,14 @@ def _is_excluded_non_crisis_attack_keyword(
                 "exercises", "drill", "drills", "fort", "wingate", "environmental",
                 "observatory", "geophysical", "nasa",
             }
-        ) and not (combined_words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
+        ) and not (
+            combined_words
+            & (
+                _MAJOR_GEOPOLITICAL_THEATER_WORDS - {"chinese"}
+                if "algeria" in combined_words
+                else _MAJOR_GEOPOLITICAL_THEATER_WORDS
+            )
+        ):
             return True
         if (
             combined_words
@@ -339,7 +356,11 @@ def _is_excluded_non_crisis_attack_keyword(
             return True
     if kw_words and kw_words <= {"nuclear"}:
         if (
-            combined_words & {"regulatory", "framework"}
+            combined_words
+            & {
+                "regulatory", "framework", "inspection", "inspections",
+                "inspector", "inspectors", "stakes", "stake", "urenco", "rwe",
+            }
         ) and not (
             combined_words
             & {
@@ -347,7 +368,7 @@ def _is_excluded_non_crisis_attack_keyword(
                 "enrichment", "strike", "strikes", "attack", "attacks",
                 "meltdown", "leak", "explosion", "evacuate", "evacuation",
                 "emergency", "crisis", "threat", "threatens", "warn", "warns",
-                "violation", "breach",
+                "violation", "breach", "block", "blocks", "blocked", "expel", "expels", "expelled",
             }
         ):
             return True
@@ -391,7 +412,11 @@ def _is_excluded_non_crisis_attack_keyword(
             return True
     if kw_words and kw_words <= {"trade", "war", "wars"}:
         if (
-            combined_words & {"budget", "unveils", "unveil", "forecast", "forecasts", "cushion"}
+            combined_words
+            & {
+                "budget", "unveils", "unveil", "forecast", "forecasts", "cushion",
+                "reshapes", "production", "stellantis", "jeep",
+            }
         ) and not (
             combined_words
             & (
@@ -418,7 +443,8 @@ def _is_excluded_non_crisis_attack_keyword(
             return True
     war_cost_context = bool(combined_words & {"cost", "costs", "bill", "household", "households"})
     war_weapons_essay = bool(
-        combined_words & {"gis", "decide", "decides", "records", "uncover", "secretly", "bolstered", "arsenal"}
+        combined_words
+        & {"gis", "decide", "decides", "records", "uncover", "secretly", "bolstered", "arsenal", "sand"}
     )
     historical_war_context = bool(
         (combined_words & {"declassified", "greenland", "mystery", "tunnels", "vatican", "wwi", "wwii"})
@@ -471,7 +497,10 @@ def _is_excluded_non_crisis_attack_keyword(
                     "decide", "decides", "airline", "airlines", "profit",
                     "profits", "traffic", "emirates", "dealmaking", "woodside",
                     "louisiana", "complicates", "records", "uncover", "secretly",
-                    "bolstered",
+                    "bolstered", "outlast", "removed", "commander", "relieved",
+                    "awarded", "contract", "contracts", "filmmaker", "newsom",
+                    "deportation", "deportations", "restarting", "lieberman",
+                    "sand",
                 }
             )
         ) and not (combined_words & ((eff_kinetic - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
@@ -595,6 +624,10 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "big stock stories:",
     "likely to move the market in the next trading session",
     ": a guide",
+    "shares to gain ",
+    "what is your number?",
+    "is a bet on ",
+    "meet the winners of",
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(
@@ -633,7 +666,7 @@ def filter_valid_severity_keywords(
     dyn_acute_set = set(load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("acute_shock_phrases", ()))
     crisis_stems = _get_crisis_stems_set()
     sw = _get_stopwords_set()
-    title_low = title.lower() if isinstance(title, str) and title.strip() else ""
+    title_low = _strip_headline_publisher_suffix(title).lower() if isinstance(title, str) and title.strip() else ""
     if _is_editorial_clickbait_or_advice_title(title_low):
         return ()
     norm_title_low = _normalize_hyphenated_crisis_negations(title_low)
@@ -1360,7 +1393,7 @@ def match_high_severity_keywords(
     now_ts: Optional[float] = None,
 ) -> Tuple[str, ...]:
     """Return all matched high-severity keywords for ``text`` using the active lexicon."""
-    lower = (text or "").lower()
+    lower = _strip_headline_publisher_suffix(text or "").lower()
     if not lower or _is_editorial_clickbait_or_advice_title(lower):
         return ()
     norm_low = _normalize_hyphenated_crisis_negations(lower)
@@ -1388,7 +1421,7 @@ def has_acute_shock_keywords(
     crisis_stems = _get_crisis_stems_set()
     items = (texts,) if isinstance(texts, str) else texts
     for t in items:
-        low = str(obj_attr(t, "title", None) or (t if isinstance(t, str) else "")).lower()
+        low = _strip_headline_publisher_suffix(str(obj_attr(t, "title", None) or (t if isinstance(t, str) else ""))).lower()
         if not low or _is_editorial_clickbait_or_advice_title(low):
             continue
         norm_low = _normalize_hyphenated_crisis_negations(low)

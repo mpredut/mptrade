@@ -123,7 +123,12 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             )
             or (
                 rs_clean < 0.50
-                and ("no immediate supply disruption" in sum_low or "no new kinetic escalation" in sum_low)
+                and (
+                    "no immediate supply disruption" in sum_low
+                    or "no new kinetic escalation" in sum_low
+                    or "rather than sudden kinetic escalation" in sum_low
+                    or "calm cross-asset risk absorption" in sum_low
+                )
             )
         ):
             tl_norm = "NORMAL"

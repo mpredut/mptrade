@@ -2811,6 +2811,19 @@ def test_tracked_equity_corporate_risk_scoped_to_equities_only(tmp_path):
     # Must NEVER trigger global HIGH_SEVERITY (GLLM3) so crypto bots are unaffected
     assert match_high_severity_keywords(jensen_probe) == ()
     assert match_high_severity_keywords(jensen_smear) == ()
+    assert has_tracked_equity_corporate_risk("AI semiconductor bull warns Nvidia crisis could trigger broader earnings reset") is True
+    assert match_high_severity_keywords("AI semiconductor bull warns Nvidia crisis could trigger broader earnings reset") == ()
+    for non_kinetic_title in (
+        "The Gulf must build security that can outlast this war",
+        "US Navy removed commander of destroyer deployed in Iran war: Report - Latest news from Azerbaijan",
+        "UN watchdog calls on Iran to reopen nuclear facilities to inspection",
+        "Canada threatens Stellantis as Trump trade war reshapes Jeep production plans",
+        "Algeria test-fires apparent Chinese YJ-12 supersonic missile in Mediterranean drill - South China Morning Post",
+        "Malaysian War Drama 'The Ghost and the Gun' Sets Global Netflix Release (EXCLUSIVE) - Variety",
+        "Nokia Federal Solutions awarded Department of War RAPID contract to advance multi-domain threat awareness",
+        "Germany eyes RWE, E.ON's stakes in nuclear firm Urenco, newspapers say - Reuters",
+    ):
+        assert match_high_severity_keywords(non_kinetic_title) == (), non_kinetic_title
 
     now_ts = 1_776_070_000.0
     news_payload = {
