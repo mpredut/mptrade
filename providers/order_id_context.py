@@ -110,14 +110,6 @@ _BOT_CID_PREFIX_MODULES: tuple[tuple[str, str], ...] = tuple(
 )
 
 
-def _match_bot_cid_spec(cid_up: str, pfx: str, mode: str) -> bool:
-    if mode == "stem":
-        return cid_up.startswith(pfx)
-    if mode == "prefix_only":
-        return cid_up.startswith(f"{pfx}_")
-    return cid_up == pfx or cid_up.startswith((f"{pfx}_", f"{pfx}-"))
-
-
 KNOWN_BOT_PROCESS_CODES = frozenset(_PROCESS_NAME_OVERRIDES.values()) | frozenset({"MN", "AI"})
 
 REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual"})
@@ -208,7 +200,15 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
         return "unspecified"
     cid_up = cid.upper()
     for pfx, bot, _tel_mod, mode in _SORTED_BOT_CID_SPECS:
-        if bot is not None and _match_bot_cid_spec(cid_up, pfx, mode):
+        if bot is not None and (
+            cid_up.startswith(pfx)
+            if mode == "stem"
+            else (
+                cid_up.startswith(f"{pfx}_")
+                if mode == "prefix_only"
+                else (cid_up == pfx or cid_up.startswith((f"{pfx}_", f"{pfx}-")))
+            )
+        ):
             return bot
     if cid.lower().startswith(MANUAL_CID_PREFIXES):
         return "manual"
@@ -266,18 +266,6 @@ def order_matches_owner(client_order_id: Optional[str], allowed_owners: Union[st
     return False
 
 
-def _normalize_id_lookup_sets(ids: Any) -> tuple[set[str], set[str]]:
-    if ids is None or isinstance(ids, (bool, str, bytes, dict)) or not hasattr(ids, "__iter__"):
-        return set(), set()
-    exact_ids: set[str] = set()
-    lower_ids: set[str] = set()
-    for item in ids:
-        if (cid := clean_order_id(item)) is not None:
-            exact_ids.add(cid)
-            lower_ids.add(cid.lower())
-    return exact_ids, lower_ids
-
-
 def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = None) -> str:
     """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
     if not isinstance(order, dict):
@@ -285,7 +273,13 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     explicit = clean_upper_scalar(order.get("actor")) or ""
     if explicit in ("AI", "BOT"):
         return explicit
-    exact_ids, lower_ids = _normalize_id_lookup_sets(known_ai_order_ids)
+    exact_ids: set[str] = set()
+    lower_ids: set[str] = set()
+    if known_ai_order_ids is not None and not isinstance(known_ai_order_ids, (bool, str, bytes, dict)) and hasattr(known_ai_order_ids, "__iter__"):
+        for item in known_ai_order_ids:
+            if (cid := clean_order_id(item)) is not None:
+                exact_ids.add(cid)
+                lower_ids.add(cid.lower())
     oid = extract_order_id(order, default="")
     if oid and exact_ids and (str(oid) in exact_ids or str(oid).lower() in lower_ids):
         return "AI"
@@ -323,7 +317,15 @@ def resolve_order_origin(
     if raw_cid:
         cid_up = raw_cid.upper()
         for pfx, _owner, bot_name, mode in _SORTED_BOT_CID_SPECS:
-            if bot_name is not None and _match_bot_cid_spec(cid_up, pfx, mode):
+            if bot_name is not None and (
+                cid_up.startswith(pfx)
+                if mode == "stem"
+                else (
+                    cid_up.startswith(f"{pfx}_")
+                    if mode == "prefix_only"
+                    else (cid_up == pfx or cid_up.startswith((f"{pfx}_", f"{pfx}-")))
+                )
+            ):
                 mod = mod or bot_name
                 if not rule:
                     if mode == "stem":

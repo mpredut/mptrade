@@ -879,21 +879,6 @@ class TrendCoordinator:
             dirty = self._dirty.get(symbol, False)
         return dirty and elapsed >= self.min_interval   # floor
 
-    def _next_wait_timeout(self, now: float) -> float:
-        wait_sec = self.max_interval
-        with self._lock:
-            dirty_state = [(s, self._dirty.get(s, False)) for s in self.symbols]
-        for sym, is_dirty in dirty_state:
-            elapsed = max(0.0, now - self._last_eval.get(sym, 0.0))
-            rem_hb = max(0.0, self.max_interval - elapsed)
-            if rem_hb < wait_sec:
-                wait_sec = rem_hb
-            if is_dirty:
-                rem_min = max(0.0, self.min_interval - elapsed)
-                if rem_min < wait_sec:
-                    wait_sec = rem_min
-        return wait_sec
-
     REGIME_CTX_MEMO_TTL_SEC = 1.0
 
     def _resolve_regime_context(self, symbol: str):
@@ -1113,7 +1098,15 @@ class TrendCoordinator:
                     except Exception as e:
                         print(f"[TrendCoordinator] Error while evaluating {symbol}: {e}")
                 continue
-            wait_timeout = self._next_wait_timeout(time.time())
+            now_wait = time.time()
+            wait_timeout = self.max_interval
+            with self._lock:
+                dirty_state = [(s, self._dirty.get(s, False)) for s in self.symbols]
+            for sym, is_dirty in dirty_state:
+                elapsed = max(0.0, now_wait - self._last_eval.get(sym, 0.0))
+                wait_timeout = min(wait_timeout, max(0.0, self.max_interval - elapsed))
+                if is_dirty:
+                    wait_timeout = min(wait_timeout, max(0.0, self.min_interval - elapsed))
             self._event.wait(timeout=wait_timeout)
             if not self._stop.is_set():
                 touch_module_heartbeat(

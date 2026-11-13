@@ -273,12 +273,6 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
             and (start_ms <= 0.0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
         ]
 
-    @staticmethod
-    def _normalize_fills_query_flags(
-        authoritative: object = False, publish_cache: object = False
-    ) -> tuple[bool, bool]:
-        return _parse_bool_flag(authoritative, False), _parse_bool_flag(publish_cache, False)
-
     def get_orders(
         self,
         symbol: str,
@@ -295,7 +289,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         since_val = safe_nonneg_float(since_s, default=None)
         if since_val is None:
             return []
-        auth, pub = self._normalize_fills_query_flags(authoritative, publish_cache)
+        auth, pub = _parse_bool_flag(authoritative, False), _parse_bool_flag(publish_cache, False)
         try:
             cache_fn = getattr(self, "_fills_from_cache", None)
             rows = cache_fn(symbol) if (callable(cache_fn) and not auth and not pub) else None
@@ -318,7 +312,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         authoritative: bool = False,
         publish_cache: bool = False,
     ) -> List[dict]:
-        auth, pub = self._normalize_fills_query_flags(authoritative, publish_cache)
+        auth, pub = _parse_bool_flag(authoritative, False), _parse_bool_flag(publish_cache, False)
         if not auth and not pub:
             try:
                 return self.get_orders(
@@ -380,18 +374,14 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         return None
 
     @classmethod
-    def _resolve_live_orders_dir(cls) -> Optional[str]:
-        dir_attr = getattr(cls, "_LIVE_ORDERS_DIR_ATTR", None)
-        if not dir_attr:
-            return None
-        val = resolve_patched_attr(dir_attr, None, modules=(cls.__module__,))
-        return str(val) if isinstance(val, (str, Path)) and str(val) else None
-
-    @classmethod
     def _venue_live_orders_enabled(cls) -> bool:
         """Return whether the venue-level live-order config gate is enabled."""
         env_key = getattr(cls, "_LIVE_ORDERS_ENV", None)
-        return bool_env(env_key, cls._resolve_live_orders_dir()) if env_key else True
+        if not env_key:
+            return True
+        dir_attr = getattr(cls, "_LIVE_ORDERS_DIR_ATTR", None)
+        val = resolve_patched_attr(dir_attr, None, modules=(cls.__module__,)) if dir_attr else None
+        return bool_env(env_key, str(val) if isinstance(val, (str, Path)) and str(val) else None)
 
     def _before_execution_enabled_check(self) -> None:
         """Optional hook run before reading ``_LIVE_ORDERS_ENV`` when ``_live_enabled`` is unset."""
@@ -402,13 +392,16 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         if live_override is not None:
             return _parse_bool_flag(live_override, False)
         self._before_execution_enabled_check()
-        env_key = getattr(type(self), "_LIVE_ORDERS_ENV", None)
+        cls = type(self)
+        env_key = getattr(cls, "_LIVE_ORDERS_ENV", None)
         if env_key:
-            folder = (
-                type(self)._resolve_live_orders_dir()
-                if _parse_bool_flag(getattr(type(self), "_LIVE_ORDERS_EXEC_READS_DIR", True), True)
+            dir_attr = getattr(cls, "_LIVE_ORDERS_DIR_ATTR", None)
+            val = (
+                resolve_patched_attr(dir_attr, None, modules=(cls.__module__,))
+                if dir_attr and _parse_bool_flag(getattr(cls, "_LIVE_ORDERS_EXEC_READS_DIR", True), True)
                 else None
             )
+            folder = str(val) if isinstance(val, (str, Path)) and str(val) else None
             live_override = getattr(self, "_live_enabled", None)
             return bool_env(env_key, folder) if live_override is None else _parse_bool_flag(live_override, False)
         return type(self)._venue_live_orders_enabled()

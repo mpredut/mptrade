@@ -268,29 +268,19 @@ class GeminiQuotaRouterMixin:
 
         token_fp = hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16] if access_token else ""
 
-        def _cache_matches_token(cached: Dict[str, Any]) -> bool:
-            cached_fp = str(cached.get("oauth_token_fp") or "").strip()
-            return not (token_fp and cached_fp and token_fp != cached_fp)
-
         with cls._QUOTA_LOCK:
-            mem = cls._QUOTA_MEM_CACHE
-            if (
-                isinstance(mem, dict)
-                and isinstance(mem.get("buckets"), dict)
-                and _cache_matches_token(mem)
-                and is_cache_fresh(mem.get("checked_ts"), now, ttl_sec, force_refresh=force_refresh)
-            ):
-                return dict(mem)
+            for is_disk in (False, True):
+                cand = _read_json_dict(state_path, default={}) if is_disk else cls._QUOTA_MEM_CACHE
+                if (
+                    isinstance(cand, dict)
+                    and isinstance(cand.get("buckets"), dict)
+                    and not (token_fp and (c_fp := str(cand.get("oauth_token_fp") or "").strip()) and token_fp != c_fp)
+                    and is_cache_fresh(cand.get("checked_ts"), now, ttl_sec, force_refresh=force_refresh)
+                ):
+                    if is_disk:
+                        cls._QUOTA_MEM_CACHE = dict(cand)
+                    return dict(cand)
 
-            disk = _read_json_dict(state_path, default={})
-            if (
-                isinstance(disk, dict)
-                and isinstance(disk.get("buckets"), dict)
-                and _cache_matches_token(disk)
-                and is_cache_fresh(disk.get("checked_ts"), now, ttl_sec, force_refresh=force_refresh)
-            ):
-                cls._QUOTA_MEM_CACHE = dict(disk)
-                return dict(disk)
 
         if not access_token:
             return None

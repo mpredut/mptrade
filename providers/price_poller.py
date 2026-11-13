@@ -557,16 +557,7 @@ def start_nonbinance_trend_poller(
     )
     stop_event = threading.Event()
 
-    cpm_cls = type(cpm)
-    has_cls_mark_ws = callable(getattr(cpm_cls, "mark_symbol_ws_event", None))
-
-    def _mark_symbol_ws_ts(sym_key: str, ts_val: float) -> None:
-        if has_cls_mark_ws:
-            cpm.mark_symbol_ws_event(sym_key, ts_val)
-            return
-        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
-        if isinstance(ws_ts_map, dict):
-            ws_ts_map[sym_key] = ts_val
+    has_cls_mark_ws = callable(getattr(type(cpm), "mark_symbol_ws_event", None))
 
     def run():
         rth_seeded: set[str] = set()
@@ -600,7 +591,10 @@ def start_nonbinance_trend_poller(
                 empty_backoff_ts.pop(sym_item, None)
                 if is_eq:
                     last_equity_poll_ts[sym_item] = now_done
-                _mark_symbol_ws_ts(sym_item, now_done)
+                if has_cls_mark_ws:
+                    cpm.mark_symbol_ws_event(sym_item, now_done)
+                elif isinstance(ws_ts_map := getattr(cpm, "_ws_last_event_ts_per_symbol", None), dict):
+                    ws_ts_map[sym_item] = now_done
                 push_fn = getattr(cpm, "push_price", None)
                 if callable(push_fn):
                     push_fn(sym_item, pf)
@@ -628,7 +622,10 @@ def start_nonbinance_trend_poller(
                 if (
                     not market_open and (s in rth_seeded or (last_empty > 0.0 and (now_ts - last_empty) < 300.0))
                 ) or (is_eq and s in rth_seeded and (now_ts - last_equity_poll_ts.get(s, 0.0)) < equity_min_gap_sec):
-                    _mark_symbol_ws_ts(s, now_ts)
+                    if has_cls_mark_ws:
+                        cpm.mark_symbol_ws_event(s, now_ts)
+                    elif isinstance(ws_ts_map := getattr(cpm, "_ws_last_event_ts_per_symbol", None), dict):
+                        ws_ts_map[s] = now_ts
                     continue
                 pending_polls.append((s, prov_name, is_eq))
 

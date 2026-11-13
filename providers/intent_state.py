@@ -194,16 +194,12 @@ def _resolve_clamped_intent_notional(
     return None
 
 
-def _intent_raw_order_type(data: dict[str, Any]) -> str:
-    return clean_upper_scalar(data.get("order_type")) or clean_upper_scalar(data.get("type")) or ""
-
-
 def extract_intent_limit_price(data: dict[str, Any], default: Any = None) -> Any:
     """Extract and parse positive passive limit price across aliases and currency strings."""
     if not isinstance(data, dict):
         return default
     keys: tuple[str, ...] = ("limit_price", "target_price", "order_price", "limit_px")
-    if _intent_raw_order_type(data) == "LIMIT":
+    if (clean_upper_scalar(data.get("order_type")) or clean_upper_scalar(data.get("type")) or "") == "LIMIT":
         keys = (*keys, "price")
     for pk in keys:
         if data.get(pk) is not None:
@@ -218,7 +214,7 @@ def extract_intent_order_type(data: dict[str, Any]) -> str:
     """Resolve normalized order execution type ('MARKET' or 'LIMIT') for an intent."""
     if not isinstance(data, dict):
         return "MARKET"
-    norm_type = _intent_raw_order_type(data)
+    norm_type = clean_upper_scalar(data.get("order_type")) or clean_upper_scalar(data.get("type")) or ""
     limit_px = extract_intent_limit_price(data, default=None)
     if norm_type == "MARKET":
         return "MARKET"

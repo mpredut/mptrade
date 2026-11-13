@@ -249,15 +249,6 @@ class RTradePairStore:
         kind_s = raw_kind.strip()
         return pid_clean, side_u, kind_s, f"{kind_s}:{side_u}"
 
-    @staticmethod
-    def _upsert_rec_intent(rec: dict, key: str, value: dict, now: float) -> bool:
-        intents = rec.setdefault("intents", {})
-        if intents.get(key) == value:
-            return False
-        intents[key] = value
-        rec["updated_ts"] = now
-        return True
-
     def intent(self, pair_id, side, price, qty, client_order_id, kind="limit", symbol=None, start_side=None):
         qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
         price_f = None if price is None else self._finite_positive(price, f"pair {pair_id!r} price")
@@ -273,7 +264,12 @@ class RTradePairStore:
                 "side": side_u, "price": price_f, "qty": qty_f,
                 "client_order_id": coid, "kind": kind_s, "order_id": None,
             }
-            return self._upsert_rec_intent(rec, key, value, now)
+            intents = rec.setdefault("intents", {})
+            if intents.get(key) == value:
+                return False
+            intents[key] = value
+            rec["updated_ts"] = now
+            return True
 
         self.mutate(op)
 
@@ -317,7 +313,12 @@ class RTradePairStore:
                 qty=requested_qty,
                 price=requested_price,
             )
-            return self._upsert_rec_intent(rec, key, value, now)
+            intents = rec.setdefault("intents", {})
+            if intents.get(key) == value:
+                return False
+            intents[key] = value
+            rec["updated_ts"] = now
+            return True
 
         self.mutate(op)
 
