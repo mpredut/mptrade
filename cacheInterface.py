@@ -426,6 +426,8 @@ class CacheManagerInterface(ABC):
         self._reader_reload_lock = threading.Lock()
         self._legacy_jsonl_needs_rewrite = False
         self._last_disk_sync_max_ts = 0
+        self._last_item_info_log_ts: dict[str, float] = {}
+        self._last_save_info_log_ts = 0.0
 
         self.days_back = 30
 
@@ -764,8 +766,35 @@ class CacheManagerInterface(ABC):
         print(f"[{self.cls_name}][Error] {label} {self.filename}{suffix}: {exc}")
         return False
 
+    _HIGH_FREQ_LOG_INTERVAL_SEC: float = 30.0
+
+    def _should_emit_throttled_info_log(self, symbol: Optional[str] = None) -> bool:
+        now_mono = _monotonic_time()
+        interval = self._HIGH_FREQ_LOG_INTERVAL_SEC
+        if symbol is None:
+            sync_sec = safe_nonneg_float(getattr(self, "sync_ts", None), default=30.0)
+            if sync_sec is not None and sync_sec >= 10.0:
+                return True
+            last_save_log = safe_nonneg_float(
+                getattr(self, "_last_save_info_log_ts", 0.0), default=0.0
+            ) or 0.0
+            if last_save_log > 0.0 and 0.0 <= (now_mono - last_save_log) < interval:
+                return False
+            self._last_save_info_log_ts = now_mono
+            return True
+        ts_map = getattr(self, "_last_item_info_log_ts", None)
+        if not isinstance(ts_map, dict):
+            ts_map = {}
+            self._last_item_info_log_ts = ts_map
+        last_item_log = ts_map.get(symbol, 0.0)
+        if last_item_log > 0.0 and 0.0 <= (now_mono - last_item_log) < interval:
+            return False
+        ts_map[symbol] = now_mono
+        return True
+
     def _log_cache_saved_ok(self) -> bool:
-        print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
+        if self._should_emit_throttled_info_log():
+            print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
         return True
 
     def _log_tagged_false(self, tag: str, detail: str) -> bool:
@@ -1242,28 +1271,42 @@ class CacheManagerInterface(ABC):
         count_new_items = (
             len(new_items) if isinstance(new_items, (list, tuple, dict)) else 1
         )
-        print(f"[{self.cls_name}][Info] {symbol}:  new_items {new_items}")
+        emit_info = self._should_emit_throttled_info_log(symbol)
+        if emit_info:
+            print(f"[{self.cls_name}][Info] {symbol}:  new_items {new_items}")
 
+        kept_count: Optional[int] = None
+        added_count = 0
         with self.lock:
             self.cache.setdefault(symbol, [])
             if self.append_mode:
                 cache_copy = list(self.cache.get(symbol, []))[-self.DEDUP_WINDOW :]
-                new_items = self.filter_new_items(cache_copy, new_items)
-                print(
-                    f"[{self.cls_name}][Info] {symbol}:  out of {count_new_items} keeping only {len(new_items)}"
-                )
-                new_items = [item for item in new_items if item is not None]
-                if not new_items:
-                    return
-                self.cache[symbol].extend(new_items)
+                filtered_items = self.filter_new_items(cache_copy, new_items)
+                kept_count = len(filtered_items)
+                filtered_items = [item for item in filtered_items if item is not None]
+                if not filtered_items:
+                    new_items = []
+                else:
+                    self.cache[symbol].extend(filtered_items)
+                    new_items = filtered_items
+                    added_count = len(filtered_items)
+                    self._advance_symbol_fetchtime_locked(symbol, current_time)
             else:
-                self.cache[symbol] = (
+                stored_items = (
                     new_items if isinstance(new_items, list) else [new_items]
                 )
+                self.cache[symbol] = stored_items
+                added_count = len(stored_items)
+                self._advance_symbol_fetchtime_locked(symbol, current_time)
 
-            self._advance_symbol_fetchtime_locked(symbol, current_time)
-
-        print(f"[{self.cls_name}][Info] {symbol}: Added {len(new_items)} new items.")
+        if emit_info and kept_count is not None:
+            print(
+                f"[{self.cls_name}][Info] {symbol}:  out of {count_new_items} keeping only {kept_count}"
+            )
+        if not added_count:
+            return
+        if emit_info:
+            print(f"[{self.cls_name}][Info] {symbol}: Added {added_count} new items.")
 
     def _persist_items(self, symbol, new_items):
         """Persist one symbol to the cache by default."""

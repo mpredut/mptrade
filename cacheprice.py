@@ -1492,34 +1492,44 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     def _save_state_to_file_impl(self) -> bool:
         """Persist ``cache_current_price.json`` without holding ``self.lock`` across disk ``fsync``."""
         write_json_fn = _cm_override("atomic_write_json", atomic_write_json)
+        commit_state: dict[str, Any] = {}
         with self._generation_lock():
             persisted_max_ts = self._persisted_max_ts()
             with self.lock:
                 self._before_state_persist_locked()
-                mem_max_ts = self._mem_max_ts()
-                if persisted_max_ts > mem_max_ts:
+                if persisted_max_ts > self._mem_max_ts():
                     builtins.print(
                         f"[{self.cls_name}][resync] file newer than memory -> "
                         f"refusing to overwrite with stale data ({self.filename})"
                     )
                     self._on_stale_memory_detected_locked()
                     return False
-                self._before_snapshot_commit_locked(persisted_max_ts)
-                items_snapshot = self._clone_snapshot_items(self.cache)
-                metadata = self._build_basic_meta_locked(sanitize_cursor=True)
-            payload = {
-                "items": items_snapshot,
-                "fetchtime": metadata["fetchtime"],
-                "rest_sync_cursor": metadata["rest_sync_cursor"],
-            }
+
+            def _write_latest_snapshot():
+                with self.lock:
+                    self._before_snapshot_commit_locked(persisted_max_ts)
+                    items_snapshot = self._clone_snapshot_items(self.cache)
+                    meta_snap = self._build_basic_meta_locked(sanitize_cursor=True)
+                    snap_max_ts = self._mem_max_ts()
+                commit_state["meta"] = meta_snap
+                commit_state["snap_max_ts"] = snap_max_ts
+                payload = {
+                    "items": items_snapshot,
+                    "fetchtime": meta_snap["fetchtime"],
+                    "rest_sync_cursor": meta_snap["rest_sync_cursor"],
+                }
+                return write_json_fn(self.filename, payload, indent=1)
+
             if not self._commit_file_and_meta_locked(
-                lambda: write_json_fn(self.filename, payload, indent=1),
-                metadata,
+                _write_latest_snapshot,
+                lambda: commit_state["meta"],
             ):
                 return False
             persisted_after = self._persisted_max_ts()
+        committed_ts = max(persisted_after, commit_state.get("snap_max_ts", 0))
         with self.lock:
-            self._last_disk_sync_max_ts = max(persisted_after, self._mem_max_ts())
+            self._last_persisted_snapshot_max_ts = committed_ts
+            self._last_disk_sync_max_ts = max(committed_ts, self._mem_max_ts())
         return self._log_cache_saved_ok()
 
     def _get_or_create_fallback_pool(self, worker_hint: int) -> _futures.ThreadPoolExecutor:
@@ -1722,6 +1732,11 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             base_wait = 0.8
         if not self.save_state or base_wait > 5.0:
             return base_wait
+        persisted_snap_ts = safe_nonneg_int(
+            getattr(self, "_last_persisted_snapshot_max_ts", 0), default=0
+        ) or 0
+        if persisted_snap_ts > 0 and (self._mem_max_ts() - persisted_snap_ts) >= 800:
+            return min(base_wait, 0.03)
         wait_sec = min(base_wait, 0.35)
         now = _now_time()
         is_live_daemon = self._is_live_daemon_poll_mode()

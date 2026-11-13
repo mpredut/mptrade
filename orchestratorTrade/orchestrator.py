@@ -88,6 +88,7 @@ class BotManager:
 
     async def _read_stream(self, stream, bot_name: str, log_file):
         verbose_stdout = self.verbose_stdout
+        last_flush = 0.0
         while True:
             line = await stream.readline()
             if not line:
@@ -97,11 +98,14 @@ class BotManager:
             if clean_line:
                 self.recent_lines[bot_name].append(clean_line)
 
-            # 1. Write to dedicated log file (so tail -f logs/<bot>.log works cleanly)
+            # 1. Write to dedicated log file (flush immediately when buffer drains or every 0.25s during bursts)
             if log_file:
                 try:
                     log_file.write(decoded)
-                    log_file.flush()
+                    now_mono = time.monotonic()
+                    if not getattr(stream, "_buffer", None) or (now_mono - last_flush) >= 0.25:
+                        log_file.flush()
+                        last_flush = now_mono
                 except OSError:
                     pass
 

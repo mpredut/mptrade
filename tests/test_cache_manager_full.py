@@ -3762,6 +3762,88 @@ def test_cpm_lock_free_disk_save_stale_ws_ts_poll_and_factory_deferred_periodic(
     assert order_guard.opposite_side is botcore.opposite_side
 
 
+def test_high_freq_tick_logging_unlocked_and_post_stage_snapshot_freshness(tmp_path):
+    """Verify update_cache_per_symbol never holds self.lock during print, throttles per-tick spam, and snapshots after .previous staging."""
+    import cacheInterface as ci
+    import cacheprice
+    import state_io
+
+    cpm_path = tmp_path / "cache_current_price.json"
+    cpm = cacheprice.CacheCurrentPriceManager(
+        0.8,
+        ["BTCUSDC"],
+        str(cpm_path),
+        market_api=MagicMock(),
+        data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+    )
+    now_ms = int(time.time() * 1000)
+
+    # 1. print() inside update_cache_per_symbol never runs while cpm.lock is held, and repeated ticks are throttled
+    print_calls = []
+    lock_free_during_print = []
+
+    def _probe_print(*args, **kwargs):
+        msg = " ".join(str(a) for a in args)
+        print_calls.append(msg)
+        res = []
+
+        def _try_lock():
+            if cpm.lock.acquire(blocking=False):
+                cpm.lock.release()
+                res.append(True)
+            else:
+                res.append(False)
+
+        th = threading.Thread(target=_try_lock, daemon=True)
+        th.start()
+        th.join(timeout=1.0)
+        lock_free_during_print.extend(res)
+
+    cpm._last_item_info_log_ts.clear()
+    with patch.object(ci, "print", side_effect=_probe_print, create=True):
+        cpm.on_items_update("BTCUSDC", [[now_ms - 500, 71000.0]])
+        cpm.on_items_update("BTCUSDC", [[now_ms - 300, 71050.0]])
+        cpm.on_items_update("BTCUSDC", [[now_ms - 100, 71100.0]])
+
+    assert len(print_calls) == 2  # First tick logs new_items + Added; next 2 ticks within 30s are throttled
+    assert all(lock_free_during_print)
+
+    # 2. Seed initial file on disk, then verify ticks arriving during slow .previous staging land in the committed file
+    assert cpm.save_state_to_file() is True
+    stage_entered = threading.Event()
+    allow_stage_finish = threading.Event()
+    real_stage_prev = state_io.stage_previous_generation
+
+    def _slow_stage_prev(path, **kwargs):
+        stage_entered.set()
+        assert allow_stage_finish.wait(timeout=2.0)
+        return real_stage_prev(path, **kwargs)
+
+    def _ws_during_stage():
+        assert stage_entered.wait(timeout=2.0)
+        cpm.on_items_update("BTCUSDC", [[now_ms + 900, 71999.0]])
+        allow_stage_finish.set()
+
+    ws_th = threading.Thread(target=_ws_during_stage, daemon=True)
+    ws_th.start()
+    try:
+        with patch.object(state_io, "stage_previous_generation", side_effect=_slow_stage_prev):
+            assert cpm.save_state_to_file() is True
+    finally:
+        allow_stage_finish.set()
+        ws_th.join(timeout=2.0)
+
+    disk_doc = json.loads(cpm_path.read_text(encoding="utf-8"))
+    assert disk_doc["items"]["BTCUSDC"] == [[now_ms + 900, 71999.0]]
+
+    # 3. When in-memory ticks advance >=800ms ahead of last persisted snapshot, _next_sync_wait_sec returns <=0.05s
+    cpm._last_persisted_snapshot_max_ts = int(time.time() * 1000) - 900
+    cpm.on_items_update("BTCUSDC", [[int(time.time() * 1000), 72100.0]])
+    assert cpm._next_sync_wait_sec() <= 0.05
+    cpm.shutdown(timeout=1.0)
+
+
+
 
 
 
