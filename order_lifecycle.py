@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +29,7 @@ from botcore import (
     extract_order_side,
     load_dotenv,
     load_root_config,
+    lru_dict_put,
     normalize_side,
     obj_attr,
     required_float_env,
@@ -131,6 +133,8 @@ class TrackedOrderResult:
     def __post_init__(self):
         if self.outcome not in {"active", "terminal", "absent", "retryable", "refused"}:
             raise ValueError(f"invalid tracked-order outcome: {self.outcome!r}")
+        if not isinstance(self.intent, dict):
+            raise ValueError("tracked-order intent must be a dict")
         if self.outcome == "terminal" and self.status is None:
             raise ValueError("terminal tracked-order result requires status")
 
@@ -226,7 +230,7 @@ class TrackedOrderLifecycle:
         self.max_age_seconds = max_age_seconds
         self.audit = audit
         self.clock = clock
-        self._last_refusal_by_intent: dict[tuple[str, str, str, str], str] = {}
+        self._last_refusal_by_intent: OrderedDict[tuple[str, str, str, str], str] = OrderedDict()
 
     def _now(self) -> float:
         now = _lifecycle_finite(self.clock(), positive=True)
@@ -316,7 +320,7 @@ class TrackedOrderLifecycle:
             "client_order_id": clean_cid,
             "symbol": clean_sym,
             "side": normalize_side(side, require_str=True) or (side.strip() if isinstance(side, str) else ""),
-            "kind": None if kind is None else clean_nonempty_str(kind),
+            "kind": None if kind is None else _clean_lifecycle_symbol(kind),
             "requested_qty": qty_f,
             "requested_price": px_f,
             "attempt": att_int,
@@ -334,14 +338,15 @@ class TrackedOrderLifecycle:
     @staticmethod
     def _order_fields(response) -> dict:
         if isinstance(response, SubmissionOutcome):
-            fields = {"submission_outcome": response.state}
-            clean_oid = extract_order_id(response.order_id)
-            if clean_oid is not None:
-                fields["order_id"] = clean_oid
-            if response.reason:
-                fields["submission_reason"] = response.reason
+            fields: dict[str, Any] = {}
             if response.native is not None:
                 fields.update(TrackedOrderLifecycle._order_fields(response.native))
+            fields["submission_outcome"] = response.state
+            clean_oid = extract_order_id(response.order_id)
+            if clean_oid is not None:
+                fields["order_id"] = str(clean_oid)
+            if response.reason:
+                fields["submission_reason"] = response.reason
             return fields
         if isinstance(response, dict):
             fields = {}
@@ -381,7 +386,7 @@ class TrackedOrderLifecycle:
             persist(dict(pending))
             reason_str = str(outcome.reason or "")
             if self._last_refusal_by_intent.get(refusal_key) != reason_str:
-                self._last_refusal_by_intent[refusal_key] = reason_str
+                lru_dict_put(self._last_refusal_by_intent, refusal_key, reason_str, 1024)
                 self._audit("submit_requested", pending, qty=pending["requested_qty"], price=pending.get("requested_price"))
                 self._audit("submit_refused", pending, reason=outcome.reason)
             return TrackedOrderResult("refused", pending)
@@ -790,13 +795,15 @@ def restore_cancelled_orders(
     """Best-effort restoration of resting orders if replacement/exit fails."""
     if not cancelled_orders or not isinstance(cancelled_orders, (list, tuple)):
         return 0
+    valid_orders = [raw_ord for raw_ord in cancelled_orders if isinstance(raw_ord, dict)]
+    if not valid_orders:
+        return 0
+    _log = log_fn if callable(log_fn) else print
     clean_reason = reason.strip() if isinstance(reason, str) else ""
     tag = f" ({clean_reason})" if clean_reason else ""
-    log_fn(f"  ! [ATOMIC_ROLLBACK] restoring {len(cancelled_orders)} cancelled order(s){tag}")
+    _log(f"  ! [ATOMIC_ROLLBACK] restoring {len(valid_orders)} cancelled order(s){tag}")
     restored = 0
-    for raw_ord in cancelled_orders:
-        if not isinstance(raw_ord, dict):
-            continue
+    for raw_ord in valid_orders:
         params = extract_order_restore_params(raw_ord)
         if not (safe_pos_float(params.get("qty"), default=None) and safe_pos_float(params.get("limit"), default=None)):
             continue
@@ -804,7 +811,7 @@ def restore_cancelled_orders(
             if restore_fn(params) is not False:
                 restored += 1
         except Exception as exc:
-            log_fn(f"  ! [ATOMIC_ROLLBACK] failed restoring order: {exc}")
+            _log(f"  ! [ATOMIC_ROLLBACK] failed restoring order: {exc}")
     return restored
 
 

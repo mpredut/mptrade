@@ -24,6 +24,7 @@ from botcore import (
     ClosedPriceSeries,
     float_env,
     lru_dict_put,
+    normalize_side,
     optional_env,
     safe_float,
     safe_nonneg_float,
@@ -250,13 +251,18 @@ class AuditedStrategyExecutor:
         clean_cid = clean_order_id_str(client_order_id) or None
         client_order_id = clean_cid or intent_client_order_id(self.name, intent_id)
         is_market = _parse_bool_flag(market, False)
+        recorded_req = _parse_bool_flag(_requested_recorded, False)
+        side_str = (
+            normalize_side(side)
+            or ("" if side is None or isinstance(side, bool) else str(side).strip())
+        ).lower()
         fields = {
-            "side": str(side).lower(), "qty": qty, "price": price,
+            "side": side_str, "qty": qty, "price": price,
             "market": is_market, "kind": kind,
             "reference_price": reference_price,
             "client_order_id": client_order_id,
         }
-        if not _requested_recorded:
+        if not recorded_req:
             self.audit.record("submit_requested", intent_id=intent_id, venue=self.name,
                               symbol=symbol, **fields)
         submit_kwargs = {"market": is_market, "kind": kind}
@@ -449,6 +455,9 @@ def _extract_audit_fill_metrics(
     fallback_ref_price: bool = False,
 ) -> tuple[str, str, Any, Optional[float], Any, Optional[float], Optional[float], bool]:
     """Extract normalized venue/local status, filled qty, cost, price, and fill flag from an audit record."""
+    if not isinstance(rec, dict):
+        return "", "", None, None, None, None, None, False
+    use_fallback_ref = _parse_bool_flag(fallback_ref_price, False)
     ev = str(rec.get("event") or "").strip().lower()
     v_stat = str(rec.get("venue_status") or "").strip().upper()
     l_stat = str(rec.get("status") or "").strip().lower()
@@ -464,7 +473,7 @@ def _extract_audit_fill_metrics(
     f_px = safe_pos_float(rec.get("price"), default=None)
     if f_px is None and cost_f is not None and f_q is not None and f_q > 0:
         f_px = round(cost_f / f_q, 8)
-    if f_px is None and fallback_ref_price:
+    if f_px is None and use_fallback_ref:
         f_px = safe_pos_float(rec.get("reference_price"), default=None)
     if raw_cost is None and f_q is not None and f_px is not None:
         raw_cost = round(f_q * f_px, 8)
@@ -488,7 +497,9 @@ _AUDIT_RECONCILE_EVENTS = frozenset({
     "order_terminal",
     "order_terminal_retry",
 })
-_AUDIT_FILE_RECORDS_CACHE: dict[str, tuple[tuple[float, int], list[dict[str, Any]]]] = {}
+_AUDIT_FILE_RECORDS_CACHE: OrderedDict[str, tuple[tuple[float, int], list[dict[str, Any]]]] = OrderedDict()
+_AUDIT_CACHE_LOCK = threading.Lock()
+_AUDIT_FILE_CACHE_MAX = 64
 
 
 def _read_audit_intent_records(audit_path: str) -> list[dict[str, Any]]:
@@ -498,14 +509,16 @@ def _read_audit_intent_records(audit_path: str) -> list[dict[str, Any]]:
         sig = (st.st_mtime, st.st_size)
     except OSError:
         return []
-    cached = _AUDIT_FILE_RECORDS_CACHE.get(audit_path)
-    if cached is not None and cached[0] == sig:
-        return cached[1]
+    with _AUDIT_CACHE_LOCK:
+        cached = _AUDIT_FILE_RECORDS_CACHE.get(audit_path)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
     recs = [
         rec for rec in read_jsonl_dicts(audit_path)
         if str(rec.get("event") or "") in _AUDIT_RECONCILE_EVENTS and _extract_intent_id(rec)
     ]
-    _AUDIT_FILE_RECORDS_CACHE[audit_path] = (sig, recs)
+    with _AUDIT_CACHE_LOCK:
+        lru_dict_put(_AUDIT_FILE_RECORDS_CACHE, audit_path, (sig, recs), _AUDIT_FILE_CACHE_MAX)
     return recs
 
 

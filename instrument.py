@@ -9,6 +9,7 @@ same asset can be represented independently on multiple venues.
 when no base is configured). ``place()`` either delegates to an internally guarded
 provider or runs the shared policy pipeline before provider mechanics.
 """
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 import inspect
 import os
@@ -34,8 +35,10 @@ from providers.base import MarketDataProvider
 from providers import order_id_context
 from providers.order_ohlc_utils import resolve_market_flag
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_nonempty_str,
+    clean_order_id,
     extract_order_id,
     is_us_rth_open,
     normalize_side,
@@ -156,6 +159,11 @@ class _PlaceContext:
     reason: Optional[str] = None
 
 
+def _clean_inst_str(val: object) -> Optional[str]:
+    s = clean_nonempty_str(val)
+    return s if (s is not None and s.lower() not in INVALID_SCALAR_STRINGS) else None
+
+
 def _is_instrument_spec(item: Any) -> bool:
     return isinstance(item, InstrumentSpec) or type(item).__name__ == "InstrumentSpec"
 
@@ -181,7 +189,7 @@ class Instrument:
         self.enabled = _parse_bool_flag(enabled, True)
         self.isolation = isolation          # 'dedicated' | 'own_ledger' (see design)
         self.market_hours = market_hours    # '24x7' | 'rth' | ...
-        self.params = dict(params or {})
+        self.params = dict(params) if isinstance(params, Mapping) else {}
         self.spec = (
             spec
             if _is_instrument_spec(spec)
@@ -344,7 +352,7 @@ class Instrument:
         allow_math_reference_sell = _parse_bool_flag(
             kwargs.pop("allow_math_reference_sell", False), False
         )
-        order_kind = clean_nonempty_str(kwargs.get("kind")) or clean_nonempty_str(kwargs.get("motivation"))
+        order_kind = _clean_inst_str(kwargs.get("kind")) or _clean_inst_str(kwargs.get("motivation"))
         if order_kind is not None:
             kwargs["kind"] = order_kind
 
@@ -542,10 +550,10 @@ class Instrument:
             if ctx.order is not None or ctx.submit_attempted:
                 ctx.outcome_context["submitted_qty"] = ctx.qty
                 ctx.outcome_context["submitted_price"] = ctx.price
-            cid = ctx.prequeued_client_order_id or ctx.kwargs.get("client_order_id")
+            cid = clean_order_id(ctx.prequeued_client_order_id) or clean_order_id(ctx.kwargs.get("client_order_id"))
             if cid:
                 ctx.outcome_context["client_order_id"] = cid
-            iid = ctx.prequeued_intent_id or ctx.kwargs.get("intent_id")
+            iid = clean_order_id(ctx.prequeued_intent_id) or clean_order_id(ctx.kwargs.get("intent_id"))
             if iid:
                 ctx.outcome_context["intent_id"] = iid
         terminal_filter_refusal = bool(
@@ -714,9 +722,10 @@ class Instrument:
         return self._provider.open_orders(self.symbol)
 
     def cancel_order(self, order_id: str) -> None:
+        clean_oid = clean_order_id(order_id)
         cancel_fn = getattr(self._provider, "cancel_order", None)
-        if callable(cancel_fn):
-            return cancel_fn(self.symbol, str(order_id))
+        if clean_oid and callable(cancel_fn):
+            return cancel_fn(self.symbol, clean_oid)
         return None
 
     # -- Order placement: dry or real after provider gates. --------------------
@@ -1128,11 +1137,12 @@ class Instrument:
                             kind=ctx.order_kind,
                             ttl_sec=ctx.kwargs.get("ttl_sec"),
                         )
-                        if ctx.prequeued_claim is None:
+                        if not isinstance(ctx.prequeued_claim, dict):
                             raise RuntimeError("the intent cannot be read back after persisting")
-                        ctx.prequeued_client_order_id = dict(
-                            ctx.prequeued_claim.get("place_kwargs") or {}
-                        ).get("client_order_id")
+                        raw_pk = ctx.prequeued_claim.get("place_kwargs")
+                        ctx.prequeued_client_order_id = (
+                            clean_order_id(raw_pk.get("client_order_id")) if isinstance(raw_pk, dict) else None
+                        )
                         if not ctx.prequeued_client_order_id:
                             raise RuntimeError("the persisted intent has no client_order_id")
                         ctx.kwargs["client_order_id"] = ctx.prequeued_client_order_id
@@ -1144,14 +1154,16 @@ class Instrument:
                     ctx.reason = "pre_submit_persist_failed"
                     return None
             else:
-                ctx.prequeued_claim = ctx.kwargs.get("_retry_claim")
+                raw_claim = ctx.kwargs.get("_retry_claim")
+                ctx.prequeued_claim = raw_claim if isinstance(raw_claim, dict) else None
 
-            if ctx.prequeued_claim is not None:
+            if isinstance(ctx.prequeued_claim, dict):
                 ctx.prequeued_record_id = ctx.prequeued_claim.get("id")
-                ctx.prequeued_client_order_id = dict(
-                    ctx.prequeued_claim.get("place_kwargs") or {}
-                ).get("client_order_id")
-                ctx.prequeued_intent_id = ctx.prequeued_claim.get("intent_id")
+                raw_pk = ctx.prequeued_claim.get("place_kwargs")
+                ctx.prequeued_client_order_id = (
+                    clean_order_id(raw_pk.get("client_order_id")) if isinstance(raw_pk, dict) else None
+                )
+                ctx.prequeued_intent_id = clean_order_id(ctx.prequeued_claim.get("intent_id"))
 
             if ctx.prequeued_intent_id and not ctx.caller_owns_retry:
                 _EXECUTION_AUDIT.record(
@@ -1447,10 +1459,13 @@ def resolve_tradable_instrument(
 
 def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     """Fetch live market price for ``inst`` from its bound provider or ``cacheprice`` SSOT fallbacks."""
+    sym_s = _clean_inst_str(getattr(inst, "symbol", None))
+    if not sym_s:
+        return 0.0
     try:
         prov = getattr(inst, "_provider", None)
         if prov is not None and hasattr(prov, "get_current_price"):
-            px_f = safe_pos_float(prov.get_current_price(inst.symbol), default=None)
+            px_f = safe_pos_float(prov.get_current_price(sym_s), default=None)
             if px_f is not None:
                 return px_f
     except Exception:
@@ -1461,7 +1476,7 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
         venue = getattr(inst, "provider", None)
     raw_base, raw_quote = getattr(inst, "base", None), getattr(inst, "quote", None)
     return resolve_cached_symbol_price(
-        str(getattr(inst, "symbol", "") or ""),
+        sym_s,
         venue=venue if isinstance(venue, str) else None,
         base=raw_base if isinstance(raw_base, str) else None,
         quote=raw_quote if isinstance(raw_quote, str) else None,

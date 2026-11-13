@@ -8,6 +8,7 @@ from botcore import (
     TOPIC_SPECS,
     _parse_bool_flag,
     canonical_topic_key,
+    clean_order_id,
     clean_scale,
     extract_order_id,
     extract_order_price,
@@ -74,6 +75,8 @@ def record_shadow_intent_observation(
     sleep_fn: Optional[Callable[[float], Any]] = None,
 ) -> dict[str, Any]:
     """Record a shadow-mode intent observation and dispatch notification."""
+    guard_allowed = _parse_bool_flag(guard_allowed, False)
+    is_limit = _parse_bool_flag(is_limit, False)
     ord_lbl = f"{decision} LIMIT" if is_limit else decision
     qty_s = format_notify_qty(target_qty)
     px_log_s = format_notify_price(price, comma=False)
@@ -130,6 +133,8 @@ def execute_enforce_intent_order(
     sleep_fn: Optional[Callable[[float], Any]] = None,
 ) -> dict[str, Any]:
     """Execute an enforce-mode trade intent via Instrument.place with retry on stale account cache."""
+    guard_allowed = _parse_bool_flag(guard_allowed, False)
+    is_limit = _parse_bool_flag(is_limit, False)
     ord_lbl = f"{decision} LIMIT" if is_limit else decision
     px_body_s = format_notify_price(price, comma=True)
     if not guard_allowed:
@@ -347,16 +352,16 @@ def cancel_existing_ai_open_orders(
     if not callable(open_fn) or not callable(cancel_fn) or (not match_any_side and not want_side):
         return canceled_ids
     if isinstance(exclude_order_ids, str):
-        excluded = {exclude_order_ids.strip()} if exclude_order_ids.strip() else set()
+        excluded = {cid} if (cid := clean_order_id(exclude_order_ids)) else set()
     elif (
         exclude_order_ids is not None
         and not isinstance(exclude_order_ids, (bool, bytes, dict))
         and hasattr(exclude_order_ids, "__iter__")
     ):
         excluded = {
-            str(x).strip()
+            cid
             for x in exclude_order_ids
-            if x is not None and not isinstance(x, bool) and str(x).strip()
+            if (cid := clean_order_id(x)) is not None
         }
     else:
         excluded = set()
@@ -569,6 +574,8 @@ def preflight_intent_and_resolve_price(
     log: Optional[Any] = None,
 ) -> tuple[bool, str, str, str, str, float, Any, float, float, bool]:
     """Validate intent fields, confidence, instrument, and live/limit price before order execution."""
+    if not isinstance(intent, dict):
+        return False, "", "", "", "", 0.0, None, 0.0, 0.0, False
     intent_id, decision, symbol, venue = normalize_intent_fields(intent, now_ts)
     if decision not in ("BUY", "SELL"):
         _record_intent_state(intent, "REJECTED_INVALID_DECISION", now_ts, decision=decision)

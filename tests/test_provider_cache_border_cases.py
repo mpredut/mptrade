@@ -75,7 +75,7 @@ from cachetrend import CacheShortTrendManager
 import external_order_guard as eog
 import guard_hierarchy as gh
 from guard_hierarchy import preflight_intelligence_guard_entry
-from instrument import Instrument, _is_aborted
+from instrument import Instrument, _is_aborted, resolve_instrument_live_price
 from instrument_registry import has_workspace_instrument_sources
 from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
 from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
@@ -183,6 +183,7 @@ from order_lifecycle import (
     TrackedOrderLifecycle,
     TrackedOrderResult,
     resolve_dynamic_reprice_bounds,
+    restore_cancelled_orders,
 )
 import order_retry
 import order_retry_worker
@@ -202,6 +203,9 @@ from providers import (
 from providers.base import MarketDataProvider
 from providers.binance_provider import BinanceProvider
 from providers.execution_audit import (
+    AuditedStrategyExecutor,
+    ExecutionAudit,
+    _extract_audit_fill_metrics,
     _filter_intents_by_scope,
     _is_open_resting_detail,
     reconcile_intents_from_execution_audit,
@@ -209,8 +213,14 @@ from providers.execution_audit import (
 )
 from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
 from providers.intent_state import (
+    _extract_intent_id,
+    _intent_venue_symbol_side_key,
     _resolve_clamped_intent_notional,
+    ai_intent_client_order_id,
     collect_known_ai_order_ids,
+    is_non_fiat_btc_quote_instrument,
+    normalize_intent_fields,
+    normalize_trading_decisions,
     validate_and_build_intent_dict,
 )
 from providers.kraken_provider import KrakenProvider
@@ -249,7 +259,12 @@ from providers.quantity import (
     venue_fee_cap_quantity,
 )
 from providers.replay_provider import ReplayMarketDataProvider
-from providers.strategy_executor import OrderReconciliationCapabilities, ProviderError, SubmissionRefused
+from providers.strategy_executor import (
+    OrderReconciliationCapabilities,
+    ProviderError,
+    SubmissionOutcome,
+    SubmissionRefused,
+)
 from providers.t212_provider import T212Provider
 import qlimit_order_guard as qog
 import rtrade
@@ -6634,6 +6649,214 @@ def test_wave37_market_regime_cacheaccount_cachetrend_rtrade_store_and_monitoror
     mo.monitor_open_orders_by_type("BTCUSDC", "BUY")
     assert place_called == []
     assert complete_calls == [("rep-801", "status_error", {"failure_reason": "cancel_activation_failed"})]
+
+
+def test_wave38_intent_execution_audit_lifecycle_and_instrument_border_cases(tmp_path):
+    # 1. providers/intent_execution: string boolean guard_allowed="false" / is_limit="false" & numeric exclude_order_ids.
+    placed_live = []
+    notif_events = []
+    stub_inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        provider_name="binance",
+        place=lambda **kw: placed_live.append(kw) or {"orderId": "901"},
+    )
+    enf_intent = {"intent_id": "enf_1", "status": "PENDING", "history": []}
+    ie_mod.execute_enforce_intent_order(
+        stub_inst,
+        enf_intent,
+        intent_id="enf_1",
+        decision="BUY",
+        target_qty=0.01,
+        price=60000.0,
+        effective_usd=600.0,
+        guard_allowed="false",  # type: ignore[arg-type]
+        guard_reason="macro_veto",
+        thesis="test",
+        trade_tag="[auto_cryptotrade_executor]",
+        now_ts=1700000000.0,
+        bypass_guards=None,
+        is_limit="false",  # type: ignore[arg-type]
+        dispatch_notify_fn=lambda **kw: notif_events.append(kw),
+    )
+    assert placed_live == []
+    assert enf_intent["status"] == "BLOCKED_BY_GUARD"
+    assert notif_events and "LIMIT" not in notif_events[0]["title"]
+
+    shadow_notifs = []
+    sh_intent = {"intent_id": "sh_1", "status": "PENDING", "history": []}
+    ie_mod.record_shadow_intent_observation(
+        stub_inst,
+        sh_intent,
+        decision="BUY",
+        target_qty=0.01,
+        price=60000.0,
+        effective_usd=600.0,
+        confidence=0.85,
+        guard_allowed="false",  # type: ignore[arg-type]
+        guard_reason="spread_wide",
+        thesis="test",
+        trade_tag="[auto_cryptotrade_executor]",
+        now_ts=1700000000.0,
+        is_limit="false",  # type: ignore[arg-type]
+        dispatch_notify_fn=lambda **kw: shadow_notifs.append(kw),
+    )
+    assert sh_intent["history"][-1]["guard_allowed"] is False
+    assert "order_type" not in sh_intent["history"][-1]
+    assert "(MARKET)" in shadow_notifs[0]["body"] and "spread_wide" in shadow_notifs[0]["body"]
+
+    canceled_oids = []
+    cancel_inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        open_orders=lambda: [
+            {"orderId": 1001, "side": "BUY", "clientOrderId": "AI_keep"},
+            {"orderId": 1002, "side": "BUY", "clientOrderId": "AI_drop"},
+        ],
+        cancel_order=lambda oid: canceled_oids.append(oid) or True,
+    )
+    cancel_inst.cancel_order._mock_name = "cancel_order"
+    res_canceled = ie_mod.cancel_existing_ai_open_orders(
+        cancel_inst,
+        "BUY",
+        exclude_order_ids={"1001.0", "0", "nan"},
+    )
+    assert res_canceled == ["1002"] and canceled_oids == ["1002"]
+    assert ie_mod.preflight_intent_and_resolve_price(
+        None,  # type: ignore[arg-type]
+        min_confidence=0.7,
+        min_notional_usd=10.0,
+        max_notional_usd=100.0,
+        resolve_instrument_fn=lambda *_a, **_kw: None,
+        get_live_price_fn=lambda _i: 0.0,
+        instruments_map={},
+        now_ts=1700000000.0,
+    )[0] is False
+
+    # 2. providers/intent_state: scalar ID/symbol hygiene & provider object unwrapping.
+    assert _extract_intent_id({"intent_id": float("nan")}) == ""
+    assert _extract_intent_id({"intent_id": "null", "id": "505.0"}) == "505"
+    assert _extract_intent_id({"intent_id": {"bad": 1}}) == ""
+    assert ai_intent_client_order_id(float("nan")) is None
+    assert ai_intent_client_order_id("null") is None
+    assert ai_intent_client_order_id(505.0) == "AI_505"
+    assert collect_known_ai_order_ids([], {1001.0, "0", "nan", "AI_x"}) == {"1001", "AI_x"}
+
+    assert _intent_venue_symbol_side_key("binance", "BTCUSDC", "LONG") == _intent_venue_symbol_side_key(
+        "binance", "btcusdc", "BUY"
+    )
+    decs = normalize_trading_decisions(
+        {
+            "decisions": [
+                {"symbol": "BTCUSDC", "venue": "binance", "decision": "LONG", "confidence": 0.9},
+                {"symbol": "BTCUSDC", "venue": "binance", "decision": "BUY", "confidence": 0.7},
+                {"symbol": "null", "venue": "binance", "decision": "BUY", "confidence": 0.8},
+            ]
+        }
+    )
+    assert len(decs) == 2 and "symbol" not in decs[1]
+    assert (
+        validate_and_build_intent_dict(
+            {"decision": "BUY", "symbol": "null", "venue": "binance", "confidence": 0.9, "notional_usd": 50.0},
+            source="test",
+            min_confidence=0.7,
+            min_notional_usd=10.0,
+            max_notional_usd=100.0,
+            existing_intents=[],
+            now_ts=1700000000.0,
+        )
+        is None
+    )
+    assert normalize_intent_fields({"intent_id": "i1", "symbol": "none", "decision": "BUY"}, 100.0)[2] == ""
+    eq_inst_obj = SimpleNamespace(provider_name=None, provider=SimpleNamespace(name="t212"), symbol="BTC_US_EQ", quote="USD")
+    assert is_non_fiat_btc_quote_instrument(eq_inst_obj) is False
+
+    # 3. providers/intent_reconciliation & providers/execution_audit border cases.
+    age_target: dict[str, Any] = {}
+    ir_mod._attach_intent_age_fields(age_target, {"ts_val": 1000.0}, None, unit_sec=60.0, ndigits=1, suffix="min")  # type: ignore[arg-type]
+    ir_mod._attach_intent_age_fields(age_target, {"ts_val": 1000.0}, 1120.0, unit_sec=0.0, ndigits=1, suffix="min")
+    assert age_target == {}
+
+    ms_intents = [
+        {
+            "intent_id": "i_ms_1",
+            "timestamp": 1700000000000,
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "decision": "BUY",
+            "order_type": "MARKET",
+            "status": "EXECUTED",
+            "suggested_notional_usd": 50.0,
+            "execution_payload": {"orderId": "77", "status": "FILLED", "executedQty": "0.001", "price": "50000", "filled_at": 1700000010.0},
+        },
+        {
+            "intent_id": "i_ms_2",
+            "timestamp": "2023-11-14T22:13:40Z",
+            "venue": "binance",
+            "symbol": "ETHUSDC",
+            "decision": "BUY",
+            "order_type": "MARKET",
+            "status": "EXECUTED",
+            "suggested_notional_usd": 50.0,
+            "execution_payload": {"orderId": "78", "status": "FILLED", "executedQty": "0.02", "price": "2500"},
+        },
+    ]
+    cycle_st = ir_mod.build_last_cycle_execution_status(
+        ms_intents, "crypto", 1700000050.0, lambda d, default=None: d.get("suggested_notional_usd", default)
+    )
+    assert isinstance(cycle_st, list) and len(cycle_st) == 2
+
+    assert _extract_audit_fill_metrics(None)[7] is False  # type: ignore[arg-type]
+    assert (
+        _extract_audit_fill_metrics(
+            {"event": "order_terminal", "venue_status": "FILLED", "qty": 1.0, "reference_price": 99.5},
+            fallback_ref_price="false",  # type: ignore[arg-type]
+        )[6]
+        is None
+    )
+    aud = ExecutionAudit(directory=str(tmp_path / "audit"), clock=lambda: 1700000000.0)
+    aud_exec = AuditedStrategyExecutor(
+        SimpleNamespace(name="binance", submit_order=lambda *_a, **_kw: "OID-1"),
+        audit=aud,
+        venue="binance",
+    )
+    out = aud_exec.submit_outcome_with_intent(
+        "int-aud-1", "BTCUSDC", " BUY ", 0.1, 50000.0, _requested_recorded="false"  # type: ignore[arg-type]
+    )
+    assert out.state == "accepted"
+    aud_rows = read_jsonl_dicts(str(tmp_path / "audit" / "execution_audit_2023-11-14.jsonl"))
+    assert [r["event"] for r in aud_rows] == ["submit_requested", "submit_accepted"]
+    assert aud_rows[0]["side"] == "buy"
+
+    # 4. order_lifecycle & Instrument border cases.
+    with pytest.raises(ValueError, match="tracked-order intent must be a dict"):
+        TrackedOrderResult("active", None)  # type: ignore[arg-type]
+    lc = TrackedOrderLifecycle(SimpleNamespace(), provider_name="binance", clock=lambda: 1700000000.0)
+    assert lc.new_intent(
+        intent_id="i1", client_order_id="c1", symbol="BTCUSDC", side="BUY", requested_qty=1.0, kind="null"
+    )["kind"] is None
+    nested_fields = TrackedOrderLifecycle._order_fields(
+        SubmissionOutcome("accepted", order_id=777, native=SubmissionOutcome("unknown", order_id=None))
+    )
+    assert nested_fields == {"submission_outcome": "accepted", "order_id": "777"}
+    assert restore_cancelled_orders([None, "bad"], lambda _p: True, log_fn=None) == 0  # type: ignore[list-item,arg-type]
+
+    prov_cancels = []
+    stub_prov = SimpleNamespace(
+        name="binance",
+        validate_symbol=lambda _s: None,
+        cancel_order=lambda sym, oid: prov_cancels.append((sym, oid)) or True,
+        get_current_price=lambda _s: 123.45,
+    )
+    stub_api = SimpleNamespace(provider_by_name=lambda _p: stub_prov)
+    inst_obj = Instrument("btc", "BTCUSDC", "binance", params=["not-a-mapping"], api=stub_api)  # type: ignore[arg-type]
+    assert inst_obj.params == {}
+    assert inst_obj.cancel_order(None) is None  # type: ignore[arg-type]
+    assert inst_obj.cancel_order(False) is None  # type: ignore[arg-type]
+    assert inst_obj.cancel_order("0") is None
+    assert inst_obj.cancel_order(1001.0) is True  # type: ignore[arg-type]
+    assert prov_cancels == [("BTCUSDC", "1001")]
+    assert resolve_instrument_live_price(SimpleNamespace(symbol=True)) == 0.0
+    assert resolve_instrument_live_price(SimpleNamespace(symbol="null")) == 0.0
+
 
 
 

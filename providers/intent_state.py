@@ -10,8 +10,10 @@ from typing import Any, Callable, Optional
 
 from botcore import (
     FileLock,
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_json_value,
+    clean_order_id,
     clean_scale,
     conf_or_override,
     extract_order_id,
@@ -47,16 +49,21 @@ _NOTIONAL_KEYS: tuple[str, ...] = (
 _INTENTS_LOCK_LOCAL = threading.local()
 
 
+def _clean_intent_symbol(raw_sym: Any) -> str:
+    if raw_sym is None or isinstance(raw_sym, (bool, dict, list, tuple, set, frozenset)):
+        return ""
+    s = str(raw_sym).strip()
+    return "" if not s or s.lower() in INVALID_SCALAR_STRINGS else s.upper()
+
+
 def _extract_intent_id(record: Any, default: str = "") -> str:
     """Return a clean non-boolean intent_id (falling back to ``id``) from ``record``."""
     if not isinstance(record, dict):
         return default
     for key in ("intent_id", "id"):
-        raw = record.get(key)
-        if raw is not None and not isinstance(raw, bool):
-            clean = str(raw).strip()
-            if clean:
-                return clean
+        clean = clean_order_id(record.get(key))
+        if clean:
+            return clean
     return default
 
 
@@ -84,7 +91,7 @@ def _record_intent_state(
 
 def ai_intent_client_order_id(intent_id: Any) -> Optional[str]:
     """Durable ``AI_`` client ID of an autonomous intent (<= 36 chars, Binance newClientOrderId compatible)."""
-    raw = "" if isinstance(intent_id, (bool, list, tuple, dict, set, frozenset)) else str(intent_id or "").strip()
+    raw = clean_order_id(intent_id) or ""
     if not raw:
         return None
     cid_body = (
@@ -122,13 +129,12 @@ def collect_known_ai_order_ids(
     """Collect venue order IDs (``execution_payload`` / ``history``) and venue-native AI client IDs across intents."""
     ai_oids: set[str] = set()
     if isinstance(initial_ids, str):
-        if clean_s := initial_ids.strip():
+        if clean_s := clean_order_id(initial_ids):
             ai_oids.add(clean_s)
     elif initial_ids is not None and not isinstance(initial_ids, (bool, bytes, dict)) and hasattr(initial_ids, "__iter__"):
         for item_id in initial_ids:
-            if item_id is not None and not isinstance(item_id, (bool, dict, list, tuple, set, frozenset)):
-                if clean_s := str(item_id).strip():
-                    ai_oids.add(clean_s)
+            if clean_s := clean_order_id(item_id):
+                ai_oids.add(clean_s)
     if isinstance(intents, dict):
         intents = intents.get("intents")
     if not isinstance(intents, list):
@@ -221,16 +227,17 @@ def extract_intent_order_type(data: dict[str, Any]) -> str:
 def _intent_venue_symbol_side_key(
     venue: Any, symbol: Any, side: Any
 ) -> tuple[str, str, tuple[str, ...], str]:
-    s_raw = str(symbol or "").strip().upper()
+    s_raw = _clean_intent_symbol(symbol)
     v_norm = normalize_venue_name(venue)
     base = canonical_base_asset(s_raw) or s_raw
     if base and is_equity_venue_or_suffix(s_raw, v_norm):
         base = f"EQ:{base}"
+    side_s = "" if side is None or isinstance(side, bool) else (normalize_side(side) or str(side).strip().upper())
     return (
         v_norm,
         base,
         compatible_quote_suffixes(s_raw),
-        str(side or "").strip().upper(),
+        side_s,
     )
 
 
@@ -258,9 +265,10 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
                 raw_side = normalize_side(raw_val) or str(raw_val).strip().upper() or "HOLD"
             d["decision"] = raw_side
             raw_sym = d.get("symbol")
-            if isinstance(raw_sym, str) and raw_sym.strip():
-                d["symbol"] = raw_sym.strip().upper()
-            elif isinstance(raw_sym, bool):
+            clean_sym = _clean_intent_symbol(raw_sym)
+            if clean_sym:
+                d["symbol"] = clean_sym
+            elif raw_sym is not None:
                 d.pop("symbol", None)
             v_norm = normalize_venue_name(d.get("venue"))
             if v_norm:
@@ -326,9 +334,8 @@ def normalize_intent_fields(
     """Extract and normalize (intent_id, decision, symbol, venue) from an intent dict."""
     intent_id = _extract_intent_id(intent, default=f"intent_{safe_nonneg_int(now_ts, default=0)}")
     decision = extract_intent_side(intent)
-    raw_sym = intent.get("symbol", "")
-    symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
-    raw_venue = intent.get("venue", "binance")
+    symbol = _clean_intent_symbol(intent.get("symbol", "") if isinstance(intent, dict) else "")
+    raw_venue = intent.get("venue", "binance") if isinstance(intent, dict) else "binance"
     if isinstance(raw_venue, bool):
         venue = "__invalid__"
     elif raw_venue is None or not str(raw_venue).strip():
@@ -342,11 +349,12 @@ def is_non_fiat_btc_quote_instrument(inst: Any) -> bool:
     """Return True when ``inst`` is a crypto instrument quoted in BTC rather than fiat/stablecoin."""
     if not inst:
         return False
-    inst_prov = getattr(inst, "provider_name", None) or getattr(inst, "provider", "")
+    raw_prov = getattr(inst, "provider_name", None) or getattr(inst, "provider", "")
+    inst_prov = getattr(raw_prov, "name", raw_prov)
     if is_equity_venue(inst_prov):
         return False
-    inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
-    inst_quote_u = str(getattr(inst, "quote", "") or "").strip().upper()
+    inst_sym_u = _clean_intent_symbol(getattr(inst, "symbol", ""))
+    inst_quote_u = _clean_intent_symbol(getattr(inst, "quote", ""))
     return symbol_quote_asset(inst_sym_u) == "BTC" or inst_quote_u == "BTC"
 
 
@@ -375,8 +383,7 @@ def validate_and_build_intent_dict(
         if log:
             log.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, raw_dec)
         return None
-    raw_sym = decision.get("symbol", "")
-    symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
+    symbol = _clean_intent_symbol(decision.get("symbol", ""))
     raw_venue = decision.get("venue", "")
     venue = "" if isinstance(raw_venue, bool) or raw_venue is None else normalize_venue_name(str(raw_venue))
     if not symbol or not venue:

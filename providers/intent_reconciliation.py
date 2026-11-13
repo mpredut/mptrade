@@ -18,7 +18,6 @@ from botcore import (
     first_pos_float,
     normalize_timestamp_ms,
     resolve_now_ts,
-    safe_float,
     safe_pos_float,
 )
 from cachepaths import (
@@ -214,9 +213,9 @@ def reconcile_intents_from_execution_audit(
                         v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
                         or l_stat in ("canceled", "cancelled", "expired", "rejected")
                     ):
-                        prev_oid = prev.get("order_id") if prev is not None else None
-                        cur_oid = rec.get("order_id")
-                        if not prev_oid or not cur_oid or str(prev_oid) == str(cur_oid):
+                        prev_oid = clean_order_id(prev.get("order_id")) if prev is not None else None
+                        cur_oid = clean_order_id(rec.get("order_id"))
+                        if not prev_oid or not cur_oid or prev_oid == cur_oid:
                             matched_records[iid] = rec
             elif iid in executed_incomplete_by_id:
                 rec_oid = extract_order_id(rec.get("order_id"), default=None)
@@ -267,7 +266,12 @@ def reconcile_intents_from_execution_audit(
         rec_ts_f = safe_pos_float(rec.get("ts"), default=None)
         eff_ts = rec_ts_f if rec_ts_f is not None else time.time()
         orig_q = rec.get("qty") if rec.get("qty") is not None else submitted_qty_by_id.get(iid)
-        side_u = str(rec.get("side") or intent.get("decision") or "").upper()
+        raw_rec_side = rec.get("side")
+        side_u = (
+            extract_intent_side(rec)
+            or extract_intent_side(intent)
+            or ("" if raw_rec_side is None or isinstance(raw_rec_side, bool) else str(raw_rec_side).strip().upper())
+        )
         sym_val = rec.get("symbol") or intent.get("symbol")
 
         if ev == "submit_unknown":
@@ -801,12 +805,16 @@ def _attach_intent_age_fields(
     ndigits: int,
     suffix: str,
 ) -> None:
-    ts_val = det["ts_val"]
+    now_f = safe_pos_float(now_ts, default=None)
+    unit_f = safe_pos_float(unit_sec, default=None)
+    if now_f is None or unit_f is None:
+        return
+    ts_val = safe_pos_float(det.get("ts_val"), default=0.0) or 0.0
     eff_ts = safe_pos_float(det.get("fill_ts_val"), default=None) or ts_val
-    if eff_ts > 0 and now_ts >= eff_ts:
-        target[f"age_{suffix}"] = round((now_ts - eff_ts) / unit_sec, ndigits)
-    if ts_val > 0 and eff_ts > ts_val + 60.0 and now_ts >= ts_val:
-        target[f"placed_age_{suffix}"] = round((now_ts - ts_val) / unit_sec, ndigits)
+    if eff_ts > 0 and now_f >= eff_ts:
+        target[f"age_{suffix}"] = round((now_f - eff_ts) / unit_f, ndigits)
+    if ts_val > 0 and eff_ts > ts_val + 60.0 and now_f >= ts_val:
+        target[f"placed_age_{suffix}"] = round((now_f - ts_val) / unit_f, ndigits)
 
 
 def _resolve_executed_open_resting_detail(
@@ -944,7 +952,8 @@ def build_last_cycle_execution_status(
         return None
 
     def _eff_intent_ts(intent_obj: dict[str, Any]) -> float:
-        base_t = safe_float(intent_obj.get("timestamp"), 0.0) or 0.0
+        parsed_base = _parse_epoch_or_iso_s(intent_obj.get("timestamp"))
+        base_t = _ts_ms_to_s(parsed_base) if (parsed_base is not None and parsed_base > 0) else 0.0
         ep = intent_obj.get("execution_payload")
         if isinstance(ep, dict):
             ep_st = str(ep.get("status") or "").strip().upper()
@@ -994,6 +1003,7 @@ def build_last_cycle_execution_status(
     seen_oids: set[str] = set()
     seen_sym_keys: set[tuple[str, str, tuple[str, ...], str]] = set()
     cycle_ids = {id(i) for i in cycle_intents}
+    now_f = safe_pos_float(now_ts, default=None)
     for i in cycle_intents:
         det = _resolve_intent_execution_details(
             i,
@@ -1008,8 +1018,9 @@ def build_last_cycle_execution_status(
             not _is_open_resting_detail(det)
             and det.get("exec_status") not in ("OPEN_RESTING", "PARTIALLY_FILLED")
             and eff_ts_det > 0
-            and now_ts > eff_ts_det
-            and (now_ts - eff_ts_det) > 3600.0
+            and now_f is not None
+            and now_f > eff_ts_det
+            and (now_f - eff_ts_det) > 3600.0
         ):
             continue
         if det["order_id"] is not None:
