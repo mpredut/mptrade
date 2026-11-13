@@ -12,10 +12,10 @@ import time
 from typing import Any, Iterable, Optional, Union
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _first_mapped,
-    clean_nonempty_str,
     clean_order_id,
+    clean_scalar_str,
+    clean_upper_scalar,
     extract_order_id,
     safe_nonneg_int,
     sanitize_identifier,
@@ -118,9 +118,6 @@ def _match_bot_cid_spec(cid_up: str, pfx: str, mode: str) -> bool:
     return cid_up == pfx or cid_up.startswith((f"{pfx}_", f"{pfx}-"))
 
 
-def _clean_ctx_str(val: object) -> Optional[str]:
-    s = clean_nonempty_str(val)
-    return s if (s is not None and s.lower() not in INVALID_SCALAR_STRINGS) else None
 KNOWN_BOT_PROCESS_CODES = frozenset(_PROCESS_NAME_OVERRIDES.values()) | frozenset({"MN", "AI"})
 
 REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual"})
@@ -236,16 +233,18 @@ def is_order_repriceable_by_monitororder(client_order_id: Optional[str]) -> bool
 
 
 def _normalize_allowed_owners(allowed_owners: Union[str, Iterable[str], None]) -> set[str]:
-    if allowed_owners is None or isinstance(allowed_owners, bool):
+    if allowed_owners is None or isinstance(allowed_owners, (bool, dict)):
         return set()
     if isinstance(allowed_owners, str):
-        clean_owner = allowed_owners.strip().lower()
-        return {clean_owner} if clean_owner else set()
+        clean_owner = clean_scalar_str(allowed_owners)
+        return {clean_owner.lower()} if clean_owner else set()
     try:
         return {
-            str(o).strip().lower()
+            s.lower()
             for o in allowed_owners
-            if o is not None and not isinstance(o, bool) and str(o).strip()
+            if o is not None
+            and not isinstance(o, (bool, dict, list, tuple, set, frozenset))
+            and (s := clean_scalar_str(str(o))) is not None
         }
     except TypeError:
         return set()
@@ -283,7 +282,7 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
     if not isinstance(order, dict):
         return "BOT"
-    explicit = (_clean_ctx_str(order.get("actor")) or "").upper()
+    explicit = clean_upper_scalar(order.get("actor")) or ""
     if explicit in ("AI", "BOT"):
         return explicit
     exact_ids, lower_ids = _normalize_id_lookup_sets(known_ai_order_ids)
@@ -306,10 +305,10 @@ def resolve_order_origin(
     if actor == "AI" or not isinstance(order, dict):
         return actor, None, None
 
-    raw_mod = _first_mapped(order, ("module", "origin_module", "bot", "caller"), _clean_ctx_str)
+    raw_mod = _first_mapped(order, ("module", "origin_module", "bot", "caller"), clean_scalar_str)
     mod = raw_mod.lower() if raw_mod else None
     rule = _first_mapped(
-        order, ("rule", "decision_rule", "trigger_rule", "kind", "role", "motivation"), _clean_ctx_str
+        order, ("rule", "decision_rule", "trigger_rule", "kind", "role", "motivation"), clean_scalar_str
     )
     oid = extract_order_id(order, default="")
     raw_cid = extract_client_order_id(order, default="") or ""
@@ -318,8 +317,8 @@ def resolve_order_origin(
         for lookup_key in (str(oid) if oid else "", raw_cid, raw_cid.lower()):
             if lookup_key and isinstance(entry := audit_origin_map.get(lookup_key), (tuple, list)) and len(entry) >= 2:
                 a_mod, a_rule = entry[0], entry[1]
-                mod = mod or _clean_ctx_str(a_mod)
-                rule = rule or _clean_ctx_str(a_rule)
+                mod = mod or clean_scalar_str(a_mod)
+                rule = rule or clean_scalar_str(a_rule)
 
     if raw_cid:
         cid_up = raw_cid.upper()
@@ -348,11 +347,14 @@ def resolve_order_origin(
 
 def format_actor_tag(actor: Optional[str], module: Optional[str] = None, rule: Optional[str] = None) -> str:
     """Format compact actor attribution string (e.g. ``'AI'`` or ``'BOT(module=assetguardian, rule=SL_PANIC)'``)."""
-    act_s = "" if isinstance(actor, (bool, dict, list, tuple, set, frozenset)) else str(actor or "").strip()
-    act_u = "" if act_s.lower() in INVALID_SCALAR_STRINGS else act_s.upper()
+    act_u = (
+        ""
+        if actor is None or isinstance(actor, (bool, dict, list, tuple, set, frozenset))
+        else (clean_upper_scalar(str(actor)) or "")
+    )
     if act_u != "BOT":
         return act_u or "BOT"
-    parts = [f"{k}={s}" for k, v in (("module", module), ("rule", rule)) if (s := _clean_ctx_str(v))]
+    parts = [f"{k}={s}" for k, v in (("module", module), ("rule", rule)) if (s := clean_scalar_str(v))]
     return f"BOT({', '.join(parts)})" if parts else "BOT"
 
 

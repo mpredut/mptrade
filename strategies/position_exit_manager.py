@@ -15,11 +15,10 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     StringEnum,
     _parse_bool_flag,
     are_close,
-    clean_nonempty_str,
+    clean_scalar_str,
     normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
@@ -37,8 +36,7 @@ STOP_EXIT_KINDS: frozenset[str] = frozenset({"STOP", "SL", "STOP_LOSS", "AI_STOP
 
 
 def _clean_symbol_str(symbol: Any) -> str:
-    s = clean_nonempty_str(symbol)
-    return s if (s is not None and s.lower() not in INVALID_SCALAR_STRINGS) else ""
+    return clean_scalar_str(symbol) or ""
 
 
 def is_stop_exit_kind(kind: Any) -> bool:

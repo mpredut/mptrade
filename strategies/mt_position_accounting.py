@@ -8,10 +8,10 @@ import math
 from typing import Any, Optional, Tuple
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_order_id,
-    clean_upper_token,
+    clean_scalar_str,
+    clean_upper_scalar,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
@@ -185,26 +185,21 @@ def _coerce_order_list(orders) -> list:
     return [] if orders is None or isinstance(orders, bool) else list(orders)
 
 
-def _clean_mt_label(val: Any) -> Optional[str]:
-    if isinstance(val, bool) or not isinstance(val, str):
-        return None
-    s = val.strip()
-    return None if not s or s.lower() in INVALID_SCALAR_STRINGS else s
-
-
 def _inst_provider(inst: Any = None) -> Optional[str]:
     """Resolve canonical provider label from an instrument instance or string."""
     if inst is None or isinstance(inst, bool):
         return None
     if isinstance(inst, str):
-        return _clean_mt_label(inst)
-    lbl = _clean_mt_label(getattr(inst, "provider_label", None)) or _clean_mt_label(getattr(inst, "provider_name", None))
+        return clean_scalar_str(inst)
+    lbl = clean_scalar_str(getattr(inst, "provider_label", None)) or clean_scalar_str(
+        getattr(inst, "provider_name", None)
+    )
     if lbl:
         return lbl
     raw = getattr(inst, "_provider", None)
     if isinstance(raw, str):
-        return _clean_mt_label(raw)
-    return _clean_mt_label(getattr(raw, "name", None)) or _clean_mt_label(getattr(raw, "provider_label", None))
+        return clean_scalar_str(raw)
+    return clean_scalar_str(getattr(raw, "name", None)) or clean_scalar_str(getattr(raw, "provider_label", None))
 
 
 _ORIG_MT_ATTRS: dict[str, Any] = {
@@ -408,15 +403,13 @@ def _infer_mt_exit_kind(
         if isinstance(trade_orders_sell, (list, tuple)) and trade_orders_sell
         else {}
     )
-    raw_lsk = clean_upper_token(latest_sell.get("kind")) or ""
-    latest_sell_kind = "" if raw_lsk.lower() in INVALID_SCALAR_STRINGS else raw_lsk
+    latest_sell_kind = clean_upper_scalar(latest_sell.get("kind")) or ""
     is_ai_sell = resolve_order_actor(latest_sell) == "AI" or latest_sell_kind.startswith("AI_")
     if is_ai_sell and not is_stop_exit_kind(latest_sell_kind):
         if isinstance(last_exit_kind_map, dict):
             last_exit_kind_map.pop(symbol, None)
         return "SELL"
-    raw_mapped = clean_upper_token(last_exit_kind_map.get(symbol)) if isinstance(last_exit_kind_map, dict) else None
-    mapped_kind = None if raw_mapped is None or raw_mapped.lower() in INVALID_SCALAR_STRINGS else raw_mapped
+    mapped_kind = clean_upper_scalar(last_exit_kind_map.get(symbol)) if isinstance(last_exit_kind_map, dict) else None
     raw_explicit = mapped_kind or (latest_sell_kind or None)
     explicit_exit_kind = "STOP" if is_stop_exit_kind(raw_explicit) else raw_explicit
     closed_by_sell = _parse_bool_flag(position_closed_by_sell, False)

@@ -16,11 +16,11 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     check_cooldown_gate,
-    clean_nonempty_str,
     clean_order_id,
+    clean_scalar_str,
+    clean_upper_scalar,
     coerce_finite_float,
     exact_pos_int,
     extract_order_id,
@@ -111,15 +111,10 @@ _DEFINITIVE_REFUSAL_TOKENS = (
 def propagate_submission_refusal(response, outcome_context):
     """Bridge Instrument's result channel into the strict lifecycle contract."""
     if response is None and isinstance(outcome_context, dict):
-        if str(outcome_context.get("state") or "").strip().lower() == "refused":
-            reason = str(outcome_context.get("reason") or "pre_submit_refused").strip()
+        if (clean_scalar_str(outcome_context.get("state")) or "").lower() == "refused":
+            reason = clean_scalar_str(outcome_context.get("reason")) or "pre_submit_refused"
             raise SubmissionRefused(reason)
     return response
-
-
-def _clean_lifecycle_symbol(symbol: object) -> Optional[str]:
-    s = clean_nonempty_str(symbol)
-    return s if (s is not None and s.lower() not in INVALID_SCALAR_STRINGS) else None
 
 
 @dataclass(frozen=True)
@@ -160,7 +155,7 @@ class StrategyExecutorLifecycleApi:
             raise RuntimeError(
                 f"{provider_name or type(self.executor).__name__}: order_by_client_id is unsupported"
             )
-        clean_sym = _clean_lifecycle_symbol(symbol)
+        clean_sym = clean_scalar_str(symbol)
         if clean_sym is None:
             raise ProviderError("invalid symbol")
         clean_cid = clean_order_id(client_order_id)
@@ -171,7 +166,7 @@ class StrategyExecutorLifecycleApi:
     def _require_order_id_op(self, cap: str, method_name: str, symbol: str, order_id: str) -> tuple[str, str]:
         if not getattr(self.reconciliation_capabilities(), cap):
             raise RuntimeError(f"{self.executor.__class__.__name__}: {method_name} is unsupported")
-        clean_sym = _clean_lifecycle_symbol(symbol)
+        clean_sym = clean_scalar_str(symbol)
         if clean_sym is None:
             raise ProviderError("invalid symbol")
         clean_oid = clean_order_id(order_id)
@@ -209,10 +204,10 @@ class TrackedOrderLifecycle:
         audit=None,
         clock: Callable[[], float] = time.time,
     ):
-        if (prov_clean := clean_nonempty_str(provider_name)) is None:
+        if (prov_clean := clean_scalar_str(provider_name)) is None:
             raise ValueError("provider_name is required")
         venue_clean: Optional[str] = None
-        if venue is not None and (venue_clean := clean_nonempty_str(venue)) is None:
+        if venue is not None and (venue_clean := clean_scalar_str(venue)) is None:
             raise ValueError("venue must be a non-empty string")
         mc_int = exact_pos_int(missing_confirmations, default=None)
         if mc_int is None:
@@ -260,7 +255,7 @@ class TrackedOrderLifecycle:
         for key in ("intent_id", "client_order_id"):
             if clean_order_id(intent.get(key)) is None:
                 raise ValueError(f"tracked intent missing {key}")
-        if _clean_lifecycle_symbol(intent.get("symbol")) is None:
+        if clean_scalar_str(intent.get("symbol")) is None:
             raise ValueError("tracked intent missing symbol")
         side_val = intent.get("side")
         if isinstance(side_val, bool) or not isinstance(side_val, str) or not side_val.strip():
@@ -308,7 +303,7 @@ class TrackedOrderLifecycle:
             raise ValueError("tracked intent attempt must be positive")
         clean_iid = clean_order_id(intent_id)
         clean_cid = clean_order_id(client_order_id)
-        clean_sym = _clean_lifecycle_symbol(symbol)
+        clean_sym = clean_scalar_str(symbol)
         if not clean_iid:
             raise ValueError("tracked intent missing intent_id")
         if not clean_cid:
@@ -320,7 +315,7 @@ class TrackedOrderLifecycle:
             "client_order_id": clean_cid,
             "symbol": clean_sym,
             "side": normalize_side(side, require_str=True) or (side.strip() if isinstance(side, str) else ""),
-            "kind": None if kind is None else _clean_lifecycle_symbol(kind),
+            "kind": None if kind is None else clean_scalar_str(kind),
             "requested_qty": qty_f,
             "requested_price": px_f,
             "attempt": att_int,
@@ -353,8 +348,7 @@ class TrackedOrderLifecycle:
             order_id = extract_order_id(response)
             if order_id is not None:
                 fields["order_id"] = str(order_id)
-            status_str = clean_nonempty_str(response.get("status"))
-            if status_str is not None and status_str.lower() not in INVALID_SCALAR_STRINGS:
+            if (status_str := clean_scalar_str(response.get("status"))) is not None:
                 fields["submit_status"] = status_str
             orig_qty = extract_orig_qty(response)
             submitted_qty = orig_qty if orig_qty is not None else extract_order_qty(response, default=None)
@@ -677,8 +671,7 @@ def _sanitize_outcome_field(value):
         return ""
     if isinstance(value, float) and safe_float(value, default=None) is None:
         return ""
-    text = sanitize_pipe_field(value).strip()
-    return "" if text.lower() in INVALID_SCALAR_STRINGS else text
+    return clean_scalar_str(sanitize_pipe_field(value)) or ""
 
 
 def _clean_numeric_field(value):
@@ -686,8 +679,7 @@ def _clean_numeric_field(value):
         return ""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value
-    s = str(value).strip()
-    return s if s.lower() not in INVALID_SCALAR_STRINGS else ""
+    return clean_scalar_str(str(value)) or ""
 
 
 def log_order_outcome(
@@ -766,12 +758,7 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
     price = extract_order_price(order, default=0.0)
     qty = safe_pos_float(extract_remaining_qty(order, default=0.0), default=0.0)
     level = safe_pos_float(order.get("level"), default=None)
-    raw_kind = order.get("kind")
-    kind = (
-        raw_kind.strip()
-        if isinstance(raw_kind, str) and raw_kind.strip() and raw_kind.strip().lower() not in INVALID_SCALAR_STRINGS
-        else ("TP" if side == "SELL" else "ENTRY")
-    )
+    kind = clean_scalar_str(order.get("kind")) or ("TP" if side == "SELL" else "ENTRY")
     prod = qty * price if qty > 0.0 and price > 0.0 else 0.0
     amount = safe_pos_float(order.get("amount"), default=safe_pos_float(prod, default=0.0))
     return {
@@ -799,7 +786,7 @@ def restore_cancelled_orders(
     if not valid_orders:
         return 0
     _log = log_fn if callable(log_fn) else print
-    clean_reason = reason.strip() if isinstance(reason, str) else ""
+    clean_reason = clean_scalar_str(reason) or ""
     tag = f" ({clean_reason})" if clean_reason else ""
     _log(f"  ! [ATOMIC_ROLLBACK] restoring {len(valid_orders)} cancelled order(s){tag}")
     restored = 0
@@ -877,8 +864,7 @@ def resolve_dynamic_reprice_bounds(
             hasattr(tick_fn, "_mock_name")
             or (not skip_live and not hasattr(place_fn, "_mock_name"))
         ):
-            sym_clean = _clean_lifecycle_symbol(symbol)
-            sym_key = sym_clean.upper() if sym_clean is not None else ""
+            sym_key = clean_upper_scalar(symbol) or ""
             cached_tick = (
                 tick_cache.get(sym_key)
                 if (isinstance(tick_cache, dict) and not hasattr(tick_fn, "_mock_name"))

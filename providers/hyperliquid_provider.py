@@ -25,6 +25,8 @@ import time
 from typing import Any, List, Optional
 
 from botcore import (
+    clean_scalar_str,
+    clean_upper_scalar,
     ClosedPriceSeries,
     exact_nonneg_int,
     exact_pos_int,
@@ -96,10 +98,8 @@ def _hl_client_module():
 
 def _spot_symbol_alias(symbol: str, token: str = "HYPE") -> bool:
     """Return whether a symbol is an exact alias of the configured USDC pair."""
-    if not symbol or not token or isinstance(symbol, bool) or isinstance(token, bool):
-        return False
-    normalized = str(symbol).strip().upper()
-    base = str(token).strip().upper()
+    normalized = clean_upper_scalar(symbol)
+    base = clean_upper_scalar(token)
     if not normalized or not base:
         return False
     return normalized in {
@@ -180,9 +180,13 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
 
     #: Served spot token, defaulting to HYPE.
     def __init__(self, token: str = "HYPE", live_enabled: Optional[bool] = None, *, client=None):
-        if isinstance(token, bool):
+        if isinstance(token, bool) or (token is not None and not isinstance(token, str)):
             raise ValueError(f"invalid Hyperliquid token: {token!r}")
-        raw_tok = str(token or "HYPE").strip().upper() or "HYPE"
+        raw_tok = clean_upper_scalar(token) or (
+            "HYPE" if token is None or not token.strip() else None
+        )
+        if raw_tok is None:
+            raise ValueError(f"invalid Hyperliquid token: {token!r}")
         split_tok = split_symbol_assets(raw_tok)
         if split_tok is not None and split_tok[1] == "USDC":
             raw_tok = split_tok[0]
@@ -232,10 +236,9 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
     @staticmethod
     def _env_account_address(client=None) -> Optional[str]:
         """Resolve ``HL_ACCOUNT_ADDRESS`` from the environment (or an injected client fallback)."""
-        addr = optional_env("HL_ACCOUNT_ADDRESS") or (
-            getattr(client, "account_address", None) if client is not None else None
+        return clean_scalar_str(optional_env("HL_ACCOUNT_ADDRESS")) or (
+            clean_scalar_str(getattr(client, "account_address", None)) if client is not None else None
         )
-        return str(addr).strip() if addr else None
 
     def _new_client(self, secret_key=None):
         """Build one consistently configured SDK client for reads or signing."""
@@ -347,14 +350,14 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             if isinstance(ss, dict) and isinstance(ss.get("balances"), list)
             else []
         )
-        coin_u = str(coin or "HYPE").strip().upper()
-        quote_u = str(quote or "USDC").strip().upper()
+        coin_u = clean_upper_scalar(coin) or "HYPE"
+        quote_u = clean_upper_scalar(quote) or "USDC"
         base_qty = next(
-            (safe_float(b.get("total")) for b in raw_balances if isinstance(b, dict) and str(b.get("coin") or "").upper() == coin_u),
+            (safe_nonneg_float(b.get("total"), 0.0) for b in raw_balances if isinstance(b, dict) and clean_upper_scalar(b.get("coin")) == coin_u),
             0.0,
         )
         quote_qty = next(
-            (safe_float(b.get("total")) for b in raw_balances if isinstance(b, dict) and str(b.get("coin") or "").upper() == quote_u),
+            (safe_nonneg_float(b.get("total"), 0.0) for b in raw_balances if isinstance(b, dict) and clean_upper_scalar(b.get("coin")) == quote_u),
             0.0,
         )
         return {"qty": base_qty, "cash_usd": quote_qty, "mid": mid}
@@ -383,9 +386,8 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
     # -- Read-only spot account access. ----------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:
         """Return available spot balance as total minus hold for supported assets."""
-        if not asset or isinstance(asset, bool) or not str(asset).strip():
+        if (asset_u := clean_upper_scalar(asset)) is None:
             return None
-        asset_u = str(asset).strip().upper()
         if (c := self._hl()) is None:
             return None
         try:
@@ -407,7 +409,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                 for b in balances:
                     if not isinstance(b, dict):
                         continue
-                    if str(b.get("coin") or "").strip().upper() == target_coin:
+                    if clean_upper_scalar(b.get("coin")) == target_coin:
                         total = safe_nonneg_float(b.get("total"), default=None)
                         hold = safe_nonneg_float(b.get("hold"), default=None)
                         if total is None or hold is None:
@@ -430,10 +432,10 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             raise ProviderError(f"{ctx}: Hyperliquid client or pair unavailable")
         c, pair = cp
         addr = None
-        if require_addr:
+        if _parse_bool_flag(require_addr, False):
             addr = (
                 self._env_account_address(c)
-                if pass_client_to_addr
+                if _parse_bool_flag(pass_client_to_addr, False)
                 else self._env_account_address()
             )
             if not addr:
@@ -460,9 +462,9 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         cls, symbol: str, start_time_ms: int = 0, client=None
     ) -> Optional[List[dict]]:
         """Fetch Hyperliquid spot fills for ``symbol`` using an injected ``client`` when compatible."""
-        if client is None or getattr(client, "info", None) is None:
+        if client is None or getattr(client, "info", None) is None or (sym_u := clean_upper_scalar(symbol)) is None:
             return None
-        tok = canonical_base_asset(symbol) or str(symbol or "HYPE").strip().upper()
+        tok = canonical_base_asset(sym_u) or sym_u
         return cls(token=tok, client=client).fetch_remote_trades(symbol, start_time_ms)
 
     def open_orders(self, symbol: str) -> List[dict]:
@@ -546,19 +548,20 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         caller: str = "submit_order",
     ) -> tuple[float, str]:
         """Resolve rounded aggressive-IOC or passive-ALO/GTC price and TIF, raising ``ProviderError`` on invalid inputs."""
-        if is_market:
+        buy_b = _parse_bool_flag(is_buy, False)
+        if _parse_bool_flag(is_market, False):
             curr_px = safe_pos_float(self.get_current_price(symbol), default=0.0) or 0.0
-            fb_px = (safe_pos_float(price, default=0.0) or 0.0) if allow_price_fallback else 0.0
+            fb_px = (safe_pos_float(price, default=0.0) or 0.0) if _parse_bool_flag(allow_price_fallback, False) else 0.0
             base_px = curr_px if curr_px > 0.0 else fb_px
             if base_px <= 0.0:
                 raise ProviderError(
                     f"{caller}({symbol}) market: price unavailable"
                     if caller == "submit_order"
-                    else f"{caller} {'BUY' if is_buy else 'SELL'} {symbol}: market price unavailable"
+                    else f"{caller} {'BUY' if buy_b else 'SELL'} {symbol}: market price unavailable"
                 )
             s_val = safe_nonneg_float(slippage, default=0.05)
             eff_slip = s_val if s_val < 1.0 else 0.05
-            raw_px = base_px * (1.0 + eff_slip if is_buy else 1.0 - eff_slip)
+            raw_px = base_px * (1.0 + eff_slip if buy_b else 1.0 - eff_slip)
             order_tif = "Ioc"
         else:
             if price is None or isinstance(price, bool):
@@ -774,7 +777,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         price: Optional[float] = None,
     ) -> dict:
         """Extract non-blocking cached size/price precision limits for ``symbol``."""
-        if provider is None or isinstance(symbol, bool):
+        if provider is None or clean_scalar_str(symbol) is None:
             return {}
         client = getattr(provider, "_client", None)
         base_tok = canonical_base_asset(symbol)
@@ -990,7 +993,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                 raise ProviderError(
                     f"order_status({order_id}): invalid order status ({raw_status})"
                 )
-            venue_status = str(raw_venue_status or "").strip()
+            venue_status = clean_scalar_str(raw_venue_status) or ""
             venue_status_lc = venue_status.lower()
             order_payload = status_payload.get("order")
             if not isinstance(order_payload, dict):
@@ -1033,8 +1036,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                     raw_fee = parse_nonneg_order_field(raw_fee_val)
                     if raw_fee is None:
                         raise ProviderError(f"order_status({order_id}): invalid fee value")
-                    raw_fee_token = f.get("feeToken") or f.get("feeAsset") or ""
-                    fee_token = str(raw_fee_token).strip().upper() if isinstance(raw_fee_token, str) else ""
+                    fee_token = clean_upper_scalar(f.get("feeToken")) or clean_upper_scalar(f.get("feeAsset")) or ""
                 # Hyperliquid usually charges BUY fees in base and SELL fees in
                 # quote. Convert base fees at the exact fill price for quote accounting.
                 if fee_token == self._token:

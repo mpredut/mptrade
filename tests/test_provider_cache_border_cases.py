@@ -182,6 +182,7 @@ from order_lifecycle import (
     StrategyExecutorLifecycleApi,
     TrackedOrderLifecycle,
     TrackedOrderResult,
+    propagate_submission_refusal,
     resolve_dynamic_reprice_bounds,
     restore_cancelled_orders,
 )
@@ -213,7 +214,7 @@ from providers.execution_audit import (
     reconcile_intents_from_execution_audit,
     summarize_recent_ai_intents,
 )
-from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
+from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read, _spot_symbol_alias
 from providers.intent_state import (
     _extract_intent_id,
     _intent_venue_symbol_side_key,
@@ -225,7 +226,7 @@ from providers.intent_state import (
     normalize_trading_decisions,
     validate_and_build_intent_dict,
 )
-from providers.kraken_provider import KrakenProvider
+from providers.kraken_provider import KrakenProvider, _kraken_balance_asset_candidates
 from providers.ohlc_utils import (
     build_price_history_points,
     drop_incomplete_last_bar,
@@ -7507,6 +7508,204 @@ def test_wave42_scalar_ssot_replay_metrics_spot_replay_ohlc_binance_and_t212_bor
 
     st_nvda = t212.order_status("null", "88")
     assert st_nvda.status == "closed" and st_nvda.fee == pytest.approx(0.15)
+
+
+def test_wave43_kraken_hyperliquid_lifecycle_instrument_and_order_id_context_border_cases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify Wave 43 clean_scalar_str SSOT adoption and border-case hardening across lifecycle, instrument, order_id_context, Kraken, and Hyperliquid."""
+    # 1. order_lifecycle: propagate_submission_refusal("null" reason -> "pre_submit_refused"), TrackedOrderLifecycle("null" provider/venue), restore_cancelled_orders("null" reason), resolve_dynamic_reprice_bounds.
+    with pytest.raises(SubmissionRefused, match="pre_submit_refused"):
+        propagate_submission_refusal(None, {"state": "refused", "reason": "null"})
+    with pytest.raises(SubmissionRefused, match="pre_submit_refused"):
+        propagate_submission_refusal(None, {"state": "refused", "reason": "   "})
+    assert propagate_submission_refusal(None, {"state": "null", "reason": "ignored"}) is None
+
+    with pytest.raises(ValueError, match="provider_name is required"):
+        TrackedOrderLifecycle(SimpleNamespace(), provider_name="null")
+    with pytest.raises(ValueError, match="venue must be a non-empty string"):
+        TrackedOrderLifecycle(SimpleNamespace(), provider_name="binance", venue="null")
+
+    logged_restore: list[str] = []
+    restored_params: list[dict[str, Any]] = []
+    restored_count = restore_cancelled_orders(
+        [{"side": "SELL", "qty": 1.5, "price": 10.0, "kind": "null"}],
+        restore_fn=lambda p: (restored_params.append(p) or True),
+        log_fn=logged_restore.append,
+        reason="null",
+    )
+    assert restored_count == 1
+    assert logged_restore == ["  ! [ATOMIC_ROLLBACK] restoring 1 cancelled order(s)"]
+    assert restored_params[0]["kind"] == "TP"
+
+    tick_calls = {"n": 0}
+    fake_mkt = SimpleNamespace(
+        pair_precision=lambda _s: (
+            tick_calls.__setitem__("n", tick_calls["n"] + 1)
+            or SimpleNamespace(price_decimals=2, tick_size=0.01)
+        )
+    )
+    tick_cache: dict[str, float] = {}
+    resolve_dynamic_reprice_bounds(
+        "null",
+        100.0,
+        market_api=fake_mkt,
+        tick_cache=tick_cache,
+        skip_live_tick_lookup="true",  # type: ignore[arg-type]
+    )
+    assert tick_calls["n"] == 0 and tick_cache == {}
+
+    # 2. instrument.resolve_instrument_live_price & strategies/mt_position_accounting + position_exit_manager.
+    captured_cache_lookup: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "instrument.resolve_cached_symbol_price",
+        lambda sym, **kw: (captured_cache_lookup.update({"sym": sym, **kw}) or 42.5),
+    )
+    fake_inst = SimpleNamespace(
+        symbol="ETHUSDC",
+        provider_name="null",
+        provider="binance",
+        base="null",
+        quote="none",
+        get_current_price=lambda: None,
+    )
+    assert resolve_instrument_live_price(fake_inst) == pytest.approx(42.5)
+    assert captured_cache_lookup["sym"] == "ETHUSDC"
+    assert captured_cache_lookup["venue"] == "binance"
+    assert captured_cache_lookup["base"] is None
+    assert captured_cache_lookup["quote"] is None
+    assert resolve_instrument_live_price(SimpleNamespace(symbol="null")) == 0.0
+
+    assert pem_mod._clean_symbol_str("null") == ""
+    assert mt_pa_mod._inst_provider(SimpleNamespace(provider_label="null", provider_name="kraken")) == "kraken"
+
+    # 3. providers/order_id_context: dict rejection on allowed_owners, scalar hygiene on owners/actor/origin/tag.
+    assert oic.order_matches_owner("TA_Main_123", {"tradeall": 1}) is False  # type: ignore[arg-type]
+    assert oic.order_matches_owner("TA_Main_123", ["null", "tradeall"]) is True
+    assert oic.format_actor_tag("BOT", module="null", rule="SL_PANIC") == "BOT(rule=SL_PANIC)"
+    assert oic.format_actor_tag("null", module="none", rule="nan") == "BOT"
+    assert oic.resolve_order_actor({"actor": "null", "clientOrderId": "TA_Main_123"}) == "BOT"
+
+    # 4. providers/kraken_provider: scalar hygiene on balance candidates, heartbeat, min_order_qty, _fetch_price_history, free_balance, open_orders, order_by_client_id, and pair_precision.
+    assert _kraken_balance_asset_candidates("null") == []
+    assert KrakenProvider.format_strategy_heartbeat_name("null") == "Kraken-HYPE"
+
+    krk_calls = {"pair_info": 0, "public": 0, "balance": 0}
+    krk_cid = KrakenProvider.derive_client_order_id("intent-wave43")
+    krk_cli = SimpleNamespace(
+        pair_info=lambda sym: (
+            krk_calls.__setitem__("pair_info", krk_calls["pair_info"] + 1)
+            or {"pair_decimals": 2, "lot_decimals": 4, "ordermin": 0.1, "base": "null"}
+        ),
+        _public=lambda ep, params=None: (
+            krk_calls.__setitem__("public", krk_calls["public"] + 1) or {}
+        ),
+        balance=lambda: (
+            krk_calls.__setitem__("balance", krk_calls["balance"] + 1) or {"ZUSD": "50.0"}
+        ),
+        open_orders=lambda: {
+            "OID-NULL-PAIR": {
+                "cl_ord_id": krk_cid,
+                "status": "open",
+                "descr": {"pair": "null", "type": "buy", "price": "25.0"},
+                "vol": "1.0",
+                "vol_exec": "0.0",
+            }
+        },
+        closed_orders=lambda: {},
+    )
+    krk = KrakenProvider(client=krk_cli, live_enabled=False)
+    assert krk.min_order_qty("null") == 0.0
+    assert krk._fetch_price_history("null", 24.0) is None
+    assert krk.free_balance("null") is None
+    assert krk_calls == {"pair_info": 0, "public": 0, "balance": 0}
+
+    with pytest.raises(ProviderError, match="without a pair"):
+        krk.open_orders("HYPEUSD")
+    recovered = krk.order_by_client_id("HYPEUSD", "intent-wave43")
+    assert recovered == {"orderId": "OID-NULL-PAIR", "status": "open"}
+    with pytest.raises(ProviderError, match="malformed pair_info"):
+        krk.pair_precision("HYPEUSD")
+    assert KrakenProvider.extract_cached_fee_and_limits(krk, "null") == {}
+
+    # 5. providers/hyperliquid_provider: _spot_symbol_alias, token init, _env_account_address, free_balance, fetch_remote_trades_with_client, _resolve_spot_order_price_and_tif, and order_status feeToken="null".
+    assert _spot_symbol_alias("null", "null") is False
+    assert _spot_symbol_alias(123, 123) is False  # type: ignore[arg-type]
+    assert _spot_symbol_alias("HYPE/USDC", "HYPE") is True
+    with pytest.raises(ValueError, match="invalid Hyperliquid token"):
+        HyperliquidProvider(token="null")
+    with pytest.raises(ValueError, match="invalid Hyperliquid token"):
+        HyperliquidProvider(token=True)  # type: ignore[arg-type]
+
+    with temporary_environ({"HL_ACCOUNT_ADDRESS": "null"}):
+        assert HyperliquidProvider._env_account_address(SimpleNamespace(account_address="none")) is None
+        assert (
+            HyperliquidProvider._env_account_address(SimpleNamespace(account_address="0xabc123"))
+            == "0xabc123"
+        )
+
+    hl_info_calls = {"spot_state": 0}
+    hl_info = SimpleNamespace(
+        spot_user_state=lambda _addr: (
+            hl_info_calls.__setitem__("spot_state", hl_info_calls["spot_state"] + 1)
+            or {"balances": []}
+        ),
+        query_order_by_oid=lambda _addr, _oid: {
+            "status": "order",
+            "order": {
+                "status": "filled",
+                "order": {"oid": 777, "origSz": "2.0", "sz": "0.0"},
+            },
+        },
+        user_fills=lambda _addr: [
+            {
+                "oid": 777,
+                "sz": "2.0",
+                "px": "20.0",
+                "fee": "0.04",
+                "feeToken": "null",
+            }
+        ],
+    )
+    hl_cli = SimpleNamespace(
+        info=hl_info,
+        account_address="0xabc123",
+        resolve_spot_pair=lambda _tok: "@107",
+        spot_mid=lambda _pair: 20.0,
+    )
+    hl = HyperliquidProvider(token="HYPE", live_enabled=False, client=hl_cli)
+    assert hl.free_balance("null") is None
+    assert hl_info_calls["spot_state"] == 0
+    assert HyperliquidProvider.fetch_remote_trades_with_client("null", client=hl_cli) is None
+    assert HyperliquidProvider.extract_cached_fee_and_limits(hl, "null") == {}
+
+    monkeypatch.setattr(hl, "round_price", lambda _sym, px: round(px, 2))
+    px_lim, tif_lim = hl._resolve_spot_order_price_and_tif(
+        "HYPEUSDC",
+        "true",  # type: ignore[arg-type]
+        19.5,
+        is_market="false",  # type: ignore[arg-type]
+        post_only="false",  # type: ignore[arg-type]
+    )
+    assert px_lim == pytest.approx(19.5) and tif_lim == "Gtc"
+
+    monkeypatch.setattr(hl, "get_current_price", lambda _sym: None)
+    with pytest.raises(ProviderError, match="price unavailable"):
+        hl._resolve_spot_order_price_and_tif(
+            "HYPEUSDC",
+            True,
+            19.5,
+            is_market=True,
+            allow_price_fallback="false",  # type: ignore[arg-type]
+        )
+
+    with temporary_environ({"HL_ACCOUNT_ADDRESS": "0xabc123"}):
+        hl_st = hl.order_status("HYPEUSDC", "777")
+    assert hl_st.status == "closed"
+    assert hl_st.filled_qty == pytest.approx(2.0)
+    assert hl_st.cost == pytest.approx(40.0)
+    assert hl_st.fee == pytest.approx(0.04)
+
 
 
 

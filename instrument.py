@@ -35,10 +35,9 @@ from providers.base import MarketDataProvider
 from providers import order_id_context
 from providers.order_ohlc_utils import resolve_market_flag
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
-    clean_nonempty_str,
     clean_order_id,
+    clean_scalar_str,
     extract_order_id,
     is_us_rth_open,
     normalize_side,
@@ -157,11 +156,6 @@ class _PlaceContext:
     submit_attempted: bool = False
     order: Any = None
     reason: Optional[str] = None
-
-
-def _clean_inst_str(val: object) -> Optional[str]:
-    s = clean_nonempty_str(val)
-    return s if (s is not None and s.lower() not in INVALID_SCALAR_STRINGS) else None
 
 
 def _is_instrument_spec(item: Any) -> bool:
@@ -352,7 +346,7 @@ class Instrument:
         allow_math_reference_sell = _parse_bool_flag(
             kwargs.pop("allow_math_reference_sell", False), False
         )
-        order_kind = _clean_inst_str(kwargs.get("kind")) or _clean_inst_str(kwargs.get("motivation"))
+        order_kind = clean_scalar_str(kwargs.get("kind")) or clean_scalar_str(kwargs.get("motivation"))
         if order_kind is not None:
             kwargs["kind"] = order_kind
 
@@ -1459,7 +1453,7 @@ def resolve_tradable_instrument(
 
 def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     """Fetch live market price for ``inst`` from its bound provider or ``cacheprice`` SSOT fallbacks."""
-    sym_s = _clean_inst_str(getattr(inst, "symbol", None))
+    sym_s = clean_scalar_str(getattr(inst, "symbol", None))
     if not sym_s:
         return 0.0
     try:
@@ -1471,15 +1465,14 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     except Exception:
         pass
 
-    venue = getattr(inst, "provider_name", None)
-    if not isinstance(venue, str):
-        venue = getattr(inst, "provider", None)
-    raw_base, raw_quote = getattr(inst, "base", None), getattr(inst, "quote", None)
+    venue = clean_scalar_str(getattr(inst, "provider_name", None)) or clean_scalar_str(
+        getattr(inst, "provider", None)
+    )
     return resolve_cached_symbol_price(
         sym_s,
-        venue=venue if isinstance(venue, str) else None,
-        base=raw_base if isinstance(raw_base, str) else None,
-        quote=raw_quote if isinstance(raw_quote, str) else None,
+        venue=venue,
+        base=clean_scalar_str(getattr(inst, "base", None)),
+        quote=clean_scalar_str(getattr(inst, "quote", None)),
         cache_dir=cache_dir,
     )
 

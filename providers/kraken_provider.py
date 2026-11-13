@@ -22,6 +22,8 @@ from typing import Any, List, Optional
 
 from botcore import (
     clean_order_id,
+    clean_scalar_str,
+    clean_upper_scalar,
     ClosedPriceSeries,
     env_values_map,
     exact_nonneg_int,
@@ -99,8 +101,7 @@ _KRAKEN_FALLBACK_ERR_TOKENS = (
 
 def _kraken_balance_asset_candidates(asset: str) -> List[str]:
     """Return ordered Kraken Balance/BalanceEx lookup keys for an asset or xStock ticker."""
-    raw = str(asset or "").strip() if not isinstance(asset, bool) else ""
-    if not raw:
+    if (raw := clean_scalar_str(asset)) is None:
         return []
     asset_u = raw.upper()
     candidates: List[str] = [
@@ -188,7 +189,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
 
     @classmethod
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
-        sym = str(symbol or "").strip().upper()
+        sym = clean_upper_scalar(symbol) or ""
         return "Kraken-HYPE" if ("HYPE" in sym or not sym) else f"Kraken-{sym}"
 
     def supports_symbol(self, symbol: str) -> bool:
@@ -256,7 +257,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                     *symbols_for("kraken"),
                     *split_csv(values.get("KRAKEN_CACHE_PAIRS"), upper=True),
                 ]
-                if (s := str(sym or "").strip().upper())
+                if (s := clean_upper_scalar(sym)) is not None
             )
         )
         if not pairs:
@@ -270,7 +271,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 raise ValueError(f"Missing or invalid required Kraken cache setting: {key}")
             return val
 
-        mode = str(values.get("KRAKEN_CACHE_MODE") or "").strip().lower()
+        mode = (clean_scalar_str(values.get("KRAKEN_CACHE_MODE")) or "").lower()
         if not mode:
             raise ValueError("Missing required Kraken cache setting: KRAKEN_CACHE_MODE")
         return {
@@ -375,8 +376,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         Do not cache zero from a failed lookup, because that would permanently
         disable minimum-volume protection and cause repeated dust rejections.
         """
-        norm_sym = str(symbol or "").strip().upper() if not isinstance(symbol, bool) else ""
-        if not norm_sym:
+        if (norm_sym := clean_upper_scalar(symbol)) is None:
             return 0.0
         cached = self._minqty.get(norm_sym) or self._minqty.get(symbol)
         if cached:  # Only positive values are cached; zero or absent retries.
@@ -393,7 +393,9 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
 
     def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Fetch ascending public OHLC closes from Kraken as timestamp/price mappings."""
-        if (lookback_f := safe_pos_float(lookback_h, default=None)) is None:
+        if (sym_clean := clean_scalar_str(symbol)) is None or (
+            lookback_f := safe_pos_float(lookback_h, default=None)
+        ) is None:
             return None
         try:
             cli = self._client()
@@ -402,7 +404,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             ratio = min(lookback_f / 12.0, valid_intervals[-1] * 1.0)
             raw_interval = max(1, math.ceil(ratio))
             interval = next((v for v in valid_intervals if v >= raw_interval), valid_intervals[-1])
-            res = cli._public("OHLC", {"pair": str(symbol).strip(), "interval": interval})
+            res = cli._public("OHLC", {"pair": sym_clean, "interval": interval})
             rows = extract_kraken_ohlc_rows(res, drop_incomplete=False)
             if not rows:
                 return None
@@ -487,13 +489,12 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             return {}
 
     def free_balance(self, asset: str) -> Optional[float]:
-        if not asset or isinstance(asset, bool) or not str(asset).strip():
+        if (asset_u := clean_upper_scalar(asset)) is None:
             return None
         try:
             bal = self._query_with_bot_fallback(self._available_balances_from_client) or {}
             if not isinstance(bal, dict):
                 return None
-            asset_u = str(asset).strip().upper()
             if asset_u in {"USD", "ZUSD", "XUSD"}:
                 total_usd = 0.0
                 for _label, keys in self._USD_EQUIVALENT_BUCKETS:
@@ -523,7 +524,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             description = raw.get("descr") or {}
             if not isinstance(description, dict):
                 raise ProviderError(f"open_orders({symbol}): invalid description for order {order_id}")
-            pair = str(description.get("pair") or raw.get("pair") or "")
+            pair = clean_scalar_str(description.get("pair")) or clean_scalar_str(raw.get("pair")) or ""
             if not pair:
                 raise ProviderError(f"open_orders({symbol}): order {order_id} without a pair")
             if not kraken_pair_matches(symbol, pair):
@@ -569,7 +570,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
 
     def _fills_from_api(self, symbol: str):
         """Fall back to direct TradesHistory, matching pre-cachemanager behavior."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        if clean_scalar_str(symbol) is None:
             return []
         res = self._query_with_bot_fallback(lambda cli: cli._private("TradesHistory"))
         if not isinstance(res, dict) or "trades" not in res:
@@ -580,7 +581,9 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         return [
             _normalize_kraken_fill(tr)
             for tr in trades.values()
-            if isinstance(tr, dict) and kraken_pair_matches(symbol, str(tr.get("pair", "")).upper())
+            if isinstance(tr, dict)
+            and (tr_pair := clean_upper_scalar(tr.get("pair")))
+            and kraken_pair_matches(symbol, tr_pair)
         ]
 
     def _prepare_kraken_order(
@@ -808,7 +811,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                     pass
         if not isinstance(info, dict):
             raise ProviderError(f"order_status: the order {order_id} was not found")
-        raw_status = str(info.get("status") or "").strip()
+        raw_status = clean_scalar_str(info.get("status")) or ""
         status_map = {
             "pending": "open",
             "open": "open",
@@ -850,12 +853,12 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             for order_id, raw in orders.items():
                 if not isinstance(raw, dict):
                     continue
-                if str(raw.get("cl_ord_id") or "").lower() != wanted:
+                if (clean_order_id(raw.get("cl_ord_id")) or "").lower() != wanted:
                     continue
                 descr = raw.get("descr")
                 if not isinstance(descr, dict):
                     descr = {}
-                pair = str(descr.get("pair") or raw.get("pair") or "")
+                pair = clean_scalar_str(descr.get("pair")) or clean_scalar_str(raw.get("pair")) or ""
                 if pair and not kraken_pair_matches(symbol, pair):
                     continue
                 clean_oid = require_clean_order_id(order_id, f"order_by_client_id({symbol}) {order_id}", str_only=True)
@@ -895,14 +898,12 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 raise ProviderError(
                     f"pair_precision {symbol}: missing metadata {', '.join(missing)}"
                 )
-            if isinstance(info["base"], bool):
-                raise ValueError("boolean values not allowed in pair_precision")
             p_dec = exact_nonneg_int(info["pair_decimals"], default=None)
             v_dec = exact_nonneg_int(info["lot_decimals"], default=None)
             ord_min = safe_pos_float(info["ordermin"], default=None)
             if p_dec is None or v_dec is None or ord_min is None:
                 raise ValueError("invalid decimals or ordermin in pair_precision")
-            base_str = str(info["base"]).strip()
+            base_str = clean_scalar_str(info["base"])
             if not base_str:
                 raise ValueError("empty base asset in pair_precision")
             return PairPrecision(
@@ -924,9 +925,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
     ) -> dict:
         """Extract non-blocking cached fee tier, ordermin, costmin, step_size, and tick_size for ``symbol``."""
         _ = price
-        if provider is None or isinstance(symbol, bool):
+        if provider is None or (sym_u := clean_upper_scalar(symbol)) is None:
             return {}
-        sym_u = str(symbol or "").strip().upper()
         kr_cands = list(
             dict.fromkeys(
                 kc
