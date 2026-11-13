@@ -200,6 +200,7 @@ from providers import (
     ssot_bridge as sb_mod,
     venue_metadata as vm_mod,
     venue_ws_protocols as vwp_mod,
+    ws_stream as ws_mod,
 )
 from providers.base import MarketDataProvider
 from providers.binance_provider import BinanceProvider
@@ -248,6 +249,7 @@ from providers.order_ohlc_utils import (
     parse_nonneg_order_field,
 )
 from providers.price_poller import (
+    KrakenPriceStream,
     NonBinanceTrendPoller,
     fetch_price_with_deadline,
     start_nonbinance_trend_poller,
@@ -265,7 +267,7 @@ from providers.quantity import (
     venue_adjust_partial_sell_quantity,
     venue_fee_cap_quantity,
 )
-from providers.replay_provider import ReplayMarketDataProvider
+from providers.replay_provider import ReplayMarketDataProvider, load_price_series
 from providers.strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -297,7 +299,12 @@ from strategies import (
     state_store as strat_ss_mod,
 )
 from strategies.base_spot_mixin import BaseSpotMixin, parse_tp_ladder_env, sanitize_common_spot_state
-from strategies.replay_execution import ExecutionModel, select_eligible_intrabar_orders
+from strategies.replay_execution import (
+    ExecutionModel,
+    choose_intrabar_scenario,
+    select_eligible_intrabar_orders,
+    unpack_ohlc_bar,
+)
 from strategies.replay_metrics import (
     calculate_performance_metrics,
     print_ascii_table_header,
@@ -7148,5 +7155,119 @@ def test_wave40_spot_rules_state_store_provider_base_bridge_and_rtrade_pair_bord
         )
     step_out = coord.step()
     assert step_out.reason == "market_exit_waiting_for_trend"
+
+
+def test_wave41_broker_replay_ws_poller_exec_and_mt_accounting_border_cases(tmp_path):
+    """Wave 41: broker_history, replay_provider, ws_stream, price_poller, venue_ws_protocols, replay_execution, and mt_position_accounting border cases."""
+    # 1. providers/broker_history: INVALID_SCALAR_STRINGS hygiene on ticker, tax currency, and order type.
+    assert bh_mod.extract_broker_order_ticker({"ticker": "null", "instrument": {"ticker": "NVDA_US_EQ"}}) == "NVDA_US_EQ"
+    assert bh_mod.extract_broker_order_ticker({"ticker": "none"}) == ""
+    norm_bh = bh_mod.normalize_broker_history_items(
+        [
+            {
+                "order": {"id": 5001, "status": "FILLED", "ticker": "null", "instrument": {"ticker": "AAPL_US_EQ"}, "type": "null", "quantity": 2.0},
+                "fill": {"id": 9001, "quantity": 2.0, "price": 180.0, "filledAt": 1700000000000, "walletImpact": {"taxes": [{"quantity": 0.25, "currency": "null"}]}},
+            }
+        ]
+    )
+    assert "NULL" not in norm_bh and len(norm_bh["AAPL_US_EQ"]) == 1
+    assert norm_bh["AAPL_US_EQ"][0]["type"] == "MARKET"
+    agg_bh = bh_mod.aggregate_broker_history_fills(
+        [({"id": 5001}, {"id": 9001, "quantity": 1.0, "price": 100.0, "walletImpact": {"taxes": [{"quantity": 0.1, "currency": "null"}]}})]
+    )
+    assert "_feeCurrencies" not in agg_bh and agg_bh["fee"] == pytest.approx(0.1)
+
+    # 2. providers/replay_provider: load_price_series/pair_precision/free_balance scalar hygiene, advance price coercion, lowercase side & None timestamp in place_order.
+    assert load_price_series("null", "BTCUSDC") == []
+    assert load_price_series(str(tmp_path / "p.jsonl"), "none") == []
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, "50000.0"), (1010.0, float("nan")), (1020.0, 50200.0)]})  # type: ignore[list-item]
+    assert rp.supports_symbol("null") is False
+    assert rp.pair_precision("null") is None
+    assert "NULL" not in rp._precisions
+    assert rp.free_balance("null") == 0.0
+    assert rp.advance("BTCUSDC", 1) == pytest.approx(50000.0)
+    assert rp.advance("BTCUSDC", 1) is None
+    assert rp.get_current_price("BTCUSDC") is None
+    assert rp.advance("BTCUSDC", 1) == pytest.approx(50200.0)
+    rp._orders["BTCUSDC"] = [{"orderId": "1", "side": "buy", "price": 49900.0, "qty": 0.5, "timestamp": None}]
+    placed = rp.place_order("BTCUSDC", "BUY", 50200.0, 1.0, kind="null")
+    assert placed == {"orderId": -1, "backtest": True}
+    assert "kind" not in rp._orders["BTCUSDC"][-1]
+    rp._orders["BTCUSDC"][0]["timestamp"] = 1019000
+    matched_buys = rp.get_orders("BTCUSDC", "BUY", 5.0)
+    assert len(matched_buys) == 2
+
+    # 3. providers/ws_stream, price_poller & venue_ws_protocols: symbol/url/token/address scalar hygiene & dict symbols rejection.
+    assert ws_mod.PublicPriceStreamBase._norm_ws_symbol("null") is None
+    assert ws_mod.PublicPriceStreamBase._norm_ws_symbol(True) is None
+    kws = KrakenPriceStream(symbols=["null", "XBT/USD"], ws_url="null")
+    assert kws._symbols == ("XBTUSD",)
+    assert kws.ws_url == "wss://ws.kraken.com"
+    assert kws._resolve_symbol("null") is None
+    assert kws._resolve_symbol(True) is None  # type: ignore[arg-type]
+
+    seen_poll_kw: list[dict[str, Any]] = []
+    fake_mapi = SimpleNamespace(get_current_price=lambda **kw: (seen_poll_kw.append(kw) or 123.45))
+    fake_pool = SimpleNamespace(submit=lambda fn: SimpleNamespace(result=lambda timeout=None: fn(), cancel=lambda: None))
+    assert fetch_price_with_deadline(fake_mapi, "HYPEUSD", fake_pool, provider_name="null") == pytest.approx(123.45)
+    assert seen_poll_kw == [{"symbol": "HYPEUSD"}]
+
+    stub_cpm = SimpleNamespace(bind_providers=lambda _b: None)
+    with pytest.raises(ValueError, match="iterable of symbol strings"):
+        start_nonbinance_trend_poller(stub_cpm, {"HYPEUSD": "kraken"}, provider_names={"HYPEUSD": "kraken"}, start_ws=False)
+    with pytest.raises(ValueError, match="explicit provider bindings"):
+        start_nonbinance_trend_poller(stub_cpm, ["null"], provider_names={"NULL": "kraken"}, start_ws=False)
+
+    assert vwp_mod.VenueWsProtocolInterface._iter_symbol_items(["BTCUSDC", "null", True, "BTCUSDC"]) == ("BTCUSDC",)
+    assert vwp_mod.KrakenWsLedgerMixin.match_configured_pair("null") is None
+    tr_norm = vwp_mod.KrakenWsLedgerMixin.normalize_ws_trade("TX1", {"pair": "null", "price": "100", "vol": "1", "type": "buy", "time": 1700000000})
+    assert tr_norm["symbol"] is None
+    with pytest.raises(RuntimeError, match="no token"):
+        vwp_mod.KrakenWsLedgerMixin.build_ws_own_trades_subscription(SimpleNamespace(_private=lambda *_a, **_kw: {"token": "null"}))
+    assert vwp_mod.HyperliquidWsMixin.resolve_ws_user_address("null", resolve_env=False) is None
+    assert vwp_mod.HyperliquidWsMixin.build_ws_user_fills_subscriptions("none") == ()
+
+    # 4. strategies/replay_execution: unpack_ohlc_bar, ExecutionModel.intrabar_policy normalization, select_eligible_intrabar_orders & choose_intrabar_scenario.
+    for bad_bar in (None, "1234", [1.0, 2.0]):
+        with pytest.raises(ValueError, match="sequence of at least 4"):
+            unpack_ohlc_bar(bad_bar)
+    em_norm = ExecutionModel(intrabar_policy=" SELL_FIRST ")
+    assert em_norm.intrabar_policy == "sell_first" and em_norm.side_order() == ("sell", "buy")
+    with pytest.raises(ValueError, match="orders must be a list or tuple"):
+        select_eligible_intrabar_orders("bad", em_norm, high=105.0, low=95.0, limit_key="price")  # type: ignore[arg-type]
+    em_wc = ExecutionModel(intrabar_policy="worst_case")
+    with pytest.raises(ValueError, match="metrics dict"):
+        choose_intrabar_scenario(em_wc, lambda _m: None)  # type: ignore[arg-type,return-value]
+
+    # 5. strategies/mt_position_accounting: _summarize_orders ID normalization, _inst_provider, _validate_scaled_buy_qty & _infer_mt_exit_kind.
+    _, _, sig_float_id = mt_pa_mod._summarize_orders([{"id": "1001.0", "price": 50.0, "qty": 1.0, "time": 1700000000000}])
+    _, _, sig_int_id = mt_pa_mod._summarize_orders([{"orderId": 1001, "price": 50.0, "qty": 1.0, "time": 1700000000000}])
+    assert sig_float_id == sig_int_id and sig_float_id[4] == "1001"
+
+    assert mt_pa_mod._inst_provider(True) is None
+    assert mt_pa_mod._inst_provider("null") is None
+    assert mt_pa_mod._inst_provider(SimpleNamespace(provider_label="null", provider_name="none", _provider=SimpleNamespace(name="Kraken"))) == "Kraken"
+
+    ok_sc, q_sc = mt_pa_mod._validate_scaled_buy_qty(None, "BTCUSDC", 100.0, "2.0", float("nan"), 0.1, "reentry")  # type: ignore[arg-type]
+    assert ok_sc is False and q_sc == 0.0
+    ok_sc2, q_sc2 = mt_pa_mod._validate_scaled_buy_qty(None, "BTCUSDC", 100.0, "2.0", "0.5", 0.1, "reentry")  # type: ignore[arg-type]
+    assert ok_sc2 is True and q_sc2 == pytest.approx(1.0)
+
+    exit_map = {"BTCUSDC": "null"}
+    inferred_stop = mt_pa_mod._infer_mt_exit_kind(
+        "BTCUSDC",
+        [{"side": "SELL", "kind": "none", "timestamp": 1700000010000}],
+        position_closed_by_sell="true",  # type: ignore[arg-type]
+        buy_price=100.0,
+        sell_price=92.0,
+        buy_time=1700000000.0,
+        sell_time=1700000010.0,
+        position={"last_cycle_buy_price": 100.0},
+        tp_ref="last",
+        lost_threshold=0.05,
+        last_exit_kind_map=exit_map,
+    )
+    assert inferred_stop == "STOP" and exit_map["BTCUSDC"] == "STOP"
+
 
 

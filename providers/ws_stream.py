@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover
     _uvloop = None
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     async_interruptible_sleep,
     is_worker_thread_alive,
@@ -105,8 +106,11 @@ class AsyncReconnectStreamBase(ABC):
 
     def start(self, name: Optional[str] = None, daemon: bool = True) -> "AsyncReconnectStreamBase":
         eff_name = (
-            str(name).strip()
-            if isinstance(name, str) and name.strip()
+            s
+            if not isinstance(name, bool)
+            and isinstance(name, str)
+            and (s := name.strip())
+            and s.lower() not in INVALID_SCALAR_STRINGS
             else self._default_thread_name
         )
         eff_daemon = _parse_bool_flag(daemon, default=True)
@@ -217,10 +221,10 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
 
     @staticmethod
     def _norm_ws_symbol(symbol: object) -> Optional[str]:
-        if not isinstance(symbol, str):
+        if isinstance(symbol, bool) or not isinstance(symbol, str):
             return None
         s = symbol.strip().upper().replace("/", "")
-        return s or None
+        return None if not s or s.lower() in INVALID_SCALAR_STRINGS else s
 
     def __init__(self, symbols: Optional[list] = None):
         super().__init__()

@@ -21,6 +21,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     exact_pos_int,
     normalize_side,
@@ -92,7 +93,16 @@ def load_price_series(
 ) -> List[Tuple[float, float]]:
     """Read a symbol JSONL cache into ascending (timestamp_seconds, price) pairs."""
     out: List[Tuple[float, float]] = []
-    if not isinstance(path, str) or not path.strip() or not isinstance(symbol, str) or not symbol.strip():
+    if (
+        isinstance(path, bool)
+        or not isinstance(path, str)
+        or not (path_s := path.strip())
+        or path_s.lower() in INVALID_SCALAR_STRINGS
+        or isinstance(symbol, bool)
+        or not isinstance(symbol, str)
+        or not (sym_s := symbol.strip())
+        or sym_s.lower() in INVALID_SCALAR_STRINGS
+    ):
         return out
     max_n = exact_pos_int(max_samples, default=None) if max_samples is not None else None
     if max_samples is not None and max_n is None:
@@ -269,12 +279,18 @@ class ReplayMarketDataProvider(MarketDataProvider):
     def supports_symbol(self, symbol: str) -> bool:
         if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
             return False
-        return self._resolve_symbol(symbol) in self._series
+        s_clean = symbol.strip()
+        if not s_clean or s_clean.lower() in INVALID_SCALAR_STRINGS:
+            return False
+        return self._resolve_symbol(s_clean) in self._series
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
-        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
             return None
-        sym = self._resolve_symbol(symbol)
+        s_clean = symbol.strip()
+        if not s_clean or s_clean.lower() in INVALID_SCALAR_STRINGS:
+            return None
+        sym = self._resolve_symbol(s_clean)
         prec = self._precisions.get(sym)
         if prec is None:
             base = _base_asset(sym).upper()
@@ -307,7 +323,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         ts_f = safe_float(ts, default=None)
         if ts_f is not None:
             self._last_ts[sym] = ts_f
-        return price
+        return safe_pos_float(price, default=None)
 
     def now(self, symbol: Optional[str] = None) -> float:
         """Return the timestamp of the most recently read replay price."""
@@ -319,7 +335,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
     # -- Market data ----------------------------------------------------------
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
         _sym, series, idx = self._resolve_series_and_cursor(symbol)
-        return series[idx - 1][1] if (series and idx > 0) else None
+        return safe_pos_float(series[idx - 1][1], default=None) if (series and idx > 0) else None
 
     def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         _sym, series, idx = self._resolve_series_and_cursor(symbol)
@@ -352,7 +368,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         if not asset or isinstance(asset, bool):
             return 0.0
         asset_norm = str(asset).strip().upper()
-        if not asset_norm:
+        if not asset_norm or asset_norm.lower() in INVALID_SCALAR_STRINGS:
             return 0.0
         canon_target = canonical_base_asset(asset_norm)
         matched = list(
@@ -436,7 +452,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         for o in reversed(orders):
             if not isinstance(o, dict):
                 continue
-            if side_u is not None and o.get("side") != side_u:
+            if side_u is not None and normalize_side(o.get("side")) != side_u:
                 continue
             ts = safe_float(o.get("timestamp"), default=None)
             if ts is None:
@@ -478,8 +494,13 @@ class ReplayMarketDataProvider(MarketDataProvider):
         now_s = safe_float(self.now(sym), default=0.0) or 0.0
         ts_ms = safe_nonneg_int(round(now_s * 1000.0), default=0)
         orders_list = self._orders.setdefault(sym, [])
-        if orders_list and ts_ms < orders_list[-1]["timestamp"]:
-            ts_ms = orders_list[-1]["timestamp"]
+        prev_ts = (
+            safe_nonneg_int(orders_list[-1].get("timestamp"), default=None)
+            if orders_list and isinstance(orders_list[-1], dict)
+            else None
+        )
+        if prev_ts is not None and ts_ms < prev_ts:
+            ts_ms = prev_ts
         pos_qty, pos_cost = self._positions.get(sym, (0.0, 0.0))
         cur_px = safe_pos_float(self.get_current_price(sym), default=None)
         if side == "BUY":
@@ -505,8 +526,13 @@ class ReplayMarketDataProvider(MarketDataProvider):
             "timestamp": ts_ms,
         }
         raw_kind = kwargs.get("kind")
-        if isinstance(raw_kind, str) and raw_kind.strip():
-            rec["kind"] = raw_kind.strip()
+        if (
+            not isinstance(raw_kind, bool)
+            and isinstance(raw_kind, str)
+            and (kind_s := raw_kind.strip())
+            and kind_s.lower() not in INVALID_SCALAR_STRINGS
+        ):
+            rec["kind"] = kind_s
         orders_list.append(rec)
         self._orders_version += 1
         self._positions[sym] = (pos_qty, pos_cost)

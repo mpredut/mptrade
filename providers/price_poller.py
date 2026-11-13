@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional
 import websockets as _websockets
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     PRICE_FALLBACK_HTTP_DEADLINE_SEC,
     PRICE_STREAM_POLL_INTERVAL_SEC,
     _parse_bool_flag,
@@ -98,7 +99,15 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
         )
         super().__init__(symbols=symbols)
         self._prov_cls = prov_cls
-        self.ws_url = ws_url or getattr(prov_cls, "PUBLIC_WS_URL", "")
+        clean_url = (
+            u
+            if not isinstance(ws_url, bool)
+            and isinstance(ws_url, str)
+            and (u := ws_url.strip())
+            and u.lower() not in INVALID_SCALAR_STRINGS
+            else ""
+        )
+        self.ws_url = clean_url or getattr(prov_cls, "PUBLIC_WS_URL", "")
         self._last_emit_ts_ms: dict[str, int] = {}
         self._last_emit_price: dict[str, float] = {}
         self._extra_subscribe_builders: list[Callable[[], tuple[str, ...]]] = []
@@ -348,8 +357,10 @@ class KrakenPriceStream(VenuePriceStreamBase):
         return prov_cls.build_ws_ticker_subscription(pairs)
 
     def _resolve_symbol(self, pair_label: str) -> Optional[str]:
-        raw_u = str(pair_label or "").strip().upper()
-        if not raw_u:
+        if isinstance(pair_label, bool) or not isinstance(pair_label, str):
+            return None
+        raw_u = pair_label.strip().upper()
+        if not raw_u or raw_u.lower() in INVALID_SCALAR_STRINGS:
             return None
         with self._lock:
             return self._pair_to_symbol.get(raw_u) or self._pair_to_symbol.get(
@@ -402,8 +413,12 @@ def fetch_price_with_deadline(
 ):
     """Bound the poller's wait while the provider owns the network-call timeout."""
     kwargs = {"symbol": symbol}
-    if provider_name is not None:
-        kwargs["provider_name"] = provider_name
+    if provider_name is not None and not isinstance(provider_name, bool):
+        if isinstance(provider_name, str):
+            if (pn := provider_name.strip()) and pn.lower() not in INVALID_SCALAR_STRINGS:
+                kwargs["provider_name"] = pn
+        else:
+            kwargs["provider_name"] = provider_name
 
     def _poll():
         with live_price_fetch_context():
@@ -487,9 +502,15 @@ def start_nonbinance_trend_poller(
     start_ws=None,
 ):
     """Feed short trends for non-Binance symbols using WebSocket-first + REST fallback."""
-    if isinstance(symbols, (str, bytes, bool)) or not hasattr(symbols, "__iter__"):
+    if isinstance(symbols, (str, bytes, bool, dict)) or not hasattr(symbols, "__iter__"):
         raise ValueError("symbols must be an iterable of symbol strings")
-    symbols = tuple("" if isinstance(symbol, bool) else str(symbol or "").strip() for symbol in symbols)
+    symbols = tuple(
+        ""
+        if isinstance(symbol, bool)
+        or (s := str(symbol or "").strip()).lower() in INVALID_SCALAR_STRINGS
+        else s
+        for symbol in symbols
+    )
     eff_interval = safe_pos_float(interval_sec, default=PRICE_STREAM_POLL_INTERVAL_SEC) or PRICE_STREAM_POLL_INTERVAL_SEC
     eff_deadline = safe_pos_float(fetch_deadline_sec, default=_NB_FETCH_DEADLINE_SEC) or _NB_FETCH_DEADLINE_SEC
     bindings = {

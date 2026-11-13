@@ -46,6 +46,8 @@ def require_optional_pos_float(val: Any, msg: str) -> float | None:
 
 def unpack_ohlc_bar(row: Any) -> tuple[float, float, float, float]:
     """Unpack and validate positive ``(open, high, low, close)`` floats from one OHLC bar."""
+    if not isinstance(row, (list, tuple)) or len(row) < 4:
+        raise ValueError("OHLC bar must be a sequence of at least 4 positive numbers")
     return (
         require_pos_float(row[0], "open"),
         require_pos_float(row[1], "high"),
@@ -91,11 +93,17 @@ class ExecutionModel:
             raise ValueError("spread_bps must be below 20,000")
         if spread_f / 2.0 + slip_f >= 10_000:
             raise ValueError("the adverse market cost must be below 100%")
-        if not isinstance(self.intrabar_policy, str) or self.intrabar_policy not in _POLICIES:
+        policy_norm = (
+            self.intrabar_policy.strip().lower()
+            if not isinstance(self.intrabar_policy, bool) and isinstance(self.intrabar_policy, str)
+            else ""
+        )
+        if policy_norm not in _POLICIES:
             raise ValueError(f"intrabar_policy invalid: {self.intrabar_policy}; expected {sorted(_POLICIES)}")
         object.__setattr__(self, "spread_bps", spread_f)
         object.__setattr__(self, "market_slippage_bps", slip_f)
         object.__setattr__(self, "partial_fill_ratio", pfr_f)
+        object.__setattr__(self, "intrabar_policy", policy_norm)
 
     def side_order(self) -> tuple[str, str]:
         return ("sell", "buy") if self.intrabar_policy == "sell_first" else ("buy", "sell")
@@ -139,6 +147,8 @@ def select_eligible_intrabar_orders(
     high_f, low_f = _req_pos_float(high, err_msg), _req_pos_float(low, err_msg)
     if low_f > high_f:
         raise ValueError(f"low ({low_f}) cannot exceed high ({high_f})")
+    if not isinstance(orders, (list, tuple)):
+        raise ValueError("orders must be a list or tuple")
     eligible: list[dict] = []
     for o in orders:
         if not isinstance(o, dict):
@@ -201,6 +211,9 @@ def choose_intrabar_scenario(
         return run_once(model)
 
     scenarios = {policy: run_once(replace(model, intrabar_policy=policy)) for policy in ("buy_first", "sell_first")}
+    for metrics in scenarios.values():
+        if not isinstance(metrics, dict):
+            raise ValueError("scenario runner must return a metrics dict")
     selected_policy, selected = min(
         scenarios.items(),
         key=lambda item: (

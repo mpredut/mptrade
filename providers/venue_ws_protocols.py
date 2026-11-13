@@ -14,6 +14,7 @@ import time
 from typing import List, Optional, Sequence
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clamp_price_to_bbo_mid,
     clean_order_id,
@@ -65,10 +66,19 @@ class VenueWsProtocolInterface(ABC):
     def _iter_symbol_items(items: object) -> tuple[str, ...]:
         if isinstance(items, str):
             s = items.strip()
-            return (s,) if s else ()
+            return (s,) if s and s.lower() not in INVALID_SCALAR_STRINGS else ()
         if not isinstance(items, (list, tuple, set, frozenset)):
             return ()
-        return tuple(s for x in items if isinstance(x, str) and (s := x.strip()))
+        return tuple(
+            dict.fromkeys(
+                s
+                for x in items
+                if not isinstance(x, bool)
+                and isinstance(x, str)
+                and (s := x.strip())
+                and s.lower() not in INVALID_SCALAR_STRINGS
+            )
+        )
 
 
 class KrakenWsLedgerMixin(VenueWsProtocolInterface):
@@ -94,7 +104,7 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
         if isinstance(symbol, bool) or not isinstance(symbol, str):
             return None
         raw = symbol.strip().upper()
-        if not raw:
+        if not raw or raw.lower() in INVALID_SCALAR_STRINGS:
             return None
         if pairs is not None:
             norm_pairs = cls._iter_symbol_items(pairs)
@@ -154,7 +164,14 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
         raw_oid = tr.get("ordertxid", tr.get("orderId"))
         order_id = extract_order_id(raw_oid, default=None) or extract_order_id(tr)
         raw_sym = tr.get("pair", tr.get("symbol"))
-        sym_val = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else None
+        sym_val = (
+            s
+            if not isinstance(raw_sym, bool)
+            and isinstance(raw_sym, str)
+            and (s := raw_sym.strip())
+            and s.lower() not in INVALID_SCALAR_STRINGS
+            else None
+        )
         fee_info = extract_order_fee(tr)
         has_fee = fee_info is not None and (fee_info["fee"] > 0 or "fee" in tr or "commission" in tr)
         return cls.build_cache_fill(
@@ -272,10 +289,14 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
     def build_ws_own_trades_subscription(cls, client) -> str:
         """Request a fresh Kraken WebSocket token and encode the ``ownTrades`` subscription frame."""
         res = client._private("GetWebSocketsToken", fresh=True)
+        raw_tok = res.get("token") if isinstance(res, dict) else None
         token = (
-            ""
-            if not isinstance(res, dict) or isinstance(res.get("token"), bool)
-            else str(res.get("token") or "").strip()
+            t
+            if not isinstance(raw_tok, bool)
+            and isinstance(raw_tok, str)
+            and (t := raw_tok.strip())
+            and t.lower() not in INVALID_SCALAR_STRINGS
+            else ""
         )
         if not token:
             raise RuntimeError("Kraken GetWebSocketsToken returned no token")
@@ -495,6 +516,13 @@ class HyperliquidWsMixin(VenueWsProtocolInterface):
                 out[s_sym] = px
         return out
 
+    @staticmethod
+    def _clean_ws_addr(addr: object) -> Optional[str]:
+        if isinstance(addr, bool) or not isinstance(addr, str):
+            return None
+        s = addr.strip()
+        return None if not s or s.lower() in INVALID_SCALAR_STRINGS else s
+
     @classmethod
     def resolve_ws_user_address(
         cls,
@@ -503,7 +531,7 @@ class HyperliquidWsMixin(VenueWsProtocolInterface):
         resolve_env: Optional[bool] = None,
     ) -> Optional[str]:
         """Resolve the Hyperliquid account address for ``userFills`` WebSocket subscriptions."""
-        addr = user_address if isinstance(user_address, str) else None
+        addr = cls._clean_ws_addr(user_address)
         if user_address is None and is_live_network_backfill_enabled(resolve_env):
             hl_dir = (
                 resolve_patched_attr(
@@ -513,17 +541,19 @@ class HyperliquidWsMixin(VenueWsProtocolInterface):
                 )
                 or _DEFAULT_HL_DIR
             )
-            addr = folder_or_env_value(
-                hl_dir, "HL_ACCOUNT_ADDRESS", strip_comments=True
+            addr = cls._clean_ws_addr(
+                folder_or_env_value(
+                    hl_dir, "HL_ACCOUNT_ADDRESS", strip_comments=True
+                )
             )
-        return addr.strip() if isinstance(addr, str) and addr.strip() else None
+        return addr
 
     @classmethod
     def build_ws_user_fills_subscriptions(
         cls, user_address: Optional[str]
     ) -> tuple[str, ...]:
         """Encode the Hyperliquid ``userFills`` WebSocket subscription payload tuple."""
-        addr = user_address.strip() if isinstance(user_address, str) else ""
+        addr = cls._clean_ws_addr(user_address)
         if not addr:
             return ()
         return (

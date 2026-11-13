@@ -4,6 +4,7 @@ import math
 from typing import Any, Mapping, Optional
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     clean_nonempty_str,
     clean_order_id,
     extract_order_id,
@@ -16,13 +17,18 @@ from botcore import (
 )
 
 
+def _clean_broker_str(val: Any) -> str:
+    s = clean_nonempty_str(val)
+    return "" if s is None or s.lower() in INVALID_SCALAR_STRINGS else s
+
+
 def extract_broker_order_ticker(raw: Any) -> str:
     """Extract ticker string from a flat or nested ``{'instrument': {'ticker': ...}}`` broker order."""
     if not isinstance(raw, Mapping):
         return ""
     inst = raw.get("instrument")
     inst_ticker = inst.get("ticker") if isinstance(inst, Mapping) else None
-    return clean_nonempty_str(raw.get("ticker")) or clean_nonempty_str(inst_ticker) or ""
+    return _clean_broker_str(raw.get("ticker")) or _clean_broker_str(inst_ticker)
 
 
 def extract_broker_signed_qty_and_side(order: Any) -> tuple[float, str]:
@@ -115,8 +121,7 @@ def aggregate_broker_history_fills(matches: list[tuple[dict, Optional[dict]]]) -
             if tax_amt <= 0.0:
                 continue
             total_fee += tax_amt
-            raw_cur = tax.get("currency")
-            currency = raw_cur.strip().upper() if isinstance(raw_cur, str) else ""
+            currency = _clean_broker_str(tax.get("currency")).upper()
             if currency:
                 fee_currencies.add(currency)
     if total_qty > 0:
@@ -156,7 +161,7 @@ def normalize_broker_history_items(items: Any) -> dict[str, list[dict]]:
             "symbol": ticker,
             "orderId": str(oid),
             "side": side,
-            "type": str(clean_nonempty_str(enriched.get("type")) or "MARKET").upper(),
+            "type": (_clean_broker_str(enriched.get("type")) or "MARKET").upper(),
             "price": round(px, 6),
             "qty": round(qty, 6),
             "executedQty": round(qty, 6),
