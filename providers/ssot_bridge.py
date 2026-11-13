@@ -8,6 +8,7 @@ import threading
 from typing import Any, List, Optional
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     PRICE_FRESHNESS_MAX_AGE_SEC,
     _is_fresh_obs_ts,
     _parse_bool_flag,
@@ -48,6 +49,25 @@ def live_price_fetch_context():
 def is_in_live_price_fetch() -> bool:
     """Return True when called inside a cacheManager remote price poll."""
     return safe_nonneg_int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0, default=0) > 0
+
+
+def _normalize_ssot_candidates(candidates: Any) -> tuple[str, ...]:
+    """Normalize a symbol or iterable of symbol candidates into unique non-empty SSOT keys."""
+    if isinstance(candidates, str):
+        s = candidates.strip()
+        return (s,) if s and s.lower() not in INVALID_SCALAR_STRINGS else ()
+    if isinstance(candidates, (bool, bytes, bytearray, dict)) or not hasattr(candidates, "__iter__"):
+        return ()
+    return tuple(
+        dict.fromkeys(
+            s
+            for c in candidates
+            if not isinstance(c, bool)
+            and isinstance(c, str)
+            and (s := c.strip())
+            and s.lower() not in INVALID_SCALAR_STRINGS
+        )
+    )
 
 
 class ProviderSsotBridgeMixin:
@@ -384,15 +404,25 @@ class ProviderSsotBridgeMixin:
     @classmethod
     def _ssot_symbol_candidates(cls, symbol: str, *, default_quote: str = "") -> tuple[str, ...]:
         """Return venue-scoped symbol keys to look up in SSOT cacheManager stores."""
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        if isinstance(symbol, bool) or not isinstance(symbol, str):
             return ()
-        raw_u = symbol.strip().upper()
+        raw = symbol.strip()
+        if not raw or raw.lower() in INVALID_SCALAR_STRINGS:
+            return ()
+        raw_u = raw.upper()
+        dq = (
+            default_quote.strip().upper()
+            if not isinstance(default_quote, bool)
+            and isinstance(default_quote, str)
+            and default_quote.strip().lower() not in INVALID_SCALAR_STRINGS
+            else ""
+        )
         cleaned = clean_symbol_key(raw_u)
         parts = split_symbol_assets(raw_u)
         canon = (
             canonical_symbol_key(raw_u)
             if parts is not None
-            else (f"{cleaned}{default_quote}" if (cleaned and default_quote) else "")
+            else (f"{cleaned}{dq}" if (cleaned and dq) else "")
         )
         return tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon) if c))
 
@@ -494,15 +524,7 @@ class ProviderSsotBridgeMixin:
     ) -> list[float]:
         """Read fresh 5m close series for ``candidates`` from ``cache_ohlc_24h_<SYM>.json``."""
         eff_age = resolve_positive_max_age(max_age_sec, 300.0)
-        norm_cands = (
-            (candidates,)
-            if isinstance(candidates, str)
-            else (
-                ()
-                if isinstance(candidates, (bool, bytes, bytearray)) or not hasattr(candidates, "__iter__")
-                else tuple(c.strip() for c in candidates if not isinstance(c, bool) and isinstance(c, str) and c.strip())
-            )
-        )
+        norm_cands = _normalize_ssot_candidates(candidates)
         if eff_age is None or not norm_cands:
             return []
         now_s = resolve_now_ts()
@@ -543,15 +565,7 @@ class ProviderSsotBridgeMixin:
     ) -> Optional[float]:
         """Resolve a fresh spot price for ``candidates`` from ``CacheCurrentPriceManager`` / ``cache_current_price.json``."""
         eff_age = resolve_positive_max_age(max_age_sec, PRICE_FRESHNESS_MAX_AGE_SEC)
-        norm_cands = (
-            (candidates,)
-            if isinstance(candidates, str)
-            else (
-                ()
-                if isinstance(candidates, (bool, bytes, bytearray)) or not hasattr(candidates, "__iter__")
-                else tuple(c for c in candidates if not isinstance(c, bool) and isinstance(c, str) and c.strip())
-            )
-        )
+        norm_cands = _normalize_ssot_candidates(candidates)
         if eff_age is None or not norm_cands:
             return None
         cls._ensure_ssot_cache_bindings()
@@ -652,7 +666,15 @@ class ProviderSsotBridgeMixin:
             )
 
     def _resolve_ssot_trade_cache_cls(self, symbol: str, cache_file: str) -> Any:
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
+        if (
+            isinstance(symbol, bool)
+            or not isinstance(symbol, str)
+            or not (sym_s := symbol.strip())
+            or sym_s.lower() in INVALID_SCALAR_STRINGS
+            or isinstance(cache_file, bool)
+            or not cache_file
+            or not str(cache_file).strip()
+        ):
             return None
         self._ensure_ssot_cache_bindings()
         return self._ssot_trade_cache_cls
@@ -698,7 +720,7 @@ class ProviderSsotBridgeMixin:
         """Atomically merge normalized multi-symbol fills into a shared SSOT trade cache snapshot."""
         if callable(patched := cls._patched_mdp_attr("merge_ssot_fills_cache")):
             return bool(patched(cache_file, fills_by_symbol))
-        if not cache_file or not isinstance(fills_by_symbol, dict):
+        if isinstance(cache_file, bool) or not cache_file or not str(cache_file).strip() or not isinstance(fills_by_symbol, dict):
             return False
         cls._ensure_ssot_cache_bindings()
         tm_cls = cls._ssot_trade_cache_cls

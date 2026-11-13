@@ -14,6 +14,7 @@ import uuid
 from typing import Any, Callable, Optional, Protocol
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_order_id,
     exact_nonneg_int,
@@ -44,6 +45,17 @@ def _parse_nonneg_int(
     if iv is None or (max_val is not None and iv > max_val):
         raise ValueError(error_msg)
     return iv
+
+
+def _clean_checkpoint_reason(raw: object, field_name: str) -> Optional[str]:
+    if raw is None:
+        return None
+    if isinstance(raw, (bool, dict, list, tuple, set, frozenset)) or (
+        isinstance(raw, float) and not math.isfinite(raw)
+    ):
+        raise ValueError(f"invalid rtrade checkpoint {field_name}")
+    text = str(raw).strip()
+    return None if not text or text.lower() in INVALID_SCALAR_STRINGS else text
 
 
 @dataclass
@@ -368,10 +380,7 @@ class PairCoordinator:
         if norm_phase not in _VALID_PHASES:
             raise ValueError("invalid rtrade checkpoint phase")
         obj.phase = norm_phase
-        raw_reason = state.get("reason")
-        if isinstance(raw_reason, (bool, dict, list, tuple, set, frozenset)):
-            raise ValueError("invalid rtrade checkpoint reason")
-        obj.reason = (str(raw_reason).strip() or None) if raw_reason is not None else None
+        obj.reason = _clean_checkpoint_reason(state.get("reason"), "reason")
         obj.shock = _parse_bool_flag(state.get("shock", False), default=False)
         raw_elapsed = state.get("elapsed_sec")
         elapsed_f = 0.0 if raw_elapsed is None else safe_float(raw_elapsed, default=None)
@@ -446,10 +455,7 @@ class PairCoordinator:
             if raw_hs_rev is None
             else _parse_nonneg_int(raw_hs_rev, max_val=_MAX_LIMIT_REVISION, error_msg=f"invalid hard-stop revision: {raw_hs_rev}")
         )
-        raw_hs_reason = state.get("hard_stop_reason")
-        if isinstance(raw_hs_reason, (bool, dict, list, tuple, set, frozenset)):
-            raise ValueError("invalid rtrade checkpoint hard_stop_reason")
-        obj.hard_stop_reason = (str(raw_hs_reason).strip() or None) if raw_hs_reason is not None else None
+        obj.hard_stop_reason = _clean_checkpoint_reason(state.get("hard_stop_reason"), "hard_stop_reason")
         return obj
 
     def _append_unique_ticket(self, ticket: OrderTicket) -> OrderTicket:
@@ -461,7 +467,8 @@ class PairCoordinator:
 
     @staticmethod
     def _intent_revision(kind: str, prefix: str) -> Optional[int]:
-        kind = str(kind)
+        if isinstance(kind, bool) or not isinstance(kind, str) or isinstance(prefix, bool) or not isinstance(prefix, str):
+            return None
         if kind == prefix:
             return 0
         marker = f"{prefix}_"
@@ -756,7 +763,7 @@ class PairCoordinator:
                 )
                 hs_reason = "fast_fill_hard_stop" if self.shock else "inventory_hard_stop"
                 allow = getattr(self.venue, "market_exit_allowed", None)
-                if callable(allow) and not allow(exposure_side, loss_fraction, hs_reason):
+                if callable(allow) and not _parse_bool_flag(allow(exposure_side, loss_fraction, hs_reason), True):
                     self.reason = "market_exit_waiting_for_trend"
                 else:
                     exit_side = "SELL" if exposure_side == "LONG" else "BUY"

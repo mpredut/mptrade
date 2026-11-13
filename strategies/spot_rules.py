@@ -11,6 +11,7 @@ from botcore import (
     are_close,
     normalize_epoch_sec,
     safe_float,
+    safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
 )
@@ -23,10 +24,8 @@ def _iter_valid_shadow_prices(shadow_prices: object) -> list[tuple[float, float]
     for item in shadow_prices:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        tf, pf = safe_float(item[0], default=None), safe_pos_float(item[1], default=None)
+        tf, pf = normalize_epoch_sec(item[0], default=None, allow_zero=True), safe_pos_float(item[1], default=None)
         if tf is not None and pf is not None:
-            if tf >= 1e11:
-                tf /= 1000.0
             out.append((tf, pf))
     if len(out) > 1 and any(out[i][0] > out[i + 1][0] for i in range(len(out) - 1)):
         out.sort(key=lambda pair: pair[0])
@@ -59,7 +58,10 @@ def dca_price_hit(price: float, last_buy: float, drop_pct: float, tol_pct: float
     if px_f is None or lb_f is None or drop_f is None:
         return False
     threshold = lb_f * (1 - drop_f / 100)
-    return px_f <= threshold or are_close(px_f, threshold, tol_pct)
+    if threshold <= 0.0:
+        return False
+    tol_f = safe_nonneg_float(tol_pct, default=0.0)
+    return px_f <= threshold or (tol_f > 0.0 and are_close(px_f, threshold, tol_f))
 
 
 def progressive_dca_drop_pct(
@@ -237,10 +239,7 @@ def check_slow_grind_exhaustion(
     ent_f = normalize_epoch_sec(entry_ts, default=None, allow_zero=True)
     cur_t_f = normalize_epoch_sec(current_ts, default=None, allow_zero=True)
     md_f, mg_f = safe_pos_float(min_days, default=None), safe_pos_float(min_gain_pct, default=None)
-    if (
-        any(v is None for v in (avg_f, px_f, md_f, mg_f))
-        or ent_f is None or cur_t_f is None or ent_f < 0 or cur_t_f < 0
-    ):
+    if any(v is None for v in (avg_f, px_f, ent_f, cur_t_f, md_f, mg_f)):
         return False, ""
     if not ((cur_t_f - ent_f) / 86400.0 >= md_f):
         return False, ""

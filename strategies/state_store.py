@@ -10,7 +10,13 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import fields
-from botcore import _parse_bool_flag, normalize_side, safe_pos_float
+from botcore import (
+    INVALID_SCALAR_STRINGS,
+    _parse_bool_flag,
+    normalize_side,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cachepaths import resolve_venue_runtime_dir
 from state_io import StateReadError, load_json_state, save_json_state
 from .position_exit_manager import PositionExitConfig, PositionExitManager, is_stop_exit_kind
@@ -36,15 +42,19 @@ def compute_adaptive_reentry_pullback_pct(
     vol_label: str = "vol",
 ) -> tuple[float, str]:
     """Compute volatility-scaled or fixed re-entry pullback threshold from peak."""
+    fixed_pb = safe_nonneg_float(getattr(params, "reentry_pullback_pct", 0.0), default=0.0)
     if not _parse_bool_flag(getattr(params, "reentry_pullback_adaptive", False), False):
-        return params.reentry_pullback_pct, "fixed"
+        return fixed_pb, "fixed"
     vol_f = safe_pos_float(vol, default=None)
-    if vol_f is None:
-        return params.reentry_pullback_pct, fallback_reason
-    lo = min(params.reentry_pullback_min, params.reentry_pullback_max)
-    hi = max(params.reentry_pullback_min, params.reentry_pullback_max)
-    val = max(lo, min(hi, params.reentry_pullback_k * vol_f))
-    return val, f"adaptive ({vol_label} {vol_f:.2f}% x k={params.reentry_pullback_k} -> {val:.2f}%)"
+    pb_min = safe_nonneg_float(getattr(params, "reentry_pullback_min", None), default=None)
+    pb_max = safe_nonneg_float(getattr(params, "reentry_pullback_max", None), default=None)
+    pb_k = safe_nonneg_float(getattr(params, "reentry_pullback_k", None), default=None)
+    if vol_f is None or pb_min is None or pb_max is None or pb_k is None:
+        return fixed_pb, fallback_reason
+    lo = min(pb_min, pb_max)
+    hi = max(pb_min, pb_max)
+    val = max(lo, min(hi, pb_k * vol_f))
+    return val, f"adaptive ({vol_label} {vol_f:.2f}% x k={pb_k} -> {val:.2f}%)"
 
 
 def build_strategy_exit_manager(
@@ -75,7 +85,7 @@ def build_strategy_exit_manager(
         reentry_tolerance_pct=p.reentry_tolerance_pct,
         gain_threshold=to_ratio(p.takeprofit_pct),
         tp_stagnation_max_sec=p.tp_stagnation_max_sec,
-        allow_external_cache=allow_external_cache,
+        allow_external_cache=_parse_bool_flag(allow_external_cache, False),
     )
     if isinstance(extra_config, dict):
         common.update(extra_config)
@@ -122,7 +132,7 @@ def update_post_sell_anchors(
         return lsp
     state["post_sell_peak"] = max(safe_pos_float(state.get("post_sell_peak"), lsp), px_f)
     state["post_sell_trough"] = min(safe_pos_float(state.get("post_sell_trough"), lsp), px_f)
-    if track_stop_sl_low and is_stop_exit_kind(state.get("last_exit_kind")):
+    if _parse_bool_flag(track_stop_sl_low, False) and is_stop_exit_kind(state.get("last_exit_kind")):
         state["sl_low"] = min(safe_pos_float(state.get("sl_low"), lsp), px_f)
     return lsp
 
@@ -137,8 +147,11 @@ def safe_state_token(
     """Sanitize a symbol/ticker/direction token for use in a ``.state_<token>.json`` filename."""
     if isinstance(val, bool) or not isinstance(val, str):
         return default
-    s = val.strip().lower() if lower else val
-    allowed = "._-=" if allow_equals else "._-"
+    raw = val.strip()
+    if not raw or raw.lower() in INVALID_SCALAR_STRINGS:
+        return default
+    s = raw.lower() if _parse_bool_flag(lower, False) else raw
+    allowed = "._-=" if _parse_bool_flag(allow_equals, False) else "._-"
     return "".join(c for c in s if (c.isascii() and c.isalnum()) or c in allowed).strip(allowed) or default
 
 
@@ -151,7 +164,12 @@ def state_path_for(
 ) -> str:
     """Return ``<dir>/.state_<safe_symbol>.json`` using ``default_dir`` or ``resolve_venue_runtime_dir(venue)`` when ``state_dir`` is blank."""
     safe = safe_state_token(symbol, "unknown")
-    eff_default = default_dir or (resolve_venue_runtime_dir(venue) if venue else "")
+    venue_str = (
+        venue.strip()
+        if not isinstance(venue, bool) and isinstance(venue, str) and venue.strip().lower() not in INVALID_SCALAR_STRINGS
+        else ""
+    )
+    eff_default = default_dir or (resolve_venue_runtime_dir(venue_str) if venue_str else "")
     if isinstance(state_dir, os.PathLike):
         directory = os.fspath(state_dir) or eff_default
     elif isinstance(state_dir, str) and state_dir.strip():
@@ -171,7 +189,7 @@ class JsonStateStore:
         self.path = path
         self.default_factory = default_factory
         self.label = label
-        self.logger = logger
+        self.logger = logger if callable(logger) else (lambda _m: None)
         self.fail_closed = False if fail_closed is None else _parse_bool_flag(fail_closed, True)
 
     def load(self) -> dict:

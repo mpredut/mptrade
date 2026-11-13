@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
+    _parse_bool_flag,
     clean_upper_token,
     load_env_file_defaults,
     resolve_patched_attr,
@@ -174,8 +176,11 @@ class ProviderVenueMetadataMixin:
     @classmethod
     def uses_shared_registry_symbols(cls, venue: Any) -> bool:
         """Return whether ``venue`` defaults to ``instrument_registry.symbols`` when ``symbols=None``."""
-        v_str = str(getattr(venue, "name", venue) or "").strip()
-        if not v_str:
+        raw = getattr(venue, "name", venue)
+        if isinstance(raw, bool):
+            return False
+        v_str = str(raw or "").strip()
+        if not v_str or v_str.lower() in INVALID_SCALAR_STRINGS:
             return True
         prov_cls = cls.resolve_venue_provider_class(v_str)
         return bool(getattr(prov_cls, "_USES_SHARED_REGISTRY_SYMBOLS", False))
@@ -193,10 +198,10 @@ class ProviderVenueMetadataMixin:
         if getattr(target_cls, "_EXACT_TELEMETRY_CACHE_SYMBOL", False):
             return True
         return bool(
-            quote_isolated
+            _parse_bool_flag(quote_isolated, False)
             and (
                 getattr(target_cls, "_QUOTE_ISOLATED_TELEMETRY_VENUE", True)
-                or multi_venue_base
+                or _parse_bool_flag(multi_venue_base, False)
             )
         )
 
@@ -222,7 +227,16 @@ class ProviderVenueMetadataMixin:
         """Return the default quote currency for ``venue`` when unparsed from ``symbol``."""
         prov_cls = cls.resolve_venue_provider_class(venue)
         q = getattr(prov_cls, "_DEFAULT_QUOTE_ASSET", None) if prov_cls is not None else None
-        return str(q).strip().upper() if isinstance(q, str) and q.strip() else str(fallback or "USD").strip().upper()
+        if isinstance(q, str) and q.strip() and q.strip().lower() not in INVALID_SCALAR_STRINGS:
+            return q.strip().upper()
+        return (
+            fallback.strip().upper()
+            if not isinstance(fallback, bool)
+            and isinstance(fallback, str)
+            and fallback.strip()
+            and fallback.strip().lower() not in INVALID_SCALAR_STRINGS
+            else "USD"
+        )
 
     @classmethod
     def resolve_venue_position_price_decimals(cls, venue: Any) -> int:
@@ -245,7 +259,12 @@ class ProviderVenueMetadataMixin:
         prov_cls = cls.resolve_venue_provider_class(venue)
         if prov_cls is not None:
             return prov_cls.format_strategy_heartbeat_name(symbol)
-        venue_str = str(venue or "").strip()
+        raw = getattr(venue, "name", venue)
+        venue_str = (
+            raw.strip()
+            if not isinstance(raw, bool) and isinstance(raw, str) and raw.strip().lower() not in INVALID_SCALAR_STRINGS
+            else ""
+        )
         return f"{venue_str}-bot" if venue_str else "Strategy-bot"
 
     @classmethod
@@ -430,7 +449,7 @@ class ProviderVenueMetadataMixin:
         )
         v_norm = normalize_venue_name(venue)
         eff_venue = v_norm if (v_norm in primary_map and primary_map[v_norm]) else default_venue
-        if multi_venue:
+        if _parse_bool_flag(multi_venue, False):
             return primary_map.get(eff_venue, ()), hl_book_url
 
         ordered: list[str] = list(primary_map.get(eff_venue, ()))

@@ -198,6 +198,7 @@ from providers import (
     market_api as mapi_mod,
     order_id_context as oic,
     ssot_bridge as sb_mod,
+    venue_metadata as vm_mod,
     venue_ws_protocols as vwp_mod,
 )
 from providers.base import MarketDataProvider
@@ -292,6 +293,7 @@ from strategies import (
     position_exit_manager as pem_mod,
     rtrade_pair as rtp_mod,
     spot_engine as spot_eng_mod,
+    spot_rules as sr_mod,
     state_store as strat_ss_mod,
 )
 from strategies.base_spot_mixin import BaseSpotMixin, parse_tp_ladder_env, sanitize_common_spot_state
@@ -7000,4 +7002,151 @@ def test_wave39_strategy_executor_order_utils_quantity_exit_and_mixin_border_cas
     assert strat_stub.s["spent"] == 50.0
     assert strat_stub._in_mhdsl_territory(float("nan"), reset_episode_on_exit="false") is False  # type: ignore[arg-type]
     assert "ETHUSDC" in mgr.sl_episode_state
+
+
+def test_wave40_spot_rules_state_store_provider_base_bridge_and_rtrade_pair_border_cases(tmp_path, monkeypatch):
+    """Wave 40: spot_rules, state_store, venue_metadata, ssot_bridge, providers/base, and rtrade_pair border cases."""
+    # 1. strategies/spot_rules: _iter_valid_shadow_prices rejects negative epochs & normalizes ms; dca_price_hit guards tol_pct/threshold.
+    shadows = sr_mod._iter_valid_shadow_prices([(-50.0, 100.0), (1700000005000, 105.0), (1700000000.0, 101.0), (True, 99.0)])
+    assert shadows == [(1700000000.0, 101.0), (1700000005.0, 105.0)]
+    assert sr_mod.dca_price_hit(98.05, 100.0, 2.0, None) is False  # type: ignore[arg-type]
+    assert sr_mod.dca_price_hit(98.05, 100.0, 2.0, -0.5) is False
+    assert sr_mod.dca_price_hit(98.05, 100.0, 2.0, "0.1") is True  # type: ignore[arg-type]
+    assert sr_mod.dca_price_hit(1.0, 100.0, 105.0, 5.0) is False
+
+    # 2. strategies/state_store: adaptive pullback NaN/None resilience, string flags, safe_state_token/state_path_for & JsonStateStore logger=None.
+    bad_params = SimpleNamespace(
+        reentry_pullback_adaptive="true",
+        reentry_pullback_pct="1.5",
+        reentry_pullback_min=None,
+        reentry_pullback_max=3.0,
+        reentry_pullback_k=0.8,
+    )
+    assert strat_ss_mod.compute_adaptive_reentry_pullback_pct(bad_params, 2.0) == (1.5, "fixed (fallback)")
+    st_anchors = {"last_sell_price": 100.0, "last_exit_kind": "STOP_LOSS"}
+    assert strat_ss_mod.update_post_sell_anchors(st_anchors, 95.0, track_stop_sl_low="false") == 100.0  # type: ignore[arg-type]
+    assert "sl_low" not in st_anchors
+    assert strat_ss_mod.safe_state_token("null", "unknown") == "unknown"
+    assert strat_ss_mod.safe_state_token("CL=F", "unknown", allow_equals="false") == "CLF"  # type: ignore[arg-type]
+    assert strat_ss_mod.safe_state_token(" BTC ", "unknown", lower="false") == "BTC"  # type: ignore[arg-type]
+    assert strat_ss_mod.state_path_for("null", None, venue="none") == ".state_unknown.json"
+    store = strat_ss_mod.JsonStateStore(
+        str(tmp_path / "missing_state.json"),
+        lambda: {"cycle": 1, "qty": 0.0},
+        label="test",
+        logger=None,  # type: ignore[arg-type]
+        fail_closed=False,
+    )
+    assert store.save("not_a_dict") is False  # type: ignore[arg-type]
+
+    # 3. providers/venue_metadata: bool/INVALID_SCALAR_STRINGS hygiene & string-false flags.
+    assert vm_mod.ProviderVenueMetadataMixin.uses_shared_registry_symbols(False) is False
+    assert vm_mod.ProviderVenueMetadataMixin.uses_shared_registry_symbols("null") is True
+    assert MarketDataProvider.is_exact_telemetry_symbol_venue("binance", quote_isolated="false", multi_venue_base="false") is False  # type: ignore[arg-type]
+    assert MarketDataProvider.resolve_venue_default_quote("unknown_venue", fallback="null") == "USD"
+    assert MarketDataProvider.resolve_venue_default_quote("unknown_venue", fallback=True) == "USD"  # type: ignore[arg-type]
+    assert MarketDataProvider.resolve_venue_strategy_heartbeat(True) == "Strategy-bot"
+    assert MarketDataProvider.resolve_venue_strategy_heartbeat("null") == "Strategy-bot"
+    urls_mv_false, _ = MarketDataProvider.resolve_orderbook_depth_urls("BTCUSDC", venue="binance", multi_venue="false")  # type: ignore[arg-type]
+    urls_mv_true, _ = MarketDataProvider.resolve_orderbook_depth_urls("BTCUSDC", venue="binance", multi_venue=True)
+    assert len(urls_mv_false) >= len(urls_mv_true)
+
+    # 4. providers/ssot_bridge: _normalize_ssot_candidates, _ssot_symbol_candidates, _resolve_ssot_trade_cache_cls & merge_ssot_fills_cache.
+    assert sb_mod._normalize_ssot_candidates("null") == ()
+    assert sb_mod._normalize_ssot_candidates({"BTCUSDC": 1}) == ()
+    assert sb_mod._normalize_ssot_candidates([" BTCUSDC ", "null", True, "BTCUSDC", "ETHUSDC"]) == ("BTCUSDC", "ETHUSDC")
+    assert MarketDataProvider._ssot_symbol_candidates("null", default_quote="USDC") == ()
+    assert MarketDataProvider._ssot_symbol_candidates("HYPE", default_quote="null") == ("HYPE",)
+    prov = _TestMarketProvider()
+    assert prov._resolve_ssot_trade_cache_cls("null", str(tmp_path / "fills.json")) is None
+    assert prov._resolve_ssot_trade_cache_cls("BTCUSDC", True) is None  # type: ignore[arg-type]
+    assert MarketDataProvider.merge_ssot_fills_cache(True, {"BTCUSDC": []}) is False  # type: ignore[arg-type]
+    assert MarketDataProvider.merge_ssot_fills_cache("   ", {"BTCUSDC": []}) is False
+
+    # 5. providers/base: _require_submitted_order_id, string-false flags on get_orders/get_trades/_invoke_fills_from_api/profit_guard_window_ref/fetch_ohlc_candles.
+    invalidated: list[str] = []
+    monkeypatch.setattr(prov, "_invalidate_fills_cache", invalidated.append)
+    for bad_oid in (None, "", "   ", "0", "null", "nan", False):
+        with pytest.raises(ProviderError, match="missing oid"):
+            prov._require_submitted_order_id("BTCUSDC", bad_oid, "missing oid")  # type: ignore[arg-type]
+    assert prov._require_submitted_order_id("BTCUSDC", 1001.0, "missing oid", invalidate_fills_cache="false") == "1001"  # type: ignore[arg-type]
+    assert invalidated == []
+
+    api_calls: list[tuple[str, Any]] = []
+    cache_hits: list[str] = []
+    now_ms = math.trunc(time.time() * 1000) - 1000
+    monkeypatch.setattr(
+        prov,
+        "_fills_from_cache",
+        lambda sym: (cache_hits.append(sym) or [{"orderId": "99", "side": "BUY", "price": 50.0, "qty": 1.0, "timestamp": now_ms}]),
+    )
+    monkeypatch.setattr(
+        prov,
+        "_fills_from_api",
+        lambda sym, publish_cache=False: (api_calls.append((sym, publish_cache)) or []),
+    )
+    orders_res = prov.get_trades("BTCUSDC", 3600.0, authoritative="false", publish_cache="false")  # type: ignore[arg-type]
+    assert len(orders_res) == 1 and cache_hits == ["BTCUSDC"] and api_calls == []
+    assert prov.position_cost_basis("null", 1.0, 3600.0) is None
+
+    prov._DEFAULT_QUOTE_ASSET = "null"  # type: ignore[attr-defined]
+    assert prov.default_quote_asset() is None
+    prov._REQUIRES_CACHE_PERMIT = "false"  # type: ignore[assignment]
+    assert prov.requires_cache_permit() is False
+
+    monkeypatch.setattr(prov, "_policy_window_cfg_fn", lambda *a, **kw: 900.0)
+    monkeypatch.setattr(prov, "_policy_window_reference_fn", lambda _self, _sym, _side, win_s, **_kw: win_s)
+    assert prov.profit_guard_window_ref("BTCUSDC", "SELL", 60.0, prefer_safeback="false") == 900.0  # type: ignore[arg-type]
+
+    # 6. strategies/rtrade_pair: checkpoint reason NaN/INVALID_SCALAR_STRINGS, _intent_revision non-str guard, market_exit_allowed="false".
+    assert rtp_mod.PairCoordinator._intent_revision(True, "limit_buy") is None  # type: ignore[arg-type]
+    assert rtp_mod.PairCoordinator._intent_revision("limit_buy_2", "limit_buy") == 2
+
+    venue_rt = SimpleNamespace(
+        current_price=lambda: 90.0,
+        order_status=lambda oid: (
+            rtp_mod.OrderSnapshot(status="closed", filled_qty=1.0, cost=100.0, fee=0.0)
+            if oid == "2001"
+            else rtp_mod.OrderSnapshot(status="open", filled_qty=0.0, cost=0.0, fee=0.0)
+        ),
+        market_exit_allowed=lambda *_a: "false",
+        preflight_order=lambda *_a, **_kw: None,
+        place_market_exit=lambda *_a, **_kw: pytest.fail("market_exit_allowed='false' should defer market exit"),
+    )
+    policy_rt = rtp_mod.PairPolicy(
+        adjustment_fraction=0.01,
+        shock_hard_stop_fraction=0.04,
+        hard_stop_fraction=0.05,
+    )
+    base_cp = {
+        "pair_id": "pair_w40",
+        "qty": 1.0,
+        "start_side": "BUY",
+        "phase": "exposed",
+        "reason": "null",
+        "hard_stop_reason": "none",
+        "shock": False,
+        "elapsed_sec": 5.0,
+        "first_fill_elapsed_sec": 1.0,
+        "first_fill_side": "BUY",
+        "tickets": [
+            {"order_id": "2001", "side": "BUY", "price": 100.0, "qty": 1.0, "active": False},
+            {"order_id": "2002", "side": "SELL", "price": 102.0, "qty": 1.0, "active": True},
+        ],
+        "snapshots": {
+            "2001": {"status": "closed", "filled_qty": 1.0, "cost": 100.0, "fee": 0.0},
+            "2002": {"status": "open", "filled_qty": 0.0, "cost": 0.0, "fee": 0.0},
+        },
+    }
+    coord = rtp_mod.PairCoordinator.from_state(venue_rt, policy_rt, base_cp, clock=lambda: 1000.0)
+    assert coord.reason is None and coord.hard_stop_reason is None
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint reason"):
+        rtp_mod.PairCoordinator.from_state(venue_rt, policy_rt, {**base_cp, "reason": float("nan")}, clock=lambda: 1000.0)
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint hard_stop_reason"):
+        rtp_mod.PairCoordinator.from_state(
+            venue_rt, policy_rt, {**base_cp, "hard_stop_reason": float("inf")}, clock=lambda: 1000.0
+        )
+    step_out = coord.step()
+    assert step_out.reason == "market_exit_waiting_for_trend"
+
 

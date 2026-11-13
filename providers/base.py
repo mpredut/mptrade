@@ -11,10 +11,12 @@ from typing import Any, List, Optional
 
 from botcore import (  # noqa: F401
     ClosedPriceSeries,
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     _ts_ms_to_s,
     bind_attr_call,
     bool_env,
+    clean_order_id,
     clean_upper_token,
     exact_nonneg_int,
     extract_order_id,
@@ -208,16 +210,18 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         invalidate_fills_cache: bool = True,
     ) -> str:
         """Require a non-empty ``order_id``, optionally invalidate ``symbol`` fills cache, and return ``order_id``."""
-        if order_id is None:
+        clean_oid = clean_order_id(order_id)
+        if clean_oid is None:
             raise ProviderError(missing_msg)
-        if invalidate_fills_cache:
+        if _parse_bool_flag(invalidate_fills_cache, True):
             self._invalidate_fills_cache(symbol)
-        return order_id
+        return clean_oid
 
     def _invoke_fills_from_api(
         self, symbol: str, *, publish_cache: bool = False
     ) -> Optional[List[dict]]:
         """Invoke ``self._fills_from_api`` without masking internal ``TypeError`` exceptions."""
+        pub = _parse_bool_flag(publish_cache, False)
         api_fn = getattr(self, "_fills_from_api", None)
         if not callable(api_fn):
             return None
@@ -229,9 +233,9 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         except (TypeError, ValueError):
             accepts_publish = False
         if accepts_publish:
-            return api_fn(symbol, publish_cache=publish_cache)
+            return api_fn(symbol, publish_cache=pub)
         rows = api_fn(symbol)
-        if publish_cache and rows is not None:
+        if pub and rows is not None:
             cache_file = self._fills_cache_file()
             if cache_file:
                 self.write_ssot_fills_cache(symbol, cache_file, rows)
@@ -291,11 +295,13 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         since_val = safe_nonneg_float(since_s, default=None)
         if since_val is None:
             return []
+        auth = _parse_bool_flag(authoritative, False)
+        pub = _parse_bool_flag(publish_cache, False)
         try:
             cache_fn = getattr(self, "_fills_from_cache", None)
-            rows = cache_fn(symbol) if (callable(cache_fn) and not authoritative and not publish_cache) else None
+            rows = cache_fn(symbol) if (callable(cache_fn) and not auth and not pub) else None
             if rows is None:
-                rows = self._invoke_fills_from_api(symbol, publish_cache=publish_cache)
+                rows = self._invoke_fills_from_api(symbol, publish_cache=pub)
             if rows is None:
                 raise ProviderError(f"get_orders({symbol}): fills history unavailable")
             return aggregate_fills_by_order_id(rows, cutoff_ms=(time.time() - since_val) * 1000.0, side=side)
@@ -313,7 +319,9 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         authoritative: bool = False,
         publish_cache: bool = False,
     ) -> List[dict]:
-        if not authoritative and not publish_cache:
+        auth = _parse_bool_flag(authoritative, False)
+        pub = _parse_bool_flag(publish_cache, False)
+        if not auth and not pub:
             try:
                 return self.get_orders(
                     symbol,
@@ -328,8 +336,8 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
             symbol,
             None,
             since_s,
-            authoritative=authoritative,
-            publish_cache=publish_cache,
+            authoritative=auth,
+            publish_cache=pub,
         )
 
     def get_trade_orders(
@@ -344,7 +352,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Return inventory-reconciled acquisition cost from fresh SSOT fills, or None when unknown."""
         since_val = require_pos_float(since_s, "since_s")
-        if (sym_u := clean_upper_token(symbol)) is None:
+        if (sym_u := clean_upper_token(symbol)) is None or sym_u.lower() in INVALID_SCALAR_STRINGS:
             return None
         fills_fn = getattr(self, "_fills_from_cache", None)
         rows = fills_fn(symbol) if callable(fills_fn) else None
@@ -532,10 +540,12 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
     def default_quote_asset(self) -> Optional[str]:
         """Return default quote asset when a venue symbol omits explicit quote suffix."""
         val = MarketDataProvider._resolve_provider_attr(self, "_DEFAULT_QUOTE_ASSET", None)
-        return str(val).strip().upper() if isinstance(val, str) and val.strip() else None
+        if isinstance(val, str) and (s := val.strip()) and s.lower() not in INVALID_SCALAR_STRINGS:
+            return s.upper()
+        return None
 
     def _provider_bool_attr(self, attr: str) -> bool:
-        return bool(MarketDataProvider._resolve_provider_attr(self, attr, False))
+        return bool(_parse_bool_flag(MarketDataProvider._resolve_provider_attr(self, attr, False), False))
 
     requires_cache_permit = bind_attr_call("_provider_bool_attr", "_REQUIRES_CACHE_PERMIT")
     defers_smart_cancellation = bind_attr_call("_provider_bool_attr", "_DEFERS_SMART_CANCELLATION")
@@ -645,7 +655,8 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         if not callable(ref_fn):
             return None
         sb_f = safe_pos_float(safeback_sec, default=None)
-        if prefer_safeback and sb_f is not None:
+        def_sb = safe_nonneg_float(default_safeback_sec, default=0.0)
+        if _parse_bool_flag(prefer_safeback, False) and sb_f is not None:
             window_s = sb_f
         else:
             cfg_fn = self._policy_window_cfg_fn
@@ -662,7 +673,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
                 else None
             )
             win_f = safe_pos_float(win_cfg, default=None)
-            window_s = win_f if win_f is not None else (sb_f if sb_f is not None else default_safeback_sec)
+            window_s = win_f if win_f is not None else (sb_f if sb_f is not None else def_sb)
         wr_kwargs = {k: v for k, v in (("reference_mode", reference_mode), ("module", module)) if v is not None}
         return ref_fn(self, symbol, side, window_s, **wr_kwargs)
 
@@ -785,7 +796,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
             fetch_fn(
                 symbol,
                 interval=eff_interval,
-                drop_incomplete=drop_incomplete,
+                drop_incomplete=_parse_bool_flag(drop_incomplete, True),
                 **kwargs,
             )
             or []
