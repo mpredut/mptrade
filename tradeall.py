@@ -1018,6 +1018,8 @@ class TrendCoordinator:
 
         ts_small = self.trend_states[symbol]
         ts_big = self.trend_states_big[symbol]
+        if stop_ev is not None and stop_ev.is_set():
+            return None
         prev_attempts = (
             getattr(ts_small, "_last_attempt_up_ts", None),
             getattr(ts_small, "_last_attempt_down_ts", None),
@@ -1052,7 +1054,7 @@ class TrendCoordinator:
         fields = {k: v for k, v in snapshot.items() if k != "symbol"}
         if kalman_fields:
             fields.update(kalman_fields)
-        if self._kalman_state is not None:
+        if self._kalman_state is not None and not (stop_ev is not None and stop_ev.is_set()):
             try:
                 # Primary Kalman starts an order on a trend transition for enabled
                 # symbols when handle_symbol did not already place one on this tick.
@@ -1161,16 +1163,21 @@ if __name__ == "__main__":
 
     def _request_stop(_signum=None, _frame=None):
         coordinator.stop()
+        current_price_mgr.set_stop_event()
+        current_price_mgr._tick_ipc_stop.set()
+        instant_mgr.set_stop_event()
 
     _signal.signal(_signal.SIGTERM, _request_stop)
     _signal.signal(_signal.SIGINT, _request_stop)
     try:
         coordinator.run()
     finally:
+        shutdown_deadline = time.monotonic() + 1.2
         coordinator.stop()
         cm.request_stop_price_ws_streams()
-        instant_mgr.shutdown(timeout=0.5)
-        cm.CacheFactory.shutdown_all(timeout=0.5)
-        current_price_mgr.shutdown(timeout=0.3)
-        shutdown_deadline = time.monotonic() + 0.3
+        instant_mgr.request_stop()
+        current_price_mgr.request_stop()
+        instant_mgr.shutdown(timeout=max(0.05, shutdown_deadline - time.monotonic()))
+        cm.CacheFactory.shutdown_all(timeout=max(0.05, shutdown_deadline - time.monotonic()))
+        current_price_mgr.shutdown(timeout=max(0.05, shutdown_deadline - time.monotonic()))
         cm.stop_price_ws_streams(shutdown_deadline)

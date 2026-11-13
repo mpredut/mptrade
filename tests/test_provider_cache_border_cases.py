@@ -7024,9 +7024,11 @@ def test_wave39_strategy_executor_order_utils_quantity_exit_and_mixin_border_cas
 
 def test_wave40_spot_rules_state_store_provider_base_bridge_and_rtrade_pair_border_cases(tmp_path, monkeypatch):
     """Wave 40: spot_rules, state_store, venue_metadata, ssot_bridge, providers/base, and rtrade_pair border cases."""
-    # 1. strategies/spot_rules: _iter_valid_shadow_prices rejects negative epochs & normalizes ms; dca_price_hit guards tol_pct/threshold.
-    shadows = sr_mod._iter_valid_shadow_prices([(-50.0, 100.0), (1700000005000, 105.0), (1700000000.0, 101.0), (True, 99.0)])
-    assert shadows == [(1700000000.0, 101.0), (1700000005.0, 105.0)]
+    # 1. strategies/spot_rules: _iter_valid_shadow_prices preserves negative warmup timestamps, normalizes ms & rejects bool/NaN/non-pos; dca_price_hit guards tol_pct/threshold.
+    shadows = sr_mod._iter_valid_shadow_prices(
+        [(-50.0, 100.0), (1700000005000, 105.0), (1700000000.0, 101.0), (True, 99.0), (float("nan"), 99.0), (10.0, 0.0)]
+    )
+    assert shadows == [(-50.0, 100.0), (1700000000.0, 101.0), (1700000005.0, 105.0)]
     assert sr_mod.dca_price_hit(98.05, 100.0, 2.0, None) is False  # type: ignore[arg-type]
     assert sr_mod.dca_price_hit(98.05, 100.0, 2.0, -0.5) is False
     assert sr_mod.dca_price_hit(98.05, 100.0, 2.0, "0.1") is True  # type: ignore[arg-type]

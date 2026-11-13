@@ -259,7 +259,7 @@ class BotManager:
                     except Exception:
                         pass
 
-                stop_timeout = 6.0 if name == "cacheManager" else 4.0
+                stop_timeout = 6.0 if name in ("cacheManager", "tradeall") else 4.0
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=stop_timeout)
                 except (asyncio.TimeoutError, TimeoutError):

@@ -1645,7 +1645,10 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return True
 
         if not is_live_daemon_poll:
+            stop_ev = getattr(self, "_stop_event", None)
             for symbol, startTime, is_rth_sym in pending_polls:
+                if stop_ev is not None and stop_ev.is_set():
+                    break
                 new_items = self._fetch_and_apply_remote_items(symbol, startTime)
                 if is_rth_sym:
                     if not new_items:

@@ -147,11 +147,27 @@ def test_invalid_observational_state_can_reset(tmp_path):
     ) == {"paper": True}
 
 
-def test_trailing_once_commands_share_daemon_lock():
+def test_trailing_once_commands_share_daemon_lock(monkeypatch):
+    import sys
+    import trailing_core
+
     root = Path(__file__).resolve().parents[1]
     core_text = (root / "trailing_core.py").read_text(encoding="utf-8")
-    assert "if not args.status:" in core_text
+    assert (
+        "if not args.status:" in core_text
+        or "if not _parse_bool_flag(args.status" in core_text
+    )
     assert "single_instance(lock_name)" in core_text
+    acquired_locks = []
+    monkeypatch.setattr(trailing_core, "single_instance", lambda name: acquired_locks.append(name))
+    monkeypatch.setattr(sys, "argv", ["trailing_stop.py", "--once"])
+    args_once = trailing_core.parse_trailing_cli_args("desc", "test_trailing_lock")
+    assert args_once.once is True and args_once.status is False
+    assert acquired_locks == ["test_trailing_lock"]
+    monkeypatch.setattr(sys, "argv", ["trailing_stop.py", "--status"])
+    args_status = trailing_core.parse_trailing_cli_args("desc", "test_trailing_lock")
+    assert args_status.status is True
+    assert acquired_locks == ["test_trailing_lock"]
     for relative, lock_name in (
         ("binance_api/trailing_stop.py", "binance_trailing"),
         ("kraken/trailing_stop.py", "kraken_trailing"),

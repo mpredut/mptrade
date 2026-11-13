@@ -3,6 +3,7 @@
 import importlib
 import math
 import sys
+import time
 from typing import Any, List, Optional
 
 import account_cache_health as health
@@ -720,6 +721,7 @@ class BinanceProvider(MarketDataProvider):
     def stop_price_ws_manager(cls, timeout: float) -> None:
         """Stop the Binance price WebSocket manager and periodic clock resync thread."""
         eff_timeout = safe_nonneg_float(timeout, default=5.0)
+        t0 = time.monotonic()
         try:
             bws_mgr = getattr(importlib.import_module("binance_api.bapi_ws"), "bapi_ws_manager", None)
         except Exception:
@@ -731,7 +733,7 @@ class BinanceProvider(MarketDataProvider):
                 pass
         try:
             importlib.import_module("binance_api.bapi_client").stop_periodic_resync(
-                timeout=eff_timeout
+                timeout=max(0.0, eff_timeout - (time.monotonic() - t0))
             )
         except Exception:
             pass

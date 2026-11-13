@@ -3843,6 +3843,55 @@ def test_high_freq_tick_logging_unlocked_and_post_stage_snapshot_freshness(tmp_p
     cpm.shutdown(timeout=1.0)
 
 
+def test_live_reader_stop_aborts_sequential_polls_and_ws_stop_shares_deadline(tmp_path):
+    """Verify MODE_LIVE_READER query_remote_and_update_cache aborts remaining symbols on stop and BinanceProvider.stop_price_ws_manager shares one deadline."""
+    import cacheprice
+    from providers.binance_provider import BinanceProvider
+
+    polled = []
+    cpm_reader = None
+
+    def _fake_fetch(symbol=None, provider_name=None):
+        polled.append(symbol)
+        cpm_reader.request_stop()
+        return 100.0
+
+    mock_api = MagicMock()
+    mock_api.get_current_price.return_value = 99.0
+    cpm_reader = cacheprice.CacheCurrentPriceManager(
+        0.8,
+        ["BTCUSDC", "TAOUSDC", "ARBUSDC"],
+        str(tmp_path / "cp_reader.json"),
+        market_api=mock_api,
+        data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
+    )
+    mock_api.get_current_price.side_effect = _fake_fetch
+    assert cpm_reader.query_remote_and_update_cache() is True
+    assert polled == ["BTCUSDC"]
+    cpm_reader.shutdown(timeout=0.5)
+
+    seen_timeouts = []
+    fake_bws = MagicMock()
+    fake_bws.stop.side_effect = lambda timeout=0.0: (seen_timeouts.append(("ws", timeout)), time.sleep(0.08))
+    fake_bws_mod = MagicMock(bapi_ws_manager=fake_bws)
+    fake_client_mod = MagicMock()
+    fake_client_mod.stop_periodic_resync.side_effect = lambda timeout=0.0: seen_timeouts.append(("resync", timeout))
+
+    def _fake_import(mod_name):
+        if mod_name == "binance_api.bapi_ws":
+            return fake_bws_mod
+        if mod_name == "binance_api.bapi_client":
+            return fake_client_mod
+        raise ImportError(mod_name)
+
+    with patch("providers.binance_provider.importlib.import_module", side_effect=_fake_import):
+        BinanceProvider.stop_price_ws_manager(timeout=0.25)
+
+    assert len(seen_timeouts) == 2
+    assert seen_timeouts[0] == ("ws", 0.25)
+    assert seen_timeouts[1][0] == "resync" and seen_timeouts[1][1] < 0.20
+
+
 
 
 
