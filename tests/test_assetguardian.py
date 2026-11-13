@@ -1622,3 +1622,99 @@ def test_assetguardian_boolean_flags__safe_tier_attempt_and__reuse_unaccepted_at
     )
     assert term_state["spent_quote_by_tier"] == {"3": 50.05}
     assert isinstance(term_state["terminal_orders"], list) and len(term_state["terminal_orders"]) == 1
+
+
+def test_cycle_io_scope_deduplicates_state_growth_and_p3b_reads_and_invalidates_on_save_error(monkeypatch, tmp_path):
+    """One multi-symbol cycle loads STATE, portfolio growth, and P3B once while reflecting in-cycle saves."""
+    state_store = ag.AssetGuardianState(path=str(tmp_path / "ag_cycle.json"))
+    state_store.save(
+        {
+            "version": 3,
+            "symbols": {
+                "BTCUSDC": {
+                    "sell": {
+                        "trough_price": 100.0,
+                        "trough_ts": 1000.0,
+                        "initial_qty": 1.0,
+                        "trend_defer": {"side": "SELL", "threshold": 5.0, "started_at": 1001.0},
+                    }
+                },
+                "ETHUSDC": {
+                    "buy": {
+                        "peak_price": 2000.0,
+                        "peak_ts": 1000.0,
+                        "initial_cash": 500.0,
+                        "trend_defer": {"side": "BUY", "threshold": 3.0, "started_at": 1001.0},
+                    }
+                },
+            },
+        }
+    )
+    counts = {"load": 0, "save": 0, "pg": 0, "p3b": 0}
+    orig_load = state_store.load
+    orig_save = state_store.save
+
+    def counted_load():
+        counts["load"] += 1
+        return orig_load()
+
+    def counted_save(val):
+        counts["save"] += 1
+        return orig_save(val)
+
+    monkeypatch.setattr(state_store, "load", counted_load)
+    monkeypatch.setattr(state_store, "save", counted_save)
+    monkeypatch.setattr(ag, "STATE", state_store)
+    monkeypatch.setattr(ag, "TRACKED_SYMBOLS", ("BTCUSDC", "ETHUSDC"))
+    monkeypatch.setattr(ag, "_last_evaluation", {})
+    monkeypatch.setattr(
+        ag,
+        "_get_portfolio_growth_percent",
+        lambda minutes_back=1440: counts.__setitem__("pg", counts["pg"] + 1) or 0.5,
+    )
+    monkeypatch.setattr(
+        ag,
+        "_read_p3b_sentiment",
+        lambda path=None, now_ts=None: counts.__setitem__("p3b", counts["p3b"] + 1)
+        or {"recommended_action": "HOLD", "market_bias": "NEUTRAL", "risk_level": "MODERATE", "confidence": 0.5, "ts": 1000.0},
+    )
+    mid_sell_growth = 0.5 * (ag.SELL_REARM_GROWTH_PERCENT + ag.SELL_TIERS[0][0])
+    btc_px = 100.0 * (1.0 + mid_sell_growth / 100.0)
+    mid_buy_dd = 0.5 * (ag.RECOVERY_RESET_PERCENT + ag.BUY_TIERS[0][0])
+    eth_px = 2000.0 * (1.0 - mid_buy_dd / 100.0)
+    prices = {"BTCUSDC": btc_px, "ETHUSDC": eth_px}
+    extrema = {
+        "BTCUSDC": ({"price": 100.0, "timestamp": 1000.0}, {"price": btc_px * 1.01, "timestamp": 1000.0}),
+        "ETHUSDC": ({"price": eth_px * 0.99, "timestamp": 1000.0}, {"price": 2000.0, "timestamp": 1000.0}),
+    }
+    monkeypatch.setattr(ag.api, "get_current_price", lambda sym: prices[sym])
+    monkeypatch.setattr(ag, "_get_symbol_window_extrema", lambda sym, px, minutes_back=1440: extrema[sym])
+    monkeypatch.setattr(ag.mkt, "provider_by_name", lambda _name: SimpleNamespace(free_balance=lambda _a: 1.0))
+
+    with ag._cycle_io_scope():
+        assert ag.evaluate_and_maybe_sell_or_buy(symbols=("BTCUSDC", "ETHUSDC")) is False
+        _ = ag._next_check_seconds()
+
+    assert counts["load"] == 1
+    assert counts["pg"] == 1
+    assert counts["p3b"] == 1
+    assert counts["save"] == 2  # both stale trend_defer entries cleared and persisted without extra loads
+    persisted = orig_load()["symbols"]
+    assert persisted["BTCUSDC"]["sell"]["initial_qty"] == 1.0
+    assert "trend_defer" not in persisted["BTCUSDC"]["sell"]
+    assert persisted["ETHUSDC"]["buy"]["initial_cash"] == 500.0
+    assert "trend_defer" not in persisted["ETHUSDC"]["buy"]
+
+    # If STATE.save raises inside a cycle scope, cached state_root is invalidated so subsequent reads reload disk truth
+    def failing_save(_val):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(state_store, "save", failing_save)
+    with ag._cycle_io_scope():
+        _ = ag._load_state_root()
+        loads_before_fail = counts["load"]
+        with pytest.raises(OSError, match="disk full"):
+            ag._save_symbol_campaign("BTCUSDC", "buy", {"initial_cash": 999.0})
+        reloaded = ag._load_state_root()
+        assert counts["load"] == loads_before_fail + 1
+        assert "buy" not in reloaded["symbols"].get("BTCUSDC", {})

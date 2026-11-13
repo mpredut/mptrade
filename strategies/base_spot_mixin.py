@@ -1087,6 +1087,20 @@ class BaseSpotMixin:
         ):
             self._log_msg(f"  [SHIELD] [STRAT] MHDSL BOUNCE DEFERRAL: {decision.reason}")
 
+    def _evaluate_mhdsl_stop_decision(
+        self, price: float, avg: float, *, include_shadow: bool = True
+    ) -> tuple[PositionSnapshot, Any]:
+        """Build position snapshot and evaluate MHDSL stop-loss via ``self.exit_manager``."""
+        if self.exit_manager is None:
+            self.exit_manager = self._init_exit_manager()
+        snapshot = self._create_position_snapshot(
+            price, avg, self.s.get("qty", 0.0), include_shadow=include_shadow
+        )
+        decision = self.exit_manager.evaluate_stop_loss(
+            snapshot, custom_threshold=self.p.stop_loss_pct / 100.0
+        )
+        return snapshot, decision
+
     def _sync_mdhtp_config(self, eff_trail_pct: float, *, trend_ride_enabled: bool | None = None) -> None:
         """Synchronize MDHTP parameters onto ``self.exit_manager.config``."""
         if self.exit_manager is None:

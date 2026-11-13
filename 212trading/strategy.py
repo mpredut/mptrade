@@ -1200,6 +1200,35 @@ class Strategy(BaseSpotMixin):
         return True
 
     # -- Protective Exits & Decision Step --------------------------------------
+    def _cancel_and_await_exit_clearance(
+        self, label: str, keep_pred: Callable[[dict], bool]
+    ) -> bool:
+        """Cancel non-exempt orders and return True only when no blocking orders/submits remain."""
+        if not self._cancel_all_orders():
+            log(f"  ! [STRAT] {label} deferred: at least one order could not be cancelled")
+            return False
+        pending_orders = [o for o in self.s["orders"] if not keep_pred(o)]
+        if pending_orders or self.s.get("pending_submit"):
+            wait_reason = (
+                f"{len(pending_orders)} existing order(s) to reconcile cancellation"
+                if pending_orders
+                else "pending submit to reconcile"
+            )
+            log(f"  [STRAT] {label} deferred: waiting for {wait_reason}")
+            return False
+        return True
+
+    def _ratchet_pos_peak(self, price: float, avg: float | None) -> tuple[float, bool]:
+        """Initialize or ratchet ``pos_peak`` and return ``(peak, hit_new_high)``."""
+        peak = safe_pos_float(self.s.get("pos_peak")) or 0.0
+        if peak <= 0:
+            self.s["pos_peak"] = peak = max(avg or price, price)
+            return peak, False
+        if price > peak:
+            self.s["pos_peak"] = peak = price
+            return peak, True
+        return peak, False
+
     def _execute_protective_exit(
         self, kind: str, price: float, label: str, fail_key: str, sell_qty: float | None = None
     ) -> bool:
@@ -1207,17 +1236,7 @@ class Strategy(BaseSpotMixin):
         existing = next((o for o in self.s["orders"] if o.get("kind") == kind), None)
         if existing is None or (not is_market_order(existing) and price < existing["limit"]):
             cancelled_orders = [dict(o) for o in self.s["orders"] if o.get("kind") != kind]
-            if not self._cancel_all_orders():
-                log(f"  ! [STRAT] {label} deferred: at least one order could not be cancelled")
-                return False
-            pending_orders = [o for o in self.s["orders"] if o.get("kind") != kind]
-            if pending_orders or self.s.get("pending_submit"):
-                wait_reason = (
-                    f"{len(pending_orders)} existing order(s) to reconcile cancellation"
-                    if pending_orders
-                    else "pending submit to reconcile"
-                )
-                log(f"  [STRAT] {label} deferred: waiting for {wait_reason}")
+            if not self._cancel_and_await_exit_clearance(label, lambda o: o.get("kind") == kind):
                 return False
             target_qty = sell_qty if sell_qty is not None else self._sellable_qty(self.s["qty"], price)
             if not self._place_sell(target_qty, round(price, 2), kind=kind, market=True):
@@ -1244,11 +1263,8 @@ class Strategy(BaseSpotMixin):
             return False
 
         avg = self._avg()
-        peak = safe_pos_float(self.s.get("pos_peak")) or 0.0
-        if not peak or peak <= 0:
-            self.s["pos_peak"] = peak = max(avg or price, price)
-        if price > peak:
-            self.s["pos_peak"] = peak = price
+        peak, hit_new_high = self._ratchet_pos_peak(price, avg)
+        if hit_new_high:
             self.s.pop("tr_fail_until", None)
             self.s["tr_alerted"] = False
 
@@ -1311,14 +1327,14 @@ class Strategy(BaseSpotMixin):
             return False
 
         if use_mhdsl:
-            snapshot = self._create_position_snapshot(price, avg, self.s.get("qty", 0.0))
-            sell_qty = snapshot.sellable_qty
             raw_pending_sl = self.s.get("sl_pending_exit")
             pending_sl = raw_pending_sl if isinstance(raw_pending_sl, dict) else None
             if pending_sl:
+                sell_qty = self._sellable_qty(self.s.get("qty", 0.0), price)
                 should_exit_sl, exit_reason, decision = True, str(pending_sl.get("reason") or "mhdsl_pending_exit"), None
             else:
-                decision = self.exit_manager.evaluate_stop_loss(snapshot, custom_threshold=self.p.stop_loss_pct / 100.0)
+                snapshot, decision = self._evaluate_mhdsl_stop_decision(price, avg)
+                sell_qty = snapshot.sellable_qty
                 should_exit_sl = bool(decision.action == ExitAction.SELL and decision.should_exit)
                 exit_reason = decision.reason if should_exit_sl else ""
 
@@ -1368,12 +1384,7 @@ class Strategy(BaseSpotMixin):
                 self.s["loss_band"] = band
         if self.observe_only:
             if held > 1e-9:
-                avg = self._avg()
-                peak = safe_pos_float(self.s.get("pos_peak")) or 0.0
-                if peak <= 0:
-                    self.s["pos_peak"] = max(avg or price, price)
-                elif price > peak:
-                    self.s["pos_peak"] = price
+                self._ratchet_pos_peak(price, avg)
             if not self.dry_run and self.s.get("orders"):
                 self._cancel_all_orders()
             return None
@@ -1458,16 +1469,7 @@ class Strategy(BaseSpotMixin):
                 )
                 return True
 
-            if not self._cancel_all_orders():
-                log("  ! [STRAT] MDHTP exit deferred: at least one order could not be cancelled")
-                return True
-            pending_orders = [o for o in self.s["orders"] if not _is_market_exit(o)]
-            if pending_orders or self.s.get("pending_submit"):
-                log(
-                    f"  [STRAT] MDHTP exit deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation"
-                    if pending_orders
-                    else "  [STRAT] MDHTP exit deferred: waiting for pending submit to reconcile"
-                )
+            if not self._cancel_and_await_exit_clearance("MDHTP exit", _is_market_exit):
                 return True
 
             fresh_held = self.s["qty"]

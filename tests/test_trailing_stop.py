@@ -879,6 +879,7 @@ class TestMinProfit(_BinanceTrailingBase):
             self.tearDown(); self.setUp()
             api = FakeApi(250.0, free=5.0)
             ts = self.ts(api, min_profit_pct=0.0)
+            ts.rebuy_enabled_for = lambda symbol: True
             seeded = {
                 "TAOUSDC": {
                     "peak": 250.0,
@@ -888,13 +889,28 @@ class TestMinProfit(_BinanceTrailingBase):
                 }
             }
             ts.core.save(seeded)
-            api.price = 260.0  # New peak > 250.0
+            api.price = 260.0  # New peak > 250.0 flushes partial exit into rebuy
             ts.check_once()
             st = ts.core.load()["TAOUSDC"]
             self.assertEqual(st["peak"], 260.0)
             self.assertNotIn("target_exit_qty", st)
             self.assertNotIn("exit_sold_qty", st)
             self.assertNotIn("exit_sold_cost", st)
+            self.assertEqual(st["rebuy"], {"qty": 1.0, "sell_price": 190.0, "low": 190.0})
+
+            # Subsequent crash below 260 * (1 - 0.22) = 202.8 sells remaining 4.0 and merges VWAP
+            api.free = 4.0
+            api.price = 180.0
+            ts.check_once()  # submits SELL for remaining 4.0 @ 180.0 (no bounce off 180.0 low)
+            self.assertEqual(len(self.po.orders), 1)
+            self.assertEqual(self.po.orders[-1]["side"], "SELL")
+            self.assertAlmostEqual(self.po.orders[-1]["qty"], 4.0)
+            api.free = 0.0
+            ts.check_once()  # reconciles closed SELL -> merges 4.0 @ 180 with 1.0 @ 190
+            st_after = ts.core.load()["TAOUSDC"]
+            self.assertAlmostEqual(st_after["rebuy"]["qty"], 5.0)
+            self.assertAlmostEqual(st_after["rebuy"]["sell_price"], 182.0)
+            self.assertAlmostEqual(st_after["rebuy"]["low"], 180.0)
 
         with self.subTest(msg="retry_counts_persisted_across_adapter_restarts"):
             self.tearDown(); self.setUp()

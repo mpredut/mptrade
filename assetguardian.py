@@ -1,4 +1,6 @@
 from __future__ import annotations
+import contextlib
+import copy
 import os
 import hashlib
 import math
@@ -183,11 +185,33 @@ class AssetGuardianState:
 
 
 STATE = AssetGuardianState()
+_CYCLE_SCOPE = threading.local()
 _last_evaluation = {
     symbol: {"growth": None, "drawdown": None, "pending_tier": False, "volatility_mult": 1.0}
     for symbol in TRACKED_SYMBOLS
 }
 _local_price_samples = {symbol: [] for symbol in TRACKED_SYMBOLS}
+
+
+@contextlib.contextmanager
+def _cycle_io_scope():
+    """Reuse normalized state root and global telemetry within one evaluation pass."""
+    existing = getattr(_CYCLE_SCOPE, "cache", None)
+    if existing is not None:
+        yield existing
+        return
+    cache = {
+        "state_id": None,
+        "state_root": None,
+        "portfolio_growth": {},
+        "p3b_loaded": False,
+        "p3b_val": None,
+    }
+    _CYCLE_SCOPE.cache = cache
+    try:
+        yield cache
+    finally:
+        _CYCLE_SCOPE.cache = None
 
 
 def _validate_tier_table(tiers, name: str, *, exact_sum: bool = False):
@@ -485,6 +509,26 @@ def _read_p3b_sentiment(path=None, now_ts=None):
     }
 
 
+def _cycle_portfolio_growth_percent(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
+    cycle = getattr(_CYCLE_SCOPE, "cache", None)
+    if cycle is None:
+        return _get_portfolio_growth_percent(minutes_back=minutes_back)
+    cache_map = cycle["portfolio_growth"]
+    if minutes_back not in cache_map:
+        cache_map[minutes_back] = _get_portfolio_growth_percent(minutes_back=minutes_back)
+    return cache_map[minutes_back]
+
+
+def _cycle_p3b_sentiment():
+    cycle = getattr(_CYCLE_SCOPE, "cache", None)
+    if cycle is None:
+        return _read_p3b_sentiment()
+    if not cycle["p3b_loaded"]:
+        cycle["p3b_val"] = _read_p3b_sentiment()
+        cycle["p3b_loaded"] = True
+    return copy.deepcopy(cycle["p3b_val"])
+
+
 def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
     """Compute (sell_mult, buy_mult, assessment) from Pillar 3B sentiment state.
 
@@ -500,7 +544,7 @@ def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
     if GUARD_REGISTRY["GLLM2"].is_bypassed(eff_bypass):
         return 1.0, 1.0, None
     if assessment is None:
-        assessment = _read_p3b_sentiment()
+        assessment = _cycle_p3b_sentiment()
     if not isinstance(assessment, dict):
         return 1.0, 1.0, None
 
@@ -720,6 +764,9 @@ def _completed_tier_values(state):
 
 def _load_state_root():
     """Load v3 BUY/SELL state and conservatively migrate older BUY-only data."""
+    cycle = getattr(_CYCLE_SCOPE, "cache", None)
+    if cycle is not None and cycle["state_id"] == id(STATE) and isinstance(cycle["state_root"], dict):
+        return copy.deepcopy(cycle["state_root"])
     raw = STATE.load()
     if not isinstance(raw, dict):
         raw = {}
@@ -742,17 +789,15 @@ def _load_state_root():
                 row = {"buy": dict(value)} if value else {}
             if row:
                 normalized[str(symbol)] = row
-        return {
-            "version": 3,
-            "symbols": normalized,
-        }
-    legacy_keys = {"peak_value", "peak_ts", "initial_cash", "completed_tiers"}
-    if legacy_keys.intersection(raw):
-        return {
-            "version": 3,
-            "symbols": {LEGACY_BUY_SYMBOL: {"buy": dict(raw)}},
-        }
-    return {"version": 3, "symbols": {}}
+        root = {"version": 3, "symbols": normalized}
+    elif {"peak_value", "peak_ts", "initial_cash", "completed_tiers"}.intersection(raw):
+        root = {"version": 3, "symbols": {LEGACY_BUY_SYMBOL: {"buy": dict(raw)}}}
+    else:
+        root = {"version": 3, "symbols": {}}
+    if cycle is not None:
+        cycle["state_id"] = id(STATE)
+        cycle["state_root"] = copy.deepcopy(root)
+    return root
 
 
 def _symbol_campaign(symbol, kind):
@@ -783,7 +828,26 @@ def _save_symbol_campaign(symbol, kind, campaign):
         row.pop(kind, None)
     if row:
         symbols_state[symbol] = row
-    STATE.save({"version": 3, "symbols": symbols_state})
+    new_root = {"version": 3, "symbols": symbols_state}
+    cycle = getattr(_CYCLE_SCOPE, "cache", None)
+    try:
+        STATE.save(new_root)
+    except Exception:
+        if cycle is not None:
+            cycle["state_id"], cycle["state_root"] = None, None
+        raise
+    if cycle is not None:
+        cycle["state_id"] = id(STATE)
+        cycle["state_root"] = copy.deepcopy(new_root)
+
+
+def _clear_campaign_trend_defer(symbol, kind, state):
+    if not isinstance(state, dict) or "trend_defer" not in state:
+        return state
+    cleaned = dict(state)
+    cleaned.pop("trend_defer", None)
+    _save_symbol_campaign(symbol, kind, cleaned)
+    return cleaned
 
 
 def _trend_defer_ready(symbol, kind, side, threshold, state):
@@ -825,10 +889,7 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
             "waiting for trend reversal without blocking sleep.")
         return False, state
 
-    if "trend_defer" in state:
-        state.pop("trend_defer", None)
-        _save_symbol_campaign(symbol, kind, state)
-    return True, state
+    return True, _clear_campaign_trend_defer(symbol, kind, state)
 
 
 def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
@@ -1053,14 +1114,12 @@ def _record_terminal_sell(symbol, state, status):
         allocation = next(
             (
                 alloc_v
-                for t_thr, t_alloc in SELL_TIERS
+                for t_thr, t_alloc in (*SELL_TIERS, (PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, PORTFOLIO_SELL_ALLOCATION))
                 if (t_thr_f := safe_pos_float(t_thr, default=None)) is not None
                 and (alloc_v := safe_pos_float(t_alloc, default=None)) is not None
                 and abs(t_thr_f - thr_f) <= 1e-9
             ),
-            (safe_pos_float(PORTFOLIO_SELL_ALLOCATION, default=None))
-            if abs(thr_f - (safe_pos_float(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, default=0.0) or 0.0)) <= 1e-9
-            else None,
+            None,
         )
     initial_qty = _finite_float(state.get("initial_qty"), positive=True)
     target_qty = initial_qty * allocation if initial_qty is not None and allocation is not None else None
@@ -1483,6 +1542,7 @@ def _next_check_seconds():
     return CHECK_INTERVAL_SECONDS
 
 
+@_cycle_io_scope()
 def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     """Evaluate and possibly submit exactly one asset-specific SELL or BUY."""
     symbol = str(symbol or "").strip().upper()
@@ -1531,18 +1591,16 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     except Exception as exc:
         print(f"[{symbol}] SELL balance unavailable; skip SELL fail-closed: {exc}")
         free_base_qty = None
-    portfolio_growth_pct = _get_portfolio_growth_percent(minutes_back=minutes_back)
+    portfolio_growth_pct = _cycle_portfolio_growth_percent(minutes_back=minutes_back)
     evaluation["portfolio_growth"] = portfolio_growth_pct
-    p3b_assessment = _read_p3b_sentiment()
+    p3b_assessment = _cycle_p3b_sentiment()
     sell_mult, buy_mult, _ = _p3b_threshold_multipliers(p3b_assessment)
     sell_tier, sell_state, effective_growth = _sell_campaign_tier(
         symbol, current_price, minimum_row, free_base_qty, provider,
         portfolio_growth_pct=portfolio_growth_pct, p3b_assessment=p3b_assessment,
     )
-    if sell_tier is None and isinstance(sell_state, dict) and "trend_defer" in sell_state:
-        sell_state = dict(sell_state)
-        sell_state.pop("trend_defer", None)
-        _save_symbol_campaign(symbol, "sell", sell_state)
+    if sell_tier is None:
+        sell_state = _clear_campaign_trend_defer(symbol, "sell", sell_state)
     evaluation["growth"] = rolling_growth_percent if effective_growth is None else effective_growth
     frozen_trough = _finite_float(sell_state.get("trough_price"), positive=True)
     pg_str = f"{portfolio_growth_pct:.4f}%" if portfolio_growth_pct is not None else "n/a"
@@ -1582,11 +1640,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
 
     first_buy_trigger = _trigger_threshold_for_buy_tier(BUY_TIERS[0][0], buy_mult, volatility_mult=vol_mult)
     if drawdown_percent > -first_buy_trigger:
-        buy_st = _symbol_campaign(symbol, "buy")
-        if isinstance(buy_st, dict) and "trend_defer" in buy_st:
-            buy_st = dict(buy_st)
-            buy_st.pop("trend_defer", None)
-            _save_symbol_campaign(symbol, "buy", buy_st)
+        _clear_campaign_trend_defer(symbol, "buy", _symbol_campaign(symbol, "buy"))
         return False
     print(f"[{symbol}] Drawdown threshold reached ({drawdown_percent:.4f}% <= -{first_buy_trigger:.4f}%). Checking staged BUY...")
     _, quote_asset = resolve_assets(symbol)
@@ -1622,6 +1676,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
 _STOP_EVENT = threading.Event()
 
 
+@_cycle_io_scope()
 def evaluate_and_maybe_sell_or_buy(
     minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT,
     symbols=None,
@@ -1661,13 +1716,14 @@ def run_forever():
     )
     try:
         while not _STOP_EVENT.is_set():
-            try:
-                evaluate_and_maybe_sell_or_buy(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
-            except Exception as e:
-                print(f" Runtime ERROR: {e}")
-            if _STOP_EVENT.is_set():
-                break
-            sleep_seconds = _next_check_seconds()
+            with _cycle_io_scope():
+                try:
+                    evaluate_and_maybe_sell_or_buy(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
+                except Exception as e:
+                    print(f" Runtime ERROR: {e}")
+                if _STOP_EVENT.is_set():
+                    break
+                sleep_seconds = _next_check_seconds()
             touch_module_heartbeat(
                 "assetguardian",
                 interval_sec=30.0,

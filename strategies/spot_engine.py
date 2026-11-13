@@ -983,12 +983,9 @@ class Strategy(BaseSpotMixin):
         if not self._in_mhdsl_territory(loss_pct):
             return False
 
-        if self.exit_manager is None:
-            self.exit_manager = self._init_exit_manager()
-        snapshot = self._create_position_snapshot(
-            price, avg, self.s.get("qty", 0.0), include_shadow=not self.replay_mode
+        _, decision = self._evaluate_mhdsl_stop_decision(
+            price, avg, include_shadow=not self.replay_mode
         )
-        decision = self.exit_manager.evaluate_stop_loss(snapshot, custom_threshold=self.p.stop_loss_pct / 100.0)
         if decision.action == ExitAction.SELL and decision.should_exit:
             if not self._has_pending_market_exit():
                 log(f"  [SL] [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) -- SELLING EVERYTHING")

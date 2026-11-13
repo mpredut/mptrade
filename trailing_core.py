@@ -257,6 +257,18 @@ class TrailingCore:
         comb_low = min(prev_rb_low, low_candidate) if prev_rb_qty > 0 else low_candidate
         st["rebuy"] = {"qty": comb_qty, "sell_price": comb_sell, "low": comb_low}
 
+    def _flush_exit_progress(
+        self, st: dict, pair, price: float, *, reset_peak_to_vwap: bool = False
+    ) -> None:
+        sold_qty = safe_nonneg_float(st.get("exit_sold_qty", 0.0))
+        if sold_qty > 0:
+            overall_avg = vwap_or_fallback(st.get("exit_sold_cost", 0.0), sold_qty, price)
+            if reset_peak_to_vwap:
+                st["peak"] = overall_avg
+            if self._rebuy_for(pair, arm=True):
+                self._merge_rebuy_state(st, sold_qty, overall_avg, min(overall_avg, price))
+        _clear_exit_progress(st)
+
     def _safe_free_qty(self, asset: str) -> float:
         raw_free = self.a.free_qty(asset)
         return safe_nonneg_float(raw_free, default=0.0)
@@ -480,7 +492,7 @@ class TrailingCore:
 
         if not _parse_bool_flag(st.get("is_flat"), default=False) and "warmup_at" not in st and price > st["peak"]:
             st["peak"] = price                                # new peak moves the trailing level up
-            _clear_exit_progress(st)
+            self._flush_exit_progress(st, pair, price)
         stop_at = st["peak"] * (1 - trail / 100.0)
 
         # Emergency crash circuit breaker - brute force exit with bounded trend deferral.
@@ -556,14 +568,8 @@ class TrailingCore:
 
         total_pos = self._remaining_qty(asset) or free
         if total_pos * price < self.min_notional:
-            sold_qty = safe_nonneg_float(st.get("exit_sold_qty", 0.0))
-            if sold_qty > 0:
-                overall_avg = vwap_or_fallback(st.get("exit_sold_cost", 0.0), sold_qty, price)
-                st["peak"] = overall_avg
-                if self._rebuy_for(pair, arm=True):
-                    self._merge_rebuy_state(st, sold_qty, overall_avg, min(overall_avg, price))
+            self._flush_exit_progress(st, pair, price, reset_peak_to_vwap=True)
             st["is_flat"] = True
-            _clear_exit_progress(st)
             return                                            # nothing to protect; keep resting orders intact
 
         if free * price < self.min_notional:
