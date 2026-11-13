@@ -9,6 +9,7 @@ import time
 from typing import Any, Callable, Optional, Tuple
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_order_id_str,
     extract_order_price,
@@ -95,6 +96,7 @@ def compute_fills_cost_basis(
     since_val = require_pos_float(since_s, "since_s")
     if not isinstance(rows, (list, tuple)):
         return None
+    req_fee_asset = _parse_bool_flag(require_explicit_fee_asset, False)
     now_ms = time.time() * 1000.0
     cutoff = now_ms - since_val * 1000.0
     normalized = []
@@ -117,10 +119,10 @@ def compute_fills_cost_basis(
             base_asset=base_asset,
             quote_asset=quote_asset,
             fill_price=px,
-            require_explicit_asset=require_explicit_fee_asset,
+            require_explicit_asset=req_fee_asset,
         )
         if fee_info is None:
-            if require_explicit_fee_asset:
+            if req_fee_asset:
                 return None
             base_fee, quote_fee = 0.0, 0.0
         else:
@@ -165,9 +167,12 @@ class QuantityDecision:
 
 
 def _clean_asset_arg(val: Any) -> Optional[str]:
-    if not val or isinstance(val, bool) or hasattr(val, "_mock_name"):
+    if not val or isinstance(val, (bool, dict, list, tuple, set, frozenset)) or hasattr(val, "_mock_name"):
         return None
-    return str(val).strip().upper() or None
+    if isinstance(val, float) and not math.isfinite(val):
+        return None
+    s = str(val).strip()
+    return None if (not s or s.lower() in INVALID_SCALAR_STRINGS) else s.upper()
 
 
 def resolve_assets(
@@ -233,8 +238,10 @@ def fee_cap_quantity(available_qty: float, fee_rate: float) -> float:
 
 
 def _floor_qty_decimals(val: float, qty_decimals: int) -> float:
-    scale = 10.0 ** max(0, qty_decimals)
-    return math.floor(val * scale + 1e-9) / scale
+    val_f = safe_nonneg_float(val, default=0.0) or 0.0
+    dec_i = max(0, safe_int(qty_decimals, default=0) or 0)
+    scale = 10.0 ** dec_i
+    return math.floor(val_f * scale + 1e-9) / scale
 
 
 def dust_protected_sell_balance_cap(
@@ -456,15 +463,16 @@ def clamp_notional_to_wallet_balance(
 
 def round_provider_qty(provider: Any, symbol: str, qty: float) -> float:
     """Round ``qty`` using the provider's ``round_amount`` or ``round_quantity`` hook when available."""
+    qty_f = safe_nonneg_float(qty, default=0.0) or 0.0
     round_fn = getattr(provider, "round_amount", None) or getattr(provider, "round_quantity", None)
-    if callable(round_fn) and qty > 0:
+    if callable(round_fn) and qty_f > 0.0:
         try:
-            res_f = safe_nonneg_float(round_fn(symbol, qty), default=None)
+            res_f = safe_nonneg_float(round_fn(symbol, qty_f), default=None)
             if res_f is not None:
                 return res_f
         except (TypeError, ValueError, OverflowError):
             pass
-    return qty
+    return qty_f
 
 
 def check_order_filter_refusal(

@@ -5,6 +5,7 @@ from typing import Any, Callable, List, Mapping, Optional
 
 from botcore import (
     ClosedPriceSeries,  # noqa: F401
+    INVALID_SCALAR_STRINGS,
     _first_mapped,
     _nonneg_abs_float,
     _parse_bool_flag,
@@ -90,6 +91,11 @@ _UNFILLED_ORDER_STATUSES = frozenset({
 })
 _FEE_KEYS = ("commission", "fee", "filled_fee", "n")
 _FEE_ASSET_KEYS = ("commissionAsset", "feeToken", "fee_asset", "feeAsset", "N")
+
+
+def _clean_order_str(val: object) -> Optional[str]:
+    s = clean_nonempty_str(val)
+    return s if (s is not None and s.lower() not in INVALID_SCALAR_STRINGS) else None
 
 
 def resolve_market_flag(force: Any = False, market: Any = False, **kwargs) -> bool:
@@ -258,15 +264,15 @@ def extract_order_fee(
 
     has_asset_key = any(k in order for k in _FEE_ASSET_KEYS)
     fee_asset = _first_mapped(
-        order, _FEE_ASSET_KEYS, lambda v: v.strip().upper() if isinstance(v, str) and v.strip() else None, ""
+        order, _FEE_ASSET_KEYS, lambda v: s.upper() if (s := _clean_order_str(v)) else None, ""
     )
 
     req_explicit = _parse_bool_flag(require_explicit_asset, False)
     if req_explicit and (not has_asset_key or (fee > 0.0 and not fee_asset)):
         return None
 
-    base_u = base_asset.strip().upper() if isinstance(base_asset, str) else ""
-    quote_u = quote_asset.strip().upper() if isinstance(quote_asset, str) else ""
+    base_u = (s_base.upper() if (s_base := _clean_order_str(base_asset)) else "")
+    quote_u = (s_quote.upper() if (s_quote := _clean_order_str(quote_asset)) else "")
     if not fee_asset and not req_explicit and quote_u:
         fee_asset = quote_u
 
@@ -338,18 +344,18 @@ def normalize_open_order(
         else ("NEW" if raw_status in ("OPEN", "PENDING", "WORKING", "RESTING", "") else raw_status)
     )
     descr = order.get("descr") if isinstance(order.get("descr"), dict) else {}
-    cand_type = clean_nonempty_str(order.get("type"))
+    cand_type = _clean_order_str(order.get("type"))
     raw_otype = (
-        clean_nonempty_str(order.get("order_type"))
-        or clean_nonempty_str(order.get("orderType"))
-        or clean_nonempty_str(descr.get("ordertype"))
+        _clean_order_str(order.get("order_type"))
+        or _clean_order_str(order.get("orderType"))
+        or _clean_order_str(descr.get("ordertype"))
         or (cand_type if (cand_type and cand_type.upper() not in ("BUY", "SELL", "B", "S")) else None)
         or "LIMIT"
     )
     actor, mod, rule = resolve_order_origin(order, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map)
-    sym_out = clean_nonempty_str(symbol) or (clean_nonempty_str(order.get("symbol")) or "").upper()
+    sym_out = _clean_order_str(symbol) or (_clean_order_str(order.get("symbol")) or "").upper()
     rec = {
-        "venue": clean_nonempty_str(venue) or "",
+        "venue": _clean_order_str(venue) or "",
         "symbol": sym_out,
         "side": extract_order_side(order) or normalize_side(order.get("side")),
         "order_type": raw_otype.upper(),
@@ -476,8 +482,9 @@ def build_open_order_entry(
     extra: Optional[dict] = None,
 ) -> dict:
     """Build a canonical Binance-shaped open order dictionary."""
-    coid = client_order_id if has_explicit_coid else extract_client_order_id(raw)
+    coid = client_order_id if _parse_bool_flag(has_explicit_coid, False) else extract_client_order_id(raw)
     st_raw = status if status is not None else (raw.get("status") if isinstance(raw, dict) else None)
+    st_str = _clean_order_str(st_raw) or _clean_order_str(default_status) or "NEW"
     entry = {
         "orderId": order_id,
         "clientOrderId": coid,
@@ -485,12 +492,12 @@ def build_open_order_entry(
         "price": price,
         "origQty": orig_qty,
         "executedQty": executed_qty,
-        "status": str(st_raw or default_status).strip().upper(),
+        "status": st_str.upper(),
     }
-    if include_time and isinstance(raw, dict):
+    if _parse_bool_flag(include_time, True) and isinstance(raw, dict):
         if (ts_ms := extract_timestamp_ms(raw, default=None)) is not None:
             entry["time"] = ts_ms
-    if extra:
+    if isinstance(extra, Mapping) and extra:
         entry.update(extra)
     return entry
 
@@ -605,6 +612,7 @@ def filter_and_normalize_open_orders(
     want_side = normalize_side(side)
     if want_side not in ("BUY", "SELL"):
         return {}
+    fb_oid = _parse_bool_flag(fallback_extract_oid, False)
     filtered_orders: dict = {}
     accepted_owner_map = None
     for order in (open_orders or ()):
@@ -620,14 +628,15 @@ def filter_and_normalize_open_orders(
                 continue
             if accepted_owner_map is None:
                 try:
-                    accepted_owner_map = owner_map_fn() if callable(owner_map_fn) else {}
+                    raw_map = owner_map_fn() if callable(owner_map_fn) else {}
+                    accepted_owner_map = raw_map if isinstance(raw_map, Mapping) else {}
                 except Exception:
                     accepted_owner_map = {}
             oid_key = (
-                str(extract_order_id(order) or "")
-                if fallback_extract_oid
-                else str(order.get("orderId") or "")
-            )
+                clean_order_id(extract_order_id(order))
+                if fb_oid
+                else clean_order_id(order.get("orderId"))
+            ) or ""
             inferred = accepted_owner_map.get(oid_key) or accepted_owner_map.get(cid)
             allowed_set = rc_mod._normalize_allowed_owners(allowed_owners)
             if not inferred or str(inferred).strip().lower() not in allowed_set:
@@ -645,7 +654,7 @@ def filter_and_normalize_open_orders(
                 else raw_time
             )
         raw_oid = normalize_scalar_order_id(order.get("orderId"))
-        if raw_oid is None and fallback_extract_oid:
+        if raw_oid is None and fb_oid:
             raw_oid = normalize_scalar_order_id(extract_order_id(order))
         if raw_oid is None:
             continue

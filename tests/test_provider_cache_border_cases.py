@@ -235,8 +235,10 @@ from providers.ohlc_utils import (
 )
 from providers.order_ohlc_utils import (
     POST_ONLY_CROSS_TOKENS,
+    build_open_order_entry,
     compute_post_only_maker_price,
     derive_venue_128bit_client_order_id,
+    extract_order_fee,
     filter_and_normalize_open_orders,
     format_venue_intent_client_order_id,
     is_post_only_cross_refusal,
@@ -251,16 +253,22 @@ from providers.price_poller import (
 )
 from providers.quantity import (
     BinanceFilterError,
+    _floor_qty_decimals,
     clamp_notional_to_wallet_balance,
+    compute_fills_cost_basis,
     decimal_places,
     dust_protected_partial_sell_qty,
     dust_protected_sell_balance_cap,
+    resolve_assets,
+    round_provider_qty,
     venue_adjust_partial_sell_quantity,
     venue_fee_cap_quantity,
 )
 from providers.replay_provider import ReplayMarketDataProvider
 from providers.strategy_executor import (
     OrderReconciliationCapabilities,
+    OrderStatus,
+    PairPrecision,
     ProviderError,
     SubmissionOutcome,
     SubmissionRefused,
@@ -286,7 +294,7 @@ from strategies import (
     spot_engine as spot_eng_mod,
     state_store as strat_ss_mod,
 )
-from strategies.base_spot_mixin import BaseSpotMixin, parse_tp_ladder_env
+from strategies.base_spot_mixin import BaseSpotMixin, parse_tp_ladder_env, sanitize_common_spot_state
 from strategies.replay_execution import ExecutionModel, select_eligible_intrabar_orders
 from strategies.replay_metrics import (
     calculate_performance_metrics,
@@ -6858,11 +6866,138 @@ def test_wave38_intent_execution_audit_lifecycle_and_instrument_border_cases(tmp
     assert resolve_instrument_live_price(SimpleNamespace(symbol="null")) == 0.0
 
 
+def test_wave39_strategy_executor_order_utils_quantity_exit_and_mixin_border_cases():
+    # 1. providers/strategy_executor: reject NaN/containers/null labels across outcomes & precision.
+    for bad_reason in (float("nan"), float("inf"), "null", "None", "nan", {"err": 1}, [1]):
+        with pytest.raises(ValueError):
+            SubmissionRefused(bad_reason)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        SubmissionOutcome("refused", reason=float("nan"))  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        OrderStatus("open", 0.0, 0.0, 0.0, venue_status={"bad": 1})  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        PairPrecision(2, 4, 0.01, base_asset=["BTC"])  # type: ignore[arg-type]
+    assert SubmissionOutcome("refused", reason="null").reason == ""
+    assert OrderStatus("open", 0.0, 0.0, 0.0, venue_status="none").venue_status == ""
+    assert PairPrecision(2, 4, 0.01, base_asset="nan").base_asset == ""
 
+    # 2. providers/order_id_context: case-insensitive token-bounded CID owner & clean ID lookup sets.
+    assert oic.resolve_order_owner("ta_mainthread_1") == "tradeall"
+    assert oic.resolve_order_owner("ai_intent_99") == "ai_executor"
+    assert oic.resolve_order_owner("ags1234abcd") == "assetguardian"
+    assert oic.resolve_order_owner("TARGET_12345") == "alt:TARG"
+    assert oic.resolve_order_owner("MOMENTUM_12345") == "alt:MOME"
+    assert oic.is_order_repriceable_by_monitororder("TARGET_12345") is False
+    assert oic.order_matches_owner("mo_ta_or_123", "monitororder") is True
+    assert oic.resolve_order_actor({"orderId": 1001}, known_ai_order_ids={1001.0, "0", "nan"}) == "AI"  # type: ignore[arg-type]
+    assert oic.resolve_order_actor({"orderId": "0"}, known_ai_order_ids={"0", "null"}) == "BOT"
+    assert oic.resolve_order_origin({"clientOrderId": "ta_grid_12345678", "module": "null", "rule": "none"}) == (
+        "BOT",
+        "tradeall",
+        "GRID",
+    )
+    assert oic.format_actor_tag(True) == "BOT"  # type: ignore[arg-type]
+    assert oic.format_actor_tag("null") == "BOT"
+    assert oic.format_actor_tag("BOT", module=True, rule="null") == "BOT"  # type: ignore[arg-type]
 
+    # 3. providers/order_ohlc_utils: fee asset null rejection, string bool flags & float orderId owner map.
+    assert extract_order_fee({"fee": "0.5", "feeAsset": "null"}, require_explicit_asset=True) is None
+    oo_norm = normalize_open_order({"orderId": 10, "side": "BUY", "price": "100", "origQty": "1", "type": "null"}, venue="null", symbol="none")
+    assert oo_norm is not None and oo_norm["order_type"] == "LIMIT" and oo_norm["venue"] == "" and oo_norm["symbol"] == ""
+    built_oo = build_open_order_entry(
+        {"time": 1700000000000, "clientOrderId": "TA_real"},
+        order_id=11,
+        side="BUY",
+        price=100.0,
+        orig_qty=1.0,
+        executed_qty=0.0,
+        client_order_id="FAKE",
+        has_explicit_coid="false",  # type: ignore[arg-type]
+        status="null",
+        include_time="false",  # type: ignore[arg-type]
+        extra=["not-a-dict"],  # type: ignore[arg-type]
+    )
+    assert built_oo["clientOrderId"] == "TA_real" and "time" not in built_oo and built_oo["status"] == "NEW"
+    filt_oo = filter_and_normalize_open_orders(
+        [{"orderId": 1001.0, "side": "BUY", "price": "50", "origQty": "2", "clientOrderId": "OR_retry_1"}],
+        "BUY",
+        allowed_owners={"tradeall"},
+        rc_mod=oic,
+        owner_map_fn=lambda: {"1001": "tradeall"},
+        fallback_extract_oid="false",  # type: ignore[arg-type]
+    )
+    assert 1001 in filt_oo
 
+    # 4. providers/quantity: string-false fee flag, asset scalar hygiene, floor decimals & round_provider_qty.
+    now_ms = math.trunc(time.time() * 1000) - 5000
+    cb_val = compute_fills_cost_basis(
+        [{"id": "f1", "timestamp": now_ms, "side": "BUY", "price": "100.0", "qty": "2.0"}],
+        held_qty=2.0,
+        since_s=3600.0,
+        require_explicit_fee_asset="false",  # type: ignore[arg-type]
+    )
+    assert cb_val == pytest.approx(100.0)
+    assert resolve_assets("BTCUSDC", base="null", quote="none") == ("BTC", "USDC")
+    assert _floor_qty_decimals(float("nan"), "3") == 0.0  # type: ignore[arg-type]
+    assert _floor_qty_decimals(1.23456, "3") == pytest.approx(1.234)  # type: ignore[arg-type]
+    assert round_provider_qty(None, "BTCUSDC", "1.25") == pytest.approx(1.25)  # type: ignore[arg-type]
+    assert round_provider_qty(None, "BTCUSDC", False) == 0.0  # type: ignore[arg-type]
 
+    # 5. strategies/position_exit_manager & strategies/base_spot_mixin border cases.
+    ed = pem_mod.ExitDecision(
+        pem_mod.ExitAction.HOLD, "false", "hold", forced="false", sell_fraction=float("nan"), metadata="bad"  # type: ignore[arg-type]
+    )
+    assert ed.should_exit is False and ed.forced is False and ed.sell_fraction == 1.0 and ed.metadata == {}
+    rd = pem_mod.ReentryDecision(pem_mod.ReentryAction.WAIT, "false", "wait", metadata=["bad"])  # type: ignore[arg-type]
+    assert rd.should_enter is False and rd.metadata == {}
+    ps = pem_mod.PositionSnapshot("BTCUSDC", 95.0, 100.0, vol_source="null", provider="none", trend_up=True)
+    assert ps.vol_source == "default" and ps.provider is None
+    rs = pem_mod.ReentrySnapshot("BTCUSDC", 95.0, last_sell_price=100.0, last_exit_kind="null", vol_source="nan")
+    assert rs.last_exit_kind is None and rs.vol_source == "default"
 
+    mgr = pem_mod.PositionExitManager()
+    assert mgr.evaluate(None).reason == "invalid_prices"  # type: ignore[arg-type]
+    assert mgr.evaluate_reentry(None).reason == "invalid_current_price"  # type: ignore[arg-type]
+    mgr.sl_bounce_state["BTCUSDC"] = "corrupt"  # type: ignore[assignment]
+    sl_dec = mgr.evaluate_stop_loss(ps, custom_threshold=0.04)
+    assert sl_dec.action == pem_mod.ExitAction.HOLD and isinstance(mgr.sl_bounce_state.get("BTCUSDC"), dict)
 
+    san_st = sanitize_common_spot_state(
+        {
+            "hard_tp_ts": {True: 1700000000, "": 1700000000, "null": 1700000000, "BTCUSDC": 1700000000},
+            "orders": [{"side": "BUY", "txid": 1001.0, "vol": 1.0, "price": 50.0}],
+        },
+        lambda: {"cycle": 1, "orders": []},
+        nonneg_float_keys=(),
+        signed_float_keys=(),
+        nonneg_int_keys=(),
+        pos_float_keys=(),
+        bool_keys=(),
+        dict_keys=(),
+        epoch_dict_keys=("hard_tp_ts",),
+        sanitize_orders="true",  # type: ignore[arg-type]
+        lowercase_order_side="false",  # type: ignore[arg-type]
+    )
+    assert san_st["hard_tp_ts"] == {"BTCUSDC": 1700000000.0}
+    assert san_st["orders"][0]["side"] == "BUY" and san_st["orders"][0]["txid"] == "1001"
 
+    strat_stub = spot_eng_mod.Strategy.__new__(spot_eng_mod.Strategy)
+    strat_stub.replay_mode = "false"
+    strat_stub.pair = True
+    strat_stub.ticker = "null"
+    strat_stub.coin = " ETHUSDC "
+    strat_stub._cost_state_key = "cost"
+    strat_stub._spent_state_key = "spent"
+    strat_stub.s = {"qty": 0.0, "cost": 0.0, "spent": 50.0, "entry_price": None, "dca_buys": 0}
+    strat_stub.p = SimpleNamespace(stop_loss_pct=5.0, reentry_tolerance_pct=0.05)
+    strat_stub.exit_manager = mgr
+    mgr.sl_episode_state["ETHUSDC"] = {"started_at": 1000.0}
+    assert strat_stub._is_replay is False
+    assert strat_stub._symbol_id == "ETHUSDC"
+    strat_stub._apply_buy_fill_accounting({"kind": "ENTRY"}, 1.0, 2000.0, fallback_to_notional="false")  # type: ignore[arg-type]
+    assert strat_stub.s["spent"] == 50.0
+    strat_stub._zero_position_exposure(clear_spent="false")  # type: ignore[arg-type]
+    assert strat_stub.s["spent"] == 50.0
+    assert strat_stub._in_mhdsl_territory(float("nan"), reset_episode_on_exit="false") is False  # type: ignore[arg-type]
+    assert "ETHUSDC" in mgr.sl_episode_state
 

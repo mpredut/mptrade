@@ -122,6 +122,14 @@ class ExitDecision:
     sell_fraction: float = 1.0
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.should_exit = _parse_bool_flag(self.should_exit, False)
+        self.forced = _parse_bool_flag(self.forced, False)
+        sf = safe_nonneg_float(self.sell_fraction, default=1.0)
+        self.sell_fraction = 1.0 if sf is None else sf
+        if not isinstance(self.metadata, dict):
+            self.metadata = {}
+
 
 class PriceGeometrySnapshot:
     """Base mixin providing unified, fuzzy-tolerant price geometry primitives."""
@@ -209,10 +217,15 @@ class PositionSnapshot(PriceGeometrySnapshot):
         self.current_time_s = normalize_epoch_sec(getattr(self, "current_time_s", 0.0), default=0.0, allow_zero=True) or 0.0
         for attr in ("sma_value", "window_move_pct"):
             setattr(self, attr, safe_float(getattr(self, attr, None), default=None))
-        if self.shadow_prices is None or isinstance(self.shadow_prices, (bool, str, bytes, dict)) or not hasattr(self.shadow_prices, "__iter__"):
-            self.shadow_prices = []
-        elif not isinstance(self.shadow_prices, list):
-            self.shadow_prices = list(self.shadow_prices)
+        self.shadow_prices = (
+            []
+            if self.shadow_prices is None
+            or isinstance(self.shadow_prices, (bool, str, bytes, dict))
+            or not hasattr(self.shadow_prices, "__iter__")
+            else (self.shadow_prices if isinstance(self.shadow_prices, list) else list(self.shadow_prices))
+        )
+        self.vol_source = _clean_symbol_str(self.vol_source) or "default"
+        self.provider = _clean_symbol_str(self.provider) or None
         self.trend_up = _parse_bool_flag(self.trend_up, False)
 
     @property
@@ -271,6 +284,11 @@ class ReentryDecision:
     reason: str
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.should_enter = _parse_bool_flag(self.should_enter, False)
+        if not isinstance(self.metadata, dict):
+            self.metadata = {}
+
 
 @dataclass
 class ReentrySnapshot(PriceGeometrySnapshot):
@@ -295,12 +313,9 @@ class ReentrySnapshot(PriceGeometrySnapshot):
             setattr(self, attr, safe_pos_float(getattr(self, attr, None), default=None))
         self.last_sell_time_s = normalize_epoch_sec(getattr(self, "last_sell_time_s", None), default=None)
         self.vol_1h = safe_nonneg_float(getattr(self, "vol_1h", 0.0), default=0.0)
+        self.vol_source = _clean_symbol_str(self.vol_source) or "default"
         self.current_time_s = normalize_epoch_sec(getattr(self, "current_time_s", 0.0), default=0.0, allow_zero=True) or 0.0
-        if self.last_exit_kind is not None:
-            if isinstance(self.last_exit_kind, (bool, dict, list, tuple, set, frozenset)):
-                self.last_exit_kind = None
-            else:
-                self.last_exit_kind = str(self.last_exit_kind).strip().upper() or None
+        self.last_exit_kind = _clean_symbol_str(self.last_exit_kind).upper() or None
         self.trend_up = _parse_bool_flag(self.trend_up, False)
         self.trend_down = _parse_bool_flag(self.trend_down, False)
 
@@ -603,13 +618,13 @@ class PositionExitManager:
     ) -> ExitDecision:
         decision = self._evaluate_stop_loss_core(snapshot, custom_threshold=custom_threshold)
         if decision.action == ExitAction.SELL or decision.should_exit:
-            _clear_smart_sl(_clean_symbol_str(snapshot.symbol), snapshot.provider)
+            _clear_smart_sl(_clean_symbol_str(getattr(snapshot, "symbol", None)), getattr(snapshot, "provider", None))
         return decision
 
     def _prepare_exit_core_inputs(
         self, snapshot: PositionSnapshot, custom_threshold: Optional[float], default_threshold: float,
     ) -> Optional[tuple[str, float, float, float, float]]:
-        if not snapshot.is_valid_price:
+        if snapshot is None or not getattr(snapshot, "is_valid_price", False):
             return None
         return (
             _clean_symbol_str(snapshot.symbol),
@@ -676,6 +691,9 @@ class PositionExitManager:
         # PRIORITY 2: Bounce Protection (Trend Up)
         if snapshot.trend_up:
             bounce_state = self.sl_bounce_state.get(symbol)
+            if bounce_state is not None and not isinstance(bounce_state, dict):
+                self.sl_bounce_state.pop(symbol, None)
+                bounce_state = None
             if bounce_state is None:
                 elapsed_ep = now - episode_started_at
                 if elapsed_ep >= self.config.sl_trend_defer_max_sec:
@@ -823,7 +841,7 @@ class PositionExitManager:
             (decision := self._evaluate_take_profit_core(snapshot, custom_threshold=custom_threshold)).action == ExitAction.SELL
             or decision.should_exit
         ):
-            _clear_smart_sl(_clean_symbol_str(snapshot.symbol), snapshot.provider)
+            _clear_smart_sl(_clean_symbol_str(getattr(snapshot, "symbol", None)), getattr(snapshot, "provider", None))
         return decision
 
     def compute_tp_anomaly_pullback(
@@ -998,6 +1016,8 @@ class PositionExitManager:
         self, snapshot: ReentrySnapshot, custom_drop_pct: Optional[float] = None,
     ) -> ReentryDecision:
         """Evaluate market re-entry following position closure (Mirror of Exit)."""
+        if snapshot is None or not getattr(snapshot, "is_valid_price", False):
+            return self._reentry_wait("invalid_current_price")
         symbol = _clean_symbol_str(snapshot.symbol)
         last_kind = (
             snapshot.last_exit_kind.strip().upper()
@@ -1005,9 +1025,6 @@ class PositionExitManager:
             else "SELL"
         )
         now = resolve_now_ts(snapshot.current_time_s, allow_zero=True)
-
-        if not snapshot.is_valid_price:
-            return self._reentry_wait("invalid_current_price")
 
         last_sell_f = safe_pos_float(snapshot.last_sell_price, default=None)
         if last_sell_f is None:
@@ -1151,7 +1168,7 @@ class PositionExitManager:
         sl_threshold: Optional[float] = None, tp_threshold: Optional[float] = None,
     ) -> ExitDecision:
         """Unified entrypoint evaluating position exits in strict mirror sequence."""
-        if not snapshot.is_valid_price:
+        if snapshot is None or not getattr(snapshot, "is_valid_price", False):
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
         symbol = _clean_symbol_str(snapshot.symbol)
 

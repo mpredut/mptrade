@@ -18,8 +18,8 @@ import time
 from typing import Any, Callable
 
 from botcore import (
-    _parse_bool_flag, are_close, clean_order_id, exact_int, exact_nonneg_int, exact_pos_int, log,
-    lru_dict_put, normalize_epoch_sec, normalize_side, optional_env,
+    INVALID_SCALAR_STRINGS, _parse_bool_flag, are_close, clean_order_id, exact_int, exact_nonneg_int, exact_pos_int,
+    log, lru_dict_put, normalize_epoch_sec, normalize_side, optional_env,
     required_bool_env, required_env, required_float_env, required_int_env,
     resolve_now_ts, safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
     split_csv, touch_module_heartbeat,
@@ -407,13 +407,18 @@ def sanitize_common_spot_state(
             raw_ed = state.get(edkey)
             if isinstance(raw_ed, dict):
                 state[edkey] = {
-                    str(fk): cv
+                    fk_s: cv
                     for fk, fv in raw_ed.items()
-                    if (cv := normalize_epoch_sec(fv, default=None)) is not None
+                    if not isinstance(fk, bool)
+                    and fk is not None
+                    and (fk_s := str(fk).strip())
+                    and fk_s.lower() not in INVALID_SCALAR_STRINGS
+                    and (cv := normalize_epoch_sec(fv, default=None)) is not None
                 }
             else:
                 state.pop(edkey, None)
-    if sanitize_orders:
+    lower_side = _parse_bool_flag(lowercase_order_side, True)
+    if _parse_bool_flag(sanitize_orders, True):
         if isinstance(state.get("orders"), list):
             clean_orders = []
             for o in state["orders"]:
@@ -424,7 +429,7 @@ def sanitize_common_spot_state(
                 s_norm = normalize_side(o.get("side"))
                 if s_norm not in ("BUY", "SELL"):
                     continue
-                o["side"] = s_norm.lower() if lowercase_order_side else s_norm
+                o["side"] = s_norm.lower() if lower_side else s_norm
                 if order_id_key in o and o.get(order_id_key) is not None:
                     o[order_id_key] = clean_order_id(o.get(order_id_key))
                 if "intent_id" in o:
@@ -457,6 +462,10 @@ def sanitize_common_spot_state(
         if isinstance(meta, dict) and "market" in meta:
             meta["market"] = _parse_bool_flag(meta.get("market"), False)
     return state
+
+
+def _is_replay_mode(obj: object) -> bool:
+    return bool(_parse_bool_flag(getattr(obj, "replay_mode", False), False))
 
 
 class BaseSpotMixin:
@@ -505,12 +514,20 @@ class BaseSpotMixin:
         self._mod_global("log", log)(msg)
 
     @property
+    def _is_replay(self) -> bool:
+        return _is_replay_mode(self)
+
+    @property
     def _symbol_id(self) -> str:
-        return getattr(self, "pair", None) or getattr(self, "ticker", None) or getattr(self, "coin", "")
+        for attr in ("pair", "ticker", "coin"):
+            val = getattr(self, attr, None)
+            if isinstance(val, str) and (s := val.strip()) and s.lower() not in INVALID_SCALAR_STRINGS:
+                return s
+        return ""
 
     def _now(self) -> float:
         """Return the current timestamp honoring custom clock or simulated time in replay mode."""
-        replay = bool(_parse_bool_flag(getattr(self, "replay_mode", False), False))
+        replay = _is_replay_mode(self)
         if replay:
             sim_ts = normalize_epoch_sec(getattr(self, "_simulated_ts", None), default=None, allow_zero=True)
             if sim_ts is not None:
@@ -565,7 +582,7 @@ class BaseSpotMixin:
         )
         if has_init_state:
             self.s = self._sanitize_state_dict(initial_state)
-        elif self.replay_mode and not init_exit_manager:
+        elif _is_replay_mode(self) and not init_exit_manager:
             self.s = self._mod_global("_new_state")()
         else:
             self.s = self._load()
@@ -603,9 +620,7 @@ class BaseSpotMixin:
         )
 
     def _record_state_file_mtime(self) -> None:
-        if _parse_bool_flag(getattr(self, "replay_mode", False), False) or not isinstance(
-            getattr(self, "state_file", None), str
-        ):
+        if _is_replay_mode(self) or not isinstance(getattr(self, "state_file", None), str):
             return
         try:
             if os.path.exists(self.state_file):
@@ -671,7 +686,7 @@ class BaseSpotMixin:
         self.s[self._spent_state_key] += (
             amt_val
             if (amt_val is not None and raw_amt is not None)
-            else ((qty * price) if fallback_to_notional else 0.0)
+            else ((qty * price) if _parse_bool_flag(fallback_to_notional, False) else 0.0)
         )
         if order.get("kind") == "DCA":
             self.s["dca_buys"] += 1
@@ -685,7 +700,7 @@ class BaseSpotMixin:
         """Zero out open quantity, cost basis, and optionally spent budget when flat."""
         self.s["qty"] = 0.0
         self.s[self._cost_state_key] = 0.0
-        if clear_spent:
+        if _parse_bool_flag(clear_spent, False):
             self.s[self._spent_state_key] = 0.0
 
     def _find_open(self, side: str) -> dict | None:
@@ -829,7 +844,7 @@ class BaseSpotMixin:
         mean_dt = (clean_pts[-1][0] - clean_pts[0][0]) / (n_clean - 1)
         if mean_dt <= 0:
             return None
-        if getattr(self, "replay_mode", False):
+        if _is_replay_mode(self):
             cache_key = (
                 round(clean_pts[-1][0] - clean_pts[0][0], 3),
                 tuple(pt[1] for pt in clean_pts),
@@ -854,7 +869,7 @@ class BaseSpotMixin:
     def _trail_vol_1h(self) -> float | None:
         """Return one-hour-normalized volatility at one OHLC cadence in live and replay."""
         trail_itv = getattr(self.p, "tp_trail_vol_interval", None)
-        if getattr(self, "replay_mode", False):
+        if _is_replay_mode(self):
             sp = getattr(self, "_shadow_prices", None)
             if not sp or len(sp) < 20:
                 return None
@@ -881,7 +896,7 @@ class BaseSpotMixin:
     def _dca_vol_1h(self) -> float | None:
         """Return DCA volatility from OHLC at the same cadence in live and replay."""
         dca_itv = getattr(self.p, "dca_vol_interval", None)
-        if getattr(self, "replay_mode", False):
+        if _is_replay_mode(self):
             closes = [price for _, price in getattr(self, "_shadow_prices", ())]
         elif hasattr(self.client, "ohlc_closes") and dca_itv is not None:
             closes = self.client.ohlc_closes(self._symbol_id, dca_itv)
@@ -915,7 +930,7 @@ class BaseSpotMixin:
                     return vol_pct_to_ratio(vol), src
             except Exception:
                 pass
-        if not self.replay_mode:
+        if not _is_replay_mode(self):
             cached = self._mod_global("resolve_cached_volatility_1h", resolve_cached_volatility_1h)(self._symbol_id)
             if cached is not None:
                 return cached, "cache"
@@ -928,7 +943,7 @@ class BaseSpotMixin:
         k_re = self.p.shadow_k_reentry
         try:
             vol = self._raw_reentry_shadow_vol_pct()
-            if vol is None and not self.replay_mode:
+            if vol is None and not _is_replay_mode(self):
                 vol = self._mod_global("resolve_cached_volatility_1h_pct", resolve_cached_volatility_1h_pct)(
                     self._symbol_id
                 )
@@ -945,7 +960,7 @@ class BaseSpotMixin:
         if not self.p.reentry_pullback_adaptive:
             return self.p.reentry_pullback_pct, "fixed"
         try:
-            if (vol := self._raw_reentry_shadow_vol_pct()) is None and not self.replay_mode:
+            if (vol := self._raw_reentry_shadow_vol_pct()) is None and not _is_replay_mode(self):
                 vol = self._mod_global("resolve_cached_volatility_1h_pct", resolve_cached_volatility_1h_pct)(
                     self._symbol_id
                 )
@@ -999,7 +1014,7 @@ class BaseSpotMixin:
             self.p,
             self.s,
             lambda _symbol: self._vol_1h_ratio(),
-            allow_external_cache=not self.replay_mode,
+            allow_external_cache=not _is_replay_mode(self),
             ratio_fn=self._exit_config_ratio_fn,
             extra_config=self._exit_config_overrides(),
         )
@@ -1028,11 +1043,15 @@ class BaseSpotMixin:
         sp = getattr(self, "_shadow_prices", None)
         if tick_time is None:
             tick_time = sp[-1][0] if (self._use_shadow_tick_time_default and sp) else self._now()
-        vol_1h, vol_source = self._vol_1h_ratio() if include_vol else (0.0, "default")
-        trend_up = self._snapshot_trend_up(regime) if include_trend else False
+        vol_1h, vol_source = self._vol_1h_ratio() if _parse_bool_flag(include_vol, True) else (0.0, "default")
+        trend_up = self._snapshot_trend_up(regime) if _parse_bool_flag(include_trend, True) else False
         sell_qty = self._sellable_qty(held, price)
         provider = self._snapshot_provider_name()
-        shadow = list(sp) if (self._include_shadow_in_snapshot and include_shadow and sp is not None) else []
+        shadow = (
+            list(sp)
+            if (self._include_shadow_in_snapshot and _parse_bool_flag(include_shadow, True) and sp is not None)
+            else []
+        )
         return PositionSnapshot(
             symbol=self._symbol_id,
             current_price=price,
@@ -1049,15 +1068,16 @@ class BaseSpotMixin:
 
     def _in_mhdsl_territory(self, loss_pct: float, *, reset_episode_on_exit: bool = True) -> bool:
         """Return True if the position is in MHDSL stop-loss or bounce-watch territory."""
-        in_sl = loss_pct > 0.0 and (
-            loss_pct >= self.p.stop_loss_pct
-            or are_close(loss_pct, self.p.stop_loss_pct, self.p.reentry_tolerance_pct)
+        loss_f = safe_float(loss_pct, default=0.0) or 0.0
+        in_sl = loss_f > 0.0 and (
+            loss_f >= self.p.stop_loss_pct
+            or are_close(loss_f, self.p.stop_loss_pct, self.p.reentry_tolerance_pct)
         )
         if not in_sl and "sl_pending_exit" in self.s:
             self.s["sl_pending_exit"] = None
         mgr, sym = self.exit_manager, self._symbol_id
         if not in_sl and not (mgr is not None and sym in mgr.sl_bounce_state):
-            if reset_episode_on_exit and mgr is not None and mgr.sl_episode_state:
+            if _parse_bool_flag(reset_episode_on_exit, True) and mgr is not None and mgr.sl_episode_state:
                 mgr.reset_sl_episode(sym)
             return False
         return True
@@ -1118,7 +1138,7 @@ class BaseSpotMixin:
     def _resolve_reentry_custom_drop(self, is_bull_reentry: bool, last_kind: str | None) -> float | None:
         drop_pct = (
             self._effective_reentry_drop_pct()[0]
-            if ((not is_bull_reentry and last_kind != "STOP") or not self.replay_mode)
+            if ((not is_bull_reentry and last_kind != "STOP") or not _is_replay_mode(self))
             else self.p.reentry_drop_pct
         )
         return vol_pct_to_ratio(drop_pct)
@@ -1156,13 +1176,13 @@ class BaseSpotMixin:
         )
         pullback_pct = (
             self._effective_reentry_pullback_pct()[0]
-            if (is_bull_reentry or not self.replay_mode)
+            if (is_bull_reentry or not _is_replay_mode(self))
             else self.p.reentry_pullback_pct
         )
         mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
         custom_drop = self._resolve_reentry_custom_drop(is_bull_reentry, last_kind)
 
-        vol_1h, vol_source = (0.0, "default") if self.replay_mode else self._vol_1h_ratio()
+        vol_1h, vol_source = (0.0, "default") if _is_replay_mode(self) else self._vol_1h_ratio()
         reentry_snap = ReentrySnapshot(
             symbol=self._symbol_id,
             current_price=price,
@@ -1219,7 +1239,7 @@ class BaseSpotMixin:
         return placed
 
     def _touch_strategy_heartbeat(self, price: float | None, sleep_sec: float, *, force: bool = False) -> None:
-        if _parse_bool_flag(getattr(self, "replay_mode", False), False):
+        if _is_replay_mode(self):
             return
         sym = str(self._symbol_id or "").strip().upper()
         hb_name = MarketDataProvider.resolve_venue_strategy_heartbeat(
@@ -1334,7 +1354,7 @@ class BaseSpotMixin:
                         continue
                     if (
                         _parse_bool_flag(reload_external, False)
-                        and not _parse_bool_flag(getattr(self, "replay_mode", False), False)
+                        and not _is_replay_mode(self)
                         and not _parse_bool_flag(getattr(self, "_state_write_failed", False), False)
                         and isinstance(getattr(self, "state_file", None), str)
                     ):

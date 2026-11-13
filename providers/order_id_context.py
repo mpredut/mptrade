@@ -12,6 +12,7 @@ import time
 from typing import Any, Iterable, Optional, Union
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _first_mapped,
     clean_nonempty_str,
     clean_order_id,
@@ -101,11 +102,25 @@ for _pfx, _owner, _tel_mod, _mode in BOT_CID_SPEC_TABLE:
         BOT_PREFIX_MAP[f"{_pfx}_"] = _owner
 
 _SORTED_BOT_PREFIXES = tuple(sorted(BOT_PREFIX_MAP.items(), key=lambda kv: len(kv[0]), reverse=True))
+_SORTED_BOT_CID_SPECS = tuple(sorted(BOT_CID_SPEC_TABLE, key=lambda row: len(row[0]), reverse=True))
 _BOT_CID_PREFIX_MODULES: tuple[tuple[str, str], ...] = tuple(
     (_pfx, _tel_mod)
     for _pfx, _owner, _tel_mod, _mode in BOT_CID_SPEC_TABLE
     if _tel_mod is not None
 )
+
+
+def _match_bot_cid_spec(cid_up: str, pfx: str, mode: str) -> bool:
+    if mode == "stem":
+        return cid_up.startswith(pfx)
+    if mode == "prefix_only":
+        return cid_up.startswith(f"{pfx}_")
+    return cid_up == pfx or cid_up.startswith((f"{pfx}_", f"{pfx}-"))
+
+
+def _clean_ctx_str(val: object) -> Optional[str]:
+    s = clean_nonempty_str(val)
+    return s if (s is not None and s.lower() not in INVALID_SCALAR_STRINGS) else None
 KNOWN_BOT_PROCESS_CODES = frozenset(_PROCESS_NAME_OVERRIDES.values()) | frozenset({"MN", "AI"})
 
 REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual"})
@@ -194,8 +209,9 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
     cid = clean_order_id(client_order_id)
     if not cid:
         return "unspecified"
-    for prefix, bot in _SORTED_BOT_PREFIXES:
-        if cid.startswith(prefix):
+    cid_up = cid.upper()
+    for pfx, bot, _tel_mod, mode in _SORTED_BOT_CID_SPECS:
+        if bot is not None and _match_bot_cid_spec(cid_up, pfx, mode):
             return bot
     if cid.lower().startswith(MANUAL_CID_PREFIXES):
         return "manual"
@@ -246,7 +262,7 @@ def order_matches_owner(client_order_id: Optional[str], allowed_owners: Union[st
     if owner in allowed_set:
         return True
     cid_str = "" if client_order_id is None or isinstance(client_order_id, bool) else str(client_order_id).strip()
-    if "monitororder" in allowed_set and cid_str.startswith("MO_"):
+    if "monitororder" in allowed_set and cid_str.upper().startswith("MO_"):
         return True
     return False
 
@@ -257,11 +273,9 @@ def _normalize_id_lookup_sets(ids: Any) -> tuple[set[str], set[str]]:
     exact_ids: set[str] = set()
     lower_ids: set[str] = set()
     for item in ids:
-        if item is not None and not isinstance(item, (bool, dict, list, tuple, set, frozenset)):
-            s = str(item).strip()
-            if s:
-                exact_ids.add(s)
-                lower_ids.add(s.lower())
+        if (cid := clean_order_id(item)) is not None:
+            exact_ids.add(cid)
+            lower_ids.add(cid.lower())
     return exact_ids, lower_ids
 
 
@@ -269,7 +283,7 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
     if not isinstance(order, dict):
         return "BOT"
-    explicit = (clean_nonempty_str(order.get("actor")) or "").upper()
+    explicit = (_clean_ctx_str(order.get("actor")) or "").upper()
     if explicit in ("AI", "BOT"):
         return explicit
     exact_ids, lower_ids = _normalize_id_lookup_sets(known_ai_order_ids)
@@ -292,10 +306,10 @@ def resolve_order_origin(
     if actor == "AI" or not isinstance(order, dict):
         return actor, None, None
 
-    raw_mod = _first_mapped(order, ("module", "origin_module", "bot", "caller"), clean_nonempty_str)
+    raw_mod = _first_mapped(order, ("module", "origin_module", "bot", "caller"), _clean_ctx_str)
     mod = raw_mod.lower() if raw_mod else None
     rule = _first_mapped(
-        order, ("rule", "decision_rule", "trigger_rule", "kind", "role", "motivation"), clean_nonempty_str
+        order, ("rule", "decision_rule", "trigger_rule", "kind", "role", "motivation"), _clean_ctx_str
     )
     oid = extract_order_id(order, default="")
     raw_cid = extract_client_order_id(order, default="") or ""
@@ -304,16 +318,16 @@ def resolve_order_origin(
         for lookup_key in (str(oid) if oid else "", raw_cid, raw_cid.lower()):
             if lookup_key and isinstance(entry := audit_origin_map.get(lookup_key), (tuple, list)) and len(entry) >= 2:
                 a_mod, a_rule = entry[0], entry[1]
-                mod = mod or clean_nonempty_str(a_mod)
-                rule = rule or clean_nonempty_str(a_rule)
+                mod = mod or _clean_ctx_str(a_mod)
+                rule = rule or _clean_ctx_str(a_rule)
 
     if raw_cid:
         cid_up = raw_cid.upper()
-        for pfx, bot_name in _BOT_CID_PREFIX_MODULES:
-            if cid_up.startswith(f"{pfx}_") or cid_up == pfx or (pfx in ("AGS", "AGB") and cid_up.startswith(pfx)):
+        for pfx, _owner, bot_name, mode in _SORTED_BOT_CID_SPECS:
+            if bot_name is not None and _match_bot_cid_spec(cid_up, pfx, mode):
                 mod = mod or bot_name
                 if not rule:
-                    if pfx in ("AGS", "AGB"):
+                    if mode == "stem":
                         rule = "SL_PROTECT" if pfx == "AGS" else "BUY_TIER"
                     else:
                         rem = raw_cid[len(pfx):].lstrip("_-")
@@ -334,10 +348,11 @@ def resolve_order_origin(
 
 def format_actor_tag(actor: Optional[str], module: Optional[str] = None, rule: Optional[str] = None) -> str:
     """Format compact actor attribution string (e.g. ``'AI'`` or ``'BOT(module=assetguardian, rule=SL_PANIC)'``)."""
-    act_u = str(actor or "").strip().upper()
+    act_s = "" if isinstance(actor, (bool, dict, list, tuple, set, frozenset)) else str(actor or "").strip()
+    act_u = "" if act_s.lower() in INVALID_SCALAR_STRINGS else act_s.upper()
     if act_u != "BOT":
         return act_u or "BOT"
-    parts = [f"{k}={v}" for k, v in (("module", module), ("rule", rule)) if v]
+    parts = [f"{k}={s}" for k, v in (("module", module), ("rule", rule)) if (s := _clean_ctx_str(v))]
     return f"BOT({', '.join(parts)})" if parts else "BOT"
 
 

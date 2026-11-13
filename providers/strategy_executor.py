@@ -13,9 +13,11 @@ Each adapter applies its configured live-order gate consistently across both pat
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Callable, Optional, Protocol, runtime_checkable
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     clean_order_id,
     exact_nonneg_int,
     extract_order_id,
@@ -26,6 +28,17 @@ from botcore import (
 from .ohlc_utils import ProviderError, _CANDLE_INTERVALS, candle_interval  # noqa: F401
 
 
+def _clean_optional_label(raw: object, field_name: str, owner: str, *, upper: bool = False) -> str:
+    if isinstance(raw, (bool, dict, list, tuple, set, frozenset)) or (
+        isinstance(raw, float) and not math.isfinite(raw)
+    ):
+        raise ValueError(f"invalid {field_name} in {owner}: {raw!r}")
+    s = str(raw or "").strip()
+    if not s or s.lower() in INVALID_SCALAR_STRINGS:
+        return ""
+    return s.upper() if upper else s
+
+
 class OrderNotFound(ProviderError):
     """The venue definitively confirms that the order does not exist."""
 
@@ -34,9 +47,7 @@ class SubmissionRefused(ProviderError, RuntimeError):
     """The order was definitively refused before or during synchronous submit."""
 
     def __init__(self, reason: str):
-        if isinstance(reason, bool):
-            raise ValueError("submission refusal reason is required")
-        self.reason = str(reason or "").strip()
+        self.reason = _clean_optional_label(reason, "reason", "SubmissionRefused")
         if not self.reason:
             raise ValueError("submission refusal reason is required")
         super().__init__(self.reason)
@@ -74,10 +85,8 @@ class SubmissionOutcome:
             raise ValueError("accepted submission requires order_id")
         if self.state != "accepted" and order_id:
             raise ValueError(f"{self.state} submission cannot carry order_id")
-        if isinstance(self.reason, bool):
-            raise ValueError(f"invalid reason in SubmissionOutcome: {self.reason!r}")
         object.__setattr__(self, "order_id", order_id)
-        object.__setattr__(self, "reason", str(self.reason or "").strip())
+        object.__setattr__(self, "reason", _clean_optional_label(self.reason, "reason", "SubmissionOutcome"))
 
     @property
     def accepted(self) -> bool:
@@ -126,9 +135,11 @@ class OrderStatus:
             if value is None:
                 raise ValueError(f"invalid {name} in OrderStatus: {raw!r}")
             object.__setattr__(self, name, value)
-        if isinstance(self.venue_status, bool):
-            raise ValueError(f"invalid venue_status in OrderStatus: {self.venue_status!r}")
-        object.__setattr__(self, "venue_status", str(self.venue_status or "").strip().upper())
+        object.__setattr__(
+            self,
+            "venue_status",
+            _clean_optional_label(self.venue_status, "venue_status", "OrderStatus", upper=True),
+        )
         if self.orig_qty is not None:
             orig_val = safe_float(self.orig_qty, default=None)
             if orig_val is None:
@@ -168,9 +179,11 @@ class PairPrecision:
         if minimum is None:
             raise ValueError(f"invalid order_min in PairPrecision: {self.order_min!r}")
         object.__setattr__(self, "order_min", minimum)
-        if isinstance(self.base_asset, bool):
-            raise ValueError(f"invalid base_asset in PairPrecision: {self.base_asset!r}")
-        object.__setattr__(self, "base_asset", str(self.base_asset or "").strip())
+        object.__setattr__(
+            self,
+            "base_asset",
+            _clean_optional_label(self.base_asset, "base_asset", "PairPrecision"),
+        )
 
 
 @dataclass(frozen=True)
