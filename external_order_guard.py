@@ -206,6 +206,16 @@ def is_gi_whale_enforced(bypass_guards: Any = None, *, venue: str = "binance") -
     return True
 
 
+def _is_whale_spread_active(
+    bypass_guards: Any = None, *, enforced: Optional[bool] = None, venue: str = "binance"
+) -> bool:
+    return (
+        is_gi_whale_enforced(bypass_guards, venue=venue)
+        if enforced is None
+        else _parse_bool_flag(enforced, False)
+    )
+
+
 def evaluate_whale_spread_flow(
     symbol: str,
     side: str,
@@ -219,7 +229,7 @@ def evaluate_whale_spread_flow(
     side_u = normalize_side(side)
     if side_u not in {"BUY", "SELL"}:
         return False, "ok"
-    if not (is_gi_whale_enforced(bypass_guards, venue=venue) if enforced is None else enforced):
+    if not _is_whale_spread_active(bypass_guards, enforced=enforced, venue=venue):
         return False, "gi_whale_bypassed_or_off"
     try:
         collector = get_whale_collector()
@@ -262,7 +272,7 @@ def resolve_whale_spread_adjustment(
     now: Optional[float] = None,
 ) -> float:
     """Widen grid quote adjustment when moderate taker flow pressure exists."""
-    if not (is_gi_whale_enforced(bypass_guards, venue=venue) if enforced is None else enforced):
+    if not _is_whale_spread_active(bypass_guards, enforced=enforced, venue=venue):
         return base_adjustment
     try:
         collector = get_whale_collector()

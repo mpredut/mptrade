@@ -21,6 +21,8 @@ from botcore import (
     FileLock,
     _parse_bool_flag,
     add_store_true_cli_args,
+    clean_nonempty_str,
+    clean_order_id,
     clean_upper_token,
     exact_nonneg_int,
     format_notify_qty,
@@ -165,34 +167,33 @@ def _hydrate_missing_order_orig_qty(mkt, symbol, order, *, provider_name=None):
 def _reconcile_client_order(mkt, symbol, client_order_id, *, provider_name=None):
     """Return a tri-state client-ID lookup result and any accepted order."""
     lookup = getattr(mkt, "order_by_client_id", None)
-    if not callable(lookup) or not client_order_id:
+    cid_clean = clean_order_id(client_order_id)
+    if not callable(lookup) or not cid_clean:
         return _RECONCILE_UNAVAILABLE, None
     try:
-        order = lookup(symbol, client_order_id, provider_name=provider_name)
+        order = lookup(symbol, cid_clean, provider_name=provider_name)
     except Exception as exc:
-        print(f"[order_retry] reconciliation unavailable {symbol}/{client_order_id}: {exc}")
+        print(f"[order_retry] reconciliation unavailable {symbol}/{cid_clean}: {exc}")
         return _RECONCILE_UNAVAILABLE, None
     if order is None:
         return _RECONCILE_NOT_FOUND, None
     if not isinstance(order, dict):
-        print(f"[order_retry] malformed reconciliation response {symbol}/{client_order_id}: {type(order).__name__}")
+        print(f"[order_retry] malformed reconciliation response {symbol}/{cid_clean}: {type(order).__name__}")
         return _RECONCILE_UNAVAILABLE, None
     if oq.extract_order_id(order) is None:
-        print(f"[order_retry] reconciliation response has no order ID {symbol}/{client_order_id}")
+        print(f"[order_retry] reconciliation response has no order ID {symbol}/{cid_clean}")
         return _RECONCILE_UNAVAILABLE, None
     return _RECONCILE_FOUND, order
 
 
 def _provider_name(mkt, record):
-    configured = record.get("provider_name") if isinstance(record, dict) else None
-    if configured is not None and not isinstance(configured, bool) and str(configured).strip():
-        return str(configured).strip()
+    if isinstance(record, dict) and (configured := clean_nonempty_str(record.get("provider_name"))):
+        return configured
     resolver = getattr(mkt, "provider_name_for", None)
     if callable(resolver) and isinstance(record, dict):
         try:
-            resolved = resolver(record.get("symbol"))
-            if resolved is not None and not isinstance(resolved, bool) and str(resolved).strip():
-                return str(resolved).strip()
+            if resolved := clean_nonempty_str(resolver(record.get("symbol"))):
+                return resolved
         except Exception:
             pass
     return None
@@ -215,7 +216,7 @@ def _audit_event(record, event, **fields):
     payload = {
         "side": str(record.get("side") or "").lower() or None,
         "kind": record.get("kind") or place_kwargs.get("kind"),
-        "client_order_id": oq._record_client_order_id(record),
+        "client_order_id": oq.record_client_order_id(record),
         "order_id": record.get("order_id"),
         "revision": record.get("revision"),
         **fields,
@@ -355,7 +356,7 @@ def process_once(mkt, now=None):
         symbol = r.get("symbol")
         provider_name = _provider_name(mkt, r)
         reconciliation_state, existing_order = _reconcile_client_order(
-            mkt, symbol, oq._record_client_order_id(r), provider_name=provider_name
+            mkt, symbol, oq.record_client_order_id(r), provider_name=provider_name
         )
         if reconciliation_state == _RECONCILE_FOUND:
             if _complete_reconciled_order(
@@ -396,7 +397,7 @@ def process_once(mkt, now=None):
         lifecycle, symbol = str(r.get("lifecycle") or "submit_pending").lower(), r.get("symbol")
         provider_name = _provider_name(mkt, r)
         if lifecycle == "awaiting_cancel":
-            replaced_order_id = str(r.get("replaces_order_id") or "")
+            replaced_order_id = clean_order_id(r.get("replaces_order_id")) or ""
             status = _fetch_claimed_order_status(
                 r,
                 replaced_order_id,
@@ -410,7 +411,8 @@ def process_once(mkt, now=None):
             venue_status = str(status.venue_status or "").upper()
             if venue_status in {"CANCELED", "CANCELLED"}:
                 orig_f = safe_pos_float(r.get("replaces_original_qty"), default=None)
-                filled_f = safe_nonneg_float(getattr(status, "filled_qty", 0.0) or 0.0, default=None)
+                raw_filled = getattr(status, "filled_qty", None)
+                filled_f = 0.0 if raw_filled is None else safe_nonneg_float(raw_filled, default=None)
                 replacement_qty = max(0.0, orig_f - filled_f) if (orig_f is not None and filled_f is not None) else -1.0
                 activation = oq.activate_claimed_replacement(r, replacement_qty, now)
                 if activation == "activated":
@@ -441,7 +443,7 @@ def process_once(mkt, now=None):
             observed += 1
             status = _fetch_claimed_order_status(
                 r,
-                str(r.get("order_id")),
+                clean_order_id(r.get("order_id")) or "",
                 provider_name,
                 log_prefix="status unavailable",
                 audit_event_name="status_error",
@@ -482,8 +484,9 @@ def process_once(mkt, now=None):
                 terminal_failed += 1
             continue
 
-        kwargs = dict(r.get("place_kwargs") or {})
-        client_order_id = kwargs.get("client_order_id")
+        raw_pk = r.get("place_kwargs")
+        kwargs = dict(raw_pk) if isinstance(raw_pk, dict) else {}
+        client_order_id = oq.record_client_order_id(r)
         if oq.submission_requires_reconciliation(r):
             reconciliation_state, existing_order = _reconcile_client_order(
                 mkt, symbol, client_order_id, provider_name=provider_name
@@ -500,9 +503,9 @@ def process_once(mkt, now=None):
                 else:
                     venue_horizon = safe_pos_float(getattr(capabilities, "not_found_reliable_for_seconds", None), default=None)
                     configured_horizon = safe_pos_float(oq.RETRY_NOT_FOUND_MAX_AGE_SEC, default=None)
-                    observed_at = safe_float(now, default=None)
-                    created_at = safe_float(r.get("created_ts") or 0.0, default=None)
-                    last_attempt_at = safe_float(r.get("last_attempt_ts") or 0.0, default=None)
+                    observed_at = safe_pos_float(now, default=None)
+                    created_at = oq.opt_nonneg_ts(r, "created_ts")
+                    last_attempt_at = oq.opt_nonneg_ts(r, "last_attempt_ts")
                     if venue_horizon is None or configured_horizon is None:
                         absence_reliable, not_found_reason = False, "missing_reconciliation_horizon"
                     elif observed_at is None or created_at is None or last_attempt_at is None or max(created_at, last_attempt_at) <= 0:

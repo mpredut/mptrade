@@ -255,9 +255,16 @@ def make_test_margins(*, disable_external_pillars: bool = False, strip_venue_ref
     """Build an ``order_guard._load_margins()`` copy with optional test overrides."""
     global _DEFAULT_MARGINS_SNAPSHOT
     if _DEFAULT_MARGINS_SNAPSHOT is None:
-        import order_guard
+        import guard_hierarchy
 
-        _DEFAULT_MARGINS_SNAPSHOT = dict(order_guard._load_margins())
+        _DEFAULT_MARGINS_SNAPSHOT = dict(
+            guard_hierarchy._MARGINS
+            or _botcore_init.parse_dotenv(
+                os.path.join(os.path.dirname(guard_hierarchy._DEFAULT_ORDER_GUARD_ANCHOR), "order_guard.conf"),
+                lower_keys=True,
+                coerce_floats=True,
+            )
+        )
     base = dict(_DEFAULT_MARGINS_SNAPSHOT)
     if disable_external_pillars:
         base.update({

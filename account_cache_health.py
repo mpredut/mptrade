@@ -16,6 +16,7 @@ from typing import Callable, Optional
 
 from botcore import (
     INVALID_SCALAR_STRINGS,
+    _parse_bool_flag,
     exact_pos_int,
     load_dotenv,
     normalize_class_name,
@@ -153,7 +154,7 @@ def disable_writer(*, now_ms: Optional[int] = None) -> bool:
 
 
 def _publish_locked(*, bump_generation: bool = True) -> bool:
-    if bump_generation:
+    if _parse_bool_flag(bump_generation, True):
         _writer_state["generation"] += 1
     atomic_write_json(_writer_path, _writer_state, separators=(",", ":"), sort_keys=True)
     return True
@@ -183,7 +184,7 @@ def _record_cache_version(
     with _writer_lock:
         if not _writer_enabled:
             return False
-        if update_sync:
+        if _parse_bool_flag(update_sync, False):
             _writer_state[sync_field] = timestamp
             # Publication time describes this atomic write, while the conservative
             # synchronization timestamp remains the first request start of the cycle.
@@ -235,9 +236,15 @@ def inspect_health(
     future_tolerance_sec: float = 5.0,
 ) -> CacheHealthStatus:
     """Validate the shared snapshot without trusting mtime or defaults."""
-    target_p = HEALTH_PATH if path is None else os.fspath(path)
-    eff_path = cache_path(CACHE_ACCOUNT_HEALTH_FILENAME) if target_p == _DEFAULT_HEALTH_PATH else str(resolve_cachedb_filepath(target_p))
     try:
+        if path is not None and isinstance(path, bool):
+            raise TypeError("invalid health path")
+        target_p = HEALTH_PATH if path is None else os.fspath(path)
+        eff_path = (
+            cache_path(CACHE_ACCOUNT_HEALTH_FILENAME)
+            if target_p == _DEFAULT_HEALTH_PATH
+            else str(resolve_cachedb_filepath(target_p))
+        )
         state = read_json_dict(eff_path)
         if state.get("schema_version") != SCHEMA_VERSION:
             return CacheHealthStatus(False, "account_cache_schema_mismatch")

@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from botcore import (
     bool_env,
+    clean_scale,
     normalize_side,
     parse_dotenv,
     safe_float,
@@ -527,7 +528,7 @@ _RAW_INTEL_CACHE_CODES: tuple[str, ...] = (
 
 def make_intel_cache_key(side: str, bypassed: set[str]) -> tuple[str, frozenset[str]]:
     """Build the canonical (side, bypassed_intel_codes) cache key for MarketRegimeContext."""
-    side_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
+    side_norm = normalize_side(side)
     _, parabolic_only, weibull_only = resolve_qlimit2_sub_bypasses(bypassed)
     codes = {
         code
@@ -894,7 +895,7 @@ def _is_valid_regime_context(
     default_max_age: float = 600.0,
 ) -> bool:
     """Return True when ``regime_context`` is non-None and passes identity/freshness validation."""
-    if regime_context is None:
+    if regime_context is None or isinstance(regime_context, (bool, int, float, str, bytes)):
         return False
     if not hasattr(regime_context, "is_valid_for"):
         return True
@@ -918,9 +919,11 @@ def merge_guard_scale(
     new_reason: str,
 ) -> Tuple[float, str]:
     """Combine a candidate guard scale into ``(effective_scale, active_reason)`` keeping the strictest scale."""
-    if new_scale < 1.0 and new_scale <= effective_scale:
-        return new_scale, new_reason
-    return effective_scale, active_reason
+    eff_s = clean_scale(effective_scale, default=1.0)
+    cand_s = clean_scale(new_scale, default=1.0)
+    if cand_s < 1.0 and cand_s <= eff_s:
+        return cand_s, (new_reason if isinstance(new_reason, str) and new_reason.strip() else active_reason)
+    return eff_s, active_reason
 
 
 def set_regime_context_attrs(regime_context: Any, **attrs: Any) -> None:

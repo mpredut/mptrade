@@ -201,7 +201,7 @@ def evaluate_high_stake_order_guard(
                 pass
 
         ccy_sym = "\u20ac" if _cachepaths.is_eur_pair(symbol) else "$"
-        do_notify = _parse_bool_flag(notify_on_eval, True) if not isinstance(notify_on_eval, bool) else notify_on_eval
+        do_notify = _parse_bool_flag(notify_on_eval, True)
         if not is_cache_hit and (do_notify or not g_allowed_bool or g_brake == BrakeAction.DOWNSCALE_QTY):
             prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
             print(
@@ -251,10 +251,11 @@ def evaluate_high_stake_order_guard(
     if isinstance(cached_g_dec, (tuple, list)) and len(cached_g_dec) == 3 and llm_mode == "enforce":
         g_allowed, g_reason, raw_g_scale = cached_g_dec
         g_scale = clean_scale(raw_g_scale, default=1.0, allow_percent=True)
+        reason_clean = g_reason.strip() if isinstance(g_reason, str) and g_reason.strip() else "high_stake_guard"
         if not _parse_bool_flag(g_allowed, True) or g_scale <= 0.0:
-            return False, g_reason, 0.0
+            return False, reason_clean, 0.0
         if g_scale < 1.0:
-            return True, g_reason, g_scale
+            return True, reason_clean, g_scale
     return True, "ok", 1.0
 
 
@@ -353,7 +354,7 @@ def check_geopolitical_order_guards(
                 if (
                     geo_mode == "shadow"
                     and shadow_notify
-                    and check_cooldown_gate(_GEO_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), order_side), resolve_now_ts(now))
+                    and check_cooldown_gate(_GEO_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), order_side), now_ts)
                 ):
                     try:
                         geo_tag = topic_spec("macro_geopolitical").bracket_tag

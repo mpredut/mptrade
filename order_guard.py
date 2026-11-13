@@ -207,6 +207,7 @@ def symbol_regime(
     svc = regime_service or _DEFAULT_REGIME_SERVICE
     if not symbol:
         return svc.evaluator.unknown("missing_symbol")
+    allow_fallback = _parse_bool_flag(allow_fallback, True)
 
     if hasattr(provider, "market_regime"):
         try:
@@ -268,6 +269,7 @@ def symbol_regime_context(
 ) -> MarketRegimeContext:
     """Resolve and bundle MarketRegimeContext once for multi-guard placement pipelines."""
     now_ts = resolve_now_ts(now, allow_zero=True)
+    allow_fallback = _parse_bool_flag(allow_fallback, True)
     decision = symbol_regime(
         symbol,
         provider=provider,
@@ -822,7 +824,8 @@ def _update_context_intel_cache(
         decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None)
         if not isinstance(decisions_map, dict):
             decisions_map = {}
-        entry = dict(decisions_map.get(cache_key) or {})
+        raw_prev = decisions_map.get(cache_key)
+        entry = dict(raw_prev) if isinstance(raw_prev, dict) else {}
         entry["price"] = price
         if decision is not None:
             entry["decision"] = decision
@@ -927,6 +930,9 @@ def check_intelligence_guards(
     else:
         cached_res = cached_price = cached_notional = None
         cached_dur = 0.0
+
+    if not (isinstance(cached_res, (tuple, list)) and len(cached_res) == 3):
+        cached_res = None
 
     if (
         cached_res is not None
@@ -1053,7 +1059,8 @@ def _evaluate_intelligence_guards_raw(
         return early
     _, side, m, bypassed, parabolic_only_bypass, weibull_only_bypass = pre
 
-    if any(fake in (symbol or "").upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE")):
+    sym_u = symbol.strip().upper() if isinstance(symbol, str) else ""
+    if any(fake in sym_u for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE")):
         return True, "test_symbol_exempt", 1.0
 
     computed_notional = resolve_order_notional(notional_eur, price, qty, default=None)
@@ -1311,7 +1318,7 @@ def profit_guard(
         print(f"[GUARD] {order_type} {symbol}: blocked by intelligence guard ({intel_reason})")
         return False
 
-    s_scale = safe_pos_float(suggested_scale, default=1.0)
+    s_scale = clean_scale(suggested_scale, default=1.0)
     if regime_context is not None and s_scale < 1.0:
         _record_context_suggested_scale(
             regime_context,

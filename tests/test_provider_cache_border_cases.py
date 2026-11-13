@@ -178,6 +178,7 @@ from order_lifecycle import (
     resolve_dynamic_reprice_bounds,
 )
 import order_retry
+import order_retry_worker
 import priceAnalysis
 import pricewindow as pw
 from providers import (
@@ -6330,6 +6331,126 @@ def test_wave35_cooldown_gate_order_retry_mt_accounting_spot_and_trailing_border
     )
     assert TrailingAdapterBase.dispatch_cli(cli_stub, SimpleNamespace(status="false", once="true")) == 0
     assert cli_calls == ["once"]
+
+
+def test_wave36_retry_worker_active_intents_health_and_guard_hierarchy_border_cases(tmp_path, monkeypatch):
+    # 1. order_retry & order_retry_worker: record_client_order_id, _reconcile_client_order, awaiting_cancel filled_qty=False,
+    #    and RECONCILE_NOT_FOUND corrupt timestamps failing closed.
+    assert order_retry.record_client_order_id({"place_kwargs": {"client_order_id": True}}) is None
+    assert order_retry.record_client_order_id({"place_kwargs": {"client_order_id": " cid-w36 "}}) == "cid-w36"
+    assert order_retry.opt_nonneg_ts({"created_ts": False}, "created_ts") is None
+    assert order_retry.opt_nonneg_ts({"created_ts": -5.0}, "created_ts") is None
+    assert order_retry.opt_nonneg_ts({}, "created_ts") == 0.0
+
+    mkt_probe = SimpleNamespace(
+        order_by_client_id=lambda sym, cid, provider_name=None: {"orderId": "901", "symbol": sym, "cid": cid},
+        provider_name_for=lambda _sym: True,
+    )
+    assert order_retry_worker._reconcile_client_order(mkt_probe, "BTCUSDC", {"bad": 1}) == ("unavailable", None)
+    assert order_retry_worker._provider_name(mkt_probe, {"provider_name": False, "symbol": "BTCUSDC"}) is None
+
+    q_w36 = tmp_path / "retry_w36.jsonl"
+    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_w36))
+    monkeypatch.setattr(order_retry, "LOCK_FILE", str(tmp_path / "retry_w36.lock"))
+    monkeypatch.setattr(order_retry_worker, "_audit_event", lambda *a, **kw: None)
+    monkeypatch.setattr(order_retry_worker.alert, "notify", lambda *a, **kw: None)
+    order_retry_worker._ALERTED_RECONCILIATION_QUARANTINES.clear()
+
+    state_io.atomic_write_jsonl(
+        str(q_w36),
+        [
+            {
+                "id": "rep-false-fill",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 1.0,
+                "created_ts": 1000.0,
+                "revision": 0,
+                "lifecycle": "awaiting_cancel",
+                "replaces_order_id": "555",
+                "replaces_original_qty": 1.0,
+                "place_kwargs": {"client_order_id": "cid-rep-1"},
+            }
+        ],
+    )
+    mkt_cancel_corrupt = SimpleNamespace(
+        order_status=lambda sym, oid, provider_name=None: SimpleNamespace(
+            status="canceled",
+            venue_status="CANCELED",
+            filled_qty=False,
+            terminal=True,
+        ),
+        provider_name_for=lambda _sym: "binance",
+    )
+    stats_w36 = order_retry_worker.process_once(mkt_cancel_corrupt, now=1500.0)
+    assert stats_w36["attempted"] == 0
+    rec_after = order_retry.load_all()[0]
+    assert rec_after["lifecycle"] == "awaiting_cancel"
+    assert rec_after["status_error"] == "cancel_activation_failed"
+
+    # 2. active_intents._build_summary & account_cache_health.inspect_health invalid path fail-closed.
+    ai_sum = active_intents._build_summary(
+        intents=["not_a_dict", {"symbol": "  BTCUSDC ", "side": "long", "requested_qty": 2.0, "requested_price": 50.0}],
+        exposures=["bad_exp", {"symbol": "   ", "qty": 1.5, "cost": 30.0}],
+    )
+    assert ai_sum["pending_notional"]["by_symbol"]["BTCUSDC"]["buy"] == 100.0
+    assert ai_sum["net_exposures"]["by_symbol"]["UNKNOWN"]["qty"] == 1.5
+
+    st_bad_path = health.inspect_health(path=True)
+    assert st_bad_path.ready is False and st_bad_path.reason == "account_cache_health_invalid"
+
+    # 3. external_order_guard string-boolean enforced="false", guard_hierarchy, llm_order_guard & order_guard.
+    assert eog.evaluate_whale_spread_flow("BTCUSDC", "BUY", enforced="false") == (False, "gi_whale_bypassed_or_off")
+    assert eog.resolve_whale_spread_adjustment("BTCUSDC", 0.25, enforced="false") == 0.25
+
+    assert gh.make_intel_cache_key("long", set()) == ("BUY", frozenset())
+    assert gh.make_intel_cache_key(123, set()) == ("", frozenset())
+    assert gh._is_valid_regime_context("corrupt_ctx", "BTCUSDC", "binance") is False
+    assert gh._is_valid_regime_context(True, "BTCUSDC", "binance") is False
+    assert gh.merge_guard_scale(1.0, "ok", "0.5", "   ") == (0.5, "ok")
+    assert gh.merge_guard_scale(1.0, "ok", float("nan"), "whale") == (1.0, "ok")
+
+    margins_w36 = make_test_margins(
+        intelligence_guards_mode="enforce",
+        llm_guard_mode="enforce",
+        high_stake_min_notional_usd=500.0,
+    )
+    ck = gh.make_intel_cache_key("BUY", set())
+    ctx_hs = SimpleNamespace(
+        _intelligence_decisions_by_key={
+            ck: {"gemini_notional": 1000.0, "gemini_decision": ("false", True, "0.5")}
+        }
+    )
+    assert llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="BTCUSDC",
+        side="BUY",
+        price=100.0,
+        qty=10.0,
+        computed_notional=1000.0,
+        regime_context=ctx_hs,
+        valid_context=True,
+        cache_key=ck,
+        margins=margins_w36,
+        bypassed=set(),
+    ) == (False, "high_stake_guard", 0.0)
+
+    # Corrupt cached _intelligence_decision on valid regime_context must not crash unpacking in check_intelligence_guards.
+    ctx_corrupt = SimpleNamespace(
+        is_valid_for=lambda **kw: True,
+        _intelligence_decisions_by_key={ck: "corrupt_non_dict"},
+        _intelligence_decision_key=ck,
+        _intelligence_decision="not_a_3_tuple",
+    )
+    order_guard._update_context_intel_cache(ctx_corrupt, ck, 100.0, 50.0, decision=(True, "ok", 1.0))
+    assert ctx_corrupt._intelligence_decisions_by_key[ck]["decision"] == (True, "ok", 1.0)
+    ctx_corrupt._intelligence_decisions_by_key[ck]["decision"] = ("bad_2_tuple", "oops")
+    assert order_guard.check_intelligence_guards(
+        "binance", "ZZZFAKEUSDC", "BUY", 100.0, qty=0.1, regime_context=ctx_corrupt
+    ) == (True, "ok", 1.0)
+    assert order_guard.check_intelligence_guards(
+        "binance", "ZZZFAKEUSDC", "BUY", 100.0, qty=0.1, regime_context="corrupt_str_ctx"
+    ) == (True, "test_symbol_exempt", 1.0)
+
 
 
 

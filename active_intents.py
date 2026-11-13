@@ -183,9 +183,12 @@ def _build_summary(intents: list[dict], exposures: list[dict]) -> dict:
     notional_by_sym: dict[str, dict[str, float]] = {}
     total_buy = 0.0
     total_sell = 0.0
-    for it in intents:
-        sym = it.get("symbol") or "UNKNOWN"
-        side = (it.get("side") or "").upper()
+    for it in intents or ():
+        if not isinstance(it, dict):
+            continue
+        raw_sym = it.get("symbol")
+        sym = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else "UNKNOWN"
+        side = normalize_side(it.get("side"))
         req_qty = safe_nonneg_float(it.get("requested_qty"), default=0.0) or 0.0
         exec_qty = safe_nonneg_float(it.get("executed_qty"), default=0.0) or 0.0
         unfilled = max(0.0, req_qty - exec_qty)
@@ -206,10 +209,11 @@ def _build_summary(intents: list[dict], exposures: list[dict]) -> dict:
 
     exp_by_sym: dict[str, dict[str, float | None]] = {}
     total_cost = 0.0
-    for exp in exposures:
+    for exp in exposures or ():
         if not isinstance(exp, dict):
             continue
-        sym = exp.get("symbol") or "UNKNOWN"
+        raw_sym = exp.get("symbol")
+        sym = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else "UNKNOWN"
         qty = safe_float(exp.get("qty"), default=0.0)
         cost = safe_nonneg_float(exp.get("cost"), default=None)
         if cost is not None:
@@ -361,10 +365,10 @@ def main() -> int:
     add_store_true_cli_args(parser, "--compact", ("--summary", "Print human-readable text summary."))
     args = parser.parse_args()
     result = build_active_intent_index(args.root)
-    if args.summary:
+    if _parse_bool_flag(args.summary, False):
         print(format_summary(result))
     else:
-        print(encode_json_payload(result, indent=None if args.compact else 2, sort_keys=True))
+        print(encode_json_payload(result, indent=None if _parse_bool_flag(args.compact, False) else 2, sort_keys=True))
     return 1 if result["errors"] else 0
 
 

@@ -636,7 +636,10 @@ def _record_client_order_id(rec: object):
     if not isinstance(rec, dict):
         return None
     place_kw = rec.get("place_kwargs")
-    return place_kw.get("client_order_id") if isinstance(place_kw, dict) else None
+    return clean_order_id(place_kw.get("client_order_id")) if isinstance(place_kw, dict) else None
+
+
+record_client_order_id = _record_client_order_id
 
 
 def _matches_exact_claim(record: dict, claim_snapshot: dict, snapshot_client_id: str) -> bool:
@@ -1394,9 +1397,12 @@ def is_expired(rec, now=None):
     return (now_f - ttl_started) > effective_ttl or (RETRY_MAX_ATTEMPTS > 0 and attempts >= RETRY_MAX_ATTEMPTS)
 
 
-def _opt_nonneg_ts(rec: dict, key: str) -> Optional[float]:
-    val = rec.get(key)
+def opt_nonneg_ts(rec: dict, key: str) -> Optional[float]:
+    val = rec.get(key) if isinstance(rec, dict) else None
     return 0.0 if val is None else safe_nonneg_float(val, default=None)
+
+
+_opt_nonneg_ts = opt_nonneg_ts
 
 
 def _clean_id_set(items) -> set[str]:
