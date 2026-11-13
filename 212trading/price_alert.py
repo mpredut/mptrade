@@ -22,8 +22,8 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from botcore import (  # noqa: E402
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
+    clean_scalar_str,
     ensure_local_module_priority,
     format_price_log,
     log,
@@ -40,7 +40,7 @@ from strategies.state_store import safe_state_token  # noqa: E402
 
 
 def _parse_armed_flag(raw_armed: object, default: bool = True) -> bool:
-    if isinstance(raw_armed, str) and (not raw_armed.strip() or raw_armed.strip().lower() in INVALID_SCALAR_STRINGS):
+    if isinstance(raw_armed, str) and clean_scalar_str(raw_armed) is None:
         return False
     return bool(_parse_bool_flag(raw_armed, default))
 
@@ -68,7 +68,7 @@ def main() -> int:
     # since the secrets moved there; loading only 212trading/.env left the alert mute.
     load_t212_environment(args.env_file)
     # PRICE alerts use the dedicated NTFY_TOPIC_PRICE.
-    topic = str(args.topic or optional_env("NTFY_TOPIC_PRICE") or "").strip()
+    topic = clean_scalar_str(args.topic) or clean_scalar_str(optional_env("NTFY_TOPIC_PRICE")) or ""
     err_msg = (
         "! no ntfy topic (--topic / NTFY_TOPIC_PRICE in .env)"
         if not topic

@@ -18,7 +18,7 @@ import time
 from typing import Any, Callable
 
 from botcore import (
-    INVALID_SCALAR_STRINGS, _parse_bool_flag, are_close, clean_order_id, exact_int, exact_nonneg_int, exact_pos_int,
+    _parse_bool_flag, are_close, clean_order_id, clean_scalar_str, exact_int, exact_nonneg_int, exact_pos_int,
     log, lru_dict_put, normalize_epoch_sec, normalize_side, optional_env,
     required_bool_env, required_env, required_float_env, required_int_env,
     resolve_now_ts, safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
@@ -411,8 +411,7 @@ def sanitize_common_spot_state(
                     for fk, fv in raw_ed.items()
                     if not isinstance(fk, bool)
                     and fk is not None
-                    and (fk_s := str(fk).strip())
-                    and fk_s.lower() not in INVALID_SCALAR_STRINGS
+                    and (fk_s := clean_scalar_str(str(fk))) is not None
                     and (cv := normalize_epoch_sec(fv, default=None)) is not None
                 }
             else:
@@ -520,8 +519,7 @@ class BaseSpotMixin:
     @property
     def _symbol_id(self) -> str:
         for attr in ("pair", "ticker", "coin"):
-            val = getattr(self, attr, None)
-            if isinstance(val, str) and (s := val.strip()) and s.lower() not in INVALID_SCALAR_STRINGS:
+            if (s := clean_scalar_str(getattr(self, attr, None))) is not None:
                 return s
         return ""
 

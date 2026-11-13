@@ -11,8 +11,8 @@ import os
 from collections.abc import Callable
 from dataclasses import fields
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
+    clean_scalar_str,
     normalize_side,
     safe_nonneg_float,
     safe_pos_float,
@@ -145,10 +145,7 @@ def safe_state_token(
     allow_equals: bool = False,
 ) -> str:
     """Sanitize a symbol/ticker/direction token for use in a ``.state_<token>.json`` filename."""
-    if isinstance(val, bool) or not isinstance(val, str):
-        return default
-    raw = val.strip()
-    if not raw or raw.lower() in INVALID_SCALAR_STRINGS:
+    if (raw := clean_scalar_str(val)) is None:
         return default
     s = raw.lower() if _parse_bool_flag(lower, False) else raw
     allowed = "._-=" if _parse_bool_flag(allow_equals, False) else "._-"
@@ -164,18 +161,10 @@ def state_path_for(
 ) -> str:
     """Return ``<dir>/.state_<safe_symbol>.json`` using ``default_dir`` or ``resolve_venue_runtime_dir(venue)`` when ``state_dir`` is blank."""
     safe = safe_state_token(symbol, "unknown")
-    venue_str = (
-        venue.strip()
-        if not isinstance(venue, bool) and isinstance(venue, str) and venue.strip().lower() not in INVALID_SCALAR_STRINGS
-        else ""
-    )
-    eff_default = default_dir or (resolve_venue_runtime_dir(venue_str) if venue_str else "")
-    if isinstance(state_dir, os.PathLike):
-        directory = os.fspath(state_dir) or eff_default
-    elif isinstance(state_dir, str) and state_dir.strip():
-        directory = state_dir.strip()
-    else:
-        directory = eff_default
+    venue_str = clean_scalar_str(venue) or ""
+    eff_default = clean_scalar_str(default_dir) or (resolve_venue_runtime_dir(venue_str) if venue_str else "")
+    raw_dir = os.fspath(state_dir) if isinstance(state_dir, (str, os.PathLike)) else None
+    directory = clean_scalar_str(raw_dir) or eff_default
     return os.path.join(directory, f".state_{safe}.json")
 
 

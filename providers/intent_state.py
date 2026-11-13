@@ -10,11 +10,12 @@ from typing import Any, Callable, Optional
 
 from botcore import (
     FileLock,
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_json_value,
     clean_order_id,
+    clean_scalar_str,
     clean_scale,
+    clean_upper_scalar,
     conf_or_override,
     extract_order_id,
     normalize_side,
@@ -52,8 +53,7 @@ _INTENTS_LOCK_LOCAL = threading.local()
 def _clean_intent_symbol(raw_sym: Any) -> str:
     if raw_sym is None or isinstance(raw_sym, (bool, dict, list, tuple, set, frozenset)):
         return ""
-    s = str(raw_sym).strip()
-    return "" if not s or s.lower() in INVALID_SCALAR_STRINGS else s.upper()
+    return clean_upper_scalar(str(raw_sym)) or ""
 
 
 def _extract_intent_id(record: Any, default: str = "") -> str:
@@ -194,12 +194,16 @@ def _resolve_clamped_intent_notional(
     return None
 
 
+def _intent_raw_order_type(data: dict[str, Any]) -> str:
+    return clean_upper_scalar(data.get("order_type")) or clean_upper_scalar(data.get("type")) or ""
+
+
 def extract_intent_limit_price(data: dict[str, Any], default: Any = None) -> Any:
     """Extract and parse positive passive limit price across aliases and currency strings."""
     if not isinstance(data, dict):
         return default
     keys: tuple[str, ...] = ("limit_price", "target_price", "order_price", "limit_px")
-    if str(data.get("order_type") or data.get("type") or "").strip().upper() == "LIMIT":
+    if _intent_raw_order_type(data) == "LIMIT":
         keys = (*keys, "price")
     for pk in keys:
         if data.get(pk) is not None:
@@ -214,8 +218,7 @@ def extract_intent_order_type(data: dict[str, Any]) -> str:
     """Resolve normalized order execution type ('MARKET' or 'LIMIT') for an intent."""
     if not isinstance(data, dict):
         return "MARKET"
-    raw_type = data.get("order_type") or data.get("type")
-    norm_type = "" if isinstance(raw_type, bool) or raw_type is None else str(raw_type).strip().upper()
+    norm_type = _intent_raw_order_type(data)
     limit_px = extract_intent_limit_price(data, default=None)
     if norm_type == "MARKET":
         return "MARKET"
@@ -336,12 +339,12 @@ def normalize_intent_fields(
     decision = extract_intent_side(intent)
     symbol = _clean_intent_symbol(intent.get("symbol", "") if isinstance(intent, dict) else "")
     raw_venue = intent.get("venue", "binance") if isinstance(intent, dict) else "binance"
-    if isinstance(raw_venue, bool):
-        venue = "__invalid__"
-    elif raw_venue is None or not str(raw_venue).strip():
+    if raw_venue is None or (isinstance(raw_venue, str) and not raw_venue.strip()):
         venue = "binance"
+    elif (clean_v := clean_scalar_str(raw_venue)) is None:
+        venue = "__invalid__"
     else:
-        venue = normalize_venue_name(str(raw_venue)) or str(raw_venue).strip().lower()
+        venue = normalize_venue_name(clean_v) or clean_v.lower()
     return intent_id, decision, symbol, venue
 
 
@@ -384,8 +387,7 @@ def validate_and_build_intent_dict(
             log.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, raw_dec)
         return None
     symbol = _clean_intent_symbol(decision.get("symbol", ""))
-    raw_venue = decision.get("venue", "")
-    venue = "" if isinstance(raw_venue, bool) or raw_venue is None else normalize_venue_name(str(raw_venue))
+    venue = normalize_venue_name(clean_scalar_str(decision.get("venue")) or "")
     if not symbol or not venue:
         if log:
             log.warning("[INTENT GATEWAY] %s %s decision missing symbol/venue (no intent).", source, side)
@@ -409,7 +411,7 @@ def validate_and_build_intent_dict(
         return None
     if callable(resolve_instrument_fn):
         inst = resolve_instrument_fn(symbol, venue)
-        inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
+        inst_sym_u = _clean_intent_symbol(getattr(inst, "symbol", ""))
         if not inst or is_non_fiat_btc_quote_instrument(inst):
             if log:
                 log.warning(
@@ -420,14 +422,8 @@ def validate_and_build_intent_dict(
         if inst_sym_u:
             symbol = inst_sym_u
     intent_id = generate_unique_intent_id(now_ts, side, symbol, existing_intents)
-    raw_urg = decision.get("urgency", "NORMAL")
-    urgency = (
-        "NORMAL"
-        if isinstance(raw_urg, bool) or raw_urg is None or not str(raw_urg).strip()
-        else str(raw_urg).strip().upper()
-    )
-    raw_thesis = decision.get("thesis", "")
-    thesis = "" if isinstance(raw_thesis, bool) or raw_thesis is None else str(raw_thesis).strip()
+    urgency = clean_upper_scalar(decision.get("urgency")) or "NORMAL"
+    thesis = clean_scalar_str(decision.get("thesis")) or ""
     order_type = extract_intent_order_type(decision)
     limit_px = extract_intent_limit_price(decision, default=None) if order_type == "LIMIT" else None
     replace_open = _parse_bool_flag(decision.get("replace_open_orders"), default=False)
@@ -447,11 +443,11 @@ def validate_and_build_intent_dict(
         "thesis": thesis,
         "status": "PENDING",
         "execution_payload": None,
-        "created_by": str(source or "").strip(),
+        "created_by": clean_scalar_str(source) or "",
         "history": [],
     }
-    if max_mode is not None:
-        rec["max_mode"] = str(max_mode)
+    if (mm := clean_scalar_str(max_mode)) is not None:
+        rec["max_mode"] = mm
     if cancel_bot_open:
         rec["cancel_bot_open_orders"] = True
     return rec
@@ -500,7 +496,10 @@ def parse_intent_gateway_config(
 @contextmanager
 def durable_intents_lock(intents_file: str):
     """Reentrant (per thread) cross-process lock serializing read-modify-write of the durable intents file."""
-    key = generation_lock_path(str(resolve_cachedb_filepath(os.fspath(intents_file))))
+    raw_p = clean_scalar_str(os.fspath(intents_file)) if isinstance(intents_file, (str, os.PathLike)) else None
+    if raw_p is None:
+        raise ValueError(f"Invalid durable intents_file: {intents_file!r}")
+    key = generation_lock_path(str(resolve_cachedb_filepath(raw_p)))
     depths = getattr(_INTENTS_LOCK_LOCAL, "depths", None)
     if depths is None:
         depths = _INTENTS_LOCK_LOCAL.depths = {}
@@ -580,6 +579,7 @@ def upsert_durable_intent(
 
 
 __all__ = [
+    "_clean_intent_symbol",
     "_extract_intent_id",
     "_intent_order_ids",
     "_intent_venue_symbol_side_key",

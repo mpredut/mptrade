@@ -21,6 +21,8 @@ from botcore import (
     bind_lazy_module_exports,
     clean_order_id,
     clean_order_id_str,
+    clean_scalar_str,
+    clean_upper_scalar,
     ClosedPriceSeries,
     float_env,
     lru_dict_put,
@@ -132,12 +134,17 @@ _DEFAULT_AUDIT_DIR = os.path.join(
 )
 
 
+def _resolve_audit_dir(directory: Optional[str] = None) -> str:
+    raw_dir = clean_scalar_str(os.fspath(directory)) if isinstance(directory, (str, os.PathLike)) else None
+    return raw_dir or clean_scalar_str(optional_env("EXECUTION_AUDIT_DIR")) or _DEFAULT_AUDIT_DIR
+
+
 class ExecutionAudit:
     """Best-effort JSONL writer shared by Kraken, T212, HL, and Binance."""
 
     def __init__(self, directory: Optional[str] = None,
                  clock: Callable[[], float] = time.time):
-        self.directory = directory or optional_env("EXECUTION_AUDIT_DIR") or _DEFAULT_AUDIT_DIR
+        self.directory = _resolve_audit_dir(directory)
         self._clock = clock
 
     def record(self, event: str, *, intent_id: str, venue: str, symbol: str,
@@ -188,7 +195,11 @@ class AuditedStrategyExecutor:
                  venue: Optional[str] = None):
         self._executor = executor
         self.audit = audit or ExecutionAudit()
-        self.name = venue or str(getattr(executor, "name", executor.__class__.__name__))
+        self.name = (
+            clean_scalar_str(venue)
+            or clean_scalar_str(getattr(executor, "name", None))
+            or executor.__class__.__name__
+        )
         self._intent_by_order = OrderedDict()
         self._last_status = OrderedDict()
         self._lock = threading.Lock()
@@ -458,9 +469,9 @@ def _extract_audit_fill_metrics(
     if not isinstance(rec, dict):
         return "", "", None, None, None, None, None, False
     use_fallback_ref = _parse_bool_flag(fallback_ref_price, False)
-    ev = str(rec.get("event") or "").strip().lower()
-    v_stat = str(rec.get("venue_status") or "").strip().upper()
-    l_stat = str(rec.get("status") or "").strip().lower()
+    ev = (clean_scalar_str(rec.get("event")) or "").lower()
+    v_stat = clean_upper_scalar(rec.get("venue_status")) or ""
+    l_stat = (clean_scalar_str(rec.get("status")) or "").lower()
     term_filled = v_stat in ("FILLED", "CLOSED") or l_stat in ("closed", "filled")
     filled_qty = (
         rec.get("filled_qty")
@@ -535,7 +546,7 @@ def find_order_audit_record(
     target_cid = clean_order_id(client_order_id)
     if not target_oid and not target_cid:
         return None
-    eff_dir = audit_dir or optional_env("EXECUTION_AUDIT_DIR") or _DEFAULT_AUDIT_DIR
+    eff_dir = _resolve_audit_dir(audit_dir)
     if not os.path.isdir(eff_dir):
         return None
     target_sym = canonical_symbol_key(symbol) if symbol and not isinstance(symbol, bool) else ""

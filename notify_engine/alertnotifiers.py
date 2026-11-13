@@ -15,9 +15,9 @@ from typing import Any, Optional
 # Import your modules
 from botcore import (
     FileLock,
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     bool_env,
+    clean_scalar_str,
     exact_pos_int,
     float_env,
     format_notify_price,
@@ -986,12 +986,7 @@ class AlertNotifier:
         px_val = safe_pos_float(raw_price, default=None)
         if px_val is not None:
             price_str = f"Price: ${px_val:.4f}"
-        elif (
-            isinstance(raw_price, str)
-            and raw_price.strip()
-            and raw_price.strip().lower() not in INVALID_SCALAR_STRINGS
-            and safe_float(raw_price, default=None) is None
-        ):
+        elif clean_scalar_str(raw_price) is not None and safe_float(raw_price, default=None) is None:
             price_str = f"Price: {raw_price}"
         else:
             price_str = "Price: N/A"

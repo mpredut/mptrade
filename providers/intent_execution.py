@@ -9,7 +9,9 @@ from botcore import (
     _parse_bool_flag,
     canonical_topic_key,
     clean_order_id,
+    clean_scalar_str,
     clean_scale,
+    clean_upper_scalar,
     extract_order_id,
     extract_order_price,
     extract_order_side,
@@ -48,7 +50,7 @@ from .quantity import _floor_qty_decimals, round_provider_qty
 def resolve_intent_topic_tag(intent: dict[str, Any], venue: str) -> str:
     """Resolve canonical topic bracket tag ('[auto_cryptotrade_executor]' or '[auto_sharetrade_executor]') for an intent."""
     raw_src = intent.get("created_by") if isinstance(intent, dict) else None
-    src_topic = canonical_topic_key("" if raw_src is None or isinstance(raw_src, bool) else str(raw_src).strip())
+    src_topic = canonical_topic_key(clean_scalar_str(raw_src) or "")
     if src_topic in TOPIC_SPECS:
         return TOPIC_SPECS[src_topic].bracket_tag
     return MarketDataProvider.resolve_venue_intent_executor_tag(venue)
@@ -205,7 +207,7 @@ def execute_enforce_intent_order(
             if order_res:
                 break
             refused_state = outcome_ctx.get("state") == "refused" or outcome_ctx.get("category") == "refused_pre_submit"
-            reason_str = str(outcome_ctx.get("reason") or "")
+            reason_str = clean_scalar_str(outcome_ctx.get("reason")) or ""
             if (
                 stale_cache_retries < 3
                 and refused_state
@@ -282,8 +284,8 @@ def execute_enforce_intent_order(
                     if log:
                         log.debug("Notification failed after order execution: %s", notify_exc)
         else:
-            refusal_reason = str(outcome_ctx.get("reason") or "Instrument.place returned None")
-            refusal_cat = str(outcome_ctx.get("category") or "")
+            refusal_reason = clean_scalar_str(outcome_ctx.get("reason")) or "Instrument.place returned None"
+            refusal_cat = clean_scalar_str(outcome_ctx.get("category")) or ""
             if log:
                 log.warning(
                     "[LLM TRADER · ENFORCE] Order placement refused or failed for %s %s: %s",
@@ -398,8 +400,9 @@ def cancel_existing_ai_open_orders(
         if log:
             log.debug("Open order scan failed before replacement: %s", e)
 
-    sym_str = str(getattr(inst, "symbol", "") or "").strip().upper()
-    if sym_str and not hasattr(getattr(inst, "symbol", None), "_mock_name"):
+    raw_inst_sym = getattr(inst, "symbol", None)
+    sym_str = clean_upper_scalar(raw_inst_sym) or ""
+    if sym_str and not hasattr(raw_inst_sym, "_mock_name"):
         try:
             to_discard = MarketDataProvider.discard_superseded_symbol_retry_records(
                 sym_str,
@@ -524,7 +527,7 @@ def resolve_intent_execution_price(
     order_type = extract_intent_order_type(intent)
     limit_px = extract_intent_limit_price(intent, default=None)
     is_urgent_reversal = (
-        str(intent.get("urgency") or "").strip().upper() == "HIGH"
+        (clean_upper_scalar(intent.get("urgency")) or "") == "HIGH"
         or _parse_bool_flag(intent.get("cancel_bot_open_orders"), False)
     )
     if order_type == "LIMIT":

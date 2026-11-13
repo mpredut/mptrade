@@ -9,9 +9,9 @@ import time
 from typing import Any, Callable, Optional, Tuple
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_order_id_str,
+    clean_upper_scalar,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
@@ -171,8 +171,7 @@ def _clean_asset_arg(val: Any) -> Optional[str]:
         return None
     if isinstance(val, float) and not math.isfinite(val):
         return None
-    s = str(val).strip()
-    return None if (not s or s.lower() in INVALID_SCALAR_STRINGS) else s.upper()
+    return clean_upper_scalar(str(val))
 
 
 def resolve_assets(

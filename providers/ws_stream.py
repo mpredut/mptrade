@@ -15,9 +15,10 @@ except ImportError:  # pragma: no cover
     _uvloop = None
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     async_interruptible_sleep,
+    clean_scalar_str,
+    clean_upper_scalar,
     is_worker_thread_alive,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -37,7 +38,7 @@ def mount_connect_retry(
 ) -> bool:
     """Mount an order-safe Retry adapter on ``session`` for https:// and http:// (best-effort)."""
     try:
-        if session is None or isinstance(status_forcelist, (bool, str, bytes)):
+        if session is None or isinstance(status_forcelist, (bool, str, bytes, dict)):
             return False
         att_i = safe_nonneg_int(attempts, default=None)
         read_i = safe_nonneg_int(read, default=None)
@@ -105,14 +106,7 @@ class AsyncReconnectStreamBase(ABC):
         self._start_lock = threading.Lock()
 
     def start(self, name: Optional[str] = None, daemon: bool = True) -> "AsyncReconnectStreamBase":
-        eff_name = (
-            s
-            if not isinstance(name, bool)
-            and isinstance(name, str)
-            and (s := name.strip())
-            and s.lower() not in INVALID_SCALAR_STRINGS
-            else self._default_thread_name
-        )
+        eff_name = clean_scalar_str(name) or self._default_thread_name
         eff_daemon = _parse_bool_flag(daemon, default=True)
         with self._start_lock:
             if self.is_running:
@@ -221,10 +215,11 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
 
     @staticmethod
     def _norm_ws_symbol(symbol: object) -> Optional[str]:
-        if isinstance(symbol, bool) or not isinstance(symbol, str):
+        if (raw := clean_upper_scalar(symbol)) is None or (
+            "/" in raw and any(clean_scalar_str(p) is None for p in raw.split("/"))
+        ):
             return None
-        s = symbol.strip().upper().replace("/", "")
-        return None if not s or s.lower() in INVALID_SCALAR_STRINGS else s
+        return clean_upper_scalar(raw.replace("/", ""))
 
     def __init__(self, symbols: Optional[list] = None):
         super().__init__()
@@ -276,8 +271,9 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
             if norm_s in self._subscribed:
                 _ws_logger.debug("[%s] Already subscribed", norm_s)
                 return False
-            if self._MAX_STREAMS is not None and len(self._subscribed) >= self._MAX_STREAMS:
-                _ws_logger.warning("Max streams (%d) reached, cannot add %s", self._MAX_STREAMS, norm_s)
+            max_streams = safe_pos_int(self._MAX_STREAMS, default=None)
+            if max_streams is not None and len(self._subscribed) >= max_streams:
+                _ws_logger.warning("Max streams (%d) reached, cannot add %s", max_streams, norm_s)
                 return False
             self._subscribed.add(norm_s)
             self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))

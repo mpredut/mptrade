@@ -33,8 +33,8 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
+    clean_scalar_str,
     clone_process_env,
     exact_pos_int,
     fetch_public_json,
@@ -103,21 +103,22 @@ def _load_state() -> dict:
     for bkey in ("alerted_pair", "alerted_tp", "alerted_tp2", "alerted_sl", "alerted_need_price"):
         merged[bkey] = _parse_bool_flag(merged.get(bkey), False)
     raw_pair = merged.get("pair")
-    if (
-        raw_pair is None
-        or isinstance(raw_pair, (bool, dict, list, tuple, set))
-        or not str(raw_pair).strip()
-        or str(raw_pair).strip().lower() in INVALID_SCALAR_STRINGS
-    ):
-        merged["pair"] = None
-    else:
-        merged["pair"] = str(raw_pair).strip()
+    merged["pair"] = (
+        None
+        if raw_pair is None or isinstance(raw_pair, (bool, dict, list, tuple, set, frozenset))
+        else clean_scalar_str(str(raw_pair))
+    )
     alloc = merged.get("allocated")
     if isinstance(alloc, dict):
         raw_asset = alloc.get("asset")
-        if raw_asset and not isinstance(raw_asset, bool) and str(raw_asset).strip():
+        clean_asset = (
+            None
+            if raw_asset is None or isinstance(raw_asset, (bool, dict, list, tuple, set, frozenset))
+            else clean_scalar_str(str(raw_asset))
+        )
+        if clean_asset:
             clean_alloc = dict(alloc)
-            clean_alloc["asset"] = str(raw_asset).strip()
+            clean_alloc["asset"] = clean_asset
             clean_alloc["qty"] = safe_nonneg_float(alloc.get("qty"), 0.0)
             if "ts" in clean_alloc:
                 clean_alloc["ts"] = safe_nonneg_float(alloc.get("ts"), 0.0)

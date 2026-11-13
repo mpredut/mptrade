@@ -6,8 +6,9 @@ import math
 from typing import Any
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     clean_order_id,
+    clean_scalar_str,
+    clean_upper_scalar,
     exact_nonneg_int,
     exact_pos_int,
     extract_order_price,
@@ -76,7 +77,7 @@ def parse_order_execution_report(
     Returns ``None`` when the report is not a fill (e.g. ``NEW`` or ``CANCELED``
     without execution) or when required fields are malformed.
     """
-    if not isinstance(event, dict) or not isinstance(raw_sym := event.get("s"), str) or not (symbol := raw_sym.strip().upper()):
+    if not isinstance(event, dict) or (symbol := clean_upper_scalar(event.get("s"))) is None:
         return None
 
     # Cache only executed orders, matching get_filled_orders. NEW or terminal orders
@@ -149,8 +150,7 @@ def parse_trade_execution_report(
     if (
         not isinstance(event, dict)
         or event.get("x") != "TRADE"
-        or not isinstance(raw_sym := event.get("s"), str)
-        or not (symbol := raw_sym.strip().upper())
+        or (symbol := clean_upper_scalar(event.get("s"))) is None
     ):
         return None
 
@@ -173,7 +173,7 @@ def parse_trade_execution_report(
             num_tid = safe_float(raw_trade_id, default=None)
             if (
                 raw_trade_id.startswith("-")
-                or raw_trade_id.lower() in INVALID_SCALAR_STRINGS
+                or clean_scalar_str(raw_trade_id) is None
                 or (num_tid is not None and (num_tid < 0 or not num_tid.is_integer()))
             ):
                 id_err = "invalid trade ID"

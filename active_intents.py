@@ -13,10 +13,10 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     add_store_true_cli_args,
     clean_order_id,
+    clean_scalar_str,
     coerce_dict_maps,
     normalize_side,
     safe_float,
@@ -71,8 +71,7 @@ def _first(row: dict, *names):
         if isinstance(value, float) and safe_float(value, default=None) is None:
             continue
         if isinstance(value, str):
-            s = value.strip()
-            if not s or s.lower() in INVALID_SCALAR_STRINGS:
+            if clean_scalar_str(value) is None:
                 continue
         return value
     return None

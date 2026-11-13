@@ -17,8 +17,8 @@ import math
 from typing import Callable, Optional, Protocol, runtime_checkable
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     clean_order_id,
+    clean_scalar_str,
     exact_nonneg_int,
     extract_order_id,
     safe_float,
@@ -33,10 +33,8 @@ def _clean_optional_label(raw: object, field_name: str, owner: str, *, upper: bo
         isinstance(raw, float) and not math.isfinite(raw)
     ):
         raise ValueError(f"invalid {field_name} in {owner}: {raw!r}")
-    s = str(raw or "").strip()
-    if not s or s.lower() in INVALID_SCALAR_STRINGS:
-        return ""
-    return s.upper() if upper else s
+    s = clean_scalar_str(str(raw)) if raw is not None else None
+    return (s.upper() if upper else s) if s is not None else ""
 
 
 class OrderNotFound(ProviderError):

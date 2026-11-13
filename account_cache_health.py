@@ -15,8 +15,8 @@ import threading
 from typing import Callable, Optional
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
+    clean_scalar_str,
     exact_pos_int,
     load_dotenv,
     normalize_class_name,
@@ -107,13 +107,23 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
         return None
 
 
+def _resolve_health_path(path: object) -> str:
+    raw = HEALTH_PATH if path is None else path
+    if not isinstance(raw, (str, os.PathLike)) or (target_p := clean_scalar_str(os.fspath(raw))) is None:
+        raise ValueError(f"invalid account cache health path: {path!r}")
+    return (
+        cache_path(CACHE_ACCOUNT_HEALTH_FILENAME)
+        if target_p == _DEFAULT_HEALTH_PATH
+        else str(resolve_cachedb_filepath(target_p))
+    )
+
+
 def enable_writer(*, path: Optional[str] = None, pid: Optional[int] = None, now_ms: Optional[int] = None) -> None:
     """Enable the sole cacheManager writer and invalidate the old generation."""
     global _writer_enabled, _writer_path, _writer_state
     timestamp = resolve_now_ms(now_ms)
     with _writer_lock:
-        target_p = HEALTH_PATH if path is None else os.fspath(path)
-        _writer_path = cache_path(CACHE_ACCOUNT_HEALTH_FILENAME) if target_p == _DEFAULT_HEALTH_PATH else str(resolve_cachedb_filepath(target_p))
+        _writer_path = _resolve_health_path(path)
         writer_pid = exact_pos_int(pid, default=None) or os.getpid()
         process_started_at_ms = _pid_started_at_ms(writer_pid)
         if _PROCESS_IDENTITY_REQUIRED and process_started_at_ms is None:
@@ -160,13 +170,6 @@ def _publish_locked(*, bump_generation: bool = True) -> bool:
     return True
 
 
-def _clean_version_str(value: object) -> str:
-    if not isinstance(value, str):
-        return ""
-    s = value.strip()
-    return "" if (not s or s.lower() in INVALID_SCALAR_STRINGS) else s
-
-
 def _record_cache_version(
     cache_name: str,
     data_version: str,
@@ -175,7 +178,7 @@ def _record_cache_version(
     update_sync: bool = False,
 ) -> bool:
     norm_name = normalize_class_name(cache_name)
-    version = _clean_version_str(data_version)
+    version = clean_scalar_str(data_version) or ""
     fields = _SYNC_FIELDS.get(norm_name) if (norm_name and version) else None
     if fields is None:
         return False
@@ -237,14 +240,7 @@ def inspect_health(
 ) -> CacheHealthStatus:
     """Validate the shared snapshot without trusting mtime or defaults."""
     try:
-        if path is not None and isinstance(path, bool):
-            raise TypeError("invalid health path")
-        target_p = HEALTH_PATH if path is None else os.fspath(path)
-        eff_path = (
-            cache_path(CACHE_ACCOUNT_HEALTH_FILENAME)
-            if target_p == _DEFAULT_HEALTH_PATH
-            else str(resolve_cachedb_filepath(target_p))
-        )
+        eff_path = _resolve_health_path(path)
         state = read_json_dict(eff_path)
         if state.get("schema_version") != SCHEMA_VERSION:
             return CacheHealthStatus(False, "account_cache_schema_mismatch")
@@ -262,8 +258,8 @@ def inspect_health(
         trade_version = state.get("trade_cache_version")
         if not isinstance(order_version, str) or not isinstance(trade_version, str):
             raise ValueError("invalid cache version")
-        order_version = _clean_version_str(order_version)
-        trade_version = _clean_version_str(trade_version)
+        order_version = clean_scalar_str(order_version) or ""
+        trade_version = clean_scalar_str(trade_version) or ""
         initializing = (
             generation < 2 or not order_sync_ms or not trade_sync_ms or not order_version or not trade_version
         )

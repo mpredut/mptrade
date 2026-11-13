@@ -14,9 +14,9 @@ import uuid
 from typing import Any, Callable, Optional, Protocol
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_order_id,
+    clean_scalar_str,
     exact_nonneg_int,
     normalize_side,
     opposite_side,
@@ -54,8 +54,7 @@ def _clean_checkpoint_reason(raw: object, field_name: str) -> Optional[str]:
         isinstance(raw, float) and not math.isfinite(raw)
     ):
         raise ValueError(f"invalid rtrade checkpoint {field_name}")
-    text = str(raw).strip()
-    return None if not text or text.lower() in INVALID_SCALAR_STRINGS else text
+    return clean_scalar_str(str(raw))
 
 
 @dataclass

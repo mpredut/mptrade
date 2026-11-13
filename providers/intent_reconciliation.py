@@ -12,6 +12,8 @@ from botcore import (
     _parse_epoch_or_iso_s,
     _ts_ms_to_s,
     clean_order_id,
+    clean_scalar_str,
+    clean_upper_scalar,
     extract_order_id,
     extract_order_price,
     extract_order_side,
@@ -39,6 +41,7 @@ from .execution_audit import (
     _read_audit_intent_records,
 )
 from .intent_state import (
+    _clean_intent_symbol,
     _extract_intent_id,
     _intent_venue_symbol_side_key,
     _record_intent_state,
@@ -107,7 +110,7 @@ def reconcile_intents_from_execution_audit(
         clean_id = _extract_intent_id(item)
         if not clean_id:
             continue
-        st_up = str(item.get("status") or "").strip().upper()
+        st_up = clean_upper_scalar(item.get("status")) or ""
         if st_up in ("FAILED", "PENDING", "PENDING_EXECUTION", "SUBMIT_UNKNOWN"):
             failed_by_id[clean_id] = item
         elif st_up == "EXECUTED":
@@ -120,7 +123,7 @@ def reconcile_intents_from_execution_audit(
                 and not _parse_bool_flag(exec_pay.get("_ts_backfill_checked"), False)
             )
             if not is_reconciled_term or needs_ts_backfill:
-                cur_v_st = str(exec_pay.get("status") or "").strip().upper()
+                cur_v_st = clean_upper_scalar(exec_pay.get("status")) or ""
                 item_oid = clean_order_id(extract_order_id(exec_pay, default=None))
                 has_fill_metrics = (
                     extract_executed_qty(exec_pay, default=0.0) > 0.0
@@ -270,9 +273,11 @@ def reconcile_intents_from_execution_audit(
         side_u = (
             extract_intent_side(rec)
             or extract_intent_side(intent)
-            or ("" if raw_rec_side is None or isinstance(raw_rec_side, bool) else str(raw_rec_side).strip().upper())
+            or clean_upper_scalar(raw_rec_side)
+            or ""
         )
-        sym_val = rec.get("symbol") or intent.get("symbol")
+        sym_val = _clean_intent_symbol(rec.get("symbol")) or _clean_intent_symbol(intent.get("symbol")) or None
+        clean_rec_oid = clean_order_id(rec.get("order_id"))
 
         if ev == "submit_unknown":
             if st_up == "SUBMIT_UNKNOWN":
@@ -288,9 +293,9 @@ def reconcile_intents_from_execution_audit(
             }
             if orig_q is not None:
                 exec_payload["origQty"] = str(orig_q)
-            if rec.get("client_order_id"):
-                exec_payload["clientOrderId"] = rec.get("client_order_id")
-            if reason_unk := (rec.get("reason") or rec.get("failure_reason")):
+            if cid_unk := clean_order_id(rec.get("client_order_id")):
+                exec_payload["clientOrderId"] = cid_unk
+            if reason_unk := (clean_scalar_str(rec.get("reason")) or clean_scalar_str(rec.get("failure_reason"))):
                 exec_payload["reason"] = reason_unk
             intent["execution_payload"] = exec_payload
             _record_intent_state(
@@ -327,7 +332,7 @@ def reconcile_intents_from_execution_audit(
             exec_qty_s = quote_qty_s = ""
 
         exec_payload = {
-            "orderId": rec.get("order_id"),
+            "orderId": clean_rec_oid,
             "symbol": sym_val,
             "side": side_u,
             "executedQty": exec_qty_s,
@@ -354,7 +359,7 @@ def reconcile_intents_from_execution_audit(
             eff_ts,
             action=action_lbl,
             **({"reason": reason_val} if reason_val is not None else {}),
-            order_id=rec.get("order_id"),
+            order_id=clean_rec_oid,
             payload=exec_payload,
         )
         updated = True
@@ -365,11 +370,12 @@ def reconcile_intents_from_execution_audit(
         ev = str(rec.get("event") or "")
         v_stat, l_stat, filled_qty, f_q, raw_cost, cost_f, f_px, is_fill = _extract_audit_fill_metrics(rec)
         rec_ts = safe_pos_float(rec.get("ts"), default=None)
-        cur_st = str(exec_pay.get("status") or "").strip().upper()
+        cur_st = clean_upper_scalar(exec_pay.get("status")) or ""
+        clean_rec_oid = clean_order_id(rec.get("order_id"))
         if is_fill:
             norm_st, is_term = _classify_audit_fill_state(ev, v_stat, l_stat)
-            if rec.get("order_id") is not None:
-                exec_pay["orderId"] = rec.get("order_id")
+            if clean_rec_oid is not None:
+                exec_pay["orderId"] = clean_rec_oid
             exec_pay["status"] = norm_st
             if f_q is not None and f_q > 0:
                 exec_pay["executedQty"] = str(filled_qty)
@@ -387,8 +393,8 @@ def reconcile_intents_from_execution_audit(
             if is_term:
                 exec_pay["reconciled_terminal"] = True
         elif ev in ("submit_accepted", "order_recovered"):
-            if rec.get("order_id") is not None:
-                exec_pay["orderId"] = rec.get("order_id")
+            if clean_rec_oid is not None:
+                exec_pay["orderId"] = clean_rec_oid
             exec_pay["status"] = v_stat if v_stat in ("NEW", "OPEN", "RESTING", "PENDING", "WORKING") else "NEW"
             if rec_ts is not None:
                 exec_pay["accepted_at"] = rec_ts
@@ -438,9 +444,10 @@ def _resolve_intent_execution_details(
     verified_open_venues: Optional[set[str]] = None,
 ) -> dict[str, Any]:
     """Resolve fill price, filled quantity, execution status, and slippage (bps) for an intent."""
-    venue = normalize_venue_name(i.get("venue")) or i.get("venue")
-    symbol = str(i.get("symbol") or "").strip().upper()
-    side = extract_intent_side(i) or str(i.get("decision") or "").strip().upper()
+    raw_i_venue = clean_scalar_str(i.get("venue"))
+    venue = (normalize_venue_name(raw_i_venue) or raw_i_venue) if raw_i_venue else None
+    symbol = _clean_intent_symbol(i.get("symbol"))
+    side = extract_intent_side(i) or clean_upper_scalar(i.get("decision")) or ""
     order_type = extract_intent_order_type(i)
     exec_pay = i.get("execution_payload") if isinstance(i.get("execution_payload"), dict) else {}
     hist = i.get("history") if isinstance(i.get("history"), list) else []
@@ -473,7 +480,7 @@ def _resolve_intent_execution_details(
         last_hist.get("order_id") or last_hist.get("payload"), default=None
     )
 
-    raw_intent_st = str(i.get("status") or "").strip().upper()
+    raw_intent_st = clean_upper_scalar(i.get("status")) or ""
     is_eq_intent = is_equity_venue_or_suffix(symbol, venue)
     matched_open = None
     expected_cids: Optional[set[str]] = None
@@ -487,10 +494,10 @@ def _resolve_intent_execution_details(
         for oo in open_orders:
             if not isinstance(oo, dict):
                 continue
-            oo_venue = normalize_venue_name(oo.get("venue"))
+            oo_venue = normalize_venue_name(clean_scalar_str(oo.get("venue")) or "")
             if oo_venue and venue and oo_venue != venue:
                 continue
-            oo_sym = str(oo.get("symbol") or "").strip().upper()
+            oo_sym = _clean_intent_symbol(oo.get("symbol"))
             oo_is_eq = is_equity_venue_or_suffix(oo_sym, oo_venue)
             if (oo_venue or oo_sym) and (venue or symbol) and oo_is_eq != is_eq_intent:
                 continue
@@ -529,9 +536,9 @@ def _resolve_intent_execution_details(
         if fill_px is None:
             fill_px = safe_pos_float(matched_open.get("price"), default=None)
 
-    venue_st = str(
-        exec_pay.get("status")
-        or ("RESTING" if str(exec_pay.get("msg") or "").strip().lower() == "resting" else "")
+    venue_st = (
+        clean_upper_scalar(exec_pay.get("status"))
+        or ("RESTING" if (clean_scalar_str(exec_pay.get("msg")) or "").lower() == "resting" else "")
         or (
             "OPEN"
             if (
@@ -542,9 +549,9 @@ def _resolve_intent_execution_details(
             )
             else ""
         )
-    ).strip().upper()
+    )
     if matched_open is not None and not venue_st:
-        venue_st = str(matched_open.get("status") or "OPEN").strip().upper()
+        venue_st = clean_upper_scalar(matched_open.get("status")) or "OPEN"
     if (
         matched_open is None
         and raw_intent_st == "EXECUTED"
@@ -740,16 +747,24 @@ def _resolve_intent_execution_details(
                 fill_ts_val = _lh_s
     fail_reason: Optional[str] = None
     if exec_status not in ("FILLED", "PARTIALLY_FILLED", "OPEN_RESTING", "ACCEPTED", "SHADOW_SIMULATED"):
-        raw_fail_reason = (
-            last_hist.get("reason")
-            or last_hist.get("guard_reason")
-            or last_hist.get("error")
-            or i.get("guard_reason")
-            or i.get("error")
-            or (exec_pay.get("reason") or exec_pay.get("error") if isinstance(exec_pay, dict) else None)
+        raw_fail_reason = next(
+            (
+                s
+                for cand in (
+                    last_hist.get("reason"),
+                    last_hist.get("guard_reason"),
+                    last_hist.get("error"),
+                    i.get("guard_reason"),
+                    i.get("error"),
+                    exec_pay.get("reason") if isinstance(exec_pay, dict) else None,
+                    exec_pay.get("error") if isinstance(exec_pay, dict) else None,
+                )
+                if (s := clean_scalar_str(cand)) is not None
+            ),
+            None,
         )
         if raw_fail_reason:
-            fail_reason = " ".join(str(raw_fail_reason).split())[:200] or None
+            fail_reason = " ".join(raw_fail_reason.split())[:200] or None
     filled_notional_usd: Optional[float] = None
     if exec_status == "PARTIALLY_FILLED":
         raw_filled_notional = exec_quote_notional or (

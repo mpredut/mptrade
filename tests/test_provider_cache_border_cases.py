@@ -196,6 +196,7 @@ from providers import (
     broker_history as bh_mod,
     intent_execution as ie_mod,
     intent_reconciliation as ir_mod,
+    intent_state as is_mod,
     market_api as mapi_mod,
     order_id_context as oic,
     ssot_bridge as sb_mod,
@@ -7831,6 +7832,170 @@ def test_wave44_providers_base_bridge_replay_poller_metadata_ws_and_market_api_b
     assert facade.infer_symbol_venue(123, fallback_venue="kraken") == "kraken"
     with pytest.raises(ValueError, match="Invalid symbol"):
         facade.get_open_orders("BUY", "null", strict=True)
+
+
+def test_wave45_ws_stream_intent_state_execution_reconciliation_and_scalar_hygiene_border_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 1. providers/ws_stream: dict status_forcelist rejection, slash-separated "null" symbol rejection, and _MAX_STREAMS coercion.
+    assert ws_mod.mount_connect_retry(
+        SimpleNamespace(mount=lambda *_a: None), status_forcelist={500: "err"}
+    ) is False
+    assert ws_mod.PublicPriceStreamBase._norm_ws_symbol("null/USDC") is None
+    assert ws_mod.PublicPriceStreamBase._norm_ws_symbol("BTC/null") is None
+    assert ws_mod.PublicPriceStreamBase._norm_ws_symbol("/") is None
+    assert ws_mod.PublicPriceStreamBase._norm_ws_symbol("BTC/USDC") == "BTCUSDC"
+    k_stream = KrakenPriceStream(["HYPEUSD"])
+    k_stream._MAX_STREAMS = "1"  # type: ignore[assignment]
+    assert k_stream.add_symbol("BTCUSD") is False
+
+    # 2. providers/intent_state: fail-closed "null" venue in normalize_intent_fields, order_type fallback, validate_and_build_intent_dict, and durable_intents_lock.
+    assert normalize_intent_fields({"intent_id": "i1", "symbol": "BTCUSDC", "decision": "BUY"}, 100.0)[3] == "binance"
+    assert normalize_intent_fields({"intent_id": "i1", "symbol": "BTCUSDC", "decision": "BUY", "venue": ""}, 100.0)[3] == "binance"
+    assert normalize_intent_fields({"intent_id": "i1", "symbol": "BTCUSDC", "decision": "BUY", "venue": "null"}, 100.0)[3] == "__invalid__"
+    assert is_mod.extract_intent_order_type({"order_type": "null", "type": "LIMIT"}) == "LIMIT"
+    assert is_mod.extract_intent_limit_price({"order_type": "null", "type": "LIMIT", "price": "$125.5"}) == pytest.approx(125.5)
+
+    built = validate_and_build_intent_dict(
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSD",
+            "venue": "kraken",
+            "confidence": 0.9,
+            "suggested_notional_usd": 50.0,
+            "urgency": "null",
+            "thesis": "null",
+        },
+        source="null",
+        min_confidence=0.5,
+        min_notional_usd=10.0,
+        max_notional_usd=100.0,
+        existing_intents=[],
+        now_ts=1700000000.0,
+        resolve_instrument_fn=lambda _s, _v: SimpleNamespace(symbol="null", provider_name="kraken", quote="USD"),
+        max_mode="null",
+    )
+    assert built is not None
+    assert built["symbol"] == "BTCUSD"
+    assert built["urgency"] == "NORMAL"
+    assert built["thesis"] == ""
+    assert built["created_by"] == ""
+    assert "max_mode" not in built
+    assert is_mod.save_durable_intents_state("null", [], log=None) is False
+    with pytest.raises(ValueError, match="Invalid durable intents_file"):
+        with is_mod.durable_intents_lock("null"):
+            pass
+
+    # 3. providers/intent_execution: topic tag fallback, outcome_ctx "null" reason/category sanitization, and cancel_existing_ai_open_orders "null" symbol guard.
+    assert ie_mod.resolve_intent_topic_tag({"created_by": "null"}, "kraken") == "[auto_cryptotrade_executor]"
+
+    def _refuse_null_place(**kw: Any) -> None:
+        kw["_outcome_context"].update({"state": "refused", "reason": "null", "category": "null"})
+        return None
+
+    fake_inst = SimpleNamespace(symbol="BTCUSD", provider_name="kraken", place=_refuse_null_place)
+    failed_intent: dict[str, Any] = {"intent_id": "i_ref", "history": []}
+    ie_mod.execute_enforce_intent_order(
+        fake_inst,
+        failed_intent,
+        intent_id="i_ref",
+        decision="BUY",
+        target_qty=1.0,
+        price=100.0,
+        effective_usd=100.0,
+        guard_allowed=True,
+        guard_reason="",
+        thesis="t",
+        trade_tag="[auto_cryptotrade_executor]",
+        now_ts=1700000000.0,
+        bypass_guards=False,
+    )
+    assert failed_intent["status"] == "FAILED"
+    assert failed_intent["history"][-1]["reason"] == "Instrument.place returned None"
+    assert "category" not in failed_intent["history"][-1]
+
+    discard_calls: list[str] = []
+    monkeypatch.setattr(
+        MarketDataProvider,
+        "discard_superseded_symbol_retry_records",
+        classmethod(lambda _cls, sym, *_a, **_kw: discard_calls.append(sym) or []),
+    )
+    null_sym_inst = SimpleNamespace(symbol="null", open_orders=lambda: [], cancel_order=lambda _oid: True)
+    assert ie_mod.cancel_existing_ai_open_orders(null_sym_inst, "BUY") == []
+    assert discard_calls == []
+
+    # 4. providers/execution_audit & providers/intent_reconciliation: "null" directory/venue/status/order_id/reason handling.
+    monkeypatch.delenv("EXECUTION_AUDIT_DIR", raising=False)
+    assert ExecutionAudit(directory="null").directory.endswith("execution_audit")
+    assert AuditedStrategyExecutor(SimpleNamespace(name="null"), venue="null").name == "SimpleNamespace"
+    assert _extract_audit_fill_metrics({"event": "null", "venue_status": "null", "status": "null"})[:2] == ("", "")
+
+    audit_dir = tmp_path / "audit_w45"
+    audit_dir.mkdir()
+    audit_file = audit_dir / "execution_audit_2023-11-14.jsonl"
+    atomic_write_text(
+        str(audit_file),
+        '{"cost":100.0,"event":"order_status","filled_qty":1.0,"intent_id":"i_exec","order_id":"null","price":100.0,"status":"closed","symbol":"BTCUSD","ts":1700000050.0,"venue":"kraken","venue_status":"FILLED"}\n',
+    )
+    exec_intent: dict[str, Any] = {
+        "intent_id": "i_exec",
+        "timestamp": 1700000000.0,
+        "decision": "BUY",
+        "symbol": "BTCUSD",
+        "venue": "kraken",
+        "order_type": "LIMIT",
+        "status": "EXECUTED",
+        "execution_payload": {"orderId": "9001", "status": "OPEN"},
+        "history": [],
+    }
+    assert reconcile_intents_from_execution_audit([exec_intent], str(audit_dir)) is True
+    assert exec_intent["execution_payload"]["orderId"] == "9001"
+    assert exec_intent["execution_payload"]["status"] == "FILLED"
+
+    resting_det = ir_mod._resolve_intent_execution_details(
+        {
+            "intent_id": "i_rest",
+            "timestamp": 1700000000.0,
+            "decision": "BUY",
+            "symbol": "BTCUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 100.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "9002", "status": "null"},
+            "history": [],
+        },
+        1700000010.0,
+        is_mod.extract_intent_notional,
+    )
+    assert resting_det["exec_status"] == "OPEN_RESTING"
+    assert resting_det["venue_status"] == "OPEN"
+
+    fail_det = ir_mod._resolve_intent_execution_details(
+        {
+            "intent_id": "i_fail",
+            "timestamp": 1700000000.0,
+            "decision": "BUY",
+            "symbol": "BTCUSD",
+            "venue": "null",
+            "status": "FAILED",
+            "history": [{"reason": "null", "guard_reason": "GO1 cooldown"}],
+        },
+        1700000010.0,
+        is_mod.extract_intent_notional,
+    )
+    assert fail_det["venue"] is None
+    assert fail_det["reason"] == "GO1 cooldown"
+
+    # 5. strategies/state_store, account_cache_health, and binance_api/bapi_ws_normalize scalar hygiene.
+    assert strat_ss_mod.state_path_for("BTCUSDC", state_dir="null", default_dir="/tmp/spot") == "/tmp/spot/.state_BTCUSDC.json"
+    assert strat_ss_mod.state_path_for("BTCUSDC", state_dir=Path("null"), default_dir="null", venue="null") == ".state_BTCUSDC.json"
+    assert health.inspect_health(path="null").reason == "account_cache_health_invalid"
+    with pytest.raises(ValueError, match="invalid account cache health path"):
+        health.enable_writer(path="null")
+    assert ws_norm.parse_order_execution_report({"s": "null", "x": "TRADE", "X": "FILLED"}) is None
+    assert ws_norm.parse_trade_execution_report({"s": "null", "x": "TRADE", "S": "BUY"}) is None
+
 
 
 

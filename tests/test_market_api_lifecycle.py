@@ -1315,6 +1315,13 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 and node.value.startswith("cache_ohlc_24h_")
             ):
                 ssot_violations.append(f"{rel_s}:{lineno}: hardcoded cache_ohlc_24h_ filename prefix")
+            elif rel_s != "botcore.py" and (
+                (isinstance(node, ast.Name) and node.id == "INVALID_SCALAR_STRINGS")
+                or (isinstance(node, ast.Attribute) and node.attr == "INVALID_SCALAR_STRINGS")
+            ):
+                ssot_violations.append(
+                    f"{rel_s}:{lineno}: direct INVALID_SCALAR_STRINGS use (call clean_scalar_str / clean_upper_scalar)"
+                )
 
     for extra_dir in ("offline", "verify_tools"):
         for p in sorted((root / extra_dir).rglob("*.py")):
