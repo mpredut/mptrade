@@ -102,6 +102,10 @@ def _format_lifo_rem_avg_tag(
 def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     """Format a normalized venue cycle anchor entry for Section 3C of the AI prompt."""
     extra_parts: List[str] = []
+    dir_norm = str(cyc.get("direction") or "").strip().upper()
+    dir_sign = -1.0 if dir_norm == "SHORT" else 1.0
+    if dir_norm == "SHORT":
+        extra_parts.append("direction=SHORT")
     lb_px_f = safe_float(cyc.get("last_buy_price"), None)
     avg_c_f = safe_float(cyc.get("avg_cost_px"), None)
     spot_px_f = safe_float(cyc.get("_spot_px"), None)
@@ -151,10 +155,10 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
         if spot_px_f is not None and spot_px_f > 0.0:
             est_spot = spot_px_f
         else:
-            est_spot = avg_c_f * (1.0 + dd_f / 100.0)
+            est_spot = avg_c_f * (1.0 + dir_sign * dd_f / 100.0)
             if avg_c_f >= 100.0 and abs(est_spot - round(est_spot, 2)) <= avg_c_f * 0.00005:
                 est_spot = round(est_spot, 2)
-        lb_pnl = ((est_spot - lb_px_f) / lb_px_f) * 100.0
+        lb_pnl = dir_sign * ((est_spot - lb_px_f) / lb_px_f) * 100.0
         if (
             isinstance(open_lots_cyc := cyc.get("_open_lots"), list)
             and len(open_lots_cyc) > 0

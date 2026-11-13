@@ -96,6 +96,7 @@ from intelligence.sentiment.collectors.portfolio_collector import (
     harvest_bot_runtime_states,
     harvest_recent_orders_and_enrich_positions,
     harvest_tradable_positions_and_orders,
+    harvest_venue_cycles,
     load_symbol_best_recent_fills,
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
@@ -114,6 +115,9 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     update_microstructure_cycle_deltas,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
+    _populate_cycle_fallback_recent_order,
+    _sync_cycle_wallet_qty_and_avg,
+    apply_cycle_fallback_to_recent_fills,
     enrich_positions_with_orders_and_cycles,
     extract_symbol_recent_fills,
     parse_venue_cycle_state,
@@ -10255,6 +10259,80 @@ def test_kinematic_velocity_acceleration_and_impulse_wakeup(tmp_path, monkeypatc
     # Immediate repeat within 150s cooldown -> skipped
     assert gtc.maybe_trigger_kinematic_ai_wakeup(now=mid_ts + 30.0) is None
     assert len(spawned_calls) == 1
+
+
+def test_short_venue_cycle_pnl_symmetry_and_shared_fallback_recent_fills(tmp_path):
+    """Verify SHORT cycle signed PnL, REDUCE classification, prompt formatting, and SSOT cycle-fallback synthesis."""
+    ws_dir = tmp_path / "ws_short"
+    hl_dir = ws_dir / "hyperliquid"
+    c_dir = ws_dir / "cachedb"
+    hl_dir.mkdir(parents=True, exist_ok=True)
+    c_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Active SHORT cycle at avg=100, spot=90 -> +10% unrealized profit (not -10% long drawdown),
+    #    and above-entry cover (last_close_price=102, realized_net=-15) -> last_exit_kind="REDUCE".
+    (hl_dir / ".state_HYPE_SHORT.json").write_text(
+        json.dumps(
+            {
+                "qty": 2.0,
+                "cost": 200.0,
+                "entry_price": 102.0,
+                "last_open_price": 98.0,
+                "last_close_price": 103.5,
+                "dca_buys": 1,
+                "realized_net": -15.0,
+                "entry_ts": 1_700_000_000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _krk_c, hl_cycles, _t212_c = harvest_venue_cycles(
+        str(ws_dir),
+        {"HYPEUSDC": {"price": 90.0}},
+        {},
+    )
+    short_cyc = hl_cycles["HYPEUSDC"]
+    assert short_cyc["direction"] == "SHORT"
+    assert short_cyc["avg_cost_px"] == pytest.approx(100.0)
+    assert short_cyc["last_buy_price"] == pytest.approx(98.0)
+    assert short_cyc["pnl_vs_avg_pct"] == pytest.approx(10.0)
+    assert short_cyc["dd_pct"] == pytest.approx(10.0)
+    assert short_cyc["last_exit_kind"] == "REDUCE"
+
+    fmt_short = _format_venue_cycle_line("hyperliquid", "HYPEUSDC", short_cyc)
+    assert "direction=SHORT" in fmt_short
+    assert "pnl_vs_avg=+10.00%" in fmt_short
+    assert "pnl_vs_last_buy=+8.16%" in fmt_short
+
+    # Wallet sync preserves SHORT sign when price rises above avg (110 vs 100 -> -10% drawdown).
+    _sync_cycle_wallet_qty_and_avg(short_cyc, qty=2.0, avg_px=100.0, spot_px=110.0, avg_dec=6)
+    assert short_cyc["pnl_vs_avg_pct"] == pytest.approx(-10.0)
+
+    # 2. Shared apply_cycle_fallback_to_recent_fills matches both _populate_cycle_fallback_recent_order and load_symbol_best_recent_fills.
+    t212_cyc = {
+        "qty": 5.0,
+        "avg_cost_px": 210.0,
+        "entry_price": 210.0,
+        "last_buy_price": 210.0,
+        "last_sell_price": 225.0,
+        "dca_buys": 0,
+        "_entry_ts_ms": 1_700_000_000_000,
+        "_last_sell_ts_ms": 1_700_003_600_000,
+    }
+    ro_map: dict = {}
+    v_ro: dict = {}
+    ro_eval = _populate_cycle_fallback_recent_order("t212", "NVDA_US_EQ", t212_cyc, True, None, ro_map, v_ro, {})
+    ro_direct = apply_cycle_fallback_to_recent_fills("t212", t212_cyc, True, None, enrich_all_venues=True)
+    assert ro_eval == ro_direct
+    assert ro_eval is not None and ro_eval["active_avg_buy_px"] == pytest.approx(210.0)
+    assert ro_eval["last_buy"]["qty"] == pytest.approx(5.0)
+    assert ro_eval["last_sell"]["price"] == pytest.approx(225.0)
+    best_hl = load_symbol_best_recent_fills(str(c_dir), "HYPEUSDC", ["HYPEUSDC", "HYPE"])
+    assert best_hl is not None
+    assert best_hl["venue"] == "hyperliquid"
+    assert best_hl["active_avg_buy_px"] == pytest.approx(100.0)
+    assert best_hl["last_buy"]["price"] == pytest.approx(98.0)
+
 
 
 

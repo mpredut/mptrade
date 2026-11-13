@@ -94,7 +94,8 @@ def _sync_cycle_wallet_qty_and_avg(
         cyc.update({"qty": 0.0, "cost_usd": 0.0, "avg_cost_px": None, "dd_pct": None, "pnl_vs_avg_pct": None})
         return
     avg_r = round(avg_px, avg_dec) if avg_px and avg_px > 0 else None
-    dd_v = round(((spot_px - avg_r) / avg_r) * 100.0, 2) if (spot_px > 0 and avg_r and avg_r > 0) else None
+    dir_sign = -1.0 if str(cyc.get("direction") or "").strip().upper() == "SHORT" else 1.0
+    dd_v = (round(dir_sign * ((spot_px - avg_r) / avg_r) * 100.0, 2) + 0.0) if (spot_px > 0 and avg_r and avg_r > 0) else None
     cyc.update({
         "qty": round(qty, 6),
         "cost_usd": round(qty * avg_r, 2) if avg_r else 0.0,
@@ -103,6 +104,70 @@ def _sync_cycle_wallet_qty_and_avg(
         "pnl_vs_avg_pct": dd_v,
         **(extra_fields or {}),
     })
+
+
+def apply_cycle_fallback_to_recent_fills(
+    venue: Optional[str],
+    cyc: Dict[str, Any],
+    cyc_has_open_qty: bool,
+    fills: Optional[Dict[str, Any]],
+    *,
+    can_create: bool = True,
+    enrich_all_venues: bool = False,
+    cyc_lb_ts: Optional[int] = None,
+    cyc_ls_ts: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Synthesize or enrich a recent-fills dict from `.state_*.json` cycle anchors."""
+    is_eq_v = is_equity_venue(venue)
+    cyc_avg = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"), default=0.0) or 0.0
+    cyc_lb = first_pos_float(cyc.get("last_buy_price"), cyc.get("entry_price"))
+    cyc_ls = safe_pos_float(cyc.get("last_sell_price"), default=None)
+    eff_ls_ts = cyc_ls_ts if cyc_ls_ts is not None else normalize_timestamp_ms(cyc.get("_last_sell_ts_ms"), default=None)
+    eff_lb_ts = cyc_lb_ts if cyc_lb_ts is not None else normalize_timestamp_ms(cyc.get("_entry_ts_ms"), default=None)
+    created_ro = False
+    if (
+        not isinstance(fills, dict)
+        and can_create
+        and (cyc_lb is not None or cyc_ls is not None or cyc_avg > 0)
+    ):
+        fills = {
+            "venue": venue,
+            "last_action_side": "BUY" if cyc_has_open_qty else ("SELL" if cyc_ls is not None else "BUY"),
+            "last_action_actor": "BOT",
+            "last_action_actor_tag": "BOT",
+            "last_buy": None,
+            "last_sell": None,
+            "active_avg_buy_px": None,
+            "recent_buys": [],
+        }
+        created_ro = True
+    if isinstance(fills, dict):
+        if created_ro and venue:
+            fills.setdefault("venue", venue)
+        if cyc_avg > 0 and cyc_has_open_qty and (
+            is_eq_v or created_ro or (enrich_all_venues and fills.get("active_avg_buy_px") is None)
+        ):
+            if (
+                is_eq_v
+                and not created_ro
+                and fills.get("tactical_avg_buy_px") is None
+                and (prev_act_avg := safe_pos_float(fills.get("active_avg_buy_px"), default=None)) is not None
+                and abs(prev_act_avg - cyc_avg) / max(cyc_avg, 1e-9) >= 0.002
+            ):
+                fills["tactical_avg_buy_px"] = round(prev_act_avg, 6)
+            fills["active_avg_buy_px"] = round(cyc_avg, 6)
+        if (is_eq_v or created_ro or enrich_all_venues) and fills.get("last_buy") is None and cyc_lb is not None:
+            lb_d: Dict[str, Any] = {"price": cyc_lb, "actor": "BOT", "actor_tag": "BOT"}
+            if eff_lb_ts is not None:
+                lb_d["ts_ms"] = eff_lb_ts
+            if enrich_all_venues or not fills.get("recent_buys"):
+                lb_d["qty"] = cyc.get("qty") if not cyc.get("dca_buys") and cyc_has_open_qty else None
+            fills["last_buy"] = lb_d
+        elif isinstance(fills.get("last_buy"), dict) and fills["last_buy"].get("ts_ms") is None and eff_lb_ts is not None:
+            fills["last_buy"]["ts_ms"] = eff_lb_ts
+        if fills.get("last_sell") is None and cyc_ls is not None:
+            fills["last_sell"] = {"price": cyc_ls, "ts_ms": eff_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
+    return fills
 
 
 def _populate_cycle_fallback_recent_order(
@@ -119,12 +184,6 @@ def _populate_cycle_fallback_recent_order(
     if not uses_cycle_state_files(p_venue):
         return ro
     is_eq_v = is_equity_venue(p_venue)
-    cyc_avg = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"), default=0.0) or 0.0
-    cyc_lb = first_pos_float(cyc.get("last_buy_price"), cyc.get("entry_price"))
-    cyc_ls = safe_pos_float(cyc.get("last_sell_price"), default=None)
-    cyc_ls_ts = cyc_sell_ts_map.get((p_venue, p_sym)) or normalize_timestamp_ms(cyc.get("_last_sell_ts_ms"), default=None)
-    cyc_lb_ts = cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or normalize_timestamp_ms(cyc.get("_entry_ts_ms"), default=None)
-    created_ro = False
     existing_ro = recent_orders.get(p_sym) if isinstance(recent_orders, dict) else None
     existing_venue = normalize_venue_name(existing_ro.get("venue")) if isinstance(existing_ro, dict) else ""
     can_create_ro = (
@@ -132,51 +191,22 @@ def _populate_cycle_fallback_recent_order(
         or p_sym not in recent_orders
         or (existing_venue and existing_venue != p_venue and f"{p_venue}:{p_sym}" not in recent_orders)
     )
-    if (
-        not isinstance(ro, dict)
-        and can_create_ro
-        and (cyc_lb is not None or cyc_ls is not None or cyc_avg > 0)
-    ):
-        ro = {
-            "venue": p_venue,
-            "last_action_side": "BUY" if cyc_has_open_qty else ("SELL" if cyc_ls is not None else "BUY"),
-            "last_action_actor": "BOT",
-            "last_action_actor_tag": "BOT",
-            "last_buy": None,
-            "last_sell": None,
-            "active_avg_buy_px": None,
-            "recent_buys": [],
-        }
+    was_missing = not isinstance(ro, dict)
+    ro = apply_cycle_fallback_to_recent_fills(
+        p_venue,
+        cyc,
+        cyc_has_open_qty,
+        ro,
+        can_create=bool(can_create_ro),
+        cyc_lb_ts=cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)),
+        cyc_ls_ts=cyc_sell_ts_map.get((p_venue, p_sym)),
+    )
+    if was_missing and isinstance(ro, dict):
         v_ro_map[p_sym] = ro
         if p_sym not in recent_orders or is_eq_v:
             recent_orders[p_sym] = ro
         else:
             recent_orders[f"{p_venue}:{p_sym}"] = ro
-        created_ro = True
-    if isinstance(ro, dict):
-        if created_ro:
-            ro.setdefault("venue", p_venue)
-        if (is_eq_v or created_ro) and cyc_avg > 0 and cyc_has_open_qty:
-            if (
-                is_eq_v
-                and not created_ro
-                and ro.get("tactical_avg_buy_px") is None
-                and (prev_act_avg := safe_pos_float(ro.get("active_avg_buy_px"), default=None)) is not None
-                and abs(prev_act_avg - cyc_avg) / max(cyc_avg, 1e-9) >= 0.002
-            ):
-                ro["tactical_avg_buy_px"] = round(prev_act_avg, 6)
-            ro["active_avg_buy_px"] = round(cyc_avg, 6)
-        if (is_eq_v or created_ro) and ro.get("last_buy") is None and cyc_lb is not None:
-            lb_d: Dict[str, Any] = {"price": cyc_lb, "actor": "BOT", "actor_tag": "BOT"}
-            if cyc_lb_ts is not None:
-                lb_d["ts_ms"] = cyc_lb_ts
-            if not ro.get("recent_buys"):
-                lb_d["qty"] = cyc.get("qty") if not cyc.get("dca_buys") and cyc_has_open_qty else None
-            ro["last_buy"] = lb_d
-        elif isinstance(ro.get("last_buy"), dict) and ro["last_buy"].get("ts_ms") is None and cyc_lb_ts is not None:
-            ro["last_buy"]["ts_ms"] = cyc_lb_ts
-        if ro.get("last_sell") is None and cyc_ls is not None:
-            ro["last_sell"] = {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
     return ro
 
 
@@ -531,14 +561,19 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
         avg_decimals: int = 6,
         fallback_prices: Optional[Dict[str, float]] = None,
         include_meta: bool = False,
+        direction: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         prices_and_trends = prices_and_trends or {}
         st_data = st_data if isinstance(st_data, dict) else {}
+        raw_dir = direction if direction is not None else st_data.get("direction")
+        dir_norm = str(raw_dir).strip().upper() if isinstance(raw_dir, str) else ""
+        dir_sign = -1.0 if dir_norm == "SHORT" else 1.0
         qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
         raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
         cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
         last_buy_px = st_data.get("last_buy_price") if st_data.get("last_buy_price") is not None else st_data.get("last_open_price")
+        last_sell_px = st_data.get("last_sell_price") if st_data.get("last_sell_price") is not None else st_data.get("last_close_price")
         explicit_avg = first_pos_float(
             st_data.get("avg_cost"),
             st_data.get("avg_cost_px"),
@@ -565,25 +600,31 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
         else:
             avg_cost = None
         px_f = resolve_symbol_price(symbol, prices_and_trends, fallback_prices)
-        dd_pct = pct_delta(px_f, avg_cost) if avg_cost and px_f > 0 else None
+        dd_pct = (
+            (round(dir_sign * ((px_f - avg_cost) / avg_cost) * 100.0, 2) + 0.0)
+            if avg_cost and px_f > 0
+            else None
+        )
         cyc_entry: Dict[str, Any] = {
             "qty": round(qty, 6),
             "cost_usd": round(cost, 2),
             "avg_cost_px": avg_cost,
             "entry_price": round_opt_px(st_data.get("entry_price"), avg_decimals),
             "last_buy_price": round_opt_px(last_buy_px, avg_decimals),
-            "last_sell_price": round_opt_px(st_data.get("last_sell_price"), avg_decimals),
+            "last_sell_price": round_opt_px(last_sell_px, avg_decimals),
             "last_exit_kind": st_data.get("last_exit_kind"),
             "dca_buys": st_data.get("dca_buys"),
             "dd_pct": dd_pct,
             "pnl_vs_avg_pct": dd_pct,
         }
+        if dir_norm in ("LONG", "SHORT"):
+            cyc_entry["direction"] = dir_norm
         pos_peak = round_opt_px(
             first_pos_float(st_data.get("pos_peak"), st_data.get("trail_peak")),
             avg_decimals,
         )
         if pos_peak is not None and qty > 1e-12:
-            if px_f > 0 and pos_peak > 0:
+            if px_f > 0 and pos_peak > 0 and dir_sign > 0:
                 eff_peak = max(pos_peak, px_f)
                 cyc_entry["pos_peak"] = round_opt_px(eff_peak, avg_decimals)
                 cyc_entry["dd_from_peak_pct"] = pct_delta(px_f, eff_peak)
@@ -597,14 +638,14 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
             cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
         entry_px_f = safe_pos_float(cyc_entry.get("entry_price"), default=0.0) or 0.0
         ref_entry_px = first_pos_float(avg_cost, entry_px_f, cyc_entry.get("last_buy_price"), default=0.0) or 0.0
-        if realized_pnl < 0.0 and entry_px_f > ref_entry_px:
+        if realized_pnl < 0.0 and entry_px_f > 0.0 and dir_sign * (entry_px_f - ref_entry_px) > 0.0:
             ref_entry_px = entry_px_f
         last_sell_px_f = safe_pos_float(cyc_entry.get("last_sell_price"), default=0.0) or 0.0
         if (
             str(cyc_entry.get("last_exit_kind") or "").strip().upper() in ("", "TP")
             and ref_entry_px > 0.0
             and last_sell_px_f > 0.0
-            and last_sell_px_f < ref_entry_px * 0.995
+            and dir_sign * (ref_entry_px - last_sell_px_f) > ref_entry_px * 0.005
             and realized_pnl < 0.0
         ):
             cyc_entry["last_exit_kind"] = "REDUCE"
@@ -1748,6 +1789,7 @@ def parse_venue_cycle_state(
     avg_decimals: int = 6,
     fallback_prices: Optional[Dict[str, float]] = None,
     include_meta: bool = False,
+    direction: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Normalize a venue cycle ``.state_*.json`` dict (Kraken, Hyperliquid, Trading212) into a uniform schema."""
     return _VENUE_CYCLE_STATE_EVALUATOR.evaluate(
@@ -1757,6 +1799,7 @@ def parse_venue_cycle_state(
         avg_decimals=avg_decimals,
         fallback_prices=fallback_prices,
         include_meta=include_meta,
+        direction=direction,
     )
 
 
@@ -1835,6 +1878,7 @@ __all__ = [
     "VenueCycleStateEvaluator",
     "_populate_cycle_fallback_recent_order",
     "_sync_cycle_wallet_qty_and_avg",
+    "apply_cycle_fallback_to_recent_fills",
     "enrich_positions_with_orders_and_cycles",
     "extract_symbol_recent_fills",
     "parse_venue_cycle_state",

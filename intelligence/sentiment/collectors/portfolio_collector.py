@@ -62,6 +62,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     _first_variant_dict,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
+    apply_cycle_fallback_to_recent_fills,
     clip_open_lots_to_held_qty,
     enrich_positions_with_orders_and_cycles,
     extract_symbol_recent_fills,
@@ -638,11 +639,16 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
         eff_fb = fallback_prices or {}
         _rj = _resolve_read_json_cached(read_json_fn)
 
-        def _record_cyc(target: Dict[str, Any], st_path: str, sym: str, dec: int, *, is_eq: bool = False) -> None:
+        def _record_cyc(
+            target: Dict[str, Any], st_path: str, sym: str, dec: int,
+            *, is_eq: bool = False, direction: Optional[str] = None,
+        ) -> None:
             if isinstance((st_data := _rj(st_path)), dict):
                 lookup_sym = ensure_equity_suffix(sym, is_equity=is_eq)
                 parsed = parse_venue_cycle_state(
-                    st_data, lookup_sym, eff_pt, avg_decimals=dec, fallback_prices=eff_fb, include_meta=True
+                    st_data, lookup_sym, eff_pt,
+                    avg_decimals=dec, fallback_prices=eff_fb,
+                    include_meta=True, direction=direction,
                 )
                 prev = target.get(sym)
                 if isinstance(prev, dict):
@@ -663,12 +669,14 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
             raw_tok = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
             if raw_tok.startswith("DN_") or raw_tok == "DN":
                 continue
+            hl_dir: Optional[str] = None
             for sfx in ("_LONG", "_SHORT"):
                 if raw_tok.endswith(sfx):
                     raw_tok = raw_tok[: -len(sfx)]
+                    hl_dir = sfx[1:]
                     break
             if raw_tok.isalnum():
-                _record_cyc(hyperliquid_cycles, st_path, ensure_quote_suffix(raw_tok, "USDC"), 6)
+                _record_cyc(hyperliquid_cycles, st_path, ensure_quote_suffix(raw_tok, "USDC"), 6, direction=hl_dir)
 
         all_t212_cycles: Dict[str, Any] = {}
         for st_path, ticker in _iter_t212_state_files(eff_workspace):
@@ -1278,62 +1286,14 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                     if matched_cyc is not None:
                         break
                 if isinstance(matched_cyc, dict):
-                    cyc_lb = first_pos_float(matched_cyc.get("last_buy_price"), matched_cyc.get("entry_price"))
-                    cyc_ls = safe_pos_float(matched_cyc.get("last_sell_price"), default=None)
-                    cyc_avg = first_pos_float(matched_cyc.get("avg_cost_px"), matched_cyc.get("entry_price"))
                     cyc_qty = safe_nonneg_float(matched_cyc.get("qty"), default=0.0) or 0.0
-                    cyc_ls_ts = matched_cyc.get("_last_sell_ts_ms")
-                    cyc_lb_ts = matched_cyc.get("_entry_ts_ms")
-                    if fills is None and (cyc_lb is not None or cyc_ls is not None or (cyc_avg is not None and cyc_avg > 0)):
-                        lb_init: Optional[Dict[str, Any]] = None
-                        if cyc_lb is not None:
-                            lb_init = {
-                                "price": cyc_lb,
-                                "qty": matched_cyc.get("qty") if not matched_cyc.get("dca_buys") and cyc_qty > 1e-8 else None,
-                                "actor": "BOT",
-                                "actor_tag": "BOT",
-                            }
-                            if cyc_lb_ts is not None:
-                                lb_init["ts_ms"] = cyc_lb_ts
-                        fills = {
-                            "venue": matched_cyc_venue,
-                            "last_action_side": "BUY" if cyc_qty > 1e-8 else ("SELL" if cyc_ls is not None else "BUY"),
-                            "last_action_actor": "BOT",
-                            "last_action_actor_tag": "BOT",
-                            "active_avg_buy_px": round(cyc_avg, 6) if (cyc_avg and cyc_qty > 1e-8) else None,
-                            "last_buy": lb_init,
-                            "last_sell": (
-                                {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
-                                if cyc_ls is not None
-                                else None
-                            ),
-                            "recent_buys": [],
-                        }
-                    elif isinstance(fills, dict):
-                        if is_equity_venue(matched_cyc_venue) and cyc_avg is not None and cyc_avg > 0 and cyc_qty > 1e-8:
-                            if (
-                                fills.get("tactical_avg_buy_px") is None
-                                and (prev_act_avg := safe_pos_float(fills.get("active_avg_buy_px"), default=None)) is not None
-                                and abs(prev_act_avg - cyc_avg) / max(cyc_avg, 1e-9) >= 0.002
-                            ):
-                                fills["tactical_avg_buy_px"] = round(prev_act_avg, 6)
-                            fills["active_avg_buy_px"] = round(cyc_avg, 6)
-                        elif fills.get("active_avg_buy_px") is None and cyc_avg is not None and cyc_avg > 0 and cyc_qty > 1e-8:
-                            fills["active_avg_buy_px"] = round(cyc_avg, 6)
-                        if fills.get("last_buy") is None and cyc_lb is not None:
-                            lb_fb: Dict[str, Any] = {
-                                "price": cyc_lb,
-                                "qty": matched_cyc.get("qty") if not matched_cyc.get("dca_buys") and cyc_qty > 1e-8 else None,
-                                "actor": "BOT",
-                                "actor_tag": "BOT",
-                            }
-                            if cyc_lb_ts is not None:
-                                lb_fb["ts_ms"] = cyc_lb_ts
-                            fills["last_buy"] = lb_fb
-                        elif isinstance(fills.get("last_buy"), dict) and fills["last_buy"].get("ts_ms") is None and cyc_lb_ts is not None:
-                            fills["last_buy"]["ts_ms"] = cyc_lb_ts
-                        if fills.get("last_sell") is None and cyc_ls is not None:
-                            fills["last_sell"] = {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
+                    fills = apply_cycle_fallback_to_recent_fills(
+                        matched_cyc_venue,
+                        matched_cyc,
+                        cyc_qty > 1e-8,
+                        fills,
+                        enrich_all_venues=True,
+                    )
         if isinstance(fills, dict) and isinstance(open_lots_raw := fills.get("open_lots"), list) and open_lots_raw:
             held_cur_f = -1.0
             if cachedb_dir and best_venue:

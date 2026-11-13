@@ -154,11 +154,19 @@ def test_live_trailing_rejects_corrupt_state_but_paper_can_reset(tmp_path):
     assert TrailingCore(enabled=False, **common).load() == {}
 
 
-def test_hyperliquid_live_engines_declare_fail_closed_reads():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for relative in ("hyperliquid/strategy.py",):
-        text = open(os.path.join(root, relative), encoding="utf-8").read()
-        assert "fail_closed=not self.dry_run" in text
+def test_hyperliquid_live_engines_declare_fail_closed_reads(tmp_path, monkeypatch):
+    hl_strat = load_venue_modules("hyperliquid", "strategy")
+    state_file = tmp_path / ".state_HYPE_long.json"
+    state_file.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(hl_strat, "state_path_for", lambda _c, _d: str(state_file))
+
+    assert issubclass(hl_strat.Strategy, BaseSpotMixin)
+    with pytest.raises(StatePersistenceError, match="Hyperliquid"):
+        hl_strat.Strategy(None, "HYPE", hl_strat.StratParams(direction="long"), dry_run=False)
+
+    paper = hl_strat.Strategy(None, "HYPE", hl_strat.StratParams(direction="long"), dry_run=True)
+    assert paper._store().fail_closed is False
+    assert paper.s["qty"] == 0.0
 
 
 def test_strategies_core_modules_dag_and_venue_purity():

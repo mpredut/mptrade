@@ -3,6 +3,7 @@ import importlib
 import json
 import os
 import sys
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
@@ -1573,4 +1574,103 @@ def test_hyperliquid_post_only_alo_and_passive_step_back_retry(monkeypatch):
     assert spot_calls[0][3] == 25.0
     assert spot_calls[1][4].get("tif") == "Alo"
     assert spot_calls[1][3] < 25.0
+
+
+def test_hyperliquid_strategy_partial_fill_reconcile_and_shared_loop(tmp_path, monkeypatch):
+    """Verify live partial-fill TP close price/size reconciliation and shared BaseSpotMixin loop/reload/heartbeat."""
+    state_path = tmp_path / ".state_HYPE_long.json"
+    monkeypatch.setattr(_hl_strat_mod, "state_path_for", lambda _c, _d: str(state_path))
+    monkeypatch.setattr(_hl_strat_mod, "notify", lambda **_kw: None)
+
+    cancels = []
+    places = []
+    open_orders_payload = [{"oid": 901, "sz": "6.0", "origSz": "10.0", "limitPx": "25.0"}]
+    pos_state = [6.0, 20.0]
+
+    fake_cli = SimpleNamespace(
+        exchange=None,
+        sz_decimals=lambda _coin: 2,
+        position_strict=lambda _coin: (pos_state[0], pos_state[1]),
+        open_orders_strict=lambda _coin: list(open_orders_payload),
+        cancel=lambda coin, oid: cancels.append((coin, oid)) or True,
+        place_limit=lambda coin, is_buy, sz, px, **kw: places.append((coin, is_buy, sz, px, kw)) or (True, 999, "ok"),
+    )
+
+    params = _hl_strat_mod.StratParams(
+        direction="long",
+        takeprofit_pct=25.0,
+        enable_takeprofit=True,
+        dca_drop_pct=10.0,
+        fee_pct=0.0,
+    )
+    strat = _hl_strat_mod.Strategy(
+        client=fake_cli,
+        coin="HYPE",
+        params=params,
+        dry_run=False,
+        initial_state={
+            "qty": 10.0,
+            "cost": 200.0,
+            "spent": 200.0,
+            "entry_price": 20.0,
+            "last_open_price": 20.0,
+            "orders": [{"oid": "901", "role": "close", "side": "sell", "sz": 10.0, "px": 25.0, "kind": "TP", "ts": 1000.0}],
+        },
+    )
+    # Spot price is 24.5, below the resting 25.0 limit TP that partially filled 4.0 units.
+    assert strat.reconcile(24.5) is True
+    # Must credit resting TP limit price (25.0 -> +20.0 gross on 4 units), NOT spot price (24.5 -> +18.0).
+    assert strat.s["realized_gross"] == pytest.approx(20.0)
+    assert strat.s["qty"] == pytest.approx(6.0)
+    assert len(strat.s["orders"]) == 1
+    assert strat.s["orders"][0]["oid"] == "901"
+    assert strat.s["orders"][0]["sz"] == pytest.approx(6.0)
+
+    # Subsequent step() must NOT cancel/replace the partially filled resting TP order.
+    strat.step(24.5)
+    assert cancels == []
+    assert places == []
+
+    # Partial fill of a resting DCA open order scales remaining sz and amount proportionally.
+    strat.s["orders"].append(
+        {"oid": "902", "role": "open", "side": "buy", "sz": 10.0, "px": 18.0, "amount": 180.0, "kind": "DCA", "ts": 1_700_000_000.0}
+    )
+    strat._now = lambda: 1_700_000_010.0
+    pos_state[:] = [10.0, 19.2]
+    open_orders_payload[:] = [
+        {"oid": 901, "sz": "6.0"},
+        {"oid": 902, "sz": "6.0"},
+    ]
+    assert strat.reconcile(19.0) is True
+    dca_ord = next(o for o in strat.s["orders"] if o["oid"] == "902")
+    assert dca_ord["sz"] == pytest.approx(6.0)
+    assert dca_ord["amount"] == pytest.approx(108.0)
+
+    # Shared BaseSpotMixin loop emits HL-bot heartbeat and reloads externally modified state file.
+    hb_calls = []
+    monkeypatch.setattr(
+        "strategies.base_spot_mixin.touch_module_heartbeat",
+        lambda name, **kw: hb_calls.append((name, kw)),
+    )
+    stop_ev = threading.Event()
+    paper_strat = _hl_strat_mod.Strategy(
+        client=None,
+        coin="HYPE",
+        params=_hl_strat_mod.StratParams(direction="long", check_minutes=0.02),
+        dry_run=True,
+    )
+    paper_strat._save()
+    ext_state = dict(paper_strat.s, wins=7)
+    state_path.write_text(json.dumps(ext_state), encoding="utf-8")
+    os.utime(state_path, (paper_strat._state_file_mtime + 5.0, paper_strat._state_file_mtime + 5.0))
+
+    def _one_tick_price(_cli, _coin):
+        stop_ev.set()
+        return 25.0
+
+    monkeypatch.setattr(_hl_strat_mod, "get_price", _one_tick_price)
+    paper_strat.run(stop=stop_ev)
+    assert any(name == "HL-bot" for name, _kw in hb_calls)
+    assert paper_strat.s["wins"] == 7
+
 

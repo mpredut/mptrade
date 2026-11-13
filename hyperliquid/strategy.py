@@ -21,7 +21,7 @@ from __future__ import annotations
 import inspect
 import os
 import sys
-import time
+import time  # noqa: F401 -- resolved via BaseSpotMixin._mod_global("time")
 from dataclasses import dataclass
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,7 +53,6 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "common", "hl_client", "market_data", "signals")
 
 from common import load_hl_default_env as _hl_default_env, notify
-from state_io import load_json_state, save_json_state
 from strategies.base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, sanitize_common_spot_state
 from strategies.state_store import safe_state_token, state_path_for as _shared_state_path_for
 from hl_client import HLClient
@@ -328,23 +327,6 @@ class Strategy(BaseSpotMixin):
             except Exception:
                 pass
 
-    # -- persistence -----------------------------------------------------------
-    def _load(self) -> dict:
-        st = load_json_state(
-            self.state_file, default_factory=dict, fail_closed=not self.dry_run,
-            label="Hyperliquid strategy",
-        )
-        merged = _sanitize_state(st)
-        if st:
-            log(f"  [STRAT] state loaded (cycle {merged.get('cycle')}, qty {merged.get('qty')})")
-        return merged
-
-    def _save(self) -> None:
-        try:
-            save_json_state(self.state_file, self.s, indent=2)
-        except OSError as e:
-            log(f"  ! [STRAT] cannot save: {e}")
-
     # -- placement -------------------------------------------------------------
     def _place(self, role: str, sz: float, px: float, kind: str, amount: float = 0.0) -> None:
         sz_f = safe_pos_float(sz, default=None)
@@ -447,12 +429,12 @@ class Strategy(BaseSpotMixin):
         qty_now = abs(szi)
         orders_fn = getattr(self.client, "open_orders_strict", None) or self.client.open_orders
         orders_ok = True
+        active_by_oid: dict[str, dict] = {}
         try:
-            active = {
-                clean_id
-                for o in (orders_fn(self.coin) or [])
-                if isinstance(o, dict) and (clean_id := clean_order_id(o.get("oid"))) is not None
-            }
+            for o in (orders_fn(self.coin) or []):
+                if isinstance(o, dict) and (clean_id := clean_order_id(o.get("oid"))) is not None:
+                    active_by_oid[clean_id] = o
+            active = set(active_by_oid)
         except Exception as e:
             orders_ok = False
             log(f"  [STRAT] open_orders unavailable ({e}); preserving tracked order state")
@@ -498,6 +480,9 @@ class Strategy(BaseSpotMixin):
             filled_close = next(
                 (o for o in self.s["orders"] if o.get("role") == "close" and clean_order_id(o.get("oid")) not in active),
                 None,
+            ) or next(
+                (o for o in self.s["orders"] if o.get("role") == "close"),
+                None,
             )
             filled_close_px = (
                 safe_pos_float(filled_close.get("px"), default=None)
@@ -517,12 +502,22 @@ class Strategy(BaseSpotMixin):
 
         for o in list(self.s["orders"]):
             if not _is_live_order_oid(o.get("oid")): continue
-            if clean_order_id(o.get("oid")) not in active:
+            oid_key = clean_order_id(o.get("oid"))
+            if oid_key not in active:
                 self._remove(o)
-            elif orders_ok and self._open_is_stale(o, price):
-                log(f"  [STRAT] open {o.get('oid')} unfilled, the price ran away -- cancelling and re-placing")
-                if self.client.cancel(self.coin, o["oid"]) is not False:
-                    self._remove(o)
+            else:
+                live_o = active_by_oid.get(oid_key) if oid_key is not None else None
+                rem_sz = safe_pos_float(live_o.get("sz"), default=None) if isinstance(live_o, dict) else None
+                cur_sz = safe_pos_float(o.get("sz"), default=None)
+                if rem_sz is not None and cur_sz is not None and rem_sz < cur_sz - 1e-9:
+                    cur_amt = safe_pos_float(o.get("amount"), default=None)
+                    if o.get("role") == "open" and cur_amt is not None:
+                        o["amount"] = round(cur_amt * (rem_sz / cur_sz), 2)
+                    o["sz"] = round(rem_sz, self.sz_dec)
+                if orders_ok and self._open_is_stale(o, price):
+                    log(f"  [STRAT] open {o.get('oid')} unfilled, the price ran away -- cancelling and re-placing")
+                    if self.client.cancel(self.coin, o["oid"]) is not False:
+                        self._remove(o)
         return True
 
     def _open_is_stale(self, order: dict, price: float, elapsed_min: float | None = None) -> bool:
@@ -719,38 +714,31 @@ class Strategy(BaseSpotMixin):
             self._place("open", self._qty_for(self.p.dca_amount, px), px, "DCA", self.p.dca_amount)
 
     # -- loop ------------------------------------------------------------------
-    def run(self) -> None:
-        mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
+    def run(self, stop: object = None) -> None:
+        mode, exec_banner = self._resolve_run_mode_and_banner(real_banner="[REAL]")
         if not self.dry_run and self.client is not None and self.client.exchange:
             self.client.set_leverage(self.coin, self.leverage)
         fee_hl = getattr(self.p, "fee_pct", HL_FEE_PCT)
         log("  === HYPERLIQUID STRATEGY STARTED ===")
-        log(f"      coin       : {self.coin} perp  DIRECTION={self.p.direction.upper()} leverage {self.leverage}x  {'[PAPER]' if self.dry_run else '[REAL]'}")
+        log(f"      coin       : {self.coin} perp  DIRECTION={self.p.direction.upper()} leverage {self.leverage}x  {exec_banner}")
         log(f"      mode       : {mode}")
         log(f"      entry      : {self.p.entry_amount} {self.ccy} @ market{'-' if self.sign>0 else '+'}{self.p.entry_discount_pct}%")
         log(f"      DCA        : {self.p.dca_amount} {self.ccy} at {self.p.dca_drop_pct}% against (max {self.p.max_dca_buys})")
         log(f"      take-profit: {self.p.takeprofit_pct}% in favor" if self.p.enable_takeprofit else "      TP: off")
         log(f"      BUDGET CAP : {self.p.max_budget} {self.ccy} / cycle  |  fee HL ~{fee_hl}%/leg")
-        sleep_sec = max(1.0, safe_pos_float(self.p.check_minutes, default=1.0) * 60.0)
-        try:
-            while True:
-                try:
-                    price = get_price(self.client, self.coin)
-                    if price is None or self.reconcile(price) is False:
-                        if price is None:
-                            log("  [STRAT] price unavailable")
-                        time.sleep(sleep_sec)
-                        continue
-                    self._step_and_save(price)
-                    avg = self._avg()
-                    pos = f"qty={self.s['qty']:.6f} avg={avg:.4f}" if avg else "qty=0 (waiting for an entry)"
-                    log(f"  [STRAT] price={price:.4f} [{self.p.direction}]  {pos}  "
-                        f"NET={self.s['realized_net']:+.2f} (gross {self.s['realized_gross']:+.2f}, fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}")
-                except KeyboardInterrupt:
-                    raise
-                except Exception as e:  # noqa: BLE001
-                    log(f"  ! [STRAT] cycle failed ({e.__class__.__name__}: {e}) -- retrying on next check")
-                    self._save()
-                time.sleep(sleep_sec)
-        except KeyboardInterrupt:
-            log("  [STRAT] stopped manually."); self._save()
+
+        def _log_status(price: float) -> None:
+            avg = self._avg()
+            pos = f"qty={self.s['qty']:.6f} avg={avg:.4f}" if avg else "qty=0 (waiting for an entry)"
+            log(
+                f"  [STRAT] price={price:.4f} [{self.p.direction}]  {pos}  "
+                f"NET={self.s['realized_net']:+.2f} (gross {self.s['realized_gross']:+.2f}, "
+                f"fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}"
+            )
+
+        self._run_strategy_loop(
+            price_fn=lambda: get_price(self.client, self.coin),
+            status_log_fn=_log_status,
+            stop=stop,
+            reload_external=True,
+        )
