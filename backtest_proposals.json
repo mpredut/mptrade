@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-11-13T00:37:56+00:00",
+    "ts": "2026-11-13T01:14:00+00:00",
     "full_key": "BINANCE_BTC.mt.lost",
     "section": "BINANCE_BTC",
     "key": "mt.lost",
@@ -8,9 +8,9 @@
     "current_on_dev": 2.6281,
     "winner_value": 2.3,
     "margin_vs_current": {
-      "half1": 83.56,
+      "half1": 84.42,
       "half2": 18.08
     },
-    "dev_commit": "aaec6349"
+    "dev_commit": "d1a947df"
   }
 ]
