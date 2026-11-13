@@ -218,6 +218,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_cross_venue_arb_metrics,
     enrich_cross_venue_trends,
     enrich_microstructure_cvd,
+    extract_bbo_and_mid,
     reconcile_sibling_flow_and_liq_regimes,
     sync_sibling_symbol_telemetry,
     update_microstructure_cycle_deltas,
@@ -9170,3 +9171,103 @@ def test_triggerevent_directional_builds_entry_buy_for_bull_and_iter183_s2():
     )
     assert bull_ev.action == TriggerAction.ENTRY and bull_ev.side == TriggerSide.BUY and bull_ev.reason == "up_break"
     assert bear_ev.action == TriggerAction.EXIT and bear_ev.side == TriggerSide.SELL and bear_ev.reason == "down_break"
+
+
+def test_load_audit_terminal_orders_reconstructs_executor_order_status_and_rejects_unfilled_cancels(tmp_path):
+    """_load_audit_terminal_orders reconstructs AuditedStrategyExecutor order_status fills with realized VWAP and ignores 0-fill cancels."""
+    audit_path = tmp_path / "execution_audit_2026-11-13.jsonl"
+    records = [
+        # 1) AuditedStrategyExecutor submit_accepted + open order_status (ignored) + closed order_status (backfills side/cid/ts, uses cost/qty VWAP)
+        {
+            "event": "submit_accepted",
+            "venue": "t212",
+            "symbol": "NVDA_US_EQ",
+            "order_id": "t212-101",
+            "client_order_id": "RTR_nvda_1",
+            "side": "buy",
+            "qty": 2.0,
+            "price": 140.0,
+            "ts": 1700001000.0,
+        },
+        {
+            "event": "order_status",
+            "venue": "t212",
+            "symbol": "NVDA_US_EQ",
+            "order_id": "t212-101",
+            "status": "open",
+            "venue_status": "PARTIALLY_FILLED",
+            "filled_qty": 0.5,
+            "cost": 69.5,
+            "ts": 1700001005.0,
+        },
+        {
+            "event": "order_status",
+            "venue": "t212",
+            "symbol": "NVDA_US_EQ",
+            "order_id": "t212-101",
+            "status": "closed",
+            "venue_status": "FILLED",
+            "filled_qty": 2.0,
+            "cost": 277.0,
+            "ts": 1700001010.0,
+        },
+        # 2) Zero-fill canceled order_terminal with qty=3.0 and filled_qty=None must NOT synthesize a phantom fill
+        {
+            "event": "order_terminal",
+            "venue": "t212",
+            "symbol": "AAPL_US_EQ",
+            "order_id": "t212-202",
+            "client_order_id": "RTR_aapl_0",
+            "side": "BUY",
+            "status": "canceled",
+            "venue_status": "CANCELED",
+            "qty": 3.0,
+            "price": 220.0,
+            "ts": 1700002000.0,
+        },
+        # 3) Partially filled then canceled order_status records realized filled_qty (0.4), not requested qty (1.5)
+        {
+            "event": "submit_accepted",
+            "venue": "t212",
+            "symbol": "MSFT_US_EQ",
+            "order_id": "t212-303",
+            "client_order_id": "RTR_msft_p",
+            "side": "sell",
+            "qty": 1.5,
+            "price": 410.0,
+            "ts": 1700003000.0,
+        },
+        {
+            "event": "order_status",
+            "venue": "t212",
+            "symbol": "MSFT_US_EQ",
+            "order_id": "t212-303",
+            "status": "canceled",
+            "venue_status": "CANCELED",
+            "filled_qty": 0.4,
+            "cost": 164.8,
+            "ts": 1700003020.0,
+        },
+    ]
+    audit_path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    by_sym = _load_audit_terminal_orders(str(tmp_path), "t212")
+    assert "AAPL_US_EQ" not in by_sym
+    assert len(by_sym["NVDA_US_EQ"]) == 1
+    nvda = by_sym["NVDA_US_EQ"][0]
+    assert nvda["side"] == "BUY"
+    assert nvda["clientOrderId"] == "RTR_nvda_1"
+    assert nvda["qty"] == pytest.approx(2.0)
+    assert nvda["price"] == pytest.approx(138.5)
+    assert nvda["timestamp"] == 1700001000000
+
+    assert len(by_sym["MSFT_US_EQ"]) == 1
+    msft = by_sym["MSFT_US_EQ"][0]
+    assert msft["side"] == "SELL"
+    assert msft["qty"] == pytest.approx(0.4)
+    assert msft["price"] == pytest.approx(412.0)
+
+    # Shared BBO/mid SSOT between microstructure_evaluator and macro_telemetry_evaluator
+    micro = {"BTCUSDC": {"best_bid": 70000.0, "best_ask": 70020.0}}
+    assert extract_bbo_and_mid(micro["BTCUSDC"]) == (70000.0, 70020.0, 70010.0)
+    assert build_cycle_fallback_prices(micro, {})["BTCUSDC"] == pytest.approx(70010.0)

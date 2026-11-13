@@ -151,13 +151,16 @@ def _compute_synthetic_spot_cvd_15m(
     return round(max(-max_spot_cvd, min(max_spot_cvd, base_ob_cvd + vel_adj)), 0)
 
 
-def _extract_bbo_and_mid(minfo: Dict[str, Any]) -> tuple[float, float, float]:
+def extract_bbo_and_mid(minfo: Dict[str, Any]) -> tuple[float, float, float]:
     b_bid = safe_pos_float(minfo.get("best_bid"), default=0.0) or 0.0
     b_ask = safe_pos_float(minfo.get("best_ask"), default=0.0) or 0.0
     ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=0.0) or 0.0
     if b_bid > 0.0 and b_ask >= b_bid and ob_mid <= 0.0:
         ob_mid = (b_bid + b_ask) / 2.0
     return b_bid, b_ask, ob_mid
+
+
+_extract_bbo_and_mid = extract_bbo_and_mid
 
 
 def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, Any]] = None) -> None:

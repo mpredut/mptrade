@@ -125,6 +125,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
         _trades_monitor_initialized = True
         return
 
+    accepted_owner_map: dict | None = None
     for symbol in symbols_to_check:
         try:
             orders = apitrades.get_trade_orders(None, symbol, maxage_trade_s)
@@ -157,10 +158,11 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 oid = extract_order_id(t, default="") or _extract_trade_uid(t)
                 all_trades_by_order.setdefault(oid, []).append(t)
 
-            try:
-                accepted_owner_map = order_retry.get_accepted_order_owner_map()
-            except Exception:
-                accepted_owner_map = {}
+            if accepted_owner_map is None:
+                try:
+                    accepted_owner_map = order_retry.get_accepted_order_owner_map()
+                except Exception:
+                    accepted_owner_map = {}
 
             for oid, group in trades_by_order.items():
                 first = group[0]
@@ -737,11 +739,11 @@ def _is_pending_exit_active(
             found = prov.order_by_client_id(symbol, p_cid)
             if found and extract_order_id(found, default=None):
                 st = str(found.get("status") or "").upper()
-                if st in ("FILLED", "RESOLVED"):
+                if st in ("FILLED", "CLOSED", "RESOLVED"):
                     print(f"[{symbol}] Pending Stop-Loss {p_cid} resolved filled on venue.")
                     _resolve_exit(symbol, inst)
                     return True
-                if st in ("NEW", "OPEN", "PARTIALLY_FILLED"):
+                if st in ("NEW", "OPEN", "PARTIALLY_FILLED", "PENDING", "WORKING", "RESTING"):
                     active_sell_exists = True
                 elif st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
                     print(f"[{symbol}] Pending exit {p_cid} terminal on venue ({st}) — clearing stale intent for fresh retry.")

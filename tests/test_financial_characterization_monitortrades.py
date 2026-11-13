@@ -2281,3 +2281,72 @@ def test_monitortrades__can_pass_buy_quantity_policy_rejects_nan_final_qty_iter1
     )
 
     assert mt._can_pass_buy_quantity_policy(nan_inst, "BTCUSDC", 60000.0, 0.01) is False
+
+
+def test_pending_exit_closed_status_resolves_and_trade_notify_loads_owner_map_once(monkeypatch):
+    """_is_pending_exit_active resolves CLOSED venue orders without duplicate resubmit, and check_and_notify_executed_trades reads owner map once per pass."""
+    sym = "SOLUSDC"
+    monkeypatch.setattr(mt, "_save_mt_state", lambda: None)
+    mt._PENDING_STOP_EXIT[sym] = {
+        "ts": NOW - 120.0,
+        "client_order_id": "MT_exit_closed_1",
+        "kind": "STOP",
+    }
+    closed_inst = SimpleNamespace(
+        symbol=sym,
+        _provider=SimpleNamespace(
+            order_by_client_id=lambda s, cid: {
+                "orderId": "ord-closed-1",
+                "clientOrderId": cid,
+                "status": "closed",
+            }
+        ),
+        open_orders=lambda: [],
+        min_notional=5.0,
+    )
+    assert mt._is_pending_exit_active(sym, closed_inst, 2.0, 0.01, NOW, current_price=150.0) is True
+    assert sym not in mt._PENDING_STOP_EXIT
+
+    # PENDING / WORKING statuses keep pending exit active so timeout cannot double-submit while order rests on venue
+    mt._PENDING_STOP_EXIT[sym] = {
+        "ts": NOW - 300.0,
+        "client_order_id": "MT_exit_working_1",
+        "kind": "STOP",
+    }
+    working_inst = SimpleNamespace(
+        symbol=sym,
+        _provider=SimpleNamespace(
+            order_by_client_id=lambda s, cid: {
+                "orderId": "ord-working-1",
+                "clientOrderId": cid,
+                "status": "working",
+            }
+        ),
+        open_orders=lambda: [],
+        min_notional=5.0,
+    )
+    assert mt._is_pending_exit_active(sym, working_inst, 2.0, 0.01, NOW, current_price=150.0) is True
+    assert sym in mt._PENDING_STOP_EXIT
+    mt._PENDING_STOP_EXIT.pop(sym, None)
+
+    # Multi-symbol check_and_notify_executed_trades must query get_accepted_order_owner_map at most once per pass
+    mt.reset_trades_monitor_state_for_test()
+    mt._trades_monitor_initialized = True
+    trades_by_sym = {
+        "BTCUSDC": [{"id": "t-btc-1", "orderId": "ob-1", "symbol": "BTCUSDC", "side": "BUY", "qty": 0.01, "price": 70000.0, "time": 1700000001000}],
+        "ETHUSDC": [{"id": "t-eth-1", "orderId": "oe-1", "symbol": "ETHUSDC", "side": "SELL", "qty": 0.2, "price": 3500.0, "time": 1700000002000}],
+        "ADAUSDC": [],
+    }
+    owner_map_calls = []
+
+    def _fake_owner_map():
+        owner_map_calls.append(1)
+        return {"ob-1": "tradeall", "oe-1": "monitortrades"}
+
+    notified = []
+    monkeypatch.setattr(mt.apitrades, "get_trade_orders", lambda _client, s, _maxage: list(trades_by_sym.get(s, [])))
+    monkeypatch.setattr(mt.order_retry, "get_accepted_order_owner_map", _fake_owner_map)
+    monkeypatch.setattr(mt.alert, "notify", lambda **kw: notified.append(kw))
+    mt.check_and_notify_executed_trades(symbols_list=["ADAUSDC", "BTCUSDC", "ETHUSDC"])
+    assert len(owner_map_calls) == 1
+    assert [n["symbol"] for n in notified] == ["BTCUSDC", "ETHUSDC"]

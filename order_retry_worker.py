@@ -45,6 +45,7 @@ from providers.execution_audit import ExecutionAudit
 from providers.market_api import api as mkt
 from providers.quantity import resolve_assets
 from state_io import (
+    discard_generation_file,
     encode_json_payload,
     load_json_state,
     previous_generation_path,
@@ -212,22 +213,7 @@ def _reconciliation_capabilities(mkt, symbol, provider_name):
 
 
 def _audit_event(record, event, **fields):
-    place_kwargs = record.get("place_kwargs") if isinstance(record.get("place_kwargs"), dict) else {}
-    payload = {
-        "side": str(record.get("side") or "").lower() or None,
-        "kind": record.get("kind") or place_kwargs.get("kind"),
-        "client_order_id": oq.record_client_order_id(record),
-        "order_id": record.get("order_id"),
-        "revision": record.get("revision"),
-        **fields,
-    }
-    _AUDIT.record(
-        event,
-        intent_id=str(record.get("intent_id") or f"outbox-{record.get('id')}"),
-        venue=str(record.get("provider_name") or "routed"),
-        symbol=str(record.get("symbol") or "unknown"),
-        **payload,
-    )
+    oq.record_outbox_audit(_AUDIT, record, event, **fields)
 
 
 def _complete_reconciled_order(
@@ -646,7 +632,11 @@ def process_once(mkt, now=None):
         "expired": len(expired),
         "skipped_price": skipped_price,
         "quarantined": quarantined,
-        "remaining": len(oq.load_all()),
+        "remaining": (
+            len(snapshot)
+            if not (expired or claimed or live_producer_reconciliation)
+            else len(oq.load_all())
+        ),
     }
 
 
@@ -928,7 +918,9 @@ class IncidentDigest:
                         created_ts=None, last_attempt_ts=None, ttl_sec=None,
                     )
                     changed = True
-            if changed:
+            if not groups:
+                discard_generation_file(self.path, include_previous=True)
+            elif changed:
                 save_json_state(self.path, state, separators=(",", ":"))
             return due
 

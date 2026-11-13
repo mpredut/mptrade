@@ -1625,3 +1625,92 @@ def test_order_retry_worker__provider_name_and_incidentdigest_iter114_s1(tmp_pat
         digest.collect([], now=None)
     with pytest.raises(ValueError):
         digest.collect([], now="bad")
+
+
+def test_incident_digest_unlinks_expired_state_and_idle_process_once_skips_reload(monkeypatch, tmp_path):
+    """Expired IncidentDigest cooldowns remove state files for zero idle lock/disk I/O, and idle process_once avoids double queue reads."""
+    digest_path = tmp_path / "order_retry_giveup_alerts.json"
+    digest = worker.IncidentDigest(digest_path, 60.0)
+    ev = {
+        "labels": {"symbol": "BTCUSDC", "side": "SELL", "reason": "active_ttl"},
+        "quantity": 0.25,
+        "sample_id": "id-1",
+    }
+    due = digest.collect([ev], now=1000.0)
+    assert len(due) == 1
+    assert digest_path.exists()
+
+    # Cooldown still active at now=1030 -> file retained
+    assert digest.collect([], now=1030.0) == []
+    assert digest_path.exists()
+
+    # Cooldown expired at now=1061 -> empty groups unlinked cleanly
+    assert digest.collect([], now=1061.0) == []
+    assert not digest_path.exists()
+
+    # Subsequent idle polls must not touch load_json_state at all
+    def _forbid_load(*_a, **_kw):
+        raise AssertionError("idle IncidentDigest.collect must not read disk after cleanup")
+
+    monkeypatch.setattr(worker, "load_json_state", _forbid_load)
+    assert digest.collect([], now=1070.0) == []
+
+    # Idle process_once with a not-yet-due record computes remaining from snapshot without calling oq.load_all()
+    q_path = tmp_path / "queue.jsonl"
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_path))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(tmp_path / "queue.lock"))
+    rid = oq.enqueue(
+        "BTCUSDC",
+        "BUY",
+        0.1,
+        {"client_order_id": "MT_idle_1"},
+        now=2000.0,
+        created_ts=2000.0,
+        failure_reason="temp_net",
+    )
+    assert rid is not None
+    rec = oq.get(rid)
+    rec["last_attempt_ts"] = 2000.0
+    rec["attempts"] = 1
+    oq.rewrite([rec])
+
+    def _forbid_load_all():
+        raise AssertionError("idle process_once must not call oq.load_all() when no queue mutations occurred")
+
+    monkeypatch.setattr(oq, "load_all", _forbid_load_all)
+    stats = worker.process_once(FakeMkt(), now=2000.1)
+    assert stats["attempted"] == 0
+    assert stats["remaining"] == 1
+
+    # Shared record_outbox_audit formats identical canonical audit envelope
+    recorded = []
+    fake_audit = SimpleNamespace(record=lambda event, **kw: recorded.append((event, kw)))
+    oq.record_outbox_audit(
+        fake_audit,
+        {
+            "id": "r42",
+            "symbol": "ETHUSDC",
+            "side": "SELL",
+            "place_kwargs": {"kind": "stop_loss", "client_order_id": "MT_eth_42"},
+            "order_id": "9001",
+            "revision": 2,
+        },
+        "order_terminal",
+        status="canceled",
+    )
+    assert recorded == [
+        (
+            "order_terminal",
+            {
+                "intent_id": "outbox-r42",
+                "venue": "routed",
+                "symbol": "ETHUSDC",
+                "side": "sell",
+                "kind": "stop_loss",
+                "client_order_id": "MT_eth_42",
+                "order_id": "9001",
+                "revision": 2,
+                "status": "canceled",
+            },
+        )
+    ]

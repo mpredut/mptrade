@@ -1217,6 +1217,26 @@ def activate_claimed_replacement(claimed, qty, now=None):
     return result
 
 
+def record_outbox_audit(audit, record: dict, event: str, *, default_symbol: str = "unknown", **fields) -> None:
+    """Emit a canonical outbox lifecycle event to ``ExecutionAudit``."""
+    place_kwargs = record.get("place_kwargs") if isinstance(record.get("place_kwargs"), dict) else {}
+    payload = {
+        "side": str(record.get("side") or "").lower() or None,
+        "kind": record.get("kind") or place_kwargs.get("kind"),
+        "client_order_id": _record_client_order_id(record),
+        "order_id": record.get("order_id"),
+        "revision": record.get("revision"),
+        **fields,
+    }
+    audit.record(
+        event,
+        intent_id=str(record.get("intent_id") or f"outbox-{record.get('id')}"),
+        venue=str(record.get("provider_name") or "routed"),
+        symbol=str(record.get("symbol") or default_symbol),
+        **payload,
+    )
+
+
 def resolve_accepted_order(symbol, order_id) -> bool:
     """Remove an ``accepted`` tracker after intentional external cancellation."""
     if isinstance(symbol, bool) or isinstance(order_id, bool):
@@ -1236,17 +1256,12 @@ def resolve_accepted_order(symbol, order_id) -> bool:
         try:
             audit = ExecutionAudit()
             for rec in removed_records:
-                rec_pk = rec.get("place_kwargs") if isinstance(rec.get("place_kwargs"), dict) else {}
-                audit.record(
+                record_outbox_audit(
+                    audit,
+                    rec,
                     "order_terminal",
-                    intent_id=str(rec.get("intent_id") or f"outbox-{rec.get('id')}"),
-                    venue=str(rec.get("provider_name") or "routed"),
-                    symbol=str(rec.get("symbol") or target_sym),
-                    side=str(rec.get("side") or "").lower() or None,
-                    kind=rec.get("kind") or rec_pk.get("kind"),
-                    client_order_id=_record_client_order_id(rec),
+                    default_symbol=target_sym,
                     order_id=rec.get("order_id") or target_oid,
-                    revision=rec.get("revision"),
                     status="canceled",
                     venue_status="CANCELED",
                     filled_qty=safe_nonneg_float(rec.get("filled_qty"), default=0.0) or 0.0,

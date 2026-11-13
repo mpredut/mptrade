@@ -79,6 +79,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
 from instrument_registry import casefold_get
 import order_retry as _oq
 from providers.base import MarketDataProvider
+from providers.execution_audit import _extract_audit_fill_metrics
 from providers.order_id_context import resolve_order_origin
 from providers.order_ohlc_utils import normalize_open_order
 from providers.intent_state import collect_known_ai_order_ids, intent_venue_client_order_ids
@@ -294,6 +295,14 @@ def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str],
     return out
 
 
+_TERMINAL_AUDIT_VENUE_STATUSES = frozenset(
+    {"FILLED", "CLOSED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "REPLACED"}
+)
+_TERMINAL_AUDIT_LOCAL_STATUSES = frozenset(
+    {"closed", "filled", "canceled", "cancelled", "expired", "rejected", "replaced"}
+)
+
+
 def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Dict[str, Any]]]:
     """Synthesize deduplicated per-symbol filled order lists from execution_audit_*.jsonl for venues lacking a disk order cache."""
     by_sym: Dict[str, List[Dict[str, Any]]] = {}
@@ -302,7 +311,7 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
     v_target = normalize_venue_name(venue)
     for audit_files in _iter_audit_dir_file_batches(cache_dir, max_files=10, newest_first=False):
         try:
-            submit_ts_by_oid: Dict[str, float] = {}
+            submit_meta_by_oid: Dict[str, Dict[str, Any]] = {}
             idx_by_oid: Dict[tuple[str, str], int] = {}
             for af in audit_files:
                 for rec in read_tail_jsonl_dicts(af, limit=None, max_bytes=1024 * 1024):
@@ -311,22 +320,42 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
                     ev_name = str(rec.get("event") or "")
                     oid_s = str(rec.get("order_id") or "").strip()
                     ts_s = normalize_epoch_sec(rec.get("ts"), default=0.0, allow_iso=True) or 0.0
-                    if ev_name == "submit_accepted" and oid_s and ts_s > 0.0:
-                        submit_ts_by_oid.setdefault(oid_s, ts_s)
+                    if ev_name in ("submit_accepted", "order_recovered") and oid_s:
+                        meta_d = submit_meta_by_oid.setdefault(oid_s, {})
+                        if ts_s > 0.0:
+                            meta_d.setdefault("ts", ts_s)
+                        if side_sub := (extract_order_side(rec) or str(rec.get("side") or "").strip().upper()):
+                            meta_d.setdefault("side", side_sub)
+                        if cid_sub := rec.get("client_order_id"):
+                            meta_d.setdefault("client_order_id", cid_sub)
+                        if (px_sub := first_pos_float(rec.get("price"), rec.get("reference_price"), default=None)) is not None:
+                            meta_d.setdefault("price", px_sub)
                         continue
-                    if ev_name not in ("order_terminal", "order_terminal_retry"):
+                    if ev_name not in ("order_terminal", "order_terminal_retry", "order_status"):
+                        continue
+                    v_stat, l_stat, _, f_q_opt, _, cost_opt, fallback_px, is_fill = _extract_audit_fill_metrics(
+                        rec, fallback_ref_price=True
+                    )
+                    if ev_name == "order_status" and (
+                        v_stat not in _TERMINAL_AUDIT_VENUE_STATUSES
+                        and l_stat not in _TERMINAL_AUDIT_LOCAL_STATUSES
+                    ):
+                        continue
+                    f_q = safe_pos_float(f_q_opt, default=0.0) or 0.0
+                    if not is_fill or f_q <= 0.0:
                         continue
                     sym_t = str(rec.get("symbol") or "").strip().upper()
-                    f_q = safe_pos_float(rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"), default=0.0) or 0.0
-                    cost_f = safe_pos_float(rec.get("cost"), default=0.0) or 0.0
-                    px_f = safe_pos_float(rec.get("price"), default=None) or (round(cost_f / f_q, 6) if cost_f > 0 and f_q > 0 else None)
-                    eff_ts_s = submit_ts_by_oid.get(oid_s, ts_s) if oid_s else ts_s
-                    side_t = extract_order_side(rec) or str(rec.get("side") or "").strip().upper()
-                    if sym_t and f_q > 0 and px_f is not None and px_f > 0 and eff_ts_s > 0 and side_t in ("BUY", "SELL"):
+                    meta = submit_meta_by_oid.get(oid_s, {}) if oid_s else {}
+                    vwap_px = round(cost_opt / f_q, 6) if cost_opt is not None and cost_opt > 0.0 else None
+                    px_f = vwap_px or fallback_px or meta.get("price")
+                    eff_ts_s = meta.get("ts") or ts_s
+                    side_t = extract_order_side(rec) or str(rec.get("side") or "").strip().upper() or meta.get("side", "")
+                    cid_val = rec.get("client_order_id") or meta.get("client_order_id")
+                    if sym_t and px_f is not None and px_f > 0 and eff_ts_s > 0 and side_t in ("BUY", "SELL"):
                         row_d = {
                             "symbol": sym_t,
                             "orderId": rec.get("order_id"),
-                            "clientOrderId": rec.get("client_order_id"),
+                            "clientOrderId": cid_val,
                             "side": side_t,
                             "price": px_f,
                             "qty": f_q,
@@ -334,7 +363,7 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
                             "timestamp": round(eff_ts_s * 1000.0),
                             "status": "FILLED",
                         }
-                        dedup_k = oid_s or str(rec.get("client_order_id") or "").strip()
+                        dedup_k = oid_s or str(cid_val or "").strip()
                         sym_list = by_sym.setdefault(sym_t, [])
                         if dedup_k and (sym_t, dedup_k) in idx_by_oid:
                             existing = sym_list[idx_by_oid[(sym_t, dedup_k)]]
@@ -342,8 +371,8 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
                             existing["qty"] = new_q
                             existing["executedQty"] = new_q
                             existing["price"] = px_f
-                            if rec.get("client_order_id") and not existing.get("clientOrderId"):
-                                existing["clientOrderId"] = rec.get("client_order_id")
+                            if cid_val and not existing.get("clientOrderId"):
+                                existing["clientOrderId"] = cid_val
                         else:
                             if dedup_k:
                                 idx_by_oid[(sym_t, dedup_k)] = len(sym_list)

@@ -34,6 +34,7 @@ from intelligence.macro_sentiment_ssot import (
     get_deribit_options_currencies,
     get_macro_benchmark_specs,
 )
+from intelligence.sentiment.evaluators.microstructure_evaluator import extract_bbo_and_mid
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
@@ -49,11 +50,7 @@ def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_it
         microstructure = {}
     for m_sym, m_dict in microstructure.items():
         if isinstance(m_dict, dict):
-            ob_mid_v = safe_pos_float(m_dict.get("ob_mid_price"), default=0.0) or 0.0
-            if ob_mid_v <= 0:
-                bb_v, ba_v = safe_pos_float(m_dict.get("best_bid"), default=0.0) or 0.0, safe_pos_float(m_dict.get("best_ask"), default=0.0) or 0.0
-                if bb_v > 0 and ba_v >= bb_v:
-                    ob_mid_v = (bb_v + ba_v) / 2.0
+            ob_mid_v = extract_bbo_and_mid(m_dict)[2]
             if ob_mid_v > 0:
                 cycle_fallback_prices[m_sym] = ob_mid_v
     if isinstance(watcher_price_items, dict):
