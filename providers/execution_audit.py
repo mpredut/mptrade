@@ -42,24 +42,7 @@ from cachepaths import (
 )
 from state_io import append_jsonl_record, read_jsonl_dicts
 from .base import MarketDataProvider
-from .intent_state import (
-    _extract_intent_id,
-    _intent_order_ids,
-    _intent_venue_symbol_side_key,
-    _record_intent_state,
-    collect_known_ai_order_ids,
-    durable_intents_lock,
-    extract_intent_limit_price,
-    extract_intent_notional,
-    extract_intent_order_type,
-    extract_intent_side,
-    intent_venue_client_order_ids,
-    load_durable_intents_state,
-    normalize_trading_decisions,
-    save_durable_intents_state,
-    upsert_durable_intent,
-    validate_and_build_intent_dict,
-)
+from .intent_state import _extract_intent_id
 from .ohlc_utils import ProviderError, require_pos_ohlc_interval
 from .order_id_context import format_venue_intent_client_order_id
 from .strategy_executor import (
@@ -533,6 +516,35 @@ def _read_audit_intent_records(audit_path: str) -> list[dict[str, Any]]:
     return recs
 
 
+def iter_audit_jsonl_paths(
+    audit_dir: str,
+    *,
+    min_day: str = "",
+    max_day: str = "",
+    reverse: bool = False,
+    unbounded_limit: Optional[int] = None,
+) -> list[str]:
+    """Return sorted ``execution_audit_YYYY-MM-DD.jsonl`` paths filtered by optional UTC day bounds."""
+    if not audit_dir or not os.path.isdir(audit_dir):
+        return []
+    paths = sorted(
+        glob.glob(os.path.join(glob.escape(audit_dir), "execution_audit_*.jsonl")),
+        reverse=_parse_bool_flag(reverse, False),
+    )
+    if unbounded_limit is not None and not min_day and not max_day:
+        paths = paths[: max(0, unbounded_limit)]
+    if not min_day and not max_day:
+        return paths
+    filtered: list[str] = []
+    for audit_path in paths:
+        file_day = os.path.basename(audit_path)[len("execution_audit_") : -len(".jsonl")]
+        if _AUDIT_DAY_RE.fullmatch(file_day):
+            if (min_day and file_day < min_day) or (max_day and file_day > max_day):
+                continue
+        filtered.append(audit_path)
+    return filtered
+
+
 def find_order_audit_record(
     order_id: Any = None,
     client_order_id: Any = None,
@@ -555,16 +567,13 @@ def find_order_audit_record(
     if ref_ts is not None and ref_ts > 0.0:
         min_day = datetime.fromtimestamp(max(0.0, ref_ts - 5 * 86400.0), timezone.utc).strftime("%Y-%m-%d")
         max_day = datetime.fromtimestamp(ref_ts + 86400.0, timezone.utc).strftime("%Y-%m-%d")
-    all_paths = sorted(
-        glob.glob(os.path.join(glob.escape(eff_dir), "execution_audit_*.jsonl")),
+    for audit_path in iter_audit_jsonl_paths(
+        eff_dir,
+        min_day=min_day,
+        max_day=max_day,
         reverse=True,
-    )
-    if not min_day:
-        all_paths = all_paths[:5]
-    for audit_path in all_paths:
-        file_day = os.path.basename(audit_path)[len("execution_audit_"):-len(".jsonl")]
-        if min_day and _AUDIT_DAY_RE.fullmatch(file_day) and (file_day < min_day or file_day > max_day):
-            continue
+        unbounded_limit=5,
+    ):
         for rec in reversed(_read_audit_intent_records(audit_path)):
             if str(rec.get("event") or "") not in _AUDIT_OWNER_EVENTS:
                 continue
@@ -586,6 +595,21 @@ def find_order_audit_record(
 
 
 _LAZY_COMPAT_EXPORTS: dict[str, str] = {
+    "_intent_order_ids": "providers.intent_state",
+    "_intent_venue_symbol_side_key": "providers.intent_state",
+    "_record_intent_state": "providers.intent_state",
+    "collect_known_ai_order_ids": "providers.intent_state",
+    "durable_intents_lock": "providers.intent_state",
+    "extract_intent_limit_price": "providers.intent_state",
+    "extract_intent_notional": "providers.intent_state",
+    "extract_intent_order_type": "providers.intent_state",
+    "extract_intent_side": "providers.intent_state",
+    "intent_venue_client_order_ids": "providers.intent_state",
+    "load_durable_intents_state": "providers.intent_state",
+    "normalize_trading_decisions": "providers.intent_state",
+    "save_durable_intents_state": "providers.intent_state",
+    "upsert_durable_intent": "providers.intent_state",
+    "validate_and_build_intent_dict": "providers.intent_state",
     "cancel_existing_ai_open_orders": "providers.intent_execution",
     "execute_enforce_intent_order": "providers.intent_execution",
     "find_duplicate_ai_open_limit_order": "providers.intent_execution",
@@ -594,38 +618,24 @@ _LAZY_COMPAT_EXPORTS: dict[str, str] = {
     "record_shadow_intent_observation": "providers.intent_execution",
     "resolve_intent_execution_price": "providers.intent_execution",
     "resolve_intent_topic_tag": "providers.intent_execution",
-    "_attach_intent_age_fields": "providers.intent_reconciliation",
-    "_filter_intents_by_scope": "providers.intent_reconciliation",
-    "_is_open_resting_detail": "providers.intent_reconciliation",
-    "_resolve_executed_open_resting_detail": "providers.intent_reconciliation",
-    "_resolve_intent_execution_details": "providers.intent_reconciliation",
-    "build_last_cycle_execution_status": "providers.intent_reconciliation",
     "reconcile_intents_from_execution_audit": "providers.intent_reconciliation",
-    "summarize_recent_ai_intents": "providers.intent_reconciliation",
+    "_attach_intent_age_fields": "providers.intent_telemetry",
+    "_filter_intents_by_scope": "providers.intent_telemetry",
+    "_is_open_resting_detail": "providers.intent_telemetry",
+    "_resolve_executed_open_resting_detail": "providers.intent_telemetry",
+    "_resolve_intent_execution_details": "providers.intent_telemetry",
+    "build_last_cycle_execution_status": "providers.intent_telemetry",
+    "summarize_recent_ai_intents": "providers.intent_telemetry",
 }
 
 __all__ = [
     "AuditedStrategyExecutor",
     "ExecutionAudit",
+    "_extract_intent_id",
     "find_order_audit_record",
     "intent_client_order_id",
+    "iter_audit_jsonl_paths",
     "new_intent_id",
-    "_extract_intent_id",
-    "_intent_order_ids",
-    "_intent_venue_symbol_side_key",
-    "_record_intent_state",
-    "collect_known_ai_order_ids",
-    "durable_intents_lock",
-    "extract_intent_limit_price",
-    "extract_intent_notional",
-    "extract_intent_order_type",
-    "extract_intent_side",
-    "intent_venue_client_order_ids",
-    "load_durable_intents_state",
-    "normalize_trading_decisions",
-    "save_durable_intents_state",
-    "upsert_durable_intent",
-    "validate_and_build_intent_dict",
     *_LAZY_COMPAT_EXPORTS,
 ]
 

@@ -546,6 +546,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "intent_state.py",
         "intent_execution.py",
         "intent_reconciliation.py",
+        "intent_telemetry.py",
     )
     forbidden_upward_layers = {
         "cacheInterface",
@@ -1117,8 +1118,16 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 for tgt in top_n.targets:
                     if isinstance(tgt, ast.Name):
                         def_set.add(tgt.id)
+                        if tgt.id == "_LAZY_COMPAT_EXPORTS" and isinstance(top_n.value, ast.Dict):
+                            for k_node in top_n.value.keys:
+                                if isinstance(k_node, ast.Constant) and isinstance(k_node.value, str):
+                                    imp_set.add(k_node.value)
             elif isinstance(top_n, ast.AnnAssign) and isinstance(top_n.target, ast.Name):
                 def_set.add(top_n.target.id)
+                if top_n.target.id == "_LAZY_COMPAT_EXPORTS" and isinstance(top_n.value, ast.Dict):
+                    for k_node in top_n.value.keys:
+                        if isinstance(k_node, ast.Constant) and isinstance(k_node.value, str):
+                            imp_set.add(k_node.value)
             elif isinstance(top_n, ast.ImportFrom) and top_n.module:
                 for al in top_n.names:
                     if al.name != "*":
@@ -1478,11 +1487,13 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     assert trail_pct == {"HYPE": 18.0, "SOL": 12.5}
 
 
-def test_intent_reconciliation_modularization_and_lazy_compat():
+def test_intent_reconciliation_modularization_and_lazy_compat(tmp_path):
     from pathlib import Path
     import providers.execution_audit as ea
     import providers.intent_execution as ie
     import providers.intent_reconciliation as ir
+    import providers.intent_state as is_mod
+    import providers.intent_telemetry as it
 
     root = Path(__file__).resolve().parent.parent
     ea_tree = ast.parse((root / "providers" / "execution_audit.py").read_text(encoding="utf-8"))
@@ -1493,14 +1504,71 @@ def test_intent_reconciliation_modularization_and_lazy_compat():
     }
     assert "intent_execution" not in ea_imports
     assert "intent_reconciliation" not in ea_imports
+    assert "intent_telemetry" not in ea_imports
+
+    ir_tree = ast.parse((root / "providers" / "intent_reconciliation.py").read_text(encoding="utf-8"))
+    ir_imported_mods = {
+        alias.name
+        for node in ast.walk(ir_tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert "glob" not in ir_imported_mods
+
+    it_tree = ast.parse((root / "providers" / "intent_telemetry.py").read_text(encoding="utf-8"))
+    it_imported_mods = {
+        alias.name
+        for node in ast.walk(it_tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        node.module
+        for node in ast.walk(it_tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert it_imported_mods.isdisjoint(
+        {"os", "glob", "state_io", "intent_reconciliation", "providers.intent_reconciliation"}
+    )
 
     assert ir.reconcile_intents_from_execution_audit.__module__ == "providers.intent_reconciliation"
-    assert ir.summarize_recent_ai_intents.__module__ == "providers.intent_reconciliation"
-    assert ir.build_last_cycle_execution_status.__module__ == "providers.intent_reconciliation"
+    assert it.summarize_recent_ai_intents.__module__ == "providers.intent_telemetry"
+    assert it.build_last_cycle_execution_status.__module__ == "providers.intent_telemetry"
+    assert it._resolve_intent_execution_details.__module__ == "providers.intent_telemetry"
     assert ea.reconcile_intents_from_execution_audit is ir.reconcile_intents_from_execution_audit
-    assert ea.summarize_recent_ai_intents is ir.summarize_recent_ai_intents
-    assert ea.build_last_cycle_execution_status is ir.build_last_cycle_execution_status
+    assert ea.summarize_recent_ai_intents is it.summarize_recent_ai_intents
+    assert ir.summarize_recent_ai_intents is it.summarize_recent_ai_intents
+    assert ea.build_last_cycle_execution_status is it.build_last_cycle_execution_status
+    assert ir.build_last_cycle_execution_status is it.build_last_cycle_execution_status
     assert ea.cancel_existing_ai_open_orders is ie.cancel_existing_ai_open_orders
+    assert ea.normalize_trading_decisions is is_mod.normalize_trading_decisions
+
+    for fname in (
+        "execution_audit_2026-11-10.jsonl",
+        "execution_audit_2026-11-11.jsonl",
+        "execution_audit_2026-11-12.jsonl",
+        "execution_audit_2026-11-13.jsonl",
+        "execution_audit_custom.jsonl",
+    ):
+        (tmp_path / fname).write_text("", encoding="utf-8")
+
+    assert ea.iter_audit_jsonl_paths("") == []
+    bounded = [
+        Path(p).name
+        for p in ea.iter_audit_jsonl_paths(str(tmp_path), min_day="2026-11-11", max_day="2026-11-12")
+    ]
+    assert bounded == [
+        "execution_audit_2026-11-11.jsonl",
+        "execution_audit_2026-11-12.jsonl",
+        "execution_audit_custom.jsonl",
+    ]
+    limited_rev = [
+        Path(p).name
+        for p in ea.iter_audit_jsonl_paths(str(tmp_path), reverse=True, unbounded_limit=2)
+    ]
+    assert limited_rev == [
+        "execution_audit_custom.jsonl",
+        "execution_audit_2026-11-13.jsonl",
+    ]
 
 
 def test_market_monitor_polymorphic_registries_and_soc_split():

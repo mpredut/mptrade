@@ -102,7 +102,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 )
 from instrument_registry import casefold_get, has_workspace_instrument_sources
 from cacheprice import resolve_ssot_price_from_cache
-from providers.intent_reconciliation import (
+from providers.intent_telemetry import (
     build_last_cycle_execution_status,
     summarize_recent_ai_intents,
 )
