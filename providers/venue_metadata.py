@@ -1,13 +1,14 @@
 """Declarative venue registry metadata, fee/precision ladders, and public orderbook helpers."""
 
 import inspect
+import os
 from pathlib import Path
 from typing import Any, Optional
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
-    clean_upper_token,
+    clean_scalar_str,
+    clean_upper_scalar,
     load_env_file_defaults,
     resolve_patched_attr,
     safe_nonneg_int,
@@ -177,10 +178,9 @@ class ProviderVenueMetadataMixin:
     def uses_shared_registry_symbols(cls, venue: Any) -> bool:
         """Return whether ``venue`` defaults to ``instrument_registry.symbols`` when ``symbols=None``."""
         raw = getattr(venue, "name", venue)
-        if isinstance(raw, bool):
+        if isinstance(raw, bool) or (raw is not None and not isinstance(raw, str)):
             return False
-        v_str = str(raw or "").strip()
-        if not v_str or v_str.lower() in INVALID_SCALAR_STRINGS:
+        if (v_str := clean_scalar_str(raw)) is None:
             return True
         prov_cls = cls.resolve_venue_provider_class(v_str)
         return bool(getattr(prov_cls, "_USES_SHARED_REGISTRY_SYMBOLS", False))
@@ -226,17 +226,8 @@ class ProviderVenueMetadataMixin:
     def resolve_venue_default_quote(cls, venue: Any, fallback: str = "USD") -> str:
         """Return the default quote currency for ``venue`` when unparsed from ``symbol``."""
         prov_cls = cls.resolve_venue_provider_class(venue)
-        q = getattr(prov_cls, "_DEFAULT_QUOTE_ASSET", None) if prov_cls is not None else None
-        if isinstance(q, str) and q.strip() and q.strip().lower() not in INVALID_SCALAR_STRINGS:
-            return q.strip().upper()
-        return (
-            fallback.strip().upper()
-            if not isinstance(fallback, bool)
-            and isinstance(fallback, str)
-            and fallback.strip()
-            and fallback.strip().lower() not in INVALID_SCALAR_STRINGS
-            else "USD"
-        )
+        q = clean_upper_scalar(getattr(prov_cls, "_DEFAULT_QUOTE_ASSET", None)) if prov_cls is not None else None
+        return q or clean_upper_scalar(fallback) or "USD"
 
     @classmethod
     def resolve_venue_position_price_decimals(cls, venue: Any) -> int:
@@ -250,7 +241,7 @@ class ProviderVenueMetadataMixin:
         if cls._STRATEGY_HEARTBEAT_NAME:
             return cls._STRATEGY_HEARTBEAT_NAME
         raw_name = getattr(cls, "name", "")
-        label = raw_name if isinstance(raw_name, str) and raw_name else cls.__name__.removesuffix("Provider")
+        label = clean_scalar_str(raw_name) or cls.__name__.removesuffix("Provider")
         return f"{label or 'Strategy'}-bot"
 
     @classmethod
@@ -259,28 +250,24 @@ class ProviderVenueMetadataMixin:
         prov_cls = cls.resolve_venue_provider_class(venue)
         if prov_cls is not None:
             return prov_cls.format_strategy_heartbeat_name(symbol)
-        raw = getattr(venue, "name", venue)
-        venue_str = (
-            raw.strip()
-            if not isinstance(raw, bool) and isinstance(raw, str) and raw.strip().lower() not in INVALID_SCALAR_STRINGS
-            else ""
-        )
+        venue_str = clean_scalar_str(getattr(venue, "name", venue))
         return f"{venue_str}-bot" if venue_str else "Strategy-bot"
 
     @classmethod
     def resolve_venue_intent_executor_tag(cls, venue: Any) -> str:
         """Resolve the canonical autonomous intent executor bracket tag for ``venue``."""
         prov_cls = cls.resolve_venue_provider_class(venue)
-        tag = getattr(prov_cls, "_DEFAULT_INTENT_EXECUTOR_TAG", None) if prov_cls is not None else None
-        return str(tag) if isinstance(tag, str) and tag.strip() else cls._DEFAULT_INTENT_EXECUTOR_TAG
+        tag = clean_scalar_str(getattr(prov_cls, "_DEFAULT_INTENT_EXECUTOR_TAG", None)) if prov_cls is not None else None
+        return tag or cls._DEFAULT_INTENT_EXECUTOR_TAG
 
     @classmethod
     def load_venue_env_defaults(cls, workspace_dir: Any, *, asset_scope: str = "all") -> None:
         """Load per-venue runtime/config env defaults matching ``asset_scope`` ('all', 'crypto', 'equities')."""
-        if not workspace_dir:
+        ws_raw = os.fspath(workspace_dir) if isinstance(workspace_dir, os.PathLike) else workspace_dir
+        if (ws_clean := clean_scalar_str(ws_raw)) is None:
             return
-        scope = str(asset_scope or "all").strip().lower()
-        ws_path = Path(workspace_dir)
+        scope = (clean_scalar_str(asset_scope) or "all").lower()
+        ws_path = Path(ws_clean)
         loader = resolve_patched_attr(
             "load_env_file_defaults",
             load_env_file_defaults,
@@ -362,7 +349,7 @@ class ProviderVenueMetadataMixin:
     @staticmethod
     def resolve_venue_instrument_spec(venue: Any, symbol: str) -> Any:
         """Resolve ``InstrumentSpec`` for ``symbol`` on ``venue`` from ``instrument_registry``."""
-        if (sym_u := clean_upper_token(symbol)) is None:
+        if (sym_u := clean_upper_scalar(symbol)) is None:
             return None
         sym_clean = clean_symbol_key(sym_u)
         sym_canon = canonical_symbol_key(sym_u)

@@ -11,13 +11,13 @@ from typing import Any, List, Optional
 
 from botcore import (  # noqa: F401
     ClosedPriceSeries,
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     _ts_ms_to_s,
     bind_attr_call,
     bool_env,
     clean_order_id,
-    clean_upper_token,
+    clean_scalar_str,
+    clean_upper_scalar,
     exact_nonneg_int,
     extract_order_id,
     extract_order_price,
@@ -108,7 +108,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
     def get_current_price(self, symbol: str) -> Optional[float]:
         """Return fresh current price for ``symbol`` (SSOT cache first when enabled, then venue transport)."""
         self.validate_symbol(symbol)
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        if clean_scalar_str(symbol) is None:
             return None
         return (
             cached
@@ -119,12 +119,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Return ascending historical prices over ``lookback_h`` hours (SSOT 24h cache first, then venue transport)."""
         self.validate_symbol(symbol)
-        if (
-            not symbol
-            or isinstance(symbol, bool)
-            or not str(symbol).strip()
-            or (lookback_f := safe_nonneg_float(lookback_h, default=None)) is None
-        ):
+        if clean_scalar_str(symbol) is None or (lookback_f := safe_nonneg_float(lookback_h, default=None)) is None:
             return None
         return (
             cached_hist
@@ -247,7 +242,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
     ) -> Optional[List[dict]]:
         """Fetch normalized remote fills for ``symbol`` using an injected ``client`` when compatible."""
         req_attr = getattr(cls, "_REMOTE_TRADES_CLIENT_ATTR", None)
-        if not req_attr or client is None or not callable(getattr(client, req_attr, None)):
+        if not req_attr or client is None or not callable(getattr(client, req_attr, None)) or clean_scalar_str(symbol) is None:
             return None
         start_ms = safe_nonneg_int(start_time_ms, default=0)
         return cls(client=client).fetch_remote_trades(symbol, start_ms, client=client)
@@ -263,12 +258,11 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
         if _parse_bool_flag(getattr(self, "_VALIDATE_REMOTE_TRADES_SYMBOL", True), default=True):
             self.validate_symbol(symbol)
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        if (sym_u := clean_upper_scalar(symbol)) is None:
             return []
         start_ms = 0.0 if start_time_ms is None else safe_nonneg_float(start_time_ms, default=None)
         if start_ms is None:
             return []
-        sym_u = str(symbol).strip().upper()
         rows = self._remote_trade_rows_for_symbol(symbol, sym_u, start_ms, client=client)
         if not isinstance(rows, list):
             return []
@@ -352,7 +346,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Return inventory-reconciled acquisition cost from fresh SSOT fills, or None when unknown."""
         since_val = require_pos_float(since_s, "since_s")
-        if (sym_u := clean_upper_token(symbol)) is None or sym_u.lower() in INVALID_SCALAR_STRINGS:
+        if (sym_u := clean_upper_scalar(symbol)) is None:
             return None
         fills_fn = getattr(self, "_fills_from_cache", None)
         rows = fills_fn(symbol) if callable(fills_fn) else None
@@ -408,7 +402,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         if env_key:
             folder = (
                 type(self)._resolve_live_orders_dir()
-                if getattr(type(self), "_LIVE_ORDERS_EXEC_READS_DIR", True)
+                if _parse_bool_flag(getattr(type(self), "_LIVE_ORDERS_EXEC_READS_DIR", True), True)
                 else None
             )
             live_override = getattr(self, "_live_enabled", None)
@@ -477,7 +471,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         self, symbol: str, side: str, *, validate_sym: bool = True
     ) -> str:
         """Validate ``symbol`` (when requested) and return normalized ``'BUY'``/``'SELL'`` or raise ``SubmissionRefused``."""
-        if validate_sym:
+        if _parse_bool_flag(validate_sym, True):
             self.validate_symbol(symbol)
         s_norm = normalize_side(side)
         if s_norm not in {"BUY", "SELL"}:
@@ -505,8 +499,8 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         call_kw = dict(kwargs)
         if is_market:
             call_kw["market"] = True
-        if kind is not None:
-            call_kw["kind"] = kind
+        if (clean_kind := clean_scalar_str(kind)) is not None:
+            call_kw["kind"] = clean_kind
         if client_order_id is not None:
             call_kw["client_order_id"] = client_order_id
         res = self.place_order(symbol, s_norm, eff_price, qty, force=is_market, **call_kw)
@@ -539,10 +533,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
 
     def default_quote_asset(self) -> Optional[str]:
         """Return default quote asset when a venue symbol omits explicit quote suffix."""
-        val = MarketDataProvider._resolve_provider_attr(self, "_DEFAULT_QUOTE_ASSET", None)
-        if isinstance(val, str) and (s := val.strip()) and s.lower() not in INVALID_SCALAR_STRINGS:
-            return s.upper()
-        return None
+        return clean_upper_scalar(MarketDataProvider._resolve_provider_attr(self, "_DEFAULT_QUOTE_ASSET", None))
 
     def _provider_bool_attr(self, attr: str) -> bool:
         return bool(_parse_bool_flag(MarketDataProvider._resolve_provider_attr(self, attr, False), False))

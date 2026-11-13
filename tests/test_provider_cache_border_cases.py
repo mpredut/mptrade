@@ -7709,6 +7709,131 @@ def test_wave43_kraken_hyperliquid_lifecycle_instrument_and_order_id_context_bor
     assert hl_st.fee == pytest.approx(0.04)
 
 
+def test_wave44_providers_base_bridge_replay_poller_metadata_ws_and_market_api_border_cases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify Wave 44 clean_scalar_str SSOT adoption and border-case hardening across providers base, bridge, replay, poller, metadata, WS protocols, and MarketApi."""
+    # 1. providers/base: scalar hygiene on get_current_price, get_price_history, fetch_remote_trades(_with_client), _validate_submit_order_side, submit_order, and default_quote_asset.
+    probe_calls = {"px": 0, "fills": 0, "val_sym": 0}
+    fake_cli = SimpleNamespace(
+        fetch_fills=lambda _sym: (
+            probe_calls.__setitem__("fills", probe_calls["fills"] + 1)
+            or [{"timestamp": 1000, "price": 10.0, "qty": 1.0, "side": "BUY"}]
+        )
+    )
+    probe = _TestMarketProvider(
+        "probe",
+        price_fn=lambda _sym: (probe_calls.__setitem__("px", probe_calls["px"] + 1) or 99.0),
+        client=fake_cli,
+    )
+    assert probe.get_current_price("null") is None
+    assert probe.get_price_history("null", 1.0) is None
+    assert probe.fetch_remote_trades("null") == []
+    assert probe.fetch_remote_trades("BTCUSDC", -5) == []
+    assert _TestMarketProvider.fetch_remote_trades_with_client("null", client=fake_cli) is None
+    assert probe_calls == {"px": 0, "fills": 0, "val_sym": 0}
+
+    monkeypatch.setattr(
+        probe,
+        "validate_symbol",
+        lambda _sym: probe_calls.__setitem__("val_sym", probe_calls["val_sym"] + 1),
+    )
+    assert probe._validate_submit_order_side("BTCUSDC", "buy", validate_sym="false") == "BUY"  # type: ignore[arg-type]
+    assert probe_calls["val_sym"] == 0
+
+    captured_submit_kw: dict[str, Any] = {}
+    probe._live_enabled = True
+    monkeypatch.setattr(
+        probe,
+        "place_order",
+        lambda sym, side, px, qty, **kw: (captured_submit_kw.update(kw) or {"orderId": "555"}),
+    )
+    assert probe.submit_order("BTCUSDC", "BUY", 1.0, 100.0, kind="null") == "555"
+    assert "kind" not in captured_submit_kw
+    probe._DEFAULT_QUOTE_ASSET = "null"
+    assert probe.default_quote_asset() is None
+
+    # 2. providers/ssot_bridge: _clean_fs_path, _normalize_ssot_candidates, read_ssot_fills_cache / write_ssot_fills_cache / merge_ssot_fills_cache on "null" paths.
+    assert sb_mod._normalize_ssot_candidates("null") == ()
+    assert sb_mod._normalize_ssot_candidates(["BTCUSDC", "null", True, "BTCUSDC"]) == ("BTCUSDC",)
+    assert probe.read_ssot_fills_cache("BTCUSDC", "null") is None
+    assert probe.write_ssot_fills_cache("BTCUSDC", "null", []) is False
+    assert MarketDataProvider.merge_ssot_fills_cache("null", {"BTCUSDC": []}) is False
+    probe._ssot_price_cache_path = "null"
+    assert probe._fills_cache_file() is None
+
+    # 3. providers/replay_provider: Path support + "null" rejection in load_price_series, malformed series guard, and "null" symbol rejection in place_order / free_balance.
+    jsonl_file = tmp_path / "prices.jsonl"
+    atomic_write_text(str(jsonl_file), '{"s": "BTCUSDC", "i": [1700000000000, 35000.0]}\n')
+    assert load_price_series(jsonl_file, "BTCUSDC") == [(1700000000.0, 35000.0)]  # type: ignore[arg-type]
+    assert load_price_series("null", "BTCUSDC") == []
+
+    rp = ReplayMarketDataProvider(
+        {
+            "null": [(100.0, 10.0)],
+            "ETHUSDC": "bad_series",  # type: ignore[dict-item]
+            "BTCUSDC": ["bad_row", (1000.0, 50.0, "extra")],  # type: ignore[list-item]
+        }
+    )
+    assert not rp.supports_symbol("null")
+    assert rp.pair_precision("null") is None
+    assert rp.advance("BTCUSDC") == pytest.approx(50.0)
+    assert rp.place_order("null", "BUY", 50.0, 1.0) is None
+    assert rp.free_balance(123) == 0.0  # type: ignore[arg-type]
+    assert rp.place_order("BTCUSDC", "BUY", 50.0, 1.0, kind="null") is not None
+    assert "kind" not in rp.get_orders("BTCUSDC", "BUY", 3600.0)[0]
+
+    # 4. providers/price_poller: start_nonbinance_trend_poller rejects non-mapping provider_names and "null"/boolean bindings.
+    fake_cpm = SimpleNamespace(bind_providers=lambda _b: None)
+    with pytest.raises(ValueError, match="provider_names must be a mapping"):
+        start_nonbinance_trend_poller(fake_cpm, ["HYPEUSD"], provider_names=["kraken"])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="explicit provider bindings are required"):
+        start_nonbinance_trend_poller(fake_cpm, ["HYPEUSD"], provider_names={"HYPEUSD": "null"})
+    with pytest.raises(ValueError, match="explicit provider bindings are required"):
+        start_nonbinance_trend_poller(fake_cpm, [123], provider_names={"123": "kraken"})  # type: ignore[list-item]
+
+    k_stream = KrakenPriceStream(["HYPEUSD"], ws_url="null")
+    assert k_stream.ws_url == KrakenProvider.PUBLIC_WS_URL
+    assert k_stream._resolve_symbol("null") is None
+
+    # 5. providers/venue_metadata & providers/venue_ws_protocols: scalar hygiene on metadata resolvers, ledger_to_fills, and resolve_ws_spot_keys.
+    assert vm_mod.ProviderVenueMetadataMixin.uses_shared_registry_symbols(123) is False
+    assert vm_mod.ProviderVenueMetadataMixin.resolve_venue_default_quote("unknown", fallback="null") == "USD"
+    assert vm_mod.ProviderVenueMetadataMixin.resolve_venue_strategy_heartbeat("null") == "Strategy-bot"
+    assert vm_mod.ProviderVenueMetadataMixin.resolve_venue_instrument_spec("binance", "null") is None
+    vm_mod.ProviderVenueMetadataMixin.load_venue_env_defaults(True)
+    vm_mod.ProviderVenueMetadataMixin.load_venue_env_defaults("null")
+
+    assert vwp_mod.HyperliquidWsMixin.resolve_ws_spot_keys("null") == ()
+    assert vwp_mod.HyperliquidWsMixin.build_ws_user_fills_subscriptions("null") == ()
+    bad_ledger = {
+        "L1": {"refid": "R1", "asset": "ZUSD", "type": "trade", "amount": "-20.0", "time": 1700000000.0},
+        "L2": {"refid": "R1", "asset": "null", "type": "trade", "amount": "1.0", "time": 1700000000.0},
+    }
+    assert vwp_mod.KrakenWsLedgerMixin.ledger_to_fills(bad_ledger) == []
+
+    # 6. providers/market_api: scalar hygiene on regime snapshot, historical OHLC, get_open_orders("null"), place_order(force="false"), supports_symbol, and infer_symbol_venue.
+    assert mapi_mod.resolve_runtime_market_regime_snapshot("null") is None
+    captured_force_kw: dict[str, Any] = {}
+    monkeypatch.setattr(
+        probe,
+        "place_order",
+        lambda sym, side, px, qty, **kw: (captured_force_kw.update(kw) or {"orderId": "777"}),
+    )
+    facade = mapi_mod.MarketApi([probe])
+    facade.place_order("BTCUSDC", "BUY", 100.0, 1.0, force="false")  # type: ignore[arg-type]
+    assert "force" not in captured_force_kw
+    assert facade.fetch_historical_ohlc_points("null", 7) == []
+    assert facade.supports_symbol("null") is False
+    assert facade.resolve_crypto_ohlc_provider("null") is None
+    assert facade.provider_by_name("null") is None
+    assert facade.infer_symbol_venue(123, fallback_venue="kraken") == "kraken"
+    with pytest.raises(ValueError, match="Invalid symbol"):
+        facade.get_open_orders("BUY", "null", strict=True)
+
+
+
 
 
 

@@ -21,8 +21,9 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
+    clean_scalar_str,
+    clean_upper_scalar,
     exact_pos_int,
     normalize_side,
     require_finite_float,
@@ -93,27 +94,20 @@ def load_price_series(
 ) -> List[Tuple[float, float]]:
     """Read a symbol JSONL cache into ascending (timestamp_seconds, price) pairs."""
     out: List[Tuple[float, float]] = []
-    if (
-        isinstance(path, bool)
-        or not isinstance(path, str)
-        or not (path_s := path.strip())
-        or path_s.lower() in INVALID_SCALAR_STRINGS
-        or isinstance(symbol, bool)
-        or not isinstance(symbol, str)
-        or not (sym_s := symbol.strip())
-        or sym_s.lower() in INVALID_SCALAR_STRINGS
-    ):
+    raw_path = os.fspath(path) if isinstance(path, os.PathLike) else path
+    if (path_s := clean_scalar_str(raw_path)) is None or (sym_s := clean_scalar_str(symbol)) is None:
         return out
     max_n = exact_pos_int(max_samples, default=None) if max_samples is not None else None
     if max_samples is not None and max_n is None:
         return out
+    path = path_s
     if not os.path.isfile(path):
         with contextlib.suppress(Exception):
             for legacy_path in legacy_filenames_for(path):
                 if os.path.isfile(legacy_path):
                     path = legacy_path
                     break
-    sym_cf = symbol.strip().casefold()
+    sym_cf = sym_s.casefold()
     for rec in iter_jsonl_dicts(path):
         rec_s = rec.get("s")
         if not isinstance(rec_s, str) or rec_s.strip().casefold() != sym_cf:
@@ -220,12 +214,15 @@ class ReplayMarketDataProvider(MarketDataProvider):
         self._series: Dict[str, List[Tuple[float, float]]] = {}
         if isinstance(price_series, dict):
             for sym_k, pts in price_series.items():
-                if not isinstance(sym_k, str):
+                if clean_scalar_str(sym_k) is None:
                     continue
-                pts_list = list(pts) if pts else []
+                pts_list = (
+                    [(item[0], item[1]) for item in pts if isinstance(item, (list, tuple)) and len(item) >= 2]
+                    if isinstance(pts, (list, tuple))
+                    else []
+                )
                 if len(pts_list) > 1 and all(
-                    isinstance(item, (list, tuple)) and len(item) >= 2 and safe_float(item[0], default=None) is not None
-                    for item in pts_list
+                    safe_float(item[0], default=None) is not None for item in pts_list
                 ):
                     if any(pts_list[i][0] > pts_list[i + 1][0] for i in range(len(pts_list) - 1)):
                         pts_list.sort(key=lambda item: item[0])
@@ -263,11 +260,10 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return "Replay"
 
     def _resolve_symbol(self, symbol: str) -> str:
-        if not isinstance(symbol, str):
+        if (s_clean := clean_scalar_str(symbol)) is None:
             return ""
         if symbol in self._series:
             return symbol
-        s_clean = symbol.strip()
         if s_clean in self._series:
             return s_clean
         s_cf = s_clean.casefold()
@@ -277,20 +273,13 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return s_clean
 
     def supports_symbol(self, symbol: str) -> bool:
-        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
-            return False
-        s_clean = symbol.strip()
-        if not s_clean or s_clean.lower() in INVALID_SCALAR_STRINGS:
-            return False
-        return self._resolve_symbol(s_clean) in self._series
+        sym = self._resolve_symbol(symbol)
+        return bool(sym and sym in self._series)
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
-        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
+        sym = self._resolve_symbol(symbol)
+        if not sym:
             return None
-        s_clean = symbol.strip()
-        if not s_clean or s_clean.lower() in INVALID_SCALAR_STRINGS:
-            return None
-        sym = self._resolve_symbol(s_clean)
         prec = self._precisions.get(sym)
         if prec is None:
             base = _base_asset(sym).upper()
@@ -365,10 +354,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
     # -- Simulated offline broker account -------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:
         # Sum base-asset inventory across all symbols sharing this base asset (e.g. BTCUSDC + BTCUSDT).
-        if not asset or isinstance(asset, bool):
-            return 0.0
-        asset_norm = str(asset).strip().upper()
-        if not asset_norm or asset_norm.lower() in INVALID_SCALAR_STRINGS:
+        if (asset_norm := clean_upper_scalar(asset)) is None:
             return 0.0
         canon_target = canonical_base_asset(asset_norm)
         matched = list(
@@ -487,6 +473,8 @@ class ReplayMarketDataProvider(MarketDataProvider):
         if side not in ("BUY", "SELL") or price_f is None or qty_f is None:
             return None
         sym = self._resolve_symbol(symbol)
+        if not sym:
+            return None
         price = price_f
         qty = safe_pos_float(self.round_quantity(sym, qty_f), default=None)
         if qty is None:
@@ -525,13 +513,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
             "qty": executed_qty,
             "timestamp": ts_ms,
         }
-        raw_kind = kwargs.get("kind")
-        if (
-            not isinstance(raw_kind, bool)
-            and isinstance(raw_kind, str)
-            and (kind_s := raw_kind.strip())
-            and kind_s.lower() not in INVALID_SCALAR_STRINGS
-        ):
+        if (kind_s := clean_scalar_str(kwargs.get("kind"))) is not None:
             rec["kind"] = kind_s
         orders_list.append(rec)
         self._orders_version += 1

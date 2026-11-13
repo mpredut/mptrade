@@ -8,10 +8,11 @@ import threading
 from typing import Any, List, Optional
 
 from botcore import (
-    INVALID_SCALAR_STRINGS,
     PRICE_FRESHNESS_MAX_AGE_SEC,
     _is_fresh_obs_ts,
     _parse_bool_flag,
+    clean_scalar_str,
+    clean_upper_scalar,
     is_shared_disk_cache_enabled,
     normalize_epoch_sec,
     require_nonneg_float,
@@ -51,23 +52,17 @@ def is_in_live_price_fetch() -> bool:
     return safe_nonneg_int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0, default=0) > 0
 
 
+def _clean_fs_path(val: Any) -> Optional[str]:
+    return clean_scalar_str(os.fspath(val) if isinstance(val, os.PathLike) else val)
+
+
 def _normalize_ssot_candidates(candidates: Any) -> tuple[str, ...]:
     """Normalize a symbol or iterable of symbol candidates into unique non-empty SSOT keys."""
-    if isinstance(candidates, str):
-        s = candidates.strip()
-        return (s,) if s and s.lower() not in INVALID_SCALAR_STRINGS else ()
-    if isinstance(candidates, (bool, bytes, bytearray, dict)) or not hasattr(candidates, "__iter__"):
+    if (single := clean_scalar_str(candidates)) is not None:
+        return (single,)
+    if isinstance(candidates, (bool, str, bytes, bytearray, dict)) or not hasattr(candidates, "__iter__"):
         return ()
-    return tuple(
-        dict.fromkeys(
-            s
-            for c in candidates
-            if not isinstance(c, bool)
-            and isinstance(c, str)
-            and (s := c.strip())
-            and s.lower() not in INVALID_SCALAR_STRINGS
-        )
-    )
+    return tuple(dict.fromkeys(s for c in candidates if (s := clean_scalar_str(c)) is not None))
 
 
 class ProviderSsotBridgeMixin:
@@ -404,19 +399,10 @@ class ProviderSsotBridgeMixin:
     @classmethod
     def _ssot_symbol_candidates(cls, symbol: str, *, default_quote: str = "") -> tuple[str, ...]:
         """Return venue-scoped symbol keys to look up in SSOT cacheManager stores."""
-        if isinstance(symbol, bool) or not isinstance(symbol, str):
-            return ()
-        raw = symbol.strip()
-        if not raw or raw.lower() in INVALID_SCALAR_STRINGS:
+        if (raw := clean_scalar_str(symbol)) is None:
             return ()
         raw_u = raw.upper()
-        dq = (
-            default_quote.strip().upper()
-            if not isinstance(default_quote, bool)
-            and isinstance(default_quote, str)
-            and default_quote.strip().lower() not in INVALID_SCALAR_STRINGS
-            else ""
-        )
+        dq = clean_upper_scalar(default_quote) or ""
         cleaned = clean_symbol_key(raw_u)
         parts = split_symbol_assets(raw_u)
         canon = (
@@ -442,10 +428,10 @@ class ProviderSsotBridgeMixin:
         has_explicit_ssot = bool(
             ssot_flag is True
             or _parse_bool_flag(getattr(self, "_force_ssot_cache", False), False)
-            or getattr(self, "_ssot_price_cache_path", None)
-            or getattr(self, "_ssot_trend_cache_path", None)
-            or getattr(self, "_ssot_24price_cache_dir", None)
-            or getattr(self, "_ssot_fills_cache_path", None)
+            or _clean_fs_path(getattr(self, "_ssot_price_cache_path", None))
+            or _clean_fs_path(getattr(self, "_ssot_trend_cache_path", None))
+            or _clean_fs_path(getattr(self, "_ssot_24price_cache_dir", None))
+            or _clean_fs_path(getattr(self, "_ssot_fills_cache_path", None))
         )
         inst_dict = getattr(self, "__dict__", {})
         inj_client = inst_dict.get("_cli")
@@ -528,11 +514,12 @@ class ProviderSsotBridgeMixin:
         if eff_age is None or not norm_cands:
             return []
         now_s = resolve_now_ts()
+        dir_override = _clean_fs_path(cache_dir_override)
         for cand in norm_cands:
             fname = cache_ohlc_24h_filename(cand)
             ohlc_path = (
-                str(resolve_cachedb_filepath(os.path.join(cache_dir_override, fname)))
-                if cache_dir_override
+                str(resolve_cachedb_filepath(os.path.join(dir_override, fname)))
+                if dir_override
                 else str(cls._resolve_cache_path(fname))
             )
             raw_doc = read_json_dict_recovering(ohlc_path)
@@ -571,16 +558,17 @@ class ProviderSsotBridgeMixin:
         cls._ensure_ssot_cache_bindings()
         if (cp_cls := cls._ssot_current_price_cls) is None:
             return None
+        clean_custom = _clean_fs_path(price_cache_path)
         price_path = (
-            str(price_cache_path)
-            if price_cache_path
+            clean_custom
+            if clean_custom
             else cls._resolve_cache_path(CACHE_CURRENT_PRICE_FILENAME)
         )
         return cp_cls.read_ssot_current_price_candidates(
             norm_cands,
             price_path,
             eff_age,
-            use_memory_manager=(price_cache_path is None),
+            use_memory_manager=(clean_custom is None),
             reader_fn=cls._ssot_current_price_reader,
         )
 
@@ -596,11 +584,11 @@ class ProviderSsotBridgeMixin:
         eff_age = resolve_positive_max_age(default_age if max_age_sec is None else max_age_sec, default_age)
         if eff_age is None or not (candidates := self._prepare_ssot_price_candidates(symbol)):
             return None
-        custom_path = getattr(self, "_ssot_price_cache_path", None)
+        custom_path = _clean_fs_path(getattr(self, "_ssot_price_cache_path", None))
         return self.read_ssot_spot_price(
             candidates,
             max_age_sec=eff_age,
-            price_cache_path=str(custom_path) if custom_path else None,
+            price_cache_path=custom_path,
         )
 
     def _cached_price_history(
@@ -616,29 +604,29 @@ class ProviderSsotBridgeMixin:
             candidates,
             lookback_hours,
             max_latest_age_sec=max_latest_age_sec,
-            custom_dir=getattr(self, "_ssot_24price_cache_dir", None),
+            custom_dir=_clean_fs_path(getattr(self, "_ssot_24price_cache_dir", None)),
         )
 
     def _fills_cache_file(self) -> Optional[str]:
-        custom = getattr(self, "_ssot_fills_cache_path", None)
+        custom = _clean_fs_path(getattr(self, "_ssot_fills_cache_path", None))
         if custom:
-            return str(custom)
+            return custom
         mod_name = type(self).__module__
-        mod_path = (
+        mod_path = _clean_fs_path(
             resolve_patched_attr(self._FILLS_CACHE_PATH_MODULE_ATTR, None, modules=(mod_name,))
             if self._FILLS_CACHE_PATH_MODULE_ATTR
             else None
         )
-        def_path = (
+        def_path = _clean_fs_path(
             resolve_patched_attr(self._FILLS_CACHE_DEFAULT_MODULE_ATTR, None, modules=(mod_name,))
             if self._FILLS_CACHE_DEFAULT_MODULE_ATTR
             else None
         )
         if mod_path and def_path and mod_path != def_path:
-            return str(mod_path)
+            return mod_path
         if self._allow_ssot_price_cache():
             if mod_path:
-                return str(mod_path)
+                return mod_path
             if self._DEFAULT_FILLS_CACHE_FILENAME:
                 return self._resolve_cache_path(self._DEFAULT_FILLS_CACHE_FILENAME)
         return None
@@ -666,15 +654,7 @@ class ProviderSsotBridgeMixin:
             )
 
     def _resolve_ssot_trade_cache_cls(self, symbol: str, cache_file: str) -> Any:
-        if (
-            isinstance(symbol, bool)
-            or not isinstance(symbol, str)
-            or not (sym_s := symbol.strip())
-            or sym_s.lower() in INVALID_SCALAR_STRINGS
-            or isinstance(cache_file, bool)
-            or not cache_file
-            or not str(cache_file).strip()
-        ):
+        if clean_scalar_str(symbol) is None or _clean_fs_path(cache_file) is None:
             return None
         self._ensure_ssot_cache_bindings()
         return self._ssot_trade_cache_cls
@@ -720,11 +700,12 @@ class ProviderSsotBridgeMixin:
         """Atomically merge normalized multi-symbol fills into a shared SSOT trade cache snapshot."""
         if callable(patched := cls._patched_mdp_attr("merge_ssot_fills_cache")):
             return bool(patched(cache_file, fills_by_symbol))
-        if isinstance(cache_file, bool) or not cache_file or not str(cache_file).strip() or not isinstance(fills_by_symbol, dict):
+        clean_cf = _clean_fs_path(cache_file)
+        if clean_cf is None or not isinstance(fills_by_symbol, dict):
             return False
         cls._ensure_ssot_cache_bindings()
         tm_cls = cls._ssot_trade_cache_cls
-        return bool(tm_cls.merge_venue_fills_snapshot(cache_file, fills_by_symbol)) if tm_cls is not None else False
+        return bool(tm_cls.merge_venue_fills_snapshot(clean_cf, fills_by_symbol)) if tm_cls is not None else False
 
     def invalidate_ssot_fills_cache(
         self, symbol: str, cache_file: str, *, match_fn: Any = None

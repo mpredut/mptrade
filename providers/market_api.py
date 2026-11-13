@@ -19,6 +19,8 @@ import botcore
 from botcore import (
     _parse_bool_flag,
     clean_order_id,
+    clean_scalar_str,
+    clean_upper_scalar,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
@@ -79,7 +81,7 @@ from .binance_provider import (  # noqa: F401
 def resolve_runtime_market_regime_snapshot(symbol: str, now=None, mgr=None):
     """Read the optional short-trend snapshot from ``mgr`` or the process SSOT short-trend manager."""
     try:
-        if not isinstance(symbol, str) or not symbol.strip():
+        if clean_scalar_str(symbol) is None:
             return None
         if now is not None and botcore.normalize_epoch_sec(now, default=None) is None:
             return None
@@ -277,9 +279,7 @@ class MarketApi:
         interval: str = "1h",
     ) -> list[tuple[float, float]]:
         """Return historical ``(epoch_sec, close_price)`` OHLC points across configured venue providers."""
-        if isinstance(symbol, bool) or not isinstance(symbol, str):
-            return []
-        sym_u = symbol.strip().upper()
+        sym_u = clean_upper_scalar(symbol)
         days_i = safe_pos_int(days, default=None)
         if not sym_u or days_i is None:
             return []
@@ -503,7 +503,7 @@ class MarketApi:
         self, order_type: str, symbol: str, *, provider_name=None
     ) -> str:
         side = require_buy_sell_side(order_type, name="order_type")
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        if clean_scalar_str(symbol) is None:
             raise ValueError(f"Invalid symbol '{symbol}'.")
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         validate_open_fn = getattr(provider, "validate_open_order_symbol", None)
@@ -698,7 +698,7 @@ class MarketApi:
             allow_fallback=allow_fallback,
             now=evaluated_at,
         )
-        provider_str = provider_name
+        provider_str = clean_scalar_str(provider_name)
         if not provider_str:
             try:
                 p_obj = self._provider_explicit_or_routed(symbol, provider_name)
@@ -812,8 +812,8 @@ class MarketApi:
         # guarded .place(); this remains for internal and dry-run cases.
         provider_name = kwargs.pop("provider_name", None)
         provider = self._provider_explicit_or_routed(symbol, provider_name)
-        if force and "force" not in kwargs:
-            kwargs["force"] = force
+        if _parse_bool_flag(force, False) and "force" not in kwargs:
+            kwargs["force"] = True
         return provider.place_order(symbol, side, price, qty, **kwargs)
 
     def submit_order(
@@ -856,39 +856,38 @@ class MarketApi:
         provider = self._provider_explicit_or_routed(
             symbol, explicit_provider_name)
         prov_name = provider.name
+        base = clean_scalar_str(base)
+        quote = clean_scalar_str(quote)
         if inst_params is None:
             spec = MarketDataProvider.resolve_venue_instrument_spec(prov_name, symbol)
             if spec is not None:
                 inst_params = dict(spec.params or {})
-                base = base or spec.base or None
-                quote = quote or spec.quote or None
+                base = base or clean_scalar_str(spec.base)
+                quote = quote or clean_scalar_str(spec.quote)
             else:
                 inst_params = {}
         if base is None or quote is None:
             res_base, res_quote = resolve_assets(symbol, base=base, quote=quote)
-            base = base or res_base or None
+            base = base or clean_scalar_str(res_base)
             default_quote_fn = getattr(provider, "default_quote_asset", None)
             default_quote = (
                 default_quote_fn()
                 if callable(default_quote_fn)
                 else MarketDataProvider.default_quote_asset(provider)
             )
-            quote = quote or res_quote or default_quote
+            quote = quote or clean_scalar_str(res_quote) or clean_scalar_str(default_quote)
         inst = inst_cls(name=symbol, symbol=symbol, provider=prov_name,
                         base=base, quote=quote, params=inst_params or {}, api=self)
         return inst.place(side, price, qty, **kwargs)
 
     def supports_symbol(self, symbol: str) -> bool:
-        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
+        if clean_scalar_str(symbol) is None:
             return False
         return any(p.supports_symbol(symbol) for p in self._providers)
 
     def resolve_crypto_ohlc_provider(self, symbol: str) -> Optional[MarketDataProvider]:
         """Resolve the canonical crypto OHLC provider for ``symbol`` (including unconfigured reference pairs)."""
-        if isinstance(symbol, bool) or not isinstance(symbol, str):
-            return None
-        sym_u = symbol.strip().upper()
-        if not sym_u or is_equity_symbol(sym_u):
+        if (sym_u := clean_upper_scalar(symbol)) is None or is_equity_symbol(sym_u):
             return None
         crypto_provs = [p for p in self._providers if getattr(p, "_ASSET_SCOPE", "crypto") == "crypto"]
         for prov in crypto_provs:
@@ -922,7 +921,7 @@ class MarketApi:
         explicit_v = normalize_venue_name(explicit_venue)
         if explicit_v and MarketDataProvider.resolve_venue_provider_class(explicit_v) is not None:
             return explicit_v
-        sym_u = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
+        sym_u = clean_upper_scalar(symbol) or ""
         if (
             ":" in sym_u
             and (pref_v := normalize_venue_name(sym_u.split(":", 1)[0]))
@@ -952,9 +951,9 @@ class MarketApi:
         """
         if hasattr(name, "name") and isinstance(getattr(name, "name", None), str):
             name = name.name
-        if isinstance(name, bool) or not isinstance(name, str):
+        if (clean_name := clean_scalar_str(name)) is None:
             return None
-        key = name.strip().lower()
+        key = clean_name.lower()
         found = self._by_name.get(key)
         if found is not None:
             return found
