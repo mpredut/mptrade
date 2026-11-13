@@ -423,6 +423,8 @@ def aggregate_fills_by_order_id(
             qty = safe_nonneg_float(norm.get("qty"), default=0.0) or 0.0
             priced_qty = qty if (px > 0.0 and qty > 0.0) else 0.0
             ts_val = ts_ms if ts_ms is not None else 0
+            st_str = clean_upper_scalar(r.get("status"))
+            coid_str = extract_client_order_id(r)
             if key not in grouped:
                 grouped[key] = {
                     "orderId": parent_oid,
@@ -432,6 +434,8 @@ def aggregate_fills_by_order_id(
                     "qty": qty,
                     "fallback_price": px,
                     "timestamp": ts_val,
+                    "status": st_str,
+                    "clientOrderId": coid_str,
                 }
                 out.append(grouped[key])
             else:
@@ -441,22 +445,33 @@ def aggregate_fills_by_order_id(
                 g["qty"] += qty
                 if px > 0:
                     g["fallback_price"] = px
+                if st_str and (ts_val >= (g["timestamp"] or 0) or not g.get("status")):
+                    g["status"] = st_str
+                if coid_str and not g.get("clientOrderId"):
+                    g["clientOrderId"] = coid_str
                 if ts_val > (g["timestamp"] or 0):
                     g["timestamp"] = ts_val
         else:
             out.append(norm)
-    return [
-        {
-            "orderId": item["orderId"],
-            "side": item["side"],
-            "price": (item["cost"] / cost_qty) if (cost_qty := item.get("cost_qty", item["qty"])) > 0 else item["fallback_price"],
-            "qty": item["qty"],
-            "timestamp": item["timestamp"],
-        }
-        if "cost" in item
-        else item
-        for item in out
-    ]
+    res: List[dict] = []
+    for item in out:
+        if "cost" in item:
+            cost_qty = item.get("cost_qty", item["qty"])
+            entry = {
+                "orderId": item["orderId"],
+                "side": item["side"],
+                "price": (item["cost"] / cost_qty) if cost_qty > 0 else item["fallback_price"],
+                "qty": item["qty"],
+                "timestamp": item["timestamp"],
+            }
+            if item.get("status"):
+                entry["status"] = item["status"]
+            if item.get("clientOrderId"):
+                entry["clientOrderId"] = item["clientOrderId"]
+            res.append(entry)
+        else:
+            res.append(item)
+    return res
 
 
 def build_open_order_entry(

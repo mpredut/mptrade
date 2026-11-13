@@ -12,6 +12,7 @@ the strict StrategyExecutor path uses the same gate. Market-hours enforcement be
 to the instrument/strategy loop; this provider itself requests regular-hours orders.
 """
 import importlib
+import inspect
 import math
 import os
 import threading
@@ -33,8 +34,10 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
+    split_csv,
 )
-from cachepaths import CACHE_T212_TRADE_FILENAME, canonical_base_asset, same_canonical_base_asset
+from cachepaths import CACHE_T212_TRADE_FILENAME, cache_path, canonical_base_asset, same_canonical_base_asset
+from instrument_registry import symbols_for
 from .base import MarketDataProvider
 from .broker_history import (
     aggregate_broker_history_fills,
@@ -145,34 +148,84 @@ class T212Provider(MarketDataProvider):
     def supports_symbol(self, symbol: str) -> bool:
         return False  # explicit-only
 
+    @classmethod
+    def _build_client_from_dir(cls, *, trade_cache_path: Optional[str] = None):
+        # importlib accepts the historical folder name without global sys.path
+        # mutation and also works in the installable wheel.
+        T212Client = importlib.import_module("212trading.t212_client").T212Client
+        # Use gitignored 212trading credentials, with fleet environment precedence.
+        values = env_values_map(_T212_DIR, ("T212_API_KEY", "T212_API_SECRET"))
+        credentials = t212_credentials(values=values)
+        env = folder_or_env_value(_T212_DIR, "T212_ENV")
+        if not env:
+            raise RuntimeError("T212_ENV is missing (212trading/.env or environment)")
+
+        def _opt_float(key: str) -> Optional[float]:
+            raw = folder_or_env_value(_T212_DIR, key, strip_comments=True)
+            return safe_nonneg_float(raw, default=None) if raw else None
+
+        kwargs: dict[str, Any] = {
+            "min_gap_sec": _opt_float("T212_MIN_GAP_SEC"),
+            "portfolio_ttl_sec": _opt_float("T212_PORTFOLIO_TTL_SEC"),
+            "order_min_gap_sec": _opt_float("T212_ORDER_MIN_GAP_SEC"),
+        }
+        if trade_cache_path is not None:
+            kwargs["trade_cache_path"] = str(trade_cache_path)
+        return T212Client(credentials.key, credentials.secret, env, **kwargs), credentials.profile
+
+    @classmethod
+    def resolve_cache_daemon_config(cls) -> dict:
+        """Resolve Trading 212 periodic history/trade cache producer settings."""
+        values = env_values_map(
+            _T212_DIR,
+            (
+                "T212_CACHE_TICKERS",
+                "T212_CACHE_POLL_S",
+                "T212_CACHE_BACKOFF_INIT_S",
+                "T212_CACHE_BACKOFF_MAX_S",
+            ),
+        )
+        symbols = list(
+            dict.fromkeys(
+                s
+                for sym in [
+                    *symbols_for("t212"),
+                    *split_csv(values.get("T212_CACHE_TICKERS"), upper=True),
+                ]
+                if (s := str(sym or "").strip().upper())
+            )
+        )
+        if not symbols:
+            raise RuntimeError(
+                "No T212 cache symbols configured in instruments.conf or T212_CACHE_TICKERS"
+            )
+
+        def _req_pos_float(key: str) -> float:
+            val = safe_pos_float(values.get(key), default=None)
+            if val is None:
+                raise ValueError(f"Missing or invalid required T212 cache setting: {key}")
+            return val
+
+        return {
+            "symbols": symbols,
+            "poll_interval": _req_pos_float("T212_CACHE_POLL_S"),
+            "backoff_init": _req_pos_float("T212_CACHE_BACKOFF_INIT_S"),
+            "backoff_max": _req_pos_float("T212_CACHE_BACKOFF_MAX_S"),
+            "cache_file": cache_path(CACHE_T212_TRADE_FILENAME),
+        }
+
+    @classmethod
+    def build_cache_client(cls):
+        """Construct an isolated T212Client for the periodic cacheManager snapshot producer."""
+        return cls._build_client_from_dir(trade_cache_path=str(cache_path(CACHE_T212_TRADE_FILENAME)))
+
     def _client(self):
         if self._cli is not None:
             return self._cli
         with self._ensure_client_lock():
             if self._cli is not None:
                 return self._cli
-            # importlib accepts the historical folder name without global sys.path
-            # mutation and also works in the installable wheel.
-            T212Client = importlib.import_module("212trading.t212_client").T212Client
-            # Use gitignored 212trading credentials, with fleet environment precedence.
-            values = env_values_map(_T212_DIR, ("T212_API_KEY", "T212_API_SECRET"))
-            credentials = t212_credentials(values=values)
-            env = folder_or_env_value(_T212_DIR, "T212_ENV")
-            if not env:
-                raise RuntimeError("T212_ENV is missing (212trading/.env or environment)")
-
-            def _opt_float(key: str) -> Optional[float]:
-                raw = folder_or_env_value(_T212_DIR, key, strip_comments=True)
-                return safe_nonneg_float(raw, default=None) if raw else None
-
-            self._cli = T212Client(
-                credentials.key,
-                credentials.secret,
-                env,
-                min_gap_sec=_opt_float("T212_MIN_GAP_SEC"),
-                portfolio_ttl_sec=_opt_float("T212_PORTFOLIO_TTL_SEC"),
-                order_min_gap_sec=_opt_float("T212_ORDER_MIN_GAP_SEC"),
-            )
+            self._cli, _ = self._build_client_from_dir()
             return self._cli
 
     def _position(self, symbol: str, *, strict: bool = False) -> Optional[dict]:
@@ -247,61 +300,166 @@ class T212Provider(MarketDataProvider):
     _REMOTE_TRADES_CLIENT_ATTR = "refresh_order_history"
     _VALIDATE_REMOTE_TRADES_SYMBOL = False
 
+    @staticmethod
+    def _call_refresh_order_history(
+        cli: Any,
+        *,
+        max_age_sec: float = 0.0,
+        publish_cache: bool = False,
+        sync_trade_cache: bool = True,
+    ) -> Any:
+        refresh_fn = getattr(cli, "refresh_order_history", None)
+        if not callable(refresh_fn):
+            return None
+        kw: dict[str, Any] = {"max_age_sec": max_age_sec}
+        try:
+            params = inspect.signature(refresh_fn).parameters
+            has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+            if has_varkw or "publish_cache" in params:
+                kw["publish_cache"] = publish_cache
+            if (has_varkw or "sync_trade_cache" in params) and not sync_trade_cache:
+                kw["sync_trade_cache"] = False
+        except (TypeError, ValueError):
+            pass
+        return refresh_fn(**kw)
+
+    @classmethod
+    def fetch_history_fills_by_symbol(
+        cls,
+        client,
+        *,
+        symbols=None,
+        publish_shared_cache: bool = True,
+    ) -> dict[str, list[dict]]:
+        """Query T212 order history via ``client`` and group normalized fills by ticker."""
+        pub_shared = _parse_bool_flag(publish_shared_cache, default=True)
+        items = cls._call_refresh_order_history(
+            client,
+            max_age_sec=0.0,
+            publish_cache=pub_shared,
+            sync_trade_cache=False,
+        )
+        if items is None or not isinstance(items, list):
+            raise ProviderError("T212 order history refresh failed")
+        raw_by_sym = cls.normalize_history_items(items) if items else {}
+        by_sym: dict[str, list[dict]] = {
+            str(s).strip().upper(): []
+            for s in (symbols or ())
+            if s and not isinstance(s, bool) and str(s).strip() and str(s).strip() != "*"
+        }
+        if isinstance(raw_by_sym, dict):
+            for sym_k, rows in raw_by_sym.items():
+                if not isinstance(sym_k, str) or not isinstance(rows, list):
+                    continue
+                key_u = sym_k.strip().upper()
+                if not key_u:
+                    continue
+                matched_key = next(
+                    (cfg_s for cfg_s in by_sym if cfg_s == key_u or _t212_tickers_match(cfg_s, key_u)),
+                    key_u,
+                )
+                bucket = by_sym.setdefault(matched_key, [])
+                for r in rows:
+                    if isinstance(r, dict):
+                        r_copy = dict(r)
+                        r_copy["symbol"] = matched_key
+                        bucket.append(r_copy)
+        for lst in by_sym.values():
+            lst.sort(key=lambda r: (r.get("timestamp") or r.get("time") or 0, str(r.get("orderId") or "")))
+        return by_sym
+
     def _remote_trade_rows_for_symbol(
         self, symbol: str, sym_u: str, start_ms: float, *, client=None
     ) -> Any:
-        cli = client if client is not None else self._client()
-        refresh_fn = getattr(cli, "refresh_order_history", None)
-        if not callable(refresh_fn):
-            return []
-        items = refresh_fn(max_age_sec=0.0)
-        if not isinstance(items, list) or not items:
-            return []
-        by_sym = self.normalize_history_items(items)
-        if not isinstance(by_sym, dict):
-            return []
-        return [
-            r
-            for k, rows in by_sym.items()
-            if isinstance(k, str)
-            and isinstance(rows, list)
-            and (k.upper() == sym_u or _t212_tickers_match(symbol, k))
-            for r in rows
-        ]
+        del sym_u, start_ms
+        return self._fills_from_api(
+            symbol, publish_cache=False, client=client, allow_cache_fallback=False
+        )
 
-    def _fills_from_api(self, symbol: str, *, publish_cache: bool = False) -> List[dict]:
+    def _merge_passive_cached_fills(
+        self, symbol: str, sym_u: str, cache_file: str, live_rows: List[dict]
+    ) -> List[dict]:
+        """Merge persisted SSOT trade-cache rows for ``symbol`` with ``live_rows`` in memory without writing to disk."""
+        tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
+        if tm_cls is None:
+            return live_rows
+        snap = tm_cls._load_venue_snapshot_dict(
+            cache_file, create=False, repair_files=False
+        )
+        if not isinstance(snap, dict) or not isinstance(snap.get("items"), dict):
+            return live_rows
+        items_map = snap["items"]
+        keys = tm_cls.matching_snapshot_keys(
+            items_map, symbol, match_fn=_t212_tickers_match
+        )
+        if not keys:
+            return live_rows
+        persisted: list[dict] = []
+        for k in keys:
+            rows = items_map.get(k)
+            if isinstance(rows, list):
+                persisted.extend(dict(r) for r in rows if isinstance(r, dict))
+        if not persisted:
+            return live_rows
+        scratch: dict[str, Any] = {"items": {}, "fetchtime": {}}
+        tm_cls.merge_venue_fills_into_dict(scratch, {sym_u: persisted})
+        if live_rows:
+            tm_cls.merge_venue_fills_into_dict(scratch, {sym_u: live_rows})
+        merged = scratch["items"].get(sym_u)
+        return merged if isinstance(merged, list) else live_rows
+
+    def _fills_from_api(
+        self,
+        symbol: str,
+        *,
+        publish_cache: bool = False,
+        client: Any = None,
+        allow_cache_fallback: bool = True,
+    ) -> List[dict]:
         """Fetch recent T212 order history and return normalized fills for ``symbol``."""
         if (sym_u := clean_upper_scalar(symbol)) is None:
             return []
-        pub_cache = _parse_bool_flag(publish_cache, False)
-        cache_file = self._fills_cache_file()
+        pub = _parse_bool_flag(publish_cache, False)
+        cache_file = self._fills_cache_file() if (pub or allow_cache_fallback) else None
         try:
-            cli = self._client()
-            refresh_fn = getattr(cli, "refresh_order_history", None)
-            items = None
-            if callable(refresh_fn):
-                if (
-                    (pub_cache or getattr(self, "_ssot_fills_cache_path", None))
-                    and cache_file
-                    and not getattr(cli, "_trade_cache_path", None)
-                ):
-                    cli._trade_cache_path = str(cache_file)
-                items = refresh_fn(max_age_sec=0.0)
+            cli = client if client is not None else self._client()
+            items = self._call_refresh_order_history(
+                cli,
+                max_age_sec=0.0,
+                publish_cache=pub,
+                sync_trade_cache=not (pub and bool(cache_file)),
+            )
             if isinstance(items, list):
-                by_sym = self.normalize_history_items(items) if items else {}
-                if pub_cache and cache_file:
-                    to_publish = dict(by_sym)
-                    if not any(k.upper() == sym_u or _t212_tickers_match(symbol, k) for k in to_publish):
+                raw_by_sym = self.normalize_history_items(items) if items else {}
+                by_sym = raw_by_sym if isinstance(raw_by_sym, dict) else {}
+                if pub and cache_file:
+                    to_publish = {
+                        k: rows
+                        for k, rows in by_sym.items()
+                        if isinstance(k, str) and isinstance(rows, list)
+                    }
+                    if not any(
+                        k.upper() == sym_u or _t212_tickers_match(symbol, k)
+                        for k in to_publish
+                    ):
                         to_publish[sym_u] = []
                     self.merge_ssot_fills_cache(cache_file, to_publish)
-                if by_sym:
-                    matched: List[dict] = []
-                    for k, rows in by_sym.items():
-                        if k.upper() == sym_u or _t212_tickers_match(symbol, k):
-                            matched.extend(rows)
-                    if matched:
-                        return matched
-            if cache_file:
+                matched = [
+                    r
+                    for k, rows in by_sym.items()
+                    if isinstance(k, str)
+                    and isinstance(rows, list)
+                    and (k.upper() == sym_u or _t212_tickers_match(symbol, k))
+                    for r in rows
+                ]
+                if not allow_cache_fallback or not cache_file:
+                    return matched
+                if pub:
+                    cached = self._fills_from_cache(symbol)
+                    if cached is not None:
+                        return cached
+                return self._merge_passive_cached_fills(symbol, sym_u, cache_file, matched)
+            if allow_cache_fallback and cache_file:
                 cached = self._fills_from_cache(symbol)
                 if cached is not None:
                     return cached
@@ -622,7 +780,7 @@ class T212Provider(MarketDataProvider):
         raw_orig = raw.get("orderedQuantity") if raw.get("orderedQuantity") is not None else raw.get("quantity")
         orig_f = safe_float(raw_orig, default=None)
         orig_qty = abs(orig_f) if orig_f is not None else None
-        if normalized == "closed":
+        if normalized == "closed" or (normalized in {"canceled", "expired"} and filled_qty > 0):
             self._invalidate_fills_cache(expected_symbol or ticker)
 
         return OrderStatus(

@@ -831,6 +831,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         orig_qty = parse_nonneg_order_field(info.get("vol"))
         if None in (filled_qty, cost, fee, orig_qty):
             raise ProviderError(f"order_status {order_id}: invalid fill values")
+        if norm_status == "closed" or (norm_status in {"canceled", "expired"} and filled_qty > 0):
+            self._invalidate_fills_cache(symbol)
         return OrderStatus(
             status=norm_status,
             filled_qty=filled_qty,
@@ -873,6 +875,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         except Exception as e:  # noqa: BLE001
             msg = str(e).lower()
             if "unknown order" in msg or "already" in msg:
+                self._invalidate_fills_cache(symbol)
                 return                       # Idempotent: already closed or canceled.
             raise ProviderError(f"cancel_order {order_id}: {e}") from e
         if not isinstance(result, dict) or "count" not in result:
@@ -883,6 +886,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             raise ProviderError(
                 f"cancel_order {order_id}: Kraken did not confirm the cancellation ({result})"
             )
+        self._invalidate_fills_cache(symbol)
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         try:

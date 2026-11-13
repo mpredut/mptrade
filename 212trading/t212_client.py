@@ -107,6 +107,8 @@ class T212Client:
         self._ord_cache: tuple[float, list] | None = None
         self._cash_cache: tuple[float, dict] | None = None
         self._hist_cache: tuple[float, list] | None = None
+        self._hist_cache_shared_published: bool = False
+        self._hist_cache_trades_synced: bool = False
         self._instr_cache: tuple[float, list] | None = None
         self._pf_ttl = safe_nonneg_float(
             required_float_env("T212_PORTFOLIO_TTL_SEC") if portfolio_ttl_sec is None else portfolio_ttl_sec,
@@ -227,7 +229,9 @@ class T212Client:
         except Exception:
             pass
 
-    def _write_shared_cache(self, attr: str, data: list | dict) -> None:
+    def _write_shared_cache(
+        self, attr: str, data: list | dict, *, sync_trade_cache: bool = True
+    ) -> None:
         if not self._shared_cache_enabled():
             return
         now_ts = time.time()
@@ -256,7 +260,7 @@ class T212Client:
                             pass
                 payload[attr] = {"ts": now_ts, "data": data}
                 atomic_write_json(self._shared_cache_path, payload)
-            if attr == "_hist_cache" and isinstance(data, list):
+            if attr == "_hist_cache" and isinstance(data, list) and _parse_bool_flag(sync_trade_cache, default=True):
                 self._sync_trade_cache(data)
         except Exception:
             pass
@@ -271,6 +275,8 @@ class T212Client:
         for attr in ("_ord_cache", "_pf_cache", "_cash_cache", "_hist_cache"):
             setattr(self, attr, None)
             self._fetch_fail.pop(attr, None)
+        self._hist_cache_shared_published = False
+        self._hist_cache_trades_synced = False
         if self._shared_cache_enabled():
             try:
                 with self._shared_cache_file_lock():
@@ -442,9 +448,18 @@ class T212Client:
         items = self._fresh_hist_cache(ttl)
         return extract_broker_history_matches(items, target_oid) if items is not None else []
 
-    def _store_shared_hist_cache(self, s_age: float, s_val: list) -> None:
+    def _store_shared_hist_cache(
+        self,
+        s_age: float,
+        s_val: list,
+        *,
+        shared_published: bool = False,
+        trades_synced: bool = False,
+    ) -> None:
         with self._lock:
             self._hist_cache = (time.monotonic() - s_age, s_val)
+            self._hist_cache_shared_published = _parse_bool_flag(shared_published, default=False)
+            self._hist_cache_trades_synced = _parse_bool_flag(trades_synced, default=False)
             self._fetch_fail.pop("_hist_cache", None)
 
     def get_historical_order(self, order_id) -> dict | bool | None:
@@ -467,10 +482,10 @@ class T212Client:
                         if s_hit and isinstance(s_val, list):
                             s_matches = extract_broker_history_matches(s_val, target_oid)
                             if s_matches:
-                                self._store_shared_hist_cache(s_age, s_val)
+                                self._store_shared_hist_cache(s_age, s_val, shared_published=True)
                                 matches = s_matches
                     if not matches:
-                        items = self._fetch_order_history_locked()
+                        items = self._fetch_order_history_locked(publish_cache=False)
                         if items is None:
                             s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache("_hist_cache", 600.0)
                             if s_fb_hit and isinstance(s_fb_val, list):
@@ -505,8 +520,10 @@ class T212Client:
                 return None
             return hc[1]
 
-    def _fetch_order_history_locked(self) -> list | None:
-        """Fetch latest 50 order history entries under ``_fetch_lock`` and persist caches."""
+    def _fetch_order_history_locked(
+        self, *, publish_cache: bool = False, sync_trade_cache: bool = True
+    ) -> list | None:
+        """Fetch latest 50 order history entries under ``_fetch_lock`` and persist caches only when ``publish_cache=True``."""
         status, body = http_get(
             f"{self.base}/equity/history/orders?limit=50",
             headers=self._headers("_hist_cache"),
@@ -521,26 +538,71 @@ class T212Client:
             return self._record_read_fail("order history (invalid JSON)", status, "_hist_cache")
         items = payload.get("items", []) if isinstance(payload, dict) else payload
         if isinstance(items, list):
-            self._store_shared_hist_cache(0.0, items)
-            self._write_shared_cache("_hist_cache", items)
+            pub = _parse_bool_flag(publish_cache, default=False)
+            sync_trades = _parse_bool_flag(sync_trade_cache, default=True)
+            self._store_shared_hist_cache(
+                0.0,
+                items,
+                shared_published=pub,
+                trades_synced=(pub and sync_trades),
+            )
+            if pub:
+                self._write_shared_cache("_hist_cache", items, sync_trade_cache=sync_trades)
+                if sync_trades and not self._shared_cache_enabled():
+                    self._sync_trade_cache(items)
             return items
         return []
 
-    def refresh_order_history(self, *, max_age_sec: float | None = None) -> list | None:
-        """Return recent order history items, refreshing from T212 and syncing trade cache when stale."""
+    def refresh_order_history(
+        self,
+        *,
+        max_age_sec: float | None = None,
+        publish_cache: bool = False,
+        sync_trade_cache: bool = True,
+    ) -> list | None:
+        """Return recent order history items, persisting disk caches only when ``publish_cache=True``."""
+        pub = _parse_bool_flag(publish_cache, default=False)
+        sync_trades = _parse_bool_flag(sync_trade_cache, default=True)
         ttl = max(1.0, safe_nonneg_float(max_age_sec, default=self._pf_ttl))
-        if (cached := self._fresh_hist_cache(ttl, require_list=True)) is not None:
+        already_persisted = not pub or (
+            getattr(self, "_hist_cache_shared_published", False)
+            and (not sync_trades or getattr(self, "_hist_cache_trades_synced", False))
+        )
+        if already_persisted and (
+            cached := self._fresh_hist_cache(ttl, require_list=True)
+        ) is not None:
             return cached
         with self._fetch_lock:
             with self._shared_cache_file_lock():
                 if (cached := self._fresh_hist_cache(ttl, require_list=True)) is not None:
+                    if pub:
+                        need_shared = not getattr(self, "_hist_cache_shared_published", False)
+                        need_trades = sync_trades and not getattr(self, "_hist_cache_trades_synced", False)
+                        if need_shared:
+                            self._write_shared_cache("_hist_cache", cached, sync_trade_cache=need_trades)
+                            if need_trades and not self._shared_cache_enabled():
+                                self._sync_trade_cache(cached)
+                        elif need_trades:
+                            self._sync_trade_cache(cached)
+                        with self._lock:
+                            self._hist_cache_shared_published = True
+                            if sync_trades:
+                                self._hist_cache_trades_synced = True
                     return cached
                 s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", ttl)
                 if s_hit and isinstance(s_val, list):
-                    self._store_shared_hist_cache(s_age, s_val)
-                    self._sync_trade_cache(s_val)
+                    self._store_shared_hist_cache(
+                        s_age,
+                        s_val,
+                        shared_published=True,
+                        trades_synced=(pub and sync_trades),
+                    )
+                    if pub and sync_trades:
+                        self._sync_trade_cache(s_val)
                     return s_val
-                return self._fetch_order_history_locked()
+                return self._fetch_order_history_locked(
+                    publish_cache=pub, sync_trade_cache=sync_trades
+                )
 
     def latest_filled_order_for_ticker(
         self,
@@ -549,19 +611,28 @@ class T212Client:
         *,
         refresh: bool = False,
         max_age_sec: float | None = None,
+        publish_cache: bool = False,
     ) -> dict | None:
-        """Return the most recent normalized FILLED order for ``ticker`` (and optional ``side``)."""
+        """Return the most recent normalized terminal order with positive execution for ``ticker`` (and optional ``side``)."""
         tkr = str(ticker or "").strip().upper()
         if not tkr:
             return None
-        items = self.refresh_order_history(max_age_sec=max_age_sec) if refresh else None
+        items = (
+            self.refresh_order_history(max_age_sec=max_age_sec, publish_cache=publish_cache)
+            if refresh
+            else None
+        )
         if not isinstance(items, list):
             with self._lock:
                 hc = getattr(self, "_hist_cache", None)
                 items = hc[1] if (hc and isinstance(hc[1], list)) else None
         if not isinstance(items, list):
-            s_hit, s_val, _ = self._read_shared_cache("_hist_cache", 86400.0)
-            items = s_val if (s_hit and isinstance(s_val, list)) else []
+            s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", 86400.0)
+            if s_hit and isinstance(s_val, list):
+                self._store_shared_hist_cache(s_age, s_val, shared_published=True)
+                items = s_val
+            else:
+                items = []
         by_sym = normalize_broker_history_items(items)
         sym_orders = by_sym.get(tkr) or next(
             (v for k, v in by_sym.items() if same_canonical_base_asset(tkr, k)),

@@ -324,3 +324,77 @@ def test_212trading_order_manager_waiting_with_sentinel_order_id_returns_false_i
         dummy_client, "NVDA_US_EQ", 1.0, 100.0, "DAY", dry_run=False, write_marker=True
     )
     assert res_wait is False
+
+
+def test_212trading_order_manager_partial_fill_on_cancelled_or_expired_order(tmp_path, monkeypatch):
+    """poll_order_until_terminal and _reconcile_record preserve actual filledQuantity on CANCELLED/EXPIRED without conflating orderedQuantity."""
+    om = load_venue_modules("212trading", "order_manager")
+    notified = []
+    monkeypatch.setattr(om, "notify", lambda **kw: notified.append(kw))
+    monkeypatch.setattr(om, "_marker_path", lambda ticker, test=False: str(tmp_path / f"marker_{ticker}.json"))
+    monkeypatch.setattr(om, "get_price_usd", lambda _sym: 150.0)
+
+    # 1. Unfilled EXPIRED order with orderedQuantity=5.0 does NOT report 5.0 shares filled
+    unfilled_cli = SimpleNamespace(
+        get_order_status=lambda _oid: {
+            "id": "exp-0",
+            "status": "EXPIRED",
+            "orderedQuantity": 5.0,
+            "filledQuantity": 0.0,
+            "limitPrice": 150.0,
+        }
+    )
+    om.poll_order_until_terminal(unfilled_cli, "exp-0", "NVDA_US_EQ")
+    assert notified[-1]["title"].startswith("✗ Order EXPIRED")
+    assert "q5" not in notified[-1]["body"]
+
+    # 2. Partially filled CANCELLED order persists actual filled_qty and notifies partial fill
+    marker_file = tmp_path / "marker_NVDA_US_EQ.json"
+    marker_file.write_text(json.dumps({
+        "version": 2,
+        "ticker": "NVDA_US_EQ",
+        "qty": 5.0,
+        "limit_price": 150.0,
+        "lifecycle": "accepted",
+        "order_id": "canc-part-1",
+        "lookup_misses": 0,
+        "next_retry_at": 0.0,
+    }), encoding="utf-8")
+    part_cli = SimpleNamespace(
+        list_active_orders=lambda: [],
+        get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": 1.25}],
+        get_order_status=lambda _oid: {
+            "id": "canc-part-1",
+            "status": "CANCELLED",
+            "orderedQuantity": 5.0,
+            "filledQuantity": 1.25,
+            "filledValue": 186.25,
+            "limitPrice": 150.0,
+        },
+    )
+    res = om.place_order_with_retry(
+        part_cli, "NVDA_US_EQ", 5.0, 150.0, "DAY", dry_run=False, write_marker=True
+    )
+    assert res is False
+    assert "partial fill" in notified[-1]["title"]
+    assert "q1.25 @ 149.0" in notified[-1]["body"]
+    saved = json.loads(marker_file.read_text(encoding="utf-8"))
+    assert saved["lifecycle"] == "canceled"
+    assert saved["filled_qty"] == pytest.approx(1.25)
+    assert saved["fill_price"] == pytest.approx(149.0)
+
+    # 3. Partially filled EXPIRED SELL order with negative filledQuantity & negative filledValue derives exact fill price
+    sell_cli = SimpleNamespace(
+        get_order_status=lambda _oid: {
+            "id": "exp-sell-part-1",
+            "status": "EXPIRED",
+            "orderedQuantity": -4.0,
+            "filledQuantity": -1.5,
+            "filledValue": -232.5,
+            "limitPrice": 150.0,
+        }
+    )
+    info_sell = om.poll_order_until_terminal(sell_cli, "exp-sell-part-1", "NVDA_US_EQ")
+    assert isinstance(info_sell, dict)
+    assert "partial fill" in notified[-1]["title"]
+    assert "q1.5 @ 155.0" in notified[-1]["body"]

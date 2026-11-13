@@ -4,6 +4,7 @@ import math
 from typing import Any, Mapping, Optional
 
 from botcore import (
+    _pos_abs_float,
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
@@ -124,7 +125,8 @@ def aggregate_broker_history_fills(matches: list[tuple[dict, Optional[dict]]]) -
         result["filledValue"] = total_cost
         if priced_qty > 0:
             result["fillPrice"] = total_cost / priced_qty
-    result["fee"] = total_fee
+    if total_fee > 0 or result.get("fee") is None:
+        result["fee"] = total_fee
     if fee_currencies:
         result["_feeCurrencies"] = sorted(fee_currencies)
     if latest_fill_ts_ms is not None:
@@ -132,25 +134,65 @@ def aggregate_broker_history_fills(matches: list[tuple[dict, Optional[dict]]]) -
     return result
 
 
+_TERMINAL_BROKER_HISTORY_STATUSES = frozenset({
+    "FILLED",
+    "CANCELLED",
+    "CANCELED",
+    "REPLACED",
+    "REJECTED",
+    "EXPIRED",
+})
+
+
 def normalize_broker_history_items(items: Any) -> dict[str, list[dict]]:
-    """Group FILLED broker order-history items by ticker and orderId into canonical fill records."""
+    """Group terminal broker order-history items with executed quantity by ticker and orderId."""
     grouped: dict[str, list[tuple[dict, Optional[dict]]]] = {}
     for oid, order, fill in iter_broker_history_order_fills(items):
-        if str(order.get("status") or "").strip().upper() == "FILLED":
+        if (clean_upper_scalar(order.get("status")) or "") in _TERMINAL_BROKER_HISTORY_STATUSES:
             grouped.setdefault(oid, []).append((order, fill if isinstance(fill, dict) else None))
     by_symbol: dict[str, list[dict]] = {}
     for oid, matches in grouped.items():
         enriched = aggregate_broker_history_fills(matches)
+        status_u = clean_upper_scalar(enriched.get("status")) or "FILLED"
         ticker = extract_broker_order_ticker(enriched).upper()
         if not ticker:
             continue
-        raw_qty, side = extract_broker_signed_qty_and_side(enriched)
-        qty = first_pos_float(enriched.get("filledQuantity"), abs(raw_qty))
-        px = first_pos_float(enriched.get("fillPrice"), enriched.get("limitPrice"))
+        raw_qty = safe_float(
+            enriched.get("orderedQuantity")
+            if enriched.get("orderedQuantity") is not None
+            else enriched.get("quantity"),
+            default=0.0,
+        ) or 0.0
+        sign_qty = raw_qty
+        if sign_qty == 0.0:
+            for orig_ord, orig_fill in matches:
+                cand_q = safe_float(
+                    orig_ord.get("filledQuantity")
+                    if orig_ord.get("filledQuantity") is not None
+                    else (orig_fill.get("quantity") if isinstance(orig_fill, dict) else None),
+                    default=0.0,
+                ) or 0.0
+                if cand_q != 0.0:
+                    sign_qty = cand_q
+                    break
+        side = extract_order_side(enriched) or ("SELL" if sign_qty < 0 else "BUY")
+        exec_qty = first_pos_float(
+            _pos_abs_float(enriched.get("filledQuantity")),
+            _pos_abs_float(enriched.get("executedQty")),
+        )
+        qty = first_pos_float(exec_qty, abs(raw_qty)) if status_u == "FILLED" else exec_qty
+        filled_val = _pos_abs_float(enriched.get("filledValue"))
+        derived_px = (filled_val / qty) if (filled_val is not None and qty is not None and qty > 0.0) else None
+        px = first_pos_float(
+            _pos_abs_float(enriched.get("fillPrice")),
+            _pos_abs_float(enriched.get("averagePrice")),
+            derived_px,
+            _pos_abs_float(enriched.get("limitPrice")),
+        )
         ts_ms = enriched.get("_timestamp_ms")
         if qty is None or px is None or ts_ms is None:
             continue
-        cost = safe_pos_float(enriched.get("filledValue"), default=px * qty) or (px * qty)
+        cost = safe_pos_float(filled_val, default=px * qty) or (px * qty)
         fee = safe_nonneg_float(enriched.get("fee"), default=0.0) or 0.0
         by_symbol.setdefault(ticker, []).append({
             "symbol": ticker,
@@ -164,7 +206,7 @@ def normalize_broker_history_items(items: Any) -> dict[str, list[dict]]:
             "fee": round(fee, 6),
             "timestamp": math.trunc(ts_ms),
             "time": math.trunc(ts_ms),
-            "status": "FILLED",
+            "status": status_u,
         })
     for sym_list in by_symbol.values():
         sym_list.sort(key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))

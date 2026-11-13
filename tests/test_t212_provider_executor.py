@@ -1,6 +1,7 @@
 """The StrategyExecutor contract for Trading212, without network or real keys."""
 
 import importlib
+import json
 import os
 import sys
 import time
@@ -625,6 +626,20 @@ class T212ClientTransportTest(TempDirTestCase):
         with patch.object(t212_client, "http_get", side_effect=[(404, b""), (200, hist_body)]):
             ord_res = c1.get_order_status(777)
         self.assertEqual(ord_res["status"], "FILLED")
+        # Passive 404 -> history reconciliation populates in-memory _hist_cache without writing disk caches
+        self.assertTrue(os.path.exists(stale_tmp))
+        self.assertFalse(os.path.exists(trade_cache_file))
+
+        latest_buy = c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="BUY", refresh=False)
+        self.assertIsNotNone(latest_buy)
+        self.assertEqual(latest_buy["orderId"], "777")
+        self.assertAlmostEqual(latest_buy["price"], 156.47)
+        self.assertIsNone(c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="SELL", refresh=False))
+
+        # Explicit producer publication persists _hist_cache (cleaning stale .tmp) and syncs _trade_cache_path
+        with patch.object(t212_client, "http_get", side_effect=AssertionError("unexpected HTTP call")):
+            published_hist = c1.refresh_order_history(max_age_sec=0.0, publish_cache=True)
+        self.assertEqual(len(published_hist), 2)
         self.assertFalse(os.path.exists(stale_tmp))
         self.assertTrue(os.path.exists(trade_cache_file))
         saved_trades = read_json_dict(trade_cache_file, default={})
@@ -635,12 +650,6 @@ class T212ClientTransportTest(TempDirTestCase):
         self.assertEqual(row["side"], "BUY")
         self.assertAlmostEqual(row["price"], 156.47)
         self.assertAlmostEqual(row["qty"], 4.01)
-
-        latest_buy = c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="BUY", refresh=False)
-        self.assertIsNotNone(latest_buy)
-        self.assertEqual(latest_buy["orderId"], "777")
-        self.assertAlmostEqual(latest_buy["price"], 156.47)
-        self.assertIsNone(c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="SELL", refresh=False))
 
         # Verify T212Provider.get_orders reads real BUY/SELL fills from cache_trade_t212.json
         now_ms = int(time.time() * 1000)
@@ -1246,3 +1255,302 @@ def test_t212provider__signed_qty_aliases_and_positional_force_in_place_order_it
     )
     res_t212 = t212.place_order("AAPL_US_EQ", "LONG", 180.0, 1.5, True)
     assert res_t212["orderId"] == "98765" and res_t212["quantity"] == pytest.approx(1.5)
+
+
+def test_t212_history_retains_partial_fills_on_cancelled_and_expired_orders(tmp_path):
+    """Terminal CANCELLED/EXPIRED orders with positive executed quantity retain actual fill qty and terminal status."""
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60.0))
+    later_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 30.0))
+    raw_items = [
+        {
+            "order": {
+                "id": 1001,
+                "ticker": "NVDA_US_EQ",
+                "status": "CANCELLED",
+                "type": "LIMIT",
+                "orderedQuantity": 5.0,
+                "limitPrice": 150.0,
+            },
+            "fill": {
+                "id": 5001,
+                "quantity": 1.0,
+                "price": 149.5,
+                "filledAt": now_iso,
+                "walletImpact": {"taxes": []},
+            },
+        },
+        {
+            "order": {
+                "id": 1002,
+                "ticker": "NVDA_US_EQ",
+                "status": "CANCELLED",
+                "type": "LIMIT",
+                "orderedQuantity": 4.0,
+                "limitPrice": 148.0,
+                "createdAt": now_iso,
+            },
+            "fill": None,
+        },
+        {
+            "order": {
+                "id": 1003,
+                "ticker": "NVDA_US_EQ",
+                "status": "EXPIRED",
+                "type": "LIMIT",
+                "orderedQuantity": -3.0,
+                "limitPrice": 155.0,
+            },
+            "fill": {
+                "id": 5002,
+                "quantity": -1.0,
+                "price": 155.25,
+                "filledAt": later_iso,
+                "walletImpact": {"taxes": []},
+            },
+        },
+        {
+            "order": {
+                "id": 1004,
+                "ticker": "NVDA_US_EQ",
+                "status": "EXPIRED",
+                "type": "LIMIT",
+                "orderedQuantity": -2.0,
+                "limitPrice": 160.0,
+                "createdAt": later_iso,
+            },
+            "fill": None,
+        },
+    ]
+
+    by_sym = T212Provider.normalize_history_items(raw_items)
+    assert list(by_sym.keys()) == ["NVDA_US_EQ"]
+    rows = by_sym["NVDA_US_EQ"]
+    assert [r["orderId"] for r in rows] == ["1001", "1003"]
+    assert rows[0]["side"] == "BUY"
+    assert rows[0]["qty"] == pytest.approx(1.0)
+    assert rows[0]["executedQty"] == pytest.approx(1.0)
+    assert rows[0]["price"] == pytest.approx(149.5)
+    assert rows[0]["status"] == "CANCELLED"
+    assert rows[1]["side"] == "SELL"
+    assert rows[1]["qty"] == pytest.approx(1.0)
+    assert rows[1]["executedQty"] == pytest.approx(1.0)
+    assert rows[1]["price"] == pytest.approx(155.25)
+    assert rows[1]["status"] == "EXPIRED"
+
+    cli = t212_client.T212Client(
+        "demo-key", "demo-secret", env="demo",
+        min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
+        enable_shared_disk_cache=False,
+    )
+    cli._store_shared_hist_cache(0.0, raw_items)
+    latest_sell = cli.latest_filled_order_for_ticker("NVDA_US_EQ", side="SELL", refresh=False)
+    assert latest_sell is not None and latest_sell["orderId"] == "1003"
+    assert latest_sell["qty"] == pytest.approx(1.0) and latest_sell["status"] == "EXPIRED"
+
+    prov = T212Provider(client=cli, live_enabled=False)
+    fills_cache = tmp_path / "cache_trade_t212.json"
+    prov._ssot_fills_cache_path = str(fills_cache)
+    buys = prov.get_orders("NVDA_US_EQ", "BUY", 3600.0, authoritative=True, publish_cache=False)
+    sells = prov.get_orders("NVDA_US_EQ", "SELL", 3600.0, authoritative=True, publish_cache=False)
+    assert len(buys) == 1 and buys[0]["orderId"] == "1001" and buys[0]["qty"] == pytest.approx(1.0)
+    assert buys[0]["status"] == "CANCELLED"
+    assert len(sells) == 1 and sells[0]["orderId"] == "1003" and sells[0]["qty"] == pytest.approx(1.0)
+    assert sells[0]["status"] == "EXPIRED"
+    assert prov.last_opposite_fill("NVDA_US_EQ", "BUY", since_s=3600.0) == pytest.approx(155.25)
+    assert not fills_cache.exists()
+
+    # Expired order with positive filledQuantity invalidates stale fills cache on order_status()
+    fills_cache.write_text(
+        json.dumps({"items": {"NVDA_US_EQ": []}, "fetchtime": {"NVDA_US_EQ": int(time.time() * 1000)}}),
+        encoding="utf-8",
+    )
+    with patch.object(
+        cli,
+        "get_order_status",
+        return_value={
+            "id": 1003,
+            "ticker": "NVDA_US_EQ",
+            "status": "EXPIRED",
+            "orderedQuantity": -3.0,
+            "filledQuantity": -1.0,
+            "filledValue": -155.25,
+        },
+    ):
+        st = prov.order_status("NVDA_US_EQ", "1003")
+    assert st.status == "expired" and st.filled_qty == pytest.approx(1.0)
+    after_inv = json.loads(fills_cache.read_text(encoding="utf-8"))
+    assert "NVDA_US_EQ" not in after_inv.get("fetchtime", {})
+
+
+def test_t212_publish_cache_false_does_not_write_caches_even_on_shared_cache_hit(tmp_path):
+    """publish_cache=False propagates to T212Client.refresh_order_history and avoids mutating SSOT or shared disk caches."""
+    shared_file = tmp_path / ".t212_shared_cache_test.json"
+    trade_cache_file = tmp_path / "cache_trade_t212.json"
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 20.0))
+    hist_items = [
+        {
+            "order": {"id": 2001, "ticker": "SPCX_US_EQ", "status": "FILLED", "orderedQuantity": 2.0},
+            "fill": {"id": 6001, "quantity": 2.0, "price": 140.0, "filledAt": now_iso, "walletImpact": {"taxes": []}},
+        }
+    ]
+    hist_body = json.dumps({"items": hist_items}).encode("utf-8")
+
+    cli = t212_client.T212Client(
+        "demo-key", "demo-secret", env="demo",
+        min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
+        shared_cache_path=str(shared_file),
+        enable_shared_disk_cache=True,
+    )
+    prov = T212Provider(client=cli, live_enabled=False)
+    prov._ssot_fills_cache_path = str(trade_cache_file)
+
+    with patch.object(t212_client, "http_get", return_value=(200, hist_body)):
+        orders = prov.get_orders("SPCX_US_EQ", "BUY", 3600.0, publish_cache=False)
+        assert len(orders) == 1 and orders[0]["orderId"] == "2001"
+        assert not trade_cache_file.exists()
+        assert not shared_file.exists()
+
+        cli._hist_cache = None
+        remote_rows = prov.fetch_remote_trades("SPCX_US_EQ", 0)
+        assert len(remote_rows) == 1 and remote_rows[0]["orderId"] == "2001"
+        assert not trade_cache_file.exists()
+        assert not shared_file.exists()
+
+    shared_file.write_text(
+        json.dumps({"_hist_cache": {"ts": time.time(), "data": hist_items}}),
+        encoding="utf-8",
+    )
+    cli._hist_cache = None
+    cli._trade_cache_path = str(trade_cache_file)
+    with patch.object(t212_client, "http_get", side_effect=AssertionError("unexpected HTTP call")):
+        orders_shared = prov.get_orders("SPCX_US_EQ", "BUY", 3600.0, authoritative=True, publish_cache=False)
+    assert len(orders_shared) == 1 and orders_shared[0]["orderId"] == "2001"
+    assert not trade_cache_file.exists()
+
+    cli._hist_cache = None
+    with patch.object(t212_client, "http_get", side_effect=AssertionError("unexpected HTTP call")):
+        published = prov.get_orders("SPCX_US_EQ", "BUY", 3600.0, authoritative=True, publish_cache=True)
+    assert len(published) == 1
+    assert trade_cache_file.exists()
+    saved = json.loads(trade_cache_file.read_text(encoding="utf-8"))
+    assert len(saved["items"]["SPCX_US_EQ"]) == 1
+
+
+def test_t212_order_status_404_reconciles_passively_and_daemon_helper_groups_fills(tmp_path):
+    """T212Provider.order_status 404 fallback reconciles from history without writing _hist_cache or cache_trade_t212.json."""
+    shared_file = tmp_path / ".t212_shared_passive.json"
+    trade_cache_file = tmp_path / "cache_trade_t212.json"
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 10.0))
+    hist_items = [
+        {
+            "order": {"id": 3101, "ticker": "SPCX_US_EQ", "status": "FILLED", "orderedQuantity": 1.5, "type": "LIMIT"},
+            "fill": {"id": 9101, "quantity": 1.5, "price": 152.0, "filledAt": now_iso, "walletImpact": {"taxes": []}},
+        }
+    ]
+    hist_body = json.dumps({"items": hist_items}).encode("utf-8")
+
+    cli = t212_client.T212Client(
+        "demo-key", "demo-secret", env="demo",
+        min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
+        shared_cache_path=str(shared_file),
+        enable_shared_disk_cache=True,
+        trade_cache_path=str(trade_cache_file),
+    )
+    prov = T212Provider(client=cli, live_enabled=False)
+    prov._ssot_fills_cache_path = str(trade_cache_file)
+
+    with patch.object(t212_client, "http_get", side_effect=[(404, b""), (200, hist_body)]):
+        st = prov.order_status("SPCX_US_EQ", "3101")
+    assert st.status == "closed"
+    assert st.filled_qty == pytest.approx(1.5)
+    assert st.cost == pytest.approx(228.0)
+    assert not shared_file.exists()
+    assert not trade_cache_file.exists()
+
+    cli._hist_cache = None
+    with patch.object(t212_client, "http_get", return_value=(200, hist_body)):
+        grouped = T212Provider.fetch_history_fills_by_symbol(
+            cli, symbols=["SPCX_US_EQ", "NVDA_US_EQ"], publish_shared_cache=True
+        )
+    assert len(grouped["SPCX_US_EQ"]) == 1
+    assert grouped["NVDA_US_EQ"] == []
+    assert shared_file.exists()
+    assert not trade_cache_file.exists()
+    cfg = T212Provider.resolve_cache_daemon_config()
+    assert cfg["poll_interval"] > 0.0
+    assert "SPCX_US_EQ" in cfg["symbols"]
+
+
+def test_t212_passive_get_orders_preserves_persisted_fills_after_invalidation_and_dedups_shared_writes(tmp_path):
+    """Passive get_orders after fetchtime invalidation retains older SSOT fills in memory without disk writes, and sync_trade_cache=False writes shared cache once per TTL."""
+    shared_file = tmp_path / ".t212_shared_merge.json"
+    trade_cache_file = tmp_path / "cache_trade_t212.json"
+    now_ms = int(time.time() * 1000)
+    save_json_state(
+        str(trade_cache_file),
+        {
+            "items": {
+                "SPCX_US_EQ": [
+                    {
+                        "orderId": "801",
+                        "symbol": "SPCX_US_EQ",
+                        "side": "BUY",
+                        "price": 138.0,
+                        "qty": 1.0,
+                        "timestamp": now_ms - 1800_000,
+                    }
+                ]
+            },
+            "fetchtime": {},
+        },
+    )
+    before_bytes = trade_cache_file.read_bytes()
+
+    cli = t212_client.T212Client(
+        "demo-key", "demo-secret", env="demo",
+        min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
+        shared_cache_path=str(shared_file),
+        enable_shared_disk_cache=True,
+    )
+    prov = T212Provider(client=cli, live_enabled=False)
+    prov._ssot_fills_cache_path = str(trade_cache_file)
+
+    # 1. History page is empty for SPCX_US_EQ while fetchtime is invalidated -> persisted fill 801 is still returned passively
+    with patch.object(t212_client, "http_get", return_value=(200, b'{"items": []}')):
+        only_persisted = prov.get_orders("SPCX_US_EQ", "BUY", 3600.0, publish_cache=False)
+    assert [o["orderId"] for o in only_persisted] == ["801"]
+    assert trade_cache_file.read_bytes() == before_bytes
+    assert not shared_file.exists()
+
+    # 2. History page has newer fill 901 while 801 scrolled off page 1 -> passive read merges [801, 901] in memory only
+    cli._hist_cache = None
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime((now_ms - 5_000) / 1000.0))
+    hist_901 = [
+        {
+            "order": {"id": 901, "ticker": "SPCX_US_EQ", "status": "FILLED", "orderedQuantity": 2.0, "type": "LIMIT"},
+            "fill": {"id": 9901, "quantity": 2.0, "price": 144.0, "filledAt": now_iso, "walletImpact": {"taxes": []}},
+        }
+    ]
+    with patch.object(t212_client, "http_get", return_value=(200, json.dumps({"items": hist_901}).encode("utf-8"))):
+        merged_passive = prov.get_orders("SPCX_US_EQ", "BUY", 3600.0, publish_cache=False)
+    assert [o["orderId"] for o in merged_passive] == ["801", "901"]
+    assert trade_cache_file.read_bytes() == before_bytes
+    assert not shared_file.exists()
+    assert getattr(cli, "_trade_cache_path", None) is None
+
+    # 3. Repeated refresh_order_history(publish_cache=True, sync_trade_cache=False) within TTL writes shared cache only once
+    cli._hist_cache = None
+    write_calls = []
+    orig_write = cli._write_shared_cache
+
+    def _spy_write(attr, data, *, sync_trade_cache=True):
+        write_calls.append((attr, sync_trade_cache))
+        return orig_write(attr, data, sync_trade_cache=sync_trade_cache)
+
+    with patch.object(cli, "_write_shared_cache", side_effect=_spy_write), patch.object(
+        t212_client, "http_get", return_value=(200, json.dumps({"items": hist_901}).encode("utf-8"))
+    ) as mock_get:
+        cli.refresh_order_history(max_age_sec=6.0, publish_cache=True, sync_trade_cache=False)
+        cli.refresh_order_history(max_age_sec=6.0, publish_cache=True, sync_trade_cache=False)
+    assert mock_get.call_count == 1
+    assert write_calls == [("_hist_cache", False)]

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Collection, Optional
 
 from botcore import (
     TOPIC_SPECS,
@@ -333,6 +333,39 @@ def _iter_matching_open_orders(
     return out
 
 
+def _is_unconfigured_mock_callable(fn: Any) -> bool:
+    return bool(
+        hasattr(fn, "_mock_name")
+        and getattr(fn, "side_effect", None) is None
+        and hasattr(getattr(fn, "return_value", None), "_mock_name")
+    )
+
+
+def _missing_target_order_blocks_replacement(inst: Any, order_id: str) -> bool:
+    """Return True when a targeted order absent from ``open_orders()`` already executed or remains active."""
+    sym = str(getattr(inst, "symbol", "") or "").strip()
+    inst_status_fn = getattr(inst, "order_status", None)
+    prov = getattr(inst, "_provider", None)
+    prov_status_fn = getattr(prov, "order_status", None) if prov is not None else None
+    st: Any = None
+    try:
+        if callable(inst_status_fn) and not _is_unconfigured_mock_callable(inst_status_fn):
+            st = inst_status_fn(str(order_id))
+        elif sym and callable(prov_status_fn) and not _is_unconfigured_mock_callable(prov_status_fn):
+            st = prov_status_fn(sym, str(order_id))
+        else:
+            return False
+    except Exception:
+        return False
+    raw_st = st.get("status") if isinstance(st, dict) else getattr(st, "status", None)
+    if not isinstance(raw_st, str):
+        return False
+    st_lc = raw_st.strip().lower()
+    raw_fq = st.get("filled_qty") if isinstance(st, dict) else getattr(st, "filled_qty", 0.0)
+    filled_q = safe_pos_float(raw_fq, default=0.0) or 0.0
+    return st_lc in {"closed", "filled", "open", "new", "partially_filled"} or filled_q > 0.0
+
+
 def cancel_existing_ai_open_orders(
     inst: Any,
     side: str,
@@ -343,6 +376,10 @@ def cancel_existing_ai_open_orders(
     include_bot_orders: bool = False,
     any_side: bool = False,
     exclude_order_ids: Optional[set[str]] = None,
+    target_order_ids: Optional[Collection[str]] = None,
+    verify_not_filled: bool = False,
+    failed_order_ids: Optional[list[str]] = None,
+    scan_errors: Optional[list[str]] = None,
 ) -> list[str]:
     """Cancel prior unfilled AI-placed (or bot-placed when ``include_bot_orders=True``) open orders on the symbol."""
     canceled_ids: list[str] = []
@@ -351,7 +388,19 @@ def cancel_existing_ai_open_orders(
     include_bots = bool(_parse_bool_flag(include_bot_orders, False))
     match_any_side = bool(_parse_bool_flag(any_side, False))
     want_side = normalize_side(side)
-    if not callable(open_fn) or not callable(cancel_fn) or (not match_any_side and not want_side):
+    targeted: Optional[set[str]] = None
+    targeted_lc: set[str] = set()
+    if target_order_ids is not None:
+        targeted = {
+            str(oid_s)
+            for x in target_order_ids
+            if x is not None and not isinstance(x, bool) and (oid_s := extract_order_id(x, default=""))
+        }
+        targeted_lc = {t.lower() for t in targeted}
+    eff_any_side = match_any_side or bool(targeted)
+    if not callable(open_fn) or not callable(cancel_fn) or (not eff_any_side and not want_side):
+        if scan_errors is not None and (not callable(open_fn) or not callable(cancel_fn)):
+            scan_errors.append("cancel_capability_unavailable")
         return canceled_ids
     if isinstance(exclude_order_ids, str):
         excluded = {cid} if (cid := clean_order_id(exclude_order_ids)) else set()
@@ -369,55 +418,102 @@ def cancel_existing_ai_open_orders(
         excluded = set()
     ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
     try:
-        for oo, oo_side, oid in _iter_matching_open_orders(open_fn(), want_side, any_side=match_any_side):
-            if oid and str(oid) in excluded:
-                continue
-            is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
-            if not is_ai_order and not include_bots:
-                continue
-            if oid:
-                try:
-                    if cancel_fn(str(oid)) is False:
-                        if log:
-                            log.warning(
-                                "[INTENT GATEWAY] Venue refused cancel of prior open order %s on %s; it stays active.",
-                                oid, getattr(inst, "symbol", ""),
-                            )
-                        continue
-                    canceled_ids.append(str(oid))
-                    if log:
-                        log.info(
-                            "[INTENT GATEWAY] Canceled prior %s open %s order %s on %s before replacement.",
-                            "AI" if is_ai_order else "BOT",
-                            oo_side or side,
-                            oid,
-                            getattr(inst, "symbol", ""),
-                        )
-                except Exception as ce:
-                    if log:
-                        log.debug("Could not cancel open order %s: %s", oid, ce)
+        raw_open = open_fn()
     except Exception as e:
+        if scan_errors is not None:
+            scan_errors.append(str(e) or type(e).__name__)
         if log:
             log.debug("Open order scan failed before replacement: %s", e)
+        raw_open = None
+
+    matched_targets_lc: set[str] = set()
+    for oo, oo_side, oid in _iter_matching_open_orders(raw_open, want_side, any_side=eff_any_side):
+        coid = extract_client_order_id(oo)
+        if (oid and str(oid) in excluded) or (coid and str(coid) in excluded):
+            continue
+        if targeted is not None:
+            oid_hit = bool(oid and (str(oid) in targeted or str(oid).lower() in targeted_lc))
+            coid_hit = bool(coid and (str(coid) in targeted or str(coid).lower() in targeted_lc))
+            if not (oid_hit or coid_hit):
+                continue
+            if oid_hit:
+                matched_targets_lc.add(str(oid).lower())
+            if coid_hit:
+                matched_targets_lc.add(str(coid).lower())
+        is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
+        if not is_ai_order and not include_bots:
+            if targeted is not None and failed_order_ids is not None:
+                failed_order_ids.append(str(oid or coid or "<missing_order_id>"))
+            continue
+        cancel_ref = str(oid or coid or "")
+        if not cancel_ref:
+            if failed_order_ids is not None:
+                failed_order_ids.append("<missing_order_id>")
+            continue
+        try:
+            if cancel_fn(cancel_ref) is False:
+                if failed_order_ids is not None:
+                    failed_order_ids.append(cancel_ref)
+                if log:
+                    log.warning(
+                        "[INTENT GATEWAY] Venue refused cancel of prior open order %s on %s; it stays active.",
+                        cancel_ref, getattr(inst, "symbol", ""),
+                    )
+                continue
+            canceled_ids.append(cancel_ref)
+            if log:
+                log.info(
+                    "[INTENT GATEWAY] Canceled prior %s open %s order %s on %s before replacement.",
+                    "AI" if is_ai_order else "BOT",
+                    oo_side or side,
+                    cancel_ref,
+                    getattr(inst, "symbol", ""),
+                )
+        except Exception as ce:
+            if failed_order_ids is not None:
+                failed_order_ids.append(cancel_ref)
+            if log:
+                log.warning("Could not cancel open order %s: %s", cancel_ref, ce)
+
+    if (
+        targeted
+        and _parse_bool_flag(verify_not_filled, default=False)
+        and failed_order_ids is not None
+        and not scan_errors
+    ):
+        for t_oid in sorted(targeted):
+            if t_oid.lower() in matched_targets_lc or t_oid in excluded:
+                continue
+            if _missing_target_order_blocks_replacement(inst, t_oid):
+                failed_order_ids.append(t_oid)
+                if log:
+                    log.warning(
+                        "[INTENT GATEWAY] Targeted prior order %s on %s already filled or remains open; aborting replacement.",
+                        t_oid, getattr(inst, "symbol", ""),
+                    )
 
     raw_inst_sym = getattr(inst, "symbol", None)
     sym_str = clean_upper_scalar(raw_inst_sym) or ""
     if sym_str and not hasattr(raw_inst_sym, "_mock_name"):
         try:
-            to_discard = MarketDataProvider.discard_superseded_symbol_retry_records(
-                sym_str,
-                want_side,
-                canceled_ids=canceled_ids,
-                ai_order_ids=ai_oids,
-                include_bot_orders=include_bots,
-                any_side=match_any_side,
-                cancel_fn_is_mock=hasattr(cancel_fn, "_mock_name"),
-            )
-            if to_discard and log:
-                log.info(
-                    "[INTENT GATEWAY] Discarded %d superseded order_retry record(s) on %s: %s",
-                    len(to_discard), sym_str, to_discard,
+            if targeted is not None:
+                for cid_done in canceled_ids:
+                    MarketDataProvider.resolve_accepted_retry_order(sym_str, cid_done)
+            else:
+                to_discard = MarketDataProvider.discard_superseded_symbol_retry_records(
+                    sym_str,
+                    want_side,
+                    canceled_ids=canceled_ids,
+                    ai_order_ids=ai_oids,
+                    include_bot_orders=include_bots,
+                    any_side=match_any_side,
+                    cancel_fn_is_mock=hasattr(cancel_fn, "_mock_name"),
                 )
+                if to_discard and log:
+                    log.info(
+                        "[INTENT GATEWAY] Discarded %d superseded order_retry record(s) on %s: %s",
+                        len(to_discard), sym_str, to_discard,
+                    )
         except Exception as re_err:
             if log:
                 log.debug("Order retry queue cleanup skipped on %s: %s", sym_str, re_err)

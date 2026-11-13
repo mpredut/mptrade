@@ -1436,3 +1436,31 @@ def test_kraken_post_only_oflags_and_passive_step_back_retry(monkeypatch):
     assert calls[0][4].get("post_only") is True
     assert calls[1][3] < 25.0
 
+
+def test_kraken_provider_invalidates_fills_cache_on_order_status_and_cancel(tmp_path):
+    """KrakenProvider.order_status (closed / partial canceled) and cancel_order invalidate SSOT fills cache."""
+    fills_cache = tmp_path / "cache_trade_kraken.json"
+
+    def _seed_cache():
+        fills_cache.write_text(
+            json.dumps({"items": {"HYPEUSD": []}, "fetchtime": {"HYPEUSD": 1_760_000_000_000}}),
+            encoding="utf-8",
+        )
+
+    cli = SimpleNamespace(
+        query_orders=lambda txid: {
+            txid: {"status": "canceled", "vol": "4.0", "vol_exec": "1.5", "cost": "37.5", "fee": "0.1"}
+        },
+        cancel_order=lambda _txid: {"count": 1},
+    )
+    kp = KrakenProvider(client=cli, live_enabled=True)
+    kp._ssot_fills_cache_path = str(fills_cache)
+
+    _seed_cache()
+    st = kp.order_status("HYPEUSD", "O-KRK-PART-1")
+    assert st.status == "canceled" and st.filled_qty == pytest.approx(1.5)
+    assert "HYPEUSD" not in json.loads(fills_cache.read_text(encoding="utf-8")).get("fetchtime", {})
+
+    _seed_cache()
+    kp.cancel_order("HYPEUSD", "O-KRK-CANC-2")
+    assert "HYPEUSD" not in json.loads(fills_cache.read_text(encoding="utf-8")).get("fetchtime", {})

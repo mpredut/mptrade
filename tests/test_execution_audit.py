@@ -610,3 +610,26 @@ def test_execution_calibration_aggregates_partial_fills_across_retries():
     assert rep["orders"][0]["final_fill_ratio"] == 1.0
     assert abs(rep["orders"][0]["limit_fill_deviation_bps"] - 60.0) < 1e-9
     assert abs(rep["orders"][0]["fee_bps"] - (0.10 / 100.6 * 10_000)) < 1e-9
+
+
+def test_audited_strategy_executor_forwards_get_orders_keyword_flags(tmp_path):
+    """AuditedStrategyExecutor.get_orders forwards authoritative and publish_cache while supporting legacy 3-arg stubs."""
+    seen_calls = []
+
+    def _modern_get_orders(symbol, side=None, lookback=None, *, authoritative=False, publish_cache=False):
+        seen_calls.append((symbol, side, lookback, authoritative, publish_cache))
+        return [{"orderId": "1"}]
+
+    aud = AuditedStrategyExecutor(
+        SimpleNamespace(name="t212", get_orders=_modern_get_orders),
+        audit=ExecutionAudit(directory=str(tmp_path)),
+    )
+    res = aud.get_orders("NVDA_US_EQ", "BUY", 3600.0, authoritative=True, publish_cache=False)
+    assert res == [{"orderId": "1"}]
+    assert seen_calls == [("NVDA_US_EQ", "BUY", 3600.0, True, False)]
+
+    legacy_aud = AuditedStrategyExecutor(
+        SimpleNamespace(name="stub", get_orders=lambda sym, side=None, lb=None: [(sym, side, lb)]),
+        audit=ExecutionAudit(directory=str(tmp_path)),
+    )
+    assert legacy_aud.get_orders("BTCUSDC", "SELL", 60.0) == [("BTCUSDC", "SELL", 60.0)]

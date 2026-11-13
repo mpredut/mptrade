@@ -2322,6 +2322,7 @@ def start_account_cache_daemon(
     _bapi_ws_bridge.initialize_ws_bridge_once()
     if is_live_network_backfill_enabled() and is_auto_start_websockets_enabled():
         start_kraken_account_ws_bridge()
+        start_t212_account_poll_bridge()
 
 
 def disable_account_cache_daemon_writer() -> None:
@@ -2331,8 +2332,8 @@ def disable_account_cache_daemon_writer() -> None:
 
 
 def request_stop_account_ws_streams() -> None:
-    """Signal the account user-data WebSocket bridges (Binance and Kraken) to stop."""
-    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge):
+    """Signal the account user-data bridges (Binance, Kraken, and T212) to stop."""
+    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge, _t212_poll_bridge):
         if bridge is not None and hasattr(bridge, "request_stop"):
             try:
                 bridge.request_stop()
@@ -2341,8 +2342,8 @@ def request_stop_account_ws_streams() -> None:
 
 
 def stop_account_ws_streams(shutdown_deadline: float) -> None:
-    """Join the account user-data WebSocket bridges within ``shutdown_deadline``."""
-    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge):
+    """Join the account user-data bridges within ``shutdown_deadline``."""
+    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge, _t212_poll_bridge):
         if bridge is not None and hasattr(bridge, "stop"):
             try:
                 bridge.stop(
@@ -2773,6 +2774,154 @@ def start_kraken_account_ws_bridge() -> Optional[_KrakenAccountTradeBridge]:
         bridge = _KrakenAccountTradeBridge()
         if bridge.start():
             _kraken_ws_bridge = bridge
+            return bridge
+        return None
+
+
+def run_t212_trade_poll_loop(
+    client,
+    *,
+    cache_file: str,
+    symbols: Sequence[str],
+    poll_interval: float,
+    backoff_init: float,
+    backoff_max: float,
+    heartbeat_fn=None,
+    stop_event: Optional[threading.Event] = None,
+) -> None:
+    """Run the periodic REST order-history polling loop for Trading 212 trade cache persistence."""
+    if (t212_prov_cls := MarketDataProvider.resolve_venue_provider_class("t212")) is None:
+        raise RuntimeError("T212 provider class is not registered")
+
+    init_bo = safe_pos_float(backoff_init, default=10.0) or 10.0
+    max_bo = safe_pos_float(backoff_max, default=120.0) or 120.0
+    poll_s = safe_nonneg_float(poll_interval, default=60.0) or 0.0
+    backoff = init_bo
+    if callable(heartbeat_fn):
+        heartbeat_fn(force=True)
+    while not (stop_event is not None and stop_event.is_set()):
+        try:
+            by_sym = t212_prov_cls.fetch_history_fills_by_symbol(
+                client, symbols=symbols, publish_shared_cache=True
+            )
+            eff_ms = resolve_now_ms()
+            cache = CacheTradeManager._merge_venue_fills_snapshot_locked(
+                cache_file,
+                by_sym,
+                now_ms=eff_ms,
+                is_snapshot=False,
+                touch_symbols=symbols,
+                touch_create_missing=True,
+                sanitize_venue="t212",
+                indent=1,
+                force_save=True,
+            )
+            log(
+                f"[t212_cache][poll] {sum(len(v) for v in cache['items'].values())} fills "
+                f"for {list(cache['items'].keys())}"
+            )
+            backoff = init_bo
+            if callable(heartbeat_fn):
+                heartbeat_fn()
+            if stop_event is not None:
+                if stop_event.wait(timeout=poll_s):
+                    break
+            else:
+                _sleep_time(poll_s)
+        except Exception as exc:
+            log(f"[t212_cache][poll] error (backoff {backoff:.0f}s): {exc}")
+            if callable(heartbeat_fn):
+                heartbeat_fn()
+            if stop_event is not None:
+                if stop_event.wait(timeout=max(0.0, backoff)):
+                    break
+            else:
+                _sleep_time(backoff)
+            backoff = min(backoff * 2.0, max_bo)
+
+
+class _T212AccountTradeBridge:
+    """Background daemon bridge managing Trading 212 periodic order-history snapshot sync inside cacheManager."""
+
+    def __init__(self) -> None:
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    @property
+    def is_running(self) -> bool:
+        return (
+            self._thread is not None
+            and self._thread.is_alive()
+            and not self._stop_event.is_set()
+        )
+
+    def start(self) -> bool:
+        t212_prov_cls = MarketDataProvider.resolve_venue_provider_class("t212")
+        try:
+            if t212_prov_cls is None:
+                raise RuntimeError("T212 provider not registered")
+            cfg = t212_prov_cls.resolve_cache_daemon_config()
+            client, profile = t212_prov_cls.build_cache_client()
+        except Exception as exc:
+            msg = (
+                "skipped (T212 provider not registered)"
+                if t212_prov_cls is None
+                else f"skipped (no T212 cache credentials): {exc}"
+                if isinstance(exc, CredentialConfigurationError)
+                else f"failed to initialize daemon config: {exc}"
+            )
+            log(f"[t212_cache] {msg}")
+            return False
+
+        self._stop_event.clear()
+        log(
+            f"[t212_cache] start: mode=poll credentials={profile} "
+            f"symbols={cfg['symbols']} poll={cfg['poll_interval']}s -> {cfg['cache_file']}"
+        )
+
+        def _runner() -> None:
+            run_t212_trade_poll_loop(
+                client,
+                cache_file=cfg["cache_file"],
+                symbols=cfg["symbols"],
+                poll_interval=cfg["poll_interval"],
+                backoff_init=cfg["backoff_init"],
+                backoff_max=cfg["backoff_max"],
+                stop_event=self._stop_event,
+            )
+
+        t = threading.Thread(
+            target=_runner,
+            name="T212AccountTradeBridge",
+            daemon=True,
+        )
+        self._thread = t
+        t.start()
+        return True
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    def stop(self, timeout: float = 0.3) -> None:
+        self.request_stop()
+        t = self._thread
+        if t is not None and t.is_alive():
+            t.join(timeout=max(0.05, safe_pos_float(timeout, default=0.3) or 0.3))
+
+
+_t212_poll_bridge: Optional[_T212AccountTradeBridge] = None
+_t212_poll_bridge_lock = threading.Lock()
+
+
+def start_t212_account_poll_bridge() -> Optional[_T212AccountTradeBridge]:
+    """Idempotently start the Trading 212 periodic order-history bridge inside cacheManager."""
+    global _t212_poll_bridge
+    with _t212_poll_bridge_lock:
+        if _t212_poll_bridge is not None and _t212_poll_bridge.is_running:
+            return _t212_poll_bridge
+        bridge = _T212AccountTradeBridge()
+        if bridge.start():
+            _t212_poll_bridge = bridge
             return bridge
         return None
 

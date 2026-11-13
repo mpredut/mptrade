@@ -1045,7 +1045,7 @@ def test_cancel_bot_open_orders_and_balance_unlock_via_replacement(temp_workspac
     btc_inst._provider.name = "binance"
     btc_inst._provider.get_current_price.return_value = 80000.0
 
-    # Case 1: cancel_bot_open_orders=True explicitly cancels bot orders across sides
+    # Case 1: cancel_bot_open_orders=True on BUY cancels only same-side BUY bot orders, preserving protective SELL orders
     btc_inst._provider.free_balance.return_value = 5000.0
     btc_inst.open_orders.return_value = [
         {"orderId": "bot_buy_1", "clientOrderId": "TO_1", "side": "BUY", "price": "79000.0"},
@@ -1064,8 +1064,8 @@ def test_cancel_bot_open_orders_and_balance_unlock_via_replacement(temp_workspac
         }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
 
     assert rec1["status"] == "EXECUTED"
-    assert rec1["canceled_prior_open_orders"] == ["bot_buy_1", "bot_sell_1"]
-    assert btc_inst.cancel_order.call_count == 2
+    assert rec1["canceled_prior_open_orders"] == ["bot_buy_1"]
+    btc_inst.cancel_order.assert_called_once_with("bot_buy_1")
 
     # Case 2: replace_open_orders=True automatically cancels bot orders when initial wallet balance is constrained
     btc_inst.cancel_order.reset_mock()
@@ -2367,3 +2367,154 @@ def test_audit_reconciliation_explicit_accepted_unknown_partial_terminal_and_pen
     assert det_done["filled_qty"] == pytest.approx(0.01)
     assert det_done["fill_px"] == pytest.approx(80050.0)
 
+
+def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_workspace):
+    """Explicit cancel_order_ids limits cancellation to listed orders, and cancel refusal/exception aborts replacement."""
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+
+    btc_inst = MagicMock(symbol="BTCUSDC", base="BTC", quote="USDC", provider_name="binance")
+    btc_inst._provider.name = "binance"
+    btc_inst._provider.get_current_price.return_value = 80000.0
+    btc_inst._provider.free_balance.return_value = 5000.0
+
+    # 1. Explicit cancel_order_ids cancels ONLY the identified order (keeping other BUY ladder & protective SELL intact)
+    btc_inst.open_orders.return_value = [
+        {"orderId": "bot_buy_target", "clientOrderId": "TO_1", "side": "BUY", "price": "79000.0"},
+        {"orderId": "bot_buy_keep", "clientOrderId": "TO_2", "side": "BUY", "price": "77500.0"},
+        {"orderId": "bot_sell_sl", "clientOrderId": "SD_0123456789abcdef0123456789abcdef", "side": "SELL", "price": "84000.0"},
+    ]
+    btc_inst.cancel_order.return_value = True
+    btc_inst.place.return_value = {"orderId": "ai_new_1", "status": "NEW", "price": "79500.0"}
+
+    norm = normalize_trading_decisions({
+        "market_trading_decisions": [
+            {
+                "decision": "BUY",
+                "symbol": "BTCUSDC",
+                "venue": "binance",
+                "order_type": "LIMIT",
+                "limit_price": 79500.0,
+                "cancel_bot_open_orders": True,
+                "cancel_order_ids": ["bot_buy_target"],
+                "confidence": 0.92,
+                "suggested_notional_usd": 300.0,
+            }
+        ]
+    })
+    assert norm[0]["cancel_order_ids"] == ["bot_buy_target"]
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_targeted = gw.submit(
+            norm[0],
+            source="auto_cryptotrade_executor",
+            max_mode="enforce",
+            instruments_map={"BTCUSDC": btc_inst},
+        )
+    assert rec_targeted["status"] == "EXECUTED"
+    assert rec_targeted["cancel_order_ids"] == ["bot_buy_target"]
+    assert rec_targeted["canceled_prior_open_orders"] == ["bot_buy_target"]
+    btc_inst.cancel_order.assert_called_once_with("bot_buy_target")
+    btc_inst.place.assert_called_once()
+
+    # 2. Venue refuses cancellation (returns False) -> gateway aborts replacement and does NOT submit new order
+    btc_inst.cancel_order.reset_mock()
+    btc_inst.place.reset_mock()
+    btc_inst.open_orders.return_value = [
+        {"orderId": "ai_old_buy", "clientOrderId": "AI_old_1", "side": "BUY", "price": "78500.0"},
+    ]
+    btc_inst.cancel_order.return_value = False
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_refused = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 79400.0,
+            "replace_open_orders": True,
+            "confidence": 0.93,
+            "suggested_notional_usd": 350.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+
+    assert rec_refused["status"] == "FAILED"
+    assert rec_refused["failed_cancel_order_ids"] == ["ai_old_buy"]
+    assert rec_refused["history"][-1]["action"] == "CANCEL_PRIOR_ORDER_FAILED"
+    btc_inst.cancel_order.assert_called_once_with("ai_old_buy")
+    btc_inst.place.assert_not_called()
+
+    # 3. Venue raises exception during balance-unlock cancel -> gateway aborts replacement without submitting
+    btc_inst.cancel_order.reset_mock()
+    btc_inst.place.reset_mock()
+    btc_inst._provider.free_balance.return_value = 0.0
+    btc_inst.open_orders.return_value = [
+        {"orderId": "bot_lock_buy", "clientOrderId": "TO_9", "side": "BUY", "price": "78000.0"},
+    ]
+    btc_inst.cancel_order.side_effect = RuntimeError("venue cancel timeout")
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_exc = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "MARKET",
+            "replace_open_orders": True,
+            "confidence": 0.94,
+            "suggested_notional_usd": 350.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+
+    assert rec_exc["status"] == "FAILED"
+    assert rec_exc["failed_cancel_order_ids"] == ["bot_lock_buy"]
+    btc_inst.place.assert_not_called()
+
+    # 4. Targeted replacement order already raced to FILLED (absent from open_orders, order_status='closed') -> abort double-buy
+    btc_inst.cancel_order.reset_mock()
+    btc_inst.cancel_order.side_effect = None
+    btc_inst.cancel_order.return_value = True
+    btc_inst.place.reset_mock()
+    btc_inst._provider.free_balance.return_value = 5000.0
+    btc_inst.open_orders.return_value = []
+    btc_inst.order_status.return_value = SimpleNamespace(status="closed", filled_qty=0.005)
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_raced = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 79600.0,
+            "replace_open_orders": True,
+            "cancel_order_ids": ["ai_race_filled"],
+            "confidence": 0.94,
+            "suggested_notional_usd": 400.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+
+    assert rec_raced["status"] == "FAILED"
+    assert rec_raced["failed_cancel_order_ids"] == ["ai_race_filled"]
+    btc_inst.place.assert_not_called()
+
+    # 5. Targeted replacement order already canceled with zero fill -> safe to submit replacement; also supports clientOrderId match
+    btc_inst.place.reset_mock()
+    btc_inst.cancel_order.reset_mock()
+    btc_inst.order_status.return_value = SimpleNamespace(status="canceled", filled_qty=0.0)
+    btc_inst.open_orders.return_value = [
+        {"orderId": "venue_77", "clientOrderId": "TO_CLIENT_77", "side": "BUY", "price": "78800.0"},
+    ]
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_ok = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 79650.0,
+            "replace_open_orders": True,
+            "cancel_order_ids": ["ai_already_canceled", "TO_CLIENT_77"],
+            "confidence": 0.95,
+            "suggested_notional_usd": 400.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+
+    assert rec_ok["status"] == "EXECUTED"
+    assert rec_ok["canceled_prior_open_orders"] == ["venue_77"]
+    btc_inst.cancel_order.assert_called_once_with("venue_77")
+    btc_inst.place.assert_called_once()

@@ -159,8 +159,10 @@ def build_supervisor_prompt(
             "the current market price (right at live spot / `best_ask`) to liquidate or reduce the unwanted position at low maker fee (all "
             "profit/cooldown guards `G_PROF`/`GO1` are bypassed so you can exit even at a scratch or small loss when a real repair is warranted).\n"
             "     3) If a bot placed a resting order in `open_limit_orders` (`\"actor\": \"BOT\"`) that you disagree with or that locks wallet "
-            "liquidity needed for your repair trade, set `\"cancel_bot_open_orders\": true` (alongside `\"replace_open_orders\": true` if also replacing a prior AI order) to cancel "
-            "the bot's resting order and unlock the balance.\n"
+            "liquidity needed for your repair trade, specify its exact `\"order_id\"` in `\"cancel_order_ids\": [\"...\"]` alongside "
+            "`\"cancel_bot_open_orders\": true` (and `\"replace_open_orders\": true` if also replacing a prior AI order) so only the targeted "
+            "order(s) are canceled (without `cancel_order_ids`, `cancel_bot_open_orders: true` only cancels same-side open orders and never "
+            "cancels opposite-side protective SELL/BUY orders; if venue cancellation fails, replacement is aborted).\n"
             "   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: No rigid trading rules, fixed percentage thresholds, "
             "or directional biases are imposed on you—judge 100% freely on your own WHEN, WHAT, HOW MUCH, on WHICH platform "
             "(`binance`, `kraken`, `hyperliquid`, `t212`), and WHY to `BUY`, `SELL`, or `HOLD`. Historical cost basis (`avg_buy_px`, "
@@ -191,7 +193,8 @@ def build_supervisor_prompt(
             "(`open_limit_orders`, including `filled_qty`, `remaining_qty`, `status`, `dist_from_spot_pct`, `fill_prob_1h_pct`, and orderbook walls ahead) and mathematical fill confirmation from the previous cycle "
             "(`last_cycle_execution_status` with `status`, `fill_px`, `ref_px`, `filled_qty`, `slippage_bps`), plus the 1-line US Equities/Futures/Macro "
             "correlation index (`SPY / QQQ / ES=F / NQ=F / DXY / US10Y` 24h/1h deltas). Setting `\"replace_open_orders\": true` "
-            "automatically cancels any prior unfilled AI limit order on the same symbol and side before placing the updated order; "
+            "(optionally narrowed to specific `\"cancel_order_ids\": [\"<order_id>\"]` from `open_limit_orders`) "
+            "cancels only the targeted (or prior unfilled same-side AI) open order before placing the updated order, and aborts replacement if cancellation fails; "
             "returning `'HOLD'` leaves existing resting open orders untouched in the book. "
             "ACTIVE ORDERBOOK & RESTING LIMIT ORDER MANAGEMENT (`replace_open_orders: true`): Actively audit every resting order in `open_limit_orders` each cycle—if "
             "a resting `SELL LIMIT` or `BUY LIMIT` is stale/far from spot (`fill_prob_1h_pct <= 5.0%` or `abs(dist_from_spot_pct) > 4.0%`) while the market is ranging "
@@ -220,7 +223,7 @@ def build_supervisor_prompt(
         )
         schema.append(
             f'  "market_trading_decisions": [{{"decision": "BUY" | "SELL" | "HOLD", "symbol": {ex_sym}, '
-            f'"venue": {venue_schema}, "order_type": "MARKET" | "LIMIT", "limit_price": null, "replace_open_orders": false, "cancel_bot_open_orders": false, '
+            f'"venue": {venue_schema}, "order_type": "MARKET" | "LIMIT", "limit_price": null, "replace_open_orders": false, "cancel_bot_open_orders": false, "cancel_order_ids": [], '
             f'"confidence": 0.90, "suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
         )
 

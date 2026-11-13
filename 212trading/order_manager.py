@@ -103,6 +103,36 @@ def _persist_marker(record: dict, path: str) -> None:
 # ---------------------------------------------------------------------------
 # Order-status polling
 # ---------------------------------------------------------------------------
+def _pos_abs_order_float(val: object) -> float | None:
+    num = safe_float(val, default=None)
+    return abs(num) if (num is not None and abs(num) > 0.0) else None
+
+
+def _extract_t212_terminal_fill(info: dict, status: str) -> tuple[float, float]:
+    """Return ``(filled_qty, fill_price)`` for a terminal T212 order without conflating ordered qty on cancel/expiry."""
+    fq_abs = _pos_abs_order_float(info.get("filledQuantity"))
+    if fq_abs is not None:
+        fq = fq_abs
+    elif status == "FILLED" and safe_float(info.get("filledQuantity"), default=None) is None:
+        fq = (
+            _pos_abs_order_float(info.get("quantity"))
+            or _pos_abs_order_float(info.get("orderedQuantity"))
+            or 0.0
+        )
+    else:
+        fq = 0.0
+    fval = _pos_abs_order_float(info.get("filledValue"))
+    derived_px = (fval / fq) if (fval is not None and fq > 0) else None
+    fp = first_pos_float(
+        _pos_abs_order_float(info.get("fillPrice")),
+        _pos_abs_order_float(info.get("averagePrice")),
+        derived_px,
+        _pos_abs_order_float(info.get("limitPrice")),
+        default=0,
+    )
+    return fq, fp
+
+
 def poll_order_until_terminal(client: T212Client, order_id, ticker: str,
                               desktop: bool = False) -> dict | bool | None:
     """Observe one status snapshot and return immediately."""
@@ -117,18 +147,22 @@ def poll_order_until_terminal(client: T212Client, order_id, ticker: str,
     log(f"  [ORDER] status {order_id}: {st or 'UNKNOWN'}")
     if st not in T212_ORDER_TERMINAL:
         return info
-    fq = first_pos_float(
-        info.get("filledQuantity"),
-        info.get("quantity"),
-        info.get("orderedQuantity"),
-        default=0,
-    )
-    fp = first_pos_float(info.get("fillPrice"), info.get("limitPrice"), default=0)
+    fq, fp = _extract_t212_terminal_fill(info, st)
     if st == "FILLED":
         log(f"  [ORDER] ✓ FILLED: {fq} @ {fp} USD")
         notify_px = safe_pos_float(fp, 0.0)
         notify(title=f"✓ Order filled: {ticker} [order_manager]", body=f"q{fq} @ {fp}",
                source="T212 order", price=notify_px, desktop=desktop)
+    elif fq > 0:
+        log(f"  [ORDER] ◐ PARTIAL {st}: {fq} @ {fp} USD")
+        notify_px = safe_pos_float(fp, 0.0)
+        notify(
+            title=f"◐ Order {st} (partial fill): {ticker} [order_manager]",
+            body=f"id={order_id} q{fq} @ {fp}",
+            source="T212 order",
+            price=notify_px,
+            desktop=desktop,
+        )
     else:
         log(f"  [ORDER] ✗ {st}")
         notify(title=f"✗ Order {st}: {ticker} [order_manager]", body=f"id={order_id}",
@@ -260,6 +294,12 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
         record["venue_status"] = status
         record["last_observed_at"] = now
         record["lifecycle"] = lifecycle
+        if lifecycle in {"filled", "canceled", "expired"}:
+            fq, fp = _extract_t212_terminal_fill(info, status)
+            if fq > 0:
+                record["filled_qty"] = fq
+                if fp > 0:
+                    record["fill_price"] = fp
         if status == "REJECTED":
             raw_hist = record.get("venue_order_ids")
             history = list(raw_hist) if isinstance(raw_hist, (list, tuple)) else []

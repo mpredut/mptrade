@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import inspect
 import os
 import re
 import threading
@@ -400,8 +401,32 @@ class AuditedStrategyExecutor:
     def open_orders(self, symbol: str):
         return self._call_opt("open_orders", symbol, default=[])
 
-    def get_orders(self, symbol: str, side: Optional[str] = None, lookback: Optional[float] = None):
-        return self._call_opt("get_orders", symbol, side, lookback, default=[])
+    def get_orders(
+        self,
+        symbol: str,
+        side: Optional[str] = None,
+        lookback: Optional[float] = None,
+        *,
+        authoritative: bool = False,
+        publish_cache: bool = False,
+    ):
+        reader = getattr(self._executor, "get_orders", None)
+        if not callable(reader):
+            return []
+        auth_flag = _parse_bool_flag(authoritative, False)
+        pub_flag = _parse_bool_flag(publish_cache, False)
+        try:
+            params = inspect.signature(reader).parameters
+        except (TypeError, ValueError):
+            params = None
+        if params is None or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return reader(symbol, side, lookback, authoritative=auth_flag, publish_cache=pub_flag)
+        kw: dict[str, Any] = {}
+        if "authoritative" in params or auth_flag:
+            kw["authoritative"] = auth_flag
+        if "publish_cache" in params or pub_flag:
+            kw["publish_cache"] = pub_flag
+        return reader(symbol, side, lookback, **kw)
 
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         return self._call_opt("position_cost_basis", symbol, held_qty, since_s)
@@ -600,6 +625,7 @@ _LAZY_COMPAT_EXPORTS: dict[str, str] = {
     "_record_intent_state": "providers.intent_state",
     "collect_known_ai_order_ids": "providers.intent_state",
     "durable_intents_lock": "providers.intent_state",
+    "extract_intent_cancel_order_ids": "providers.intent_state",
     "extract_intent_limit_price": "providers.intent_state",
     "extract_intent_notional": "providers.intent_state",
     "extract_intent_order_type": "providers.intent_state",

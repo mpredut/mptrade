@@ -1090,6 +1090,8 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                 # Every rejection or cancellation is terminal, not a temporarily
                 # missing open order.
                 normalized = "canceled"
+            if normalized == "closed" or (normalized in {"canceled", "expired"} and filled > 0):
+                self._invalidate_fills_cache(symbol)
             return OrderStatus(
                 normalized, filled, cost, fee, venue_status=venue_status,
                 orig_qty=original)
@@ -1105,3 +1107,4 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             raise ProviderError(
                 f"cancel_order({order_id}): pair unavailable")
         self._execute_confirmed_cancel(order_id, lambda: self._signer().cancel(pair, oid))
+        self._invalidate_fills_cache(symbol)

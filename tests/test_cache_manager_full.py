@@ -3081,6 +3081,77 @@ def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
     assert not bridge.is_running
 
 
+def test_t212_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
+    """Verify _T212AccountTradeBridge periodically publishes fills + fetchtime for all configured T212 tickers and stops cleanly."""
+    from providers.t212_provider import T212Provider
+
+    cache_file = str(tmp_path / "cache_trade_t212.json")
+    pulled_event = threading.Event()
+    refresh_kwargs: list[dict] = []
+
+    def _fake_refresh(*, max_age_sec=0.0, publish_cache=False, sync_trade_cache=True):
+        refresh_kwargs.append(
+            {
+                "max_age_sec": max_age_sec,
+                "publish_cache": publish_cache,
+                "sync_trade_cache": sync_trade_cache,
+            }
+        )
+        pulled_event.set()
+        return [
+            {
+                "order": {"id": 4401, "ticker": "SPCX_US_EQ", "status": "FILLED", "orderedQuantity": 2.0},
+                "fill": {
+                    "id": 8801,
+                    "quantity": 2.0,
+                    "price": 148.5,
+                    "filledAt": "2026-10-13T15:37:40.000Z",
+                },
+            }
+        ]
+
+    fake_t212_cli = SimpleNamespace(refresh_order_history=_fake_refresh)
+    monkeypatch.setattr(
+        T212Provider,
+        "resolve_cache_daemon_config",
+        classmethod(
+            lambda _cls: {
+                "symbols": ["SPCX_US_EQ", "NVDA_US_EQ"],
+                "poll_interval": 10.0,
+                "backoff_init": 1.0,
+                "backoff_max": 5.0,
+                "cache_file": cache_file,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        T212Provider,
+        "build_cache_client",
+        classmethod(lambda _cls: (fake_t212_cli, "T212")),
+    )
+
+    bridge = cacheaccount._T212AccountTradeBridge()
+    assert bridge.start() is True
+    try:
+        assert pulled_event.wait(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not os.path.exists(cache_file):
+            time.sleep(0.02)
+        saved = read_json_dict(cache_file)
+        assert isinstance(saved, dict)
+        assert len(saved["items"]["SPCX_US_EQ"]) == 1
+        assert saved["items"]["SPCX_US_EQ"][0]["orderId"] == "4401"
+        assert saved["items"]["SPCX_US_EQ"][0]["price"] == pytest.approx(148.5)
+        assert saved["items"]["NVDA_US_EQ"] == []
+        assert "SPCX_US_EQ" in saved["fetchtime"]
+        assert "NVDA_US_EQ" in saved["fetchtime"]
+        assert refresh_kwargs[0]["publish_cache"] is True
+        assert refresh_kwargs[0]["sync_trade_cache"] is False
+    finally:
+        bridge.stop(timeout=1.0)
+    assert not bridge.is_running
+
+
 def test_cache_modules_delegate_venue_ws_protocols_to_providers():
     """Enforce zero concrete provider or venue-transport imports and wss:// URLs in cache*.py."""
     repo_root = Path(__file__).resolve().parent.parent
@@ -3515,6 +3586,46 @@ def test_equity_rth_cadence_and_future_tick_hygiene(tmp_path, monkeypatch):
         assert flush_seen_during_poll[0][-1][1] == pytest.approx(71550.0)
     finally:
         cpm_prod.shutdown(timeout=1.0)
+
+    # Cache24PriceManager.update_cache_per_symbol & on_price_update avoid per-tick full-list copies
+    full_iter_calls = 0
+
+    class _TrackedHistoryList(list):
+        def __iter__(self):
+            nonlocal full_iter_calls
+            full_iter_calls += 1
+            return super().__iter__()
+
+    p24_file = tmp_path / "p24_slice_only.json"
+    p24 = cacheprice.Cache24PriceManager(
+        sync_ts=9999,
+        symbols=["BTCUSDC"],
+        filename=str(p24_file),
+        read_only=False,
+        data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+    )
+    try:
+        now_ms_t = int(time.time() * 1000)
+        old_ms_t = int((time.time() - (p24.KEEP_HOURS + 1) * 3600) * 1000)
+        base_ts = now_ms_t - 2000_000
+        # Include 2 expired entries (< HOT_TRIM_MIN_BATCH=64) followed by 500 fresh entries
+        tracked = _TrackedHistoryList(
+            [[old_ms_t, 69000.0], [old_ms_t + 1000, 69001.0]]
+            + [[base_ts + i * 1000, 70000.0 + i] for i in range(500)]
+        )
+        p24.cache["BTCUSDC"] = tracked
+        full_iter_calls = 0
+        p24.on_price_update("BTCUSDC", now_ms_t + 1000, 70501.0)
+        assert full_iter_calls == 0
+        # List object was updated in-place without reallocating on small expired head (< 64)
+        assert p24.cache["BTCUSDC"] is tracked
+        assert p24.cache["BTCUSDC"][-1] == [now_ms_t + 1000, 70501.0]
+        # Snapshot save flushes amortized expired entries before writing to disk
+        assert p24.save_state_to_file() is True
+        persisted_p24 = json.loads(p24_file.read_text(encoding="utf-8"))
+        assert all(row[0] >= base_ts for row in persisted_p24["items"]["BTCUSDC"])
+    finally:
+        p24.shutdown(timeout=1.0)
 
 
 def test_c24_nonblocking_ws_tick_during_snapshot_save_and_assetguardian_shutdown(tmp_path):

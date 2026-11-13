@@ -61,6 +61,7 @@ from providers.intent_execution import (
 )
 from providers.intent_state import (
     append_intent_history,
+    extract_intent_cancel_order_ids,
     load_durable_intents_state,
     parse_intent_gateway_config,
     save_durable_intents_state,
@@ -212,6 +213,40 @@ class AutonomousIntentGateway:
             logger.debug("Failed notifying via notify_engine: %s", e)
             return False
 
+    @staticmethod
+    def _abort_on_cancel_failure(
+        inst: Any,
+        intent: Dict[str, Any],
+        *,
+        decision: str,
+        failed_order_ids: List[str],
+        scan_errors: List[str],
+        now_ts: float,
+    ) -> Dict[str, Any]:
+        """Stop order replacement when canceling any targeted prior open order fails or cannot be verified."""
+        sym_lbl = str(getattr(inst, "symbol", "") or intent.get("symbol") or "")
+        if failed_order_ids:
+            intent["failed_cancel_order_ids"] = list(failed_order_ids)
+            reason = f"cancel_prior_open_order_failed:{','.join(failed_order_ids)}"
+        else:
+            reason = f"open_orders_scan_failed:{scan_errors[0] if scan_errors else 'unknown'}"
+        logger.warning(
+            "[LLM TRADER · ENFORCE] Aborting replacement %s %s: %s",
+            decision, sym_lbl, reason,
+        )
+        intent["status"] = "FAILED"
+        hist_entry: Dict[str, Any] = {
+            "ts": now_ts,
+            "action": "CANCEL_PRIOR_ORDER_FAILED",
+            "reason": reason,
+        }
+        if failed_order_ids:
+            hist_entry["failed_order_ids"] = list(failed_order_ids)
+        if scan_errors:
+            hist_entry["scan_errors"] = list(scan_errors)
+        append_intent_history(intent, hist_entry)
+        return intent
+
     def process_intent(
         self,
         intent: Dict[str, Any],
@@ -261,6 +296,7 @@ class AutonomousIntentGateway:
 
         replace_open = _parse_bool_flag(intent.get("replace_open_orders"), default=False)
         cancel_bot_open = _parse_bool_flag(intent.get("cancel_bot_open_orders"), default=False)
+        target_oids = extract_intent_cancel_order_ids(intent)
         thesis_low = str(intent.get("thesis") or "").lower()
         thesis_cancels_bot_order = bool(
             replace_open
@@ -268,7 +304,7 @@ class AutonomousIntentGateway:
             and any(a in thesis_low for a in ("cancel", "override", "unwanted", "premature", "unlock"))
         )
         dup_oid: Optional[str] = None
-        if mode == "enforce" and is_limit and not (cancel_bot_open or thesis_cancels_bot_order):
+        if mode == "enforce" and is_limit and not (cancel_bot_open or thesis_cancels_bot_order or target_oids):
             dup_oid = find_duplicate_ai_open_limit_order(
                 inst,
                 decision,
@@ -277,18 +313,33 @@ class AutonomousIntentGateway:
                 intents=self.load_all_intents(),
                 require_notional_match=replace_open,
             )
-        if mode == "enforce" and (replace_open or cancel_bot_open):
+        if mode == "enforce" and (replace_open or cancel_bot_open or bool(target_oids)):
+            failed_cancel_ids: list[str] = []
+            cancel_scan_errors: list[str] = []
             canceled_ids = cancel_existing_ai_open_orders(
                 inst,
                 decision,
                 log=logger,
                 intents=self.load_all_intents(),
-                include_bot_orders=cancel_bot_open,
-                any_side=cancel_bot_open,
+                include_bot_orders=cancel_bot_open or bool(target_oids),
+                any_side=bool(target_oids),
                 exclude_order_ids={dup_oid} if dup_oid else None,
+                target_order_ids=target_oids or None,
+                verify_not_filled=replace_open,
+                failed_order_ids=failed_cancel_ids,
+                scan_errors=cancel_scan_errors,
             )
             if canceled_ids:
                 intent["canceled_prior_open_orders"] = canceled_ids
+            if failed_cancel_ids or cancel_scan_errors:
+                return self._abort_on_cancel_failure(
+                    inst,
+                    intent,
+                    decision=decision,
+                    failed_order_ids=failed_cancel_ids,
+                    scan_errors=cancel_scan_errors,
+                    now_ts=now,
+                )
         if dup_oid:
             logger.info(
                 "[LLM TRADER · ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
@@ -315,10 +366,13 @@ class AutonomousIntentGateway:
             mode == "enforce"
             and replace_open
             and not cancel_bot_open
+            and not target_oids
             and (thesis_cancels_bot_order or not guard_allowed or effective_usd < requested_effective_usd * 0.95)
         ):
             # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
             # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
+            unlock_failed_ids: list[str] = []
+            unlock_scan_errors: list[str] = []
             unlocked_ids = cancel_existing_ai_open_orders(
                 inst,
                 decision,
@@ -326,6 +380,8 @@ class AutonomousIntentGateway:
                 intents=self.load_all_intents(),
                 include_bot_orders=True,
                 any_side=False,
+                failed_order_ids=unlock_failed_ids,
+                scan_errors=unlock_scan_errors,
             )
             if unlocked_ids:
                 prior_c = list(intent.get("canceled_prior_open_orders") or [])
@@ -334,6 +390,16 @@ class AutonomousIntentGateway:
                         prior_c.append(uid)
                 intent["canceled_prior_open_orders"] = prior_c
                 intent["canceled_bot_open_orders"] = unlocked_ids
+            if unlock_failed_ids or unlock_scan_errors:
+                return self._abort_on_cancel_failure(
+                    inst,
+                    intent,
+                    decision=decision,
+                    failed_order_ids=unlock_failed_ids,
+                    scan_errors=unlock_scan_errors,
+                    now_ts=now,
+                )
+            if unlocked_ids:
                 guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
                     inst, decision, price, requested_effective_usd
                 )

@@ -1674,3 +1674,45 @@ def test_hyperliquid_strategy_partial_fill_reconcile_and_shared_loop(tmp_path, m
     assert paper_strat.s["wins"] == 7
 
 
+def test_hyperliquid_provider_invalidates_fills_cache_on_order_status_and_cancel(tmp_path, monkeypatch):
+    """HyperliquidProvider.order_status (closed / partial canceled) and cancel_order invalidate SSOT fills cache."""
+    fills_cache = tmp_path / "cache_trade_hyperliquid.json"
+
+    def _seed_cache():
+        fills_cache.write_text(
+            json.dumps({"items": {"HYPEUSDC": []}, "fetchtime": {"HYPEUSDC": 1_760_000_000_000}}),
+            encoding="utf-8",
+        )
+
+    fake_cli = SimpleNamespace(
+        info=SimpleNamespace(
+            query_order_by_oid=lambda _addr, _oid: {
+                "status": "order",
+                "order": {
+                    "status": "canceled",
+                    "order": {"coin": "@107", "origSz": "5.0", "sz": "3.0"},
+                },
+            },
+            user_fills=lambda _addr: [
+                {"oid": 77701, "coin": "@107", "sz": "2.0", "px": "25.0", "fee": "0.02", "feeToken": "USDC"}
+            ],
+        )
+    )
+    hl = HyperliquidProvider(token="HYPE", live_enabled=True)
+    hl._ssot_fills_cache_path = str(fills_cache)
+    monkeypatch.setattr(hl, "_pair", lambda: "@107")
+    monkeypatch.setattr(
+        hl,
+        "_require_hl_client_and_pair",
+        lambda *_a, **_kw: (fake_cli, "@107", "0x0000000000000000000000000000000000000001"),
+    )
+    monkeypatch.setattr(hl, "_signer", lambda: SimpleNamespace(cancel=lambda _pair, _oid: True))
+
+    _seed_cache()
+    st = hl.order_status("HYPEUSDC", "77701")
+    assert st.status == "canceled" and st.filled_qty == pytest.approx(2.0)
+    assert "HYPEUSDC" not in json.loads(fills_cache.read_text(encoding="utf-8")).get("fetchtime", {})
+
+    _seed_cache()
+    hl.cancel_order("HYPEUSDC", "77701")
+    assert "HYPEUSDC" not in json.loads(fills_cache.read_text(encoding="utf-8")).get("fetchtime", {})

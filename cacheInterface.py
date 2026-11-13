@@ -1288,16 +1288,16 @@ class CacheManagerInterface(ABC):
         kept_count: Optional[int] = None
         added_count = 0
         with self.lock:
-            self.cache.setdefault(symbol, [])
+            bucket = self.cache.setdefault(symbol, [])
             if self.append_mode:
-                cache_copy = list(self.cache.get(symbol, []))[-self.DEDUP_WINDOW :]
+                cache_copy = bucket[-self.DEDUP_WINDOW :]
                 filtered_items = self.filter_new_items(cache_copy, new_items)
                 kept_count = len(filtered_items)
                 filtered_items = [item for item in filtered_items if item is not None]
                 if not filtered_items:
                     new_items = []
                 else:
-                    self.cache[symbol].extend(filtered_items)
+                    bucket.extend(filtered_items)
                     new_items = filtered_items
                     added_count = len(filtered_items)
                     self._advance_symbol_fetchtime_locked(symbol, current_time)

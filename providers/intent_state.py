@@ -227,6 +227,31 @@ def extract_intent_order_type(data: dict[str, Any]) -> str:
     return "MARKET"
 
 
+def extract_intent_cancel_order_ids(data: dict[str, Any]) -> list[str]:
+    """Extract deduplicated explicit venue order IDs targeted for cancellation before placement."""
+    if not isinstance(data, dict):
+        return []
+    found: list[str] = []
+    for key in ("cancel_order_ids", "target_order_ids", "cancel_order_id", "replace_order_id"):
+        raw = data.get(key)
+        if raw is None or isinstance(raw, bool):
+            continue
+        items: list[Any]
+        if isinstance(raw, (list, tuple, set, frozenset)):
+            items = list(raw)
+        elif isinstance(raw, str) and "," in raw:
+            items = [part.strip() for part in raw.split(",")]
+        else:
+            items = [raw]
+        for item in items:
+            if item is None or isinstance(item, bool):
+                continue
+            oid = extract_order_id(item, default="")
+            if oid:
+                found.append(str(oid))
+    return list(dict.fromkeys(found))
+
+
 def _intent_venue_symbol_side_key(
     venue: Any, symbol: Any, side: Any
 ) -> tuple[str, str, tuple[str, ...], str]:
@@ -290,6 +315,11 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
                 d["replace_open_orders"] = _parse_bool_flag(d.get("replace_open_orders"), False)
             if "cancel_bot_open_orders" in d:
                 d["cancel_bot_open_orders"] = _parse_bool_flag(d.get("cancel_bot_open_orders"), False)
+            cancel_oids = extract_intent_cancel_order_ids(d)
+            if cancel_oids:
+                d["cancel_order_ids"] = cancel_oids
+            elif "cancel_order_ids" in d:
+                d["cancel_order_ids"] = []
             candidates.append(d)
 
     def _sort_key(d: dict[str, Any]) -> tuple[int, float]:
@@ -428,6 +458,7 @@ def validate_and_build_intent_dict(
     limit_px = extract_intent_limit_price(decision, default=None) if order_type == "LIMIT" else None
     replace_open = _parse_bool_flag(decision.get("replace_open_orders"), default=False)
     cancel_bot_open = _parse_bool_flag(decision.get("cancel_bot_open_orders"), default=False)
+    cancel_oids = extract_intent_cancel_order_ids(decision)
     rec = {
         "intent_id": intent_id,
         "timestamp": now_ts,
@@ -450,6 +481,8 @@ def validate_and_build_intent_dict(
         rec["max_mode"] = mm
     if cancel_bot_open:
         rec["cancel_bot_open_orders"] = True
+    if cancel_oids:
+        rec["cancel_order_ids"] = cancel_oids
     return rec
 
 
@@ -589,6 +622,7 @@ __all__ = [
     "append_intent_history",
     "collect_known_ai_order_ids",
     "durable_intents_lock",
+    "extract_intent_cancel_order_ids",
     "extract_intent_limit_price",
     "extract_intent_notional",
     "extract_intent_order_type",

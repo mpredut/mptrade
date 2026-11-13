@@ -569,6 +569,8 @@ class Cache24PriceManager(CachePriceManagerBase):
 
     def _before_snapshot_commit_locked(self, persisted_max_ts: int) -> None:
         """Preserve 3-element OHLCV bars written to disk by enrichment while retaining recent in-memory ticks."""
+        for s_trim in list(self.symbols):
+            self._trim_old_data(s_trim)
         if persisted_max_ts <= self._last_disk_sync_max_ts:
             return
         backup_path = self._previous_generation_path()
@@ -648,7 +650,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                     self._last_accepted_tick_ts_ms[sym_k] = ts_val
         for sym_k, batch in grouped.items():
             self.update_cache_per_symbol(sym_k, batch)
-            self._trim_old_data(sym_k)
+            self._trim_old_data(sym_k, min_batch=self.HOT_TRIM_MIN_BATCH)
 
     def _before_state_persist_locked(self) -> None:
         self._drain_deferred_price_ticks_locked()
@@ -659,6 +661,8 @@ class Cache24PriceManager(CachePriceManagerBase):
                 return
         with self.lock:
             self._drain_deferred_price_ticks_locked()
+
+    HOT_TRIM_MIN_BATCH = 64
 
     def on_price_update(self, symbol: str, ts_ms: int, price: float):
         """Receive every new WebSocket or HTTP price from CacheCurrentPriceManager without blocking on disk I/O."""
@@ -676,7 +680,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                         self._last_accepted_tick_ts_ms[symbol] = ts_val
                 self._ensure_fetchtimes_initialized()
                 self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
-                self._trim_old_data(symbol)
+                self._trim_old_data(symbol, min_batch=self.HOT_TRIM_MIN_BATCH)
             finally:
                 self.lock.release()
             self._notify_price_subscribers(symbol, ts_val, price_val)
@@ -693,19 +697,23 @@ class Cache24PriceManager(CachePriceManagerBase):
             self._deferred_price_ticks.append((symbol, ts_val, price_val))
         self._notify_price_subscribers(symbol, ts_val, price_val)
 
-    def _trim_old_data(self, symbol):
-        """Remove entries older than ``KEEP_HOURS`` efficiently on every tick."""
+    def _trim_old_data(self, symbol, *, min_batch: int = 1):
+        """Remove entries older than ``KEEP_HOURS`` (amortized when ``min_batch > 1``)."""
         cutoff_ms = math.trunc((_now_time() - self.KEEP_HOURS * 3600) * 1000)
+        eff_batch = safe_pos_int(min_batch, default=1) or 1
         with self.lock:
             entries = self.cache.get(symbol)
             if not entries or not isinstance(entries, list):
+                return
+            probe_idx = eff_batch - 1
+            if len(entries) <= probe_idx or self._entry_timestamp_ms(entries[probe_idx]) >= cutoff_ms:
                 return
             idx = bisect.bisect_left(
                 entries, cutoff_ms, key=self._entry_timestamp_ms
             )
             if is_equity_symbol(symbol):
                 idx = min(idx, max(0, len(entries) - 288))
-            if idx > 0:
+            if idx >= eff_batch:
                 self.cache[symbol] = entries[idx:]
 
     def get_recent_entries(self, symbol: str, last_seconds: float) -> list:
@@ -993,11 +1001,17 @@ class Cache365PriceManager(Cache24PriceManager):
                         s_sym, self.fetchtime_per_symbol[s_sym]
                     )
 
-    def _trim_old_data(self, symbol):
+    def _trim_old_data(self, symbol, *, min_batch: int = 1):
+        req_batch = safe_pos_int(min_batch, default=1) or 1
+        eff_batch = (
+            1
+            if req_batch <= 1
+            else min(req_batch, max(1, CM_LONG_ARCHIVE_MEMORY_ROWS // 16))
+        )
         with self.lock:
             entries = self.cache.get(symbol, [])
             overflow = max(0, len(entries) - CM_LONG_ARCHIVE_MEMORY_ROWS)
-            if overflow:
+            if overflow >= eff_batch:
                 self.cache[symbol] = entries[overflow:]
                 self._persisted_counts[symbol] = max(
                     0, self._persisted_counts.get(symbol, 0) - overflow
@@ -1008,7 +1022,7 @@ class Cache365PriceManager(Cache24PriceManager):
         self._last_long_trim = now
         with self.lock:
             before = len(self.cache.get(symbol, []))
-        super()._trim_old_data(symbol)
+        super()._trim_old_data(symbol, min_batch=1)
         with self.lock:
             after = len(self.cache.get(symbol, []))
             if after < before:

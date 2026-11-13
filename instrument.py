@@ -715,12 +715,14 @@ class Instrument:
     def open_orders(self) -> List[dict]:
         return self._provider.open_orders(self.symbol)
 
-    def cancel_order(self, order_id: str) -> None:
-        clean_oid = clean_order_id(order_id)
+    def cancel_order(self, order_id: str) -> Any:
         cancel_fn = getattr(self._provider, "cancel_order", None)
-        if clean_oid and callable(cancel_fn):
-            return cancel_fn(self.symbol, clean_oid)
-        return None
+        if not callable(cancel_fn):
+            return False
+        clean_oid = clean_order_id(order_id)
+        if not clean_oid:
+            return None
+        return cancel_fn(self.symbol, clean_oid)
 
     # -- Order placement: dry or real after provider gates. --------------------
     def _acquire_fresh_cache_permit(self, ctx: Any) -> Any:
