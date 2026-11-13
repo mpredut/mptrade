@@ -35,6 +35,7 @@ from providers import order_id_context
 from providers.order_ohlc_utils import resolve_market_flag
 from botcore import (
     _parse_bool_flag,
+    clean_nonempty_str,
     extract_order_id,
     is_us_rth_open,
     normalize_side,
@@ -343,7 +344,7 @@ class Instrument:
         allow_math_reference_sell = _parse_bool_flag(
             kwargs.pop("allow_math_reference_sell", False), False
         )
-        order_kind = kwargs.get("kind") or kwargs.get("motivation")
+        order_kind = clean_nonempty_str(kwargs.get("kind")) or clean_nonempty_str(kwargs.get("motivation"))
         if order_kind is not None:
             kwargs["kind"] = order_kind
 
@@ -443,18 +444,10 @@ class Instrument:
         ctx.wait_for_trend = _parse_bool_flag(kwargs.pop("wait_for_trend", True), True)
         ctx.abort_if = kwargs.pop("abort_if", None)
         ctx.early_abort_if = getattr(ctx.abort_if, "is_aborted", None)
-        ctx.requires_permit = bool(
-            _parse_bool_flag(getattr(self._provider, "requires_cache_permit", lambda: False)(), False)
-        )
-        ctx.defers_smart_cancel = bool(
-            _parse_bool_flag(getattr(self._provider, "defers_smart_cancellation", lambda: False)(), False)
-        )
-        ctx.supports_biz_min = bool(
-            _parse_bool_flag(getattr(self._provider, "supports_business_minimum", lambda: False)(), False)
-        )
-        ctx.supports_post_only = bool(
-            _parse_bool_flag(getattr(self._provider, "supports_post_only", lambda: False)(), False)
-        )
+        ctx.requires_permit = self._provider_bool_cap("requires_cache_permit")
+        ctx.defers_smart_cancel = self._provider_bool_cap("defers_smart_cancellation")
+        ctx.supports_biz_min = self._provider_bool_cap("supports_business_minimum")
+        ctx.supports_post_only = self._provider_bool_cap("supports_post_only")
         if ctx.cache_permit is not None and not ctx.requires_permit:
             return None, _refuse_early(
                 "invalid_cache_permit_provider",
@@ -480,19 +473,12 @@ class Instrument:
             )
         if inst_live is not None and "live_enabled" not in kwargs:
             kwargs["live_enabled"] = provider_execution_enabled
-        supports_validity = _eval_callable_bool_gate(
-            getattr(
-                self._provider,
-                "supports_order_validity",
-                lambda: MarketDataProvider.supports_order_validity(self._provider),
-            ),
-            missing_default=False,
-        )
+        supports_validity = self._provider_bool_cap("supports_order_validity", fallback_base=True)
         if supports_validity and "order_validity" not in kwargs:
             inst_validity = self.param("execution", "order_validity")
             if isinstance(inst_validity, str) and inst_validity.strip():
                 kwargs["order_validity"] = inst_validity.strip().upper()
-        if self._provider.guards_internally():
+        if self._provider_bool_cap("guards_internally"):
             if ctx.retry_constraint_supplied:
                 return None, _refuse_early("retry_price_constraint_unsupported")
             return None, self._provider.place_order(self.symbol, side_u, price, qty, **kwargs)
@@ -749,6 +735,10 @@ class Instrument:
             raise SubmissionRefused("account_cache_not_fresh")
         return permit
 
+    def _provider_bool_cap(self, attr: str, *, fallback_base: bool = False) -> bool:
+        default_fn = (lambda: getattr(MarketDataProvider, attr)(self._provider)) if fallback_base else None
+        return _eval_callable_bool_gate(getattr(self._provider, attr, default_fn), missing_default=False)
+
     @staticmethod
     def _is_execution_gate_enabled(exec_fn: Any) -> bool:
         return _eval_callable_bool_gate(exec_fn, missing_default=True)
@@ -789,11 +779,7 @@ class Instrument:
                 if ctx.guarded_order_state is None:
                     raise SubmissionRefused("account_cache_not_fresh")
             if not ctx.requires_permit and callable(ctx.preflight_order):
-                defers_qty = getattr(
-                    self._provider,
-                    "defers_preflight_quantity",
-                    lambda: MarketDataProvider.defers_preflight_quantity(self._provider),
-                )()
+                defers_qty = self._provider_bool_cap("defers_preflight_quantity", fallback_base=True)
                 preflight_qty = None if defers_qty else ctx.qty
                 ctx.preflight_order(
                     self.symbol,

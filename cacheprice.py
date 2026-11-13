@@ -1478,6 +1478,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
 
     @staticmethod
     def _clone_snapshot_items(cache_map: dict) -> dict:
+        if not isinstance(cache_map, dict):
+            return {}
         return {
             sym_k: (
                 [list(pt) if isinstance(pt, (list, tuple)) else pt for pt in rows]
@@ -1562,6 +1564,13 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             _, cur_ts_ms = self.extract_price_and_ts(entries)
         return cur_ts_ms
 
+    def _is_delegated_poller_symbol(self, symbol: object) -> bool:
+        delegated = getattr(self, "_delegated_poller_symbols", ())
+        if not delegated or isinstance(delegated, (bool, str, bytes, dict)):
+            return False
+        sym_u = str(symbol or "").strip().upper()
+        return symbol in delegated or (bool(sym_u) and sym_u in delegated)
+
     def _symbol_ws_and_cache_fresh(
         self, symbol: str, *, is_live_daemon_poll: bool, now_ms: Optional[float] = None
     ) -> bool:
@@ -1572,14 +1581,15 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         cur_ts_ms = self._cached_entry_ts_ms(symbol)
         if cur_ts_ms is None:
             return False
-        eff_now_ms = (_now_time() * 1000.0) if now_ms is None else now_ms
+        eff_now_ms = safe_nonneg_float(now_ms, default=None)
+        if eff_now_ms is None:
+            eff_now_ms = _now_time() * 1000.0
         return -5_000.0 <= (eff_now_ms - cur_ts_ms) < (self.ws_timeout_sec_for(symbol) * 1000.0)
 
     def query_remote_and_update_cache(self):
         if not self.fetchtime_per_symbol:
             self._ensure_fetchtimes_initialized()
             self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
-        delegated = getattr(self, "_delegated_poller_symbols", ())
         is_live_daemon_poll = self._is_live_daemon_poll_mode()
         min_poll_gap = max(
             0.45,
@@ -1588,9 +1598,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         pending_polls: list[tuple[str, Any, bool]] = []
         now_ms_scan = _now_time() * 1000.0
         for symbol in list(self.symbols):
-            if delegated and (
-                symbol in delegated or str(symbol).strip().upper() in delegated
-            ):
+            if self._is_delegated_poller_symbol(symbol):
                 continue
             if self._symbol_ws_and_cache_fresh(
                 symbol, is_live_daemon_poll=is_live_daemon_poll, now_ms=now_ms_scan
@@ -1616,7 +1624,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 last_poll = self._last_http_poll_ts_per_symbol.get(symbol, 0.0)
                 if last_poll > 0.0 and 0.0 <= (now_s - last_poll) < min_poll_gap:
                     cur_ts_ms = self._cached_entry_ts_ms(symbol)
-                    if cur_ts_ms is not None and (now_s * 1000.0 - cur_ts_ms) < 1_800.0:
+                    if cur_ts_ms is not None and -5_000.0 <= (now_s * 1000.0 - cur_ts_ms) < 1_800.0:
                         continue
             startTime = self.fetchtime_per_symbol.get(
                 symbol, self.fallback_time_default
@@ -1698,14 +1706,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return True
         if not self._is_live_daemon_poll_mode():
             return False
-        delegated = getattr(self, "_delegated_poller_symbols", ())
         now_ms = _now_time() * 1000.0
         for sym_item in list(self.symbols):
-            if delegated and (
-                sym_item in delegated or str(sym_item).strip().upper() in delegated
-            ):
-                continue
-            if self._is_equity_instrument(sym_item):
+            if self._is_delegated_poller_symbol(sym_item) or self._is_equity_instrument(sym_item):
                 continue
             if not self._symbol_ws_and_cache_fresh(
                 sym_item, is_live_daemon_poll=True, now_ms=now_ms
@@ -1722,13 +1725,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         wait_sec = min(base_wait, 0.35)
         now = _now_time()
         is_live_daemon = self._is_live_daemon_poll_mode()
-        delegated = getattr(self, "_delegated_poller_symbols", ())
         for sym_item in list(self.symbols):
-            if delegated and (
-                sym_item in delegated or str(sym_item).strip().upper() in delegated
-            ):
-                continue
-            if self._is_equity_instrument(sym_item):
+            if self._is_delegated_poller_symbol(sym_item) or self._is_equity_instrument(sym_item):
                 continue
             sym_u, sym_clean = _norm_symbol_keys(sym_item)
             last_ts = next(

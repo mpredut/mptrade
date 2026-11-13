@@ -171,7 +171,12 @@ from orchestratorOS.lib import technical_repair_ssot as tr_ssot
 from orchestratorOS.livecheck import os_resources_watchdog as wd
 from orchestratorOS.supervisor import prompt_formatters as pf_mod, prompt_sections as ps_mod
 import order_guard
-from order_lifecycle import TrackedOrderLifecycle
+from order_lifecycle import (
+    StrategyExecutorLifecycleApi,
+    TrackedOrderLifecycle,
+    TrackedOrderResult,
+    resolve_dynamic_reprice_bounds,
+)
 import order_retry
 import priceAnalysis
 import pricewindow as pw
@@ -253,6 +258,7 @@ from state_io import (
 )
 from strategies import (
     mt_position_accounting as mt_pa_mod,
+    position_exit_manager as pem_mod,
     rtrade_pair as rtp_mod,
     spot_engine as spot_eng_mod,
     state_store as strat_ss_mod,
@@ -5997,6 +6003,158 @@ def test_wave33_broker_history_order_context_and_intent_border_cases():
         verified_open_venues="binance",
     )
     assert det["exec_status"] == "OPEN_RESTING"
+
+
+def test_wave34_cpm_delegated_lifecycle_instrument_and_exit_border_cases(tmp_path, monkeypatch):
+    # 1. CacheCurrentPriceManager: _is_delegated_poller_symbol, _clone_snapshot_items,
+    #    _symbol_ws_and_cache_fresh NaN/bool now_ms, and future cur_ts_ms HTTP poll bound.
+    cpm_path = tmp_path / "cache_current_price.json"
+    now_s = time.time()
+    init_ms = math.trunc(now_s * 1000.0)
+    state_io.save_json_state(
+        str(cpm_path),
+        {
+            "items": {"HYPE": [[init_ms, 38.5]], "BTCUSDC": [[init_ms, 70500.0]]},
+            "fetchtime": {"HYPE": init_ms, "BTCUSDC": init_ms},
+        },
+    )
+    cpm = CacheCurrentPriceManager(
+        0.5,
+        symbols=["HYPE", "BTCUSDC"],
+        filename=str(cpm_path),
+        data_sync_mode="producer",
+    )
+    assert CacheCurrentPriceManager._clone_snapshot_items(None) == {}
+    cpm._delegated_poller_symbols = "HYPEUSDC"
+    assert cpm._is_delegated_poller_symbol("HYPE") is False
+    cpm._delegated_poller_symbols = True
+    assert cpm._is_delegated_poller_symbol("HYPE") is False
+    cpm._delegated_poller_symbols = {"HYPE"}
+    assert cpm._is_delegated_poller_symbol("hype") is True
+
+    cpm.push_price("BTCUSDC", 70500.0, ts_ms=math.trunc(time.time() * 1000.0))
+    monkeypatch.setattr(cpm, "_ws_is_healthy", lambda *_a, **_kw: True)
+    assert cpm._symbol_ws_and_cache_fresh("BTCUSDC", is_live_daemon_poll=True, now_ms=float("nan")) is True
+    assert cpm._symbol_ws_and_cache_fresh("BTCUSDC", is_live_daemon_poll=True, now_ms=True) is True
+    # Stale epoch-zero entry (cur_ts_ms=1000) must NOT look fresh when now_ms=True (falls back to real clock, not 1.0ms).
+    cpm.push_price("BTCUSDC", 70500.0, ts_ms=1000)
+    assert cpm._symbol_ws_and_cache_fresh("BTCUSDC", is_live_daemon_poll=True, now_ms=True) is False
+
+    # Future corrupt cur_ts_ms (+60s ahead) must NOT suppress HTTP polling during min_poll_gap.
+    cpm.push_price("BTCUSDC", 70500.0, ts_ms=math.trunc((now_s + 60.0) * 1000.0))
+    monkeypatch.setattr(cpm, "_ws_is_healthy", lambda *_a, **_kw: False)
+    monkeypatch.setattr(cpm, "_is_live_daemon_poll_mode", lambda: True)
+    cpm._last_http_poll_ts_per_symbol["BTCUSDC"] = now_s
+    polled_syms = []
+    monkeypatch.setattr(
+        cpm,
+        "get_remote_items",
+        lambda sym, _st: polled_syms.append(sym) or [[math.trunc(time.time() * 1000.0), 70600.0]],
+    )
+    assert cpm.query_remote_and_update_cache() is True
+    assert polled_syms == ["BTCUSDC"]
+    cpm.shutdown(timeout=0.5)
+
+    # 2. order_lifecycle: scalar IDs/symbols, metadata Mapping guard, status cleaning, and skip_live_tick_lookup flag.
+    lc_api = SimpleNamespace(
+        order_by_client_id=lambda *_a, **_kw: None,
+        order_status=lambda *_a, **_kw: None,
+        cancel_order=lambda *_a, **_kw: None,
+    )
+    lc = TrackedOrderLifecycle(lc_api, provider_name="binance", clock=lambda: 1700000000.0)
+    with pytest.raises(ValueError, match="missing symbol"):
+        lc.new_intent(intent_id="i1", client_order_id="c1", symbol={"id": "1"}, side="BUY", requested_qty=1.0)
+    with pytest.raises(ValueError, match="missing symbol"):
+        lc.new_intent(intent_id="i1", client_order_id="c1", symbol=12345, side="BUY", requested_qty=1.0)
+    with pytest.raises(ValueError, match="missing intent_id"):
+        lc.new_intent(intent_id={"id": "1"}, client_order_id="c1", symbol="BTCUSDC", side="BUY", requested_qty=1.0)
+    with pytest.raises(ValueError, match="metadata must be a mapping"):
+        lc.new_intent(intent_id="i1", client_order_id="c1", symbol="BTCUSDC", side="BUY", requested_qty=1.0, metadata=True)
+
+    valid_intent = lc.new_intent(
+        intent_id="i1", client_order_id="c1", symbol="BTCUSDC", side=" buy ", requested_qty=1.0
+    )
+    assert valid_intent["side"] == "BUY"
+    assert TrackedOrderResult("active", {"order_id": {"id": "99"}}).order_known is False
+    assert TrackedOrderResult("active", {"order_id": "99"}).order_known is True
+    assert TrackedOrderLifecycle._order_fields({"orderId": "88", "status": True}) == {"order_id": "88"}
+    assert TrackedOrderLifecycle._order_fields({"orderId": "88", "status": "null"}) == {"order_id": "88"}
+
+    strict_exec = SimpleNamespace(
+        reconciliation_capabilities=lambda: OrderReconciliationCapabilities(True, True, True),
+        order_by_client_id=lambda sym, cid: (sym, cid),
+        order_status=lambda sym, oid: (sym, oid),
+        cancel_order=lambda sym, oid: (sym, oid),
+    )
+    exec_adapter = StrategyExecutorLifecycleApi(strict_exec)
+    with pytest.raises(ProviderError, match="invalid client_order_id"):
+        exec_adapter.order_by_client_id("BTCUSDC", {"id": "1"})
+    with pytest.raises(ProviderError, match="invalid symbol"):
+        exec_adapter.order_status(True, "123")
+
+    tick_lookups = []
+    live_tick_api = SimpleNamespace(
+        price_tick_size=lambda sym, reference_price=None: tick_lookups.append((sym, reference_price)) or 0.5
+    )
+    tick_cache = {}
+    resolve_dynamic_reprice_bounds(
+        "BTCUSDC",
+        100.0,
+        market_api=live_tick_api,
+        tick_cache=tick_cache,
+        skip_live_tick_lookup="false",
+    )
+    assert tick_lookups == [("BTCUSDC", 100.0)]
+    assert tick_cache["BTCUSDC"] == 0.5
+
+    # 3. Instrument: _provider_bool_cap string-boolean normalization & order_kind boolean sanitization.
+    preflight_seen = []
+    cap_prov = SimpleNamespace(
+        name="stubcap",
+        validate_symbol=lambda _s: None,
+        requires_cache_permit=lambda: "false",
+        defers_smart_cancellation=lambda: "false",
+        supports_business_minimum=lambda: "false",
+        supports_post_only=lambda: "false",
+        supports_order_validity=lambda: "false",
+        guards_internally=lambda: "false",
+        defers_preflight_quantity=lambda: "false",
+        execution_enabled=lambda: False,
+        preflight_order=lambda sym, side, qty, price, **kw: preflight_seen.append((sym, side, qty, price, kw)),
+    )
+    cap_api = SimpleNamespace(provider_by_name=lambda _n: cap_prov)
+    cap_inst = Instrument("STUB", "BTCUSDC", "stubcap", base="BTC", quote="USDC", api=cap_api)
+    assert cap_inst._provider_bool_cap("defers_preflight_quantity") is False
+    assert cap_inst._provider_bool_cap("guards_internally") is False
+    out_ctx = {}
+    assert cap_inst.place("BUY", 100.0, 1.5, kind=True, motivation="ENTRY_GRID", _outcome_context=out_ctx) is None
+    assert out_ctx["reason"] == "execution_disabled"
+
+    # 4. PositionExitManager: update_reentry_anchors, _clean_symbol_str, and allow_external_cache string bools.
+    assert pem_mod._clean_symbol_str({"sym": "BTC"}) == ""
+    assert pem_mod._clean_symbol_str("null") == ""
+    anchor_state = {}
+    t_out, p_out = pem_mod.update_reentry_anchors(
+        anchor_state,
+        100.0,
+        default_trough=None,
+        default_peak=float("nan"),
+        clamp_to_defaults="false",
+    )
+    assert (t_out, p_out) == (100.0, 100.0)
+    assert pem_mod.update_reentry_anchors(None, float("nan"), default_trough=None, default_peak=None) == (0.0, 0.0)
+
+    pem_cfg = pem_mod.PositionExitConfig(allow_external_cache="false")
+    assert pem_cfg.allow_external_cache is False
+    pem = pem_mod.PositionExitManager(config=pem_cfg)
+    pem.config.allow_external_cache = "false"
+    monkeypatch.setattr(
+        pem_mod,
+        "resolve_cached_volatility_1h",
+        lambda _s: (_ for _ in ()).throw(AssertionError("external cache must not be queried")),
+    )
+    assert pem._resolve_effective_vol_1h("BTCUSDC", 0.0) == (0.0, "default")
+
 
 
 

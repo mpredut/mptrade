@@ -15,9 +15,11 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     StringEnum,
     _parse_bool_flag,
     are_close,
+    clean_nonempty_str,
     normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
@@ -35,7 +37,8 @@ STOP_EXIT_KINDS: frozenset[str] = frozenset({"STOP", "SL", "STOP_LOSS", "AI_STOP
 
 
 def _clean_symbol_str(symbol: Any) -> str:
-    return str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+    s = clean_nonempty_str(symbol)
+    return s if (s is not None and s.lower() not in INVALID_SCALAR_STRINGS) else ""
 
 
 def is_stop_exit_kind(kind: Any) -> bool:
@@ -73,25 +76,31 @@ def update_reentry_anchors(
     clamp_to_defaults: bool = True,
 ) -> Tuple[float, float]:
     """Update ``trough``, ``peak_bounce``, and ``peak`` in ``state`` for ``current_price``."""
-    cur_trough = safe_pos_float(state.get("trough"), default=default_trough)
-    cur_peak = safe_pos_float(state.get("peak"), default=default_peak)
-    cur_peak_bounce = safe_pos_float(state.get("peak_bounce"), default=current_price)
-    if current_price > 0:
+    if not isinstance(state, dict):
+        state = {}
+    px_f = safe_pos_float(current_price, default=0.0) or 0.0
+    def_trough = safe_pos_float(default_trough, default=px_f) or px_f
+    def_peak = safe_pos_float(default_peak, default=px_f) or px_f
+    clamp = _parse_bool_flag(clamp_to_defaults, True)
+    cur_trough = safe_pos_float(state.get("trough"), default=def_trough) or def_trough
+    cur_peak = safe_pos_float(state.get("peak"), default=def_peak) or def_peak
+    cur_peak_bounce = safe_pos_float(state.get("peak_bounce"), default=px_f) or px_f
+    if px_f > 0.0:
         eff_trough = (
-            min(cur_trough, default_trough, current_price)
-            if clamp_to_defaults
-            else min(cur_trough, current_price)
+            min(cur_trough, def_trough, px_f)
+            if (clamp and def_trough > 0.0)
+            else (min(cur_trough, px_f) if cur_trough > 0.0 else px_f)
         )
         state["trough"] = eff_trough
         state["peak_bounce"] = (
-            current_price
-            if (eff_trough < cur_trough or current_price < cur_trough)
-            else max(cur_peak_bounce, current_price)
+            px_f
+            if (eff_trough < cur_trough or (cur_trough > 0.0 and px_f < cur_trough))
+            else max(cur_peak_bounce, px_f)
         )
         state["peak"] = (
-            max(cur_peak, default_peak, current_price)
-            if clamp_to_defaults
-            else max(cur_peak, current_price)
+            max(cur_peak, def_peak, px_f)
+            if clamp
+            else max(cur_peak, px_f)
         )
     return state.get("trough", cur_trough), state.get("peak", cur_peak)
 
@@ -541,7 +550,7 @@ class PositionExitManager:
                 except Exception:
                     res_vol = 0.0
                 eff_vol = safe_pos_float(res_vol, default=0.0)
-            elif getattr(self.config, "allow_external_cache", True):
+            elif _parse_bool_flag(getattr(self.config, "allow_external_cache", True), True):
                 cached = safe_pos_float(resolve_cached_volatility_1h(symbol), default=0.0)
                 if cached > 0.0:
                     eff_vol, eff_src = cached, "cache"
@@ -758,7 +767,7 @@ class PositionExitManager:
             and not _parse_bool_flag(episode_state.get("smart_sl_done"), False)
         ):
             eval_fn = self.smart_sl_evaluator
-            if eval_fn is None and getattr(self.config, "allow_external_cache", True):
+            if eval_fn is None and _parse_bool_flag(getattr(self.config, "allow_external_cache", True), True):
                 eval_fn = getattr(_smart_sl_guard, "evaluate_smart_stop_loss", None)
 
             if eval_fn is not None:

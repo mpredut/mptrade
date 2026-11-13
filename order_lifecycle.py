@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
@@ -114,6 +115,11 @@ def propagate_submission_refusal(response, outcome_context):
     return response
 
 
+def _clean_lifecycle_symbol(symbol: object) -> Optional[str]:
+    s = clean_nonempty_str(symbol)
+    return s if (s is not None and s.lower() not in INVALID_SCALAR_STRINGS) else None
+
+
 @dataclass(frozen=True)
 class TrackedOrderResult:
     """One lifecycle observation without equating submit acceptance with a fill."""
@@ -130,7 +136,7 @@ class TrackedOrderResult:
 
     @property
     def order_known(self) -> bool:
-        return extract_order_id(self.intent.get("order_id")) is not None
+        return clean_order_id(self.intent.get("order_id")) is not None
 
 
 class StrategyExecutorLifecycleApi:
@@ -150,28 +156,32 @@ class StrategyExecutorLifecycleApi:
             raise RuntimeError(
                 f"{provider_name or type(self.executor).__name__}: order_by_client_id is unsupported"
             )
-        clean_cid = extract_order_id(client_order_id)
+        clean_sym = _clean_lifecycle_symbol(symbol)
+        if clean_sym is None:
+            raise ProviderError("invalid symbol")
+        clean_cid = clean_order_id(client_order_id)
         if not clean_cid:
             raise ProviderError("invalid client_order_id")
-        return method(symbol, clean_cid)
+        return method(clean_sym, clean_cid)
 
-    def _require_order_id_op(self, cap: str, method_name: str, order_id: str) -> str:
+    def _require_order_id_op(self, cap: str, method_name: str, symbol: str, order_id: str) -> tuple[str, str]:
         if not getattr(self.reconciliation_capabilities(), cap):
             raise RuntimeError(f"{self.executor.__class__.__name__}: {method_name} is unsupported")
-        clean_oid = extract_order_id(order_id)
+        clean_sym = _clean_lifecycle_symbol(symbol)
+        if clean_sym is None:
+            raise ProviderError("invalid symbol")
+        clean_oid = clean_order_id(order_id)
         if not clean_oid:
             raise ProviderError("invalid order_id")
-        return clean_oid
+        return clean_sym, clean_oid
 
     def order_status(self, symbol: str, order_id: str, *, provider_name=None):
-        return self.executor.order_status(
-            symbol, self._require_order_id_op("status_by_order_id", "order_status", order_id)
-        )
+        clean_sym, clean_oid = self._require_order_id_op("status_by_order_id", "order_status", symbol, order_id)
+        return self.executor.order_status(clean_sym, clean_oid)
 
     def cancel_order(self, symbol: str, order_id: str, *, provider_name=None):
-        return self.executor.cancel_order(
-            symbol, self._require_order_id_op("cancel_by_order_id", "cancel_order", order_id)
-        )
+        clean_sym, clean_oid = self._require_order_id_op("cancel_by_order_id", "cancel_order", symbol, order_id)
+        return self.executor.cancel_order(clean_sym, clean_oid)
 
 
 _RESERVED_INTENT_KEYS = frozenset({
@@ -243,14 +253,18 @@ class TrackedOrderLifecycle:
     def _validate_identity(intent: dict) -> dict:
         if not isinstance(intent, dict):
             raise ValueError("tracked intent must be a dict")
-        for key in ("intent_id", "client_order_id", "symbol"):
-            if extract_order_id(intent.get(key)) is None:
+        for key in ("intent_id", "client_order_id"):
+            if clean_order_id(intent.get(key)) is None:
                 raise ValueError(f"tracked intent missing {key}")
+        if _clean_lifecycle_symbol(intent.get("symbol")) is None:
+            raise ValueError("tracked intent missing symbol")
         side_val = intent.get("side")
-        if isinstance(side_val, bool) or not str(side_val or "").strip():
+        if isinstance(side_val, bool) or not isinstance(side_val, str) or not side_val.strip():
             raise ValueError("tracked intent missing side")
-        if str(side_val).strip().upper() not in {"BUY", "SELL"}:
+        side_norm = normalize_side(side_val, require_str=True)
+        if side_norm not in {"BUY", "SELL"}:
             raise ValueError("tracked intent side must be BUY or SELL")
+        intent["side"] = side_norm
         if _lifecycle_finite(intent.get("requested_qty"), positive=True) is None:
             raise ValueError("tracked intent requested_qty must be positive")
         price = intent.get("requested_price")
@@ -273,6 +287,10 @@ class TrackedOrderLifecycle:
     ) -> dict:
         if any(isinstance(x, bool) for x in (intent_id, client_order_id, symbol, side, kind)):
             raise ValueError("tracked intent identity fields must not be boolean")
+        if metadata is not None and not isinstance(metadata, Mapping):
+            raise ValueError("tracked intent metadata must be a mapping")
+        if kind is not None and not isinstance(kind, str):
+            raise ValueError("tracked intent kind must be a string or None")
         qty_f = _lifecycle_finite(requested_qty, positive=True)
         if qty_f is None:
             raise ValueError("tracked intent requested_qty must be positive")
@@ -284,9 +302,9 @@ class TrackedOrderLifecycle:
         att_int = exact_pos_int(attempt, default=None)
         if att_int is None:
             raise ValueError("tracked intent attempt must be positive")
-        clean_iid = extract_order_id(intent_id)
-        clean_cid = extract_order_id(client_order_id)
-        clean_sym = extract_order_id(symbol)
+        clean_iid = clean_order_id(intent_id)
+        clean_cid = clean_order_id(client_order_id)
+        clean_sym = _clean_lifecycle_symbol(symbol)
         if not clean_iid:
             raise ValueError("tracked intent missing intent_id")
         if not clean_cid:
@@ -297,8 +315,8 @@ class TrackedOrderLifecycle:
             "intent_id": clean_iid,
             "client_order_id": clean_cid,
             "symbol": clean_sym,
-            "side": normalize_side(side),
-            "kind": None if kind is None else str(kind),
+            "side": normalize_side(side, require_str=True) or (side.strip() if isinstance(side, str) else ""),
+            "kind": None if kind is None else clean_nonempty_str(kind),
             "requested_qty": qty_f,
             "requested_price": px_f,
             "attempt": att_int,
@@ -330,8 +348,9 @@ class TrackedOrderLifecycle:
             order_id = extract_order_id(response)
             if order_id is not None:
                 fields["order_id"] = str(order_id)
-            if response.get("status") is not None:
-                fields["submit_status"] = str(response["status"])
+            status_str = clean_nonempty_str(response.get("status"))
+            if status_str is not None and status_str.lower() not in INVALID_SCALAR_STRINGS:
+                fields["submit_status"] = status_str
             orig_qty = extract_orig_qty(response)
             submitted_qty = orig_qty if orig_qty is not None else extract_order_qty(response, default=None)
             if submitted_qty is not None:
@@ -376,7 +395,7 @@ class TrackedOrderLifecycle:
 
         pending.update(self._order_fields(outcome))
         persist(dict(pending))
-        if extract_order_id(pending.get("order_id")):
+        if clean_order_id(pending.get("order_id")):
             self._audit(
                 "submit_accepted", pending,
                 qty=pending["requested_qty"],
@@ -428,7 +447,7 @@ class TrackedOrderLifecycle:
 
         symbol = pending["symbol"]
         client_order_id = pending["client_order_id"]
-        order_id = extract_order_id(pending.get("order_id"))
+        order_id = clean_order_id(pending.get("order_id"))
         if not order_id:
             err_text = str(pending.get("submit_error") or pending.get("refusal_reason") or "").lower()
             if (
@@ -843,14 +862,16 @@ def resolve_dynamic_reprice_bounds(
         or round(eff_base_min * MONITOR_INITIAL_MAX_PROC_MULT, 4)
     )
     px_f = safe_pos_float(current_price, default=None)
+    skip_live = _parse_bool_flag(skip_live_tick_lookup, False)
     if tick_size is None and market_api is not None:
         tick_fn = getattr(market_api, "price_tick_size", None)
         place_fn = getattr(market_api, "place", None)
         if callable(tick_fn) and (
             hasattr(tick_fn, "_mock_name")
-            or (not skip_live_tick_lookup and not hasattr(place_fn, "_mock_name"))
+            or (not skip_live and not hasattr(place_fn, "_mock_name"))
         ):
-            sym_key = str(symbol or "").strip().upper()
+            sym_clean = _clean_lifecycle_symbol(symbol)
+            sym_key = sym_clean.upper() if sym_clean is not None else ""
             cached_tick = (
                 tick_cache.get(sym_key)
                 if (isinstance(tick_cache, dict) and not hasattr(tick_fn, "_mock_name"))
