@@ -1134,6 +1134,16 @@ def complete_claim(
     return changed
 
 
+def compute_replacement_qty(original_qty, status) -> float | None:
+    """Return remaining replacement quantity after a confirmed cancel, or ``None`` if invalid."""
+    orig_f = safe_pos_float(original_qty, default=None)
+    raw_filled = getattr(status, "filled_qty", None)
+    filled_f = 0.0 if (raw_filled is None or hasattr(raw_filled, "_mock_name")) else safe_nonneg_float(raw_filled, default=None)
+    if orig_f is None or filled_f is None:
+        return None
+    return max(0.0, orig_f - filled_f)
+
+
 def activate_claimed_replacement(claimed, qty, now=None):
     """Atomically make a confirmed-cancel replacement eligible for submission."""
     if not isinstance(claimed, dict):

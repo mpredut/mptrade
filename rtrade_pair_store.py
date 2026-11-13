@@ -21,9 +21,9 @@ from state_io import atomic_write_json, encode_json_payload, parse_json_payload,
 
 
 def rtrade_client_order_id(pair_id, side, kind="limit"):
-    raw_pair = str(pair_id if pair_id is not None else "").strip()
-    raw_side = normalize_side(side) if side is not None else ""
-    raw_kind = str(kind if kind is not None else "limit").strip()
+    raw_pair = "" if (pair_id is None or isinstance(pair_id, bool)) else (clean_order_id_str(pair_id) or str(pair_id).strip())
+    raw_side = normalize_side(side, require_str=True) if side is not None else ""
+    raw_kind = "limit" if (kind is None or isinstance(kind, bool)) else str(kind).strip()
     raw = f"{raw_pair}:{raw_side}:{raw_kind}".encode("utf-8")
     return "RT_" + hashlib.blake2s(raw, digest_size=16).hexdigest()
 
@@ -80,8 +80,9 @@ class RTradePairStore:
     def _validate_intent(cls, pair_id, symbol, key, intent):
         if not isinstance(intent, dict):
             raise ValueError(f"invalid rtrade intent {key!r}: expected an object")
-        side = normalize_side(intent.get("side"))
-        kind = str(intent.get("kind") or "")
+        side = normalize_side(intent.get("side"), require_str=True)
+        raw_kind = intent.get("kind")
+        kind = raw_kind.strip() if cls._is_valid_store_str(raw_kind) else ""
         if side not in {"BUY", "SELL"} or not kind or key != f"{kind}:{side}":
             raise ValueError(f"invalid rtrade intent identity {key!r}")
         if not clean_order_id_str(intent.get("client_order_id")):
@@ -224,13 +225,13 @@ class RTradePairStore:
             result = fn(pairs)
             if result is not False:
                 terminal = sorted(
-                    (rec for rec in pairs.values() if isinstance(rec, dict) and rec.get("terminal")),
+                    (rec for rec in pairs.values() if isinstance(rec, dict) and _parse_bool_flag(rec.get("terminal"), False)),
                     key=lambda rec: normalize_epoch_sec(rec.get("updated_ts"), default=0.0, allow_zero=True, allow_iso=True) or 0.0,
                     reverse=True,
                 )
                 keep = {rec.get("pair_id") for rec in terminal[:self.terminal_retention]}
                 for pair_id, rec in list(pairs.items()):
-                    if isinstance(rec, dict) and rec.get("terminal") and pair_id not in keep:
+                    if isinstance(rec, dict) and _parse_bool_flag(rec.get("terminal"), False) and pair_id not in keep:
                         del pairs[pair_id]
                 self._write(self._validate(data))
             return result
@@ -238,9 +239,15 @@ class RTradePairStore:
     def _normalize_intent_scope(
         self, pair_id, side, kind, *, default_kind: str = "limit"
     ) -> tuple[str, str, str, str]:
-        side_u = normalize_side(side)
-        kind_s = str(kind or default_kind).strip()
-        return (str(pair_id).strip() if isinstance(pair_id, str) else pair_id), side_u, kind_s, f"{kind_s}:{side_u}"
+        pid_clean = clean_order_id_str(pair_id)
+        if not pid_clean:
+            raise ValueError(f"invalid rtrade pair_id: {pair_id!r}")
+        side_u = normalize_side(side, require_str=True)
+        raw_kind = default_kind if kind is None else kind
+        if not self._is_valid_store_str(raw_kind):
+            raise ValueError(f"invalid rtrade intent kind: {kind!r}")
+        kind_s = raw_kind.strip()
+        return pid_clean, side_u, kind_s, f"{kind_s}:{side_u}"
 
     @staticmethod
     def _upsert_rec_intent(rec: dict, key: str, value: dict, now: float) -> bool:
@@ -287,6 +294,10 @@ class RTradePairStore:
             if not isinstance(pending, dict):
                 raise ValueError("tracked rtrade intent must be a dict")
             value = dict(pending)
+            if value.get("pair_id") is not None:
+                value["pair_id"] = clean_order_id_str(value["pair_id"]) or value["pair_id"]
+            if isinstance(value.get("symbol"), str):
+                value["symbol"] = value["symbol"].strip()
             requested_qty = value.get("requested_qty", value.get("qty", qty))
             if requested_qty is None:
                 raise ValueError("tracked rtrade intent missing requested_qty")
@@ -330,17 +341,20 @@ class RTradePairStore:
         checkpoints = list(checkpoints)
         if not checkpoints:
             return
-        for pair_id, state, _terminal in checkpoints:
-            if not isinstance(state, dict):
+        normalized = []
+        for pair_id, state, terminal in checkpoints:
+            pid_clean = clean_order_id_str(pair_id)
+            if not pid_clean or not isinstance(state, dict):
                 raise ValueError(f"invalid rtrade checkpoint for {pair_id!r}")
+            normalized.append((pid_clean, state, _parse_bool_flag(terminal, False)))
 
         def op(pairs):
             now = time.time()
-            for pair_id, state, terminal in checkpoints:
-                rec = pairs[str(pair_id).strip() if isinstance(pair_id, str) else pair_id]
+            for pid_clean, state, terminal_b in normalized:
+                rec = pairs[pid_clean]
                 rec["state"] = state
                 rec["phase"] = state.get("phase")
-                rec["terminal"] = _parse_bool_flag(terminal, False)
+                rec["terminal"] = terminal_b
                 rec["updated_ts"] = now
             return True
 
@@ -355,5 +369,5 @@ class RTradePairStore:
             pairs = self._read().get("pairs", {})
         return [
             rec for rec in pairs.values()
-            if canonical_symbol_key(rec.get("symbol")) == sym_key and not rec.get("terminal")
+            if canonical_symbol_key(rec.get("symbol")) == sym_key and not _parse_bool_flag(rec.get("terminal"), False)
         ]

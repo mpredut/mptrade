@@ -647,14 +647,25 @@ class CacheTradeManager(CacheAccountManagerBase):
         candidate_keys=None,
     ) -> list[str]:
         """Return matching symbol keys in a venue trade snapshot ``mapping``."""
+        if not isinstance(mapping, dict):
+            return []
         if callable(match_fn):
             return [k for k in mapping if isinstance(k, str) and match_fn(symbol, k)]
-        raw_cands = candidate_keys if candidate_keys is not None else (symbol,)
-        cands = {str(c).upper() for c in raw_cands if c}
+        if candidate_keys is None:
+            raw_cands = (symbol,)
+        elif isinstance(candidate_keys, str):
+            raw_cands = (candidate_keys,)
+        elif isinstance(candidate_keys, (list, tuple, set, frozenset)):
+            raw_cands = candidate_keys
+        else:
+            raw_cands = ()
+        cands = {s for c in raw_cands if isinstance(c, str) and (s := c.strip().upper())}
+        if not cands:
+            return []
         return [
             k
             for k in mapping
-            if isinstance(k, str) and (k.upper() in cands or clean_symbol_key(k) in cands)
+            if isinstance(k, str) and (k.strip().upper() in cands or clean_symbol_key(k) in cands)
         ]
 
     @staticmethod
@@ -750,18 +761,21 @@ class CacheTradeManager(CacheAccountManagerBase):
         touch_symbols=None,
     ) -> bool:
         """Venue-agnostic in-memory merger of ``{symbol: [fill_dict, ...]}`` into ``cache_obj`` (`items` + `fetchtime`)."""
+        if fills_by_symbol is not None and not isinstance(fills_by_symbol, dict):
+            return False
         prep = cls._prepare_venue_cache_dict(cache_obj, now_ms)
         if prep is None:
             return False
+        is_snapshot_b = _parse_bool_flag(is_snapshot, False)
         items, ft, eff_now_ms = prep
         changed = False
         for sym_raw, new_rows in (fills_by_symbol or {}).items():
-            if not sym_raw or isinstance(sym_raw, bool) or not isinstance(new_rows, list):
+            if not isinstance(sym_raw, str) or not isinstance(new_rows, list):
                 continue
-            sym_key = str(sym_raw).strip().upper()
+            sym_key = sym_raw.strip().upper()
             if not sym_key:
                 continue
-            if is_snapshot:
+            if is_snapshot_b:
                 clean_rows = [dict(r) for r in new_rows if isinstance(r, dict)]
                 if items.get(sym_key) != clean_rows or ft.get(sym_key) != eff_now_ms:
                     changed = True
@@ -838,6 +852,9 @@ class CacheTradeManager(CacheAccountManagerBase):
     ) -> dict:
         """Atomically load, merge, touch, and persist a venue trade snapshot under ``.generation.lock``."""
         target_path = str(cache_file)
+        is_snapshot_b = _parse_bool_flag(is_snapshot, False)
+        touch_create_b = _parse_bool_flag(touch_create_missing, False)
+        force_save_b = _parse_bool_flag(force_save, False)
         with generation_file_lock(target_path):
             cache_obj = (
                 cls.load_sanitized_trade_snapshot(
@@ -852,17 +869,17 @@ class CacheTradeManager(CacheAccountManagerBase):
                 cache_obj,
                 fills_by_symbol,
                 now_ms=now_ms,
-                is_snapshot=is_snapshot,
+                is_snapshot=is_snapshot_b,
                 touch_symbols=None,
             )
             if touch_symbols and cls.touch_venue_ws_fetchtimes_in_dict(
                 cache_obj,
                 now_ms,
                 symbols=touch_symbols,
-                create_missing=touch_create_missing,
+                create_missing=touch_create_b,
             ):
                 changed = True
-            if changed or is_snapshot or force_save or not os.path.exists(target_path):
+            if changed or is_snapshot_b or force_save_b or not os.path.exists(target_path):
                 save_json_state(target_path, cache_obj, indent=indent)
             return cache_obj
 
@@ -880,16 +897,17 @@ class CacheTradeManager(CacheAccountManagerBase):
         indent: Optional[int] = None,
     ) -> bool:
         """Merge ``{symbol: [fill_dict, ...]}`` into a shared SSOT trade cache file (`items` + `fetchtime`)."""
+        is_snapshot_b = _parse_bool_flag(is_snapshot, False)
         if not cache_file or not isinstance(fills_by_symbol, dict):
             return False
-        if not fills_by_symbol and not touch_symbols and not is_snapshot:
+        if not fills_by_symbol and not touch_symbols and not is_snapshot_b:
             return False
         try:
             cls._merge_venue_fills_snapshot_locked(
                 str(cache_file),
                 fills_by_symbol,
                 now_ms=now_ms,
-                is_snapshot=is_snapshot,
+                is_snapshot=is_snapshot_b,
                 touch_symbols=touch_symbols,
                 touch_create_missing=touch_create_missing,
                 sanitize_venue=sanitize_venue,
@@ -913,17 +931,18 @@ class CacheTradeManager(CacheAccountManagerBase):
         if not cache_file:
             return False
         target_path = str(cache_file)
+        create_missing_b = _parse_bool_flag(create_missing, False)
         try:
             with generation_file_lock(target_path):
                 loaded = cls._load_venue_snapshot_dict(
-                    target_path, create=create_missing, repair_files=True
+                    target_path, create=create_missing_b, repair_files=True
                 )
                 if loaded is None:
                     return False
                 touched = cls.touch_venue_ws_fetchtimes_in_dict(
-                    loaded, now_ms, symbols=symbols, create_missing=create_missing
+                    loaded, now_ms, symbols=symbols, create_missing=create_missing_b
                 )
-                if touched or (create_missing and not os.path.exists(target_path)):
+                if touched or (create_missing_b and not os.path.exists(target_path)):
                     save_json_state(target_path, loaded, indent=indent)
                 return touched
         except Exception:
@@ -942,8 +961,17 @@ class CacheTradeManager(CacheAccountManagerBase):
         if (prep := cls._prepare_venue_cache_dict(cache_obj, now_ms)) is None:
             return False
         items, ft, resolved_ms = prep
-        valid_syms = [s for s in (symbols or ()) if s and s != "*"]
-        if create_missing:
+        raw_syms = (
+            (symbols,)
+            if isinstance(symbols, str)
+            else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else ())
+        )
+        valid_syms = [
+            s_clean
+            for s in raw_syms
+            if isinstance(s, str) and (s_clean := s.strip()) and s_clean != "*"
+        ]
+        if _parse_bool_flag(create_missing, False):
             for s_sym in valid_syms:
                 items.setdefault(s_sym, [])
             touch_syms = list(items.keys())
@@ -2169,11 +2197,7 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             print(f"[{self.cls_name}][Error] Cannot query the total value: {e}")
             return []
 
-        total_val = (
-            safe_pos_float(total_usdc, default=None)
-            if isinstance(total_usdc, (int, float))
-            else None
-        )
+        total_val = safe_pos_float(total_usdc, default=None)
         if total_val is None:
             print(f"[{self.cls_name}][Error] Invalid total value: {total_usdc}")
             return []

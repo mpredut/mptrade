@@ -1311,34 +1311,39 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
     def _set_mem(self, symbol, **fields):
         """Merge fields in memory only; the flush loop owns file I/O."""
+        if not isinstance(symbol, str) or not (sym_key := symbol.strip()):
+            return
         with self._lock:
-            snap = dict(
-                self._mem.get(symbol) or self._read_file().get(symbol) or {}
-            )
+            existing = self._mem.get(sym_key)
+            if not isinstance(existing, dict):
+                existing = self._read_file().get(sym_key)
+            snap = dict(existing) if isinstance(existing, dict) else {}
             for legacy_k in _LEGACY_SNAP_KEYS:
                 snap.pop(legacy_k, None)
             snap.update(fields)
-            snap["symbol"] = symbol
-            self._mem[symbol] = snap
+            snap["symbol"] = sym_key
+            self._mem[sym_key] = snap
             self.cache = self._mem
             self._mem_dirty = True
-            self._sync_symbol_cursor_from_snap(symbol, snap)
+            self._sync_symbol_cursor_from_snap(sym_key, snap)
 
     def update_snapshot(self, symbol, **fields):
         """Update memory and flush immediately only when this instance is the writer."""
+        if not isinstance(symbol, str) or not (sym_key := symbol.strip()):
+            return False
         with self._lock:
             prev_snap = (
-                dict(self._mem[symbol])
-                if isinstance(self._mem.get(symbol), dict)
+                dict(self._mem[sym_key])
+                if isinstance(self._mem.get(sym_key), dict)
                 else None
             )
-            self._set_mem(symbol, **fields)
+            self._set_mem(sym_key, **fields)
             if self.writer:
                 if not self.save_state_to_file():
                     if prev_snap is not None:
-                        self._mem[symbol] = prev_snap
+                        self._mem[sym_key] = prev_snap
                     else:
-                        self._mem.pop(symbol, None)
+                        self._mem.pop(sym_key, None)
                     self._mem_dirty = False
                     return False
         return True
@@ -1402,14 +1407,17 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         if symbols is None:
             allowed = None
         elif isinstance(symbols, str):
-            allowed = {symbols.strip()} if symbols.strip() else set()
+            allowed = {symbols.strip().upper()} if symbols.strip() else set()
+        elif isinstance(symbols, (list, tuple, set, frozenset)):
+            allowed = {s.upper() for sym_it in symbols if isinstance(sym_it, str) and (s := sym_it.strip())}
         else:
-            allowed = {str(symbol) for symbol in symbols}
+            allowed = set()
         with self._lock:
             for symbol, snap in data.items():
                 if (
-                    isinstance(snap, dict)
-                    and (allowed is None or symbol in allowed)
+                    isinstance(symbol, str)
+                    and isinstance(snap, dict)
+                    and (allowed is None or symbol in allowed or symbol.strip().upper() in allowed)
                     and (overwrite or symbol not in self._mem)
                 ):
                     cleaned_snap = {
@@ -1731,7 +1739,7 @@ class KalmanStateTracker:
         self._now = now_fn or time.time
         self.state_path = state_path
         self.state_min_interval = safe_nonneg_float(state_min_interval, 1.0)
-        self.compute_vol = bool(compute_vol)
+        self.compute_vol = _parse_bool_flag(compute_vol, True)
         self._state: dict = {}
         if self.state_path:
             try:
@@ -1768,6 +1776,9 @@ class KalmanStateTracker:
 
     def _write_state(self, now: float) -> None:
         if self.read_only or not self.state_path:
+            return
+        now = normalize_epoch_sec(now, default=None, allow_zero=True)
+        if now is None:
             return
         with self._lock:
             if self._last_state_write > now:
@@ -1817,8 +1828,10 @@ class KalmanStateTracker:
 
     def current_trend(self, symbol: str) -> tuple:
         """Return Kalman trend and state age for tradeall's live order gate."""
+        if not isinstance(symbol, str) or not symbol.strip():
+            return None, 1e18
         st = self._state.get(symbol)
-        if not isinstance(st, dict) and isinstance(symbol, str):
+        if not isinstance(st, dict):
             st = casefold_get(self._state, symbol)
             if not isinstance(st, dict):
                 for cand in cache_symbol_variants(symbol):
@@ -1865,17 +1878,23 @@ class KalmanStateTracker:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
         # snapshot remains populated.
         with self._lock:
-            if isinstance(symbol, str) and (norm_sym := symbol.strip().upper()):
-                if symbol != norm_sym and symbol in self._state:
-                    val_sym = self._state.pop(symbol, None)
-                    if norm_sym not in self._state and val_sym is not None:
-                        self._state[norm_sym] = val_sym
-                symbol = norm_sym
-            if (ts := normalize_epoch_sec(ts, allow_zero=True)) is None or (
-                price := safe_pos_float(price, default=None)
-            ) is None:
-                k = self._last_kfields.get(symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0})
-                v1h_cached = self._last_vol_fields.get(symbol)
+            norm_sym = symbol.strip().upper() if isinstance(symbol, str) else ""
+            if norm_sym and symbol != norm_sym and symbol in self._state:
+                val_sym = self._state.pop(symbol, None)
+                if norm_sym not in self._state and val_sym is not None:
+                    self._state[norm_sym] = val_sym
+            symbol = norm_sym
+            if (
+                not symbol
+                or (ts := normalize_epoch_sec(ts, allow_zero=True)) is None
+                or (price := safe_pos_float(price, default=None)) is None
+            ):
+                k = (
+                    self._last_kfields.get(symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0})
+                    if symbol
+                    else {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
+                )
+                v1h_cached = self._last_vol_fields.get(symbol) if symbol else None
                 adapt_reentry, adapt_dca = pw.adaptive_thresholds(
                     v1h_cached, k_reentry=pw.K_REENTRY_DEFAULT, k_dca=pw.K_DCA_DEFAULT
                 )

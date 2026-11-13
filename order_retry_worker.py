@@ -410,10 +410,7 @@ def process_once(mkt, now=None):
                 continue
             venue_status = str(status.venue_status or "").upper()
             if venue_status in {"CANCELED", "CANCELLED"}:
-                orig_f = safe_pos_float(r.get("replaces_original_qty"), default=None)
-                raw_filled = getattr(status, "filled_qty", None)
-                filled_f = 0.0 if raw_filled is None else safe_nonneg_float(raw_filled, default=None)
-                replacement_qty = max(0.0, orig_f - filled_f) if (orig_f is not None and filled_f is not None) else -1.0
+                replacement_qty = oq.compute_replacement_qty(r.get("replaces_original_qty"), status)
                 activation = oq.activate_claimed_replacement(r, replacement_qty, now)
                 if activation == "activated":
                     oq.complete_claim(r, "release", now)

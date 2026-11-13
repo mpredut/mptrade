@@ -151,7 +151,14 @@ import llm_order_guard
 from market_monitor.new_coins_discovery import NewCoinsFactory
 from market_monitor.pricechecker import PriceAlert, PriceChecker
 from market_monitor.pricefetcher import StockYahooPricePlatform
-from market_regime import MarketRegimeHorizon, MarketRegimeService
+from market_regime import (
+    MarketRegimeContext,
+    MarketRegimeDecision,
+    MarketRegimeEvidence,
+    MarketRegimeHorizon,
+    MarketRegimeService,
+)
+import monitororder as mo
 import monitortrades as mt
 from notify_engine import alertnotifiers as alert_mod, server as notify_server_mod
 from offline.backtests import evaluation as bt_eval
@@ -246,7 +253,7 @@ from providers.strategy_executor import OrderReconciliationCapabilities, Provide
 from providers.t212_provider import T212Provider
 import qlimit_order_guard as qog
 import rtrade
-from rtrade_pair_store import RTradePairStore
+from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 import state_io
 from state_io import (
     atomic_write_text,
@@ -6450,6 +6457,184 @@ def test_wave36_retry_worker_active_intents_health_and_guard_hierarchy_border_ca
     assert order_guard.check_intelligence_guards(
         "binance", "ZZZFAKEUSDC", "BUY", 100.0, qty=0.1, regime_context="corrupt_str_ctx"
     ) == (True, "test_symbol_exempt", 1.0)
+
+
+def test_wave37_market_regime_cacheaccount_cachetrend_rtrade_store_and_monitororder_border_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wave 37: market_regime, cacheaccount, cachetrend, rtrade_pair_store, and monitororder replacement SSOT border cases."""
+    # 1. market_regime: string-boolean fresh/fallback_used/continuous_candles, invalid decision coercion, and _provider_label.
+    dec_str_false = MarketRegimeDecision(
+        regime="bull", gradient=0.02, epsilon=0.005, strength=4.0,
+        fresh="false", reason="stale_str", fallback_used="false",
+    )
+    assert dec_str_false.fresh is False and dec_str_false.fallback_used is False
+
+    ctx_none_dec = MarketRegimeContext.from_decision(
+        None, evaluated_at=1000.0, benchmark_decision="corrupt_bench"
+    )
+    assert ctx_none_dec.decision.regime == "unknown"
+    assert ctx_none_dec.decision.fresh is False
+    assert ctx_none_dec.decision.reason == "invalid_decision"
+    assert ctx_none_dec.benchmark_decision is None
+
+    dec_ok = MarketRegimeDecision(
+        regime="bull", gradient=0.02, epsilon=0.005, strength=4.0,
+        fresh="true", reason="directional_signal",
+    )
+    ev_gap = MarketRegimeEvidence(
+        role="asset_short", family="price_trend", classifier="linear_noise_v1",
+        provider="binance", symbol="BTCUSDC", decision=dec_ok,
+        evaluated_at=1000.0, observed_at=995.0, max_age_seconds=30.0,
+        closed_candles="true", continuous_candles="false",
+    )
+    assert ev_gap.closed_candles is True and ev_gap.continuous_candles is False
+    assert ev_gap.usable is False and ev_gap.availability_reason == "candle_gap"
+
+    svc = MarketRegimeService()
+    assert svc._provider_label(SimpleNamespace(name=None)) == "unknown"
+    assert svc._provider_label(SimpleNamespace(name="   ")) == "unknown"
+    assert svc._provider_label(SimpleNamespace(name=True)) == "unknown"
+    assert svc._provider_label(SimpleNamespace(name=" Kraken ")) == "Kraken"
+
+    # 2. CacheTradeManager: matching_snapshot_keys, is_snapshot="false", and bare-str touch_venue_ws_fetchtimes_in_dict.
+    assert CacheTradeManager.matching_snapshot_keys(None, "BTCUSDC") == []  # type: ignore[arg-type]
+    snap_map = {"BTCUSDC": [{"id": "1"}], "B": [{"id": "bad"}], "TRUE": [{"id": "bool"}]}
+    assert CacheTradeManager.matching_snapshot_keys(snap_map, "BTCUSDC", candidate_keys=" btcusdc ") == ["BTCUSDC"]
+    assert CacheTradeManager.matching_snapshot_keys(snap_map, "BTCUSDC", candidate_keys=[True, 123]) == []
+
+    cache_obj: dict[str, Any] = {
+        "items": {"BTCUSDC": [{"id": "fill-1", "time": 1000, "price": 50000.0}]},
+        "fetchtime": {"BTCUSDC": 1000},
+    }
+    assert CacheTradeManager.merge_venue_fills_into_dict(cache_obj, ["not_a_dict"]) is False  # type: ignore[arg-type]
+    merged_ok = CacheTradeManager.merge_venue_fills_into_dict(
+        cache_obj,
+        {"BTCUSDC": [{"id": "fill-2", "time": 2000, "price": 50100.0}], True: [{"id": "x"}]},  # type: ignore[dict-item]
+        now_ms=2000,
+        is_snapshot="false",  # type: ignore[arg-type]
+    )
+    assert merged_ok is True
+    assert [r["id"] for r in cache_obj["items"]["BTCUSDC"]] == ["fill-1", "fill-2"]
+    assert True not in cache_obj["items"]
+
+    ws_cache_obj: dict[str, Any] = {"items": {}, "fetchtime": {}}
+    assert CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+        ws_cache_obj, 3000, symbols="XXBTZUSD", create_missing="false"  # type: ignore[arg-type]
+    ) is False
+    assert ws_cache_obj["items"] == {}
+    assert CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+        ws_cache_obj, 3000, symbols=" XXBTZUSD ", create_missing="true"  # type: ignore[arg-type]
+    ) is True
+    assert list(ws_cache_obj["items"].keys()) == ["XXBTZUSD"]
+
+    snap_file = tmp_path / "venue_trades.json"
+    assert CacheTradeManager.merge_venue_fills_snapshot(
+        str(snap_file), {}, is_snapshot="false"  # type: ignore[arg-type]
+    ) is False
+    assert not snap_file.exists()
+
+    av_mgr = CacheAssetValueManager.__new__(CacheAssetValueManager)
+    av_mgr.cls_name = "CacheAssetValueManager"
+    av_mgr.filename = str(tmp_path / "cache_asset_value.jsonl")
+    av_mgr.api_client = SimpleNamespace(get_total_assets_value_usdc=lambda **_kw: "1234.56")
+    av_rows = av_mgr.get_remote_items("TOTAL", 0)
+    assert len(av_rows) == 1 and av_rows[0]["total_value_usdc"] == pytest.approx(1234.56)
+
+    # 3. CacheShortTrendManager & KalmanStateTracker border hygiene.
+    st_file = tmp_path / "cache_short_trend.json"
+    state_io.save_json_state(str(st_file), {"BTCUSDC": {"symbol": "BTCUSDC", "current_price": 50000.0, "ts": 1000.0}})
+    st_mgr = CacheShortTrendManager(["BTCUSDC"], str(st_file), data_sync_mode=CacheShortTrendManager.MODE_DISK_READER)
+    assert st_mgr.prime_from_file(symbols=True) >= 0
+    assert st_mgr.prime_from_file(symbols=[" btcusdc ", True]) == 1
+    assert st_mgr.update_snapshot("", current_price=1.0) is False
+    assert st_mgr.update_snapshot(True, current_price=1.0) is False  # type: ignore[arg-type]
+
+    kt_tracker = cachetrend.KalmanStateTracker(
+        state_path=str(tmp_path / "kalman_state.json"),
+        compute_vol="false",  # type: ignore[arg-type]
+        read_only=False,
+    )
+    assert kt_tracker.compute_vol is False
+    kt_tracker._state[1] = {"ts": 1000.0, "kalman_trend": 1}
+    assert kt_tracker.current_trend(True) == (None, 1e18)  # type: ignore[arg-type]
+    assert kt_tracker.current_trend("   ") == (None, 1e18)
+    empty_upd = kt_tracker.update("   ", 1000.0, 50000.0)
+    bool_upd = kt_tracker.update(True, 1000.0, 50000.0)  # type: ignore[arg-type]
+    assert empty_upd["kalman_trend"] == 0 and bool_upd["kalman_trend"] == 0
+    assert list(kt_tracker._state.keys()) == [1] and not any(isinstance(k, bool) for k in kt_tracker._state)
+    kt_tracker._write_state(float("nan"))
+
+    # 4. RTradePairStore: boolean/invalid kind & pair_id rejection, numeric pair_id normalization, terminal="false".
+    assert rtrade_client_order_id("2001.0", "buy", "limit") == rtrade_client_order_id(2001, "BUY", "limit")
+    assert rtrade_client_order_id(True, True, True) == rtrade_client_order_id("", "", "limit")
+
+    rt_store = RTradePairStore(path=str(tmp_path / "rt_pairs.json"))
+    with pytest.raises(ValueError, match="invalid rtrade intent kind"):
+        rt_store.intent("p1", "BUY", 100.0, 1.0, "CID-1", kind=True, symbol="BTCUSDC")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="invalid rtrade pair_id"):
+        rt_store.intent("0", "BUY", 100.0, 1.0, "CID-1", symbol="BTCUSDC")
+    rt_store.persist_intent(
+        " 2001.0 ",
+        "buy",
+        "limit",
+        {
+            "pair_id": " 2001.0 ",
+            "symbol": " BTCUSDC ",
+            "requested_qty": 0.5,
+            "requested_price": 100.0,
+            "client_order_id": "CID-2001",
+        },
+        symbol=" BTCUSDC ",
+        start_side="buy",
+    )
+    rt_store.checkpoint(
+        2001.0,
+        {"pair_id": "2001", "qty": 0.5, "start_side": "BUY", "phase": "quoting", "tickets": []},
+        terminal="false",
+    )
+    assert [r["pair_id"] for r in rt_store.active("BTCUSDC")] == ["2001"]
+
+    # 5. order_retry.compute_replacement_qty & monitororder fail-closed replacement activation on corrupt filled_qty.
+    assert order_retry.compute_replacement_qty(1.0, SimpleNamespace(filled_qty=0.25)) == pytest.approx(0.75)
+    assert order_retry.compute_replacement_qty(1.0, SimpleNamespace(filled_qty=None)) == pytest.approx(1.0)
+    assert order_retry.compute_replacement_qty(1.0, SimpleNamespace(filled_qty=False)) is None
+    assert order_retry.compute_replacement_qty(1.0, SimpleNamespace(filled_qty=float("nan"))) is None
+    assert order_retry.compute_replacement_qty(1.0, SimpleNamespace(filled_qty=-0.1)) is None
+
+    mo.reset_monitororder_state_for_test()
+    place_called = []
+    complete_calls = []
+    monkeypatch.setattr(
+        mo.api,
+        "get_open_orders",
+        lambda _side, _sym: {801: {"price": 100.0, "quantity": 1.0, "remainingQty": 1.0, "clientOrderId": "TA_ord"}},
+    )
+    monkeypatch.setattr(mo.api, "get_current_price", lambda _sym: 100.5)
+    monkeypatch.setattr(mo.api, "cancel_order", lambda _sym, _oid: True)
+    monkeypatch.setattr(mo.mkt, "order_filter_refusal", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mo.mkt, "preflight_order", lambda *_a, **_kw: object())
+    monkeypatch.setattr(
+        mo.mkt,
+        "order_status",
+        lambda _sym, _oid: SimpleNamespace(venue_status="CANCELED", terminal=False, filled_qty=False),
+    )
+    monkeypatch.setattr(mo.mkt, "place", lambda *_a, **_kw: place_called.append((_a, _kw)) or {"orderId": 9001})
+    monkeypatch.setattr(mo.order_retry, "enqueue", lambda *_a, **_kw: "rep-801")
+    monkeypatch.setattr(
+        mo.order_retry,
+        "claim",
+        lambda *_a, **_kw: [{"id": "rep-801", "place_kwargs": {"client_order_id": "MO_TA_cid_801"}}],
+    )
+    monkeypatch.setattr(
+        mo.order_retry,
+        "complete_claim",
+        lambda claim, outcome, **kw: complete_calls.append((claim.get("id"), outcome, kw)) or True,
+    )
+    mo.monitor_open_orders_by_type("BTCUSDC", "BUY")
+    assert place_called == []
+    assert complete_calls == [("rep-801", "status_error", {"failure_reason": "cancel_activation_failed"})]
+
 
 
 

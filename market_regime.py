@@ -60,6 +60,10 @@ class MarketRegimeDecision:
     source: str = "unknown"
     fallback_used: bool = False
 
+    def __post_init__(self):
+        object.__setattr__(self, "fresh", _parse_bool_flag(self.fresh, False))
+        object.__setattr__(self, "fallback_used", _parse_bool_flag(self.fallback_used, False))
+
     @property
     def directional(self) -> bool:
         return self.regime in {"bull", "bear"}
@@ -189,22 +193,29 @@ class MarketRegimeContext:
         return True
 
     @staticmethod
-    def _coerce_decision(val):
+    def _coerce_decision(val, *, required: bool = False):
+        if isinstance(val, MarketRegimeDecision):
+            return val
         if isinstance(val, Mapping):
             return MarketRegimeDecision(
                 regime=str(val.get("regime", "unknown") or "unknown").strip().lower(),
                 gradient=val.get("gradient"),
                 epsilon=val.get("epsilon"),
                 strength=val.get("strength"),
-                fresh=_parse_bool_flag(val.get("fresh"), False),
+                fresh=val.get("fresh", False),
                 reason=str(val.get("reason", "dict_decision") or "dict_decision"),
                 n_samples=val.get("n_samples"),
                 window_seconds=val.get("window_seconds"),
                 horizon=str(val.get("horizon", "unspecified") or "unspecified"),
                 source=str(val.get("source", "unknown") or "unknown"),
-                fallback_used=_parse_bool_flag(val.get("fallback_used"), False),
+                fallback_used=val.get("fallback_used", False),
             )
-        return val
+        if required:
+            return MarketRegimeDecision(
+                regime="unknown", gradient=None, epsilon=None, strength=None,
+                fresh=False, reason="invalid_decision",
+            )
+        return None
 
     @classmethod
     def from_decision(
@@ -217,7 +228,7 @@ class MarketRegimeContext:
         benchmark_symbol: Optional[str] = None,
         benchmark_decision: Optional[MarketRegimeDecision] = None,
     ) -> "MarketRegimeContext":
-        decision = cls._coerce_decision(decision)
+        decision = cls._coerce_decision(decision, required=True)
         benchmark_decision = cls._coerce_decision(benchmark_decision)
         trend = "flat" if decision.regime == "sideways" else decision.regime
         if evaluated_at is None or isinstance(evaluated_at, bool):
@@ -257,6 +268,12 @@ class MarketRegimeEvidence:
     closed_candles: Optional[bool] = None
     continuous_candles: Optional[bool] = None
     correlation_key: str = ""
+
+    def __post_init__(self):
+        if self.closed_candles is not None:
+            object.__setattr__(self, "closed_candles", _parse_bool_flag(self.closed_candles, False))
+        if self.continuous_candles is not None:
+            object.__setattr__(self, "continuous_candles", _parse_bool_flag(self.continuous_candles, False))
 
     @property
     def age_seconds(self) -> Optional[float]:
@@ -500,6 +517,11 @@ class MarketRegimeService:
                 return value[key]
         return None
 
+    @staticmethod
+    def _provider_label(provider) -> str:
+        raw = getattr(provider, "name", None)
+        return raw.strip() if isinstance(raw, str) and raw.strip() else "unknown"
+
     def _evidence(
         self,
         provider,
@@ -522,19 +544,20 @@ class MarketRegimeService:
             max_age_seconds = safe_pos_float(max_age_seconds, default=None)
             if max_age_seconds is None:
                 raise ValueError("max_age_seconds must be finite and positive")
+        prov_label = self._provider_label(provider)
         role_str = role.strip() if isinstance(role, str) and role.strip() else "asset_short"
         fam_str = family.strip() if isinstance(family, str) and family.strip() else "price_trend"
         cls_str = classifier.strip() if isinstance(classifier, str) and classifier.strip() else "linear_noise_v1"
         corr_str = (
             correlation_key.strip()
             if isinstance(correlation_key, str) and correlation_key.strip()
-            else f"{str(getattr(provider, 'name', 'unknown')).lower()}:{str(symbol).upper()}:price_trend:{horizon.value}"
+            else f"{prov_label.lower()}:{str(symbol).upper()}:price_trend:{horizon.value}"
         )
         return MarketRegimeEvidence(
             role=role_str,
             family=fam_str,
             classifier=cls_str,
-            provider=str(getattr(provider, "name", "unknown")),
+            provider=prov_label,
             symbol=str(symbol),
             decision=decision,
             evaluated_at=resolve_now_ts(evaluated_at),
@@ -754,7 +777,7 @@ class MarketRegimeService:
             raise ValueError("the regime interval and window must be positive")
         interval_min, window_seconds = im_i, win_f
         key = (
-            str(getattr(provider, "name", "unknown")).lower(),
+            self._provider_label(provider).lower(),
             str(symbol),
             interval_min,
             window_seconds,
@@ -766,7 +789,7 @@ class MarketRegimeService:
                 c_ts = safe_float(cached[0], default=None)
                 cached_dec = cached[1]
                 if c_ts is not None and cached_dec is not None:
-                    ttl = self.cache_ttl_sec if getattr(cached_dec, "fresh", False) else self.negative_cache_ttl_sec
+                    ttl = self.cache_ttl_sec if _parse_bool_flag(getattr(cached_dec, "fresh", False), False) else self.negative_cache_ttl_sec
                     if ttl > 0 and 0.0 <= cache_now - c_ts <= ttl:
                         self._cache.move_to_end(key)
                         return cached[1:]

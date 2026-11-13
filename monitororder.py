@@ -20,6 +20,7 @@ import order_retry
 import order_lifecycle
 from botcore import (
     OrderedIdSet,
+    _parse_bool_flag,
     are_close,
     clean_order_id_str,
     clean_upper_token,
@@ -37,7 +38,6 @@ from botcore import (
     normalize_side,
     required_float_env,
     required_int_env,
-    safe_nonneg_float,
     safe_pos_float,
     touch_module_heartbeat,
 )
@@ -554,24 +554,28 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 )
                 continue
 
-            filled_quantity = safe_nonneg_float(getattr(status, "filled_qty", 0.0), 0.0)
-            quantity = max(0.0, original_quantity - filled_quantity)
-            activation = order_retry.activate_claimed_replacement(
-                replacement_claim, quantity)
+            quantity = order_retry.compute_replacement_qty(original_quantity, status)
+            activation = (
+                order_retry.activate_claimed_replacement(replacement_claim, quantity)
+                if quantity is not None
+                else None
+            )
             if activation == "resolved":
                 _clear_initial_order_price(initial_prices, order_id, oid_str)
                 continue
-            refreshed_claim = (
-                order_retry.begin_claimed_submit(replacement_claim)
-                if activation == "activated"
-                else None
-            )
-            if refreshed_claim is None:
+            if activation != "activated":
+                order_retry.complete_claim(
+                    replacement_claim, "status_error", failure_reason="cancel_activation_failed"
+                )
                 print(
                     f"The durable replacement for order {order_id} could not be "
                     "activated after cancellation; no replacement is submitted."
-                    if activation != "activated"
-                    else f"The durable replacement claim for order {order_id} changed "
+                )
+                continue
+            refreshed_claim = order_retry.begin_claimed_submit(replacement_claim)
+            if refreshed_claim is None:
+                print(
+                    f"The durable replacement claim for order {order_id} changed "
                     "before dispatch; no replacement is submitted by this process."
                 )
                 continue
@@ -606,7 +610,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     )
                 raw_new_id = (
                     new_order["orderId"]
-                    if isinstance(new_order, dict) and "orderId" in new_order
+                    if isinstance(new_order, dict) and clean_order_id_str(new_order.get("orderId"))
                     else extract_order_id(new_order)
                 )
                 new_oid = clean_order_id_str(raw_new_id) or str(raw_new_id)
@@ -699,7 +703,7 @@ def monitor_orders():
     }
     touch_module_heartbeat("monitororder", interval_sec=30.0, force=True, symbols=list(sym.symbols), intervals=hb_intervals)
 
-    while not getattr(api, "stop", False):
+    while not _parse_bool_flag(getattr(api, "stop", False), False):
         try:
             currenttime = time.time()
             if currenttime < monitor_open_orders_lasttime:
