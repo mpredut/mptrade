@@ -2518,3 +2518,88 @@ def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_
     assert rec_ok["canceled_prior_open_orders"] == ["venue_77"]
     btc_inst.cancel_order.assert_called_once_with("venue_77")
     btc_inst.place.assert_called_once()
+
+
+def test_reconcile_resumed_intent_adopts_already_filled_order_via_client_id_without_duplicate_place(temp_workspace, monkeypatch):
+    """Resumed enforce intents adopt orders that already filled on the venue (absent from open_orders) via order_by_client_id, while 0-fill canceled orders still execute."""
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce", notify_enabled=False)
+    btc_inst = _make_mock_inst(
+        "BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        venue="binance",
+        price=80000.0,
+        free_balance=1000.0,
+        place_return={"orderId": "ord_retry_ok", "status": "FILLED"},
+    )
+    inst_map = {"BINANCE_BTC": btc_inst}
+    monkeypatch.setattr(gw, "load_tradable_instruments", lambda **_kw: inst_map)
+
+    # 1. Filled order absent from open_orders() is recovered via _provider.order_by_client_id -> no duplicate place()
+    filled_id = "intent_1795000001_buy_btcusdc"
+    gw.save_all_intents([
+        {
+            "intent_id": filled_id,
+            "timestamp": 1795000001.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "confidence": 0.95,
+            "suggested_notional_usd": 160.0,
+            "order_type": "MARKET",
+            "max_mode": "enforce",
+            "status": "PENDING_EXECUTION",
+            "history": [],
+        }
+    ])
+    btc_inst.open_orders.return_value = []
+    btc_inst._provider.order_by_client_id = MagicMock(
+        return_value={
+            "orderId": "fill_771",
+            "clientOrderId": f"AI_{filled_id}",
+            "status": "FILLED",
+            "executedQty": "0.002",
+        }
+    )
+    resumed_filled = gw.process_all_pending()
+    assert len(resumed_filled) == 1
+    assert resumed_filled[0]["status"] == "EXECUTED"
+    assert resumed_filled[0]["execution_payload"]["orderId"] == "fill_771"
+    assert resumed_filled[0]["history"][-1]["action"] == "RECONCILED_CLIENT_ORDER_ID"
+    btc_inst._provider.order_by_client_id.assert_called_once_with("BTCUSDC", f"AI_{filled_id}")
+    btc_inst.place.assert_not_called()
+
+    # 2. Canceled order with 0 fill is NOT falsely adopted as EXECUTED -> proceeds to place()
+    canceled_id = "intent_1795000002_buy_btcusdc"
+    gw.save_all_intents([
+        {
+            "intent_id": canceled_id,
+            "timestamp": 1795000002.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "confidence": 0.95,
+            "suggested_notional_usd": 160.0,
+            "order_type": "LIMIT",
+            "limit_price": 79500.0,
+            "max_mode": "enforce",
+            "status": "PENDING_EXECUTION",
+            "history": [],
+        }
+    ])
+    btc_inst.order_status.return_value = SimpleNamespace(status="canceled", filled_qty=0.0)
+    btc_inst._provider.order_by_client_id = MagicMock(
+        return_value={
+            "orderId": "canc_0",
+            "clientOrderId": f"AI_{canceled_id}",
+            "status": "CANCELED",
+            "executedQty": "0.0",
+        }
+    )
+    resumed_canceled = gw.process_all_pending()
+    assert len(resumed_canceled) == 1
+    assert resumed_canceled[0]["status"] == "EXECUTED"
+    assert resumed_canceled[0]["execution_payload"]["orderId"] == "ord_retry_ok"
+    btc_inst.place.assert_called_once()
+

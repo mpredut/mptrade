@@ -24,6 +24,7 @@ from botcore import (
 import notify_engine.alertnotifiers as _alertnotifiers
 from .base import MarketDataProvider
 from .intent_state import (
+    _extract_intent_id,
     _intent_order_ids,
     _record_intent_state,
     _resolve_clamped_intent_notional,
@@ -341,6 +342,11 @@ def _is_unconfigured_mock_callable(fn: Any) -> bool:
     )
 
 
+_ACTIVE_OR_FILLED_ORDER_STATUSES = frozenset(
+    {"closed", "filled", "open", "new", "partially_filled", "pending", "working", "resting"}
+)
+
+
 def _missing_target_order_blocks_replacement(inst: Any, order_id: str) -> bool:
     """Return True when a targeted order absent from ``open_orders()`` already executed or remains active."""
     sym = str(getattr(inst, "symbol", "") or "").strip()
@@ -363,7 +369,7 @@ def _missing_target_order_blocks_replacement(inst: Any, order_id: str) -> bool:
     st_lc = raw_st.strip().lower()
     raw_fq = st.get("filled_qty") if isinstance(st, dict) else getattr(st, "filled_qty", 0.0)
     filled_q = safe_pos_float(raw_fq, default=0.0) or 0.0
-    return st_lc in {"closed", "filled", "open", "new", "partially_filled"} or filled_q > 0.0
+    return st_lc in _ACTIVE_OR_FILLED_ORDER_STATUSES or filled_q > 0.0
 
 
 def cancel_existing_ai_open_orders(
@@ -746,39 +752,74 @@ def reconcile_open_intent_by_client_id(
     *,
     log: Optional[Any] = None,
 ) -> bool:
-    """Adopt an existing venue open order matching this intent's client_order_id before resubmitting on recovery."""
+    """Adopt an existing venue open or already-filled order matching this intent's client_order_id before resubmitting on recovery."""
     expected_cids = intent_venue_client_order_ids(intent)
-    open_fn = getattr(inst, "open_orders", None)
-    if not expected_cids or not callable(open_fn):
+    if not expected_cids:
         return False
-    try:
-        raw_open = open_fn()
-    except Exception:
-        return False
-    if not isinstance(raw_open, list):
-        return False
-    for oo in raw_open:
-        if not isinstance(oo, dict):
-            continue
-        cid = (extract_client_order_id(oo, default="") or "").strip().lower()
-        if cid and cid in expected_cids:
-            oid_str = extract_order_id(oo, default="")
-            intent["execution_payload"] = oo
-            extra = {"order_id": oid_str} if oid_str else {}
-            _record_intent_state(
-                intent,
-                "EXECUTED",
-                now_ts,
-                action="RECONCILED_CLIENT_ORDER_ID",
-                payload=oo,
-                **extra,
+
+    def _adopt(payload: dict[str, Any], matched_cid: str) -> bool:
+        oid_str = extract_order_id(payload, default="")
+        intent["execution_payload"] = payload
+        extra = {"order_id": oid_str} if oid_str else {}
+        _record_intent_state(
+            intent,
+            "EXECUTED",
+            now_ts,
+            action="RECONCILED_CLIENT_ORDER_ID",
+            payload=payload,
+            **extra,
+        )
+        if log:
+            log.info(
+                "[INTENT GATEWAY] Reconciled resumed intent on %s via client_order_id %s (order_id=%s).",
+                getattr(inst, "symbol", ""), matched_cid, oid_str or "N/A",
             )
-            if log:
-                log.info(
-                    "[INTENT GATEWAY] Reconciled resumed intent on %s via client_order_id %s (order_id=%s).",
-                    getattr(inst, "symbol", ""), cid, oid_str or "N/A",
-                )
-            return True
+        return True
+
+    open_fn = getattr(inst, "open_orders", None)
+    if callable(open_fn) and not _is_unconfigured_mock_callable(open_fn):
+        try:
+            raw_open = open_fn()
+        except Exception:
+            raw_open = None
+        if isinstance(raw_open, list):
+            for oo in raw_open:
+                if not isinstance(oo, dict):
+                    continue
+                cid = (extract_client_order_id(oo, default="") or "").strip().lower()
+                if cid and cid in expected_cids:
+                    return _adopt(oo, cid)
+
+    base_cid = ai_intent_client_order_id(_extract_intent_id(intent))
+    if not base_cid:
+        return False
+    sym = str(getattr(inst, "symbol", "") or "").strip()
+    inst_lookup = getattr(inst, "order_by_client_id", None)
+    prov = getattr(inst, "_provider", None)
+    prov_lookup = getattr(prov, "order_by_client_id", None) if prov is not None else None
+    found: Any = None
+    try:
+        if callable(inst_lookup) and not _is_unconfigured_mock_callable(inst_lookup):
+            found = inst_lookup(base_cid)
+        elif sym and callable(prov_lookup) and not _is_unconfigured_mock_callable(prov_lookup):
+            found = prov_lookup(sym, base_cid)
+    except Exception:
+        found = None
+    if not isinstance(found, dict):
+        return False
+    oid_str = extract_order_id(found, default="")
+    if not oid_str:
+        return False
+    raw_st = found.get("status")
+    st_lc = raw_st.strip().lower() if isinstance(raw_st, str) else ""
+    filled_q = extract_executed_qty(found) or (safe_pos_float(found.get("filled_qty"), default=0.0) or 0.0)
+    if (
+        st_lc in _ACTIVE_OR_FILLED_ORDER_STATUSES
+        or filled_q > 0.0
+        or (st_lc in {"canceled", "cancelled", "expired"} and _missing_target_order_blocks_replacement(inst, oid_str))
+    ):
+        matched_cid = (extract_client_order_id(found, default="") or base_cid).strip().lower()
+        return _adopt(found, matched_cid)
     return False
 
 

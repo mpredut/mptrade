@@ -759,13 +759,7 @@ def _active_order_keys(r: dict) -> tuple[str, ...]:
 
 def get_accepted_order_ttl_map() -> dict:
     """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
-    return {
-        k: ttl_val
-        for r in _safe_load_all()
-        if (keys := _active_order_keys(r))
-        and (ttl_val := safe_pos_float(r.get("ttl_sec"), default=None)) is not None
-        for k in keys
-    }
+    return get_accepted_order_ttl_and_owner_maps()[0]
 
 
 def _is_concrete_owner(owner: object) -> bool:
@@ -837,14 +831,27 @@ def infer_concrete_record_owner(rec: dict) -> str:
     return owner if _is_concrete_owner(owner) else ""
 
 
+def get_accepted_order_ttl_and_owner_maps() -> tuple[dict, dict]:
+    """Return ``(ttl_map, owner_map)`` for active accepted orders from a single queue pass."""
+    ttl_map: dict = {}
+    owner_map: dict = {}
+    for r in _safe_load_all():
+        keys = _active_order_keys(r)
+        if not keys:
+            continue
+        ttl_val = safe_pos_float(r.get("ttl_sec"), default=None)
+        inferred = infer_concrete_record_owner(r)
+        for k in keys:
+            if ttl_val is not None:
+                ttl_map[k] = ttl_val
+            if inferred:
+                owner_map[k] = inferred
+    return ttl_map, owner_map
+
+
 def get_accepted_order_owner_map() -> dict:
     """Return a mapping of order_id and client_order_id to logical bot owner for active accepted orders."""
-    return {
-        k: inferred
-        for r in _safe_load_all()
-        if (keys := _active_order_keys(r)) and (inferred := infer_concrete_record_owner(r))
-        for k in keys
-    }
+    return get_accepted_order_ttl_and_owner_maps()[1]
 
 
 def resolve_tracked_order_owner(

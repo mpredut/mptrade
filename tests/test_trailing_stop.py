@@ -1158,3 +1158,34 @@ def test_trailingcore_string_false_in_st_is_flat_does_not_iter131_s1(tmp_path):
     core_paper._process("BTCUSDC", "BTC", "BTCUSDC", 15.0, st_state)
     assert st_state["BTCUSDC"]["peak"] == 120.0
     assert "warmup_at" not in st_state["BTCUSDC"]
+
+
+def test_trailing_core_check_once_skips_redundant_disk_write_when_state_unchanged(tmp_path):
+    """TrailingCore.check_once persists state mutations and skips save_json_state on unchanged steady-state ticks."""
+    state_file = str(tmp_path / "trail_steady.json")
+    adapter = DummyTrailingAdapter(assets_list=[("BTCUSDC", "BTC", "BTCUSDC", 15.0)], free=1.0, px=100.0)
+    core = TrailingCore(
+        adapter,
+        log=lambda _m: None,
+        enabled=True,
+        state_file=state_file,
+        min_notional=10.0,
+        rebuy_enabled=False,
+        rebuy_bounce_pct=5.0,
+        rebuy_skip_if_trend_down=False,
+        min_profit_pct=0.0,
+    )
+    with patch.object(core, "save", wraps=core.save) as spy_save:
+        # Tick 1: creates state file with peak=100.0 -> writes once
+        core.check_once()
+        assert spy_save.call_count == 1
+        # Tick 2: price stays 100.0 (or slightly lower 95.0 without trigger) -> state unchanged, 0 writes
+        adapter.px = 95.0
+        core.check_once()
+        assert spy_save.call_count == 1
+        # Tick 3: price advances to new peak 105.0 -> state changed, writes once
+        adapter.px = 105.0
+        core.check_once()
+        assert spy_save.call_count == 2
+    assert core.load()["BTCUSDC"]["peak"] == 105.0
+

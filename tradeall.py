@@ -9,7 +9,10 @@ import threading
 # Local imports.
 from notify_engine import alertnotifiers as alert  # noqa: F401 (re-export: test compat)
 import cacheManager as cm
-from intelligence.internal.state.volatility import get_kalman_state_path
+from intelligence.internal.state.volatility import (
+    get_kalman_state_path,
+    resolve_cached_volatility_1h_pct,
+)
 import order_retry
 from instrument_registry import (
     casefold_get,
@@ -26,7 +29,7 @@ from providers.market_api import (
 )
 api = mkt
 import shadow_signals
-from state_io import append_text_line, read_json_dict_cached
+from state_io import append_text_line
 
 from pricewindow import (  # noqa: F401 (re-export: test compat)
     PriceTrendAnalyzer,
@@ -990,21 +993,23 @@ class TrendCoordinator:
                 if st_prev:
                     prev_ktrend = st_prev.get("kalman_trend")
                 ssot_vol = None
-                inst_fname = getattr(self.instant_mgr, "filename", None)
-                if isinstance(inst_fname, str) and inst_fname and os.path.exists(inst_fname):
-                    try:
-                        disk_st = casefold_get(read_json_dict_cached(inst_fname, default={}), symbol)
-                        if isinstance(disk_st, dict):
-                            ssot_vol = safe_pos_float(disk_st.get("vol_1h_pct"), default=None)
-                    except Exception:
-                        ssot_vol = None
-                elif hasattr(self.instant_mgr, "_read_file"):
-                    try:
-                        disk_st = casefold_get(self.instant_mgr._read_file(), symbol)
-                        if isinstance(disk_st, dict):
-                            ssot_vol = safe_pos_float(disk_st.get("vol_1h_pct"), default=None)
-                    except Exception:
-                        ssot_vol = None
+                mem_dict = getattr(self.instant_mgr, "_mem", None)
+                if isinstance(mem_dict, dict):
+                    with getattr(self.instant_mgr, "_lock", None) or contextlib.nullcontext():
+                        mem_st = casefold_get(mem_dict, symbol)
+                        if isinstance(mem_st, dict):
+                            ssot_vol = safe_pos_float(mem_st.get("vol_1h_pct"), default=None)
+                if ssot_vol is None:
+                    inst_fname = getattr(self.instant_mgr, "filename", None)
+                    if isinstance(inst_fname, str) and inst_fname and os.path.exists(inst_fname):
+                        ssot_vol = resolve_cached_volatility_1h_pct(symbol, state_path=inst_fname)
+                    elif hasattr(self.instant_mgr, "_read_file"):
+                        try:
+                            disk_st = casefold_get(self.instant_mgr._read_file(), symbol)
+                            if isinstance(disk_st, dict):
+                                ssot_vol = safe_pos_float(disk_st.get("vol_1h_pct"), default=None)
+                        except Exception:
+                            ssot_vol = None
                 kalman_fields = self._kalman_state.update(
                     symbol, time.time(), current_price,
                     epsilon=win.get_noise_epsilon(),

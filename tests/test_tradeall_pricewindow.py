@@ -1746,3 +1746,54 @@ def test_af_unix_price_tick_subscriber_o1_lookup_and_dynamic_symbols_refresh(tmp
         finally:
             consumer.shutdown(timeout=1.0)
             producer.shutdown(timeout=1.0)
+
+
+def test_trend_coordinator_evaluate_resolves_ssot_vol_1h_pct_from_mem_and_disk(tmp_path, monkeypatch):
+    """TrendCoordinator.evaluate passes SSOT vol_1h_pct from instant_mgr._mem and disk filename to Kalman update."""
+    now_ms = int(time.time() * 1000)
+    monkeypatch.setattr(ta, "is_symbol_market_open", lambda _sym: True)
+    seen_vols = []
+
+    def _fake_kalman_update(sym, ts, px, **kw):
+        seen_vols.append(kw.get("precomputed_vol_1h_pct"))
+        return {"kalman_trend": "NEUTRAL"}
+
+    win_stub = SimpleNamespace(get_noise_epsilon=lambda: 1e-4, prices=[80000.0, 80010.0], sample_rate_sec=1.0)
+    inst_file = tmp_path / "cache_instant_trend.json"
+    inst_file.write_text(json.dumps({"BTCUSDC": {"vol_1h_pct": 2.75}}), encoding="utf-8")
+
+    coord = ta.TrendCoordinator.__new__(ta.TrendCoordinator)
+    coord._lock = threading.Lock()
+    coord._dirty = {"BTCUSDC": True}
+    coord._last_eval = {}
+    coord._canonical_symbols = {"BTCUSDC": "BTCUSDC"}
+    coord.symbol_aliases = {}
+    coord.trend_states = {"BTCUSDC": SimpleNamespace()}
+    coord.trend_states_big = {"BTCUSDC": SimpleNamespace()}
+    coord._kalman_state = SimpleNamespace(_state={}, update=_fake_kalman_update)
+    coord._regime_ctx_memo = {"BTCUSDC": (time.monotonic(), SimpleNamespace(regime="bull", fresh=True))}
+    coord.current_price_mgr = SimpleNamespace(
+        STALE_THRESHOLD_MS=5000,
+        stale_threshold_ms_for=lambda _sym: 5000,
+        get_price=lambda _sym: [now_ms - 100, 80010.0],
+    )
+    coord.instant_mgr = SimpleNamespace(
+        _lock=threading.Lock(),
+        _mem={"BTCUSDC": {"vol_1h_pct": 1.85}},
+        filename=str(inst_file),
+        window_big_sec=900,
+        get_window=lambda *_a: win_stub,
+        get_analyzer=lambda *_a: SimpleNamespace(),
+        update_snapshot=lambda *_a, **_kw: None,
+    )
+    monkeypatch.setattr(ta, "handle_symbol", lambda *_a, **_kw: {"symbol": "BTCUSDC"})
+
+    # 1. In-memory _mem takes precedence with zero disk parse errors
+    assert coord.evaluate("BTCUSDC") == {"symbol": "BTCUSDC"}
+    assert seen_vols == [pytest.approx(1.85)]
+
+    # 2. When _mem has no vol_1h_pct, disk state_path resolves cleanly via resolve_cached_volatility_1h_pct
+    coord.instant_mgr._mem = {}
+    assert coord.evaluate("BTCUSDC") == {"symbol": "BTCUSDC"}
+    assert seen_vols[-1] == pytest.approx(2.75)
+

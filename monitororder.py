@@ -157,6 +157,52 @@ def reset_monitororder_state_for_test():
     _monitororder_initialized = False
 
 
+def _resolve_provider_name(symbol: str) -> str:
+    prov_fn = getattr(mkt, "provider_name_for", None)
+    if callable(prov_fn):
+        try:
+            raw_prov = prov_fn(symbol)
+            if isinstance(raw_prov, str) and raw_prov.strip():
+                return raw_prov.strip()
+        except Exception:
+            pass
+    return "Binance"
+
+
+_ORIG_GET_TTL_MAP = order_retry.get_accepted_order_ttl_map
+_ORIG_GET_OWNER_MAP = order_retry.get_accepted_order_owner_map
+
+
+def _resolve_accepted_ttl_and_owner_maps(
+    custom_ttl_map: dict | None = None,
+    accepted_owner_map: dict | None = None,
+) -> tuple[dict, dict]:
+    if (
+        custom_ttl_map is None
+        and accepted_owner_map is None
+        and order_retry.get_accepted_order_ttl_map is _ORIG_GET_TTL_MAP
+        and order_retry.get_accepted_order_owner_map is _ORIG_GET_OWNER_MAP
+    ):
+        try:
+            return order_retry.get_accepted_order_ttl_and_owner_maps()
+        except Exception:
+            return {}, {}
+    if custom_ttl_map is None:
+        try:
+            custom_ttl_map = order_retry.get_accepted_order_ttl_map()
+        except Exception:
+            custom_ttl_map = {}
+    if accepted_owner_map is None:
+        try:
+            accepted_owner_map = order_retry.get_accepted_order_owner_map()
+        except Exception:
+            accepted_owner_map = {}
+    return (
+        custom_ttl_map if isinstance(custom_ttl_map, dict) else {},
+        accepted_owner_map if isinstance(accepted_owner_map, dict) else {},
+    )
+
+
 def _should_notify_order_launched(owner):
     """Return False for fast scalpers (rtrade) and for ai_executor (the intent gateway already notifies placement)."""
     if not owner or isinstance(owner, bool):
@@ -164,8 +210,8 @@ def _should_notify_order_launched(owner):
     return str(owner).strip().lower() not in ("rtrade", "ai_executor")
 
 
-def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=None):
-    """Notify when a newly placed open order is detected on Binance."""
+def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=None, venue=None):
+    """Notify when a newly placed open order is detected on the venue."""
     if not _should_notify_order_launched(owner):
         return
     try:
@@ -173,8 +219,9 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
             symbol, order_type, price, quantity, owner
         )
         px_disp = format_price_log(px)
+        venue_slug = (str(venue).strip() if isinstance(venue, str) and venue.strip() else _resolve_provider_name(symbol)).lower()
         t_title, t_body = alert.format_trade_notification(
-            "PLACED", side, symbol, px_disp, qty, val, quote, order_id, venue="binance", owner=owner
+            "PLACED", side, symbol, px_disp, qty, val, quote, order_id, venue=venue_slug, owner=owner
         )
         print(f"[MONITORORDER] 📝 New order launched{owner_body}: {side} {qty:.6f} {symbol} @ {px_disp} (orderId={order_id})")
         alert.notify(
@@ -229,7 +276,15 @@ def _evaluate_reprice_trend_state(symbol: str, order_type: str) -> tuple[bool, b
         return False, False
 
 
-def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
+def monitor_open_orders_by_type(
+    symbol,
+    order_type,
+    failed_orders=None,
+    *,
+    custom_ttl_map: dict | None = None,
+    accepted_owner_map: dict | None = None,
+    _cycle_maps: list[tuple[dict, dict]] | None = None,
+):
     """Reprice eligible open orders without owning a second retry loop.
 
     Each replacement is persisted as ``awaiting_cancel`` before the old venue
@@ -270,15 +325,15 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     eff_pushback_offset = eff_mid_proc / 100.0
     
     initial_prices = initial_sell_prices if order_type == "SELL" else initial_buy_prices
-    custom_ttl_map = {}
-    try:
-        custom_ttl_map = order_retry.get_accepted_order_ttl_map()
-    except Exception:
-        custom_ttl_map = {}
-    try:
-        accepted_owner_map = order_retry.get_accepted_order_owner_map()
-    except Exception:
-        accepted_owner_map = {}
+    provider_name = _resolve_provider_name(symbol)
+    if isinstance(_cycle_maps, list) and custom_ttl_map is None and accepted_owner_map is None:
+        if not _cycle_maps:
+            _cycle_maps.append(_resolve_accepted_ttl_and_owner_maps())
+        custom_ttl_map, accepted_owner_map = _cycle_maps[0]
+    else:
+        custom_ttl_map, accepted_owner_map = _resolve_accepted_ttl_and_owner_maps(
+            custom_ttl_map, accepted_owner_map
+        )
 
     for order_id in list(orders.keys()):
         order = orders[order_id]
@@ -314,7 +369,9 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             and _monitororder_initialized
             and _should_notify_order_launched(owner)
         ):
-            _notify_order_launched(symbol, order_type, order_id, price, extract_order_qty(order), owner=owner)
+            _notify_order_launched(
+                symbol, order_type, order_id, price, extract_order_qty(order), owner=owner, venue=provider_name
+            )
 
         # Check order age and Market TTL expiration (hard cap of 3 days or effective TTL).
         age_sec = 0.0
@@ -451,7 +508,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 },
                 requested_price=new_price, ref_price=current_price,
                 failure_reason="submit_pending",
-                provider_name="Binance", kind="monitor_order_replace",
+                provider_name=provider_name, kind="monitor_order_replace",
                 lifecycle="awaiting_cancel", replaces_order_id=order_id,
                 replaces_original_qty=original_quantity,
                 ttl_sec=replacement_ttl)
@@ -494,7 +551,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     quantity,
                     market=False,
                     enforce_business_minimum=True,
-                    provider_name="Binance",
+                    provider_name=provider_name,
                 )
                 if filter_refusal:
                     raise SubmissionRefused(filter_refusal)
@@ -604,7 +661,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             if new_order:
                 tracked = order_lifecycle.complete_accepted_claim(
                     order_retry, replacement_claim, order=new_order,
-                    provider_name="Binance", symbol=symbol, side=order_type)
+                    provider_name=provider_name, symbol=symbol, side=order_type)
                 if not tracked:
                     print(
                         f"CRITICAL: replacement order {extract_order_id(new_order)} "
@@ -711,9 +768,10 @@ def monitor_orders():
             if currenttime < monitor_open_orders_lasttime:
                 monitor_open_orders_lasttime = currenttime - MONITOR_OPEN_ORDER_INTERVAL - TIME_SLEEP_ERROR
             if currenttime - monitor_open_orders_lasttime > MONITOR_OPEN_ORDER_INTERVAL:
+                cycle_maps: list[tuple[dict, dict]] = []
                 for symbol in sym.symbols:
                     for side in ("SELL", "BUY"):
-                        monitor_open_orders_by_type(symbol, side)
+                        monitor_open_orders_by_type(symbol, side, _cycle_maps=cycle_maps)
                 monitor_open_orders_lasttime = currenttime
 
             touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)

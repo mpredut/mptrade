@@ -587,23 +587,29 @@ class TrailingCore:
         self.a.log_hold(key, asset, pair, price, st["peak"], stop_at, trail, free)
 
     # -- one step -------------------------------------------------------------
+    def _save_if_changed(self, state: dict, before: object) -> None:
+        if clean_json_value(state, stringify_keys=False) != before or not os.path.exists(self.state_file):
+            self.save(state)
+
     def check_once(self) -> None:
         if not self.a.begin_tick():
             return
-        if self.item_isolation:                               # Binance: isolate each coin and always save
+        if self.item_isolation:                               # Binance: isolate each coin and save when mutated
             state = self.load()
+            before = clean_json_value(state, stringify_keys=False)
             for key, asset, pair, trail in self.a.assets():
                 try:
                     self._process(key, asset, pair, trail, state)
                 except Exception as e:  # noqa: BLE001 -- one coin must not stop the rest
                     self.a.log_item_error(key, e)
-            self.save(state)
+            self._save_if_changed(state, before)
         else:                                                 # Kraken: one try per tick; retry errors without saving
             try:
                 state = self.load()
+                before = clean_json_value(state, stringify_keys=False)
                 for key, asset, pair, trail in self.a.assets():
                     self._process(key, asset, pair, trail, state)
-                self.save(state)
+                self._save_if_changed(state, before)
             except Exception as e:  # noqa: BLE001 -- resilience: retry after a network failure
                 self.a.log_tick_error(e)
 

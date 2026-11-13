@@ -764,3 +764,67 @@ def test_monitororder_resolve_effective_order_ttl_rejects_sentinel_ids_iter159_s
     assert monitororder.resolve_effective_order_ttl("123.0", "", custom_ttl_map={"123": 120.0}) == 120.0
     assert monitororder.safe_pos_float(float("nan")) == 0.0
     assert monitororder.safe_pos_float(True) == 0.0
+
+
+def test_single_pass_ttl_and_owner_maps_reused_per_cycle_and_dynamic_provider_name():
+    """Outbox TTL+owner maps load in a single pass per cycle and non-Binance provider_name routes dynamically."""
+    rec_id = oq.enqueue(
+        "HYPEUSD",
+        "BUY",
+        2.0,
+        place_kwargs={"client_order_id": "TA_OR_hype_1", "ttl_sec": 900.0},
+        requested_price=25.0,
+        ref_price=25.0,
+        provider_name="Kraken",
+    )
+    claimed = oq.claim([rec_id], lease_sec=30.0)
+    assert len(claimed) == 1
+    assert accepted_order_persistence.complete_accepted_claim(
+        oq,
+        claimed[0],
+        order={"orderId": "KRK-OPEN-1", "clientOrderId": "TA_OR_hype_1"},
+        provider_name="Kraken",
+        symbol="HYPEUSD",
+        side="BUY",
+    )
+
+    with patch.object(oq, "_safe_load_all", wraps=oq._safe_load_all) as spy_load:
+        ttl_map, owner_map = oq.get_accepted_order_ttl_and_owner_maps()
+        assert spy_load.call_count == 1
+    assert ttl_map.get("KRK-OPEN-1") == 900.0
+    assert owner_map.get("KRK-OPEN-1") == "tradeall"
+
+    open_orders = {
+        "KRK-OPEN-1": {
+            "price": 24.99,
+            "quantity": 2.0,
+            "remainingQty": 2.0,
+            "clientOrderId": "TA_OR_hype_1",
+        }
+    }
+    cycle_maps = []
+    completed_providers = []
+
+    def _capture_complete(_mod, _claim, *, order=None, provider_name=None, **_kw):
+        completed_providers.append(provider_name)
+        return True
+
+    with (
+        patch.object(monitororder.mkt, "provider_name_for", return_value="Kraken"),
+        patch.object(monitororder.mkt, "order_filter_refusal", return_value=None) as mock_filter,
+        patch.object(oq, "_safe_load_all", wraps=oq._safe_load_all) as spy_cycle_load,
+        _replacement_env(open_orders, 25.0, order_id="KRK-NEW-2", complete_claim=False, silence_notify=True),
+        patch.object(monitororder.order_lifecycle, "complete_accepted_claim", side_effect=_capture_complete),
+    ):
+        # First call populates cycle_maps via a single initial map read (+ replacement enqueue/claim/activate writes)
+        monitororder.monitor_open_orders_by_type("HYPEUSD", "BUY", _cycle_maps=cycle_maps)
+        assert len(cycle_maps) == 1
+        loads_after_first = spy_cycle_load.call_count
+        # Subsequent call in the same cycle with open orders that stay on book does 0 extra map loads
+        with patch.object(monitororder, "_evaluate_reprice_trend_state", return_value=(True, False)):
+            monitororder.monitor_open_orders_by_type("HYPEUSD", "BUY", _cycle_maps=cycle_maps)
+        assert spy_cycle_load.call_count == loads_after_first
+
+    assert mock_filter.call_args.kwargs["provider_name"] == "Kraken"
+    assert completed_providers == ["Kraken"]
+
