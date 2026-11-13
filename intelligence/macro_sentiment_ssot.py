@@ -137,6 +137,8 @@ _LEXICON_DELEGATED_ATTRS = frozenset({
     "_is_excluded_non_crisis_attack_keyword",
     "_is_noise_dynamic_keyword",
     "filter_valid_severity_keywords",
+    "has_tracked_equity_corporate_risk",
+    "has_tracked_equity_entity",
     "headlines_are_semantic_duplicates",
     "is_excluded_reference_news_item",
 })

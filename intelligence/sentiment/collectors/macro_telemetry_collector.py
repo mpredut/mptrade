@@ -37,6 +37,7 @@ from intelligence.macro.lexicon_ssot import (
     _strip_headline_publisher_suffix,
     filter_valid_severity_keywords,
     has_financial_or_geopolitical_context,
+    has_tracked_equity_corporate_risk,
     has_tracked_equity_entity,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
@@ -674,7 +675,11 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                 key=lambda x: (
                     1 if x.get("is_high_severity") else 0,
                     (
-                        1
+                        (
+                            3
+                            if has_tracked_equity_corporate_risk(x.get("title"))
+                            else (2 if has_tracked_equity_entity(x.get("title")) else 1)
+                        )
                         if (
                             scope_norm == "equities"
                             and (
@@ -722,12 +727,17 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                     if 0.0 < seen_ts <= now_ts + 300.0
                     else None
                 )
+                resolved_title = clean_title or item.get("title")
+                is_corp_risk = bool(
+                    scope_norm == "equities" and has_tracked_equity_corporate_risk(resolved_title)
+                )
                 breaking_news.append({
-                    "title": clean_title or item.get("title"), "source": item.get("source"),
+                    "title": resolved_title, "source": item.get("source"),
                     "is_high_severity": bool(_parse_bool_flag(item.get("is_high_severity"), False)),
                     "keywords": item.get("matched_keywords") or [],
                     "age_min": round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None,
                     **({"published_utc": pub_utc} if pub_utc else {}),
+                    **({"is_corporate_risk": True} if is_corp_risk else {}),
                 })
         gt_cur = macro_sensors.get("geopolitical_threat")
         if isinstance(gt_cur, dict) and valid_news and not any(

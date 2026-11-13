@@ -2783,3 +2783,70 @@ def test_fetch_public_json_is_centralized_in_botcore_and_re_exported_iter184_s1(
     """[ITER184 #1] fetch_public_json is centralized in botcore and re-exported in macro_sentiment_ssot."""
     # 1. fetch_public_json is centralized in botcore and re-exported in macro_sentiment_ssot
     assert ssot.fetch_public_json is botcore.fetch_public_json
+
+
+def test_tracked_equity_corporate_risk_scoped_to_equities_only(tmp_path):
+    """Corporate risk keywords for tracked T212 equities prioritize headlines in equities scope without triggering GLLM3 or crypto scope."""
+    from intelligence.macro.lexicon_ssot import (
+        has_financial_or_geopolitical_context,
+        has_tracked_equity_corporate_risk,
+        has_tracked_equity_entity,
+        match_high_severity_keywords,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+
+    jensen_probe = "Nvidia's Jensen Huang faces congressional probe over China ties"
+    jensen_smear = "China dismisses a spy plot claim involving Nvidia CEO Jensen Huang as smear campaign"
+    nvda_pr = "Nvidia announces new developer conference schedule for autumn"
+    btc_macro = "Federal Reserve signals steady interest rates ahead of CPI report"
+
+    assert has_tracked_equity_entity(jensen_probe) is True
+    assert has_tracked_equity_entity("Jensen Huang speaks at tech forum") is True
+    assert has_tracked_equity_corporate_risk(jensen_probe) is True
+    assert has_tracked_equity_corporate_risk(jensen_smear) is True
+    assert has_tracked_equity_corporate_risk(nvda_pr) is False
+    assert has_tracked_equity_corporate_risk("Generic company faces SEC probe") is False
+    assert has_financial_or_geopolitical_context(jensen_smear) is True
+
+    # Must NEVER trigger global HIGH_SEVERITY (GLLM3) so crypto bots are unaffected
+    assert match_high_severity_keywords(jensen_probe) == ()
+    assert match_high_severity_keywords(jensen_smear) == ()
+
+    now_ts = 1_776_070_000.0
+    news_payload = {
+        "headlines": [
+            {
+                "title": nvda_pr,
+                "source": "Yahoo! Finance",
+                "first_seen_ts": now_ts - 60.0,
+                "is_high_severity": False,
+                "matched_keywords": [],
+            },
+            {
+                "title": btc_macro,
+                "source": "CNBC",
+                "first_seen_ts": now_ts - 30.0,
+                "is_high_severity": False,
+                "matched_keywords": [],
+            },
+            {
+                "title": jensen_probe,
+                "source": "BBC World",
+                "first_seen_ts": now_ts - 300.0,
+                "is_high_severity": False,
+                "matched_keywords": [],
+            },
+        ]
+    }
+    (tmp_path / "news_feed_collect.json").write_text(json.dumps(news_payload), encoding="utf-8")
+
+    _, eq_breaking = harvest_macro_and_news_sensors(str(tmp_path), now_ts, persist=False, scope="equities")
+    assert eq_breaking[0]["title"] == jensen_probe
+    assert eq_breaking[0].get("is_corporate_risk") is True
+    assert eq_breaking[1]["title"] == nvda_pr
+    assert eq_breaking[1].get("is_corporate_risk") is None
+
+    _, cr_breaking = harvest_macro_and_news_sensors(str(tmp_path), now_ts, persist=False, scope="crypto")
+    assert cr_breaking[0]["title"] == btc_macro
+    assert all(item.get("is_corporate_risk") is None for item in cr_breaking)
+

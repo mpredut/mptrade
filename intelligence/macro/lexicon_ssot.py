@@ -1069,6 +1069,15 @@ def has_tracked_equity_entity(title: Any) -> bool:
     return bool(words & {k for k in cfg_kws if k})
 
 
+def has_tracked_equity_corporate_risk(title: Any) -> bool:
+    """Return True if ``title`` mentions a tracked equity entity together with a corporate-risk keyword."""
+    if not has_tracked_equity_entity(title) or is_excluded_reference_news_item(title):
+        return False
+    words = set(re.findall(r"[a-z0-9]{2,}", _strip_headline_publisher_suffix(title).lower()))
+    risk_kws = {k for k in split_csv(_cfg_str("feeds", "equity_corporate_risk_keywords"), lower=True) if k}
+    return bool(words & risk_kws)
+
+
 def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
     """Return curated specialized editorial RSS feeds + equity ticker RSS feed + dynamically built crisis query feed."""
     dyn_url = build_dynamic_rss_url(cache_dir=cache_dir, now_ts=now_ts)
@@ -1258,10 +1267,11 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     clean_low = _strip_headline_publisher_suffix(title).lower()
     words = set(re.findall(r"[a-z]{3,}", clean_low))
     matched_fin = words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS
+    has_eq_entity = has_tracked_equity_entity(title)
     has_multi_theater_geo = len(words & _MAJOR_GEOPOLITICAL_THEATER_WORDS) >= 2 and bool(
         words & {"aggressive", "alliance", "conflict", "cooperation", "deal", "defence", "defense", "escalation", "pact", "security", "summit", "tensions", "treaty"}
     )
-    if not matched_fin and not has_multi_theater_geo:
+    if not matched_fin and not has_multi_theater_geo and not has_eq_entity:
         return False
     if matched_fin and matched_fin <= {"military", "troops"} and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
         return False
@@ -1308,7 +1318,7 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     ):
         if not (words & (_PARTISAN_MARKET_CONTEXT_WHITELIST - {"market", "markets"})):
             return False
-    if (words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not (words & _PARTISAN_MARKET_CONTEXT_WHITELIST):
+    if (words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not (words & _PARTISAN_MARKET_CONTEXT_WHITELIST) and not has_eq_entity:
         return False
     if (words & _COMMERCIAL_METAPHOR_WAR_WORDS) and not (words & (_PARTISAN_MARKET_CONTEXT_WHITELIST | {"chip", "chips", "semiconductor", "semiconductors", "trade"})):
         return False
