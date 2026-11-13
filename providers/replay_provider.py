@@ -277,8 +277,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return bool(sym and sym in self._series)
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
-        sym = self._resolve_symbol(symbol)
-        if not sym:
+        if not (sym := self._resolve_symbol(symbol)):
             return None
         prec = self._precisions.get(sym)
         if prec is None:

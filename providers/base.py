@@ -273,6 +273,12 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
             and (start_ms <= 0.0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
         ]
 
+    @staticmethod
+    def _normalize_fills_query_flags(
+        authoritative: object = False, publish_cache: object = False
+    ) -> tuple[bool, bool]:
+        return _parse_bool_flag(authoritative, False), _parse_bool_flag(publish_cache, False)
+
     def get_orders(
         self,
         symbol: str,
@@ -289,8 +295,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         since_val = safe_nonneg_float(since_s, default=None)
         if since_val is None:
             return []
-        auth = _parse_bool_flag(authoritative, False)
-        pub = _parse_bool_flag(publish_cache, False)
+        auth, pub = self._normalize_fills_query_flags(authoritative, publish_cache)
         try:
             cache_fn = getattr(self, "_fills_from_cache", None)
             rows = cache_fn(symbol) if (callable(cache_fn) and not auth and not pub) else None
@@ -313,8 +318,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         authoritative: bool = False,
         publish_cache: bool = False,
     ) -> List[dict]:
-        auth = _parse_bool_flag(authoritative, False)
-        pub = _parse_bool_flag(publish_cache, False)
+        auth, pub = self._normalize_fills_query_flags(authoritative, publish_cache)
         if not auth and not pub:
             try:
                 return self.get_orders(

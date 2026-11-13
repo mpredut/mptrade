@@ -567,17 +567,19 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 order_retry.complete_claim(
                     replacement_claim, "status_error", failure_reason="cancel_activation_failed"
                 )
-                print(
+                refreshed_claim = None
+                skip_msg = (
                     f"The durable replacement for order {order_id} could not be "
                     "activated after cancellation; no replacement is submitted."
                 )
-                continue
-            refreshed_claim = order_retry.begin_claimed_submit(replacement_claim)
-            if refreshed_claim is None:
-                print(
+            else:
+                refreshed_claim = order_retry.begin_claimed_submit(replacement_claim)
+                skip_msg = (
                     f"The durable replacement claim for order {order_id} changed "
                     "before dispatch; no replacement is submitted by this process."
                 )
+            if refreshed_claim is None:
+                print(skip_msg)
                 continue
             replacement_claim = refreshed_claim
 

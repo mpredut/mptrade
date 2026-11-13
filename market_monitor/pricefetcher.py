@@ -22,10 +22,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import (
-    CACHE_WATCHER_ALL_PRICE_FILENAME,
-    normalize_venue_name,
-)
+from cachepaths import CACHE_WATCHER_ALL_PRICE_FILENAME
 from cacheManager import CacheFactory
 from cacheprice import CachePriceManagerBase
 from instrument_registry import casefold_get
@@ -41,6 +38,7 @@ from market_monitor.price_platforms import (
     get_base_symbol,
     is_rth_equity_symbol,
     is_valid_symbol_for_monitoring,
+    resolve_platform_for_source,
 )
 from providers.market_api import api
 from state_io import atomic_write_json, read_json_dict
@@ -184,14 +182,9 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         resolver = getattr(self.price_factory, "resolve_preferred_platform", None)
         if callable(resolver) and type(self.price_factory) is PricePlatformFactory:
             return resolver(preferred_source)
-        pref_raw = preferred_source.strip().lower()
-        pref_norm = normalize_venue_name(pref_raw) or pref_raw
-        for platform in getattr(self.price_factory, "_platforms", ()) or ():
-            plat_raw = str(platform.platform_name).strip().lower()
-            plat_norm = normalize_venue_name(plat_raw) or plat_raw
-            if plat_norm == pref_norm or plat_raw == pref_raw:
-                return platform
-        return None
+        return resolve_platform_for_source(
+            getattr(self.price_factory, "_platforms", ()), preferred_source
+        )
 
     def get_remote_items(self, symbol, startTime):
         if (

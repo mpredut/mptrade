@@ -859,6 +859,11 @@ def symbol_quote_asset(symbol: object) -> str:
     return parts[1] if parts is not None else ""
 
 
+def _usd_base_pair(base_src: str) -> tuple[str, str] | None:
+    base = normalize_cache_base_asset(base_src)
+    return (base, "USD") if base else None
+
+
 def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     """Split a spot/equity pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD, SPCX_US_EQ, SPCXx.T) into ``(base, quote)``."""
     raw = clean_scalar_str(symbol)
@@ -868,8 +873,7 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     if not sym_u:
         return None
     if (sym_u.endswith("USEQ") and len(sym_u) > 4) or (raw.upper().endswith("_EQ") and len(sym_u) > 2):
-        base = normalize_cache_base_asset(raw)
-        return (base, "USD") if base else None
+        return _usd_base_pair(raw)
     for quote in (*CACHE_QUOTE_SUFFIXES, "BTC", "ETH"):
         if _is_false_tusd_or_busd_match(sym_u, quote):
             continue
@@ -883,11 +887,9 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
             base = normalize_cache_base_asset(base_raw)
             return (base, quote) if base else None
     if sym_u.endswith(("X.T", ".T", ".F", ".S")) and len(sym_u) > 3:
-        base = normalize_cache_base_asset(raw)
-        return (base, "USD") if base else None
+        return _usd_base_pair(raw)
     if _has_xstock_lowercase_x(raw):
-        base = normalize_cache_base_asset(raw[:-1])
-        return (base, "USD") if base else None
+        return _usd_base_pair(raw[:-1])
     return None
 
 
@@ -914,23 +916,22 @@ def is_usd_stablecoin_pair(symbol: object) -> bool:
 
 def is_usdc_pair(symbol: object) -> bool:
     """Return True if ``symbol`` is a non-equity pair explicitly quoted in ``USDC``."""
-    if isinstance(symbol, bool) or not isinstance(symbol, str):
-        return False
-    return not has_equity_suffix(symbol, include_compact=True) and symbol_quote_asset(symbol) == "USDC"
+    return symbol_quote_asset(symbol) == "USDC"
 
 
 def is_eur_pair(symbol: object) -> bool:
     """Return True if ``symbol`` is a non-equity pair explicitly quoted in ``EUR``."""
-    if isinstance(symbol, bool) or not isinstance(symbol, str):
-        return False
-    return not has_equity_suffix(symbol, include_compact=True) and symbol_quote_asset(symbol) == "EUR"
+    return (parts := split_symbol_assets(symbol)) is not None and parts[1] == "EUR"
 
 
 def is_fiat_quote_pair(symbol: object) -> bool:
     """Return True if ``symbol`` is a non-equity crypto pair quoted in fiat ``USD`` or ``EUR``."""
-    if isinstance(symbol, bool) or not isinstance(symbol, str):
-        return False
-    return not has_equity_suffix(symbol, include_compact=True) and symbol_quote_asset(symbol) in ("USD", "EUR")
+    return (
+        isinstance(symbol, str)
+        and not isinstance(symbol, bool)
+        and not has_equity_suffix(symbol, include_compact=True)
+        and symbol_quote_asset(symbol) in ("USD", "EUR")
+    )
 
 
 def is_usd_compatible_pair(symbol: object) -> bool:

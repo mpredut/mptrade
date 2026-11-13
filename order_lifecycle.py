@@ -147,6 +147,16 @@ class StrategyExecutorLifecycleApi:
     def reconciliation_capabilities(self):
         return reconciliation_capabilities_of(self.executor)
 
+    @staticmethod
+    def _clean_symbol_and_order_id(symbol: str, raw_id: str, id_label: str) -> tuple[str, str]:
+        clean_sym = clean_scalar_str(symbol)
+        if clean_sym is None:
+            raise ProviderError("invalid symbol")
+        clean_id = clean_order_id(raw_id)
+        if not clean_id:
+            raise ProviderError(f"invalid {id_label}")
+        return clean_sym, clean_id
+
     def order_by_client_id(self, symbol: str, client_order_id: str, *, provider_name=None):
         if not self.reconciliation_capabilities().lookup_by_client_order_id:
             raise RuntimeError(f"{self.executor.__class__.__name__}: order_by_client_id is unsupported")
@@ -155,24 +165,15 @@ class StrategyExecutorLifecycleApi:
             raise RuntimeError(
                 f"{provider_name or type(self.executor).__name__}: order_by_client_id is unsupported"
             )
-        clean_sym = clean_scalar_str(symbol)
-        if clean_sym is None:
-            raise ProviderError("invalid symbol")
-        clean_cid = clean_order_id(client_order_id)
-        if not clean_cid:
-            raise ProviderError("invalid client_order_id")
+        clean_sym, clean_cid = self._clean_symbol_and_order_id(
+            symbol, client_order_id, "client_order_id"
+        )
         return method(clean_sym, clean_cid)
 
     def _require_order_id_op(self, cap: str, method_name: str, symbol: str, order_id: str) -> tuple[str, str]:
         if not getattr(self.reconciliation_capabilities(), cap):
             raise RuntimeError(f"{self.executor.__class__.__name__}: {method_name} is unsupported")
-        clean_sym = clean_scalar_str(symbol)
-        if clean_sym is None:
-            raise ProviderError("invalid symbol")
-        clean_oid = clean_order_id(order_id)
-        if not clean_oid:
-            raise ProviderError("invalid order_id")
-        return clean_sym, clean_oid
+        return self._clean_symbol_and_order_id(symbol, order_id, "order_id")
 
     def order_status(self, symbol: str, order_id: str, *, provider_name=None):
         clean_sym, clean_oid = self._require_order_id_op("status_by_order_id", "order_status", symbol, order_id)

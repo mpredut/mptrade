@@ -165,6 +165,21 @@ class EquityPricePlatformBase(PricePlatformInterface):
     IS_EQUITY_PLATFORM: bool = True
 
 
+def resolve_platform_for_source(
+    platforms, preferred_source: object
+) -> Optional[PricePlatformInterface]:
+    if not isinstance(preferred_source, str) or not preferred_source.strip():
+        return None
+    pref_raw = preferred_source.strip().lower()
+    pref_norm = normalize_venue_name(pref_raw) or pref_raw
+    for platform in platforms or ():
+        plat_raw = str(platform.platform_name).strip().lower()
+        plat_norm = normalize_venue_name(plat_raw) or plat_raw
+        if plat_norm == pref_norm or plat_raw == pref_raw:
+            return platform
+    return None
+
+
 class PricePlatformFactory:
     """Declarative registry and ordered fallback router across price platforms."""
 
@@ -215,16 +230,7 @@ class PricePlatformFactory:
         self._capabilities = all_symbols
 
     def resolve_preferred_platform(self, preferred_source: object) -> Optional[PricePlatformInterface]:
-        if not isinstance(preferred_source, str) or not preferred_source.strip():
-            return None
-        pref_raw = preferred_source.strip().lower()
-        pref_norm = normalize_venue_name(pref_raw) or pref_raw
-        for platform in getattr(self, "_platforms", ()) or ():
-            plat_raw = str(platform.platform_name).strip().lower()
-            plat_norm = normalize_venue_name(plat_raw) or plat_raw
-            if plat_norm == pref_norm or plat_raw == pref_raw:
-                return platform
-        return None
+        return resolve_platform_for_source(getattr(self, "_platforms", ()), preferred_source)
 
     def get_price(self, symbol: str) -> Dict:
         if not isinstance(symbol, str) or not symbol.strip():
