@@ -40,6 +40,7 @@ from botcore import (
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     _parse_bool_flag,
     clean_json_value,
+    clean_nonempty_str,
     clean_upper_token,
     env_items_with_prefix,
     first_pos_float,
@@ -122,7 +123,7 @@ def parse_trailing_cli_args(description: str, lock_name: str) -> argparse.Namesp
     ap = argparse.ArgumentParser(description=description)
     add_once_status_cli_args(ap)
     args = ap.parse_args()
-    if not args.status:
+    if not _parse_bool_flag(args.status, default=False):
         single_instance(lock_name)
     return args
 
@@ -132,10 +133,8 @@ def extract_trailing_intent_action_asset(intent: object) -> tuple[str, str]:
     pending = intent if isinstance(intent, dict) else {}
     raw_meta = pending.get("metadata")
     meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
-    raw_act = pending.get("action") or meta_dict.get("action")
-    action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
-    raw_asset = pending.get("asset") or meta_dict.get("asset")
-    asset = raw_asset.strip() if isinstance(raw_asset, str) else ""
+    action = clean_upper_token(pending.get("action")) or clean_upper_token(meta_dict.get("action")) or ""
+    asset = clean_nonempty_str(pending.get("asset")) or clean_nonempty_str(meta_dict.get("asset")) or ""
     return action, asset
 
 
@@ -199,7 +198,7 @@ class TrailingCore:
         # (one failed coin does not stop the rest). False (Kraken): wrap the entire tick;
         # on error, log without saving and retry next time. This preserves each provider's
         # original error-handling structure.
-        self.item_isolation = item_isolation
+        self.item_isolation = _parse_bool_flag(item_isolation, default=True)
 
     # -- state (peak per key) -------------------------------------------------
     def load(self) -> dict:
@@ -1025,10 +1024,10 @@ class TrailingAdapterBase:
         print(f"ENABLED={self.enabled} (a dry run if False)")
 
     def dispatch_cli(self, args) -> int:
-        if getattr(args, "status", False):
+        if _parse_bool_flag(getattr(args, "status", False), default=False):
             self.print_status()
             return 0
-        if getattr(args, "once", False):
+        if _parse_bool_flag(getattr(args, "once", False), default=False):
             self.check_once()
             return 0
         self.run()

@@ -16,7 +16,9 @@ from typing import Iterable, Optional
 
 from botcore import (
     FileLock,
+    _parse_bool_flag,
     clean_non_bool_str as _clean_str,
+    clean_order_id,
     exact_int,
     exact_nonneg_int,
     exact_pos_int,
@@ -724,16 +726,27 @@ def _safe_load_all() -> list:
         return []
 
 
+def _active_order_keys(r: dict) -> tuple[str, ...]:
+    if not isinstance(r, dict):
+        return ()
+    lc = str(r.get("lifecycle") or "").strip().lower()
+    if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
+        return ()
+    return tuple(
+        k
+        for raw_k in (r.get("order_id"), _record_client_order_id(r))
+        if (k := clean_order_id(raw_k))
+    )
+
+
 def get_accepted_order_ttl_map() -> dict:
     """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
     return {
         k: ttl_val
         for r in _safe_load_all()
-        if (lc := str(r.get("lifecycle") or "").lower()) == "accepted"
-        or (lc == "submit_pending" and r.get("order_id") is None)
-        if (ttl_val := safe_pos_float(r.get("ttl_sec"), default=None)) is not None
-        for k in (extract_order_id(r.get("order_id")), extract_order_id(_record_client_order_id(r)))
-        if k
+        if (keys := _active_order_keys(r))
+        and (ttl_val := safe_pos_float(r.get("ttl_sec"), default=None)) is not None
+        for k in keys
     }
 
 
@@ -804,18 +817,12 @@ def infer_concrete_record_owner(rec: dict) -> str:
 
 def get_accepted_order_owner_map() -> dict:
     """Return a mapping of order_id and client_order_id to logical bot owner for active accepted orders."""
-    res = {}
-    for r in _safe_load_all():
-        lc = str(r.get("lifecycle") or "").lower()
-        if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
-            continue
-        inferred = infer_concrete_record_owner(r)
-        if not inferred:
-            continue
-        for k in (extract_order_id(r.get("order_id")), extract_order_id(_record_client_order_id(r))):
-            if k:
-                res[k] = inferred
-    return res
+    return {
+        k: inferred
+        for r in _safe_load_all()
+        if (keys := _active_order_keys(r)) and (inferred := infer_concrete_record_owner(r))
+        for k in keys
+    }
 
 
 def resolve_tracked_order_owner(
@@ -828,8 +835,8 @@ def resolve_tracked_order_owner(
     audit_dir: Optional[str] = None,
 ) -> str:
     """Resolve the logical bot owner for an order across clientOrderId, outbox, and execution audit."""
-    oid_str = extract_order_id(order_id) or _clean_str(order_id)
-    cid_str = _clean_str(client_order_id)
+    oid_str = clean_order_id(order_id) or extract_order_id(order_id, default="")
+    cid_str = clean_order_id(client_order_id) or ""
     owner = "unspecified"
     if cid_str:
         try:
@@ -1387,24 +1394,36 @@ def is_expired(rec, now=None):
     return (now_f - ttl_started) > effective_ttl or (RETRY_MAX_ATTEMPTS > 0 and attempts >= RETRY_MAX_ATTEMPTS)
 
 
+def _opt_nonneg_ts(rec: dict, key: str) -> Optional[float]:
+    val = rec.get(key)
+    return 0.0 if val is None else safe_nonneg_float(val, default=None)
+
+
+def _clean_id_set(items) -> set[str]:
+    if items is None or isinstance(items, (bool, dict)):
+        return set()
+    seq = items if isinstance(items, Iterable) and not isinstance(items, (str, bytes)) else (items,)
+    return {cid for x in seq if (cid := clean_order_id(x))}
+
+
 def is_due(rec, now=None):
     """Return true once the retry interval has elapsed since creation or last attempt."""
     if not isinstance(rec, dict):
         return False
-    now_f = safe_float(time.time() if now is None else now, default=None)
-    claim_until = safe_float(rec.get("claim_until", 0) or 0, default=None)
-    created = safe_float(rec.get("created_ts", 0) or 0, default=None)
+    now_f = safe_nonneg_float(time.time() if now is None else now, default=None)
+    claim_until = _opt_nonneg_ts(rec, "claim_until")
+    created = _opt_nonneg_ts(rec, "created_ts")
     if now_f is None or claim_until is None or created is None:
         return False
-    lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
+    lifecycle = str(rec.get("lifecycle") or "submit_pending").strip().lower()
     if lifecycle in {"accepted", "awaiting_cancel"}:
-        last_st = safe_float(rec.get("last_status_ts", 0) or 0, default=None)
-        acc_ts = safe_float(rec.get("accepted_ts", 0) or 0, default=None)
+        last_st = _opt_nonneg_ts(rec, "last_status_ts")
+        acc_ts = _opt_nonneg_ts(rec, "accepted_ts")
         if last_st is None or acc_ts is None:
             return False
         base = max(last_st, acc_ts, created)
     else:
-        last_att = safe_float(rec.get("last_attempt_ts", 0) or 0, default=None)
+        last_att = _opt_nonneg_ts(rec, "last_attempt_ts")
         if last_att is None:
             return False
         base = max(last_att, created)
@@ -1435,16 +1454,16 @@ def price_gate_ok(rec, current_price, tol=None):
 
 def discard_refused_intent_records(intent_id: str) -> list[str]:
     """Discard queued records matching ``intent_id`` whose ``submission_state`` is ``refused``."""
-    iid_str = "" if isinstance(intent_id, bool) else str(intent_id or "").strip()
+    iid_str = clean_order_id(intent_id)
     if not iid_str:
         return []
     rm_ids = [
-        str(r["id"])
+        rid
         for r in load_all()
         if isinstance(r, dict)
-        and str(r.get("intent_id") or "").strip() == iid_str
-        and str(r.get("submission_state") or "").lower() == "refused"
-        and r.get("id") is not None
+        and clean_order_id(r.get("intent_id")) == iid_str
+        and str(r.get("submission_state") or "").strip().lower() == "refused"
+        and (rid := clean_order_id(r.get("id")))
     ]
     if rm_ids:
         discard(rm_ids)
@@ -1462,23 +1481,29 @@ def discard_superseded_symbol_records(
     cancel_fn_is_mock: bool = False,
 ) -> list[str]:
     """Discard superseded ``submit_pending`` / ``awaiting_cancel`` retry records for ``symbol``."""
-    sym_str = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
+    sym_str = _canonical_queue_symbol(symbol)
     if not sym_str:
         return []
+    any_side_b = _parse_bool_flag(any_side, False)
+    want_side_u = normalize_side(want_side)
+    if not any_side_b and want_side_u not in {"BUY", "SELL"}:
+        return []
+    include_bots_b = _parse_bool_flag(include_bot_orders, False)
+    is_mock_b = _parse_bool_flag(cancel_fn_is_mock, False)
     default_q = os.path.abspath(str(resolve_cachedb_filepath("order_retry_queue.jsonl")))
     active_q = os.path.abspath(str(QUEUE_FILE))
-    if active_q == default_q and cancel_fn_is_mock:
+    if active_q == default_q and is_mock_b:
         return []
-    canceled_set = {str(x) for x in (canceled_ids or ()) if x}
-    ai_oids = set(ai_order_ids or ())
+    canceled_set = _clean_id_set(canceled_ids)
+    ai_oids = _clean_id_set(ai_order_ids)
     to_discard: list[str] = []
     for rec in load_all():
-        if not isinstance(rec, dict) or str(rec.get("symbol") or "").strip().upper() != sym_str:
+        if not isinstance(rec, dict) or _canonical_queue_symbol(rec.get("symbol")) != sym_str:
             continue
-        rec_id = str(rec.get("id") or "").strip()
+        rec_id = clean_order_id(rec.get("id"))
         if not rec_id:
             continue
-        rec_oid = str(rec.get("order_id") or "").strip()
+        rec_oid = clean_order_id(rec.get("order_id")) or ""
         if rec_oid and rec_oid in canceled_set:
             to_discard.append(rec_id)
             continue
@@ -1486,16 +1511,16 @@ def discard_superseded_symbol_records(
         if lc not in ("submit_pending", "awaiting_cancel"):
             continue
         rec_side = normalize_side(rec.get("side"))
-        if not any_side and rec_side != want_side:
+        if not any_side_b and rec_side != want_side_u:
             continue
         rec_kw = rec.get("place_kwargs") if isinstance(rec.get("place_kwargs"), dict) else {}
         rec_probe = {
             "orderId": rec_oid,
-            "clientOrderId": rec_kw.get("client_order_id") or rec.get("prefix") or "",
-            "intent_id": rec.get("intent_id") or "",
+            "clientOrderId": clean_order_id(rec_kw.get("client_order_id")) or clean_order_id(rec.get("prefix")) or "",
+            "intent_id": clean_order_id(rec.get("intent_id")) or "",
         }
         is_ai_rec = resolve_order_actor(rec_probe, ai_oids) == "AI"
-        if not is_ai_rec and not include_bot_orders:
+        if not is_ai_rec and not include_bots_b:
             continue
         to_discard.append(rec_id)
     if to_discard:

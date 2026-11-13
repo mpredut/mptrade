@@ -22,6 +22,7 @@ import weakref
 from botcore import (
     FileLock,
     _parse_bool_flag,
+    check_cooldown_gate,
     extract_timestamp_ms,
     extract_timestamp_s,
     is_worker_thread_alive,
@@ -776,9 +777,9 @@ class CacheManagerInterface(ABC):
             if sync_sec is not None and sync_sec >= 10.0:
                 return True
             last_save_log = safe_nonneg_float(
-                getattr(self, "_last_save_info_log_ts", 0.0), default=0.0
-            ) or 0.0
-            if last_save_log > 0.0 and 0.0 <= (now_mono - last_save_log) < interval:
+                getattr(self, "_last_save_info_log_ts", None), default=None
+            )
+            if last_save_log is not None and 0.0 <= (now_mono - last_save_log) < interval:
                 return False
             self._last_save_info_log_ts = now_mono
             return True
@@ -786,11 +787,7 @@ class CacheManagerInterface(ABC):
         if not isinstance(ts_map, dict):
             ts_map = {}
             self._last_item_info_log_ts = ts_map
-        last_item_log = ts_map.get(symbol, 0.0)
-        if last_item_log > 0.0 and 0.0 <= (now_mono - last_item_log) < interval:
-            return False
-        ts_map[symbol] = now_mono
-        return True
+        return check_cooldown_gate(ts_map, symbol, now_mono, cooldown_sec=interval, max_entries=1024)
 
     def _log_cache_saved_ok(self) -> bool:
         if self._should_emit_throttled_info_log():

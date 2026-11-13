@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import fields
-from botcore import _parse_bool_flag, safe_pos_float
+from botcore import _parse_bool_flag, normalize_side, safe_pos_float
 from cachepaths import resolve_venue_runtime_dir
 from state_io import StateReadError, load_json_state, save_json_state
 from .position_exit_manager import PositionExitConfig, PositionExitManager, is_stop_exit_kind
@@ -18,13 +18,14 @@ from .position_exit_manager import PositionExitConfig, PositionExitManager, is_s
 
 def find_open_order(state: dict, side: str) -> dict | None:
     """Return the first open order in ``state['orders']`` matching ``side`` (case-insensitive)."""
-    if not isinstance(state, dict) or isinstance(side, bool):
-        return None
-    target = str(side or "").strip().lower()
+    target = normalize_side(side, require_str=True) if isinstance(state, dict) else ""
     orders = state.get("orders") if target else None
-    if not isinstance(orders, list):
+    if not isinstance(orders, (list, tuple)):
         return None
-    return next((o for o in orders if isinstance(o, dict) and str(o.get("side") or "").strip().lower() == target), None)
+    return next(
+        (o for o in orders if isinstance(o, dict) and normalize_side(o.get("side"), require_str=True) == target),
+        None,
+    )
 
 
 def compute_adaptive_reentry_pullback_pct(

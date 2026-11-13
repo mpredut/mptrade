@@ -291,7 +291,7 @@ from tests.conftest import (
     make_test_margins,
 )
 import tradeall
-from trailing_core import TrailingAdapterBase
+from trailing_core import TrailingAdapterBase, TrailingCore, extract_trailing_intent_action_asset
 import utils
 from verify_tools import check_cache_coherence, monitor_night, ownership_inventory, portfolio_snapshot
 import visuals.tradeall_observe as tobs
@@ -6154,6 +6154,183 @@ def test_wave34_cpm_delegated_lifecycle_instrument_and_exit_border_cases(tmp_pat
         lambda _s: (_ for _ in ()).throw(AssertionError("external cache must not be queried")),
     )
     assert pem._resolve_effective_vol_1h("BTCUSDC", 0.0) == (0.0, "default")
+
+
+def test_wave35_cooldown_gate_order_retry_mt_accounting_spot_and_trailing_border_cases(tmp_path, monkeypatch):
+    # 1. botcore.check_cooldown_gate & CacheManagerInterface._should_emit_throttled_info_log border cases.
+    assert botcore.check_cooldown_gate(None, "k", 100.0, cooldown_sec=60.0) is True
+    cd_map = {"k": "corrupt_ts"}
+    assert botcore.check_cooldown_gate(cd_map, "k", 0.0, cooldown_sec=30.0) is True
+    assert cd_map["k"] == 0.0
+    assert botcore.check_cooldown_gate(cd_map, "k", 10.0, cooldown_sec=30.0) is False
+    assert botcore.check_cooldown_gate(cd_map, ["unhashable"], 10.0, cooldown_sec=30.0, max_entries=1) is True
+    assert len(cd_map) == 1
+
+    monkeypatch.setattr(cacheInterface, "_monotonic_time", lambda: 0.0)
+    log_stub = SimpleNamespace(
+        _HIGH_FREQ_LOG_INTERVAL_SEC=30.0,
+        sync_ts=1.0,
+        _last_item_info_log_ts="corrupt",
+    )
+    emit_fn = MethodType(cacheInterface.CacheManagerInterface._should_emit_throttled_info_log, log_stub)
+    assert emit_fn() is True
+    assert emit_fn() is False
+    assert emit_fn("BTCUSDC") is True
+    assert emit_fn("BTCUSDC") is False
+    assert emit_fn(["BTCUSDC"]) is True
+
+    # 2. order_retry: _active_order_keys, is_due bool/NaN rejection, discard_superseded_symbol_records.
+    q_file = tmp_path / "retry_w35.jsonl"
+    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(order_retry, "LOCK_FILE", str(tmp_path / "retry_w35.lock"))
+
+    assert order_retry.is_due({"created_ts": False, "last_attempt_ts": 1000.0}, now=2000.0) is False
+    assert order_retry.is_due({"claim_until": True, "created_ts": 1000.0}, now=2000.0) is False
+    assert order_retry.is_due({"created_ts": 1000.0, "last_attempt_ts": None}, now=1000.0 + order_retry.RETRY_INTERVAL_SEC) is True
+
+    state_io.atomic_write_jsonl(
+        str(q_file),
+        [
+            {
+                "id": "bot-rec-1",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.1,
+                "created_ts": 1000.0,
+                "lifecycle": "submit_pending",
+                "order_id": "2",
+                "place_kwargs": {"client_order_id": "mt-buy-1"},
+                "ttl_sec": 120.0,
+                "parent_owner": "monitortrades",
+            },
+            {
+                "id": "ai-rec-1",
+                "symbol": "XBT/USD",
+                "side": "BUY",
+                "qty": 0.2,
+                "created_ts": 1000.0,
+                "lifecycle": "submit_pending",
+                "intent_id": "AI_9001",
+                "place_kwargs": {"client_order_id": "AI_cid_1"},
+            },
+            {
+                "id": "refused-1",
+                "symbol": "ETHUSDC",
+                "side": "SELL",
+                "qty": 1.0,
+                "created_ts": 1000.0,
+                "lifecycle": "submit_pending",
+                "submission_state": "refused",
+                "intent_id": "intent_ref_1",
+            },
+        ],
+    )
+    # Active TTL/owner maps ignore submit_pending records that already carry an order_id, and map clean active ones.
+    ttl_map = order_retry.get_accepted_order_ttl_map()
+    assert "2" not in ttl_map
+    assert order_retry.resolve_tracked_order_owner({"bad": "dict"}, {"bad": "cid"}) == "unspecified"
+
+    # Scalar canceled_ids="123" must NOT character-split into {"1","2","3"} and discard order_id="2",
+    # and include_bot_orders="false" must NOT discard bot-rec-1!
+    discarded_btc = order_retry.discard_superseded_symbol_records(
+        "BTCUSDC",
+        "buy",
+        canceled_ids="123",
+        ai_order_ids="AI_9001",
+        include_bot_orders="false",
+        any_side="false",
+        cancel_fn_is_mock="false",
+    )
+    assert discarded_btc == []
+    # Canonical symbol matching ("BTCUSD" <-> "XBT/USD") + scalar ai_order_ids="AI_9001" + lowercase want_side="buy".
+    discarded_kr = order_retry.discard_superseded_symbol_records(
+        "BTCUSD",
+        "buy",
+        ai_order_ids="AI_9001",
+        include_bot_orders="false",
+        any_side="false",
+    )
+    assert discarded_kr == ["ai-rec-1"]
+    assert order_retry.discard_refused_intent_records({"id": "intent_ref_1"}) == []
+    assert order_retry.discard_refused_intent_records("intent_ref_1") == ["refused-1"]
+
+    # 3. mt_position_accounting: _FifoTradeIdTracker, _is_untradable_dust, _infer_mt_exit_kind, _update_mt_reentry_state.
+    fifo = mt_pa_mod._FifoTradeIdTracker(maxsize=4)
+    fifo.add(None)
+    fifo.add(True)
+    fifo.add("")
+    assert len(fifo) == 0
+    assert (True in fifo) is False
+    fifo.add("trd_1")
+    assert ("trd_1" in fifo) is True
+
+    assert mt_pa_mod._is_untradable_dust(None, "BTCUSDC", None, 100.0, 0.01) is True
+    assert mt_pa_mod._is_untradable_dust(None, "BTCUSDC", float("nan"), 100.0, 0.01) is True
+    assert mt_pa_mod._is_untradable_dust(None, "BTCUSDC", 0.5, float("nan"), 0.01) is False
+
+    exit_map = {"BTCUSDC": True}
+    assert (
+        mt_pa_mod._infer_mt_exit_kind(
+            "BTCUSDC",
+            [{"kind": True, "time": 1000}],
+            "false",
+            100.0,
+            90.0,
+            None,
+            2000.0,
+            {},
+            "AVERAGE",
+            0.02,
+            exit_map,
+        )
+        == "SELL"
+    )
+    re_map = {"BTCUSDC": None}
+    re_out = mt_pa_mod._update_mt_reentry_state("BTCUSDC", 95.0, 96.0, 1700000100, 1700000050.0, re_map)
+    assert re_out["trough"] == 95.0 and re_out["peak"] == 96.0
+    assert re_map["BTCUSDC"]["peak_bounce"] == 96.0
+
+    # 4. strategies/state_store, BaseSpotMixin, and trailing_core border cases.
+    st_orders = {"orders": ({"side": "long", "id": "o1"}, {"side": True, "id": "bad"})}
+    assert strat_ss_mod.find_open_order(st_orders, 123) is None
+    assert strat_ss_mod.find_open_order(st_orders, "buy") == {"side": "long", "id": "o1"}
+
+    spot_stub = SimpleNamespace(
+        replay_mode=True,
+        _simulated_ts=float("nan"),
+        _clock=lambda: 1700000500.0,
+        _pending_submit_state_key="pending_sub",
+        s={"pending_sub": {"side": "short"}, "orders": []},
+    )
+    spot_stub._find_open = lambda side: strat_ss_mod.find_open_order(spot_stub.s, side)
+    assert BaseSpotMixin._now(spot_stub) == 1700000500.0
+    assert BaseSpotMixin._has_open(spot_stub, "sell") is True
+    assert BaseSpotMixin._has_open(spot_stub, 123) is False
+
+    assert extract_trailing_intent_action_asset(
+        {"action": "   ", "asset": True, "metadata": {"action": "sell", "asset": " BTC "}}
+    ) == ("SELL", "BTC")
+    tc = TrailingCore(
+        None,
+        log=lambda _m: None,
+        enabled="false",
+        state_file=str(tmp_path / "tc.json"),
+        min_notional=10.0,
+        rebuy_enabled="false",
+        rebuy_bounce_pct=1.0,
+        rebuy_skip_if_trend_down="false",
+        item_isolation="false",
+    )
+    assert tc.item_isolation is False
+    cli_calls = []
+    cli_stub = SimpleNamespace(
+        print_status=lambda: cli_calls.append("status"),
+        check_once=lambda: cli_calls.append("once"),
+        run=lambda: cli_calls.append("run"),
+    )
+    assert TrailingAdapterBase.dispatch_cli(cli_stub, SimpleNamespace(status="false", once="true")) == 0
+    assert cli_calls == ["once"]
+
 
 
 

@@ -512,7 +512,7 @@ class BaseSpotMixin:
         """Return the current timestamp honoring custom clock or simulated time in replay mode."""
         replay = bool(_parse_bool_flag(getattr(self, "replay_mode", False), False))
         if replay:
-            sim_ts = getattr(self, "_simulated_ts", None)
+            sim_ts = normalize_epoch_sec(getattr(self, "_simulated_ts", None), default=None, allow_zero=True)
             if sim_ts is not None:
                 return sim_ts
         clock = getattr(self, "_clock", None)
@@ -626,10 +626,10 @@ class BaseSpotMixin:
 
     def _recover_state_write_or_skip(self) -> bool:
         """Retry saving after an earlier disk write failure; return False if still failing."""
-        if not getattr(self, "_state_write_failed", False):
+        if not _parse_bool_flag(getattr(self, "_state_write_failed", False), False):
             return True
         self._save()
-        return not self._state_write_failed
+        return not _parse_bool_flag(getattr(self, "_state_write_failed", False), False)
 
     def _step_and_save(self, price: float) -> None:
         self.step(price)
@@ -692,16 +692,14 @@ class BaseSpotMixin:
         return find_open_order(self.s, side)
 
     def _has_open(self, side: str) -> bool:
-        if isinstance(side, bool):
+        side_u = normalize_side(side, require_str=True)
+        if not side_u:
             return False
-        if self._pending_submit_state_key:
-            side_u = str(side or "").strip().upper()
-            if not side_u:
-                return False
+        if self._pending_submit_state_key and isinstance(getattr(self, "s", None), dict):
             raw_pending = self.s.get(self._pending_submit_state_key)
-            pending = raw_pending if isinstance(raw_pending, dict) else {}
-            return str(pending.get("side") or "").strip().upper() == side_u or self._find_open(side_u) is not None
-        return self._find_open(side) is not None
+            if isinstance(raw_pending, dict) and normalize_side(raw_pending.get("side"), require_str=True) == side_u:
+                return True
+        return self._find_open(side_u) is not None
 
     def _remove(self, o: dict) -> None:
         if o in self.s["orders"]:
@@ -1221,7 +1219,7 @@ class BaseSpotMixin:
         return placed
 
     def _touch_strategy_heartbeat(self, price: float | None, sleep_sec: float, *, force: bool = False) -> None:
-        if getattr(self, "replay_mode", False):
+        if _parse_bool_flag(getattr(self, "replay_mode", False), False):
             return
         sym = str(self._symbol_id or "").strip().upper()
         hb_name = MarketDataProvider.resolve_venue_strategy_heartbeat(
@@ -1335,9 +1333,9 @@ class BaseSpotMixin:
                         _delay()
                         continue
                     if (
-                        reload_external
-                        and not getattr(self, "replay_mode", False)
-                        and not getattr(self, "_state_write_failed", False)
+                        _parse_bool_flag(reload_external, False)
+                        and not _parse_bool_flag(getattr(self, "replay_mode", False), False)
+                        and not _parse_bool_flag(getattr(self, "_state_write_failed", False), False)
                         and isinstance(getattr(self, "state_file", None), str)
                     ):
                         try:
@@ -1357,7 +1355,7 @@ class BaseSpotMixin:
                     continue
                 status_log_fn(price)
                 _delay()
-            if getattr(self, "_state_write_failed", False):
+            if _parse_bool_flag(getattr(self, "_state_write_failed", False), False):
                 self._save()
         except KeyboardInterrupt:
             self._log_msg("  [STRAT] stopped manually.")

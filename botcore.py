@@ -2740,11 +2740,24 @@ def check_cooldown_gate(
     cooldown_map: dict, key: object, now_ts: float, cooldown_sec: float = 1800.0, max_entries: int = 1000
 ) -> bool:
     """Return True and record ``now_ts`` if ``key`` is not within ``cooldown_sec``."""
-    last = cooldown_map.get(key, -1e18)
-    if 0.0 <= (now_ts - last) < cooldown_sec:
+    if not isinstance(cooldown_map, dict):
+        return True
+    now_f = safe_float(now_ts, None)
+    if now_f is None:
+        return True
+    cd_f = safe_nonneg_float(cooldown_sec, 0.0) or 0.0
+    try:
+        raw_last = cooldown_map.get(key)
+        map_key = key
+    except TypeError:
+        map_key = str(key)
+        raw_last = cooldown_map.get(map_key)
+    last_f = safe_float(raw_last, None) if raw_last is not None else None
+    if last_f is not None and 0.0 <= (now_f - last_f) < cd_f:
         return False
-    cooldown_map[key] = now_ts
-    while len(cooldown_map) > max_entries:
+    cooldown_map[map_key] = now_f
+    cap = safe_pos_int(max_entries, 1000) or 1000
+    while len(cooldown_map) > cap:
         cooldown_map.pop(next(iter(cooldown_map)), None)
     return True
 

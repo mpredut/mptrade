@@ -8,6 +8,9 @@ import math
 from typing import Any, Optional, Tuple
 
 from botcore import (
+    _parse_bool_flag,
+    clean_order_id,
+    clean_upper_token,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
@@ -49,7 +52,9 @@ class _FifoTradeIdTracker:
         self._maxsize = ms if ms >= 2 else 10000
 
     def add(self, item: str) -> None:
-        key = str(item)
+        key = clean_order_id(item)
+        if not key:
+            return
         self._data.pop(key, None)
         self._data[key] = None
         if len(self._data) > self._maxsize:
@@ -58,7 +63,8 @@ class _FifoTradeIdTracker:
                 self._data.pop(next(iter(self._data)), None)
 
     def __contains__(self, item: object) -> bool:
-        return str(item) in self._data
+        key = clean_order_id(item)
+        return bool(key) and key in self._data
 
     def __len__(self) -> int:
         return len(self._data)
@@ -225,12 +231,15 @@ _ORIG_MT_ATTRS["_is_terminal_dust_refusal"] = _is_terminal_dust_refusal
 
 def _is_untradable_dust(inst, symbol: str, sellable_qty: float, current_price: float, min_qty: float) -> bool:
     """Return True if sellable_qty is zero or below venue minimum quantity/notional."""
-    if sellable_qty <= 0 or (min_qty > 0 and sellable_qty < min_qty):
+    sq = safe_pos_float(sellable_qty, default=None)
+    mq = safe_pos_float(min_qty, default=0.0) or 0.0
+    if sq is None or (mq > 0.0 and sq < mq):
         return True
     prov = getattr(inst, "_provider", None)
-    if prov is not None and current_price and current_price > 0:
+    cp = safe_pos_float(current_price, default=None)
+    if prov is not None and cp is not None:
         refusal = _mt_attr("check_order_filter_refusal", check_order_filter_refusal)(
-            prov, symbol, "SELL", current_price, sellable_qty,
+            prov, symbol, "SELL", cp, sq,
             market=True, enforce_business_minimum=False,
         )
         if _mt_attr("_is_terminal_dust_refusal", _is_terminal_dust_refusal)(refusal):
@@ -385,33 +394,39 @@ def _infer_mt_exit_kind(
         if isinstance(trade_orders_sell, (list, tuple)) and trade_orders_sell
         else {}
     )
-    latest_sell_kind = str(latest_sell.get("kind") or "").strip().upper()
+    latest_sell_kind = clean_upper_token(latest_sell.get("kind")) or ""
     is_ai_sell = resolve_order_actor(latest_sell) == "AI" or latest_sell_kind.startswith("AI_")
     if is_ai_sell and not is_stop_exit_kind(latest_sell_kind):
         if isinstance(last_exit_kind_map, dict):
             last_exit_kind_map.pop(symbol, None)
         return "SELL"
-    raw_explicit = (last_exit_kind_map.get(symbol) if isinstance(last_exit_kind_map, dict) else None) or (latest_sell_kind or None)
+    mapped_kind = clean_upper_token(last_exit_kind_map.get(symbol)) if isinstance(last_exit_kind_map, dict) else None
+    raw_explicit = mapped_kind or (latest_sell_kind or None)
     explicit_exit_kind = "STOP" if is_stop_exit_kind(raw_explicit) else raw_explicit
+    closed_by_sell = _parse_bool_flag(position_closed_by_sell, False)
+    bp_f = safe_pos_float(buy_price, default=None)
+    bt_f = safe_nonneg_float(buy_time, default=None)
+    st_f = safe_nonneg_float(sell_time, default=None)
     if (
         not explicit_exit_kind
-        and position_closed_by_sell
+        and closed_by_sell
         and not is_ai_sell
-        and buy_price
-        and sell_time >= buy_time
+        and bp_f is not None
+        and bt_f is not None
+        and st_f is not None
+        and st_f >= bt_f
     ):
         pos_dict = position if isinstance(position, dict) else {}
-        bp_f = safe_pos_float(buy_price, default=0.0) or 0.0
         cycle_buy_px = (
             safe_pos_float(pos_dict.get("last_cycle_buy_price"), default=None)
             or safe_pos_float(pos_dict.get("active_average_buy_price"), default=None)
             or bp_f
         )
-        ref_buy_px = (cycle_buy_px or bp_f) if tp_ref == "average" else bp_f
+        ref_buy_px = (cycle_buy_px or bp_f) if str(tp_ref or "").strip().lower() == "average" else bp_f
         lost_f = safe_nonneg_float(lost_threshold, default=0.0) or 0.0
         tol_factor = 1.0 - min(lost_f * 0.25, 0.002)
         sell_px_f = safe_pos_float(sell_price, default=None)
-        if sell_px_f is not None and bp_f > 0 and sell_px_f < bp_f * tol_factor and sell_px_f < ref_buy_px * tol_factor:
+        if sell_px_f is not None and sell_px_f < bp_f * tol_factor and sell_px_f < ref_buy_px * tol_factor:
             explicit_exit_kind = "STOP"
     if explicit_exit_kind == "STOP" and isinstance(last_exit_kind_map, dict):
         last_exit_kind_map[symbol] = "STOP"
@@ -434,10 +449,12 @@ def _update_mt_reentry_state(
         if isinstance(current_time_s, int) and not isinstance(current_time_s, bool)
         else now_s
     )
-    prev_reentry_state = dict(reentry_state_map.get(symbol, {}))
+    state_map = reentry_state_map if isinstance(reentry_state_map, dict) else {}
+    raw_prev = state_map.get(symbol)
+    prev_reentry_state = dict(raw_prev) if isinstance(raw_prev, dict) else {}
     if is_reentry_state_stale(prev_reentry_state, sell_time_clean):
         prev_reentry_state = {}
-        reentry_state_map.pop(symbol, None)
+        state_map.pop(symbol, None)
         if isinstance(last_exit_kind_map, dict):
             last_exit_kind_map.pop(symbol, None)
     cp_f = safe_pos_float(current_price, default=None)
@@ -465,5 +482,5 @@ def _update_mt_reentry_state(
             default_peak=default_peak,
             clamp_to_defaults=False,
         )
-    reentry_state_map[symbol] = dict(prev_reentry_state)
+    state_map[symbol] = dict(prev_reentry_state)
     return prev_reentry_state
