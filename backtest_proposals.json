@@ -1,6 +1,20 @@
 [
   {
-    "ts": "2026-11-15T01:40:49+00:00",
+    "ts": "2026-11-15T03:34:21+00:00",
+    "full_key": "BINANCE_BTC.mt.maxage_days",
+    "section": "BINANCE_BTC",
+    "key": "mt.maxage_days",
+    "symbol": "BTCUSDC",
+    "current_on_dev": 10.5,
+    "winner_value": 10.0,
+    "margin_vs_current": {
+      "half1": 77.93,
+      "half2": 47.79
+    },
+    "dev_commit": "c848295d"
+  },
+  {
+    "ts": "2026-11-15T03:34:21+00:00",
     "full_key": "BINANCE_ARB.mt.lost",
     "section": "BINANCE_ARB",
     "key": "mt.lost",
