@@ -243,7 +243,7 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         parts = []
         for name, info in self.source_freshness.items():
             itv_v = info["interval_sec"]
-            itv_s = f"{int(round(itv_v))}s" if abs(itv_v - round(itv_v)) < 1e-6 else f"{itv_v:.1f}s"
+            itv_s = f"{round(itv_v)}s" if abs(itv_v - round(itv_v)) < 1e-6 else f"{itv_v:.1f}s"
             state = "fresh" if info["fresh"] else "stale"
             parts.append(f"{name}={info['age_sec']:.1f}s/{itv_s} ({info['age_ratio']:.1f}x, {state})")
         return ", ".join(parts)
