@@ -5680,11 +5680,11 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
     assert geo_spec.preferred_model == "gemini-3.8-flash-low"
     assert geo_spec.default_timeout_sec == 120.0
 
-    # 4. 10-minute executors use gemini-4-argon-medium and 90.0s timeout
+    # 4. Autonomous trade executors use gemini-4-argon-medium and 120.0s timeout
     for exec_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):
         spec = topic_spec(exec_topic)
         assert spec.preferred_model == "gemini-4-argon-medium"
-        assert spec.default_timeout_sec == 90.0
+        assert spec.default_timeout_sec == 120.0
 
     # 5. GeminiClient fallback chain deduplicates primary model, keeps weak gpt-oss excluded, and maps high/med/low chains
     observed = {}

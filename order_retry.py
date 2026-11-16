@@ -1399,6 +1399,10 @@ _FAST_IMPULSE_KIND_PREFIXES = (
     "accel_surge_",
     "accel_plunge_",
     "kalman_primary_",
+    "trend_confirmed_",
+    "consistent_or_old_",
+    "slope<=",
+    "slope>=",
 )
 
 

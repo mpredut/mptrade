@@ -526,7 +526,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 (True, "_last_fear_greed_ts", self.fear_greed_interval_sec, self.update_fear_greed, (force,), 12.0, "fear_greed", "fear_greed_updated", None),
                 (True, "_last_breadth_ts", self.breadth_interval_sec, self.update_market_breadth, (force,), 15.0, "breadth", "breadth_updated", None),
                 (not self.skip_external, "_last_macro_benchmarks_ts", self.macro_benchmarks_interval_sec, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),
-                (not self.skip_external, "_last_pretrade_caches_ts", self.pretrade_caches_interval_sec, self.update_pretrade_caches, (force,), 18.0, "pretrade_caches", "pretrade_caches_updated", None),
+                (not self.skip_external, "_last_pretrade_caches_ts", self.pretrade_caches_interval_sec, self.update_pretrade_caches, (force,), 24.0, "pretrade_caches", "pretrade_caches_updated", None),
                 (not self.skip_external, "_last_venue_balances_ts", self.venue_balances_interval_sec, self.update_venue_balances, (force,), 18.0, "venue_balances", "venue_balances_updated", None),
             )
             for enabled, ts_attr, itv_sec, fn, fn_args, timeout_s, lbl, res_key, on_done_cb in scheduled_tasks:

@@ -3331,7 +3331,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         can_trade=True,
         asset_scope="crypto",
         default_preferred_model="gemini-4-argon-medium",
-        default_timeout_sec=90.0,
+        default_timeout_sec=120.0,
         model_env_key="LLM_DEFAULT_MODEL",
     ),
     "auto_sharetrade_executor": TopicSpec(
@@ -3339,7 +3339,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         can_trade=True,
         asset_scope="equities",
         default_preferred_model="gemini-4-argon-medium",
-        default_timeout_sec=90.0,
+        default_timeout_sec=120.0,
         model_env_key="LLM_DEFAULT_MODEL",
     ),
     "macro_geopolitical": TopicSpec(

@@ -2142,14 +2142,15 @@ def refresh_pretrade_telemetry_caches(
                     )
                 except Exception:
                     pass
-    try:
-        vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
-        if os.path.exists(vb_path) and isinstance(vb_d := _rj(vb_path), dict):
-            status["t212_positions_refreshed"] = bool(
-                _refresh_stale_t212_cached_positions(vb_d, vb_path, eff_now)
-            )
-    except Exception:
-        pass
+    if not sym_raw or is_eq_sym:
+        try:
+            vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
+            if os.path.exists(vb_path) and isinstance(vb_d := _rj(vb_path), dict):
+                status["t212_positions_refreshed"] = bool(
+                    _refresh_stale_t212_cached_positions(vb_d, vb_path, eff_now)
+                )
+        except Exception:
+            pass
     return status
 
 

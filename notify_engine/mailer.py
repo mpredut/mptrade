@@ -60,7 +60,8 @@ def _config() -> dict | None:
     }
     missing = [k for k in ("username", "password", "to") if not cfg[k]]
     if missing:
-        logging.warning(f"Email not configured (missing: {', '.join(missing)})")
+        if len(missing) < 3:
+            logging.warning(f"Email not configured (missing: {', '.join(missing)})")
         return None
     port_i = safe_pos_int(cfg["port"], default=None)
     if port_i is None or port_i > 65535:

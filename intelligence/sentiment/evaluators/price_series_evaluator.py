@@ -1157,7 +1157,8 @@ def _load_stitched_24h_ohlc_points(
                             and (not require_positive_volume or (len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0))
                         ]
                         if len(filt) >= 8 and (filt[-1][0] - filt[0][0]) >= 18 * 3600 * 1000:
-                            if age_s < 240.0 or allow_offline_disk or not callable(ohlc_fn):
+                            fresh_ttl = 180.0 + (sum(ord(ch) for ch in sym_u) % 5) * 30.0
+                            if age_s < fresh_ttl or allow_offline_disk or not callable(ohlc_fn):
                                 return filt
                             disk_fallback_pts = filt
         except Exception:
