@@ -339,6 +339,7 @@ _VENUE_ISOLATED_MODULES = (
     "hl_client",
     "ipo_common",
     "ipo_notify",
+    "t212_broker_lifecycle",
     "t212_client",
     "market_data",
     "price_analysis",

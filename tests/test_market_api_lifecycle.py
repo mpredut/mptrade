@@ -1754,5 +1754,64 @@ def test_order_id_context_and_broker_history_soc_split():
     assert oic.format_actor_tag("BOT", "trailing", "EXIT") == "BOT(module=trailing, rule=EXIT)"
 
 
+def test_t212_broker_lifecycle_soc_and_ssot_boundaries():
+    from types import SimpleNamespace
+    from strategies.base_spot_mixin import BaseSpotMixin
+    from tests.conftest import load_venue_modules
 
+    t212_bl, t212_strat, t212_om = load_venue_modules(
+        "212trading", "t212_broker_lifecycle", "strategy", "order_manager"
+    )
+    assert issubclass(t212_bl.T212BrokerLifecycleMixin, BaseSpotMixin)
+    assert issubclass(t212_strat.Strategy, t212_bl.T212BrokerLifecycleMixin)
+    assert t212_strat._new_state is t212_bl._new_state
+    assert t212_strat._sanitize_t212_state is t212_bl._sanitize_t212_state
+    assert t212_om.t212_portfolio_position is t212_bl.t212_portfolio_position
+    assert t212_om.t212_active_order_matches is t212_bl.t212_active_order_matches
+
+    root = Path(__file__).resolve().parent.parent
+    bl_tree = ast.parse((root / "212trading" / "t212_broker_lifecycle.py").read_text(encoding="utf-8"))
+    bl_imports = {
+        alias.name
+        for node in ast.walk(bl_tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        node.module
+        for node in ast.walk(bl_tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert bl_imports.isdisjoint({"strategy", "market_data", "t212_bot", "replay", "backtest", "order_manager"})
+
+    strat_tree = ast.parse((root / "212trading" / "strategy.py").read_text(encoding="utf-8"))
+    strat_imported_names = {
+        alias.name
+        for node in ast.walk(strat_tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    assert strat_imported_names.isdisjoint(
+        {"ProviderError", "OrderNotFound", "restore_cancelled_orders", "extract_broker_order_ticker", "extract_orig_qty"}
+    )
+
+    cli_none = SimpleNamespace(get_portfolio=lambda: None)
+    assert t212_bl.t212_portfolio_position(cli_none, "NVDA_US_EQ") is None
+    cli_pos = SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": 2.5}])
+    assert t212_bl.t212_portfolio_position(cli_pos, "NVDA_US_EQ") == (2.5, 0.0)
+    assert t212_bl.t212_portfolio_position(cli_pos, "SPCX_US_EQ") == (0.0, 0.0)
+
+    sell_ord = {"id": "s-1", "instrument": {"ticker": "NVDA_US_EQ"}, "quantity": -1.25, "limitPrice": 150.0}
+    assert t212_bl.t212_active_order_matches(
+        sell_ord, target_ticker="NVDA_US_EQ", expected_side="SELL", expected_qty=1.25, expected_limit=150.0
+    )
+    assert not t212_bl.t212_active_order_matches(
+        sell_ord, target_ticker="NVDA_US_EQ", expected_side="BUY", expected_qty=1.25, expected_limit=150.0
+    )
+    assert t212_bl.t212_active_order_matches(
+        {"id": "m-1", "ticker": "NVDA_US_EQ", "quantity": -1.25},
+        target_ticker="NVDA_US_EQ",
+        expected_side="SELL",
+        expected_qty=1.25,
+        is_market=True,
+    )
 

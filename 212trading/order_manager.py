@@ -25,7 +25,6 @@ from botcore import (  # noqa: E402
     clean_upper_token,
     ensure_local_module_priority,
     extract_order_id,
-    extract_order_side,
     first_pos_float,
     log,
     optional_env,
@@ -36,13 +35,13 @@ from botcore import (  # noqa: E402
     safe_pos_float,
     sanitize_identifier,
 )
-ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
+ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_broker_lifecycle", "t212_client")
 
-from cachepaths import canonical_base_asset, same_canonical_base_asset as _t212_tickers_match
+from cachepaths import canonical_base_asset, same_canonical_base_asset as _t212_tickers_match  # noqa: E402
 from ipo_common import notify  # noqa: E402
 from market_data import get_price_usd, get_usd_ron  # noqa: E402
-from providers.broker_history import extract_broker_order_ticker as _order_ticker
-from state_io import encode_json_payload, load_json_state, save_json_state
+from state_io import encode_json_payload, load_json_state, save_json_state  # noqa: E402
+from t212_broker_lifecycle import t212_active_order_matches, t212_portfolio_position  # noqa: E402
 from t212_client import T212Client  # noqa: E402
 
 T212_ORDER_TERMINAL = {"FILLED", "CANCELLED", "CANCELED", "EXPIRED", "REJECTED"}
@@ -171,51 +170,27 @@ def poll_order_until_terminal(client: T212Client, order_id, ticker: str,
 
 
 def _portfolio_qty(client: T212Client, ticker: str) -> float | None:
-    portfolio = client.get_portfolio()
-    if portfolio is None:
-        return None
-    for position in portfolio:
-        if not isinstance(position, dict):
-            continue
-        if _t212_tickers_match(position.get("ticker") or "", ticker):
-            raw_q = position.get("quantity")
-            if raw_q is None:
-                return 0.0
-            return safe_nonneg_float(raw_q, default=None)
-    return 0.0
+    pos = t212_portfolio_position(client, ticker)
+    return pos[0] if pos is not None else None
 
 
 def _matching_active_orders(client: T212Client, record: dict) -> list[dict] | None:
     orders = client.list_active_orders()
     if orders is None:
         return None
-    expected_qty = safe_pos_float(record.get("qty"), None)
-    expected_limit = safe_pos_float(record.get("limit_price"), None)
-    if expected_qty is None or expected_limit is None:
+    if safe_pos_float(record.get("qty"), None) is None or safe_pos_float(record.get("limit_price"), None) is None:
         return None
-    matches = []
-    for order in orders:
-        if not isinstance(order, dict):
-            continue
-        ticker = _order_ticker(order).upper()
-        if not _t212_tickers_match(ticker, record.get("ticker") or ""):
-            continue
-        raw_sq = order.get("quantity", order.get("orderedQuantity", order.get("qty")))
-        raw_lim = order.get("limitPrice", order.get("limit"))
-        signed_qty = safe_float(raw_sq, default=None)
-        limit = safe_pos_float(raw_lim, default=None)
-        if signed_qty is None or limit is None:
-            continue
-        qty = abs(signed_qty)
-        side = extract_order_side(order) or ""
-        if side != "BUY" or qty <= 0:
-            continue
-        if abs(qty - expected_qty) > max(0.011, expected_qty * 1e-6):
-            continue
-        if abs(limit - expected_limit) > 0.011:
-            continue
-        matches.append(order)
-    return matches
+    return [
+        order
+        for order in orders
+        if t212_active_order_matches(
+            order,
+            target_ticker=record.get("ticker") or "",
+            expected_side="BUY",
+            expected_qty=record.get("qty"),
+            expected_limit=record.get("limit_price"),
+        )
+    ]
 
 
 def _confirm_fill_from_portfolio(
