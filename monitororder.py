@@ -12,7 +12,10 @@ from providers import order_id_context as rc
 from providers.order_ohlc_utils import extract_remaining_qty
 extract_client_order_id = rc.extract_client_order_id
 from cachepaths import split_symbol_assets
-from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
+from providers.market_api import (  # Single guarded proxy (Instrument.place).
+    api as mkt,
+    resolve_symbol_provider_name,
+)
 api = mkt
 from providers.ohlc_utils import ProviderError
 from providers.strategy_executor import SubmissionRefused
@@ -158,15 +161,7 @@ def reset_monitororder_state_for_test():
 
 
 def _resolve_provider_name(symbol: str) -> str:
-    prov_fn = getattr(mkt, "provider_name_for", None)
-    if callable(prov_fn):
-        try:
-            raw_prov = prov_fn(symbol)
-            if isinstance(raw_prov, str) and raw_prov.strip():
-                return raw_prov.strip()
-        except Exception:
-            pass
-    return "Binance"
+    return resolve_symbol_provider_name(symbol, market_api=mkt, fallback="Binance")
 
 
 _ORIG_GET_TTL_MAP = order_retry.get_accepted_order_ttl_map

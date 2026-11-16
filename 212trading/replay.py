@@ -37,8 +37,10 @@ finally:
 from providers.ohlc_utils import align_previous_values, validate_ohlc_bars
 from providers.replay_provider import SimClock
 from strategies.replay_execution import (
-    choose_intrabar_scenario,
     ExecutionModel,
+    build_warmup_shadow_prices,
+    choose_intrabar_scenario,
+    normalize_replay_timestamps,
     require_optional_pos_float,
     select_eligible_intrabar_orders,
     split_order_fill,
@@ -111,17 +113,12 @@ def run_replay(
         validate_ohlc_bars(warmup_ohlc, exact_len_4=True, check_envelope=False)
     if params.dca_trend_gate_pct > 0 and bar_minutes != 5:
         raise ValueError("dca_trend_gate_pct requires 5-minute bars, the same cadence as the live Yahoo signal")
-    if timestamps:
-        if len(timestamps) != len(ohlc):
-            raise ValueError("timestamps must have the same length as ohlc")
-        prev_ts: float | None = None
-        for idx, ts_val in enumerate(timestamps):
-            ts_f = safe_nonneg_float(ts_val, default=None)
-            if ts_f is None:
-                raise ValueError(f"timestamp at index {idx} must be a non-negative finite number")
-            if prev_ts is not None and ts_f <= prev_ts:
-                raise ValueError(f"timestamps must be strictly increasing at index {idx}")
-            prev_ts = ts_f
+    ts_tuple = (
+        normalize_replay_timestamps(
+            timestamps, len(ohlc), strictly_increasing=True, empty_as_none=True
+        )
+        or ()
+    )
     rates = _fx_rates(fx_to_usd, len(ohlc))
     model = execution or ExecutionModel()
     return choose_intrabar_scenario(
@@ -133,7 +130,7 @@ def run_replay(
             fx_rates=rates,
             periods_per_year=periods_per_year,
             warmup_ohlc=warmup_ohlc,
-            timestamps=timestamps,
+            timestamps=ts_tuple,
             warmup_timestamps=warmup_timestamps,
             execution=scenario,
             initial_cash=initial_cash,
@@ -153,32 +150,20 @@ def _run_once(
     fx_rates: list[float],
     periods_per_year: float | None,
     warmup_ohlc,
-    timestamps: Sequence[int],
+    timestamps: Sequence[float],
     warmup_timestamps: Sequence[int] = (),
     execution: ExecutionModel,
     initial_cash: float | None = None,
 ) -> dict:
     client = _ReplayClient()
     clock = SimClock(0.0)
-    trend_closes: deque[float] = deque(maxlen=12)
-    warmup_rows = list(warmup_ohlc or ())
-    warmup_ts_list = list(warmup_timestamps or ())
-    use_warmup_ts = len(warmup_ts_list) == len(warmup_rows) and bool(warmup_rows)
-    warmup_step = bar_minutes * 60.0 if bar_minutes else 1.0
-    base_ts = safe_nonneg_float(timestamps[0], 0.0) if timestamps else 0.0
-    warmup_shadow: list[tuple[float, float]] = []
-    for pos_idx, row in enumerate(warmup_rows):
-        w_idx = pos_idx - len(warmup_rows)
-        if isinstance(row, (list, tuple)) and len(row) >= 4:
-            cf = safe_pos_float(row[3], default=None)
-            if cf is not None:
-                trend_closes.append(cf)
-                w_ts = (
-                    safe_nonneg_float(warmup_ts_list[pos_idx], base_ts + w_idx * warmup_step)
-                    if use_warmup_ts
-                    else (base_ts + w_idx * warmup_step)
-                )
-                warmup_shadow.append((w_ts, cf))
+    warmup_shadow = build_warmup_shadow_prices(
+        warmup_ohlc,
+        bar_minutes=bar_minutes,
+        base_ts=timestamps[0] if timestamps else 0.0,
+        warmup_timestamps=warmup_timestamps,
+    )
+    trend_closes: deque[float] = deque((px for _, px in warmup_shadow), maxlen=12)
     original_log, original_notify = _strat.log, _strat.notify
     _strat.log = _strat.notify = lambda *_args, **_kwargs: None
     try:

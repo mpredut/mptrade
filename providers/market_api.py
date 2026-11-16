@@ -981,3 +981,29 @@ api = MarketApi(
     _configured_providers,
     regime_snapshot_resolver=_runtime_market_regime_snapshot,
 )
+
+
+def resolve_symbol_provider_name(
+    symbol: object,
+    *,
+    market_api: Any = None,
+    explicit_venue: object = None,
+    fallback: str = "Binance",
+    lowercase: bool = False,
+) -> str:
+    """Resolve provider/venue label for ``symbol`` via ``market_api.provider_name_for`` with safe fallback."""
+    if exp_s := clean_scalar_str(explicit_venue):
+        return exp_s.lower() if lowercase else exp_s
+    api_obj = api if market_api is None else market_api
+    prov_fn = getattr(api_obj, "provider_name_for", None)
+    sym_s = clean_scalar_str(symbol)
+    if sym_s and callable(prov_fn):
+        try:
+            raw_prov = prov_fn(sym_s)
+            if isinstance(raw_prov, str) and raw_prov.strip():
+                res = raw_prov.strip()
+                return res.lower() if lowercase else res
+        except Exception:
+            pass
+    return fallback.lower() if lowercase else fallback
+

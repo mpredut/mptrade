@@ -28,9 +28,11 @@ from botcore import (
 )
 from providers.ohlc_utils import validate_ohlc_bars
 from strategies.replay_execution import (
-    choose_intrabar_scenario,
     ExecutionModel,
     FeeModel,
+    build_warmup_shadow_prices,
+    choose_intrabar_scenario,
+    normalize_replay_timestamps,
     require_optional_pos_float,
     select_eligible_intrabar_orders,
     split_order_fill,
@@ -252,23 +254,12 @@ def run_replay(
     include_decision_trace = _strat._parse_bool_flag(include_decision_trace, False)
     intrabar_high = _strat._parse_bool_flag(intrabar_high, False)
     initial_cash = require_optional_pos_float(initial_cash, "initial_cash must be finite and positive")
-    ts_tuple: tuple[float, ...] | None = None
-    if timestamps is not None:
-        ts_raw = list(timestamps)
-        if len(ts_raw) != len(ohlc):
-            raise ValueError(f"timestamps length ({len(ts_raw)}) must match ohlc length ({len(ohlc)})")
-        parsed_ts: list[float] = []
-        for t_item in ts_raw:
-            tf = normalize_epoch_sec(t_item, default=None, allow_zero=True)
-            if tf is None:
-                raise ValueError(f"invalid replay timestamp: {t_item!r}")
-            parsed_ts.append(tf)
-        ts_tuple = tuple(parsed_ts)
-    warmup_ts_tuple: tuple[float | None, ...] | None = None
-    if warmup_timestamps is not None:
-        warmup_ts_tuple = tuple(
-            normalize_epoch_sec(wt, default=None, allow_zero=True) for wt in warmup_timestamps
-        )
+    ts_tuple = normalize_replay_timestamps(timestamps, len(ohlc), normalize_ms=True)
+    warmup_ts_tuple: tuple[float | None, ...] | None = (
+        tuple(normalize_epoch_sec(wt, default=None, allow_zero=True) for wt in warmup_timestamps)
+        if warmup_timestamps is not None
+        else None
+    )
     model = execution or ExecutionModel()
     fees = fee_model or FeeModel(fee_pct, fee_pct)
     warmup_rows = tuple(warmup_ohlc) if warmup_ohlc else ()
@@ -328,21 +319,14 @@ def _run_once(
         strategy = _strat.Strategy(
             client, "REPLAY", params, dry_run=True, initial_state=_strat._new_state(), replay_mode=True,
         )
-        warmup_step = bar_minutes * 60.0 if bar_minutes else 1.0
         base_ts = timestamps[0] if timestamps else 0.0
-        use_warm_ts = bool(warmup_timestamps is not None and len(warmup_timestamps) == len(warmup_ohlc))
-        valid_warmup: list[tuple[float | None, float]] = []
-        for raw_idx, w_row in enumerate(warmup_ohlc):
-            if not isinstance(w_row, (list, tuple)) or len(w_row) < 4:
-                continue
-            close_f = safe_pos_float(w_row[3], default=None)
-            if close_f is not None:
-                wt_val = warmup_timestamps[raw_idx] if use_warm_ts else None
-                valid_warmup.append((wt_val, close_f))
-        n_warm = len(valid_warmup)
-        for idx_w, (wt_val, close_f) in enumerate(valid_warmup):
-            fallback_wt = base_ts + (idx_w - n_warm) * warmup_step
-            eff_wt = wt_val if wt_val is not None else fallback_wt
+        for eff_wt, close_f in build_warmup_shadow_prices(
+            warmup_ohlc,
+            bar_minutes=bar_minutes,
+            base_ts=base_ts,
+            warmup_timestamps=warmup_timestamps,
+            normalize_ms=True,
+        ):
             strategy._shadow_prices.append((eff_wt, close_f))
             if strategy._surge_replay_closes is not None:
                 strategy._surge_replay_closes.append(close_f)

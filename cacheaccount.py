@@ -92,6 +92,7 @@ from state_io import (
     meta_file_path,
     parse_json_payload,
     read_json_dict,
+    read_json_dict_cached,
     read_json_dict_recovering,
     read_recovering_previous,
     save_json_state,
@@ -2215,10 +2216,9 @@ class CacheAssetValueManager(CacheAccountManagerBase):
                 os.path.join(cache_root, "state", "venue_balances_state.json"),
                 os.path.join(cache_root, "venue_balances_state.json"),
             ):
-                if os.path.isfile(cand):
-                    vb_data = read_json_dict(cand, default=None)
-                    if isinstance(vb_data, dict) and vb_data:
-                        break
+                vb_data = read_json_dict_cached(cand)
+                if isinstance(vb_data, dict) and vb_data:
+                    break
             if isinstance(vb_data, dict) and vb_data:
                 live_cp_data = None
                 cp_default_filename = CACHE_CURRENT_PRICE_FILENAME
@@ -2226,10 +2226,9 @@ class CacheAssetValueManager(CacheAccountManagerBase):
                     os.path.join(cache_root, "prices", cp_default_filename),
                     os.path.join(cache_root, cp_default_filename),
                 ):
-                    if os.path.isfile(cp_cand):
-                        live_cp_data = read_json_dict(cp_cand, default=None)
-                        if isinstance(live_cp_data, dict) and live_cp_data:
-                            break
+                    live_cp_data = read_json_dict_cached(cp_cand)
+                    if isinstance(live_cp_data, dict) and live_cp_data:
+                        break
                 nav = compute_venue_nav_breakdown(
                     venue_balances_state=vb_data,
                     live_prices=live_cp_data,

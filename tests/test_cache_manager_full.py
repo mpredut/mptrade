@@ -1007,6 +1007,13 @@ class TestCacheAssetValueManager(TempDirTestCase):
             items_live = mgr.get_remote_items("TOTAL", 0)
             self.assertEqual(items_live[0]["venues_usd"]["t212"], 121.5)
             self.assertEqual(items_live[0]["portfolio_total_usd"], 3071.5)
+            with patch("state_io.json.load", wraps=json.load) as spy_json_load:
+                items_first = mgr.get_remote_items("TOTAL", 0)
+                loads_after_first = spy_json_load.call_count
+                items_cached = mgr.get_remote_items("TOTAL", 0)
+                self.assertEqual(items_first[0]["portfolio_total_usd"], 3071.5)
+                self.assertEqual(items_cached[0]["portfolio_total_usd"], 3071.5)
+                self.assertEqual(spy_json_load.call_count, loads_after_first)
 
             with open(vb_path, encoding="utf-8") as handle:
                 vb_loaded = json.load(handle)

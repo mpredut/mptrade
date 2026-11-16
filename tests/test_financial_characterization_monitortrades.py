@@ -2344,9 +2344,26 @@ def test_pending_exit_closed_status_resolves_and_trade_notify_loads_owner_map_on
         return {"ob-1": "tradeall", "oe-1": "monitortrades"}
 
     notified = []
+    seen_venues = []
+    orig_fmt = mt.alert.format_trade_notification
+
+    def _spy_fmt(*a, **kw):
+        seen_venues.append((a[2], kw.get("venue")))
+        return orig_fmt(*a, **kw)
+
+    monkeypatch.setattr(
+        mt.mkt,
+        "provider_name_for",
+        lambda s: "Kraken" if s == "HYPEUSD" else "Binance",
+    )
+    trades_by_sym["HYPEUSD"] = [
+        {"id": "t-hype-1", "orderId": "oh-1", "symbol": "HYPEUSD", "side": "BUY", "qty": 2.0, "price": 25.0, "time": 1700000003000}
+    ]
     monkeypatch.setattr(mt.apitrades, "get_trade_orders", lambda _client, s, _maxage: list(trades_by_sym.get(s, [])))
     monkeypatch.setattr(mt.order_retry, "get_accepted_order_owner_map", _fake_owner_map)
+    monkeypatch.setattr(mt.alert, "format_trade_notification", _spy_fmt)
     monkeypatch.setattr(mt.alert, "notify", lambda **kw: notified.append(kw))
-    mt.check_and_notify_executed_trades(symbols_list=["ADAUSDC", "BTCUSDC", "ETHUSDC"])
+    mt.check_and_notify_executed_trades(symbols_list=["ADAUSDC", "BTCUSDC", "ETHUSDC", "HYPEUSD"])
     assert len(owner_map_calls) == 1
-    assert [n["symbol"] for n in notified] == ["BTCUSDC", "ETHUSDC"]
+    assert [n["symbol"] for n in notified] == ["BTCUSDC", "ETHUSDC", "HYPEUSD"]
+    assert seen_venues == [("BTCUSDC", "binance"), ("ETHUSDC", "binance"), ("HYPEUSD", "kraken")]

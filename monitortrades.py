@@ -48,7 +48,7 @@ import order_retry
 import pricewindow as pw
 from providers.base import MarketDataProvider
 from providers.order_id_context import extract_client_order_id
-from providers.market_api import api as mkt
+from providers.market_api import api as mkt, resolve_symbol_provider_name
 apitrades = mkt
 from providers.quantity import check_order_filter_refusal, resolve_assets
 from state_io import canonical_json_key, discard_generation_file, read_json_dict, save_json_state
@@ -203,6 +203,13 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                     cum_val = sum(extract_order_qty(t) * extract_order_price(t) for t in all_group)
                     fill_suffix += f" [total: {cum_qty:.4f} {sym_name} (~{cum_val:.2f} {quote}), {len(all_group)} fills]"
                 avg_px_str = format_price_log(avg_price)
+                venue_slug = resolve_symbol_provider_name(
+                    sym_name,
+                    market_api=mkt,
+                    explicit_venue=(first.get("venue") or first.get("provider")) if isinstance(first, dict) else None,
+                    fallback="binance",
+                    lowercase=True,
+                )
                 t_title, t_body = alert.format_trade_notification(
                     "FILLED",
                     side,
@@ -212,7 +219,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                     total_val,
                     quote,
                     oid,
-                    venue="binance",
+                    venue=venue_slug,
                     owner=owner,
                     fills_count=len(group),
                     cum_qty=cum_qty,

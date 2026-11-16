@@ -51,7 +51,7 @@ from order_retry import (
 )
 from providers.order_id_context import extract_client_order_id
 from providers.execution_audit import AuditedStrategyExecutor
-from providers.market_api import api as mkt
+from providers.market_api import api as mkt, resolve_symbol_provider_name
 api = mkt
 from providers.quantity import balance_cap_quantity, decide_quantity
 from providers.ohlc_utils import ProviderError
@@ -773,22 +773,44 @@ def _market_regime_decision(symbol) -> MarketRegimeDecision:
     )
 
 
-def _is_gi_whale_enforced(bypass_guards=None) -> bool:
+def _is_gi_whale_enforced(bypass_guards=None, *, symbol: str | None = None, venue: str | None = None) -> bool:
     """Return True if GI_WHALE is actively enforced and not bypassed in order_guard.conf."""
-    return sys.modules.get("external_order_guard", eog).is_gi_whale_enforced(bypass_guards, venue="binance")
+    eff_venue = resolve_symbol_provider_name(
+        symbol, market_api=mkt, explicit_venue=venue, fallback="binance", lowercase=True
+    )
+    return sys.modules.get("external_order_guard", eog).is_gi_whale_enforced(bypass_guards, venue=eff_venue)
 
 
-def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None) -> tuple[bool, str]:
+_ORIG_IS_GI_WHALE_ENFORCED = _is_gi_whale_enforced
+
+
+def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None, venue: str | None = None) -> tuple[bool, str]:
     """Check if whale taker flow or OI divergence conflicts with initiating an rtrade round."""
+    eff_venue = resolve_symbol_provider_name(
+        symbol, market_api=mkt, explicit_venue=venue, fallback="binance", lowercase=True
+    )
+    enforced = (
+        _is_gi_whale_enforced(bypass_guards, venue=eff_venue)
+        if _is_gi_whale_enforced is _ORIG_IS_GI_WHALE_ENFORCED
+        else _is_gi_whale_enforced(bypass_guards)
+    )
     return sys.modules.get("external_order_guard", eog).evaluate_whale_spread_flow(
-        symbol, side, bypass_guards=bypass_guards, enforced=_is_gi_whale_enforced(bypass_guards)
+        symbol, side, bypass_guards=bypass_guards, enforced=enforced, venue=eff_venue
     )
 
 
-def _effective_adjustment_fraction(symbol: str, base_adjustment: float, *, bypass_guards=None) -> float:
+def _effective_adjustment_fraction(symbol: str, base_adjustment: float, *, bypass_guards=None, venue: str | None = None) -> float:
     """Widen grid quote adjustment when moderate taker flow pressure exists."""
+    eff_venue = resolve_symbol_provider_name(
+        symbol, market_api=mkt, explicit_venue=venue, fallback="binance", lowercase=True
+    )
+    enforced = (
+        _is_gi_whale_enforced(bypass_guards, venue=eff_venue)
+        if _is_gi_whale_enforced is _ORIG_IS_GI_WHALE_ENFORCED
+        else _is_gi_whale_enforced(bypass_guards)
+    )
     return sys.modules.get("external_order_guard", eog).resolve_whale_spread_adjustment(
-        symbol, base_adjustment, bypass_guards=bypass_guards, enforced=_is_gi_whale_enforced(bypass_guards)
+        symbol, base_adjustment, bypass_guards=bypass_guards, enforced=enforced, venue=eff_venue
     )
 
 

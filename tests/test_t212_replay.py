@@ -16,6 +16,7 @@ from providers.execution_audit import ExecutionAudit
 from providers.quantity import balance_cap_quantity, decide_quantity
 from providers.strategy_executor import OrderStatus, PairPrecision
 from providers.t212_provider import T212Provider
+from strategies.replay_execution import build_warmup_shadow_prices, normalize_replay_timestamps
 from tests.conftest import TempDirTestCase, load_venue_modules, make_t212_test_env
 
 replay, _t212_bt_mod, _t212_md_mod = load_venue_modules(
@@ -964,3 +965,36 @@ def test_t212_wave3_fx_principal_translation_shadow_vol_and_ladder_cancel():
     ]
     engine._apply_fill({"side": "BUY", "kind": "DCA", "qty": 1.0, "limit": 95.0, "amount": 95.0}, 1.0, 95.0)
     assert [o for o in engine.s["orders"] if o["side"] == "SELL"] == []
+
+
+def test_shared_replay_timestamps_and_warmup_shadow_prices_ssot():
+    """normalize_replay_timestamps and build_warmup_shadow_prices enforce replay contracts across T212 and spot replay."""
+    assert normalize_replay_timestamps(None, 3) is None
+    assert normalize_replay_timestamps((), 3, empty_as_none=True) is None
+    assert normalize_replay_timestamps([100, 200, 300], 3, strictly_increasing=True) == (100.0, 200.0, 300.0)
+    assert normalize_replay_timestamps([1_700_000_000_000, 1_700_000_300_000], 2, normalize_ms=True) == (
+        1700000000.0,
+        1700000300.0,
+    )
+    with pytest.raises(ValueError, match="timestamps length"):
+        normalize_replay_timestamps([100], 2)
+    with pytest.raises(ValueError, match="strictly increasing"):
+        normalize_replay_timestamps([100, 100], 2, strictly_increasing=True)
+    with pytest.raises(ValueError, match="non-negative"):
+        normalize_replay_timestamps([-5, 10], 2)
+
+    warm_series = build_warmup_shadow_prices(
+        [("bad",), (100.0, 101.0, 99.0, 98.5), (98.5, 100.0, 97.5, 99.25)],
+        bar_minutes=5.0,
+        base_ts=1000.0,
+    )
+    assert warm_series == [(400.0, 98.5), (700.0, 99.25)]
+    warm_explicit = build_warmup_shadow_prices(
+        [(100.0, 101.0, 99.0, 98.5), (98.5, 100.0, 97.5, 99.25)],
+        bar_minutes=5.0,
+        base_ts=1000.0,
+        warmup_timestamps=[1_700_000_000_000, 1_700_000_300_000],
+        normalize_ms=True,
+    )
+    assert warm_explicit == [(1700000000.0, 98.5), (1700000300.0, 99.25)]
+

@@ -1883,3 +1883,44 @@ def test_rtrade__touch_rtrade_heartbeat_and__livepairvenue_hygiene_iter158_s5(mo
     )
     assert merged["limit_revisions"]["BUY"] == 2
     assert merged["hard_stop_revision"] == 1
+
+
+def test_rtrade_whale_flow_and_adjustment_route_per_symbol_venue(monkeypatch):
+    """rtrade evaluates GI_WHALE bypass per symbol venue (e.g., kraken vs binance) via resolve_symbol_provider_name."""
+    collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
+    for sym in ("TAOUSDC", "HYPEUSD"):
+        collector.record_snapshot(
+            WhalePositioningSnapshot(
+                symbol=sym,
+                top_traders_long_ratio=2.0,
+                top_traders_long_pct=0.66,
+                taker_buy_sell_ratio=0.70,
+                taker_buy_vol_usd=70_000.0,
+                taker_sell_vol_usd=100_000.0,
+                open_interest_usd=50_000_000.0,
+                open_interest_1h_change_pct=0.0,
+                divergence_regime="neutral",
+                ts=time.time(),
+            )
+        )
+    monkeypatch.setattr(external_order_guard, "_whale_collector", collector)
+    monkeypatch.setattr(
+        rtrade.mkt,
+        "provider_name_for",
+        lambda sym: "Kraken" if sym == "HYPEUSD" else "Binance",
+    )
+    base_m = dict(order_guard._load_margins())
+    base_m["kraken_bypass_guards"] = {"GI_WHALE"}
+    monkeypatch.setattr(external_order_guard, "_load_margins", lambda: base_m)
+
+    # Kraken pair honors [kraken] bypass_guards -> unblocked and unscaled
+    krk_blocked, krk_reason = rtrade._whale_flow_blocks_side("HYPEUSD", "BUY")
+    assert krk_blocked is False
+    assert krk_reason == "gi_whale_bypassed_or_off"
+    assert rtrade._effective_adjustment_fraction("HYPEUSD", 0.004) == pytest.approx(0.004)
+
+    # Binance pair remains enforced -> blocked and widened
+    bin_blocked, _ = rtrade._whale_flow_blocks_side("TAOUSDC", "BUY")
+    assert bin_blocked is True
+    assert rtrade._effective_adjustment_fraction("TAOUSDC", 0.004) == pytest.approx(0.006)
+

@@ -12,6 +12,7 @@ from typing import Any, Callable
 from botcore import (
     _parse_bool_flag,
     is_market_order,
+    normalize_epoch_sec,
     normalize_side,
     require_finite_float,
     require_pos_float,
@@ -235,11 +236,84 @@ def choose_intrabar_scenario(
     return result
 
 
+def normalize_replay_timestamps(
+    timestamps: Any,
+    expected_len: int,
+    *,
+    strictly_increasing: bool = False,
+    normalize_ms: bool = False,
+    empty_as_none: bool = False,
+) -> tuple[float, ...] | None:
+    """Validate and coerce per-bar replay timestamps to finite non-negative epoch seconds."""
+    if timestamps is None:
+        return None
+    ts_raw = list(timestamps)
+    if empty_as_none and not ts_raw:
+        return None
+    if len(ts_raw) != expected_len:
+        raise ValueError(f"timestamps length ({len(ts_raw)}) must match ohlc length ({expected_len})")
+    parsed: list[float] = []
+    prev_ts: float | None = None
+    for idx, item in enumerate(ts_raw):
+        ts_f = (
+            normalize_epoch_sec(item, default=None, allow_zero=True)
+            if normalize_ms
+            else safe_nonneg_float(item, default=None)
+        )
+        if ts_f is None:
+            raise ValueError(f"timestamp at index {idx} must be a non-negative finite number: {item!r}")
+        if strictly_increasing and prev_ts is not None and ts_f <= prev_ts:
+            raise ValueError(f"timestamps must be strictly increasing at index {idx}")
+        prev_ts = ts_f
+        parsed.append(ts_f)
+    return tuple(parsed)
+
+
+def build_warmup_shadow_prices(
+    warmup_ohlc: Any,
+    *,
+    bar_minutes: float | None = None,
+    base_ts: float = 0.0,
+    warmup_timestamps: Any = None,
+    normalize_ms: bool = False,
+) -> list[tuple[float, float]]:
+    """Extract ``(timestamp_sec, close_price)`` warmup history ending one bar before ``base_ts``."""
+    warmup_rows = list(warmup_ohlc or ())
+    if not warmup_rows:
+        return []
+    raw_wts = list(warmup_timestamps) if warmup_timestamps is not None else []
+    use_warm_ts = len(raw_wts) == len(warmup_rows)
+    step_sec = (safe_pos_float(bar_minutes, default=None) or (1.0 / 60.0)) * 60.0
+    anchor_ts = safe_nonneg_float(base_ts, default=0.0) or 0.0
+    valid: list[tuple[float | None, float]] = []
+    for raw_idx, row in enumerate(warmup_rows):
+        if not isinstance(row, (list, tuple)) or len(row) < 4:
+            continue
+        close_f = safe_pos_float(row[3], default=None)
+        if close_f is None:
+            continue
+        wt_val: float | None = None
+        if use_warm_ts:
+            wt_val = (
+                normalize_epoch_sec(raw_wts[raw_idx], default=None, allow_zero=True)
+                if normalize_ms
+                else safe_nonneg_float(raw_wts[raw_idx], default=None)
+            )
+        valid.append((wt_val, close_f))
+    n_warm = len(valid)
+    return [
+        (wt_val if wt_val is not None else anchor_ts + (idx_w - n_warm) * step_sec, close_f)
+        for idx_w, (wt_val, close_f) in enumerate(valid)
+    ]
+
+
 __all__ = [
     "ExecutionModel",
     "FeeModel",
+    "build_warmup_shadow_prices",
     "choose_intrabar_scenario",
     "is_market_order",
+    "normalize_replay_timestamps",
     "require_optional_pos_float",
     "select_eligible_intrabar_orders",
     "split_order_fill",
