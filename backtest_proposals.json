@@ -1,30 +1,30 @@
 [
   {
-    "ts": "2026-11-15T12:40:51+00:00",
-    "full_key": "BINANCE_BTC.mt.maxage_days",
-    "section": "BINANCE_BTC",
-    "key": "mt.maxage_days",
-    "symbol": "BTCUSDC",
-    "current_on_dev": 10.5,
-    "winner_value": 10.0,
-    "margin_vs_current": {
-      "half1": 77.29,
-      "half2": 47.79
-    },
-    "dev_commit": "c848295d"
-  },
-  {
-    "ts": "2026-11-15T12:40:51+00:00",
+    "ts": "2026-11-16T00:39:41+00:00",
     "full_key": "BINANCE_ARB.mt.lost",
     "section": "BINANCE_ARB",
     "key": "mt.lost",
     "symbol": "ARBUSDC",
-    "current_on_dev": 4.8594,
+    "current_on_dev": 4.1797,
     "winner_value": 3.5,
     "margin_vs_current": {
-      "half1": 15.05,
-      "half2": 29.35
+      "half1": 7.37,
+      "half2": 16.98
     },
-    "dev_commit": "c848295d"
+    "dev_commit": "5c3f0737"
+  },
+  {
+    "ts": "2026-11-16T00:39:41+00:00",
+    "full_key": "BINANCE_ARB.trailing.pct",
+    "section": "BINANCE_ARB",
+    "key": "trailing.pct",
+    "symbol": "ARBUSDC",
+    "current_on_dev": 36.0,
+    "winner_value": 20.0,
+    "margin_vs_current": {
+      "half1": 4.34,
+      "half2": 1.78
+    },
+    "dev_commit": "5c3f0737"
   }
 ]
