@@ -493,7 +493,7 @@ class Instrument:
         ctx.applied_scale = ctx.caller_applied_scale
         ctx.is_monitor_replace = "monitor_order_replace" in (clean_scalar_str(order_kind) or "")
         if ctx.is_monitor_replace:
-            ctx.bypassed_guards.add("GLLM1")
+            ctx.bypassed_guards.add("gllm1")
         ctx.profit_margin = safe_float(caller_profit_margin, default=None)
         ctx.retry_kwargs = {
             **ctx.kwargs,

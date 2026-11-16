@@ -1832,3 +1832,97 @@ def test_order_retry_price_gate_ok_supports_bid_long_and_ask_a_iter179_s4():
     # 4. order_retry.price_gate_ok supports BID/LONG and ASK/A/SHORT
     assert oq.price_gate_ok({"side": "BID", "requested_price": 100.0}, 99.0, tol=0.0) is True
     assert oq.price_gate_ok({"side": "ASK", "requested_price": 100.0}, 101.0, tol=0.0) is True
+
+
+def test_is_expired_preserves_retry_terminal_remainder_and_dedup_refreshed_ttl(tmp_path, monkeypatch):
+    """Partial-fill retry_terminal remainders and RETRY_DEDUP refreshed TTLs are not prematurely expired via created_ts."""
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(tmp_path / "retry_ttl_bug.jsonl"))
+    monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+    monkeypatch.setattr(oq, "RETRY_DEDUP", True)
+    monkeypatch.setattr(oq, "RETRY_TTL_SEC", 3600.0)
+
+    # 1. Partial-fill retry_terminal on custom-TTL or fast-impulse order preserves fresh TTL window for remainder
+    rid = oq.enqueue(
+        "TAOUSDC",
+        "BUY",
+        2.0,
+        {"hours": 0.25},
+        requested_price=250.0,
+        now=1000.0,
+        kind="kalman_primary_up",
+        ttl_sec=600.0,
+    )
+    claimed = oq.claim([rid], now=1010.0)[0]
+    assert oq.complete_claim(claimed, "accepted", now=1010.0, order={"orderId": "901"})
+    obs_claim = oq.claim([rid], now=1800.0)[0]
+    status = OrderStatus(status="canceled", filled_qty=0.8, cost=200.0, fee=0.0, venue_status="CANCELED", orig_qty=2.0)
+    assert oq.complete_claim(obs_claim, "retry_terminal", now=1800.0, status=status)
+    rem = oq.get(rid)
+    assert rem is not None and rem["qty"] == pytest.approx(1.2)
+    assert rem["ttl_started_ts"] == pytest.approx(1800.0)
+    assert rem["expires_at_ts"] == pytest.approx(2400.0)
+    assert oq.is_expired(rem, now=1805.0) is False
+    assert oq.is_expired(rem, now=2401.0) is True
+
+    # 2. RETRY_DEDUP refresh updates expires_at_ts while keeping earliest created_ts -> honors new expires_at_ts
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(tmp_path / "retry_dedup_ttl.jsonl"))
+    did1 = oq.enqueue(
+        "BTCUSDC",
+        "BUY",
+        0.01,
+        {},
+        requested_price=80000.0,
+        now=1000.0,
+        failure_reason="account_cache_not_fresh",
+        kind="trend_signal",
+        ttl_sec=600.0,
+    )
+    did2 = oq.enqueue(
+        "BTCUSDC",
+        "BUY",
+        0.01,
+        {},
+        requested_price=80100.0,
+        now=1400.0,
+        failure_reason="account_cache_not_fresh",
+        kind="trend_signal",
+        ttl_sec=600.0,
+    )
+    assert did2 == did1
+    refreshed = oq.get(did1)
+    assert refreshed["created_ts"] == pytest.approx(1000.0)
+    assert refreshed["expires_at_ts"] == pytest.approx(2000.0)
+    assert oq.is_expired(refreshed, now=1650.0) is False
+    assert oq.is_expired(refreshed, now=2001.0) is True
+
+    # 3. Legacy/raw record with place_kwargs['ttl_sec'] and no expires_at_ts still expires under deferral
+    raw_rec = {
+        "id": "legacy1",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "qty": 0.01,
+        "created_ts": 1000.0,
+        "ttl_started_ts": 1000.0,
+        "attempts": 0,
+        "lifecycle": "submit_pending",
+        "last_failure_reason": "trend_deferred",
+        "place_kwargs": {"ttl_sec": 300.0},
+    }
+    assert oq.resolve_record_ttl(raw_rec) == pytest.approx(300.0)
+    assert oq.is_expired(raw_rec, now=1250.0) is False
+    assert oq.is_expired(raw_rec, now=1301.0) is True
+
+    # 4. Instrument monitor_order_replace keeps bypassed_guards canonically lowercase without duplicate GLLM1/gllm1
+    test_prov = DummySpotExecutionProvider(name="TestProv")
+    inst = inst_mod.Instrument(name="BTCUSDC", symbol="BTCUSDC", provider="TestProv", base="BTC", quote="USDC", api=MarketApi([test_prov]))
+    ctx, early = inst._init_and_gate_pre_pipeline(
+        "BUY",
+        100.0,
+        1.0,
+        {"kind": "monitor_order_replace", "bypass_guards": ["G_PROF", "GT_S", "GLLM1"]},
+    )
+    assert early is None and ctx is not None
+    assert "gllm1" in ctx.retry_kwargs["bypass_guards"]
+    assert "GLLM1" not in ctx.retry_kwargs["bypass_guards"]
+    assert all(tok == tok.lower() for tok in ctx.retry_kwargs["bypass_guards"])
+

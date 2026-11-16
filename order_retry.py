@@ -1407,11 +1407,21 @@ _FAST_IMPULSE_KIND_PREFIXES = (
 )
 
 
+def _explicit_record_ttl(rec: dict) -> Optional[float]:
+    raw_kw = rec.get("place_kwargs")
+    raw_ttl = (
+        rec.get("ttl_sec")
+        if rec.get("ttl_sec") is not None
+        else (raw_kw.get("ttl_sec") if isinstance(raw_kw, dict) else None)
+    )
+    return safe_pos_float(raw_ttl, default=None)
+
+
 def resolve_record_ttl(rec):
     """Return the effective active retry TTL for ``rec``, honoring custom ``ttl_sec``."""
     base_ttl = safe_pos_float(RETRY_TTL_SEC, default=1800.0)
     if isinstance(rec, dict):
-        custom_ttl = safe_pos_float(rec.get("ttl_sec"), default=None)
+        custom_ttl = _explicit_record_ttl(rec)
         if custom_ttl is not None:
             return min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
         if (clean_scalar_str(rec.get("kind")) or "").startswith(_FAST_IMPULSE_KIND_PREFIXES):
@@ -1448,10 +1458,10 @@ def is_expired(rec, now=None):
             return True
     effective_ttl = resolve_record_ttl(rec)
     has_custom_or_impulse_ttl = (
-        safe_pos_float(rec.get("ttl_sec"), default=None) is not None
+        _explicit_record_ttl(rec) is not None
         or (clean_scalar_str(rec.get("kind")) or "").startswith(_FAST_IMPULSE_KIND_PREFIXES)
     )
-    if has_custom_or_impulse_ttl and (now_f - created) > effective_ttl:
+    if raw_expires_at is None and has_custom_or_impulse_ttl and (now_f - ttl_started) > effective_ttl:
         return True
     if is_non_failure_deferral(rec.get("last_failure_reason")):
         return False
