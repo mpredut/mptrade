@@ -749,8 +749,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         )
 
     def _published_dynamic_windows(self, symbol, now=None):
-        """Compute configured, secondary (e.g. 2.5h), and active dynamic windows."""
-        published = {}
+        """Compute configured, secondary (e.g. 2.5h), and active dynamic windows from one snapshot."""
         published_cfg = _cm_attr(
             "CM_PUBLISHED_TREND_WINDOWS_SEC", CM_PUBLISHED_TREND_WINDOWS_SEC
         )
@@ -767,11 +766,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             if (wf := safe_pos_float(w, default=None)) is not None
         ]
         target_windows = list(dict.fromkeys(valid_targets))
-        for window in target_windows:
-            dyn = self.get_short_trend_for_window(symbol, window, now=now)
-            if dyn is not None:
-                published[pw.dynamic_window_key(dyn["window_seconds"])] = dyn
-        return published
+        return self._evaluate_dynamic_windows(
+            symbol, target_windows, now=now, log_clamp=True
+        )
 
     def _start_full_eval_loop(self):
         if self._full_eval_thread is not None and self._full_eval_thread.is_alive():
@@ -970,6 +967,30 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             )
         return clamped, pw.dynamic_window_key(clamped), now
 
+    @staticmethod
+    def _c24_entry_ts_ms(entry: object) -> float:
+        if isinstance(entry, (list, tuple)) and entry:
+            val = entry[0]
+            if type(val) in (int, float):
+                return val
+            return safe_float(val, default=0.0) or 0.0
+        return 0.0
+
+    def _extract_fresh_latest_tick(
+        self, last_entry: object, now_val: float
+    ) -> Optional[tuple[int, float]]:
+        if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:
+            return None
+        ts_f = safe_pos_float(last_entry[0], default=None)
+        latest_price = safe_pos_float(last_entry[1], default=None)
+        if ts_f is None or latest_price is None:
+            return None
+        newest_ts_ms = math.trunc(ts_f)
+        age_sec = now_val - (newest_ts_ms / 1000.0)
+        if not (-5.0 <= age_sec <= self.TREND_STALE_SEC):
+            return None
+        return newest_ts_ms, latest_price
+
     def _eval_and_persist_window_slice(
         self,
         target_sym: str,
@@ -985,18 +1006,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         n_samples = b - a + 1
         if n_samples < 3:
             return None
-        last_entry = entries[b]
-        if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:
+        newest_tick = self._extract_fresh_latest_tick(entries[b], now_val)
+        if newest_tick is None:
             return None
-        ts_f = safe_pos_float(last_entry[0], default=None)
-        latest_price = safe_pos_float(last_entry[1], default=None)
-        if ts_f is None or latest_price is None:
-            return None
-        newest_ts_ms = math.trunc(ts_f)
-        newest_ts_sec = newest_ts_ms / 1000.0
-        age_sec = now_val - newest_ts_sec
-        if not (-5.0 <= age_sec <= self.TREND_STALE_SEC):
-            return None
+        newest_ts_ms, latest_price = newest_tick
         if check_memo:
             with self._lock:
                 cached = (self._live_windows.get(target_sym) or {}).get(w_key)
@@ -1028,6 +1041,167 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         )
         return res
 
+    def _evaluate_dynamic_windows(
+        self, symbol, windows, now=None, *, log_clamp: bool = False
+    ) -> dict[str, dict]:
+        """Evaluate one or more dynamic windows for ``symbol`` over a single price-history snapshot."""
+        if now is not None:
+            now_val = normalize_epoch_sec(now, default=None)
+            if now_val is None:
+                return {}
+        else:
+            now_val = time.time()
+
+        requests: list[tuple[float, str]] = []
+        seen_keys: set[str] = set()
+        for win in windows:
+            norm = self._normalize_dynamic_window_request(
+                symbol, win, now=now_val, log_clamp=log_clamp
+            )
+            if norm is None:
+                continue
+            clamped, w_key, _ = norm
+            if w_key not in seen_keys:
+                seen_keys.add(w_key)
+                requests.append((clamped, w_key))
+        if not requests:
+            return {}
+
+        results: dict[str, dict] = {}
+        if self._cache24_managers is None:
+            # Reader process: check published live_<SYMBOL>.json / shared file first,
+            # then fall back once to on-disk cache_24_price_<SYMBOL>.json if available.
+            missing: list[tuple[float, str]] = []
+            for clamped, w_key in requests:
+                pub = self._published_window(symbol, clamped, now=now_val)
+                if pub is not None:
+                    results[w_key] = pub
+                else:
+                    missing.append((clamped, w_key))
+            if not missing:
+                return results
+            disk_entries = self._load_disk_cache24_entries(symbol)
+            if not disk_entries:
+                return results
+            b = len(disk_entries) - 1
+            for clamped, w_key in missing:
+                cutoff_ms = math.trunc((now_val - clamped) * 1000)
+                a = bisect.bisect_left(disk_entries, cutoff_ms, key=self._c24_entry_ts_ms)
+                dyn = self._eval_and_persist_window_slice(
+                    symbol, disk_entries, a, b, clamped, w_key, now_val, check_memo=False
+                )
+                if dyn is not None:
+                    results[w_key] = dyn
+            return results
+
+        matched_cand, c24 = _find_by_symbol_variant(self._cache24_managers, symbol)
+        if c24 is None:
+            return results
+        c24_sym = matched_cand or symbol
+
+        with self._lock:
+            self._active_dynamic_windows.update(clamped for clamped, _ in requests)
+            sym_live = self._live_windows.get(c24_sym)
+            memo_by_key = (
+                {
+                    wk: dict(wv)
+                    for wk, wv in sym_live.items()
+                    if wk in seen_keys and isinstance(wv, dict)
+                }
+                if isinstance(sym_live, dict)
+                else {}
+            )
+
+        # Fast path when c24 is a real Cache24PriceManager instance with direct buffer access:
+        # check memoization under lock before copying, and snapshot at most once across all windows.
+        if hasattr(c24, "cache") and hasattr(c24, "lock"):
+            all_entries = None
+            pending: list[tuple[int, int, float, str]] = []
+            with c24.lock:
+                raw_entries = casefold_get(c24.cache, c24_sym, [])
+                if not isinstance(raw_entries, (list, tuple)):
+                    raw_entries = list(raw_entries or ())
+                n_total = len(raw_entries)
+                if n_total >= 3:
+                    b = n_total - 1
+                    newest_tick = self._extract_fresh_latest_tick(raw_entries[b], now_val)
+                    if newest_tick is not None:
+                        newest_ts_ms, _ = newest_tick
+                        for clamped, w_key in requests:
+                            cutoff_ms = math.trunc((now_val - clamped) * 1000)
+                            a = bisect.bisect_left(
+                                raw_entries, cutoff_ms, key=self._c24_entry_ts_ms
+                            )
+                            n_samples = b - a + 1
+                            if n_samples < 3:
+                                continue
+                            cached = memo_by_key.get(w_key)
+                            if (
+                                cached is not None
+                                and cached.get("_last_tick_ts_ms") == newest_ts_ms
+                                and cached.get("n_samples") == n_samples
+                            ):
+                                hit = self._strip_internal_fields(cached)
+                                hit["ts"] = now_val
+                                results[w_key] = hit
+                            else:
+                                pending.append((a, b, clamped, w_key))
+                        if pending:
+                            all_entries = list(raw_entries)
+            for a, b, clamped, w_key in pending:
+                dyn = self._eval_and_persist_window_slice(
+                    c24_sym, all_entries, a, b, clamped, w_key, now_val, check_memo=False
+                )
+                if dyn is not None:
+                    results[w_key] = dyn
+            return results
+
+        # Compatibility path for custom/mock c24 objects implementing only get_recent_entries:
+        if len(requests) == 1:
+            clamped, w_key = requests[0]
+            try:
+                entries = c24.get_recent_entries(c24_sym, last_seconds=clamped)
+            except Exception as e:
+                print(
+                    f"[get_short_trend_for_window] {symbol}: get_recent_entries failed ({e})"
+                )
+                return results
+            if len(entries) >= 3:
+                dyn = self._eval_and_persist_window_slice(
+                    symbol, entries, 0, len(entries) - 1, clamped, w_key, now_val, check_memo=False
+                )
+                if dyn is not None:
+                    results[w_key] = dyn
+            return results
+
+        max_clamped = max(clamped for clamped, _ in requests)
+        try:
+            all_recent = list(c24.get_recent_entries(c24_sym, last_seconds=max_clamped) or ())
+        except Exception as e:
+            print(
+                f"[get_short_trend_for_window] {symbol}: get_recent_entries failed ({e})"
+            )
+            return results
+        if len(all_recent) < 3:
+            return results
+        b = len(all_recent) - 1
+        for clamped, w_key in requests:
+            a = (
+                0
+                if clamped >= max_clamped
+                else bisect.bisect_left(
+                    all_recent,
+                    math.trunc((now_val - clamped) * 1000),
+                    key=self._c24_entry_ts_ms,
+                )
+            )
+            dyn = self._eval_and_persist_window_slice(
+                symbol, all_recent, a, b, clamped, w_key, now_val, check_memo=False
+            )
+            if dyn is not None:
+                results[w_key] = dyn
+        return results
+
     def get_short_trend_for_window(self, symbol, window_seconds, now=None):
         """Calculate trend on demand for an arbitrary window in seconds.
 
@@ -1035,63 +1209,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         per-symbol persistence (cachedb/24trend/live_<SYMBOL>.json) so repeated
         requests for the same tick state are served directly from persistence.
         """
-        norm = self._normalize_dynamic_window_request(
-            symbol, window_seconds, now=now, log_clamp=True
+        evaluated = self._evaluate_dynamic_windows(
+            symbol, (window_seconds,), now=now, log_clamp=True
         )
-        if norm is None:
-            return None
-        clamped, w_key, now_val = norm
-
-        if self._cache24_managers is None:
-            # Reader process: check published live_<SYMBOL>.json / shared file first,
-            # then fall back to on-disk cache_24_price_<SYMBOL>.json if available.
-            pub = self._published_window(symbol, clamped, now=now_val)
-            if pub is not None:
-                return pub
-            disk_entries = self._load_disk_cache24_entries(symbol)
-            if not disk_entries:
-                return None
-            cutoff_ms = math.trunc((now_val - clamped) * 1000)
-            a = bisect.bisect_left(disk_entries, cutoff_ms, key=lambda e: e[0])
-            b = len(disk_entries) - 1
-            return self._eval_and_persist_window_slice(
-                symbol, disk_entries, a, b, clamped, w_key, now_val, check_memo=False
-            )
-
-        matched_cand, c24 = _find_by_symbol_variant(self._cache24_managers, symbol)
-        if c24 is None:
-            return None
-        c24_sym = matched_cand or symbol
-
-        with self._lock:
-            self._active_dynamic_windows.add(clamped)
-
-        # Fast path when c24 is a real Cache24PriceManager instance with direct buffer access:
-        if hasattr(c24, "cache") and hasattr(c24, "lock"):
-            with c24.lock:
-                all_entries = list(casefold_get(c24.cache, c24_sym, []))
-            if len(all_entries) < 3:
-                return None
-            cutoff_ms = math.trunc((now_val - clamped) * 1000)
-            a = bisect.bisect_left(all_entries, cutoff_ms, key=lambda e: e[0])
-            b = len(all_entries) - 1
-            return self._eval_and_persist_window_slice(
-                c24_sym, all_entries, a, b, clamped, w_key, now_val, check_memo=True
-            )
-
-        # Compatibility path for custom/mock c24 objects implementing only get_recent_entries:
-        try:
-            entries = c24.get_recent_entries(c24_sym, last_seconds=clamped)
-        except Exception as e:
-            print(
-                f"[get_short_trend_for_window] {symbol}: get_recent_entries failed ({e})"
-            )
-            return None
-        if len(entries) < 3:
-            return None
-        return self._eval_and_persist_window_slice(
-            symbol, entries, 0, len(entries) - 1, clamped, w_key, now_val, check_memo=False
-        )
+        return next(iter(evaluated.values()), None)
 
     def _persist_live_window(
         self,

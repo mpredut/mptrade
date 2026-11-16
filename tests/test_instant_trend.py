@@ -950,6 +950,103 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
             else:
                 sys.modules.pop("_cacheManager_initialized", None)
 
+    def test_published_dynamic_windows_snapshots_cache24_once_and_skips_copy_on_memo_hit(self):
+        class _CountingLock:
+            def __init__(self):
+                self._inner = cm.threading.RLock()
+                self.acquires = 0
+
+            def __enter__(self):
+                self.acquires += 1
+                return self._inner.__enter__()
+
+            def __exit__(self, exc_type, exc, tb):
+                return self._inner.__exit__(exc_type, exc, tb)
+
+        class _CountingList(list):
+            def __init__(self, items):
+                super().__init__(items)
+                self.iter_copies = 0
+
+            def __iter__(self):
+                self.iter_copies += 1
+                return super().__iter__()
+
+        trend_file = os.path.join(self.tmp, "cache_short_trend_single_snap.json")
+        mgr = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, data_sync_mode="producer")
+        self.addCleanup(mgr.shutdown)
+        now_sec = 1_780_000_500.0
+        base_ms = int((now_sec - 299) * 1000) - 200
+        tracked_entries = _CountingList(
+            [[base_ms + i * 1000, 60000.0 + i * 2.0] for i in range(300)]
+        )
+        counting_lock = _CountingLock()
+        c24 = MagicMock()
+        c24.lock = counting_lock
+        c24.cache = {"BTCUSDT": tracked_entries}
+        c24.get_recent_entries.side_effect = lambda _sym, last_seconds: [
+            e for e in list.__iter__(tracked_entries) if e[0] >= (now_sec - last_seconds) * 1000
+        ]
+        cpm = MagicMock()
+        cpm.get_cached_price_observation.return_value = (now_sec, 60598.0)
+        mgr.start_computation({"BTCUSDT": c24}, cpm, run_full_eval=False)
+        mgr._active_dynamic_windows.update({60.0, 180.0})
+
+        counting_lock.acquires = 0
+        tracked_entries.iter_copies = 0
+        orig_eval_slice = mgr._eval_and_persist_window_slice
+        mutated_mid_round = {"done": False}
+
+        def _inject_tick_after_first_window(*args, **kwargs):
+            out = orig_eval_slice(*args, **kwargs)
+            if not mutated_mid_round["done"]:
+                mutated_mid_round["done"] = True
+                # Simulate a concurrent tick arriving on Cache24 mid-publication round.
+                tracked_entries.append([base_ms + 300_000, 65000.0])
+            return out
+
+        with patch.object(mgr, "_eval_and_persist_window_slice", side_effect=_inject_tick_after_first_window):
+            published = mgr._published_dynamic_windows("BTCUSDT", now=now_sec)
+
+        expected_keys = {"60", "90", "180", "222", "900", "9000"}
+        self.assertTrue(expected_keys.issubset(set(published.keys())))
+        # Lock acquired once and 24h buffer copied once across all 6 windows of the round.
+        self.assertEqual(counting_lock.acquires, 1)
+        self.assertEqual(tracked_entries.iter_copies, 1)
+        # Every published window in the round reflects the exact same pre-mutation tick snapshot.
+        for wk in expected_keys:
+            self.assertAlmostEqual(published[wk]["current_price"], 60598.0, places=6)
+            self.assertEqual(
+                mgr._live_windows["BTCUSDT"][wk].get("_last_tick_ts_ms"),
+                base_ms + 299_000,
+            )
+
+        # Pop the injected tick and verify a subsequent evaluation with unchanged window slices skips copying completely.
+        tracked_entries.pop()
+        counting_lock.acquires = 0
+        tracked_entries.iter_copies = 0
+        with patch.object(mgr, "_eval_entries_with_buffer") as eval_buf:
+            published_cached = mgr._published_dynamic_windows("BTCUSDT", now=now_sec + 0.5)
+            single_cached = mgr.get_short_trend_for_window("BTCUSDT", 90.0, now=now_sec + 0.5)
+        self.assertEqual(counting_lock.acquires, 2)
+        self.assertEqual(tracked_entries.iter_copies, 0)
+        eval_buf.assert_not_called()
+        self.assertEqual(set(published_cached.keys()), set(published.keys()))
+        self.assertIsNotNone(single_cached)
+        self.assertAlmostEqual(single_cached["ts"], now_sec + 0.5, places=6)
+
+        # Advance past a tick boundary: shorter windows recompute from a single copy while 900s/9000s reuse memo.
+        counting_lock.acquires = 0
+        tracked_entries.iter_copies = 0
+        with patch.object(
+            mgr, "_eval_entries_with_buffer", wraps=mgr._eval_entries_with_buffer
+        ) as eval_buf_wrapped:
+            published_aged = mgr._published_dynamic_windows("BTCUSDT", now=now_sec + 1.0)
+        self.assertEqual(counting_lock.acquires, 1)
+        self.assertEqual(tracked_entries.iter_copies, 1)
+        self.assertEqual(eval_buf_wrapped.call_count, 4)
+        self.assertEqual(set(published_aged.keys()), set(published.keys()))
+
     def test_evaluate_full_preserves_live_window_memoization_tick_ts(self):
         trend_file = os.path.join(self.tmp, "cache_short_trend_memo.json")
         mgr = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, data_sync_mode="producer")
