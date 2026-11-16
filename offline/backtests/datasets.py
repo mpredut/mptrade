@@ -141,6 +141,127 @@ def merge_datasets(*datasets: Iterable[Mapping]) -> list[dict]:
     return validate_dataset(by_timestamp[timestamp] for timestamp in sorted(by_timestamp))
 
 
+def ohlc_range_window_seconds(range_spec: object) -> int | None:
+    """Convert an OHLC range token such as ``730d`` or ``10y`` into seconds."""
+    if isinstance(range_spec, bool) or not isinstance(range_spec, str):
+        return None
+    token = range_spec.strip().lower()
+    if len(token) < 2:
+        return None
+    unit = token[-1]
+    qty = safe_pos_float(token[:-1], default=None)
+    if qty is None:
+        return None
+    if unit == "d":
+        return exact_pos_int(round(qty * 86400.0), default=None)
+    if unit == "y":
+        return exact_pos_int(round(qty * 365.25 * 86400.0), default=None)
+    if unit == "h":
+        return exact_pos_int(round(qty * 3600.0), default=None)
+    return None
+
+
+def _load_existing_ohlc_records(csv_path: str | Path) -> list[dict]:
+    if isinstance(csv_path, (bool, int, float)) or not os.path.isfile(csv_path):
+        return []
+    try:
+        return load_dataset(csv_path)
+    except (OSError, ValueError):
+        return [
+            {"timestamp": ts_i, "open": o, "high": h, "low": l, "close": c}
+            for ts_i, o, h, l, c in load_ohlc_tuples_csv(csv_path, strict=False)
+        ]
+
+
+def merge_with_existing_ohlc_csv(
+    records: Iterable[Mapping],
+    csv_path: str | Path,
+    *,
+    min_timestamp: int | None = None,
+    window_seconds: int | None = None,
+) -> list[dict]:
+    """Merge newly fetched OHLC bars with an existing CSV and trim to the target horizon."""
+    fresh_rows = list(records)
+    existing = _load_existing_ohlc_records(csv_path)
+    if existing and fresh_rows:
+        merged = merge_datasets(existing, fresh_rows)
+    elif fresh_rows:
+        merged = validate_dataset(fresh_rows)
+    else:
+        merged = existing
+    if not merged:
+        return []
+    floor_ts = exact_pos_int(min_timestamp, default=None)
+    win_sec = exact_pos_int(window_seconds, default=None)
+    if win_sec is not None:
+        win_floor = merged[-1]["timestamp"] - win_sec
+        floor_ts = win_floor if floor_ts is None else max(floor_ts, win_floor)
+    if floor_ts is not None:
+        windowed = [r for r in merged if r["timestamp"] >= floor_ts]
+        if windowed:
+            merged = windowed
+    return merged
+
+
+def format_utc_bar_timestamp(ts: object, *, include_time: bool = False) -> str | None:
+    """Format an epoch-second OHLC bar timestamp in UTC."""
+    ts_i = exact_pos_int(ts, default=None)
+    if ts_i is None:
+        return None
+    fmt = "%Y-%m-%d %H:%M UTC" if include_time else "%Y-%m-%d"
+    return dt.datetime.fromtimestamp(ts_i, tz=dt.timezone.utc).strftime(fmt)
+
+
+def summarize_ohlc_spans(
+    spans: Iterable[tuple[int, int]],
+    *,
+    include_time: bool = True,
+) -> str | None:
+    """Format effective ``start -> end`` coverage and last-bar UTC timestamp(s) across assets."""
+    valid: list[tuple[int, int]] = []
+    for item in spans:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        s_i = exact_pos_int(item[0], default=None)
+        e_i = exact_pos_int(item[1], default=None)
+        if s_i is not None and e_i is not None and s_i <= e_i:
+            valid.append((s_i, e_i))
+    if not valid:
+        return None
+    min_start = min(s for s, _ in valid)
+    min_end = min(e for _, e in valid)
+    max_end = max(e for _, e in valid)
+    start_s = format_utc_bar_timestamp(min_start, include_time=False)
+    end_s = format_utc_bar_timestamp(max_end, include_time=False)
+    last_max_s = format_utc_bar_timestamp(max_end, include_time=include_time)
+    if not (start_s and end_s and last_max_s):
+        return None
+    if min_end != max_end:
+        last_min_s = format_utc_bar_timestamp(min_end, include_time=include_time)
+        last_desc = f"{last_min_s} .. {last_max_s}" if last_min_s else last_max_s
+    else:
+        last_desc = last_max_s
+    return f"{start_s} -> {end_s} (last bar: {last_desc})"
+
+
+def scan_ohlc_csv_spans(
+    data_dir: str | Path,
+    *,
+    suffix: str = ".csv",
+) -> list[tuple[int, int]]:
+    """Scan OHLC CSV files in ``data_dir`` matching ``suffix`` and return ``(start_ts, end_ts)`` pairs."""
+    if isinstance(data_dir, (bool, int, float)) or not os.path.isdir(data_dir):
+        return []
+    spans: list[tuple[int, int]] = []
+    for fname in sorted(os.listdir(data_dir)):
+        if not fname.endswith(suffix):
+            continue
+        rows = load_ohlc_tuples_csv(os.path.join(data_dir, fname), strict=False)
+        if rows:
+            spans.append((rows[0][0], rows[-1][0]))
+    return spans
+
+
 def dataset_metadata(records: Iterable[Mapping], *, interval_minutes: int | None = None) -> dict:
     rows = validate_dataset(records, interval_minutes=interval_minutes)
     return {

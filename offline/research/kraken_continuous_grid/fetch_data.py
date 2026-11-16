@@ -18,6 +18,7 @@ from botcore import optional_env, parse_cli_float
 from offline.backtests.datasets import (
     DAILY_DATASET_MAX_AGE_SEC,
     has_usable_ohlc_csv,
+    merge_with_existing_ohlc_csv,
     save_dataset,
     should_skip_ohlc_csv_refresh,
     validate_dataset,
@@ -65,17 +66,22 @@ def fetch(
             return has_usable
         # Allow historical exchange maintenance windows while enforcing strict chronological order & OHLC invariants.
         validated = validate_dataset(candles)
-        if len(validated) < MIN_GRID_BARS:
+        merged = merge_with_existing_ohlc_csv(
+            validated,
+            out_path,
+            min_timestamp=START_MS // 1000,
+        )
+        if len(merged) < MIN_GRID_BARS:
             print(
-                f"[fetch] {name}: insufficient bars ({len(validated)} < {MIN_GRID_BARS}); "
+                f"[fetch] {name}: insufficient bars ({len(merged)} < {MIN_GRID_BARS}); "
                 "keeping existing file if present",
                 flush=True,
             )
             return has_usable
-        save_dataset(validated, out_path)
-        print(f"[fetch] {name}: {len(validated)} bars "
-              f"{time.strftime('%Y-%m-%d', time.gmtime(validated[0]['timestamp']))} -> "
-              f"{time.strftime('%Y-%m-%d', time.gmtime(validated[-1]['timestamp']))}", flush=True)
+        save_dataset(merged, out_path)
+        print(f"[fetch] {name}: {len(merged)} bars "
+              f"{time.strftime('%Y-%m-%d', time.gmtime(merged[0]['timestamp']))} -> "
+              f"{time.strftime('%Y-%m-%d', time.gmtime(merged[-1]['timestamp']))}", flush=True)
         return True
     except Exception as exc:  # noqa: BLE001
         print(f"[fetch] {name}: error {exc}; keeping existing file if present", flush=True)

@@ -1617,3 +1617,68 @@ def test_pretrade_telemetry_per_source_ages_expose_stale_derivatives_and_whale_w
     assert stale_sym_snap.age_sec == pytest.approx(420.0)
     assert stale_sym_snap.is_available is False
     assert stale_sym_snap.unavailable_reason == "telemetry_stale"
+
+
+def test_update_pretrade_caches_checks_t212_portfolio_once_and_reports_effective_publication(
+    temp_cache_dir, monkeypatch
+):
+    now_s = 1_750_200_000.0
+    save_json_state(
+        os.path.join(temp_cache_dir, "venue_balances_state.json"),
+        {"pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "free": 2.0, "price": 135.0, "ts": now_s - 10.0}},
+    )
+
+    t212_calls: list[float] = []
+    micro_calls: list[str] = []
+    publish_t212 = False
+
+    monkeypatch.setattr(
+        ptc_mod,
+        "_ensure_fresh_pretrade_microstructure",
+        lambda cachedb_dir, sym, *a, **kw: micro_calls.append(sym) or False,
+    )
+    monkeypatch.setattr(
+        ptc_mod,
+        "_refresh_stale_t212_cached_positions",
+        lambda vb_d, vb_path, ts: t212_calls.append(ts) or publish_t212,
+    )
+
+    collector = GlobalTelemetryCollector(
+        symbols=["BTCUSDC", "ETHUSDC", "NVDA_US_EQ", "SPCX_US_EQ"],
+        cache_dir=temp_cache_dir,
+        skip_news=True,
+    )
+    with (
+        patch.object(collector, "_step_external_symbols"),
+        patch.object(collector, "update_fear_greed", return_value=True),
+        patch.object(collector, "update_market_breadth", return_value=True),
+        patch.object(collector, "update_macro_benchmarks", return_value=True),
+        patch.object(collector, "update_venue_balances", return_value=True),
+    ):
+        res_noop = collector.run_cycle(force=True, now=now_s)
+
+    assert micro_calls == ["BTCUSDC", "ETHUSDC", "NVDA_US_EQ", "SPCX_US_EQ"]
+    assert len(t212_calls) == 1
+    assert res_noop["pretrade_caches_updated"] is False
+
+    # Crypto-only symbol roster still checks T212 portfolio once per round and sets True on actual publish
+    t212_calls.clear()
+    micro_calls.clear()
+    publish_t212 = True
+    crypto_collector = GlobalTelemetryCollector(
+        symbols=["BTCUSDC", "ETHUSDC"],
+        cache_dir=temp_cache_dir,
+        skip_news=True,
+    )
+    with (
+        patch.object(crypto_collector, "_step_external_symbols"),
+        patch.object(crypto_collector, "update_fear_greed", return_value=True),
+        patch.object(crypto_collector, "update_market_breadth", return_value=True),
+        patch.object(crypto_collector, "update_macro_benchmarks", return_value=True),
+        patch.object(crypto_collector, "update_venue_balances", return_value=True),
+    ):
+        res_pub = crypto_collector.run_cycle(force=True, now=now_s + 120.0)
+
+    assert micro_calls == ["BTCUSDC", "ETHUSDC"]
+    assert len(t212_calls) == 1
+    assert res_pub["pretrade_caches_updated"] is True

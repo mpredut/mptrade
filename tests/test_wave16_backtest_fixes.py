@@ -317,3 +317,205 @@ def test_ohlc_csv_daily_staleness_refresh_and_fallback(
     assert kcg_fetch.fetch("BTCUSDT", "BTC") is True
     assert len(read_text_file(str(btc_csv)).strip().splitlines()) == 52
 
+
+def test_ohlc_refresh_preserves_history_via_merge_and_reports_effective_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Truncated (>min_bars) API responses merge into existing CSVs without shrinking history, and reports show coverage."""
+    from offline.backtests.datasets import load_dataset
+    from offline.research.kraken_continuous_grid import report as kcg_rep, report2 as kcg_rep2, report3 as kcg_rep3
+    from offline.research.t212_continuous_grid import grid as t212_grid, report as t212_rep
+
+    # A. Kraken fetch_data merges truncated (>43-bar) response with multi-year CSV and trims < START_MS
+    k_dir = tmp_path / "k_exp"
+    k_data = k_dir / "data"
+    k_data.mkdir(parents=True)
+    monkeypatch.setattr(kcg_fetch, "DATA", str(k_data))
+
+    start_sec = kcg_fetch.START_MS // 1000
+    existing_k = [
+        {
+            "timestamp": start_sec - 14400,
+            "open": 9.0,
+            "high": 9.5,
+            "low": 8.5,
+            "close": 9.2,
+            "volume": 50.0,
+        },
+        *[
+            {
+                "timestamp": start_sec + i * 14400,
+                "open": 100.0 + (i % 5),
+                "high": 103.0 + (i % 5),
+                "low": 99.0 + (i % 5),
+                "close": 101.0 + (i % 5),
+                "volume": 100.0,
+            }
+            for i in range(200)
+        ],
+    ]
+    btc_csv = k_data / "BTC_240m.csv"
+    save_dataset(existing_k, btc_csv)
+    stale_ts = time.time() - 90000.0
+    os.utime(btc_csv, (stale_ts, stale_ts))
+
+    partial_tail_k = [
+        {
+            "timestamp": start_sec + i * 14400,
+            "open": 110.0 + (i % 5),
+            "high": 114.0 + (i % 5),
+            "low": 109.0 + (i % 5),
+            "close": 112.0 + (i % 5),
+            "volume": 150.0,
+        }
+        for i in range(152, 202)  # 50 bars >= 43, overlapping 152..199 and appending 200..201
+    ]
+    monkeypatch.setattr(kcg_fetch.mkt, "fetch_ohlc_candles", lambda sym, **kw: list(partial_tail_k))
+    assert kcg_fetch.fetch("BTCUSDT", "BTC") is True
+    merged_k = load_dataset(btc_csv)
+    assert len(merged_k) == 202
+    assert merged_k[0]["timestamp"] == start_sec
+    assert merged_k[-1]["timestamp"] == start_sec + 201 * 14400
+    assert merged_k[160]["close"] == pytest.approx(112.0 + (160 % 5))
+
+    # B. T212 fetch.py merges truncated (100-bar > 32) response into 400-bar 1d CSV and enforces 730d window on 1h
+    t_out = tmp_path / "t212_exp"
+    t_data = t_out / "data"
+    t_data.mkdir(parents=True)
+    monkeypatch.setenv("GRID_OUT", str(t_out))
+    monkeypatch.setattr(t212_fetch, "ASSETS", ["NVDA"])
+    monkeypatch.setattr(t212_fetch.time, "sleep", lambda _s: None)
+
+    base_1d_ts = 1_700_006_400  # 2023-11-15 00:00:00 UTC
+    existing_1d = [
+        {
+            "timestamp": base_1d_ts + i * 86400,
+            "open": 200.0 + (i % 7),
+            "high": 205.0 + (i % 7),
+            "low": 198.0 + (i % 7),
+            "close": 202.0 + (i % 7),
+        }
+        for i in range(400)
+    ]
+    nvda_1d_csv = t_data / "NVDA_1d.csv"
+    save_dataset(existing_1d, nvda_1d_csv)
+    os.utime(nvda_1d_csv, (stale_ts, stale_ts))
+
+    ancient_1h_ts = base_1d_ts - 800 * 86400
+    existing_1h = [
+        {
+            "timestamp": ancient_1h_ts,
+            "open": 50.0,
+            "high": 51.0,
+            "low": 49.0,
+            "close": 50.5,
+        },
+        *[
+            {
+                "timestamp": base_1d_ts + i * 3600,
+                "open": 200.0 + (i % 4),
+                "high": 203.0 + (i % 4),
+                "low": 199.0 + (i % 4),
+                "close": 201.0 + (i % 4),
+            }
+            for i in range(300)
+        ],
+    ]
+    nvda_1h_csv = t_data / "NVDA_1h.csv"
+    save_dataset(existing_1h, nvda_1h_csv)
+    os.utime(nvda_1h_csv, (stale_ts, stale_ts))
+
+    def _fake_yahoo(sym, *, interval="1h", range_="730d", drop_incomplete=True, provider_name="t212"):
+        if sym != "NVDA":
+            return []
+        if interval == "1d":
+            return [
+                {
+                    "timestamp": base_1d_ts + i * 86400,
+                    "open": 210.0,
+                    "high": 215.0,
+                    "low": 208.0,
+                    "close": 212.0,
+                }
+                for i in range(302, 402)  # 100 bars (> 32), must NOT wipe 0..301
+            ]
+        return [
+            {
+                "timestamp": base_1d_ts + i * 3600,
+                "open": 210.0,
+                "high": 214.0,
+                "low": 209.0,
+                "close": 211.0,
+            }
+            for i in range(262, 302)  # 40 bars (> 32)
+        ]
+
+    monkeypatch.setattr(t212_fetch.mkt, "fetch_ohlc_candles", _fake_yahoo)
+    monkeypatch.setattr("sys.argv", ["fetch.py"])
+    runpy.run_path(str(ROOT / "offline/research/t212_continuous_grid/fetch.py"), run_name="__main__")
+
+    merged_1d = load_dataset(nvda_1d_csv)
+    assert len(merged_1d) == 402
+    assert merged_1d[0]["timestamp"] == base_1d_ts
+    assert merged_1d[-1]["timestamp"] == base_1d_ts + 401 * 86400
+
+    merged_1h = load_dataset(nvda_1h_csv)
+    assert len(merged_1h) == 302
+    assert merged_1h[0]["timestamp"] == base_1d_ts  # ancient bar (>730d before end) trimmed
+
+    # C. Grid & reports render last bar UTC date and effective interval coverage
+    monkeypatch.setattr(t212_grid, "DATA", str(t_data))
+    t212_grid._SPLIT_CACHE.clear()
+    t212_grid._TASK_CACHE.clear()
+    row_t = t212_grid.task(("nvda", "live", "NVDA"))
+    assert row_t["1d"]["bars"] == 402
+    assert row_t["1d"]["start_ts"] == base_1d_ts
+    assert row_t["1d"]["end_ts"] == base_1d_ts + 401 * 86400
+    from state_io import atomic_write_jsonl
+
+    atomic_write_jsonl(str(t_out / "results.jsonl"), [row_t])
+    rep_t = t212_rep.generate_report(str(t_out))
+    assert "Effective coverage: 1h: 2023-11-15 -> 2023-11-27 (last bar: 2023-11-27 13:00 UTC); 1d: 2023-11-15 -> 2024-12-20 (last bar: 2024-12-20)." in rep_t
+
+    live_p, live_pk = kcg_rep.load_local_module(
+        str(ROOT / "offline/research/kraken_continuous_grid"), "grid", module_key="offline.research.kraken_continuous_grid.grid"
+    ).CONFIGS["live"]
+    atomic_write_jsonl(
+        str(k_dir / "results.jsonl"),
+        [
+            {
+                "asset": "BTC",
+                "cfg": "live",
+                "bars": 202,
+                "start_ts": start_sec,
+                "end_ts": start_sec + 201 * 14400,
+                "params_repr": repr(live_p),
+                "peak": bool(live_pk),
+                "full": {"ret": 15.0, "dd": 6.0, "expo": 40.0, "bh": 10.0},
+                "year": {"2018": {"ret": 15.0}},
+                "w30": [[1.0, 2.0, 0.5]],
+                "w90": [[3.0, 4.0, 1.5]],
+            }
+        ],
+    )
+    rep_k = "\n".join(kcg_rep.generate_report(str(k_dir)))
+    assert "Effective coverage: 2018-01-01 -> 2018-02-03 (last bar: 2018-02-03 12:00 UTC)." in rep_k
+    rep_k2 = "\n".join(kcg_rep2.generate_report(str(k_dir)))
+    assert "Effective coverage: 2018-01-01 -> 2018-02-03 (last bar: 2018-02-03 12:00 UTC)." in rep_k2
+    atomic_write_jsonl(
+        str(k_dir / "results3.jsonl"),
+        [
+            {
+                "asset": "BTC",
+                "cfg": "live",
+                "start_ts": start_sec,
+                "end_ts": start_sec + 201 * 14400,
+                "params_repr": repr(live_p),
+                "peak": bool(live_pk),
+                "0.26": {"ret": 12.0, "dd": 5.0},
+                "0.4": {"ret": 10.0, "dd": 6.0},
+            }
+        ],
+    )
+    rep_k3 = "\n".join(kcg_rep3.generate_report(str(k_dir)))
+    assert "Effective coverage: 2018-01-01 -> 2018-02-03 (last bar: 2018-02-03 12:00 UTC)." in rep_k3

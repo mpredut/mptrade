@@ -8,7 +8,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import load_local_module, optional_env, safe_float
+from botcore import exact_pos_int, load_local_module, optional_env, safe_float
+from offline.backtests.datasets import scan_ohlc_csv_spans, summarize_ohlc_spans
 from offline.research.kraken_continuous_grid.report import (
     _append_markdown_table_header,
     _finalize_markdown_report,
@@ -70,6 +71,28 @@ def generate_report(exp_dir=None):
         f"{len(valid_rows)} runs, {len(errors)} errors. Returns and drawdowns in % of the profile budget; "
         "1h = last ~730 days, 1d = ~10 years, continuous; w90 = fresh 90-day windows on 1h.\n",
     ]
+    cov_parts = []
+    for itv_k, inc_time in (("1h", True), ("1d", False)):
+        itv_spans: list[tuple[int, int]] = []
+        seen_itv_assets: set[str] = set()
+        for r in valid_rows:
+            sub_d = r.get(itv_k) if isinstance(r, dict) else None
+            if not isinstance(sub_d, dict):
+                continue
+            s_i = exact_pos_int(sub_d.get("start_ts"), default=None)
+            e_i = exact_pos_int(sub_d.get("end_ts"), default=None)
+            if s_i is not None and e_i is not None and s_i <= e_i:
+                ak = str(r.get("asset") or "")
+                if not ak or ak not in seen_itv_assets:
+                    if ak:
+                        seen_itv_assets.add(ak)
+                    itv_spans.append((s_i, e_i))
+        if not itv_spans:
+            itv_spans = scan_ohlc_csv_spans(os.path.join(exp, "data"), suffix=f"_{itv_k}.csv")
+        if itv_summary := summarize_ohlc_spans(itv_spans, include_time=inc_time):
+            cov_parts.append(f"{itv_k}: {itv_summary}")
+    if cov_parts:
+        L.append(f"Effective coverage: {'; '.join(cov_parts)}.\n")
 
     for profile, home in HOME.items():
         variants = sorted({v for (p, v) in by if p == profile and v is not None})

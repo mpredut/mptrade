@@ -624,16 +624,16 @@ def ensure_fresh_symbol_microstructure(
     max_age_whale_sec: Optional[float] = None,
     include_derivatives: bool = False,
     allow_network: bool = True,
-) -> None:
+) -> bool:
     """Trigger on-demand orderbook, derivatives, or whale collector fetches when cached files are missing or stale."""
     if not allow_network or not is_live_network_backfill_enabled() or not cache_dir:
-        return
+        return False
     eff_cache_dir = resolve_cache_dir_path(cache_dir)
     if not eff_cache_dir or not os.path.isdir(eff_cache_dir):
-        return
+        return False
     sym_u = str(symbol or "").strip().upper()
     if not sym_u:
-        return
+        return False
     eff_now = resolve_now_ts(now_ts)
     is_eq = is_equity_symbol(sym_u)
     if is_eq:
@@ -656,21 +656,41 @@ def ensure_fresh_symbol_microstructure(
             return False
         return max_age is not None and (eff_now - os.path.getmtime(fpath)) > max_age
 
+    refreshed_any = False
     if _needs_fetch(CACHE_ORDERBOOK_DEPTH_PREFIX, max_age_ob_sec):
         try:
-            OrderbookDepthCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(sym_u, allow_network=True, now=eff_now)
+            if (
+                OrderbookDepthCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(
+                    sym_u, allow_network=True, now=eff_now
+                )
+                is not None
+            ):
+                refreshed_any = True
         except Exception:
             pass
     if include_derivatives and _needs_fetch(CACHE_DERIVATIVES_TELEMETRY_PREFIX, max_age_whale_sec):
         try:
-            DerivativesTelemetryCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(sym_u, allow_network=True, now=eff_now)
+            if (
+                DerivativesTelemetryCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(
+                    sym_u, allow_network=True, now=eff_now
+                )
+                is not None
+            ):
+                refreshed_any = True
         except Exception:
             pass
     if _needs_fetch(CACHE_WHALE_SNAPSHOT_PREFIX, max_age_whale_sec):
         try:
-            WhalePositioningCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(sym_u, allow_network=True, now=eff_now)
+            if (
+                WhalePositioningCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(
+                    sym_u, allow_network=True, now=eff_now
+                )
+                is not None
+            ):
+                refreshed_any = True
         except Exception:
             pass
+    return refreshed_any
 
 
 def discover_reference_microstructure_symbols(

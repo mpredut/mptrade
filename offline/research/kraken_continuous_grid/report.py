@@ -9,7 +9,8 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import load_local_module, optional_env, safe_float, safe_nonneg_int
+from botcore import exact_pos_int, load_local_module, optional_env, safe_float, safe_nonneg_int
+from offline.backtests.datasets import scan_ohlc_csv_spans, summarize_ohlc_spans
 from state_io import atomic_write_json, atomic_write_text, read_jsonl_dicts
 
 
@@ -65,6 +66,32 @@ def _resolve_exp_dir(exp_dir: str | None = None) -> str:
     exp = exp_dir or optional_env("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
     os.makedirs(exp, exist_ok=True)
     return exp
+
+
+def format_grid_coverage_line(
+    rows: list[dict],
+    exp_dir: str,
+    *,
+    suffix: str = "_240m.csv",
+    include_time: bool = True,
+) -> str | None:
+    """Summarize effective bar coverage and last-bar UTC timestamp from result rows or ``data/`` CSVs."""
+    spans: list[tuple[int, int]] = []
+    seen_assets: set[str] = set()
+    for r in rows:
+        if not isinstance(r, dict) or _is_error_row(r):
+            continue
+        s_i = exact_pos_int(r.get("start_ts"), default=None)
+        e_i = exact_pos_int(r.get("end_ts"), default=None)
+        if s_i is not None and e_i is not None and s_i <= e_i:
+            asset_k = str(r.get("asset") or "")
+            if not asset_k or asset_k not in seen_assets:
+                if asset_k:
+                    seen_assets.add(asset_k)
+                spans.append((s_i, e_i))
+    if not spans:
+        spans = scan_ohlc_csv_spans(os.path.join(exp_dir, "data"), suffix=suffix)
+    return summarize_ohlc_spans(spans, include_time=include_time)
 
 
 def _format_errors_section(errors: list[dict], *, label_fn=None, limit: int = 20) -> list[str]:
@@ -273,6 +300,8 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         "windows of 90/30 days, step 30 days.\n",
         "`beat_full`/`beat_w90` = on how many assets the config beats `live`.\n",
     ]
+    if cov_line := format_grid_coverage_line(rows, exp):
+        L.append(f"Effective coverage: {cov_line}.\n")
 
     def table(items, title):
         _append_markdown_table_header(

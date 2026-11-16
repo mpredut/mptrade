@@ -9,6 +9,8 @@ if REPO not in sys.path:
 from botcore import optional_env, parse_cli_float
 from offline.backtests.datasets import (
     DAILY_DATASET_MAX_AGE_SEC,
+    merge_with_existing_ohlc_csv,
+    ohlc_range_window_seconds,
     save_dataset,
     should_skip_ohlc_csv_refresh,
     validate_dataset,
@@ -81,19 +83,24 @@ if __name__ == "__main__":
                         usable_total += 1
                     continue
                 validated = validate_dataset(candles)
-                if len(validated) <= 32:
+                merged = merge_with_existing_ohlc_csv(
+                    validated,
+                    csv_path,
+                    window_seconds=ohlc_range_window_seconds(rng),
+                )
+                if not (len(merged) > 32):
                     print(
-                        f"[fetch] {sym} {itv}: insufficient bars ({len(validated)} <= 32) -- refusing overwrite",
+                        f"[fetch] {sym} {itv}: insufficient bars ({len(merged)} <= 32) -- refusing overwrite",
                         flush=True,
                     )
                     if has_cached_csv:
                         usable_total += 1
                     continue
-                save_dataset(validated, Path(csv_path))
+                save_dataset(merged, Path(csv_path))
                 usable_total += 1
-                print(f"[fetch] {sym} {itv}: {len(validated)} bars "
-                      f"{time.strftime('%Y-%m-%d', time.gmtime(validated[0]['timestamp']))} -> "
-                      f"{time.strftime('%Y-%m-%d', time.gmtime(validated[-1]['timestamp']))}", flush=True)
+                print(f"[fetch] {sym} {itv}: {len(merged)} bars "
+                      f"{time.strftime('%Y-%m-%d', time.gmtime(merged[0]['timestamp']))} -> "
+                      f"{time.strftime('%Y-%m-%d', time.gmtime(merged[-1]['timestamp']))}", flush=True)
             except Exception as exc:  # noqa: BLE001
                 print(f"[fetch] {sym} {itv}: {exc}", flush=True)
                 if has_cached_csv:

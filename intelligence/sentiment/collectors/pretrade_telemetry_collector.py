@@ -432,16 +432,17 @@ def _ensure_fresh_pretrade_microstructure(
     _rj: Callable[[str], Any],
     *,
     allow_network: Optional[bool] = False,
-) -> None:
+) -> bool:
     is_monkeypatched = ensure_fresh_symbol_microstructure is not _ORIG_ENSURE_FRESH_SYMBOL_MICROSTRUCTURE
     can_refresh = (allow_network is True and is_live_network_backfill_enabled()) or (
         allow_network is None and is_monkeypatched
     )
     if not ((is_usd_sym or is_eq_sym) and can_refresh and _rj is _default_read_json_cached):
-        return
+        return False
     refresh_cands = list(quote_variants)
     if not is_eq_sym and canonical_base_asset(symbol) != "BTC" and "BTCUSDC" not in refresh_cands:
         refresh_cands.append("BTCUSDC")
+    refreshed_any = False
     for cand_m in refresh_cands:
         cand_mu = str(cand_m or "").strip().upper()
         if not cand_mu:
@@ -451,13 +452,16 @@ def _ensure_fresh_pretrade_microstructure(
             for pfx_m in (CACHE_ORDERBOOK_DEPTH_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX, CACHE_WHALE_SNAPSHOT_PREFIX)
         )
         if has_existing_m:
-            ensure_fresh_symbol_microstructure(
+            res = ensure_fresh_symbol_microstructure(
                 cachedb_dir,
                 cand_mu,
                 max_age_ob_sec=180.0,
                 max_age_whale_sec=360.0,
                 include_derivatives=True,
             )
+            if res is True or (is_monkeypatched and res is None):
+                refreshed_any = True
+    return refreshed_any
 
 
 def _snap_ts(obj: Any) -> float:
@@ -2204,6 +2208,7 @@ def refresh_pretrade_telemetry_caches(
     cachedb_dir: str = "cachedb",
     *,
     now_ts: Optional[float] = None,
+    include_t212_portfolio: bool = True,
 ) -> Dict[str, bool]:
     """Producer-only function refreshing pre-trade caches (microstructure and T212 position prices; equity OHLCV series is owned by cacheManager)."""
     orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator, start_sync=True)
@@ -2217,6 +2222,7 @@ def refresh_pretrade_telemetry_caches(
     }
     _rj = _resolve_read_json_cached()
     sym_raw = str(symbol or "").strip()
+    is_eq_sym = False
     if sym_raw:
         session_policy = orchestrator.resolve_session_policy(sym_raw)
         sym_quotes = compatible_quote_suffixes(sym_raw)
@@ -2224,10 +2230,11 @@ def refresh_pretrade_telemetry_caches(
         is_eq_sym = session_policy.is_equity or is_equity_symbol(sym_raw)
         _, quote_variants = _scope_symbol_variants(sym_raw, is_eq_sym, is_usd_sym, sym_quotes)
         try:
-            _ensure_fresh_pretrade_microstructure(
-                cachedb_dir, sym_raw, quote_variants, is_usd_sym, is_eq_sym, _rj, allow_network=True
+            status["microstructure_refreshed"] = bool(
+                _ensure_fresh_pretrade_microstructure(
+                    cachedb_dir, sym_raw, quote_variants, is_usd_sym, is_eq_sym, _rj, allow_network=True
+                )
             )
-            status["microstructure_refreshed"] = True
         except Exception:
             pass
         if (
@@ -2242,6 +2249,7 @@ def refresh_pretrade_telemetry_caches(
                 str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{sym_u}.json")))
             ):
                 try:
+                    prev_mtime = os.path.getmtime(ohlc_path) if os.path.exists(ohlc_path) else 0.0
                     _load_stitched_24h_ohlc_points(
                         _resolve_fallback_ohlc_fn(sym_u),
                         sym_u,
@@ -2249,9 +2257,12 @@ def refresh_pretrade_telemetry_caches(
                         require_positive_volume=True,
                         cache_dir=cachedb_dir,
                     )
+                    new_mtime = os.path.getmtime(ohlc_path) if os.path.exists(ohlc_path) else 0.0
+                    if new_mtime > prev_mtime:
+                        status["microstructure_refreshed"] = True
                 except Exception:
                     pass
-    if not sym_raw or is_eq_sym:
+    if include_t212_portfolio and (not sym_raw or is_eq_sym):
         try:
             vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
             if os.path.exists(vb_path) and isinstance(vb_d := _rj(vb_path), dict):

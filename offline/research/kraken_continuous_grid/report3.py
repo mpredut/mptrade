@@ -18,6 +18,7 @@ from offline.research.kraken_continuous_grid.report import (
     _load_grid_results_by_cfg,
     _resolve_exp_dir,
     _risk_adjusted_score as _ret_dd_ratio,
+    format_grid_coverage_line,
 )
 
 
@@ -29,6 +30,8 @@ def _generate_report_with_status(exp_dir: str | None = None) -> tuple[list[str],
     L = ["# Finite-cash continuous runs (3900 USD, no refill after losses)\n",
          "Return and max drawdown as % of 3900 USD over the whole history per asset; "
          "`neg` = assets with a loss; `min cash` = lowest free cash seen (median over assets).\n"]
+    if cov_line := format_grid_coverage_line(valid_rows, exp):
+        L.append(f"Effective coverage: {cov_line}.\n")
     for fee in ("0.26", "0.4"):
         _append_markdown_table_header(
             L,

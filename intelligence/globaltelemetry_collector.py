@@ -331,18 +331,28 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         return False
 
     def update_pretrade_caches(self, force: bool = False, now: Optional[float] = None) -> bool:
-        """Producer refresh of pre-trade caches (sibling microstructure, T212 position prices, Yahoo 5d equity chart)."""
+        """Producer refresh of pre-trade caches (per-symbol microstructure and once-per-round T212 position prices)."""
         try:
             eff_now = resolve_now_ts(self._resolve_step_now(now))
             any_refreshed = False
             for sym in list(self.symbols):
-                status = refresh_pretrade_telemetry_caches(sym, cachedb_dir=self.cache_dir, now_ts=eff_now)
+                status = refresh_pretrade_telemetry_caches(
+                    sym,
+                    cachedb_dir=self.cache_dir,
+                    now_ts=eff_now,
+                    include_t212_portfolio=False,
+                )
                 if any(status.values()):
                     any_refreshed = True
-            if not self.symbols:
-                status = refresh_pretrade_telemetry_caches("", cachedb_dir=self.cache_dir, now_ts=eff_now)
-                any_refreshed = any(status.values())
-            return True if (self.symbols or any_refreshed) else False
+            portfolio_status = refresh_pretrade_telemetry_caches(
+                "",
+                cachedb_dir=self.cache_dir,
+                now_ts=eff_now,
+                include_t212_portfolio=True,
+            )
+            if any(portfolio_status.values()):
+                any_refreshed = True
+            return any_refreshed
         except Exception as e:
             logger.warning("Failed refreshing pre-trade caches: %s", e)
         return False

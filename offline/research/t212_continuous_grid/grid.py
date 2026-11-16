@@ -194,7 +194,12 @@ def task(args):
         for itv, minutes, bars in (("1h", 60, bars_1h), ("1d", 1440, bars_1d)):
             if bars:
                 ohlc, ts = _SPLIT_CACHE.get((DATA, asset, itv), (None, None))
-                out[itv] = run(bars, params, peak, minutes, ohlc=ohlc, ts=ts)
+                out[itv] = {
+                    **run(bars, params, peak, minutes, ohlc=ohlc, ts=ts),
+                    "bars": len(bars),
+                    "start_ts": bars[0][0],
+                    "end_ts": bars[-1][0],
+                }
         if bars_1h:
             ohlc, ts = _SPLIT_CACHE.get((DATA, asset, "1h"), (None, None))
             if ohlc is None:

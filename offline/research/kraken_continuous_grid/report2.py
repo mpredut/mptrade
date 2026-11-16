@@ -21,6 +21,7 @@ from offline.research.kraken_continuous_grid.report import (
     _matches_known_spec,
     _rank_key,
     _resolve_exp_dir,
+    format_grid_coverage_line,
 )
 
 
@@ -32,6 +33,8 @@ def _generate_report_with_status(exp_dir: str | None = None) -> tuple[list[str],
     wave1 = read_jsonl_dicts(results_path)
     errors = [r for r in rows if _is_error_row(r)]
     L = ["# Overnight wave 2: selection, fine overlay grid, fee stress\n"]
+    if cov_line := format_grid_coverage_line(rows or wave1, exp):
+        L.append(f"Effective coverage: {cov_line}.\n")
 
     # ---------------------------------------------------------------- selection
     sel_by_asset: dict[str, dict] = {}
