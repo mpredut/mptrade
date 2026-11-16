@@ -386,6 +386,7 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
             "telemetry_asset_scope": resolved_snapshot.asset_scope,
             "telemetry_source": resolved_snapshot.source,
             "telemetry_pillar_sources": dict(resolved_snapshot.pillar_sources),
+            "telemetry_source_freshness": resolved_snapshot.source_freshness,
             "telemetry_ts": resolved_snapshot.ts,
             "telemetry_age_sec": round(resolved_snapshot.age_sec, 3) if resolved_snapshot.age_sec is not None else None,
             "telemetry_max_age_sec": resolved_snapshot.max_age_sec,
@@ -423,10 +424,18 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
         if resolved_snapshot:
             age_str = f"{resolved_snapshot.age_sec:.1f}s" if resolved_snapshot.age_sec is not None else "n/a"
             src_str = resolved_snapshot.source or "cachedb"
-            context_items.append(
-                f"- Telemetry Snapshot: symbol={resolved_snapshot.canonical_symbol} "
-                f"(scope={resolved_snapshot.asset_scope}, source={src_str}, age={age_str}, fresh={resolved_snapshot.is_fresh})"
-            )
+            src_ages_str = resolved_snapshot.format_source_ages()
+            if src_ages_str:
+                context_items.append(
+                    f"- Telemetry Snapshot: symbol={resolved_snapshot.canonical_symbol} "
+                    f"(scope={resolved_snapshot.asset_scope}, source={src_str}, newest_age={age_str}, gate_fresh={resolved_snapshot.is_fresh})"
+                )
+                context_items.append(f"- Telemetry Source Ages (age/interval): {src_ages_str}")
+            else:
+                context_items.append(
+                    f"- Telemetry Snapshot: symbol={resolved_snapshot.canonical_symbol} "
+                    f"(scope={resolved_snapshot.asset_scope}, source={src_str}, age={age_str}, fresh={resolved_snapshot.is_fresh})"
+                )
             context_items.extend(f"- {k}: {v}" for k, v in resolved_snapshot.items())
         context_str = "\n".join(context_items)
 

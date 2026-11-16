@@ -625,9 +625,21 @@ def test_pretrade_telemetry_read_write_separation_and_explicit_snapshot_contract
     assert dec_hs.allowed is True
     assert dec_hs.metadata["telemetry_symbol"] == "NVDAUSEQ"
     assert dec_hs.metadata["telemetry_source"] == "cachedb"
+    assert snap.source_freshness["orderbook"]["age_sec"] == pytest.approx(25.0)
+    assert snap.source_freshness["orderbook"]["interval_sec"] == pytest.approx(15.0)
+    assert snap.source_freshness["orderbook"]["fresh"] is True
+    assert "microstructure" not in snap.source_freshness
+    assert snap.source_freshness["price_series_24h"]["age_sec"] == pytest.approx(600.0)
+    assert snap.source_freshness["price_series_24h"]["interval_sec"] == pytest.approx(60.0)
+    assert snap.source_freshness["price_series_24h"]["fresh"] is False
     assert dec_hs.metadata["telemetry_age_sec"] == pytest.approx(25.0)
     assert dec_hs.metadata["telemetry_fresh"] is True
-    assert any("Telemetry Snapshot: symbol=NVDAUSEQ" in p for p in prompts_seen)
+    assert dec_hs.metadata["telemetry_source_freshness"] == snap.source_freshness
+    assert any("Telemetry Snapshot: symbol=NVDAUSEQ" in p and "newest_age=25.0s, gate_fresh=True" in p for p in prompts_seen)
+    assert any(
+        "Telemetry Source Ages (age/interval): orderbook=25.0s/15s (1.7x, fresh), price_series_24h=600.0s/60s (10.0x, stale)" in p
+        for p in prompts_seen
+    )
     assert network_calls == []
 
     # 3. Unavailable/stale telemetry preserves fallback_action and shadow/enforce policies without blocking on LLM
@@ -1474,4 +1486,134 @@ def test_global_telemetry_collector_publishes_venue_balances_and_cycle_deltas(tm
     assert os.path.exists(mhist_path)
 
 
+def test_pretrade_telemetry_per_source_ages_expose_stale_derivatives_and_whale_without_changing_gate_policy(
+    temp_cache_dir, monkeypatch
+):
+    _HIGH_STAKE_DECISION_CACHE.clear()
+    clear_post_stop_reentry_cache()
+    monkeypatch.setattr(ptc_mod, "get_cachedb_dir", lambda: temp_cache_dir)
 
+    now_ts = 1_750_100_000.0
+    save_json_state(
+        os.path.join(temp_cache_dir, "cache_current_price.json"),
+        {"items": {"BTCUSDC": [[int((now_ts - 2.0) * 1000), 68000.0]]}},
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "orderbook_depth_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "mid_price": 68000.0,
+            "best_bid": 67999.0,
+            "best_ask": 68001.0,
+            "bid_depth_usd": 500000.0,
+            "ask_depth_usd": 400000.0,
+            "imbalance_ratio": 0.55,
+            "largest_bid_wall_usd": 120000.0,
+            "largest_bid_wall_price": 67800.0,
+            "largest_ask_wall_usd": 110000.0,
+            "largest_ask_wall_price": 68200.0,
+            "spread_bps": 0.29,
+            "ts": now_ts - 8.0,
+        },
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "derivatives_telemetry_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "funding_rate": 0.0001,
+            "predicted_funding_rate": 0.0001,
+            "open_interest": 1000.0,
+            "open_interest_usd": 68000000.0,
+            "ts": now_ts - 420.0,
+        },
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "whale_snapshot_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "top_traders_long_ratio": 1.5,
+            "top_traders_long_pct": 0.60,
+            "taker_buy_sell_ratio": 1.12,
+            "taker_buy_vol_usd": 5000000.0,
+            "taker_sell_vol_usd": 4460000.0,
+            "open_interest_usd": 68000000.0,
+            "ts": now_ts - 900.0,
+        },
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "cache_short_trend.json"),
+        {"items": {"BTCUSDC": {"price": 68000.0, "slope_90s": 0.0002, "slope_15m": 0.0005, "ts": now_ts - 4.0}}},
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "sentiment_eval.json"),
+        {"market_bias": "NEUTRAL", "risk_level": "MODERATE", "recommended_action": "HOLD", "ts": now_ts - 36000.0},
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "fear_greed_collect.json"),
+        {"value": 52, "classification": "Neutral", "ts": now_ts - 900.0},
+    )
+
+    snap = read_pretrade_telemetry_snapshot(
+        "BTCUSDC", cachedb_dir=temp_cache_dir, now_ts=now_ts, max_age_sec=300.0, enforce_freshness=True
+    )
+    assert snap.is_available is True
+    assert snap.is_fresh is True
+    assert snap.age_sec == pytest.approx(2.0)
+
+    sf = snap.source_freshness
+    assert sf["price_series_24h"] == {
+        "ts": pytest.approx(now_ts - 2.0),
+        "age_sec": 2.0,
+        "interval_sec": 30.0,
+        "age_ratio": 0.07,
+        "fresh": True,
+    }
+    assert sf["orderbook"]["fresh"] is True
+    assert sf["short_slopes"]["fresh"] is True
+    assert sf["fear_greed"]["fresh"] is True
+    assert sf["derivatives"]["age_sec"] == pytest.approx(420.0)
+    assert sf["derivatives"]["interval_sec"] == pytest.approx(30.0)
+    assert sf["derivatives"]["age_ratio"] == pytest.approx(14.0)
+    assert sf["derivatives"]["fresh"] is False
+    assert sf["whale"]["age_sec"] == pytest.approx(900.0)
+    assert sf["whale"]["interval_sec"] == pytest.approx(60.0)
+    assert sf["whale"]["age_ratio"] == pytest.approx(15.0)
+    assert sf["whale"]["fresh"] is False
+    assert sf["sentiment_eval"]["fresh"] is False
+
+    prompts_seen: list[str] = []
+    monkeypatch.setattr(
+        "intelligence.sentiment.guards.high_stake_guard.query_topic_json",
+        lambda client, topic, prompt, **kw: prompts_seen.append(prompt)
+        or {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"},
+    )
+    ps_guard = PostStopReentryGuard(gemini_client=object(), notify_enabled=False, cache_ttl_sec=0.0)
+    dec_ps = ps_guard.check(
+        "BTCUSDC",
+        current_price=68000.0,
+        last_sell_price=67500.0,
+        trough=66800.0,
+        bounce_pct=0.018,
+        qty=0.02,
+        snapshot=snap,
+        now=now_ts,
+    )
+    assert dec_ps.allowed is True
+    assert len(prompts_seen) == 1
+    assert "derivatives=420.0s/30s (14.0x, stale)" in prompts_seen[0]
+    assert "whale=900.0s/60s (15.0x, stale)" in prompts_seen[0]
+    assert "price_series_24h=2.0s/30s (0.1x, fresh)" in prompts_seen[0]
+
+    snap_later = PretradeTelemetrySnapshot.from_raw(snap, symbol="BTCUSDC", now_ts=now_ts + 60.0)
+    assert snap_later.source_freshness["price_series_24h"]["age_sec"] == pytest.approx(62.0)
+    assert snap_later.source_freshness["price_series_24h"]["fresh"] is False
+
+    # Display-only macro/short_slopes timestamps never mask stale symbol market data under enforce_freshness
+    os.remove(os.path.join(temp_cache_dir, "cache_current_price.json"))
+    os.remove(os.path.join(temp_cache_dir, "orderbook_depth_BTCUSDC.json"))
+    stale_sym_snap = read_pretrade_telemetry_snapshot(
+        "BTCUSDC", cachedb_dir=temp_cache_dir, now_ts=now_ts, max_age_sec=300.0, enforce_freshness=True
+    )
+    assert stale_sym_snap.age_sec == pytest.approx(420.0)
+    assert stale_sym_snap.is_available is False
+    assert stale_sym_snap.unavailable_reason == "telemetry_stale"

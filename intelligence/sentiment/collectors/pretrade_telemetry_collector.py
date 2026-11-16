@@ -10,8 +10,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from botcore import (
+    SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     clean_scale,
     extract_current_price_item,
+    extract_timestamp_s,
     is_live_network_backfill_enabled,
     is_offline_disk_cache_enabled,
     normalize_epoch_sec,
@@ -43,6 +45,7 @@ from intelligence.macro_sentiment_ssot import (
     enrich_macro_benchmarks_live_state,
     format_equity_macro_regime_line,
     read_first_cached_dict,
+    resolve_derived_telemetry_intervals,
     resolve_kalman_vel_z,
     resolve_read_json_cached,
     SHORT_KINEMATIC_METRIC_KEYS,
@@ -119,6 +122,40 @@ from state_io import (
 read_json_cached = _default_read_json_cached
 
 DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC: float = 1800.0
+PRETRADE_SOURCE_STALE_INTERVAL_MULT: float = 2.0
+
+
+def resolve_pretrade_source_intervals_sec(asset_scope: str = "CRYPTO") -> Dict[str, float]:
+    """Return SSOT expected update intervals (seconds) per pre-trade telemetry source."""
+    derived = resolve_derived_telemetry_intervals()
+    ob_itv = derived["orderbook_interval_sec"]
+    deriv_itv = derived["derivatives_interval_sec"]
+    whale_itv = derived["whale_interval_sec"]
+    is_eq = str(asset_scope or "").strip().upper() == "EQUITY"
+    return {
+        "price_series_24h": max(whale_itv, ob_itv * 3.0) if is_eq else deriv_itv,
+        "orderbook": ob_itv,
+        "microstructure": ob_itv,
+        "derivatives": deriv_itv,
+        "whale": whale_itv,
+        "short_slopes": SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
+        "macro_benchmarks": derived["macro_benchmarks_interval_sec"],
+        "fear_greed": derived["fear_greed_interval_sec"],
+        "sentiment_eval": derived["default_sentiment_interval_sec"],
+        "geopolitical_eval": derived["default_geopolitical_interval_sec"],
+    }
+
+
+def _clean_pillar_timestamps(raw_map: Any) -> Dict[str, float]:
+    if not isinstance(raw_map, Mapping):
+        return {}
+    out: Dict[str, float] = {}
+    for k, v in raw_map.items():
+        key_s = str(k or "").strip()
+        ts_v = normalize_epoch_sec(v, default=0.0) or 0.0
+        if key_s and ts_v > 0.0:
+            out[key_s] = ts_v
+    return out
 
 
 @dataclass(frozen=True)
@@ -137,6 +174,7 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
     data: Dict[str, Any] = field(default_factory=dict)
     unavailable_reason: Optional[str] = None
     enforce_freshness: bool = False
+    pillar_timestamps: Dict[str, float] = field(default_factory=dict)
 
     def __getitem__(self, key: str) -> Any:
         return self.data[key]
@@ -174,6 +212,41 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         if self.enforce_freshness:
             return bool(self.data) and self.is_fresh
         return True
+
+    @property
+    def source_freshness(self) -> Dict[str, Dict[str, Any]]:
+        """Per-source age, expected update interval, age/interval ratio, and freshness flag."""
+        if not self.pillar_timestamps or self.evaluated_at_ts <= 0.0:
+            return {}
+        intervals = resolve_pretrade_source_intervals_sec(self.asset_scope)
+        ob_ts = normalize_epoch_sec(self.pillar_timestamps.get("orderbook"), default=0.0) or 0.0
+        out: Dict[str, Dict[str, Any]] = {}
+        for name, raw_ts in self.pillar_timestamps.items():
+            ts_val = normalize_epoch_sec(raw_ts, default=0.0) or 0.0
+            if ts_val <= 0.0:
+                continue
+            if name == "microstructure" and ob_ts > 0.0 and abs(ts_val - ob_ts) < 1e-3:
+                continue
+            age_s = max(0.0, self.evaluated_at_ts - ts_val)
+            itv_s = safe_pos_float(intervals.get(name), self.max_age_sec) or self.max_age_sec
+            out[name] = {
+                "ts": ts_val,
+                "age_sec": round(age_s, 1),
+                "interval_sec": round(itv_s, 1),
+                "age_ratio": round(age_s / itv_s, 2),
+                "fresh": age_s <= itv_s * PRETRADE_SOURCE_STALE_INTERVAL_MULT,
+            }
+        return out
+
+    def format_source_ages(self) -> str:
+        """Render compact per-source age vs update interval summary for LLM guard prompts."""
+        parts = []
+        for name, info in self.source_freshness.items():
+            itv_v = info["interval_sec"]
+            itv_s = f"{int(round(itv_v))}s" if abs(itv_v - round(itv_v)) < 1e-6 else f"{itv_v:.1f}s"
+            state = "fresh" if info["fresh"] else "stale"
+            parts.append(f"{name}={info['age_sec']:.1f}s/{itv_s} ({info['age_ratio']:.1f}x, {state})")
+        return ", ".join(parts)
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a shallow dict copy of the formatted telemetry lines."""
@@ -230,6 +303,7 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         source: str = "explicit",
         ts: Optional[float] = None,
         pillar_sources: Optional[Dict[str, str]] = None,
+        pillar_timestamps: Optional[Dict[str, float]] = None,
         max_age_sec: Optional[float] = None,
         unavailable_reason: Optional[str] = None,
         enforce_freshness: bool = False,
@@ -240,6 +314,7 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
                 max_age_sec is None
                 and not enforce_freshness
                 and unavailable_reason is None
+                and pillar_timestamps is None
                 and (now_ts is None or abs(eff_now - raw.evaluated_at_ts) < 1e-6)
             ):
                 return raw
@@ -265,6 +340,9 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
                 data=dict(raw.data),
                 unavailable_reason=eff_unavail,
                 enforce_freshness=eff_enforce,
+                pillar_timestamps=_clean_pillar_timestamps(
+                    pillar_timestamps if pillar_timestamps is not None else raw.pillar_timestamps
+                ),
             )
         sym_raw = str(symbol or "").strip()
         canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
@@ -281,6 +359,7 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         meta_ts = normalize_epoch_sec(raw_dict.pop("_telemetry_ts", None), default=None)
         meta_src = raw_dict.pop("_telemetry_source", None)
         meta_pillars = raw_dict.pop("_telemetry_pillar_sources", None)
+        meta_pillar_ts = raw_dict.pop("_telemetry_pillar_timestamps", None)
         meta_unavail = raw_dict.pop("_telemetry_unavailable_reason", None)
         eff_ts = normalize_epoch_sec(ts if ts is not None else meta_ts, default=0.0) or 0.0
         if eff_ts <= 0.0 and source == "explicit" and raw_dict:
@@ -308,6 +387,9 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
             data=raw_dict,
             unavailable_reason=eff_unavail,
             enforce_freshness=eff_enforce,
+            pillar_timestamps=_clean_pillar_timestamps(
+                pillar_timestamps if pillar_timestamps is not None else meta_pillar_ts
+            ),
         )
 
 
@@ -501,6 +583,7 @@ class PretradeEvaluationContext:
     now_ts: float = 0.0
     telemetry: Dict[str, Any] = field(default_factory=dict)
     pillar_sources: Dict[str, str] = field(default_factory=dict)
+    pillar_timestamps: Dict[str, float] = field(default_factory=dict)
     source_timestamps: List[float] = field(default_factory=list)
     ob_snap: Any = None
     f_snap: Any = None
@@ -529,12 +612,27 @@ class PretradeEvaluationContext:
     st_items_map: Dict[str, Any] = field(default_factory=dict)
     k_items_map: Dict[str, Any] = field(default_factory=dict)
 
-    def record_pillar_source(self, pillar: str, source: str, ts: Optional[float] = None) -> None:
+    def record_pillar_source(
+        self,
+        pillar: str,
+        source: str,
+        ts: Optional[float] = None,
+        *,
+        include_in_snapshot_ts: bool = True,
+    ) -> None:
         """Record pillar provenance and valid epoch timestamp on the evaluation context."""
         self.pillar_sources[pillar] = str(source or "cachedb")
         norm_ts = normalize_epoch_sec(ts, default=0.0) or 0.0
         if norm_ts > 0.0:
-            self.source_timestamps.append(norm_ts)
+            self.pillar_timestamps[pillar] = norm_ts
+            if include_in_snapshot_ts:
+                self.source_timestamps.append(norm_ts)
+
+    def record_source_timestamp(self, source_key: str, ts: Optional[float]) -> None:
+        """Record a per-source timestamp without altering the snapshot-level gate timestamp."""
+        norm_ts = normalize_epoch_sec(ts, default=0.0) or 0.0
+        if norm_ts > 0.0:
+            self.pillar_timestamps[source_key] = norm_ts
 
 
 class PretradePillarCollectorBase(TelemetryCacheCollectorInterface, ABC):
@@ -1355,6 +1453,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
         has_st_tinfo = False
         st_items_map: Dict[str, Any] = {}
         k_items_map: Dict[str, Any] = {}
+        st_ts_t: Optional[float] = None
         try:
             _ensure_cacheprice_classes_bound()
             if isinstance(st_data := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.DEFAULT_FILENAME)), dict):
@@ -1444,6 +1543,8 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                 ):
                     t_entry.pop(k_ov, None)
                 t_entry.update(_compute_short_slopes_from_series(alt_series_24h))
+                if last_alt_pt is not None:
+                    st_ts_t = normalize_epoch_sec(last_alt_pt[0], default=st_ts_t)
                 if (eq_px_diverged_05pct or eq_chart_refreshed or eq_ohlc_flat_short) and isinstance(k_recomp := _compute_kalman_from_series(alt_series_24h), dict):
                     t_entry.update(k_recomp)
             elif alt_series_24h and (
@@ -1493,7 +1594,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
             cur_px_est,
         )
         if ctx.t_entry:
-            ctx.record_pillar_source("short_slopes", "cachedb")
+            ctx.record_pillar_source("short_slopes", "cachedb", st_ts_t, include_in_snapshot_ts=False)
 
 
 class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
@@ -1877,6 +1978,7 @@ class MacroPillarsStage(PretradePillarCollectorBase):
                 eq_reg_line = format_equity_macro_regime_line(mb_data)
                 if eq_reg_line:
                     ctx.telemetry["Equity & Macro Regime"] = eq_reg_line
+                    ctx.record_source_timestamp("macro_benchmarks", extract_timestamp_s(mb_data))
         except Exception:
             pass
         if not ctx.is_eq_sym:
@@ -1894,6 +1996,7 @@ class MacroPillarsStage(PretradePillarCollectorBase):
                         ctx.telemetry["Macro Sentiment Bias"] = (
                             f"{bias or 'UNKNOWN'} (Risk: {risk or 'UNKNOWN'}, Recommendation: {action or 'NONE'})"
                         )
+                        ctx.record_source_timestamp("sentiment_eval", extract_timestamp_s(m_data))
             except Exception:
                 pass
             try:
@@ -1908,6 +2011,10 @@ class MacroPillarsStage(PretradePillarCollectorBase):
                         ctx.telemetry["Fear & Greed Index"] = (
                             f"{val} ({str(label).strip() if label is not None and not isinstance(label, bool) else ''})"
                         )
+                        ctx.record_source_timestamp(
+                            "fear_greed",
+                            normalize_epoch_sec(fg_data.get("ts"), default=None) or extract_timestamp_s(fg_data),
+                        )
             except Exception:
                 pass
         try:
@@ -1920,6 +2027,7 @@ class MacroPillarsStage(PretradePillarCollectorBase):
                 level = g_data.get("threat_level", "")
                 if level is not None and not isinstance(level, bool) and str(level).strip() != "":
                     ctx.telemetry["Geopolitical Threat Level"] = str(level).strip()
+                    ctx.record_source_timestamp("geopolitical_eval", extract_timestamp_s(g_data))
         except Exception:
             pass
         if len(ctx.telemetry) > before_cnt:
@@ -2033,6 +2141,7 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
             source="cachedb",
             ts=snap_ts,
             pillar_sources=ctx.pillar_sources,
+            pillar_timestamps=ctx.pillar_timestamps,
             max_age_sec=max_age_sec,
             enforce_freshness=enforce_freshness,
         )
@@ -2196,6 +2305,8 @@ __all__ = [
     "QuantitativeSeriesAndMicrostructureStage",
     "RecentFillsExecutionStage",
     "collect_pretrade_telemetry",
+    "PRETRADE_SOURCE_STALE_INTERVAL_MULT",
     "read_pretrade_telemetry_snapshot",
     "refresh_pretrade_telemetry_caches",
+    "resolve_pretrade_source_intervals_sec",
 ]
