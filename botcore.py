@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
-"""
-botcore.py -- SHARED SSOT core for bot utilities: logging, .env, HTTP, numeric coercion, and time.
-No external dependencies; standard library only.
+"""botcore.py -- Canonical SSOT core primitives, configuration, HTTP, timestamps, and runtime services.
+
+Thematic layout (Sections 1..10):
+  1. Logging & Process Locking Primitives (`log`, `single_instance`, `FileLock`)
+  2. Scalar Coercion, Sanitization & Order/Side Primitives (`strict_ascii_int`, `extract_order_*`, `normalize_side`)
+  3. Configuration, Environment & CLI SSOT (`Config` / `cfg`, `load_dotenv`, `load_ini_config`, `required_*_env`)
+  4. HTTP Transport, Crypto Signing & Mathematical Helpers (`http_get`, `fetch_public_json`, `diff_percent`, `slope`)
+  5. Timestamps, Epoch Normalization, Freshness & Market Hours (`normalize_epoch_sec`, `resolve_now_ts`, `is_cache_fresh`)
+  6. Price Series, Cache Freshness SLA & Multi-Venue NAV (`ClosedPriceSeries`, `compute_venue_nav_breakdown`)
+  7. Heartbeats & Process Manifest (`touch_module_heartbeat`, `evaluate_heartbeat_files_freshness`, `parse_procs_manifest`)
+  8. Runtime Services, Execution Gates & Monitoring Threads (`RuntimeServices`, `is_*_enabled`, `start_monitoring_daemon_thread`)
+  9. Module Loading, Lazy Registries & Backward-Compatible Aliases (`LazyPluginRegistryFactory`, `load_local_module`)
+ 10. Canonical LLM Topic Identity Registry & Re-Export Sync (`TopicSpec`, `TOPIC_SPECS`, `_sync_reexport_modules`)
 """
 from __future__ import annotations
 
@@ -66,6 +76,11 @@ from cachepaths import (
     sync_module_reexports,
 )
 import state_io as _state_io
+
+
+# =============================================================================
+# 1. LOGGING & PROCESS LOCKING PRIMITIVES
+# =============================================================================
 
 HTTP_TIMEOUT = 25
 BUCHAREST = ZoneInfo("Europe/Bucharest")
@@ -171,10 +186,8 @@ class FileLock:
 
 
 # =============================================================================
-# 1. NUMERIC COERCION & OBJECT SANITIZATION PRIMITIVES
+# 2. SCALAR COERCION, SANITIZATION & ORDER/SIDE PRIMITIVES
 # =============================================================================
-
-
 
 def strict_ascii_int(
     val: object, default: int | None = None, *, min_value: int | None = None, allow_float_str: bool = False
@@ -339,11 +352,399 @@ def format_notify_price(price: object, *, comma: bool = True) -> str:
     return raw
 
 
+def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:
+    """Parse a numeric config value that may be expressed either as a ratio or as a percentage."""
+    if isinstance(raw, str) and raw.strip().endswith("%"):
+        return require_nonneg_float(raw.strip()[:-1].strip(), name="ratio_or_pct") / 100.0
+    val = require_nonneg_float(raw, name="ratio_or_pct")
+    cutoff = require_nonneg_float(pct_cutoff, name="pct_cutoff")
+    return val / 100.0 if val > cutoff else val
+
+
+def safe_thresh(val: object, default: int) -> int:
+    """Safely coerce sentiment index/threshold to an integer in [0, 100]."""
+    f = safe_float(val, -1.0)
+    return int(round(f)) if 0.0 <= f <= 100.0 else default
+
+
+def obj_attr_first(obj: object, *names: str, default: object = None) -> object:
+    """Return the first non-``None`` attribute or mapping value among ``names`` on ``obj``."""
+    for name in names:
+        val = obj_attr(obj, name, None)
+        if val is not None:
+            return val
+    return default
+
+
+def coerce_finite_float(
+    raw: object, *, positive: bool = False, default: float | None = None
+) -> float | None:
+    """Coerce ``raw`` to a finite float (or strictly positive finite float when ``positive=True``)."""
+    return safe_pos_float(raw, default=default) if positive else safe_float(raw, default=default)
+
+
+def resolve_positive_max_age(max_age_sec: object, default: float | None) -> float | None:
+    """Return sanitized positive ``default`` when ``max_age_sec is None``, else strictly positive finite float or ``None``."""
+    return (
+        safe_pos_float(default, default=None)
+        if max_age_sec is None
+        else safe_pos_float(max_age_sec, default=None)
+    )
+
+
+def resolve_order_notional(
+    notional_eur: object,
+    price: object,
+    qty: object,
+    *,
+    default: float | None = None,
+    fallback_on_nonfinite: bool = True,
+) -> float | None:
+    """Resolve positive order notional from explicit ``notional_eur`` or ``price * qty`` fallback."""
+    n_clean = safe_pos_float(notional_eur, 0.0)
+    if n_clean > 0.0:
+        return n_clean
+    if not fallback_on_nonfinite and notional_eur is not None and safe_float(notional_eur, None) is None:
+        return default
+    px_clean = safe_pos_float(price, 0.0)
+    qty_clean = safe_pos_float(qty, 0.0)
+    return (px_clean * qty_clean) if (px_clean > 0.0 and qty_clean > 0.0) else default
+
+
+def clean_scale(
+    val: object,
+    default: float = 1.0,
+    *,
+    allow_percent: bool = False,
+    min_positive: bool = False,
+    clamp: bool = False,
+) -> float:
+    """Normalize a scale factor into [0.0, 1.0], optionally converting [5.0, 100.0] or '%' percentages."""
+    if allow_percent and isinstance(val, str) and val.strip().endswith("%"):
+        pct = safe_nonneg_float(val.strip()[:-1].strip(), default=None)
+        f = round(pct / 100.0, 4) if (pct is not None and pct <= 100.0) else -1.0
+    else:
+        f = safe_float(val, -1.0)
+        if allow_percent and 5.0 <= f <= 100.0:
+            f = round(f / 100.0, 4)
+    if f < 0.0 or (min_positive and f <= 0.0):
+        return default
+    if clamp and f > 1.0:
+        return 1.0
+    return f if 0.0 <= f <= 1.0 else default
+
+
+def _first_mapped(mapping: object, keys: tuple[str, ...], parser: object, default: object = None) -> object:
+    """Return the first non-None parsed value from ``mapping`` across ``keys``."""
+    if not isinstance(mapping, dict):
+        return default
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            val = parser(mapping[key])
+            if val is not None:
+                return val
+    return default
+
+
+_SAFE_ID_DOT_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_SAFE_ID_NODOT_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_TREND_UP_TOKENS = frozenset(("up", "bull", "uptrend", "bullish"))
+_TREND_DOWN_TOKENS = frozenset(("down", "bear", "downtrend", "bearish"))
+_BUY_SIDE_TOKENS = frozenset(("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"))
+_SELL_SIDE_TOKENS = frozenset(("A", "S", "SELL", "SOLD", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"))
+_INVALID_OID_STRINGS = INVALID_SCALAR_STRINGS | frozenset(("0", "0.0", "-0", "+0", "+0.0", "-0.0"))
+
+
+def normalize_side(side: object, *, require_str: bool = False) -> str:
+    """Normalize a scalar order side token to ``'BUY'`` or ``'SELL'`` (or ``''`` when unrecognized)."""
+    if side is None or isinstance(side, bool) or (require_str and not isinstance(side, str)):
+        return ""
+    s = " ".join(str(side).strip().upper().replace("_", " ").replace("-", " ").split())
+    if s in _BUY_SIDE_TOKENS:
+        return "BUY"
+    if s in _SELL_SIDE_TOKENS:
+        return "SELL"
+    return ""
+
+
+def require_buy_sell_side(side: object, *, name: str = "side") -> str:
+    """Normalize ``side`` to ``'BUY'`` or ``'SELL'``, raising ``ValueError`` otherwise."""
+    norm = normalize_side(side)
+    if norm not in ("BUY", "SELL"):
+        raise ValueError(f"Invalid {name} {side!r}: {name} must be BUY or SELL (expected 'BUY' or 'SELL')")
+    return norm
+
+
+def opposite_side(side: object) -> str:
+    """Return the opposite order side (``'SELL'`` for ``'BUY'``, ``'BUY'`` for ``'SELL'``)."""
+    return "SELL" if require_buy_sell_side(side, name="order_type") == "BUY" else "BUY"
+
+
+def clean_order_id(val: object) -> str | None:
+    """Validate and normalize a scalar venue order ID to a non-empty string (or ``None``)."""
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return None
+    if isinstance(val, (int, float)):
+        val = exact_pos_int(val, default=None)
+        if val is None:
+            return None
+    if not isinstance(val, (str, int)):
+        return None
+    text = str(val).strip()
+    if not text or text.startswith("-") or text.lower() in _INVALID_OID_STRINGS:
+        return None
+    if text.endswith(".0") and text[:-2].lstrip("+").isdigit():
+        text = text[:-2]
+    if text in {"0", "+0"}:
+        return None
+    return text[1:] if text.startswith("+") and text[1:].isdigit() else text
+
+
+def clean_order_id_str(val: object) -> str:
+    """Return ``clean_order_id(val)`` or ``''`` when empty/invalid."""
+    return clean_order_id(val) or ""
+
+
+def normalize_scalar_order_id(val: object) -> int | str | None:
+    """Normalize a scalar order ID, preserving positive integers as ``int`` and string IDs as ``str``."""
+    cleaned = clean_order_id(val)
+    if cleaned is None:
+        return None
+    return exact_pos_int(val, default=cleaned) if isinstance(val, (int, float)) else cleaned
+
+
+def normalize_trend_direction(
+    raw_dir: object,
+    default: str | None = None,
+    *,
+    preserve_bull_bear: bool = False,
+    allow_long_short: bool = False,
+) -> str | None:
+    """Normalize a raw trend token (``up``/``bull``/``uptrend``/``bullish``/``long``, etc.) into a canonical direction."""
+    if not isinstance(raw_dir, str):
+        return default
+    d = raw_dir.strip().lower()
+    if d in _TREND_UP_TOKENS or (allow_long_short and d == "long"):
+        return ("up" if d == "up" else "bull") if preserve_bull_bear else "up"
+    if d in _TREND_DOWN_TOKENS or (allow_long_short and d == "short"):
+        return ("down" if d == "down" else "bear") if preserve_bull_bear else "down"
+    return default
+
+
+def sanitize_pipe_field(value: object) -> str:
+    """Sanitize a field value for pipe-delimited logs by replacing ``|``, ``\\r``, and ``\\n``."""
+    return "" if value is None else str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
+
+
+def sanitize_identifier(
+    value: object,
+    default: str = "unknown",
+    *,
+    sep: str = "_",
+    allow_dots_hyphens: bool = True,
+    strip_chars: str | None = None,
+) -> str:
+    """Sanitize an identifier/slug by replacing unsafe characters with ``sep`` and stripping edge separators."""
+    if value is None or isinstance(value, bool):
+        return default
+    pattern = _SAFE_ID_DOT_RE if allow_dots_hyphens else _SAFE_ID_NODOT_RE
+    cleaned = pattern.sub(sep, str(value).strip()).strip(strip_chars if strip_chars is not None else sep)
+    return cleaned or default
+
+
+def normalize_class_name(cls_or_name: object) -> str:
+    """Return the class name for a ``type`` object or stripped string, else ``''``."""
+    if isinstance(cls_or_name, type):
+        return cls_or_name.__name__
+    return cls_or_name.strip() if isinstance(cls_or_name, str) else ""
+
+
+_ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "txid", "oid", "i", "id")
+_PRICE_KEYS = ("price", "px", "limitPx", "fillPrice", "limit", "limitPrice", "averagePrice", "avgPrice", "rate", "L", "p")
+_QTY_KEYS = (
+    "qty", "quantity", "executedQty", "executed_qty", "filledQuantity", "filledQty", "filled_qty", "vol_exec",
+    "sz", "vol", "origQty", "origSz", "orig_qty", "requested_qty", "orderedQuantity", "amount_shares", "l", "z", "q",
+)
+_COST_EXEC_KEY_PAIRS = (
+    ("cummulativeQuoteQty", "executedQty"),
+    ("cummulativeQuoteQty", "qty"),
+    ("cummulativeQuoteQty", "quantity"),
+    ("quoteQty", "qty"),
+    ("quoteQty", "quantity"),
+    ("cost", "vol_exec"),
+    ("cost", "vol"),
+    ("filledValue", "filledQuantity"),
+    ("Y", "l"),
+    ("Z", "z"),
+)
+
+
+def _pos_abs_float(value: object) -> float | None:
+    val = abs(safe_float(value, default=0.0))
+    return val if val > 0.0 else None
+
+
+def _nonneg_abs_float(value: object) -> float | None:
+    val = safe_float(value, default=None)
+    return abs(val) if val is not None else None
+
+
+def extract_order_id(order: object, default: str | None = None) -> str | None:
+    """Extract and normalize a venue order ID from any response shape."""
+    if order is None or isinstance(order, bool):
+        return default
+    if isinstance(order, (list, tuple)):
+        for item in order:
+            if (cleaned := extract_order_id(item)) is not None:
+                return cleaned
+        return default
+    if hasattr(order, "order_id") and hasattr(order, "state"):
+        cleaned = clean_order_id(getattr(order, "order_id", None))
+        return cleaned if cleaned is not None else default
+    if isinstance(order, dict):
+        return _first_mapped(order, _ORDER_ID_KEYS, extract_order_id, default)
+    cleaned = clean_order_id(order)
+    return cleaned if cleaned is not None else default
+
+
+def extract_order_side(order: object) -> str:
+    """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
+    if not isinstance(order, dict):
+        return ""
+    s_norm = _first_mapped(order, ("side", "S", "dir"), lambda v: normalize_side(v) or None)
+    if s_norm:
+        return s_norm
+    descr = order.get("descr")
+    for raw_type in (order.get("type"), descr.get("type") if isinstance(descr, dict) else None):
+        if (t_norm := normalize_side(raw_type)) in ("BUY", "SELL"):
+            return t_norm
+    raw_buyer = order.get("isBuyer")
+    if raw_buyer is not None:
+        parsed_b = _parse_bool_flag(raw_buyer, None)
+        if parsed_b is not None:
+            return "BUY" if parsed_b else "SELL"
+        if isinstance(raw_buyer, str) and (b_norm := raw_buyer.strip().lower()) in ("b", "buy", "s", "sell"):
+            return "BUY" if b_norm.startswith("b") else "SELL"
+    inst = order.get("instrument")
+    has_broker_hint = "ticker" in order or "limitPrice" in order or (isinstance(inst, dict) and "ticker" in inst)
+    for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
+        sq = safe_float(order.get(sq_key), default=0.0)
+        if sq < 0.0:
+            return "SELL"
+        if sq > 0.0 and (sq_key in ("signed_qty", "orderedQuantity") or has_broker_hint):
+            return "BUY"
+    return ""
+
+
+def extract_order_price(order: object, default: float = 0.0) -> float:
+    """Extract order/fill price from any venue shape."""
+    if not isinstance(order, dict):
+        return default
+    val = _first_mapped(order, _PRICE_KEYS, lambda v: safe_pos_float(v, default=None))
+    if val is not None:
+        return val
+    descr = order.get("descr")
+    if isinstance(descr, dict) and (val := safe_pos_float(descr.get("price"), default=None)) is not None:
+        return val
+    for cost_key, exec_key in _COST_EXEC_KEY_PAIRS:
+        if cost_key in order and exec_key in order:
+            cost_val = _pos_abs_float(order.get(cost_key))
+            exec_val = _pos_abs_float(order.get(exec_key))
+            if cost_val and exec_val and (res := safe_pos_float(cost_val / exec_val, default=None)) is not None:
+                return res
+    fills = order.get("fills")
+    if isinstance(fills, list) and fills:
+        total_quote, total_qty = 0.0, 0.0
+        for f in fills:
+            if isinstance(f, dict):
+                f_px = safe_pos_float(f.get("price", f.get("px", 0.0)), default=None)
+                f_qty = _pos_abs_float(f.get("qty", f.get("quantity", f.get("sz", 0.0))))
+                if f_px is not None and f_qty is not None:
+                    total_quote += f_px * f_qty
+                    total_qty += f_qty
+        if total_qty > 0 and (res := safe_pos_float(total_quote / total_qty, default=None)) is not None:
+            return res
+    msg_str = order.get("msg")
+    if isinstance(msg_str, str) and "@" in msg_str and msg_str.strip().lower().startswith("filled "):
+        if (msg_px := safe_pos_float(msg_str.rsplit("@", 1)[1].strip(), default=None)) is not None:
+            return msg_px
+    return default
+
+
+def extract_order_qty(order: object, default: float = 0.0) -> float:
+    """Extract order/fill quantity from any venue shape."""
+    return _first_mapped(order, _QTY_KEYS, _pos_abs_float, default)
+
+
+def is_market_order(order: object) -> bool:
+    """Return whether ``order`` represents a market order (safe against string flags like ``'false'``)."""
+    if not isinstance(order, Mapping):
+        return False
+    if "market" in order and order.get("market") is not None:
+        return bool(_parse_bool_flag(order.get("market"), False))
+    descr = order.get("descr")
+    for raw_ot in (
+        order.get("ordertype"),
+        order.get("type"),
+        descr.get("ordertype") if isinstance(descr, Mapping) else None,
+    ):
+        if isinstance(raw_ot, str) and raw_ot.strip().upper() == "MARKET":
+            return True
+    return False
+
+
+def clamp_price_to_bbo_mid(
+    price: float | None,
+    bid: object,
+    ask: object,
+    *,
+    max_spread_ratio: float = 0.05,
+) -> float | None:
+    """Return ``price`` clamped to the BBO mid ``(bid + ask) / 2`` when ``price`` falls outside a tight ``[bid, ask]`` spread."""
+    px_f = safe_pos_float(price, default=None) if not isinstance(price, bool) else None
+    bid_f = safe_pos_float(bid, default=None) if not isinstance(bid, bool) else None
+    ask_f = safe_pos_float(ask, default=None) if not isinstance(ask, bool) else None
+    max_ratio = safe_nonneg_float(max_spread_ratio, default=0.05)
+    if (
+        bid_f is not None
+        and ask_f is not None
+        and bid_f <= ask_f
+        and (ask_f - bid_f) / bid_f <= max_ratio
+        and (px_f is None or px_f < bid_f or px_f > ask_f)
+    ):
+        return round((bid_f + ask_f) * 0.5, 8)
+    return px_f
+
+
+_CSV_SPLIT_RE = re.compile(r"[,\n]+")
+
+
+def split_csv(raw: str | None, *, lower: bool = False, upper: bool = False) -> tuple[str, ...]:
+    """Split comma- or newline-delimited strings into a deduplicated tuple of stripped tokens."""
+    if not isinstance(raw, str) or not raw:
+        return ()
+    seen: dict[str, None] = {}
+    for part in _CSV_SPLIT_RE.split(raw):
+        if cleaned := part.strip():
+            cleaned = cleaned.lower() if lower else (cleaned.upper() if upper else cleaned)
+            seen.setdefault(cleaned, None)
+    return tuple(seen)
+
+
+def parse_symbol_list(symbols: object) -> list[str]:
+    """Normalize comma-separated string or iterable of symbols into uppercase list."""
+    if isinstance(symbols, str):
+        return [tok for raw_tok in split_csv(symbols, upper=True) if (tok := clean_upper_scalar(raw_tok)) is not None]
+    if symbols is None or isinstance(symbols, (bool, bytes, bytearray, dict)) or not hasattr(symbols, "__iter__"):
+        return []
+    return list(dict.fromkeys(tok for s in symbols if (tok := clean_upper_scalar(s)) is not None))
+
+
 # =============================================================================
-# 2. CONFIGURATION & ENVIRONMENT SSOT (Loading, Parsing, Key-Value & Watcher)
+# 3. CONFIGURATION, ENVIRONMENT & CLI SSOT (Config / cfg)
 # =============================================================================
 
-# -- 2.1. Dotenv / KEY=VALUE Parsing & Environment Stack Loading --------------
+# -- 3.1. Dotenv / KEY=VALUE Parsing & Environment Stack Loading --------------
 
 
 def _strip_env_value_quotes_and_comment(val: str) -> str:
@@ -664,7 +1065,7 @@ def bind_isolated_venue_cfg_loader(
     return _loader
 
 
-# -- 2.2. INI (.conf) Parsing, Mtime Caching & Override Resolution ------------
+# -- 3.2. INI (.conf) Parsing, Mtime Caching & Override Resolution ------------
 
 _INI_CONFIG_CACHE: dict[str, tuple[tuple[int, int, bool], configparser.ConfigParser]] = (
     globals().get("_INI_CONFIG_CACHE") or {}
@@ -723,7 +1124,7 @@ def parse_notify_enabled_flag(notify_enabled: object, conf: dict[str, str], conf
     raise ValueError(f"Invalid {label} {raw!r}")
 
 
-# -- 2.3. Typed Environment & Key-Value Lookups -------------------------------
+# -- 3.3. Typed Environment & Key-Value Lookups -------------------------------
 
 
 def _clean_env_str(val: object) -> str:
@@ -1165,7 +1566,17 @@ def add_paper_skip_wait_cli_args(
     return parser
 
 
-# -- 2.4. Global trade_enabled Configuration Cache & Hot-Reload Watcher -------
+def validate_required_env_keys(
+    keys: list[str] | tuple[str, ...], *, env: dict | None = None, label: str = "configuration"
+) -> None:
+    """Abort startup with the complete list of missing or empty mandatory environment keys."""
+    src = os.environ if env is None else env
+    missing = [name for name in keys if not _clean_env_str(src.get(name))]
+    if missing:
+        raise ValueError(f"Missing or empty mandatory {label} settings: " + ", ".join(missing))
+
+
+# -- 3.4. Global trade_enabled Configuration Cache & Hot-Reload Watcher -------
 
 config_cache: dict = {}
 _CONFIG_MTIME: tuple[float, float] = (-1.0, -1.0)
@@ -1228,10 +1639,59 @@ def is_trade_enabled() -> bool:
 load_config()
 
 
-# =============================================================================
-# 3. HTTP TRANSPORT, APPROXIMATE MATH & MARKET HOURS
-# =============================================================================
+class Config:
+    """Canonical SSOT configuration namespace and hot-reloaded ``trade_enabled`` manager."""
 
+    load_dotenv = staticmethod(load_dotenv)
+    load_env_stack = staticmethod(load_env_stack)
+    load_root_config = staticmethod(load_root_config)
+    load_shadow_environment = staticmethod(load_shadow_environment)
+    parse_dotenv = staticmethod(parse_dotenv)
+    load_env_file_defaults = staticmethod(load_env_file_defaults)
+    load_key_value_conf = staticmethod(load_key_value_conf)
+    load_layered_env_config = staticmethod(load_layered_env_config)
+    load_isolated_venue_cfg = staticmethod(load_isolated_venue_cfg)
+    bind_isolated_venue_cfg_loader = staticmethod(bind_isolated_venue_cfg_loader)
+    empty_ini_config = staticmethod(empty_ini_config)
+    load_ini_config = staticmethod(load_ini_config)
+    conf_or_override = staticmethod(conf_or_override)
+    parse_notify_enabled_flag = staticmethod(parse_notify_enabled_flag)
+    pos_float_env = staticmethod(pos_float_env)
+    required_env = staticmethod(required_env)
+    defined_env = staticmethod(defined_env)
+    required_float_env = staticmethod(required_float_env)
+    required_int_env = staticmethod(required_int_env)
+    required_bool_env = staticmethod(required_bool_env)
+    optional_env = staticmethod(optional_env)
+    env_value = staticmethod(env_value)
+    is_env_defined = staticmethod(is_env_defined)
+    secret_env = staticmethod(secret_env)
+    folder_or_env_value = staticmethod(folder_or_env_value)
+    env_values_map = staticmethod(env_values_map)
+    bool_env = staticmethod(bool_env)
+    any_bool_env = staticmethod(any_bool_env)
+    validate_required_env_keys = staticmethod(validate_required_env_keys)
+
+    @property
+    def cache(self) -> dict:
+        return config_cache
+
+    @staticmethod
+    def reload() -> dict:
+        load_config()
+        return config_cache
+
+    @staticmethod
+    def is_trade_enabled() -> bool:
+        return is_trade_enabled()
+
+
+cfg = Config()
+
+
+# =============================================================================
+# 4. HTTP TRANSPORT, CRYPTO SIGNING & MATHEMATICAL HELPERS
+# =============================================================================
 
 def http_request(
     method: str,
@@ -1509,6 +1969,80 @@ def are_close(value1: float, value2: float, tolerance_percent: float = 1.0) -> b
 ET = ZoneInfo("America/New_York")
 
 
+def clamp_float(
+    val: object, minimum: float = 0.0, maximum: float = 1.0, *, default: float = 0.0
+) -> float:
+    """Safely coerce ``val`` to a float and clamp it to ``[minimum, maximum]``."""
+    v = safe_float(val, default=default)
+    return max(minimum, min(maximum, default if v is None else v))
+
+
+def value_diff_to_percent(value1, value2) -> float:
+    v1, v2 = safe_float(value1, default=None), safe_float(value2, default=None)
+    if v1 is None or v2 is None or v1 == 0.0:
+        return 0.0
+    return safe_float(((v1 - v2) / v1) * 100.0, default=0.0)
+
+
+def slope(val1, idx1, val2, idx2) -> float:
+    v1 = safe_float(val1, default=None)
+    i1 = safe_float(idx1, default=None)
+    v2 = safe_float(val2, default=None)
+    i2 = safe_float(idx2, default=None)
+    if v1 is None or i1 is None or v2 is None or i2 is None or i1 == i2:
+        return 0.0
+    return safe_float((v2 - v1) / (i2 - i1), default=0.0)
+
+
+def gaussian_weights_from_idx(T, idx: int):
+    """Return ``t`` as the position axis ``[idx..T-1]`` and ``w`` as its Gaussian weights."""
+    import numpy as np
+
+    t_f = safe_pos_float(T, default=None)
+    idx_f = safe_float(idx, default=None)
+    if t_f is None or idx_f is None:
+        return np.array([]), np.array([])
+    t_steps = min(100000, max(1, int(round(t_f))))
+    idx_int = max(0, int(idx_f))
+    if idx_int >= t_steps:
+        return np.array([]), np.array([])
+
+    t_full = np.linspace(0, t_steps - 1, t_steps)
+    mu = (t_steps - 1) / 2
+    sigma = t_steps / 4
+    w_full = np.exp(-0.5 * ((t_full - mu) / sigma) ** 2)
+    w_full = w_full / w_full.sum()
+    return t_full[idx_int:], w_full[idx_int:]
+
+
+def _load_ed25519_signing_key():
+    try:
+        import nacl.signing
+
+        pem_data = _state_io.read_text_file("keys/ed25519_private.pem")
+        b64match = re.search(r"-----BEGIN PRIVATE KEY-----(.*?)-----END PRIVATE KEY-----", pem_data, re.DOTALL)
+        if not b64match:
+            raise ValueError("Invalid PEM")
+        der_bytes = base64.b64decode(b64match.group(1).strip())
+        if len(der_bytes) < 32:
+            raise ValueError("DER too short")
+        return nacl.signing.SigningKey(der_bytes[-32:])
+    except Exception as e:
+        print(f"Error loading the Ed25519 key: {e}")
+        return None
+
+
+def _sign_ed25519(signing_key, payload: str) -> str:
+    if signing_key is None or payload is None or isinstance(payload, bool):
+        raise ValueError("signing_key and payload are required")
+    raw_bytes = payload if isinstance(payload, bytes) else str(payload).encode("utf-8")
+    return base64.b64encode(signing_key.sign(raw_bytes).signature).decode("ascii")
+
+
+# =============================================================================
+# 5. TIMESTAMPS, EPOCH NORMALIZATION, FRESHNESS & MARKET HOURS
+# =============================================================================
+
 def is_us_rth_open(now_ts: float | None = None) -> bool:
     """Return True if US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) are open."""
     ts = resolve_now_ts(now_ts)
@@ -1519,10 +2053,226 @@ def is_us_rth_open(now_ts: float | None = None) -> bool:
     return ny_dt.weekday() < 5 and dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
 
 
-# =============================================================================
-# 4. MODULE LOADING, HEARTBEATS, TIMESTAMPS & RUNTIME HELPERS
-# =============================================================================
+def timestampToTime(timestamp_ms) -> str:
+    ts_ms = safe_nonneg_float(timestamp_ms, default=None)
+    if ts_ms is None:
+        return "N/A"
+    try:
+        return datetime.fromtimestamp(ts_ms / 1000.0).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "N/A"
 
+
+@lru_cache(maxsize=256)
+def timeToHMS(timestamp_sec) -> str:
+    ts_f = normalize_epoch_sec(timestamp_sec, default=None, allow_zero=True)
+    if ts_f is None:
+        return "N/A"
+    try:
+        return datetime.fromtimestamp(ts_f).strftime("%H:%M:%S")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "N/A"
+
+
+def _bind_seconds_converter(divisor: float):
+    return lambda max_age_seconds, _div=divisor: safe_nonneg_float(max_age_seconds, default=0.0) / _div
+
+
+secondsToDays = _bind_seconds_converter(86400.0)
+secondsToHours = _bind_seconds_converter(3600.0)
+
+
+def parse_iso_datetime_utc(raw: str) -> datetime | None:
+    """Parse an ISO-8601 string (supporting trailing ``Z``/``z``) into a timezone-aware UTC ``datetime``."""
+    try:
+        iso_s = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+        dt = datetime.fromisoformat(iso_s)
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    except Exception:
+        return None
+
+
+def normalize_epoch_sec(
+    val: object, default: float | None = None, *, allow_zero: bool = False, allow_iso: bool = False
+) -> float | None:
+    """Normalize a timestamp in seconds, milliseconds (>= 1e11), or optional ISO-8601 string into epoch seconds."""
+    f = safe_nonneg_float(val, default=None) if allow_zero else safe_pos_float(val, default=None)
+    if f is None and allow_iso and isinstance(val, str):
+        s = val.strip()
+        if len(s) >= 10 and ("-" in s or "T" in s):
+            if (dt := parse_iso_datetime_utc(s)) is not None:
+                ts_s = dt.timestamp()
+                if (ts_s >= 0.0) if allow_zero else (ts_s > 0.0):
+                    f = ts_s
+    if f is None:
+        return default
+    return f / 1000.0 if f >= 1e11 else f
+
+
+def first_epoch_sec(
+    *values: object, default: float | None = None, allow_iso: bool = False
+) -> float | None:
+    """Return the first strictly positive epoch-seconds timestamp among ``values``, skipping None/0/'0'/NaN/Inf/bool."""
+    for val in values:
+        if (ts_s := normalize_epoch_sec(val, default=None, allow_zero=False, allow_iso=allow_iso)) is not None:
+            return ts_s
+    return default
+
+
+def parse_epoch_price_pair(
+    item: object, *, allow_zero_ts: bool = True
+) -> tuple[float, float] | None:
+    """Parse a 2-element ``(ts, price)`` list/tuple into ``(epoch_sec, positive_price)`` or ``None``."""
+    if not isinstance(item, (list, tuple)) or len(item) < 2:
+        return None
+    t = normalize_epoch_sec(item[0], default=None, allow_zero=allow_zero_ts)
+    p = safe_pos_float(item[1], default=None)
+    return (t, p) if (t is not None and p is not None) else None
+
+
+def safe_nonneg_ts(val: object, default: float = 0.0) -> float:
+    """Safely coerce a timestamp to non-negative epoch seconds, converting ms (>= 1e11)."""
+    res = normalize_epoch_sec(val, default=default, allow_zero=True)
+    return default if res is None else res
+
+
+def resolve_now_ts(now_ts: object = None, *, allow_zero: bool = False) -> float:
+    """Return ``now_ts`` normalized to epoch seconds (converting ms >= 1e11), or the active runtime clock."""
+    f = normalize_epoch_sec(now_ts, default=None, allow_zero=allow_zero)
+    if f is not None:
+        return f
+    clk = getattr(globals().get("_RUNTIME_SERVICES"), "clock_fn", None)
+    return float(clk()) if callable(clk) else _time.time()
+
+
+def resolve_now_ms(now_ms: object = None) -> int:
+    """Return ``now_ms`` as a positive integer millisecond timestamp, or ``int(resolve_now_ts() * 1000)``."""
+    parsed = safe_pos_int(now_ms, default=None)
+    return parsed if parsed is not None else int(resolve_now_ts() * 1000)
+
+
+_TIMESTAMP_KEYS = (
+    "timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime",
+    "filledAt", "dateExecuted", "dateModified", "createdAt", "dateCreated", "T", "E", "ts", "ts_ms",
+)
+
+
+def _parse_epoch_or_iso_s(value: object) -> float | None:
+    numeric = safe_nonneg_float(value, default=None)
+    return numeric if numeric is not None else normalize_epoch_sec(value, default=None, allow_zero=True, allow_iso=True)
+
+
+def normalize_timestamp_ms(value: object, default: int | None = None) -> int | None:
+    """Normalize a raw timestamp (in seconds, milliseconds, or ISO-8601 string) to integer milliseconds."""
+    numeric = safe_nonneg_float(value, default=None)
+    if numeric is None:
+        numeric = _parse_epoch_or_iso_s(value)
+    if numeric is None:
+        return default
+    if numeric == 0.0:
+        return 0
+    if 1_000_000_000.0 <= numeric < 100_000_000_000.0 or (
+        0.0 < numeric < 1_000_000_000.0 and isinstance(value, float) and not numeric.is_integer()
+    ):
+        return int(round(numeric * 1000.0))
+    return int(round(numeric))
+
+
+def _ts_ms_to_s(ts_ms: float | int) -> float:
+    return normalize_epoch_sec(ts_ms, default=0.0, allow_zero=True) or 0.0
+
+
+def _is_fresh_obs_ts(obs_ts_s: float | None, now_s: float, max_age_s: float) -> bool:
+    return obs_ts_s is not None and -5.0 <= (now_s - obs_ts_s) <= max_age_s
+
+
+def extract_timestamp_ms(order: object, default: int | None = None) -> int | None:
+    """Extract and normalize an order/fill/tick timestamp in milliseconds from any venue shape."""
+    if isinstance(order, (list, tuple)):
+        return normalize_timestamp_ms(order[0], default=default) if order else default
+    pos_ms = _first_mapped(
+        order,
+        _TIMESTAMP_KEYS,
+        lambda v: ms if (ms := normalize_timestamp_ms(v, default=None)) is not None and ms > 0 else None,
+        None,
+    )
+    if pos_ms is not None:
+        return pos_ms
+    return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_timestamp_ms(v, default=None), default)
+
+
+def extract_timestamp_s(order: object, default: float | None = None) -> float | None:
+    """Extract and normalize an order/fill/tick timestamp in seconds from any venue shape."""
+    if isinstance(order, (list, tuple)):
+        return normalize_epoch_sec(order[0], default=default, allow_zero=True, allow_iso=True) if order else default
+    pos_s = _first_mapped(
+        order,
+        _TIMESTAMP_KEYS,
+        lambda v: normalize_epoch_sec(v, default=None, allow_zero=False, allow_iso=True),
+        None,
+    )
+    if pos_s is not None:
+        return pos_s
+    return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_epoch_sec(v, allow_zero=True, allow_iso=True), default)
+
+
+def is_cache_fresh(
+    last_ts: object, now_ts: float, ttl_sec: object, *, force_refresh: object = False
+) -> bool:
+    """Return True if cached state at ``last_ts`` is still within ``ttl_sec`` at ``now_ts``."""
+    if _parse_bool_flag(force_refresh, False):
+        return False
+    now_s = safe_nonneg_float(now_ts, None)
+    if now_s is None:
+        return False
+    lt = safe_nonneg_float(last_ts, 0.0)
+    ttl = safe_nonneg_float(ttl_sec, 0.0)
+    return lt > 0.0 and 0.0 <= (now_s - lt) < ttl
+
+
+def is_interval_due(
+    current_ts: float, last_ts: object, interval_sec: object, *, force: object = False
+) -> bool:
+    """Return True if ``force`` is truthy or ``interval_sec`` has elapsed since ``last_ts``."""
+    if _parse_bool_flag(force, False):
+        return True
+    cur_s = safe_nonneg_float(current_ts, None)
+    if cur_s is None:
+        return True
+    lt = safe_nonneg_float(last_ts, 0.0)
+    itv = safe_nonneg_float(interval_sec, 0.0)
+    return not (0.0 <= (cur_s - lt) < itv)
+
+
+def check_cooldown_gate(
+    cooldown_map: dict, key: object, now_ts: float, cooldown_sec: float = 1800.0, max_entries: int = 1000
+) -> bool:
+    """Return True and record ``now_ts`` if ``key`` is not within ``cooldown_sec``."""
+    if not isinstance(cooldown_map, dict):
+        return True
+    now_f = safe_float(now_ts, None)
+    if now_f is None:
+        return True
+    cd_f = safe_nonneg_float(cooldown_sec, 0.0) or 0.0
+    try:
+        raw_last = cooldown_map.get(key)
+        map_key = key
+    except TypeError:
+        map_key = str(key)
+        raw_last = cooldown_map.get(map_key)
+    last_f = safe_float(raw_last, None) if raw_last is not None else None
+    if last_f is not None and 0.0 <= (now_f - last_f) < cd_f:
+        return False
+    cooldown_map[map_key] = now_f
+    cap = safe_pos_int(max_entries, 1000) or 1000
+    while len(cooldown_map) > cap:
+        cooldown_map.pop(next(iter(cooldown_map)), None)
+    return True
+
+
+# =============================================================================
+# 6. PRICE SERIES, CACHE FRESHNESS SLA & MULTI-VENUE NAV
+# =============================================================================
 
 def extract_current_price_item(item: object) -> float | None:
     """Extract the latest positive finite price from any ``cache_current_price.json`` item format."""
@@ -1687,124 +2437,273 @@ def summarize_current_price_cache_freshness(
     }
 
 
-_LOCAL_MODULE_LOCK = globals().get("_LOCAL_MODULE_LOCK") or threading.RLock()
+def resolve_sustained_sample_rate(
+    cpm: object, symbol: str, *, min_span_sec: float = 5.0
+) -> float | None:
+    """Resolve sustained sample rate from a current-price manager or compatible test double."""
+    if cpm is None:
+        return None
+    min_span_s = safe_nonneg_float(min_span_sec, default=5.0)
+    if callable(getattr(type(cpm), "get_sustained_sample_rate", None)):
+        return safe_pos_float(
+            cpm.get_sustained_sample_rate(symbol, min_span_sec=min_span_s),
+            default=None,
+        )
+    lock_obj = getattr(cpm, "lock", None)
+    with lock_obj if hasattr(lock_obj, "__enter__") else threading.RLock():
+        ts_map = getattr(cpm, "_update_timestamps", None)
+        dq = ts_map.get(symbol) if isinstance(ts_map, dict) else None
+        samples = list(dq) if dq else []
+    if len(samples) < 2 or (samples[-1] - samples[0]) < min_span_s:
+        return None
+    sr_fn = getattr(cpm, "get_sample_rate", None)
+    if callable(sr_fn):
+        return safe_pos_float(sr_fn(symbol, fallback=None), default=None)
+    return safe_pos_float(
+        (samples[-1] - samples[0]) / (len(samples) - 1), default=None
+    )
 
 
-def ensure_local_module_priority(directory: str, *module_names: str) -> None:
-    """Ensure ``directory`` is first on ``sys.path`` (with repo root available) and evict foreign cached modules."""
-    with _LOCAL_MODULE_LOCK:
-        abs_dir = os.path.abspath(directory)
-        if _REPO_ROOT not in sys.path:
-            sys.path.insert(0, _REPO_ROOT)
-        if sys.path[:1] != [abs_dir]:
-            if abs_dir in sys.path:
-                sys.path.remove(abs_dir)
-            sys.path.insert(0, abs_dir)
-        for mod_name in module_names:
-            mod_obj = sys.modules.get(mod_name)
-            if mod_obj is None:
+@dataclass(frozen=True)
+class ClosedPriceSeries:
+    """Completed closes with the timestamp of the newest completed candle."""
+
+    closes: tuple
+    interval_min: int
+    last_closed_at: float | None = None
+    timestamps: tuple = ()
+    volumes: tuple = ()
+
+    @classmethod
+    def from_raw_candles(
+        cls,
+        raw_candles: object,
+        interval_min: int,
+        close_getter: object,
+        ts_ms_getter: object,
+        vol_getter: object = None,
+    ) -> "ClosedPriceSeries":
+        completed = list(raw_candles or ())[:-1]  # type: ignore[arg-type]
+        valid = [
+            (item, c_f)
+            for item in completed
+            if (c_f := safe_pos_float(close_getter(item), default=None)) is not None  # type: ignore[operator]
+        ]
+        closes = tuple(c_f for _item, c_f in valid)
+        ts_list = []
+        ts_ok = bool(valid)
+        for item, _ in valid:
+            t_ms = safe_pos_float(ts_ms_getter(item), default=None)  # type: ignore[operator]
+            if t_ms is None:
+                ts_ok = False
+                break
+            ts_list.append(t_ms / 1000.0)
+        timestamps = tuple(ts_list) if ts_ok else ()
+        volumes = (
+            tuple(safe_nonneg_float(vol_getter(item), default=0.0) or 0.0 for item, _ in valid)
+            if callable(vol_getter) and valid
+            else ()
+        )
+        return cls(
+            closes,
+            safe_pos_int(interval_min, 1),
+            timestamps[-1] if timestamps else None,
+            timestamps,
+            volumes,
+        )
+
+
+def compute_venue_nav_breakdown(
+    *,
+    positions: object = None,
+    quote_cash: object = None,
+    venue_balances_state: object = None,
+    live_prices: object = None,
+    venue_overrides: object = None,
+    exclude_venues: tuple[str, ...] = (),
+    scope: str = "all",
+) -> dict[str, object]:
+    """Canonical SSOT multi-venue NAV calculator and position/cash deduplicator."""
+
+    excl_set = {normalize_venue_name(v) or str(v).strip().lower() for v in (exclude_venues or ()) if v}
+    scope_norm = str(scope or "all").strip().lower()
+    live_src = (
+        live_prices.get("items")
+        if isinstance(live_prices, dict) and isinstance(live_prices.get("items"), dict)
+        else (live_prices if isinstance(live_prices, dict) else {})
+    )
+    live_px_map = {
+        raw_k.strip().upper(): px
+        for raw_k, raw_v in live_src.items()
+        if isinstance(raw_k, str) and raw_k.strip() and (px := extract_current_price_item(raw_v)) is not None
+    }
+
+    pos_rows: list[dict] = []
+    cash_items: list[tuple[str, object]] = []
+
+    if isinstance(venue_balances_state, dict):
+        for key, entry in venue_balances_state.items():
+            if not isinstance(key, str) or not isinstance(entry, dict):
                 continue
-            mod_file = getattr(mod_obj, "__file__", None)
-            if type(mod_obj) is object or (
-                isinstance(mod_file, str) and mod_file and os.path.dirname(os.path.abspath(mod_file)) != abs_dir
-            ):
-                sys.modules.pop(mod_name, None)
+            parts = key.split(":", 2)
+            v_cand = entry.get("venue") or (parts[1] if len(parts) > 1 else "")
+            if key.startswith("cash:"):
+                a_cand = entry.get("asset") or (parts[2] if len(parts) > 2 else "USD")
+                cash_items.append((f"{v_cand}:{a_cand}", {**entry, "venue": v_cand, "asset": a_cand}))
+            elif key.startswith("pos:"):
+                s_cand = entry.get("symbol") or (parts[2] if len(parts) > 2 else key)
+                pos_rows.append({**entry, "venue": v_cand, "symbol": s_cand})
+
+    if isinstance(positions, (list, tuple)):
+        pos_rows.extend(p for p in positions if isinstance(p, dict))
+    if isinstance(quote_cash, dict):
+        cash_items.extend((str(ck or ""), cv) for ck, cv in quote_cash.items())
+
+    def _matches_scope(v_name: str, sym_u: str = "") -> bool:
+        if v_name in excl_set:
+            return False
+        if scope_norm not in ("equities", "crypto"):
+            return True
+        is_eq = is_equity_venue_or_suffix(sym_u, v_name)
+        return is_eq if scope_norm == "equities" else (not is_eq)
+
+    grouped_pos: dict[tuple[str, str], list[dict]] = {}
+    for p in pos_rows:
+        v_name = normalize_venue_name(p.get("venue")) or "unknown"
+        sym_raw = str(p.get("symbol") or "").strip().upper()
+        if not _matches_scope(v_name, sym_raw):
+            continue
+        is_eq_p = is_equity_venue_or_suffix(sym_raw, v_name)
+        base_p = canonical_base_asset(p.get("base") or sym_raw) or sym_raw or f"IDX_{len(grouped_pos)}"
+        grouped_pos.setdefault((v_name, f"EQ:{base_p}" if is_eq_p else base_p), []).append(p)
+
+    venue_pos_usd: dict[str, float] = {}
+    grouped_positions_out: list[tuple[str, dict, float]] = []
+    for (v_name, _), grp_list in grouped_pos.items():
+        free_val_u = 0.0
+        locked_by_sym: dict[str, float] = {}
+        for idx_g, gp in enumerate(grp_list):
+            sym_u = str(gp.get("symbol") or "").strip().upper()
+            live_px: float | None = None
+            if live_px_map and sym_u:
+                if sym_u in live_px_map:
+                    live_px = live_px_map[sym_u]
+                elif not has_equity_suffix(sym_u):
+                    for cand in cache_symbol_variants(sym_u, quotes=compatible_quote_suffixes(sym_u)):
+                        if isinstance(cand, str) and not has_equity_suffix(cand) and cand in live_px_map:
+                            live_px = live_px_map[cand]
+                            break
+            if live_px is not None and (
+                fb_live := safe_nonneg_float(gp.get("free_base"), None)
+            ) is not None:
+                gp_free_u = round(fb_live * live_px, 2)
+            elif (val_u := safe_nonneg_float(gp.get("value_usd"), None)) is not None:
+                gp_free_u = val_u
+            else:
+                gp_free_u = round(
+                    (safe_nonneg_float(gp.get("free_base"), 0.0) or 0.0)
+                    * (safe_nonneg_float(gp.get("price"), 0.0) or 0.0),
+                    2,
+                )
+            free_val_u = max(free_val_u, gp_free_u)
+            s_g = sym_u or f"SYM_{idx_g}"
+            if live_px is not None and (
+                lb_live := safe_pos_float(gp.get("locked_base_qty"), None)
+            ) is not None:
+                locked_usd = round(lb_live * live_px, 2)
+            else:
+                locked_usd = safe_nonneg_float(gp.get("locked_base_usd"), 0.0) or 0.0
+            locked_by_sym[s_g] = max(locked_by_sym.get(s_g, 0.0), locked_usd)
+        val_u = free_val_u + sum(locked_by_sym.values())
+        venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u
+        grouped_positions_out.append((v_name, grp_list[0], val_u))
+
+    dedup_cash: dict[tuple[str, str], tuple[float, float]] = {}
+    for c_key, c in cash_items:
+        k_parts = str(c_key or "").split(":", 1)
+        v_fallback = normalize_venue_name(k_parts[0])
+        if isinstance(c, dict):
+            v_name = normalize_venue_name(c.get("venue")) or v_fallback or "unknown"
+            c_asset_u = str(
+                c.get("asset") or (k_parts[1] if len(k_parts) > 1 and k_parts[1].strip() else c_key or "USD")
+            ).strip().upper() or "USD"
+            f_u = first_pos_float(c.get("free"), c.get("free_quote_usd"), c.get("free_usd"), default=0.0) or 0.0
+            l_u = safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0
+        else:
+            f_u = safe_pos_float(c, default=0.0) or 0.0
+            if f_u <= 0.0:
+                continue
+            v_name = v_fallback or "unknown"
+            c_asset_u = k_parts[1].strip().upper() if len(k_parts) > 1 and k_parts[1].strip() else "USD"
+            l_u = 0.0
+        if not _matches_scope(v_name):
+            continue
+        prev_f, prev_l = dedup_cash.get((v_name, c_asset_u), (0.0, 0.0))
+        dedup_cash[(v_name, c_asset_u)] = (max(prev_f, f_u), max(prev_l, l_u))
+
+    venue_free_cash_usd: dict[str, float] = {}
+    venue_locked_quote_usd: dict[str, float] = {}
+    venue_cash_usd: dict[str, float] = {}
+    for (v_name, _), (f_u, l_u) in dedup_cash.items():
+        venue_free_cash_usd[v_name] = venue_free_cash_usd.get(v_name, 0.0) + f_u
+        venue_locked_quote_usd[v_name] = venue_locked_quote_usd.get(v_name, 0.0) + l_u
+        venue_cash_usd[v_name] = venue_cash_usd.get(v_name, 0.0) + f_u + l_u
+
+    venues_usd: dict[str, float] = {}
+    venue_breakdown: dict[str, dict[str, float]] = {}
+    for v_k in sorted(set(venue_pos_usd) | set(venue_cash_usd)):
+        p_u = round(venue_pos_usd.get(v_k, 0.0), 2)
+        fc_u = round(venue_free_cash_usd.get(v_k, 0.0), 2)
+        lq_u = round(venue_locked_quote_usd.get(v_k, 0.0), 2)
+        c_u = round(venue_cash_usd.get(v_k, 0.0), 2)
+        v_tot = round(p_u + c_u, 2)
+        if v_tot > 0.0:
+            venues_usd[v_k] = v_tot
+            venue_breakdown[v_k] = {
+                "pos_usd": p_u,
+                "free_cash_usd": fc_u,
+                "locked_quote_usd": lq_u,
+                "cash_usd": c_u,
+                "total_usd": v_tot,
+            }
+
+    if isinstance(venue_overrides, dict):
+        for ov_k, ov_v in venue_overrides.items():
+            v_norm = normalize_venue_name(ov_k) or str(ov_k or "").strip().lower()
+            if not v_norm or not _matches_scope(v_norm):
+                continue
+            ov_f = safe_pos_float(ov_v, default=0.0) or 0.0
+            if ov_f > venues_usd.get(v_norm, 0.0):
+                venues_usd[v_norm] = round(ov_f, 2)
+                if v_norm in venue_breakdown:
+                    venue_breakdown[v_norm]["total_usd"] = round(ov_f, 2)
+
+    venues_usd = {k: venues_usd[k] for k in sorted(venues_usd)}
+    invested_usd = round(sum(venue_pos_usd.values()), 2)
+    free_cash_usd = round(sum(venue_free_cash_usd.values()), 2)
+    locked_quote_usd = round(sum(venue_locked_quote_usd.values()), 2)
+    total_quote_reserve_usd = round(free_cash_usd + locked_quote_usd, 2)
+    portfolio_total_usd = round(max(sum(venues_usd.values()), invested_usd + total_quote_reserve_usd), 2)
+
+    return {
+        "venues_usd": venues_usd,
+        "venue_breakdown": venue_breakdown,
+        "grouped_positions": grouped_positions_out,
+        "venue_pos_usd": venue_pos_usd,
+        "venue_free_cash_usd": venue_free_cash_usd,
+        "venue_locked_quote_usd": venue_locked_quote_usd,
+        "venue_cash_usd": venue_cash_usd,
+        "invested_usd": invested_usd,
+        "free_cash_usd": free_cash_usd,
+        "locked_quote_usd": locked_quote_usd,
+        "total_quote_reserve_usd": total_quote_reserve_usd,
+        "portfolio_total_usd": portfolio_total_usd,
+    }
 
 
-_AMBIGUOUS_LOCAL_MODULES = (
-    "strategy", "market_data", "replay", "common", "hl_client", "t212_client", "ipo_common",
-    "notify", "ipo_notify", "signals",
-)
-
-_LEGACY_ARCHIVE_DIR: str | None = None
-
-
-def _resolve_archived_module_dir(abs_dir: str, stem: str) -> str:
-    global _LEGACY_ARCHIVE_DIR
-    if os.path.isfile(os.path.join(abs_dir, f"{stem}.py")) or os.path.isdir(os.path.join(abs_dir, stem)):
-        return abs_dir
-    archive_tar = os.path.join(_REPO_ROOT, "archive", "legacy_archive.tar.gz")
-    if not os.path.isfile(archive_tar):
-        return abs_dir
-    rel = os.path.relpath(abs_dir, _REPO_ROOT)
-    if not (rel == "archive" or rel.startswith("archive" + os.sep)):
-        return abs_dir
-    if _LEGACY_ARCHIVE_DIR is None or not os.path.isdir(_LEGACY_ARCHIVE_DIR):
-        _LEGACY_ARCHIVE_DIR = tempfile.mkdtemp(prefix="mptrade_legacy_archive_")
-        atexit.register(shutil.rmtree, _LEGACY_ARCHIVE_DIR, True)
-        with tarfile.open(archive_tar, "r:gz") as tf:
-            tf.extractall(_LEGACY_ARCHIVE_DIR, filter="data")
-    extracted_dir = os.path.join(_LEGACY_ARCHIVE_DIR, rel)
-    return extracted_dir if (os.path.isfile(os.path.join(extracted_dir, f"{stem}.py")) or os.path.isdir(os.path.join(extracted_dir, stem))) else abs_dir
-
-
-def load_local_module(
-    directory: str, name: str, *, module_key: str | None = None, register: bool = True, reload: bool = False
-):
-    """Load a sibling module ``<name>.py`` from ``directory`` without colliding with other venue modules."""
-    with _LOCAL_MODULE_LOCK:
-        stem = name[:-3] if name.endswith(".py") else name
-        abs_dir = _resolve_archived_module_dir(os.path.abspath(directory), stem)
-        key = module_key or stem
-        if register and not reload:
-            mod = sys.modules.get(key)
-            mod_file = getattr(mod, "__file__", None) if mod is not None else None
-            if (
-                mod is not None
-                and getattr(mod, "__mptrade_exec_done__", True)
-                and (not isinstance(mod_file, str) or not mod_file or os.path.dirname(os.path.abspath(mod_file)) == abs_dir)
-            ):
-                return mod
-
-        orig_sys_path = list(sys.path)
-        saved_ambiguous: dict[str, object] = {}
-        for amb_name in _AMBIGUOUS_LOCAL_MODULES:
-            if amb_name in sys.modules:
-                amb_file = getattr(sys.modules[amb_name], "__file__", None)
-                if isinstance(amb_file, str) and amb_file and os.path.dirname(os.path.abspath(amb_file)) != abs_dir:
-                    saved_ambiguous[amb_name] = sys.modules.pop(amb_name)
-        succeeded = False
-        try:
-            while abs_dir in sys.path:
-                sys.path.remove(abs_dir)
-            while _REPO_ROOT in sys.path:
-                sys.path.remove(_REPO_ROOT)
-            sys.path.insert(0, _REPO_ROOT)
-            repo_base = os.path.basename(_REPO_ROOT)
-            for seg in abs_dir.split(os.sep):
-                if not seg or seg == repo_base:
-                    continue
-                cand_dir = os.path.join(_REPO_ROOT, seg)
-                if cand_dir != abs_dir and os.path.isdir(cand_dir) and cand_dir not in sys.path:
-                    sys.path.insert(0, cand_dir)
-            sys.path.insert(0, abs_dir)
-            spec = importlib.util.spec_from_file_location(key, os.path.join(abs_dir, f"{stem}.py"))
-            mod = importlib.util.module_from_spec(spec)
-            setattr(mod, "__mptrade_exec_done__", False)
-            prev_key_mod = sys.modules.get(key)
-            sys.modules[key] = mod
-            try:
-                spec.loader.exec_module(mod)
-                setattr(mod, "__mptrade_exec_done__", True)
-            except Exception:
-                if prev_key_mod is None:
-                    sys.modules.pop(key, None)
-                else:
-                    sys.modules[key] = prev_key_mod
-                raise
-            if not register:
-                if prev_key_mod is None:
-                    sys.modules.pop(key, None)
-                else:
-                    sys.modules[key] = prev_key_mod
-            succeeded = True
-            return mod
-        finally:
-            sys.path[:] = orig_sys_path
-            for amb_name, saved_mod in saved_ambiguous.items():
-                if not (succeeded and register and amb_name == key):
-                    sys.modules[amb_name] = saved_mod
-
+# =============================================================================
+# 7. HEARTBEATS & PROCESS MANIFEST (procs.conf)
+# =============================================================================
 
 def sanitize_heartbeat_status(status: object) -> tuple[float, dict]:
     """Sanitize a daemon/module cycle status dict, replacing non-finite floats with None."""
@@ -2081,121 +2980,257 @@ def parse_procs_manifest(
     return procs
 
 
-def clamp_float(
-    val: object, minimum: float = 0.0, maximum: float = 1.0, *, default: float = 0.0
-) -> float:
-    """Safely coerce ``val`` to a float and clamp it to ``[minimum, maximum]``."""
-    v = safe_float(val, default=default)
-    return max(minimum, min(maximum, default if v is None else v))
+# =============================================================================
+# 8. RUNTIME SERVICES, EXECUTION GATES & MONITORING THREADS
+# =============================================================================
+
+def resolve_mem_bounded_worker_cap(
+    max_workers: int = 4,
+    *,
+    default_cpus: int = 2,
+    env_var: str = "WORKERS",
+    read_text_fn: object = None,
+) -> int:
+    """Resolve worker pool size from ``env_var`` or CPU count bounded to 2 on <=4.5 GiB hosts."""
+    raw_w = int_env(env_var)
+    if raw_w is not None and raw_w > 0:
+        return raw_w
+    cpu_cap = min(max(1, safe_pos_int(max_workers, 4)), os.cpu_count() or max(1, safe_pos_int(default_cpus, 2)))
+    reader = read_text_fn if callable(read_text_fn) else _state_io.read_text_file
+    meminfo = reader("/proc/meminfo", default="")
+    if isinstance(meminfo, str):
+        for line in meminfo.splitlines():
+            if line.startswith("MemTotal:"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    mem_kb = safe_nonneg_int(parts[1], default=0)
+                    if 0 < mem_kb <= 4608 * 1024:
+                        return min(2, cpu_cap)
+                break
+    return cpu_cap
 
 
-def value_diff_to_percent(value1, value2) -> float:
-    v1, v2 = safe_float(value1, default=None), safe_float(value2, default=None)
-    if v1 is None or v2 is None or v1 == 0.0:
-        return 0.0
-    return safe_float(((v1 - v2) / v1) * 100.0, default=0.0)
+class RuntimeServices:
+    """Explicit dependency-injection container for clock, sleep, retry, snapshot, and external transport policies."""
+
+    def __init__(
+        self,
+        *,
+        clock_fn: object = None,
+        sleep_fn: object = None,
+        stale_cache_retry_delay_sec: float = 1.5,
+        enforce_rth_gate: bool = True,
+        allow_live_network_backfill: bool = True,
+        allow_unmocked_llm_queries: bool = True,
+        allow_shared_disk_cache: bool = True,
+    ) -> None:
+        self.clock_fn = clock_fn if callable(clock_fn) else None
+        self.sleep_fn = sleep_fn if callable(sleep_fn) else None
+        self.stale_cache_retry_delay_sec = safe_nonneg_float(stale_cache_retry_delay_sec, default=1.5)
+        self.enforce_rth_gate = _parse_bool_flag(enforce_rth_gate, True)
+        self.allow_live_network_backfill = _parse_bool_flag(allow_live_network_backfill, True)
+        self.allow_unmocked_llm_queries = _parse_bool_flag(allow_unmocked_llm_queries, True)
+        self.allow_shared_disk_cache = _parse_bool_flag(allow_shared_disk_cache, True)
+
+    def configure(self, **kwargs: object) -> "RuntimeServices":
+        for k, v in kwargs.items():
+            if not hasattr(self, k):
+                raise AttributeError(f"Unknown RuntimeServices attribute: {k!r}")
+            if k in ("clock_fn", "sleep_fn"):
+                setattr(self, k, v if callable(v) else None)
+            elif k == "stale_cache_retry_delay_sec":
+                setattr(self, k, safe_nonneg_float(v, default=1.5))
+            else:
+                setattr(self, k, _parse_bool_flag(v, getattr(self, k, True)))
+        return self
+
+    def rth_gate_enabled(self, override: bool | None = None, *, rth_fn: object = None) -> bool:
+        if override is not None:
+            return _parse_bool_flag(override, False)
+        if rth_fn is not None and not (
+            rth_fn is is_us_rth_open
+            or (
+                getattr(rth_fn, "__module__", None) == __name__
+                and getattr(rth_fn, "__qualname__", None) == "is_us_rth_open"
+            )
+        ):
+            return True
+        if bool_env("MPTRADE_FORCE_RTH_GATE", default=False):
+            return True
+        return bool(self.enforce_rth_gate)
+
+    def live_network_backfill_enabled(self, override: bool | None = None) -> bool:
+        if override is not None:
+            return bool(override)
+        env_flag = os.environ.get("MPTRADE_ALLOW_LIVE_BACKFILL")
+        if env_flag is not None and str(env_flag).strip() != "":
+            return bool(_parse_bool_flag(env_flag, default=True))
+        return bool(self.allow_live_network_backfill)
+
+    def unmocked_llm_query_allowed(self, override: bool | None = None) -> bool:
+        return bool(override) if override is not None else bool(self.allow_unmocked_llm_queries)
+
+    def shared_disk_cache_enabled(self, override: bool | None = None) -> bool:
+        return bool(override) if override is not None else bool(self.allow_shared_disk_cache)
+
+    def stale_cache_retry_delay(self, override: float | None = None) -> float:
+        if override is not None:
+            val = safe_nonneg_float(override, default=None)
+            if val is not None:
+                return val
+        return float(self.stale_cache_retry_delay_sec)
 
 
-def slope(val1, idx1, val2, idx2) -> float:
-    v1 = safe_float(val1, default=None)
-    i1 = safe_float(idx1, default=None)
-    v2 = safe_float(val2, default=None)
-    i2 = safe_float(idx2, default=None)
-    if v1 is None or i1 is None or v2 is None or i2 is None or i1 == i2:
-        return 0.0
-    return safe_float((v2 - v1) / (i2 - i1), default=0.0)
+_prev_rs = globals().get("_RUNTIME_SERVICES")
+if _prev_rs is not None and hasattr(_prev_rs, "enforce_rth_gate"):
+    with contextlib.suppress(TypeError):
+        _prev_rs.__class__ = RuntimeServices
+    _RUNTIME_SERVICES: RuntimeServices = _prev_rs  # type: ignore[assignment]
+else:
+    _RUNTIME_SERVICES = RuntimeServices()
 
 
-def timestampToTime(timestamp_ms) -> str:
-    ts_ms = safe_nonneg_float(timestamp_ms, default=None)
-    if ts_ms is None:
-        return "N/A"
-    try:
-        return datetime.fromtimestamp(ts_ms / 1000.0).strftime("%Y-%m-%d %H:%M:%S")
-    except (TypeError, ValueError, OverflowError, OSError):
-        return "N/A"
+def configure_runtime_services(**kwargs: object) -> RuntimeServices:
+    """Update fields on the active ``RuntimeServices`` container and return it."""
+    return _RUNTIME_SERVICES.configure(**kwargs)
 
 
-@lru_cache(maxsize=256)
-def timeToHMS(timestamp_sec) -> str:
-    ts_f = normalize_epoch_sec(timestamp_sec, default=None, allow_zero=True)
-    if ts_f is None:
-        return "N/A"
-    try:
-        return datetime.fromtimestamp(ts_f).strftime("%H:%M:%S")
-    except (TypeError, ValueError, OverflowError, OSError):
-        return "N/A"
+SIMULATED_PROVIDER_NAMES: frozenset[str] = frozenset(
+    {"replay", "backtest", "sim", "mock", "paper_sim", "test"}
+)
 
 
-def _bind_seconds_converter(divisor: float):
-    return lambda max_age_seconds, _div=divisor: safe_nonneg_float(max_age_seconds, default=0.0) / _div
+def is_simulated_provider_name(provider: object) -> bool:
+    """Return True when ``provider`` identifies a simulated/replay/backtest/mock execution adapter."""
+    return bool(
+        provider
+        and not isinstance(provider, bool)
+        and str(provider).strip().lower() in SIMULATED_PROVIDER_NAMES
+    )
 
 
-secondsToDays = _bind_seconds_converter(86400.0)
-secondsToHours = _bind_seconds_converter(3600.0)
+def is_replay_or_backtest_env(*extra_keys: str, env: dict | None = None) -> bool:
+    """Return True when ``BACKTEST_MODE``, ``REPLAY_MODE``, or any ``extra_keys`` flag is enabled."""
+    return any_bool_env("BACKTEST_MODE", "REPLAY_MODE", *extra_keys, env=env)
 
 
-def gaussian_weights_from_idx(T, idx: int):
-    """Return ``t`` as the position axis ``[idx..T-1]`` and ``w`` as its Gaussian weights."""
-    import numpy as np
-
-    t_f = safe_pos_float(T, default=None)
-    idx_f = safe_float(idx, default=None)
-    if t_f is None or idx_f is None:
-        return np.array([]), np.array([])
-    t_steps = min(100000, max(1, int(round(t_f))))
-    idx_int = max(0, int(idx_f))
-    if idx_int >= t_steps:
-        return np.array([]), np.array([])
-
-    t_full = np.linspace(0, t_steps - 1, t_steps)
-    mu = (t_steps - 1) / 2
-    sigma = t_steps / 4
-    w_full = np.exp(-0.5 * ((t_full - mu) / sigma) ** 2)
-    w_full = w_full / w_full.sum()
-    return t_full[idx_int:], w_full[idx_int:]
+def is_gemini_llm_disabled(env: dict | None = None) -> bool:
+    """Return True when Gemini LLM queries are suppressed via ``DISABLE_GEMINI_LLM``, ``BACKTEST_MODE``, or ``REPLAY_MODE``."""
+    return is_replay_or_backtest_env("DISABLE_GEMINI_LLM", env=env)
 
 
-def _load_ed25519_signing_key():
-    try:
-        import nacl.signing
-
-        pem_data = _state_io.read_text_file("keys/ed25519_private.pem")
-        b64match = re.search(r"-----BEGIN PRIVATE KEY-----(.*?)-----END PRIVATE KEY-----", pem_data, re.DOTALL)
-        if not b64match:
-            raise ValueError("Invalid PEM")
-        der_bytes = base64.b64decode(b64match.group(1).strip())
-        if len(der_bytes) < 32:
-            raise ValueError("DER too short")
-        return nacl.signing.SigningKey(der_bytes[-32:])
-    except Exception as e:
-        print(f"Error loading the Ed25519 key: {e}")
-        return None
+def is_offline_disk_cache_enabled(env: dict | None = None) -> bool:
+    """Return True when ``MPTRADE_OFFLINE_DISK_CACHE`` is enabled for offline OHLC disk reads."""
+    return bool_env("MPTRADE_OFFLINE_DISK_CACHE", env=env, default=False)
 
 
-def _sign_ed25519(signing_key, payload: str) -> str:
-    if signing_key is None or payload is None or isinstance(payload, bool):
-        raise ValueError("signing_key and payload are required")
-    raw_bytes = payload if isinstance(payload, bytes) else str(payload).encode("utf-8")
-    return base64.b64encode(signing_key.sign(raw_bytes).signature).decode("ascii")
+def is_auto_start_websockets_enabled(env: dict | None = None) -> bool:
+    """Return True when ``BINANCE_AUTO_START_WEBSOCKETS`` permits background WS startup (default True)."""
+    return bool_env("BINANCE_AUTO_START_WEBSOCKETS", env=env, default=True)
 
 
+def disable_auto_start_websockets_default() -> None:
+    """Default ``BINANCE_AUTO_START_WEBSOCKETS=0`` in ``os.environ`` for read-only CLI/supervisor entrypoints."""
+    os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
-def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:
-    """Parse a numeric config value that may be expressed either as a ratio or as a percentage."""
-    if isinstance(raw, str) and raw.strip().endswith("%"):
-        return require_nonneg_float(raw.strip()[:-1].strip(), name="ratio_or_pct") / 100.0
-    val = require_nonneg_float(raw, name="ratio_or_pct")
-    cutoff = require_nonneg_float(pct_cutoff, name="pct_cutoff")
-    return val / 100.0 if val > cutoff else val
+def is_rth_gate_enabled(override: bool | None = None, *, rth_fn: object = None) -> bool:
+    """Return whether US equities RTH session gating is active under the current runtime policy."""
+    return _RUNTIME_SERVICES.rth_gate_enabled(override, rth_fn=rth_fn)
 
 
-def safe_thresh(val: object, default: int) -> int:
-    """Safely coerce sentiment index/threshold to an integer in [0, 100]."""
-    f = safe_float(val, -1.0)
-    return int(round(f)) if 0.0 <= f <= 100.0 else default
+def is_live_network_backfill_enabled(override: bool | None = None) -> bool:
+    """Return whether opportunistic on-demand live network backfills are enabled."""
+    return _RUNTIME_SERVICES.live_network_backfill_enabled(override)
 
+
+def is_unmocked_llm_query_allowed(override: bool | None = None) -> bool:
+    """Return whether unmocked external LLM CLI/REST queries are permitted."""
+    return _RUNTIME_SERVICES.unmocked_llm_query_allowed(override)
+
+
+def is_shared_disk_cache_enabled(override: bool | None = None) -> bool:
+    """Return whether default cross-process disk caches are enabled when no explicit path is injected."""
+    return _RUNTIME_SERVICES.shared_disk_cache_enabled(override)
+
+
+def get_stale_cache_retry_delay_sec(override: float | None = None) -> float:
+    """Return the retry delay in seconds for stale account cache order retries."""
+    return _RUNTIME_SERVICES.stale_cache_retry_delay(override)
+
+
+async def async_interruptible_sleep(
+    stop_event: object, delay: object, step: object = 0.2, *, sleep_fn: object = None
+) -> None:
+    """Sleep asynchronously up to ``delay`` seconds in ``step`` increments while ``stop_event`` is not set."""
+    eff_delay = safe_pos_float(delay, default=None)
+    if eff_delay is None:
+        return
+    eff_step = safe_pos_float(step, default=0.2) or 0.2
+    if sleep_fn is None:
+        sleep_fn = asyncio.sleep
+    is_stopped = getattr(stop_event, "is_set", None)
+    elapsed = 0.0
+    while elapsed < eff_delay and not (callable(is_stopped) and is_stopped()):
+        await sleep_fn(min(eff_step, eff_delay - elapsed))
+        elapsed += eff_step
+
+
+def is_worker_thread_alive(instance: object, attr: str = "_thread") -> bool:
+    """Return True when the thread stored on ``getattr(instance, attr, None)`` is alive."""
+    thread = getattr(instance, attr, None)
+    return thread is not None and bool(getattr(thread, "is_alive", lambda: False)())
+
+
+def set_stop_event(instance: object, attr: str = "_stop_event") -> None:
+    """Signal the ``threading.Event`` stored on ``getattr(instance, attr, None)`` to stop."""
+    ev = getattr(instance, attr, None)
+    if ev is not None and hasattr(ev, "set"):
+        ev.set()
+
+
+def sleep_monitoring_interval(
+    instance: object,
+    interval_sec: object,
+    *,
+    max_sleep_step: float = 1.0,
+    sleep_fn: object = None,
+) -> None:
+    """Sleep in interruptible steps summing to ``interval_sec`` while ``instance._running`` remains truthy."""
+    remaining = safe_pos_float(interval_sec, default=60.0) or 60.0
+    step_cap = safe_pos_float(max_sleep_step, default=1.0) or 1.0
+    sleeper = sleep_fn if callable(sleep_fn) else _time.sleep
+    while remaining > 1e-9 and _parse_bool_flag(getattr(instance, "_running", False), default=False):
+        chunk = min(step_cap, remaining)
+        sleeper(chunk)
+        remaining -= chunk
+
+
+def start_monitoring_daemon_thread(
+    instance: object, target: object, name: str
+) -> threading.Thread:
+    """Create, attach to ``instance._thread``, and start a daemon monitoring thread."""
+    thread = threading.Thread(target=target, name=name, daemon=True)
+    setattr(instance, "_thread", thread)
+    thread.start()
+    return thread
+
+
+def stop_monitoring_thread(
+    instance: object, label: str = "", *, timeout: float = 5.0
+) -> None:
+    """Stop a background monitoring loop backed by ``_running`` and ``_thread``."""
+    setattr(instance, "_running", False)
+    thread = getattr(instance, "_thread", None)
+    if thread and thread is not threading.current_thread():
+        thread.join(timeout=safe_nonneg_float(timeout, default=5.0))
+    eff_label = label or getattr(instance, "_MONITOR_LABEL", None) or type(instance).__name__
+    print(f"[{eff_label}] Monitoring stopped")
+
+
+# =============================================================================
+# 9. MODULE LOADING, LAZY REGISTRIES & BACKWARD-COMPATIBLE ALIASES
+# =============================================================================
 
 class StringEnum(str, Enum):
     """String-backed ``Enum`` whose ``__str__`` returns the raw string ``value`` across Python versions."""
@@ -2310,515 +3345,133 @@ class LazyPluginRegistryFactory:
         )
 
 
-def obj_attr_first(obj: object, *names: str, default: object = None) -> object:
-    """Return the first non-``None`` attribute or mapping value among ``names`` on ``obj``."""
-    for name in names:
-        val = obj_attr(obj, name, None)
-        if val is not None:
-            return val
-    return default
+_LOCAL_MODULE_LOCK = globals().get("_LOCAL_MODULE_LOCK") or threading.RLock()
 
 
-def coerce_finite_float(
-    raw: object, *, positive: bool = False, default: float | None = None
-) -> float | None:
-    """Coerce ``raw`` to a finite float (or strictly positive finite float when ``positive=True``)."""
-    return safe_pos_float(raw, default=default) if positive else safe_float(raw, default=default)
+def ensure_local_module_priority(directory: str, *module_names: str) -> None:
+    """Ensure ``directory`` is first on ``sys.path`` (with repo root available) and evict foreign cached modules."""
+    with _LOCAL_MODULE_LOCK:
+        abs_dir = os.path.abspath(directory)
+        if _REPO_ROOT not in sys.path:
+            sys.path.insert(0, _REPO_ROOT)
+        if sys.path[:1] != [abs_dir]:
+            if abs_dir in sys.path:
+                sys.path.remove(abs_dir)
+            sys.path.insert(0, abs_dir)
+        for mod_name in module_names:
+            mod_obj = sys.modules.get(mod_name)
+            if mod_obj is None:
+                continue
+            mod_file = getattr(mod_obj, "__file__", None)
+            if type(mod_obj) is object or (
+                isinstance(mod_file, str) and mod_file and os.path.dirname(os.path.abspath(mod_file)) != abs_dir
+            ):
+                sys.modules.pop(mod_name, None)
 
 
-def resolve_positive_max_age(max_age_sec: object, default: float | None) -> float | None:
-    """Return sanitized positive ``default`` when ``max_age_sec is None``, else strictly positive finite float or ``None``."""
-    return (
-        safe_pos_float(default, default=None)
-        if max_age_sec is None
-        else safe_pos_float(max_age_sec, default=None)
-    )
-
-
-def resolve_mem_bounded_worker_cap(
-    max_workers: int = 4,
-    *,
-    default_cpus: int = 2,
-    env_var: str = "WORKERS",
-    read_text_fn: object = None,
-) -> int:
-    """Resolve worker pool size from ``env_var`` or CPU count bounded to 2 on <=4.5 GiB hosts."""
-    raw_w = int_env(env_var)
-    if raw_w is not None and raw_w > 0:
-        return raw_w
-    cpu_cap = min(max(1, safe_pos_int(max_workers, 4)), os.cpu_count() or max(1, safe_pos_int(default_cpus, 2)))
-    reader = read_text_fn if callable(read_text_fn) else _state_io.read_text_file
-    meminfo = reader("/proc/meminfo", default="")
-    if isinstance(meminfo, str):
-        for line in meminfo.splitlines():
-            if line.startswith("MemTotal:"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    mem_kb = safe_nonneg_int(parts[1], default=0)
-                    if 0 < mem_kb <= 4608 * 1024:
-                        return min(2, cpu_cap)
-                break
-    return cpu_cap
-
-
-def resolve_order_notional(
-    notional_eur: object,
-    price: object,
-    qty: object,
-    *,
-    default: float | None = None,
-    fallback_on_nonfinite: bool = True,
-) -> float | None:
-    """Resolve positive order notional from explicit ``notional_eur`` or ``price * qty`` fallback."""
-    n_clean = safe_pos_float(notional_eur, 0.0)
-    if n_clean > 0.0:
-        return n_clean
-    if not fallback_on_nonfinite and notional_eur is not None and safe_float(notional_eur, None) is None:
-        return default
-    px_clean = safe_pos_float(price, 0.0)
-    qty_clean = safe_pos_float(qty, 0.0)
-    return (px_clean * qty_clean) if (px_clean > 0.0 and qty_clean > 0.0) else default
-
-
-def clean_scale(
-    val: object,
-    default: float = 1.0,
-    *,
-    allow_percent: bool = False,
-    min_positive: bool = False,
-    clamp: bool = False,
-) -> float:
-    """Normalize a scale factor into [0.0, 1.0], optionally converting [5.0, 100.0] or '%' percentages."""
-    if allow_percent and isinstance(val, str) and val.strip().endswith("%"):
-        pct = safe_nonneg_float(val.strip()[:-1].strip(), default=None)
-        f = round(pct / 100.0, 4) if (pct is not None and pct <= 100.0) else -1.0
-    else:
-        f = safe_float(val, -1.0)
-        if allow_percent and 5.0 <= f <= 100.0:
-            f = round(f / 100.0, 4)
-    if f < 0.0 or (min_positive and f <= 0.0):
-        return default
-    if clamp and f > 1.0:
-        return 1.0
-    return f if 0.0 <= f <= 1.0 else default
-
-
-def parse_iso_datetime_utc(raw: str) -> datetime | None:
-    """Parse an ISO-8601 string (supporting trailing ``Z``/``z``) into a timezone-aware UTC ``datetime``."""
-    try:
-        iso_s = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
-        dt = datetime.fromisoformat(iso_s)
-        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-    except Exception:
-        return None
-
-
-def normalize_epoch_sec(
-    val: object, default: float | None = None, *, allow_zero: bool = False, allow_iso: bool = False
-) -> float | None:
-    """Normalize a timestamp in seconds, milliseconds (>= 1e11), or optional ISO-8601 string into epoch seconds."""
-    f = safe_nonneg_float(val, default=None) if allow_zero else safe_pos_float(val, default=None)
-    if f is None and allow_iso and isinstance(val, str):
-        s = val.strip()
-        if len(s) >= 10 and ("-" in s or "T" in s):
-            if (dt := parse_iso_datetime_utc(s)) is not None:
-                ts_s = dt.timestamp()
-                if (ts_s >= 0.0) if allow_zero else (ts_s > 0.0):
-                    f = ts_s
-    if f is None:
-        return default
-    return f / 1000.0 if f >= 1e11 else f
-
-
-def first_epoch_sec(
-    *values: object, default: float | None = None, allow_iso: bool = False
-) -> float | None:
-    """Return the first strictly positive epoch-seconds timestamp among ``values``, skipping None/0/'0'/NaN/Inf/bool."""
-    for val in values:
-        if (ts_s := normalize_epoch_sec(val, default=None, allow_zero=False, allow_iso=allow_iso)) is not None:
-            return ts_s
-    return default
-
-
-def parse_epoch_price_pair(
-    item: object, *, allow_zero_ts: bool = True
-) -> tuple[float, float] | None:
-    """Parse a 2-element ``(ts, price)`` list/tuple into ``(epoch_sec, positive_price)`` or ``None``."""
-    if not isinstance(item, (list, tuple)) or len(item) < 2:
-        return None
-    t = normalize_epoch_sec(item[0], default=None, allow_zero=allow_zero_ts)
-    p = safe_pos_float(item[1], default=None)
-    return (t, p) if (t is not None and p is not None) else None
-
-
-def safe_nonneg_ts(val: object, default: float = 0.0) -> float:
-    """Safely coerce a timestamp to non-negative epoch seconds, converting ms (>= 1e11)."""
-    res = normalize_epoch_sec(val, default=default, allow_zero=True)
-    return default if res is None else res
-
-
-def resolve_now_ts(now_ts: object = None, *, allow_zero: bool = False) -> float:
-    """Return ``now_ts`` normalized to epoch seconds (converting ms >= 1e11), or the active runtime clock."""
-    f = normalize_epoch_sec(now_ts, default=None, allow_zero=allow_zero)
-    if f is not None:
-        return f
-    clk = getattr(globals().get("_RUNTIME_SERVICES"), "clock_fn", None)
-    return float(clk()) if callable(clk) else _time.time()
-
-
-def resolve_now_ms(now_ms: object = None) -> int:
-    """Return ``now_ms`` as a positive integer millisecond timestamp, or ``int(resolve_now_ts() * 1000)``."""
-    parsed = safe_pos_int(now_ms, default=None)
-    return parsed if parsed is not None else int(resolve_now_ts() * 1000)
-
-
-_TIMESTAMP_KEYS = (
-    "timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime",
-    "filledAt", "dateExecuted", "dateModified", "createdAt", "dateCreated", "T", "E", "ts", "ts_ms",
+_AMBIGUOUS_LOCAL_MODULES = (
+    "strategy", "market_data", "replay", "common", "hl_client", "t212_client", "ipo_common",
+    "notify", "ipo_notify", "signals",
 )
 
-
-def _first_mapped(mapping: object, keys: tuple[str, ...], parser: object, default: object = None) -> object:
-    """Return the first non-None parsed value from ``mapping`` across ``keys``."""
-    if not isinstance(mapping, dict):
-        return default
-    for key in keys:
-        if key in mapping and mapping[key] is not None:
-            val = parser(mapping[key])
-            if val is not None:
-                return val
-    return default
+_LEGACY_ARCHIVE_DIR: str | None = None
 
 
-def _parse_epoch_or_iso_s(value: object) -> float | None:
-    numeric = safe_nonneg_float(value, default=None)
-    return numeric if numeric is not None else normalize_epoch_sec(value, default=None, allow_zero=True, allow_iso=True)
+def _resolve_archived_module_dir(abs_dir: str, stem: str) -> str:
+    global _LEGACY_ARCHIVE_DIR
+    if os.path.isfile(os.path.join(abs_dir, f"{stem}.py")) or os.path.isdir(os.path.join(abs_dir, stem)):
+        return abs_dir
+    archive_tar = os.path.join(_REPO_ROOT, "archive", "legacy_archive.tar.gz")
+    if not os.path.isfile(archive_tar):
+        return abs_dir
+    rel = os.path.relpath(abs_dir, _REPO_ROOT)
+    if not (rel == "archive" or rel.startswith("archive" + os.sep)):
+        return abs_dir
+    if _LEGACY_ARCHIVE_DIR is None or not os.path.isdir(_LEGACY_ARCHIVE_DIR):
+        _LEGACY_ARCHIVE_DIR = tempfile.mkdtemp(prefix="mptrade_legacy_archive_")
+        atexit.register(shutil.rmtree, _LEGACY_ARCHIVE_DIR, True)
+        with tarfile.open(archive_tar, "r:gz") as tf:
+            tf.extractall(_LEGACY_ARCHIVE_DIR, filter="data")
+    extracted_dir = os.path.join(_LEGACY_ARCHIVE_DIR, rel)
+    return extracted_dir if (os.path.isfile(os.path.join(extracted_dir, f"{stem}.py")) or os.path.isdir(os.path.join(extracted_dir, stem))) else abs_dir
 
 
-def normalize_timestamp_ms(value: object, default: int | None = None) -> int | None:
-    """Normalize a raw timestamp (in seconds, milliseconds, or ISO-8601 string) to integer milliseconds."""
-    numeric = safe_nonneg_float(value, default=None)
-    if numeric is None:
-        numeric = _parse_epoch_or_iso_s(value)
-    if numeric is None:
-        return default
-    if numeric == 0.0:
-        return 0
-    if 1_000_000_000.0 <= numeric < 100_000_000_000.0 or (
-        0.0 < numeric < 1_000_000_000.0 and isinstance(value, float) and not numeric.is_integer()
-    ):
-        return int(round(numeric * 1000.0))
-    return int(round(numeric))
+def load_local_module(
+    directory: str, name: str, *, module_key: str | None = None, register: bool = True, reload: bool = False
+):
+    """Load a sibling module ``<name>.py`` from ``directory`` without colliding with other venue modules."""
+    with _LOCAL_MODULE_LOCK:
+        stem = name[:-3] if name.endswith(".py") else name
+        abs_dir = _resolve_archived_module_dir(os.path.abspath(directory), stem)
+        key = module_key or stem
+        if register and not reload:
+            mod = sys.modules.get(key)
+            mod_file = getattr(mod, "__file__", None) if mod is not None else None
+            if (
+                mod is not None
+                and getattr(mod, "__mptrade_exec_done__", True)
+                and (not isinstance(mod_file, str) or not mod_file or os.path.dirname(os.path.abspath(mod_file)) == abs_dir)
+            ):
+                return mod
+
+        orig_sys_path = list(sys.path)
+        saved_ambiguous: dict[str, object] = {}
+        for amb_name in _AMBIGUOUS_LOCAL_MODULES:
+            if amb_name in sys.modules:
+                amb_file = getattr(sys.modules[amb_name], "__file__", None)
+                if isinstance(amb_file, str) and amb_file and os.path.dirname(os.path.abspath(amb_file)) != abs_dir:
+                    saved_ambiguous[amb_name] = sys.modules.pop(amb_name)
+        succeeded = False
+        try:
+            while abs_dir in sys.path:
+                sys.path.remove(abs_dir)
+            while _REPO_ROOT in sys.path:
+                sys.path.remove(_REPO_ROOT)
+            sys.path.insert(0, _REPO_ROOT)
+            repo_base = os.path.basename(_REPO_ROOT)
+            for seg in abs_dir.split(os.sep):
+                if not seg or seg == repo_base:
+                    continue
+                cand_dir = os.path.join(_REPO_ROOT, seg)
+                if cand_dir != abs_dir and os.path.isdir(cand_dir) and cand_dir not in sys.path:
+                    sys.path.insert(0, cand_dir)
+            sys.path.insert(0, abs_dir)
+            spec = importlib.util.spec_from_file_location(key, os.path.join(abs_dir, f"{stem}.py"))
+            mod = importlib.util.module_from_spec(spec)
+            setattr(mod, "__mptrade_exec_done__", False)
+            prev_key_mod = sys.modules.get(key)
+            sys.modules[key] = mod
+            try:
+                spec.loader.exec_module(mod)
+                setattr(mod, "__mptrade_exec_done__", True)
+            except Exception:
+                if prev_key_mod is None:
+                    sys.modules.pop(key, None)
+                else:
+                    sys.modules[key] = prev_key_mod
+                raise
+            if not register:
+                if prev_key_mod is None:
+                    sys.modules.pop(key, None)
+                else:
+                    sys.modules[key] = prev_key_mod
+            succeeded = True
+            return mod
+        finally:
+            sys.path[:] = orig_sys_path
+            for amb_name, saved_mod in saved_ambiguous.items():
+                if not (succeeded and register and amb_name == key):
+                    sys.modules[amb_name] = saved_mod
 
 
-def _ts_ms_to_s(ts_ms: float | int) -> float:
-    return normalize_epoch_sec(ts_ms, default=0.0, allow_zero=True) or 0.0
-
-
-def _is_fresh_obs_ts(obs_ts_s: float | None, now_s: float, max_age_s: float) -> bool:
-    return obs_ts_s is not None and -5.0 <= (now_s - obs_ts_s) <= max_age_s
-
-
-def extract_timestamp_ms(order: object, default: int | None = None) -> int | None:
-    """Extract and normalize an order/fill/tick timestamp in milliseconds from any venue shape."""
-    if isinstance(order, (list, tuple)):
-        return normalize_timestamp_ms(order[0], default=default) if order else default
-    pos_ms = _first_mapped(
-        order,
-        _TIMESTAMP_KEYS,
-        lambda v: ms if (ms := normalize_timestamp_ms(v, default=None)) is not None and ms > 0 else None,
-        None,
-    )
-    if pos_ms is not None:
-        return pos_ms
-    return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_timestamp_ms(v, default=None), default)
-
-
-def extract_timestamp_s(order: object, default: float | None = None) -> float | None:
-    """Extract and normalize an order/fill/tick timestamp in seconds from any venue shape."""
-    if isinstance(order, (list, tuple)):
-        return normalize_epoch_sec(order[0], default=default, allow_zero=True, allow_iso=True) if order else default
-    pos_s = _first_mapped(
-        order,
-        _TIMESTAMP_KEYS,
-        lambda v: normalize_epoch_sec(v, default=None, allow_zero=False, allow_iso=True),
-        None,
-    )
-    if pos_s is not None:
-        return pos_s
-    return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_epoch_sec(v, allow_zero=True, allow_iso=True), default)
-
-
-_ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "txid", "oid", "i", "id")
-_PRICE_KEYS = ("price", "px", "limitPx", "fillPrice", "limit", "limitPrice", "averagePrice", "avgPrice", "rate", "L", "p")
-_QTY_KEYS = (
-    "qty", "quantity", "executedQty", "executed_qty", "filledQuantity", "filledQty", "filled_qty", "vol_exec",
-    "sz", "vol", "origQty", "origSz", "orig_qty", "requested_qty", "orderedQuantity", "amount_shares", "l", "z", "q",
-)
-_COST_EXEC_KEY_PAIRS = (
-    ("cummulativeQuoteQty", "executedQty"),
-    ("cummulativeQuoteQty", "qty"),
-    ("cummulativeQuoteQty", "quantity"),
-    ("quoteQty", "qty"),
-    ("quoteQty", "quantity"),
-    ("cost", "vol_exec"),
-    ("cost", "vol"),
-    ("filledValue", "filledQuantity"),
-    ("Y", "l"),
-    ("Z", "z"),
-)
-
-
-def _pos_abs_float(value: object) -> float | None:
-    val = abs(safe_float(value, default=0.0))
-    return val if val > 0.0 else None
-
-
-def _nonneg_abs_float(value: object) -> float | None:
-    val = safe_float(value, default=None)
-    return abs(val) if val is not None else None
-
-
-def extract_order_id(order: object, default: str | None = None) -> str | None:
-    """Extract and normalize a venue order ID from any response shape."""
-    if order is None or isinstance(order, bool):
-        return default
-    if isinstance(order, (list, tuple)):
-        for item in order:
-            if (cleaned := extract_order_id(item)) is not None:
-                return cleaned
-        return default
-    if hasattr(order, "order_id") and hasattr(order, "state"):
-        cleaned = clean_order_id(getattr(order, "order_id", None))
-        return cleaned if cleaned is not None else default
-    if isinstance(order, dict):
-        return _first_mapped(order, _ORDER_ID_KEYS, extract_order_id, default)
-    cleaned = clean_order_id(order)
-    return cleaned if cleaned is not None else default
-
-
-def extract_order_side(order: object) -> str:
-    """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
-    if not isinstance(order, dict):
-        return ""
-    s_norm = _first_mapped(order, ("side", "S", "dir"), lambda v: normalize_side(v) or None)
-    if s_norm:
-        return s_norm
-    descr = order.get("descr")
-    for raw_type in (order.get("type"), descr.get("type") if isinstance(descr, dict) else None):
-        if (t_norm := normalize_side(raw_type)) in ("BUY", "SELL"):
-            return t_norm
-    raw_buyer = order.get("isBuyer")
-    if raw_buyer is not None:
-        parsed_b = _parse_bool_flag(raw_buyer, None)
-        if parsed_b is not None:
-            return "BUY" if parsed_b else "SELL"
-        if isinstance(raw_buyer, str) and (b_norm := raw_buyer.strip().lower()) in ("b", "buy", "s", "sell"):
-            return "BUY" if b_norm.startswith("b") else "SELL"
-    inst = order.get("instrument")
-    has_broker_hint = "ticker" in order or "limitPrice" in order or (isinstance(inst, dict) and "ticker" in inst)
-    for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
-        sq = safe_float(order.get(sq_key), default=0.0)
-        if sq < 0.0:
-            return "SELL"
-        if sq > 0.0 and (sq_key in ("signed_qty", "orderedQuantity") or has_broker_hint):
-            return "BUY"
-    return ""
-
-
-def extract_order_price(order: object, default: float = 0.0) -> float:
-    """Extract order/fill price from any venue shape."""
-    if not isinstance(order, dict):
-        return default
-    val = _first_mapped(order, _PRICE_KEYS, lambda v: safe_pos_float(v, default=None))
-    if val is not None:
-        return val
-    descr = order.get("descr")
-    if isinstance(descr, dict) and (val := safe_pos_float(descr.get("price"), default=None)) is not None:
-        return val
-    for cost_key, exec_key in _COST_EXEC_KEY_PAIRS:
-        if cost_key in order and exec_key in order:
-            cost_val = _pos_abs_float(order.get(cost_key))
-            exec_val = _pos_abs_float(order.get(exec_key))
-            if cost_val and exec_val and (res := safe_pos_float(cost_val / exec_val, default=None)) is not None:
-                return res
-    fills = order.get("fills")
-    if isinstance(fills, list) and fills:
-        total_quote, total_qty = 0.0, 0.0
-        for f in fills:
-            if isinstance(f, dict):
-                f_px = safe_pos_float(f.get("price", f.get("px", 0.0)), default=None)
-                f_qty = _pos_abs_float(f.get("qty", f.get("quantity", f.get("sz", 0.0))))
-                if f_px is not None and f_qty is not None:
-                    total_quote += f_px * f_qty
-                    total_qty += f_qty
-        if total_qty > 0 and (res := safe_pos_float(total_quote / total_qty, default=None)) is not None:
-            return res
-    msg_str = order.get("msg")
-    if isinstance(msg_str, str) and "@" in msg_str and msg_str.strip().lower().startswith("filled "):
-        if (msg_px := safe_pos_float(msg_str.rsplit("@", 1)[1].strip(), default=None)) is not None:
-            return msg_px
-    return default
-
-
-def extract_order_qty(order: object, default: float = 0.0) -> float:
-    """Extract order/fill quantity from any venue shape."""
-    return _first_mapped(order, _QTY_KEYS, _pos_abs_float, default)
-
-
-def is_market_order(order: object) -> bool:
-    """Return whether ``order`` represents a market order (safe against string flags like ``'false'``)."""
-    if not isinstance(order, Mapping):
-        return False
-    if "market" in order and order.get("market") is not None:
-        return bool(_parse_bool_flag(order.get("market"), False))
-    descr = order.get("descr")
-    for raw_ot in (
-        order.get("ordertype"),
-        order.get("type"),
-        descr.get("ordertype") if isinstance(descr, Mapping) else None,
-    ):
-        if isinstance(raw_ot, str) and raw_ot.strip().upper() == "MARKET":
-            return True
-    return False
-
-
-def clamp_price_to_bbo_mid(
-    price: float | None,
-    bid: object,
-    ask: object,
-    *,
-    max_spread_ratio: float = 0.05,
-) -> float | None:
-    """Return ``price`` clamped to the BBO mid ``(bid + ask) / 2`` when ``price`` falls outside a tight ``[bid, ask]`` spread."""
-    px_f = safe_pos_float(price, default=None) if not isinstance(price, bool) else None
-    bid_f = safe_pos_float(bid, default=None) if not isinstance(bid, bool) else None
-    ask_f = safe_pos_float(ask, default=None) if not isinstance(ask, bool) else None
-    max_ratio = safe_nonneg_float(max_spread_ratio, default=0.05)
-    if (
-        bid_f is not None
-        and ask_f is not None
-        and bid_f <= ask_f
-        and (ask_f - bid_f) / bid_f <= max_ratio
-        and (px_f is None or px_f < bid_f or px_f > ask_f)
-    ):
-        return round((bid_f + ask_f) * 0.5, 8)
-    return px_f
-
-
-def resolve_sustained_sample_rate(
-    cpm: object, symbol: str, *, min_span_sec: float = 5.0
-) -> float | None:
-    """Resolve sustained sample rate from a current-price manager or compatible test double."""
-    if cpm is None:
-        return None
-    min_span_s = safe_nonneg_float(min_span_sec, default=5.0)
-    if callable(getattr(type(cpm), "get_sustained_sample_rate", None)):
-        return safe_pos_float(
-            cpm.get_sustained_sample_rate(symbol, min_span_sec=min_span_s),
-            default=None,
-        )
-    lock_obj = getattr(cpm, "lock", None)
-    with lock_obj if hasattr(lock_obj, "__enter__") else threading.RLock():
-        ts_map = getattr(cpm, "_update_timestamps", None)
-        dq = ts_map.get(symbol) if isinstance(ts_map, dict) else None
-        samples = list(dq) if dq else []
-    if len(samples) < 2 or (samples[-1] - samples[0]) < min_span_s:
-        return None
-    sr_fn = getattr(cpm, "get_sample_rate", None)
-    if callable(sr_fn):
-        return safe_pos_float(sr_fn(symbol, fallback=None), default=None)
-    return safe_pos_float(
-        (samples[-1] - samples[0]) / (len(samples) - 1), default=None
-    )
-
-
-def is_cache_fresh(
-    last_ts: object, now_ts: float, ttl_sec: object, *, force_refresh: object = False
-) -> bool:
-    """Return True if cached state at ``last_ts`` is still within ``ttl_sec`` at ``now_ts``."""
-    if _parse_bool_flag(force_refresh, False):
-        return False
-    now_s = safe_nonneg_float(now_ts, None)
-    if now_s is None:
-        return False
-    lt = safe_nonneg_float(last_ts, 0.0)
-    ttl = safe_nonneg_float(ttl_sec, 0.0)
-    return lt > 0.0 and 0.0 <= (now_s - lt) < ttl
-
-
-def is_interval_due(
-    current_ts: float, last_ts: object, interval_sec: object, *, force: object = False
-) -> bool:
-    """Return True if ``force`` is truthy or ``interval_sec`` has elapsed since ``last_ts``."""
-    if _parse_bool_flag(force, False):
-        return True
-    cur_s = safe_nonneg_float(current_ts, None)
-    if cur_s is None:
-        return True
-    lt = safe_nonneg_float(last_ts, 0.0)
-    itv = safe_nonneg_float(interval_sec, 0.0)
-    return not (0.0 <= (cur_s - lt) < itv)
-
-
-def check_cooldown_gate(
-    cooldown_map: dict, key: object, now_ts: float, cooldown_sec: float = 1800.0, max_entries: int = 1000
-) -> bool:
-    """Return True and record ``now_ts`` if ``key`` is not within ``cooldown_sec``."""
-    if not isinstance(cooldown_map, dict):
-        return True
-    now_f = safe_float(now_ts, None)
-    if now_f is None:
-        return True
-    cd_f = safe_nonneg_float(cooldown_sec, 0.0) or 0.0
-    try:
-        raw_last = cooldown_map.get(key)
-        map_key = key
-    except TypeError:
-        map_key = str(key)
-        raw_last = cooldown_map.get(map_key)
-    last_f = safe_float(raw_last, None) if raw_last is not None else None
-    if last_f is not None and 0.0 <= (now_f - last_f) < cd_f:
-        return False
-    cooldown_map[map_key] = now_f
-    cap = safe_pos_int(max_entries, 1000) or 1000
-    while len(cooldown_map) > cap:
-        cooldown_map.pop(next(iter(cooldown_map)), None)
-    return True
-
-
-_CSV_SPLIT_RE = re.compile(r"[,\n]+")
-
-
-def split_csv(raw: str | None, *, lower: bool = False, upper: bool = False) -> tuple[str, ...]:
-    """Split comma- or newline-delimited strings into a deduplicated tuple of stripped tokens."""
-    if not isinstance(raw, str) or not raw:
-        return ()
-    seen: dict[str, None] = {}
-    for part in _CSV_SPLIT_RE.split(raw):
-        if cleaned := part.strip():
-            cleaned = cleaned.lower() if lower else (cleaned.upper() if upper else cleaned)
-            seen.setdefault(cleaned, None)
-    return tuple(seen)
-
-
-def parse_symbol_list(symbols: object) -> list[str]:
-    """Normalize comma-separated string or iterable of symbols into uppercase list."""
-    if isinstance(symbols, str):
-        return [tok for raw_tok in split_csv(symbols, upper=True) if (tok := clean_upper_scalar(raw_tok)) is not None]
-    if symbols is None or isinstance(symbols, (bool, bytes, bytearray, dict)) or not hasattr(symbols, "__iter__"):
-        return []
-    return list(dict.fromkeys(tok for s in symbols if (tok := clean_upper_scalar(s)) is not None))
-
-
-def validate_required_env_keys(
-    keys: list[str] | tuple[str, ...], *, env: dict | None = None, label: str = "configuration"
-) -> None:
-    """Abort startup with the complete list of missing or empty mandatory environment keys."""
-    src = os.environ if env is None else env
-    missing = [name for name in keys if not _clean_env_str(src.get(name))]
-    if missing:
-        raise ValueError(f"Missing or empty mandatory {label} settings: " + ", ".join(missing))
+def prepare_shadow_runtime(root: str, *module_dirs: str) -> None:
+    """Make repository modules importable and disable live Binance WebSockets."""
+    ensure_local_module_priority(root)
+    for path in module_dirs:
+        absolute = os.path.abspath(path)
+        if absolute not in sys.path:
+            sys.path.append(absolute)
+    os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 
 def resolve_patched_attr(
@@ -2894,286 +3547,6 @@ def bind_lazy_module_exports(
     module_globals["__getattr__"] = __getattr__
     module_globals["__dir__"] = __dir__
     return __getattr__, __dir__
-
-
-_SAFE_ID_DOT_RE = re.compile(r"[^A-Za-z0-9_.-]+")
-_SAFE_ID_NODOT_RE = re.compile(r"[^A-Za-z0-9_-]+")
-_TREND_UP_TOKENS = frozenset(("up", "bull", "uptrend", "bullish"))
-_TREND_DOWN_TOKENS = frozenset(("down", "bear", "downtrend", "bearish"))
-_BUY_SIDE_TOKENS = frozenset(("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"))
-_SELL_SIDE_TOKENS = frozenset(("A", "S", "SELL", "SOLD", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"))
-_INVALID_OID_STRINGS = INVALID_SCALAR_STRINGS | frozenset(("0", "0.0", "-0", "+0", "+0.0", "-0.0"))
-
-
-def normalize_side(side: object, *, require_str: bool = False) -> str:
-    """Normalize a scalar order side token to ``'BUY'`` or ``'SELL'`` (or ``''`` when unrecognized)."""
-    if side is None or isinstance(side, bool) or (require_str and not isinstance(side, str)):
-        return ""
-    s = " ".join(str(side).strip().upper().replace("_", " ").replace("-", " ").split())
-    if s in _BUY_SIDE_TOKENS:
-        return "BUY"
-    if s in _SELL_SIDE_TOKENS:
-        return "SELL"
-    return ""
-
-
-def require_buy_sell_side(side: object, *, name: str = "side") -> str:
-    """Normalize ``side`` to ``'BUY'`` or ``'SELL'``, raising ``ValueError`` otherwise."""
-    norm = normalize_side(side)
-    if norm not in ("BUY", "SELL"):
-        raise ValueError(f"Invalid {name} {side!r}: {name} must be BUY or SELL (expected 'BUY' or 'SELL')")
-    return norm
-
-
-def opposite_side(side: object) -> str:
-    """Return the opposite order side (``'SELL'`` for ``'BUY'``, ``'BUY'`` for ``'SELL'``)."""
-    return "SELL" if require_buy_sell_side(side, name="order_type") == "BUY" else "BUY"
-
-
-def clean_order_id(val: object) -> str | None:
-    """Validate and normalize a scalar venue order ID to a non-empty string (or ``None``)."""
-    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
-        return None
-    if isinstance(val, (int, float)):
-        val = exact_pos_int(val, default=None)
-        if val is None:
-            return None
-    if not isinstance(val, (str, int)):
-        return None
-    text = str(val).strip()
-    if not text or text.startswith("-") or text.lower() in _INVALID_OID_STRINGS:
-        return None
-    if text.endswith(".0") and text[:-2].lstrip("+").isdigit():
-        text = text[:-2]
-    if text in {"0", "+0"}:
-        return None
-    return text[1:] if text.startswith("+") and text[1:].isdigit() else text
-
-
-def clean_order_id_str(val: object) -> str:
-    """Return ``clean_order_id(val)`` or ``''`` when empty/invalid."""
-    return clean_order_id(val) or ""
-
-
-def normalize_scalar_order_id(val: object) -> int | str | None:
-    """Normalize a scalar order ID, preserving positive integers as ``int`` and string IDs as ``str``."""
-    cleaned = clean_order_id(val)
-    if cleaned is None:
-        return None
-    return exact_pos_int(val, default=cleaned) if isinstance(val, (int, float)) else cleaned
-
-
-def normalize_trend_direction(
-    raw_dir: object,
-    default: str | None = None,
-    *,
-    preserve_bull_bear: bool = False,
-    allow_long_short: bool = False,
-) -> str | None:
-    """Normalize a raw trend token (``up``/``bull``/``uptrend``/``bullish``/``long``, etc.) into a canonical direction."""
-    if not isinstance(raw_dir, str):
-        return default
-    d = raw_dir.strip().lower()
-    if d in _TREND_UP_TOKENS or (allow_long_short and d == "long"):
-        return ("up" if d == "up" else "bull") if preserve_bull_bear else "up"
-    if d in _TREND_DOWN_TOKENS or (allow_long_short and d == "short"):
-        return ("down" if d == "down" else "bear") if preserve_bull_bear else "down"
-    return default
-
-
-def sanitize_pipe_field(value: object) -> str:
-    """Sanitize a field value for pipe-delimited logs by replacing ``|``, ``\\r``, and ``\\n``."""
-    return "" if value is None else str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
-
-
-def sanitize_identifier(
-    value: object,
-    default: str = "unknown",
-    *,
-    sep: str = "_",
-    allow_dots_hyphens: bool = True,
-    strip_chars: str | None = None,
-) -> str:
-    """Sanitize an identifier/slug by replacing unsafe characters with ``sep`` and stripping edge separators."""
-    if value is None or isinstance(value, bool):
-        return default
-    pattern = _SAFE_ID_DOT_RE if allow_dots_hyphens else _SAFE_ID_NODOT_RE
-    cleaned = pattern.sub(sep, str(value).strip()).strip(strip_chars if strip_chars is not None else sep)
-    return cleaned or default
-
-
-def normalize_class_name(cls_or_name: object) -> str:
-    """Return the class name for a ``type`` object or stripped string, else ``''``."""
-    if isinstance(cls_or_name, type):
-        return cls_or_name.__name__
-    return cls_or_name.strip() if isinstance(cls_or_name, str) else ""
-
-
-async def async_interruptible_sleep(
-    stop_event: object, delay: object, step: object = 0.2, *, sleep_fn: object = None
-) -> None:
-    """Sleep asynchronously up to ``delay`` seconds in ``step`` increments while ``stop_event`` is not set."""
-    eff_delay = safe_pos_float(delay, default=None)
-    if eff_delay is None:
-        return
-    eff_step = safe_pos_float(step, default=0.2) or 0.2
-    if sleep_fn is None:
-        sleep_fn = asyncio.sleep
-    is_stopped = getattr(stop_event, "is_set", None)
-    elapsed = 0.0
-    while elapsed < eff_delay and not (callable(is_stopped) and is_stopped()):
-        await sleep_fn(min(eff_step, eff_delay - elapsed))
-        elapsed += eff_step
-
-
-def prepare_shadow_runtime(root: str, *module_dirs: str) -> None:
-    """Make repository modules importable and disable live Binance WebSockets."""
-    ensure_local_module_priority(root)
-    for path in module_dirs:
-        absolute = os.path.abspath(path)
-        if absolute not in sys.path:
-            sys.path.append(absolute)
-    os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-
-class RuntimeServices:
-    """Explicit dependency-injection container for clock, sleep, retry, snapshot, and external transport policies."""
-
-    def __init__(
-        self,
-        *,
-        clock_fn: object = None,
-        sleep_fn: object = None,
-        stale_cache_retry_delay_sec: float = 1.5,
-        enforce_rth_gate: bool = True,
-        allow_live_network_backfill: bool = True,
-        allow_unmocked_llm_queries: bool = True,
-        allow_shared_disk_cache: bool = True,
-    ) -> None:
-        self.clock_fn = clock_fn if callable(clock_fn) else None
-        self.sleep_fn = sleep_fn if callable(sleep_fn) else None
-        self.stale_cache_retry_delay_sec = safe_nonneg_float(stale_cache_retry_delay_sec, default=1.5)
-        self.enforce_rth_gate = _parse_bool_flag(enforce_rth_gate, True)
-        self.allow_live_network_backfill = _parse_bool_flag(allow_live_network_backfill, True)
-        self.allow_unmocked_llm_queries = _parse_bool_flag(allow_unmocked_llm_queries, True)
-        self.allow_shared_disk_cache = _parse_bool_flag(allow_shared_disk_cache, True)
-
-
-_prev_rs = globals().get("_RUNTIME_SERVICES")
-if _prev_rs is not None and hasattr(_prev_rs, "enforce_rth_gate"):
-    with contextlib.suppress(TypeError):
-        _prev_rs.__class__ = RuntimeServices
-    _RUNTIME_SERVICES: RuntimeServices = _prev_rs  # type: ignore[assignment]
-else:
-    _RUNTIME_SERVICES = RuntimeServices()
-
-
-def configure_runtime_services(**kwargs: object) -> RuntimeServices:
-    """Update fields on the active ``RuntimeServices`` container and return it."""
-    for k, v in kwargs.items():
-        if not hasattr(_RUNTIME_SERVICES, k):
-            raise AttributeError(f"Unknown RuntimeServices attribute: {k!r}")
-        if k in ("clock_fn", "sleep_fn"):
-            setattr(_RUNTIME_SERVICES, k, v if callable(v) else None)
-        elif k == "stale_cache_retry_delay_sec":
-            setattr(_RUNTIME_SERVICES, k, safe_nonneg_float(v, default=1.5))
-        else:
-            setattr(_RUNTIME_SERVICES, k, _parse_bool_flag(v, getattr(_RUNTIME_SERVICES, k, True)))
-    return _RUNTIME_SERVICES
-
-
-SIMULATED_PROVIDER_NAMES: frozenset[str] = frozenset(
-    {"replay", "backtest", "sim", "mock", "paper_sim", "test"}
-)
-
-
-def is_simulated_provider_name(provider: object) -> bool:
-    """Return True when ``provider`` identifies a simulated/replay/backtest/mock execution adapter."""
-    return bool(
-        provider
-        and not isinstance(provider, bool)
-        and str(provider).strip().lower() in SIMULATED_PROVIDER_NAMES
-    )
-
-
-def is_replay_or_backtest_env(*extra_keys: str, env: dict | None = None) -> bool:
-    """Return True when ``BACKTEST_MODE``, ``REPLAY_MODE``, or any ``extra_keys`` flag is enabled."""
-    return any_bool_env("BACKTEST_MODE", "REPLAY_MODE", *extra_keys, env=env)
-
-
-def is_gemini_llm_disabled(env: dict | None = None) -> bool:
-    """Return True when Gemini LLM queries are suppressed via ``DISABLE_GEMINI_LLM``, ``BACKTEST_MODE``, or ``REPLAY_MODE``."""
-    return is_replay_or_backtest_env("DISABLE_GEMINI_LLM", env=env)
-
-
-def is_offline_disk_cache_enabled(env: dict | None = None) -> bool:
-    """Return True when ``MPTRADE_OFFLINE_DISK_CACHE`` is enabled for offline OHLC disk reads."""
-    return bool_env("MPTRADE_OFFLINE_DISK_CACHE", env=env, default=False)
-
-
-def is_auto_start_websockets_enabled(env: dict | None = None) -> bool:
-    """Return True when ``BINANCE_AUTO_START_WEBSOCKETS`` permits background WS startup (default True)."""
-    return bool_env("BINANCE_AUTO_START_WEBSOCKETS", env=env, default=True)
-
-
-def disable_auto_start_websockets_default() -> None:
-    """Default ``BINANCE_AUTO_START_WEBSOCKETS=0`` in ``os.environ`` for read-only CLI/supervisor entrypoints."""
-    os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-
-
-def is_rth_gate_enabled(override: bool | None = None, *, rth_fn: object = None) -> bool:
-    """Return whether US equities RTH session gating is active under the current runtime policy."""
-    if override is not None:
-        return _parse_bool_flag(override, False)
-    if rth_fn is not None and not (
-        rth_fn is is_us_rth_open
-        or (
-            getattr(rth_fn, "__module__", None) == __name__
-            and getattr(rth_fn, "__qualname__", None) == "is_us_rth_open"
-        )
-    ):
-        return True
-    if bool_env("MPTRADE_FORCE_RTH_GATE", default=False):
-        return True
-    return bool(_RUNTIME_SERVICES.enforce_rth_gate)
-
-
-def is_live_network_backfill_enabled(override: bool | None = None) -> bool:
-    """Return whether opportunistic on-demand live network backfills are enabled."""
-    if override is not None:
-        return bool(override)
-    env_flag = os.environ.get("MPTRADE_ALLOW_LIVE_BACKFILL")
-    if env_flag is not None and str(env_flag).strip() != "":
-        return bool(_parse_bool_flag(env_flag, default=True))
-    return bool(_RUNTIME_SERVICES.allow_live_network_backfill)
-
-
-def is_unmocked_llm_query_allowed(override: bool | None = None) -> bool:
-    """Return whether unmocked external LLM CLI/REST queries are permitted."""
-    if override is not None:
-        return bool(override)
-    return bool(_RUNTIME_SERVICES.allow_unmocked_llm_queries)
-
-
-def is_shared_disk_cache_enabled(override: bool | None = None) -> bool:
-    """Return whether default cross-process disk caches are enabled when no explicit path is injected."""
-    if override is not None:
-        return bool(override)
-    return bool(_RUNTIME_SERVICES.allow_shared_disk_cache)
-
-
-def get_stale_cache_retry_delay_sec(override: float | None = None) -> float:
-    """Return the retry delay in seconds for stale account cache order retries."""
-    if override is not None:
-        val = safe_nonneg_float(override, default=None)
-        if val is not None:
-            return val
-    return float(_RUNTIME_SERVICES.stale_cache_retry_delay_sec)
-
-
-# =============================================================================
-# 5. MERGED MODULE ALIAS REGISTRY (Backward-Compatible sys.modules Bindings)
-# =============================================================================
 
 
 def register_module_aliases(module_name: str, *aliases: str) -> None:
@@ -3281,9 +3654,8 @@ if not any(
 
 
 # =============================================================================
-# 10. CANONICAL LLM TOPIC IDENTITY REGISTRY
+# 10. CANONICAL LLM TOPIC IDENTITY REGISTRY & RE-EXPORT SYNC
 # =============================================================================
-
 
 @dataclass(frozen=True)
 class TopicSpec:
@@ -3389,295 +3761,6 @@ def topic_spec(topic_key: str) -> TopicSpec:
     return TOPIC_SPECS[resolved]
 
 
-def compute_venue_nav_breakdown(
-    *,
-    positions: object = None,
-    quote_cash: object = None,
-    venue_balances_state: object = None,
-    live_prices: object = None,
-    venue_overrides: object = None,
-    exclude_venues: tuple[str, ...] = (),
-    scope: str = "all",
-) -> dict[str, object]:
-    """Canonical SSOT multi-venue NAV calculator and position/cash deduplicator."""
-
-    excl_set = {normalize_venue_name(v) or str(v).strip().lower() for v in (exclude_venues or ()) if v}
-    scope_norm = str(scope or "all").strip().lower()
-    live_src = (
-        live_prices.get("items")
-        if isinstance(live_prices, dict) and isinstance(live_prices.get("items"), dict)
-        else (live_prices if isinstance(live_prices, dict) else {})
-    )
-    live_px_map = {
-        raw_k.strip().upper(): px
-        for raw_k, raw_v in live_src.items()
-        if isinstance(raw_k, str) and raw_k.strip() and (px := extract_current_price_item(raw_v)) is not None
-    }
-
-    pos_rows: list[dict] = []
-    cash_items: list[tuple[str, object]] = []
-
-    if isinstance(venue_balances_state, dict):
-        for key, entry in venue_balances_state.items():
-            if not isinstance(key, str) or not isinstance(entry, dict):
-                continue
-            parts = key.split(":", 2)
-            v_cand = entry.get("venue") or (parts[1] if len(parts) > 1 else "")
-            if key.startswith("cash:"):
-                a_cand = entry.get("asset") or (parts[2] if len(parts) > 2 else "USD")
-                cash_items.append((f"{v_cand}:{a_cand}", {**entry, "venue": v_cand, "asset": a_cand}))
-            elif key.startswith("pos:"):
-                s_cand = entry.get("symbol") or (parts[2] if len(parts) > 2 else key)
-                pos_rows.append({**entry, "venue": v_cand, "symbol": s_cand})
-
-    if isinstance(positions, (list, tuple)):
-        pos_rows.extend(p for p in positions if isinstance(p, dict))
-    if isinstance(quote_cash, dict):
-        cash_items.extend((str(ck or ""), cv) for ck, cv in quote_cash.items())
-
-    def _matches_scope(v_name: str, sym_u: str = "") -> bool:
-        if v_name in excl_set:
-            return False
-        if scope_norm not in ("equities", "crypto"):
-            return True
-        is_eq = is_equity_venue_or_suffix(sym_u, v_name)
-        return is_eq if scope_norm == "equities" else (not is_eq)
-
-    grouped_pos: dict[tuple[str, str], list[dict]] = {}
-    for p in pos_rows:
-        v_name = normalize_venue_name(p.get("venue")) or "unknown"
-        sym_raw = str(p.get("symbol") or "").strip().upper()
-        if not _matches_scope(v_name, sym_raw):
-            continue
-        is_eq_p = is_equity_venue_or_suffix(sym_raw, v_name)
-        base_p = canonical_base_asset(p.get("base") or sym_raw) or sym_raw or f"IDX_{len(grouped_pos)}"
-        grouped_pos.setdefault((v_name, f"EQ:{base_p}" if is_eq_p else base_p), []).append(p)
-
-    venue_pos_usd: dict[str, float] = {}
-    grouped_positions_out: list[tuple[str, dict, float]] = []
-    for (v_name, _), grp_list in grouped_pos.items():
-        free_val_u = 0.0
-        locked_by_sym: dict[str, float] = {}
-        for idx_g, gp in enumerate(grp_list):
-            sym_u = str(gp.get("symbol") or "").strip().upper()
-            live_px: float | None = None
-            if live_px_map and sym_u:
-                if sym_u in live_px_map:
-                    live_px = live_px_map[sym_u]
-                elif not has_equity_suffix(sym_u):
-                    for cand in cache_symbol_variants(sym_u, quotes=compatible_quote_suffixes(sym_u)):
-                        if isinstance(cand, str) and not has_equity_suffix(cand) and cand in live_px_map:
-                            live_px = live_px_map[cand]
-                            break
-            if live_px is not None and (
-                fb_live := safe_nonneg_float(gp.get("free_base"), None)
-            ) is not None:
-                gp_free_u = round(fb_live * live_px, 2)
-            elif (val_u := safe_nonneg_float(gp.get("value_usd"), None)) is not None:
-                gp_free_u = val_u
-            else:
-                gp_free_u = round(
-                    (safe_nonneg_float(gp.get("free_base"), 0.0) or 0.0)
-                    * (safe_nonneg_float(gp.get("price"), 0.0) or 0.0),
-                    2,
-                )
-            free_val_u = max(free_val_u, gp_free_u)
-            s_g = sym_u or f"SYM_{idx_g}"
-            if live_px is not None and (
-                lb_live := safe_pos_float(gp.get("locked_base_qty"), None)
-            ) is not None:
-                locked_usd = round(lb_live * live_px, 2)
-            else:
-                locked_usd = safe_nonneg_float(gp.get("locked_base_usd"), 0.0) or 0.0
-            locked_by_sym[s_g] = max(locked_by_sym.get(s_g, 0.0), locked_usd)
-        val_u = free_val_u + sum(locked_by_sym.values())
-        venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u
-        grouped_positions_out.append((v_name, grp_list[0], val_u))
-
-    dedup_cash: dict[tuple[str, str], tuple[float, float]] = {}
-    for c_key, c in cash_items:
-        k_parts = str(c_key or "").split(":", 1)
-        v_fallback = normalize_venue_name(k_parts[0])
-        if isinstance(c, dict):
-            v_name = normalize_venue_name(c.get("venue")) or v_fallback or "unknown"
-            c_asset_u = str(
-                c.get("asset") or (k_parts[1] if len(k_parts) > 1 and k_parts[1].strip() else c_key or "USD")
-            ).strip().upper() or "USD"
-            f_u = first_pos_float(c.get("free"), c.get("free_quote_usd"), c.get("free_usd"), default=0.0) or 0.0
-            l_u = safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0
-        else:
-            f_u = safe_pos_float(c, default=0.0) or 0.0
-            if f_u <= 0.0:
-                continue
-            v_name = v_fallback or "unknown"
-            c_asset_u = k_parts[1].strip().upper() if len(k_parts) > 1 and k_parts[1].strip() else "USD"
-            l_u = 0.0
-        if not _matches_scope(v_name):
-            continue
-        prev_f, prev_l = dedup_cash.get((v_name, c_asset_u), (0.0, 0.0))
-        dedup_cash[(v_name, c_asset_u)] = (max(prev_f, f_u), max(prev_l, l_u))
-
-    venue_free_cash_usd: dict[str, float] = {}
-    venue_locked_quote_usd: dict[str, float] = {}
-    venue_cash_usd: dict[str, float] = {}
-    for (v_name, _), (f_u, l_u) in dedup_cash.items():
-        venue_free_cash_usd[v_name] = venue_free_cash_usd.get(v_name, 0.0) + f_u
-        venue_locked_quote_usd[v_name] = venue_locked_quote_usd.get(v_name, 0.0) + l_u
-        venue_cash_usd[v_name] = venue_cash_usd.get(v_name, 0.0) + f_u + l_u
-
-    venues_usd: dict[str, float] = {}
-    venue_breakdown: dict[str, dict[str, float]] = {}
-    for v_k in sorted(set(venue_pos_usd) | set(venue_cash_usd)):
-        p_u = round(venue_pos_usd.get(v_k, 0.0), 2)
-        fc_u = round(venue_free_cash_usd.get(v_k, 0.0), 2)
-        lq_u = round(venue_locked_quote_usd.get(v_k, 0.0), 2)
-        c_u = round(venue_cash_usd.get(v_k, 0.0), 2)
-        v_tot = round(p_u + c_u, 2)
-        if v_tot > 0.0:
-            venues_usd[v_k] = v_tot
-            venue_breakdown[v_k] = {
-                "pos_usd": p_u,
-                "free_cash_usd": fc_u,
-                "locked_quote_usd": lq_u,
-                "cash_usd": c_u,
-                "total_usd": v_tot,
-            }
-
-    if isinstance(venue_overrides, dict):
-        for ov_k, ov_v in venue_overrides.items():
-            v_norm = normalize_venue_name(ov_k) or str(ov_k or "").strip().lower()
-            if not v_norm or not _matches_scope(v_norm):
-                continue
-            ov_f = safe_pos_float(ov_v, default=0.0) or 0.0
-            if ov_f > venues_usd.get(v_norm, 0.0):
-                venues_usd[v_norm] = round(ov_f, 2)
-                if v_norm in venue_breakdown:
-                    venue_breakdown[v_norm]["total_usd"] = round(ov_f, 2)
-
-    venues_usd = {k: venues_usd[k] for k in sorted(venues_usd)}
-    invested_usd = round(sum(venue_pos_usd.values()), 2)
-    free_cash_usd = round(sum(venue_free_cash_usd.values()), 2)
-    locked_quote_usd = round(sum(venue_locked_quote_usd.values()), 2)
-    total_quote_reserve_usd = round(free_cash_usd + locked_quote_usd, 2)
-    portfolio_total_usd = round(max(sum(venues_usd.values()), invested_usd + total_quote_reserve_usd), 2)
-
-    return {
-        "venues_usd": venues_usd,
-        "venue_breakdown": venue_breakdown,
-        "grouped_positions": grouped_positions_out,
-        "venue_pos_usd": venue_pos_usd,
-        "venue_free_cash_usd": venue_free_cash_usd,
-        "venue_locked_quote_usd": venue_locked_quote_usd,
-        "venue_cash_usd": venue_cash_usd,
-        "invested_usd": invested_usd,
-        "free_cash_usd": free_cash_usd,
-        "locked_quote_usd": locked_quote_usd,
-        "total_quote_reserve_usd": total_quote_reserve_usd,
-        "portfolio_total_usd": portfolio_total_usd,
-    }
-
-
-@dataclass(frozen=True)
-class ClosedPriceSeries:
-    """Completed closes with the timestamp of the newest completed candle."""
-
-    closes: tuple
-    interval_min: int
-    last_closed_at: float | None = None
-    timestamps: tuple = ()
-    volumes: tuple = ()
-
-    @classmethod
-    def from_raw_candles(
-        cls,
-        raw_candles: object,
-        interval_min: int,
-        close_getter: object,
-        ts_ms_getter: object,
-        vol_getter: object = None,
-    ) -> "ClosedPriceSeries":
-        completed = list(raw_candles or ())[:-1]  # type: ignore[arg-type]
-        valid = [
-            (item, c_f)
-            for item in completed
-            if (c_f := safe_pos_float(close_getter(item), default=None)) is not None  # type: ignore[operator]
-        ]
-        closes = tuple(c_f for _item, c_f in valid)
-        ts_list = []
-        ts_ok = bool(valid)
-        for item, _ in valid:
-            t_ms = safe_pos_float(ts_ms_getter(item), default=None)  # type: ignore[operator]
-            if t_ms is None:
-                ts_ok = False
-                break
-            ts_list.append(t_ms / 1000.0)
-        timestamps = tuple(ts_list) if ts_ok else ()
-        volumes = (
-            tuple(safe_nonneg_float(vol_getter(item), default=0.0) or 0.0 for item, _ in valid)
-            if callable(vol_getter) and valid
-            else ()
-        )
-        return cls(
-            closes,
-            safe_pos_int(interval_min, 1),
-            timestamps[-1] if timestamps else None,
-            timestamps,
-            volumes,
-        )
-
-
-def is_worker_thread_alive(instance: object, attr: str = "_thread") -> bool:
-    """Return True when the thread stored on ``getattr(instance, attr, None)`` is alive."""
-    thread = getattr(instance, attr, None)
-    return thread is not None and bool(getattr(thread, "is_alive", lambda: False)())
-
-
-def set_stop_event(instance: object, attr: str = "_stop_event") -> None:
-    """Signal the ``threading.Event`` stored on ``getattr(instance, attr, None)`` to stop."""
-    ev = getattr(instance, attr, None)
-    if ev is not None and hasattr(ev, "set"):
-        ev.set()
-
-
-def sleep_monitoring_interval(
-    instance: object,
-    interval_sec: object,
-    *,
-    max_sleep_step: float = 1.0,
-    sleep_fn: object = None,
-) -> None:
-    """Sleep in interruptible steps summing to ``interval_sec`` while ``instance._running`` remains truthy."""
-    remaining = safe_pos_float(interval_sec, default=60.0) or 60.0
-    step_cap = safe_pos_float(max_sleep_step, default=1.0) or 1.0
-    sleeper = sleep_fn if callable(sleep_fn) else _time.sleep
-    while remaining > 1e-9 and _parse_bool_flag(getattr(instance, "_running", False), default=False):
-        chunk = min(step_cap, remaining)
-        sleeper(chunk)
-        remaining -= chunk
-
-
-def start_monitoring_daemon_thread(
-    instance: object, target: object, name: str
-) -> threading.Thread:
-    """Create, attach to ``instance._thread``, and start a daemon monitoring thread."""
-    thread = threading.Thread(target=target, name=name, daemon=True)
-    setattr(instance, "_thread", thread)
-    thread.start()
-    return thread
-
-
-def stop_monitoring_thread(
-    instance: object, label: str = "", *, timeout: float = 5.0
-) -> None:
-    """Stop a background monitoring loop backed by ``_running`` and ``_thread``."""
-    setattr(instance, "_running", False)
-    thread = getattr(instance, "_thread", None)
-    if thread and thread is not threading.current_thread():
-        thread.join(timeout=safe_nonneg_float(timeout, default=5.0))
-    eff_label = label or getattr(instance, "_MONITOR_LABEL", None) or type(instance).__name__
-    print(f"[{eff_label}] Monitoring stopped")
-
-
 _REEXPORT_MODULE_NAMES = (
     "utils",
     "order_guard",
@@ -3693,7 +3776,3 @@ def _sync_reexport_modules() -> None:
 
 
 _sync_reexport_modules()
-
-
-
-

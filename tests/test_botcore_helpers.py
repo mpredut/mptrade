@@ -32,7 +32,13 @@ from botcore import (
     resolve_order_notional,
     safe_float,
 )
-from cacheaccount import CacheTradeManager
+from cacheaccount import (
+    CacheTradeManager,
+    _AccountTradeBridgeBase,
+    _HyperliquidAccountTradeBridge,
+    _KrakenAccountTradeBridge,
+    _T212AccountTradeBridge,
+)
 from cachepaths import (
     cache_path,
     cachedb_root_for_file,
@@ -1244,3 +1250,55 @@ def test_resolve_order_notional_handles_explicit_notional_price_qty_fallback_and
     assert resolve_order_notional(0.0, 100.0, 2.5) == pytest.approx(250.0)
     assert resolve_order_notional(None, 0.0, 2.5, default=None) is None
     assert resolve_order_notional(float("nan"), 100.0, 10.0, default=0.0, fallback_on_nonfinite=False) == pytest.approx(0.0)
+
+
+def test_botcore_config_runtime_services_and_account_bridge_hierarchy(tmp_path, monkeypatch):
+    """Verify botcore.Config/cfg facade, RuntimeServices cohesive methods, and cacheaccount _AccountTradeBridgeBase hierarchy."""
+    env_file = tmp_path / "cfg_test.env"
+    env_file.write_text("TRADE_ENABLED=false\nSAMPLE_NUM=42.5\n", encoding="utf-8")
+    monkeypatch.delenv("TRADE_ENABLED", raising=False)
+    monkeypatch.setattr(botcore, "CONFIG_ENV_PATH", str(env_file))
+    monkeypatch.setattr(botcore, "CONFIG_TXT_PATH", str(tmp_path / "missing.txt"))
+
+    assert isinstance(botcore.cfg, botcore.Config)
+    reloaded = botcore.cfg.reload()
+    assert reloaded["trade_enabled"] is False
+    assert botcore.cfg.is_trade_enabled() is False
+    assert botcore.cfg.cache is botcore.config_cache
+    parsed = botcore.cfg.parse_dotenv(str(env_file))
+    assert botcore.cfg.required_float_env("SAMPLE_NUM", parsed) == pytest.approx(42.5)
+
+    rs = botcore.RuntimeServices()
+    rs.configure(
+        enforce_rth_gate=False,
+        allow_live_network_backfill=False,
+        allow_unmocked_llm_queries=False,
+        allow_shared_disk_cache=False,
+        stale_cache_retry_delay_sec=3.25,
+    )
+    assert rs.rth_gate_enabled() is False
+    assert rs.live_network_backfill_enabled() is False
+    assert rs.unmocked_llm_query_allowed() is False
+    assert rs.shared_disk_cache_enabled() is False
+    assert rs.stale_cache_retry_delay() == pytest.approx(3.25)
+
+    assert issubclass(_KrakenAccountTradeBridge, _AccountTradeBridgeBase)
+    assert issubclass(_T212AccountTradeBridge, _AccountTradeBridgeBase)
+    ws_stub = SimpleNamespace(
+        _lock=threading.Lock(),
+        _symbols=["HYPE"],
+        _candidate_mids_keys=lambda s: [s],
+        registered=[],
+    )
+    ws_stub.register_channel_handler = lambda ch, fn, **kw: ws_stub.registered.append((ch, fn, kw))
+    hl_bridge = _HyperliquidAccountTradeBridge(
+        ws_stub,
+        user_address="0x1111111111111111111111111111111111111111",
+        fills_cache_path=str(tmp_path / "hl_trades.json"),
+        resolve_env_user_address=False,
+    )
+    hl_bridge.attach()
+    assert len(ws_stub.registered) == 1
+    assert ws_stub.registered[0][0] == "userFills"
+    assert ws_stub._resolve_fills_cache_file() == str(tmp_path / "hl_trades.json")
+

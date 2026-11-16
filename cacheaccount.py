@@ -1,15 +1,13 @@
-"""Account domain cache hierarchy (Level 2 abstract base + Level 3 concrete classes).
+"""Account domain cache hierarchy, multi-venue trade bridges, and SSOT reader singletons.
 
-Provides:
-- ``CacheAccountManagerBase(CacheManagerInterface, ABC)``:
-  Abstract base class for account-domain caches (``Order``, ``Trade``, ``AssetValue``)
-  with schema-v2 manifests, ``.previous`` crash recovery, and reader synchronization.
-- ``CacheTradeManager(CacheAccountManagerBase)``:
-  Immutable trade fill cache backed by byte-boundary JSONL and Blake2s digests.
-- ``CacheOrderManager(CacheAccountManagerBase)``:
-  Order aggregate cache backed by versioned JSON snapshots.
-- ``CacheAssetValueManager(CacheAccountManagerBase)``:
-  Account/portfolio NAV history cache backed by append-only JSONL.
+Thematic layout (Sections 1..7):
+  1. Level 2 Abstract Base: ``CacheAccountManagerBase(CacheManagerInterface, ABC)``
+  2. Trade Fill Cache: ``CacheTradeManager(CacheAccountManagerBase)``
+  3. Order Snapshot Cache: ``CacheOrderManager(CacheAccountManagerBase)``
+  4. Portfolio NAV Archive: ``CacheAssetValueManager(CacheAccountManagerBase)``
+  5. Account Reader Synchronization & Daemon Lifecycle (`ensure_account_cache_readers`, `start_account_cache_daemon`)
+  6. Venue Account Trade Bridges (`_AccountTradeBridgeBase`, `_HyperliquidAccountTradeBridge`, `_KrakenAccountTradeBridge`, `_T212AccountTradeBridge`)
+  7. SSOT Singleton Factory Getters (`get_asset_value_manager`, `get_binance_order_manager`, `get_trade_manager`)
 """
 
 from __future__ import annotations
@@ -116,6 +114,11 @@ _bapi_ws_bridge = (
     if _bn_acc_prov_cls is not None
     else None
 )
+
+
+# =============================================================================
+# 1. LEVEL 2 ABSTRACT BASE: CacheAccountManagerBase
+# =============================================================================
 
 
 class CacheAccountManagerBase(CacheManagerInterface, ABC):
@@ -509,6 +512,11 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
     def _log_account_save_error(self, op_label: str, exc: Exception) -> bool:
         print(f"[{self.cls_name}][Error] {op_label}: {exc}")
         return False
+
+
+# =============================================================================
+# 2. TRADE FILL CACHE: CacheTradeManager
+# =============================================================================
 
 
 class CacheTradeManager(CacheAccountManagerBase):
@@ -1718,6 +1726,11 @@ class CacheTradeManager(CacheAccountManagerBase):
         return latest_price
 
 
+# =============================================================================
+# 3. ORDER SNAPSHOT CACHE: CacheOrderManager
+# =============================================================================
+
+
 class CacheOrderManager(CacheAccountManagerBase):
     """Account order aggregate cache (Level 3) backed by versioned JSON snapshots and schema-v2 manifests."""
 
@@ -2113,6 +2126,11 @@ class CacheOrderManager(CacheAccountManagerBase):
                 self._advance_symbol_fetchtime_locked(symbol, now_ms)
 
 
+# =============================================================================
+# 4. PORTFOLIO NAV ARCHIVE: CacheAssetValueManager
+# =============================================================================
+
+
 class CacheAssetValueManager(CacheAccountManagerBase):
     """Account/portfolio total asset value history cache (Level 3) backed by append-only JSONL."""
 
@@ -2266,7 +2284,9 @@ CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
 )
 
 
-# -- Account reader synchronization, user-stream WS bridge & daemon lifecycle --
+# =============================================================================
+# 5. ACCOUNT READER SYNCHRONIZATION & DAEMON LIFECYCLE
+# =============================================================================
 
 _account_cache_getter = None
 
@@ -2352,47 +2372,178 @@ def stop_account_ws_streams(shutdown_deadline: float) -> None:
                 pass
 
 
-def attach_hyperliquid_user_fills_bridge(
-    ws_stream,
-    *,
-    user_address: Optional[str] = None,
-    fills_cache_path: Optional[str] = None,
-    resolve_env_user_address: Optional[bool] = None,
-    **_unused_kwargs,
-) -> None:
-    """Attach the account-domain ``userFills`` WebSocket bridge onto a Hyperliquid stream instance."""
-    hl_prov_cls = MarketDataProvider.resolve_venue_provider_class("hyperliquid")
-    ws_stream._fills_cache_path = fills_cache_path
-    ws_stream._fills_ws_seeded = False
-    ws_stream._last_fills_touch_ms = 0
-    ws_stream._user_address = (
-        hl_prov_cls.resolve_ws_user_address(
-            user_address, resolve_env=resolve_env_user_address
-        )
-        if hl_prov_cls is not None
-        else (str(user_address or "").strip() or None)
-    )
+# =============================================================================
+# 6. VENUE ACCOUNT TRADE BRIDGES (Base, Hyperliquid, Kraken, Trading 212)
+# =============================================================================
 
-    def _resolve_fills_cache_file() -> str:
+def _wait_or_sleep(stop_event: Optional[threading.Event], delay_sec: float) -> bool:
+    """Wait on ``stop_event`` when present, else sleep; return True when stop is signaled."""
+    eff_delay = max(0.0, delay_sec)
+    if stop_event is not None:
+        return bool(stop_event.wait(timeout=eff_delay))
+    _sleep_time(eff_delay)
+    return False
+
+
+def _run_account_trade_poll_loop(
+    *,
+    sync_once_fn,
+    log_tag: str,
+    poll_interval: float,
+    default_poll_sec: float,
+    backoff_init: float,
+    default_backoff_init: float,
+    backoff_max: float,
+    default_backoff_max: float,
+    heartbeat_fn=None,
+    stop_event: Optional[threading.Event] = None,
+) -> None:
+    """Shared exponential-backoff REST trade-cache polling loop across venue bridges."""
+    init_bo = safe_pos_float(backoff_init, default=default_backoff_init) or default_backoff_init
+    max_bo = safe_pos_float(backoff_max, default=default_backoff_max) or default_backoff_max
+    poll_s = safe_nonneg_float(poll_interval, default=default_poll_sec) or 0.0
+    backoff = init_bo
+    if callable(heartbeat_fn):
+        heartbeat_fn(force=True)
+    while not (stop_event is not None and stop_event.is_set()):
+        try:
+            cache = sync_once_fn()
+            log(
+                f"[{log_tag}][poll] {sum(len(v) for v in cache['items'].values())} fills "
+                f"for {list(cache['items'].keys())}"
+            )
+            backoff = init_bo
+            if callable(heartbeat_fn):
+                heartbeat_fn()
+            if _wait_or_sleep(stop_event, poll_s):
+                break
+        except Exception as exc:
+            log(f"[{log_tag}][poll] error (backoff {backoff:.0f}s): {exc}")
+            if callable(heartbeat_fn):
+                heartbeat_fn()
+            if _wait_or_sleep(stop_event, backoff):
+                break
+            backoff = min(backoff * 2.0, max_bo)
+
+
+class _AccountTradeBridgeBase(ABC):
+    """Abstract base contract (Level 2) for background venue account-trade sync bridges."""
+
+    VENUE_KEY: str = ""
+    VENUE_LABEL: str = ""
+    LOG_TAG: str = ""
+    THREAD_NAME: str = ""
+
+    def __init__(self) -> None:
+        self._stop_event = threading.Event()
+        self._ws_holder: list[Any] = [None]
+        self._thread: Optional[threading.Thread] = None
+
+    @property
+    def is_running(self) -> bool:
+        return (
+            self._thread is not None
+            and self._thread.is_alive()
+            and not self._stop_event.is_set()
+        )
+
+    @classmethod
+    def _resolve_daemon_config_and_client(cls):
+        prov_cls = MarketDataProvider.resolve_venue_provider_class(cls.VENUE_KEY)
+        try:
+            if prov_cls is None:
+                raise RuntimeError(f"{cls.VENUE_LABEL} provider not registered")
+            cfg = prov_cls.resolve_cache_daemon_config()
+            client, profile = prov_cls.build_cache_client()
+            return cfg, client, profile
+        except Exception as exc:
+            msg = (
+                f"skipped ({cls.VENUE_LABEL} provider not registered)"
+                if prov_cls is None
+                else f"skipped (no {cls.VENUE_LABEL} cache credentials): {exc}"
+                if isinstance(exc, CredentialConfigurationError)
+                else f"failed to initialize daemon config: {exc}"
+            )
+            log(f"[{cls.LOG_TAG}] {msg}")
+            return None
+
+    def _spawn_bridge_thread(self, target) -> bool:
+        self._stop_event.clear()
+        t = threading.Thread(
+            target=target,
+            name=self.THREAD_NAME or self.__class__.__name__,
+            daemon=True,
+        )
+        self._thread = t
+        t.start()
+        return True
+
+    @abstractmethod
+    def start(self) -> bool:
+        """Initialize credentials/config and start the background sync thread."""
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+        ws = self._ws_holder[0]
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def stop(self, timeout: float = 0.3) -> None:
+        self.request_stop()
+        t = self._thread
+        if t is not None and t.is_alive():
+            t.join(timeout=max(0.05, safe_pos_float(timeout, default=0.3) or 0.3))
+
+
+class _HyperliquidAccountTradeBridge:
+    """Channel bridge attaching ``userFills`` persistence onto a shared Hyperliquid WebSocket stream."""
+
+    def __init__(
+        self,
+        ws_stream,
+        *,
+        user_address: Optional[str] = None,
+        fills_cache_path: Optional[str] = None,
+        resolve_env_user_address: Optional[bool] = None,
+    ) -> None:
+        self.ws_stream = ws_stream
+        self.hl_prov_cls = MarketDataProvider.resolve_venue_provider_class("hyperliquid")
+        ws_stream._fills_cache_path = fills_cache_path
+        ws_stream._fills_ws_seeded = False
+        ws_stream._last_fills_touch_ms = 0
+        ws_stream._user_address = (
+            self.hl_prov_cls.resolve_ws_user_address(
+                user_address, resolve_env=resolve_env_user_address
+            )
+            if self.hl_prov_cls is not None
+            else (str(user_address or "").strip() or None)
+        )
+
+    def resolve_fills_cache_file(self) -> str:
+        ws_stream = self.ws_stream
         return (
             str(ws_stream._fills_cache_path)
             if ws_stream._fills_cache_path
             else cache_path(CACHE_HYPERLIQUID_TRADE_FILENAME)
         )
 
-    def _handle_user_fills(data: object, *, ts_ms: int) -> None:
-        if hl_prov_cls is None:
+    def handle_user_fills(self, data: object, *, ts_ms: int) -> None:
+        if self.hl_prov_cls is None:
             return
+        ws_stream = self.ws_stream
         with ws_stream._lock:
             symbols = ws_stream._symbols
-        parsed = hl_prov_cls.extract_ws_user_fills(
+        parsed = self.hl_prov_cls.extract_ws_user_fills(
             data, symbols, candidate_mids_fn=ws_stream._candidate_mids_keys
         )
         if parsed is None:
             return
         is_snapshot, fills_by_symbol = parsed
         CacheTradeManager.merge_venue_fills_snapshot(
-            _resolve_fills_cache_file(),
+            self.resolve_fills_cache_file(),
             fills_by_symbol,
             now_ms=ts_ms,
             is_snapshot=is_snapshot,
@@ -2402,7 +2553,8 @@ def attach_hyperliquid_user_fills_bridge(
             ws_stream._fills_ws_seeded = True
         ws_stream._last_fills_touch_ms = ts_ms
 
-    def _touch_fills_cache_if_needed(ts_ms: int) -> None:
+    def touch_fills_cache_if_needed(self, ts_ms: int) -> None:
+        ws_stream = self.ws_stream
         if (
             not ws_stream._fills_ws_seeded
             or (ts_ms - ws_stream._last_fills_touch_ms) < 15_000
@@ -2412,7 +2564,7 @@ def attach_hyperliquid_user_fills_bridge(
             with ws_stream._lock:
                 symbols = ws_stream._symbols
             CacheTradeManager.touch_venue_fills_snapshot(
-                _resolve_fills_cache_file(),
+                self.resolve_fills_cache_file(),
                 ts_ms,
                 symbols=symbols,
                 create_missing=False,
@@ -2421,19 +2573,39 @@ def attach_hyperliquid_user_fills_bridge(
         except Exception:
             pass
 
-    ws_stream._resolve_fills_cache_file = _resolve_fills_cache_file
-    ws_stream._handle_user_fills = _handle_user_fills
-    ws_stream._touch_fills_cache_if_needed = _touch_fills_cache_if_needed
-    if hasattr(ws_stream, "register_channel_handler"):
-        ws_stream.register_channel_handler(
-            "userFills",
-            _handle_user_fills,
-            subscribe_builder=lambda: (
-                setattr(ws_stream, "_fills_ws_seeded", False)
-                or (() if hl_prov_cls is None else hl_prov_cls.build_ws_user_fills_subscriptions(ws_stream._user_address))
-            ),
-            on_tick=_touch_fills_cache_if_needed,
-        )
+    def attach(self) -> None:
+        ws_stream = self.ws_stream
+        ws_stream._resolve_fills_cache_file = self.resolve_fills_cache_file
+        ws_stream._handle_user_fills = self.handle_user_fills
+        ws_stream._touch_fills_cache_if_needed = self.touch_fills_cache_if_needed
+        if hasattr(ws_stream, "register_channel_handler"):
+            hl_prov_cls = self.hl_prov_cls
+            ws_stream.register_channel_handler(
+                "userFills",
+                self.handle_user_fills,
+                subscribe_builder=lambda: (
+                    setattr(ws_stream, "_fills_ws_seeded", False)
+                    or (() if hl_prov_cls is None else hl_prov_cls.build_ws_user_fills_subscriptions(ws_stream._user_address))
+                ),
+                on_tick=self.touch_fills_cache_if_needed,
+            )
+
+
+def attach_hyperliquid_user_fills_bridge(
+    ws_stream,
+    *,
+    user_address: Optional[str] = None,
+    fills_cache_path: Optional[str] = None,
+    resolve_env_user_address: Optional[bool] = None,
+    **_unused_kwargs,
+) -> None:
+    """Attach the account-domain ``userFills`` WebSocket bridge onto a Hyperliquid stream instance."""
+    _HyperliquidAccountTradeBridge(
+        ws_stream,
+        user_address=user_address,
+        fills_cache_path=fills_cache_path,
+        resolve_env_user_address=resolve_env_user_address,
+    ).attach()
 
 
 def run_kraken_trade_poll_loop(
@@ -2452,47 +2624,31 @@ def run_kraken_trade_poll_loop(
     if (kr_prov_cls := MarketDataProvider.resolve_venue_provider_class("kraken")) is None:
         raise RuntimeError("Kraken provider class is not registered")
 
-    init_bo = safe_pos_float(backoff_init, default=5.0) or 5.0
-    max_bo = safe_pos_float(backoff_max, default=60.0) or 60.0
-    poll_s = safe_nonneg_float(poll_interval, default=30.0) or 0.0
-    backoff = init_bo
-    if callable(heartbeat_fn):
-        heartbeat_fn(force=True)
-    while not (stop_event is not None and stop_event.is_set()):
-        try:
-            by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
-                client, pairs=pairs, lookback_sec=lookback_sec
-            )
-            cache = CacheTradeManager._merge_venue_fills_snapshot_locked(
-                cache_file,
-                by_sym,
-                is_snapshot=True,
-                sanitize_venue="kraken",
-                indent=1,
-                force_save=True,
-            )
-            log(
-                f"[kraken_cache][poll] {sum(len(v) for v in cache['items'].values())} fills "
-                f"for {list(cache['items'].keys())}"
-            )
-            backoff = init_bo
-            if callable(heartbeat_fn):
-                heartbeat_fn()
-            if stop_event is not None:
-                if stop_event.wait(timeout=poll_s):
-                    break
-            else:
-                _sleep_time(poll_s)
-        except Exception as exc:
-            log(f"[kraken_cache][poll] error (backoff {backoff:.0f}s): {exc}")
-            if callable(heartbeat_fn):
-                heartbeat_fn()
-            if stop_event is not None:
-                if stop_event.wait(timeout=max(0.0, backoff)):
-                    break
-            else:
-                _sleep_time(backoff)
-            backoff = min(backoff * 2.0, max_bo)
+    def _sync_once() -> dict:
+        by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
+            client, pairs=pairs, lookback_sec=lookback_sec
+        )
+        return CacheTradeManager._merge_venue_fills_snapshot_locked(
+            cache_file,
+            by_sym,
+            is_snapshot=True,
+            sanitize_venue="kraken",
+            indent=1,
+            force_save=True,
+        )
+
+    _run_account_trade_poll_loop(
+        sync_once_fn=_sync_once,
+        log_tag="kraken_cache",
+        poll_interval=poll_interval,
+        default_poll_sec=30.0,
+        backoff_init=backoff_init,
+        default_backoff_init=5.0,
+        backoff_max=backoff_max,
+        default_backoff_max=60.0,
+        heartbeat_fn=heartbeat_fn,
+        stop_event=stop_event,
+    )
 
 
 def run_kraken_trade_ws_loop(
@@ -2660,49 +2816,24 @@ def run_kraken_trade_ws_loop(
         log("[kraken_cache][ws] disconnected; reconnect in 5s")
         if callable(heartbeat_fn):
             heartbeat_fn()
-        if stop_event is not None:
-            if stop_event.wait(timeout=5.0):
-                break
-        else:
-            _sleep_time(5)
+        if _wait_or_sleep(stop_event, 5.0):
+            break
         _merge_rest("REST resync after disconnect failed")
 
 
-class _KrakenAccountTradeBridge:
+class _KrakenAccountTradeBridge(_AccountTradeBridgeBase):
     """Background daemon bridge managing Kraken ``ownTrades`` WS and ``Ledgers`` REST sync inside cacheManager."""
 
-    def __init__(self) -> None:
-        self._stop_event = threading.Event()
-        self._ws_holder: list[Any] = [None]
-        self._thread: Optional[threading.Thread] = None
-
-    @property
-    def is_running(self) -> bool:
-        return (
-            self._thread is not None
-            and self._thread.is_alive()
-            and not self._stop_event.is_set()
-        )
+    VENUE_KEY = "kraken"
+    VENUE_LABEL = "Kraken"
+    LOG_TAG = "kraken_cache"
+    THREAD_NAME = "KrakenAccountTradeBridge"
 
     def start(self) -> bool:
-        kr_prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
-        try:
-            if kr_prov_cls is None:
-                raise RuntimeError("Kraken provider not registered")
-            cfg = kr_prov_cls.resolve_cache_daemon_config()
-            client, profile = kr_prov_cls.build_cache_client()
-        except Exception as exc:
-            msg = (
-                "skipped (Kraken provider not registered)"
-                if kr_prov_cls is None
-                else f"skipped (no Kraken cache credentials): {exc}"
-                if isinstance(exc, CredentialConfigurationError)
-                else f"failed to initialize daemon config: {exc}"
-            )
-            log(f"[kraken_cache] {msg}")
+        resolved = self._resolve_daemon_config_and_client()
+        if resolved is None:
             return False
-
-        self._stop_event.clear()
+        cfg, client, profile = resolved
         mode = cfg["mode"]
         log(
             f"[kraken_cache] start: mode={mode} credentials={profile} "
@@ -2735,46 +2866,7 @@ class _KrakenAccountTradeBridge:
                     stop_event=self._stop_event,
                 )
 
-        t = threading.Thread(
-            target=_runner,
-            name="KrakenAccountTradeBridge",
-            daemon=True,
-        )
-        self._thread = t
-        t.start()
-        return True
-
-    def request_stop(self) -> None:
-        self._stop_event.set()
-        ws = self._ws_holder[0]
-        if ws is not None:
-            try:
-                ws.close()
-            except Exception:
-                pass
-
-    def stop(self, timeout: float = 0.3) -> None:
-        self.request_stop()
-        t = self._thread
-        if t is not None and t.is_alive():
-            t.join(timeout=max(0.05, safe_pos_float(timeout, default=0.3) or 0.3))
-
-
-_kraken_ws_bridge: Optional[_KrakenAccountTradeBridge] = None
-_kraken_ws_bridge_lock = threading.Lock()
-
-
-def start_kraken_account_ws_bridge() -> Optional[_KrakenAccountTradeBridge]:
-    """Idempotently start the Kraken ``ownTrades``/``Ledgers`` background bridge inside cacheManager."""
-    global _kraken_ws_bridge
-    with _kraken_ws_bridge_lock:
-        if _kraken_ws_bridge is not None and _kraken_ws_bridge.is_running:
-            return _kraken_ws_bridge
-        bridge = _KrakenAccountTradeBridge()
-        if bridge.start():
-            _kraken_ws_bridge = bridge
-            return bridge
-        return None
+        return self._spawn_bridge_thread(_runner)
 
 
 def run_t212_trade_poll_loop(
@@ -2792,87 +2884,49 @@ def run_t212_trade_poll_loop(
     if (t212_prov_cls := MarketDataProvider.resolve_venue_provider_class("t212")) is None:
         raise RuntimeError("T212 provider class is not registered")
 
-    init_bo = safe_pos_float(backoff_init, default=10.0) or 10.0
-    max_bo = safe_pos_float(backoff_max, default=120.0) or 120.0
-    poll_s = safe_nonneg_float(poll_interval, default=60.0) or 0.0
-    backoff = init_bo
-    if callable(heartbeat_fn):
-        heartbeat_fn(force=True)
-    while not (stop_event is not None and stop_event.is_set()):
-        try:
-            by_sym = t212_prov_cls.fetch_history_fills_by_symbol(
-                client, symbols=symbols, publish_shared_cache=True
-            )
-            eff_ms = resolve_now_ms()
-            cache = CacheTradeManager._merge_venue_fills_snapshot_locked(
-                cache_file,
-                by_sym,
-                now_ms=eff_ms,
-                is_snapshot=False,
-                touch_symbols=symbols,
-                touch_create_missing=True,
-                sanitize_venue="t212",
-                indent=1,
-                force_save=True,
-            )
-            log(
-                f"[t212_cache][poll] {sum(len(v) for v in cache['items'].values())} fills "
-                f"for {list(cache['items'].keys())}"
-            )
-            backoff = init_bo
-            if callable(heartbeat_fn):
-                heartbeat_fn()
-            if stop_event is not None:
-                if stop_event.wait(timeout=poll_s):
-                    break
-            else:
-                _sleep_time(poll_s)
-        except Exception as exc:
-            log(f"[t212_cache][poll] error (backoff {backoff:.0f}s): {exc}")
-            if callable(heartbeat_fn):
-                heartbeat_fn()
-            if stop_event is not None:
-                if stop_event.wait(timeout=max(0.0, backoff)):
-                    break
-            else:
-                _sleep_time(backoff)
-            backoff = min(backoff * 2.0, max_bo)
-
-
-class _T212AccountTradeBridge:
-    """Background daemon bridge managing Trading 212 periodic order-history snapshot sync inside cacheManager."""
-
-    def __init__(self) -> None:
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-
-    @property
-    def is_running(self) -> bool:
-        return (
-            self._thread is not None
-            and self._thread.is_alive()
-            and not self._stop_event.is_set()
+    def _sync_once() -> dict:
+        by_sym = t212_prov_cls.fetch_history_fills_by_symbol(
+            client, symbols=symbols, publish_shared_cache=True
+        )
+        return CacheTradeManager._merge_venue_fills_snapshot_locked(
+            cache_file,
+            by_sym,
+            now_ms=resolve_now_ms(),
+            is_snapshot=False,
+            touch_symbols=symbols,
+            touch_create_missing=True,
+            sanitize_venue="t212",
+            indent=1,
+            force_save=True,
         )
 
-    def start(self) -> bool:
-        t212_prov_cls = MarketDataProvider.resolve_venue_provider_class("t212")
-        try:
-            if t212_prov_cls is None:
-                raise RuntimeError("T212 provider not registered")
-            cfg = t212_prov_cls.resolve_cache_daemon_config()
-            client, profile = t212_prov_cls.build_cache_client()
-        except Exception as exc:
-            msg = (
-                "skipped (T212 provider not registered)"
-                if t212_prov_cls is None
-                else f"skipped (no T212 cache credentials): {exc}"
-                if isinstance(exc, CredentialConfigurationError)
-                else f"failed to initialize daemon config: {exc}"
-            )
-            log(f"[t212_cache] {msg}")
-            return False
+    _run_account_trade_poll_loop(
+        sync_once_fn=_sync_once,
+        log_tag="t212_cache",
+        poll_interval=poll_interval,
+        default_poll_sec=60.0,
+        backoff_init=backoff_init,
+        default_backoff_init=10.0,
+        backoff_max=backoff_max,
+        default_backoff_max=120.0,
+        heartbeat_fn=heartbeat_fn,
+        stop_event=stop_event,
+    )
 
-        self._stop_event.clear()
+
+class _T212AccountTradeBridge(_AccountTradeBridgeBase):
+    """Background daemon bridge managing Trading 212 periodic order-history snapshot sync inside cacheManager."""
+
+    VENUE_KEY = "t212"
+    VENUE_LABEL = "T212"
+    LOG_TAG = "t212_cache"
+    THREAD_NAME = "T212AccountTradeBridge"
+
+    def start(self) -> bool:
+        resolved = self._resolve_daemon_config_and_client()
+        if resolved is None:
+            return False
+        cfg, client, profile = resolved
         log(
             f"[t212_cache] start: mode=poll credentials={profile} "
             f"symbols={cfg['symbols']} poll={cfg['poll_interval']}s -> {cfg['cache_file']}"
@@ -2889,27 +2943,26 @@ class _T212AccountTradeBridge:
                 stop_event=self._stop_event,
             )
 
-        t = threading.Thread(
-            target=_runner,
-            name="T212AccountTradeBridge",
-            daemon=True,
-        )
-        self._thread = t
-        t.start()
-        return True
-
-    def request_stop(self) -> None:
-        self._stop_event.set()
-
-    def stop(self, timeout: float = 0.3) -> None:
-        self.request_stop()
-        t = self._thread
-        if t is not None and t.is_alive():
-            t.join(timeout=max(0.05, safe_pos_float(timeout, default=0.3) or 0.3))
+        return self._spawn_bridge_thread(_runner)
 
 
+_kraken_ws_bridge: Optional[_KrakenAccountTradeBridge] = None
+_kraken_ws_bridge_lock = threading.Lock()
 _t212_poll_bridge: Optional[_T212AccountTradeBridge] = None
 _t212_poll_bridge_lock = threading.Lock()
+
+
+def start_kraken_account_ws_bridge() -> Optional[_KrakenAccountTradeBridge]:
+    """Idempotently start the Kraken ``ownTrades``/``Ledgers`` background bridge inside cacheManager."""
+    global _kraken_ws_bridge
+    with _kraken_ws_bridge_lock:
+        if _kraken_ws_bridge is not None and _kraken_ws_bridge.is_running:
+            return _kraken_ws_bridge
+        bridge = _KrakenAccountTradeBridge()
+        if bridge.start():
+            _kraken_ws_bridge = bridge
+            return bridge
+        return None
 
 
 def start_t212_account_poll_bridge() -> Optional[_T212AccountTradeBridge]:
@@ -2925,6 +2978,10 @@ def start_t212_account_poll_bridge() -> Optional[_T212AccountTradeBridge]:
         return None
 
 
+# =============================================================================
+# 7. SSOT SINGLETON FACTORY GETTERS
+# =============================================================================
+
 ORDER_SYNC_INTERVAL_SEC = 0.4 * 60
 TRADE_SYNC_INTERVAL_SEC = 3 * 60
 ASSET_VALUE_SYNC_INTERVAL_SEC = 10 * 60
@@ -2936,6 +2993,24 @@ _VENUE_TRADE_CACHE_NAMES = {
     "hyperliquid": "HyperliquidTrade",
     "t212": "T212Trade",
 }
+
+
+def _get_or_create_readonly_account_reader(
+    cache_name: str,
+    *,
+    can_reuse_fn,
+    can_store: bool,
+    builder_fn,
+    resync_existing: bool = False,
+):
+    with _READONLY_ACCOUNT_LOCK:
+        inst = _READONLY_ACCOUNT_READERS.get(cache_name)
+        if inst is not None and can_reuse_fn(inst):
+            return CacheManagerInterface._resync_readonly_reader(inst) if resync_existing else inst
+        inst = builder_fn()
+        if can_store:
+            _READONLY_ACCOUNT_READERS[cache_name] = inst
+        return inst
 
 
 def get_asset_value_manager(
@@ -2964,26 +3039,25 @@ def get_asset_value_manager(
     )
     if delegated:
         return res
-    with _READONLY_ACCOUNT_LOCK:
-        inst = _READONLY_ACCOUNT_READERS.get("AssetValue")
-        if (
-            inst is not None
-            and eff_symbols == list(getattr(inst, "symbols", []))
-            and filename == CacheAssetValueManager.DEFAULT_FILENAME
-            and not save_state_flag
-            and not start_periodic
-        ):
-            return CacheManagerInterface._resync_readonly_reader(inst)
-        inst = CacheAssetValueManager(
+    is_default_file = filename == CacheAssetValueManager.DEFAULT_FILENAME
+    is_readonly = not save_state_flag and not start_periodic
+    return _get_or_create_readonly_account_reader(
+        "AssetValue",
+        can_reuse_fn=lambda inst: (
+            eff_symbols == list(getattr(inst, "symbols", []))
+            and is_default_file
+            and is_readonly
+        ),
+        can_store=is_default_file,
+        builder_fn=lambda: CacheAssetValueManager(
             sync_ts=ASSET_VALUE_SYNC_INTERVAL_SEC,
             filename=filename,
             symbols=eff_symbols,
-            read_only=(not save_state_flag and not start_periodic),
+            read_only=is_readonly,
             data_sync_mode=resolved_mode,
-        )
-        if filename == CacheAssetValueManager.DEFAULT_FILENAME:
-            _READONLY_ACCOUNT_READERS["AssetValue"] = inst
-        return inst
+        ),
+        resync_existing=True,
+    )
 
 
 get_asset_value_manager._is_ssot_asset_value_getter = True  # type: ignore[attr-defined]
@@ -3015,26 +3089,20 @@ def get_binance_order_manager(
     )
     if delegated:
         return res
-    with _READONLY_ACCOUNT_LOCK:
-        inst = _READONLY_ACCOUNT_READERS.get("BinanceOrder")
-        if (
-            inst is not None
-            and symbols is None
-            and filename == CacheOrderManager.DEFAULT_FILENAME
-            and not save_state_flag
-            and not start_periodic
-        ):
-            return inst
-        inst = CacheOrderManager(
+    can_cache = symbols is None and filename == CacheOrderManager.DEFAULT_FILENAME
+    is_readonly = not save_state_flag and not start_periodic
+    return _get_or_create_readonly_account_reader(
+        "BinanceOrder",
+        can_reuse_fn=lambda _inst: can_cache and is_readonly,
+        can_store=can_cache,
+        builder_fn=lambda: CacheOrderManager(
             sync_ts=ORDER_SYNC_INTERVAL_SEC,
             filename=filename,
             symbols=eff_symbols,
-            read_only=(not save_state_flag and not start_periodic),
+            read_only=is_readonly,
             data_sync_mode=resolved_mode,
-        )
-        if symbols is None and filename == CacheOrderManager.DEFAULT_FILENAME:
-            _READONLY_ACCOUNT_READERS["BinanceOrder"] = inst
-        return inst
+        ),
+    )
 
 
 get_binance_order_manager._is_ssot_binance_order_getter = True  # type: ignore[attr-defined]
@@ -3072,25 +3140,25 @@ def get_trade_manager(
     )
     if delegated:
         return res
-    with _READONLY_ACCOUNT_LOCK:
-        inst = _READONLY_ACCOUNT_READERS.get(cache_name)
-        if inst is not None and symbols is None and not save_state_flag and not start_periodic:
-            return inst
-        inst = CacheTradeManager(
+    is_readonly = not save_state_flag and not start_periodic
+    return _get_or_create_readonly_account_reader(
+        cache_name,
+        can_reuse_fn=lambda _inst: symbols is None and is_readonly,
+        can_store=symbols is None,
+        builder_fn=lambda: CacheTradeManager(
             sync_ts=TRADE_SYNC_INTERVAL_SEC,
             filename=CacheTradeManager.disk_filename(v_norm),
             symbols=eff_symbols,
-            read_only=(is_non_binance or (not save_state_flag and not start_periodic)),
+            read_only=(is_non_binance or is_readonly),
             data_sync_mode=resolved_mode,
             venue=v_norm,
             stream_format="json" if is_non_binance else "jsonl",
-        )
-        if symbols is None:
-            _READONLY_ACCOUNT_READERS[cache_name] = inst
-        return inst
+        ),
+    )
 
 
 get_trade_manager._is_ssot_trade_getter = True  # type: ignore[attr-defined]
+
 
 
 
