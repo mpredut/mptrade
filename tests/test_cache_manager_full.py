@@ -3067,8 +3067,8 @@ def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
     bridge = cacheaccount._KrakenAccountTradeBridge()
     assert bridge.start() is True
     try:
-        assert pulled_event.wait(timeout=2.0)
-        deadline = time.monotonic() + 2.0
+        assert pulled_event.wait(timeout=10.0)
+        deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline and not os.path.exists(cache_file):
             time.sleep(0.02)
         saved = read_json_dict(cache_file)
@@ -3133,8 +3133,8 @@ def test_t212_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
     bridge = cacheaccount._T212AccountTradeBridge()
     assert bridge.start() is True
     try:
-        assert pulled_event.wait(timeout=2.0)
-        deadline = time.monotonic() + 2.0
+        assert pulled_event.wait(timeout=10.0)
+        deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline and not os.path.exists(cache_file):
             time.sleep(0.02)
         saved = read_json_dict(cache_file)

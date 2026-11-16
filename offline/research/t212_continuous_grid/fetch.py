@@ -6,7 +6,7 @@ from pathlib import Path
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-from botcore import optional_env
+from botcore import optional_env, parse_cli_float
 from offline.backtests.datasets import (
     DAILY_DATASET_MAX_AGE_SEC,
     save_dataset,
@@ -14,7 +14,6 @@ from offline.backtests.datasets import (
     validate_dataset,
 )
 from providers.market_api import api as mkt
-from strategies.replay_metrics import parse_bt_cli_float
 
 
 def fetch_yahoo_candles(sym: str, *, range_: str = "730d", interval: str = "1h", drop_incomplete: bool = True) -> list[dict]:
@@ -48,7 +47,7 @@ if __name__ == "__main__":
     ap.add_argument("--force", action="store_true", help="re-fetch all symbols regardless of existing CSVs")
     ap.add_argument(
         "--max-age-hours",
-        type=parse_bt_cli_float,
+        type=parse_cli_float,
         default=DAILY_DATASET_MAX_AGE_SEC / 3600.0,
         help="maximum cached CSV age in hours before refreshing (default: 18h)",
     )

@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import optional_env
+from botcore import optional_env, parse_cli_float
 from offline.backtests.datasets import (
     DAILY_DATASET_MAX_AGE_SEC,
     has_usable_ohlc_csv,
@@ -24,7 +24,6 @@ from offline.backtests.datasets import (
 )
 from providers.market_api import api as mkt
 from state_io import atomic_snapshot_file
-from strategies.replay_metrics import parse_bt_cli_float
 
 EXP = optional_env("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
 DATA = os.path.join(EXP, "data")
@@ -89,7 +88,7 @@ if __name__ == "__main__":
     ap.add_argument("--missing-only", action="store_true", help="skip symbols with any usable existing CSV")
     ap.add_argument(
         "--max-age-hours",
-        type=parse_bt_cli_float,
+        type=parse_cli_float,
         default=DAILY_DATASET_MAX_AGE_SEC / 3600.0,
         help="maximum cached CSV age in hours before refreshing (default: 18h)",
     )
