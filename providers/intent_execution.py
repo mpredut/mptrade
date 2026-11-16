@@ -347,8 +347,10 @@ _ACTIVE_OR_FILLED_ORDER_STATUSES = frozenset(
 )
 
 
-def _missing_target_order_blocks_replacement(inst: Any, order_id: str) -> bool:
-    """Return True when a targeted order absent from ``open_orders()`` already executed or remains active."""
+def _missing_target_order_blocks_replacement(
+    inst: Any, order_id: str, *, want_side: Optional[str] = None
+) -> bool:
+    """Return True when a targeted same-side order absent from ``open_orders()`` already executed or remains active."""
     sym = str(getattr(inst, "symbol", "") or "").strip()
     inst_status_fn = getattr(inst, "order_status", None)
     prov = getattr(inst, "_provider", None)
@@ -363,6 +365,14 @@ def _missing_target_order_blocks_replacement(inst: Any, order_id: str) -> bool:
             return False
     except Exception:
         return False
+    if want_side in ("BUY", "SELL"):
+        st_side = (
+            extract_order_side(st)
+            if isinstance(st, dict)
+            else normalize_side(getattr(st, "side", None) if not hasattr(getattr(st, "side", None), "_mock_name") else None)
+        )
+        if st_side in ("BUY", "SELL") and st_side != want_side:
+            return False
     raw_st = st.get("status") if isinstance(st, dict) else getattr(st, "status", None)
     if not isinstance(raw_st, str):
         return False
@@ -433,6 +443,7 @@ def cancel_existing_ai_open_orders(
         raw_open = None
 
     matched_targets_lc: set[str] = set()
+    pending_cancels: list[tuple[str, bool, str]] = []
     for oo, oo_side, oid in _iter_matching_open_orders(raw_open, want_side, any_side=eff_any_side):
         coid = extract_client_order_id(oo)
         if (oid and str(oid) in excluded) or (coid and str(coid) in excluded):
@@ -456,6 +467,28 @@ def cancel_existing_ai_open_orders(
             if failed_order_ids is not None:
                 failed_order_ids.append("<missing_order_id>")
             continue
+        pending_cancels.append((cancel_ref, is_ai_order, oo_side or side))
+
+    if (
+        targeted
+        and _parse_bool_flag(verify_not_filled, default=False)
+        and failed_order_ids is not None
+        and not scan_errors
+    ):
+        for t_oid in sorted(targeted):
+            if t_oid.lower() in matched_targets_lc or t_oid in excluded:
+                continue
+            if _missing_target_order_blocks_replacement(inst, t_oid, want_side=want_side):
+                failed_order_ids.append(t_oid)
+                if log:
+                    log.warning(
+                        "[INTENT GATEWAY] Targeted prior order %s on %s already filled or remains open; aborting replacement.",
+                        t_oid, getattr(inst, "symbol", ""),
+                    )
+        if failed_order_ids:
+            return canceled_ids
+
+    for cancel_ref, is_ai_order, eff_oo_side in pending_cancels:
         try:
             if cancel_fn(cancel_ref) is False:
                 if failed_order_ids is not None:
@@ -471,7 +504,7 @@ def cancel_existing_ai_open_orders(
                 log.info(
                     "[INTENT GATEWAY] Canceled prior %s open %s order %s on %s before replacement.",
                     "AI" if is_ai_order else "BOT",
-                    oo_side or side,
+                    eff_oo_side,
                     cancel_ref,
                     getattr(inst, "symbol", ""),
                 )
@@ -481,23 +514,6 @@ def cancel_existing_ai_open_orders(
             if log:
                 log.warning("Could not cancel open order %s: %s", cancel_ref, ce)
 
-    if (
-        targeted
-        and _parse_bool_flag(verify_not_filled, default=False)
-        and failed_order_ids is not None
-        and not scan_errors
-    ):
-        for t_oid in sorted(targeted):
-            if t_oid.lower() in matched_targets_lc or t_oid in excluded:
-                continue
-            if _missing_target_order_blocks_replacement(inst, t_oid):
-                failed_order_ids.append(t_oid)
-                if log:
-                    log.warning(
-                        "[INTENT GATEWAY] Targeted prior order %s on %s already filled or remains open; aborting replacement.",
-                        t_oid, getattr(inst, "symbol", ""),
-                    )
-
     raw_inst_sym = getattr(inst, "symbol", None)
     sym_str = clean_upper_scalar(raw_inst_sym) or ""
     if sym_str and not hasattr(raw_inst_sym, "_mock_name"):
@@ -505,6 +521,16 @@ def cancel_existing_ai_open_orders(
             if targeted is not None:
                 for cid_done in canceled_ids:
                     MarketDataProvider.resolve_accepted_retry_order(sym_str, cid_done)
+                if include_bots and any(t.lower() not in matched_targets_lc for t in targeted):
+                    MarketDataProvider.discard_superseded_symbol_retry_records(
+                        sym_str,
+                        want_side,
+                        canceled_ids=canceled_ids,
+                        ai_order_ids=ai_oids,
+                        include_bot_orders=True,
+                        any_side=eff_any_side,
+                        cancel_fn_is_mock=hasattr(cancel_fn, "_mock_name"),
+                    )
             else:
                 to_discard = MarketDataProvider.discard_superseded_symbol_retry_records(
                     sym_str,

@@ -2519,6 +2519,56 @@ def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_
     btc_inst.cancel_order.assert_called_once_with("venue_77")
     btc_inst.place.assert_called_once()
 
+    # 6. Opposite-side bot BUY order that already filled does NOT abort AI SELL replacement,
+    #    while a same-side raced fill aborts BEFORE canceling other open orders.
+    btc_inst.place.reset_mock()
+    btc_inst.cancel_order.reset_mock()
+    btc_inst.order_status.side_effect = lambda oid: (
+        SimpleNamespace(status="closed", filled_qty=0.5942, side="BUY")
+        if oid == "bot_buy_filled"
+        else SimpleNamespace(status="closed", filled_qty=0.01, side="SELL")
+    )
+    btc_inst.open_orders.return_value = [
+        {"orderId": "ai_sell_open", "clientOrderId": "AI_sell_1", "side": "SELL", "price": "82000.0"},
+    ]
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_opp_filled = gw.submit({
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 81500.0,
+            "replace_open_orders": True,
+            "cancel_bot_open_orders": True,
+            "cancel_order_ids": ["bot_buy_filled", "ai_sell_open"],
+            "confidence": 0.96,
+            "suggested_notional_usd": 400.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+    assert rec_opp_filled["status"] == "EXECUTED"
+    assert rec_opp_filled["canceled_prior_open_orders"] == ["ai_sell_open"]
+    btc_inst.cancel_order.assert_called_once_with("ai_sell_open")
+    btc_inst.place.assert_called_once()
+
+    btc_inst.place.reset_mock()
+    btc_inst.cancel_order.reset_mock()
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_same_filled = gw.submit({
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 81500.0,
+            "replace_open_orders": True,
+            "cancel_bot_open_orders": True,
+            "cancel_order_ids": ["bot_sell_filled", "ai_sell_open"],
+            "confidence": 0.96,
+            "suggested_notional_usd": 400.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+    assert rec_same_filled["status"] == "FAILED"
+    assert rec_same_filled["failed_cancel_order_ids"] == ["bot_sell_filled"]
+    btc_inst.cancel_order.assert_not_called()
+    btc_inst.place.assert_not_called()
+
 
 def test_reconcile_resumed_intent_adopts_already_filled_order_via_client_id_without_duplicate_place(temp_workspace, monkeypatch):
     """Resumed enforce intents adopt orders that already filled on the venue (absent from open_orders) via order_by_client_id, while 0-fill canceled orders still execute."""
