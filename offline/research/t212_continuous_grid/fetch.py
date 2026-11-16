@@ -7,8 +7,14 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 from botcore import optional_env
-from offline.backtests.datasets import load_ohlc_tuples_csv, save_dataset, validate_dataset
+from offline.backtests.datasets import (
+    DAILY_DATASET_MAX_AGE_SEC,
+    save_dataset,
+    should_skip_ohlc_csv_refresh,
+    validate_dataset,
+)
 from providers.market_api import api as mkt
+from strategies.replay_metrics import parse_bt_cli_float
 
 
 def fetch_yahoo_candles(sym: str, *, range_: str = "730d", interval: str = "1h", drop_incomplete: bool = True) -> list[dict]:
@@ -33,19 +39,39 @@ def fetch(sym, rng, itv):
     return [(c["timestamp"], c["open"], c["high"], c["low"], c["close"]) for c in validated]
 
 
+MIN_GRID_BARS = 33  # len(rows) > 32 (WARM + 12)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--missing-only", action="store_true", help="skip symbols with an existing >32-bar CSV")
     ap.add_argument("--force", action="store_true", help="re-fetch all symbols regardless of existing CSVs")
+    ap.add_argument(
+        "--max-age-hours",
+        type=parse_bt_cli_float,
+        default=DAILY_DATASET_MAX_AGE_SEC / 3600.0,
+        help="maximum cached CSV age in hours before refreshing (default: 18h)",
+    )
     cli_args = ap.parse_args()
-    missing_only = bool(cli_args.missing_only and not cli_args.force)
+    if cli_args.max_age_hours < 0.0:
+        ap.error("--max-age-hours must be >= 0")
+    force_refresh = bool(cli_args.force)
+    missing_only = bool(cli_args.missing_only and not force_refresh)
+    max_age_sec = cli_args.max_age_hours * 3600.0
     os.makedirs(DATA, exist_ok=True)
     usable_total = 0
     for sym in ASSETS:
         for rng, itv in (("730d", "1h"), ("10y", "1d")):
             csv_path = os.path.join(DATA, f"{sym}_{itv}.csv")
-            has_cached_csv = os.path.exists(csv_path) and len(load_ohlc_tuples_csv(csv_path, strict=False)) > 32
-            if missing_only and has_cached_csv:
+            skip, has_cached_csv = should_skip_ohlc_csv_refresh(
+                csv_path,
+                min_bars=MIN_GRID_BARS,
+                strict=False,
+                force=force_refresh,
+                missing_only=missing_only,
+                max_age_sec=max_age_sec,
+            )
+            if skip:
                 usable_total += 1
                 continue
             try:

@@ -11,10 +11,11 @@ import csv
 import datetime as dt
 import hashlib
 import io
+import os
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from botcore import exact_pos_int, safe_pos_float
+from botcore import exact_pos_int, is_cache_fresh, resolve_now_ts, safe_pos_float
 from providers.ohlc_utils import (
     REQUIRED_FIELDS,
     align_previous_values,
@@ -23,6 +24,9 @@ from providers.ohlc_utils import (
     validate_dataset,
 )
 from state_io import atomic_write_bytes, read_csv_dicts, read_text_file
+
+DAILY_REFRESH_CADENCE_SEC: float = 86400.0
+DAILY_DATASET_MAX_AGE_SEC: float = DAILY_REFRESH_CADENCE_SEC * 0.75
 
 
 def canonical_bytes(records: Iterable[Mapping]) -> bytes:
@@ -86,6 +90,45 @@ def load_ohlc_tuples_csv(
         ):
             by_ts[ts_i] = (ts_i, o, h, l, c)
     return [by_ts[k] for k in sorted(by_ts)]
+
+
+def has_usable_ohlc_csv(
+    path: str | Path,
+    *,
+    min_bars: int,
+    strict: bool = True,
+) -> bool:
+    """Return True when ``path`` exists and parses to at least ``min_bars`` valid OHLC rows."""
+    if isinstance(path, (bool, int, float)) or not os.path.isfile(path):
+        return False
+    try:
+        rows = load_ohlc_tuples_csv(path, strict=strict)
+    except (OSError, ValueError):
+        return False
+    return len(rows) >= min_bars
+
+
+def should_skip_ohlc_csv_refresh(
+    path: str | Path,
+    *,
+    min_bars: int,
+    strict: bool = True,
+    force: bool = False,
+    missing_only: bool = False,
+    max_age_sec: float = DAILY_DATASET_MAX_AGE_SEC,
+    now_ts: float | None = None,
+) -> tuple[bool, bool]:
+    """Return ``(skip_refresh, has_usable_csv)`` for daily/on-demand OHLC CSV refreshers."""
+    has_usable = has_usable_ohlc_csv(path, min_bars=min_bars, strict=strict)
+    if not has_usable or force:
+        return False, has_usable
+    if missing_only:
+        return True, True
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return False, True
+    return is_cache_fresh(mtime, resolve_now_ts(now_ts), max_age_sec), True
 
 
 def merge_datasets(*datasets: Iterable[Mapping]) -> list[dict]:

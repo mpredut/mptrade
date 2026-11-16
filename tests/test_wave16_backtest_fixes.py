@@ -7,12 +7,14 @@ from pathlib import Path
 import runpy
 import subprocess
 import sys
+import time
 
 import pytest
 
-from offline.backtests.datasets import save_dataset
+from offline.backtests.datasets import save_dataset, should_skip_ohlc_csv_refresh
 from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as rdss
 from offline.research.kraken_continuous_grid import (
+    fetch_data as kcg_fetch,
     grid as kcg_grid,
     report2 as kcg_report2,
     report3 as kcg_report3,
@@ -26,7 +28,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 _WAVE16_PY_FILES = (
     "providers/replay_provider.py",
+    "offline/backtests/datasets.py",
     "offline/research/comprehensive_surge_sweep/run_deep_surge_sweep.py",
+    "offline/research/kraken_continuous_grid/fetch_data.py",
     "offline/research/kraken_continuous_grid/grid2.py",
     "offline/research/kraken_continuous_grid/grid3.py",
     "offline/research/kraken_continuous_grid/report2.py",
@@ -248,3 +252,68 @@ def test_deep_surge_sweep_unscaled_profile_load_and_scaled_slice_replay(monkeypa
     assert len(seen_params) == 3
     assert all(p.check_minutes == pytest.approx(240.0) for p in seen_params)
     assert out["strategy_params"] == dataclasses.asdict(hl_params)
+
+
+def test_ohlc_csv_daily_staleness_refresh_and_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh OHLC CSVs (<18h) skip re-download; stale CSVs (>18h) auto-refresh and fall back safely."""
+    data_dir = tmp_path / "kcg_data"
+    data_dir.mkdir(parents=True)
+    monkeypatch.setattr(kcg_fetch, "DATA", str(data_dir))
+
+    initial_records = [
+        {
+            "timestamp": 1700000000 + i * 14400,
+            "open": 50.0 + (i % 3),
+            "high": 52.0 + (i % 3),
+            "low": 49.0 + (i % 3),
+            "close": 51.0 + (i % 3),
+            "volume": 100.0,
+        }
+        for i in range(50)
+    ]
+    btc_csv = data_dir / "BTC_240m.csv"
+    save_dataset(initial_records, btc_csv)
+
+    calls: list[str] = []
+    updated_records = initial_records + [
+        {
+            "timestamp": 1700000000 + 50 * 14400,
+            "open": 60.0,
+            "high": 62.0,
+            "low": 59.0,
+            "close": 61.0,
+            "volume": 200.0,
+        }
+    ]
+
+    monkeypatch.setattr(
+        kcg_fetch.mkt,
+        "fetch_ohlc_candles",
+        lambda sym, **kw: calls.append(sym) or list(updated_records),
+    )
+
+    # 1. Fresh CSV (<18h) skips network call by default
+    assert kcg_fetch.fetch("BTCUSDT", "BTC") is True
+    assert calls == []
+
+    # 2. Age CSV past 18h -> --missing-only still skips, default refreshes to 51 bars
+    stale_ts = time.time() - 90000.0
+    os.utime(btc_csv, (stale_ts, stale_ts))
+    assert should_skip_ohlc_csv_refresh(btc_csv, min_bars=43, missing_only=True) == (True, True)
+    assert should_skip_ohlc_csv_refresh(btc_csv, min_bars=43, missing_only=False) == (False, True)
+
+    assert kcg_fetch.fetch("BTCUSDT", "BTC", missing_only=True) is True
+    assert calls == []
+
+    assert kcg_fetch.fetch("BTCUSDT", "BTC") is True
+    assert calls == ["BTCUSDT"]
+    assert len(read_text_file(str(btc_csv)).strip().splitlines()) == 52  # header + 51 bars
+
+    # 3. Stale CSV + transient empty API response preserves existing CSV and returns True
+    os.utime(btc_csv, (stale_ts, stale_ts))
+    monkeypatch.setattr(kcg_fetch.mkt, "fetch_ohlc_candles", lambda sym, **kw: [])
+    assert kcg_fetch.fetch("BTCUSDT", "BTC") is True
+    assert len(read_text_file(str(btc_csv)).strip().splitlines()) == 52
+

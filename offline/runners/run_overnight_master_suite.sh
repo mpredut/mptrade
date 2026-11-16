@@ -93,7 +93,7 @@ run_step "7A" "Monitortrades Replay Backtest on Binance Historical Ticks" "$PYTH
 run_step "7B" "Monitortrades MHDSL Structural Break Variant Comparison" "$PYTHON_BIN offline/research/monitortrades_backtest/compare_sl_variants.py"
 run_step "8"  "Scheduled Pilot Proposals Generation & Worktree Push" "rc=0; bash offline/runners/run_backtest_cycle.sh local || rc=\$?; if [ \"\$rc\" -eq 75 ]; then echo '[run_backtest_cycle] Skipped cleanly due to active lock (rc=75)'; exit 0; fi; exit \"\$rc\""
 run_step "9A" "Kraken Continuous Multi-Asset Grid (11 assets since 2018)" "bash offline/research/kraken_continuous_grid/run_all.sh" 7200
-run_step "9B" "Trading212 Continuous Multi-Asset Factorial Grid (16 equities/ETFs, 54 variants)" "$PYTHON_BIN offline/research/t212_continuous_grid/fetch.py --missing-only && $PYTHON_BIN offline/research/t212_continuous_grid/grid.py && $PYTHON_BIN offline/research/t212_continuous_grid/report.py" 5400
+run_step "9B" "Trading212 Continuous Multi-Asset Factorial Grid (16 equities/ETFs, 54 variants)" "$PYTHON_BIN offline/research/t212_continuous_grid/fetch.py && $PYTHON_BIN offline/research/t212_continuous_grid/grid.py && $PYTHON_BIN offline/research/t212_continuous_grid/report.py" 5400
 run_step "10" "Full DEV Test Regression Suite (pytest tests/)" "SKIP_GIT_SYNC=1 bash offline/runners/run_dev_regression.sh run"
 
 TOTAL_ELAPSED=$(( $(date +%s) - START_SEC ))
