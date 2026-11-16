@@ -2587,6 +2587,33 @@ def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_
     btc_inst.cancel_order.assert_not_called()
     btc_inst.place.assert_not_called()
 
+    # 7. When monitororder reprices a targeted bot order (old ID canceled with 0 fill, new MO_ order open),
+    #    cancel_existing_ai_open_orders cancels the repriced MO_ bot order and unlocks balance.
+    btc_inst.place.reset_mock()
+    btc_inst.cancel_order.reset_mock()
+    btc_inst.order_status.side_effect = None
+    btc_inst.order_status.return_value = SimpleNamespace(status="canceled", filled_qty=0.0, side="SELL")
+    btc_inst.open_orders.return_value = [
+        {"orderId": "10863524639", "clientOrderId": "MO_TA_OR_4a2f467af57547fb972a2277_0", "side": "SELL", "price": "64802.1"},
+    ]
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_repriced = gw.submit({
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 65550.0,
+            "replace_open_orders": True,
+            "cancel_bot_open_orders": True,
+            "cancel_order_ids": ["10863498235"],
+            "confidence": 0.95,
+            "suggested_notional_usd": 400.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+    assert rec_repriced["status"] == "EXECUTED"
+    assert rec_repriced["canceled_prior_open_orders"] == ["10863524639"]
+    btc_inst.cancel_order.assert_called_once_with("10863524639")
+    btc_inst.place.assert_called_once()
+
 
 def test_reconcile_resumed_intent_adopts_already_filled_order_via_client_id_without_duplicate_place(temp_workspace, monkeypatch):
     """Resumed enforce intents adopt orders that already filled on the venue (absent from open_orders) via order_by_client_id, while 0-fill canceled orders still execute."""

@@ -488,6 +488,34 @@ def cancel_existing_ai_open_orders(
         if failed_order_ids:
             return canceled_ids
 
+    if (
+        targeted
+        and include_bots
+        and any(
+            t.lower() not in matched_targets_lc
+            and t not in excluded
+            and t not in ai_oids
+            and not t.upper().startswith("AI_")
+            for t in targeted
+        )
+        and not any(not is_ai for _, is_ai, _ in pending_cancels)
+    ):
+        queued_refs = {ref for ref, _, _ in pending_cancels}
+        for oo, oo_side, oid in _iter_matching_open_orders(raw_open, want_side, any_side=True):
+            coid = extract_client_order_id(oo)
+            if (oid and str(oid) in excluded) or (coid and str(coid) in excluded):
+                continue
+            if resolve_order_actor(oo, ai_oids) == "AI":
+                continue
+            coid_u = str(coid or "").strip().upper()
+            if coid_u.startswith("SD_"):
+                continue
+            if coid_u.startswith("MO_") or oo_side == want_side:
+                cancel_ref = str(oid or coid or "")
+                if cancel_ref and cancel_ref not in queued_refs:
+                    queued_refs.add(cancel_ref)
+                    pending_cancels.append((cancel_ref, False, oo_side or side))
+
     for cancel_ref, is_ai_order, eff_oo_side in pending_cancels:
         try:
             if cancel_fn(cancel_ref) is False:
