@@ -39,7 +39,7 @@ from botcore import (
     _is_fresh_obs_ts,
     _parse_bool_flag,
     _ts_ms_to_s,
-    clean_upper_token,
+    clean_upper_scalar,
     extract_current_price_item,
     extract_timestamp_ms,
     extract_timestamp_s,
@@ -2273,7 +2273,7 @@ def resolve_ssot_price_from_cache(
     now_ts: Optional[float] = None,
 ) -> Optional[float]:
     """Resolve a fresh positive spot price for ``symbol`` from SSOT cacheManager stores (0 ms local)."""
-    if (sym_u := clean_upper_token(symbol)) is None or not (sym_clean := clean_symbol_key(sym_u)):
+    if (sym_u := clean_upper_scalar(symbol)) is None or not (sym_clean := clean_symbol_key(sym_u)):
         return None
     if (max_age := resolve_positive_max_age(max_age_sec, 60.0)) is None:
         return None

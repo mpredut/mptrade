@@ -27,7 +27,7 @@ if _ROOT not in sys.path:
 
 from botcore import (  # noqa: E402
     bind_attr_call,
-    clean_nonempty_str,
+    clean_scalar_str,
     coerce_dict_maps,
     exact_int,
     load_local_module,
@@ -235,7 +235,7 @@ class HLClient:
 
     @classmethod
     def _coin_candidates(cls, coin: object) -> tuple[str, ...]:
-        if (c := clean_nonempty_str(coin)) is None:
+        if (c := clean_scalar_str(coin)) is None:
             return ()
         split = split_symbol_assets(c)
         base = split[0] if (split is not None and split[1] == "USDC") else c
@@ -246,7 +246,7 @@ class HLClient:
         return {c.casefold() for c in cls._coin_candidates(coin)}
 
     def sz_decimals(self, coin: str) -> int:
-        if clean_nonempty_str(coin) is None:
+        if clean_scalar_str(coin) is None:
             raise HLError(f"Missing size precision metadata for {coin}")
         cand_coins = self._coin_candidates(coin)
         meta = None
@@ -294,7 +294,7 @@ class HLClient:
         return default
 
     def _mid_for_key(self, key: str, label: str) -> float | None:
-        if (key := clean_nonempty_str(key)) is None:
+        if (key := clean_scalar_str(key)) is None:
             return None
         try:
             mids = self.info.all_mids()
@@ -319,7 +319,7 @@ class HLClient:
         """Return position data while propagating API errors.
         Use when code must distinguish no position (0) from unknown state, such as
         delta-neutral logic where a false zero could open a duplicate leg."""
-        if (coin := clean_nonempty_str(coin)) is None:
+        if (coin := clean_scalar_str(coin)) is None:
             return 0.0, 0.0
         cand_cfs = self._coin_candidate_cfs(coin)
         p = next(
@@ -361,7 +361,7 @@ class HLClient:
             raise HLError("HL_ACCOUNT_ADDRESS missing")
         cand_cfs: set[str] | None = None
         if coin is not None:
-            if clean_nonempty_str(coin) is None:
+            if clean_scalar_str(coin) is None:
                 return []
             cand_cfs = self._coin_candidate_cfs(coin)
         oo = self.info.open_orders(self.address)
@@ -384,7 +384,7 @@ class HLClient:
     def resolve_spot_pair(self, token: str) -> str | None:
         """Resolve a TOKEN/USDC spot pair (@index) from spotMeta for any token,
         such as HYPE -> @107, USOL -> @156, or PURR -> PURR/USDC."""
-        if (token_clean := clean_nonempty_str(token)) is None:
+        if (token_clean := clean_scalar_str(token)) is None:
             return None
         cand_tokens = self._coin_candidates(token_clean)
         try:
@@ -407,7 +407,7 @@ class HLClient:
         if isinstance(name_to_coin, dict):
             for cand in cand_tokens:
                 mapped = casefold_get(name_to_coin, f"{cand}/USDC") or casefold_get(name_to_coin, cand)
-                if (mapped_s := clean_nonempty_str(mapped)) is not None:
+                if (mapped_s := clean_scalar_str(mapped)) is not None:
                     return mapped_s
         return None
 
@@ -415,7 +415,7 @@ class HLClient:
 
     def funding_rate(self, coin: str) -> float | None:
         """Return the current hourly perpetual funding rate; positive means longs pay shorts."""
-        if (coin_clean := clean_nonempty_str(coin)) is None:
+        if (coin_clean := clean_scalar_str(coin)) is None:
             return None
         cand_cfs = self._coin_candidate_cfs(coin_clean)
         try:
@@ -437,7 +437,7 @@ class HLClient:
 
     def candles(self, coin: str, interval: str = "1h", lookback_hours: int = 60) -> list[dict]:
         """Return OHLCV candles for trend indicators."""
-        if (coin := clean_nonempty_str(coin)) is None or (interval := clean_nonempty_str(interval)) is None:
+        if (coin := clean_scalar_str(coin)) is None or (interval := clean_scalar_str(interval)) is None:
             return []
         try:
             _, start, end, _ = resolve_ohlc_time_window_ms(lookback_hours=lookback_hours)
@@ -457,13 +457,13 @@ class HLClient:
         """Place a spot limit or market IOC order; pair is the @index name such as @107."""
         if not self.exchange:
             raise HLError("No agent wallet (HL_SECRET_KEY)")
-        if (pair := clean_nonempty_str(pair)) is None:
+        if (pair := clean_scalar_str(pair)) is None:
             return False, None, "invalid pair"
         if not isinstance(is_buy, bool):
             return False, None, "invalid non-boolean is_buy"
         if not isinstance(is_market, bool):
             return False, None, "invalid non-boolean is_market"
-        if tif is not None and (tif := clean_nonempty_str(tif)) is None:
+        if tif is not None and (tif := clean_scalar_str(tif)) is None:
             return False, None, "invalid tif"
         if isinstance(sz_decimals, bool):
             return False, None, "invalid boolean order parameter"
@@ -489,7 +489,7 @@ class HLClient:
 
     # ----- signed trading -----------------------------------------------------
     def set_leverage(self, coin: str, leverage: int) -> None:
-        if not self.exchange or (coin_clean := clean_nonempty_str(coin)) is None:
+        if not self.exchange or (coin_clean := clean_scalar_str(coin)) is None:
             return
         lev_i = _exact_int_in_range(leverage, 1)
         if lev_i is None:
@@ -505,7 +505,7 @@ class HLClient:
         """Place an ALO (Post-Only) or GTC LIMIT order and return (ok, oid, message)."""
         if not self.exchange:
             raise HLError("No agent wallet (HL_SECRET_KEY) -- orders cannot be placed")
-        if (coin := clean_nonempty_str(coin)) is None:
+        if (coin := clean_scalar_str(coin)) is None:
             return False, None, "invalid coin"
         if not isinstance(is_buy, bool) or not isinstance(reduce_only, bool) or not isinstance(post_only, bool):
             return False, None, "invalid non-boolean is_buy or reduce_only"
@@ -558,7 +558,7 @@ class HLClient:
     def cancel(self, coin: str, oid: int) -> bool:
         if (
             not self.exchange
-            or (coin := clean_nonempty_str(coin)) is None
+            or (coin := clean_scalar_str(coin)) is None
             or oid is None
             or isinstance(oid, bool)
         ):

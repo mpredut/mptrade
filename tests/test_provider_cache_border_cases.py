@@ -8354,6 +8354,70 @@ def test_wave47_order_gateway_guards_registry_and_retry_scalar_border_cases(monk
             digest.collect([{"labels": {"symbol": "BTCUSDC"}, "quantity": 1.0, "sample_id": bad_sid}], now=1000.0)
 
 
+def test_wave48_venue_clients_trailing_monitororder_and_open_order_id_scalar_border_cases(monkeypatch, tmp_path):
+    """Verify Wave 48 surgical scalar SSOT alignment across portfolio_collector open-order IDs, Binance/HL/T212 clients, trailing_core, and monitororder."""
+
+    # 1. _load_open_order_timestamps rejects "0" / "null" / "none" / bool / container order IDs and normalizes "1001.0" -> "1001".
+    ts_map = _load_open_order_timestamps(
+        None,
+        {
+            "open_orders:binance": [
+                {"created_ts": 1700000100.0, "orderId": "0", "clientOrderId": "null"},
+                {"created_ts": 1700000200.0, "orderId": "1001.0", "clientOrderId": "CID_OK"},
+                {"created_ts": 1700000300.0, "orderId": True, "clientOrderId": ["bad"]},
+            ]
+        },
+    )
+    assert ts_map == {"1001": 1700000200.0, "CID_OK": 1700000200.0}
+
+    # 2. bapi, bapi_allorders, bapi_placeorder reject "null" / "none" / "nan" symbols and sanitize permit scopes.
+    bapi_mod = importlib.import_module("binance_api.bapi")
+    bapi_ao_mod = importlib.import_module("binance_api.bapi_allorders")
+    for bad_sym in ("null", "none", "nan", True, None):
+        assert bapi_mod.update_price(bad_sym) is None
+        assert bapi_mod.get_free_balance(bad_sym) is None
+        assert bapi_mod.cancel_order(bad_sym, "123") is False
+        assert bapi_ao_mod.paginate_my_trades(None, bad_sym, 1000) == []
+        with pytest.raises(SubmissionRefused):
+            bapi_placeorder.issue_account_cache_submit_permit(bad_sym, "BUY", 1.0, 100.0)
+        with pytest.raises(SubmissionRefused):
+            bapi_placeorder.cancel_opposite_orders("BUY", bad_sym, 100.0)
+
+    # 3. HLClient, 212trading order_manager/market_data, trailing_core, trailing_stop, monitororder scalar hygiene.
+    repo_root = Path(__file__).resolve().parents[1]
+    hl_mod = botcore.load_local_module(str(repo_root / "hyperliquid"), "hl_client")
+    assert hl_mod.HLClient._coin_candidates("null") == ()
+    assert hl_mod.HLClient._coin_candidates("none") == ()
+    hl_dummy = object.__new__(hl_mod.HLClient)
+    hl_dummy.exchange = object()
+    assert hl_dummy.spot_order("null", True, 1.0, 10.0) == (False, None, "invalid pair")
+    assert hl_dummy.spot_order("@107", True, 1.0, 10.0, tif="none") == (False, None, "invalid tif")
+
+    t212_om = botcore.load_local_module(str(repo_root / "212trading"), "order_manager")
+    t212_md = botcore.load_local_module(str(repo_root / "212trading"), "market_data")
+    assert t212_om.place_order_with_retry(None, "null", 1.0, 100.0, "DAY", dry_run=True) is False
+    assert t212_om.place_order_with_retry(None, "NVDA_US_EQ", 1.0, 100.0, "none", dry_run=True) is False
+    with pytest.raises(ValueError, match="invalid range"):
+        t212_md.fetch_yahoo_candles("NVDA", "null", "5m")
+    with pytest.raises(ValueError, match="invalid interval"):
+        t212_md.fetch_yahoo_candles("NVDA", "5d", "none")
+
+    tc_mod = importlib.import_module("trailing_core")
+    ts_mod = importlib.import_module("binance_api.trailing_stop")
+    assert tc_mod.extract_trailing_intent_action_asset(
+        {"action": "null", "asset": "none", "metadata": {"action": "sell", "asset": "BTC"}}
+    ) == ("SELL", "BTC")
+    assert tc_mod.TrailingAdapterBase._lookup_symbol_entry({"NULL": 1, "BTCUSDC": 2}, "null") is None
+    assert ts_mod.TrailingStop._find_balance_row([{"asset": "null", "free": 5.0}], "null") is None
+
+    assert mo.resolve_effective_order_ttl("0", "RT_123", owner="null") == min(
+        mo.MODULE_ORDER_TTLS["rtrade"], mo.MAX_GLOBAL_ORDER_TTL_SEC
+    )
+    assert mo._should_notify_order_launched("null") is True
+    assert mo.monitor_open_orders_by_type("null", "BUY") is None
+
+
+
 
 
 

@@ -11,7 +11,7 @@ from binance.exceptions import BinanceAPIException
 import instrument_registry as sym
 from botcore import (
     clean_order_id,
-    clean_upper_token,
+    clean_upper_scalar,
     exact_pos_int,
     extract_order_price,
     extract_order_qty,
@@ -39,7 +39,7 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
     plus one until a short page arrives.
     """
     strict = _parse_bool_flag(strict, False)
-    symbol = clean_upper_token(symbol)
+    symbol = clean_upper_scalar(symbol)
     start_i = safe_nonneg_int(start_time_ms, default=None) if symbol is not None else None
     if start_i is None:
         if strict:

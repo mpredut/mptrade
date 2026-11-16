@@ -4,7 +4,7 @@ import time
 # Repository imports.
 from botcore import (
     clean_order_id,
-    clean_upper_token,
+    clean_upper_scalar,
     exact_nonneg_int,
     extract_order_id,
     extract_order_side,
@@ -76,7 +76,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     for trade, side, ts_ms, px, qty in apiorders.filter_recent_cached_orders(
         init_cache_trade_manager(), order_type, symbol, max_age_seconds, _validated=True
     ):
-        sym_out = clean_upper_token(trade.get('symbol')) or symbol
+        sym_out = clean_upper_scalar(trade.get('symbol')) or symbol
         clean_oid = _resolve_trade_order_id(trade)
         row = {
             'symbol': sym_out,

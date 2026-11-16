@@ -57,7 +57,7 @@ from trailing_core import (  # noqa: E402
     load_trailing_common_env,
     parse_trailing_cli_args,
 )
-from botcore import (clean_upper_token, load_dotenv, log, required_bool_env, required_float_env,
+from botcore import (clean_upper_scalar, load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, safe_float, safe_nonneg_float, safe_pos_float)  # noqa: E402
 from cachepaths import resolve_venue_trailing_state_path  # noqa: E402
 
@@ -175,7 +175,7 @@ class TrailingStop(TrailingAdapterBase):
         Cache only the average, never its price-dependent verdict. Refresh after
         UTC midnight; missing/stale/malformed history or price blocks auto re-buy.
         """
-        symbol = clean_upper_token(symbol)
+        symbol = clean_upper_scalar(symbol)
         if symbol is None:
             return False
         now = time.time()
@@ -219,12 +219,12 @@ class TrailingStop(TrailingAdapterBase):
 
     @staticmethod
     def _find_balance_row(balances: list | None, asset: str, *, unique: bool = False) -> dict | None:
-        if (target := clean_upper_token(asset)) is None:
+        if (target := clean_upper_scalar(asset)) is None:
             return None
         matches = [
             row for row in (balances or [])
             if isinstance(row, dict)
-            and clean_upper_token(row.get("asset")) == target
+            and clean_upper_scalar(row.get("asset")) == target
         ]
         if not matches or (unique and len(matches) != 1):
             return None
@@ -237,7 +237,7 @@ class TrailingStop(TrailingAdapterBase):
         stale, or inconsistent evidence, retain the core's first-observation fallback.
         Existing peaks, warm-up thresholds, and pending orders are never rewritten.
         """
-        if (pair_norm := clean_upper_token(pair)) is None:
+        if (pair_norm := clean_upper_scalar(pair)) is None:
             return None
         try:
             spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, pair) or TRAILING_INSTRUMENTS[pair]

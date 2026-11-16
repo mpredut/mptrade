@@ -20,9 +20,9 @@ _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 from botcore import (  # noqa: E402
-    clean_nonempty_str,
     clean_order_id,
-    clean_upper_token,
+    clean_scalar_str,
+    clean_upper_scalar,
     ensure_local_module_priority,
     extract_order_id,
     first_pos_float,
@@ -83,7 +83,7 @@ def resolve_quantity(order_price: float,
 def _marker_path(ticker: str, *, test: bool = False) -> str:
     """Namespace one-shot state by profile and ticker, never across accounts."""
     profile = sanitize_identifier(optional_env("IPO_PROFILE") or "default", sep="_", allow_dots_hyphens=True, strip_chars="._")
-    raw_ticker = clean_upper_token(ticker) or ""
+    raw_ticker = clean_upper_scalar(ticker) or ""
     symbol = sanitize_identifier(raw_ticker, sep="_", allow_dots_hyphens=True, strip_chars="._")
     suffix = ".test" if test else ""
     return os.path.join(
@@ -359,9 +359,9 @@ def place_order_with_retry(
     qty_r = round(qty_f, 2) if qty_f is not None else 0.0
     price_r = round(price_f, 2) if price_f is not None else 0.0
     param_err: str | None = None
-    if (ticker := clean_nonempty_str(ticker)) is None:
+    if (ticker := clean_scalar_str(ticker)) is None:
         param_err = "  ! [ORDER] ticker invalid"
-    elif (validity := clean_upper_token(validity)) is None:
+    elif (validity := clean_upper_scalar(validity)) is None:
         param_err = "  ! [ORDER] validity invalid"
     else:
         if validity == "GTC":
@@ -419,7 +419,7 @@ def place_order_with_retry(
             and abs(rec_qty_f - qty_r) <= 0.011
             and abs(rec_lim_f - price_r) <= 0.011
         )
-        lifecycle = str(record.get("lifecycle") or "").strip().lower()
+        lifecycle = (clean_scalar_str(record.get("lifecycle")) or "").lower()
         if not same_intent or lifecycle in {"canceled", "cancelled", "expired"}:
             log(
                 "  ! [ORDER] another intent already exists in the marker — NOT overwriting"

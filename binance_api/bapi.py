@@ -7,7 +7,8 @@ import signal
 #### MYLIB
 from botcore import (
     _parse_bool_flag,
-    clean_upper_token,
+    clean_scalar_str,
+    clean_upper_scalar,
     load_dotenv,
     normalize_scalar_order_id,
     safe_nonneg_float,
@@ -48,7 +49,7 @@ _normalize_side = sym._normalize_ordertype
 
 def update_price(symbol):
     """Fetch one live REST quote directly from Binance, failing closed on error."""
-    if (symbol := clean_upper_token(symbol)) is None:
+    if (symbol := clean_upper_scalar(symbol)) is None:
         return None
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
@@ -64,14 +65,14 @@ def update_price(symbol):
 
 def get_current_price(symbol):
     """Return a live REST quote without any hidden in-memory cache."""
-    if (symbol := clean_upper_token(symbol)) is None:
+    if (symbol := clean_upper_scalar(symbol)) is None:
         return None
     return update_price(symbol)
 
 
 def get_free_balance(asset: str):
     try:
-        asset_u = clean_upper_token(asset)
+        asset_u = clean_upper_scalar(asset)
         if asset_u is None:
             return None
         # Return the free Binance balance for an asset.
@@ -106,8 +107,7 @@ def get_account_assets_balances(raise_errors=False):
             if free_qty is None or locked_qty is None:
                 raise ValueError(f"invalid non-finite or negative balance: {balance!r}")
             total_qty = free_qty + locked_qty
-            raw_asset = balance.get("asset")
-            asset_name = raw_asset.strip() if isinstance(raw_asset, str) else ""
+            asset_name = clean_scalar_str(balance.get("asset")) or ""
             if not asset_name:
                 continue
             if total_qty <= 0:
@@ -141,7 +141,7 @@ def _validate_side(order_type, symbol) -> str:
 def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
     strict = _parse_bool_flag(strict, False)
     order_type = _validate_side(order_type, symbol)
-    symbol = symbol.strip().upper()
+    symbol = clean_upper_scalar(symbol) or ""
         
     try:
         open_orders = client.get_open_orders(symbol=symbol)
@@ -172,7 +172,7 @@ def _cancel_and_resolve(symbol, order_id) -> bool:
 
 def cancel_order(symbol, order_id):
     try:
-        if (symbol := clean_upper_token(symbol)) is None:
+        if (symbol := clean_upper_scalar(symbol)) is None:
             return False
         oid_arg = normalize_scalar_order_id(order_id)
         if oid_arg is None:
@@ -231,7 +231,7 @@ def _get_symbol_price_safe(symbol):
 
 
 def _convert_to_usdc(asset, amount):
-    if (asset_clean := clean_upper_token(asset)) is None:
+    if (asset_clean := clean_upper_scalar(asset)) is None:
         return 0.0
     amt_f = safe_pos_float(amount, default=0.0)
     if amt_f <= 0:

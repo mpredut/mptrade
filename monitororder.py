@@ -26,7 +26,8 @@ from botcore import (
     _parse_bool_flag,
     are_close,
     clean_order_id_str,
-    clean_upper_token,
+    clean_scalar_str,
+    clean_upper_scalar,
     diff_percent,
     exact_nonneg_int,
     extract_order_id,
@@ -93,10 +94,11 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
             return min(val, MAX_GLOBAL_ORDER_TTL_SEC)
 
     # 2. Module default based on owner
-    if (not owner or isinstance(owner, bool)) and cid_str:
-        owner = rc.resolve_order_owner(cid_str)
+    owner_clean = clean_scalar_str(owner)
+    if not owner_clean and cid_str:
+        owner_clean = clean_scalar_str(rc.resolve_order_owner(cid_str))
 
-    norm_owner = str(owner).strip().lower() if isinstance(owner, str) else ""
+    norm_owner = (owner_clean or "").lower()
     if norm_owner in MODULE_ORDER_TTLS:
         return min(MODULE_ORDER_TTLS[norm_owner], MAX_GLOBAL_ORDER_TTL_SEC)
 
@@ -200,9 +202,10 @@ def _resolve_accepted_ttl_and_owner_maps(
 
 def _should_notify_order_launched(owner):
     """Return False for fast scalpers (rtrade) and for ai_executor (the intent gateway already notifies placement)."""
-    if not owner or isinstance(owner, bool):
+    owner_clean = clean_scalar_str(owner)
+    if not owner_clean:
         return True
-    return str(owner).strip().lower() not in ("rtrade", "ai_executor")
+    return owner_clean.lower() not in ("rtrade", "ai_executor")
 
 
 def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=None, venue=None):
@@ -214,7 +217,7 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
             symbol, order_type, price, quantity, owner
         )
         px_disp = format_price_log(px)
-        venue_slug = (str(venue).strip() if isinstance(venue, str) and venue.strip() else _resolve_provider_name(symbol)).lower()
+        venue_slug = (clean_scalar_str(venue) or _resolve_provider_name(symbol)).lower()
         t_title, t_body = alert.format_trade_notification(
             "PLACED", side, symbol, px_disp, qty, val, quote, order_id, venue=venue_slug, owner=owner
         )
@@ -287,7 +290,7 @@ def monitor_open_orders_by_type(
     durable record submittable. ``failed_orders`` remains a compatibility-only
     argument for old callers; this function neither writes nor drains it.
     """
-    if clean_upper_token(symbol) is None:
+    if clean_upper_scalar(symbol) is None:
         return
     order_type_u = normalize_side(order_type)
     if order_type_u not in ("BUY", "SELL"):

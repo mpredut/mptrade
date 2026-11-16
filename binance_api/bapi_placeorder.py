@@ -12,6 +12,8 @@ import botcore as cfg
 from botcore import (
     _parse_bool_flag,
     clean_order_id,
+    clean_scalar_str,
+    clean_upper_scalar,
     extract_order_id,
     extract_order_price,
     extract_order_side,
@@ -106,13 +108,13 @@ class _AccountCacheSubmitPermit:
             expires_at_wall=issued_at_wall + account_cache_health.SUBMIT_PERMIT_TTL_SEC,
             order_cache_version=str(status.order_cache_version),
             trade_cache_version=str(status.trade_cache_version),
-            symbol="" if isinstance(symbol, bool) else str(symbol or "").strip().upper(),
-            side="" if isinstance(side, bool) else str(_normalize_side(side or "")).strip().upper(),
+            symbol=clean_upper_scalar(symbol) or "",
+            side="" if isinstance(side, bool) else (clean_upper_scalar(_normalize_side(side or "")) or ""),
             max_qty=require_finite_float(qty, "qty"),
             requested_price=None if is_market else require_finite_float(price, "price"),
             price_tick_size=require_finite_float(price_tick_size, "price_tick_size"),
             market=is_market,
-            kind=str(kind or ""),
+            kind=clean_scalar_str(kind) or "",
         ))
         object.__setattr__(self, "_consumed", False)
         object.__setattr__(self, "_lock", threading.Lock())
@@ -227,8 +229,8 @@ def issue_account_cache_submit_permit(symbol, side, qty, price=None, *,
                                       market=False, kind=None, api_client=None):
     """Authorize one narrowly scoped submit after a complete cache validation."""
     market = _parse_bool_flag(market, False)
-    side_str = "" if isinstance(side, bool) else str(_normalize_side(side or "")).strip().upper()
-    symbol_str = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
+    side_str = "" if isinstance(side, bool) else (clean_upper_scalar(_normalize_side(side or "")) or "")
+    symbol_str = clean_upper_scalar(symbol) or ""
     qty, price = safe_pos_float(qty, default=None), (None if market else safe_pos_float(price, default=None))
     if side_str not in {"BUY", "SELL"} or not symbol_str or qty is None or (not market and price is None):
         raise SubmissionRefused("invalid_order_parameters")
@@ -278,17 +280,18 @@ def _consume_account_cache_submit_permit(
                 or (scope.side == "SELL" and submitted_price + scope.price_tick_size >= scoped_price)
             )
         )
+        sym_u = clean_upper_scalar(symbol)
         matches = (
             scope.pid == os.getpid()
             and time.monotonic() <= scope.expires_at
             and time.time() <= scope.expires_at_wall
             and bool(scope.order_cache_version) and bool(scope.trade_cache_version)
-            and symbol is not None and not isinstance(symbol, bool)
+            and bool(sym_u)
             and side is not None and not isinstance(side, bool)
-            and scope.symbol == str(symbol).strip().upper()
-            and scope.side == str(_normalize_side(side))
+            and scope.symbol == sym_u
+            and scope.side == (clean_upper_scalar(_normalize_side(side)) or "")
             and scope.market is market
-            and scope.kind == str(kind or "")
+            and scope.kind == (clean_scalar_str(kind) or "")
             and actual_qty <= scope.max_qty
             and price_is_safe
         )
@@ -420,11 +423,11 @@ def _last_opposite_fill_price_api(symbol, order_type):
 
 def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=None):
     """Cancel adverse opposing Binance orders without changing the target price."""
-    sym_str = "" if isinstance(symbol, bool) else str(symbol or "").strip()
+    sym_str = clean_scalar_str(symbol) or ""
     req_px = None if isinstance(order_type, bool) or not sym_str else safe_pos_float(requested_price, default=None)
     if req_px is None:
         raise SubmissionRefused("invalid_opposing_cancel_request")
-    order_type = str(_normalize_side(order_type or "")).strip().upper()
+    order_type = clean_upper_scalar(_normalize_side(order_type or "")) or ""
     if order_type not in {"BUY", "SELL"}:
         return
     opp_side = opposite_side(order_type)
@@ -449,11 +452,11 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
 def adjust_price_and_cancel_opposite(order_type, symbol, price, cancel_opposite=True):
     """Apply Binance price mechanics and optionally cancel opposing orders."""
     cancel_opposite = _parse_bool_flag(cancel_opposite, True)
-    sym_str = "" if isinstance(symbol, bool) else str(symbol or "").strip()
+    sym_str = clean_scalar_str(symbol) or ""
     price = None if isinstance(order_type, bool) or not sym_str else safe_pos_float(price, default=None)
     if price is None:
         raise SubmissionRefused("invalid_order_parameters")
-    order_type = str(_normalize_side(order_type or "")).strip().upper()
+    order_type = clean_upper_scalar(_normalize_side(order_type or "")) or ""
     if cancel_opposite:
         cancel_opposite_orders(order_type, sym_str, price)
     cp = safe_pos_float(api.get_current_price(sym_str), default=None)

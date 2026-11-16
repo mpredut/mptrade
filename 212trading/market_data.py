@@ -21,7 +21,7 @@ if _ROOT not in sys.path:
 from botcore import (
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     _parse_bool_flag,
-    clean_nonempty_str,
+    clean_scalar_str,
     exact_pos_int,
     fetch_public_json,
     http_get,
@@ -81,9 +81,9 @@ def fetch_yahoo_candles(
     if to_f is None:
         raise ValueError(f"invalid timeout: {timeout!r}")
     symbol = require_ohlc_symbol(symbol, label="symbol")
-    if (rng_clean := clean_nonempty_str(range_)) is None:
+    if (rng_clean := clean_scalar_str(range_)) is None:
         raise ValueError(f"invalid range: {range_!r}")
-    if (itv_clean := clean_nonempty_str(interval)) is None:
+    if (itv_clean := clean_scalar_str(interval)) is None:
         raise ValueError(f"invalid interval: {interval!r}")
     range_ = rng_clean
     interval = itv_clean

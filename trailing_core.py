@@ -40,8 +40,8 @@ from botcore import (
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
     _parse_bool_flag,
     clean_json_value,
-    clean_nonempty_str,
-    clean_upper_token,
+    clean_scalar_str,
+    clean_upper_scalar,
     env_items_with_prefix,
     first_pos_float,
     required_bool_env,
@@ -97,7 +97,7 @@ def apply_trailing_asset_env_overrides(
     for env_k, env_v in prefixed.items():
         if env_k.endswith("_PAIR"):
             asset = env_k[len(prefix):-len("_PAIR")].strip().upper()
-            if asset and str(env_v or "").strip():
+            if asset and clean_scalar_str(env_v):
                 pair_for[asset] = required_env(env_k, env)
                 trail_pct.setdefault(asset, default_trail_pct)
     for env_k in prefixed:
@@ -133,8 +133,8 @@ def extract_trailing_intent_action_asset(intent: object) -> tuple[str, str]:
     pending = intent if isinstance(intent, dict) else {}
     raw_meta = pending.get("metadata")
     meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
-    action = clean_upper_token(pending.get("action")) or clean_upper_token(meta_dict.get("action")) or ""
-    asset = clean_nonempty_str(pending.get("asset")) or clean_nonempty_str(meta_dict.get("asset")) or ""
+    action = clean_upper_scalar(pending.get("action")) or clean_upper_scalar(meta_dict.get("action")) or ""
+    asset = clean_scalar_str(pending.get("asset")) or clean_scalar_str(meta_dict.get("asset")) or ""
     return action, asset
 
 
@@ -236,9 +236,9 @@ class TrailingCore:
         return persist
 
     def _asset_for_pair(self, pair: str, default: str = "") -> str:
-        pair_u = "" if isinstance(pair, bool) or pair is None else str(pair).strip().upper()
+        pair_u = clean_upper_scalar(pair) or ""
         for _k, asset, p, _t in self.a.assets():
-            if p == pair or (pair_u and str(p or "").strip().upper() == pair_u):
+            if p == pair or (pair_u and (clean_upper_scalar(p) or "") == pair_u):
                 return asset
         return default
 
@@ -668,7 +668,7 @@ class TrailingAdapterBase:
 
     @classmethod
     def _lookup_symbol_entry(cls, mapping: dict, symbol: str, predicate=None):
-        if not isinstance(mapping, dict) or (sym_norm := clean_upper_token(symbol)) is None:
+        if not isinstance(mapping, dict) or (sym_norm := clean_upper_scalar(symbol)) is None:
             return None
         canon_sym = canonical_symbol_key(sym_norm) if sym_norm else ""
         cands = (
@@ -697,7 +697,7 @@ class TrailingAdapterBase:
     def trail_pct_for(self, symbol: str) -> float:
         raw_default = self._module_attr("DEFAULT_TRAIL_PCT", None)
         default_pct = safe_pos_float(raw_default, default=None)
-        if clean_upper_token(symbol) is not None:
+        if clean_upper_scalar(symbol) is not None:
             trail_map = self._module_attr("TRAIL_PCT")
             val = self._lookup_symbol_entry(
                 trail_map,
@@ -719,7 +719,7 @@ class TrailingAdapterBase:
 
     def rebuy_enabled_for(self, symbol: str) -> bool:
         """Per-coin re-buy switch (registry trailing.rebuy: on/off/auto), falling back to REBUY_ENABLED."""
-        if (sym_norm := clean_upper_token(symbol)) is None:
+        if (sym_norm := clean_upper_scalar(symbol)) is None:
             return False
         rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
         default_rebuy = _parse_bool_flag(self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled), self.core.rebuy_enabled)
@@ -748,7 +748,7 @@ class TrailingAdapterBase:
 
     def rebuy_configured_for(self, symbol: str) -> bool:
         """Return configured re-buy intent for symbol/asset (including auto while trend is down)."""
-        if (sym_norm := clean_upper_token(symbol)) is None:
+        if (sym_norm := clean_upper_scalar(symbol)) is None:
             return False
         if callable(getattr(self, "_long_trend_up", None)):
             rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
@@ -815,8 +815,7 @@ class TrailingAdapterBase:
         if not isinstance(pending, dict):
             return None
         result = self.order_lifecycle.reconcile(pending, persist=persist)
-        raw_pair = pending.get("symbol")
-        pair = raw_pair.strip() if isinstance(raw_pair, str) else ""
+        pair = clean_scalar_str(pending.get("symbol")) or ""
         action, _ = extract_trailing_intent_action_asset(pending)
         retry_key = (pair, action)
         st = getattr(persist, "st", None)

@@ -9,6 +9,7 @@ import time as _time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from botcore import (
+    clean_order_id,
     coerce_dict_maps,
     extract_order_id,
     extract_order_side,
@@ -240,7 +241,7 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
                     )
                     if c_ts is not None and c_ts > 0.0:
                         for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
-                            if kv := str(oo_prev.get(id_k) or "").strip():
+                            if kv := clean_order_id(oo_prev.get(id_k)):
                                 out.setdefault(kv, c_ts)
     if not cache_dir:
         return out
@@ -257,7 +258,7 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
             exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
             for src_d in (it, exec_pay):
                 for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId", "intent_id"):
-                    if kv := str(src_d.get(id_k) or "").strip():
+                    if kv := clean_order_id(src_d.get(id_k)):
                         out.setdefault(kv, it_ts)
             if oid_pay := extract_order_id(exec_pay, default=""):
                 out.setdefault(str(oid_pay), it_ts)
@@ -270,7 +271,7 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
             for rec in read_tail_jsonl_dicts(fpath, limit=None, max_bytes=512 * 1024):
                 if (rec_ts := normalize_epoch_sec(rec.get("ts"), default=None, allow_iso=True)) is not None:
                     for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
-                        if kv := str(rec.get(id_k) or "").strip():
+                        if kv := clean_order_id(rec.get(id_k)):
                             out.setdefault(kv, rec_ts)
                             found_in_batch = True
         if found_in_batch:
