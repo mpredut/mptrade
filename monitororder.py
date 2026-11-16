@@ -452,9 +452,10 @@ def monitor_open_orders_by_type(
                     new_price = current_price * (1.0 + eff_reprice_offset)
                 else:
                     new_price = current_price * (1.0 - eff_reprice_offset)
-            # Short trend was already evaluated pre-cancel; once we decide to cancel
-            # the live order on the exchange, do not re-defer the replacement via GT_S.
-            replace_bypass_guards = ["G_PROF", "GT_S"]
+            # Short trend and high-stake sizing were already evaluated on initial
+            # placement; once we cancel the live order on the exchange, do not
+            # re-defer via GT_S or block for 30-60s on GLLM1 while permit expires.
+            replace_bypass_guards = ["G_PROF", "GT_S", "GLLM1"]
             replace_wait_for_trend = False
             effective_new_price = new_price
             round_px = getattr(mkt, "round_price", None)

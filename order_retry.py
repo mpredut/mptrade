@@ -1401,6 +1401,7 @@ _FAST_IMPULSE_KIND_PREFIXES = (
     "kalman_primary_",
     "trend_confirmed_",
     "consistent_or_old_",
+    "trend_signal",
     "slope<=",
     "slope>=",
 )
@@ -1446,7 +1447,11 @@ def is_expired(rec, now=None):
         if expires_at is None or now_f > expires_at:
             return True
     effective_ttl = resolve_record_ttl(rec)
-    if (clean_scalar_str(rec.get("kind")) or "").startswith(_FAST_IMPULSE_KIND_PREFIXES) and (now_f - created) > effective_ttl:
+    has_custom_or_impulse_ttl = (
+        safe_pos_float(rec.get("ttl_sec"), default=None) is not None
+        or (clean_scalar_str(rec.get("kind")) or "").startswith(_FAST_IMPULSE_KIND_PREFIXES)
+    )
+    if has_custom_or_impulse_ttl and (now_f - created) > effective_ttl:
         return True
     if is_non_failure_deferral(rec.get("last_failure_reason")):
         return False

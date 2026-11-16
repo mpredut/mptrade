@@ -1053,8 +1053,9 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
             for p24_path in _candidate_cache_paths(cachedb_dir, Cache24PriceManager.disk_filename_for_symbol(cand)):
                 if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                     continue
-                raw_ser = sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands))
+                raw_ser = _extract_cached_items_series(_rj(p24_path), cands)
                 if is_eq_sym_load and len(raw_ser) >= 2:
+                    raw_ser = sort_ts_rows(raw_ser)
                     for ohlc24_path in _candidate_cache_paths(cachedb_dir, cache_ohlc_24h_filename(cand)):
                         if not os.path.exists(ohlc24_path):
                             continue

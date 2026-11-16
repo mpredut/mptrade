@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import importlib
 import logging
+import math
 import os
 import re
 import sys
@@ -274,10 +275,18 @@ def _cfg_int(section: str, key: str, fallback: int, config_path: Optional[str] =
 # ============================================================================
 
 
+_NUMERIC_ROW_TYPES = (int, float)
+
+
 def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
     if not isinstance(row, (list, tuple)) or len(row) < 2:
         return None
-    tf, pf = safe_pos_float(row[0], 0.0), safe_pos_float(row[1], 0.0)
+    t, p = row[0], row[1]
+    if type(t) in _NUMERIC_ROW_TYPES and type(p) in _NUMERIC_ROW_TYPES:
+        if t > 0.0 and p > 0.0 and math.isfinite(t) and math.isfinite(p):
+            return ((t * 1000.0 if t < 1e11 else t * 1.0), p * 1.0)
+        return None
+    tf, pf = safe_pos_float(t, 0.0), safe_pos_float(p, 0.0)
     return ((tf * 1000.0 if tf < 1e11 else tf), pf) if (tf > 0.0 and pf > 0.0) else None
 
 

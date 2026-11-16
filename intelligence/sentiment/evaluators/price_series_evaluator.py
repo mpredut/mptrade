@@ -2188,7 +2188,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         return True
 
     def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
-        return strip_off_rth_flat_poller_tail(rows, symbol, is_market_open_fn=is_market_open_fn)
+        return strip_off_rth_flat_poller_tail(sort_ts_rows(rows), symbol, is_market_open_fn=is_market_open_fn)
 
     def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
         ohlc_bars = [
