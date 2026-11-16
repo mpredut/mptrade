@@ -325,7 +325,7 @@ class AutonomousIntentGateway:
                 any_side=bool(target_oids),
                 exclude_order_ids={dup_oid} if dup_oid else None,
                 target_order_ids=target_oids or None,
-                verify_not_filled=replace_open,
+                verify_not_filled=replace_open or bool(target_oids),
                 failed_order_ids=failed_cancel_ids,
                 scan_errors=cancel_scan_errors,
             )

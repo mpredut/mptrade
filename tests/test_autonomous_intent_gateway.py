@@ -2493,6 +2493,24 @@ def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_
     assert rec_raced["failed_cancel_order_ids"] == ["ai_race_filled"]
     btc_inst.place.assert_not_called()
 
+    # 4b. Targeted bot order via cancel_bot_open_orders + cancel_order_ids (without replace_open_orders) also aborts when already FILLED
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_bot_raced = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 79600.0,
+            "cancel_bot_open_orders": True,
+            "cancel_order_ids": ["bot_race_filled"],
+            "confidence": 0.94,
+            "suggested_notional_usd": 400.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+
+    assert rec_bot_raced["status"] == "FAILED"
+    assert rec_bot_raced["failed_cancel_order_ids"] == ["bot_race_filled"]
+    btc_inst.place.assert_not_called()
+
     # 5. Targeted replacement order already canceled with zero fill -> safe to submit replacement; also supports clientOrderId match
     btc_inst.place.reset_mock()
     btc_inst.cancel_order.reset_mock()
