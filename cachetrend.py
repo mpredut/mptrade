@@ -1,14 +1,11 @@
-"""Domain trend cache managers (Level 2 abstract base + Level 3 concrete classes).
+"""Domain trend cache hierarchy, Kalman state tracker, and singleton reader factories.
 
-Provides:
-- ``CacheTrendManagerBase(CacheManagerInterface, ABC)``: Level-2 abstract base
-  for trend cache managers.
-- ``CacheLongTrendManager(CacheTrendManagerBase)``:
-  concrete manager for long-horizon trend snapshots from ``priceanalysis.json``.
-- ``CacheShortTrendManager(CacheTrendManagerBase)``:
-  concrete manager for real-time multi-window short trends, O(1) incremental
-  prefix-sum dynamic windows, and transactional cross-process snapshot persistence
-  (``cache_short_trend.json`` + ``.meta`` + ``.previous`` recovery).
+Thematic layout (Sections 1..5):
+  1. Symbol Variant Helpers & Level 2 Abstract Base: ``CacheTrendManagerBase(CacheManagerInterface, ABC)``
+  2. Long-Horizon Trend Cache: ``CacheLongTrendManager(CacheTrendManagerBase)``
+  3. Real-Time Multi-Window Short Trend Cache: ``CacheShortTrendManager(CacheTrendManagerBase)``
+  4. Kalman State Tracker & Transition Journal (`KalmanJournal`, `KalmanStateTracker`)
+  5. SSOT Singleton Factory Getters (`get_short_trend_manager`, `get_long_trend_manager`)
 """
 
 from __future__ import annotations
@@ -105,6 +102,12 @@ _ORIG_CACHETREND_ATTRS = {
     "CM_PUBLISHED_TREND_WINDOWS_SEC": CM_PUBLISHED_TREND_WINDOWS_SEC,
     "atomic_write_json": atomic_write_json,
 }
+_ORIG_READ_JSON_DICT_RECOVERING = read_json_dict_recovering
+
+
+# =============================================================================
+# 1. SYMBOL VARIANT HELPERS & LEVEL 2 BASE: CacheTrendManagerBase
+# =============================================================================
 
 
 def _cm_attr(name: str, default=None):
@@ -183,6 +186,11 @@ class CacheTrendManagerBase(CacheManagerInterface, ABC):
         super().__init__(*args, **kwargs)
 
 
+# =============================================================================
+# 2. LONG-HORIZON TREND CACHE: CacheLongTrendManager
+# =============================================================================
+
+
 class CacheLongTrendManager(CacheTrendManagerBase):
     """Long-horizon trend cache backed by ``priceanalysis.json``."""
 
@@ -246,6 +254,11 @@ class CacheLongTrendManager(CacheTrendManagerBase):
         if has_missing and base_wait > 15.0:
             return 15.0
         return base_wait
+
+
+# =============================================================================
+# 3. REAL-TIME MULTI-WINDOW SHORT TREND CACHE: CacheShortTrendManager
+# =============================================================================
 
 
 class CacheShortTrendManager(CacheTrendManagerBase):
@@ -972,7 +985,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         if isinstance(entry, (list, tuple)) and entry:
             val = entry[0]
             if type(val) in (int, float):
-                return val
+                return val if math.isfinite(val) else 0.0
             return safe_float(val, default=0.0) or 0.0
         return 0.0
 
@@ -1711,7 +1724,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             return None
         try:
             loaded = CacheManagerInterface._read_recovering_dict_and_items(
-                trend_path, read_json_dict_recovering
+                trend_path,
+                read_json_dict_recovering,
+                orig_reader_fn=_ORIG_READ_JSON_DICT_RECOVERING,
             )
             if loaded is None:
                 return None
@@ -1796,7 +1811,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         return g < 0 if side == "BUY" else g > 0
 
 
-# -- Kalman State Tracker & Transition Journal (`cache_kalman_trend.json`) -----
+# =============================================================================
+# 4. KALMAN STATE TRACKER & TRANSITION JOURNAL
+# =============================================================================
+
 KALMAN_SAMPLE_SEC = pos_float_env("SHADOW_KALMAN_SAMPLE_SEC", 60.0)
 _DEFAULT_LOG_DIR = os.path.join(_CONFIG_ROOT, "logger")
 _KALMAN_KEYS = ("kalman_vel", "kalman_vel_std", "kalman_trend")
@@ -2146,6 +2164,10 @@ class KalmanStateTracker:
             return fields
 
 
+# =============================================================================
+# 5. SSOT SINGLETON FACTORY GETTERS
+# =============================================================================
+
 LONG_TREND_SYNC_INTERVAL_SEC = 10 * 60
 _READONLY_TREND_LOCK = threading.RLock()
 _READONLY_TREND_READERS: dict[str, Any] = {}
@@ -2179,18 +2201,19 @@ def get_short_trend_manager(
     )
     if delegated:
         return res
-    with _READONLY_TREND_LOCK:
-        inst = _READONLY_TREND_READERS.get("ShortTrend")
-        if inst is not None and symbols is None and filename == CacheShortTrendManager.DEFAULT_FILENAME:
-            return inst
-        inst = CacheShortTrendManager(
+    can_cache = symbols is None and filename == CacheShortTrendManager.DEFAULT_FILENAME
+    return CacheManagerInterface._get_or_create_readonly_reader(
+        _READONLY_TREND_LOCK,
+        _READONLY_TREND_READERS,
+        "ShortTrend",
+        can_reuse_fn=lambda _inst: can_cache,
+        can_store=can_cache,
+        builder_fn=lambda: CacheShortTrendManager(
             eff_symbols,
             filename,
             data_sync_mode=resolved_mode,
-        )
-        if symbols is None and filename == CacheShortTrendManager.DEFAULT_FILENAME:
-            _READONLY_TREND_READERS["ShortTrend"] = inst
-        return inst
+        ),
+    )
 
 
 get_short_trend_manager._is_ssot_short_trend_getter = True  # type: ignore[attr-defined]
@@ -2223,26 +2246,23 @@ def get_long_trend_manager(
     )
     if delegated:
         return res
-    with _READONLY_TREND_LOCK:
-        inst = _READONLY_TREND_READERS.get("LongTrend")
-        if (
-            inst is not None
-            and symbols is None
-            and filename == CacheLongTrendManager.DEFAULT_FILENAME
-            and not save_state_flag
-            and not start_periodic
-        ):
-            return CacheManagerInterface._resync_readonly_reader(inst)
-        inst = CacheLongTrendManager(
+    can_cache = symbols is None and filename == CacheLongTrendManager.DEFAULT_FILENAME
+    is_readonly = not save_state_flag and not start_periodic
+    return CacheManagerInterface._get_or_create_readonly_reader(
+        _READONLY_TREND_LOCK,
+        _READONLY_TREND_READERS,
+        "LongTrend",
+        can_reuse_fn=lambda _inst: can_cache and is_readonly,
+        can_store=can_cache,
+        builder_fn=lambda: CacheLongTrendManager(
             sync_ts=LONG_TREND_SYNC_INTERVAL_SEC,
             filename=filename,
             symbols=eff_symbols,
-            read_only=(not save_state_flag and not start_periodic),
+            read_only=is_readonly,
             data_sync_mode=resolved_mode,
-        )
-        if symbols is None and filename == CacheLongTrendManager.DEFAULT_FILENAME:
-            _READONLY_TREND_READERS["LongTrend"] = inst
-        return inst
+        ),
+        resync_existing=True,
+    )
 
 
 get_long_trend_manager._is_ssot_long_trend_getter = True  # type: ignore[attr-defined]

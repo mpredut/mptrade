@@ -63,6 +63,7 @@ from state_io import (
     previous_generation_path,
     prune_rotated_archives,
     read_json_dict,
+    read_json_dict_cached,
     read_jsonl_bucket_map,
     restore_previous_generation,
     truncate_file_bytes,
@@ -258,11 +259,38 @@ class CacheManagerInterface(ABC):
 
     @staticmethod
     def _read_recovering_dict_and_items(
-        path: str, reader_fn: Any
+        path: str, reader_fn: Any, *, orig_reader_fn: Any = None
     ) -> Optional[tuple[dict, dict]]:
-        if not isinstance(data := reader_fn(path), dict):
+        eff_reader = (
+            read_json_dict_cached
+            if orig_reader_fn is not None and reader_fn is orig_reader_fn
+            else reader_fn
+        )
+        if not isinstance(data := eff_reader(path), dict):
             return None
         return data, (items if isinstance(items := data.get("items"), dict) else data)
+
+    @classmethod
+    def _get_or_create_readonly_reader(
+        cls,
+        lock: Any,
+        store: dict,
+        cache_name: str,
+        *,
+        can_reuse_fn: Any,
+        can_store: bool = True,
+        builder_fn: Any,
+        resync_existing: bool = False,
+    ) -> Any:
+        """Shared thread-safe singleton lookup/resync/store across domain cache reader registries."""
+        with lock:
+            inst = store.get(cache_name)
+            if inst is not None and can_reuse_fn(inst):
+                return cls._resync_readonly_reader(inst) if resync_existing else inst
+            inst = builder_fn()
+            if can_store:
+                store[cache_name] = inst
+            return inst
 
     @classmethod
     def _delegate_or_resolve_sync_and_symbols(

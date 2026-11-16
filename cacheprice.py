@@ -1,16 +1,13 @@
-"""Price domain cache hierarchy (Level 2 abstract base + Level 3 concrete classes).
+"""Price domain cache hierarchy, SSOT price resolvers, and singleton reader factories.
 
-Provides:
-- ``CachePriceManagerBase(CacheManagerInterface, ABC)``:
-  Abstract base class for price-domain caches.
-- ``CacheSparsePriceManager(CachePriceManagerBase)``:
-  Sparse 3-minute price history in append-only JSONL.
-- ``Cache24PriceManager(CachePriceManagerBase)``:
-  Dense 24-hour rolling price series in per-symbol JSON snapshots.
-- ``Cache365PriceManager(Cache24PriceManager)``:
-  Long-horizon 365-day dense archive in append-only JSONL with bounded memory tail.
-- ``CacheCurrentPriceManager(CachePriceManagerBase)``:
-  Real-time per-symbol current price cache (WebSocket-first with HTTP fallback).
+Thematic layout (Sections 1..7):
+  1. Level 2 Abstract Base: ``CachePriceManagerBase(CacheManagerInterface, ABC)``
+  2. Sparse Long-Horizon Archive: ``CacheSparsePriceManager(CachePriceManagerBase)``
+  3. Rolling 24-Hour Series: ``Cache24PriceManager(CachePriceManagerBase)``
+  4. Dense 365-Day Archive: ``Cache365PriceManager(Cache24PriceManager)``
+  5. Real-Time Spot & Stream Fanout: ``CacheCurrentPriceManager(CachePriceManagerBase)``
+  6. SSOT Local Price Resolution & WS Stream Lifecycle (`resolve_ssot_price_from_cache`, `resolve_cached_symbol_price`)
+  7. SSOT Singleton Factory Getters (`get_current_price_manager`, `get_24_price_manager`, `get_sparse_price_manager`)
 """
 
 from __future__ import annotations
@@ -131,6 +128,7 @@ from state_io import (
     parse_json_payload,
     previous_generation_path,
     read_json_dict,
+    read_json_dict_cached,
     read_json_dict_recovering,
     read_tail_complete_lines_text,
     read_tail_lines,
@@ -155,6 +153,12 @@ for _name, _value in (
 
 
 _bn_price_prov_cls = MarketDataProvider.resolve_venue_provider_class("binance")
+_ORIG_READ_JSON_DICT_RECOVERING = read_json_dict_recovering
+
+
+# =============================================================================
+# 1. LEVEL 2 ABSTRACT BASE: CachePriceManagerBase
+# =============================================================================
 
 
 class CachePriceManagerBase(CacheManagerInterface, ABC):
@@ -324,6 +328,11 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         return [[tick[0], tick[1]]] if tick is not None else []
 
 
+# =============================================================================
+# 2. SPARSE LONG-HORIZON ARCHIVE: CacheSparsePriceManager
+# =============================================================================
+
+
 class CacheSparsePriceManager(CachePriceManagerBase):
     """Store sparse three-minute price samples (Level 3) for two years in JSONL."""
 
@@ -354,6 +363,11 @@ class CacheSparsePriceManager(CachePriceManagerBase):
             current_price_mgr=current_price_mgr,
             data_sync_mode=data_sync_mode,
         )
+
+
+# =============================================================================
+# 3. ROLLING 24-HOUR SERIES: Cache24PriceManager
+# =============================================================================
 
 
 class Cache24PriceManager(CachePriceManagerBase):
@@ -906,6 +920,11 @@ class Cache24PriceManager(CachePriceManagerBase):
         return None
 
 
+# =============================================================================
+# 4. DENSE 365-DAY ARCHIVE: Cache365PriceManager
+# =============================================================================
+
+
 class Cache365PriceManager(Cache24PriceManager):
     """Multi-month/multi-year dense archive variant (Level 3) using incremental JSONL persistence."""
 
@@ -1258,6 +1277,11 @@ class Cache365PriceManager(Cache24PriceManager):
                 return self._restore_archive_after_failed_rotation_locked(archive)
         self._compress_and_prune_archive(archive)
         return True
+
+
+# =============================================================================
+# 5. REAL-TIME SPOT & STREAM FANOUT: CacheCurrentPriceManager
+# =============================================================================
 
 
 class CacheCurrentPriceManager(CachePriceManagerBase):
@@ -2239,7 +2263,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return None
         try:
             loaded = cls._read_recovering_dict_and_items(
-                price_path, read_json_dict_recovering
+                price_path,
+                read_json_dict_recovering,
+                orig_reader_fn=_ORIG_READ_JSON_DICT_RECOVERING,
             )
             if loaded is None:
                 return None
@@ -2262,6 +2288,19 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         except Exception:
             pass
         return None
+
+
+# =============================================================================
+# 6. SSOT LOCAL PRICE RESOLUTION & WS STREAM LIFECYCLE
+# =============================================================================
+
+
+def _passive_dict_reader():
+    return (
+        read_json_dict_cached
+        if read_json_dict_recovering is _ORIG_READ_JSON_DICT_RECOVERING
+        else read_json_dict_recovering
+    )
 
 
 def resolve_ssot_price_from_cache(
@@ -2349,8 +2388,9 @@ def resolve_cached_symbol_price(
     is_usd_quote = "USD" in allowed_quotes
 
     cache_file = os.path.join(cache_dir, CacheCurrentPriceManager.DEFAULT_FILENAME)
+    read_dict = _passive_dict_reader()
     try:
-        cdata = read_json_dict_recovering(cache_file)
+        cdata = read_dict(cache_file)
         if isinstance(cdata, dict):
             raw_items = cdata.get("items")
             items = raw_items if isinstance(raw_items, dict) else {}
@@ -2434,7 +2474,7 @@ def resolve_cached_symbol_price(
                 ob_path = telemetry_cache_file_path(cache_dir, "orderbook_depth", cand)
                 if not ob_path or (not os.path.exists(ob_path) and not os.path.exists(previous_generation_path(ob_path))):
                     continue
-                ob = read_json_dict_recovering(ob_path)
+                ob = read_dict(ob_path)
                 if isinstance(ob, dict):
                     raw_mid = ob.get("mid_price") if ob.get("mid_price") is not None else ob.get("ob_mid_price")
                     ob_mid = safe_pos_float(raw_mid, default=None)
@@ -2482,6 +2522,10 @@ def stop_price_ws_streams(shutdown_deadline: float) -> None:
             timeout=min(1.0, max(0.35, shutdown_deadline - _monotonic_time()))
         )
 
+
+# =============================================================================
+# 7. SSOT SINGLETON FACTORY GETTERS
+# =============================================================================
 
 SPARSE_PRICE_SYNC_INTERVAL_SEC = 3 * 60
 PRICE_24_SYNC_INTERVAL_SEC = 30
@@ -2617,18 +2661,27 @@ def _get_per_symbol_price_managers(
     )
     if delegated:
         return res
-    with _READONLY_PRICE_LOCK:
-        inst = _READONLY_PRICE_READERS.get(cache_name)
-        if isinstance(inst, dict) and not save_state_flag and not start_periodic:
-            wanted = {str(s).strip().upper() for s in eff_symbols if s}
-            if wanted.issubset({str(k).strip().upper() for k in inst}):
-                for sym_k, mgr in inst.items():
-                    if str(sym_k).strip().upper() in wanted:
-                        CacheManagerInterface._resync_readonly_reader(mgr)
-                return inst
-        prefix, ext = manager_cls.FILE_PREFIX, manager_cls.FILE_EXT
-        eff_read_only = not save_state_flag and not start_periodic
-        inst = {
+    eff_read_only = not save_state_flag and not start_periodic
+    wanted = {str(s).strip().upper() for s in eff_symbols if s}
+
+    def _can_reuse_dict(inst: Any) -> bool:
+        if not (isinstance(inst, dict) and eff_read_only):
+            return False
+        if not wanted.issubset({str(k).strip().upper() for k in inst}):
+            return False
+        for sym_k, mgr in inst.items():
+            if str(sym_k).strip().upper() in wanted:
+                CacheManagerInterface._resync_readonly_reader(mgr)
+        return True
+
+    prefix, ext = manager_cls.FILE_PREFIX, manager_cls.FILE_EXT
+    return CacheManagerInterface._get_or_create_readonly_reader(
+        _READONLY_PRICE_LOCK,
+        _READONLY_PRICE_READERS,
+        cache_name,
+        can_reuse_fn=_can_reuse_dict,
+        can_store=True,
+        builder_fn=lambda: {
             s: manager_cls(
                 sync_ts=default_sync_ts,
                 filename=f"{prefix}{s}.{ext}",
@@ -2637,9 +2690,8 @@ def _get_per_symbol_price_managers(
                 data_sync_mode=resolved_mode,
             )
             for s in eff_symbols
-        }
-        _READONLY_PRICE_READERS[cache_name] = inst
-        return inst
+        },
+    )
 
 
 def get_24_price_manager(

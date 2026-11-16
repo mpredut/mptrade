@@ -5,9 +5,12 @@ import json
 import os
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+import cacheprice
+import cachetrend
 import order_guard
 import state_io
 from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
@@ -629,3 +632,48 @@ def test_state_io_atomic_write_jsonl_writes_iterable_of_dicts_atomically_and_ite
     data = [{"order_id": 1, "sym": "BTCUSDC"}, {"order_id": 2, "sym": "ETHUSDC"}]
     state_io.atomic_write_jsonl(str(p_jsonl), data)
     assert state_io.read_jsonl_dicts(str(p_jsonl)) == data
+
+
+def test_read_json_dict_cached_inode_invalidation_and_memoized_ssot_price_trend_readers(tmp_path):
+    """read_json_dict_cached invalidates on atomic inode swap even with identical mtime/size, and memoizes SSOT price/trend lookups."""
+    memo = {}
+    same_size_file = str(tmp_path / "same_size.json")
+    atomic_write_json(same_size_file, {"v": 1})
+    st1 = os.stat(same_size_file)
+    assert read_json_dict_cached(same_size_file, memo) == {"v": 1}
+
+    # Atomic replace with identical byte size and forced identical mtime_ns -> new inode invalidates memo
+    atomic_write_json(same_size_file, {"v": 2})
+    os.utime(same_size_file, ns=(st1.st_atime_ns, st1.st_mtime_ns))
+    assert read_json_dict_cached(same_size_file, memo) == {"v": 2}
+
+    # resolve_cached_symbol_price & read_ssot_short_trend_candidates stat-memoize unchanged files across multi-symbol calls
+    cp_file = tmp_path / "cache_current_price.json"
+    atomic_write_json(
+        str(cp_file),
+        {"items": {"BTCUSDC": [[1_790_000_000_000, 91234.5]], "ETHUSDC": [[1_790_000_000_000, 3456.7]]}},
+    )
+    trend_file = tmp_path / "cache_short_trend.json"
+    now_s = 1_790_000_005.0
+    atomic_write_json(
+        str(trend_file),
+        {"items": {"BTCUSDC": {"ts": now_s - 2.0, "slope": 0.42}}},
+    )
+    with patch("state_io.json.load", wraps=json.load) as spy_load:
+        assert cacheprice.resolve_cached_symbol_price("BTCUSDC", cache_dir=str(tmp_path)) == pytest.approx(91234.5)
+        assert spy_load.call_count == 1
+        assert cacheprice.resolve_cached_symbol_price("ETHUSDC", cache_dir=str(tmp_path)) == pytest.approx(3456.7)
+        assert spy_load.call_count == 1
+
+        s1 = cachetrend.CacheShortTrendManager.read_ssot_short_trend_file(
+            str(trend_file), ["BTCUSDC"], 60.0, now_s=now_s
+        )
+        assert s1 is not None and s1["slope"] == pytest.approx(0.42)
+        assert spy_load.call_count == 2
+        s2 = cachetrend.CacheShortTrendManager.read_ssot_short_trend_file(
+            str(trend_file), ["BTCUSDC"], 60.0, now_s=now_s
+        )
+        assert s2 is not None and s2["slope"] == pytest.approx(0.42)
+        assert spy_load.call_count == 2
+    assert cachetrend.CacheShortTrendManager._c24_entry_ts_ms([float("nan"), 100.0]) == 0.0
+

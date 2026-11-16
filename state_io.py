@@ -1181,10 +1181,10 @@ _JSON_DICT_MEMO: dict[str, tuple[tuple, dict[str, Any]]] = {}
 _ORIG_READ_RECOVERING_ID = id(read_recovering_previous)
 
 
-def _stat_sig(path: str) -> tuple[int, int] | None:
+def _stat_sig(path: str) -> tuple[int, int, int] | None:
     try:
         st = os.stat(path)
-        return (st.st_mtime_ns, st.st_size)
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
     except OSError:
         return None
 

@@ -3003,14 +3003,15 @@ def _get_or_create_readonly_account_reader(
     builder_fn,
     resync_existing: bool = False,
 ):
-    with _READONLY_ACCOUNT_LOCK:
-        inst = _READONLY_ACCOUNT_READERS.get(cache_name)
-        if inst is not None and can_reuse_fn(inst):
-            return CacheManagerInterface._resync_readonly_reader(inst) if resync_existing else inst
-        inst = builder_fn()
-        if can_store:
-            _READONLY_ACCOUNT_READERS[cache_name] = inst
-        return inst
+    return CacheManagerInterface._get_or_create_readonly_reader(
+        _READONLY_ACCOUNT_LOCK,
+        _READONLY_ACCOUNT_READERS,
+        cache_name,
+        can_reuse_fn=can_reuse_fn,
+        can_store=can_store,
+        builder_fn=builder_fn,
+        resync_existing=resync_existing,
+    )
 
 
 def get_asset_value_manager(
