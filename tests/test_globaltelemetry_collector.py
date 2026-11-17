@@ -2137,3 +2137,41 @@ def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(
     assert "macro_calendar" not in sensor_only_snap.source_ages_sec
     assert sensor_only_snap.age_sec == pytest.approx(3600.0)
 
+    # 6. _refresh_stale_t212_cached_positions skips polling outside US RTH and advances stale ts during RTH even when price is unchanged
+    import intelligence.sentiment.collectors.microstructure_collector as mc_mod
+
+    vb_rth_path = os.path.join(eq_dir, "venue_balances_state.json")
+    vb_rth_doc = {
+        "pos:t212:RGNT_US_EQ": {
+            "symbol": "RGNT_US_EQ",
+            "free": 3.93,
+            "price": 1.22,
+            "value_usd": 4.79,
+            "ts": now_s - 3600.0,
+        }
+    }
+    save_json_state(vb_rth_path, vb_rth_doc)
+    t212_poll_count = 0
+
+    class _StubT212Provider:
+        def _client(self):
+            def _get_portfolio():
+                nonlocal t212_poll_count
+                t212_poll_count += 1
+                return [{"ticker": "RGNT_US_EQ", "currentPrice": 1.22}]
+
+            return SimpleNamespace(get_portfolio=_get_portfolio)
+
+    monkeypatch.setattr(mc_mod._t212_prov_mod, "T212Provider", _StubT212Provider)
+    monkeypatch.setattr(mc_mod, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
+    monkeypatch.setattr(mc_mod, "is_symbol_market_open", lambda sym, ts=None: False)
+    assert mc_mod._refresh_stale_t212_cached_positions(vb_rth_doc, vb_rth_path, now_s, max_age_sec=180.0) is False
+    assert t212_poll_count == 0
+    assert vb_rth_doc["pos:t212:RGNT_US_EQ"]["ts"] == pytest.approx(now_s - 3600.0)
+
+    monkeypatch.setattr(mc_mod, "is_symbol_market_open", lambda sym, ts=None: True)
+    assert mc_mod._refresh_stale_t212_cached_positions(vb_rth_doc, vb_rth_path, now_s, max_age_sec=180.0) is True
+    assert t212_poll_count == 1
+    assert vb_rth_doc["pos:t212:RGNT_US_EQ"]["ts"] == pytest.approx(now_s)
+
+

@@ -752,6 +752,7 @@ def _iter_t212_state_files(workspace_dir: str) -> List[Tuple[str, str]]:
 
 
 _LAST_T212_PORTFOLIO_POLL_TS: float = 0.0
+_ORIG_IS_SYMBOL_MARKET_OPEN = is_symbol_market_open
 
 
 def _refresh_stale_t212_cached_positions(
@@ -769,12 +770,26 @@ def _refresh_stale_t212_cached_positions(
         or not os.path.exists(bcache_path)
     ):
         return False
-    if not is_live_network_backfill_enabled():
+    try:
+        is_real_t212 = getattr(_t212_prov_mod.T212Provider, "__module__", "") == "providers.t212_provider"
+    except Exception:
+        is_real_t212 = False
+    if not is_live_network_backfill_enabled() and is_real_t212:
+        return False
+    if is_real_t212 or is_symbol_market_open is not _ORIG_IS_SYMBOL_MARKET_OPEN:
         try:
-            if getattr(_t212_prov_mod.T212Provider, "__module__", "") == "providers.t212_provider":
+            probe_sym = next(
+                (
+                    str(bval.get("symbol") or bkey.split(":", 2)[-1]).strip().upper()
+                    for bkey, bval in cached_bals.items()
+                    if isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(bval, dict)
+                ),
+                "NVDA_US_EQ",
+            )
+            if not is_symbol_market_open(probe_sym or "NVDA_US_EQ", now_ts):
                 return False
         except Exception:
-            return False
+            pass
     t212_ts_vals = [
         normalize_epoch_sec(bval.get("ts"), default=0.0) or 0.0
         for bkey, bval in cached_bals.items()
@@ -800,8 +815,10 @@ def _refresh_stale_t212_cached_positions(
 
         def _update_t212_pos_price(c_pos: Dict[str, Any], cur_px: float, *, ts_missing: bool) -> bool:
             prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
+            prev_c_ts = normalize_epoch_sec(c_pos.get("ts"), default=0.0) or 0.0
             new_c_px = round(cur_px, 4)
-            if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or ts_missing:
+            is_stale_ts = prev_c_ts <= 0.0 or not (0.0 <= (now_ts - prev_c_ts) < max_age_sec)
+            if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or ts_missing or is_stale_ts:
                 c_free = safe_pos_float(
                     c_pos.get("free") if c_pos.get("free") is not None else c_pos.get("free_base"),
                     default=0.0,
