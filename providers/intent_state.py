@@ -253,6 +253,39 @@ def extract_intent_cancel_order_ids(data: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def decision_has_cancel_directive(d: Any) -> bool:
+    """Return True when a trading decision dict specifies bot/order cancellation."""
+    return isinstance(d, dict) and (
+        _parse_bool_flag(d.get("cancel_bot_open_orders"), False)
+        or bool(extract_intent_cancel_order_ids(d))
+    )
+
+
+def resolve_hold_cancel_target(
+    decision: Any,
+    *,
+    min_confidence: float,
+    resolve_instrument_fn: Callable[[str, str], Any],
+) -> tuple[Any, list[str], bool]:
+    """Resolve (instrument, target_order_ids, only_bot_orders) for a HOLD decision with targeted cancellation."""
+    if not isinstance(decision, dict):
+        return None, [], True
+    raw_dec = clean_upper_scalar(decision.get("decision") or decision.get("action") or decision.get("side")) or "HOLD"
+    if extract_intent_side(decision) in ("BUY", "SELL") or raw_dec != "HOLD":
+        return None, [], True
+    target_oids = extract_intent_cancel_order_ids(decision)
+    if not target_oids or clean_scale(decision.get("confidence"), 0.0, allow_percent=True) < clean_scale(min_confidence, 1.0, allow_percent=True):
+        return None, [], True
+    sym = _clean_intent_symbol(decision.get("symbol", ""))
+    ven = normalize_venue_name(clean_scalar_str(decision.get("venue")) or "")
+    if not (sym and ven):
+        return None, [], True
+    inst = resolve_instrument_fn(sym, ven)
+    if inst is None or is_non_fiat_btc_quote_instrument(inst):
+        return None, [], True
+    return inst, target_oids, not _parse_bool_flag(decision.get("replace_open_orders"), default=False)
+
+
 def _intent_venue_symbol_side_key(
     venue: Any, symbol: Any, side: Any
 ) -> tuple[str, str, tuple[str, ...], str]:
@@ -326,7 +359,7 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
     def _sort_key(d: dict[str, Any]) -> tuple[int, int, float]:
         side = str(d.get("decision") or "HOLD").strip().upper()
         is_action = 1 if side in ("BUY", "SELL") else 0
-        has_cancel = 1 if (_parse_bool_flag(d.get("cancel_bot_open_orders"), False) or bool(d.get("cancel_order_ids"))) else 0
+        has_cancel = 1 if decision_has_cancel_directive(d) else 0
         conf = clean_scale(d.get("confidence"), default=0.0, allow_percent=True)
         return (-is_action, -has_cancel, -conf)
 
@@ -623,6 +656,7 @@ __all__ = [
     "ai_intent_client_order_id",
     "append_intent_history",
     "collect_known_ai_order_ids",
+    "decision_has_cancel_directive",
     "durable_intents_lock",
     "extract_intent_cancel_order_ids",
     "extract_intent_limit_price",
@@ -636,6 +670,7 @@ __all__ = [
     "normalize_intent_fields",
     "normalize_trading_decisions",
     "parse_intent_gateway_config",
+    "resolve_hold_cancel_target",
     "save_durable_intents_state",
     "upsert_durable_intent",
     "validate_and_build_intent_dict",

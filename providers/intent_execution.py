@@ -354,7 +354,7 @@ def _missing_target_order_blocks_replacement(
     inst: Any, order_id: str, *, want_side: Optional[str] = None
 ) -> bool:
     """Return True when a targeted same-side order absent from ``open_orders()`` already executed or remains active."""
-    sym = str(getattr(inst, "symbol", "") or "").strip()
+    sym = clean_scalar_str(getattr(inst, "symbol", None)) or ""
     inst_status_fn = getattr(inst, "order_status", None)
     prov = getattr(inst, "_provider", None)
     prov_status_fn = getattr(prov, "order_status", None) if prov is not None else None
@@ -376,10 +376,9 @@ def _missing_target_order_blocks_replacement(
         )
         if st_side in ("BUY", "SELL") and st_side != want_side:
             return False
-    raw_st = st.get("status") if isinstance(st, dict) else getattr(st, "status", None)
-    if not isinstance(raw_st, str):
+    st_lc = (clean_scalar_str(st.get("status") if isinstance(st, dict) else getattr(st, "status", None)) or "").lower()
+    if not st_lc:
         return False
-    st_lc = raw_st.strip().lower()
     raw_fq = st.get("filled_qty") if isinstance(st, dict) else getattr(st, "filled_qty", 0.0)
     filled_q = safe_pos_float(raw_fq, default=0.0) or 0.0
     return st_lc in _ACTIVE_OR_FILLED_ORDER_STATUSES or filled_q > 0.0
@@ -519,7 +518,7 @@ def cancel_existing_ai_open_orders(
                 continue
             if resolve_order_actor(oo, ai_oids) == "AI":
                 continue
-            coid_u = str(coid or "").strip().upper()
+            coid_u = clean_upper_scalar(coid) or ""
             if coid_u.startswith("SD_"):
                 continue
             if coid_u.startswith("MO_") and bool(want_side) and oo_side == want_side:
@@ -703,11 +702,10 @@ def resolve_intent_execution_price(
         (clean_upper_scalar(intent.get("urgency")) or "") == "HIGH"
         or _parse_bool_flag(intent.get("cancel_bot_open_orders"), False)
     )
+    price = live_px
     if order_type == "LIMIT":
         if limit_px is None or limit_px <= 0 or limit_px < live_px * 0.50 or limit_px > live_px * 2.00:
-            if is_urgent_reversal:
-                price = live_px
-            else:
+            if not is_urgent_reversal:
                 fallback_mult = 0.995 if dec_norm == "BUY" else 1.005
                 price = round(live_px * fallback_mult, 8)
                 if log:
@@ -723,18 +721,11 @@ def resolve_intent_execution_price(
                     "fallback_limit_price": price,
                     "live_price": live_px,
                 })
-        elif dec_norm == "BUY" and limit_px > live_px:
-            price = live_px
-        elif dec_norm == "SELL" and limit_px < live_px:
-            price = live_px
-        else:
+        elif not ((dec_norm == "BUY" and limit_px > live_px) or (dec_norm == "SELL" and limit_px < live_px)):
             price = limit_px
-        intent["order_type"] = "LIMIT"
-        intent["limit_price"] = price
-        return True, price, True
     intent["order_type"] = "LIMIT"
-    intent["limit_price"] = live_px
-    return True, live_px, True
+    intent["limit_price"] = price
+    return True, price, True
 
 
 def preflight_intent_and_resolve_price(

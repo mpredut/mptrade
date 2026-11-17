@@ -61,7 +61,7 @@ from intelligence.macro_sentiment_ssot import (
     read_first_cached_dict,
 )
 import notify_engine.alertnotifiers as _alertnotifiers
-from providers.intent_state import normalize_trading_decisions
+from providers.intent_state import decision_has_cancel_directive, normalize_trading_decisions
 from state_io import (
     atomic_write_text,
     read_json_recovering,
@@ -1553,8 +1553,7 @@ def submit_supervisor_trading_decisions(
         d
         for d in decisions_list
         if str(d.get("decision") or "HOLD").upper() in ("BUY", "SELL")
-        or _parse_bool_flag(d.get("cancel_bot_open_orders"), False)
-        or bool(d.get("cancel_order_ids"))
+        or decision_has_cancel_directive(d)
     ]
     submit_decs = actionable_decs if actionable_decs else decisions_list[:1]
     effective_max_mode = "shadow" if (scope == "equities" and not is_rth_open_fn(now_ts)) else mode

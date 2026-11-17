@@ -65,10 +65,9 @@ from providers.intent_execution import (
 from providers.intent_state import (
     append_intent_history,
     extract_intent_cancel_order_ids,
-    extract_intent_side,
-    is_non_fiat_btc_quote_instrument,
     load_durable_intents_state,
     parse_intent_gateway_config,
+    resolve_hold_cancel_target,
     save_durable_intents_state,
     upsert_durable_intent,
     validate_and_build_intent_dict,
@@ -597,31 +596,29 @@ class AutonomousIntentGateway:
             log=logger,
         )
         if intent is None:
-            if isinstance(decision, dict):
-                raw_dec = str(decision.get("decision") or decision.get("action") or decision.get("side") or "HOLD").strip().upper() or "HOLD"
-                is_hold = extract_intent_side(decision) not in ("BUY", "SELL") and raw_dec == "HOLD"
-                min_conf = clean_scale(self.min_confidence, 1.0, allow_percent=True)
-                conf = clean_scale(decision.get("confidence"), 0.0, allow_percent=True)
-                target_oids = extract_intent_cancel_order_ids(decision)
-                mode = min(self.mode, norm_max_mode, key=lambda m: MODE_RANK.get(m, 0))
-                if is_hold and conf >= min_conf and mode == "enforce" and target_oids:
-                    hold_sym = "" if isinstance(decision.get("symbol"), bool) else str(decision.get("symbol") or "").strip().upper()
-                    hold_venue = "" if isinstance(decision.get("venue"), bool) else str(decision.get("venue") or "").strip().lower()
-                    inst = self.resolve_instrument(hold_sym, venue=hold_venue, instruments_map=instruments_map) if (hold_sym and hold_venue) else None
-                    if inst is not None and not is_non_fiat_btc_quote_instrument(inst):
-                        cancel_existing_ai_open_orders(
-                            inst,
-                            "",
-                            log=logger,
-                            intents=intents,
-                            include_bot_orders=True,
-                            only_bot_orders=not _parse_bool_flag(decision.get("replace_open_orders"), default=False),
-                            any_side=True,
-                            target_order_ids=target_oids,
-                            verify_not_filled=True,
-                            failed_order_ids=[],
-                            scan_errors=[],
-                        )
+            mode = min(self.mode, norm_max_mode, key=lambda m: MODE_RANK.get(m, 0))
+            if mode == "enforce":
+                inst, target_oids, only_bots = resolve_hold_cancel_target(
+                    decision,
+                    min_confidence=self.min_confidence,
+                    resolve_instrument_fn=lambda sym, ven: self.resolve_instrument(
+                        sym, venue=ven, instruments_map=instruments_map
+                    ),
+                )
+                if inst is not None:
+                    cancel_existing_ai_open_orders(
+                        inst,
+                        "",
+                        log=logger,
+                        intents=intents,
+                        include_bot_orders=True,
+                        only_bot_orders=only_bots,
+                        any_side=True,
+                        target_order_ids=target_oids,
+                        verify_not_filled=True,
+                        failed_order_ids=[],
+                        scan_errors=[],
+                    )
             return None
         intent["status"] = "PENDING_EXECUTION"
         if not upsert_durable_intent(self.intents_file, intent, reconcile_fn=self.reconcile_intents, log=logger):
