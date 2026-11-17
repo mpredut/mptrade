@@ -1549,7 +1549,13 @@ def submit_supervisor_trading_decisions(
         decisions_list = [d for d in decisions_list if _is_decision_in_scope(d, scope)]
     market_decision = decisions_list[0] if decisions_list else {}
     intents_emitted: List[Dict[str, Any]] = []
-    actionable_decs = [d for d in decisions_list if str(d.get("decision") or "HOLD").upper() in ("BUY", "SELL")]
+    actionable_decs = [
+        d
+        for d in decisions_list
+        if str(d.get("decision") or "HOLD").upper() in ("BUY", "SELL")
+        or _parse_bool_flag(d.get("cancel_bot_open_orders"), False)
+        or bool(d.get("cancel_order_ids"))
+    ]
     submit_decs = actionable_decs if actionable_decs else decisions_list[:1]
     effective_max_mode = "shadow" if (scope == "equities" and not is_rth_open_fn(now_ts)) else mode
     any_executed = False
