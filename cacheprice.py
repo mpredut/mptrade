@@ -18,6 +18,7 @@ import builtins
 from collections import defaultdict, deque
 import concurrent.futures as _futures
 import math
+from operator import itemgetter
 import os
 import socket
 import sys
@@ -153,7 +154,22 @@ for _name, _value in (
 
 
 _bn_price_prov_cls = MarketDataProvider.resolve_venue_provider_class("binance")
+_ORIG_READ_JSON_DICT = read_json_dict
+_ORIG_READ_JSON_DICT_CACHED = read_json_dict_cached
 _ORIG_READ_JSON_DICT_RECOVERING = read_json_dict_recovering
+_LIST_OR_TUPLE_TYPES = (list, tuple)
+_EXACT_NUM_TYPES = (int, float)
+_SSOT_PT_TS_KEY = itemgetter(0)
+_SSOT_24PRICE_DISK_MEMO: dict[str, tuple[tuple, dict[str, Any]]] = {}
+_SSOT_24PRICE_PARSED_MEMO: dict[int, tuple[list, tuple[Any, ...], list[tuple[int, float]], int]] = {}
+
+
+def _ssot_entry_memo_token(entry: Any) -> Any:
+    if type(entry) in _LIST_OR_TUPLE_TYPES and len(entry) >= 2:
+        t_v, p_v = entry[0], entry[1]
+        if type(t_v) in _EXACT_NUM_TYPES and type(p_v) in _EXACT_NUM_TYPES:
+            return (id(entry), t_v, p_v)
+    return id(entry)
 
 
 # =============================================================================
@@ -250,6 +266,19 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         entry: Any, fallback_ts: Optional[float] = None
     ) -> Optional[tuple[int, float]]:
         """Parse a cached price entry (dict, ``[ts, px]``, or nested list) into ``(ts_ms, price)``."""
+        if (
+            fallback_ts is None
+            and type(entry) in _LIST_OR_TUPLE_TYPES
+            and len(entry) >= 2
+            and type(t0 := entry[0]) is int
+            and 100_000_000_000 <= t0 <= 9_000_000_000_000_000
+        ):
+            p1 = entry[1]
+            if type(p1) is float and p1 > 0.0 and math.isfinite(p1):
+                return (t0, p1)
+            if type(p1) is int and 0 < p1 <= 9_000_000_000_000_000:
+                return (t0, p1 * 1.0)
+
         def _finalize_point(ts_ms: Optional[int], px_f: Optional[float]) -> Optional[tuple[int, float]]:
             if (ts_ms is None or ts_ms <= 0) and fallback_ts is not None:
                 ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
@@ -838,7 +867,17 @@ class Cache24PriceManager(CachePriceManagerBase):
         """Read raw 24-hour price entries for ``cand`` from ``c24_path`` (including ``.previous`` recovery)."""
         if not c24_path:
             return None, None
-        raw = read_json_dict_recovering(c24_path, default=None)
+        use_cached_reader = (
+            read_json_dict_recovering is _ORIG_READ_JSON_DICT_RECOVERING
+            and read_json_dict is _ORIG_READ_JSON_DICT
+            and read_json_dict_cached is _ORIG_READ_JSON_DICT_CACHED
+            and read_json_dict_cached.__globals__.get("read_json_dict") is _ORIG_READ_JSON_DICT
+        )
+        raw = (
+            read_json_dict_cached(c24_path, _SSOT_24PRICE_DISK_MEMO, max_entries=64)
+            if use_cached_reader
+            else read_json_dict_recovering(c24_path, default=None)
+        )
         if not isinstance(raw, dict):
             return None, None
         items = raw.get("items")
@@ -890,31 +929,95 @@ class Cache24PriceManager(CachePriceManagerBase):
                 _, entries = cls.read_ssot_24price_entries(c24_path, cand)
                 if not entries or len(entries) < 2:
                     continue
-                valid = [
-                    p
-                    for e in entries
-                    if (p := cls.parse_ssot_price_point(e)) is not None
-                ]
-                if len(valid) < 2:
+                use_default_parser = (
+                    cls.parse_ssot_price_point is CachePriceManagerBase.parse_ssot_price_point
+                )
+                valid: Optional[list[tuple[int, float]]] = None
+                memo_sig: tuple[Any, ...] = ()
+                if use_default_parser:
+                    memo_sig = (
+                        len(entries),
+                        _ssot_entry_memo_token(entries[0]),
+                        _ssot_entry_memo_token(entries[len(entries) // 2]),
+                        _ssot_entry_memo_token(entries[-1]),
+                    )
+                    cached_parsed = _SSOT_24PRICE_PARSED_MEMO.get(id(entries))
+                    if (
+                        cached_parsed is not None
+                        and cached_parsed[0] is entries
+                        and cached_parsed[1] == memo_sig
+                        and cutoff_ms >= cached_parsed[3]
+                    ):
+                        valid = cached_parsed[2]
+                if valid is None:
+                    valid = []
+                    prev_ts = -1
+                    is_sorted = True
+                    if use_default_parser:
+                        for e in entries:
+                            if (
+                                type(e) in _LIST_OR_TUPLE_TYPES
+                                and len(e) >= 2
+                                and type(t0_v := e[0]) is int
+                                and 100_000_000_000 <= t0_v <= 9_000_000_000_000_000
+                            ):
+                                if t0_v < cutoff_ms:
+                                    continue
+                                p1_v = e[1]
+                                if type(p1_v) is float and p1_v > 0.0 and math.isfinite(p1_v):
+                                    pt: Optional[tuple[int, float]] = (t0_v, p1_v)
+                                elif type(p1_v) is int and 0 < p1_v <= 9_000_000_000_000_000:
+                                    pt = (t0_v, p1_v * 1.0)
+                                else:
+                                    pt = CachePriceManagerBase.parse_ssot_price_point(e)
+                                    if pt is None or pt[0] < cutoff_ms:
+                                        continue
+                            else:
+                                pt = CachePriceManagerBase.parse_ssot_price_point(e)
+                                if pt is None or pt[0] < cutoff_ms:
+                                    continue
+                            if pt[0] < prev_ts:
+                                is_sorted = False
+                            prev_ts = pt[0]
+                            valid.append(pt)
+                    else:
+                        for e in entries:
+                            pt = cls.parse_ssot_price_point(e)
+                            if pt is None or pt[0] < cutoff_ms:
+                                continue
+                            if pt[0] < prev_ts:
+                                is_sorted = False
+                            prev_ts = pt[0]
+                            valid.append(pt)
+                    if not is_sorted:
+                        valid.sort(key=_SSOT_PT_TS_KEY)
+                    if use_default_parser:
+                        if len(_SSOT_24PRICE_PARSED_MEMO) > 64:
+                            _SSOT_24PRICE_PARSED_MEMO.clear()
+                        _SSOT_24PRICE_PARSED_MEMO[id(entries)] = (
+                            entries,
+                            memo_sig,
+                            valid,
+                            cutoff_ms,
+                        )
+                    start_idx = 0
+                else:
+                    start_idx = bisect.bisect_left(valid, cutoff_ms, key=_SSOT_PT_TS_KEY)
+                if (len(valid) - start_idx) < 2:
                     continue
-                valid.sort(key=lambda pt: pt[0])
                 if not _is_fresh_obs_ts(valid[-1][0] / 1000.0, now_s, max_latest_age):
-                    continue
-                out = [
-                    {"timestamp": ts, "price": px}
-                    for ts, px in valid
-                    if ts >= cutoff_ms
-                ]
-                if len(out) < 2:
                     continue
                 if (
                     custom_dir is None
                     and lh_f > 0.25
-                    and (out[-1]["timestamp"] - out[0]["timestamp"])
+                    and (valid[-1][0] - valid[start_idx][0])
                     < (lh_f * 3600.0 * 1000.0 * 0.75)
                 ):
                     continue
-                return out
+                return [
+                    {"timestamp": valid[k][0], "price": valid[k][1]}
+                    for k in range(start_idx, len(valid))
+                ]
             except Exception:
                 continue
         return None

@@ -8417,6 +8417,76 @@ def test_wave48_venue_clients_trailing_monitororder_and_open_order_id_scalar_bor
     assert mo.monitor_open_orders_by_type("null", "BUY") is None
 
 
+def test_read_ssot_price_history_memo_bisect_and_lookback_expansion(tmp_path, monkeypatch):
+    """Verify Cache24PriceManager.read_ssot_price_history stat-memoizes disk JSON, slices via bisect, expands lookback safely, and preserves unsorted/malformed/future-dated parity."""
+    import cacheprice as cp_mod
+    import state_io as sio_mod
+
+    now_s = 1_750_000_000.0
+    now_ms = int(now_s * 1000)
+    monkeypatch.setattr(cp_mod, "_now_time", lambda: now_s)
+
+    # Build 6h ascending series + mixed dict/nested/invalid rows
+    rows = []
+    for k in range(360, 0, -1):
+        rows.append([now_ms - k * 60_000, round(80_000.0 + k * 0.5, 2)])
+    rows.insert(10, [now_ms - 300 * 60_000, None])
+    rows.insert(20, [True, 81_000.0])
+    rows.insert(30, [now_ms - 15 * 60_000, False])
+    rows.append({"timestamp": now_ms - 30_000, "price": 80_010.25})
+    rows.append([[now_ms - 5_000, 80_020.5]])
+
+    c24_file = tmp_path / cp_mod.cache_24_price_filename("BTCUSDC")
+    c24_file.parent.mkdir(parents=True, exist_ok=True)
+    c24_file.write_text(json.dumps({"items": {"BTCUSDC": rows}}), encoding="utf-8")
+
+    json_loads = []
+    real_json_load = json.load
+
+    def _counting_json_load(fp, *a, **kw):
+        json_loads.append(1)
+        return real_json_load(fp, *a, **kw)
+
+    monkeypatch.setattr(sio_mod.json, "load", _counting_json_load)
+    cp_mod._SSOT_24PRICE_DISK_MEMO.clear()
+    cp_mod._SSOT_24PRICE_PARSED_MEMO.clear()
+
+    # 1. Cold 1h read loads JSON once; warm 0.5h and advancing-clock 1h reads hit both disk & parsed memos (0 extra json.load)
+    h_1h = Cache24PriceManager.read_ssot_price_history(("BTCUSDC",), 1.0, custom_dir=str(tmp_path))
+    assert h_1h is not None and len(h_1h) == 62
+    assert h_1h[-1] == {"timestamp": now_ms - 5_000, "price": 80_020.5}
+    assert len(json_loads) == 1
+
+    h_30m = Cache24PriceManager.read_ssot_price_history(("BTCUSDC",), 0.5, custom_dir=str(tmp_path))
+    assert h_30m is not None and len(h_30m) == 32
+    assert len(json_loads) == 1
+
+    # 2. Wider 4h lookback expands _SSOT_24PRICE_PARSED_MEMO without re-reading JSON from disk
+    h_4h = Cache24PriceManager.read_ssot_price_history(("BTCUSDC",), 4.0, custom_dir=str(tmp_path))
+    assert h_4h is not None and len(h_4h) == 242
+    assert len(json_loads) == 1
+
+    # 3. Unsorted series with future-dated outlier (> now + 5s) is rejected identically to legacy behavior
+    bad_future_rows = [
+        [now_ms - 120_000, 100.0],
+        [now_ms + 15_000, 105.0],
+        [now_ms - 10_000, 101.0],
+    ]
+    c24_eth = tmp_path / cp_mod.cache_24_price_filename("ETHUSDC")
+    c24_eth.parent.mkdir(parents=True, exist_ok=True)
+    c24_eth.write_text(json.dumps({"items": {"ETHUSDC": bad_future_rows}}), encoding="utf-8")
+    assert Cache24PriceManager.read_ssot_price_history(("ETHUSDC",), 1.0, custom_dir=str(tmp_path)) is None
+
+    # 4. parse_ssot_price_point fast-path handles bool/int/float/nan/inf identically
+    assert cp_mod.CachePriceManagerBase.parse_ssot_price_point([True, 50.0]) is None
+    assert cp_mod.CachePriceManagerBase.parse_ssot_price_point([now_ms, True]) is None
+    assert cp_mod.CachePriceManagerBase.parse_ssot_price_point([now_ms, float("nan")]) is None
+    assert cp_mod.CachePriceManagerBase.parse_ssot_price_point([now_ms, float("inf")]) is None
+    assert cp_mod.CachePriceManagerBase.parse_ssot_price_point([now_ms, 42]) == (now_ms, 42.0)
+    assert type(cp_mod.CachePriceManagerBase.parse_ssot_price_point([now_ms, 42])[1]) is float
+
+
+
 
 
 
