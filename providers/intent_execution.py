@@ -390,6 +390,7 @@ def cancel_existing_ai_open_orders(
     known_ai_order_ids: Optional[set[str]] = None,
     intents: Optional[list[dict[str, Any]]] = None,
     include_bot_orders: bool = False,
+    only_bot_orders: bool = False,
     any_side: bool = False,
     exclude_order_ids: Optional[set[str]] = None,
     target_order_ids: Optional[Collection[str]] = None,
@@ -402,6 +403,7 @@ def cancel_existing_ai_open_orders(
     open_fn = getattr(inst, "open_orders", None)
     cancel_fn = getattr(inst, "cancel_order", None)
     include_bots = bool(_parse_bool_flag(include_bot_orders, False))
+    only_bots = bool(_parse_bool_flag(only_bot_orders, False))
     match_any_side = bool(_parse_bool_flag(any_side, False))
     want_side = normalize_side(side)
     targeted: Optional[set[str]] = None
@@ -458,6 +460,8 @@ def cancel_existing_ai_open_orders(
             if coid_hit:
                 matched_targets_lc.add(str(coid).lower())
         is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
+        if is_ai_order and only_bots and targeted is None:
+            continue
         if not is_ai_order and not include_bots:
             if targeted is not None and failed_order_ids is not None:
                 failed_order_ids.append(str(oid or coid or "<missing_order_id>"))
@@ -510,7 +514,7 @@ def cancel_existing_ai_open_orders(
             coid_u = str(coid or "").strip().upper()
             if coid_u.startswith("SD_"):
                 continue
-            if coid_u.startswith("MO_") or oo_side == want_side:
+            if coid_u.startswith("MO_") or (want_side and oo_side == want_side) or not want_side:
                 cancel_ref = str(oid or coid or "")
                 if cancel_ref and cancel_ref not in queued_refs:
                     queued_refs.add(cancel_ref)

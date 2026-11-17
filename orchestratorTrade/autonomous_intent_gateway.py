@@ -501,6 +501,25 @@ class AutonomousIntentGateway:
             log=logger,
         )
         if intent is None:
+            if isinstance(decision, dict):
+                cancel_bot_open = _parse_bool_flag(decision.get("cancel_bot_open_orders"), default=False)
+                target_oids = extract_intent_cancel_order_ids(decision)
+                mode = min(self.mode, norm_max_mode, key=lambda m: MODE_RANK.get(m, 0))
+                if mode == "enforce" and (cancel_bot_open or target_oids):
+                    hold_sym = "" if isinstance(decision.get("symbol"), bool) else str(decision.get("symbol") or "").strip().upper()
+                    hold_venue = "" if isinstance(decision.get("venue"), bool) else str(decision.get("venue") or "").strip().lower()
+                    inst = self.resolve_instrument(hold_sym, venue=hold_venue, instruments_map=instruments_map) if hold_sym else None
+                    if inst is not None:
+                        cancel_existing_ai_open_orders(
+                            inst,
+                            "",
+                            log=logger,
+                            intents=intents,
+                            include_bot_orders=True,
+                            only_bot_orders=not _parse_bool_flag(decision.get("replace_open_orders"), default=False),
+                            any_side=True,
+                            target_order_ids=target_oids or None,
+                        )
             return None
         intent["status"] = "PENDING_EXECUTION"
         if not upsert_durable_intent(self.intents_file, intent, reconcile_fn=self.reconcile_intents, log=logger):
