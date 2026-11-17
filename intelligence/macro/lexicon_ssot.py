@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _LEXICON_FILE_CACHE: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
-_LEXICON_EVAL_CACHE: Dict[Tuple[Any, ...], Dict[str, Tuple[str, ...]]] = {}
+_LEXICON_EVAL_CACHE: Dict[Tuple[Any, ...], Tuple[Dict[str, Any], Dict[str, Tuple[str, ...]]]] = {}
 
 _NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
     "more than", "first time", "yahoo finance", "financial times", "new york",
@@ -797,11 +797,12 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
             return empty_res
-        file_sig = (_LEXICON_FILE_CACHE.get(path) or (None,))[0]
-        eval_key = (path, file_sig, id(data), math.trunc(now), ttl)
+        resolved_path = str(resolve_cachedb_filepath(path))
+        file_sig = (_LEXICON_FILE_CACHE.get(resolved_path) or _LEXICON_FILE_CACHE.get(path) or (None,))[0]
+        eval_key = (resolved_path, file_sig, id(data), math.trunc(now), ttl)
         cached_eval = _LEXICON_EVAL_CACHE.get(eval_key)
-        if cached_eval is not None:
-            return cached_eval
+        if cached_eval is not None and cached_eval[0] is data:
+            return cached_eval[1]
         stopwords = _get_stopwords_set()
         valid_rows: List[Tuple[float, int, str, str]] = []
         for idx, (term, meta) in enumerate(entries.items()):
@@ -836,7 +837,7 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         }
         if len(_LEXICON_EVAL_CACHE) >= 32:
             _LEXICON_EVAL_CACHE.clear()
-        _LEXICON_EVAL_CACHE[eval_key] = res
+        _LEXICON_EVAL_CACHE[eval_key] = (data, res)
         return res
     except Exception as exc:
         logger.debug("Could not load dynamic lexicon from %s: %s", path, exc)
@@ -1198,7 +1199,7 @@ def _normalize_semantic_stem(token: str) -> str:
     return t
 
 
-_HEADLINE_STEMS_CACHE: Dict[Tuple[str, int], frozenset[str]] = {}
+_HEADLINE_STEMS_CACHE: Dict[Tuple[str, int], Tuple[Any, frozenset[str]]] = {}
 _HEADLINE_STEM_TOKEN_RE = re.compile(
     r"\$?(\d[\d,]*(?:\.\d+)?)\s*(?:bn|b|billion|m|mn|million|trillion|pct|%)?\b|\b(?:ai|us|uk|eu|un)\b|[a-z]{3,}"
 )
@@ -1214,8 +1215,8 @@ def headline_content_stems(title: Any) -> Set[str]:
     stopwords = _get_stopwords_set()
     cache_key = (title, id(stopwords))
     cached = _HEADLINE_STEMS_CACHE.get(cache_key)
-    if cached is not None:
-        return set(cached)
+    if cached is not None and cached[0] is stopwords:
+        return set(cached[1])
     clean = _strip_headline_publisher_suffix(title).strip().lower()
     stems: Set[str] = set()
     for m in _HEADLINE_STEM_TOKEN_RE.finditer(clean):
@@ -1231,7 +1232,7 @@ def headline_content_stems(title: Any) -> Set[str]:
             stems.add(stem)
     if len(_HEADLINE_STEMS_CACHE) >= 2048:
         _HEADLINE_STEMS_CACHE.clear()
-    _HEADLINE_STEMS_CACHE[cache_key] = frozenset(stems)
+    _HEADLINE_STEMS_CACHE[cache_key] = (stopwords, frozenset(stems))
     return stems
 
 

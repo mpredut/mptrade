@@ -8626,14 +8626,89 @@ def test_wave49_callable_anchor_id_memos_and_equity_suffix_ssot(tmp_path, monkey
         cpm._shutdown_fallback_pool()
 
 
+def test_wave50_anchored_id_memos_and_market_regime_scalar_ssot(tmp_path, monkeypatch):
+    """Verify lifetime anchoring on state_io/lexicon/smart_sl memos and MarketRegime scalar SSOT."""
+    import json
+    from intelligence.external.guards import smart_stop_loss_guard as ssl_mod
+    from intelligence.macro import lexicon_ssot as lex_mod
+    import market_regime as mr_mod
 
+    # 1. state_io.read_json_dict_cached anchors json.load callable reference inside sig tuple
+    sample_path = tmp_path / "memo_hook.json"
+    atomic_write_text(str(sample_path), '{"v": 1}')
+    local_memo = {}
 
+    def _read_with_transient_loader(override_v: int):
+        with monkeypatch.context() as mp:
+            mp.setattr(json, "load", lambda _fh, **_kw: {"v": override_v})
+            return state_io.read_json_dict_cached(str(sample_path), local_memo)
 
+    assert _read_with_transient_loader(10) == {"v": 10}
+    assert _read_with_transient_loader(20) == {"v": 20}
+    assert callable(local_memo[str(sample_path.resolve())][0][3])
 
+    # 2. lexicon_ssot anchors data in _LEXICON_EVAL_CACHE and stopwords in _HEADLINE_STEMS_CACHE
+    lex_mod._LEXICON_EVAL_CACHE.clear()
+    lex_mod._HEADLINE_STEMS_CACHE.clear()
+    now_fixed = 1_750_000_100.0
 
+    def _eval_transient_lexicon(term: str):
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                lex_mod,
+                "read_json_dict_cached",
+                lambda _p, _c: {"entries": {term: {"ts": now_fixed - 5.0, "tier": "acute"}}},
+            )
+            return lex_mod.load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=now_fixed)
 
+    r1 = _eval_transient_lexicon("cyber blackout")
+    r2 = _eval_transient_lexicon("port blockade")
+    assert "cyber blackout" in r1["acute_shock_phrases"]
+    assert "port blockade" in r2["acute_shock_phrases"]
 
+    def _stems_with_transient_stopwords(blocked_word: str):
+        with monkeypatch.context() as mp:
+            mp.setattr(lex_mod, "_get_stopwords_set", lambda: frozenset({blocked_word}))
+            return lex_mod.headline_content_stems("Alpha bravo charlie")
 
+    assert "alpha" not in _stems_with_transient_stopwords("alpha")
+    assert "alpha" in _stems_with_transient_stopwords("bravo")
 
+    # 3. smart_stop_loss_guard anchors data in _LOADED_STATE_FILE_KEY
+    monkeypatch.setattr(ssl_mod, "_GRACE_TRACKER", {})
+    monkeypatch.setattr(ssl_mod, "_GRACE_FILE_MEMO", {})
+    monkeypatch.setattr(ssl_mod, "_LOADED_STATE_FILE_KEY", None)
+
+    def _load_transient_grace(sym_k: str):
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                ssl_mod,
+                "read_json_dict_cached",
+                lambda _f, _m: {sym_k: {"start_ts": now_fixed - 10.0, "provider": "binance"}},
+            )
+            return dict(ssl_mod._load_grace_state(is_sim=False, now_ts=now_fixed))
+
+    assert "BTCUSDC" in _load_transient_grace("BTCUSDC")
+    assert "ETHUSDC" in _load_transient_grace("ETHUSDC")
+    assert len(ssl_mod._LOADED_STATE_FILE_KEY) == 4
+
+    # 4. MarketRegime scalar SSOT rejects "null"/"nan"/"none" tokens
+    ctx = mr_mod.MarketRegimeContext.from_decision(
+        {"regime": "null", "reason": "nan", "horizon": "none", "source": "null", "fresh": False},
+        evaluated_at=now_fixed,
+        symbol="null",
+        provider="none",
+        benchmark_symbol="nan",
+    )
+    assert ctx.decision.regime == "unknown"
+    assert ctx.decision.reason == "dict_decision"
+    assert ctx.decision.horizon == "unspecified"
+    assert ctx.decision.source == "unknown"
+    assert ctx.symbol is None and ctx.provider is None and ctx.benchmark_symbol is None
+    assert ctx.is_valid_for(symbol="null", now=now_fixed) is False
+    for bad_horizon in ("null", "nan", "none", True, 123):
+        with pytest.raises(ValueError, match="unsupported market-regime horizon"):
+            mr_mod.MarketRegimeHorizon.parse(bad_horizon)
+    assert mr_mod.MarketRegimeService.horizon_sample_capacity("short") == 15
 
 

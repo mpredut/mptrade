@@ -123,6 +123,17 @@ def _sanitize_grace_entries(data: Dict[str, Any], now_curr: float) -> Dict[str, 
     return out
 
 
+def _replace_live_grace_entries(entries: Dict[str, Dict[str, Any]]) -> None:
+    sim_entries = {
+        k: v
+        for k, v in _GRACE_TRACKER.items()
+        if isinstance(v, dict) and _is_simulated_provider(v.get("provider"))
+    }
+    _GRACE_TRACKER.clear()
+    _GRACE_TRACKER.update(sim_entries)
+    _GRACE_TRACKER.update(entries)
+
+
 def _load_grace_state(*, is_sim: bool = False, now_ts: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
     global _LOADED_STATE_FILE_KEY
     if is_sim:
@@ -134,21 +145,17 @@ def _load_grace_state(*, is_sim: bool = False, now_ts: Optional[float] = None) -
     resolved_state_file = str(resolve_cachedb_filepath(state_file))
     memo_entry = _GRACE_FILE_MEMO.get(resolved_state_file)
     file_sig = memo_entry[0] if memo_entry else None
-    file_key = (state_file, file_sig, id(data))
-    if _LOADED_STATE_FILE_KEY == file_key:
+    if (
+        isinstance(_LOADED_STATE_FILE_KEY, tuple)
+        and len(_LOADED_STATE_FILE_KEY) == 4
+        and _LOADED_STATE_FILE_KEY[:3] == (state_file, file_sig, id(data))
+        and _LOADED_STATE_FILE_KEY[3] is data
+    ):
         return _GRACE_TRACKER
     # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
     now_curr = resolve_now_ts(now_ts, allow_zero=True)
-    clean_data = _sanitize_grace_entries(data, now_curr)
-    sim_entries = {
-        k: v
-        for k, v in _GRACE_TRACKER.items()
-        if isinstance(v, dict) and _is_simulated_provider(v.get("provider"))
-    }
-    _GRACE_TRACKER.clear()
-    _GRACE_TRACKER.update(sim_entries)
-    _GRACE_TRACKER.update(clean_data)
-    _LOADED_STATE_FILE_KEY = file_key
+    _replace_live_grace_entries(_sanitize_grace_entries(data, now_curr))
+    _LOADED_STATE_FILE_KEY = (state_file, file_sig, id(data), data)
     return _GRACE_TRACKER
 
 
@@ -193,19 +200,12 @@ def _save_grace_state(
                 }
             save_json_state(resolved_state_file, persisted, indent=2)
             if upsert is not None or remove:
-                sim_entries = {
-                    k: v
-                    for k, v in _GRACE_TRACKER.items()
-                    if isinstance(v, dict) and _is_simulated_provider(v.get("provider"))
-                }
-                _GRACE_TRACKER.clear()
-                _GRACE_TRACKER.update(sim_entries)
-                _GRACE_TRACKER.update(persisted)
+                _replace_live_grace_entries(persisted)
             _GRACE_FILE_MEMO.clear()
             cached = read_json_dict_cached(state_file, _GRACE_FILE_MEMO)
             memo_entry = _GRACE_FILE_MEMO.get(resolved_state_file)
             _LOADED_STATE_FILE_KEY = (
-                (state_file, memo_entry[0], id(cached))
+                (state_file, memo_entry[0], id(cached), cached)
                 if memo_entry is not None and isinstance(cached, dict)
                 else ((state_file, None) if not persisted else None)
             )

@@ -159,15 +159,15 @@ def _reject_json_constant(constant: str) -> Any:
     raise ValueError(f"non-standard JSON constant {constant!r}")
 
 
-_ORIG_JSON_LOAD_ID = id(json.load)
-_ORIG_JSON_LOADS_ID = id(json.loads)
-_ORIG_JSON_DUMPS_ID = id(json.dumps)
-_ORIG_OPEN_ID = id(open)
+_ORIG_JSON_LOAD = json.load
+_ORIG_JSON_LOADS = json.loads
+_ORIG_JSON_DUMPS = json.dumps
+_ORIG_OPEN = open
 
 
 def _fast_json_loads(raw: str | bytes | bytearray | memoryview, *, strict_constants: bool = False) -> Any:
     """Parse JSON via ``orjson.loads`` on the fast path, falling back to ``json.loads``."""
-    if _orjson is not None and id(json.loads) == _ORIG_JSON_LOADS_ID and isinstance(raw, (str, bytes, bytearray, memoryview)):
+    if _orjson is not None and json.loads is _ORIG_JSON_LOADS and isinstance(raw, (str, bytes, bytearray, memoryview)):
         try:
             return _orjson.loads(raw)
         except Exception:
@@ -178,7 +178,7 @@ def _fast_json_loads(raw: str | bytes | bytearray | memoryview, *, strict_consta
 
 def _read_json_candidate(candidate_path: str, **json_kwargs: Any) -> Any:
     """Read UTF-8 JSON while preserving patched ``open`` and ``json.load`` hooks."""
-    if _orjson is not None and id(json.load) == _ORIG_JSON_LOAD_ID and id(open) == _ORIG_OPEN_ID:
+    if _orjson is not None and json.load is _ORIG_JSON_LOAD and open is _ORIG_OPEN:
         with open(candidate_path, "rb") as handle:
             raw_bytes = handle.read()
         try:
@@ -525,7 +525,7 @@ def truncate_file_bytes(path: str, size: int) -> None:
 
 def format_jsonl_bucket_line(symbol: str, item: Any) -> str:
     """Serialize one ``(symbol, item)`` pair as a compact JSONL line."""
-    if _orjson is not None and id(json.dumps) == _ORIG_JSON_DUMPS_ID:
+    if _orjson is not None and json.dumps is _ORIG_JSON_DUMPS:
         try:
             return _orjson.dumps({"s": symbol, "i": item}, option=_orjson.OPT_APPEND_NEWLINE).decode("ascii")
         except Exception:
@@ -1174,7 +1174,6 @@ def read_recovering_previous(
 _JSON_DICT_MEMO: dict[str, tuple[tuple, dict[str, Any]]] = {}
 _ORIG_READ_JSON_DICT = read_json_dict
 _ORIG_READ_RECOVERING_PREVIOUS = read_recovering_previous
-_ORIG_READ_RECOVERING_ID = id(read_recovering_previous)
 
 
 def _stat_sig(path: str) -> tuple[int, int, int] | None:
@@ -1225,7 +1224,7 @@ def read_json_dict_cached(
         return res_patched if isinstance(res_patched, dict) else None
 
     cache_store = _JSON_DICT_MEMO if memo is None else memo
-    sig = (st_main, st_bak, id(read_recovering_previous), id(json.load))
+    sig = (st_main, st_bak, read_recovering_previous, json.load)
     cached = cache_store.get(resolved)
     if cached is not None and cached[0] == sig:
         return cached[1]
@@ -1235,7 +1234,7 @@ def read_json_dict_cached(
     )
     if isinstance(res, dict):
         if st_bak is not None:
-            sig = (_stat_sig(resolved), _stat_sig(backup_path), id(read_recovering_previous), id(json.load))
+            sig = (_stat_sig(resolved), _stat_sig(backup_path), read_recovering_previous, json.load)
         if len(cache_store) > max_entries:
             cache_store.clear()
         cache_store[resolved] = (sig, res)
