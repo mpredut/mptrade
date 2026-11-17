@@ -173,6 +173,21 @@ def _ssot_entry_memo_token(entry: Any) -> Any:
     return id(entry)
 
 
+def _fast_parse_ssot_point(entry: Any) -> Optional[tuple[int, float]]:
+    if (
+        type(entry) in _LIST_OR_TUPLE_TYPES
+        and len(entry) >= 2
+        and type(t0 := entry[0]) is int
+        and 100_000_000_000 <= t0 <= 9_000_000_000_000_000
+    ):
+        p1 = entry[1]
+        if type(p1) is float and p1 > 0.0 and math.isfinite(p1):
+            return (t0, p1)
+        if type(p1) is int and 0 < p1 <= 9_000_000_000_000_000:
+            return (t0, p1 * 1.0)
+    return None
+
+
 # =============================================================================
 # 1. LEVEL 2 ABSTRACT BASE: CachePriceManagerBase
 # =============================================================================
@@ -267,18 +282,8 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         entry: Any, fallback_ts: Optional[float] = None
     ) -> Optional[tuple[int, float]]:
         """Parse a cached price entry (dict, ``[ts, px]``, or nested list) into ``(ts_ms, price)``."""
-        if (
-            fallback_ts is None
-            and type(entry) in _LIST_OR_TUPLE_TYPES
-            and len(entry) >= 2
-            and type(t0 := entry[0]) is int
-            and 100_000_000_000 <= t0 <= 9_000_000_000_000_000
-        ):
-            p1 = entry[1]
-            if type(p1) is float and p1 > 0.0 and math.isfinite(p1):
-                return (t0, p1)
-            if type(p1) is int and 0 < p1 <= 9_000_000_000_000_000:
-                return (t0, p1 * 1.0)
+        if fallback_ts is None and (fast_pt := _fast_parse_ssot_point(entry)) is not None:
+            return fast_pt
 
         def _finalize_point(ts_ms: Optional[int], px_f: Optional[float]) -> Optional[tuple[int, float]]:
             if (ts_ms is None or ts_ms <= 0) and fallback_ts is not None:
@@ -960,23 +965,12 @@ class Cache24PriceManager(CachePriceManagerBase):
                                 type(e) in _LIST_OR_TUPLE_TYPES
                                 and len(e) >= 2
                                 and type(t0_v := e[0]) is int
-                                and 100_000_000_000 <= t0_v <= 9_000_000_000_000_000
+                                and 100_000_000_000 <= t0_v < cutoff_ms
                             ):
-                                if t0_v < cutoff_ms:
-                                    continue
-                                p1_v = e[1]
-                                if type(p1_v) is float and p1_v > 0.0 and math.isfinite(p1_v):
-                                    pt: Optional[tuple[int, float]] = (t0_v, p1_v)
-                                elif type(p1_v) is int and 0 < p1_v <= 9_000_000_000_000_000:
-                                    pt = (t0_v, p1_v * 1.0)
-                                else:
-                                    pt = CachePriceManagerBase.parse_ssot_price_point(e)
-                                    if pt is None or pt[0] < cutoff_ms:
-                                        continue
-                            else:
-                                pt = CachePriceManagerBase.parse_ssot_price_point(e)
-                                if pt is None or pt[0] < cutoff_ms:
-                                    continue
+                                continue
+                            pt = _fast_parse_ssot_point(e) or CachePriceManagerBase.parse_ssot_price_point(e)
+                            if pt is None or pt[0] < cutoff_ms:
+                                continue
                             if pt[0] < prev_ts:
                                 is_sorted = False
                             prev_ts = pt[0]

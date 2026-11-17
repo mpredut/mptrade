@@ -33,10 +33,9 @@ from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
     KINEMATIC_HORIZON_SPECS,
     SHORT_KINEMATIC_METRIC_KEYS,
-    _SORTED_TS_PX_ANCHORS,
-    _SORTED_TS_PX_MEMO,
     _TWO_COL_TS_PX_IDS,
     _extract_sorted_ts_px,
+    _finalize_sorted_ts_px,
     _parse_ts_px_row,
     _series_memo_key,
     resolve_kalman_vel_z,
@@ -1976,27 +1975,12 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
     elif not has_any_vol and len(dedup_24h) >= 2:
         mkey = _series_memo_key(dedup_24h)
         if mkey is not None:
-            pts_clean: List[Tuple[float, float]] = [(r[0] * 1.0, r[1] * 1.0) for r in dedup_24h]
-            if (
-                len(pts_clean) >= 10
-                and 0.0 < (pts_clean[-1][0] - pts_clean[-2][0]) < 295000.0
-                and abs(pts_clean[-1][1] - pts_clean[-2][1]) <= 1e-9
-                and sum(
-                    1
-                    for a, b in zip(pts_clean[:-2][-5:], pts_clean[1:-1][-5:])
-                    if 0.0 < (b[0] - a[0]) < 180000.0
-                )
-                < 2
-            ):
-                pts_clean.pop()
-            if len(_TWO_COL_TS_PX_IDS) >= 64:
-                _TWO_COL_TS_PX_IDS.clear()
-            _TWO_COL_TS_PX_IDS[id(pts_clean)] = pts_clean
-            if len(_SORTED_TS_PX_MEMO) >= 32:
-                _SORTED_TS_PX_MEMO.clear()
-                _SORTED_TS_PX_ANCHORS.clear()
-            _SORTED_TS_PX_MEMO[mkey] = pts_clean
-            _SORTED_TS_PX_ANCHORS[mkey] = (dedup_24h[0], dedup_24h[len(dedup_24h) // 2], dedup_24h[-1])
+            _finalize_sorted_ts_px(
+                dedup_24h,
+                [(r[0] * 1.0, r[1] * 1.0) for r in dedup_24h],
+                mkey,
+                all_two_col=True,
+            )
     return dedup_24h if len(dedup_24h) >= 2 else []
 
 

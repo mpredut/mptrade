@@ -1483,11 +1483,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         is_writer = _parse_bool_flag(self.writer, default=False)
         if self._can_use_passive_disk_memo(is_writer):
             return self._unwrap_short_trend_file_dict(
-                read_json_dict_cached(
-                    self.filename,
-                    memo=getattr(self, "_disk_json_memo", None),
-                    max_entries=128,
-                )
+                self._read_passive_or_writer_dict(self.filename, is_writer=is_writer)
             )
         backup_path = self._previous_generation_path()
         if not os.path.exists(self.filename) and not os.path.exists(backup_path):

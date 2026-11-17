@@ -329,6 +329,33 @@ def _series_memo_key(series: list) -> Optional[Tuple[Any, int, Any, Any, Any]]:
         return None
 
 
+def _finalize_sorted_ts_px(
+    series: list,
+    pts: List[Tuple[float, float]],
+    mkey: Optional[Tuple[Any, int, Any, Any, Any]],
+    *,
+    all_two_col: bool,
+) -> List[Tuple[float, float]]:
+    if (
+        len(pts) >= 10
+        and 0.0 < (pts[-1][0] - pts[-2][0]) < 295000.0
+        and abs(pts[-1][1] - pts[-2][1]) <= 1e-9
+        and sum(1 for a, b in zip(pts[:-2][-5:], pts[1:-1][-5:]) if 0.0 < (b[0] - a[0]) < 180000.0) < 2
+    ):
+        pts.pop()
+    if all_two_col:
+        if len(_TWO_COL_TS_PX_IDS) >= 64:
+            _TWO_COL_TS_PX_IDS.clear()
+        _TWO_COL_TS_PX_IDS[id(pts)] = pts
+    if mkey is not None and series:
+        if len(_SORTED_TS_PX_MEMO) >= 32:
+            _SORTED_TS_PX_MEMO.clear()
+            _SORTED_TS_PX_ANCHORS.clear()
+        _SORTED_TS_PX_MEMO[mkey] = pts
+        _SORTED_TS_PX_ANCHORS[mkey] = (series[0], series[len(series) // 2], series[-1])
+    return pts
+
+
 def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
     if not isinstance(series, list) or not series:
         return []
@@ -404,24 +431,7 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
             pts = [(t_v, p_v) for t_v, p_v, _ in pts_vol]
     elif not is_sorted:
         pts.sort(key=lambda x: x[0])
-    if (
-        len(pts) >= 10
-        and 0.0 < (pts[-1][0] - pts[-2][0]) < 295000.0
-        and abs(pts[-1][1] - pts[-2][1]) <= 1e-9
-        and sum(1 for a, b in zip(pts[:-2][-5:], pts[1:-1][-5:]) if 0.0 < (b[0] - a[0]) < 180000.0) < 2
-    ):
-        pts.pop()
-    if all_two_col:
-        if len(_TWO_COL_TS_PX_IDS) >= 64:
-            _TWO_COL_TS_PX_IDS.clear()
-        _TWO_COL_TS_PX_IDS[id(pts)] = pts
-    if mkey is not None:
-        if len(_SORTED_TS_PX_MEMO) >= 32:
-            _SORTED_TS_PX_MEMO.clear()
-            _SORTED_TS_PX_ANCHORS.clear()
-        _SORTED_TS_PX_MEMO[mkey] = pts
-        _SORTED_TS_PX_ANCHORS[mkey] = (series[0], series[len(series) // 2], series[-1])
-    return pts
+    return _finalize_sorted_ts_px(series, pts, mkey, all_two_col=all_two_col)
 
 
 def extract_high_severity_headlines_and_digest(

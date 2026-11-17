@@ -356,6 +356,14 @@ def _candidate_cache_paths(cachedb_dir: str, *basenames: str) -> list[str]:
     ]
 
 
+def _append_file_stat(stat_list: List[Tuple[str, int, int]], cand_sp: str) -> None:
+    try:
+        st = os.stat(cand_sp)
+        stat_list.append((cand_sp, st.st_mtime_ns, st.st_size))
+    except OSError:
+        pass
+
+
 def _stat_candidate_price_files(cachedb_dir: str, *basenames: str) -> List[Tuple[str, int, int]]:
     base_dir = str(cachedb_dir)
     norm_base = base_dir.replace("\\", "/").rstrip("/")
@@ -373,6 +381,7 @@ def _stat_candidate_price_files(cachedb_dir: str, *basenames: str) -> List[Tuple
             has_sub_dir = False
     if not flat_entries and not sub_entries and not norm_base.endswith("/prices"):
         return []
+    stat_list: List[Tuple[str, int, int]] = []
     if norm_base.endswith("/prices") or (
         has_sub_dir
         and any(
@@ -380,14 +389,9 @@ def _stat_candidate_price_files(cachedb_dir: str, *basenames: str) -> List[Tuple
             for bn in basenames
         )
     ):
-        stat_list: List[Tuple[str, int, int]] = []
         for sp in _candidate_cache_paths(cachedb_dir, *basenames):
             for cand_sp in (sp, sp + ".previous") if Cache24PriceManager.FILE_PREFIX in sp else (sp,):
-                try:
-                    st = os.stat(cand_sp)
-                    stat_list.append((cand_sp, st.st_mtime_ns, st.st_size))
-                except OSError:
-                    pass
+                _append_file_stat(stat_list, cand_sp)
         return stat_list
     rel_key = (basenames, has_sub_dir)
     rel_cands = _REL_CANDIDATE_FILENAME_MEMO.get(rel_key)
@@ -405,15 +409,9 @@ def _stat_candidate_price_files(cachedb_dir: str, *basenames: str) -> List[Tuple
             _REL_CANDIDATE_FILENAME_MEMO.clear()
         rel_cands = tuple(built)
         _REL_CANDIDATE_FILENAME_MEMO[rel_key] = rel_cands
-    stat_list = []
     for is_sub, fname in rel_cands:
         if fname in (sub_entries if is_sub else flat_entries):
-            cand_sp = os.path.join(sub_dir if is_sub else base_dir, fname)
-            try:
-                st = os.stat(cand_sp)
-                stat_list.append((cand_sp, st.st_mtime_ns, st.st_size))
-            except OSError:
-                pass
+            _append_file_stat(stat_list, os.path.join(sub_dir if is_sub else base_dir, fname))
     return stat_list
 
 
