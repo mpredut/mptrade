@@ -1338,6 +1338,17 @@ def _effective_sell_tiers(portfolio_growth_pct=None, sell_mult=1.0):
     return tuple(tiers)
 
 
+def _is_short_trend_waiting(symbol: str, side: str) -> bool:
+    try:
+        return bool(
+            pw.should_wait_short_trend(
+                cm.get_short_trend_manager(), side, symbol, short_trend_cls=cm.CacheShortTrendManager
+            )
+        )
+    except Exception:
+        return False
+
+
 def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
                         portfolio_growth_pct=None, p3b_assessment=None,
                         canceled_orders_out: list | None = None):
@@ -1371,12 +1382,15 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
             for threshold, _ in active_tiers
         )
 
+    def _can_preempt_sell() -> bool:
+        return canceled_orders_out is None or not _is_short_trend_waiting(symbol, "SELL")
+
     if free_qty == 0 or (free_qty * current_price) < 5.0:
         open_sells = _active_sell_orders(provider, symbol)
         if open_sells is None or open_sells:
             ref_trough = _finite_float((state or {}).get("trough_price") or minimum_row.get("price"), positive=True)
             cand_growth = (((current_price - ref_trough) / ref_trough) * 100.0) if ref_trough else None
-            if open_sells and _has_due_sell_tier_at(cand_growth):
+            if open_sells and _has_due_sell_tier_at(cand_growth) and _can_preempt_sell():
                 open_sells = _resolve_blocking_sell_orders(
                     symbol, open_sells, canceled_orders_out=canceled_orders_out
                 )
@@ -1453,9 +1467,10 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         print(f"[{symbol}] Cannot verify open SELL orders; do not submit tier.")
         return None, ({} if new_campaign else state), growth
     had_open_sells = bool(open_sells)
-    open_sells = _resolve_blocking_sell_orders(
-        symbol, open_sells, canceled_orders_out=canceled_orders_out
-    )
+    if open_sells and _can_preempt_sell():
+        open_sells = _resolve_blocking_sell_orders(
+            symbol, open_sells, canceled_orders_out=canceled_orders_out
+        )
     if open_sells:
         print(
             f"[{symbol}] Existing SELL order blocks AssetGuardian tier: "
@@ -1730,16 +1745,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
             and abs(drawdown_percent) >= _trigger_threshold_for_buy_tier(threshold, buy_mult, volatility_mult=vol_mult)
             for threshold, _ in BUY_TIERS
         )
-        short_trend_waits = False
-        if has_due_buy_tier:
-            try:
-                short_trend_waits = bool(
-                    pw.should_wait_short_trend(
-                        cm.get_short_trend_manager(), "BUY", symbol, short_trend_cls=cm.CacheShortTrendManager
-                    )
-                )
-            except Exception:
-                short_trend_waits = False
+        short_trend_waits = _is_short_trend_waiting(symbol, "BUY") if has_due_buy_tier else False
         if has_due_buy_tier and not short_trend_waits and preempt_lower_priority_open_orders(
             provider,
             symbol,
