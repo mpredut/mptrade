@@ -1836,4 +1836,32 @@ def test_cycle_io_scope_deduplicates_state_growth_and_p3b_reads_and_invalidates_
     assert camp_down["completed_tiers"] == [4.1]
     assert camp_down["initial_qty"] == pytest.approx(0.018887 + 0.00764 + 0.00773)
 
+    # Zero free_qty with both a non-blocking AI SELL order and a preemptible rtrade SELL order
+    # preempts the rtrade order once without re-blocking on the static open_orders snapshot.
+    ag._save_symbol_campaign("BTCUSDC", "sell", {})
+    ag._rtrade_sell_block_since["BTCUSDC"] = time.time() - (ag.RTRADE_BLOCK_CANCEL_SECONDS + 5.0)
+    monkeypatch.setattr(ag, "_is_short_trend_waiting", lambda _sym, _side: False)
+    canceled_rt = []
+    monkeypatch.setattr(ag.mkt, "cancel_order", lambda sym, oid, **kw: canceled_rt.append(oid) or True)
+    zero_free_prov = SimpleNamespace(
+        open_orders=lambda _sym=None: [
+            {"orderId": "ai_s_1", "clientOrderId": "AI_sell_1", "side": "SELL", "price": "72000.0", "origQty": "0.005"},
+            {"orderId": "rt_s_1", "clientOrderId": "RT_sell_1", "side": "SELL", "price": "71000.0", "origQty": "0.020"},
+        ],
+        free_balance=lambda _a: 0.020,
+    )
+    preempted_out = []
+    tier_zf, camp_zf, _ = ag._sell_campaign_tier(
+        "BTCUSDC",
+        70000.0,
+        {"price": 60000.0, "timestamp": 1000.0},
+        0.0,
+        zero_free_prov,
+        canceled_orders_out=preempted_out,
+    )
+    assert tier_zf is not None
+    assert canceled_rt == ["rt_s_1"]
+    assert [o["orderId"] for o in preempted_out] == ["rt_s_1"]
+    assert camp_zf["initial_qty"] == pytest.approx(0.020)
+
 

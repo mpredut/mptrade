@@ -902,8 +902,15 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
     return True, _clear_campaign_trend_defer(symbol, kind, state)
 
 
-def _reconcile_campaign_initial_amount(symbol: str, kind: str, state: dict, free_amount: float) -> dict:
-    """Reconcile ``initial_cash`` (BUY) or ``initial_qty`` (SELL) upward when free balance exceeds expected remaining."""
+def _reconcile_campaign_initial_amount(
+    symbol: str,
+    kind: str,
+    state: dict,
+    free_amount: float,
+    *,
+    open_sells_loader=None,
+) -> dict:
+    """Reconcile ``initial_cash`` (BUY) or ``initial_qty`` (SELL) against free and locked balance."""
     init_key, used_key, min_tol, label = (
         ("initial_cash", "total_spent_quote", 1e-9, "Free quote balance")
         if kind == "buy"
@@ -914,7 +921,8 @@ def _reconcile_campaign_initial_amount(symbol: str, kind: str, state: dict, free
         return state
     used_val = safe_nonneg_float(state.get(used_key), default=0.0)
     expected_rem = max(0.0, init_val - used_val)
-    if free_amount > expected_rem + max(min_tol, init_val * 1e-6):
+    tol = max(min_tol, init_val * 1e-6)
+    if free_amount > expected_rem + tol:
         reconciled = free_amount + used_val
         print(
             f"[{symbol}] {label} increased from expected {expected_rem:.8f} to {free_amount:.8f}; "
@@ -923,6 +931,28 @@ def _reconcile_campaign_initial_amount(symbol: str, kind: str, state: dict, free
         )
         state = {**state, init_key: reconciled}
         _save_symbol_campaign(symbol, kind, state)
+    elif (
+        kind == "sell"
+        and callable(open_sells_loader)
+        and (not _completed_tier_values(state) or used_val > 0.0)
+        and free_amount + tol < expected_rem
+    ):
+        open_sells = open_sells_loader()
+        if open_sells is not None and all(
+            extract_remaining_qty(o, default=0.0) > 0.0 for o in open_sells
+        ):
+            locked_qty = sum(extract_remaining_qty(o, default=0.0) for o in open_sells)
+            total_held = free_amount + locked_qty
+            if total_held + tol < expected_rem:
+                reconciled = total_held + used_val
+                print(
+                    f"[{symbol}] Total held base ({total_held:.8f} = free {free_amount:.8f} + "
+                    f"open_sell {locked_qty:.8f}) decreased below expected {expected_rem:.8f}; "
+                    f"reconciling SELL campaign initial_qty from {init_val:.8f} "
+                    f"to {reconciled:.8f} while preserving stage tracking."
+                )
+                state = {**state, init_key: reconciled}
+                _save_symbol_campaign(symbol, kind, state)
     return state
 
 
@@ -1443,16 +1473,34 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         except Exception:
             return None
 
+    def _filter_blocking_sells(orders, *, needs_locked: bool = True) -> list[dict]:
+        return [
+            o for o in (orders or ())
+            if resolve_priority_bot_owner(o) in {"assetguardian", "manual", "unspecified"}
+            or (needs_locked and can_bot_preempt_order("assetguardian", o))
+        ]
+
+    preloaded_open_sells = None
+
+    def _get_open_sells():
+        nonlocal preloaded_open_sells
+        if preloaded_open_sells is None:
+            preloaded_open_sells = _active_sell_orders(provider, symbol)
+        return preloaded_open_sells
+
     if free_qty == 0 or (free_qty * current_price) < 5.0:
-        open_sells = _active_sell_orders(provider, symbol)
+        open_sells = _get_open_sells()
         if open_sells is None or open_sells:
             ref_trough = _finite_float((state or {}).get("trough_price") or minimum_row.get("price"), positive=True)
             cand_growth = (((current_price - ref_trough) / ref_trough) * 100.0) if ref_trough else None
-            if open_sells and _has_due_sell_tier_at(cand_growth) and _can_preempt_sell():
-                open_sells = _resolve_blocking_sell_orders(
-                    symbol, open_sells, canceled_orders_out=canceled_orders_out
+            blocking_sells = _filter_blocking_sells(open_sells, needs_locked=True)
+            if blocking_sells and _has_due_sell_tier_at(cand_growth) and _can_preempt_sell():
+                rem_blocking = _resolve_blocking_sell_orders(
+                    symbol, blocking_sells, canceled_orders_out=canceled_orders_out
                 )
-                if not open_sells:
+                if not rem_blocking:
+                    canceled_refs = {id(o) for o in blocking_sells}
+                    preloaded_open_sells = [o for o in (open_sells or []) if id(o) not in canceled_refs]
                     refreshed_free = _refresh_free_base()
                     if refreshed_free is not None and (refreshed_free * current_price) >= 5.0:
                         free_qty = refreshed_free
@@ -1468,7 +1516,6 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         _save_symbol_campaign(symbol, "sell", {})
         return None, {}, growth_val
 
-    preloaded_open_sells = None
     if state:
         trough_price = _finite_float(state.get("trough_price"), positive=True)
         trough_ts = _finite_float(state.get("trough_ts"), positive=True)
@@ -1483,34 +1530,9 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
                 f"{SELL_REARM_GROWTH_PERCENT:.4f}% against frozen trough "
                 f"{trough_price:.8f}.")
             return _reset_sell_campaign(growth)
-        state = _reconcile_campaign_initial_amount(symbol, "sell", state, free_qty)
-        initial_qty = _finite_float(state.get("initial_qty"), positive=True)
-        used_qty = safe_nonneg_float(state.get("total_filled_qty"), default=0.0)
-        comp_prev = _completed_tier_values(state)
-        if (
-            initial_qty is not None
-            and (not comp_prev or used_qty > 0.0)
-            and free_qty + max(1e-12, initial_qty * 1e-6) < max(0.0, initial_qty - used_qty)
-        ):
-            preloaded_open_sells = _active_sell_orders(provider, symbol)
-            if preloaded_open_sells is not None and all(
-                extract_remaining_qty(o, default=0.0) > 0.0 for o in preloaded_open_sells
-            ):
-                locked_sell_qty = sum(
-                    extract_remaining_qty(o, default=0.0) for o in preloaded_open_sells
-                )
-                total_held_qty = free_qty + locked_sell_qty
-                expected_rem_qty = max(0.0, initial_qty - used_qty)
-                if total_held_qty + max(1e-12, initial_qty * 1e-6) < expected_rem_qty:
-                    reconciled_down = total_held_qty + used_qty
-                    print(
-                        f"[{symbol}] Total held base ({total_held_qty:.8f} = free {free_qty:.8f} + "
-                        f"open_sell {locked_sell_qty:.8f}) decreased below expected {expected_rem_qty:.8f}; "
-                        f"reconciling SELL campaign initial_qty from {initial_qty:.8f} "
-                        f"to {reconciled_down:.8f} while preserving stage tracking."
-                    )
-                    state = {**state, "initial_qty": reconciled_down}
-                    _save_symbol_campaign(symbol, "sell", state)
+        state = _reconcile_campaign_initial_amount(
+            symbol, "sell", state, free_qty, open_sells_loader=_get_open_sells
+        )
     else:
         trough_price = _finite_float(minimum_row.get("price"), positive=True)
         trough_ts = _finite_float(minimum_row.get("timestamp"), positive=True)
@@ -1547,20 +1569,12 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         (initial_qty or 0.0) * due_allocation
         - safe_nonneg_float(filled_by_tier.get(_tier_key(due_threshold)), default=0.0),
     )
-    open_sells = (
-        preloaded_open_sells
-        if preloaded_open_sells is not None
-        else _active_sell_orders(provider, symbol)
-    )
+    open_sells = _get_open_sells()
     if open_sells is None:
         print(f"[{symbol}] Cannot verify open SELL orders; do not submit tier.")
         return None, ({} if new_campaign else state), growth
     needs_locked_balance = new_campaign or (free_qty + 1e-12 < due_unfilled_qty)
-    open_sells = [
-        o for o in open_sells
-        if resolve_priority_bot_owner(o) in {"assetguardian", "manual", "unspecified"}
-        or (needs_locked_balance and can_bot_preempt_order("assetguardian", o))
-    ]
+    open_sells = _filter_blocking_sells(open_sells, needs_locked=needs_locked_balance)
     if not open_sells:
         _rtrade_sell_block_since.pop(symbol, None)
     had_open_sells = bool(open_sells)
