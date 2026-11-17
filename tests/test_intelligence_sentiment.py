@@ -10551,7 +10551,10 @@ def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, 
     assert isinstance(s2[-1], list)
     assert s2[-1] == [live_now_ms - 60_000.0, 80100.0]
     assert s1 is not s2 and s2 is not s3
-    assert s2[0] is s3[0] and s2[-1] is s3[-1]
+    assert s1[0] is s2[0] and s2[0] is s3[0] and s2[-1] is s3[-1]
+    assert ssot_mod._series_memo_key(s1) == ssot_mod._series_memo_key(s2)
+    seeded_pts = ssot_mod._SORTED_TS_PX_MEMO.get(ssot_mod._series_memo_key(s2))
+    assert seeded_pts is not None and id(seeded_pts) in ssot_mod._TWO_COL_TS_PX_IDS
     s2.append([live_now_ms, 80200.0])
     s4, _ = load_symbol_price_series(str(c_dir), "BTCUSDC", current_price_items={})
     assert len(s4) == 3

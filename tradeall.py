@@ -1161,9 +1161,9 @@ if __name__ == "__main__":
 
     def _request_stop(_signum=None, _frame=None):
         coordinator.stop()
-        current_price_mgr.set_stop_event()
+        current_price_mgr.request_stop()
         current_price_mgr._tick_ipc_stop.set()
-        instant_mgr.set_stop_event()
+        instant_mgr.request_stop()
 
     _signal.signal(_signal.SIGTERM, _request_stop)
     _signal.signal(_signal.SIGINT, _request_stop)

@@ -33,6 +33,8 @@ from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
     KINEMATIC_HORIZON_SPECS,
     SHORT_KINEMATIC_METRIC_KEYS,
+    _SORTED_TS_PX_MEMO,
+    _TWO_COL_TS_PX_IDS,
     _extract_sorted_ts_px,
     _parse_ts_px_row,
     _series_memo_key,
@@ -123,7 +125,11 @@ def compute_volume_profile_metrics(
     if not isinstance(series, list) or len(series) < 4:
         return {}
     try:
-        has_vol_or_scalar = any(not isinstance(r, (list, tuple)) or len(r) != 2 for r in series)
+        has_vol_or_scalar = (
+            False
+            if (precleaned_ts_px is not None and id(precleaned_ts_px) in _TWO_COL_TS_PX_IDS)
+            else any(not isinstance(r, (list, tuple)) or len(r) != 2 for r in series)
+        )
         if not has_vol_or_scalar:
             ts_px_pts = precleaned_ts_px if precleaned_ts_px is not None else _extract_sorted_ts_px(series)
             n_pts = len(ts_px_pts)
@@ -1919,13 +1925,17 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
     if not series_24h:
         return []
     cleaned_24h = []
-    prev_t, is_sorted = -1.0, True
+    prev_t, is_sorted, has_any_vol = -1.0, True, False
     for row in series_24h:
         if (pt := _parse_ts_px_row(row)) is not None:
             is_sorted = is_sorted and pt[0] >= prev_t
             prev_t = pt[0]
             vol_v = safe_pos_float(row[2], default=None) if len(row) >= 3 else None
-            cleaned_24h.append([pt[0], pt[1], vol_v] if vol_v is not None else [pt[0], pt[1]])
+            if vol_v is not None:
+                has_any_vol = True
+                cleaned_24h.append([pt[0], pt[1], vol_v])
+            else:
+                cleaned_24h.append([pt[0], pt[1]])
     if not is_sorted:
         cleaned_24h.sort(key=lambda x: x[0])
     if len(cleaned_24h) < 2:
@@ -1937,7 +1947,7 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
         else:
             dedup_24h[-1] = [pt[0], pt[1], dedup_24h[-1][2]] if (len(pt) < 3 and len(dedup_24h[-1]) >= 3) else pt
     _has_pos_vol_24h = lambda row_d: len(row_d) >= 3 and (safe_pos_float(row_d[2], default=0.0) or 0.0) > 0.0
-    if len(dedup_24h) >= 3 and any(_has_pos_vol_24h(p) for p in dedup_24h):
+    if has_any_vol and len(dedup_24h) >= 3 and any(_has_pos_vol_24h(p) for p in dedup_24h):
         filtered_24h = [dedup_24h[0]]
         for idx_d in range(1, len(dedup_24h) - 1):
             cur_d = dedup_24h[idx_d]
@@ -1962,6 +1972,28 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
             filtered_24h.append(cur_d)
         filtered_24h.append(dedup_24h[-1])
         dedup_24h = strip_off_rth_flat_poller_tail(filtered_24h, symbol, is_market_open_fn=is_market_open_fn)
+    elif not has_any_vol and len(dedup_24h) >= 2:
+        mkey = _series_memo_key(dedup_24h)
+        if mkey is not None:
+            pts_clean: List[Tuple[float, float]] = [(r[0] * 1.0, r[1] * 1.0) for r in dedup_24h]
+            if (
+                len(pts_clean) >= 10
+                and 0.0 < (pts_clean[-1][0] - pts_clean[-2][0]) < 295000.0
+                and abs(pts_clean[-1][1] - pts_clean[-2][1]) <= 1e-9
+                and sum(
+                    1
+                    for a, b in zip(pts_clean[:-2][-5:], pts_clean[1:-1][-5:])
+                    if 0.0 < (b[0] - a[0]) < 180000.0
+                )
+                < 2
+            ):
+                pts_clean.pop()
+            if len(_TWO_COL_TS_PX_IDS) >= 64:
+                _TWO_COL_TS_PX_IDS.clear()
+            _TWO_COL_TS_PX_IDS.add(id(pts_clean))
+            if len(_SORTED_TS_PX_MEMO) >= 32:
+                _SORTED_TS_PX_MEMO.clear()
+            _SORTED_TS_PX_MEMO[mkey] = pts_clean
     return dedup_24h if len(dedup_24h) >= 2 else []
 
 

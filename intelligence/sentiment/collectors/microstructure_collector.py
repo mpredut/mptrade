@@ -344,6 +344,9 @@ def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
     )
 
 
+_REL_CANDIDATE_FILENAME_MEMO: Dict[Tuple[Tuple[str, ...], bool], Tuple[Tuple[bool, str], ...]] = {}
+
+
 def _candidate_cache_paths(cachedb_dir: str, *basenames: str) -> list[str]:
     return [
         p
@@ -351,6 +354,67 @@ def _candidate_cache_paths(cachedb_dir: str, *basenames: str) -> list[str]:
         for full_p in (str(resolve_cachedb_filepath(os.path.join(cachedb_dir, bn))),)
         for p in (full_p, *legacy_filenames_for(full_p))
     ]
+
+
+def _stat_candidate_price_files(cachedb_dir: str, *basenames: str) -> List[Tuple[str, int, int]]:
+    base_dir = str(cachedb_dir)
+    norm_base = base_dir.replace("\\", "/").rstrip("/")
+    try:
+        flat_entries = set(os.listdir(base_dir))
+    except OSError:
+        flat_entries = set()
+    sub_dir = os.path.join(base_dir, "prices")
+    sub_entries: set[str] = set()
+    has_sub_dir = "prices" in flat_entries and os.path.isdir(sub_dir)
+    if has_sub_dir:
+        try:
+            sub_entries = set(os.listdir(sub_dir))
+        except OSError:
+            has_sub_dir = False
+    if not flat_entries and not sub_entries and not norm_base.endswith("/prices"):
+        return []
+    if norm_base.endswith("/prices") or (
+        has_sub_dir
+        and any(
+            (bn in flat_entries or (bn + ".previous") in flat_entries) and bn not in sub_entries
+            for bn in basenames
+        )
+    ):
+        stat_list: List[Tuple[str, int, int]] = []
+        for sp in _candidate_cache_paths(cachedb_dir, *basenames):
+            for cand_sp in (sp, sp + ".previous") if Cache24PriceManager.FILE_PREFIX in sp else (sp,):
+                try:
+                    st = os.stat(cand_sp)
+                    stat_list.append((cand_sp, st.st_mtime_ns, st.st_size))
+                except OSError:
+                    pass
+        return stat_list
+    rel_key = (basenames, has_sub_dir)
+    rel_cands = _REL_CANDIDATE_FILENAME_MEMO.get(rel_key)
+    if rel_cands is None:
+        built: List[Tuple[bool, str]] = []
+        for bn in basenames:
+            rel_full = os.path.join("prices", bn) if has_sub_dir else bn
+            for rel_p in (rel_full, *legacy_filenames_for(rel_full)):
+                is_sub = rel_p.replace("\\", "/").startswith("prices/")
+                fname = os.path.basename(rel_p)
+                built.append((is_sub, fname))
+                if Cache24PriceManager.FILE_PREFIX in fname:
+                    built.append((is_sub, fname + ".previous"))
+        if len(_REL_CANDIDATE_FILENAME_MEMO) > 256:
+            _REL_CANDIDATE_FILENAME_MEMO.clear()
+        rel_cands = tuple(built)
+        _REL_CANDIDATE_FILENAME_MEMO[rel_key] = rel_cands
+    stat_list = []
+    for is_sub, fname in rel_cands:
+        if fname in (sub_entries if is_sub else flat_entries):
+            cand_sp = os.path.join(sub_dir if is_sub else base_dir, fname)
+            try:
+                st = os.stat(cand_sp)
+                stat_list.append((cand_sp, st.st_mtime_ns, st.st_size))
+            except OSError:
+                pass
+    return stat_list
 
 
 def _read_archive_series_file(
@@ -1048,28 +1112,16 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         if is_default_rj:
             try:
                 memo_key = (os.path.abspath(str(cachedb_dir)), sym_u, bool(include_7d), tuple(eff_quotes))
-                stat_list = []
-                for sp in _candidate_cache_paths(
+                stat_list = _stat_candidate_price_files(
                     cachedb_dir,
                     *(Cache24PriceManager.disk_filename_for_symbol(c) for c in cands),
                     *((cache_ohlc_24h_filename(c) for c in cands) if is_eq_sym else ()),
                     *(CacheSparsePriceManager.disk_filename_for_symbol(c) for c in cands),
                     *(Cache365PriceManager.disk_filename_for_symbol(c) for c in cands),
                     *(f"cache_365_price_{c}.json" for c in cands),
-                ):
-                    for cand_sp in (sp, sp + ".previous") if Cache24PriceManager.FILE_PREFIX in sp else (sp,):
-                        try:
-                            st = os.stat(cand_sp)
-                            stat_list.append((cand_sp, st.st_mtime_ns, st.st_size))
-                        except OSError:
-                            pass
+                )
                 if not stat_list:
-                    for w_sp in _candidate_cache_paths(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME):
-                        try:
-                            st = os.stat(w_sp)
-                            stat_list.append((w_sp, st.st_mtime_ns, st.st_size))
-                        except OSError:
-                            pass
+                    stat_list = _stat_candidate_price_files(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME)
                 cur_list = []
                 if isinstance(current_price_items, dict) and current_price_items:
                     for c in cands:
@@ -1236,7 +1288,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
             _PRICE_SERIES_MEMO[memo_key] = (
                 memo_file_sig,
                 memo_cur_sig,
-                [list(pt) for pt in series_24h],
+                list(series_24h),
                 list(vals_7d),
                 arch_7d_span_ms,
             )

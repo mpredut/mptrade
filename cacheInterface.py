@@ -1516,6 +1516,7 @@ class CacheManagerInterface(ABC):
             return self.thread
 
     request_stop = set_stop_event
+    set_stop_event = request_stop
 
     def is_running(self) -> bool:
         """Return True if a background synchronization thread is active."""

@@ -276,6 +276,7 @@ def _cfg_int(section: str, key: str, fallback: int, config_path: Optional[str] =
 
 
 _NUMERIC_ROW_TYPES = (int, float)
+_SEQ_ROW_TYPES = (list, tuple)
 
 
 def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
@@ -290,7 +291,8 @@ def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
     return ((tf * 1000.0 if tf < 1e11 else tf), pf) if (tf > 0.0 and pf > 0.0) else None
 
 
-_SORTED_TS_PX_MEMO: Dict[Tuple[int, int, Any, Any, Any], List[Tuple[float, float]]] = {}
+_SORTED_TS_PX_MEMO: Dict[Tuple[Any, int, Any, Any, Any], List[Tuple[float, float]]] = {}
+_TWO_COL_TS_PX_IDS: set[int] = set()
 
 
 def _row_memo_token(row: Any) -> Any:
@@ -299,15 +301,25 @@ def _row_memo_token(row: Any) -> Any:
     return row
 
 
-def _series_memo_key(series: list) -> Optional[Tuple[int, int, Any, Any, Any]]:
+def _series_memo_key(series: list) -> Optional[Tuple[Any, int, Any, Any, Any]]:
     if not isinstance(series, list) or not series:
         return None
+    r0, r_mid, r_last = series[0], series[len(series) // 2], series[-1]
+    seq_id = (
+        (id(r0), id(r_mid), id(r_last))
+        if (
+            type(r0) in _SEQ_ROW_TYPES
+            and type(r_mid) in _SEQ_ROW_TYPES
+            and type(r_last) in _SEQ_ROW_TYPES
+        )
+        else id(series)
+    )
     cand = (
-        id(series),
+        seq_id,
         len(series),
-        _row_memo_token(series[0]),
-        _row_memo_token(series[len(series) // 2]),
-        _row_memo_token(series[-1]),
+        _row_memo_token(r0),
+        _row_memo_token(r_mid),
+        _row_memo_token(r_last),
     )
     try:
         hash(cand)
@@ -322,9 +334,32 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
     mkey = _series_memo_key(series)
     if mkey is not None and (cached := _SORTED_TS_PX_MEMO.get(mkey)) is not None:
         return cached
+    pts: List[Tuple[float, float]] = []
     pts_vol: List[Tuple[float, float, Optional[float]]] = []
-    prev_t, is_sorted, has_pos_vol = -1.0, True, False
+    prev_t, is_sorted, has_pos_vol, all_two_col = -1.0, True, False, True
     for row in series:
+        if type(row) in _SEQ_ROW_TYPES and len(row) == 2:
+            t, p = row[0], row[1]
+            if (
+                type(t) in _NUMERIC_ROW_TYPES
+                and type(p) in _NUMERIC_ROW_TYPES
+                and t > 0.0
+                and p > 0.0
+                and math.isfinite(t)
+                and math.isfinite(p)
+            ):
+                t_ms = t * 1000.0 if t < 1e11 else t * 1.0
+                p_f = p * 1.0
+                if t_ms < prev_t:
+                    is_sorted = False
+                prev_t = t_ms
+                if has_pos_vol:
+                    pts_vol.append((t_ms, p_f, None))
+                else:
+                    pts.append((t_ms, p_f))
+                continue
+        if not isinstance(row, (list, tuple)) or len(row) != 2:
+            all_two_col = False
         if (pt := _parse_ts_px_row(row)) is not None:
             if pt[0] < prev_t:
                 is_sorted = False
@@ -332,35 +367,42 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
             vol_v: Optional[float] = None
             if isinstance(row, (list, tuple)) and len(row) >= 3:
                 vol_v = safe_float(row[2], default=None)
-                if vol_v is not None and vol_v > 0.0:
+                if vol_v is not None and vol_v > 0.0 and not has_pos_vol:
                     has_pos_vol = True
-            pts_vol.append((pt[0], pt[1], vol_v))
-    if not is_sorted:
-        pts_vol.sort(key=lambda x: x[0])
-    if has_pos_vol and len(pts_vol) >= 3:
-        pts: List[Tuple[float, float]] = [(pts_vol[0][0], pts_vol[0][1])]
-        for idx in range(1, len(pts_vol) - 1):
-            t_cur, p_cur, v_cur = pts_vol[idx]
-            if v_cur is None or v_cur <= 0.0:
-                next_idx = idx + 1
-                while (
-                    next_idx < len(pts_vol) - 1
-                    and (pts_vol[next_idx][2] is None or pts_vol[next_idx][2] <= 0.0)
-                    and abs(pts_vol[next_idx][1] - p_cur) <= 1e-9
-                ):
-                    next_idx += 1
-                p_prev, p_next = pts[-1][1], pts_vol[next_idx][1]
-                if (
-                    min(p_prev, p_next, p_cur) > 0.0
-                    and abs(p_cur - p_prev) / p_prev > 0.025
-                    and abs(p_cur - p_next) / p_next > 0.025
-                    and abs(p_next - p_prev) / min(p_prev, p_next) <= 0.035
-                ):
-                    continue
-            pts.append((t_cur, p_cur))
-        pts.append((pts_vol[-1][0], pts_vol[-1][1]))
-    else:
-        pts = [(t_v, p_v) for t_v, p_v, _ in pts_vol]
+                    pts_vol = [(t_v, p_v, None) for t_v, p_v in pts]
+            if has_pos_vol:
+                pts_vol.append((pt[0], pt[1], vol_v))
+            else:
+                pts.append(pt)
+    if has_pos_vol:
+        if not is_sorted:
+            pts_vol.sort(key=lambda x: x[0])
+        if len(pts_vol) >= 3:
+            pts = [(pts_vol[0][0], pts_vol[0][1])]
+            for idx in range(1, len(pts_vol) - 1):
+                t_cur, p_cur, v_cur = pts_vol[idx]
+                if v_cur is None or v_cur <= 0.0:
+                    next_idx = idx + 1
+                    while (
+                        next_idx < len(pts_vol) - 1
+                        and (pts_vol[next_idx][2] is None or pts_vol[next_idx][2] <= 0.0)
+                        and abs(pts_vol[next_idx][1] - p_cur) <= 1e-9
+                    ):
+                        next_idx += 1
+                    p_prev, p_next = pts[-1][1], pts_vol[next_idx][1]
+                    if (
+                        min(p_prev, p_next, p_cur) > 0.0
+                        and abs(p_cur - p_prev) / p_prev > 0.025
+                        and abs(p_cur - p_next) / p_next > 0.025
+                        and abs(p_next - p_prev) / min(p_prev, p_next) <= 0.035
+                    ):
+                        continue
+                pts.append((t_cur, p_cur))
+            pts.append((pts_vol[-1][0], pts_vol[-1][1]))
+        else:
+            pts = [(t_v, p_v) for t_v, p_v, _ in pts_vol]
+    elif not is_sorted:
+        pts.sort(key=lambda x: x[0])
     if (
         len(pts) >= 10
         and 0.0 < (pts[-1][0] - pts[-2][0]) < 295000.0
@@ -368,6 +410,10 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
         and sum(1 for a, b in zip(pts[:-2][-5:], pts[1:-1][-5:]) if 0.0 < (b[0] - a[0]) < 180000.0) < 2
     ):
         pts.pop()
+    if all_two_col:
+        if len(_TWO_COL_TS_PX_IDS) >= 64:
+            _TWO_COL_TS_PX_IDS.clear()
+        _TWO_COL_TS_PX_IDS.add(id(pts))
     if mkey is not None:
         if len(_SORTED_TS_PX_MEMO) >= 32:
             _SORTED_TS_PX_MEMO.clear()
