@@ -1047,6 +1047,24 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(eval_buf_wrapped.call_count, 4)
         self.assertEqual(set(published_aged.keys()), set(published.keys()))
 
+        # Full evaluation overrides primary 222s n_samples with len(pwin.prices) (222 != 223 in Cache24 at exact endpoint),
+        # yet preserves _last_c24_n_samples so repeated evaluate_full and 222s queries still skip copying completely.
+        exact_end_sec = (base_ms + 299_000) / 1000.0
+        cpm.get_cached_price_observation.return_value = (exact_end_sec, 60598.0)
+        mgr.evaluate_full("BTCUSDT")
+        self.assertEqual(mgr._live_windows["BTCUSDT"]["222"]["n_samples"], 222)
+        self.assertEqual(mgr._live_windows["BTCUSDT"]["222"]["_last_c24_n_samples"], 223)
+        counting_lock.acquires = 0
+        tracked_entries.iter_copies = 0
+        with patch.object(mgr, "_eval_entries_with_buffer") as eval_buf_full:
+            mgr.evaluate_full("BTCUSDT")
+            prim_cached = mgr.get_short_trend_for_window("BTCUSDT", 222.0, now=exact_end_sec)
+        self.assertEqual(counting_lock.acquires, 2)
+        self.assertEqual(tracked_entries.iter_copies, 0)
+        eval_buf_full.assert_not_called()
+        self.assertIsNotNone(prim_cached)
+        self.assertNotIn("_last_c24_n_samples", prim_cached)
+
     def test_evaluate_full_preserves_live_window_memoization_tick_ts(self):
         trend_file = os.path.join(self.tmp, "cache_short_trend_memo.json")
         mgr = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, data_sync_mode="producer")

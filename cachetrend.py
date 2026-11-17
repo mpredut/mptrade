@@ -636,15 +636,13 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         with self._lock:
             live_sym = self._live_windows.setdefault(symbol, {})
             for wk, wval in published_dyn.items():
-                prev_tick_ts = (
-                    live_sym[wk].get("_last_tick_ts_ms")
-                    if isinstance(live_sym.get(wk), dict)
-                    else None
-                )
+                prev_live = live_sym.get(wk)
                 entry = dict(wval)
                 entry.setdefault("current_price", current_price)
-                if prev_tick_ts is not None:
-                    entry["_last_tick_ts_ms"] = prev_tick_ts
+                if isinstance(prev_live, dict):
+                    for ik in ("_last_tick_ts_ms", "_last_c24_n_samples"):
+                        if prev_live.get(ik) is not None:
+                            entry[ik] = prev_live[ik]
                 live_sym[wk] = entry
             self._dirty_live_symbols.add(symbol)
 
@@ -661,8 +659,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                         with self._lock:
                             tbuf_v = self._get_trend_buffer(symbol)
                             ts_tail = list(tbuf_v.timestamps[-n_big:]) if len(tbuf_v.timestamps) >= n_big else []
-                            all_tbuf_ts = list(tbuf_v.timestamps)
-                            all_tbuf_px = list(tbuf_v.prices)
                         if len(ts_tail) >= 20:
                             max_intra_dt = max(
                                 1800.0,
@@ -678,22 +674,27 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                             nz_big = sum(
                                 1 for i in range(1, len(w_big.prices)) if abs(w_big.prices[i] - w_big.prices[i - 1]) > 1e-12
                             )
-                            if nz_big < 10 and len(all_tbuf_ts) >= 20 and len(all_tbuf_ts) == len(all_tbuf_px):
-                                sub_1m: List[Tuple[float, float]] = []
-                                last_t_ms = -1e18
-                                for t_ms, px_v in zip(all_tbuf_ts, all_tbuf_px):
-                                    t_ms_f = safe_float(t_ms, default=None)
-                                    px_v_f = safe_pos_float(px_v, default=None)
-                                    if t_ms_f is not None and px_v_f is not None and (t_ms_f - last_t_ms) >= 55000.0:
-                                        sub_1m.append((t_ms_f, px_v_f))
-                                        last_t_ms = t_ms_f
-                                if len(sub_1m) >= 20:
-                                    tail_1m = sub_1m[-60:]
-                                    eff_v1h_sr = max(
-                                        60.0,
-                                        (tail_1m[-1][0] - tail_1m[0][0]) / (1000.0 * max(1, len(tail_1m) - 1)),
-                                    )
-                                    v1h_prices = [r[1] for r in tail_1m]
+                            if nz_big < 10:
+                                with self._lock:
+                                    tbuf_v = self._get_trend_buffer(symbol)
+                                    all_tbuf_ts = list(tbuf_v.timestamps)
+                                    all_tbuf_px = list(tbuf_v.prices)
+                                if len(all_tbuf_ts) >= 20 and len(all_tbuf_ts) == len(all_tbuf_px):
+                                    sub_1m: List[Tuple[float, float]] = []
+                                    last_t_ms = -1e18
+                                    for t_ms, px_v in zip(all_tbuf_ts, all_tbuf_px):
+                                        t_ms_f = safe_float(t_ms, default=None)
+                                        px_v_f = safe_pos_float(px_v, default=None)
+                                        if t_ms_f is not None and px_v_f is not None and (t_ms_f - last_t_ms) >= 55000.0:
+                                            sub_1m.append((t_ms_f, px_v_f))
+                                            last_t_ms = t_ms_f
+                                    if len(sub_1m) >= 20:
+                                        tail_1m = sub_1m[-60:]
+                                        eff_v1h_sr = max(
+                                            60.0,
+                                            (tail_1m[-1][0] - tail_1m[0][0]) / (1000.0 * max(1, len(tail_1m) - 1)),
+                                        )
+                                        v1h_prices = [r[1] for r in tail_1m]
                     v1h = pw.calculate_volatility_1h(
                         v1h_prices, eff_v1h_sr
                     )
@@ -1025,11 +1026,11 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         newest_ts_ms, latest_price = newest_tick
         if check_memo:
             with self._lock:
-                cached = (self._live_windows.get(target_sym) or {}).get(w_key)
+                cached = (casefold_get(self._live_windows, target_sym) or {}).get(w_key)
                 if (
                     isinstance(cached, dict)
                     and cached.get("_last_tick_ts_ms") == newest_ts_ms
-                    and cached.get("n_samples") == n_samples
+                    and cached.get("_last_c24_n_samples", cached.get("n_samples")) == n_samples
                 ):
                     hit = self._strip_internal_fields(cached)
                     hit["ts"] = now_val
@@ -1050,7 +1051,11 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             ts=now_val,
         )
         self._persist_live_window(
-            target_sym, w_key, res, last_tick_ts_ms=newest_ts_ms
+            target_sym,
+            w_key,
+            res,
+            last_tick_ts_ms=newest_ts_ms,
+            last_c24_n_samples=n_samples,
         )
         return res
 
@@ -1114,7 +1119,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
         with self._lock:
             self._active_dynamic_windows.update(clamped for clamped, _ in requests)
-            sym_live = self._live_windows.get(c24_sym)
+            sym_live = casefold_get(self._live_windows, c24_sym)
             memo_by_key = (
                 {
                     wk: dict(wv)
@@ -1132,8 +1137,13 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             pending: list[tuple[int, int, float, str]] = []
             with c24.lock:
                 raw_entries = casefold_get(c24.cache, c24_sym, [])
+                copied_raw = False
                 if not isinstance(raw_entries, (list, tuple)):
-                    raw_entries = list(raw_entries or ())
+                    if isinstance(raw_entries, (str, bytes, dict)) or not hasattr(raw_entries, "__iter__"):
+                        raw_entries = ()
+                    else:
+                        raw_entries = list(raw_entries)
+                        copied_raw = True
                 n_total = len(raw_entries)
                 if n_total >= 3:
                     b = n_total - 1
@@ -1152,7 +1162,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                             if (
                                 cached is not None
                                 and cached.get("_last_tick_ts_ms") == newest_ts_ms
-                                and cached.get("n_samples") == n_samples
+                                and cached.get("_last_c24_n_samples", cached.get("n_samples")) == n_samples
                             ):
                                 hit = self._strip_internal_fields(cached)
                                 hit["ts"] = now_val
@@ -1160,7 +1170,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                             else:
                                 pending.append((a, b, clamped, w_key))
                         if pending:
-                            all_entries = list(raw_entries)
+                            all_entries = raw_entries if copied_raw else list(raw_entries)
             for a, b, clamped, w_key in pending:
                 dyn = self._eval_and_persist_window_slice(
                     c24_sym, all_entries, a, b, clamped, w_key, now_val, check_memo=False
@@ -1234,6 +1244,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         data: dict,
         last_tick_ts_ms: Optional[int] = None,
         flush: bool = False,
+        *,
+        last_c24_n_samples: Optional[int] = None,
     ):
         """Store a computed sliding window in memory and optionally flush 24trend/live_<SYMBOL>.json."""
         with self._lock:
@@ -1243,6 +1255,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 tick_i = safe_nonneg_int(last_tick_ts_ms, default=None)
                 if tick_i is not None:
                     stored["_last_tick_ts_ms"] = tick_i
+            if last_c24_n_samples is not None:
+                ns_i = safe_pos_int(last_c24_n_samples, default=None)
+                if ns_i is not None:
+                    stored["_last_c24_n_samples"] = ns_i
             sym_live[w_key] = stored
             self._dirty_live_symbols.add(symbol)
             if flush and self.writer:
