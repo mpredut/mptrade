@@ -1324,10 +1324,22 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     free_qty = _finite_float(free_qty)
     if current_price is None or free_qty is None or free_qty < 0:
         return None, state, None
+    sell_mult, _, _ = _p3b_threshold_multipliers(p3b_assessment)
+    vol_mult = _symbol_volatility_mult(symbol)
+    active_tiers = _effective_sell_tiers(portfolio_growth_pct, sell_mult=sell_mult)
+    min_trigger_thr = min(
+        _trigger_threshold_for_sell_tier(
+            t, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult
+        )
+        for t, _ in active_tiers
+    )
+
     if free_qty == 0 or (free_qty * current_price) < 5.0:
         open_sells = _active_sell_orders(provider, symbol)
         if open_sells is None or open_sells:
-            if open_sells:
+            ref_trough = _finite_float((state or {}).get("trough_price") or minimum_row.get("price"), positive=True)
+            cand_growth = (((current_price - ref_trough) / ref_trough) * 100.0) if ref_trough else None
+            if open_sells and cand_growth is not None and cand_growth >= min_trigger_thr:
                 open_sells = _resolve_blocking_sell_orders(symbol, open_sells)
                 if not open_sells and callable(getattr(provider, "free_balance", None)):
                     try:
@@ -1344,16 +1356,6 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
             if state:
                 _save_symbol_campaign(symbol, "sell", {})
             return None, {}, None
-
-    sell_mult, _, _ = _p3b_threshold_multipliers(p3b_assessment)
-    vol_mult = _symbol_volatility_mult(symbol)
-    active_tiers = _effective_sell_tiers(portfolio_growth_pct, sell_mult=sell_mult)
-    min_trigger_thr = min(
-        _trigger_threshold_for_sell_tier(
-            t, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult
-        )
-        for t, _ in active_tiers
-    )
 
     def _reset_sell_campaign(growth_val=None):
         _save_symbol_campaign(symbol, "sell", {})
@@ -1670,7 +1672,13 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     _, quote_asset = resolve_assets(symbol)
     free_cash = _finite_float(provider.free_balance(quote_asset), positive=True) if provider else None
     if (free_cash is None or free_cash < 10.0) and provider is not None:
-        if preempt_lower_priority_open_orders(
+        buy_completed = _completed_tier_values(_symbol_campaign(symbol, "buy"))
+        has_due_buy_tier = any(
+            threshold not in buy_completed
+            and abs(drawdown_percent) >= _trigger_threshold_for_buy_tier(threshold, buy_mult, volatility_mult=vol_mult)
+            for threshold, _ in BUY_TIERS
+        )
+        if has_due_buy_tier and preempt_lower_priority_open_orders(
             provider,
             symbol,
             "BUY",

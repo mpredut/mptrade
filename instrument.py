@@ -657,6 +657,8 @@ class Instrument:
                             failure_reason=ctx.reason,
                             submission_state="unknown" if ctx.submit_attempted else "refused",
                         )
+                        if claim_outcome != "success":
+                            ctx.retry_enqueued = True
                     else:
                         q_orig = safe_pos_float(ctx.orig_qty, default=None)
                         if q_orig is None:
@@ -672,7 +674,7 @@ class Instrument:
                             except Exception:  # noqa: BLE001
                                 ref_price = None
                             self._apply_outbox_lineage_prefix(ctx.retry_kwargs, ctx.kwargs)
-                            order_retry.enqueue(
+                            if order_retry.enqueue(
                                 self.symbol,
                                 ctx.side_u,
                                 queue_qty,
@@ -684,7 +686,8 @@ class Instrument:
                                 intent_id=ctx.kwargs.get("intent_id"),
                                 kind=ctx.order_kind,
                                 ttl_sec=ctx.kwargs.get("ttl_sec"),
-                            )
+                            ):
+                                ctx.retry_enqueued = True
             except Exception as _e:  # noqa: BLE001
                 print(f"[{self.symbol}] {ctx.side_u} enqueue retry failed (ignored): {_e}")
 
@@ -841,9 +844,10 @@ class Instrument:
             allow_priority_preempt = (
                 _parse_bool_flag(ctx.kwargs.get("cancelorders", False), False)
                 or ctx.caller_module == "assetguardian"
-            )
+            ) and bool(order_id_context.preemptible_owners_for(ctx.caller_module))
 
             ctx.known_balance = None
+            deferred_zero_balance = False
             if (
                 not ctx.reason
                 and hasattr(self._provider, "free_balance")
@@ -853,22 +857,14 @@ class Instrument:
                 try:
                     kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
                     if kb_f is not None:
-                        if kb_f <= 0 and allow_priority_preempt:
-                            if order_lifecycle.preempt_lower_priority_open_orders(
-                                self,
-                                self.symbol,
-                                ctx.side_u,
-                                ctx.caller_module,
-                                canceled_orders_out=preempted_orders,
-                                resolve_retry_fn=order_retry.resolve_accepted_order,
-                            ):
-                                kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
-                        if kb_f is not None:
-                            if kb_f <= 0:
+                        if kb_f <= 0:
+                            if allow_priority_preempt:
+                                deferred_zero_balance = True
+                            else:
                                 print(f"[{self.symbol}] {ctx.side_u} preflight refused: balance_unavailable asset={target_asset}")
                                 ctx.reason = "balance_unavailable"
-                            else:
-                                ctx.known_balance = kb_f
+                        else:
+                            ctx.known_balance = kb_f
                 except Exception:
                     ctx.known_balance = None
 
@@ -937,6 +933,26 @@ class Instrument:
                 ctx.reason = "aborted_by_caller"
             if ctx.reason:
                 return None
+
+            if deferred_zero_balance:
+                if order_lifecycle.preempt_lower_priority_open_orders(
+                    self,
+                    self.symbol,
+                    ctx.side_u,
+                    ctx.caller_module,
+                    canceled_orders_out=preempted_orders,
+                    resolve_retry_fn=order_retry.resolve_accepted_order,
+                ):
+                    try:
+                        kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
+                        if kb_f is not None and kb_f > 0:
+                            ctx.known_balance = kb_f
+                    except Exception:
+                        pass
+                if ctx.known_balance is None or ctx.known_balance <= 0:
+                    print(f"[{self.symbol}] {ctx.side_u} preflight refused: balance_unavailable asset={target_asset}")
+                    ctx.reason = "balance_unavailable"
+                    return None
 
             # Stage 2: Quantity Sizing, Gaussian/Chop Weights & Balance Capping.
             hours_f = safe_pos_float(ctx.kwargs.get("hours", 5), default=5.0)
@@ -1367,7 +1383,7 @@ class Instrument:
                 ctx.order is None
                 and preempted_orders
                 and not ctx.submit_attempted
-                and (ctx.caller_owns_retry or not order_retry.is_non_failure_deferral(ctx.reason))
+                and not getattr(ctx, "retry_enqueued", False)
             ):
                 order_lifecycle.restore_cancelled_instrument_orders(
                     self,
