@@ -959,6 +959,24 @@ class Instrument:
                             return "medium_trend_deferred"
                 return None
 
+            def _preempt_and_refresh_balance() -> bool:
+                if not order_lifecycle.preempt_lower_priority_open_orders(
+                    self,
+                    self.symbol,
+                    ctx.side_u,
+                    ctx.caller_module,
+                    canceled_orders_out=preempted_orders,
+                    resolve_retry_fn=order_retry.resolve_accepted_order,
+                ):
+                    return False
+                try:
+                    kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
+                    if kb_f is not None and kb_f > 0:
+                        ctx.known_balance = kb_f
+                except Exception:
+                    pass
+                return True
+
             if deferred_zero_balance:
                 if order_lifecycle.has_preemptible_open_orders(
                     self, self.symbol, ctx.side_u, ctx.caller_module
@@ -967,20 +985,7 @@ class Instrument:
                     if pre_defer:
                         ctx.reason = pre_defer
                         return None
-                    if order_lifecycle.preempt_lower_priority_open_orders(
-                        self,
-                        self.symbol,
-                        ctx.side_u,
-                        ctx.caller_module,
-                        canceled_orders_out=preempted_orders,
-                        resolve_retry_fn=order_retry.resolve_accepted_order,
-                    ):
-                        try:
-                            kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
-                            if kb_f is not None and kb_f > 0:
-                                ctx.known_balance = kb_f
-                        except Exception:
-                            pass
+                    _preempt_and_refresh_balance()
                 if ctx.known_balance is None or ctx.known_balance <= 0:
                     print(f"[{self.symbol}] {ctx.side_u} preflight refused: balance_unavailable asset={target_asset}")
                     ctx.reason = "balance_unavailable"
@@ -997,21 +1002,26 @@ class Instrument:
                 )
                 else ctx.regime_context
             )
-            decision = self._provider.quantity_decision(
-                self.symbol,
-                ctx.side_u,
-                ctx.quantity_price,
-                ctx.qty,
-                base=ctx.base_asset,
-                quote=ctx.quote_asset,
-                cancelorders=_parse_bool_flag(ctx.kwargs.get("cancelorders", False), False),
-                hours=hours_f,
-                apply_policy=not ctx.bypass_quantity_policy,
-                market=ctx.is_market,
-                enforce_business_minimum=ctx.enforce_business_minimum,
-                regime_context=regime_ctx_for_qty,
-                known_balance=ctx.known_balance,
-            )
+            cancelorders_flag = _parse_bool_flag(ctx.kwargs.get("cancelorders", False), False)
+
+            def _eval_qty_decision():
+                return self._provider.quantity_decision(
+                    self.symbol,
+                    ctx.side_u,
+                    ctx.quantity_price,
+                    ctx.qty,
+                    base=ctx.base_asset,
+                    quote=ctx.quote_asset,
+                    cancelorders=cancelorders_flag,
+                    hours=hours_f,
+                    apply_policy=not ctx.bypass_quantity_policy,
+                    market=ctx.is_market,
+                    enforce_business_minimum=ctx.enforce_business_minimum,
+                    regime_context=regime_ctx_for_qty,
+                    known_balance=ctx.known_balance,
+                )
+
+            decision = _eval_qty_decision()
             if (
                 allow_priority_preempt
                 and not preempted_orders
@@ -1039,35 +1049,8 @@ class Instrument:
                     if decision.final_qty <= 0:
                         ctx.reason = pre_defer_qty
                         return None
-                elif order_lifecycle.preempt_lower_priority_open_orders(
-                    self,
-                    self.symbol,
-                    ctx.side_u,
-                    ctx.caller_module,
-                    canceled_orders_out=preempted_orders,
-                    resolve_retry_fn=order_retry.resolve_accepted_order,
-                ):
-                    try:
-                        kb_refreshed = safe_float(self._provider.free_balance(target_asset), default=None)
-                        if kb_refreshed is not None and kb_refreshed > 0:
-                            ctx.known_balance = kb_refreshed
-                    except Exception:
-                        pass
-                    decision = self._provider.quantity_decision(
-                        self.symbol,
-                        ctx.side_u,
-                        ctx.quantity_price,
-                        ctx.qty,
-                        base=ctx.base_asset,
-                        quote=ctx.quote_asset,
-                        cancelorders=_parse_bool_flag(ctx.kwargs.get("cancelorders", False), False),
-                        hours=hours_f,
-                        apply_policy=not ctx.bypass_quantity_policy,
-                        market=ctx.is_market,
-                        enforce_business_minimum=ctx.enforce_business_minimum,
-                        regime_context=regime_ctx_for_qty,
-                        known_balance=ctx.known_balance,
-                    )
+                elif _preempt_and_refresh_balance():
+                    decision = _eval_qty_decision()
             ctx.qty = decision.final_qty
             raw_dec_scale = (
                 getattr(decision, "applied_scale", 1.0)

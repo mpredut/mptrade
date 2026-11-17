@@ -902,6 +902,30 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
     return True, _clear_campaign_trend_defer(symbol, kind, state)
 
 
+def _reconcile_campaign_initial_amount(symbol: str, kind: str, state: dict, free_amount: float) -> dict:
+    """Reconcile ``initial_cash`` (BUY) or ``initial_qty`` (SELL) upward when free balance exceeds expected remaining."""
+    init_key, used_key, min_tol, label = (
+        ("initial_cash", "total_spent_quote", 1e-9, "Free quote balance")
+        if kind == "buy"
+        else ("initial_qty", "total_filled_qty", 1e-12, "Free balance")
+    )
+    init_val = _finite_float(state.get(init_key), positive=True)
+    if init_val is None:
+        return state
+    used_val = safe_nonneg_float(state.get(used_key), default=0.0)
+    expected_rem = max(0.0, init_val - used_val)
+    if free_amount > expected_rem + max(min_tol, init_val * 1e-6):
+        reconciled = free_amount + used_val
+        print(
+            f"[{symbol}] {label} increased from expected {expected_rem:.8f} to {free_amount:.8f}; "
+            f"reconciling {kind.upper()} campaign {init_key} from {init_val:.8f} "
+            f"to {reconciled:.8f} while preserving stage tracking."
+        )
+        state = {**state, init_key: reconciled}
+        _save_symbol_campaign(symbol, kind, state)
+    return state
+
+
 def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
                    p3b_assessment=None):
     """Select one crossed, incomplete BUY tier for one symbol campaign."""
@@ -939,20 +963,8 @@ def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
                 state["initial_cash"] = free_cash
             state["completed_tiers"] = sorted(_completed_tier_values(state))
         _save_symbol_campaign(symbol, "buy", state)
-    init_cash = _finite_float(state.get("initial_cash"), positive=True)
-    if init_cash is not None and stored_peak is not None:
-        tot_spent = safe_nonneg_float(state.get("total_spent_quote"), default=0.0)
-        expected_rem_cash = max(0.0, init_cash - tot_spent)
-        if free_cash > expected_rem_cash + max(1e-9, init_cash * 1e-6):
-            reconciled_cash = free_cash + tot_spent
-            print(
-                f"[{symbol}] Free quote balance increased from expected "
-                f"{expected_rem_cash:.6f} to {free_cash:.6f}; "
-                f"reconciling BUY campaign initial_cash from {init_cash:.6f} "
-                f"to {reconciled_cash:.6f} while preserving stage tracking."
-            )
-            state = {**state, "initial_cash": reconciled_cash}
-            _save_symbol_campaign(symbol, "buy", state)
+    if stored_peak is not None:
+        state = _reconcile_campaign_initial_amount(symbol, "buy", state, free_cash)
 
     # Try the deepest crossed tier first. The shallowest tier respects the profit
     # guard and can be refused on every cycle; walking tiers from the top made that
@@ -1448,20 +1460,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
                 f"{SELL_REARM_GROWTH_PERCENT:.4f}% against frozen trough "
                 f"{trough_price:.8f}.")
             return _reset_sell_campaign(growth)
-        total_filled = safe_nonneg_float(state.get("total_filled_qty"), default=0.0)
-        expected_remaining = max(0.0, initial_qty - total_filled)
-        balance_tolerance = max(1e-12, initial_qty * 1e-6)
-        if free_qty > expected_remaining + balance_tolerance:
-            reconciled_initial_qty = free_qty + total_filled
-            print(
-                f"[{symbol}] Free balance increased from expected "
-                f"{expected_remaining:.8f} to {free_qty:.8f}; "
-                f"reconciling SELL campaign initial_qty from {initial_qty:.8f} "
-                f"to {reconciled_initial_qty:.8f} while preserving stage tracking."
-            )
-            initial_qty = reconciled_initial_qty
-            state = {**state, "initial_qty": initial_qty}
-            _save_symbol_campaign(symbol, "sell", state)
+        state = _reconcile_campaign_initial_amount(symbol, "sell", state, free_qty)
     else:
         trough_price = _finite_float(minimum_row.get("price"), positive=True)
         trough_ts = _finite_float(minimum_row.get("timestamp"), positive=True)
@@ -1536,13 +1535,9 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
                 free_qty = refreshed_free
                 if new_campaign:
                     state["initial_qty"] = free_qty
-                    initial_qty = free_qty
-                elif initial_qty is not None:
-                    tot_f = safe_nonneg_float(state.get("total_filled_qty"), default=0.0)
-                    if free_qty + tot_f > initial_qty + max(1e-12, initial_qty * 1e-6):
-                        initial_qty = free_qty + tot_f
-                        state = {**state, "initial_qty": initial_qty}
-                        _save_symbol_campaign(symbol, "sell", state)
+                else:
+                    state = _reconcile_campaign_initial_amount(symbol, "sell", state, free_qty)
+                initial_qty = _finite_float(state.get("initial_qty"), positive=True)
         except Exception:
             pass
     if new_campaign:

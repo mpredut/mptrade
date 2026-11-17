@@ -261,9 +261,7 @@ def resolve_priority_bot_owner(order_or_cid: Any, *, owner_map: Optional[dict[st
     oid = extract_order_id(order_or_cid, default="") if isinstance(order_or_cid, dict) else ""
     if cid:
         cid_u = cid.upper()
-        if cid_u.startswith(("RT_", "MO_RT_")):
-            return "rtrade"
-        if cid_u.startswith(("TA_", "TO_", "MO_TA_")):
+        if cid_u == "TO" or cid_u.startswith(("TO_", "TO-")):
             return "tradeall"
         if cid_u in ("TS", "TRL") or cid_u.startswith(("TS_", "TS-", "TRL_", "TRL-")):
             return "trailing_stop"
