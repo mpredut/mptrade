@@ -1907,6 +1907,22 @@ class TestOrderRollback(unittest.TestCase):
         )
         self.assertEqual(res_ag, ["rt_1", "ta_1"])
 
+        # 3. QuantityDecision.wallet_constrained is True when balance_cap clamps explicit requested_qty or insufficient_funds,
+        #    and False when policy_cap==0 (qty_zero_after_policy) or balance_cap >= requested_qty
+        from providers.quantity import QuantityDecision
+        dec_clamped = QuantityDecision(
+            requested_qty=0.01, balance_cap=0.002, policy_cap=0.01, fee_cap=0.002, final_qty=0.002
+        )
+        self.assertTrue(dec_clamped.wallet_constrained)
+        dec_policy_zero = QuantityDecision(
+            requested_qty=float("inf"), balance_cap=10.0, policy_cap=0.0, fee_cap=10.0, final_qty=0.0, refuse_reason="qty_zero_after_policy"
+        )
+        self.assertFalse(dec_policy_zero.wallet_constrained)
+        dec_plenty = QuantityDecision(
+            requested_qty=0.00001, balance_cap=10.0, policy_cap=10.0, fee_cap=10.0, final_qty=0.0, refuse_reason="below_min_notional"
+        )
+        self.assertFalse(dec_plenty.wallet_constrained)
+
 
 # ---------------------------------------------------------------------------
 # Consolidated from tests/test_trade_cooldown.py & tests/test_active_intents.py

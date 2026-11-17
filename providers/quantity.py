@@ -165,6 +165,18 @@ class QuantityDecision:
     scale_applied: bool = False
     applied_scale: float = 1.0
 
+    @property
+    def wallet_constrained(self) -> bool:
+        if self.refuse_reason in ("balance_unavailable", "insufficient_funds"):
+            return True
+        if self.balance_cap is None:
+            return False
+        w_cap = min(self.balance_cap, self.fee_cap) if self.fee_cap is not None else self.balance_cap
+        if self.requested_qty is not None and math.isfinite(self.requested_qty) and self.requested_qty > 0:
+            target = min(self.requested_qty, self.policy_cap) if self.policy_cap is not None else self.requested_qty
+            return target > 0 and w_cap < target * (1.0 - 1e-6)
+        return self.final_qty <= 0 and w_cap <= 0
+
 
 def _clean_asset_arg(val: Any) -> Optional[str]:
     if not val or isinstance(val, (bool, dict, list, tuple, set, frozenset)) or hasattr(val, "_mock_name"):

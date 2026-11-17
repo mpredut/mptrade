@@ -1718,3 +1718,16 @@ def test_cycle_io_scope_deduplicates_state_growth_and_p3b_reads_and_invalidates_
         reloaded = ag._load_state_root()
         assert counts["load"] == loads_before_fail + 1
         assert "buy" not in reloaded["symbols"].get("BTCUSDC", {})
+
+    # Preempted lower-priority orders are restored via mkt.place with original owner prefix when trend-deferred or refused
+    restored_calls = []
+    monkeypatch.setattr(ag.mkt, "place", lambda sym, side, px, qty, **kw: restored_calls.append((sym, side, px, qty, kw)) or {"orderId": "rest_1"})
+    restored_cnt = ag._restore_preempted_orders(
+        "BTCUSDC",
+        [{"orderId": "rt_old_1", "clientOrderId": "RT_MainThread_1", "side": "BUY", "price": "79500.0", "origQty": "0.002"}],
+        "assetguardian_buy_trend_deferred",
+    )
+    assert restored_cnt == 1
+    assert len(restored_calls) == 1
+    assert restored_calls[0][:4] == ("BTCUSDC", "BUY", 79500.0, 0.002)
+    assert str(restored_calls[0][4].get("client_order_id") or "").startswith("RT_")

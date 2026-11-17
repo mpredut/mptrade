@@ -12,7 +12,11 @@ from providers.order_id_context import can_bot_preempt_order, extract_client_ord
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 api = mkt
 from providers.execution_audit import ExecutionAudit
-from order_lifecycle import preempt_lower_priority_open_orders, propagate_submission_refusal
+from order_lifecycle import (
+    preempt_lower_priority_open_orders,
+    propagate_submission_refusal,
+    restore_cancelled_instrument_orders,
+)
 from order_retry import resolve_accepted_order
 from providers.quantity import resolve_assets
 from state_io import load_json_state, read_json_dict, save_json_state
@@ -1242,7 +1246,24 @@ def _active_sell_orders(provider, symbol):
 _rtrade_sell_block_since: dict = {}
 
 
-def _resolve_blocking_sell_orders(symbol, open_sells):
+def _restore_preempted_orders(symbol: str, orders: list[dict], reason: str) -> int:
+    if not orders:
+        return 0
+
+    class _MktProxy:
+        @staticmethod
+        def place(**kw):
+            return mkt.place(symbol, kw.pop("side"), kw.pop("price"), kw.pop("qty"), **kw)
+
+    return restore_cancelled_instrument_orders(
+        _MktProxy,
+        orders,
+        bypass_guards={"all"},
+        reason=reason,
+    )
+
+
+def _resolve_blocking_sell_orders(symbol, open_sells, *, canceled_orders_out: list | None = None):
     """Allow short retry when blocked only by lower-priority bots (rtrade, tradeall), then preemptively cancel."""
     if not open_sells:
         _rtrade_sell_block_since.pop(symbol, None)
@@ -1285,6 +1306,8 @@ def _resolve_blocking_sell_orders(symbol, open_sells):
         if oid:
             try:
                 if mkt.cancel_order(symbol, oid, provider_name="binance") is not False:
+                    if canceled_orders_out is not None and isinstance(order, dict):
+                        canceled_orders_out.append(dict(order))
                     print(
                         f"[{symbol}] Preemptively canceled blocking rtrade SELL order {oid} "
                         f"(cid={extract_client_order_id(order, default='')}) after {elapsed:.1f}s."
@@ -1316,7 +1339,8 @@ def _effective_sell_tiers(portfolio_growth_pct=None, sell_mult=1.0):
 
 
 def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
-                        portfolio_growth_pct=None, p3b_assessment=None):
+                        portfolio_growth_pct=None, p3b_assessment=None,
+                        canceled_orders_out: list | None = None):
     """Select one incomplete SELL tier against a frozen campaign trough."""
     state = _symbol_campaign(symbol, "sell")
     new_campaign = not bool(state)
@@ -1340,7 +1364,9 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
             ref_trough = _finite_float((state or {}).get("trough_price") or minimum_row.get("price"), positive=True)
             cand_growth = (((current_price - ref_trough) / ref_trough) * 100.0) if ref_trough else None
             if open_sells and cand_growth is not None and cand_growth >= min_trigger_thr:
-                open_sells = _resolve_blocking_sell_orders(symbol, open_sells)
+                open_sells = _resolve_blocking_sell_orders(
+                    symbol, open_sells, canceled_orders_out=canceled_orders_out
+                )
                 if not open_sells and callable(getattr(provider, "free_balance", None)):
                     try:
                         base_asset, _ = resolve_assets(symbol)
@@ -1411,7 +1437,9 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         print(f"[{symbol}] Cannot verify open SELL orders; do not submit tier.")
         return None, ({} if new_campaign else state), growth
     had_open_sells = bool(open_sells)
-    open_sells = _resolve_blocking_sell_orders(symbol, open_sells)
+    open_sells = _resolve_blocking_sell_orders(
+        symbol, open_sells, canceled_orders_out=canceled_orders_out
+    )
     if open_sells:
         print(
             f"[{symbol}] Existing SELL order blocks AssetGuardian tier: "
@@ -1621,11 +1649,15 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     evaluation["portfolio_growth"] = portfolio_growth_pct
     p3b_assessment = _cycle_p3b_sentiment()
     sell_mult, buy_mult, _ = _p3b_threshold_multipliers(p3b_assessment)
+    preempted_sell_orders: list[dict] = []
     sell_tier, sell_state, effective_growth = _sell_campaign_tier(
         symbol, current_price, minimum_row, free_base_qty, provider,
         portfolio_growth_pct=portfolio_growth_pct, p3b_assessment=p3b_assessment,
+        canceled_orders_out=preempted_sell_orders,
     )
     if sell_tier is None:
+        if preempted_sell_orders:
+            _restore_preempted_orders(symbol, preempted_sell_orders, "assetguardian_sell_no_tier")
         sell_state = _clear_campaign_trend_defer(symbol, "sell", sell_state)
     evaluation["growth"] = rolling_growth_percent if effective_growth is None else effective_growth
     frozen_trough = _finite_float(sell_state.get("trough_price"), positive=True)
@@ -1658,10 +1690,13 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         evaluation["pending_tier"] = True
         ready, sell_state = _trend_defer_ready(symbol, "sell", "SELL", threshold, sell_state)
         if not ready:
+            _restore_preempted_orders(symbol, preempted_sell_orders, "assetguardian_sell_trend_deferred")
             return False
         if _submit_sell_tier(symbol, current_price=current_price, tier=sell_tier, state=sell_state):
             evaluation["pending_tier"] = _has_pending_campaign(_symbol_campaign(symbol, "sell"))
             return True
+        if _LAST_SUBMIT_OUTCOME.get("state") != "unknown":
+            _restore_preempted_orders(symbol, preempted_sell_orders, "assetguardian_sell_refused")
         return False
 
     first_buy_trigger = _trigger_threshold_for_buy_tier(BUY_TIERS[0][0], buy_mult, volatility_mult=vol_mult)
@@ -1671,6 +1706,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     print(f"[{symbol}] Drawdown threshold reached ({drawdown_percent:.4f}% <= -{first_buy_trigger:.4f}%). Checking staged BUY...")
     _, quote_asset = resolve_assets(symbol)
     free_cash = _finite_float(provider.free_balance(quote_asset), positive=True) if provider else None
+    preempted_buy_orders: list[dict] = []
     if (free_cash is None or free_cash < 10.0) and provider is not None:
         buy_completed = _completed_tier_values(_symbol_campaign(symbol, "buy"))
         has_due_buy_tier = any(
@@ -1684,34 +1720,43 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
             "BUY",
             "assetguardian",
             cancel_fn=lambda oid: mkt.cancel_order(symbol, oid, provider_name="binance"),
+            canceled_orders_out=preempted_buy_orders,
             resolve_retry_fn=resolve_accepted_order,
         ):
             free_cash = _finite_float(provider.free_balance(quote_asset), positive=True)
     if free_cash is None:
+        _restore_preempted_orders(symbol, preempted_buy_orders, "assetguardian_buy_no_cash")
         return _log_symbol_and_return(symbol, f"No valid {quote_asset} balance for staged BUY.")
     tier, campaign = _campaign_tier(symbol, abs(drawdown_percent), maximum_row, free_cash, p3b_assessment=p3b_assessment)
     if tier is None:
+        _restore_preempted_orders(symbol, preempted_buy_orders, "assetguardian_buy_no_tier")
         return _log_symbol_and_return(symbol, "No uncompleted BUY tier at current drawdown.")
     threshold, allocation = tier
     evaluation["pending_tier"] = True
     if _finite_float(campaign.get("initial_cash"), positive=True) is None:
         print(f"[{symbol}] Invalid campaign initial cash; reset fail-closed.")
         _save_symbol_campaign(symbol, "buy", {})
+        _restore_preempted_orders(symbol, preempted_buy_orders, "assetguardian_buy_invalid_campaign")
         return False
     cash_amount, target_cash, prior_spent = _buy_remaining_cash(campaign, threshold, allocation)
     if cash_amount is None:
+        _restore_preempted_orders(symbol, preempted_buy_orders, "assetguardian_buy_invalid_budget")
         return _log_symbol_and_return(symbol, "Invalid BUY tier budget; preserve fail-closed.")
     if cash_amount <= max(1e-9, target_cash * 0.02):
         _complete_campaign_tier(symbol, "buy", campaign, threshold)
         print(f"[{symbol}] BUY tier -{threshold:.2f}% already funded by terminal partials ({prior_spent:.6f} quote); mark complete.")
+        _restore_preempted_orders(symbol, preempted_buy_orders, "assetguardian_buy_already_funded")
         return False
     print(f"[{symbol}] BUY tier -{threshold:.2f}% allocation={allocation:.3f} cash_remaining={cash_amount:.6f}/{target_cash:.6f} USDC")
     ready, campaign = _trend_defer_ready(symbol, "buy", "BUY", threshold, campaign)
     if not ready:
+        _restore_preempted_orders(symbol, preempted_buy_orders, "assetguardian_buy_trend_deferred")
         return False
     if _submit_buy_tier(symbol, current_price, cash_amount, tier, campaign):
         evaluation["pending_tier"] = True
         return True
+    if _LAST_SUBMIT_OUTCOME.get("state") != "unknown":
+        _restore_preempted_orders(symbol, preempted_buy_orders, "assetguardian_buy_refused")
     return False
 
 
