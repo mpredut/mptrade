@@ -1092,6 +1092,32 @@ def test_cancel_bot_open_orders_and_balance_unlock_via_replacement(temp_workspac
     # The opposite-side protective SELL (trailing stop) frees no quote balance and must not be canceled
     assert "bot_trailing_sell" not in rec2["canceled_prior_open_orders"]
 
+    # Case 3: When canceling a prior AI order alone unlocks sufficient balance, same-side bot orders are preserved
+    # and canceled_bot_open_orders is not populated.
+    btc_inst.cancel_order.reset_mock()
+    free_usdc = {"val": 0.0}
+    btc_inst._provider.free_balance.side_effect = lambda _a: free_usdc["val"]
+    btc_inst.open_orders.return_value = [
+        {"orderId": "ai_prior_buy_9", "clientOrderId": "AI_prior_9", "side": "BUY", "price": "79100.0"},
+        {"orderId": "bot_sibling_buy_9", "clientOrderId": "TO_sibling_9", "side": "BUY", "price": "78500.0"},
+    ]
+    btc_inst.cancel_order.side_effect = lambda oid: free_usdc.update(val=500.0) if oid == "ai_prior_buy_9" else None
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec3 = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "confidence": 0.92,
+            "replace_open_orders": True,
+            "suggested_notional_usd": 400.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+
+    assert rec3["status"] == "EXECUTED"
+    assert rec3["canceled_prior_open_orders"] == ["ai_prior_buy_9"]
+    assert "canceled_bot_open_orders" not in rec3
+    btc_inst.cancel_order.assert_called_once_with("ai_prior_buy_9")
+
 
 def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect_ai_ids():
     """Verify unfilled resting LIMIT orders and non-executed intents do not inherit prior fills from recent_orders."""
