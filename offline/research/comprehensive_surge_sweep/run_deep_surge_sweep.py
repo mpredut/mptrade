@@ -42,7 +42,7 @@ from botcore import (
     safe_pos_int,
 )
 from offline.backtests.evaluation import parse_cli_float, parse_cli_int
-from offline.backtests.datasets import scan_ohlc_csv_spans, summarize_ohlc_spans
+from offline.backtests.datasets import summarize_ohlc_dir_coverage
 from state_io import atomic_write_json, atomic_write_text
 from strategies import spot_engine as strat, spot_replay as _spot_replay
 from strategies.replay_metrics import write_markdown_report
@@ -611,7 +611,7 @@ def main():
         f"- **Assets:** {', '.join(ASSETS)} (4h bars)",
         *(
             [f"- **Effective Data Coverage:** {surge_cov}"]
-            if (surge_cov := summarize_ohlc_spans(scan_ohlc_csv_spans(args.data_dir, suffix="_240m.csv"), include_time=True))
+            if (surge_cov := summarize_ohlc_dir_coverage(args.data_dir, suffix="_240m.csv", include_time=True))
             else []
         ),
         f"- **Baseline Reference (Surge OFF):** ${base_pnl:,.2f} | H1: ${base_h1:,.2f} | H2: ${base_h2:,.2f}",

@@ -637,17 +637,16 @@ class PretradeEvaluationContext:
     ) -> None:
         """Record pillar provenance and valid epoch timestamp on the evaluation context."""
         self.pillar_sources[pillar] = str(source or "cachedb")
-        norm_ts = normalize_epoch_sec(ts, default=0.0) or 0.0
-        if norm_ts > 0.0:
-            self.pillar_timestamps[pillar] = norm_ts
-            if include_in_snapshot_ts:
-                self.source_timestamps.append(norm_ts)
+        norm_ts = self.record_source_timestamp(pillar, ts)
+        if norm_ts > 0.0 and include_in_snapshot_ts:
+            self.source_timestamps.append(norm_ts)
 
-    def record_source_timestamp(self, source_key: str, ts: Optional[float]) -> None:
+    def record_source_timestamp(self, source_key: str, ts: Optional[float]) -> float:
         """Record a per-source timestamp without altering the snapshot-level gate timestamp."""
         norm_ts = normalize_epoch_sec(ts, default=0.0) or 0.0
         if norm_ts > 0.0:
             self.pillar_timestamps[source_key] = norm_ts
+        return norm_ts
 
 
 class PretradePillarCollectorBase(TelemetryCacheCollectorInterface, ABC):
@@ -1830,12 +1829,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                         ):
                             apply_live_24trend_windows(sib_p_est, l24_sib_d)
                         if isinstance(sib_k := casefold_get(k_items_map, cand_u), dict):
-                            sib_k_vel = safe_float(sib_k.get("kalman_vel"), default=None)
-                            sib_k_std = safe_float(sib_k.get("kalman_vel_std"), default=None)
-                            if not (
-                                sib_k_vel is not None
-                                and (abs(sib_k_vel) < 1e-9 or (abs(sib_k_vel) < 1e-12 and (sib_k_std is None or sib_k_std >= 5.99)))
-                            ) or sib_p_est.get("kalman_vel") is None:
+                            if not is_unseeded_kalman_state(sib_k) or sib_p_est.get("kalman_vel") is None:
                                 for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
                                     sib_p_est[k_kal] = sib_k.get(k_kal)
                             if (sib_k_vol := safe_pos_float(sib_k.get("vol_1h_pct"), default=None)) is not None:

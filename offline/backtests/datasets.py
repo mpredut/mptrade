@@ -295,6 +295,16 @@ def scan_ohlc_csv_spans(
     return spans
 
 
+def summarize_ohlc_dir_coverage(
+    data_dir: str | Path,
+    *,
+    suffix: str = ".csv",
+    include_time: bool = True,
+) -> str | None:
+    """Scan OHLC CSVs in ``data_dir`` and return formatted ``start -> end (last bar: ...)`` coverage."""
+    return summarize_ohlc_spans(scan_ohlc_csv_spans(data_dir, suffix=suffix), include_time=include_time)
+
+
 def dataset_metadata(records: Iterable[Mapping], *, interval_minutes: int | None = None) -> dict:
     rows = validate_dataset(records, interval_minutes=interval_minutes)
     return {

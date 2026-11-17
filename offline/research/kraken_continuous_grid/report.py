@@ -10,7 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import exact_pos_int, load_local_module, optional_env, safe_float, safe_nonneg_int
-from offline.backtests.datasets import scan_ohlc_csv_spans, summarize_ohlc_spans
+from offline.backtests.datasets import summarize_ohlc_dir_coverage, summarize_ohlc_spans
 from state_io import atomic_write_json, atomic_write_text, read_jsonl_dicts
 
 
@@ -93,9 +93,9 @@ def format_grid_coverage_line(
                 if asset_k:
                     seen_assets.add(asset_k)
                 spans.append((s_i, e_i))
-    if not spans:
-        spans = scan_ohlc_csv_spans(os.path.join(exp_dir, "data"), suffix=suffix)
-    return summarize_ohlc_spans(spans, include_time=include_time)
+    if spans:
+        return summarize_ohlc_spans(spans, include_time=include_time)
+    return summarize_ohlc_dir_coverage(os.path.join(exp_dir, "data"), suffix=suffix, include_time=include_time)
 
 
 def _format_errors_section(errors: list[dict], *, label_fn=None, limit: int = 20) -> list[str]:

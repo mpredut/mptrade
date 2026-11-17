@@ -9,7 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import clean_nonempty_str, safe_float, safe_nonneg_int
-from offline.backtests.datasets import load_ohlc_tuples_csv, scan_ohlc_csv_spans, summarize_ohlc_spans
+from offline.backtests.datasets import load_ohlc_tuples_csv, summarize_ohlc_dir_coverage, summarize_ohlc_spans
 from state_io import atomic_write_text, read_json_dict, read_json_file
 
 
@@ -37,7 +37,7 @@ EQUITIES_JSON = os.path.join(OUT_DIR, "equities_ablation_results.json")
 
 def _build_effective_coverage_bullet() -> str | None:
     cov_parts: list[str] = []
-    if crypto_cov := summarize_ohlc_spans(scan_ohlc_csv_spans(CRYPTO_DATA_DIR, suffix="_240m.csv"), include_time=True):
+    if crypto_cov := summarize_ohlc_dir_coverage(CRYPTO_DATA_DIR, suffix="_240m.csv", include_time=True):
         cov_parts.append(f"Crypto 4h = {crypto_cov}")
     eq_spans = [
         (rows[0][0], rows[-1][0])
