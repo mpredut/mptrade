@@ -386,6 +386,9 @@ class AutonomousIntentGateway:
             # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
             unlock_failed_ids: list[str] = []
             unlock_scan_errors: list[str] = []
+            already_excluded = set(intent.get("canceled_prior_open_orders") or [])
+            if dup_oid:
+                already_excluded.add(dup_oid)
             unlocked_ids = cancel_existing_ai_open_orders(
                 inst,
                 decision,
@@ -393,6 +396,7 @@ class AutonomousIntentGateway:
                 intents=self.load_all_intents(),
                 include_bot_orders=True,
                 any_side=False,
+                exclude_order_ids=already_excluded or None,
                 failed_order_ids=unlock_failed_ids,
                 scan_errors=unlock_scan_errors,
                 canceled_orders_out=canceled_order_snapshots,
@@ -491,7 +495,8 @@ class AutonomousIntentGateway:
         last_hist = (res_intent.get("history") or [{}])[-1] if isinstance(res_intent.get("history"), list) else {}
         if (
             canceled_order_snapshots
-            and res_intent.get("status") in ("BLOCKED_BY_GUARD", "FAILED")
+            and guard_allowed
+            and res_intent.get("status") == "FAILED"
             and not res_intent.get("execution_payload")
             and last_hist.get("category") != "deferred"
         ):

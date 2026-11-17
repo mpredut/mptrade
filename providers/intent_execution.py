@@ -446,6 +446,7 @@ def cancel_existing_ai_open_orders(
         raw_open = None
 
     matched_targets_lc: set[str] = set()
+    seen_cancel_refs: set[str] = set()
     pending_cancels: list[tuple[str, bool, str, dict[str, Any]]] = []
     for oo, oo_side, oid in _iter_matching_open_orders(raw_open, want_side, any_side=eff_any_side):
         coid = extract_client_order_id(oo)
@@ -472,6 +473,9 @@ def cancel_existing_ai_open_orders(
             if failed_order_ids is not None:
                 failed_order_ids.append("<missing_order_id>")
             continue
+        if cancel_ref in seen_cancel_refs:
+            continue
+        seen_cancel_refs.add(cancel_ref)
         pending_cancels.append((cancel_ref, is_ai_order, oo_side or side, oo))
 
     if (

@@ -371,28 +371,13 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
             to_cancel.append(clean_oid)
             existing_str.add(clean_oid)
 
-    canceled_snapshots: list[dict] = []
     if to_cancel or order_ids:
-        open_by_id: dict[str, dict] = {}
-        if to_cancel and not hasattr(_fire_order, "_mock_name") and hasattr(api, "get_open_orders"):
-            try:
-                raw_oo = api.get_open_orders(symbol, **_provider_kw(symbol))
-                if isinstance(raw_oo, list):
-                    for oo in raw_oo:
-                        if isinstance(oo, dict):
-                            oid_s = extract_order_id(oo, default=None)
-                            if oid_s:
-                                open_by_id[str(oid_s)] = oo
-            except Exception:
-                pass
         failed_cancels = []
         for order_id in to_cancel:
             try:
                 if mkt.cancel_order(symbol, str(order_id), **_provider_kw(symbol)) is False:
                     failed_cancels.append(order_id)
                     continue
-                if str(order_id) in open_by_id:
-                    canceled_snapshots.append(open_by_id[str(order_id)])
                 try:
                     order_retry.resolve_accepted_order(symbol, order_id)
                 except Exception:
@@ -430,48 +415,6 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
                     order_ids.append(raw_id)
                 else:
                     order_ids.append(oid)
-
-    if not order_ids and canceled_snapshots and not hasattr(_fire_order, "_mock_name"):
-        has_queued_retry = False
-        try:
-            for rec in order_retry.load_all():
-                if (
-                    isinstance(rec, dict)
-                    and str(rec.get("lifecycle") or "submit_pending").lower() == "submit_pending"
-                    and str(rec.get("symbol") or "").upper() == symbol.upper()
-                    and (normalize_side(rec.get("side")) or "") == action
-                ):
-                    has_queued_retry = True
-                    break
-        except Exception:
-            has_queued_retry = False
-        if not has_queued_retry:
-            def _restore_tradeall_order(params: dict) -> bool:
-                restored_ord = mkt.place(
-                    symbol,
-                    params["side"],
-                    params["limit"],
-                    params["qty"],
-                    smart=False,
-                    wait_for_trend=False,
-                    enforce_business_minimum=False,
-                    caller_owns_retry=True,
-                    bypass_guards={"all"},
-                    motivation=f"atomic_rollback:{reason}",
-                    **_provider_kw(symbol),
-                )
-                r_oid = extract_order_id(restored_ord, default=None) if restored_ord else None
-                if r_oid:
-                    order_ids.append(r_oid)
-                    return True
-                return False
-
-            order_lifecycle.restore_cancelled_orders(
-                canceled_snapshots,
-                restore_fn=_restore_tradeall_order,
-                log_fn=print,
-                reason=f"tradeall {symbol} {action} replacement refused",
-            )
 
     return order_ids
 
