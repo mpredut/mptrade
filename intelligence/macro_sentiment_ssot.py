@@ -628,6 +628,15 @@ def resolve_derived_telemetry_intervals(
     }
 
 
+TELEMETRY_SOURCE_STALE_INTERVAL_MULT: float = 2.0
+
+
+def format_interval_sec_label(itv_sec: float) -> str:
+    """Format an interval in seconds cleanly as integer seconds (`15s`) or 1-decimal (`12.5s`)."""
+    return f"{round(itv_sec)}s" if abs(itv_sec - round(itv_sec)) < 1e-6 else f"{itv_sec:.1f}s"
+
+
+
 KINEMATIC_HORIZON_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("90s", "vel_90s_pct_min", "accel_90s_pct_min2"),
     ("5m", "vel_5m_pct_min", "accel_5m_pct_min2"),

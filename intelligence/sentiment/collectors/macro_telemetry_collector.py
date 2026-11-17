@@ -1252,6 +1252,33 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 return is_equity_venue(v_n) == (scope_norm == "equities")
             return True
 
+        def _collect_scoped_map_timestamps(
+            items_map: Any,
+            envelope_doc: Any,
+            item_ts_fn: Callable[[str, Any], Optional[float]],
+        ) -> tuple[List[float], Optional[float]]:
+            has_in_scope = False
+            has_out_of_scope = False
+            item_ts: List[float] = []
+            if isinstance(items_map, dict):
+                for k_raw, v_raw in items_map.items():
+                    k_up = str(k_raw or "").strip().upper()
+                    if not k_up or k_up in _meta_keys_up:
+                        continue
+                    if _sym_in_scope(k_up):
+                        has_in_scope = True
+                        ts_v = item_ts_fn(k_raw, v_raw)
+                        if ts_v is not None and ts_v > 0.0:
+                            item_ts.append(ts_v)
+                    else:
+                        has_out_of_scope = True
+            top_ts = (
+                extract_timestamp_s(envelope_doc)
+                if isinstance(envelope_doc, dict) and (has_in_scope or not has_out_of_scope)
+                else None
+            )
+            return item_ts, top_ts
+
         cp_source_items = (
             cur_p_items
             if isinstance(cur_p_items, dict) and cur_p_items
@@ -1262,24 +1289,15 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             if isinstance(prices_data, dict) and isinstance(prices_data.get("fetchtime"), dict)
             else {}
         )
-        has_in_scope_cp = False
-        has_out_of_scope_cp = False
-        cp_item_ts: List[float] = []
-        for k_cp, v_cp in cp_source_items.items():
-            k_cp_up = str(k_cp or "").strip().upper()
-            if not k_cp_up or k_cp_up in _meta_keys_up:
-                continue
-            if _sym_in_scope(k_cp_up):
-                has_in_scope_cp = True
-                ts_cp, ok_cp = extract_current_price_timestamp_sec(v_cp, cp_ft_map.get(k_cp))
-                if ok_cp and ts_cp > 0.0:
-                    cp_item_ts.append(ts_cp)
-            else:
-                has_out_of_scope_cp = True
-        prices_top_ts = (
-            extract_timestamp_s(prices_data)
-            if isinstance(prices_data, dict) and (has_in_scope_cp or not has_out_of_scope_cp)
-            else None
+        cp_item_ts, prices_top_ts = _collect_scoped_map_timestamps(
+            cp_source_items,
+            prices_data,
+            lambda k_cp, v_cp: (
+                ts_cp
+                if (cp_res := extract_current_price_timestamp_sec(v_cp, cp_ft_map.get(k_cp)))[1]
+                and (ts_cp := cp_res[0]) > 0.0
+                else None
+            ),
         )
         if scope_norm in ("equities", "crypto") and cp_item_ts:
             snap_ts: Optional[float] = max(cp_item_ts)
@@ -1306,24 +1324,10 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         if len(cp_item_ts) > 1:
             domain_ts["prices_oldest"] = min(cp_item_ts)
         st_items_d = trends_data.get("items") if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict) else trends_data
-        has_in_scope_st = False
-        has_out_of_scope_st = False
-        st_ts_vals: List[float] = []
-        if isinstance(st_items_d, dict):
-            for tk, tv in st_items_d.items():
-                tk_up = str(tk or "").strip().upper()
-                if not tk_up or tk_up in _meta_keys_up:
-                    continue
-                if _sym_in_scope(tk_up):
-                    has_in_scope_st = True
-                    if isinstance(tv, dict) and (ts_st := extract_timestamp_s(tv)) is not None and ts_st > 0.0:
-                        st_ts_vals.append(ts_st)
-                else:
-                    has_out_of_scope_st = True
-        st_top_ts = (
-            extract_timestamp_s(trends_data)
-            if isinstance(trends_data, dict) and (has_in_scope_st or not has_out_of_scope_st)
-            else None
+        st_ts_vals, st_top_ts = _collect_scoped_map_timestamps(
+            st_items_d,
+            trends_data,
+            lambda _tk, tv: extract_timestamp_s(tv) if isinstance(tv, dict) else None,
         )
         if st_ts_vals:
             domain_ts["short_trends"] = max(st_ts_vals)

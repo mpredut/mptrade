@@ -42,8 +42,10 @@ from cachepaths import (
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
+    TELEMETRY_SOURCE_STALE_INTERVAL_MULT,
     enrich_macro_benchmarks_live_state,
     format_equity_macro_regime_line,
+    format_interval_sec_label,
     read_first_cached_dict,
     resolve_derived_telemetry_intervals,
     resolve_kalman_vel_z,
@@ -122,7 +124,7 @@ from state_io import (
 read_json_cached = _default_read_json_cached
 
 DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC: float = 1800.0
-PRETRADE_SOURCE_STALE_INTERVAL_MULT: float = 2.0
+PRETRADE_SOURCE_STALE_INTERVAL_MULT: float = TELEMETRY_SOURCE_STALE_INTERVAL_MULT
 
 
 def resolve_pretrade_source_intervals_sec(asset_scope: str = "CRYPTO") -> Dict[str, float]:
@@ -251,8 +253,7 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         """Render compact per-source age vs update interval summary for LLM guard prompts."""
         parts = []
         for name, info in self.source_freshness.items():
-            itv_v = info["interval_sec"]
-            itv_s = f"{round(itv_v)}s" if abs(itv_v - round(itv_v)) < 1e-6 else f"{itv_v:.1f}s"
+            itv_s = format_interval_sec_label(info["interval_sec"])
             state = "fresh" if info["fresh"] else "stale"
             parts.append(f"{name}={info['age_sec']:.1f}s/{itv_s} ({info['age_ratio']:.1f}x, {state})")
         return ", ".join(parts)

@@ -58,6 +58,13 @@ _MICRO_PRICE_ANCHOR_KEYS: frozenset[str] = frozenset({
     "long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px",
     "long_liq_dist_pct", "short_liq_dist_pct", "long_liq_deep_dist_pct", "short_liq_deep_dist_pct",
 })
+_MICRO_OB_LOCAL_KEYS: frozenset[str] = frozenset({
+    "ob_mid_price", "best_bid", "best_ask", "ob_imbalance", "spread_bps",
+    "bid_depth_usd", "ask_depth_usd", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
+    "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
+    "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_perp_flow_regime",
+    "_ob_raw_ts", "_ob_ts",
+})
 
 
 def _first_variant_dict(mapping: Any, variants: Any, default: Any = None) -> Any:
@@ -1285,16 +1292,9 @@ def sync_sibling_symbol_telemetry(
                         microstructure[sym].get("bid_depth_usd") is not None
                         or microstructure[sym].get("ask_depth_usd") is not None
                     )
-                    ob_local_keys = {
-                        "ob_mid_price", "best_bid", "best_ask", "ob_imbalance", "spread_bps",
-                        "bid_depth_usd", "ask_depth_usd", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
-                        "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
-                        "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_perp_flow_regime",
-                        "_ob_raw_ts", "_ob_ts",
-                    }
                     synced_any_micro = False
                     for mk, mv in sib_micro.items():
-                        if sym_has_own_ob and mk in ob_local_keys:
+                        if sym_has_own_ob and mk in _MICRO_OB_LOCAL_KEYS:
                             continue
                         if not (micro_px_diverged and mk in _MICRO_PRICE_ANCHOR_KEYS) and mv is not None:
                             if microstructure[sym].get(mk) is None or (
@@ -1680,6 +1680,7 @@ __all__ = [
     "MicrostructureEvaluatorBase",
     "OrderbookCvdFlowEvaluator",
     "SiblingSymbolTelemetrySyncEvaluator",
+    "_MICRO_OB_LOCAL_KEYS",
     "_MICRO_PRICE_ANCHOR_KEYS",
     "_blend_structural_liq_anchor",
     "_first_variant_dict",

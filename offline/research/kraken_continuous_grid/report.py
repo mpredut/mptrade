@@ -74,6 +74,7 @@ def format_grid_coverage_line(
     *,
     suffix: str = "_240m.csv",
     include_time: bool = True,
+    sub_key: str | None = None,
 ) -> str | None:
     """Summarize effective bar coverage and last-bar UTC timestamp from result rows or ``data/`` CSVs."""
     spans: list[tuple[int, int]] = []
@@ -81,8 +82,11 @@ def format_grid_coverage_line(
     for r in rows:
         if not isinstance(r, dict) or _is_error_row(r):
             continue
-        s_i = exact_pos_int(r.get("start_ts"), default=None)
-        e_i = exact_pos_int(r.get("end_ts"), default=None)
+        target = r.get(sub_key) if sub_key is not None else r
+        if not isinstance(target, dict):
+            continue
+        s_i = exact_pos_int(target.get("start_ts"), default=None)
+        e_i = exact_pos_int(target.get("end_ts"), default=None)
         if s_i is not None and e_i is not None and s_i <= e_i:
             asset_k = str(r.get("asset") or "")
             if not asset_k or asset_k not in seen_assets:

@@ -27,7 +27,9 @@ from cachepaths import (
 )
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
 from intelligence.macro_sentiment_ssot import (
+    TELEMETRY_SOURCE_STALE_INTERVAL_MULT,
     format_equity_macro_regime_line,
+    format_interval_sec_label,
     format_macro_benchmarks_summary_line,
     resolve_derived_telemetry_intervals,
     SHORT_KINEMATIC_METRIC_KEYS,
@@ -36,6 +38,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
+    _MICRO_OB_LOCAL_KEYS,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
     reconcile_sibling_flow_and_liq_regimes,
@@ -829,10 +832,10 @@ def _format_3b_source_ages_suffix(
         if explicit_now is None and not (0.0 <= age_s <= 7.0 * 86400.0):
             continue
         age_clamped = max(0.0, age_s)
-        is_stale = age_clamped > itv_s * 2.0
+        is_stale = age_clamped > itv_s * TELEMETRY_SOURCE_STALE_INTERVAL_MULT
         if is_stale:
             any_stale = True
-        itv_lbl = f"{round(itv_s)}s" if abs(itv_s - round(itv_s)) < 1e-6 else f"{itv_s:.1f}s"
+        itv_lbl = format_interval_sec_label(itv_s)
         tag = "[stale]" if is_stale else ""
         parts.append(f"{lbl}={age_clamped:.1f}s/{itv_lbl}{tag}")
     if not parts or (explicit_now is None and not any_stale):
@@ -908,20 +911,13 @@ def _format_microstructure_section(
             or minfo.get("ask_depth_usd") is not None
             or minfo.get("ob_mid_price") is not None
         )
-        _ob_local_keys_3b = {
-            "ob_mid_price", "best_bid", "best_ask", "ob_imbalance", "spread_bps",
-            "bid_depth_usd", "ask_depth_usd", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
-            "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
-            "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_perp_flow_regime",
-            "_ob_raw_ts", "_ob_ts",
-        }
         for other_s in sib_3b:
             other_m = microstructure.get(other_s)
             if not isinstance(other_m, dict):
                 continue
             same_q_3b = compatible_quote_suffixes(other_s) == sym_quotes_3b
             for mk, mv in other_m.items():
-                if has_own_ob_3b and mk in _ob_local_keys_3b:
+                if has_own_ob_3b and mk in _MICRO_OB_LOCAL_KEYS:
                     continue
                 if mv is not None and (same_q_3b or mk not in _px_keys_3b):
                     if minfo.get(mk) is None or (
