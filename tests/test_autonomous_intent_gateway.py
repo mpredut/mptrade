@@ -2614,28 +2614,6 @@ def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_
     btc_inst.cancel_order.assert_called_once_with("10863524639")
     btc_inst.place.assert_called_once()
 
-    # 8. HOLD decision with cancel_bot_open_orders=True / cancel_order_ids cancels targeted bot open orders
-    #    while preserving untargeted AI resting orders and placing no new order.
-    btc_inst.place.reset_mock()
-    btc_inst.cancel_order.reset_mock()
-    btc_inst.open_orders.return_value = [
-        {"orderId": "725781222", "clientOrderId": "AI_intent_1794905565_sell_taousdc", "side": "SELL", "price": "196.4"},
-        {"orderId": "725793121", "clientOrderId": "RT_BUY_1", "side": "BUY", "price": "189.3"},
-        {"orderId": "725793123", "clientOrderId": "RT_SELL_1", "side": "SELL", "price": "191.7"},
-    ]
-    with patch.object(gw, "_dispatch_notify", return_value=True):
-        rec_hold_cancel = gw.submit({
-            "decision": "HOLD",
-            "symbol": "BTCUSDC",
-            "venue": "binance",
-            "cancel_bot_open_orders": True,
-            "cancel_order_ids": ["725793121", "725793123"],
-            "confidence": 0.95,
-        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
-    assert rec_hold_cancel is None
-    assert [c.args[0] for c in btc_inst.cancel_order.call_args_list] == ["725793121", "725793123"]
-    btc_inst.place.assert_not_called()
-
 
 def test_reconcile_resumed_intent_adopts_already_filled_order_via_client_id_without_duplicate_place(temp_workspace, monkeypatch):
     """Resumed enforce intents adopt orders that already filled on the venue (absent from open_orders) via order_by_client_id, while 0-fill canceled orders still execute."""

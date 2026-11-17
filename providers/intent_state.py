@@ -318,12 +318,11 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
                 d["cancel_order_ids"] = []
             candidates.append(d)
 
-    def _sort_key(d: dict[str, Any]) -> tuple[int, int, float]:
+    def _sort_key(d: dict[str, Any]) -> tuple[int, float]:
         side = str(d.get("decision") or "HOLD").strip().upper()
         is_action = 1 if side in ("BUY", "SELL") else 0
-        has_cancel = 1 if (_parse_bool_flag(d.get("cancel_bot_open_orders"), False) or bool(d.get("cancel_order_ids"))) else 0
         conf = clean_scale(d.get("confidence"), default=0.0, allow_percent=True)
-        return (-is_action, -has_cancel, -conf)
+        return (-is_action, -conf)
 
     candidates.sort(key=_sort_key)
 
