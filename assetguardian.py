@@ -11,7 +11,6 @@ import time
 from providers.order_id_context import (
     can_bot_preempt_order,
     extract_client_order_id,
-    resolve_order_owner,
     resolve_priority_bot_owner,
 )
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
@@ -972,14 +971,45 @@ def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
     # guard were never attempted. Per-tier budgets are unchanged by the order.
     _, buy_mult, _ = _p3b_threshold_multipliers(p3b_assessment)
     vol_mult = _symbol_volatility_mult(symbol)
-    completed = _completed_tier_values(state)
-    for threshold, allocation in sorted(BUY_TIERS, key=lambda tier: tier[0], reverse=True):
-        trigger_thr = _trigger_threshold_for_buy_tier(
-            threshold, buy_mult, volatility_mult=vol_mult
-        )
-        if drawdown_abs >= trigger_thr and threshold not in completed:
-            return (threshold, allocation), state
-    return None, state
+    return _first_due_buy_tier(drawdown_abs, _completed_tier_values(state), buy_mult, vol_mult), state
+
+
+def _first_due_buy_tier(drawdown_abs: float | None, completed: set, buy_mult: float = 1.0, vol_mult: float = 1.0):
+    if drawdown_abs is None:
+        return None
+    return next(
+        (
+            (threshold, allocation)
+            for threshold, allocation in sorted(BUY_TIERS, key=lambda tier: tier[0], reverse=True)
+            if threshold not in completed
+            and drawdown_abs >= _trigger_threshold_for_buy_tier(threshold, buy_mult, volatility_mult=vol_mult)
+        ),
+        None,
+    )
+
+
+def _first_due_sell_tier(
+    growth: float | None,
+    completed: set,
+    sell_mult: float = 1.0,
+    portfolio_growth_pct: float | None = None,
+    vol_mult: float = 1.0,
+    active_tiers=None,
+):
+    if growth is None:
+        return None
+    tiers = active_tiers if active_tiers is not None else _effective_sell_tiers(portfolio_growth_pct, sell_mult=sell_mult)
+    return next(
+        (
+            (threshold, allocation)
+            for threshold, allocation in tiers
+            if threshold not in completed
+            and growth >= _trigger_threshold_for_sell_tier(
+                threshold, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult
+            )
+        ),
+        None,
+    )
 
 
 def _complete_campaign_tier(symbol, kind, state, threshold):
@@ -1300,18 +1330,7 @@ def _resolve_blocking_sell_orders(symbol, open_sells, *, canceled_orders_out: li
     if not open_sells:
         _rtrade_sell_block_since.pop(symbol, None)
         return []
-    non_rtrade = [
-        o for o in open_sells
-        if not (
-            isinstance(o, dict)
-            and (
-                can_bot_preempt_order("assetguardian", o)
-                or (cid := (extract_client_order_id(o, default="") or "")).startswith(("RT_", "MO_RT_"))
-                or resolve_order_owner(cid) == "rtrade"
-            )
-        )
-    ]
-    if non_rtrade:
+    if any(not (isinstance(o, dict) and can_bot_preempt_order("assetguardian", o)) for o in open_sells):
         _rtrade_sell_block_since.pop(symbol, None)
         return open_sells
     now = time.time() * 1.0
@@ -1404,18 +1423,24 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     completed_existing = _completed_tier_values(state)
 
     def _has_due_sell_tier_at(g_val: float | None) -> bool:
-        if g_val is None:
-            return False
-        return any(
-            threshold not in completed_existing
-            and g_val >= _trigger_threshold_for_sell_tier(
-                threshold, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult
+        return (
+            _first_due_sell_tier(
+                g_val, completed_existing, sell_mult, portfolio_growth_pct, vol_mult, active_tiers=active_tiers
             )
-            for threshold, _ in active_tiers
+            is not None
         )
 
     def _can_preempt_sell() -> bool:
         return canceled_orders_out is None or not _is_short_trend_waiting(symbol, "SELL")
+
+    def _refresh_free_base() -> float | None:
+        if not callable(getattr(provider, "free_balance", None)):
+            return None
+        try:
+            base_asset, _ = resolve_assets(symbol)
+            return _finite_float(provider.free_balance(base_asset), positive=True)
+        except Exception:
+            return None
 
     if free_qty == 0 or (free_qty * current_price) < 5.0:
         open_sells = _active_sell_orders(provider, symbol)
@@ -1426,14 +1451,10 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
                 open_sells = _resolve_blocking_sell_orders(
                     symbol, open_sells, canceled_orders_out=canceled_orders_out
                 )
-                if not open_sells and callable(getattr(provider, "free_balance", None)):
-                    try:
-                        base_asset, _ = resolve_assets(symbol)
-                        refreshed_free = _finite_float(provider.free_balance(base_asset))
-                        if refreshed_free is not None and refreshed_free > 0 and (refreshed_free * current_price) >= 5.0:
-                            free_qty = refreshed_free
-                    except Exception:
-                        pass
+                if not open_sells:
+                    refreshed_free = _refresh_free_base()
+                    if refreshed_free is not None and (refreshed_free * current_price) >= 5.0:
+                        free_qty = refreshed_free
             if free_qty == 0 or (free_qty * current_price) < 5.0:
                 print(f"[{symbol}] Zero free qty with unknown/active SELL orders; preserve state.")
                 return None, state, None
@@ -1485,16 +1506,8 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     initial_qty = _finite_float(state.get("initial_qty"), positive=True)
     raw_filled_by_tier = state.get("filled_qty_by_tier")
     filled_by_tier = dict(raw_filled_by_tier) if isinstance(raw_filled_by_tier, dict) else {}
-    due_tier = next(
-        (
-            (threshold, allocation)
-            for threshold, allocation in active_tiers
-            if threshold not in completed
-            and growth >= _trigger_threshold_for_sell_tier(
-                threshold, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult
-            )
-        ),
-        None,
+    due_tier = _first_due_sell_tier(
+        growth, completed, sell_mult, portfolio_growth_pct, vol_mult, active_tiers=active_tiers
     )
     if due_tier is None:
         _rtrade_sell_block_since.pop(symbol, None)
@@ -1527,38 +1540,28 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
             f"[{symbol}] Existing SELL order blocks AssetGuardian tier: "
             f"{[extract_order_id(order) for order in open_sells]}")
         return None, ({} if new_campaign else state), growth
-    if had_open_sells and callable(getattr(provider, "free_balance", None)):
-        try:
-            base_asset, _ = resolve_assets(symbol)
-            refreshed_free = _finite_float(provider.free_balance(base_asset), positive=True)
-            if refreshed_free is not None and refreshed_free > free_qty:
-                free_qty = refreshed_free
-                if new_campaign:
-                    state["initial_qty"] = free_qty
-                else:
-                    state = _reconcile_campaign_initial_amount(symbol, "sell", state, free_qty)
-                initial_qty = _finite_float(state.get("initial_qty"), positive=True)
-        except Exception:
-            pass
+    if had_open_sells:
+        refreshed_free = _refresh_free_base()
+        if refreshed_free is not None and refreshed_free > free_qty:
+            free_qty = refreshed_free
+            if new_campaign:
+                state["initial_qty"] = free_qty
+            else:
+                state = _reconcile_campaign_initial_amount(symbol, "sell", state, free_qty)
+            initial_qty = _finite_float(state.get("initial_qty"), positive=True)
     if new_campaign:
         _save_symbol_campaign(symbol, "sell", state)
 
-    for threshold, allocation in active_tiers:
-        trigger_thr = _trigger_threshold_for_sell_tier(
-            threshold, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult
-        )
-        if growth < trigger_thr or threshold in completed:
-            continue
-        tier_target_qty = initial_qty * allocation
-        already_filled = safe_nonneg_float(
-            filled_by_tier.get(_tier_key(threshold)), default=0.0)
-        unfilled_tier_qty = max(0.0, tier_target_qty - already_filled)
-        remaining_qty = min(free_qty, unfilled_tier_qty)
-        if remaining_qty <= max(1e-12, tier_target_qty * 0.02):
-            _complete_campaign_tier(symbol, "sell", state, threshold)
-            return None, _symbol_campaign(symbol, "sell"), growth
-        return (threshold, allocation, remaining_qty), state, growth
-    return None, state, growth
+    tier_target_qty = initial_qty * due_allocation
+    already_filled = safe_nonneg_float(
+        filled_by_tier.get(_tier_key(due_threshold)), default=0.0
+    )
+    unfilled_tier_qty = max(0.0, tier_target_qty - already_filled)
+    remaining_qty = min(free_qty, unfilled_tier_qty)
+    if remaining_qty <= max(1e-12, tier_target_qty * 0.02):
+        _complete_campaign_tier(symbol, "sell", state, due_threshold)
+        return None, _symbol_campaign(symbol, "sell"), growth
+    return (due_threshold, due_allocation, remaining_qty), state, growth
 
 
 def _safe_tier_attempt(attempts_map, key):
@@ -1740,25 +1743,18 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         if preempted_sell_orders:
             _restore_preempted_orders(symbol, preempted_sell_orders, "assetguardian_sell_no_tier")
         cand_sell_g = effective_growth if effective_growth is not None else rolling_growth_percent
-        vol_m = _symbol_volatility_mult(symbol)
-        due_sell_thr = next(
-            (
-                t
-                for t, _ in _effective_sell_tiers(portfolio_growth_pct, sell_mult=sell_mult)
-                if t not in _completed_tier_values(sell_state)
-                and cand_sell_g >= _trigger_threshold_for_sell_tier(t, sell_mult, portfolio_growth_pct, volatility_mult=vol_m)
-            ),
-            None,
+        due_sell_pair = _first_due_sell_tier(
+            cand_sell_g, _completed_tier_values(sell_state), sell_mult, portfolio_growth_pct, _symbol_volatility_mult(symbol)
         )
         if (
-            due_sell_thr is not None
+            due_sell_pair is not None
             and provider is not None
             and has_preemptible_open_orders(provider, symbol, "SELL", "assetguardian")
             and _is_short_trend_waiting(symbol, "SELL")
         ):
             evaluation["pending_tier"] = True
             if isinstance(sell_state, dict) and sell_state:
-                _, sell_state = _trend_defer_ready(symbol, "sell", "SELL", due_sell_thr, sell_state)
+                _, sell_state = _trend_defer_ready(symbol, "sell", "SELL", due_sell_pair[0], sell_state)
         else:
             sell_state = _clear_campaign_trend_defer(symbol, "sell", sell_state)
     evaluation["growth"] = rolling_growth_percent if effective_growth is None else effective_growth
@@ -1811,15 +1807,8 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     preempted_buy_orders: list[dict] = []
     if provider is not None:
         existing_buy = _symbol_campaign(symbol, "buy")
-        buy_completed = _completed_tier_values(existing_buy)
-        due_buy_tier = next(
-            (
-                (threshold, allocation)
-                for threshold, allocation in sorted(BUY_TIERS, key=lambda t: t[0], reverse=True)
-                if threshold not in buy_completed
-                and abs(drawdown_percent) >= _trigger_threshold_for_buy_tier(threshold, buy_mult, volatility_mult=vol_mult)
-            ),
-            None,
+        due_buy_tier = _first_due_buy_tier(
+            abs(drawdown_percent), _completed_tier_values(existing_buy), buy_mult, vol_mult
         )
         due_rem_cash = (
             _buy_remaining_cash(existing_buy, due_buy_tier[0], due_buy_tier[1])[0]

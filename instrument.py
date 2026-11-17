@@ -1027,19 +1027,7 @@ class Instrument:
                 and not preempted_orders
                 and target_asset
                 and callable(getattr(self._provider, "free_balance", None))
-                and (
-                    getattr(decision, "wallet_constrained", False)
-                    or (
-                        decision.final_qty <= 0
-                        and decision.refuse_reason not in ("qty_zero_after_policy", "policy_unavailable")
-                        and not (
-                            decision.requested_qty is not None
-                            and math.isfinite(decision.requested_qty)
-                            and decision.balance_cap is not None
-                            and decision.balance_cap >= decision.requested_qty
-                        )
-                    )
-                )
+                and getattr(decision, "wallet_constrained", False)
                 and order_lifecycle.has_preemptible_open_orders(
                     self, self.symbol, ctx.side_u, ctx.caller_module
                 )

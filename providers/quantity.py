@@ -177,7 +177,9 @@ class QuantityDecision:
         if self.requested_qty is not None and math.isfinite(self.requested_qty) and self.requested_qty > 0:
             target = min(self.requested_qty, self.policy_cap) if self.policy_cap is not None else self.requested_qty
             return target > 0 and w_cap < target * (1.0 - 1e-6)
-        return self.final_qty <= 0 and w_cap <= 0
+        return self.final_qty <= 0 and (
+            w_cap <= 0 or (self.policy_cap is not None and w_cap < self.policy_cap * (1.0 - 1e-6))
+        )
 
 
 def _clean_asset_arg(val: Any) -> Optional[str]:
