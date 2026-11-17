@@ -59,6 +59,7 @@ from state_io import (
     discard_generation_file,
     format_jsonl_bucket_line,
     generation_lock_path,
+    is_state_io_dict_reader_unpatched,
     meta_file_path,
     previous_generation_path,
     prune_rotated_archives,
@@ -263,7 +264,9 @@ class CacheManagerInterface(ABC):
     ) -> Optional[tuple[dict, dict]]:
         eff_reader = (
             read_json_dict_cached
-            if orig_reader_fn is not None and reader_fn is orig_reader_fn
+            if orig_reader_fn is not None
+            and reader_fn is orig_reader_fn
+            and is_state_io_dict_reader_unpatched()
             else reader_fn
         )
         if not isinstance(data := eff_reader(path), dict):

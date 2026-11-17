@@ -73,6 +73,7 @@ from state_io import (
     discard_generation_file,
     durable_replace_file,
     generation_file_lock,
+    is_state_io_dict_reader_unpatched,
     meta_file_path,
     previous_generation_path,
     read_json_dict,
@@ -1458,7 +1459,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             not is_writer
             and read_json_dict is _ORIG_READ_JSON_DICT
             and read_recovering_previous is _ORIG_READ_RECOVERING_PREVIOUS
-            and read_json_dict_cached.__globals__.get("read_json_dict") is _ORIG_READ_JSON_DICT
+            and is_state_io_dict_reader_unpatched()
         )
 
     def _read_passive_or_writer_dict(self, path: str, *, is_writer: bool) -> dict:

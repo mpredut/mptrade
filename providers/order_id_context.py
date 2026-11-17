@@ -264,6 +264,8 @@ def resolve_priority_bot_owner(order_or_cid: Any, *, owner_map: Optional[dict[st
             return "rtrade"
         if cid_u.startswith(("TA_", "TO_", "MO_TA_")):
             return "tradeall"
+        if cid_u in ("TS", "TRL") or cid_u.startswith(("TS_", "TS-", "TRL_", "TRL-")):
+            return "trailing_stop"
         owner = resolve_order_owner(cid).lower()
         if owner in BOT_PRIORITY_RANKS:
             return owner
@@ -274,6 +276,17 @@ def resolve_priority_bot_owner(order_or_cid: Any, *, owner_map: Optional[dict[st
                 if mapped in BOT_PRIORITY_RANKS:
                     return mapped
     return "unspecified"
+
+
+def resolve_owner_cid_prefix(owner: Optional[str]) -> Optional[str]:
+    """Return the canonical ``create_client_order_id`` process prefix for a bot or actor owner name."""
+    if not isinstance(owner, str) or not (key := owner.strip().lower()):
+        return None
+    if key == "ai_executor":
+        return "AI"
+    if key == "manual":
+        return "MN"
+    return _PROCESS_NAME_OVERRIDES.get(key)
 
 
 def bot_priority_rank(order_or_cid: Any, *, owner_map: Optional[dict[str, str]] = None) -> int:

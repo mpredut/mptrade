@@ -2948,5 +2948,29 @@ def test_atomic_rollback_restores_canceled_open_orders_when_replacement_fails_or
     assert "restored_prior_open_orders" not in res_ambig
     assert len(place_calls) == 1
 
+    # 4. Verify manual (web_*/MN_*) and trailing-stop (TS_*/TRL_*) orders preserve canonical MN_ / SD_ prefixes on rollback
+    import order_lifecycle as ol_mod
+
+    assert rc.resolve_priority_bot_owner("web_abc123") == "manual"
+    assert rc.resolve_priority_bot_owner("TS_trail_99") == "trailing_stop"
+    assert rc.resolve_owner_cid_prefix("manual") == "MN"
+    assert rc.resolve_owner_cid_prefix("trailing_stop") == "SD"
+    restored_kwargs = []
+    dummy_inst = MagicMock()
+    dummy_inst.place.side_effect = lambda **kw: restored_kwargs.append(kw) or {"orderId": f"r_{len(restored_kwargs)}"}
+    cnt_restored = ol_mod.restore_cancelled_instrument_orders(
+        dummy_inst,
+        [
+            {"orderId": "m1", "clientOrderId": "web_abc123", "side": "BUY", "price": "75000.0", "origQty": "0.004"},
+            {"orderId": "t1", "clientOrderId": "TS_trail_99", "side": "SELL", "price": "85000.0", "origQty": "0.004"},
+        ],
+        bypass_guards={"all"},
+        reason="test_manual_and_ts_rollback",
+    )
+    assert cnt_restored == 2
+    assert str(restored_kwargs[0].get("client_order_id") or "").startswith("MN_")
+    assert str(restored_kwargs[1].get("client_order_id") or "").startswith("SD_")
+
+
 
 

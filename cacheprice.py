@@ -124,6 +124,7 @@ from state_io import (
     format_jsonl_bucket_line,
     generation_file_lock,
     generation_lock_path,
+    is_state_io_dict_reader_unpatched,
     iter_jsonl_retention_lines,
     meta_file_path,
     parse_json_payload,
@@ -871,7 +872,7 @@ class Cache24PriceManager(CachePriceManagerBase):
             read_json_dict_recovering is _ORIG_READ_JSON_DICT_RECOVERING
             and read_json_dict is _ORIG_READ_JSON_DICT
             and read_json_dict_cached is _ORIG_READ_JSON_DICT_CACHED
-            and read_json_dict_cached.__globals__.get("read_json_dict") is _ORIG_READ_JSON_DICT
+            and is_state_io_dict_reader_unpatched()
         )
         raw = (
             read_json_dict_cached(c24_path, _SSOT_24PRICE_DISK_MEMO, max_entries=64)
@@ -2402,6 +2403,7 @@ def _passive_dict_reader():
     return (
         read_json_dict_cached
         if read_json_dict_recovering is _ORIG_READ_JSON_DICT_RECOVERING
+        and is_state_io_dict_reader_unpatched()
         else read_json_dict_recovering
     )
 

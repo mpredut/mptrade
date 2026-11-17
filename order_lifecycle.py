@@ -829,7 +829,7 @@ def restore_cancelled_instrument_orders(
             or owner == "ai_executor"
             or orig_cid.upper().startswith("AI_")
         )
-        pfx = "AI" if is_ai else rc._PROCESS_NAME_OVERRIDES.get(owner)
+        pfx = "AI" if is_ai else rc.resolve_owner_cid_prefix(owner)
         place_kw: dict[str, Any] = {
             "side": params["side"],
             "price": params["limit"],

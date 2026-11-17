@@ -1178,6 +1178,8 @@ def read_recovering_previous(
 
 
 _JSON_DICT_MEMO: dict[str, tuple[tuple, dict[str, Any]]] = {}
+_ORIG_READ_JSON_DICT = read_json_dict
+_ORIG_READ_RECOVERING_PREVIOUS = read_recovering_previous
 _ORIG_READ_RECOVERING_ID = id(read_recovering_previous)
 
 
@@ -1214,9 +1216,19 @@ def read_json_dict_cached(
     except Exception:
         return None
     backup_path = previous_generation_path(resolved)
+    unpatched = is_state_io_dict_reader_unpatched()
     st_main, st_bak = _stat_sig(resolved), _stat_sig(backup_path)
-    if st_main is None and st_bak is None and id(read_recovering_previous) == _ORIG_READ_RECOVERING_ID:
+    if st_main is None and st_bak is None and unpatched:
         return None
+    if not unpatched:
+        res_patched = (
+            read_json_dict_recovering(resolved, default=None, repair_files=False)
+            if read_json_dict_recovering is not _ORIG_READ_JSON_DICT_RECOVERING
+            else read_json_dict(
+                resolved, default=None, backup_path=backup_path, recover_previous=True, repair_files=False
+            )
+        )
+        return res_patched if isinstance(res_patched, dict) else None
 
     cache_store = _JSON_DICT_MEMO if memo is None else memo
     sig = (st_main, st_bak, id(read_recovering_previous), id(json.load))
@@ -1235,6 +1247,20 @@ def read_json_dict_cached(
         cache_store[resolved] = (sig, res)
         return res
     return None
+
+
+_ORIG_READ_JSON_DICT_RECOVERING = read_json_dict_recovering
+_ORIG_READ_JSON_DICT_CACHED = read_json_dict_cached
+
+
+def is_state_io_dict_reader_unpatched() -> bool:
+    """Return True when ``state_io`` dict/recovering readers are unpatched (survives ``importlib.reload(state_io)``)."""
+    return (
+        read_json_dict is _ORIG_READ_JSON_DICT
+        and read_recovering_previous is _ORIG_READ_RECOVERING_PREVIOUS
+        and read_json_dict_recovering is _ORIG_READ_JSON_DICT_RECOVERING
+        and read_json_dict_cached is _ORIG_READ_JSON_DICT_CACHED
+    )
 
 
 def parse_proc_stat_fields(stat_text: str, *, min_fields: int = 20) -> tuple[str, list[str]]:

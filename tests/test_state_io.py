@@ -677,3 +677,31 @@ def test_read_json_dict_cached_inode_invalidation_and_memoized_ssot_price_trend_
         assert spy_load.call_count == 2
     assert cachetrend.CacheShortTrendManager._c24_entry_ts_ms([float("nan"), 100.0]) == 0.0
 
+    # importlib.reload(state_io) (triggered by orchestrator hot-reload) preserves stat-memoization
+    # in Cache24PriceManager and CacheShortTrendManager while honoring state_io.read_json_dict monkeypatches
+    import importlib
+
+    importlib.reload(state_io)
+    assert state_io.is_state_io_dict_reader_unpatched() is True
+    c24_file = tmp_path / cacheprice.cache_24_price_filename("BTCUSDC")
+    now_ms = int(now_s * 1000)
+    atomic_write_json(
+        str(c24_file),
+        {"items": {"BTCUSDC": [[now_ms - k * 60_000, 85_000.0 + k] for k in range(80, 0, -1)]}},
+    )
+    cacheprice._SSOT_24PRICE_DISK_MEMO.clear()
+    cacheprice._SSOT_24PRICE_PARSED_MEMO.clear()
+    with patch.object(cacheprice, "_now_time", return_value=now_s), patch(
+        "state_io.json.load", wraps=json.load
+    ) as spy_after_reload:
+        h_a = cacheprice.Cache24PriceManager.read_ssot_price_history(("BTCUSDC",), 1.0, custom_dir=str(tmp_path))
+        h_b = cacheprice.Cache24PriceManager.read_ssot_price_history(("BTCUSDC",), 0.5, custom_dir=str(tmp_path))
+        assert h_a is not None and h_b is not None
+        assert spy_after_reload.call_count == 1
+    with patch.object(state_io, "read_json_dict", return_value={"items": {"BTCUSDC": [[now_ms - 60_000, 1.0], [now_ms - 10_000, 2.0]]}}):
+        assert state_io.is_state_io_dict_reader_unpatched() is False
+        with patch.object(cacheprice, "_now_time", return_value=now_s):
+            h_p = cacheprice.Cache24PriceManager.read_ssot_price_history(("BTCUSDC",), 1.0, custom_dir=str(tmp_path))
+            assert h_p is not None and h_p[-1]["price"] == pytest.approx(2.0)
+
+
