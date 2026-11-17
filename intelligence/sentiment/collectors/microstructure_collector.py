@@ -1065,7 +1065,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 cached_entry = _PRICE_SERIES_MEMO.get(memo_key)
                 if cached_entry is not None and cached_entry[0] == memo_file_sig and cached_entry[1] == memo_cur_sig:
                     _LAST_7D_SPAN_MS_BY_SYM[sym_u] = cached_entry[4]
-                    return [list(pt) for pt in cached_entry[2]], list(cached_entry[3])
+                    return list(cached_entry[2]), list(cached_entry[3])
             except Exception:
                 memo_key = None
 

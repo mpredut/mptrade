@@ -1,11 +1,13 @@
 """Stateless quantitative price-series, volume-profile, swing-wave, Kalman, and multi-horizon trend evaluators."""
 from __future__ import annotations
 
+import bisect
 import math
 import os
 import statistics
 import time as _time
 from abc import ABC, abstractmethod
+from operator import itemgetter
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
@@ -59,6 +61,14 @@ def _round_small_slope(val: float) -> float:
 
 
 _BUCKET_5M_MEMO: Dict[Tuple[int, int, Any, Any, Any], Dict[int, float]] = {}
+_PT_TS_KEY = itemgetter(0)
+
+
+def _tpo_sample_at(pts: List[Tuple[float, float]], idx: int) -> Tuple[float, float]:
+    px_f = pts[idx][1]
+    prev_px = pts[idx - 1][1] if idx > 0 else None
+    vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
+    return (px_f, vol_w)
 
 
 def pct_delta(cur_px: float, ref_px: float, decimals: int = 2) -> float:
@@ -102,7 +112,12 @@ def _compute_horizon_range_dict(cur_px: float, low_px: float, high_px: float, su
 
 
 def compute_volume_profile_metrics(
-    series: list, *, num_bins: int = 24, value_area_pct: float = 0.70, decimals: Optional[int] = None,
+    series: list,
+    *,
+    num_bins: int = 24,
+    value_area_pct: float = 0.70,
+    decimals: Optional[int] = None,
+    precleaned_ts_px: Optional[List[Tuple[float, float]]] = None,
 ) -> Dict[str, Any]:
     """Compute realized session Volume Profile (Point of Control POC, Value Area High VAH, Value Area Low VAL, symmetric % distances, VA position, and regime)."""
     if not isinstance(series, list) or len(series) < 4:
@@ -110,8 +125,18 @@ def compute_volume_profile_metrics(
     try:
         has_vol_or_scalar = any(not isinstance(r, (list, tuple)) or len(r) != 2 for r in series)
         if not has_vol_or_scalar:
-            raw_pairs = [(px_f, 0.0) for _, px_f in _extract_sorted_ts_px(series)]
+            ts_px_pts = precleaned_ts_px if precleaned_ts_px is not None else _extract_sorted_ts_px(series)
+            n_pts = len(ts_px_pts)
+            if n_pts < 4:
+                return {}
             has_real_vol = False
+            if n_pts > 4000:
+                step = max(1, n_pts // 2000)
+                samples = [_tpo_sample_at(ts_px_pts, idx) for idx in range(0, n_pts, step)]
+                if samples[-1][0] != ts_px_pts[n_pts - 1][1]:
+                    samples.append(_tpo_sample_at(ts_px_pts, n_pts - 1))
+            else:
+                samples = [_tpo_sample_at(ts_px_pts, idx) for idx in range(n_pts)]
         else:
             timed_rows: list[Tuple[float, float, float]] = []
             scalar_rows: list[float] = []
@@ -157,28 +182,28 @@ def compute_volume_profile_metrics(
                 vol_cov_fresh and n_pos_vol >= max(4, min(len(raw_pairs), max(n_with_vol_col, 16)) // 4)
             )
 
-        vol_cap: Optional[float] = None
-        if has_real_vol:
-            pos_vols = sorted(v for _, v in raw_pairs if v > 0.0)
-            if len(pos_vols) >= 8:
-                vol_cap = pos_vols[len(pos_vols) // 2] * 8.0
-        samples: list[Tuple[float, float]] = []
-        prev_px: Optional[float] = None
-        for px_f, vol_w in raw_pairs:
-            if not has_real_vol:
-                vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
-            elif vol_w <= 0.0:
-                vol_w = 0.0
-            elif vol_cap is not None and vol_w > vol_cap:
-                vol_w = vol_cap
-            prev_px = px_f
-            samples.append((px_f, vol_w))
+            vol_cap: Optional[float] = None
+            if has_real_vol:
+                pos_vols = sorted(v for _, v in raw_pairs if v > 0.0)
+                if len(pos_vols) >= 8:
+                    vol_cap = pos_vols[len(pos_vols) // 2] * 8.0
+            samples = []
+            prev_px: Optional[float] = None
+            for px_f, vol_w in raw_pairs:
+                if not has_real_vol:
+                    vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
+                elif vol_w <= 0.0:
+                    vol_w = 0.0
+                elif vol_cap is not None and vol_w > vol_cap:
+                    vol_w = vol_cap
+                prev_px = px_f
+                samples.append((px_f, vol_w))
 
-        if len(samples) < 4:
-            return {}
-        if len(samples) > 4000:
-            downsampled = samples[:: max(1, len(samples) // 2000)]
-            samples = downsampled + ([samples[-1]] if downsampled[-1][0] != samples[-1][0] else [])
+            if len(samples) < 4:
+                return {}
+            if len(samples) > 4000:
+                downsampled = samples[:: max(1, len(samples) // 2000)]
+                samples = downsampled + ([samples[-1]] if downsampled[-1][0] != samples[-1][0] else [])
 
         cur_px = samples[-1][0]
         low_px, high_px = min(p for p, _ in samples), max(p for p, _ in samples)
@@ -311,24 +336,34 @@ def compute_volume_profile_metrics(
         return {}
 
 
+_ORIG_COMPUTE_VP_METRICS = compute_volume_profile_metrics
+
+
 def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
     """Compute multi-horizon percentage changes (15m, 30m, 1h, 3h) and 24h range from a cache_24_price series."""
     if not isinstance(series, list) or len(series) < 2:
         return {}
     try:
         clean_series = _extract_sorted_ts_px(series)
-        if len(clean_series) < 2:
+        n_clean = len(clean_series)
+        if n_clean < 2:
             return {}
         now_ms, cur_px = clean_series[-1]
         span_ms = now_ms - clean_series[0][0]
+        low_24h_raw = high_24h_raw = clean_series[0][1]
+        for _, px_v in clean_series:
+            if px_v < low_24h_raw:
+                low_24h_raw = px_v
+            elif px_v > high_24h_raw:
+                high_24h_raw = px_v
         out = _compute_horizon_range_dict(
             cur_px,
-            round(min(x[1] for x in clean_series), 6),
-            round(max(x[1] for x in clean_series), 6),
+            round(low_24h_raw, 6),
+            round(high_24h_raw, 6),
             "24h",
         )
         seen_sample_tms: set[float] = set()
-        dedup_sparse_samples = len(clean_series) >= 12
+        dedup_sparse_samples = n_clean >= 12
         for key, mins, min_span_ms, max_gap_mins in (
             ("chg_1m_pct", 1.0, 60000.0, 1.999), ("chg_3m_pct", 3.0, 180000.0, 1.999), ("chg_5m_pct", 5.0, 300000.0, 5.2),
             ("chg_15m_pct", 15.0, 0.0, 14.99 if dedup_sparse_samples else 0.0),
@@ -338,15 +373,16 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
             ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0), ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
         ):
-            tms, p_ref = next(((t_v, p_v) for t_v, p_v in reversed(clean_series) if t_v <= now_ms - mins * 60000.0), (None, clean_series[0][1]))
+            target_ms = now_ms - mins * 60000.0
+            ref_idx = bisect.bisect_right(clean_series, target_ms, key=_PT_TS_KEY)
+            tms, p_ref = clean_series[ref_idx - 1] if ref_idx > 0 else (None, clean_series[0][1])
             valid_back = p_ref > 0 and span_ms >= min_span_ms and (
                 max_gap_mins <= 0.0 or (tms is not None and tms >= now_ms - (mins + max_gap_mins) * 60000.0)
             )
             if valid_back and dedup_sparse_samples and tms is not None and mins < 1440.0 and tms in seen_sample_tms:
                 valid_back = False
             if not valid_back and 15.0 <= mins <= 180.0 and span_ms >= max(min_span_ms, mins * 60000.0):
-                target_ms = now_ms - mins * 60000.0
-                nxt_t = next((t_f for t_f, _ in clean_series if tms is not None and t_f > tms), None)
+                nxt_t = clean_series[ref_idx][0] if (tms is not None and ref_idx < n_clean) else None
                 has_overnight_gap = (
                     tms is not None
                     and nxt_t is not None
@@ -355,10 +391,14 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                 )
                 if mins <= 30.0 or has_overnight_gap:
                     max_fwd_ms = now_ms - (30.0 if mins == 60.0 else mins * 0.75) * 60000.0
-                    fwd_pt = next(
-                        ((t_f, p_f) for t_f, p_f in clean_series if target_ms < t_f <= max_fwd_ms and t_f not in seen_sample_tms),
-                        None,
-                    )
+                    fwd_pt: Optional[Tuple[float, float]] = None
+                    for fwd_idx in range(ref_idx, n_clean):
+                        cand_pt = clean_series[fwd_idx]
+                        if cand_pt[0] > max_fwd_ms:
+                            break
+                        if cand_pt[0] not in seen_sample_tms:
+                            fwd_pt = cand_pt
+                            break
                     if fwd_pt is not None and fwd_pt[1] > 0:
                         tms, p_ref, valid_back = fwd_pt[0], fwd_pt[1], True
                     elif has_overnight_gap and p_ref > 0 and tms not in seen_sample_tms:
@@ -368,7 +408,8 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                     seen_sample_tms.add(tms)
                 out[key] = pct_delta(cur_px, p_ref)
 
-        recent_15m = [p_v for tms, p_v in clean_series if tms >= now_ms - 15.0 * 60000.0]
+        idx_15m = bisect.bisect_left(clean_series, now_ms - 15.0 * 60000.0, key=_PT_TS_KEY)
+        recent_15m = [clean_series[k][1] for k in range(idx_15m, n_clean)]
         if len(recent_15m) >= 2:
             eff_dec_15m = _auto_px_decimals(cur_px)
             tape_pts: list[str] = []
@@ -382,7 +423,8 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                 if span_ms < m_off * 60000.0:
                     continue
                 max_tape_gap = 5.2 if m_off == 5.0 else (1.999 if m_off in (1.0, 3.0) else max(3.0, m_off * 0.5))
-                t_tap, p_tap = next(((t_v, p_v) for t_v, p_v in reversed(clean_series) if t_v <= now_ms - m_off * 60000.0), (None, clean_series[0][1]))
+                tap_idx = bisect.bisect_right(clean_series, now_ms - m_off * 60000.0, key=_PT_TS_KEY)
+                t_tap, p_tap = clean_series[tap_idx - 1] if tap_idx > 0 else (None, clean_series[0][1])
                 if t_tap is None or t_tap < now_ms - (m_off + max_tape_gap) * 60000.0 or t_tap in seen_tape_tms:
                     continue
                 seen_tape_tms.add(t_tap)
@@ -398,12 +440,13 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             if len(tape_pts) >= 3:
                 out["recent_tape_15m"] = tape_pts
         if span_ms >= 3600000.0 * 2.0:
-            win_6h = [(tms, p_v) for tms, p_v in clean_series if tms >= now_ms - 360.0 * 60000.0]
-            cutoff_1h = now_ms - 60.0 * 60000.0
-            prior_pts = [p_v for tms, p_v in win_6h if tms < cutoff_1h]
-            recent_pts = [p_v for tms, p_v in win_6h if tms >= cutoff_1h]
-            if len(prior_pts) >= 2 and len(recent_pts) >= 2:
-                high_6h, prior_low, recent_low = max(p_v for _, p_v in win_6h), min(prior_pts), min(recent_pts)
+            idx_6h = bisect.bisect_left(clean_series, now_ms - 360.0 * 60000.0, key=_PT_TS_KEY)
+            idx_1h = bisect.bisect_left(clean_series, now_ms - 60.0 * 60000.0, key=_PT_TS_KEY, lo=idx_6h)
+            if (idx_1h - idx_6h) >= 2 and (n_clean - idx_1h) >= 2:
+                prior_pts = [clean_series[k][1] for k in range(idx_6h, idx_1h)]
+                recent_pts = [clean_series[k][1] for k in range(idx_1h, n_clean)]
+                high_6h = max(max(prior_pts), max(recent_pts))
+                prior_low, recent_low = min(prior_pts), min(recent_pts)
                 low_6h = min(prior_low, recent_low)
                 dd_low_6h = ((low_6h / high_6h) - 1.0) * 100.0 if high_6h > 0.0 else 0.0
                 pos_6h = ((cur_px - low_6h) / (high_6h - low_6h)) if high_6h > low_6h else 1.0
@@ -441,7 +484,12 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                         out["bottom_structure_6h"] = "FRESH_6H_LOW_TEST"
                     if "bottom_structure_6h" in out:
                         out["prior_6h_low_px"], out["recent_1h_low_px"] = round(prior_low, eff_dec), round(recent_low, eff_dec)
-        out.update(compute_volume_profile_metrics(series))
+        vp_metrics = (
+            compute_volume_profile_metrics(series, precleaned_ts_px=clean_series)
+            if compute_volume_profile_metrics is _ORIG_COMPUTE_VP_METRICS
+            else compute_volume_profile_metrics(series)
+        )
+        out.update(vp_metrics)
         return out
     except Exception:
         return {}

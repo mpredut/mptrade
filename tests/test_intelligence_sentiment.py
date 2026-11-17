@@ -10334,6 +10334,230 @@ def test_short_venue_cycle_pnl_symmetry_and_shared_fallback_recent_fills(tmp_pat
     assert best_hl["last_buy"]["price"] == pytest.approx(98.0)
 
 
+def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, monkeypatch):
+    """Verify bisect-based compute_24h_price_metrics + TPO downsampling match legacy linear scans bit-for-bit, call _extract_sorted_ts_px once, and avoid inner sub-list reallocation on _PRICE_SERIES_MEMO hit."""
+    import intelligence.sentiment.evaluators.price_series_evaluator as pse_mod
+    import intelligence.macro_sentiment_ssot as ssot_mod
+
+    def _legacy_compute_24h_and_tpo(series: list) -> dict:
+        clean_series = ssot_mod._extract_sorted_ts_px(series)
+        if len(clean_series) < 2:
+            return {}
+        now_ms, cur_px = clean_series[-1]
+        span_ms = now_ms - clean_series[0][0]
+        out = pse_mod._compute_horizon_range_dict(
+            cur_px,
+            round(min(x[1] for x in clean_series), 6),
+            round(max(x[1] for x in clean_series), 6),
+            "24h",
+        )
+        seen_sample_tms: set = set()
+        dedup_sparse_samples = len(clean_series) >= 12
+        for key, mins, min_span_ms, max_gap_mins in (
+            ("chg_1m_pct", 1.0, 60000.0, 1.999),
+            ("chg_3m_pct", 3.0, 180000.0, 1.999),
+            ("chg_5m_pct", 5.0, 300000.0, 5.2),
+            ("chg_15m_pct", 15.0, 0.0, 14.99 if dedup_sparse_samples else 0.0),
+            ("chg_30m_pct", 30.0, 0.0, 29.99 if dedup_sparse_samples else 0.0),
+            ("chg_1h_pct", 60.0, 0.0, 119.99 if dedup_sparse_samples else 0.0),
+            ("chg_3h_pct", 180.0, 0.0, 179.99 if dedup_sparse_samples else 0.0),
+            ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
+            ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0),
+            ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
+        ):
+            tms, p_ref = next(
+                ((t_v, p_v) for t_v, p_v in reversed(clean_series) if t_v <= now_ms - mins * 60000.0),
+                (None, clean_series[0][1]),
+            )
+            valid_back = p_ref > 0 and span_ms >= min_span_ms and (
+                max_gap_mins <= 0.0 or (tms is not None and tms >= now_ms - (mins + max_gap_mins) * 60000.0)
+            )
+            if valid_back and dedup_sparse_samples and tms is not None and mins < 1440.0 and tms in seen_sample_tms:
+                valid_back = False
+            if not valid_back and 15.0 <= mins <= 180.0 and span_ms >= max(min_span_ms, mins * 60000.0):
+                target_ms = now_ms - mins * 60000.0
+                nxt_t = next((t_f for t_f, _ in clean_series if tms is not None and t_f > tms), None)
+                has_overnight_gap = (
+                    tms is not None
+                    and nxt_t is not None
+                    and tms <= target_ms < nxt_t
+                    and (nxt_t - tms) > 4.0 * 3600000.0
+                )
+                if mins <= 30.0 or has_overnight_gap:
+                    max_fwd_ms = now_ms - (30.0 if mins == 60.0 else mins * 0.75) * 60000.0
+                    fwd_pt = next(
+                        ((t_f, p_f) for t_f, p_f in clean_series if target_ms < t_f <= max_fwd_ms and t_f not in seen_sample_tms),
+                        None,
+                    )
+                    if fwd_pt is not None and fwd_pt[1] > 0:
+                        tms, p_ref, valid_back = fwd_pt[0], fwd_pt[1], True
+                    elif has_overnight_gap and p_ref > 0 and tms not in seen_sample_tms:
+                        valid_back = True
+            if valid_back:
+                if tms is not None:
+                    seen_sample_tms.add(tms)
+                out[key] = pse_mod.pct_delta(cur_px, p_ref)
+        recent_15m = [p_v for tms, p_v in clean_series if tms >= now_ms - 15.0 * 60000.0]
+        if len(recent_15m) >= 2:
+            eff_dec_15m = pse_mod._auto_px_decimals(cur_px)
+            tape_pts: list = []
+            tape_vals: list = []
+            seen_tape_tms: set = set()
+            for m_off, lbl in ((15.0, "-15m"), (10.0, "-10m"), (5.0, "-5m"), (3.0, "-3m"), (1.0, "-1m"), (0.0, "now")):
+                if m_off == 0.0:
+                    tape_pts.append(f"now:{f'{round(cur_px, eff_dec_15m):.{eff_dec_15m}f}'.rstrip('0').rstrip('.')}")
+                    tape_vals.append(cur_px)
+                    continue
+                if span_ms < m_off * 60000.0:
+                    continue
+                max_tape_gap = 5.2 if m_off == 5.0 else (1.999 if m_off in (1.0, 3.0) else max(3.0, m_off * 0.5))
+                t_tap, p_tap = next(
+                    ((t_v, p_v) for t_v, p_v in reversed(clean_series) if t_v <= now_ms - m_off * 60000.0),
+                    (None, clean_series[0][1]),
+                )
+                if t_tap is None or t_tap < now_ms - (m_off + max_tape_gap) * 60000.0 or t_tap in seen_tape_tms:
+                    continue
+                seen_tape_tms.add(t_tap)
+                tape_pts.append(f"{lbl}:{f'{round(p_tap, eff_dec_15m):.{eff_dec_15m}f}'.rstrip('0').rstrip('.')}")
+                tape_vals.append(p_tap)
+            if len(recent_15m) >= 3 or len(tape_pts) >= 3:
+                all_15m_vals = recent_15m + tape_vals if len(tape_pts) >= 3 else recent_15m
+                l15, h15 = round(min(all_15m_vals), eff_dec_15m), round(max(all_15m_vals), eff_dec_15m)
+                out["low_15m"], out["high_15m"] = l15, h15
+                if h15 > l15 > 0:
+                    out["pos_15m_pct"] = pse_mod.range_position_pct(cur_px, l15, h15)
+                    out["span_15m_pct"] = pse_mod.pct_delta(h15, l15)
+            if len(tape_pts) >= 3:
+                out["recent_tape_15m"] = tape_pts
+        if span_ms >= 3600000.0 * 2.0:
+            win_6h = [(tms, p_v) for tms, p_v in clean_series if tms >= now_ms - 360.0 * 60000.0]
+            cutoff_1h = now_ms - 60.0 * 60000.0
+            prior_pts = [p_v for tms, p_v in win_6h if tms < cutoff_1h]
+            recent_pts = [p_v for tms, p_v in win_6h if tms >= cutoff_1h]
+            if len(prior_pts) >= 2 and len(recent_pts) >= 2:
+                high_6h, prior_low, recent_low = max(p_v for _, p_v in win_6h), min(prior_pts), min(recent_pts)
+                low_6h = min(prior_low, recent_low)
+                dd_low_6h = ((low_6h / high_6h) - 1.0) * 100.0 if high_6h > 0.0 else 0.0
+                pos_6h = ((cur_px - low_6h) / (high_6h - low_6h)) if high_6h > low_6h else 1.0
+                dd_24h = out.get("dd_24h_high_pct") or 0.0
+                pos_24h = out.get("pos_24h_pct") if out.get("pos_24h_pct") is not None else 100.0
+                has_meaningful_bottom_dd = dd_low_6h <= -1.45 or (
+                    dd_low_6h <= -0.85 and dd_24h <= -1.45 and pos_24h <= 35.0
+                )
+                if has_meaningful_bottom_dd and pos_6h <= 0.70 and prior_low > 0.0 and recent_low > 0.0:
+                    eff_dec = pse_mod._auto_px_decimals(cur_px)
+                    if recent_low < prior_low and cur_px > prior_low:
+                        out["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
+                        out["reclaim_above_prior_low_pct"] = pse_mod.pct_delta(cur_px, prior_low)
+                    elif (
+                        recent_low >= prior_low
+                        and ((recent_low / prior_low) - 1.0) * 100.0 <= 4.5
+                        and (
+                            cur_px > recent_low * 1.002
+                            or (recent_low > prior_low * 1.002 and cur_px >= recent_low)
+                            or (recent_low > prior_low and cur_px > recent_low * 1.0005 and cur_px > prior_low * 1.001)
+                        )
+                    ):
+                        out["bottom_structure_6h"] = "HIGHER_LOW_DOUBLE_BOTTOM"
+                        out["higher_low_vs_prior_pct"] = pse_mod.pct_delta(recent_low, prior_low)
+                    elif (
+                        (recent_low <= prior_low and cur_px <= prior_low and ((cur_px / recent_low) - 1.0) * 100.0 <= 2.5)
+                        or (
+                            recent_low >= prior_low
+                            and ((recent_low / prior_low) - 1.0) * 100.0 <= 0.20
+                            and ((cur_px / prior_low) - 1.0) * 100.0 <= 0.25
+                        )
+                    ):
+                        out["bottom_structure_6h"] = "FRESH_6H_LOW_TEST"
+                    if "bottom_structure_6h" in out:
+                        out["prior_6h_low_px"], out["recent_1h_low_px"] = round(prior_low, eff_dec), round(recent_low, eff_dec)
+        # Force 3-col zero-vol path in compute_volume_profile_metrics to compare legacy full-array TPO downsampling
+        legacy_vp = compute_volume_profile_metrics([[t_v, p_v, 0.0] for t_v, p_v in clean_series])
+        out.update(legacy_vp)
+        return out
+
+    base_ms = 1_750_000_000_000.0
+    # 1. Dense >4000-point 24h series with duplicate boundary timestamps and LIQUIDITY_SWEEP_RECLAIM
+    dense_series = []
+    for i in range(6017):
+        t_ms = base_ms + i * 14_350.0
+        px = 100.0 - (i / 6016.0) * 3.0 + math.sin(i * 0.13) * 0.45
+        dense_series.append([t_ms, round(px, 4)])
+        if i in (2500, 5950):
+            dense_series.append([t_ms, round(px + 0.08, 4)])
+    dense_series[-10][1] = 95.80
+    dense_series[-1][1] = 96.85
+    assert compute_24h_price_metrics(dense_series) == _legacy_compute_24h_and_tpo(dense_series)
+
+    # 2. Sparse series with overnight gap (>4h) triggering forward-point fallback and HIGHER_LOW_DOUBLE_BOTTOM
+    now_ms = base_ms + 24 * 3600_000.0
+    sparse_overnight = [
+        [now_ms - 24 * 3600_000.0, 210.0],
+        [now_ms - 18 * 3600_000.0, 208.5],
+        [now_ms - 12 * 3600_000.0, 207.0],
+        [now_ms - 6.5 * 3600_000.0, 205.0],
+        [now_ms - 5.0 * 3600_000.0, 206.0],
+        [now_ms - 4.8 * 3600_000.0, 200.0],
+        [now_ms - 52 * 60_000.0, 200.4],
+        [now_ms - 45 * 60_000.0, 200.2],
+        [now_ms - 26 * 60_000.0, 200.6],
+        [now_ms - 14 * 60_000.0, 200.8],
+        [now_ms - 9 * 60_000.0, 200.9],
+        [now_ms - 4.5 * 60_000.0, 201.0],
+        [now_ms - 2.5 * 60_000.0, 201.1],
+        [now_ms - 0.8 * 60_000.0, 201.15],
+        [now_ms, 201.2],
+    ]
+    res_sparse = compute_24h_price_metrics(sparse_overnight)
+    assert res_sparse == _legacy_compute_24h_and_tpo(sparse_overnight)
+    assert res_sparse.get("bottom_structure_6h") == "HIGHER_LOW_DOUBLE_BOTTOM"
+
+    # 3. _extract_sorted_ts_px is called only once inside compute_24h_price_metrics on 2-col series
+    extract_calls = []
+    real_extract = pse_mod._extract_sorted_ts_px
+
+    def _counting_extract(ser):
+        ssot_mod._SORTED_TS_PX_MEMO.clear()
+        extract_calls.append(len(ser))
+        return real_extract(ser)
+
+    monkeypatch.setattr(pse_mod, "_extract_sorted_ts_px", _counting_extract)
+    res_counted = compute_24h_price_metrics(dense_series)
+    assert len(extract_calls) == 1
+    assert res_counted == _legacy_compute_24h_and_tpo(dense_series)
+
+    # 4. load_symbol_price_series memo hit returns distinct outer list without reallocating inner row lists
+    from cacheprice import Cache24PriceManager
+
+    c_dir = tmp_path / "cachedb"
+    p24_file = c_dir / Cache24PriceManager.disk_filename_for_symbol("BTCUSDC")
+    p24_file.parent.mkdir(parents=True, exist_ok=True)
+    live_now_ms = round(time.time() * 1000.0)
+    p24_file.write_text(
+        json.dumps(
+            {
+                "BTCUSDC": [
+                    [live_now_ms - 600_000.0, 80000.0],
+                    [live_now_ms - 300_000.0, 80050.0],
+                    [live_now_ms - 60_000.0, 80100.0],
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    s1, _ = load_symbol_price_series(str(c_dir), "BTCUSDC", current_price_items={})
+    s2, _ = load_symbol_price_series(str(c_dir), "BTCUSDC", current_price_items={})
+    s3, _ = load_symbol_price_series(str(c_dir), "BTCUSDC", current_price_items={})
+    assert isinstance(s2[-1], list)
+    assert s2[-1] == [live_now_ms - 60_000.0, 80100.0]
+    assert s1 is not s2 and s2 is not s3
+    assert s2[0] is s3[0] and s2[-1] is s3[-1]
+    s2.append([live_now_ms, 80200.0])
+    s4, _ = load_symbol_price_series(str(c_dir), "BTCUSDC", current_price_items={})
+    assert len(s4) == 3
+
+
+
 
 
 
