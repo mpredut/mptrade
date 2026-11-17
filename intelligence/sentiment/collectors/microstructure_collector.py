@@ -498,9 +498,12 @@ def load_symbol_microstructure(
         best_ask = safe_pos_float(obj_attr(ob, "best_ask"), default=None)
         if (spread_bps := round_spread_bps(obj_attr(ob, "spread_bps"), best_bid=best_bid, best_ask=best_ask, mid_price=ob_mid)) is not None:
             m_info["spread_bps"] = spread_bps
+        ob_raw_ts = normalize_epoch_sec(obj_attr(ob, "ts", obj_attr(ob, "timestamp", None)), default=0.0) or 0.0
+        if ob_raw_ts > 0.0:
+            m_info["_ob_raw_ts"] = ob_raw_ts
         if ob_same_quote:
-            if (ob_ts_v := (normalize_epoch_sec(obj_attr(ob, "ts"), default=0.0) or 0.0)) > 0.0:
-                m_info["_ob_ts"] = ob_ts_v
+            if ob_raw_ts > 0.0:
+                m_info["_ob_ts"] = ob_raw_ts
             for k_px, v_px in (("ob_mid_price", ob_mid), ("best_bid", best_bid), ("best_ask", best_ask)):
                 if v_px is not None:
                     m_info[k_px] = v_px
@@ -514,6 +517,9 @@ def load_symbol_microstructure(
         m_info["bid_wall_px"] = safe_pos_float(obj_attr(ob, "largest_bid_wall_price", obj_attr(ob, "bid_wall_px")), default=None) if ob_same_quote else None
         m_info["ask_wall_px"] = safe_pos_float(obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px")), default=None) if ob_same_quote else None
     if deriv is not None:
+        deriv_ts_v = normalize_epoch_sec(obj_attr(deriv, "ts", obj_attr(deriv, "timestamp", None)), default=0.0) or 0.0
+        if deriv_ts_v > 0.0:
+            m_info["_deriv_ts"] = deriv_ts_v
         m_info["funding_rate"] = safe_float(obj_attr(deriv, "funding_rate"), default=None)
         m_info["pred_funding_rate"] = safe_float(obj_attr(deriv, "predicted_funding_rate", obj_attr(deriv, "pred_funding_rate")), default=None)
         m_info["oi_usd"] = obj_attr(deriv, "open_interest_usd", obj_attr(deriv, "oi_usd"))
@@ -522,6 +528,9 @@ def load_symbol_microstructure(
         m_info["perp_spot_basis_bps"] = safe_float(obj_attr(deriv, "perp_spot_basis_bps"), default=None)
         m_info["funding_annualized_pct"] = safe_float(obj_attr(deriv, "funding_annualized_pct"), default=None)
     if whale is not None:
+        whale_ts_v = normalize_epoch_sec(obj_attr(whale, "ts", obj_attr(whale, "timestamp", None)), default=0.0) or 0.0
+        if whale_ts_v > 0.0:
+            m_info["_whale_ts"] = whale_ts_v
         for dst_k, src_k, alt_k in (
             ("whale_long_pct", "top_traders_long_pct", "whale_long_pct"),
             ("whale_long_ratio", "top_traders_long_ratio", "whale_long_ratio"),

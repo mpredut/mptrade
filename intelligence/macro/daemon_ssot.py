@@ -688,6 +688,10 @@ class ExternalTelemetryMixin:
             else:
                 snap = collector.fetch(symbol, allow_network=True)
             if snap:
+                sym_clean = str(symbol or "").strip().upper()
+                stale_set = getattr(collector, "_stale_fallback_symbols", None)
+                if isinstance(stale_set, set) and sym_clean in stale_set:
+                    return False
                 vals = [
                     obj_attr(snap, spec[0], spec[1]) if isinstance(spec, tuple) else obj_float(snap, spec)
                     for spec in attr_specs
@@ -744,6 +748,7 @@ class CachedHttpJsonCollector(SyncModeMixin, ABC):
         self.endpoint_url = (endpoint_url.strip() if isinstance(endpoint_url, str) else "") or default_endpoint_fn()
         self._cached_snapshot: Any = None
         self._last_fetch_ts: float = 0.0
+        self._last_fetch_used_stale_fallback: bool = False
         self._init_sync_mode(start_sync)
 
     @abstractmethod
@@ -764,6 +769,7 @@ class CachedHttpJsonCollector(SyncModeMixin, ABC):
             allow_network=allow_network,
         )
         if not should_fetch:
+            self._last_fetch_used_stale_fallback = False
             return ready
         try:
             fetch_fn = _resolve_daemon_helper(
@@ -776,6 +782,7 @@ class CachedHttpJsonCollector(SyncModeMixin, ABC):
             )
             snapshot = self._parse_fetched_payload(data, now)
             if snapshot:
+                self._last_fetch_used_stale_fallback = False
                 self._cached_snapshot, self._last_fetch_ts = snapshot, now
                 return snapshot
         except Exception as exc:
@@ -784,6 +791,7 @@ class CachedHttpJsonCollector(SyncModeMixin, ABC):
                 self._COLLECTOR_LABEL,
                 exc,
             )
+        self._last_fetch_used_stale_fallback = self._cached_snapshot is not None
         return self._cached_snapshot
 
     def read_snapshot(self, *, now_ts: Optional[float] = None) -> Any:

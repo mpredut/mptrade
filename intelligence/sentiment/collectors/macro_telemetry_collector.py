@@ -1213,20 +1213,19 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
 
         scope_label = str(scope or "all").strip().lower() or "all"
         snap_source = "cachedb_read_only" if not allow_network and not persist else "live_harvest"
+        cp_item_ts = [
+            ts_norm
+            for v_item in (cur_p_items.values() if isinstance(cur_p_items, dict) else ())
+            if isinstance(v_item, list)
+            and v_item
+            and isinstance(v_item[-1], (list, tuple))
+            and len(v_item[-1]) >= 2
+            and (ts_norm := normalize_epoch_sec(v_item[-1][0], default=None)) is not None
+            and ts_norm > 0.0
+        ]
         snap_ts = extract_timestamp_s(prices_data) if isinstance(prices_data, dict) else None
-        if snap_ts is None and isinstance(cur_p_items, dict):
-            cp_item_ts = [
-                ts_norm
-                for v_item in cur_p_items.values()
-                if isinstance(v_item, list)
-                and v_item
-                and isinstance(v_item[-1], (list, tuple))
-                and len(v_item[-1]) >= 2
-                and (ts_norm := normalize_epoch_sec(v_item[-1][0], default=None)) is not None
-                and ts_norm > 0.0
-            ]
-            if cp_item_ts:
-                snap_ts = max(cp_item_ts)
+        if snap_ts is None and cp_item_ts:
+            snap_ts = max(cp_item_ts)
         if snap_ts is None:
             sensor_ts_candidates = [
                 ts_v
@@ -1234,6 +1233,43 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 if isinstance(s_val, dict) and (ts_v := extract_timestamp_s(s_val)) is not None
             ]
             snap_ts = max(sensor_ts_candidates) if sensor_ts_candidates else now_ts
+        domain_ts: Dict[str, float] = {}
+        prices_newest_ts = max(cp_item_ts) if cp_item_ts else (extract_timestamp_s(prices_data) if isinstance(prices_data, dict) else None)
+        if prices_newest_ts is not None and prices_newest_ts > 0.0:
+            domain_ts["prices_newest"] = prices_newest_ts
+        if len(cp_item_ts) > 1:
+            domain_ts["prices_oldest"] = min(cp_item_ts)
+        st_items_d = trends_data.get("items") if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict) else trends_data
+        st_ts_vals = [
+            ts_st
+            for tv in (st_items_d.values() if isinstance(st_items_d, dict) else ())
+            if isinstance(tv, dict) and (ts_st := extract_timestamp_s(tv)) is not None and ts_st > 0.0
+        ]
+        st_top_ts = extract_timestamp_s(trends_data) if isinstance(trends_data, dict) else None
+        if st_ts_vals:
+            domain_ts["short_trends"] = max(st_ts_vals)
+        elif st_top_ts is not None and st_top_ts > 0.0:
+            domain_ts["short_trends"] = st_top_ts
+        if cache_dir:
+            vb_p = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json")))
+            if os.path.exists(vb_p) and isinstance(vb_doc := _rj(vb_p), dict):
+                vb_ts_vals = [
+                    ts_vb
+                    for bk, bv in vb_doc.items()
+                    if isinstance(bk, str)
+                    and (
+                        (bk.startswith("open_orders_verified_ts:") and (ts_vb := normalize_epoch_sec(bv, default=None)) is not None)
+                        or (isinstance(bv, dict) and (ts_vb := extract_timestamp_s(bv)) is not None)
+                    )
+                    and ts_vb > 0.0
+                ]
+                if vb_ts_vals:
+                    domain_ts["venue_balances"] = min(vb_ts_vals)
+        for m_name, m_val in macro_sensors.items():
+            if isinstance(m_val, dict):
+                m_ts = normalize_epoch_sec(m_val.get("ts"), default=None) or extract_timestamp_s(m_val)
+                if m_ts is not None and m_ts > 0.0:
+                    domain_ts[m_name] = m_ts
         snap_age_sec = round(max(0.0, now_ts - snap_ts), 3)
         if not getattr(snapshot, "snapshot_id", ""):
             snapshot.snapshot_id = f"market_portfolio:{scope_label}:{round(snap_ts * 1000.0)}"
@@ -1242,6 +1278,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         snapshot.ts = snap_ts
         snapshot.evaluated_at_ts = now_ts
         snapshot.age_sec = snap_age_sec
+        snapshot.source_timestamps = domain_ts
+        snapshot.source_ages_sec = {k: round(max(0.0, now_ts - v), 1) for k, v in domain_ts.items()}
         return snapshot
 
     def read_snapshot(

@@ -246,9 +246,10 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 force_refresh=_parse_bool_flag(force, False),
                 now_ts=(eff_now := self._resolve_step_now(now)),
             )
-            if snap:
+            if snap and not getattr(self.fear_greed_collector, "_last_fetch_used_stale_fallback", False):
                 now_val = resolve_now_ts(eff_now)
                 idx_ts = safe_nonneg_ts(getattr(snap, "timestamp", None), now_val) or now_val
+                fetch_ts = safe_pos_float(getattr(self.fear_greed_collector, "_last_fetch_ts", None), default=None) or now_val
                 save_json_state(
                     os.path.join(self.cache_dir, "fear_greed_collect.json"),
                     {
@@ -260,7 +261,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         "is_extreme_fear": snap.is_extreme_fear,
                         "is_extreme_greed": snap.is_extreme_greed,
                         "index_timestamp": idx_ts,
-                        "ts": now_val,
+                        "ts": fetch_ts,
                     },
                     indent=2,
                 )
@@ -279,7 +280,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 force_refresh=_parse_bool_flag(force, False),
                 now_ts=eff_now,
             )
-            if breadth:
+            if breadth and not getattr(self.breadth_collector, "_last_fetch_used_stale_fallback", False):
                 now_val = resolve_now_ts(eff_now)
                 raw_gainers = getattr(breadth, "top_gainers", None) or ()
                 raw_losers = getattr(breadth, "top_losers", None) or ()
@@ -403,7 +404,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             )
             if micro_map:
                 update_microstructure_cycle_deltas(self.cache_dir, micro_map, now_ts=eff_now, persist=True)
-            return True if (inst_map or micro_map or not has_inst_source) else False
+            return bool(inst_map or micro_map)
         except Exception as e:
             logger.warning("Failed refreshing venue balances state: %s", e)
         return False

@@ -519,3 +519,44 @@ def test_ohlc_refresh_preserves_history_via_merge_and_reports_effective_coverage
     )
     rep_k3 = "\n".join(kcg_rep3.generate_report(str(k_dir)))
     assert "Effective coverage: 2018-01-01 -> 2018-02-03 (last bar: 2018-02-03 12:00 UTC)." in rep_k3
+
+
+def test_hybrid_reentry_report_renders_effective_data_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from offline.research.hybrid_reentry import report as hr_rep
+    from state_io import atomic_write_json
+
+    out_dir = tmp_path / "hr_out"
+    k_data = tmp_path / "k_data"
+    out_dir.mkdir(parents=True)
+    k_data.mkdir(parents=True)
+
+    bars = [
+        {
+            "timestamp": 1_514_764_800 + i * 14400,
+            "open": 100.0,
+            "high": 102.0,
+            "low": 99.0,
+            "close": 101.0,
+        }
+        for i in range(60)
+    ]
+    save_dataset(bars, k_data / "BTC_240m.csv")
+    atomic_write_json(
+        str(out_dir / "ablation_results.json"),
+        [{"asset": "BTC", "test_id": "Test 0", "return_pct": 12.5, "max_drawdown_pct": 5.0}],
+    )
+    atomic_write_json(
+        str(out_dir / "ablation_summary.json"),
+        {"Test 0": {"name": "Baseline", "positive_assets": "1/1", "median_return_pct": 12.5}},
+    )
+    monkeypatch.setattr(hr_rep, "OUT_DIR", str(out_dir))
+    monkeypatch.setattr(hr_rep, "CRYPTO_JSON", str(out_dir / "ablation_results.json"))
+    monkeypatch.setattr(hr_rep, "SUMMARY_JSON", str(out_dir / "ablation_summary.json"))
+    monkeypatch.setattr(hr_rep, "EQUITIES_JSON", str(out_dir / "equities_ablation_results.json"))
+    monkeypatch.setattr(hr_rep, "CRYPTO_DATA_DIR", str(k_data))
+    monkeypatch.setattr(hr_rep, "EQUITY_DATASET_PATHS", ())
+
+    md_text = hr_rep.generate_markdown_report()
+    assert "**Effective Data Coverage:** Crypto 4h = 2018-01-01 -> 2018-01-10 (last bar: 2018-01-10 20:00 UTC)." in md_text

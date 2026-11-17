@@ -1682,3 +1682,134 @@ def test_update_pretrade_caches_checks_t212_portfolio_once_and_reports_effective
     assert micro_calls == ["BTCUSDC", "ETHUSDC"]
     assert len(t212_calls) == 1
     assert res_pub["pretrade_caches_updated"] is True
+
+
+def test_stale_http_fallbacks_preserve_disk_ts_and_section3b_and_domain_ages_render(
+    temp_cache_dir, monkeypatch
+):
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from state_io import read_json_dict
+
+    now_0 = 1_750_300_000.0
+    collector = GlobalTelemetryCollector(
+        symbols=["BTCUSDC"],
+        cache_dir=temp_cache_dir,
+        skip_news=True,
+    )
+
+    # 1. Seed fresh Fear & Greed, Market Breadth, and Orderbook at now_0
+    monkeypatch.setattr(
+        "intelligence.sentiment.collectors.fear_greed_collector.fetch_public_json",
+        lambda *a, **kw: {"data": [{"value": "48", "value_classification": "Neutral", "timestamp": str(round(now_0 - 60))}]},
+    )
+    monkeypatch.setattr(
+        "intelligence.sentiment.collectors.market_breadth_collector.fetch_public_json",
+        lambda *a, **kw: [
+            {"symbol": "BTCUSDT", "priceChangePercent": "2.0", "lastPrice": "68000", "quoteVolume": "50000000"},
+            {"symbol": "ETHUSDT", "priceChangePercent": "-1.0", "lastPrice": "3400", "quoteVolume": "25000000"},
+            {"symbol": "SOLUSDT", "priceChangePercent": "3.5", "lastPrice": "155", "quoteVolume": "20000000"},
+            {"symbol": "XRPUSDT", "priceChangePercent": "1.2", "lastPrice": "0.62", "quoteVolume": "18000000"},
+            {"symbol": "ADAUSDT", "priceChangePercent": "-0.5", "lastPrice": "0.45", "quoteVolume": "15000000"},
+        ],
+    )
+    assert collector.update_fear_greed(force=True, now=now_0) is True
+    assert collector.update_market_breadth(force=True, now=now_0) is True
+
+    fg_path = os.path.join(temp_cache_dir, "fear_greed_collect.json")
+    mb_path = os.path.join(temp_cache_dir, "market_breadth_collect.json")
+    assert read_json_dict(fg_path)["ts"] == pytest.approx(now_0)
+
+    save_json_state(
+        os.path.join(temp_cache_dir, "orderbook_depth_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "mid_price": 68000.0,
+            "best_bid": 67999.0,
+            "best_ask": 68001.0,
+            "bid_depth_usd": 500000.0,
+            "ask_depth_usd": 450000.0,
+            "imbalance_ratio": 0.53,
+            "largest_bid_wall_usd": 120000.0,
+            "largest_bid_wall_price": 67800.0,
+            "largest_ask_wall_usd": 110000.0,
+            "largest_ask_wall_price": 68200.0,
+            "spread_bps": 0.29,
+            "ts": now_0 - 300.0,
+        },
+    )
+
+    # 2. Simulate network outage at now_1: fallback returns cached object, but daemon neither overwrites ts nor marks updated=True
+    now_1 = now_0 + 7200.0
+    def _boom(*_a, **_kw):
+        raise RuntimeError("upstream_timeout")
+
+    monkeypatch.setattr("intelligence.sentiment.collectors.fear_greed_collector.fetch_public_json", _boom)
+    monkeypatch.setattr("intelligence.sentiment.collectors.market_breadth_collector.fetch_public_json", _boom)
+    monkeypatch.setattr("intelligence.external.collectors.orderbook_depth_collector.fetch_public_json", _boom)
+
+    assert collector.update_fear_greed(force=True, now=now_1) is False
+    assert collector.update_market_breadth(force=True, now=now_1) is False
+    assert read_json_dict(fg_path)["ts"] == pytest.approx(now_0)
+
+    collector._active_cycle_ts = now_1
+    assert collector.update_orderbook("BTCUSDC") is False
+    collector._active_cycle_ts = None
+
+    # 3. Empty workspace with zero instruments and zero microstructure returns False from update_venue_balances
+    empty_cdir = os.path.join(temp_cache_dir, "empty_sub")
+    os.makedirs(empty_cdir, exist_ok=True)
+    empty_col = GlobalTelemetryCollector(symbols=[], cache_dir=empty_cdir, skip_news=True, skip_external=True)
+    assert empty_col.update_venue_balances(force=True, now=now_1) is False
+
+    # 4. Section 3B per-source microstructure ages & MarketAndPortfolioSnapshotOrchestrator domain ages
+    save_json_state(
+        os.path.join(temp_cache_dir, "cache_current_price.json"),
+        {
+            "items": {
+                "BTCUSDC": [[round((now_1 - 2.0) * 1000.0), 68100.0]],
+                "ETHUSDC": [[round((now_1 - 180.0) * 1000.0), 3410.0]],
+            }
+        },
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "derivatives_telemetry_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "funding_rate": 0.0001,
+            "predicted_funding_rate": 0.0001,
+            "open_interest": 1000.0,
+            "open_interest_usd": 68100000.0,
+            "ts": now_1 - 420.0,
+        },
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "whale_snapshot_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "top_traders_long_ratio": 1.5,
+            "top_traders_long_pct": 0.60,
+            "taker_buy_sell_ratio": 1.08,
+            "taker_buy_vol_usd": 4000000.0,
+            "taker_sell_vol_usd": 3700000.0,
+            "open_interest_usd": 68100000.0,
+            "ts": now_1 - 15.0,
+        },
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "venue_balances_state.json"),
+        {"open_orders_verified_ts:binance": now_1 - 240.0},
+    )
+
+    orch = TelemetryCollectorFactory.create("macro_market_portfolio_snapshot", start_sync=False)
+    snap = orch.read_snapshot(temp_cache_dir, now_ts=now_1)
+    assert snap.source_ages_sec["prices_newest"] == pytest.approx(2.0)
+    assert snap.source_ages_sec["prices_oldest"] == pytest.approx(180.0)
+    assert snap.source_ages_sec["venue_balances"] == pytest.approx(240.0)
+    assert snap.source_ages_sec["fear_greed"] == pytest.approx(7200.0)
+
+    prompt_txt = build_supervisor_prompt(snap, [], topic_key="auto_cryptotrade_executor")
+    assert "- Snapshot Domain Ages:" in prompt_txt
+    assert "prices_newest=2.0s" in prompt_txt
+    assert "prices_oldest=180.0s" in prompt_txt
+    assert "venue_balances=240.0s" in prompt_txt
+    assert "source_ages(ob=7500.0s/15s[stale], deriv=420.0s/30s[stale], whale=15.0s/60s)" in prompt_txt

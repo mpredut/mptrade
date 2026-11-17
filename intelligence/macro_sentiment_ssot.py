@@ -1537,5 +1537,7 @@ class TelemetrySensorSnapshot:
     ts: float = 0.0
     evaluated_at_ts: float = 0.0
     age_sec: float = 0.0
+    source_timestamps: Dict[str, float] = field(default_factory=dict)
+    source_ages_sec: Dict[str, float] = field(default_factory=dict)
 
 

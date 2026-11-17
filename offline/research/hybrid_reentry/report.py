@@ -9,6 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import clean_nonempty_str, safe_float, safe_nonneg_int
+from offline.backtests.datasets import load_ohlc_tuples_csv, scan_ohlc_csv_spans, summarize_ohlc_spans
 from state_io import atomic_write_text, read_json_dict, read_json_file
 
 
@@ -24,9 +25,28 @@ def _valid_ablation_row(row) -> bool:
     return isinstance(row, dict) and "error" not in row and bool(clean_nonempty_str(row.get("asset")) and clean_nonempty_str(row.get("test_id")))
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
+CRYPTO_DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "data")
+EQUITY_DATASET_PATHS = (
+    os.path.join(ROOT, "offline", "research", "t212_dataset", "nvda", "datasets", "NVDA_1d_9e8cbd3c6ff5.csv"),
+    os.path.join(ROOT, "offline", "research", "t212_dataset", "rgnt", "datasets", "RGNT_1d_b67a2932ddd6.csv"),
+)
 CRYPTO_JSON = os.path.join(OUT_DIR, "ablation_results.json")
 SUMMARY_JSON = os.path.join(OUT_DIR, "ablation_summary.json")
 EQUITIES_JSON = os.path.join(OUT_DIR, "equities_ablation_results.json")
+
+
+def _build_effective_coverage_bullet() -> str | None:
+    cov_parts: list[str] = []
+    if crypto_cov := summarize_ohlc_spans(scan_ohlc_csv_spans(CRYPTO_DATA_DIR, suffix="_240m.csv"), include_time=True):
+        cov_parts.append(f"Crypto 4h = {crypto_cov}")
+    eq_spans = [
+        (rows[0][0], rows[-1][0])
+        for p in EQUITY_DATASET_PATHS
+        if os.path.isfile(p) and (rows := load_ohlc_tuples_csv(p, strict=False))
+    ]
+    if eq_cov := summarize_ohlc_spans(eq_spans, include_time=False):
+        cov_parts.append(f"Equities 1d = {eq_cov}")
+    return f"**Effective Data Coverage:** {'; '.join(cov_parts)}." if cov_parts else None
 
 
 def generate_markdown_report() -> str:
@@ -41,10 +61,12 @@ def generate_markdown_report() -> str:
     raw_eq = read_json_file(EQUITIES_JSON, default=[]) if os.path.isfile(EQUITIES_JSON) else []
     equities_data = [eq for eq in raw_eq if _valid_ablation_row(eq)] if isinstance(raw_eq, list) else []
 
+    cov_bullet = _build_effective_coverage_bullet()
     md = [
         "# Hybrid Re-Entry Architecture: Ablation Benchmark & Research Report",
         f"\n**Date:** {datetime.now(timezone.utc).strftime('%B %d, %Y')}",
         "**Evaluation Scope:** 11 Crypto Assets (4h bars, Binance 2018-2026 + Hyperliquid HYPE) & US Equities (NVDA, RGNT).",
+        *(([cov_bullet]) if cov_bullet else []),
         "**Accounting Model:** Strict Finite Cash Account ($3,900 USD crypto, $500 USD equities), realistic taker/FX fees (0.26% crypto, 0.15% equity), no magical refills.",
         "\n---\n",
         "## 1. Executive Summary & Test Matrix",

@@ -362,6 +362,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             default=self._FALLBACK_DISK_TTL_SEC,
         )
         self._cache: Dict[str, tuple[float, Any]] = {}
+        self._stale_fallback_symbols: set[str] = set()
 
     def _invoke_fetch_with_cache_dir(
         self,
@@ -517,12 +518,19 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         )
 
     def _fallback_stale(self, symbol: str, cached: Any) -> Optional[Any]:
-        if isinstance(cached, tuple) and len(cached) >= 2:
-            return cached[1]
-        if cached and self._SNAPSHOT_CLS is not None and isinstance(cached, self._SNAPSHOT_CLS):
-            return cached
         sym_clean = symbol.strip().upper() if isinstance(symbol, str) else ""
-        return self._load_from_disk(symbol, 0.0, ignore_ttl=True, exact_only=self._is_exact_venue_symbol(sym_clean))
+        res: Optional[Any] = None
+        if isinstance(cached, tuple) and len(cached) >= 2:
+            res = cached[1]
+        elif cached and self._SNAPSHOT_CLS is not None and isinstance(cached, self._SNAPSHOT_CLS):
+            res = cached
+        else:
+            res = self._load_from_disk(symbol, 0.0, ignore_ttl=True, exact_only=self._is_exact_venue_symbol(sym_clean))
+        if res is not None and sym_clean:
+            stale_set = getattr(self, "_stale_fallback_symbols", None)
+            if isinstance(stale_set, set):
+                stale_set.add(sym_clean)
+        return res
 
     def _warn_and_fallback_stale(
         self,
@@ -606,6 +614,9 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
     ) -> Tuple[Optional[str], float, Any, Optional[Any], bool]:
         if not isinstance(symbol, str) or not (sym_clean := symbol.strip().upper()):
             return None, 0.0, None, None, False
+        stale_set = getattr(self, "_stale_fallback_symbols", None)
+        if isinstance(stale_set, set):
+            stale_set.discard(sym_clean)
         now_f = resolve_now_ts(now)
         if allow_network is None:
             allow_net_bool = (

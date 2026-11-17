@@ -55,6 +55,11 @@ def build_supervisor_prompt(
     context_items: List[str] = [
         f"### 0. RUN TIMESTAMP & OPERATIONAL CLOCK: {now_ts_str}\n"
     ]
+    domain_ages = getattr(sensors, "source_ages_sec", None)
+    if not is_pure_sre and isinstance(domain_ages, dict) and domain_ages:
+        age_tokens = [f"{k}={v}s" for k, v in domain_ages.items() if safe_pos_float(v, default=None) is not None or v == 0.0]
+        if age_tokens:
+            context_items.append(f"- Snapshot Domain Ages: {', '.join(age_tokens)}")
     if not is_pure_sre:
         context_items.extend(_format_macro_and_news_section(sensors, getattr(spec, "asset_scope", "all")))
     if spec.can_self_heal:
@@ -62,10 +67,11 @@ def build_supervisor_prompt(
     prices_and_trends = getattr(sensors, "prices_and_trends", None) or {}
     microstructure = getattr(sensors, "microstructure", None) or {}
     portfolio_summary = getattr(sensors, "portfolio_summary", None) or {}
+    eval_now_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
     if not is_pure_sre and prices_and_trends:
         context_items.extend(_format_market_prices_section(prices_and_trends))
     if not is_pure_sre and microstructure:
-        context_items.extend(_format_microstructure_section(microstructure, prices_and_trends))
+        context_items.extend(_format_microstructure_section(microstructure, prices_and_trends, now_ts=eval_now_ts))
     if not is_pure_sre and portfolio_summary:
         context_items.extend(
             _format_portfolio_section(

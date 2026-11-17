@@ -15,7 +15,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, normalize_timestamp_ms, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, normalize_epoch_sec, normalize_timestamp_ms, safe_float, safe_pos_float
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -29,6 +29,7 @@ from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
 from intelligence.macro_sentiment_ssot import (
     format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
+    resolve_derived_telemetry_intervals,
     SHORT_KINEMATIC_METRIC_KEYS,
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
@@ -796,12 +797,57 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
     return lines
 
 
+def _format_3b_source_ages_suffix(
+    minfo: Dict[str, Any],
+    *,
+    now_ts: Optional[float],
+    intervals: Dict[str, float],
+    ob_only: bool = False,
+) -> str:
+    explicit_now = safe_pos_float(now_ts, default=None)
+    ref_now = explicit_now if explicit_now is not None else time.time()
+    specs = (
+        (("ob", "_ob_raw_ts", intervals["orderbook_interval_sec"]),)
+        if ob_only
+        else (
+            ("ob", "_ob_raw_ts", intervals["orderbook_interval_sec"]),
+            ("deriv", "_deriv_ts", intervals["derivatives_interval_sec"]),
+            ("whale", "_whale_ts", intervals["whale_interval_sec"]),
+        )
+    )
+    parts: List[str] = []
+    any_stale = False
+    for lbl, ts_k, itv_s in specs:
+        raw_t = minfo.get(ts_k)
+        if raw_t is None and lbl == "ob":
+            raw_t = minfo.get("_ob_ts")
+        ts_v = normalize_epoch_sec(raw_t, default=0.0) or 0.0
+        if ts_v <= 0.0:
+            continue
+        age_s = ref_now - ts_v
+        if explicit_now is None and not (0.0 <= age_s <= 7.0 * 86400.0):
+            continue
+        age_clamped = max(0.0, age_s)
+        is_stale = age_clamped > itv_s * 2.0
+        if is_stale:
+            any_stale = True
+        itv_lbl = f"{round(itv_s)}s" if abs(itv_s - round(itv_s)) < 1e-6 else f"{itv_s:.1f}s"
+        tag = "[stale]" if is_stale else ""
+        parts.append(f"{lbl}={age_clamped:.1f}s/{itv_lbl}{tag}")
+    if not parts or (explicit_now is None and not any_stale):
+        return ""
+    return f", source_ages({', '.join(parts)})"
+
+
 def _format_microstructure_section(
     microstructure: Dict[str, Any],
     prices_and_trends: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
 ) -> List[str]:
     """Format Section 3B (Orderbook Walls, Derivatives & Whale Flow)."""
     lines = ["\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:"]
+    derived_3b_itvs = resolve_derived_telemetry_intervals()
     seen_3b_groups: set[Tuple[str, Tuple[str, ...]]] = set()
 
     def _group_key_3b(s: str, m: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:
@@ -1071,12 +1117,15 @@ def _format_microstructure_section(
         if prev_perp is not None and not is_usdc_pair(sym) and prev_perp[1:] == tr_sig and tr_sig[0] is not None:
             arb_only_parts = [p for p in basis_parts if p.startswith(("arb_vs_", "net_buy_edge="))]
             arb_sfx = f", {', '.join(arb_only_parts)}" if arb_only_parts else ""
+            ob_age_sfx = _format_3b_source_ages_suffix(
+                minfo, now_ts=now_ts, intervals=derived_3b_itvs, ob_only=True
+            )
             lines.append(
                 f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
                 f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
                 f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
                 f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist})"
-                f"{arb_sfx}{spread_sfx}{cd_sfx}, perp_whale_flow=shared_with_{prev_perp[0]}"
+                f"{arb_sfx}{spread_sfx}{cd_sfx}{ob_age_sfx}, perp_whale_flow=shared_with_{prev_perp[0]}"
             )
             continue
         if is_usdc_pair(sym) and b_canon_3b not in rendered_3b_perp_by_base:
@@ -1094,6 +1143,9 @@ def _format_microstructure_section(
                 )
             )
         )
+        src_age_sfx = _format_3b_source_ages_suffix(
+            minfo, now_ts=now_ts, intervals=derived_3b_itvs, ob_only=False
+        )
         lines.append(
             f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
             f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
@@ -1102,7 +1154,7 @@ def _format_microstructure_section(
             f"whale_long_pct={minfo.get('whale_long_pct')}, "
             f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
             f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}"
-            f"{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}"
+            f"{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
         )
     return lines
 
