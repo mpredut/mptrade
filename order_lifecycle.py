@@ -861,35 +861,30 @@ def restore_cancelled_instrument_orders(
     )
 
 
-def preempt_lower_priority_open_orders(
+def _collect_preemptible_open_orders(
     inst_or_provider: Any,
     symbol: str,
     side: str,
     caller_bot: Optional[str],
     *,
-    cancel_fn: Optional[Callable[[str], Any]] = None,
-    canceled_orders_out: Optional[list[dict[str, Any]]] = None,
-    resolve_retry_fn: Optional[Callable[[str, str], Any]] = None,
     owner_map: Optional[dict[str, str]] = None,
-    log_fn: Callable[[str], None] = print,
-) -> list[str]:
-    """Cancel same-side open orders owned by strictly lower-priority bots to unlock balance/credit."""
+) -> tuple[str, str, list[tuple[int, str, dict[str, Any], str]]]:
     want_side = normalize_side(side)
     sym_str = clean_upper_scalar(symbol) or ""
     if not want_side or not sym_str or not rc.preemptible_owners_for(caller_bot):
-        return []
+        return "", "", []
     open_fn = getattr(inst_or_provider, "open_orders", None)
     if not callable(open_fn):
-        return []
+        return want_side, sym_str, []
     try:
         try:
             raw_open = open_fn()
         except TypeError:
             raw_open = open_fn(sym_str)
     except Exception:
-        return []
+        return want_side, sym_str, []
     if not isinstance(raw_open, list) or not raw_open:
-        return []
+        return want_side, sym_str, []
 
     candidates: list[tuple[int, str, dict[str, Any], str]] = []
     seen_ids: set[str] = set()
@@ -907,10 +902,43 @@ def preempt_lower_priority_open_orders(
         target_owner = rc.resolve_priority_bot_owner(oo, owner_map=owner_map)
         target_rank = rc.bot_priority_rank(oo, owner_map=owner_map)
         candidates.append((target_rank, oid, oo, target_owner))
+    candidates.sort(key=lambda item: item[0])
+    return want_side, sym_str, candidates
 
+
+def has_preemptible_open_orders(
+    inst_or_provider: Any,
+    symbol: str,
+    side: str,
+    caller_bot: Optional[str],
+    *,
+    owner_map: Optional[dict[str, str]] = None,
+) -> bool:
+    """Return True if at least one same-side open order owned by a lower-priority bot exists."""
+    _, _, candidates = _collect_preemptible_open_orders(
+        inst_or_provider, symbol, side, caller_bot, owner_map=owner_map
+    )
+    return bool(candidates)
+
+
+def preempt_lower_priority_open_orders(
+    inst_or_provider: Any,
+    symbol: str,
+    side: str,
+    caller_bot: Optional[str],
+    *,
+    cancel_fn: Optional[Callable[[str], Any]] = None,
+    canceled_orders_out: Optional[list[dict[str, Any]]] = None,
+    resolve_retry_fn: Optional[Callable[[str, str], Any]] = None,
+    owner_map: Optional[dict[str, str]] = None,
+    log_fn: Callable[[str], None] = print,
+) -> list[str]:
+    """Cancel same-side open orders owned by strictly lower-priority bots to unlock balance/credit."""
+    want_side, sym_str, candidates = _collect_preemptible_open_orders(
+        inst_or_provider, symbol, side, caller_bot, owner_map=owner_map
+    )
     if not candidates:
         return []
-    candidates.sort(key=lambda item: item[0])
 
     if cancel_fn is None:
         raw_cancel = getattr(inst_or_provider, "cancel_order", None)

@@ -155,6 +155,7 @@ class _PlaceContext:
     prequeued_intent_id: Any = None
     permit_requested_price: Any = None
     submit_attempted: bool = False
+    retry_enqueued: bool = False
     order: Any = None
     reason: Optional[str] = None
 
@@ -959,24 +960,27 @@ class Instrument:
                 return None
 
             if deferred_zero_balance:
-                pre_defer = _precheck_trend_deferral()
-                if pre_defer:
-                    ctx.reason = pre_defer
-                    return None
-                if order_lifecycle.preempt_lower_priority_open_orders(
-                    self,
-                    self.symbol,
-                    ctx.side_u,
-                    ctx.caller_module,
-                    canceled_orders_out=preempted_orders,
-                    resolve_retry_fn=order_retry.resolve_accepted_order,
+                if order_lifecycle.has_preemptible_open_orders(
+                    self, self.symbol, ctx.side_u, ctx.caller_module
                 ):
-                    try:
-                        kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
-                        if kb_f is not None and kb_f > 0:
-                            ctx.known_balance = kb_f
-                    except Exception:
-                        pass
+                    pre_defer = _precheck_trend_deferral()
+                    if pre_defer:
+                        ctx.reason = pre_defer
+                        return None
+                    if order_lifecycle.preempt_lower_priority_open_orders(
+                        self,
+                        self.symbol,
+                        ctx.side_u,
+                        ctx.caller_module,
+                        canceled_orders_out=preempted_orders,
+                        resolve_retry_fn=order_retry.resolve_accepted_order,
+                    ):
+                        try:
+                            kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
+                            if kb_f is not None and kb_f > 0:
+                                ctx.known_balance = kb_f
+                        except Exception:
+                            pass
                 if ctx.known_balance is None or ctx.known_balance <= 0:
                     print(f"[{self.symbol}] {ctx.side_u} preflight refused: balance_unavailable asset={target_asset}")
                     ctx.reason = "balance_unavailable"
@@ -1026,9 +1030,16 @@ class Instrument:
                         )
                     )
                 )
-                and not _precheck_trend_deferral()
+                and order_lifecycle.has_preemptible_open_orders(
+                    self, self.symbol, ctx.side_u, ctx.caller_module
+                )
             ):
-                if order_lifecycle.preempt_lower_priority_open_orders(
+                pre_defer_qty = _precheck_trend_deferral()
+                if pre_defer_qty:
+                    if decision.final_qty <= 0:
+                        ctx.reason = pre_defer_qty
+                        return None
+                elif order_lifecycle.preempt_lower_priority_open_orders(
                     self,
                     self.symbol,
                     ctx.side_u,
@@ -1424,7 +1435,7 @@ class Instrument:
             except Exception:
                 caller = None
             self._finalize_place_outcome(ctx, caller=caller)
-            if will_rollback_preempted:
+            if will_rollback_preempted and not getattr(ctx, "retry_enqueued", False):
                 order_lifecycle.restore_cancelled_instrument_orders(
                     self,
                     preempted_orders,

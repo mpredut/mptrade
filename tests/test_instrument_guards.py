@@ -1923,6 +1923,112 @@ class TestOrderRollback(unittest.TestCase):
         )
         self.assertFalse(dec_plenty.wallet_constrained)
 
+        # 4. Dust/zero balance preemption prechecks:
+        #    - Empty wallet with NO preemptible open orders reports balance_unavailable even if short-trend waits.
+        #    - Dust wallet ($4 < min_notional) WITH a preemptible rtrade open order reports trend_deferred (not below_min_notional)
+        #      when short-trend waits, and skips rollback when retry_enqueued=True while restoring once on terminal refusal.
+        from order_lifecycle import has_preemptible_open_orders
+        from tests.conftest import DummySpotExecutionProvider, SingleProviderApi
+        import instrument as inst_mod
+
+        self.assertFalse(has_preemptible_open_orders(SimpleNamespace(open_orders=lambda: []), "BTCUSDC", "BUY", "tradeall"))
+        self.assertTrue(has_preemptible_open_orders(dummy_inst, "BTCUSDC", "BUY", "tradeall"))
+
+        prov_preempt = DummySpotExecutionProvider(name="kraken")
+        prov_preempt.open_orders_list = []
+        prov_preempt.free_bal = 0.0
+        prov_preempt.open_orders = lambda _sym=None: list(prov_preempt.open_orders_list)
+        prov_preempt.cancel_order = lambda _sym, oid=None: cancelled_ids.append(oid or _sym) or True
+        prov_preempt.free_balance = lambda _asset: prov_preempt.free_bal
+
+        def _qty_dec(_sym, _side, px, req_qty, **kw):
+            kb = kw.get("known_balance")
+            cap = (kb / px) if (kb is not None and px > 0) else 0.0
+            if cap * px < 10.0:
+                return QuantityDecision(
+                    requested_qty=req_qty, balance_cap=cap, policy_cap=req_qty, fee_cap=cap,
+                    final_qty=0.0, refuse_reason="below_min_notional", balance_asset="USDC",
+                )
+            return QuantityDecision(
+                requested_qty=req_qty, balance_cap=cap, policy_cap=req_qty, fee_cap=cap,
+                final_qty=min(req_qty, cap), balance_asset="USDC",
+            )
+
+        prov_preempt.quantity_decision = _qty_dec
+        inst_p = Instrument(
+            "BTCUSDC", "BTCUSDC", "kraken", base="BTC", quote="USDC",
+            api=SingleProviderApi(prov_preempt),
+        )
+        with patch.object(inst_mod.pw, "should_wait_short_trend", return_value=True):
+            out_empty = {}
+            self.assertIsNone(
+                inst_p.place(
+                    "BUY", 100.0, 1.0, module="tradeall", cancelorders=True,
+                    wait_for_trend=True, smart=False, caller_owns_retry=True,
+                    bypass_guards={"all"}, _outcome_context=out_empty,
+                )
+            )
+            self.assertEqual(out_empty.get("reason"), "balance_unavailable")
+
+            # Dust balance ($4) + preemptible RT_1 open order + short-trend waiting -> trend_deferred (not below_min_notional)
+            prov_preempt.free_bal = 4.0
+            prov_preempt.open_orders_list = [
+                {"orderId": "rt_dust_1", "clientOrderId": "RT_1", "side": "BUY", "price": "98.0", "origQty": "5.0"}
+            ]
+            cancelled_ids.clear()
+            out_dust_defer = {}
+            self.assertIsNone(
+                inst_p.place(
+                    "BUY", 100.0, 1.0, module="tradeall", cancelorders=True,
+                    wait_for_trend=True, smart=False, caller_owns_retry=True,
+                    bypass_guards={"all"}, _outcome_context=out_dust_defer,
+                )
+            )
+            self.assertEqual(out_dust_defer.get("reason"), "trend_deferred")
+            self.assertEqual(cancelled_ids, [])
+
+        # When preempted order is unlocked ($500) and a later deferral enqueues retry (retry_enqueued=True),
+        # preempted order is NOT restored on top of the active retry; on terminal refusal it IS restored once.
+        prov_preempt.open_orders_list = [
+            {"orderId": "rt_unlock_1", "clientOrderId": "RT_1", "side": "BUY", "price": "98.0", "origQty": "5.0"}
+        ]
+        prov_preempt.free_bal = 4.0
+
+        def _cancel_and_credit(_sym, oid=None):
+            cancelled_ids.append(oid or _sym)
+            prov_preempt.free_bal = 500.0
+            return True
+
+        prov_preempt.cancel_order = _cancel_and_credit
+        restored_Rollbacks = []
+        with patch.object(
+            inst_mod.order_lifecycle, "restore_cancelled_instrument_orders",
+            side_effect=lambda *a, **kw: restored_Rollbacks.append((a, kw)) or 1,
+        ), patch.object(inst_mod.order_retry, "enqueue", return_value="rec_1"):
+            # Flip short-trend False on precheck, True on Stage 3 gate -> retry_enqueued=True -> 0 rollbacks
+            trend_seq = iter([False, True])
+            with patch.object(inst_mod.pw, "should_wait_short_trend", side_effect=lambda *a, **k: next(trend_seq)):
+                self.assertIsNone(
+                    inst_p.place(
+                        "BUY", 100.0, 1.0, module="tradeall", cancelorders=True,
+                        wait_for_trend=True, smart=False, caller_owns_retry=False,
+                        bypass_guards={"all"},
+                    )
+                )
+            self.assertEqual(len(restored_Rollbacks), 0)
+
+            # Terminal pre-submit abort (aborted_by_caller, retry_enqueued=False) -> restores preempted order once
+            prov_preempt.free_bal = 4.0
+            with patch.object(inst_mod.pw, "should_wait_short_trend", return_value=False):
+                self.assertIsNone(
+                    inst_p.place(
+                        "BUY", 100.0, 1.0, module="tradeall", cancelorders=True,
+                        wait_for_trend=False, smart=False, early_abort_if=lambda: True,
+                        bypass_guards={"all"},
+                    )
+                )
+            self.assertEqual(len(restored_Rollbacks), 1)
+
 
 # ---------------------------------------------------------------------------
 # Consolidated from tests/test_trade_cooldown.py & tests/test_active_intents.py

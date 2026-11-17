@@ -1764,3 +1764,49 @@ def test_cycle_io_scope_deduplicates_state_growth_and_p3b_reads_and_invalidates_
     assert len(restored_calls) == 1
     assert restored_calls[0][:4] == ("BTCUSDC", "BUY", 79500.0, 0.002)
     assert str(restored_calls[0][4].get("client_order_id") or "").startswith("RT_")
+
+    # BUY campaign reconciles initial_cash upward when unlocked quote balance arrives while preserving completed_tiers,
+    # and evaluate_symbol does NOT freeze $6 dust into a new BUY campaign while short-trend defers preemption
+    monkeypatch.setattr(state_store, "save", orig_save)
+    ag._save_symbol_campaign(
+        "BTCUSDC",
+        "buy",
+        {
+            "peak_price": 90000.0,
+            "peak_ts": 1000.0,
+            "initial_cash": 200.0,
+            "completed_tiers": [3.0],
+            "spent_quote_by_tier": {"3": 50.0},
+            "total_spent_quote": 50.0,
+        },
+    )
+    tier_rec, camp_rec = ag._campaign_tier(
+        "BTCUSDC", 12.0, {"price": 90000.0, "timestamp": 1000.0}, 600.0
+    )
+    assert tier_rec is not None
+    assert camp_rec["initial_cash"] == pytest.approx(650.0)
+    assert camp_rec["completed_tiers"] == [3.0]
+
+    ag._save_symbol_campaign("BTCUSDC", "buy", {})
+    ag._save_symbol_campaign("BTCUSDC", "sell", {})
+    dust_prov = SimpleNamespace(
+        free_balance=lambda asset: 6.0 if asset == "USDC" else 0.0,
+        open_orders=lambda sym=None: [
+            {"orderId": "rt_b1", "clientOrderId": "RT_1", "side": "BUY", "price": "70000.0", "origQty": "0.007"}
+        ],
+    )
+    monkeypatch.setattr(ag.mkt, "provider_by_name", lambda _n: dust_prov)
+    monkeypatch.setattr(ag.api, "get_current_price", lambda _s: 75000.0)
+    monkeypatch.setattr(
+        ag,
+        "_get_symbol_window_extrema",
+        lambda _s, _p, minutes_back=1440: (
+            {"price": 75000.0, "timestamp": 1000.0},
+            {"price": 90000.0, "timestamp": 1000.0},
+        ),
+    )
+    monkeypatch.setattr(ag, "_is_short_trend_waiting", lambda _sym, _side: True)
+    assert ag.evaluate_symbol("BTCUSDC") is False
+    assert ag._last_evaluation["BTCUSDC"]["pending_tier"] is True
+    assert ag._symbol_campaign("BTCUSDC", "buy") == {}
+
