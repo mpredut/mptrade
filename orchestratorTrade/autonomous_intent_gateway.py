@@ -405,12 +405,16 @@ class AutonomousIntentGateway:
         guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
             inst, decision, price, requested_effective_usd
         )
+        is_balance_constrained = (
+            (not guard_allowed and "insufficient free" in str(guard_reason or "").lower())
+            or (guard_allowed and effective_usd < requested_effective_usd * 0.95)
+        )
         if (
             mode == "enforce"
             and replace_open
             and not cancel_bot_open
             and not target_oids
-            and (thesis_cancels_bot_order or not guard_allowed or effective_usd < requested_effective_usd * 0.95)
+            and (thesis_cancels_bot_order or is_balance_constrained)
         ):
             # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
             # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.

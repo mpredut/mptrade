@@ -934,8 +934,32 @@ class Instrument:
             if ctx.reason:
                 return None
 
+            def _precheck_trend_deferral() -> bool:
+                if ctx.wait_for_trend:
+                    try:
+                        if pw.should_wait_short_trend(
+                            ct.get_short_trend_manager(),
+                            ctx.side_u,
+                            self.symbol,
+                            short_trend_cls=ct.CacheShortTrendManager,
+                        ):
+                            return True
+                    except Exception:
+                        pass
+                check_mt = not GUARD_REGISTRY["GT_M"].is_bypassed(ctx.bypassed_guards)
+                mt_act = (clean_scalar_str(ctx.medium_trend_action_cfg) or "").lower() or None
+                if check_mt and mt_act == "defer":
+                    gt2_ctx = ctx.regime_context or self._resolve_regime_context()
+                    if gt2_ctx is not None:
+                        raw_r = clean_scalar_str(obj_attr(gt2_ctx, "regime")) or clean_scalar_str(
+                            obj_attr(gt2_ctx, "resolved_trend")
+                        )
+                        if order_guard.is_adverse_trend(ctx.side_u, raw_r.lower() if raw_r else None):
+                            return True
+                return False
+
             if deferred_zero_balance:
-                if order_lifecycle.preempt_lower_priority_open_orders(
+                if not _precheck_trend_deferral() and order_lifecycle.preempt_lower_priority_open_orders(
                     self,
                     self.symbol,
                     ctx.side_u,
@@ -998,6 +1022,7 @@ class Instrument:
                         )
                     )
                 )
+                and not _precheck_trend_deferral()
             ):
                 if order_lifecycle.preempt_lower_priority_open_orders(
                     self,
@@ -1392,7 +1417,6 @@ class Instrument:
                 ctx.order is None
                 and preempted_orders
                 and not ctx.submit_attempted
-                and not getattr(ctx, "retry_enqueued", False)
             ):
                 order_lifecycle.restore_cancelled_instrument_orders(
                     self,

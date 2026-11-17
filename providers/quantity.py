@@ -167,6 +167,8 @@ class QuantityDecision:
 
     @property
     def wallet_constrained(self) -> bool:
+        if self.refuse_reason in ("qty_zero_after_policy", "policy_unavailable"):
+            return False
         if self.refuse_reason in ("balance_unavailable", "insufficient_funds"):
             return True
         if self.balance_cap is None:
