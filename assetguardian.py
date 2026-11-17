@@ -1739,14 +1739,26 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     if sell_tier is None:
         if preempted_sell_orders:
             _restore_preempted_orders(symbol, preempted_sell_orders, "assetguardian_sell_no_tier")
+        cand_sell_g = effective_growth if effective_growth is not None else rolling_growth_percent
+        vol_m = _symbol_volatility_mult(symbol)
+        due_sell_thr = next(
+            (
+                t
+                for t, _ in _effective_sell_tiers(portfolio_growth_pct, sell_mult=sell_mult)
+                if t not in _completed_tier_values(sell_state)
+                and cand_sell_g >= _trigger_threshold_for_sell_tier(t, sell_mult, portfolio_growth_pct, volatility_mult=vol_m)
+            ),
+            None,
+        )
         if (
-            isinstance(sell_state, dict)
-            and sell_state.get("trend_defer")
+            due_sell_thr is not None
             and provider is not None
             and has_preemptible_open_orders(provider, symbol, "SELL", "assetguardian")
             and _is_short_trend_waiting(symbol, "SELL")
         ):
             evaluation["pending_tier"] = True
+            if isinstance(sell_state, dict) and sell_state:
+                _, sell_state = _trend_defer_ready(symbol, "sell", "SELL", due_sell_thr, sell_state)
         else:
             sell_state = _clear_campaign_trend_defer(symbol, "sell", sell_state)
     evaluation["growth"] = rolling_growth_percent if effective_growth is None else effective_growth
@@ -1815,7 +1827,8 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
             else None
         )
         needs_locked_quote = (
-            free_cash is None
+            not existing_buy
+            or free_cash is None
             or free_cash < 10.0
             or (due_rem_cash is not None and free_cash + 1e-9 < due_rem_cash)
         )
