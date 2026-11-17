@@ -2698,3 +2698,69 @@ def test_reconcile_resumed_intent_adopts_already_filled_order_via_client_id_with
     assert resumed_canceled[0]["execution_payload"]["orderId"] == "ord_retry_ok"
     btc_inst.place.assert_called_once()
 
+
+def test_atomic_rollback_restores_canceled_open_orders_when_replacement_fails_or_is_blocked(temp_workspace):
+    """When prior same-side open orders are canceled to unlock credit/balance and the replacement placement
+    is subsequently blocked or refused, the canceled order is atomically restored via restore_cancelled_instrument_orders."""
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce", notify_enabled=False)
+
+    btc_inst = MagicMock(symbol="BTCUSDC", base="BTC", quote="USDC", provider_name="binance")
+    btc_inst._provider.name = "binance"
+    btc_inst._provider.get_current_price.return_value = 80000.0
+    btc_inst._provider.free_balance.return_value = 500.0
+    btc_inst.open_orders.return_value = [
+        {
+            "orderId": "ai_prior_buy_1",
+            "clientOrderId": "AI_prior_1",
+            "side": "BUY",
+            "price": "78500.0",
+            "origQty": "0.005",
+            "executedQty": "0.0",
+        }
+    ]
+    btc_inst.cancel_order.return_value = True
+
+    place_calls = []
+
+    def _place_side_effect(**kwargs):
+        place_calls.append(kwargs)
+        if len(place_calls) == 1:
+            # Replacement order refused on venue
+            ctx = kwargs.get("_outcome_context")
+            if isinstance(ctx, dict):
+                ctx["state"] = "refused"
+                ctx["reason"] = "exchange_filter_failure"
+            return None
+        # Second call is atomic rollback restoring the canceled order
+        return {"orderId": "restored_buy_1", "status": "NEW"}
+
+    btc_inst.place.side_effect = _place_side_effect
+
+    res = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 79200.0,
+            "replace_open_orders": True,
+            "confidence": 0.94,
+            "suggested_notional_usd": 400.0,
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+
+    assert res["status"] == "FAILED"
+    assert res["canceled_prior_open_orders"] == ["ai_prior_buy_1"]
+    assert res["restored_prior_open_orders"] == 1
+    assert len(place_calls) == 2
+    rollback_call = place_calls[1]
+    assert rollback_call["side"] == "BUY"
+    assert rollback_call["price"] == pytest.approx(78500.0)
+    assert rollback_call["qty"] == pytest.approx(0.005)
+    assert rollback_call["caller_owns_retry"] is True
+
+

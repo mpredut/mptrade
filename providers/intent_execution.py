@@ -396,6 +396,7 @@ def cancel_existing_ai_open_orders(
     verify_not_filled: bool = False,
     failed_order_ids: Optional[list[str]] = None,
     scan_errors: Optional[list[str]] = None,
+    canceled_orders_out: Optional[list[dict[str, Any]]] = None,
 ) -> list[str]:
     """Cancel prior unfilled AI-placed (or bot-placed when ``include_bot_orders=True``) open orders on the symbol."""
     canceled_ids: list[str] = []
@@ -443,7 +444,7 @@ def cancel_existing_ai_open_orders(
         raw_open = None
 
     matched_targets_lc: set[str] = set()
-    pending_cancels: list[tuple[str, bool, str]] = []
+    pending_cancels: list[tuple[str, bool, str, dict[str, Any]]] = []
     for oo, oo_side, oid in _iter_matching_open_orders(raw_open, want_side, any_side=eff_any_side):
         coid = extract_client_order_id(oo)
         if (oid and str(oid) in excluded) or (coid and str(coid) in excluded):
@@ -467,7 +468,7 @@ def cancel_existing_ai_open_orders(
             if failed_order_ids is not None:
                 failed_order_ids.append("<missing_order_id>")
             continue
-        pending_cancels.append((cancel_ref, is_ai_order, oo_side or side))
+        pending_cancels.append((cancel_ref, is_ai_order, oo_side or side, oo))
 
     if (
         targeted
@@ -498,9 +499,9 @@ def cancel_existing_ai_open_orders(
             and not t.upper().startswith("AI_")
             for t in targeted
         )
-        and not any(not is_ai for _, is_ai, _ in pending_cancels)
+        and not any(not is_ai for _, is_ai, _, _ in pending_cancels)
     ):
-        queued_refs = {ref for ref, _, _ in pending_cancels}
+        queued_refs = {ref for ref, _, _, _ in pending_cancels}
         for oo, oo_side, oid in _iter_matching_open_orders(raw_open, want_side, any_side=True):
             coid = extract_client_order_id(oo)
             if (oid and str(oid) in excluded) or (coid and str(coid) in excluded):
@@ -514,9 +515,9 @@ def cancel_existing_ai_open_orders(
                 cancel_ref = str(oid or coid or "")
                 if cancel_ref and cancel_ref not in queued_refs:
                     queued_refs.add(cancel_ref)
-                    pending_cancels.append((cancel_ref, False, oo_side or side))
+                    pending_cancels.append((cancel_ref, False, oo_side or side, oo))
 
-    for cancel_ref, is_ai_order, eff_oo_side in pending_cancels:
+    for cancel_ref, is_ai_order, eff_oo_side, raw_oo in pending_cancels:
         try:
             if cancel_fn(cancel_ref) is False:
                 if failed_order_ids is not None:
@@ -528,6 +529,8 @@ def cancel_existing_ai_open_orders(
                     )
                 continue
             canceled_ids.append(cancel_ref)
+            if canceled_orders_out is not None and isinstance(raw_oo, dict):
+                canceled_orders_out.append(dict(raw_oo))
             if log:
                 log.info(
                     "[INTENT GATEWAY] Canceled prior %s open %s order %s on %s before replacement.",

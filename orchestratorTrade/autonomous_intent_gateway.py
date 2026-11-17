@@ -47,6 +47,7 @@ from instrument import (
 )
 from instrument_registry import discover_tradable_specs, resolve_instrument_spec
 import notify_engine.alertnotifiers as _alertnotifiers
+from order_lifecycle import restore_cancelled_instrument_orders
 from providers.intent_reconciliation import (
     reconcile_intents_from_execution_audit,
 )
@@ -313,6 +314,7 @@ class AutonomousIntentGateway:
                 intents=self.load_all_intents(),
                 require_notional_match=replace_open,
             )
+        canceled_order_snapshots: list[dict[str, Any]] = []
         if mode == "enforce" and (replace_open or cancel_bot_open or bool(target_oids)):
             failed_cancel_ids: list[str] = []
             cancel_scan_errors: list[str] = []
@@ -328,10 +330,21 @@ class AutonomousIntentGateway:
                 verify_not_filled=replace_open or bool(target_oids),
                 failed_order_ids=failed_cancel_ids,
                 scan_errors=cancel_scan_errors,
+                canceled_orders_out=canceled_order_snapshots,
             )
             if canceled_ids:
                 intent["canceled_prior_open_orders"] = canceled_ids
             if failed_cancel_ids or cancel_scan_errors:
+                if canceled_order_snapshots:
+                    restored_abort = restore_cancelled_instrument_orders(
+                        inst,
+                        canceled_order_snapshots,
+                        bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
+                        log_fn=logger.warning,
+                        reason=f"intent {intent_id} cancel_prior_order_failed",
+                    )
+                    if restored_abort > 0:
+                        intent["restored_prior_open_orders"] = restored_abort
                 return self._abort_on_cancel_failure(
                     inst,
                     intent,
@@ -382,6 +395,7 @@ class AutonomousIntentGateway:
                 any_side=False,
                 failed_order_ids=unlock_failed_ids,
                 scan_errors=unlock_scan_errors,
+                canceled_orders_out=canceled_order_snapshots,
             )
             if unlocked_ids:
                 prior_c = list(intent.get("canceled_prior_open_orders") or [])
@@ -391,6 +405,16 @@ class AutonomousIntentGateway:
                 intent["canceled_prior_open_orders"] = prior_c
                 intent["canceled_bot_open_orders"] = unlocked_ids
             if unlock_failed_ids or unlock_scan_errors:
+                if canceled_order_snapshots:
+                    restored_abort = restore_cancelled_instrument_orders(
+                        inst,
+                        canceled_order_snapshots,
+                        bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
+                        log_fn=logger.warning,
+                        reason=f"intent {intent_id} unlock_cancel_failed",
+                    )
+                    if restored_abort > 0:
+                        intent["restored_prior_open_orders"] = restored_abort
                 return self._abort_on_cancel_failure(
                     inst,
                     intent,
@@ -446,7 +470,7 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        return execute_enforce_intent_order(
+        res_intent = execute_enforce_intent_order(
             inst,
             intent,
             intent_id=intent_id,
@@ -464,6 +488,23 @@ class AutonomousIntentGateway:
             dispatch_notify_fn=self._dispatch_notify,
             log=logger,
         )
+        last_hist = (res_intent.get("history") or [{}])[-1] if isinstance(res_intent.get("history"), list) else {}
+        if (
+            canceled_order_snapshots
+            and res_intent.get("status") in ("BLOCKED_BY_GUARD", "FAILED")
+            and not res_intent.get("execution_payload")
+            and last_hist.get("category") != "deferred"
+        ):
+            restored = restore_cancelled_instrument_orders(
+                inst,
+                canceled_order_snapshots,
+                bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
+                log_fn=logger.warning,
+                reason=f"intent {intent_id} {res_intent.get('status')}",
+            )
+            if restored > 0:
+                res_intent["restored_prior_open_orders"] = restored
+        return res_intent
 
     def submit(
         self,

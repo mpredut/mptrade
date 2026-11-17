@@ -803,6 +803,41 @@ def restore_cancelled_orders(
     return restored
 
 
+def restore_cancelled_instrument_orders(
+    inst: Any,
+    cancelled_orders: list[dict],
+    *,
+    bypass_guards: Any = None,
+    log_fn: Callable[[str], None] = print,
+    reason: str = "",
+) -> int:
+    """Restore cancelled resting orders on a canonical ``Instrument`` when a replacement/exit fails."""
+    place_fn = getattr(inst, "place", None)
+    if not callable(place_fn):
+        return 0
+
+    def _restore_one(params: dict[str, Any]) -> bool:
+        res = place_fn(
+            side=params["side"],
+            price=params["limit"],
+            qty=params["qty"],
+            smart=False,
+            wait_for_trend=False,
+            enforce_business_minimum=False,
+            caller_owns_retry=True,
+            bypass_guards=bypass_guards,
+            reason=f"atomic_rollback:{clean_scalar_str(reason) or 'restore_cancelled_order'}",
+        )
+        return bool(res)
+
+    return restore_cancelled_orders(
+        cancelled_orders,
+        restore_fn=_restore_one,
+        log_fn=log_fn,
+        reason=reason,
+    )
+
+
 # --- Dynamic Reprice & Entry Offset Bounds (SSOT) ---
 
 load_dotenv()
