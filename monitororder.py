@@ -486,7 +486,7 @@ def monitor_open_orders_by_type(
             # order. Response loss and transient refusals therefore leave a
             # durable intent for the shared worker; deterministic venue filters
             # are checked while the existing order is still active.
-            replace_pfx = "MO_TA_OR" if owner == "tradeall" else ("MO_MN_OR" if owner == "manual" else "MO_OR")
+            replace_pfx = rc.resolve_monitororder_replace_prefix(owner)
             has_explicit_ttl = (
                 order_ts > 0
                 or oid_str in custom_ttl_map

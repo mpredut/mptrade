@@ -57,6 +57,8 @@ BOT_CID_SPEC_TABLE: tuple[tuple[str, Optional[str], Optional[str], str], ...] = 
     ("MO_MT", "monitortrades", "monitortrades", "token"),
     ("MO_RT", "rtrade", "rtrade", "token"),
     ("MO_SD", "spot_dca", "trailing", "token"),
+    ("MO_AG", "assetguardian", "assetguardian", "token"),
+    ("MO_AI", "ai_executor", None, "token"),
     ("TA_OR", "tradeall", "tradeall", "token"),
     ("MT_OR", "monitortrades", "monitortrades", "token"),
     ("AG_OR", "assetguardian", "assetguardian", "token"),
@@ -117,7 +119,6 @@ REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual"})
 BOT_PRIORITY_RANKS: dict[str, int] = {
     "rtrade": 10,
     "tradeall": 20,
-    "monitororder": 20,
     "assetguardian": 30,
     "monitortrades": 40,
     "spot_dca": 50,
@@ -287,6 +288,12 @@ def resolve_owner_cid_prefix(owner: Optional[str]) -> Optional[str]:
     if key == "manual":
         return "MN"
     return _PROCESS_NAME_OVERRIDES.get(key)
+
+
+def resolve_monitororder_replace_prefix(owner: Optional[str]) -> str:
+    """Return the clientOrderId prefix for a monitororder replacement preserving ``owner``."""
+    pfx = resolve_owner_cid_prefix(owner)
+    return f"MO_{pfx}_OR" if pfx and pfx != "MO" else "MO_OR"
 
 
 def bot_priority_rank(order_or_cid: Any, *, owner_map: Optional[dict[str, str]] = None) -> int:

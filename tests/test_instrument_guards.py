@@ -1866,15 +1866,30 @@ class TestOrderRollback(unittest.TestCase):
 
     def test_bot_priority_hierarchy_and_preempt_lower_priority_open_orders(self):
         from order_lifecycle import preempt_lower_priority_open_orders
-        from providers.order_id_context import can_bot_preempt_order, preemptible_owners_for
+        from providers.order_id_context import (
+            bot_priority_rank,
+            can_bot_preempt_order,
+            preemptible_owners_for,
+            resolve_monitororder_replace_prefix,
+            resolve_priority_bot_owner,
+        )
 
         # 1. Hierarchy: rtrade (10) < tradeall (20) < assetguardian (30) < monitortrades (40)
+        #    monitororder has no standalone rank and preserves the modified order's owner rank
+        self.assertEqual(bot_priority_rank("monitororder"), 0)
         self.assertEqual(preemptible_owners_for("rtrade"), frozenset())
         self.assertEqual(preemptible_owners_for("tradeall"), frozenset({"rtrade"}))
         self.assertEqual(
             preemptible_owners_for("assetguardian"),
-            frozenset({"rtrade", "tradeall", "monitororder"}),
+            frozenset({"rtrade", "tradeall"}),
         )
+        self.assertEqual(resolve_monitororder_replace_prefix("tradeall"), "MO_TA_OR")
+        self.assertEqual(resolve_monitororder_replace_prefix("manual"), "MO_MN_OR")
+        self.assertEqual(resolve_monitororder_replace_prefix("monitortrades"), "MO_MT_OR")
+        self.assertEqual(resolve_priority_bot_owner("MO_TA_OR_123"), "tradeall")
+        self.assertEqual(resolve_priority_bot_owner("MO_MN_OR_123"), "manual")
+        self.assertEqual(resolve_priority_bot_owner("MO_AG_OR_123"), "assetguardian")
+        self.assertEqual(resolve_priority_bot_owner("MO_AI_OR_123"), "ai_executor")
         self.assertTrue(can_bot_preempt_order("tradeall", {"clientOrderId": "RT_100"}))
         self.assertFalse(can_bot_preempt_order("tradeall", {"clientOrderId": "AG_100"}))
         self.assertTrue(can_bot_preempt_order("assetguardian", {"clientOrderId": "TO_200"}))

@@ -449,7 +449,7 @@ def enqueue(
     if not prefix and eff_kind:
         parent_owner = (clean_scalar_str(placement.get("parent_owner")) or "").lower()
         if "monitor_order_replace" in eff_kind:
-            prefix = "MO_MN_OR" if parent_owner == "manual" else ("MO_TA_OR" if parent_owner == "tradeall" else "MO_OR")
+            prefix = rc.resolve_monitororder_replace_prefix(parent_owner)
         elif eff_kind in {"STOP", "TP"}:
             prefix = "MT_OR"
         elif eff_kind == "trend_signal" or eff_kind.startswith(_TRADEALL_KIND_PREFIXES):
@@ -872,7 +872,7 @@ def resolve_tracked_order_owner(
             owner = rc.resolve_order_owner(cid_str)
         except Exception:
             owner = "unspecified"
-        if _is_concrete_owner(owner):
+        if _is_concrete_owner(owner) and owner.lower() != "monitororder":
             return owner
     owner_map = accepted_owner_map if isinstance(accepted_owner_map, dict) else get_accepted_order_owner_map()
     for key in (oid_str, cid_str):
