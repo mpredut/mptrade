@@ -81,6 +81,7 @@ from cachepaths import (
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
+    ensure_equity_suffix,
     filter_candidates_by_asset_class,
     get_cachedb_dir,
     has_equity_suffix,
@@ -2523,7 +2524,7 @@ def resolve_cached_symbol_price(
     except Exception:
         pass
 
-    lookup_sym = f"{sym_u}_US_EQ" if inst_is_eq and not has_equity_suffix(sym_u) else sym_u
+    lookup_sym = ensure_equity_suffix(sym_u, is_equity=inst_is_eq)
     series_cands = filter_candidates_by_asset_class(
         cache_symbol_variants(
             lookup_sym, include_original=True, include_base=False, quotes=allowed_quotes

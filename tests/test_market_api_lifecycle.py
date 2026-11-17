@@ -1331,6 +1331,17 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 ssot_violations.append(
                     f"{rel_s}:{lineno}: direct INVALID_SCALAR_STRINGS use (call clean_scalar_str / clean_upper_scalar)"
                 )
+            elif (
+                rel_s != "cachepaths.py"
+                and isinstance(node, ast.JoinedStr)
+                and node.values
+                and isinstance(node.values[-1], ast.Constant)
+                and isinstance(node.values[-1].value, str)
+                and node.values[-1].value.endswith("_US_EQ")
+            ):
+                ssot_violations.append(
+                    f"{rel_s}:{lineno}: manual f-string _US_EQ concatenation (call ensure_equity_suffix)"
+                )
 
     for extra_dir in ("offline", "verify_tools"):
         for p in sorted((root / extra_dir).rglob("*.py")):

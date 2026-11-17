@@ -31,6 +31,7 @@ from cachepaths import (
     canonical_base_asset,
     canonical_symbol_key,
     clean_symbol_key,
+    clean_upper_scalar,
     compatible_quote_suffixes,
     ensure_equity_suffix,
     ensure_quote_suffix,
@@ -763,16 +764,11 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             if is_xstock_tok:
                 x_holdings[ak_str] = round(av_f, 6)
         alloc_info = xst_data.get("allocated") if isinstance(xst_data.get("allocated"), dict) else None
-        raw_pair = xst_data.get("pair")
-        listed_pair = (
-            str(raw_pair).strip().upper()
-            if isinstance(raw_pair, str) and raw_pair.strip() and raw_pair.strip().lower() not in ("none", "null", "nan")
-            else None
-        )
+        listed_pair = clean_upper_scalar(xst_data.get("pair"))
         if not (x_holdings or alloc_info or listed_pair):
             return None
-        underlying = (xstock_cfg.get("xstock_yahoo") or "SPCX").strip().upper()
-        t212_sib = f"{underlying}_US_EQ"
+        underlying = clean_upper_scalar(xstock_cfg.get("xstock_yahoo")) or "SPCX"
+        t212_sib = ensure_equity_suffix(underlying)
         alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None)
         live_px = (
             (resolve_symbol_price(listed_pair, eff_pt) if listed_pair else 0.0)

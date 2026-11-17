@@ -302,8 +302,8 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
 
     if not _parse_bool_flag(force_refresh, default=False):
         cached = _position_stats_cache.get(cache_key)
-        if cached is not None:
-            cached_sig, cached_time, cached_val = cached
+        if cached is not None and len(cached) >= 4 and cached[3] is api:
+            cached_sig, cached_time, cached_val, _ = cached
             if cached_sig == entry_sig and (explicit_orders or 0.0 <= (now_ts - cached_time) < _POSITION_CACHE_HEARTBEAT_SEC):
                 return dict(cached_val)
 
@@ -319,7 +319,9 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         "buy_count": len(buy_orders),
         "sell_count": len(sell_orders),
     }
-    _position_stats_cache[cache_key] = (entry_sig, now_ts, res)
+    if len(_position_stats_cache) >= 256:
+        _position_stats_cache.clear()
+    _position_stats_cache[cache_key] = (entry_sig, now_ts, res, api)
     return dict(res)
 
 

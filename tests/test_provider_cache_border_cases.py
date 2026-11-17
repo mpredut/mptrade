@@ -8521,6 +8521,82 @@ def test_read_ssot_price_history_memo_bisect_and_lookback_expansion(tmp_path, mo
     assert type(cp_mod.CachePriceManagerBase.parse_ssot_price_point([now_ms, 42])[1]) is float
 
 
+def test_wave49_callable_anchor_id_memos_and_equity_suffix_ssot(tmp_path, monkeypatch):
+    """Verify Wave 49 lifetime-anchored id() caches across microstructure_collector, price_series_evaluator, and monitortrades plus ensure_equity_suffix SSOT."""
+
+    # 1. callable_identity_anchor & same_callable_anchor handle lambdas and bound methods on unhashable SimpleNamespace.
+    unhashable_prov = SimpleNamespace(tag="p1")
+    unhashable_prov.ohlc_series = MethodType(lambda self, s, iv: (self.tag, s, iv), unhashable_prov)
+    other_prov = SimpleNamespace(tag="p1")
+    other_prov.ohlc_series = MethodType(unhashable_prov.ohlc_series.__func__, other_prov)
+    k1, a1 = mss.callable_identity_anchor(getattr(unhashable_prov, "ohlc_series"))
+    k2, a2 = mss.callable_identity_anchor(getattr(unhashable_prov, "ohlc_series"))
+    _, a_other = mss.callable_identity_anchor(getattr(other_prov, "ohlc_series"))
+    assert k1 == k2 and hash(k1) is not None
+    assert mss.same_callable_anchor(a1, a2) is True
+    assert mss.same_callable_anchor(a1, a_other) is False
+
+    # 2. _wrap_cached_ohlc_fn prevents GC address-reuse aliasing across transient lambdas and hits across bound methods.
+    mc_mod._FALLBACK_OHLC_SERIES_CACHE.clear()
+    calls: list[str] = []
+
+    def _run_transient_ohlc(tag: str, px: float):
+        fn = lambda s, iv: (calls.append(tag), SimpleNamespace(timestamps=[1700000000.0], closes=[px]))[1]
+        wrapped = mc_mod._wrap_cached_ohlc_fn("kraken", fn, ttl_sec=60.0)
+        return wrapped("BTCUSD", 5).closes[0]
+
+    assert _run_transient_ohlc("first", 101.0) == 101.0
+    assert _run_transient_ohlc("second", 202.0) == 202.0
+    assert calls == ["first", "second"]
+
+    bm_calls: list[int] = []
+    prov_bm = SimpleNamespace()
+    prov_bm.ohlc_series = MethodType(
+        lambda self, s, iv: (bm_calls.append(1), SimpleNamespace(timestamps=[1700000000.0], closes=[303.0]))[1],
+        prov_bm,
+    )
+    assert mc_mod._wrap_cached_ohlc_fn("kraken", getattr(prov_bm, "ohlc_series"), ttl_sec=60.0)("BTCUSD", 5).closes == [303.0]
+    assert mc_mod._wrap_cached_ohlc_fn("kraken", getattr(prov_bm, "ohlc_series"), ttl_sec=60.0)("BTCUSD", 5).closes == [303.0]
+    assert len(bm_calls) == 1
+
+    # 3. _load_stitched_24h_ohlc_points anchors writer callable in _LAST_OHLC_WRITER_ID_BY_PATH so new transient lambdas never read stale disk points.
+    monkeypatch.setattr(pse_mod, "is_offline_disk_cache_enabled", lambda: False)
+    monkeypatch.setattr(pse_mod, "is_live_network_backfill_enabled", lambda: False)
+    pse_mod._OHLC_24H_DISK_MEMO.clear()
+    pse_mod._LAST_OHLC_WRITER_ID_BY_PATH.clear()
+    t0 = 1_750_000_000.0
+    ts_list = [t0 - (20 - i) * 3600.0 for i in range(21)]
+
+    def _run_transient_stitch(px: float):
+        fn = lambda _sym, _iv: SimpleNamespace(timestamps=ts_list, closes=[px] * len(ts_list), volumes=[10.0] * len(ts_list))
+        return pse_mod._load_stitched_24h_ohlc_points(fn, "BTCUSDC", t0 - 86400.0, cache_dir=str(tmp_path))
+
+    pts_first = _run_transient_stitch(50_000.0)
+    pts_second = _run_transient_stitch(60_000.0)
+    assert pts_first[-1][1] == 50_000.0
+    assert pts_second[-1][1] == 60_000.0
+
+    # 4. monitortrades.get_position_stats anchors api object in _position_stats_cache and bounds cache size.
+    mt.clear_position_stats_cache()
+
+    def _query_transient_mt_api(px: float):
+        transient_api = SimpleNamespace(
+            name="mock_venue",
+            get_orders=lambda _sym, side, _age: (
+                [{"orderId": "1", "price": px, "qty": 2.0, "time": 1700000000000, "side": "BUY"}]
+                if side == "BUY"
+                else []
+            ),
+        )
+        return mt.get_position_stats("BTCUSDC", 3600.0, api=transient_api, now_ts=1700000100.0)
+
+    st1 = _query_transient_mt_api(100.0)
+    st2 = _query_transient_mt_api(120.0)
+    assert st1["average_buy_price"] == 100.0 and st2["average_buy_price"] == 120.0
+    assert all(len(v) == 4 for v in mt._position_stats_cache.values())
+
+
+
 
 
 

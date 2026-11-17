@@ -36,6 +36,7 @@ from cachepaths import (
     CACHE_WHALE_SNAPSHOT_PREFIX,
     canonical_base_asset,
     clean_symbol_key,
+    clean_upper_scalar,
     compatible_quote_suffixes,
     has_crypto_quote_suffix,
     has_equity_suffix,
@@ -113,9 +114,11 @@ from intelligence.external.collectors.derivatives_telemetry_collector import Der
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 from intelligence.macro_sentiment_ssot import (
+    callable_identity_anchor,
     load_microstructure_cycle_history,
     lookup_symbol_cache_items,
     resolve_read_json_cached,
+    same_callable_anchor,
     save_microstructure_cycle_history,
     _parse_ts_px_row,
 )
@@ -171,7 +174,7 @@ from state_io import (
 
 read_json_cached = _default_read_json_cached
 _FALLBACK_PROVIDER_OHLC_FNS: Dict[str, Any] = {}
-_FALLBACK_OHLC_SERIES_CACHE: Dict[Tuple[str, str, int], Tuple[float, Any]] = {}
+_FALLBACK_OHLC_SERIES_CACHE: Dict[Tuple[str, Any, str, int], Tuple[float, Any, Any]] = {}
 _PRICE_SERIES_MEMO: Dict[Tuple[str, str, bool, Tuple[str, ...]], Tuple[Any, list, list, float]] = {}
 _ARCH_FILE_MEMO: Dict[Tuple[str, int, int, int, Tuple[str, ...]], list] = {}
 _EQ_YAHOO_CHART_MEMO: Dict[str, Tuple[float, Any]] = {}
@@ -243,16 +246,17 @@ def _wrap_cached_ohlc_fn(
         fn = resolved_fn
         if not callable(fn):
             return None
-        ck = (prov_key, id(fn), str(s_arg or "").strip().upper(), safe_pos_int(interval_min, default=1) or 1)
+        fn_id, fn_anchor = callable_identity_anchor(fn)
+        ck = (prov_key, fn_id, clean_upper_scalar(s_arg) or "", safe_pos_int(interval_min, default=1) or 1)
         now_s = _time.time()
         hit = _FALLBACK_OHLC_SERIES_CACHE.get(ck)
-        if hit is not None and 0.0 <= (now_s - hit[0]) < ttl_sec:
+        if hit is not None and len(hit) >= 3 and same_callable_anchor(hit[2], fn_anchor) and 0.0 <= (now_s - hit[0]) < ttl_sec:
             return hit[1]
         res = fn(s_arg, interval_min)
         if res is not None and getattr(res, "closes", None):
             if len(_FALLBACK_OHLC_SERIES_CACHE) > 128:
                 _FALLBACK_OHLC_SERIES_CACHE.clear()
-            _FALLBACK_OHLC_SERIES_CACHE[ck] = (now_s, res)
+            _FALLBACK_OHLC_SERIES_CACHE[ck] = (now_s, res, fn_anchor)
         return res
 
     return _cached_ohlc

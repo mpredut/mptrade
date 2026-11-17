@@ -296,6 +296,22 @@ _SORTED_TS_PX_ANCHORS: Dict[Tuple[Any, int, Any, Any, Any], Any] = {}
 _TWO_COL_TS_PX_IDS: Dict[int, List[Tuple[float, float]]] = {}
 
 
+def callable_identity_anchor(fn: Any) -> Tuple[Any, Any]:
+    """Return ``(hashable_id_key, lifetime_anchor)`` for a function, lambda, or bound method."""
+    self_obj = getattr(fn, "__self__", None)
+    func_obj = getattr(fn, "__func__", None)
+    if self_obj is not None and func_obj is not None:
+        return (id(self_obj), id(func_obj)), (self_obj, func_obj)
+    return id(fn), fn
+
+
+def same_callable_anchor(left: Any, right: Any) -> bool:
+    """Return True when two anchors from ``callable_identity_anchor`` reference the exact same target."""
+    if type(left) is tuple and type(right) is tuple and len(left) == 2 and len(right) == 2:
+        return left[0] is right[0] and left[1] is right[1]
+    return left is right
+
+
 def _row_memo_token(row: Any) -> Any:
     if isinstance(row, (list, tuple)):
         return (len(row), row[0], row[1], row[2] if len(row) > 2 else None) if len(row) >= 2 else tuple(row)
@@ -352,7 +368,7 @@ def _finalize_sorted_ts_px(
             _SORTED_TS_PX_MEMO.clear()
             _SORTED_TS_PX_ANCHORS.clear()
         _SORTED_TS_PX_MEMO[mkey] = pts
-        _SORTED_TS_PX_ANCHORS[mkey] = (series[0], series[len(series) // 2], series[-1])
+        _SORTED_TS_PX_ANCHORS[mkey] = (series, series[0], series[len(series) // 2], series[-1])
     return pts
 
 

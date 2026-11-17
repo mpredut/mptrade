@@ -38,13 +38,15 @@ from intelligence.macro_sentiment_ssot import (
     _finalize_sorted_ts_px,
     _parse_ts_px_row,
     _series_memo_key,
+    callable_identity_anchor,
     resolve_kalman_vel_z,
+    same_callable_anchor,
 )
 from state_io import generation_file_lock, read_json_dict, read_json_recovering, save_json_state
 
 KalmanTrend: Any = None
 _OHLC_24H_DISK_MEMO: Dict[Tuple[str, int, int], List[List[Any]]] = {}
-_LAST_OHLC_WRITER_ID_BY_PATH: Dict[str, int] = {}
+_LAST_OHLC_WRITER_ID_BY_PATH: Dict[str, Any] = {}
 _LAST_7D_SPAN_MS_BY_SYM: Dict[str, float] = {}
 
 
@@ -515,7 +517,7 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
             if mkey is not None:
                 if len(_BUCKET_5M_MEMO) >= 32:
                     _BUCKET_5M_MEMO.clear()
-                _BUCKET_5M_MEMO[mkey] = ((series[0], series[len(series) // 2], series[-1]), bmap)
+                _BUCKET_5M_MEMO[mkey] = ((series, series[0], series[len(series) // 2], series[-1]), bmap)
             return bmap
 
         a_map, b_map = _clean_buckets(alt_series), _clean_buckets(btc_series)
@@ -1170,6 +1172,7 @@ def _load_stitched_24h_ohlc_points(
     cutoff_ms = (normalize_epoch_sec(cutoff_24h, default=0.0, allow_zero=True) or 0.0) * 1000.0
     cpath = ""
     disk_fallback_pts: List[List[Any]] = []
+    _, writer_anchor = callable_identity_anchor(ohlc_fn) if callable(ohlc_fn) else (None, None)
     if sym_u and sym_u.replace("_", "").isalnum():
         try:
             fname = cache_ohlc_24h_filename(sym_u)
@@ -1182,7 +1185,10 @@ def _load_stitched_24h_ohlc_points(
                 not callable(ohlc_fn)
                 or allow_offline_disk
                 or is_live_network_backfill_enabled()
-                or _LAST_OHLC_WRITER_ID_BY_PATH.get(cpath) == id(ohlc_fn)
+                or (
+                    (prev_writer := _LAST_OHLC_WRITER_ID_BY_PATH.get(cpath)) is not None
+                    and same_callable_anchor(prev_writer, writer_anchor)
+                )
             )
             if can_read_disk:
                 st = os.stat(cpath)
@@ -1237,7 +1243,9 @@ def _load_stitched_24h_ohlc_points(
                     save_json_state(cpath, {"ts": now_w, "symbol": sym_u, "points": pts_all})
                     st_new = os.stat(cpath)
                     _OHLC_24H_DISK_MEMO[(cpath, st_new.st_mtime_ns, st_new.st_size)] = [list(p) for p in pts_all]
-                    _LAST_OHLC_WRITER_ID_BY_PATH[cpath] = id(ohlc_fn)
+                    if len(_LAST_OHLC_WRITER_ID_BY_PATH) >= 64:
+                        _LAST_OHLC_WRITER_ID_BY_PATH.clear()
+                    _LAST_OHLC_WRITER_ID_BY_PATH[cpath] = writer_anchor
         except Exception:
             pass
     res_pts = (

@@ -441,7 +441,7 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
 
         crypto_bases = {base for base, is_eq, _, _, _, _ in pos_exposures if not is_eq}
         corr_map: Dict[str, float] = {
-            (f"{base}_US_EQ" if (is_eq and base in crypto_bases) else base): round(corr_v, 2)
+            ensure_equity_suffix(base, is_equity=is_eq and base in crypto_bases): round(corr_v, 2)
             for base, is_eq, _, _, corr_v, _ in pos_exposures
             if base != "BTC"
         }
