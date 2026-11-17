@@ -56,8 +56,18 @@ def build_supervisor_prompt(
         f"### 0. RUN TIMESTAMP & OPERATIONAL CLOCK: {now_ts_str}\n"
     ]
     domain_ages = getattr(sensors, "source_ages_sec", None)
+    spec_scope_norm = str(getattr(spec, "asset_scope", "all") or "all").strip().lower()
+    skip_domain_keys = (
+        {"fear_greed", "market_breadth", "sentiment_advisor"}
+        if spec_scope_norm in ("equities", "equity")
+        else set()
+    )
     if not is_pure_sre and isinstance(domain_ages, dict) and domain_ages:
-        age_tokens = [f"{k}={v}s" for k, v in domain_ages.items() if safe_pos_float(v, default=None) is not None or v == 0.0]
+        age_tokens = [
+            f"{k}={v}s"
+            for k, v in domain_ages.items()
+            if k not in skip_domain_keys and (safe_pos_float(v, default=None) is not None or v == 0.0)
+        ]
         if age_tokens:
             context_items.append(f"- Snapshot Domain Ages: {', '.join(age_tokens)}")
     if not is_pure_sre:

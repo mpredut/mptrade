@@ -1813,3 +1813,162 @@ def test_stale_http_fallbacks_preserve_disk_ts_and_section3b_and_domain_ages_ren
     assert "prices_oldest=180.0s" in prompt_txt
     assert "venue_balances=240.0s" in prompt_txt
     assert "source_ages(ob=7500.0s/15s[stale], deriv=420.0s/30s[stale], whale=15.0s/60s)" in prompt_txt
+
+
+def test_reverify_scheduled_step_noop_scope_isolation_and_sibling_ob_ts(temp_cache_dir, monkeypatch):
+    """Verify clean scheduled no-ops do not trigger 0.25x retry spin, snapshot domain ages isolate crypto vs equities scopes, and sibling orderbook timestamps stay pair-local."""
+    from intelligence.sentiment.evaluators.microstructure_evaluator import sync_sibling_symbol_telemetry
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+    from state_io import save_json_state
+
+    # 1. Clean no-op on update_pretrade_caches / update_venue_balances advances full interval without 15s spin,
+    #    whereas exceptions still apply compute_step_retry_ts backoff.
+    noop_ws = os.path.join(os.path.dirname(temp_cache_dir), "empty_ws")
+    noop_dir = os.path.join(noop_ws, "cachedb")
+    os.makedirs(noop_dir, exist_ok=True)
+    col = GlobalTelemetryCollector(
+        symbols=["BTCUSDC"],
+        cache_dir=noop_dir,
+        skip_news=True,
+        fear_greed_interval_sec=3600.0,
+        breadth_interval_sec=3600.0,
+        macro_benchmarks_interval_sec=3600.0,
+    )
+    col.pretrade_caches_interval_sec = 60.0
+    col.venue_balances_interval_sec = 60.0
+    monkeypatch.setattr(col, "_step_external_symbols", lambda *_a, **_kw: None)
+    monkeypatch.setattr(col, "update_fear_greed", lambda *_a, **_kw: True)
+    monkeypatch.setattr(col, "update_market_breadth", lambda *_a, **_kw: True)
+    monkeypatch.setattr(col, "update_macro_benchmarks", lambda *_a, **_kw: True)
+
+    pretrade_calls = []
+
+    def _clean_noop_refresh(sym="", cachedb_dir="", **kwargs):
+        pretrade_calls.append((sym, kwargs.get("include_t212_portfolio")))
+        return {"microstructure_refreshed": False, "t212_positions_refreshed": False, "equity_chart_refreshed": False}
+
+    monkeypatch.setattr("intelligence.globaltelemetry_collector.refresh_pretrade_telemetry_caches", _clean_noop_refresh)
+
+    t0 = 1_760_100_000.0
+    res0 = col.run_cycle(force=False, now=t0)
+    assert res0["pretrade_caches_updated"] is False
+    assert res0["venue_balances_updated"] is False
+    assert col._last_pretrade_caches_ts == pytest.approx(t0)
+    assert col._last_venue_balances_ts == pytest.approx(t0)
+    assert len(pretrade_calls) == 2
+
+    # 20s later (< 60s interval, > 15s retry window): must NOT re-run clean no-op steps
+    res_20s = col.run_cycle(force=False, now=t0 + 20.0)
+    assert res_20s["pretrade_caches_updated"] is False
+    assert len(pretrade_calls) == 2
+
+    # On exception, retry backoff (0.25 * 60s = 15s) MUST remain active
+    def _failing_refresh(*_a, **_kw):
+        raise RuntimeError("transient_broker_timeout")
+
+    monkeypatch.setattr("intelligence.globaltelemetry_collector.refresh_pretrade_telemetry_caches", _failing_refresh)
+    t1 = t0 + 61.0
+    res_fail = col.run_cycle(force=False, now=t1)
+    assert res_fail["pretrade_caches_updated"] is False
+    assert col._last_pretrade_caches_ts == pytest.approx(t1 - 45.0)
+
+    # 2. Cross-scope & retired-position isolation in TelemetrySensorSnapshot domain ages
+    scope_ws = os.path.join(os.path.dirname(temp_cache_dir), "scope_ws")
+    scope_dir = os.path.join(scope_ws, "cachedb")
+    os.makedirs(scope_dir, exist_ok=True)
+    now_s = 1_760_200_000.0
+    save_json_state(
+        os.path.join(scope_dir, "cache_current_price.json"),
+        {
+            "ts": now_s - 3.0,
+            "items": {
+                "BTCUSDC": [[round((now_s - 3.0) * 1000.0), 68500.0]],
+                "ETHUSDC": [[round((now_s - 9.0) * 1000.0), 3450.0]],
+                "NVDA_US_EQ": [[round((now_s - 54000.0) * 1000.0), 141.2]],
+            },
+        },
+    )
+    save_json_state(
+        os.path.join(scope_dir, "fear_greed_collect.json"),
+        {"value": 55, "classification": "Neutral", "ts": now_s - 600.0},
+    )
+    save_json_state(
+        os.path.join(scope_dir, "venue_balances_state.json"),
+        {
+            "open_orders_verified_ts:binance": now_s - 6.0,
+            "open_orders_verified_ts:t212": now_s - 54000.0,
+            "pos:binance:RETIREDCOINUSDC": {
+                "venue": "binance",
+                "symbol": "RETIREDCOINUSDC",
+                "free_base": 0.0,
+                "ts": now_s - 900000.0,
+            },
+        },
+    )
+
+    orch = MarketAndPortfolioSnapshotOrchestrator(start_sync=False)
+    snap_crypto = orch.read_snapshot(scope_dir, scope="crypto", now_ts=now_s)
+    assert snap_crypto.source_ages_sec["prices_newest"] == pytest.approx(3.0)
+    assert snap_crypto.source_ages_sec["prices_oldest"] == pytest.approx(9.0)
+    assert snap_crypto.source_ages_sec["venue_balances"] == pytest.approx(6.0)
+    assert snap_crypto.source_ages_sec["fear_greed"] == pytest.approx(600.0)
+
+    snap_eq = orch.read_snapshot(scope_dir, scope="equities", now_ts=now_s)
+    assert snap_eq.age_sec == pytest.approx(54000.0)
+    assert snap_eq.source_ages_sec["prices_newest"] == pytest.approx(54000.0)
+    assert "prices_oldest" not in snap_eq.source_ages_sec
+    assert snap_eq.source_ages_sec["venue_balances"] == pytest.approx(54000.0)
+    assert "fear_greed" not in snap_eq.source_ages_sec
+    assert "market_breadth" not in snap_eq.source_ages_sec
+    assert "sentiment_advisor" not in snap_eq.source_ages_sec
+
+    eq_prompt = build_supervisor_prompt(snap_eq, [], topic_key="auto_sharetrade_executor")
+    assert "fear_greed=" not in eq_prompt
+
+    # 3. Sibling orderbook timestamp isolation when a symbol already has its own orderbook
+    pt_sib = {
+        "BTCUSDC": {"price": 68500.0, "trend": 1, "growth_coefficient": 0.01},
+        "BTCUSD": {"price": 68505.0, "trend": 1, "growth_coefficient": 0.01},
+    }
+    micro_sib = {
+        "BTCUSDC": {
+            "ob_mid_price": 68500.0,
+            "best_bid": 68499.0,
+            "best_ask": 68501.0,
+            "ob_imbalance": 0.54,
+            "bid_depth_usd": 400000.0,
+            "ask_depth_usd": 350000.0,
+            "bid_wall_px": 68300.0,
+            "bid_wall_usd": 90000.0,
+            "ask_wall_px": 68700.0,
+            "ask_wall_usd": 85000.0,
+        },
+        "BTCUSD": {
+            "ob_mid_price": 68505.0,
+            "best_bid": 68504.0,
+            "best_ask": 68506.0,
+            "ob_imbalance": 0.51,
+            "bid_depth_usd": 200000.0,
+            "ask_depth_usd": 190000.0,
+            "bid_wall_px": 68310.0,
+            "bid_wall_usd": 50000.0,
+            "ask_wall_px": 68710.0,
+            "ask_wall_usd": 48000.0,
+            "_ob_raw_ts": now_s - 120.0,
+            "_ob_ts": now_s - 120.0,
+            "funding_rate": 0.0001,
+            "oi_usd": 50000000.0,
+            "_deriv_ts": now_s - 12.0,
+        },
+    }
+    sync_sibling_symbol_telemetry(pt_sib, micro_sib, cache_dir=scope_dir, now_ts=now_s, persist_cycle_deltas=False)
+    assert "_ob_raw_ts" not in micro_sib["BTCUSDC"]
+    assert micro_sib["BTCUSDC"].get("_deriv_ts") == pytest.approx(now_s - 12.0)
+
+    lines_3b = "\n".join(_format_microstructure_section(micro_sib, pt_sib, now_ts=now_s))
+    for ln in lines_3b.splitlines():
+        if ln.strip().startswith("* BTCUSDC"):
+            assert "ob=120.0s" not in ln
+            assert "deriv=12.0s" in ln
+

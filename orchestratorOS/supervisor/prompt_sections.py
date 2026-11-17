@@ -912,6 +912,7 @@ def _format_microstructure_section(
             "bid_depth_usd", "ask_depth_usd", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
             "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
             "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_perp_flow_regime",
+            "_ob_raw_ts", "_ob_ts",
         }
         for other_s in sib_3b:
             other_m = microstructure.get(other_s)

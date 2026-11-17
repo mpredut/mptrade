@@ -14,6 +14,7 @@ from botcore import (
     _parse_bool_flag,
     coerce_dict_maps,
     extract_current_price_item,
+    extract_current_price_timestamp_sec,
     extract_timestamp_s,
     fetch_public_json,
     first_epoch_sec,
@@ -28,8 +29,11 @@ from botcore import (
 )
 from cachepaths import (
     CACHE_WATCHER_ALL_PRICE_FILENAME,
+    cache_symbol_variants,
     canonical_base_asset,
+    has_equity_suffix,
     is_equity_venue,
+    normalize_venue_name,
     resolve_cachedb_filepath,
 )
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
@@ -963,7 +967,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
         for attr, val in macro_sensors.items():
             setattr(snapshot, attr, val)
-        if str(scope or "").strip().lower() == "equities":
+        if str(scope or "").strip().lower() in ("equities", "equity"):
             snapshot.fear_greed = None
             snapshot.market_breadth = None
             snapshot.sentiment_advisor = None
@@ -1212,40 +1216,115 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 snapshot.portfolio_summary["portfolio_risk_engine"] = risk_eng
 
         scope_label = str(scope or "all").strip().lower() or "all"
+        scope_norm = "equities" if scope_label in ("equities", "equity") else scope_label
         snap_source = "cachedb_read_only" if not allow_network and not persist else "live_harvest"
-        cp_item_ts = [
-            ts_norm
-            for v_item in (cur_p_items.values() if isinstance(cur_p_items, dict) else ())
-            if isinstance(v_item, list)
-            and v_item
-            and isinstance(v_item[-1], (list, tuple))
-            and len(v_item[-1]) >= 2
-            and (ts_norm := normalize_epoch_sec(v_item[-1][0], default=None)) is not None
-            and ts_norm > 0.0
-        ]
-        snap_ts = extract_timestamp_s(prices_data) if isinstance(prices_data, dict) else None
-        if snap_ts is None and cp_item_ts:
-            snap_ts = max(cp_item_ts)
+        t212_sym_set = {str(s).upper() for s in (t212_cycles or ())} | {
+            str(s).split(":", 1)[-1].upper()
+            for s, iv in (inst_by_sym or {}).items()
+            if is_equity_venue(getattr(iv, "provider_name", None))
+        }
+        scoped_pt_syms = {
+            str(k).strip().upper()
+            for k in (snapshot.prices_and_trends if isinstance(snapshot.prices_and_trends, dict) else ())
+            if str(k).strip()
+        }
+        _meta_keys_up = {"TS", "TIMESTAMP", "UPDATED_AT", "ITEMS", "FETCHTIME", "DYNAMIC"}
+
+        def _sym_in_scope(sym_key: Any) -> bool:
+            k_up = str(sym_key or "").strip().upper()
+            if not k_up or k_up in _meta_keys_up:
+                return False
+            if scope_norm in ("equities", "crypto"):
+                is_eq = has_equity_suffix(k_up) or k_up in t212_sym_set
+                if is_eq != (scope_norm == "equities"):
+                    return False
+            if scoped_pt_syms:
+                return k_up in scoped_pt_syms or any(
+                    c.upper() in scoped_pt_syms for c in cache_symbol_variants(k_up, include_base=False)
+                )
+            return True
+
+        def _vb_venue_in_scope(v_raw: Any) -> bool:
+            v_n = normalize_venue_name(v_raw)
+            if not v_n:
+                return scope_norm not in ("equities", "crypto")
+            if scope_norm in ("equities", "crypto"):
+                return is_equity_venue(v_n) == (scope_norm == "equities")
+            return True
+
+        cp_source_items = (
+            cur_p_items
+            if isinstance(cur_p_items, dict) and cur_p_items
+            else (prices_data if isinstance(prices_data, dict) else {})
+        )
+        cp_ft_map = (
+            prices_data.get("fetchtime")
+            if isinstance(prices_data, dict) and isinstance(prices_data.get("fetchtime"), dict)
+            else {}
+        )
+        has_in_scope_cp = False
+        has_out_of_scope_cp = False
+        cp_item_ts: List[float] = []
+        for k_cp, v_cp in cp_source_items.items():
+            k_cp_up = str(k_cp or "").strip().upper()
+            if not k_cp_up or k_cp_up in _meta_keys_up:
+                continue
+            if _sym_in_scope(k_cp_up):
+                has_in_scope_cp = True
+                ts_cp, ok_cp = extract_current_price_timestamp_sec(v_cp, cp_ft_map.get(k_cp))
+                if ok_cp and ts_cp > 0.0:
+                    cp_item_ts.append(ts_cp)
+            else:
+                has_out_of_scope_cp = True
+        prices_top_ts = (
+            extract_timestamp_s(prices_data)
+            if isinstance(prices_data, dict) and (has_in_scope_cp or not has_out_of_scope_cp)
+            else None
+        )
+        if scope_norm in ("equities", "crypto") and cp_item_ts:
+            snap_ts: Optional[float] = max(cp_item_ts)
+        else:
+            snap_ts = prices_top_ts
+            if snap_ts is None and cp_item_ts:
+                snap_ts = max(cp_item_ts)
+        active_macro_sensors = {
+            m_name: m_val
+            for m_name in macro_sensors
+            if isinstance(m_val := getattr(snapshot, m_name, None), dict)
+        }
         if snap_ts is None:
             sensor_ts_candidates = [
                 ts_v
-                for s_val in macro_sensors.values()
-                if isinstance(s_val, dict) and (ts_v := extract_timestamp_s(s_val)) is not None
+                for s_val in active_macro_sensors.values()
+                if (ts_v := extract_timestamp_s(s_val)) is not None
             ]
             snap_ts = max(sensor_ts_candidates) if sensor_ts_candidates else now_ts
         domain_ts: Dict[str, float] = {}
-        prices_newest_ts = max(cp_item_ts) if cp_item_ts else (extract_timestamp_s(prices_data) if isinstance(prices_data, dict) else None)
+        prices_newest_ts = max(cp_item_ts) if cp_item_ts else prices_top_ts
         if prices_newest_ts is not None and prices_newest_ts > 0.0:
             domain_ts["prices_newest"] = prices_newest_ts
         if len(cp_item_ts) > 1:
             domain_ts["prices_oldest"] = min(cp_item_ts)
         st_items_d = trends_data.get("items") if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict) else trends_data
-        st_ts_vals = [
-            ts_st
-            for tv in (st_items_d.values() if isinstance(st_items_d, dict) else ())
-            if isinstance(tv, dict) and (ts_st := extract_timestamp_s(tv)) is not None and ts_st > 0.0
-        ]
-        st_top_ts = extract_timestamp_s(trends_data) if isinstance(trends_data, dict) else None
+        has_in_scope_st = False
+        has_out_of_scope_st = False
+        st_ts_vals: List[float] = []
+        if isinstance(st_items_d, dict):
+            for tk, tv in st_items_d.items():
+                tk_up = str(tk or "").strip().upper()
+                if not tk_up or tk_up in _meta_keys_up:
+                    continue
+                if _sym_in_scope(tk_up):
+                    has_in_scope_st = True
+                    if isinstance(tv, dict) and (ts_st := extract_timestamp_s(tv)) is not None and ts_st > 0.0:
+                        st_ts_vals.append(ts_st)
+                else:
+                    has_out_of_scope_st = True
+        st_top_ts = (
+            extract_timestamp_s(trends_data)
+            if isinstance(trends_data, dict) and (has_in_scope_st or not has_out_of_scope_st)
+            else None
+        )
         if st_ts_vals:
             domain_ts["short_trends"] = max(st_ts_vals)
         elif st_top_ts is not None and st_top_ts > 0.0:
@@ -1253,23 +1332,57 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         if cache_dir:
             vb_p = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json")))
             if os.path.exists(vb_p) and isinstance(vb_doc := _rj(vb_p), dict):
-                vb_ts_vals = [
-                    ts_vb
-                    for bk, bv in vb_doc.items()
-                    if isinstance(bk, str)
-                    and (
-                        (bk.startswith("open_orders_verified_ts:") and (ts_vb := normalize_epoch_sec(bv, default=None)) is not None)
-                        or (isinstance(bv, dict) and (ts_vb := extract_timestamp_s(bv)) is not None)
-                    )
-                    and ts_vb > 0.0
+                inst_vb_syms = {
+                    str(s_inst).split(":", 1)[-1].strip().upper()
+                    for s_inst, iv_inst in (inst_by_sym or {}).items()
+                    if _vb_venue_in_scope(getattr(iv_inst, "provider_name", None))
+                }
+                verified_by_venue: Dict[str, float] = {}
+                fallback_by_venue: Dict[str, List[float]] = {}
+                for bk, bv in vb_doc.items():
+                    if not isinstance(bk, str):
+                        continue
+                    if bk.startswith("open_orders_verified_ts:"):
+                        v_part = normalize_venue_name(bk.split(":", 1)[1])
+                        if v_part and _vb_venue_in_scope(v_part) and (ts_vb := normalize_epoch_sec(bv, default=None)) is not None and ts_vb > 0.0:
+                            verified_by_venue[v_part] = max(verified_by_venue.get(v_part, 0.0), ts_vb)
+                    elif isinstance(bv, dict) and (ts_vb := extract_timestamp_s(bv)) is not None and ts_vb > 0.0:
+                        bk_parts = bk.split(":")
+                        v_cand = normalize_venue_name(
+                            bv.get("venue")
+                            or (
+                                bk_parts[1]
+                                if len(bk_parts) >= 3 and bk_parts[0] in ("pos", "cash", "breakdown")
+                                else (bk_parts[0] if len(bk_parts) >= 2 else "")
+                            )
+                        )
+                        sym_cand = str(
+                            bv.get("symbol") or (bk_parts[2] if len(bk_parts) >= 3 and bk_parts[0] == "pos" else "")
+                        ).strip().upper()
+                        if v_cand:
+                            if not _vb_venue_in_scope(v_cand):
+                                continue
+                        elif sym_cand and scope_norm in ("equities", "crypto"):
+                            if (has_equity_suffix(sym_cand) or sym_cand in t212_sym_set) != (scope_norm == "equities"):
+                                continue
+                            v_cand = "t212" if scope_norm == "equities" else "crypto"
+                        elif scope_norm in ("equities", "crypto"):
+                            continue
+                        else:
+                            v_cand = "unknown"
+                        if sym_cand and inst_vb_syms and sym_cand not in inst_vb_syms:
+                            if not any(c.upper() in inst_vb_syms for c in cache_symbol_variants(sym_cand, include_base=False)):
+                                continue
+                        fallback_by_venue.setdefault(v_cand, []).append(ts_vb)
+                vb_ts_vals = list(verified_by_venue.values()) + [
+                    max(ts_list) for v_k, ts_list in fallback_by_venue.items() if v_k not in verified_by_venue and ts_list
                 ]
                 if vb_ts_vals:
                     domain_ts["venue_balances"] = min(vb_ts_vals)
-        for m_name, m_val in macro_sensors.items():
-            if isinstance(m_val, dict):
-                m_ts = normalize_epoch_sec(m_val.get("ts"), default=None) or extract_timestamp_s(m_val)
-                if m_ts is not None and m_ts > 0.0:
-                    domain_ts[m_name] = m_ts
+        for m_name, m_val in active_macro_sensors.items():
+            m_ts = normalize_epoch_sec(m_val.get("ts"), default=None) or extract_timestamp_s(m_val)
+            if m_ts is not None and m_ts > 0.0:
+                domain_ts[m_name] = m_ts
         snap_age_sec = round(max(0.0, now_ts - snap_ts), 3)
         if not getattr(snapshot, "snapshot_id", ""):
             snapshot.snapshot_id = f"market_portfolio:{scope_label}:{round(snap_ts * 1000.0)}"

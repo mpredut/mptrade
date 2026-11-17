@@ -353,6 +353,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             )
             if any(portfolio_status.values()):
                 any_refreshed = True
+            self._last_pretrade_caches_ts_noop = not any_refreshed
             return any_refreshed
         except Exception as e:
             logger.warning("Failed refreshing pre-trade caches: %s", e)
@@ -404,7 +405,9 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             )
             if micro_map:
                 update_microstructure_cycle_deltas(self.cache_dir, micro_map, now_ts=eff_now, persist=True)
-            return bool(inst_map or micro_map)
+            published = bool(inst_map or micro_map)
+            self._last_venue_balances_ts_noop = not published
+            return published
         except Exception as e:
             logger.warning("Failed refreshing venue balances state: %s", e)
         return False

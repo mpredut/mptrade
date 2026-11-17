@@ -358,6 +358,11 @@ def run_scheduled_step(
     last_ts = safe_nonneg_ts(getattr(obj, ts_attr, 0.0), 0.0)
     if not is_interval_due(current_ts, last_ts, interval_sec, force=force):
         return False
+    noop_attr = f"{ts_attr}_noop"
+    try:
+        setattr(obj, noop_attr, False)
+    except AttributeError:
+        pass
     runner = getattr(obj, "_run_step_bounded", None)
     ok = (
         runner(fn, *fn_args, timeout_sec=timeout_sec, label=label)
@@ -367,6 +372,8 @@ def run_scheduled_step(
     if ok:
         if isinstance(results, dict) and result_key:
             results[result_key] = True
+        setattr(obj, ts_attr, current_ts)
+    elif getattr(obj, noop_attr, False):
         setattr(obj, ts_attr, current_ts)
     else:
         setattr(obj, ts_attr, compute_step_retry_ts(last_ts, current_ts, interval_sec))

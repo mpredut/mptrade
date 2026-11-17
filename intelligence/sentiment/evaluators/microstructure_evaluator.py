@@ -1290,6 +1290,7 @@ def sync_sibling_symbol_telemetry(
                         "bid_depth_usd", "ask_depth_usd", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
                         "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
                         "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_perp_flow_regime",
+                        "_ob_raw_ts", "_ob_ts",
                     }
                     synced_any_micro = False
                     for mk, mv in sib_micro.items():
@@ -1444,6 +1445,7 @@ def reconcile_sibling_flow_and_liq_regimes(
                     "oi_usd", "native_l1_oi_usd", "oi_1h_chg_pct",
                     "perp_spot_basis_bps", "funding_rate", "predicted_funding_rate", "funding_annualized_pct",
                     "long_liq_usd", "short_liq_usd", "long_liq_deep_usd", "short_liq_deep_usd",
+                    "_deriv_ts",
                 ):
                     if prim_m.get(shared_oi_k) is not None:
                         m_sib[shared_oi_k] = prim_m[shared_oi_k]
