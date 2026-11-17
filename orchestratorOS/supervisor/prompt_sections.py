@@ -803,6 +803,7 @@ def _format_3b_source_ages_suffix(
     now_ts: Optional[float],
     intervals: Dict[str, float],
     ob_only: bool = False,
+    include_deriv: bool = True,
 ) -> str:
     explicit_now = safe_pos_float(now_ts, default=None)
     ref_now = explicit_now if explicit_now is not None else time.time()
@@ -811,7 +812,7 @@ def _format_3b_source_ages_suffix(
         if ob_only
         else (
             ("ob", "_ob_raw_ts", intervals["orderbook_interval_sec"]),
-            ("deriv", "_deriv_ts", intervals["derivatives_interval_sec"]),
+            *((("deriv", "_deriv_ts", intervals["derivatives_interval_sec"]),) if include_deriv else ()),
             ("whale", "_whale_ts", intervals["whale_interval_sec"]),
         )
     )
@@ -1145,7 +1146,7 @@ def _format_microstructure_section(
             )
         )
         src_age_sfx = _format_3b_source_ages_suffix(
-            minfo, now_ts=now_ts, intervals=derived_3b_itvs, ob_only=False
+            minfo, now_ts=now_ts, intervals=derived_3b_itvs, ob_only=False, include_deriv=bool(deriv_oi_sfx)
         )
         lines.append(
             f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "

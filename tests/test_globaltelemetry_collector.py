@@ -1972,3 +1972,120 @@ def test_reverify_scheduled_step_noop_scope_isolation_and_sibling_ob_ts(temp_cac
             assert "ob=120.0s" not in ln
             assert "deriv=12.0s" in ln
 
+
+def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(temp_cache_dir, monkeypatch):
+    """Verify Pass-2 audit fixes: stale microstructure & RSS fallbacks do not report refreshed=True, cross-quote pretrade ages resolve cleanly, and zero-OI equity omits deriv age."""
+    from intelligence.sentiment.collectors.microstructure_collector import ensure_fresh_symbol_microstructure
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+    from state_io import save_json_state
+
+    now_s = 1_760_300_000.0
+    sub_dir = os.path.join(temp_cache_dir, "pass2_sub")
+    os.makedirs(sub_dir, exist_ok=True)
+
+    # 1. ensure_fresh_symbol_microstructure returns False when HTTP fails and collector serves stale disk fallback
+    monkeypatch.setenv("MPTRADE_ENABLE_LIVE_BACKFILL", "1")
+    ob_file = os.path.join(sub_dir, "orderbook_depth_BTCUSDC.json")
+    save_json_state(
+        ob_file,
+        {
+            "symbol": "BTCUSDC",
+            "mid_price": 68000.0,
+            "best_bid": 67999.0,
+            "best_ask": 68001.0,
+            "bid_depth_usd": 300000.0,
+            "ask_depth_usd": 290000.0,
+            "imbalance_ratio": 0.51,
+            "largest_bid_wall_usd": 60000.0,
+            "largest_bid_wall_price": 67800.0,
+            "largest_ask_wall_usd": 58000.0,
+            "largest_ask_wall_price": 68200.0,
+            "spread_bps": 0.29,
+            "ts": now_s - 900.0,
+        },
+    )
+    os.utime(ob_file, (now_s - 900.0, now_s - 900.0))
+
+    def _fail_http(*_a, **_kw):
+        raise RuntimeError("http_down")
+
+    monkeypatch.setattr("intelligence.external.collectors.orderbook_depth_collector.fetch_public_json", _fail_http)
+    monkeypatch.setattr("intelligence.external.collectors.whale_positioning_collector.fetch_public_json", _fail_http)
+    monkeypatch.setattr("intelligence.external.collectors.derivatives_telemetry_collector.fetch_public_json", _fail_http)
+    assert (
+        ensure_fresh_symbol_microstructure(
+            sub_dir,
+            "BTCUSDC",
+            now_ts=now_s,
+            max_age_ob_sec=60.0,
+            max_age_whale_sec=60.0,
+            include_derivatives=True,
+            allow_network=True,
+        )
+        is False
+    )
+
+    # 2. NewsFeedCollector & GlobalTelemetryCollector.update_news return False on stale RSS fallback
+    rss_xml = (
+        b"<?xml version='1.0' encoding='UTF-8'?><rss version='2.0'><channel><title>Feed</title>"
+        b"<item><title>Federal Reserve signals steady interest rates amid inflation data</title>"
+        b"<link>https://example.com/fed-rates</link><source>Reuters</source></item></channel></rss>"
+    )
+    monkeypatch.setattr("intelligence.macro.news_feed_collector.fetch_public_bytes", lambda *_a, **_kw: rss_xml)
+    news_col = GlobalTelemetryCollector(
+        symbols=["BTCUSDC"],
+        cache_dir=sub_dir,
+        skip_external=True,
+        news_interval_sec=300.0,
+        fear_greed_interval_sec=3600.0,
+        breadth_interval_sec=3600.0,
+    )
+    news_col.news_collector.rss_urls = ("https://example.com/rss",)
+    assert news_col.update_news(force=True, now=now_s - 400.0) is True
+
+    monkeypatch.setattr("intelligence.macro.news_feed_collector.fetch_public_bytes", _fail_http)
+    assert news_col.update_news(force=True, now=now_s) is False
+
+    # 3. Cross-quote BTCEUR pretrade snapshot records orderbook age from BTCUSDC and envelope short_slopes ts
+    save_json_state(
+        os.path.join(sub_dir, "cache_current_price.json"),
+        {"items": {"BTCEUR": [[round((now_s - 4.0) * 1000.0), 62500.0]]}},
+    )
+    save_json_state(
+        os.path.join(sub_dir, "cache_short_trend.json"),
+        {"ts": now_s - 25.0, "items": {"BTCEUR": {"trend": 1, "growth_coefficient": 0.015, "slope_15m": 0.002}}},
+    )
+    pt_snap = read_pretrade_telemetry_snapshot("BTCEUR", cachedb_dir=sub_dir, now_ts=now_s)
+    assert pt_snap.is_fresh is True
+    assert pt_snap.source_freshness["orderbook"]["age_sec"] == pytest.approx(900.0)
+    assert pt_snap.source_freshness["orderbook"]["fresh"] is False
+    assert pt_snap.source_freshness["short_slopes"]["age_sec"] == pytest.approx(25.0)
+
+    # 4. Zero-OI equity in Section 3B omits phantom deriv age when derivatives metrics are hidden
+    eq_pt = {"RGNT_US_EQ": {"price": 24.5, "trend": 0, "growth_coefficient": 0.0}}
+    eq_micro = {
+        "RGNT_US_EQ": {
+            "ob_mid_price": 24.5,
+            "best_bid": 24.48,
+            "best_ask": 24.52,
+            "ob_imbalance": 0.50,
+            "bid_depth_usd": 12000.0,
+            "ask_depth_usd": 12000.0,
+            "bid_wall_px": 24.2,
+            "bid_wall_usd": 4000.0,
+            "ask_wall_px": 24.8,
+            "ask_wall_usd": 4000.0,
+            "whale_long_pct": 50.0,
+            "taker_buy_sell_ratio": 1.0,
+            "oi_usd": 0.0,
+            "funding_rate": 0.0,
+            "_ob_raw_ts": now_s - 10.0,
+            "_deriv_ts": now_s - 500.0,
+            "_whale_ts": now_s - 20.0,
+        }
+    }
+    eq_lines_3b = "\n".join(_format_microstructure_section(eq_micro, eq_pt, now_ts=now_s))
+    assert "ob=10.0s" in eq_lines_3b
+    assert "whale=20.0s" in eq_lines_3b
+    assert "deriv=" not in eq_lines_3b
+

@@ -665,37 +665,30 @@ def ensure_fresh_symbol_microstructure(
             return False
         return max_age is not None and (eff_now - os.path.getmtime(fpath)) > max_age
 
+    def _run_fresh_collector(col_cls: Any) -> bool:
+        col = col_cls(cache_dir=eff_cache_dir, start_sync=True)
+        snap = col.fetch(sym_u, allow_network=True, now=eff_now)
+        if snap is None:
+            return False
+        stale_set = getattr(col, "_stale_fallback_symbols", None)
+        return not (isinstance(stale_set, set) and sym_u in stale_set)
+
     refreshed_any = False
     if _needs_fetch(CACHE_ORDERBOOK_DEPTH_PREFIX, max_age_ob_sec):
         try:
-            if (
-                OrderbookDepthCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(
-                    sym_u, allow_network=True, now=eff_now
-                )
-                is not None
-            ):
+            if _run_fresh_collector(OrderbookDepthCollector):
                 refreshed_any = True
         except Exception:
             pass
     if include_derivatives and _needs_fetch(CACHE_DERIVATIVES_TELEMETRY_PREFIX, max_age_whale_sec):
         try:
-            if (
-                DerivativesTelemetryCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(
-                    sym_u, allow_network=True, now=eff_now
-                )
-                is not None
-            ):
+            if _run_fresh_collector(DerivativesTelemetryCollector):
                 refreshed_any = True
         except Exception:
             pass
     if _needs_fetch(CACHE_WHALE_SNAPSHOT_PREFIX, max_age_whale_sec):
         try:
-            if (
-                WhalePositioningCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(
-                    sym_u, allow_network=True, now=eff_now
-                )
-                is not None
-            ):
+            if _run_fresh_collector(WhalePositioningCollector):
                 refreshed_any = True
         except Exception:
             pass

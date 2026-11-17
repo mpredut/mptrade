@@ -231,7 +231,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 force_refresh=_parse_bool_flag(force, False),
                 now_ts=eff_now,
             )
-            if news_snap:
+            if news_snap and not getattr(self.news_collector, "_last_fetch_used_stale_fallback", False):
                 logger.debug("RSS news pool updated: %d headlines in pool", news_snap.total_fetched)
                 return True
         except Exception as e:

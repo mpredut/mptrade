@@ -107,6 +107,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         self.rolling_window_sec = safe_pos_float(rolling_window_sec, DEFAULT_NEWS_ROLLING_WINDOW_SEC)
         self._cached_snapshot: Optional[NewsFeedSnapshot] = None
         self._last_fetch_ts: float = 0.0
+        self._last_fetch_used_stale_fallback: bool = False
         self._aggregated_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
         self._seen_first_ts: Dict[str, float] = {}
         self._load_history()
@@ -691,6 +692,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
             offline_fallback_fn=lambda ts: self.get_pool_snapshot(now_ts=ts),
         )
         if not should_fetch:
+            self._last_fetch_used_stale_fallback = False
             return ready
 
         cache_dir = self._CacheDirOrNone()
@@ -721,11 +723,13 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         if any_parsed:
             combined_latest = self._make_snapshot(collected_headlines, now, cache_dir)
             aggregated = self._aggregate(combined_latest, now)
+            self._last_fetch_used_stale_fallback = False
             self._cached_snapshot = aggregated
             self._last_fetch_ts = now
             return aggregated
 
         logger.warning("Failed to fetch any RSS news feeds. Using cached fallback if available.")
+        self._last_fetch_used_stale_fallback = self._cached_snapshot is not None
         return self._cached_snapshot
 
     def _invoke_fetch_with_cache_dir(

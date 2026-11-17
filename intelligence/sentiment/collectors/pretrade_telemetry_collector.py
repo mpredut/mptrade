@@ -131,7 +131,7 @@ def resolve_pretrade_source_intervals_sec(asset_scope: str = "CRYPTO") -> Dict[s
     ob_itv = derived["orderbook_interval_sec"]
     deriv_itv = derived["derivatives_interval_sec"]
     whale_itv = derived["whale_interval_sec"]
-    is_eq = str(asset_scope or "").strip().upper() == "EQUITY"
+    is_eq = str(asset_scope or "").strip().upper() in ("EQUITY", "EQUITIES")
     return {
         "price_series_24h": max(whale_itv, ob_itv * 3.0) if is_eq else deriv_itv,
         "orderbook": ob_itv,
@@ -1026,6 +1026,9 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             return
         now_ts_s = _time.time()
         ob_ts_est = safe_pos_float(cur_m_info.pop("_ob_ts", None), default=0.0) or 0.0
+        ob_raw_ts_m = safe_pos_float(cur_m_info.pop("_ob_raw_ts", None), default=0.0) or 0.0
+        deriv_ts_m = safe_pos_float(cur_m_info.pop("_deriv_ts", None), default=0.0) or 0.0
+        whale_ts_m = safe_pos_float(cur_m_info.pop("_whale_ts", None), default=0.0) or 0.0
         def _refresh_wall_telemetry(use_sub_ten_decimals: bool = False) -> None:
             for side_lbl, usd_k, px_k in (("Ask", "ask_wall_usd", "ask_wall_px"), ("Bid", "bid_wall_usd", "bid_wall_px")):
                 w_px_rc = safe_pos_float(cur_m_info.get(px_k), 0.0)
@@ -1086,6 +1089,22 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
         ctx.cur_m_info, ctx.cur_px_est, ctx.ob_ts_est = cur_m_info, cur_px_est, ob_ts_est
         if ctx.cur_m_info:
             ctx.record_pillar_source("microstructure", "cachedb", ctx.ob_ts_est)
+            has_ob_m = cur_m_info.get("ob_imbalance") is not None or cur_m_info.get("bid_depth_usd") is not None
+            has_deriv_m = (
+                ((safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) > 0.0)
+                if is_eq_sym
+                else (cur_m_info.get("funding_rate") is not None or cur_m_info.get("oi_usd") is not None)
+            )
+            has_whale_m = (
+                cur_m_info.get("whale_long_pct") is not None or cur_m_info.get("taker_buy_sell_ratio") is not None
+            )
+            for src_k_m, src_ts_m, present_m in (
+                ("orderbook", ob_raw_ts_m or ob_ts_est, has_ob_m),
+                ("derivatives", deriv_ts_m, has_deriv_m),
+                ("whale", whale_ts_m, has_whale_m),
+            ):
+                if present_m and src_ts_m > 0.0 and src_k_m not in ctx.pillar_timestamps:
+                    ctx.record_source_timestamp(src_k_m, src_ts_m)
 
 
 class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
@@ -1163,7 +1182,8 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
                     btc_live_px = btc_last_pt[1]
                 btc_m_info = load_symbol_microstructure(cachedb_dir, "BTCUSDC", _rj)
                 if isinstance(btc_m_info, dict):
-                    btc_m_info.pop("_ob_ts", None)
+                    for _k_int_ts in ("_ob_ts", "_ob_raw_ts", "_deriv_ts", "_whale_ts"):
+                        btc_m_info.pop(_k_int_ts, None)
                 btc_ob_mid = safe_pos_float((btc_m_info or {}).get("ob_mid_price"), default=None)
                 if (
                     btc_ob_mid is not None
@@ -1519,6 +1539,8 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                     if t_entry.get("vol_1h_pct") is None and (k_vol := safe_pos_float(k_sym.get("vol_1h_pct"), default=None)) is not None:
                         t_entry["vol_1h_pct"] = k_vol
             st_ts_t = safe_pos_float(t_entry.pop("_short_trend_ts", None), default=None)
+            if st_ts_t is None and has_st_tinfo and isinstance(st_data, dict):
+                st_ts_t = extract_timestamp_s(st_data)
             stale_short_ts = bool(
                 st_ts_t is not None
                 and last_alt_pt is not None
@@ -1559,6 +1581,8 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                 for sk, sv in _compute_short_slopes_from_series(alt_series_24h).items():
                     if t_entry.get(sk) is None or (s15_val == s25_val and sk in ("slope_3_7m", "slope_15m", "slope_2_5h")):
                         t_entry[sk] = sv
+                if st_ts_t is None and last_alt_pt is not None:
+                    st_ts_t = normalize_epoch_sec(last_alt_pt[0], default=None)
             if is_eq_sym and not eq_px_diverged_05pct and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
                 for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s", "vel_90s_pct_min", "accel_90s_pct_min2"):
                     t_entry.pop(k_stale_90, None)
@@ -1598,7 +1622,15 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
             cur_px_est,
         )
         if ctx.t_entry:
-            ctx.record_pillar_source("short_slopes", "cachedb", st_ts_t, include_in_snapshot_ts=False)
+            has_emitted_slopes = bool(
+                has_st_tinfo or any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h"))
+            )
+            ctx.record_pillar_source(
+                "short_slopes",
+                "cachedb",
+                st_ts_t if has_emitted_slopes else None,
+                include_in_snapshot_ts=False,
+            )
 
 
 class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
@@ -1753,6 +1785,8 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 sib_bd = safe_pos_float(sib_ob_d.get("bid_depth_usd"), default=0.0) or 0.0
                 if sib_bd > 0.0 and abs(sib_bd - cur_bd) > 1.0:
                     if sib_m := load_symbol_microstructure(cachedb_dir, cand_u, _rj, ob=sib_ob_d):
+                        for _k_sib_ts in ("_ob_raw_ts", "_deriv_ts", "_whale_ts"):
+                            sib_m.pop(_k_sib_ts, None)
                         sib_ob_ts = safe_pos_float(sib_m.pop("_ob_ts", None), default=0.0) or normalize_epoch_sec(
                             sib_ob_d.get("ts"),
                             default=0.0,
