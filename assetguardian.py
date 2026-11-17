@@ -8,7 +8,12 @@ import signal
 import threading
 import time
 
-from providers.order_id_context import can_bot_preempt_order, extract_client_order_id, resolve_order_owner
+from providers.order_id_context import (
+    can_bot_preempt_order,
+    extract_client_order_id,
+    resolve_order_owner,
+    resolve_priority_bot_owner,
+)
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 api = mkt
 from providers.execution_audit import ExecutionAudit
@@ -1428,17 +1433,20 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
                 f"{SELL_REARM_GROWTH_PERCENT:.4f}% against frozen trough "
                 f"{trough_price:.8f}.")
             return _reset_sell_campaign(growth)
-        expected_remaining = max(
-            0.0,
-            initial_qty - safe_nonneg_float(state.get("total_filled_qty"), default=0.0),
-        )
+        total_filled = safe_nonneg_float(state.get("total_filled_qty"), default=0.0)
+        expected_remaining = max(0.0, initial_qty - total_filled)
         balance_tolerance = max(1e-12, initial_qty * 1e-6)
         if free_qty > expected_remaining + balance_tolerance:
+            reconciled_initial_qty = free_qty + total_filled
             print(
                 f"[{symbol}] Free balance increased from expected "
-                f"{expected_remaining:.8f} to {free_qty:.8f}; rearm SELL campaign "
-                "for the reconciled larger position.")
-            return _reset_sell_campaign(growth)
+                f"{expected_remaining:.8f} to {free_qty:.8f}; "
+                f"reconciling SELL campaign initial_qty from {initial_qty:.8f} "
+                f"to {reconciled_initial_qty:.8f} while preserving stage tracking."
+            )
+            initial_qty = reconciled_initial_qty
+            state = {**state, "initial_qty": initial_qty}
+            _save_symbol_campaign(symbol, "sell", state)
     else:
         trough_price = _finite_float(minimum_row.get("price"), positive=True)
         trough_ts = _finite_float(minimum_row.get("timestamp"), positive=True)
@@ -1459,13 +1467,42 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
             "attempts_by_tier": {},
             "terminal_orders": [],
         }
-    if not _has_due_sell_tier_at(growth):
+    completed = _completed_tier_values(state)
+    initial_qty = _finite_float(state.get("initial_qty"), positive=True)
+    raw_filled_by_tier = state.get("filled_qty_by_tier")
+    filled_by_tier = dict(raw_filled_by_tier) if isinstance(raw_filled_by_tier, dict) else {}
+    due_tier = next(
+        (
+            (threshold, allocation)
+            for threshold, allocation in active_tiers
+            if threshold not in completed
+            and growth >= _trigger_threshold_for_sell_tier(
+                threshold, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult
+            )
+        ),
+        None,
+    )
+    if due_tier is None:
         _rtrade_sell_block_since.pop(symbol, None)
         return None, ({} if new_campaign else state), growth
+    due_threshold, due_allocation = due_tier
+    due_unfilled_qty = max(
+        0.0,
+        (initial_qty or 0.0) * due_allocation
+        - safe_nonneg_float(filled_by_tier.get(_tier_key(due_threshold)), default=0.0),
+    )
     open_sells = _active_sell_orders(provider, symbol)
     if open_sells is None:
         print(f"[{symbol}] Cannot verify open SELL orders; do not submit tier.")
         return None, ({} if new_campaign else state), growth
+    needs_locked_balance = new_campaign or (free_qty + 1e-12 < due_unfilled_qty)
+    open_sells = [
+        o for o in open_sells
+        if resolve_priority_bot_owner(o) in {"assetguardian", "manual", "unspecified"}
+        or (needs_locked_balance and can_bot_preempt_order("assetguardian", o))
+    ]
+    if not open_sells:
+        _rtrade_sell_block_since.pop(symbol, None)
     had_open_sells = bool(open_sells)
     if open_sells and _can_preempt_sell():
         open_sells = _resolve_blocking_sell_orders(
@@ -1484,15 +1521,12 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
                 free_qty = refreshed_free
                 if new_campaign:
                     state["initial_qty"] = free_qty
+                    initial_qty = free_qty
         except Exception:
             pass
     if new_campaign:
         _save_symbol_campaign(symbol, "sell", state)
 
-    completed = _completed_tier_values(state)
-    initial_qty = _finite_float(state.get("initial_qty"), positive=True)
-    raw_filled_by_tier = state.get("filled_qty_by_tier")
-    filled_by_tier = dict(raw_filled_by_tier) if isinstance(raw_filled_by_tier, dict) else {}
     for threshold, allocation in active_tiers:
         trigger_thr = _trigger_threshold_for_sell_tier(
             threshold, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult

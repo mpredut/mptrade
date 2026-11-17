@@ -764,15 +764,48 @@ class AssetGuardianTest(unittest.TestCase):
                     "total_filled_qty": 3.0,
                 }}},
             })
-            with patch.object(ag, "STATE", state):
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag, "SELL_TIERS", ((15.0, 0.30), (25.0, 0.30), (35.0, 0.40))):
                 tier, campaign, growth = ag._sell_campaign_tier(
                     "TAOUSDC", 126.0, {"timestamp": 20, "price": 110.0}, 8.0,
                     self.sell_provider)
 
-            self.assertIsNone(tier)
+            self.assertEqual(tier[0], 25.0)
+            self.assertEqual(tier[1], 0.30)
+            self.assertAlmostEqual(tier[2], 3.30)
             self.assertEqual(growth, 26.0)
-            self.assertEqual(campaign, {})
-            self.assertNotIn("TAOUSDC", state.value.get("symbols", {}))
+            self.assertEqual(campaign["trough_price"], 100.0)
+            self.assertEqual(campaign["completed_tiers"], [15.0])
+            self.assertAlmostEqual(campaign["initial_qty"], 11.0)
+            self.assertAlmostEqual(
+                state.value["symbols"]["TAOUSDC"]["sell"]["initial_qty"], 11.0
+            )
+
+        with self.subTest(msg="test_other_bot_open_sell_does_not_block_when_free_qty_sufficient"):
+            state = MemoryState({
+                "version": 3,
+                "symbols": {"TAOUSDC": {"sell": {
+                    "trough_price": 100.0, "trough_ts": 10,
+                    "initial_qty": 10.0, "completed_tiers": [15.0],
+                    "total_filled_qty": 3.0,
+                }}},
+            })
+            provider = Mock()
+            provider.open_orders.return_value = [
+                {"orderId": "ai-725840787", "clientOrderId": "AI_intent_1_sell_taousdc", "side": "SELL", "status": "NEW"},
+                {"orderId": "rt-999", "clientOrderId": "RT_TAO_1", "side": "SELL", "status": "NEW"},
+            ]
+            with patch.object(ag, "STATE", state), \
+                 patch.object(ag, "SELL_TIERS", ((15.0, 0.30), (25.0, 0.30), (35.0, 0.40))), \
+                 patch.object(ag.mkt, "cancel_order") as cancel_mock:
+                tier, campaign, growth = ag._sell_campaign_tier(
+                    "TAOUSDC", 126.0, {"timestamp": 20, "price": 110.0}, 7.0,
+                    provider)
+
+            cancel_mock.assert_not_called()
+            self.assertEqual(tier, (25.0, 0.30, 3.0))
+            self.assertEqual(growth, 26.0)
+            self.assertEqual(campaign["completed_tiers"], [15.0])
 
     def test_sell_order_reconciliation_and_lifecycle(self):
         with self.subTest(msg="test_open_sell_order_stays_pending_and_does_not_complete_tier"):
