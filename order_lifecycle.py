@@ -41,6 +41,7 @@ from botcore import (
     sanitize_pipe_field,
 )
 from notify_engine import alertnotifiers as alert
+from providers import order_id_context as rc
 from providers.order_ohlc_utils import (
     POST_ONLY_CROSS_TOKENS,
     extract_orig_qty,
@@ -762,6 +763,7 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
     kind = clean_scalar_str(order.get("kind")) or ("TP" if side == "SELL" else "ENTRY")
     prod = qty * price if qty > 0.0 and price > 0.0 else 0.0
     amount = safe_pos_float(order.get("amount"), default=safe_pos_float(prod, default=0.0))
+    client_order_id = rc.extract_client_order_id(order, default=None)
     return {
         "side": side,
         "qty": qty,
@@ -770,6 +772,7 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
         "kind": kind,
         "level": level,
         "amount": amount,
+        "client_order_id": client_order_id,
         "raw": order,
     }
 
@@ -817,17 +820,28 @@ def restore_cancelled_instrument_orders(
         return 0
 
     def _restore_one(params: dict[str, Any]) -> bool:
-        res = place_fn(
-            side=params["side"],
-            price=params["limit"],
-            qty=params["qty"],
-            smart=False,
-            wait_for_trend=False,
-            enforce_business_minimum=False,
-            caller_owns_retry=True,
-            bypass_guards=bypass_guards,
-            reason=f"atomic_rollback:{clean_scalar_str(reason) or 'restore_cancelled_order'}",
+        orig_cid = clean_order_id(params.get("client_order_id")) or ""
+        owner = rc.resolve_order_owner(orig_cid) if orig_cid else "unspecified"
+        pfx = (
+            "AI"
+            if owner == "ai_executor" or orig_cid.upper().startswith("AI_")
+            else rc._PROCESS_NAME_OVERRIDES.get(owner)
         )
+        place_kw: dict[str, Any] = {
+            "side": params["side"],
+            "price": params["limit"],
+            "qty": params["qty"],
+            "market": False,
+            "smart": False,
+            "wait_for_trend": False,
+            "enforce_business_minimum": False,
+            "caller_owns_retry": True,
+            "bypass_guards": bypass_guards,
+            "reason": f"atomic_rollback:{clean_scalar_str(reason) or 'restore_cancelled_order'}",
+        }
+        if pfx:
+            place_kw["client_order_id"] = rc.create_client_order_id(process_name=pfx)
+        res = place_fn(**place_kw)
         return bool(res)
 
     return restore_cancelled_orders(

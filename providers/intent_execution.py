@@ -301,7 +301,10 @@ def execute_enforce_intent_order(
             if callable(dispatch_notify_fn):
                 dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
 
+            sub_state = clean_scalar_str(outcome_ctx.get("state")) or ""
             extra_cat = {"category": refusal_cat} if refusal_cat else {}
+            if sub_state:
+                extra_cat["submission_state"] = sub_state
             _record_intent_state(intent, "FAILED", now_ts, reason=refusal_reason, **extra_cat)
             if outcome_ctx.get("state") == "refused":
                 _cleanup_refused_retry_records()

@@ -499,6 +499,8 @@ class AutonomousIntentGateway:
             and res_intent.get("status") == "FAILED"
             and not res_intent.get("execution_payload")
             and last_hist.get("category") != "deferred"
+            and last_hist.get("submission_state") != "unknown"
+            and last_hist.get("reason") != "submit_ambiguous"
         ):
             restored = restore_cancelled_instrument_orders(
                 inst,

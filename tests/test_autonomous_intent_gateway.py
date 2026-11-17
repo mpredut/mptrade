@@ -2783,13 +2783,15 @@ def test_atomic_rollback_restores_canceled_open_orders_when_replacement_fails_or
     assert rollback_call["side"] == "BUY"
     assert rollback_call["price"] == pytest.approx(78500.0)
     assert rollback_call["qty"] == pytest.approx(0.005)
+    assert rollback_call["market"] is False
     assert rollback_call["caller_owns_retry"] is True
     assert rollback_call["smart"] is False
+    assert str(rollback_call.get("client_order_id") or "").startswith("AI_")
 
     # 2. Verify zero double-cancel when initial AI cancel pass is followed by balance-unlock pass on static open_orders
     btc_inst.cancel_order.reset_mock()
     place_calls.clear()
-    btc_inst._provider.free_balance.side_effect = [100.0, 500.0]
+    btc_inst._provider.free_balance.side_effect = [100.0, 500.0, 500.0]
     btc_inst.open_orders.return_value = [
         {
             "orderId": "ai_prior_buy_1",
@@ -2825,6 +2827,37 @@ def test_atomic_rollback_restores_canceled_open_orders_when_replacement_fails_or
     )
     assert [c.args[0] for c in btc_inst.cancel_order.call_args_list] == ["ai_prior_buy_1", "bot_prior_buy_2"]
     assert res_no_dup["restored_prior_open_orders"] == 2
+
+    # 3. Verify ambiguous submission (state='unknown' / submit_ambiguous) does NOT restore canceled orders on top of in-flight order
+    place_calls.clear()
+
+    def _place_ambiguous(**kwargs):
+        place_calls.append(kwargs)
+        ctx = kwargs.get("_outcome_context")
+        if isinstance(ctx, dict):
+            ctx["state"] = "unknown"
+            ctx["reason"] = "submit_ambiguous"
+        return None
+
+    btc_inst.place.side_effect = _place_ambiguous
+    res_ambig = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 79200.0,
+            "replace_open_orders": True,
+            "confidence": 0.94,
+            "suggested_notional_usd": 400.0,
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert res_ambig["status"] == "FAILED"
+    assert "restored_prior_open_orders" not in res_ambig
+    assert len(place_calls) == 1
 
 
 
