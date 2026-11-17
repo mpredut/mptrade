@@ -821,7 +821,7 @@ def restore_cancelled_instrument_orders(
 
     def _restore_one(params: dict[str, Any]) -> bool:
         orig_cid = clean_order_id(params.get("client_order_id")) or ""
-        owner = rc.resolve_order_owner(orig_cid) if orig_cid else "unspecified"
+        owner = rc.resolve_priority_bot_owner(orig_cid) if orig_cid else "unspecified"
         pfx = (
             "AI"
             if owner == "ai_executor" or orig_cid.upper().startswith("AI_")
@@ -850,6 +850,93 @@ def restore_cancelled_instrument_orders(
         log_fn=log_fn,
         reason=reason,
     )
+
+
+def preempt_lower_priority_open_orders(
+    inst_or_provider: Any,
+    symbol: str,
+    side: str,
+    caller_bot: Optional[str],
+    *,
+    cancel_fn: Optional[Callable[[str], Any]] = None,
+    canceled_orders_out: Optional[list[dict[str, Any]]] = None,
+    resolve_retry_fn: Optional[Callable[[str, str], Any]] = None,
+    owner_map: Optional[dict[str, str]] = None,
+    log_fn: Callable[[str], None] = print,
+) -> list[str]:
+    """Cancel same-side open orders owned by strictly lower-priority bots to unlock balance/credit."""
+    want_side = normalize_side(side)
+    sym_str = clean_upper_scalar(symbol) or ""
+    if not want_side or not sym_str or not rc.preemptible_owners_for(caller_bot):
+        return []
+    open_fn = getattr(inst_or_provider, "open_orders", None)
+    if not callable(open_fn):
+        return []
+    try:
+        try:
+            raw_open = open_fn()
+        except TypeError:
+            raw_open = open_fn(sym_str)
+    except Exception:
+        return []
+    if not isinstance(raw_open, list) or not raw_open:
+        return []
+
+    candidates: list[tuple[int, str, dict[str, Any], str]] = []
+    seen_ids: set[str] = set()
+    for oo in raw_open:
+        if not isinstance(oo, dict):
+            continue
+        if extract_order_side(oo) != want_side:
+            continue
+        if not rc.can_bot_preempt_order(caller_bot, oo, owner_map=owner_map):
+            continue
+        oid = extract_order_id(oo, default="")
+        if not oid or oid in seen_ids:
+            continue
+        seen_ids.add(oid)
+        target_owner = rc.resolve_priority_bot_owner(oo, owner_map=owner_map)
+        target_rank = rc.bot_priority_rank(oo, owner_map=owner_map)
+        candidates.append((target_rank, oid, oo, target_owner))
+
+    if not candidates:
+        return []
+    candidates.sort(key=lambda item: item[0])
+
+    if cancel_fn is None:
+        raw_cancel = getattr(inst_or_provider, "cancel_order", None)
+        if not callable(raw_cancel):
+            return []
+
+        def _default_cancel(oid_s: str) -> Any:
+            try:
+                return raw_cancel(oid_s)
+            except TypeError:
+                return raw_cancel(sym_str, oid_s)
+
+        cancel_fn = _default_cancel
+
+    _log = log_fn if callable(log_fn) else print
+    canceled_ids: list[str] = []
+    for _rank, oid, oo, target_owner in candidates:
+        try:
+            if cancel_fn(oid) is False:
+                continue
+            canceled_ids.append(oid)
+            if canceled_orders_out is not None:
+                canceled_orders_out.append(dict(oo))
+            _log(
+                f"[{sym_str}] Preempted lower-priority {target_owner} {want_side} order {oid} "
+                f"for {caller_bot} balance unlock."
+            )
+            if callable(resolve_retry_fn):
+                try:
+                    resolve_retry_fn(sym_str, oid)
+                except Exception:
+                    pass
+        except Exception as exc:
+            _log(f"[{sym_str}] Failed preempting {target_owner} {want_side} order {oid}: {exc}")
+    return canceled_ids
 
 
 # --- Dynamic Reprice & Entry Offset Bounds (SSOT) ---

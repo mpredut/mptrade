@@ -114,6 +114,18 @@ KNOWN_BOT_PROCESS_CODES = frozenset(_PROCESS_NAME_OVERRIDES.values()) | frozense
 
 REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual"})
 
+BOT_PRIORITY_RANKS: dict[str, int] = {
+    "rtrade": 10,
+    "tradeall": 20,
+    "monitororder": 20,
+    "assetguardian": 30,
+    "monitortrades": 40,
+    "spot_dca": 50,
+    "trailing_stop": 50,
+    "manual": 60,
+    "ai_executor": 70,
+}
+
 _CLIENT_ORDER_COUNTER = itertools.count()
 
 VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = {
@@ -230,6 +242,68 @@ def is_order_repriceable_by_monitororder(client_order_id: Optional[str]) -> bool
     if owner == "unspecified":
         return True
     return owner in REPRICEABLE_BOTS
+
+
+def resolve_priority_bot_owner(order_or_cid: Any, *, owner_map: Optional[dict[str, str]] = None) -> str:
+    """Resolve the canonical bot owner of an order or clientOrderId for priority preemption."""
+    if isinstance(order_or_cid, str):
+        clean_s = order_or_cid.strip().lower()
+        if clean_s in BOT_PRIORITY_RANKS:
+            return clean_s
+        if clean_s == "asset_guardian":
+            return "assetguardian"
+    cid = (
+        extract_client_order_id(order_or_cid, default="")
+        if isinstance(order_or_cid, dict)
+        else (clean_order_id(order_or_cid) or "")
+    )
+    oid = extract_order_id(order_or_cid, default="") if isinstance(order_or_cid, dict) else ""
+    if cid:
+        cid_u = cid.upper()
+        if cid_u.startswith(("RT_", "MO_RT_")):
+            return "rtrade"
+        if cid_u.startswith(("TA_", "TO_", "MO_TA_")):
+            return "tradeall"
+        owner = resolve_order_owner(cid).lower()
+        if owner in BOT_PRIORITY_RANKS:
+            return owner
+    if isinstance(owner_map, dict):
+        for k in (oid, cid):
+            if k and k in owner_map:
+                mapped = (clean_scalar_str(owner_map.get(k)) or "").lower()
+                if mapped in BOT_PRIORITY_RANKS:
+                    return mapped
+    return "unspecified"
+
+
+def bot_priority_rank(order_or_cid: Any, *, owner_map: Optional[dict[str, str]] = None) -> int:
+    """Return numeric priority rank for a bot owner name, order dict, or clientOrderId (0 if unknown)."""
+    owner = resolve_priority_bot_owner(order_or_cid, owner_map=owner_map)
+    return BOT_PRIORITY_RANKS.get(owner, 0)
+
+
+def preemptible_owners_for(caller_bot: Optional[str]) -> frozenset[str]:
+    """Return the set of strictly lower-priority bot owners that ``caller_bot`` may preempt for balance."""
+    caller_rank = bot_priority_rank(caller_bot)
+    if caller_rank <= 0:
+        return frozenset()
+    return frozenset(
+        bot for bot, rank in BOT_PRIORITY_RANKS.items() if 0 < rank < caller_rank
+    )
+
+
+def can_bot_preempt_order(
+    caller_bot: Optional[str],
+    order_or_cid: Any,
+    *,
+    owner_map: Optional[dict[str, str]] = None,
+) -> bool:
+    """Return True if ``caller_bot`` has strictly higher priority than the owner of ``order_or_cid``."""
+    caller_rank = bot_priority_rank(caller_bot)
+    if caller_rank <= 0:
+        return False
+    target_rank = bot_priority_rank(order_or_cid, owner_map=owner_map)
+    return 0 < target_rank < caller_rank
 
 
 def _normalize_allowed_owners(allowed_owners: Union[str, Iterable[str], None]) -> set[str]:

@@ -1864,6 +1864,49 @@ class TestOrderRollback(unittest.TestCase):
         params = extract_order_restore_params(b_ord)
         self.assertEqual(params["qty"], 3.5)
 
+    def test_bot_priority_hierarchy_and_preempt_lower_priority_open_orders(self):
+        from order_lifecycle import preempt_lower_priority_open_orders
+        from providers.order_id_context import can_bot_preempt_order, preemptible_owners_for
+
+        # 1. Hierarchy: rtrade (10) < tradeall (20) < assetguardian (30) < monitortrades (40)
+        self.assertEqual(preemptible_owners_for("rtrade"), frozenset())
+        self.assertEqual(preemptible_owners_for("tradeall"), frozenset({"rtrade"}))
+        self.assertEqual(
+            preemptible_owners_for("assetguardian"),
+            frozenset({"rtrade", "tradeall", "monitororder"}),
+        )
+        self.assertTrue(can_bot_preempt_order("tradeall", {"clientOrderId": "RT_100"}))
+        self.assertFalse(can_bot_preempt_order("tradeall", {"clientOrderId": "AG_100"}))
+        self.assertTrue(can_bot_preempt_order("assetguardian", {"clientOrderId": "TO_200"}))
+        self.assertTrue(can_bot_preempt_order("assetguardian", {"clientOrderId": "RT_100"}))
+        self.assertFalse(can_bot_preempt_order("rtrade", {"clientOrderId": "RT_100"}))
+
+        # 2. Preemption cancels lowest-priority first (rtrade before tradeall) and preserves higher-priority orders
+        open_list = [
+            {"orderId": "ta_1", "clientOrderId": "TO_1", "side": "BUY", "price": "99.0", "origQty": "1.0"},
+            {"orderId": "rt_1", "clientOrderId": "RT_1", "side": "BUY", "price": "98.0", "origQty": "2.0"},
+            {"orderId": "mt_1", "clientOrderId": "MT_1", "side": "BUY", "price": "97.0", "origQty": "3.0"},
+        ]
+        cancelled_ids = []
+        snapshots = []
+        dummy_inst = SimpleNamespace(
+            open_orders=lambda: open_list,
+            cancel_order=lambda oid: cancelled_ids.append(oid) or True,
+        )
+        # tradeall only cancels rtrade (rt_1)
+        res_ta = preempt_lower_priority_open_orders(
+            dummy_inst, "BTCUSDC", "BUY", "tradeall", canceled_orders_out=snapshots
+        )
+        self.assertEqual(res_ta, ["rt_1"])
+        self.assertEqual(len(snapshots), 1)
+
+        # assetguardian cancels both rtrade and tradeall, in priority order (rt_1 then ta_1), keeping mt_1 untouched
+        cancelled_ids.clear()
+        res_ag = preempt_lower_priority_open_orders(
+            dummy_inst, "BTCUSDC", "BUY", "assetguardian"
+        )
+        self.assertEqual(res_ag, ["rt_1", "ta_1"])
+
 
 # ---------------------------------------------------------------------------
 # Consolidated from tests/test_trade_cooldown.py & tests/test_active_intents.py

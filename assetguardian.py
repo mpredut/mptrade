@@ -8,11 +8,11 @@ import signal
 import threading
 import time
 
-from providers.order_id_context import extract_client_order_id, resolve_order_owner
+from providers.order_id_context import can_bot_preempt_order, extract_client_order_id, resolve_order_owner
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 api = mkt
 from providers.execution_audit import ExecutionAudit
-from order_lifecycle import propagate_submission_refusal
+from order_lifecycle import preempt_lower_priority_open_orders, propagate_submission_refusal
 from order_retry import resolve_accepted_order
 from providers.quantity import resolve_assets
 from state_io import load_json_state, read_json_dict, save_json_state
@@ -1243,7 +1243,7 @@ _rtrade_sell_block_since: dict = {}
 
 
 def _resolve_blocking_sell_orders(symbol, open_sells):
-    """Allow short retry when blocked only by rtrade (RT_*), then preemptively cancel."""
+    """Allow short retry when blocked only by lower-priority bots (rtrade, tradeall), then preemptively cancel."""
     if not open_sells:
         _rtrade_sell_block_since.pop(symbol, None)
         return []
@@ -1252,7 +1252,8 @@ def _resolve_blocking_sell_orders(symbol, open_sells):
         if not (
             isinstance(o, dict)
             and (
-                (cid := (extract_client_order_id(o, default="") or "")).startswith(("RT_", "MO_RT_"))
+                can_bot_preempt_order("assetguardian", o)
+                or (cid := (extract_client_order_id(o, default="") or "")).startswith(("RT_", "MO_RT_"))
                 or resolve_order_owner(cid) == "rtrade"
             )
         )
@@ -1326,11 +1327,23 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     if free_qty == 0 or (free_qty * current_price) < 5.0:
         open_sells = _active_sell_orders(provider, symbol)
         if open_sells is None or open_sells:
-            print(f"[{symbol}] Zero free qty with unknown/active SELL orders; preserve state.")
-            return None, state, None
-        if state:
-            _save_symbol_campaign(symbol, "sell", {})
-        return None, {}, None
+            if open_sells:
+                open_sells = _resolve_blocking_sell_orders(symbol, open_sells)
+                if not open_sells and callable(getattr(provider, "free_balance", None)):
+                    try:
+                        base_asset, _ = resolve_assets(symbol)
+                        refreshed_free = _finite_float(provider.free_balance(base_asset))
+                        if refreshed_free is not None and refreshed_free > 0 and (refreshed_free * current_price) >= 5.0:
+                            free_qty = refreshed_free
+                    except Exception:
+                        pass
+            if free_qty == 0 or (free_qty * current_price) < 5.0:
+                print(f"[{symbol}] Zero free qty with unknown/active SELL orders; preserve state.")
+                return None, state, None
+        else:
+            if state:
+                _save_symbol_campaign(symbol, "sell", {})
+            return None, {}, None
 
     sell_mult, _, _ = _p3b_threshold_multipliers(p3b_assessment)
     vol_mult = _symbol_volatility_mult(symbol)
@@ -1395,12 +1408,23 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     if open_sells is None:
         print(f"[{symbol}] Cannot verify open SELL orders; do not submit tier.")
         return None, ({} if new_campaign else state), growth
+    had_open_sells = bool(open_sells)
     open_sells = _resolve_blocking_sell_orders(symbol, open_sells)
     if open_sells:
         print(
             f"[{symbol}] Existing SELL order blocks AssetGuardian tier: "
             f"{[extract_order_id(order) for order in open_sells]}")
         return None, ({} if new_campaign else state), growth
+    if had_open_sells and callable(getattr(provider, "free_balance", None)):
+        try:
+            base_asset, _ = resolve_assets(symbol)
+            refreshed_free = _finite_float(provider.free_balance(base_asset), positive=True)
+            if refreshed_free is not None and refreshed_free > free_qty:
+                free_qty = refreshed_free
+                if new_campaign:
+                    state["initial_qty"] = free_qty
+        except Exception:
+            pass
     if new_campaign:
         _save_symbol_campaign(symbol, "sell", state)
 
@@ -1645,6 +1669,16 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     print(f"[{symbol}] Drawdown threshold reached ({drawdown_percent:.4f}% <= -{first_buy_trigger:.4f}%). Checking staged BUY...")
     _, quote_asset = resolve_assets(symbol)
     free_cash = _finite_float(provider.free_balance(quote_asset), positive=True) if provider else None
+    if (free_cash is None or free_cash < 10.0) and provider is not None:
+        if preempt_lower_priority_open_orders(
+            provider,
+            symbol,
+            "BUY",
+            "assetguardian",
+            cancel_fn=lambda oid: mkt.cancel_order(symbol, oid, provider_name="binance"),
+            resolve_retry_fn=resolve_accepted_order,
+        ):
+            free_cash = _finite_float(provider.free_balance(quote_asset), positive=True)
     if free_cash is None:
         return _log_symbol_and_return(symbol, f"No valid {quote_asset} balance for staged BUY.")
     tier, campaign = _campaign_tier(symbol, abs(drawdown_percent), maximum_row, free_cash, p3b_assessment=p3b_assessment)

@@ -763,6 +763,7 @@ class Instrument:
         ctx, early_return = self._init_and_gate_pre_pipeline(side, price, qty, kwargs)
         if ctx is None:
             return early_return
+        preempted_orders: list[dict[str, Any]] = []
         try:
             if ctx.retry_constraint_supplied:
                 ctx.retry_requested_price = safe_pos_float(ctx.retry_requested_price_raw, default=None)
@@ -837,6 +838,10 @@ class Instrument:
 
             ctx.base_asset, ctx.quote_asset = resolve_assets(self.symbol, self.base, self.quote)
             target_asset = ctx.quote_asset if ctx.side_u == "BUY" else ctx.base_asset
+            allow_priority_preempt = (
+                _parse_bool_flag(ctx.kwargs.get("cancelorders", False), False)
+                or ctx.caller_module == "assetguardian"
+            )
 
             ctx.known_balance = None
             if (
@@ -848,11 +853,22 @@ class Instrument:
                 try:
                     kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
                     if kb_f is not None:
-                        if kb_f <= 0:
-                            print(f"[{self.symbol}] {ctx.side_u} preflight refused: balance_unavailable asset={target_asset}")
-                            ctx.reason = "balance_unavailable"
-                        else:
-                            ctx.known_balance = kb_f
+                        if kb_f <= 0 and allow_priority_preempt:
+                            if order_lifecycle.preempt_lower_priority_open_orders(
+                                self,
+                                self.symbol,
+                                ctx.side_u,
+                                ctx.caller_module,
+                                canceled_orders_out=preempted_orders,
+                                resolve_retry_fn=order_retry.resolve_accepted_order,
+                            ):
+                                kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
+                        if kb_f is not None:
+                            if kb_f <= 0:
+                                print(f"[{self.symbol}] {ctx.side_u} preflight refused: balance_unavailable asset={target_asset}")
+                                ctx.reason = "balance_unavailable"
+                            else:
+                                ctx.known_balance = kb_f
                 except Exception:
                     ctx.known_balance = None
 
@@ -924,6 +940,15 @@ class Instrument:
 
             # Stage 2: Quantity Sizing, Gaussian/Chop Weights & Balance Capping.
             hours_f = safe_pos_float(ctx.kwargs.get("hours", 5), default=5.0)
+            regime_ctx_for_qty = (
+                None
+                if (
+                    ctx.caller_applied_scale < 1.0
+                    or ctx.bypass_profit_guard
+                    or ctx.is_monitor_replace
+                )
+                else ctx.regime_context
+            )
             decision = self._provider.quantity_decision(
                 self.symbol,
                 ctx.side_u,
@@ -936,17 +961,48 @@ class Instrument:
                 apply_policy=not ctx.bypass_quantity_policy,
                 market=ctx.is_market,
                 enforce_business_minimum=ctx.enforce_business_minimum,
-                regime_context=(
-                    None
-                    if (
-                        ctx.caller_applied_scale < 1.0
-                        or ctx.bypass_profit_guard
-                        or ctx.is_monitor_replace
-                    )
-                    else ctx.regime_context
-                ),
+                regime_context=regime_ctx_for_qty,
                 known_balance=ctx.known_balance,
             )
+            if (
+                allow_priority_preempt
+                and not preempted_orders
+                and target_asset
+                and callable(getattr(self._provider, "free_balance", None))
+                and (
+                    decision.final_qty <= 0
+                    or getattr(decision, "wallet_constrained", False)
+                )
+            ):
+                if order_lifecycle.preempt_lower_priority_open_orders(
+                    self,
+                    self.symbol,
+                    ctx.side_u,
+                    ctx.caller_module,
+                    canceled_orders_out=preempted_orders,
+                    resolve_retry_fn=order_retry.resolve_accepted_order,
+                ):
+                    try:
+                        kb_refreshed = safe_float(self._provider.free_balance(target_asset), default=None)
+                        if kb_refreshed is not None and kb_refreshed > 0:
+                            ctx.known_balance = kb_refreshed
+                    except Exception:
+                        pass
+                    decision = self._provider.quantity_decision(
+                        self.symbol,
+                        ctx.side_u,
+                        ctx.quantity_price,
+                        ctx.qty,
+                        base=ctx.base_asset,
+                        quote=ctx.quote_asset,
+                        cancelorders=_parse_bool_flag(ctx.kwargs.get("cancelorders", False), False),
+                        hours=hours_f,
+                        apply_policy=not ctx.bypass_quantity_policy,
+                        market=ctx.is_market,
+                        enforce_business_minimum=ctx.enforce_business_minimum,
+                        regime_context=regime_ctx_for_qty,
+                        known_balance=ctx.known_balance,
+                    )
             ctx.qty = decision.final_qty
             raw_dec_scale = (
                 getattr(decision, "applied_scale", 1.0)
@@ -1307,6 +1363,18 @@ class Instrument:
             except Exception:
                 caller = None
             self._finalize_place_outcome(ctx, caller=caller)
+            if (
+                ctx.order is None
+                and preempted_orders
+                and not ctx.submit_attempted
+                and (ctx.caller_owns_retry or not order_retry.is_non_failure_deferral(ctx.reason))
+            ):
+                order_lifecycle.restore_cancelled_instrument_orders(
+                    self,
+                    preempted_orders,
+                    bypass_guards={"all"},
+                    reason=f"{ctx.caller_module or 'bot'} placement refused ({ctx.reason})",
+                )
 
     def min_qty(self) -> float:
         """Return the venue minimum order quantity; ``0`` means no known minimum."""
