@@ -309,6 +309,20 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertFalse(mt._is_trend_gate_deferred("TAOUSDC", side="SELL"))
             self.assertEqual(queried, [("SELL", "TAOUSDC", 90.0, False)])
 
+        # Unpatched CacheShortTrendManager.should_wait reuses preloaded fast-window dict without querying twice.
+        win_calls = []
+
+        def count_get_for_win(symbol, window_sec=None, now=None):
+            win_calls.append((symbol, window_sec))
+            return {"growth_coefficient": -0.05, "epsilon": 0.01} if window_sec == 90.0 else None
+
+        with patch.object(mgr, "get_short_trend_for_window", side_effect=count_get_for_win):
+            self.assertTrue(pw.should_wait_short_trend(mgr, "BUY", "TAOUSDC", short_trend_cls=cm.CacheShortTrendManager))
+            self.assertEqual(len(win_calls), 1)
+            win_calls.clear()
+            self.assertFalse(pw.should_wait_short_trend(mgr, "SELL", "TAOUSDC", short_trend_cls=cm.CacheShortTrendManager))
+            self.assertEqual(len(win_calls), 1)
+
     def test_market_api_regime_service_for_reuses_and_caches_services(self):
 
         api_inst = MarketApi([SimpleNamespace(name="dummy", supports_symbol=lambda s: True)])

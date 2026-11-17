@@ -282,13 +282,24 @@ def should_wait_short_trend(short_tm, side: str, symbol: str, *, short_trend_cls
         fast_w is not None
         and (short_trend_cls is None or isinstance(short_tm, short_trend_cls))
         and callable(getattr(short_tm, "get_short_trend_for_window", None))
-        and isinstance(short_tm.get_short_trend_for_window(symbol, fast_w), dict)
+        and isinstance(fast_snap := short_tm.get_short_trend_for_window(symbol, fast_w), dict)
     ):
-        return bool(
-            short_tm.should_wait(
-                side, symbol, window_seconds=fast_w, use_noise_gate=False
+        try:
+            return bool(
+                short_tm.should_wait(
+                    side,
+                    symbol,
+                    window_seconds=fast_w,
+                    use_noise_gate=False,
+                    preloaded_snap=fast_snap,
+                )
             )
-        )
+        except TypeError:
+            return bool(
+                short_tm.should_wait(
+                    side, symbol, window_seconds=fast_w, use_noise_gate=False
+                )
+            )
     try:
         return bool(short_tm.should_wait(side, symbol, use_noise_gate=False))
     except TypeError:

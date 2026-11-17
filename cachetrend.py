@@ -1828,6 +1828,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         fast=False,
         use_noise_gate=True,
         now=None,
+        *,
+        preloaded_snap: Optional[dict] = None,
     ):
         """Decide whether to delay a BUY or SELL intent; True means wait.
 
@@ -1843,9 +1845,17 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         fast = _parse_bool_flag(fast, default=False)
         use_noise_gate = _parse_bool_flag(use_noise_gate, default=True)
 
-        snap, is_dyn = self._resolve_snapshot_for_window(
-            symbol, window_seconds=window_seconds, now=now
-        )
+        if isinstance(preloaded_snap, dict):
+            win_sec = safe_pos_float(window_seconds, default=None) if window_seconds is not None else None
+            is_dyn = bool(
+                win_sec is not None
+                and not math.isclose(win_sec, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6)
+            )
+            snap = preloaded_snap
+        else:
+            snap, is_dyn = self._resolve_snapshot_for_window(
+                symbol, window_seconds=window_seconds, now=now
+            )
         if not isinstance(snap, dict):
             return False
         if not is_dyn and fast:
