@@ -33,6 +33,7 @@ from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
     KINEMATIC_HORIZON_SPECS,
     SHORT_KINEMATIC_METRIC_KEYS,
+    _SORTED_TS_PX_ANCHORS,
     _SORTED_TS_PX_MEMO,
     _TWO_COL_TS_PX_IDS,
     _extract_sorted_ts_px,
@@ -62,7 +63,7 @@ def _round_small_slope(val: float) -> float:
     return ((safe_float(f"{val:.2e}", 0.0) or 0.0) if 0.0 < abs(val) < 1e-4 else round(val, 6)) + 0.0
 
 
-_BUCKET_5M_MEMO: Dict[Tuple[int, int, Any, Any, Any], Dict[int, float]] = {}
+_BUCKET_5M_MEMO: Dict[Tuple[Any, int, Any, Any, Any], Tuple[Any, Dict[int, float]]] = {}
 _PT_TS_KEY = itemgetter(0)
 
 
@@ -127,7 +128,7 @@ def compute_volume_profile_metrics(
     try:
         has_vol_or_scalar = (
             False
-            if (precleaned_ts_px is not None and id(precleaned_ts_px) in _TWO_COL_TS_PX_IDS)
+            if (precleaned_ts_px is not None and _TWO_COL_TS_PX_IDS.get(id(precleaned_ts_px)) is precleaned_ts_px)
             else any(not isinstance(r, (list, tuple)) or len(r) != 2 for r in series)
         )
         if not has_vol_or_scalar:
@@ -509,13 +510,13 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         def _clean_buckets(series: list) -> Dict[int, float]:
             mkey = _series_memo_key(series)
             if mkey is not None and (cached_b := _BUCKET_5M_MEMO.get(mkey)) is not None:
-                return cached_b
+                return cached_b[1]
             pts = _extract_sorted_ts_px(series)
             bmap = {round(pt[0] / 300000.0): pt[1] for pt in pts}
             if mkey is not None:
                 if len(_BUCKET_5M_MEMO) >= 32:
                     _BUCKET_5M_MEMO.clear()
-                _BUCKET_5M_MEMO[mkey] = bmap
+                _BUCKET_5M_MEMO[mkey] = ((series[0], series[len(series) // 2], series[-1]), bmap)
             return bmap
 
         a_map, b_map = _clean_buckets(alt_series), _clean_buckets(btc_series)
@@ -1990,10 +1991,12 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
                 pts_clean.pop()
             if len(_TWO_COL_TS_PX_IDS) >= 64:
                 _TWO_COL_TS_PX_IDS.clear()
-            _TWO_COL_TS_PX_IDS.add(id(pts_clean))
+            _TWO_COL_TS_PX_IDS[id(pts_clean)] = pts_clean
             if len(_SORTED_TS_PX_MEMO) >= 32:
                 _SORTED_TS_PX_MEMO.clear()
+                _SORTED_TS_PX_ANCHORS.clear()
             _SORTED_TS_PX_MEMO[mkey] = pts_clean
+            _SORTED_TS_PX_ANCHORS[mkey] = (dedup_24h[0], dedup_24h[len(dedup_24h) // 2], dedup_24h[-1])
     return dedup_24h if len(dedup_24h) >= 2 else []
 
 

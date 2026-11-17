@@ -10559,6 +10559,19 @@ def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, 
     s4, _ = load_symbol_price_series(str(c_dir), "BTCUSDC", current_price_items={})
     assert len(s4) == 3
 
+    # 5. Evicting _SORTED_TS_PX_MEMO >32 times never leaves dangling id() entries in _TWO_COL_TS_PX_IDS
+    #    that could misclassify a subsequent 3-col real-volume series as TPO
+    for k in range(50):
+        ssot_mod._extract_sorted_ts_px(
+            [[live_now_ms - (30 - i) * 60_000.0, 100.0 + i + k * 0.1] for i in range(21)]
+        )
+        s3_vol = [
+            [live_now_ms - (30 - i) * 60_000.0, 1.30 + (i % 3) * 0.01, 500.0 + i]
+            for i in range(21)
+        ]
+        assert compute_24h_price_metrics(s3_vol).get("vp_source") == "REAL_VOL"
+
+
 
 
 

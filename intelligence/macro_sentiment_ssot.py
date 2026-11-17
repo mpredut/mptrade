@@ -292,12 +292,13 @@ def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
 
 
 _SORTED_TS_PX_MEMO: Dict[Tuple[Any, int, Any, Any, Any], List[Tuple[float, float]]] = {}
-_TWO_COL_TS_PX_IDS: set[int] = set()
+_SORTED_TS_PX_ANCHORS: Dict[Tuple[Any, int, Any, Any, Any], Any] = {}
+_TWO_COL_TS_PX_IDS: Dict[int, List[Tuple[float, float]]] = {}
 
 
 def _row_memo_token(row: Any) -> Any:
     if isinstance(row, (list, tuple)):
-        return (row[0], row[1]) if len(row) >= 2 else tuple(row)
+        return (len(row), row[0], row[1], row[2] if len(row) > 2 else None) if len(row) >= 2 else tuple(row)
     return row
 
 
@@ -413,11 +414,13 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
     if all_two_col:
         if len(_TWO_COL_TS_PX_IDS) >= 64:
             _TWO_COL_TS_PX_IDS.clear()
-        _TWO_COL_TS_PX_IDS.add(id(pts))
+        _TWO_COL_TS_PX_IDS[id(pts)] = pts
     if mkey is not None:
         if len(_SORTED_TS_PX_MEMO) >= 32:
             _SORTED_TS_PX_MEMO.clear()
+            _SORTED_TS_PX_ANCHORS.clear()
         _SORTED_TS_PX_MEMO[mkey] = pts
+        _SORTED_TS_PX_ANCHORS[mkey] = (series[0], series[len(series) // 2], series[-1])
     return pts
 
 
