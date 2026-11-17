@@ -7788,8 +7788,8 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert pt_rgnt_gap["RGNT_US_EQ"].get("chg_1h_pct") is not None
     assert pt_rgnt_gap["RGNT_US_EQ"].get("slope_15m") is not None
 
-    # 10h. extract_symbol_recent_fills preserves open_lots[0] when > 6 open lots exist so
-    # enrich_positions_with_orders_and_cycles recovers the true cycle peak since the first open lot.
+    # 10h. extract_symbol_recent_fills preserves middle lots up to 32 open lots and retains open_lots[0] when > 32 lots exist
+    # so enrich_positions_with_orders_and_cycles recovers both exact LIFO VWAP and true cycle peak since the first open lot.
     base_lot_ms = int((now_s_rec - 20 * 86400.0) * 1000)
     many_orders = [
         {"symbol": "SPCX_US_EQ", "side": "BUY", "price": 159.58, "qty": 0.53, "executedQty": 0.53, "timestamp": base_lot_ms, "status": "FILLED"}
@@ -7807,7 +7807,7 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     ]
     fills_many = extract_symbol_recent_fills(many_orders, symbol="SPCX_US_EQ")
     assert fills_many is not None
-    assert len(fills_many["open_lots"]) == 6
+    assert len(fills_many["open_lots"]) == 8
     assert fills_many["open_lots"][0]["ts_ms"] == base_lot_ms
 
     # 10i. summarize_recent_ai_intents and build_last_cycle_execution_status surface failure/guard `reason` on FAILED/BLOCKED_BY_GUARD intents.

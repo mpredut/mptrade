@@ -260,12 +260,12 @@ def select_fresh_open_lots(
             or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
         )
     ]
-    if held_qty > 1e-8 and fresh_lots and len(fresh_lots) < len(tail_lots):
+    if held_qty > 1e-8 and fresh_lots and len(fresh_lots) < len(lots_seq):
         fresh_q_chk = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
         if fresh_q_chk < held_qty * 0.90:
             ext_rev: List[Dict[str, Any]] = []
             acc_q = 0.0
-            for lot in reversed(tail_lots):
+            for lot in reversed(lots_seq):
                 if not isinstance(lot, dict):
                     continue
                 lot_px = safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)
@@ -275,9 +275,10 @@ def select_fresh_open_lots(
                     continue
                 if newest_lot_ts > 0 and lot_ts > 0 and (newest_lot_ts - lot_ts) > 45 * 86400 * 1000:
                     continue
-                if acc_q + lq <= held_qty * 1.05 or (
-                    newest_lot_ts <= 0 or not lot_ts or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
-                ):
+                is_recent_14d = newest_lot_ts <= 0 or not lot_ts or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
+                if not is_recent_14d and acc_q >= held_qty * 0.999:
+                    break
+                if acc_q + lq <= held_qty * 1.05 or is_recent_14d:
                     ext_rev.append({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
                     acc_q += lq
             if len(ext_rev) > len(fresh_lots):
@@ -392,6 +393,7 @@ def format_recent_fill_subcycle_parts(
     *,
     last_buy_px: Any = None,
     open_lots: Any = None,
+    held_qty: Optional[float] = None,
     round_anchors: bool = False,
     include_open_lots: bool = False,
     include_markout: bool = False,
@@ -401,13 +403,21 @@ def format_recent_fill_subcycle_parts(
         return []
     parts: List[str] = []
     lots_seq = open_lots if isinstance(open_lots, list) else (fills.get("open_lots") if isinstance(fills.get("open_lots"), list) else [])
+    eff_held_q = first_pos_float(held_qty, fills.get("held_qty"), fills.get("active_cycle_rem_qty"))
     _anch = (lambda v: round_opt_px(v, 6)) if round_anchors else (lambda v: safe_pos_float(v, default=None))
     lb_px = _anch(last_buy_px)
     act_avg = _anch(fills.get("active_avg_buy_px"))
     if act_avg is not None and act_avg > 0.0:
         parts.append(f"Active Cycle Avg BUY={act_avg}")
         if lots_seq:
-            lifo_avg, _, _ = compute_open_lots_vwap(lots_seq, ref_avg_px=act_avg, min_rel_diff=0.0025)
+            lifo_avg, _, _ = compute_open_lots_vwap(
+                lots_seq,
+                held_qty=eff_held_q,
+                clip_to_held=eff_held_q is not None,
+                ref_avg_px=act_avg,
+                min_rel_diff=0.0025,
+                min_coverage_ratio=0.90 if eff_held_q is not None else 0.0,
+            )
             if lifo_avg is not None:
                 parts.append(f"Remaining LIFO Avg BUY={lifo_avg}")
     tac_avg = _anch(fills.get("tactical_avg_buy_px"))
@@ -471,7 +481,9 @@ def reconcile_fresh_lots_vwap(
             safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in lots_seq if isinstance(lt, dict)
         )
         if fresh_q >= held_qty * 0.98 and unfiltered_q > held_qty * 1.15:
-            fresh_vwap, vwap_q, _ = compute_open_lots_vwap(fresh_lots, decimals=6)
+            fresh_vwap, vwap_q, _ = compute_open_lots_vwap(
+                fresh_lots, held_qty=held_qty, clip_to_held=True, decimals=6
+            )
             if fresh_vwap is not None:
                 fills_or_ro["active_avg_buy_px"] = fresh_vwap
                 fills_or_ro["active_cycle_rem_qty"] = round(vwap_q, 6)
@@ -1061,7 +1073,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
             "active_avg_buy_px": active_avg_r,
             "swing_subcycle_avg_px": swing_subcycle_avg_px,
             "swing_subcycle_qty": swing_subcycle_qty if swing_subcycle_qty > 0 else None,
-            "open_lots": [open_lots[0], *open_lots[-5:]] if len(open_lots) > 6 else open_lots,
+            "open_lots": [open_lots[0], *open_lots[-31:]] if len(open_lots) > 32 else open_lots,
             "lifo_realized_pnl_usd": round(lifo_realized_pnl_usd, 2) if abs(lifo_realized_pnl_usd) >= 0.01 else 0.0,
             "last_buy": dict(buys_fmt[-1]) if buys_fmt else None,
             "last_sell": dict(sells_fmt[-1]) if sells_fmt else None,
@@ -1472,12 +1484,17 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     held_qty=held_cur,
                     fallback_newest_ts_ms=(safe_pos_int(lb.get("ts_ms"), default=0) or 0) if isinstance(lb, dict) else 0,
                 )
+                if not is_flat_after_exit and held_cur > 1e-8:
+                    ro["held_qty"] = round(held_cur, 6)
                 if not is_flat_after_exit and "open_lots" in pos:
                     if fresh_lots:
-                        pos["open_lots"] = fresh_lots
-                        fresh_vwap, _ = reconcile_fresh_lots_vwap(ro, open_lots, fresh_lots, held_cur)
+                        clipped_fresh = clip_open_lots_to_held_qty(fresh_lots, held_cur)
+                        pos["open_lots"] = clipped_fresh
+                        fresh_vwap, fresh_q = reconcile_fresh_lots_vwap(ro, open_lots, fresh_lots, held_cur)
+                        if held_cur > 1e-8 and fresh_q >= held_cur * 0.98:
+                            ro["open_lots"] = clipped_fresh
+                            open_lots = clipped_fresh
                         if fresh_vwap is not None:
-                            ro["open_lots"] = fresh_lots
                             set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", fresh_vwap, pos_px_f, overwrite=True)
                             if "tactical_avg_buy_px" not in ro:
                                 _clear_pos_pair(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct")

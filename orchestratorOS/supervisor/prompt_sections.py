@@ -174,9 +174,10 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
             lb_pnl_sfx = f" (chg_vs_last_buy={lb_pnl:+.2f}%, lot_harvested)"
         else:
             lb_pnl_sfx = f" (pnl_vs_last_buy={lb_pnl:+.2f}%)"
+    entry_px_part = f"entry_px={cyc.get('entry_price')}, " if cyc.get("entry_price") is not None else ""
     return (
         f"    - [{venue}] {sym}: qty={cyc.get('qty')}, cost=${cyc.get('cost_usd')}, "
-        f"avg_cost={cyc.get('avg_cost_px')}, entry_px={cyc.get('entry_price')}, "
+        f"avg_cost={cyc.get('avg_cost_px')}, {entry_px_part}"
         f"last_buy={cyc.get('last_buy_price')}{lb_pnl_sfx}, last_sell={cyc.get('last_sell_price')}"
         f"{exit_kind_sfx}, dca_buys={cyc.get('dca_buys')}, {dd_field}{extra_sfx}"
     )
@@ -1726,8 +1727,18 @@ def _format_portfolio_section(
                     it_st = str(it.get("status") or "").upper()
                     age_h = safe_float(it.get("age_h"), 0.0)
                     if (
-                        v_st in ("CANCELED_OR_EXPIRED", "CANCELED", "CANCELLED", "EXPIRED")
-                        or it_st in ("CANCELED", "CANCELLED", "EXPIRED", "FAILED", "REJECTED", "BLOCKED_BY_GUARD")
+                        v_st in ("CANCELED_OR_EXPIRED", "CANCELED", "CANCELLED", "EXPIRED", "UNKNOWN")
+                        or it_st in (
+                            "CANCELED",
+                            "CANCELLED",
+                            "EXPIRED",
+                            "FAILED",
+                            "REJECTED",
+                            "BLOCKED_BY_GUARD",
+                            "SUBMIT_UNKNOWN",
+                            "SKIPPED_DUPLICATE_OPEN_ORDER",
+                        )
+                        or it_st.startswith("REJECTED_")
                     ) and age_h > 1.0:
                         continue
                     it_oids = {

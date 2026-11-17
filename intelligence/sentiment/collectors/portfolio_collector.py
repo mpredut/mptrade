@@ -1339,6 +1339,8 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                     if held_cur_f < 0.0 and base_upper:
                         if (raw_b_v := safe_nonneg_float(vb_d_f.get(f"{best_venue}:{base_upper}"), default=None)) is not None:
                             held_cur_f = raw_b_v
+            if held_cur_f > 1e-8:
+                fills["held_qty"] = round(held_cur_f, 6)
             fresh_lots, _ = select_fresh_open_lots(open_lots_raw, held_qty=held_cur_f)
             if fresh_lots:
                 _, fresh_q = reconcile_fresh_lots_vwap(fills, open_lots_raw, fresh_lots, held_cur_f)

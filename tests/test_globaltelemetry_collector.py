@@ -2175,3 +2175,75 @@ def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(
     assert vb_rth_doc["pos:t212:RGNT_US_EQ"]["ts"] == pytest.approx(now_s)
 
 
+def test_scope_all_off_rth_domain_ages_and_multilot_lifo_reconciliation(temp_cache_dir, monkeypatch):
+    """Verify scope='all' excludes closed off-RTH equities from prices_oldest/venue_balances and >6-lot LIFO stacks reconcile held_qty without 2025 phantom splice."""
+    import intelligence.sentiment.collectors.macro_telemetry_collector as mtc_mod
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        extract_symbol_recent_fills,
+        format_recent_fill_subcycle_parts,
+        reconcile_fresh_lots_vwap,
+        select_fresh_open_lots,
+    )
+    from state_io import save_json_state
+
+    ws_dir = os.path.join(os.path.dirname(temp_cache_dir), "all_rth_ws")
+    c_dir = os.path.join(ws_dir, "cachedb")
+    os.makedirs(c_dir, exist_ok=True)
+    now_s = 1_760_300_000.0
+    save_json_state(
+        os.path.join(c_dir, "cache_current_price.json"),
+        {
+            "ts": now_s - 1.0,
+            "items": {
+                "BTCUSDC": [[round((now_s - 1.0) * 1000.0), 68500.0]],
+                "TAOUSDC": [[round((now_s - 4.0) * 1000.0), 192.0]],
+                "NVDA_US_EQ": [[round((now_s - 54000.0) * 1000.0), 155.2]],
+            },
+        },
+    )
+    save_json_state(
+        os.path.join(c_dir, "venue_balances_state.json"),
+        {
+            "open_orders_verified_ts:binance": now_s - 8.0,
+            "open_orders_verified_ts:t212": now_s - 54000.0,
+        },
+    )
+    orch = MarketAndPortfolioSnapshotOrchestrator(start_sync=False)
+    monkeypatch.setattr(mtc_mod, "is_us_rth_open", lambda _ts=None: False)
+    snap_off = orch.read_snapshot(c_dir, scope="all", now_ts=now_s)
+    assert snap_off.source_ages_sec["prices_oldest"] == pytest.approx(4.0)
+    assert snap_off.source_ages_sec["venue_balances"] == pytest.approx(8.0)
+
+    monkeypatch.setattr(mtc_mod, "is_us_rth_open", lambda _ts=None: True)
+    snap_on = orch.read_snapshot(c_dir, scope="all", now_ts=now_s)
+    assert snap_on.source_ages_sec["prices_oldest"] == pytest.approx(54000.0)
+    assert snap_on.source_ages_sec["venue_balances"] == pytest.approx(54000.0)
+
+    # Multi-lot (>6 lots) LIFO stack preserves middle lots and reconciles 10 recent lots to held_qty while dropping 400d phantom lots
+    day_ms = 86_400_000
+    t0_ms = 1_794_900_000_000
+    orders = [
+        {"orderId": f"old_{idx}", "side": "BUY", "status": "FILLED", "executedQty": "10.0", "price": "380.0", "time": t0_ms - (400 - idx) * day_ms}
+        for idx in range(5)
+    ] + [
+        {"orderId": f"cur_{idx}", "side": "BUY", "status": "FILLED", "executedQty": "3.0", "price": str(200.0 + idx * 2.0), "time": t0_ms - (25 - idx * 2) * day_ms}
+        for idx in range(10)
+    ]
+    fills = extract_symbol_recent_fills(orders, symbol="TAOUSDC")
+    assert len(fills["open_lots"]) == 15
+    fresh_lots, _ = select_fresh_open_lots(fills["open_lots"], held_qty=30.0)
+    assert len(fresh_lots) == 10
+    vwap_rec, fq_rec = reconcile_fresh_lots_vwap(fills, fills["open_lots"], fresh_lots, 30.0)
+    assert fq_rec == pytest.approx(30.0)
+    assert vwap_rec == pytest.approx(209.0)
+    assert fills["active_avg_buy_px"] == pytest.approx(209.0)
+
+    # Partial 4-lot subset (<90% of held_qty) must not emit misleading Remaining LIFO Avg BUY
+    sub_parts = format_recent_fill_subcycle_parts(
+        {"active_avg_buy_px": 220.0, "held_qty": 30.0, "open_lots": fresh_lots[-4:]},
+        open_lots=fresh_lots[-4:],
+    )
+    assert not any(p.startswith("Remaining LIFO Avg BUY=") for p in sub_parts)
+
+
+

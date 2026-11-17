@@ -2312,8 +2312,10 @@ def test_audit_reconciliation_explicit_accepted_unknown_partial_terminal_and_pen
     assert intents[2]["history"][-1]["action"] == "RECONCILED_UNKNOWN"
     assert intents[2]["execution_payload"]["status"] == "UNKNOWN"
     assert intents[2]["execution_payload"]["submission_state"] == "unknown"
+    intents[2]["execution_payload"]["origQty"] = "7753.6"
     det_unk = _resolve_intent_execution_details(intents[2], 1794500010.0, extract_intent_notional)
     assert det_unk["exec_status"] == "SUBMIT_UNKNOWN"
+    assert det_unk["filled_qty"] is None
 
     gw.save_all_intents(intents)
     mock_btc = _make_mock_inst("BTCUSDC", base="BTC", quote="USDC", price=80000.0, free_balance=5000.0)
@@ -2996,6 +2998,35 @@ def test_atomic_rollback_restores_canceled_open_orders_when_replacement_fails_or
     assert cnt_restored == 2
     assert str(restored_kwargs[0].get("client_order_id") or "").startswith("MN_")
     assert str(restored_kwargs[1].get("client_order_id") or "").startswith("SD_")
+
+    # 5. extract_executed_qty never reports origQty on UNKNOWN/FAILED payloads and prompt_sections ages stale SUBMIT_UNKNOWN & omits entry_px=None
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section, _format_venue_cycle_line
+    from providers.order_ohlc_utils import extract_executed_qty
+
+    assert extract_executed_qty({"status": "UNKNOWN", "submission_state": "unknown", "executedQty": "", "origQty": "7753.6"}) == 0.0
+    assert extract_executed_qty({"status": "FAILED", "origQty": "12.5"}) == 0.0
+
+    rgnt_cyc_line = _format_venue_cycle_line(
+        "t212",
+        "RGNT_US_EQ",
+        {"qty": 3.93, "cost_usd": 5.64, "avg_cost_px": 1.434575, "entry_price": None, "last_buy_price": 1.43, "last_sell_price": 1.5, "dca_buys": 0, "dd_pct": -15.65},
+    )
+    assert "entry_px=None" not in rgnt_cyc_line
+
+    sec3c_lines = "\n".join(
+        _format_portfolio_section(
+            {
+                "recent_ai_intents": [
+                    {"decision": "SELL", "symbol": "ARBUSDC", "venue": "binance", "status": "SUBMIT_UNKNOWN", "venue_status": "UNKNOWN", "age_h": 59.5},
+                    {"decision": "SELL", "symbol": "ARBUSDC", "venue": "binance", "status": "EXECUTED", "venue_status": "OPEN", "order_id": "566749020", "age_h": 0.8},
+                ]
+            },
+            "crypto",
+        )
+    )
+    assert "SUBMIT_UNKNOWN" not in sec3c_lines
+    assert "RESTING_IN_BOOK" in sec3c_lines
+
 
 
 

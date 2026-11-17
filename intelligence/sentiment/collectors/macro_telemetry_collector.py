@@ -20,6 +20,7 @@ from botcore import (
     first_epoch_sec,
     first_pos_float,
     is_live_network_backfill_enabled,
+    is_us_rth_open,
     normalize_epoch_sec,
     resolve_now_ts,
     resolve_patched_attr,
@@ -1321,8 +1322,23 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         prices_newest_ts = max(cp_item_ts) if cp_item_ts else prices_top_ts
         if prices_newest_ts is not None and prices_newest_ts > 0.0:
             domain_ts["prices_newest"] = prices_newest_ts
-        if len(cp_item_ts) > 1:
-            domain_ts["prices_oldest"] = min(cp_item_ts)
+        us_rth_open = is_us_rth_open(now_ts)
+        cp_oldest_pool = cp_item_ts
+        if scope_norm == "all" and not us_rth_open and isinstance(cp_source_items, dict):
+            cp_open_ts = [
+                ts_cp
+                for k_cp, v_cp in cp_source_items.items()
+                if (k_up := str(k_cp or "").strip().upper())
+                and k_up not in _meta_keys_up
+                and _sym_in_scope(k_up)
+                and not (has_equity_suffix(k_up) or k_up in t212_sym_set)
+                and (cp_res := extract_current_price_timestamp_sec(v_cp, cp_ft_map.get(k_cp)))[1]
+                and (ts_cp := cp_res[0]) > 0.0
+            ]
+            if cp_open_ts:
+                cp_oldest_pool = cp_open_ts
+        if len(cp_oldest_pool) > 1:
+            domain_ts["prices_oldest"] = min(cp_oldest_pool)
         st_items_d = trends_data.get("items") if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict) else trends_data
         st_ts_vals, st_top_ts = _collect_scoped_map_timestamps(
             st_items_d,
@@ -1381,6 +1397,16 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 vb_ts_vals = list(verified_by_venue.values()) + [
                     max(ts_list) for v_k, ts_list in fallback_by_venue.items() if v_k not in verified_by_venue and ts_list
                 ]
+                if scope_norm == "all" and not us_rth_open:
+                    vb_open_ts_vals = [
+                        ts_v for v_k, ts_v in verified_by_venue.items() if not is_equity_venue(v_k)
+                    ] + [
+                        max(ts_list)
+                        for v_k, ts_list in fallback_by_venue.items()
+                        if v_k not in verified_by_venue and not is_equity_venue(v_k) and ts_list
+                    ]
+                    if vb_open_ts_vals:
+                        vb_ts_vals = vb_open_ts_vals
                 if vb_ts_vals:
                     domain_ts["venue_balances"] = min(vb_ts_vals)
         for m_name, m_val in active_macro_sensors.items():
