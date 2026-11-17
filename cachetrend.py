@@ -76,6 +76,7 @@ from state_io import (
     meta_file_path,
     previous_generation_path,
     read_json_dict,
+    read_json_dict_cached,
     read_json_dict_recovering,
     read_recovering_previous,
     save_json_state,
@@ -102,7 +103,12 @@ _ORIG_CACHETREND_ATTRS = {
     "CM_PUBLISHED_TREND_WINDOWS_SEC": CM_PUBLISHED_TREND_WINDOWS_SEC,
     "atomic_write_json": atomic_write_json,
 }
+_ORIG_READ_JSON_DICT = read_json_dict
 _ORIG_READ_JSON_DICT_RECOVERING = read_json_dict_recovering
+_ORIG_READ_RECOVERING_PREVIOUS = read_recovering_previous
+_SHORT_TREND_ENVELOPE_KEYS = frozenset(
+    {"items", "fetchtime", "rest_sync_cursor", "data_version"}
+)
 
 
 # =============================================================================
@@ -342,6 +348,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         self._trend_buffers = {}
         self._active_dynamic_windows = set()
         self._disk_c24_cache = {}
+        self._disk_json_memo = {}
         self._mem_dirty = False
         self._dirty_live_symbols = set()
         # Writer state populated by start_computation: symbol/window to analyzer objects.
@@ -1341,15 +1348,14 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                         fresh = _check_fresh(snap)
                         if fresh is not None:
                             return fresh
+            is_writer = _parse_bool_flag(self.writer, default=False)
             for cand in variants:
                 if not isinstance(cand, str) or not cand:
                     continue
-                file_live = read_json_dict(
-                    self._live_trend_file(cand),
-                    default={},
-                    recover_previous=True,
-                    repair_files=_parse_bool_flag(self.writer, default=False),
-                ).get(w_key)
+                live_dict = self._read_passive_or_writer_dict(
+                    self._live_trend_file(cand), is_writer=is_writer
+                )
+                file_live = live_dict.get(w_key) if isinstance(live_dict, dict) else None
                 if isinstance(file_live, dict):
                     fresh = _check_fresh(file_live)
                     if fresh is not None:
@@ -1438,23 +1444,58 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             print(f"[{self.cls_name}] write failure for {self.filename}: {e}")
             return False
 
+    @staticmethod
+    def _unwrap_short_trend_file_dict(data: object) -> dict:
+        if not isinstance(data, dict):
+            return {}
+        items = data.get("items")
+        if isinstance(items, dict) and set(data.keys()) <= _SHORT_TREND_ENVELOPE_KEYS:
+            return dict(items)
+        return dict(data)
+
+    def _can_use_passive_disk_memo(self, is_writer: bool) -> bool:
+        return (
+            not is_writer
+            and read_json_dict is _ORIG_READ_JSON_DICT
+            and read_recovering_previous is _ORIG_READ_RECOVERING_PREVIOUS
+        )
+
+    def _read_passive_or_writer_dict(self, path: str, *, is_writer: bool) -> dict:
+        if self._can_use_passive_disk_memo(is_writer):
+            cached = read_json_dict_cached(
+                path,
+                memo=getattr(self, "_disk_json_memo", None),
+                max_entries=128,
+            )
+            return cached if isinstance(cached, dict) else {}
+        return read_json_dict(
+            path,
+            default={},
+            recover_previous=True,
+            repair_files=is_writer,
+        )
+
     def _read_file(self):
-        # Read through read_recovering_previous so an interrupted writer commit
-        # automatically restores the prior valid generation (.previous).
+        # Passive readers use stat-memoized reads without mutating disk; the writer
+        # repairs an interrupted commit from .previous when present.
+        is_writer = _parse_bool_flag(self.writer, default=False)
+        if self._can_use_passive_disk_memo(is_writer):
+            return self._unwrap_short_trend_file_dict(
+                read_json_dict_cached(
+                    self.filename,
+                    memo=getattr(self, "_disk_json_memo", None),
+                    max_entries=128,
+                )
+            )
         backup_path = self._previous_generation_path()
         if not os.path.exists(self.filename) and not os.path.exists(backup_path):
             return {}
         try:
             return read_recovering_previous(
                 self.filename,
-                lambda p: (
-                    dict(data["items"])
-                    if isinstance((data := read_json_dict(p)).get("items"), dict)
-                    and set(data.keys()) <= {"items", "fetchtime", "rest_sync_cursor", "data_version"}
-                    else data
-                ),
+                lambda p: self._unwrap_short_trend_file_dict(read_json_dict(p)),
                 backup_path=backup_path,
-                repair_files=bool(self.writer),
+                repair_files=is_writer,
             )
         except Exception:
             return {}
@@ -1647,6 +1688,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             self._trend_buffers.clear()
             self._active_dynamic_windows.clear()
             self._disk_c24_cache.clear()
+            self._disk_json_memo.clear()
             self._mem_dirty = False
             self._dirty_live_symbols.clear()
             try:

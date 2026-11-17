@@ -2159,3 +2159,71 @@ class TestWsBridgeIntegration(TempDirTestCase):
         self.assertIsNotNone(win2)
         self.assertAlmostEqual(win2["gradient_recent"], 0.55, places=6)
         self.assertAlmostEqual(win2["current_price"], 60500.0, places=6)
+
+    def test_passive_disk_reader_memoizes_unchanged_trend_and_live_files_across_symbols(self):
+        import state_io as sio_mod
+
+        syms = [f"COIN{i}USDC" for i in range(12)]
+        trend_file = os.path.join(self.tmp, "passive_memo_short_trend.json")
+        writer = cm.CacheShortTrendManager(syms, trend_file, data_sync_mode="producer")
+        reader = cm.CacheShortTrendManager(syms, trend_file, data_sync_mode="disk_reader")
+        t0 = 1_780_001_000.0
+        for idx, s in enumerate(syms):
+            writer._set_mem(
+                s,
+                gradient_recent=0.10 + idx * 0.01,
+                growth_coefficient=0.10 + idx * 0.01,
+                epsilon=0.01,
+                current_price=100.0 + idx,
+                ts=t0,
+            )
+        writer._persist_live_window(
+            "COIN0USDC",
+            "180",
+            {
+                "final_trend": 1,
+                "growth_coefficient": 0.33,
+                "slope_full": 0.30,
+                "gradient_recent": 0.33,
+                "epsilon": 0.01,
+                "n_samples": 60,
+                "window_seconds": 180.0,
+                "sample_rate_sec": 1.0,
+                "current_price": 100.0,
+                "ts": t0,
+            },
+        )
+        self.assertTrue(writer.save_state_to_file())
+
+        with patch.object(
+            sio_mod, "_read_json_dict_strict", wraps=sio_mod._read_json_dict_strict
+        ) as strict_read:
+            for idx, s in enumerate(syms):
+                snap = reader.get_fresh_snapshot(s, now=t0 + 0.5)
+                self.assertIsNotNone(snap)
+                self.assertAlmostEqual(snap["current_price"], 100.0 + idx, places=6)
+                self.assertTrue(reader.is_trend_up(s, now=t0 + 0.5))
+                self.assertFalse(reader.should_wait("BUY", s, now=t0 + 0.5))
+            # 36 queries across 12 symbols parse cache_short_trend.json from disk exactly once.
+            self.assertEqual(strict_read.call_count, 1)
+
+            # Querying an un-embedded window falls back to live_COIN0USDC.json once and memoizes repeated reads.
+            for _ in range(5):
+                w180 = reader.get_short_trend_for_window("COIN0USDC", 180.0, now=t0 + 0.5)
+                self.assertIsNotNone(w180)
+                self.assertAlmostEqual(w180["growth_coefficient"], 0.33, places=6)
+            self.assertEqual(strict_read.call_count, 2)
+
+            # Updating the disk snapshot invalidates stat signature immediately on next read.
+            writer.update_snapshot(
+                "COIN0USDC",
+                gradient_recent=-0.50,
+                growth_coefficient=-0.50,
+                epsilon=0.01,
+                current_price=95.0,
+                ts=t0 + 1.0,
+            )
+            snap_updated = reader.get_fresh_snapshot("COIN0USDC", now=t0 + 1.2)
+            self.assertIsNotNone(snap_updated)
+            self.assertAlmostEqual(snap_updated["current_price"], 95.0, places=6)
+            self.assertEqual(strict_read.call_count, 3)
