@@ -350,23 +350,27 @@ _ACTIVE_OR_FILLED_ORDER_STATUSES = frozenset(
 )
 
 
+def _call_inst_or_provider_order_lookup(inst: Any, method_name: str, order_ref: str) -> Any:
+    sym = clean_scalar_str(getattr(inst, "symbol", None)) or ""
+    inst_fn = getattr(inst, method_name, None)
+    prov = getattr(inst, "_provider", None)
+    prov_fn = getattr(prov, method_name, None) if prov is not None else None
+    try:
+        if callable(inst_fn) and not _is_unconfigured_mock_callable(inst_fn):
+            return inst_fn(str(order_ref))
+        if sym and callable(prov_fn) and not _is_unconfigured_mock_callable(prov_fn):
+            return prov_fn(sym, str(order_ref))
+    except Exception:
+        return None
+    return None
+
+
 def _missing_target_order_blocks_replacement(
     inst: Any, order_id: str, *, want_side: Optional[str] = None
 ) -> bool:
     """Return True when a targeted same-side order absent from ``open_orders()`` already executed or remains active."""
-    sym = clean_scalar_str(getattr(inst, "symbol", None)) or ""
-    inst_status_fn = getattr(inst, "order_status", None)
-    prov = getattr(inst, "_provider", None)
-    prov_status_fn = getattr(prov, "order_status", None) if prov is not None else None
-    st: Any = None
-    try:
-        if callable(inst_status_fn) and not _is_unconfigured_mock_callable(inst_status_fn):
-            st = inst_status_fn(str(order_id))
-        elif sym and callable(prov_status_fn) and not _is_unconfigured_mock_callable(prov_status_fn):
-            st = prov_status_fn(sym, str(order_id))
-        else:
-            return False
-    except Exception:
+    st = _call_inst_or_provider_order_lookup(inst, "order_status", order_id)
+    if st is None:
         return False
     if want_side in ("BUY", "SELL"):
         st_side = (
@@ -450,27 +454,37 @@ def cancel_existing_ai_open_orders(
     matched_targets_lc: set[str] = set()
     seen_cancel_refs: set[str] = set()
     pending_cancels: list[tuple[str, bool, str, dict[str, Any]]] = []
+    mo_fallback_cancels: list[tuple[str, bool, str, dict[str, Any]]] = []
     for oo, oo_side, oid in _iter_matching_open_orders(raw_open, want_side, any_side=eff_any_side):
         coid = extract_client_order_id(oo)
         if (oid and str(oid) in excluded) or (coid and str(coid) in excluded):
             continue
+        is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
+        cancel_ref = str(oid or coid or "")
         if targeted is not None:
             oid_hit = bool(oid and (str(oid) in targeted or str(oid).lower() in targeted_lc))
             coid_hit = bool(coid and (str(coid) in targeted or str(coid).lower() in targeted_lc))
             if not (oid_hit or coid_hit):
+                if (
+                    include_bots
+                    and not is_ai_order
+                    and bool(want_side)
+                    and oo_side == want_side
+                    and (clean_upper_scalar(coid) or "").startswith("MO_")
+                    and cancel_ref
+                ):
+                    mo_fallback_cancels.append((cancel_ref, False, oo_side or side, oo))
                 continue
             if oid_hit:
                 matched_targets_lc.add(str(oid).lower())
             if coid_hit:
                 matched_targets_lc.add(str(coid).lower())
-        is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
         if is_ai_order and only_bots and targeted is None:
             continue
         if not is_ai_order and not include_bots:
             if targeted is not None and failed_order_ids is not None:
-                failed_order_ids.append(str(oid or coid or "<missing_order_id>"))
+                failed_order_ids.append(cancel_ref or "<missing_order_id>")
             continue
-        cancel_ref = str(oid or coid or "")
         if not cancel_ref:
             if failed_order_ids is not None:
                 failed_order_ids.append("<missing_order_id>")
@@ -502,6 +516,7 @@ def cancel_existing_ai_open_orders(
     if (
         targeted
         and include_bots
+        and mo_fallback_cancels
         and any(
             t.lower() not in matched_targets_lc
             and t not in excluded
@@ -511,21 +526,10 @@ def cancel_existing_ai_open_orders(
         )
         and not any(not is_ai for _, is_ai, _, _ in pending_cancels)
     ):
-        queued_refs = {ref for ref, _, _, _ in pending_cancels}
-        for oo, oo_side, oid in _iter_matching_open_orders(raw_open, want_side, any_side=True):
-            coid = extract_client_order_id(oo)
-            if (oid and str(oid) in excluded) or (coid and str(coid) in excluded):
-                continue
-            if resolve_order_actor(oo, ai_oids) == "AI":
-                continue
-            coid_u = clean_upper_scalar(coid) or ""
-            if coid_u.startswith("SD_"):
-                continue
-            if coid_u.startswith("MO_") and bool(want_side) and oo_side == want_side:
-                cancel_ref = str(oid or coid or "")
-                if cancel_ref and cancel_ref not in queued_refs:
-                    queued_refs.add(cancel_ref)
-                    pending_cancels.append((cancel_ref, False, oo_side or side, oo))
+        for item in mo_fallback_cancels:
+            if item[0] not in seen_cancel_refs:
+                seen_cancel_refs.add(item[0])
+                pending_cancels.append(item)
 
     for cancel_ref, is_ai_order, eff_oo_side, raw_oo in pending_cancels:
         try:
@@ -565,24 +569,14 @@ def cancel_existing_ai_open_orders(
             if targeted is not None:
                 for cid_done in canceled_ids:
                     MarketDataProvider.resolve_accepted_retry_order(sym_str, cid_done)
-                if include_bots and any(t.lower() not in matched_targets_lc for t in targeted):
-                    MarketDataProvider.discard_superseded_symbol_retry_records(
-                        sym_str,
-                        want_side,
-                        canceled_ids=canceled_ids,
-                        ai_order_ids=ai_oids,
-                        include_bot_orders=True,
-                        any_side=eff_any_side,
-                        cancel_fn_is_mock=hasattr(cancel_fn, "_mock_name"),
-                    )
-            else:
+            if targeted is None or (include_bots and any(t.lower() not in matched_targets_lc for t in targeted)):
                 to_discard = MarketDataProvider.discard_superseded_symbol_retry_records(
                     sym_str,
                     want_side,
                     canceled_ids=canceled_ids,
                     ai_order_ids=ai_oids,
                     include_bot_orders=include_bots,
-                    any_side=match_any_side,
+                    any_side=eff_any_side,
                     cancel_fn_is_mock=hasattr(cancel_fn, "_mock_name"),
                 )
                 if to_discard and log:
@@ -855,32 +849,20 @@ def reconcile_open_intent_by_client_id(
     base_cid = ai_intent_client_order_id(_extract_intent_id(intent))
     if not base_cid:
         return False
-    sym = str(getattr(inst, "symbol", "") or "").strip()
-    inst_lookup = getattr(inst, "order_by_client_id", None)
-    prov = getattr(inst, "_provider", None)
-    prov_lookup = getattr(prov, "order_by_client_id", None) if prov is not None else None
-    found: Any = None
-    try:
-        if callable(inst_lookup) and not _is_unconfigured_mock_callable(inst_lookup):
-            found = inst_lookup(base_cid)
-        elif sym and callable(prov_lookup) and not _is_unconfigured_mock_callable(prov_lookup):
-            found = prov_lookup(sym, base_cid)
-    except Exception:
-        found = None
+    found = _call_inst_or_provider_order_lookup(inst, "order_by_client_id", base_cid)
     if not isinstance(found, dict):
         return False
     oid_str = extract_order_id(found, default="")
     if not oid_str:
         return False
-    raw_st = found.get("status")
-    st_lc = raw_st.strip().lower() if isinstance(raw_st, str) else ""
+    st_lc = (clean_scalar_str(found.get("status")) or "").lower()
     filled_q = extract_executed_qty(found) or (safe_pos_float(found.get("filled_qty"), default=0.0) or 0.0)
     if (
         st_lc in _ACTIVE_OR_FILLED_ORDER_STATUSES
         or filled_q > 0.0
         or (st_lc in {"canceled", "cancelled", "expired"} and _missing_target_order_blocks_replacement(inst, oid_str))
     ):
-        matched_cid = (extract_client_order_id(found, default="") or base_cid).strip().lower()
+        matched_cid = (clean_scalar_str(extract_client_order_id(found, default="")) or base_cid).lower()
         return _adopt(found, matched_cid)
     return False
 

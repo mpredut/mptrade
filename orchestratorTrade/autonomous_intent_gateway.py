@@ -284,19 +284,21 @@ class AutonomousIntentGateway:
     def _cancel_prior_orders_or_abort(
         self,
         inst: Any,
-        intent: Dict[str, Any],
+        intent: Optional[Dict[str, Any]] = None,
         *,
-        intent_id: str,
-        decision: str,
-        now_ts: float,
-        canceled_order_snapshots: List[Dict[str, Any]],
-        rollback_reason: str,
-        include_bot_orders: bool,
+        intent_id: str = "",
+        decision: str = "",
+        now_ts: float = 0.0,
+        canceled_order_snapshots: Optional[List[Dict[str, Any]]] = None,
+        rollback_reason: str = "",
+        include_bot_orders: bool = False,
+        only_bot_orders: bool = False,
         any_side: bool = False,
         exclude_order_ids: Optional[set[str]] = None,
         target_order_ids: Optional[List[str]] = None,
         verify_not_filled: bool = False,
         extra_intent_key: Optional[str] = None,
+        intents: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[bool, List[str]]:
         failed_ids: List[str] = []
         scan_errors: List[str] = []
@@ -304,8 +306,9 @@ class AutonomousIntentGateway:
             inst,
             decision,
             log=logger,
-            intents=self.load_all_intents(),
+            intents=intents if intents is not None else self.load_all_intents(),
             include_bot_orders=include_bot_orders,
+            only_bot_orders=only_bot_orders,
             any_side=any_side,
             exclude_order_ids=exclude_order_ids or None,
             target_order_ids=target_order_ids or None,
@@ -314,6 +317,8 @@ class AutonomousIntentGateway:
             scan_errors=scan_errors,
             canceled_orders_out=canceled_order_snapshots,
         )
+        if intent is None:
+            return not (failed_ids or scan_errors), canceled_ids
         if canceled_ids:
             prior_c = list(intent.get("canceled_prior_open_orders") or [])
             for cid in canceled_ids:
@@ -326,7 +331,7 @@ class AutonomousIntentGateway:
             self._rollback_canceled_orders(
                 inst,
                 intent,
-                canceled_order_snapshots,
+                canceled_order_snapshots or [],
                 reason=f"intent {intent_id} {rollback_reason}",
             )
             self._abort_on_cancel_failure(
@@ -606,18 +611,14 @@ class AutonomousIntentGateway:
                     ),
                 )
                 if inst is not None:
-                    cancel_existing_ai_open_orders(
+                    self._cancel_prior_orders_or_abort(
                         inst,
-                        "",
-                        log=logger,
-                        intents=intents,
                         include_bot_orders=True,
                         only_bot_orders=only_bots,
                         any_side=True,
                         target_order_ids=target_oids,
                         verify_not_filled=True,
-                        failed_order_ids=[],
-                        scan_errors=[],
+                        intents=intents,
                     )
             return None
         intent["status"] = "PENDING_EXECUTION"
