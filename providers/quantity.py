@@ -171,15 +171,12 @@ class QuantityDecision:
             return False
         if self.refuse_reason in ("balance_unavailable", "insufficient_funds"):
             return True
-        if self.balance_cap is None:
+        if self.balance_cap is None or (self.policy_cap is not None and self.policy_cap <= 0):
             return False
         w_cap = min(self.balance_cap, self.fee_cap) if self.fee_cap is not None else self.balance_cap
         if self.requested_qty is not None and math.isfinite(self.requested_qty) and self.requested_qty > 0:
-            target = min(self.requested_qty, self.policy_cap) if self.policy_cap is not None else self.requested_qty
-            return target > 0 and w_cap < target * (1.0 - 1e-6)
-        return self.final_qty <= 0 and (
-            w_cap <= 0 or (self.policy_cap is not None and w_cap < self.policy_cap * (1.0 - 1e-6))
-        )
+            return w_cap < self.requested_qty * (1.0 - 1e-6)
+        return self.final_qty <= 0
 
 
 def _clean_asset_arg(val: Any) -> Optional[str]:

@@ -1929,6 +1929,14 @@ class TestOrderRollback(unittest.TestCase):
             requested_qty=0.01, balance_cap=0.002, policy_cap=0.01, fee_cap=0.002, final_qty=0.002
         )
         self.assertTrue(dec_clamped.wallet_constrained)
+        dec_sell_policy_clamped = QuantityDecision(
+            requested_qty=0.01, balance_cap=0.002, policy_cap=0.002, fee_cap=0.002, final_qty=0.002
+        )
+        self.assertTrue(dec_sell_policy_clamped.wallet_constrained)
+        dec_weighted_auto = QuantityDecision(
+            requested_qty=float("inf"), balance_cap=0.06, policy_cap=0.03, fee_cap=0.0599, final_qty=0.0, refuse_reason="below_min_notional"
+        )
+        self.assertTrue(dec_weighted_auto.wallet_constrained)
         dec_policy_zero = QuantityDecision(
             requested_qty=float("inf"), balance_cap=10.0, policy_cap=0.0, fee_cap=10.0, final_qty=0.0, refuse_reason="qty_zero_after_policy"
         )
