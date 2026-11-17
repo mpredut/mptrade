@@ -291,6 +291,24 @@ def load_versioned_account_meta_file(
         raise AccountCacheNotReady(reader_reason) from exc
 
 
+def _validated_trade_record(
+    record: object,
+    is_valid_item_fn: Callable[[dict[str, Any]], bool],
+    *,
+    error_message: str,
+) -> tuple[str, dict[str, Any]]:
+    """Validate the shared symbol and item contract for a Trade JSONL row."""
+    if (
+        not isinstance(record, dict)
+        or clean_scalar_str(record.get("s")) is None
+        or not isinstance(record.get("i"), dict)
+        or not is_valid_item_fn(record["i"])
+        or str(record["i"]["symbol"]).upper() != str(record["s"]).upper()
+    ):
+        raise ValueError(error_message)
+    return record["s"], record["i"]
+
+
 def read_trade_records_range_strict(
     path: str,
     start_byte: int,
@@ -316,15 +334,9 @@ def read_trade_records_range_strict(
             if not line.strip():
                 continue
             record = parse_json_payload(line.decode("utf-8"))
-            if (
-                not isinstance(record, dict)
-                or clean_scalar_str(record.get("s")) is None
-                or not isinstance(record.get("i"), dict)
-                or not is_valid_item_fn(record["i"])
-                or str(record["i"]["symbol"]).upper() != str(record["s"]).upper()
-            ):
-                raise ValueError("invalid Trade cache row")
-            records.append((record["s"], record["i"]))
+            records.append(
+                _validated_trade_record(record, is_valid_item_fn, error_message="invalid Trade cache row")
+            )
         return records
     except (OSError, UnicodeError, TypeError, ValueError, JSONDecodeError) as exc:
         raise AccountCacheNotReady(reader_reason) from exc
@@ -419,23 +431,16 @@ def read_legacy_trade_jsonl_strict(
             continue
         try:
             rec = parse_json_payload(raw)
-            if (
-                not isinstance(rec, dict)
-                or clean_scalar_str(rec.get("s")) is None
-                or not isinstance(rec.get("i"), dict)
-                or not is_valid_item_fn(rec["i"])
-                or str(rec["i"]["symbol"]).upper() != str(rec["s"]).upper()
-            ):
-                raise ValueError("invalid legacy Trade row")
-            trade_id = str(_strict_int_field(rec["i"]["id"]))
-            signature = trade_semantic_signature(rec["i"])
-            symbol_items = seen_trade_items[str(rec["s"]).upper()]
+            symbol, item = _validated_trade_record(rec, is_valid_item_fn, error_message="invalid legacy Trade row")
+            trade_id = str(_strict_int_field(item["id"]))
+            signature = trade_semantic_signature(item)
+            symbol_items = seen_trade_items[str(symbol).upper()]
             if trade_id in symbol_items:
                 if symbol_items[trade_id] != signature:
                     raise ValueError(f"conflicting legacy Trade rows for immutable ID {trade_id}")
                 continue
             symbol_items[trade_id] = signature
-            cache.setdefault(rec["s"], []).append(rec["i"])
+            cache.setdefault(symbol, []).append(item)
         except Exception as exc:
             expected_counts = legacy_metadata.get("counts")
             actual_counts = {symbol: len(items) for symbol, items in cache.items()}

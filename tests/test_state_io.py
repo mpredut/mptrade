@@ -2,6 +2,7 @@ import csv
 import datetime as dt
 import gzip
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -148,6 +149,43 @@ def test_invalid_observational_state_can_reset(tmp_path):
         path, default_factory=lambda: {"paper": True},
         fail_closed=False, label="paper", root_type=dict,
     ) == {"paper": True}
+
+
+def test_json_file_readers_preserve_constant_policy_and_patched_loader(tmp_path, monkeypatch):
+    path = tmp_path / "nonstandard.json"
+    path.write_text('{"value": NaN}', encoding="utf-8")
+    assert math.isnan(read_json_file(path)["value"])
+    assert math.isnan(load_json_state(path, default_factory=dict, fail_closed=False, label="paper")["value"])
+    with pytest.raises(StateReadError):
+        load_json_state(path, default_factory=dict, fail_closed=True, label="live")
+
+    original_load = json.load
+    observed = []
+
+    def patched_load(handle, **kwargs):
+        if handle.name == str(path):
+            observed.append(kwargs)
+        return original_load(handle, **kwargs)
+
+    monkeypatch.setattr(state_io.json, "load", patched_load)
+    assert math.isnan(read_json_file(path)["value"])
+    assert math.isnan(load_json_state(path, default_factory=dict, fail_closed=False, label="paper")["value"])
+    with pytest.raises(StateReadError):
+        load_json_state(path, default_factory=dict, fail_closed=True, label="live")
+    assert observed == [
+        {},
+        {"parse_constant": None},
+        {"parse_constant": state_io._reject_json_constant},
+    ]
+
+
+def test_json_file_readers_reject_invalid_utf8(tmp_path):
+    path = tmp_path / "invalid_utf8.json"
+    path.write_bytes(b'{"value": "\xff"}')
+    with pytest.raises(UnicodeDecodeError):
+        read_json_file(path)
+    with pytest.raises(StateReadError):
+        load_json_state(path, default_factory=dict, fail_closed=True, label="live")
 
 
 def test_trailing_once_commands_share_daemon_lock(monkeypatch):

@@ -960,6 +960,41 @@ def test_account_cache_and_legacy_jsonl_border_cases(tmp_path: Path):
         )
 
 
+def test_trade_jsonl_readers_share_row_validation(tmp_path: Path):
+    item = {
+        "symbol": "BTCUSDC",
+        "id": 101,
+        "orderId": 202,
+        "price": "50000",
+        "qty": "0.01",
+        "time": 1_700_000_000_000,
+        "isBuyer": True,
+    }
+    path = tmp_path / "trade_rows.jsonl"
+
+    def read_strict():
+        return cacheintegrity.read_trade_records_range_strict(
+            str(path), 0, path.stat().st_size,
+            is_valid_item_fn=CacheTradeManager._is_valid_item, reader_reason="invalid_trade_row",
+        )
+
+    def read_legacy():
+        return cacheintegrity.read_legacy_trade_jsonl_strict(
+            str(path), {"counts": {"BTCUSDC": 1}},
+            is_valid_item_fn=CacheTradeManager._is_valid_item, reader_reason="invalid_trade_row",
+        )
+
+    path.write_text(json.dumps({"s": "BTCUSDC", "i": item}) + "\n", encoding="utf-8")
+    assert read_strict() == [("BTCUSDC", item)]
+    assert read_legacy() == {"BTCUSDC": [item]}
+
+    path.write_text(json.dumps({"s": "ETHUSDC", "i": item}) + "\n", encoding="utf-8")
+    with pytest.raises(cacheintegrity.AccountCacheNotReady):
+        read_strict()
+    with pytest.raises(cacheintegrity.AccountCacheNotReady):
+        read_legacy()
+
+
 def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(monkeypatch):
     """Verify declarative provider class specs, cross-venue live/dry-run symmetry, and border hardening."""
 

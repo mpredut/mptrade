@@ -176,25 +176,28 @@ def _fast_json_loads(raw: str | bytes | bytearray | memoryview, *, strict_consta
     return json.loads(text, parse_constant=_reject_json_constant if strict_constants else None)
 
 
+def _read_json_candidate(candidate_path: str, **json_kwargs: Any) -> Any:
+    """Read UTF-8 JSON while preserving patched ``open`` and ``json.load`` hooks."""
+    if _orjson is not None and id(json.load) == _ORIG_JSON_LOAD_ID and id(open) == _ORIG_OPEN_ID:
+        with open(candidate_path, "rb") as handle:
+            raw_bytes = handle.read()
+        try:
+            return _orjson.loads(raw_bytes)
+        except Exception:
+            return json.loads(raw_bytes.decode("utf-8"), **json_kwargs)
+    with open(candidate_path, "r", encoding="utf-8") as handle:
+        return json.load(handle, **json_kwargs)
+
+
 def load_json_state(path: str, *, default_factory, fail_closed: bool,
                     label: str, root_type: type = dict):
     """Load JSON state with an explicit live-versus-observational failure policy."""
     fail_closed = _parse_bool_flag(fail_closed, True)
 
     def _read_and_validate(candidate_path: str):
-        if _orjson is not None and id(json.load) == _ORIG_JSON_LOAD_ID and id(open) == _ORIG_OPEN_ID:
-            with open(candidate_path, "rb") as handle:
-                raw_bytes = handle.read()
-            try:
-                value = _orjson.loads(raw_bytes)
-            except Exception:
-                value = json.loads(
-                    raw_bytes.decode("utf-8"),
-                    parse_constant=_reject_json_constant if fail_closed else None,
-                )
-        else:
-            with open(candidate_path, "r", encoding="utf-8") as handle:
-                value = json.load(handle, parse_constant=_reject_json_constant if fail_closed else None)
+        value = _read_json_candidate(
+            candidate_path, parse_constant=_reject_json_constant if fail_closed else None
+        )
         if not isinstance(value, root_type):
             raise ValueError(f"expected {root_type.__name__}, got {type(value).__name__}")
         return value
@@ -965,16 +968,7 @@ def commit_file_and_meta(
 
 
 def _read_json_file_strict(path: str) -> Any:
-    target = _resolve_target_path(path)
-    if _orjson is not None and id(json.load) == _ORIG_JSON_LOAD_ID and id(open) == _ORIG_OPEN_ID:
-        with open(target, "rb") as handle:
-            raw_bytes = handle.read()
-        try:
-            return _orjson.loads(raw_bytes)
-        except Exception:
-            return json.loads(raw_bytes.decode("utf-8"))
-    with open(target, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+    return _read_json_candidate(_resolve_target_path(path))
 
 
 def _read_json_dict_strict(path: str) -> dict[str, Any]:
