@@ -49,7 +49,10 @@ from instrument_registry import (
     is_equity_symbol,
     tracked_price_instruments,
 )
-from intelligence.external.collectors.base_collector import SyncModeMixin
+from intelligence.external.collectors.base_collector import (
+    SyncModeMixin,
+    collector_used_stale_fallback,
+)
 from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
@@ -695,9 +698,7 @@ class ExternalTelemetryMixin:
             else:
                 snap = collector.fetch(symbol, allow_network=True)
             if snap:
-                sym_clean = str(symbol or "").strip().upper()
-                stale_set = getattr(collector, "_stale_fallback_symbols", None)
-                if isinstance(stale_set, set) and sym_clean in stale_set:
+                if collector_used_stale_fallback(collector, symbol):
                     return False
                 vals = [
                     obj_attr(snap, spec[0], spec[1]) if isinstance(spec, tuple) else obj_float(snap, spec)
@@ -776,7 +777,6 @@ class CachedHttpJsonCollector(SyncModeMixin, ABC):
             allow_network=allow_network,
         )
         if not should_fetch:
-            self._last_fetch_used_stale_fallback = False
             return ready
         try:
             fetch_fn = _resolve_daemon_helper(
@@ -789,17 +789,14 @@ class CachedHttpJsonCollector(SyncModeMixin, ABC):
             )
             snapshot = self._parse_fetched_payload(data, now)
             if snapshot:
-                self._last_fetch_used_stale_fallback = False
-                self._cached_snapshot, self._last_fetch_ts = snapshot, now
-                return snapshot
+                return self._record_fresh_in_memory_snapshot(snapshot, now)
         except Exception as exc:
             self._LOGGER.warning(
                 "Failed to fetch %s: %s. Using cached fallback if available.",
                 self._COLLECTOR_LABEL,
                 exc,
             )
-        self._last_fetch_used_stale_fallback = self._cached_snapshot is not None
-        return self._cached_snapshot
+        return self._fallback_stale_in_memory_snapshot()
 
     def read_snapshot(self, *, now_ts: Optional[float] = None) -> Any:
         """Read-only consumer entrypoint: return cached in-memory snapshot with 0 network I/O."""

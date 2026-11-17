@@ -7,15 +7,16 @@ Trading212 and any future adapter.
 
 from __future__ import annotations
 
+import argparse
 import csv
 import datetime as dt
 import hashlib
 import io
 import os
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Sequence
 
-from botcore import exact_pos_int, is_cache_fresh, resolve_now_ts, safe_pos_float
+from botcore import exact_pos_int, is_cache_fresh, parse_cli_float, resolve_now_ts, safe_pos_float
 from providers.ohlc_utils import (
     REQUIRED_FIELDS,
     align_previous_values,
@@ -210,6 +211,38 @@ def format_utc_bar_timestamp(ts: object, *, include_time: bool = False) -> str |
         return None
     fmt = "%Y-%m-%d %H:%M UTC" if include_time else "%Y-%m-%d"
     return dt.datetime.fromtimestamp(ts_i, tz=dt.timezone.utc).strftime(fmt)
+
+
+def format_ohlc_bars_log_span(records: Sequence[Mapping]) -> str:
+    """Format ``<N> bars <YYYY-MM-DD> -> <YYYY-MM-DD>`` for OHLC fetch progress logs."""
+    if not records:
+        return "0 bars"
+    start_s = format_utc_bar_timestamp(records[0].get("timestamp"), include_time=False) or "?"
+    end_s = format_utc_bar_timestamp(records[-1].get("timestamp"), include_time=False) or "?"
+    return f"{len(records)} bars {start_s} -> {end_s}"
+
+
+def parse_ohlc_refresh_cli_args(
+    description: str | None = None,
+    *,
+    default_max_age_sec: float = DAILY_DATASET_MAX_AGE_SEC,
+) -> tuple[bool, bool, float]:
+    """Parse standard ``(--force, --missing-only, --max-age-hours)`` CLI flags and return ``(force, missing_only, max_age_sec)``."""
+    ap = argparse.ArgumentParser(description=description)
+    ap.add_argument("--force", action="store_true", help="re-fetch all symbols regardless of existing CSV age")
+    ap.add_argument("--missing-only", action="store_true", help="skip symbols with any usable existing CSV")
+    ap.add_argument(
+        "--max-age-hours",
+        type=parse_cli_float,
+        default=default_max_age_sec / 3600.0,
+        help="maximum cached CSV age in hours before refreshing (default: 18h)",
+    )
+    cli_args = ap.parse_args()
+    if cli_args.max_age_hours < 0.0:
+        ap.error("--max-age-hours must be >= 0")
+    force_refresh = bool(cli_args.force)
+    missing_only = bool(cli_args.missing_only and not force_refresh)
+    return force_refresh, missing_only, cli_args.max_age_hours * 3600.0
 
 
 def summarize_ohlc_spans(

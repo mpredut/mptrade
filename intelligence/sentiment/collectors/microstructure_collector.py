@@ -108,6 +108,7 @@ def _ensure_cacheprice_classes_bound() -> None:
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
+    collector_used_stale_fallback,
     round_spread_bps,
 )
 from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
@@ -734,10 +735,7 @@ def ensure_fresh_symbol_microstructure(
     def _run_fresh_collector(col_cls: Any) -> bool:
         col = col_cls(cache_dir=eff_cache_dir, start_sync=True)
         snap = col.fetch(sym_u, allow_network=True, now=eff_now)
-        if snap is None:
-            return False
-        stale_set = getattr(col, "_stale_fallback_symbols", None)
-        return not (isinstance(stale_set, set) and sym_u in stale_set)
+        return snap is not None and not collector_used_stale_fallback(col, sym_u)
 
     refreshed_any = False
     if _needs_fetch(CACHE_ORDERBOOK_DEPTH_PREFIX, max_age_ob_sec):

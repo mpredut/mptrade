@@ -228,6 +228,7 @@ class SyncModeMixin:
         now = resolve_now_ts(now_ts)
         cached = getattr(self, "_cached_snapshot", None)
         if not self._resolve_allow_sync_flag(allow_network):
+            self._last_fetch_used_stale_fallback = False
             return now, False, cached or (offline_fallback_fn(now) if callable(offline_fallback_fn) else None)
         if cached and is_cache_fresh(
             getattr(self, "_last_fetch_ts", 0.0),
@@ -235,8 +236,39 @@ class SyncModeMixin:
             getattr(self, "cache_ttl_sec", 0.0),
             force_refresh=force_refresh,
         ):
+            self._last_fetch_used_stale_fallback = False
             return now, False, cached
         return now, True, cached
+
+    def _record_fresh_in_memory_snapshot(self, snapshot: Any, now: float) -> Any:
+        self._last_fetch_used_stale_fallback = False
+        self._cached_snapshot = snapshot
+        self._last_fetch_ts = now
+        return snapshot
+
+    def _fallback_stale_in_memory_snapshot(self) -> Any:
+        cached = getattr(self, "_cached_snapshot", None)
+        self._last_fetch_used_stale_fallback = cached is not None
+        return cached
+
+    def used_stale_fallback(self, symbol: Optional[str] = None) -> bool:
+        if symbol is not None and (sym_clean := str(symbol).strip().upper()):
+            stale_set = getattr(self, "_stale_fallback_symbols", None)
+            if isinstance(stale_set, set):
+                return sym_clean in stale_set
+        return bool(getattr(self, "_last_fetch_used_stale_fallback", False))
+
+
+def collector_used_stale_fallback(collector: Any, symbol: Optional[str] = None) -> bool:
+    """Return True if ``collector`` served a stale fallback on its most recent fetch (globally or for ``symbol``)."""
+    check_fn = getattr(collector, "used_stale_fallback", None)
+    if callable(check_fn):
+        return bool(check_fn(symbol))
+    if symbol is not None and (sym_clean := str(symbol).strip().upper()):
+        stale_set = getattr(collector, "_stale_fallback_symbols", None)
+        if isinstance(stale_set, set):
+            return sym_clean in stale_set
+    return bool(getattr(collector, "_last_fetch_used_stale_fallback", False))
 
 
 class TelemetryCacheCollectorInterface(SyncModeMixin, ABC):

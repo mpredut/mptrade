@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Fetch Yahoo 1h (last ~730 days) and 1d (10 years) regular-session bars for the grid."""
-import argparse, os, sys, time
+import os, sys, time
 from pathlib import Path
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-from botcore import optional_env, parse_cli_float
+from botcore import optional_env
 from offline.backtests.datasets import (
-    DAILY_DATASET_MAX_AGE_SEC,
+    format_ohlc_bars_log_span,
     merge_with_existing_ohlc_csv,
     ohlc_range_window_seconds,
+    parse_ohlc_refresh_cli_args,
     save_dataset,
     should_skip_ohlc_csv_refresh,
     validate_dataset,
@@ -44,21 +45,7 @@ MIN_GRID_BARS = 33  # len(rows) > 32 (WARM + 12)
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--missing-only", action="store_true", help="skip symbols with an existing >32-bar CSV")
-    ap.add_argument("--force", action="store_true", help="re-fetch all symbols regardless of existing CSVs")
-    ap.add_argument(
-        "--max-age-hours",
-        type=parse_cli_float,
-        default=DAILY_DATASET_MAX_AGE_SEC / 3600.0,
-        help="maximum cached CSV age in hours before refreshing (default: 18h)",
-    )
-    cli_args = ap.parse_args()
-    if cli_args.max_age_hours < 0.0:
-        ap.error("--max-age-hours must be >= 0")
-    force_refresh = bool(cli_args.force)
-    missing_only = bool(cli_args.missing_only and not force_refresh)
-    max_age_sec = cli_args.max_age_hours * 3600.0
+    force_refresh, missing_only, max_age_sec = parse_ohlc_refresh_cli_args(__doc__)
     os.makedirs(DATA, exist_ok=True)
     usable_total = 0
     for sym in ASSETS:
@@ -82,9 +69,8 @@ if __name__ == "__main__":
                     if has_cached_csv:
                         usable_total += 1
                     continue
-                validated = validate_dataset(candles)
                 merged = merge_with_existing_ohlc_csv(
-                    validated,
+                    candles,
                     csv_path,
                     window_seconds=ohlc_range_window_seconds(rng),
                 )
@@ -98,9 +84,7 @@ if __name__ == "__main__":
                     continue
                 save_dataset(merged, Path(csv_path))
                 usable_total += 1
-                print(f"[fetch] {sym} {itv}: {len(merged)} bars "
-                      f"{time.strftime('%Y-%m-%d', time.gmtime(merged[0]['timestamp']))} -> "
-                      f"{time.strftime('%Y-%m-%d', time.gmtime(merged[-1]['timestamp']))}", flush=True)
+                print(f"[fetch] {sym} {itv}: {format_ohlc_bars_log_span(merged)}", flush=True)
             except Exception as exc:  # noqa: BLE001
                 print(f"[fetch] {sym} {itv}: {exc}", flush=True)
                 if has_cached_csv:

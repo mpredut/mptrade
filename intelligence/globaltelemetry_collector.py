@@ -17,7 +17,7 @@ import os
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT_DIR not in sys.path:
@@ -47,6 +47,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
     resolve_workspace_dir_from_cachedb,
 )
+from intelligence.external.collectors.base_collector import collector_used_stale_fallback
 from intelligence.macro.daemon_ssot import (
     ExternalTelemetryMixin,
     add_external_telemetry_cli_args,
@@ -222,16 +223,24 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             return safe_pos_float(now, default=None)
         return safe_pos_float(getattr(self, "_active_cycle_ts", None), default=None)
 
+    def _fetch_fresh_collector_snapshot(
+        self, collector: Any, *, force: bool = False, now: Optional[float] = None
+    ) -> Tuple[Any, Optional[float]]:
+        eff_now = self._resolve_step_now(now)
+        snap = self._call_collector_fetch(
+            collector,
+            force_refresh=_parse_bool_flag(force, False),
+            now_ts=eff_now,
+        )
+        if not snap or collector_used_stale_fallback(collector):
+            return None, eff_now
+        return snap, eff_now
+
     def update_news(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch breaking macro RSS headlines and update local rolling pool (zero LLM)."""
         try:
-            eff_now = self._resolve_step_now(now)
-            news_snap = self._call_collector_fetch(
-                self.news_collector,
-                force_refresh=_parse_bool_flag(force, False),
-                now_ts=eff_now,
-            )
-            if news_snap and not getattr(self.news_collector, "_last_fetch_used_stale_fallback", False):
+            news_snap, _ = self._fetch_fresh_collector_snapshot(self.news_collector, force=force, now=now)
+            if news_snap:
                 logger.debug("RSS news pool updated: %d headlines in pool", news_snap.total_fetched)
                 return True
         except Exception as e:
@@ -241,12 +250,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def update_fear_greed(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch Crypto Fear & Greed Index and persist snapshot to cachedb/."""
         try:
-            snap = self._call_collector_fetch(
-                self.fear_greed_collector,
-                force_refresh=_parse_bool_flag(force, False),
-                now_ts=(eff_now := self._resolve_step_now(now)),
-            )
-            if snap and not getattr(self.fear_greed_collector, "_last_fetch_used_stale_fallback", False):
+            snap, eff_now = self._fetch_fresh_collector_snapshot(self.fear_greed_collector, force=force, now=now)
+            if snap:
                 now_val = resolve_now_ts(eff_now)
                 idx_ts = safe_nonneg_ts(getattr(snap, "timestamp", None), now_val) or now_val
                 fetch_ts = safe_pos_float(getattr(self.fear_greed_collector, "_last_fetch_ts", None), default=None) or now_val
@@ -274,13 +279,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def update_market_breadth(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch Binance 24h market breadth and persist snapshot to cachedb/."""
         try:
-            eff_now = self._resolve_step_now(now)
-            breadth = self._call_collector_fetch(
-                self.breadth_collector,
-                force_refresh=_parse_bool_flag(force, False),
-                now_ts=eff_now,
-            )
-            if breadth and not getattr(self.breadth_collector, "_last_fetch_used_stale_fallback", False):
+            breadth, eff_now = self._fetch_fresh_collector_snapshot(self.breadth_collector, force=force, now=now)
+            if breadth:
                 now_val = resolve_now_ts(eff_now)
                 raw_gainers = getattr(breadth, "top_gainers", None) or ()
                 raw_losers = getattr(breadth, "top_losers", None) or ()
