@@ -1458,6 +1458,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             not is_writer
             and read_json_dict is _ORIG_READ_JSON_DICT
             and read_recovering_previous is _ORIG_READ_RECOVERING_PREVIOUS
+            and read_json_dict_cached.__globals__.get("read_json_dict") is _ORIG_READ_JSON_DICT
         )
 
     def _read_passive_or_writer_dict(self, path: str, *, is_writer: bool) -> dict:
@@ -1847,6 +1848,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
         if isinstance(preloaded_snap, dict):
             win_sec = safe_pos_float(window_seconds, default=None) if window_seconds is not None else None
+            if window_seconds is not None and win_sec is None:
+                return False
             is_dyn = bool(
                 win_sec is not None
                 and not math.isclose(win_sec, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6)
