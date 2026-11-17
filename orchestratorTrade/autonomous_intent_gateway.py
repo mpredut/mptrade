@@ -326,7 +326,12 @@ class AutonomousIntentGateway:
                     prior_c.append(cid)
             intent["canceled_prior_open_orders"] = prior_c
             if extra_intent_key:
-                intent[extra_intent_key] = canceled_ids
+                bot_cids = [
+                    cid
+                    for cid, snap in zip(canceled_ids, canceled_order_snapshots or [])
+                    if isinstance(snap, dict) and snap.get("actor") != "AI"
+                ]
+                intent[extra_intent_key] = bot_cids or list(canceled_ids)
         if failed_ids or scan_errors:
             self._rollback_canceled_orders(
                 inst,
@@ -411,24 +416,48 @@ class AutonomousIntentGateway:
                 intents=self.load_all_intents(),
                 require_notional_match=replace_open,
             )
+        requested_effective_usd = effective_usd
+        guard_allowed, guard_reason, is_balance_constrained = True, "OK", False
+        if not dup_oid:
+            guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
+                inst, decision, price, requested_effective_usd
+            )
+            is_balance_constrained = (
+                (not guard_allowed and "insufficient free" in str(guard_reason or "").lower())
+                or (guard_allowed and effective_usd < requested_effective_usd * 0.95)
+            )
+        # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
+        # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
+        unlock_bot_orders = (
+            not dup_oid
+            and replace_open
+            and not cancel_bot_open
+            and not target_oids
+            and (thesis_cancels_bot_order or is_balance_constrained)
+        )
         canceled_order_snapshots: list[dict[str, Any]] = []
         if mode == "enforce" and (replace_open or cancel_bot_open or bool(target_oids)):
-            ok_cancel, _ = self._cancel_prior_orders_or_abort(
+            ok_cancel, canceled_ids = self._cancel_prior_orders_or_abort(
                 inst,
                 intent,
                 intent_id=intent_id,
                 decision=decision,
                 now_ts=now,
                 canceled_order_snapshots=canceled_order_snapshots,
-                rollback_reason="cancel_prior_order_failed",
-                include_bot_orders=cancel_bot_open or bool(target_oids),
+                rollback_reason="unlock_cancel_failed" if unlock_bot_orders else "cancel_prior_order_failed",
+                include_bot_orders=cancel_bot_open or bool(target_oids) or unlock_bot_orders,
                 any_side=bool(target_oids),
                 exclude_order_ids={dup_oid} if dup_oid else None,
                 target_order_ids=target_oids or None,
                 verify_not_filled=replace_open or bool(target_oids),
+                extra_intent_key="canceled_bot_open_orders" if unlock_bot_orders else None,
             )
             if not ok_cancel:
                 return intent
+            if not dup_oid and canceled_ids and is_balance_constrained:
+                guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
+                    inst, decision, price, requested_effective_usd
+                )
         if dup_oid:
             logger.info(
                 "[LLM TRADER · ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
@@ -444,48 +473,6 @@ class AutonomousIntentGateway:
                 "notional_usd": effective_usd,
             })
             return intent
-
-        # Minimal Operational Preflight (Symmetric BUY / SELL, Zero Strategy or Daily-Cap Guards):
-        # Clamp desired notional strictly to real spot wallet free liquidity.
-        requested_effective_usd = effective_usd
-        guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
-            inst, decision, price, requested_effective_usd
-        )
-        is_balance_constrained = (
-            (not guard_allowed and "insufficient free" in str(guard_reason or "").lower())
-            or (guard_allowed and effective_usd < requested_effective_usd * 0.95)
-        )
-        if (
-            mode == "enforce"
-            and replace_open
-            and not cancel_bot_open
-            and not target_oids
-            and (thesis_cancels_bot_order or is_balance_constrained)
-        ):
-            # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
-            # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
-            already_excluded = set(intent.get("canceled_prior_open_orders") or [])
-            if dup_oid:
-                already_excluded.add(dup_oid)
-            ok_unlock, unlocked_ids = self._cancel_prior_orders_or_abort(
-                inst,
-                intent,
-                intent_id=intent_id,
-                decision=decision,
-                now_ts=now,
-                canceled_order_snapshots=canceled_order_snapshots,
-                rollback_reason="unlock_cancel_failed",
-                include_bot_orders=True,
-                any_side=False,
-                exclude_order_ids=already_excluded or None,
-                extra_intent_key="canceled_bot_open_orders",
-            )
-            if not ok_unlock:
-                return intent
-            if unlocked_ids:
-                guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
-                    inst, decision, price, requested_effective_usd
-                )
         if guard_allowed and effective_usd > 0:
             intent["clamped_notional_usd"] = round(effective_usd, 2)
         target_qty = effective_usd / price if effective_usd > 0 else 0.0
