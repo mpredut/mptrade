@@ -1358,12 +1358,25 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         for t, _ in active_tiers
     )
 
+    completed_existing = _completed_tier_values(state)
+
+    def _has_due_sell_tier_at(g_val: float | None) -> bool:
+        if g_val is None:
+            return False
+        return any(
+            threshold not in completed_existing
+            and g_val >= _trigger_threshold_for_sell_tier(
+                threshold, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult
+            )
+            for threshold, _ in active_tiers
+        )
+
     if free_qty == 0 or (free_qty * current_price) < 5.0:
         open_sells = _active_sell_orders(provider, symbol)
         if open_sells is None or open_sells:
             ref_trough = _finite_float((state or {}).get("trough_price") or minimum_row.get("price"), positive=True)
             cand_growth = (((current_price - ref_trough) / ref_trough) * 100.0) if ref_trough else None
-            if open_sells and cand_growth is not None and cand_growth >= min_trigger_thr:
+            if open_sells and _has_due_sell_tier_at(cand_growth):
                 open_sells = _resolve_blocking_sell_orders(
                     symbol, open_sells, canceled_orders_out=canceled_orders_out
                 )
@@ -1432,6 +1445,9 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
             "attempts_by_tier": {},
             "terminal_orders": [],
         }
+    if not _has_due_sell_tier_at(growth):
+        _rtrade_sell_block_since.pop(symbol, None)
+        return None, ({} if new_campaign else state), growth
     open_sells = _active_sell_orders(provider, symbol)
     if open_sells is None:
         print(f"[{symbol}] Cannot verify open SELL orders; do not submit tier.")
@@ -1714,7 +1730,17 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
             and abs(drawdown_percent) >= _trigger_threshold_for_buy_tier(threshold, buy_mult, volatility_mult=vol_mult)
             for threshold, _ in BUY_TIERS
         )
-        if has_due_buy_tier and preempt_lower_priority_open_orders(
+        short_trend_waits = False
+        if has_due_buy_tier:
+            try:
+                short_trend_waits = bool(
+                    pw.should_wait_short_trend(
+                        cm.get_short_trend_manager(), "BUY", symbol, short_trend_cls=cm.CacheShortTrendManager
+                    )
+                )
+            except Exception:
+                short_trend_waits = False
+        if has_due_buy_tier and not short_trend_waits and preempt_lower_priority_open_orders(
             provider,
             symbol,
             "BUY",
