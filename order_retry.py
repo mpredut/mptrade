@@ -107,6 +107,9 @@ def _record_lifecycle(rec: object, default: str = "submit_pending") -> str:
     return s.lower() if (s := clean_scalar_str(raw)) is not None else ""
 
 
+record_lifecycle = _record_lifecycle
+
+
 def submission_requires_reconciliation(rec) -> bool:
     """Return whether a persisted intent might already have reached its venue."""
     if not isinstance(rec, dict):
@@ -380,6 +383,13 @@ def _shift_ttl_after_deferral(rec: dict, previous_reason, next_reason, prev_atte
                 rec["ttl_started_ts"] = ttl_ts + (now - prev_last_ts)
 
 
+def _sanitize_place_kwargs(place_kwargs) -> dict:
+    return {
+        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
+        for k, v in dict(place_kwargs or {}).items()
+    }
+
+
 def enqueue(
     symbol, side, qty, place_kwargs=None, requested_price=None, ref_price=None,
     now=None, created_ts=None, attempts=0, last_attempt_ts=0.0,
@@ -437,10 +447,8 @@ def enqueue(
     kind_clean = clean_scalar_str(kind)
     iid_clean = clean_order_id(intent_id)
     fail_clean = clean_scalar_str(failure_reason)
-    placement = {
-        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
-        for k, v in dict(place_kwargs or {}).items()
-    }
+    base_placement = _sanitize_place_kwargs(place_kwargs)
+    placement = dict(base_placement)
     owner_clean = clean_scalar_str(placement.get("owner"))
     prefix = clean_scalar_str(placement.get("prefix")) or (
         f"{owner_clean}_OR" if owner_clean else None
@@ -541,10 +549,7 @@ def enqueue(
                     e["ref_price"] = ref_price
                     _set_record_qty(e, qty)
                     revision = safe_nonneg_int(e.get("revision"), default=0) + 1
-                    refreshed_kwargs = {
-                        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
-                        for k, v in dict(place_kwargs or {}).items()
-                    }
+                    refreshed_kwargs = dict(base_placement)
                     pfx = (
                         clean_scalar_str(e.get("prefix"))
                         or clean_scalar_str(refreshed_kwargs.get("prefix"))
@@ -592,7 +597,7 @@ def enqueue(
         if RETRY_MAX_QUEUE > 0 and len(existing) >= RETRY_MAX_QUEUE:
             pending = [
                 (index, item) for index, item in enumerate(existing)
-                if str(item.get("lifecycle") or "submit_pending").lower() == "submit_pending"
+                if _record_lifecycle(item) == "submit_pending"
                 and _safe_to_evict_for_capacity(item)
             ]
             deferred = [
@@ -1037,10 +1042,10 @@ def complete_claim(
         raise ValueError(f"invalid submission state: {submission_state!r}")
     now = resolve_now_ts(now)
     changed = False
+    claimed_client_id = _record_client_order_id(claimed)
     with _locked_queue() as existing:
         remaining = []
         for rec in existing:
-            claimed_client_id = _record_client_order_id(claimed)
             if (
                 rec.get("id") != claimed.get("id")
                 or rec.get("claim_token") != claimed.get("claim_token")
@@ -1188,7 +1193,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
                 and exact_int(rec.get("revision"), 0) == exact_int(claimed.get("claim_revision"), -1)
             ):
                 continue
-            if str(rec.get("lifecycle") or "").lower() != "awaiting_cancel":
+            if _record_lifecycle(rec, default="") != "awaiting_cancel":
                 break
             current_qty = safe_nonneg_float(rec.get("qty"), default=0.0)
             if qty > current_qty + max(1e-12, current_qty * 1e-9):
@@ -1215,7 +1220,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
                 existing = [
                     item for item in existing
                     if not (
-                        str(item.get("lifecycle") or "").lower() == "accepted"
+                        _record_lifecycle(item, default="") == "accepted"
                         and _canonical_queue_symbol(item.get("symbol")) == replaced_symbol
                         and (extract_order_id(item.get("order_id")) or str(item.get("order_id") or "").strip()) == replaced_order_id
                     )
@@ -1254,7 +1259,7 @@ def resolve_accepted_order(symbol, order_id) -> bool:
         return False
     removed_records = _remove_matching_locked(
         lambda rec: (
-            str(rec.get("lifecycle") or "").lower() == "accepted"
+            _record_lifecycle(rec, default="") == "accepted"
             and _canonical_queue_symbol(rec.get("symbol")) == target_sym
             and extract_order_id(rec.get("order_id")) == target_oid
         )
@@ -1298,7 +1303,7 @@ def advance_claimed_status(claimed: dict, status: OrderStatus, now=None) -> Outb
     """Persist one accepted order-status transition without venue I/O."""
     if not isinstance(status, OrderStatus):
         raise TypeError("status must be OrderStatus")
-    if str(claimed.get("lifecycle") or "").lower() != "accepted":
+    if _record_lifecycle(claimed, default="") != "accepted":
         raise ValueError("status transition requires an accepted claimed record")
 
     if not status.terminal:

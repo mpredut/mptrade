@@ -1133,92 +1133,24 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                     if al.name != "*":
                         imp_set.add(al.asname or al.name)
         reexport_defs_by_mod[mod_name] = imp_set - def_set
-    order_ohlc_reexports = {
-        "ClosedPriceSeries",
-        "MANUAL_CID_PREFIXES",
-        "OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES",
-        "OHLC_INTERVALS_MIN_TO_STR",
-        "OHLC_INTERVALS_STR_TO_MIN",
-        "ProviderError",
-        "REQUIRED_FIELDS",
-        "VENUE_PROVIDER_SPECS",
-        "_CANDLE_INTERVALS",
-        "_parse_epoch_or_iso_s",
-        "_ts_ms_to_s",
-        "aggregate_broker_history_fills",
-        "align_previous_values",
-        "all_venue_native_client_order_ids",
-        "build_price_history_points",
-        "candle_interval",
-        "candles_to_historical_points",
-        "clean_order_id",
-        "derive_venue_128bit_client_order_id",
-        "drop_incomplete_last_bar",
-        "extract_broker_history_matches",
-        "extract_broker_order_ticker",
-        "extract_client_order_id",
-        "extract_order_id",
-        "extract_order_price",
-        "extract_order_qty",
-        "extract_order_side",
-        "extract_timestamp_ms",
-        "extract_timestamp_s",
-        "extract_trading_quote_pairs",
-        "extract_yahoo_chart_latest_price",
-        "extract_yahoo_chart_result_and_quote",
-        "format_actor_tag",
-        "format_venue_intent_client_order_id",
-        "iter_broker_history_order_fills",
-        "normalize_broker_history_items",
-        "normalize_record",
-        "normalize_side",
-        "normalize_timestamp_ms",
-        "normalize_yahoo_5d_chart_bars",
-        "parse_ohlc_interval",
-        "parse_ohlc_interval_minutes",
-        "require_pos_ohlc_interval",
-        "resolve_ohlc_time_window_ms",
-        "resolve_order_actor",
-        "resolve_order_origin",
-        "resolve_venue_provider_class",
-        "series_to_historical_points",
-        "validate_dataset",
-        "validate_ohlc_bars",
-        "validate_ohlc_candle_bar",
-    }
-    cacheprice_poller_reexports = {
-        "HyperliquidPriceStream",
-        "KrakenPriceStream",
+    cacheprice_poller_aliases = {
         "NonBinanceTrendPoller",
-        "_NonBinanceTrendPoller",
         "VenuePriceStreamBase",
-        "_VenuePriceStreamBase",
-        "_NB_FETCH_DEADLINE_SEC",
         "fetch_price_with_deadline",
-        "_fetch_price_with_deadline",
         "start_nonbinance_trend_poller",
-        "_start_nonbinance_trend_poller",
     }
+    venue_leaf_dirs = ("binance_api/", "kraken/", "hyperliquid/", "212trading/", "market_monitor/")
     ssot_violations: list[str] = []
 
     def _check_reexport_imports(rel_s: str, node: ast.ImportFrom) -> None:
         lineno = getattr(node, "lineno", 0)
         if node.module == "providers.base" or (rel_s.startswith("providers/") and node.level == 1 and node.module == "base"):
-            if rel_s.startswith(("binance_api/", "kraken/", "hyperliquid/", "212trading/", "market_monitor/")):
+            if rel_s.startswith(venue_leaf_dirs):
                 ssot_violations.append(f"{rel_s}:{lineno}: upward layer import from providers.base")
-            bad_names = [a.name for a in node.names if a.name != "MarketDataProvider"]
-            if bad_names:
+            if bad_names := [a.name for a in node.names if a.name != "MarketDataProvider"]:
                 ssot_violations.append(f"{rel_s}:{lineno}: legacy re-export import from providers.base: {bad_names}")
-        elif node.module == "providers.order_ohlc_utils" or (
-            rel_s.startswith("providers/") and node.level == 1 and node.module == "order_ohlc_utils"
-        ):
-            bad_oou = [a.name for a in node.names if a.name in order_ohlc_reexports]
-            if bad_oou:
-                ssot_violations.append(f"{rel_s}:{lineno}: non-canonical re-export import from order_ohlc_utils: {bad_oou}")
-        elif node.module == "cacheprice":
-            bad_cp = [a.name for a in node.names if a.name in cacheprice_poller_reexports]
-            if bad_cp:
-                ssot_violations.append(f"{rel_s}:{lineno}: non-canonical poller re-export import from cacheprice: {bad_cp}")
+        elif node.module == "cacheprice" and (bad_cp := [a.name for a in node.names if a.name in cacheprice_poller_aliases]):
+            ssot_violations.append(f"{rel_s}:{lineno}: non-canonical poller re-export import from cacheprice: {bad_cp}")
         if node.module:
             target_mod = _resolve_import_target(rel_s, node.level, node.module)
             if (
@@ -1226,14 +1158,13 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 and target_mod != "botcore"
                 and target_mod not in pkg_init_mods
                 and target_mod in reexport_defs_by_mod
+                and (bad_reexp := [a.name for a in node.names if a.name in reexport_defs_by_mod[target_mod]])
             ):
-                bad_reexp = [a.name for a in node.names if a.name in reexport_defs_by_mod[target_mod]]
-                if bad_reexp:
-                    ssot_violations.append(
-                        f"{rel_s}:{lineno}: non-canonical transitive re-export import from {target_mod}: {bad_reexp}"
-                    )
+                ssot_violations.append(
+                    f"{rel_s}:{lineno}: non-canonical transitive re-export import from {target_mod}: {bad_reexp}"
+                )
 
-    for rel_s, path_obj in prod_files:
+    for rel_s, _ in prod_files:
         tree = parsed_prod_trees[rel_s]
         seen_top_import_from: set[tuple[int, str]] = set()
         for top_node in tree.body:
@@ -1246,59 +1177,27 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
             lineno = getattr(node, "lineno", 0)
             if isinstance(node, ast.Call):
                 fn = node.func
-                if rel_s not in open_owners and isinstance(fn, ast.Name) and fn.id == "open":
-                    ssot_violations.append(f"{rel_s}:{lineno}: raw open()")
-                if rel_s not in coercion_owners and isinstance(fn, ast.Name) and fn.id in ("float", "int"):
-                    ssot_violations.append(f"{rel_s}:{lineno}: raw {fn.id}()")
-                if (
-                    rel_s not in json_owners
-                    and isinstance(fn, ast.Attribute)
-                    and isinstance(fn.value, ast.Name)
-                    and fn.value.id == "json"
-                    and fn.attr in ("load", "loads", "dump", "dumps")
-                ):
-                    ssot_violations.append(f"{rel_s}:{lineno}: raw json.{fn.attr}")
-                if (
-                    rel_s not in text_owners
-                    and isinstance(fn, ast.Attribute)
-                    and fn.attr in ("read_text", "write_text")
-                ):
-                    ssot_violations.append(f"{rel_s}:{lineno}: Path.{fn.attr}")
-                if rel_s != "botcore.py" and (
-                    (isinstance(fn, ast.Attribute) and fn.attr == "ConfigParser")
-                    or (isinstance(fn, ast.Name) and fn.id == "ConfigParser")
-                ):
+                fn_name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
+                owner_mod = fn.value.id if (isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name)) else ""
+                if isinstance(fn, ast.Name):
+                    if fn_name == "open" and rel_s not in open_owners:
+                        ssot_violations.append(f"{rel_s}:{lineno}: raw open()")
+                    elif fn_name in ("float", "int") and rel_s not in coercion_owners:
+                        ssot_violations.append(f"{rel_s}:{lineno}: raw {fn_name}()")
+                if rel_s not in json_owners and owner_mod == "json" and fn_name in ("load", "loads", "dump", "dumps"):
+                    ssot_violations.append(f"{rel_s}:{lineno}: raw json.{fn_name}")
+                elif rel_s not in text_owners and isinstance(fn, ast.Attribute) and fn_name in ("read_text", "write_text"):
+                    ssot_violations.append(f"{rel_s}:{lineno}: Path.{fn_name}")
+                elif rel_s != "botcore.py" and fn_name == "ConfigParser":
                     ssot_violations.append(f"{rel_s}:{lineno}: ConfigParser")
-                if rel_s != "botcore.py" and (
-                    (isinstance(fn, ast.Attribute) and fn.attr in ("urlopen", "Request"))
-                    or (isinstance(fn, ast.Name) and fn.id in ("urlopen", "Request"))
-                ):
-                    attr_name = fn.attr if isinstance(fn, ast.Attribute) else fn.id
-                    ssot_violations.append(f"{rel_s}:{lineno}: urllib {attr_name}")
-                if (
-                    rel_s != "botcore.py"
-                    and isinstance(fn, ast.Attribute)
-                    and isinstance(fn.value, ast.Name)
-                    and fn.value.id == "requests"
-                    and fn.attr in ("get", "post", "put", "delete", "request")
-                ):
-                    ssot_violations.append(f"{rel_s}:{lineno}: raw requests.{fn.attr}")
-                if (
-                    rel_s not in quote_endswith_owners
-                    and isinstance(fn, ast.Attribute)
-                    and fn.attr == "endswith"
-                    and node.args
-                ):
+                elif rel_s != "botcore.py" and fn_name in ("urlopen", "Request"):
+                    ssot_violations.append(f"{rel_s}:{lineno}: urllib {fn_name}")
+                elif rel_s != "botcore.py" and owner_mod == "requests" and fn_name in ("get", "post", "put", "delete", "request"):
+                    ssot_violations.append(f"{rel_s}:{lineno}: raw requests.{fn_name}")
+                elif rel_s not in quote_endswith_owners and isinstance(fn, ast.Attribute) and fn_name == "endswith" and node.args:
                     ew_arg = node.args[0]
-                    ew_vals: list[str] = []
-                    if isinstance(ew_arg, ast.Constant) and isinstance(ew_arg.value, str):
-                        ew_vals.append(ew_arg.value)
-                    elif isinstance(ew_arg, (ast.Tuple, ast.List)):
-                        ew_vals.extend(
-                            elt.value
-                            for elt in ew_arg.elts
-                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-                        )
+                    ew_nodes = ew_arg.elts if isinstance(ew_arg, (ast.Tuple, ast.List)) else (ew_arg,)
+                    ew_vals = [e.value for e in ew_nodes if isinstance(e, ast.Constant) and isinstance(e.value, str)]
                     if any(v in quote_suffix_tokens for v in ew_vals):
                         ssot_violations.append(f"{rel_s}:{lineno}: manual quote .endswith({ew_vals})")
             elif (
@@ -1311,9 +1210,7 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 ssot_violations.append(f"{rel_s}:{lineno}: os.{node.attr}")
             elif isinstance(node, ast.ImportFrom):
                 _check_reexport_imports(rel_s, node)
-            elif isinstance(node, ast.Import) and rel_s.startswith(
-                ("binance_api/", "kraken/", "hyperliquid/", "212trading/", "market_monitor/")
-            ):
+            elif isinstance(node, ast.Import) and rel_s.startswith(venue_leaf_dirs):
                 for alias in node.names:
                     if alias.name == "providers.base":
                         ssot_violations.append(f"{rel_s}:{lineno}: upward layer import providers.base")
@@ -1419,12 +1316,18 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     assert is_fiat_quote_pair("XBTEUR") is True
     assert is_fiat_quote_pair("BTCTUSD") is False
     assert is_fiat_quote_pair("BTCUSDC") is False
+    assert is_fiat_quote_pair("SPCXx.T") is False
+    assert is_fiat_quote_pair("ETH.S") is False
     assert is_usd_compatible_pair("BTCUSDC") is True
     assert is_usd_compatible_pair("XBTUSD") is True
     assert is_usd_compatible_pair("XBTEUR") is False
     assert ensure_quote_suffix("BTC", "USDC") == "BTCUSDC"
     assert ensure_quote_suffix("BTCUSDC", "USDC") == "BTCUSDC"
     assert ensure_quote_suffix("sol/usdc", "USDC") == "SOLUSDC"
+    assert ensure_quote_suffix("null", "USDC") == ""
+    _null_prov_mkt = type("M", (), {"provider_name_for": staticmethod(lambda _s: "null")})()
+    assert ma.resolve_symbol_provider_name("BTCUSDC", market_api=_null_prov_mkt, fallback="Binance") == "Binance"
+    assert ma.resolve_symbol_provider_name("BTCUSDC", market_api=_null_prov_mkt, fallback=None) is None
     assert crypto_quote_priority_rank("BTCUSDC") == 0
     assert crypto_quote_priority_rank("BTCUSDT") == 1
     assert crypto_quote_priority_rank("XBTUSD") == 2

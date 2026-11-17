@@ -42,7 +42,7 @@ from botcore import (
 from cachepaths import split_symbol_assets
 import order_retry as oq
 from providers.execution_audit import ExecutionAudit
-from providers.market_api import api as mkt
+from providers.market_api import api as mkt, resolve_symbol_provider_name
 from providers.quantity import resolve_assets
 from state_io import (
     discard_generation_file,
@@ -139,15 +139,8 @@ _ALERTED_TERMINALS = _PersistentQuarantineSet("terminal")
 
 
 def _normalize_bypass_set(raw_bg) -> set[str]:
-    if isinstance(raw_bg, str):
-        return {tok for s in split_csv(raw_bg) if (tok := clean_scalar_str(s)) is not None}
-    if isinstance(raw_bg, (list, tuple, set, frozenset)):
-        return {
-            tok
-            for s in raw_bg
-            if (tok := clean_scalar_str(s)) is not None
-        }
-    return set()
+    items = split_csv(raw_bg) if isinstance(raw_bg, str) else (raw_bg if isinstance(raw_bg, (list, tuple, set, frozenset)) else ())
+    return {tok for s in items if (tok := clean_scalar_str(s)) is not None}
 
 
 def _hydrate_missing_order_orig_qty(mkt, symbol, order, *, provider_name=None):
@@ -188,16 +181,14 @@ def _reconcile_client_order(mkt, symbol, client_order_id, *, provider_name=None)
 
 
 def _provider_name(mkt, record):
-    if isinstance(record, dict) and (configured := clean_scalar_str(record.get("provider_name"))):
-        return configured
-    resolver = getattr(mkt, "provider_name_for", None)
-    if callable(resolver) and isinstance(record, dict) and (sym := clean_scalar_str(record.get("symbol"))):
-        try:
-            if resolved := clean_scalar_str(resolver(sym)):
-                return resolved
-        except Exception:
-            pass
-    return None
+    if not isinstance(record, dict):
+        return None
+    return resolve_symbol_provider_name(
+        record.get("symbol"),
+        market_api=False if mkt is None else mkt,
+        explicit_venue=record.get("provider_name"),
+        fallback=None,
+    )
 
 
 def _reconciliation_capabilities(mkt, symbol, provider_name):
@@ -297,7 +288,7 @@ def process_once(mkt, now=None):
         if oq.is_expired(r, now):
             expired.append(r)
             continue
-        lifecycle, symbol = (clean_scalar_str(r.get("lifecycle")) or "submit_pending").lower(), r.get("symbol")
+        lifecycle, symbol = oq.record_lifecycle(r), r.get("symbol")
         if (clean_scalar_str(r.get("submission_state")) or "").lower() == "producer_claimed":
             if safe_float(r.get("claim_until"), default=0.0) > now:
                 continue

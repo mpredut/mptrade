@@ -38,7 +38,6 @@ from botcore import (
 from cachepaths import (
     has_equity_suffix,
     is_fiat_quote_pair,
-    is_fiat_usd_pair,
     is_primary_stream_venue,
     is_usd_stablecoin_pair,
     normalize_venue_name,
@@ -898,7 +897,7 @@ class MarketApi:
                 continue
         if is_usd_stablecoin_pair(sym_u):
             return next((p for p in crypto_provs if is_primary_stream_venue(p.name)), None)
-        if is_fiat_usd_pair(sym_u) or is_fiat_quote_pair(sym_u) or sym_u.startswith(("XX", "XZ")):
+        if is_fiat_quote_pair(sym_u) or sym_u.startswith(("XX", "XZ")):
             return next(
                 (
                     p
@@ -988,22 +987,19 @@ def resolve_symbol_provider_name(
     *,
     market_api: Any = None,
     explicit_venue: object = None,
-    fallback: str = "Binance",
+    fallback: Optional[str] = "Binance",
     lowercase: bool = False,
-) -> str:
+) -> Optional[str]:
     """Resolve provider/venue label for ``symbol`` via ``market_api.provider_name_for`` with safe fallback."""
     if exp_s := clean_scalar_str(explicit_venue):
         return exp_s.lower() if lowercase else exp_s
     api_obj = api if market_api is None else market_api
     prov_fn = getattr(api_obj, "provider_name_for", None)
-    sym_s = clean_scalar_str(symbol)
-    if sym_s and callable(prov_fn):
+    if (sym_s := clean_scalar_str(symbol)) and callable(prov_fn):
         try:
-            raw_prov = prov_fn(sym_s)
-            if isinstance(raw_prov, str) and raw_prov.strip():
-                res = raw_prov.strip()
+            if res := clean_scalar_str(prov_fn(sym_s)):
                 return res.lower() if lowercase else res
         except Exception:
             pass
-    return fallback.lower() if lowercase else fallback
+    return fallback.lower() if (lowercase and isinstance(fallback, str)) else fallback
 

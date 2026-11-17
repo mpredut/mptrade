@@ -11,7 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from botcore import clean_nonempty_str  # noqa: E402
+from botcore import clean_order_id, clean_scalar_str  # noqa: E402
 from cachepaths import normalize_venue_name  # noqa: E402
 from state_io import atomic_write_json, atomic_write_text, iter_jsonl_dicts  # noqa: E402
 from offline.backtests.comparison import add_report_output_cli_args, format_number  # noqa: E402
@@ -21,11 +21,8 @@ from offline.backtests.execution_calibration import (  # noqa: E402
 
 
 def _norm_audit_venue(val: object) -> str:
-    if isinstance(val, bool) or val is None:
-        return ""
-    raw = str(val).strip().lower()
+    raw = (clean_scalar_str(val) or "").lower()
     return normalize_venue_name(raw) or raw
-
 
 
 def _load(paths: list[Path], venue: str | None) -> list[dict]:
@@ -44,7 +41,7 @@ def _load(paths: list[Path], venue: str | None) -> list[dict]:
     matched_intents = {
         intent_id
         for event in parsed_events
-        if (intent_id := clean_nonempty_str(event.get("intent_id")))
+        if (intent_id := clean_order_id(event.get("intent_id")))
         and _norm_audit_venue(event.get("venue")) == norm_venue
     }
     return [
@@ -53,7 +50,7 @@ def _load(paths: list[Path], venue: str | None) -> list[dict]:
         if _norm_audit_venue(event.get("venue")) == norm_venue
         or (
             ((v := event.get("venue")) is None or (isinstance(v, str) and not v.strip()))
-            and clean_nonempty_str(event.get("intent_id")) in matched_intents
+            and clean_order_id(event.get("intent_id")) in matched_intents
         )
     ]
 

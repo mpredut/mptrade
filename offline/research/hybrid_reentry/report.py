@@ -8,7 +8,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import clean_nonempty_str, safe_float, safe_nonneg_int
+from botcore import clean_scalar_str, safe_float, safe_nonneg_int
 from offline.backtests.datasets import load_ohlc_tuples_csv, summarize_ohlc_dir_coverage, summarize_ohlc_spans
 from state_io import atomic_write_text, read_json_dict, read_json_file
 
@@ -22,7 +22,7 @@ def _fmt_pct(val, *, decimals: int = 2, signed: bool = False, bold: bool = False
 
 
 def _valid_ablation_row(row) -> bool:
-    return isinstance(row, dict) and "error" not in row and bool(clean_nonempty_str(row.get("asset")) and clean_nonempty_str(row.get("test_id")))
+    return isinstance(row, dict) and "error" not in row and bool(clean_scalar_str(row.get("asset")) and clean_scalar_str(row.get("test_id")))
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
 CRYPTO_DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "data")
