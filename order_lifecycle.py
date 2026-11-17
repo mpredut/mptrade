@@ -813,6 +813,7 @@ def restore_cancelled_instrument_orders(
     bypass_guards: Any = None,
     log_fn: Callable[[str], None] = print,
     reason: str = "",
+    restored_orders_out: Optional[list[dict[str, Any]]] = None,
 ) -> int:
     """Restore cancelled resting orders on a canonical ``Instrument`` when a replacement/exit fails."""
     place_fn = getattr(inst, "place", None)
@@ -820,13 +821,15 @@ def restore_cancelled_instrument_orders(
         return 0
 
     def _restore_one(params: dict[str, Any]) -> bool:
+        raw_ord = params.get("raw") if isinstance(params.get("raw"), dict) else {}
         orig_cid = clean_order_id(params.get("client_order_id")) or ""
         owner = rc.resolve_priority_bot_owner(orig_cid) if orig_cid else "unspecified"
-        pfx = (
-            "AI"
-            if owner == "ai_executor" or orig_cid.upper().startswith("AI_")
-            else rc._PROCESS_NAME_OVERRIDES.get(owner)
+        is_ai = (
+            clean_upper_scalar(raw_ord.get("actor")) == "AI"
+            or owner == "ai_executor"
+            or orig_cid.upper().startswith("AI_")
         )
+        pfx = "AI" if is_ai else rc._PROCESS_NAME_OVERRIDES.get(owner)
         place_kw: dict[str, Any] = {
             "side": params["side"],
             "price": params["limit"],
@@ -842,6 +845,12 @@ def restore_cancelled_instrument_orders(
         if pfx:
             place_kw["client_order_id"] = rc.create_client_order_id(process_name=pfx)
         res = place_fn(**place_kw)
+        if res and restored_orders_out is not None:
+            restored_orders_out.append({
+                "actor": "AI" if is_ai else "BOT",
+                "order_id": extract_order_id(res, default=""),
+                "client_order_id": place_kw.get("client_order_id") or orig_cid,
+            })
         return bool(res)
 
     return restore_cancelled_orders(

@@ -36,6 +36,8 @@ if ROOT_DIR not in sys.path:
 from botcore import (
     _parse_bool_flag,
     add_store_true_cli_args,
+    clean_order_id,
+    clean_scale,
     disable_auto_start_websockets_default,
     is_us_rth_open,
     load_key_value_conf,
@@ -63,6 +65,8 @@ from providers.intent_execution import (
 from providers.intent_state import (
     append_intent_history,
     extract_intent_cancel_order_ids,
+    extract_intent_side,
+    is_non_fiat_btc_quote_instrument,
     load_durable_intents_state,
     parse_intent_gateway_config,
     save_durable_intents_state,
@@ -215,6 +219,36 @@ class AutonomousIntentGateway:
             return False
 
     @staticmethod
+    def _rollback_canceled_orders(
+        inst: Any,
+        intent: Dict[str, Any],
+        canceled_order_snapshots: List[Dict[str, Any]],
+        *,
+        reason: str,
+    ) -> None:
+        if not canceled_order_snapshots:
+            return
+        restored_out: List[Dict[str, Any]] = []
+        restored = restore_cancelled_instrument_orders(
+            inst,
+            canceled_order_snapshots,
+            bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
+            log_fn=logger.warning,
+            reason=reason,
+            restored_orders_out=restored_out,
+        )
+        if restored > 0:
+            intent["restored_prior_open_orders"] = restored
+            ai_ids: List[str] = list(intent.get("restored_ai_order_ids") or [])
+            for item in restored_out:
+                if isinstance(item, dict) and item.get("actor") == "AI":
+                    for k in ("order_id", "client_order_id"):
+                        if (cid := clean_order_id(item.get(k))) and cid not in ai_ids:
+                            ai_ids.append(cid)
+            if ai_ids:
+                intent["restored_ai_order_ids"] = ai_ids
+
+    @staticmethod
     def _abort_on_cancel_failure(
         inst: Any,
         intent: Dict[str, Any],
@@ -335,16 +369,12 @@ class AutonomousIntentGateway:
             if canceled_ids:
                 intent["canceled_prior_open_orders"] = canceled_ids
             if failed_cancel_ids or cancel_scan_errors:
-                if canceled_order_snapshots:
-                    restored_abort = restore_cancelled_instrument_orders(
-                        inst,
-                        canceled_order_snapshots,
-                        bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
-                        log_fn=logger.warning,
-                        reason=f"intent {intent_id} cancel_prior_order_failed",
-                    )
-                    if restored_abort > 0:
-                        intent["restored_prior_open_orders"] = restored_abort
+                self._rollback_canceled_orders(
+                    inst,
+                    intent,
+                    canceled_order_snapshots,
+                    reason=f"intent {intent_id} cancel_prior_order_failed",
+                )
                 return self._abort_on_cancel_failure(
                     inst,
                     intent,
@@ -409,16 +439,12 @@ class AutonomousIntentGateway:
                 intent["canceled_prior_open_orders"] = prior_c
                 intent["canceled_bot_open_orders"] = unlocked_ids
             if unlock_failed_ids or unlock_scan_errors:
-                if canceled_order_snapshots:
-                    restored_abort = restore_cancelled_instrument_orders(
-                        inst,
-                        canceled_order_snapshots,
-                        bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
-                        log_fn=logger.warning,
-                        reason=f"intent {intent_id} unlock_cancel_failed",
-                    )
-                    if restored_abort > 0:
-                        intent["restored_prior_open_orders"] = restored_abort
+                self._rollback_canceled_orders(
+                    inst,
+                    intent,
+                    canceled_order_snapshots,
+                    reason=f"intent {intent_id} unlock_cancel_failed",
+                )
                 return self._abort_on_cancel_failure(
                     inst,
                     intent,
@@ -502,15 +528,12 @@ class AutonomousIntentGateway:
             and last_hist.get("submission_state") != "unknown"
             and last_hist.get("reason") != "submit_ambiguous"
         ):
-            restored = restore_cancelled_instrument_orders(
+            self._rollback_canceled_orders(
                 inst,
+                res_intent,
                 canceled_order_snapshots,
-                bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
-                log_fn=logger.warning,
                 reason=f"intent {intent_id} {res_intent.get('status')}",
             )
-            if restored > 0:
-                res_intent["restored_prior_open_orders"] = restored
         return res_intent
 
     def submit(
@@ -550,14 +573,17 @@ class AutonomousIntentGateway:
         )
         if intent is None:
             if isinstance(decision, dict):
-                cancel_bot_open = _parse_bool_flag(decision.get("cancel_bot_open_orders"), default=False)
+                raw_dec = str(decision.get("decision") or decision.get("action") or decision.get("side") or "HOLD").strip().upper() or "HOLD"
+                is_hold = extract_intent_side(decision) not in ("BUY", "SELL") and raw_dec == "HOLD"
+                min_conf = clean_scale(self.min_confidence, 1.0, allow_percent=True)
+                conf = clean_scale(decision.get("confidence"), 0.0, allow_percent=True)
                 target_oids = extract_intent_cancel_order_ids(decision)
                 mode = min(self.mode, norm_max_mode, key=lambda m: MODE_RANK.get(m, 0))
-                if mode == "enforce" and (cancel_bot_open or target_oids):
+                if is_hold and conf >= min_conf and mode == "enforce" and target_oids:
                     hold_sym = "" if isinstance(decision.get("symbol"), bool) else str(decision.get("symbol") or "").strip().upper()
                     hold_venue = "" if isinstance(decision.get("venue"), bool) else str(decision.get("venue") or "").strip().lower()
-                    inst = self.resolve_instrument(hold_sym, venue=hold_venue, instruments_map=instruments_map) if hold_sym else None
-                    if inst is not None:
+                    inst = self.resolve_instrument(hold_sym, venue=hold_venue, instruments_map=instruments_map) if (hold_sym and hold_venue) else None
+                    if inst is not None and not is_non_fiat_btc_quote_instrument(inst):
                         cancel_existing_ai_open_orders(
                             inst,
                             "",
@@ -566,7 +592,10 @@ class AutonomousIntentGateway:
                             include_bot_orders=True,
                             only_bot_orders=not _parse_bool_flag(decision.get("replace_open_orders"), default=False),
                             any_side=True,
-                            target_order_ids=target_oids or None,
+                            target_order_ids=target_oids,
+                            verify_not_filled=True,
+                            failed_order_ids=[],
+                            scan_errors=[],
                         )
             return None
         intent["status"] = "PENDING_EXECUTION"

@@ -119,6 +119,11 @@ def _intent_order_ids(item: dict[str, Any]) -> set[str]:
             h_oid = extract_order_id(h_entry.get("order_id"), default="") or extract_order_id(h_entry.get("payload"), default="")
             if h_oid:
                 ids.add(str(h_oid))
+    for r_id in (item.get("restored_ai_order_ids") if isinstance(item.get("restored_ai_order_ids"), list) else ()):
+        if clean_r := clean_order_id(r_id):
+            ids.add(clean_r)
+            if clean_r.upper().startswith("AI_"):
+                ids.update(all_venue_native_client_order_ids(clean_r))
     return ids
 
 

@@ -522,7 +522,7 @@ def cancel_existing_ai_open_orders(
             coid_u = str(coid or "").strip().upper()
             if coid_u.startswith("SD_"):
                 continue
-            if coid_u.startswith("MO_") or (want_side and oo_side == want_side) or not want_side:
+            if coid_u.startswith("MO_") and bool(want_side) and oo_side == want_side:
                 cancel_ref = str(oid or coid or "")
                 if cancel_ref and cancel_ref not in queued_refs:
                     queued_refs.add(cancel_ref)
@@ -541,7 +541,10 @@ def cancel_existing_ai_open_orders(
                 continue
             canceled_ids.append(cancel_ref)
             if canceled_orders_out is not None and isinstance(raw_oo, dict):
-                canceled_orders_out.append(dict(raw_oo))
+                snap_oo = dict(raw_oo)
+                if is_ai_order and "actor" not in snap_oo:
+                    snap_oo["actor"] = "AI"
+                canceled_orders_out.append(snap_oo)
             if log:
                 log.info(
                     "[INTENT GATEWAY] Canceled prior %s open %s order %s on %s before replacement.",

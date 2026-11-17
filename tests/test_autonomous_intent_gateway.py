@@ -2636,6 +2636,89 @@ def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_
     assert [c.args[0] for c in btc_inst.cancel_order.call_args_list] == ["725793121", "725793123"]
     btc_inst.place.assert_not_called()
 
+    # 9. Rejected BUY/SELL decisions (low confidence or invalid notional), low-confidence HOLD decisions,
+    #    HOLD without explicit cancel_order_ids, HOLD with an already-canceled target order, and BUY with
+    #    missing target order alongside an opposite-side MO_ SELL order must NEVER cancel protective SELL orders.
+    btc_inst.cancel_order.reset_mock()
+    btc_inst.open_orders.return_value = [
+        {"orderId": "bot_buy_1", "clientOrderId": "RT_BUY_1", "side": "BUY", "price": "189.3"},
+        {"orderId": "725793123", "clientOrderId": "RT_SELL_1", "side": "SELL", "price": "191.7"},
+        {"orderId": "mo_sell_tp", "clientOrderId": "MO_AG_SELL_1", "side": "SELL", "price": "195.0"},
+    ]
+    btc_inst.order_status.return_value = SimpleNamespace(status="canceled", filled_qty=0.0, side="BUY")
+    for non_canceling_dec in (
+        # Rejected BUY due to confidence < min_confidence
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "cancel_bot_open_orders": True,
+            "cancel_order_ids": ["bot_buy_1"],
+            "confidence": 0.20,
+            "suggested_notional_usd": 300.0,
+        },
+        # Rejected BUY due to invalid notional
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "cancel_bot_open_orders": True,
+            "cancel_order_ids": ["bot_buy_1"],
+            "confidence": 0.95,
+            "suggested_notional_usd": 0.0,
+        },
+        # Rejected HOLD due to confidence < min_confidence
+        {
+            "decision": "HOLD",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "cancel_bot_open_orders": True,
+            "cancel_order_ids": ["bot_buy_1"],
+            "confidence": 0.20,
+        },
+        # HOLD without explicit cancel_order_ids
+        {
+            "decision": "HOLD",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "cancel_bot_open_orders": True,
+            "confidence": 0.95,
+        },
+        # HOLD targeting an order ("725793121") already absent/canceled must not wipe untargeted RT_SELL_1 / MO_AG_SELL_1
+        {
+            "decision": "HOLD",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "cancel_bot_open_orders": True,
+            "cancel_order_ids": ["725793121"],
+            "confidence": 0.95,
+        },
+    ):
+        assert gw.submit(
+            non_canceling_dec,
+            source="auto_cryptotrade_executor",
+            max_mode="enforce",
+            instruments_map={"BTCUSDC": btc_inst},
+        ) is None
+    btc_inst.cancel_order.assert_not_called()
+
+    # BUY with missing targeted BUY order ("stale_bot_buy_1") must NOT cancel opposite-side MO_AG_SELL_1
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_buy_preserve_mo_sell = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 190.0,
+            "replace_open_orders": True,
+            "cancel_bot_open_orders": True,
+            "cancel_order_ids": ["stale_bot_buy_1"],
+            "confidence": 0.95,
+            "suggested_notional_usd": 300.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+    assert rec_buy_preserve_mo_sell["status"] == "EXECUTED"
+    btc_inst.cancel_order.assert_not_called()
+
 
 def test_reconcile_resumed_intent_adopts_already_filled_order_via_client_id_without_duplicate_place(temp_workspace, monkeypatch):
     """Resumed enforce intents adopt orders that already filled on the venue (absent from open_orders) via order_by_client_id, while 0-fill canceled orders still execute."""
@@ -2778,6 +2861,7 @@ def test_atomic_rollback_restores_canceled_open_orders_when_replacement_fails_or
     assert res["status"] == "FAILED"
     assert res["canceled_prior_open_orders"] == ["ai_prior_buy_1"]
     assert res["restored_prior_open_orders"] == 1
+    assert "restored_buy_1" in res.get("restored_ai_order_ids", [])
     assert len(place_calls) == 2
     rollback_call = place_calls[1]
     assert rollback_call["side"] == "BUY"
@@ -2787,6 +2871,11 @@ def test_atomic_rollback_restores_canceled_open_orders_when_replacement_fails_or
     assert rollback_call["caller_owns_retry"] is True
     assert rollback_call["smart"] is False
     assert str(rollback_call.get("client_order_id") or "").startswith("AI_")
+    # Restored AI order is tracked in known_ai_order_ids so even without clientOrderId on the venue open order
+    # it is recognized as actor="AI" on the next cycle.
+    known_after_rollback = collect_known_ai_order_ids(gw.load_all_intents())
+    assert "restored_buy_1" in known_after_rollback
+    assert rc.resolve_order_actor({"orderId": "restored_buy_1", "side": "BUY", "price": "78500.0"}, known_after_rollback) == "AI"
 
     # 2. Verify zero double-cancel when initial AI cancel pass is followed by balance-unlock pass on static open_orders
     btc_inst.cancel_order.reset_mock()
