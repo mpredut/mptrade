@@ -934,7 +934,7 @@ class Instrument:
             if ctx.reason:
                 return None
 
-            def _precheck_trend_deferral() -> bool:
+            def _precheck_trend_deferral() -> Optional[str]:
                 if ctx.wait_for_trend:
                     try:
                         if pw.should_wait_short_trend(
@@ -943,7 +943,7 @@ class Instrument:
                             self.symbol,
                             short_trend_cls=ct.CacheShortTrendManager,
                         ):
-                            return True
+                            return "trend_deferred"
                     except Exception:
                         pass
                 check_mt = not GUARD_REGISTRY["GT_M"].is_bypassed(ctx.bypassed_guards)
@@ -955,11 +955,15 @@ class Instrument:
                             obj_attr(gt2_ctx, "resolved_trend")
                         )
                         if order_guard.is_adverse_trend(ctx.side_u, raw_r.lower() if raw_r else None):
-                            return True
-                return False
+                            return "medium_trend_deferred"
+                return None
 
             if deferred_zero_balance:
-                if not _precheck_trend_deferral() and order_lifecycle.preempt_lower_priority_open_orders(
+                pre_defer = _precheck_trend_deferral()
+                if pre_defer:
+                    ctx.reason = pre_defer
+                    return None
+                if order_lifecycle.preempt_lower_priority_open_orders(
                     self,
                     self.symbol,
                     ctx.side_u,
@@ -1408,16 +1412,19 @@ class Instrument:
             ctx.reason = ctx.reason or "guard_check_failed"
             return None
         finally:
+            will_rollback_preempted = bool(
+                ctx.order is None
+                and preempted_orders
+                and not ctx.submit_attempted
+            )
+            if will_rollback_preempted and ctx.prequeued_record_id is None and not order_retry.is_non_failure_deferral(ctx.reason):
+                ctx.caller_owns_retry = True
             try:
                 caller = os.path.basename(sys._getframe(1).f_code.co_filename)
             except Exception:
                 caller = None
             self._finalize_place_outcome(ctx, caller=caller)
-            if (
-                ctx.order is None
-                and preempted_orders
-                and not ctx.submit_attempted
-            ):
+            if will_rollback_preempted:
                 order_lifecycle.restore_cancelled_instrument_orders(
                     self,
                     preempted_orders,
