@@ -2089,3 +2089,51 @@ def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(
     assert "whale=20.0s" in eq_lines_3b
     assert "deriv=" not in eq_lines_3b
 
+    # 5. Zero-OI equity pretrade snapshot omits phantom derivatives age; sensor-only snapshot excludes synthetic macro_calendar=0.0s
+    eq_dir = os.path.join(os.path.dirname(temp_cache_dir), "pass3_eq_ws", "cachedb")
+    os.makedirs(eq_dir, exist_ok=True)
+    save_json_state(
+        os.path.join(eq_dir, "orderbook_depth_RGNT_US_EQ.json"),
+        {
+            "symbol": "RGNT_US_EQ",
+            "mid_price": 1.23,
+            "best_bid": 1.225,
+            "best_ask": 1.235,
+            "bid_depth_usd": 50.0,
+            "ask_depth_usd": 60.0,
+            "imbalance_ratio": 0.45,
+            "largest_bid_wall_usd": 20.0,
+            "largest_bid_wall_price": 1.22,
+            "largest_ask_wall_usd": 25.0,
+            "largest_ask_wall_price": 1.24,
+            "spread_bps": 81.3,
+            "ts": now_s - 12.0,
+        },
+    )
+    save_json_state(
+        os.path.join(eq_dir, "derivatives_telemetry_RGNT_US_EQ.json"),
+        {
+            "symbol": "RGNT_US_EQ",
+            "funding_rate": 0.0,
+            "predicted_funding_rate": 0.0,
+            "open_interest": 0.0,
+            "open_interest_usd": 0.0,
+            "ts": now_s - 12.0,
+        },
+    )
+    save_json_state(
+        os.path.join(eq_dir, "fear_greed_collect.json"),
+        {"value": 42, "classification": "Fear", "ts": now_s - 3600.0},
+    )
+    rgnt_snap = read_pretrade_telemetry_snapshot("RGNT_US_EQ", cachedb_dir=eq_dir, now_ts=now_s)
+    assert "Derivatives Open Interest" not in rgnt_snap
+    assert "Perpetual Funding Rate" not in rgnt_snap
+    assert "orderbook" in rgnt_snap.source_freshness
+    assert "derivatives" not in rgnt_snap.source_freshness
+
+    sensor_only_snap = MarketAndPortfolioSnapshotOrchestrator(start_sync=False).read_snapshot(
+        eq_dir, scope="crypto", now_ts=now_s
+    )
+    assert "macro_calendar" not in sensor_only_snap.source_ages_sec
+    assert sensor_only_snap.age_sec == pytest.approx(3600.0)
+

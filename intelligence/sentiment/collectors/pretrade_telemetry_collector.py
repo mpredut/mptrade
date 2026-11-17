@@ -219,6 +219,7 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         if not self.pillar_timestamps or self.evaluated_at_ts <= 0.0:
             return {}
         intervals = resolve_pretrade_source_intervals_sec(self.asset_scope)
+        is_eq_scope = str(self.asset_scope or "").strip().upper() in ("EQUITY", "EQUITIES")
         ob_ts = normalize_epoch_sec(self.pillar_timestamps.get("orderbook"), default=0.0) or 0.0
         out: Dict[str, Dict[str, Any]] = {}
         for name, raw_ts in self.pillar_timestamps.items():
@@ -226,6 +227,14 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
             if ts_val <= 0.0:
                 continue
             if name == "microstructure" and ob_ts > 0.0 and abs(ts_val - ob_ts) < 1e-3:
+                continue
+            if (
+                name == "derivatives"
+                and is_eq_scope
+                and self.source != "explicit"
+                and "Derivatives Open Interest" not in self.data
+                and "Perpetual Funding Rate" not in self.data
+            ):
                 continue
             age_s = max(0.0, self.evaluated_at_ts - ts_val)
             itv_s = safe_pos_float(intervals.get(name), self.max_age_sec) or self.max_age_sec

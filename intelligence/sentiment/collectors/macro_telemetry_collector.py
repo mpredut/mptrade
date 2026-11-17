@@ -1290,7 +1290,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         active_macro_sensors = {
             m_name: m_val
             for m_name in macro_sensors
-            if isinstance(m_val := getattr(snapshot, m_name, None), dict)
+            if m_name != "macro_calendar" and isinstance(m_val := getattr(snapshot, m_name, None), dict)
         }
         if snap_ts is None:
             sensor_ts_candidates = [
