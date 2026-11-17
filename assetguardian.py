@@ -1522,6 +1522,12 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
                 if new_campaign:
                     state["initial_qty"] = free_qty
                     initial_qty = free_qty
+                elif initial_qty is not None:
+                    tot_f = safe_nonneg_float(state.get("total_filled_qty"), default=0.0)
+                    if free_qty + tot_f > initial_qty + max(1e-12, initial_qty * 1e-6):
+                        initial_qty = free_qty + tot_f
+                        state = {**state, "initial_qty": initial_qty}
+                        _save_symbol_campaign(symbol, "sell", state)
         except Exception:
             pass
     if new_campaign:
