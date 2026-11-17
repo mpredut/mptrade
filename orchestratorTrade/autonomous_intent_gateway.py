@@ -282,6 +282,65 @@ class AutonomousIntentGateway:
         append_intent_history(intent, hist_entry)
         return intent
 
+    def _cancel_prior_orders_or_abort(
+        self,
+        inst: Any,
+        intent: Dict[str, Any],
+        *,
+        intent_id: str,
+        decision: str,
+        now_ts: float,
+        canceled_order_snapshots: List[Dict[str, Any]],
+        rollback_reason: str,
+        include_bot_orders: bool,
+        any_side: bool = False,
+        exclude_order_ids: Optional[set[str]] = None,
+        target_order_ids: Optional[List[str]] = None,
+        verify_not_filled: bool = False,
+        extra_intent_key: Optional[str] = None,
+    ) -> Tuple[bool, List[str]]:
+        failed_ids: List[str] = []
+        scan_errors: List[str] = []
+        canceled_ids = cancel_existing_ai_open_orders(
+            inst,
+            decision,
+            log=logger,
+            intents=self.load_all_intents(),
+            include_bot_orders=include_bot_orders,
+            any_side=any_side,
+            exclude_order_ids=exclude_order_ids or None,
+            target_order_ids=target_order_ids or None,
+            verify_not_filled=verify_not_filled,
+            failed_order_ids=failed_ids,
+            scan_errors=scan_errors,
+            canceled_orders_out=canceled_order_snapshots,
+        )
+        if canceled_ids:
+            prior_c = list(intent.get("canceled_prior_open_orders") or [])
+            for cid in canceled_ids:
+                if cid not in prior_c:
+                    prior_c.append(cid)
+            intent["canceled_prior_open_orders"] = prior_c
+            if extra_intent_key:
+                intent[extra_intent_key] = canceled_ids
+        if failed_ids or scan_errors:
+            self._rollback_canceled_orders(
+                inst,
+                intent,
+                canceled_order_snapshots,
+                reason=f"intent {intent_id} {rollback_reason}",
+            )
+            self._abort_on_cancel_failure(
+                inst,
+                intent,
+                decision=decision,
+                failed_order_ids=failed_ids,
+                scan_errors=scan_errors,
+                now_ts=now_ts,
+            )
+            return False, canceled_ids
+        return True, canceled_ids
+
     def process_intent(
         self,
         intent: Dict[str, Any],
@@ -350,39 +409,22 @@ class AutonomousIntentGateway:
             )
         canceled_order_snapshots: list[dict[str, Any]] = []
         if mode == "enforce" and (replace_open or cancel_bot_open or bool(target_oids)):
-            failed_cancel_ids: list[str] = []
-            cancel_scan_errors: list[str] = []
-            canceled_ids = cancel_existing_ai_open_orders(
+            ok_cancel, _ = self._cancel_prior_orders_or_abort(
                 inst,
-                decision,
-                log=logger,
-                intents=self.load_all_intents(),
+                intent,
+                intent_id=intent_id,
+                decision=decision,
+                now_ts=now,
+                canceled_order_snapshots=canceled_order_snapshots,
+                rollback_reason="cancel_prior_order_failed",
                 include_bot_orders=cancel_bot_open or bool(target_oids),
                 any_side=bool(target_oids),
                 exclude_order_ids={dup_oid} if dup_oid else None,
                 target_order_ids=target_oids or None,
                 verify_not_filled=replace_open or bool(target_oids),
-                failed_order_ids=failed_cancel_ids,
-                scan_errors=cancel_scan_errors,
-                canceled_orders_out=canceled_order_snapshots,
             )
-            if canceled_ids:
-                intent["canceled_prior_open_orders"] = canceled_ids
-            if failed_cancel_ids or cancel_scan_errors:
-                self._rollback_canceled_orders(
-                    inst,
-                    intent,
-                    canceled_order_snapshots,
-                    reason=f"intent {intent_id} cancel_prior_order_failed",
-                )
-                return self._abort_on_cancel_failure(
-                    inst,
-                    intent,
-                    decision=decision,
-                    failed_order_ids=failed_cancel_ids,
-                    scan_errors=cancel_scan_errors,
-                    now_ts=now,
-                )
+            if not ok_cancel:
+                return intent
         if dup_oid:
             logger.info(
                 "[LLM TRADER · ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
@@ -418,45 +460,24 @@ class AutonomousIntentGateway:
         ):
             # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
             # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
-            unlock_failed_ids: list[str] = []
-            unlock_scan_errors: list[str] = []
             already_excluded = set(intent.get("canceled_prior_open_orders") or [])
             if dup_oid:
                 already_excluded.add(dup_oid)
-            unlocked_ids = cancel_existing_ai_open_orders(
+            ok_unlock, unlocked_ids = self._cancel_prior_orders_or_abort(
                 inst,
-                decision,
-                log=logger,
-                intents=self.load_all_intents(),
+                intent,
+                intent_id=intent_id,
+                decision=decision,
+                now_ts=now,
+                canceled_order_snapshots=canceled_order_snapshots,
+                rollback_reason="unlock_cancel_failed",
                 include_bot_orders=True,
                 any_side=False,
                 exclude_order_ids=already_excluded or None,
-                failed_order_ids=unlock_failed_ids,
-                scan_errors=unlock_scan_errors,
-                canceled_orders_out=canceled_order_snapshots,
+                extra_intent_key="canceled_bot_open_orders",
             )
-            if unlocked_ids:
-                prior_c = list(intent.get("canceled_prior_open_orders") or [])
-                for uid in unlocked_ids:
-                    if uid not in prior_c:
-                        prior_c.append(uid)
-                intent["canceled_prior_open_orders"] = prior_c
-                intent["canceled_bot_open_orders"] = unlocked_ids
-            if unlock_failed_ids or unlock_scan_errors:
-                self._rollback_canceled_orders(
-                    inst,
-                    intent,
-                    canceled_order_snapshots,
-                    reason=f"intent {intent_id} unlock_cancel_failed",
-                )
-                return self._abort_on_cancel_failure(
-                    inst,
-                    intent,
-                    decision=decision,
-                    failed_order_ids=unlock_failed_ids,
-                    scan_errors=unlock_scan_errors,
-                    now_ts=now,
-                )
+            if not ok_unlock:
+                return intent
             if unlocked_ids:
                 guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
                     inst, decision, price, requested_effective_usd
