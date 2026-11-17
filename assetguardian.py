@@ -16,6 +16,7 @@ from providers.order_id_context import (
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 api = mkt
 from providers.execution_audit import ExecutionAudit
+from providers.order_ohlc_utils import extract_remaining_qty
 from order_lifecycle import (
     has_preemptible_open_orders,
     preempt_lower_priority_open_orders,
@@ -1467,6 +1468,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         _save_symbol_campaign(symbol, "sell", {})
         return None, {}, growth_val
 
+    preloaded_open_sells = None
     if state:
         trough_price = _finite_float(state.get("trough_price"), positive=True)
         trough_ts = _finite_float(state.get("trough_ts"), positive=True)
@@ -1482,6 +1484,33 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
                 f"{trough_price:.8f}.")
             return _reset_sell_campaign(growth)
         state = _reconcile_campaign_initial_amount(symbol, "sell", state, free_qty)
+        initial_qty = _finite_float(state.get("initial_qty"), positive=True)
+        used_qty = safe_nonneg_float(state.get("total_filled_qty"), default=0.0)
+        comp_prev = _completed_tier_values(state)
+        if (
+            initial_qty is not None
+            and (not comp_prev or used_qty > 0.0)
+            and free_qty + max(1e-12, initial_qty * 1e-6) < max(0.0, initial_qty - used_qty)
+        ):
+            preloaded_open_sells = _active_sell_orders(provider, symbol)
+            if preloaded_open_sells is not None and all(
+                extract_remaining_qty(o, default=0.0) > 0.0 for o in preloaded_open_sells
+            ):
+                locked_sell_qty = sum(
+                    extract_remaining_qty(o, default=0.0) for o in preloaded_open_sells
+                )
+                total_held_qty = free_qty + locked_sell_qty
+                expected_rem_qty = max(0.0, initial_qty - used_qty)
+                if total_held_qty + max(1e-12, initial_qty * 1e-6) < expected_rem_qty:
+                    reconciled_down = total_held_qty + used_qty
+                    print(
+                        f"[{symbol}] Total held base ({total_held_qty:.8f} = free {free_qty:.8f} + "
+                        f"open_sell {locked_sell_qty:.8f}) decreased below expected {expected_rem_qty:.8f}; "
+                        f"reconciling SELL campaign initial_qty from {initial_qty:.8f} "
+                        f"to {reconciled_down:.8f} while preserving stage tracking."
+                    )
+                    state = {**state, "initial_qty": reconciled_down}
+                    _save_symbol_campaign(symbol, "sell", state)
     else:
         trough_price = _finite_float(minimum_row.get("price"), positive=True)
         trough_ts = _finite_float(minimum_row.get("timestamp"), positive=True)
@@ -1518,7 +1547,11 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         (initial_qty or 0.0) * due_allocation
         - safe_nonneg_float(filled_by_tier.get(_tier_key(due_threshold)), default=0.0),
     )
-    open_sells = _active_sell_orders(provider, symbol)
+    open_sells = (
+        preloaded_open_sells
+        if preloaded_open_sells is not None
+        else _active_sell_orders(provider, symbol)
+    )
     if open_sells is None:
         print(f"[{symbol}] Cannot verify open SELL orders; do not submit tier.")
         return None, ({} if new_campaign else state), growth

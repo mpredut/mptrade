@@ -2227,3 +2227,49 @@ class TestWsBridgeIntegration(TempDirTestCase):
             self.assertIsNotNone(snap_updated)
             self.assertAlmostEqual(snap_updated["current_price"], 95.0, places=6)
             self.assertEqual(strict_read.call_count, 3)
+
+    def test_evaluate_full_subsamples_high_freq_bid_ask_bounce_for_vol_1h_pct(self):
+        import math
+        import pricewindow as pw
+
+        # 60 minutes of 2s ticks oscillating +-0.05% around a gentle +0.2% drift:
+        # raw 2s tick volatility would exceed 2.0% from bid-ask bounce, whereas 1m bar vol_1h_pct stays < 0.8%.
+        now_s = time.time()
+        now_ms = int(now_s * 1000)
+        rows = []
+        for i in range(1800, -1, -1):
+            base_px = 194.0 + 0.8 * math.sin(i / 60.0)
+            bounce = 0.05 if (i % 2 == 0) else -0.05
+            rows.append([now_ms - i * 2_000, round(base_px + bounce, 4)])
+
+        trend_file = os.path.join(self.tmp, "bid_ask_bounce_short_trend.json")
+        mgr = cm.CacheShortTrendManager(["TAOUSDC"], trend_file, data_sync_mode="producer")
+        fake_c24 = SimpleNamespace(
+            lock=threading.RLock(),
+            cache={"TAOUSDC": rows},
+            subscribe_price=lambda _sub: None,
+            get_recent_entries=lambda _sym, last_seconds=0: [
+                r for r in rows if r[0] >= now_ms - int(last_seconds * 1000)
+            ],
+        )
+        fake_cp = SimpleNamespace(
+            get_cached_price_observation=lambda _sym, _max_age: (now_s, rows[-1][1]),
+            get_sample_rate=lambda _sym: 2.0,
+            get_update_frequency=lambda _sym: 0.5,
+        )
+        mgr.current_price_mgr = fake_cp
+        mgr._get_trend_buffer("TAOUSDC").sync_entries(rows)
+        mgr.windows["TAOUSDC"] = {}
+        mgr.analyzers["TAOUSDC"] = {}
+        for sec in mgr.window_seconds:
+            w = pw.PriceWindow.from_cache24("TAOUSDC", sec, fake_c24)
+            mgr.windows["TAOUSDC"][sec] = w
+            mgr.analyzers["TAOUSDC"][sec] = pw.WindowAnalyzer(w)
+        mgr.evaluate_full("TAOUSDC")
+        snap = mgr.get_fresh_snapshot("TAOUSDC", now=now_s)
+        raw_tick_vol = pw.calculate_volatility_1h([r[1] for r in rows], 2.0)
+        self.assertIsNotNone(snap)
+        self.assertIsNotNone(snap.get("vol_1h_pct"))
+        self.assertGreater(raw_tick_vol, 2.0)
+        self.assertLess(snap["vol_1h_pct"], raw_tick_vol * 0.55)
+        self.assertGreater(snap["vol_1h_pct"], 0.5)

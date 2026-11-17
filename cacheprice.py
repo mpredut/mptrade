@@ -1767,12 +1767,22 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                         and self.extract_price_and_ts(existing_entries)[0] is not None
                     ):
                         continue
-            if is_live_daemon_poll and not is_rth_sym:
+            if is_live_daemon_poll:
                 now_s = _now_time()
                 last_poll = self._last_http_poll_ts_per_symbol.get(symbol, 0.0)
-                if last_poll > 0.0 and 0.0 <= (now_s - last_poll) < min_poll_gap:
+                eff_gap = (
+                    max(min_poll_gap, round(self.ws_timeout_sec_for(symbol) * 0.4, 3))
+                    if is_rth_sym
+                    else min_poll_gap
+                )
+                eff_fresh_ms = (
+                    round(self.ws_timeout_sec_for(symbol) * 800.0, 1)
+                    if is_rth_sym
+                    else 1_800.0
+                )
+                if last_poll > 0.0 and 0.0 <= (now_s - last_poll) < eff_gap:
                     cur_ts_ms = self._cached_entry_ts_ms(symbol)
-                    if cur_ts_ms is not None and -5_000.0 <= (now_s * 1000.0 - cur_ts_ms) < 1_800.0:
+                    if cur_ts_ms is not None and -5_000.0 <= (now_s * 1000.0 - cur_ts_ms) < eff_fresh_ms:
                         continue
             startTime = self.fetchtime_per_symbol.get(
                 symbol, self.fallback_time_default

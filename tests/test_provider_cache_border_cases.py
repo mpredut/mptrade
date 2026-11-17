@@ -8595,6 +8595,37 @@ def test_wave49_callable_anchor_id_memos_and_equity_suffix_ssot(tmp_path, monkey
     assert st1["average_buy_price"] == 100.0 and st2["average_buy_price"] == 120.0
     assert all(len(v) == 4 for v in mt._position_stats_cache.values())
 
+    # 5. CacheCurrentPriceManager throttles US RTH equity HTTP polls while cached quote is fresh
+    import cacheprice as cp_mod
+
+    cpm = cp_mod.CacheCurrentPriceManager(
+        1.0,
+        ["NVDA_US_EQ"],
+        str(tmp_path / "cp_rth_throttle.json"),
+        provider_names={"NVDA_US_EQ": "t212"},
+        data_sync_mode="disk_reader",
+    )
+    cpm.save_state = True
+    cpm.market_api = cp_mod._market_api.api
+    t_rth = 1_750_000_000.0
+    cpm.cache["NVDA_US_EQ"] = [[int(t_rth * 1000) - 1_000, 155.0]]
+    cpm._last_http_poll_ts_per_symbol["NVDA_US_EQ"] = t_rth - 1.5  # < 4.0s RTH poll gap
+    polled_syms = []
+    monkeypatch.setattr(cp_mod, "_now_time", lambda: t_rth)
+    monkeypatch.setattr(cp_mod, "is_live_network_backfill_enabled", lambda *_a, **_k: True)
+    monkeypatch.setattr(cp_mod, "is_us_rth_open", lambda *_a, **_k: True)
+    monkeypatch.setattr(cpm, "get_remote_items", lambda sym, st: polled_syms.append(sym) or [[int(t_rth * 1000), 155.5]])
+    try:
+        cpm.query_remote_and_update_cache()
+        assert polled_syms == []
+        # Once 4.5s (> 4.0s gap) elapses during RTH, equity HTTP poll proceeds normally
+        cpm._last_http_poll_ts_per_symbol["NVDA_US_EQ"] = t_rth - 4.5
+        cpm.query_remote_and_update_cache()
+        assert polled_syms == ["NVDA_US_EQ"]
+    finally:
+        cpm._shutdown_fallback_pool()
+
+
 
 
 

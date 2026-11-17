@@ -1810,3 +1810,30 @@ def test_cycle_io_scope_deduplicates_state_growth_and_p3b_reads_and_invalidates_
     assert ag._last_evaluation["BTCUSDC"]["pending_tier"] is True
     assert ag._symbol_campaign("BTCUSDC", "buy") == {}
 
+    # External base-asset reduction on an active SELL campaign reconciles initial_qty downward
+    # against verified (free_qty + open_sell_locked_qty + total_filled_qty) while preserving completed_tiers
+    ag._save_symbol_campaign(
+        "BTCUSDC",
+        "sell",
+        {
+            "trough_price": 62000.0,
+            "trough_ts": 1000.0,
+            "initial_qty": 0.0773849,
+            "completed_tiers": [4.1],
+            "filled_qty_by_tier": {"4.1": 0.00773},
+            "total_filled_qty": 0.00773,
+        },
+    )
+    ext_sell_prov = SimpleNamespace(
+        open_orders=lambda _sym=None: [
+            {"orderId": "10868145076", "clientOrderId": "AI_sell_1", "side": "SELL", "price": "65420.0", "origQty": "0.00764"}
+        ],
+    )
+    tier_down, camp_down, _ = ag._sell_campaign_tier(
+        "BTCUSDC", 64860.0, {"price": 62000.0, "timestamp": 1000.0}, 0.018887, ext_sell_prov
+    )
+    assert tier_down is None
+    assert camp_down["completed_tiers"] == [4.1]
+    assert camp_down["initial_qty"] == pytest.approx(0.018887 + 0.00764 + 0.00773)
+
+
