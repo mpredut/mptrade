@@ -1231,14 +1231,15 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         }
         _meta_keys_up = {"TS", "TIMESTAMP", "UPDATED_AT", "ITEMS", "FETCHTIME", "DYNAMIC"}
 
+        def _is_eq_sym(sym_up: str) -> bool:
+            return has_equity_suffix(sym_up) or sym_up in t212_sym_set
+
         def _sym_in_scope(sym_key: Any) -> bool:
             k_up = str(sym_key or "").strip().upper()
             if not k_up or k_up in _meta_keys_up:
                 return False
-            if scope_norm in ("equities", "crypto"):
-                is_eq = has_equity_suffix(k_up) or k_up in t212_sym_set
-                if is_eq != (scope_norm == "equities"):
-                    return False
+            if scope_norm in ("equities", "crypto") and _is_eq_sym(k_up) != (scope_norm == "equities"):
+                return False
             if scoped_pt_syms:
                 return k_up in scoped_pt_syms or any(
                     c.upper() in scoped_pt_syms for c in cache_symbol_variants(k_up, include_base=False)
@@ -1257,6 +1258,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             items_map: Any,
             envelope_doc: Any,
             item_ts_fn: Callable[[str, Any], Optional[float]],
+            *,
+            exclude_eq: bool = False,
         ) -> tuple[List[float], Optional[float]]:
             has_in_scope = False
             has_out_of_scope = False
@@ -1264,7 +1267,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             if isinstance(items_map, dict):
                 for k_raw, v_raw in items_map.items():
                     k_up = str(k_raw or "").strip().upper()
-                    if not k_up or k_up in _meta_keys_up:
+                    if not k_up or k_up in _meta_keys_up or (exclude_eq and _is_eq_sym(k_up)):
                         continue
                     if _sym_in_scope(k_up):
                         has_in_scope = True
@@ -1290,16 +1293,12 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             if isinstance(prices_data, dict) and isinstance(prices_data.get("fetchtime"), dict)
             else {}
         )
-        cp_item_ts, prices_top_ts = _collect_scoped_map_timestamps(
-            cp_source_items,
-            prices_data,
-            lambda k_cp, v_cp: (
-                ts_cp
-                if (cp_res := extract_current_price_timestamp_sec(v_cp, cp_ft_map.get(k_cp)))[1]
-                and (ts_cp := cp_res[0]) > 0.0
-                else None
-            ),
-        )
+
+        def _cp_ts(k_cp: str, v_cp: Any) -> Optional[float]:
+            cp_res = extract_current_price_timestamp_sec(v_cp, cp_ft_map.get(k_cp))
+            return cp_res[0] if cp_res[1] and cp_res[0] > 0.0 else None
+
+        cp_item_ts, prices_top_ts = _collect_scoped_map_timestamps(cp_source_items, prices_data, _cp_ts)
         if scope_norm in ("equities", "crypto") and cp_item_ts:
             snap_ts: Optional[float] = max(cp_item_ts)
         else:
@@ -1323,20 +1322,11 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         if prices_newest_ts is not None and prices_newest_ts > 0.0:
             domain_ts["prices_newest"] = prices_newest_ts
         us_rth_open = is_us_rth_open(now_ts)
-        cp_oldest_pool = cp_item_ts
-        if scope_norm == "all" and not us_rth_open and isinstance(cp_source_items, dict):
-            cp_open_ts = [
-                ts_cp
-                for k_cp, v_cp in cp_source_items.items()
-                if (k_up := str(k_cp or "").strip().upper())
-                and k_up not in _meta_keys_up
-                and _sym_in_scope(k_up)
-                and not (has_equity_suffix(k_up) or k_up in t212_sym_set)
-                and (cp_res := extract_current_price_timestamp_sec(v_cp, cp_ft_map.get(k_cp)))[1]
-                and (ts_cp := cp_res[0]) > 0.0
-            ]
-            if cp_open_ts:
-                cp_oldest_pool = cp_open_ts
+        cp_oldest_pool = (
+            (_collect_scoped_map_timestamps(cp_source_items, None, _cp_ts, exclude_eq=True)[0] or cp_item_ts)
+            if (scope_norm == "all" and not us_rth_open)
+            else cp_item_ts
+        )
         if len(cp_oldest_pool) > 1:
             domain_ts["prices_oldest"] = min(cp_oldest_pool)
         st_items_d = trends_data.get("items") if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict) else trends_data
@@ -1382,10 +1372,11 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                         if v_cand:
                             if not _vb_venue_in_scope(v_cand):
                                 continue
-                        elif sym_cand and scope_norm in ("equities", "crypto"):
-                            if (has_equity_suffix(sym_cand) or sym_cand in t212_sym_set) != (scope_norm == "equities"):
+                        elif sym_cand:
+                            is_eq_cand = _is_eq_sym(sym_cand)
+                            if scope_norm in ("equities", "crypto") and is_eq_cand != (scope_norm == "equities"):
                                 continue
-                            v_cand = "t212" if scope_norm == "equities" else "crypto"
+                            v_cand = "t212" if is_eq_cand else "crypto"
                         elif scope_norm in ("equities", "crypto"):
                             continue
                         else:
@@ -1394,19 +1385,17 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                             if not any(c.upper() in inst_vb_syms for c in cache_symbol_variants(sym_cand, include_base=False)):
                                 continue
                         fallback_by_venue.setdefault(v_cand, []).append(ts_vb)
-                vb_ts_vals = list(verified_by_venue.values()) + [
-                    max(ts_list) for v_k, ts_list in fallback_by_venue.items() if v_k not in verified_by_venue and ts_list
-                ]
-                if scope_norm == "all" and not us_rth_open:
-                    vb_open_ts_vals = [
-                        ts_v for v_k, ts_v in verified_by_venue.items() if not is_equity_venue(v_k)
+
+                def _vb_pool(exclude_eq: bool = False) -> List[float]:
+                    return [
+                        ts_v for v_k, ts_v in verified_by_venue.items() if not (exclude_eq and is_equity_venue(v_k))
                     ] + [
                         max(ts_list)
                         for v_k, ts_list in fallback_by_venue.items()
-                        if v_k not in verified_by_venue and not is_equity_venue(v_k) and ts_list
+                        if v_k not in verified_by_venue and ts_list and not (exclude_eq and is_equity_venue(v_k))
                     ]
-                    if vb_open_ts_vals:
-                        vb_ts_vals = vb_open_ts_vals
+
+                vb_ts_vals = (_vb_pool(exclude_eq=True) if (scope_norm == "all" and not us_rth_open) else []) or _vb_pool()
                 if vb_ts_vals:
                     domain_ts["venue_balances"] = min(vb_ts_vals)
         for m_name, m_val in active_macro_sensors.items():

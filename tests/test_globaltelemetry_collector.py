@@ -2245,5 +2245,14 @@ def test_scope_all_off_rth_domain_ages_and_multilot_lifo_reconciliation(temp_cac
     )
     assert not any(p.startswith("Remaining LIFO Avg BUY=") for p in sub_parts)
 
+    # UNKNOWN/FAILED orders without explicit executedQty must not pollute recent fills as 0-qty last_sell/last_buy
+    assert (
+        extract_symbol_recent_fills(
+            [{"orderId": "unk_1", "side": "SELL", "status": "UNKNOWN", "origQty": "7753.6", "price": "0.10", "time": t0_ms}],
+            symbol="ARBUSDC",
+        )
+        is None
+    )
+
 
 

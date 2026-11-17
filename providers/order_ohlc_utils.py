@@ -89,7 +89,7 @@ _UNFILLED_ORDER_STATUSES = frozenset({
     "NEW", "OPEN", "RESTING", "WORKING", "PENDING",
     "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "UNFILLED",
 })
-_NON_FILL_FALLBACK_STATUSES = frozenset({
+_NON_FILL_ORDER_STATUSES = _UNFILLED_ORDER_STATUSES | frozenset({
     "UNKNOWN", "SUBMIT_UNKNOWN", "FAILED", "ERROR", "REFUSED",
 })
 _NON_FILL_SUBMISSION_STATES = frozenset({"unknown", "refused", "failed"})
@@ -212,8 +212,7 @@ def extract_executed_qty(order: Any, default: float = 0.0) -> float:
     raw_st = str(order.get("status") or "").strip().upper()
     sub_st = str(order.get("submission_state") or "").strip().lower()
     if (
-        raw_st in _UNFILLED_ORDER_STATUSES
-        or raw_st in _NON_FILL_FALLBACK_STATUSES
+        raw_st in _NON_FILL_ORDER_STATUSES
         or sub_st in _NON_FILL_SUBMISSION_STATES
         or (isinstance(order.get("resting"), dict) and not filled_sub)
     ):

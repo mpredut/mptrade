@@ -58,7 +58,8 @@ from providers.order_id_context import (
 )
 from providers.order_ohlc_utils import (
     _EXEC_QTY_KEYS,
-    _UNFILLED_ORDER_STATUSES,
+    _NON_FILL_ORDER_STATUSES,
+    _NON_FILL_SUBMISSION_STATES,
     aggregate_fills_by_order_id,
     extract_executed_qty,
     extract_orig_qty,
@@ -707,7 +708,11 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
             o for o in orders_list
             if isinstance(o, dict) and (
                 extract_executed_qty(o, default=0.0) > 0.0
-                or (str(o.get("status") or "").strip().upper() not in _UNFILLED_ORDER_STATUSES and not any(k in o for k in _explicit_exec_keys))
+                or (
+                    str(o.get("status") or "").strip().upper() not in _NON_FILL_ORDER_STATUSES
+                    and str(o.get("submission_state") or "").strip().lower() not in _NON_FILL_SUBMISSION_STATES
+                    and not any(k in o for k in _explicit_exec_keys)
+                )
             )
         ]
         fallback_sym = str(symbol or "").strip().upper()
@@ -760,7 +765,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 or str(exec_pay.get("msg") or "").strip().lower().startswith("filled ")
             )
             is_confirmed_fill = exec_st in ("FILLED", "PARTIALLY_FILLED", "CLOSED") or (
-                has_explicit_exec_q and exec_st not in _UNFILLED_ORDER_STATUSES
+                has_explicit_exec_q and exec_st not in _NON_FILL_ORDER_STATUSES
             )
             sym_matches_target = _same_asset_scope_and_quote(i_sym, fallback_sym)
             if (

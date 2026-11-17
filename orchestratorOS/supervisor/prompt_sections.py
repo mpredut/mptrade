@@ -163,14 +163,7 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
             if avg_c_f >= 100.0 and abs(est_spot - round(est_spot, 2)) <= avg_c_f * 0.00005:
                 est_spot = round(est_spot, 2)
         lb_pnl = dir_sign * ((est_spot - lb_px_f) / lb_px_f) * 100.0
-        if (
-            isinstance(open_lots_cyc := cyc.get("_open_lots"), list)
-            and len(open_lots_cyc) > 0
-            and not any(
-                isinstance(lt, dict) and _same_anchor_px(lb_px_f, lt.get("entry_px"))
-                for lt in open_lots_cyc
-            )
-        ):
+        if is_last_buy_lot_harvested(lb_px_f, cyc.get("_open_lots")):
             lb_pnl_sfx = f" (chg_vs_last_buy={lb_pnl:+.2f}%, lot_harvested)"
         else:
             lb_pnl_sfx = f" (pnl_vs_last_buy={lb_pnl:+.2f}%)"
