@@ -42,7 +42,7 @@ from cachepaths import (
     is_usd_stablecoin_pair,
     normalize_venue_name,
 )
-from instrument_registry import is_equity_symbol
+from instrument_registry import is_equity_symbol, venue_for_symbol
 import pricewindow as pw
 from . import order_id_context as rc
 from .base import MarketDataProvider
@@ -997,6 +997,18 @@ def resolve_symbol_provider_name(
     prov_fn = getattr(api_obj, "provider_name_for", None)
     if (sym_s := clean_scalar_str(symbol)) and callable(prov_fn):
         try:
+            supports_fn = getattr(api_obj, "supports_symbol", None)
+            by_name_fn = getattr(api_obj, "provider_by_name", None)
+            if (
+                getattr(prov_fn, "__func__", None) is MarketApi.provider_name_for
+                and callable(supports_fn)
+                and callable(by_name_fn)
+                and not supports_fn(sym_s)
+                and (reg_v := venue_for_symbol(sym_s))
+                and (reg_p := by_name_fn(reg_v)) is not None
+                and (reg_name := clean_scalar_str(getattr(reg_p, "name", None)))
+            ):
+                return reg_name.lower() if lowercase else reg_name
             if res := clean_scalar_str(prov_fn(sym_s)):
                 return res.lower() if lowercase else res
         except Exception:

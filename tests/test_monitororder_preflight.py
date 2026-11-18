@@ -591,7 +591,6 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         monitororder.initial_sell_prices.clear()
         orders_kr = {"OTXID-KR-1": {"price": 200.0, "quantity": 1.5}}
         with (
-            patch.object(monitororder.mkt, "provider_name_for", return_value="Kraken"),
             patch.object(monitororder, "_native_replace_enabled_for", return_value=True),
             patch.object(monitororder.api, "get_open_orders", return_value=orders_kr),
             patch.object(monitororder.api, "get_current_price", return_value=200.0),
