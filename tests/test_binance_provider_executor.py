@@ -222,7 +222,7 @@ CONTRACT_METHODS = (
 
 EXPECTED_RECONCILIATION = {
     "kraken": OrderReconciliationCapabilities(False, True, True, True, replace_by_order_id=True),
-    "hyperliquid": OrderReconciliationCapabilities(True, True, True, True),
+    "hyperliquid": OrderReconciliationCapabilities(True, True, True, True, replace_by_order_id=True),
     "binance": OrderReconciliationCapabilities(True, True, True, True, 90 * 24 * 60 * 60, replace_by_order_id=True),
     "trading212": OrderReconciliationCapabilities(False, True, True, True),
 }
@@ -433,3 +433,72 @@ def test_binance_cancel_replace_order_outcomes(monkeypatch):
     out_bp = bp.replace_order("TAOUSDC", "12345", "SELL", 350.0, 1.5, client_order_id="MO_TA_OR_5", cache_permit=permit)
     assert out_bp == {"orderId": 9002}
     assert forwarded[-1][1]["replaces_order_id"] == "12345"
+
+
+def test_hyperliquid_modify_spot_order_and_provider_replace_order(monkeypatch):
+    """[NATIVE_REPLACE step 6] HLClient.modify_spot_order and HyperliquidProvider.replace_order contract."""
+    from providers.hyperliquid_provider import _hl_client_module
+    from providers.strategy_executor import SubmissionRefused
+    from types import SimpleNamespace
+
+    HLClient = _hl_client_module().HLClient
+
+    hl_cli = HLClient.__new__(HLClient)
+    mod_calls = []
+
+    def _mock_modify(oid, name, is_buy, sz, limit_px, order_type, reduce_only=False, cloid=None):
+        mod_calls.append((oid, name, is_buy, sz, limit_px, order_type, reduce_only, cloid))
+        return {"status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": 88802}}]}}}
+
+    hl_cli.exchange = SimpleNamespace(modify_order=_mock_modify)
+    ok, new_oid, msg = hl_cli.modify_spot_order(
+        88801,
+        "@107",
+        False,
+        2.5678,
+        25.123456,
+        sz_decimals=2,
+        cloid="0x0123456789abcdef0123456789abcdef",
+        tif="Alo",
+    )
+    assert (ok, new_oid, msg) == (True, 88802, "resting")
+    oid_arg, pair_arg, is_buy_arg, sz_arg, px_arg, ot_arg, ro_arg, cloid_arg = mod_calls[-1]
+    assert (oid_arg, pair_arg, is_buy_arg, sz_arg, ot_arg, ro_arg) == (
+        88801,
+        "@107",
+        False,
+        2.57,
+        {"limit": {"tif": "Alo"}},
+        False,
+    )
+    assert cloid_arg is not None
+
+    # Provider replace_order resolves oid via order_by_client_id when modify returns "success" without oid.
+    hp = HyperliquidProvider(token="HYPE", live_enabled=True)
+    monkeypatch.setattr(hp, "_pair", lambda: "@107")
+    monkeypatch.setattr(hp, "round_quantity", lambda _s, q: q)
+    monkeypatch.setattr(hp, "round_price", lambda _s, p: p)
+    signer = SimpleNamespace(
+        sz_decimals=lambda _t: 2,
+        modify_spot_order=lambda *_a, **_kw: (True, None, "modified"),
+    )
+    monkeypatch.setattr(hp, "_signer", lambda: signer)
+    monkeypatch.setattr(hp, "order_by_client_id", lambda _s, _cid: {"orderId": "88803", "status": "open"})
+
+    res_hp = hp.replace_order("HYPEUSDC", "88801", "SELL", 25.5, 2.0, client_order_id="MO_TA_OR_HL_1")
+    assert res_hp == {"orderId": 88803, "ok": True, "msg": "modified"}
+
+    # Rejection or dry mode -> SubmissionRefused("replace_not_attempted").
+    hp_dry = HyperliquidProvider(token="HYPE", live_enabled=False)
+    with pytest.raises(SubmissionRefused) as exc_dry:
+        hp_dry.replace_order("HYPEUSDC", "88801", "SELL", 25.5, 2.0)
+    assert exc_dry.value.reason == "replace_not_attempted"
+
+    signer_fail = SimpleNamespace(
+        sz_decimals=lambda _t: 2,
+        modify_spot_order=lambda *_a, **_kw: (False, None, "Order could not be modified"),
+    )
+    monkeypatch.setattr(hp, "_signer", lambda: signer_fail)
+    with pytest.raises(SubmissionRefused) as exc_rej:
+        hp.replace_order("HYPEUSDC", "88801", "SELL", 25.5, 2.0)
+    assert exc_rej.value.reason == "replace_not_attempted"

@@ -2611,11 +2611,10 @@ def test_native_replace_contract_defaults_and_config_gate(monkeypatch):
     from providers.kraken_provider import KrakenProvider
     from providers.t212_provider import T212Provider
 
-    # 1. Default capability is False on the dataclass and T212; Kraken and Binance declare native replace; non-bool is rejected.
-    for prov_cls in (BinanceProvider, KrakenProvider):
+    # 1. Default capability is False on the dataclass and T212; Kraken, Binance, and Hyperliquid declare native replace.
+    for prov_cls in (BinanceProvider, KrakenProvider, HyperliquidProvider):
         assert prov_cls._RECONCILIATION_CAPABILITIES.replace_by_order_id is True
-    for prov_cls in (HyperliquidProvider, T212Provider):
-        assert prov_cls._RECONCILIATION_CAPABILITIES.replace_by_order_id is False
+    assert T212Provider._RECONCILIATION_CAPABILITIES.replace_by_order_id is False
     assert OrderReconciliationCapabilities().replace_by_order_id is False
     with pytest.raises(TypeError, match="replace_by_order_id"):
         OrderReconciliationCapabilities(replace_by_order_id="yes")

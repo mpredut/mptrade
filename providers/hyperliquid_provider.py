@@ -176,6 +176,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         status_by_order_id=True,
         cancel_by_order_id=True,
         list_open_orders=True,
+        replace_by_order_id=True,
     )
 
     #: Served spot token, defaulting to HYPE.
@@ -711,6 +712,79 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             if self._is_definitive_refusal(e):
                 raise SubmissionRefused(f"place_order({symbol}) rejected: {e}") from e
             return None
+
+    def replace_order(
+        self,
+        symbol: str,
+        order_id: str,
+        side: str,
+        price: float,
+        qty: float,
+        **kwargs,
+    ):
+        """Atomically modify a resting Hyperliquid spot limit order."""
+        self.validate_symbol(symbol)
+        if not self._resolve_live_order_flag(kwargs) or resolve_market_flag(**kwargs):
+            raise SubmissionRefused("replace_not_attempted")
+        oid_i = exact_pos_int(order_id, default=None)
+        s_norm = normalize_side(side)
+        if oid_i is None or s_norm not in {"BUY", "SELL"}:
+            raise SubmissionRefused("replace_not_attempted")
+        is_buy = s_norm == "BUY"
+        post_only = _parse_bool_flag(kwargs.get("post_only"), True)
+        try:
+            submit_px, order_tif = self._resolve_spot_order_price_and_tif(
+                symbol,
+                is_buy,
+                price,
+                is_market=False,
+                post_only=post_only,
+                caller="replace_order",
+            )
+            qty_r = self.round_quantity(symbol, qty)
+            pair = self._pair()
+            if qty_r <= 0 or pair is None:
+                raise SubmissionRefused("replace_not_attempted")
+            if not self._client_tried and not self._env_loaded:
+                self._load_env()
+            client_order_id = kwargs.get("client_order_id")
+            cloid = (
+                self.derive_client_order_id(client_order_id)
+                if client_order_id is not None
+                else None
+            )
+            signer = self._signer()
+            sz_dec = signer.sz_decimals(self._token)
+            ok, new_oid, msg = signer.modify_spot_order(
+                oid_i,
+                pair,
+                is_buy,
+                qty_r,
+                submit_px,
+                sz_decimals=sz_dec,
+                cloid=cloid,
+                tif=order_tif,
+            )
+        except SubmissionRefused:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            print(f"[HL] replace_order({symbol},{oid_i}) failed: {exc}")
+            raise SubmissionRefused("replace_not_attempted") from exc
+        if not ok:
+            raise SubmissionRefused("replace_not_attempted")
+        clean_oid = extract_order_id(new_oid, default=None)
+        if not clean_oid and client_order_id is not None:
+            try:
+                found = self.order_by_client_id(symbol, str(client_order_id))
+                if isinstance(found, dict):
+                    clean_oid = extract_order_id(found, default=None)
+            except Exception:
+                clean_oid = None
+        if not clean_oid:
+            clean_oid = str(oid_i)
+        self._invalidate_fills_cache(symbol)
+        out_oid = exact_pos_int(clean_oid, default=clean_oid)
+        return {"orderId": out_oid, "ok": True, "msg": msg}
 
     @staticmethod
     def _invoke_spot_order(

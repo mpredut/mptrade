@@ -487,6 +487,60 @@ class HLClient:
             return False, None, str(e)
         return _parse_order_response(res, include_avg_px=False)
 
+    def modify_spot_order(
+        self,
+        oid: int,
+        pair: str,
+        is_buy: bool,
+        sz: float,
+        px: float,
+        sz_decimals: int = 2,
+        cloid: str | None = None,
+        tif: str | None = None,
+    ) -> tuple[bool, int | None, str]:
+        """Atomically modify a resting spot limit order via Hyperliquid's batchModify endpoint."""
+        if not self.exchange:
+            raise HLError("No agent wallet (HL_SECRET_KEY)")
+        if (pair := clean_scalar_str(pair)) is None:
+            return False, None, "invalid pair"
+        oid_i = _exact_int_in_range(oid, 1) if not isinstance(oid, bool) else None
+        if oid_i is None:
+            return False, None, "invalid oid"
+        if not isinstance(is_buy, bool):
+            return False, None, "invalid non-boolean is_buy"
+        if tif is not None and (tif := clean_scalar_str(tif)) is None:
+            return False, None, "invalid tif"
+        if isinstance(sz_decimals, bool):
+            return False, None, "invalid boolean order parameter"
+        dec_raw = _exact_int_in_range(sz_decimals, 0)
+        sz_r, px_r, err = _validate_and_round_order_params(
+            sz, px, min(dec_raw, 18) if dec_raw is not None else None, is_perp=False
+        )
+        if err is not None:
+            return False, None, err
+        order_tif = tif or "Alo"
+        try:
+            cloid_obj = None
+            if cloid is not None:
+                from hyperliquid.utils.types import Cloid
+                cloid_obj = Cloid.from_str(cloid)
+            res = self.exchange.modify_order(
+                oid_i,
+                pair,
+                is_buy,
+                sz_r,
+                px_r,
+                {"limit": {"tif": order_tif}},
+                reduce_only=False,
+                cloid=cloid_obj,
+            )
+        except Exception as e:  # noqa: BLE001
+            return False, None, str(e)
+        st = _first_exchange_status(res)
+        if st == "success":
+            return True, None, "modified"
+        return _parse_order_response(res, include_avg_px=False)
+
     # ----- signed trading -----------------------------------------------------
     def set_leverage(self, coin: str, leverage: int) -> None:
         if not self.exchange or (coin_clean := clean_scalar_str(coin)) is None:
