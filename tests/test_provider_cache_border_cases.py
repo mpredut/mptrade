@@ -8665,6 +8665,7 @@ def test_wave50_anchored_id_memos_and_market_regime_scalar_ssot(tmp_path, monkey
     r2 = _eval_transient_lexicon("port blockade")
     assert "cyber blackout" in r1["acute_shock_phrases"]
     assert "port blockade" in r2["acute_shock_phrases"]
+    assert len(lex_mod._LEXICON_EVAL_CACHE) == 1
 
     def _stems_with_transient_stopwords(blocked_word: str):
         with monkeypatch.context() as mp:
@@ -8673,6 +8674,7 @@ def test_wave50_anchored_id_memos_and_market_regime_scalar_ssot(tmp_path, monkey
 
     assert "alpha" not in _stems_with_transient_stopwords("alpha")
     assert "alpha" in _stems_with_transient_stopwords("bravo")
+    assert len(lex_mod._HEADLINE_STEMS_CACHE) == 1
 
     # 3. smart_stop_loss_guard anchors data in _LOADED_STATE_FILE_KEY
     monkeypatch.setattr(ssl_mod, "_GRACE_TRACKER", {})

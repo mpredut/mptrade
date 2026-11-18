@@ -10,6 +10,7 @@ import urllib.parse
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from botcore import (
+    lru_dict_put,
     normalize_epoch_sec,
     obj_attr,
     resolve_now_ts,
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _LEXICON_FILE_CACHE: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
-_LEXICON_EVAL_CACHE: Dict[Tuple[Any, ...], Tuple[Dict[str, Any], Dict[str, Tuple[str, ...]]]] = {}
+_LEXICON_EVAL_CACHE: Dict[Tuple[Any, ...], Tuple[Tuple[Any, Dict[str, Any], Any], Dict[str, Tuple[str, ...]]]] = {}
 
 _NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
     "more than", "first time", "yahoo finance", "financial times", "new york",
@@ -799,11 +800,16 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
             return empty_res
         resolved_path = str(resolve_cachedb_filepath(path))
         file_sig = (_LEXICON_FILE_CACHE.get(resolved_path) or _LEXICON_FILE_CACHE.get(path) or (None,))[0]
-        eval_key = (resolved_path, file_sig, id(data), math.trunc(now), ttl)
-        cached_eval = _LEXICON_EVAL_CACHE.get(eval_key)
-        if cached_eval is not None and cached_eval[0] is data:
-            return cached_eval[1]
         stopwords = _get_stopwords_set()
+        eval_key = (resolved_path, math.trunc(now), ttl)
+        cached_eval = _LEXICON_EVAL_CACHE.get(eval_key)
+        if (
+            cached_eval is not None
+            and cached_eval[0][0] == file_sig
+            and cached_eval[0][1] is data
+            and cached_eval[0][2] is stopwords
+        ):
+            return cached_eval[1]
         valid_rows: List[Tuple[float, int, str, str]] = []
         for idx, (term, meta) in enumerate(entries.items()):
             if not isinstance(term, str) or not term.strip():
@@ -835,9 +841,7 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
             "dynamic_severity_keywords": high_tup,
             "dynamic_acute_shock_phrases": acute_tup,
         }
-        if len(_LEXICON_EVAL_CACHE) >= 32:
-            _LEXICON_EVAL_CACHE.clear()
-        _LEXICON_EVAL_CACHE[eval_key] = (data, res)
+        lru_dict_put(_LEXICON_EVAL_CACHE, eval_key, ((file_sig, data, stopwords), res), 32)
         return res
     except Exception as exc:
         logger.debug("Could not load dynamic lexicon from %s: %s", path, exc)
@@ -1199,7 +1203,7 @@ def _normalize_semantic_stem(token: str) -> str:
     return t
 
 
-_HEADLINE_STEMS_CACHE: Dict[Tuple[str, int], Tuple[Any, frozenset[str]]] = {}
+_HEADLINE_STEMS_CACHE: Dict[str, Tuple[Any, frozenset[str]]] = {}
 _HEADLINE_STEM_TOKEN_RE = re.compile(
     r"\$?(\d[\d,]*(?:\.\d+)?)\s*(?:bn|b|billion|m|mn|million|trillion|pct|%)?\b|\b(?:ai|us|uk|eu|un)\b|[a-z]{3,}"
 )
@@ -1213,8 +1217,7 @@ def headline_content_stems(title: Any) -> Set[str]:
     if not isinstance(title, str) or not title.strip():
         return set()
     stopwords = _get_stopwords_set()
-    cache_key = (title, id(stopwords))
-    cached = _HEADLINE_STEMS_CACHE.get(cache_key)
+    cached = _HEADLINE_STEMS_CACHE.get(title)
     if cached is not None and cached[0] is stopwords:
         return set(cached[1])
     clean = _strip_headline_publisher_suffix(title).strip().lower()
@@ -1230,9 +1233,7 @@ def headline_content_stems(title: Any) -> Set[str]:
             continue
         if len(stem) >= 3 or stem in _HEADLINE_DEDUP_RETAINED_STEMS:
             stems.add(stem)
-    if len(_HEADLINE_STEMS_CACHE) >= 2048:
-        _HEADLINE_STEMS_CACHE.clear()
-    _HEADLINE_STEMS_CACHE[cache_key] = (stopwords, frozenset(stems))
+    lru_dict_put(_HEADLINE_STEMS_CACHE, title, (stopwords, frozenset(stems)), 2048)
     return stems
 
 

@@ -320,21 +320,27 @@ def _row_memo_token(row: Any) -> Any:
     return row
 
 
-def _series_memo_key(series: list) -> Optional[Tuple[Any, int, Any, Any, Any]]:
+def _series_memo_anchor(series: list) -> Any:
+    """Anchor only the objects whose ``id()`` participates in ``_series_memo_key``."""
     if not isinstance(series, list) or not series:
         return None
     r0, r_mid, r_last = series[0], series[len(series) // 2], series[-1]
-    seq_id = (
-        (id(r0), id(r_mid), id(r_last))
-        if (
-            type(r0) in _SEQ_ROW_TYPES
-            and type(r_mid) in _SEQ_ROW_TYPES
-            and type(r_last) in _SEQ_ROW_TYPES
-        )
-        else id(series)
-    )
+    if (
+        type(r0) in _SEQ_ROW_TYPES
+        and type(r_mid) in _SEQ_ROW_TYPES
+        and type(r_last) in _SEQ_ROW_TYPES
+    ):
+        return (r0, r_mid, r_last)
+    return series
+
+
+def _series_memo_key(series: list) -> Optional[Tuple[Any, int, Any, Any, Any]]:
+    anch = _series_memo_anchor(series)
+    if anch is None:
+        return None
+    r0, r_mid, r_last = anch if type(anch) is tuple else (series[0], series[len(series) // 2], series[-1])
     cand = (
-        seq_id,
+        (id(r0), id(r_mid), id(r_last)) if type(anch) is tuple else id(series),
         len(series),
         _row_memo_token(r0),
         _row_memo_token(r_mid),
@@ -345,20 +351,6 @@ def _series_memo_key(series: list) -> Optional[Tuple[Any, int, Any, Any, Any]]:
         return cand
     except TypeError:
         return None
-
-
-def _series_memo_anchor(series: list) -> Any:
-    """Anchor only the objects whose ``id()`` participates in ``_series_memo_key``."""
-    if not series:
-        return None
-    r0, r_mid, r_last = series[0], series[len(series) // 2], series[-1]
-    if (
-        type(r0) in _SEQ_ROW_TYPES
-        and type(r_mid) in _SEQ_ROW_TYPES
-        and type(r_last) in _SEQ_ROW_TYPES
-    ):
-        return (r0, r_mid, r_last)
-    return series
 
 
 def _finalize_sorted_ts_px(
