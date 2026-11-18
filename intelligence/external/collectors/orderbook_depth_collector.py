@@ -53,6 +53,7 @@ class OrderbookSnapshot:
     spread_bps: float = 0.0
     depth_1pct_bid_usd: float = 0.0
     depth_1pct_ask_usd: float = 0.0
+    book_span_pct: float = 0.0
 
     to_dict = asdict
 
@@ -88,6 +89,7 @@ class OrderbookSnapshot:
             spread_bps=spread_bps,
             depth_1pct_bid_usd=d1_bid,
             depth_1pct_ask_usd=d1_ask,
+            book_span_pct=_clean_dict_float(data, "book_span_pct", 0.0, nonneg=True),
         )
 
 
@@ -246,6 +248,11 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             total_depth = bid_depth_usd + ask_depth_usd
             imbalance = bid_depth_usd / total_depth if total_depth > 0 else 0.5
             spread_bps = round_spread_bps(best_bid=best_bid, best_ask=best_ask, mid_price=mid) or 0.0
+            book_span_pct = 0.0
+            if mid > 0 and (len(bids) >= 100 or len(asks) >= 100):
+                bid_span = max(0.0, ((mid - bids[-1][0]) / mid) * 100.0)
+                ask_span = max(0.0, ((asks[-1][0] - mid) / mid) * 100.0)
+                book_span_pct = round(min(bid_span, ask_span, self.depth_band_pct), 3)
 
             snapshot = OrderbookSnapshot(
                 symbol=symbol,
@@ -263,6 +270,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 spread_bps=spread_bps,
                 depth_1pct_bid_usd=round(depth_1pct_bid_usd, 2),
                 depth_1pct_ask_usd=round(depth_1pct_ask_usd, 2),
+                book_span_pct=book_span_pct,
             )
             return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:

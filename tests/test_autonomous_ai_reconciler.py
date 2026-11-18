@@ -2106,7 +2106,7 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert "* ADAUSD: ob_imbalance=0.44" in u_prompt
     assert "realized_pnl=$18.45, tp_sold=[1, 2]" in u_prompt
     assert "API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee" in u_prompt
-    assert "Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles)" in u_prompt
+    assert "Cross-Market US Equities Telemetry (Live/Extended & T212 Quotes, Multi-Horizon Deltas & Active Cycles)" in u_prompt
     assert "Realized 24h Cross-Asset Correlation" not in u_prompt
     assert "Hyperliquid Bot Signal Telemetry" not in u_prompt
 
@@ -8349,7 +8349,7 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
     assert "cross_venue_routing" not in risk_eng
     ps["portfolio_risk_engine"] = risk_eng
     sec_3c_lines = "\n".join(_format_portfolio_section(ps, "crypto"))
-    assert "Enterprise Global Portfolio Risk Engine:" in sec_3c_lines
+    assert "Portfolio Risk Engine (Crypto Scope: binance + kraken + hyperliquid; excl. T212 equities):" in sec_3c_lines
     assert "portfolio_btc_beta=" in sec_3c_lines
     assert "subcycle_lifo_pnl=$+42.50" in sec_3c_lines
     assert "cvar_975=" not in sec_3c_lines

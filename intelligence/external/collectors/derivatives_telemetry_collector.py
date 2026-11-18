@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 from cachepaths import resolve_binance_lookup_symbol
-from instrument_registry import venue_for_symbol
+from instrument_registry import resolve_kraken_tokenized_pair, venue_for_symbol
 from providers.base import MarketDataProvider
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
@@ -149,6 +149,8 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         )
         if not should_fetch or symbol is None:
             return ready
+        if resolve_kraken_tokenized_pair(symbol)[1]:
+            return None
 
         is_hl_primary = MarketDataProvider.has_native_l1_derivatives(venue_for_symbol(symbol))
         if is_hl_primary:

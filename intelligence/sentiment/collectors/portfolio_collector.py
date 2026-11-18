@@ -680,11 +680,27 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
         eff_fb = fallback_prices or {}
         _rj = _resolve_read_json_cached(read_json_fn)
 
+        def _is_paper_state(st_obj: Dict[str, Any]) -> bool:
+            if _parse_bool_flag(st_obj.get("paper"), False):
+                return True
+            raw_orders = st_obj.get("orders")
+            if isinstance(raw_orders, list) and raw_orders:
+                oids = [
+                    str(o.get("oid") or o.get("order_id") or "").strip().upper()
+                    for o in raw_orders
+                    if isinstance(o, dict)
+                ]
+                if oids and all(oid.startswith("PAPER-") for oid in oids):
+                    return True
+            return False
+
         def _record_cyc(
             target: Dict[str, Any], st_path: str, sym: str, dec: int,
             *, is_eq: bool = False, direction: Optional[str] = None,
         ) -> None:
             if isinstance((st_data := _rj(st_path)), dict):
+                if _is_paper_state(st_data):
+                    return
                 lookup_sym = ensure_equity_suffix(sym, is_equity=is_eq)
                 parsed = parse_venue_cycle_state(
                     st_data, lookup_sym, eff_pt,
@@ -778,19 +794,45 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         listed_pair = clean_upper_scalar(xst_data.get("pair"))
         if not (x_holdings or alloc_info or listed_pair):
             return None
-        underlying = clean_upper_scalar(xstock_cfg.get("xstock_yahoo")) or "SPCX"
+
+        def _holding_underlying(token: str) -> str:
+            t_s = token.strip()
+            if symbol_quote_asset(t_s) == "USD" and len(t_s) > 4 and t_s[:-3].endswith("x"):
+                return canonical_base_asset(t_s[:-4])
+            return canonical_base_asset(t_s)
+
+        held_underlyings: List[str] = []
+        holdings_by_underlying: Dict[str, str] = {}
+        for hk in x_holdings:
+            hu = _holding_underlying(hk)
+            if hu:
+                holdings_by_underlying[hk] = hu
+                if hu not in held_underlyings:
+                    held_underlyings.append(hu)
+        cfg_underlying = clean_upper_scalar(xstock_cfg.get("xstock_yahoo")) or "SPCX"
+        pair_underlying = _holding_underlying(listed_pair) if listed_pair else ""
+        if pair_underlying:
+            underlying = pair_underlying
+        elif held_underlyings and cfg_underlying not in held_underlyings:
+            underlying = held_underlyings[0]
+        else:
+            underlying = cfg_underlying
         t212_sib = ensure_equity_suffix(underlying)
         alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None) or (
             safe_pos_float(alloc_info.get("alloc_price"), default=None) if isinstance(alloc_info, dict) else None
         )
+        primary_xpair = f"{underlying}xUSD"
         live_px = (
             (resolve_symbol_price(listed_pair, eff_pt) if listed_pair else 0.0)
+            or resolve_symbol_price(primary_xpair, eff_pt)
             or resolve_symbol_price(t212_sib, eff_pt)
         )
         xst_summary: Dict[str, Any] = {
             "underlying": underlying,
             "t212_sibling": t212_sib,
             "holdings": x_holdings,
+            **({"holdings_underlying_map": holdings_by_underlying} if len(held_underlyings) > 1 else {}),
+            **({"watched_ipo_underlying": cfg_underlying} if cfg_underlying and cfg_underlying != underlying else {}),
             "allocated": alloc_info,
             "listed_pair": listed_pair,
             "alloc_price": alloc_px,

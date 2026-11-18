@@ -48,7 +48,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     _auto_px_decimals,
     _LAST_7D_SPAN_MS_BY_SYM,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, resolve_kraken_tokenized_pair
 from providers.market_api import api as mkt_api
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_evaluator")
@@ -61,8 +61,8 @@ _MICRO_PRICE_ANCHOR_KEYS: frozenset[str] = frozenset({
 _MICRO_OB_LOCAL_KEYS: frozenset[str] = frozenset({
     "ob_mid_price", "best_bid", "best_ask", "ob_imbalance", "spread_bps",
     "bid_depth_usd", "ask_depth_usd", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
-    "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
-    "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_perp_flow_regime",
+    "book_span_pct", "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
+    "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_cvd_source", "spot_perp_flow_regime",
     "_ob_raw_ts", "_ob_ts",
 })
 
@@ -301,7 +301,8 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     a_depth = safe_nonneg_float(minfo.get("ask_depth_usd"), default=0.0) or 0.0
     tot_depth = b_depth + a_depth
     if (
-        (minfo.get("spot_cvd_15m_usd") is None or pinfo is not None or minfo.get("_synthetic_spot_cvd"))
+        minfo.get("spot_cvd_source") != "real_spot"
+        and (minfo.get("spot_cvd_15m_usd") is None or pinfo is not None or minfo.get("_synthetic_spot_cvd"))
         and tot_depth > 0.0
         and not minfo.get("_cross_venue_spot_cvd")
     ):
@@ -316,6 +317,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             cvd_usd=cvd_usd,
         )
         minfo["_synthetic_spot_cvd"] = True
+        minfo["spot_cvd_source"] = "est_ob_15m"
     spot_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
     oi_chg = safe_float(minfo.get("oi_1h_chg_pct"), default=0.0) or 0.0
     cvd_5m = safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0
@@ -371,10 +373,17 @@ def _blend_structural_liq_anchor(
 
 
 def compute_liquidation_clusters(
-    pinfo: Optional[Dict[str, Any]], minfo: Optional[Dict[str, Any]], *, decimals: Optional[int] = None,
+    pinfo: Optional[Dict[str, Any]],
+    minfo: Optional[Dict[str, Any]],
+    *,
+    decimals: Optional[int] = None,
+    symbol: str = "",
 ) -> Dict[str, Any]:
     """Compute symmetric LONG (downside) and SHORT (upside) liquidation heatmap clusters and magnet bias."""
     if not isinstance(minfo, dict):
+        return {}
+    sym_chk = str(symbol or minfo.get("symbol") or minfo.get("_source_cand") or "").strip()
+    if sym_chk and (has_equity_suffix(sym_chk) or resolve_kraken_tokenized_pair(sym_chk)[1]):
         return {}
     p_dict = pinfo if isinstance(pinfo, dict) else {}
     cur_px = safe_pos_float(p_dict.get("price"), default=0.0) or 0.0
@@ -385,10 +394,12 @@ def compute_liquidation_clusters(
         return {}
 
     oi_usd = safe_pos_float(minfo.get("oi_usd"), default=0.0) or 0.0
+    used_synthetic_oi = False
     if oi_usd <= 0.0:
         b_depth = safe_nonneg_float(minfo.get("bid_depth_usd"), default=0.0) or 0.0
         a_depth = safe_nonneg_float(minfo.get("ask_depth_usd"), default=0.0) or 0.0
         oi_usd = (b_depth + a_depth) * 12.0 if (b_depth + a_depth) > 0.0 else 0.0
+        used_synthetic_oi = oi_usd > 0.0
     if oi_usd <= 0.0:
         return {}
 
@@ -615,6 +626,7 @@ def compute_liquidation_clusters(
         "long_liq_deep_px": long_liq_deep_px, "long_liq_deep_usd": long_liq_deep_usd, "long_liq_deep_dist_pct": long_liq_deep_dist_pct,
         "short_liq_deep_px": short_liq_deep_px, "short_liq_deep_usd": short_liq_deep_usd, "short_liq_deep_dist_pct": short_liq_deep_dist_pct,
         "liq_magnet_bias": liq_magnet_bias,
+        "liq_source": "model_est_depth_proxy" if used_synthetic_oi else "model_est",
     }
 
 
@@ -1321,7 +1333,7 @@ def sync_sibling_symbol_telemetry(
             ),
         )
         enrich_microstructure_cvd(minfo, p_match)
-        minfo.update(compute_liquidation_clusters(p_match, minfo))
+        minfo.update(compute_liquidation_clusters(p_match, minfo, symbol=msym))
         if isinstance(p_match, dict) and minfo.get("spread_bps") is not None:
             p_match.setdefault("spread_bps", minfo["spread_bps"])
         compute_cross_venue_arb_metrics(msym, minfo, p_match, microstructure, prices_and_trends)
@@ -1535,10 +1547,11 @@ class LiquidationClusterEvaluator(MicrostructureEvaluatorBase):
         *,
         now_ts: Optional[float] = None,
         micro_info: Optional[Dict[str, Any]] = None,
+        symbol: str = "",
         **kwargs: Any,
     ) -> Dict[str, Any]:
         p_info = data if isinstance(data, dict) else {}
-        return compute_liquidation_clusters(p_info, micro_info)
+        return compute_liquidation_clusters(p_info, micro_info, symbol=symbol)
 
 
 class CrossVenueSiblingArbEvaluator(MicrostructureEvaluatorBase):

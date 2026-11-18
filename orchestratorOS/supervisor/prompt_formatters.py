@@ -11,6 +11,10 @@ from typing import Any, List, Optional
 from zoneinfo import ZoneInfo
 
 from botcore import parse_symbol_list, safe_pos_float, topic_spec
+from intelligence.macro_sentiment_ssot import (
+    TELEMETRY_SOURCE_STALE_INTERVAL_MULT,
+    resolve_derived_telemetry_intervals,
+)
 from orchestratorOS.lib.technical_repair_ssot import (
     ALL_DIAGNOSED_CATEGORIES,
     ALL_REPAIR_ACTIONS,
@@ -63,11 +67,16 @@ def build_supervisor_prompt(
         else set()
     )
     if not is_pure_sre and isinstance(domain_ages, dict) and domain_ages:
-        age_tokens = [
-            f"{k}={v}s"
-            for k, v in domain_ages.items()
-            if k not in skip_domain_keys and (safe_pos_float(v, default=None) is not None or v == 0.0)
-        ]
+        ob_stale_thr = resolve_derived_telemetry_intervals()["orderbook_interval_sec"] * TELEMETRY_SOURCE_STALE_INTERVAL_MULT
+        age_tokens: List[str] = []
+        for k, v in domain_ages.items():
+            if k in skip_domain_keys:
+                continue
+            v_f = safe_pos_float(v, default=None)
+            if v_f is None and v != 0.0:
+                continue
+            stale_tag = "[stale]" if k.startswith("orderbook_") and (v_f or 0.0) > ob_stale_thr else ""
+            age_tokens.append(f"{k}={v}s{stale_tag}")
         if age_tokens:
             context_items.append(f"- Snapshot Domain Ages: {', '.join(age_tokens)}")
     if not is_pure_sre:
@@ -187,7 +196,8 @@ def build_supervisor_prompt(
             "`active_avg_buy_px` or after a strong upward swing), you are completely free to harvest the profitable tranche or sell a large "
             "quantity / the entire position (`50%–100%` of `value_usd`, up to "
             f"{max_usd:g} USD) at once without being anchored by older cycle averages; symmetrically, if live price velocity and acceleration "
-            "(`kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`), derivatives/spot order flow (`cvd_5m`, `cvd_15m`, `spot_cvd_15m`, "
+            "(`kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`), derivatives/spot order flow (`cvd_5m`, `cvd_15m`, `spot_cvd_15m` -- note: "
+            "`[real_spot]` is observed spot taker flow whereas `[est:ob+15m]` is an orderbook+15m-delta proxy and must not be double-counted as independent spot tape volume alongside `ob_imbalance`, "
             "`CB_Premium`), or market structure convince you that a deeper breakdown is unfolding, you are equally free to proactively trim "
             "or exit spot holdings via a near-market spot `LIMIT` order (`\"order_type\": \"LIMIT\"` priced right at spot/BBO, even at breakeven or below cost basis) to protect NAV and raise quote liquidity to "
             "reload lower—or to hold through noise when data shows genuine absorption.\n"
@@ -206,8 +216,8 @@ def build_supervisor_prompt(
             "orderbook so every execution pays low maker fees instead of expensive taker `MARKET` fees: for normal range/swing tranches, rest a passive `BUY LIMIT` at a major `bid_wall` / support level below spot "
             "or a passive `SELL LIMIT` at an `ask_wall` / take-profit target above spot; when executing a reversal, repair, or urgent entry/exit that must fill immediately, "
             "still use `\"order_type\": \"LIMIT\"` and set `\"limit_price\"` as close as possible to the current live market price (right at spot / `best_bid` for `BUY` or `best_ask` for `SELL`, which the engine automatically steps by 1 tick onto the maker book if needed). Section 3C explicitly reports your active resting orders "
-            "(`open_limit_orders`, including `filled_qty`, `remaining_qty`, `status`, `dist_from_spot_pct`, `fill_prob_1h_pct`, and orderbook walls ahead) and mathematical fill confirmation from the previous cycle "
-            "(`last_cycle_execution_status` with `status`, `fill_px`, `ref_px`, `filled_qty`, `slippage_bps`), plus the 1-line US Equities/Futures/Macro "
+            "(`open_limit_orders`, including `filled_qty`, `remaining_qty`, `status`, `dist_from_spot_pct`, `fill_prob_1h_pct` [1h fat-tailed barrier-touch estimate with queue wall penalty], and orderbook walls ahead) and recent execution confirmation "
+            "(`last_cycle_execution_status` with `status`, `fill_px`, `ref_px`, `filled_qty`, `slippage_bps` whenever a recent `<=30m` fill/rejection/resting order exists; omitted when idle or when all resting orders are `>30m` old and already shown in `open_limit_orders`), plus the 1-line US Equities/Futures/Macro "
             "correlation index (`SPY / QQQ / ES=F / NQ=F / DXY / US10Y` 24h/1h deltas). Setting `\"replace_open_orders\": true` "
             "(optionally narrowed to specific `\"cancel_order_ids\": [\"<order_id>\"]` from `open_limit_orders`) "
             "cancels only the targeted (or prior unfilled same-side AI) open order before placing the updated order, and aborts replacement if cancellation fails; "
@@ -219,9 +229,9 @@ def build_supervisor_prompt(
             "order with `\"replace_open_orders\": true` (e.g. front-running the wall at `recommended_front_run_px`, tightening a far-OTM target, or setting `\"limit_price\"` right at spot/BBO when an immediate reversal/exit is required).\n"
             "   - VOLUME PROFILE (`vol_profile` IN SECTION 3A), LIQUIDATION CLUSTERS (`liq_clusters` IN SECTION 3B) & VENUE FEE/LIMITS "
             "(`venue_fee_per_leg`, `maker`/`taker`, `spread`, `limits` IN SECTION 3C): Reason directly from the raw quantitative numbers without relying on pre-baked labels—use Session Volume Profile "
-            "(`POC`, `sec_POC`, `LVN`, 70% Value Area `[VAL, VAH]`, `%` distances, and `va_pos`) "
+            "(`POC`, `sec_POC`, `LVN`, 70% Value Area `[VAL, VAH]`, `%` distances, `va_pos`, and `vp_source`: `REAL_VOL` from 24h OHLC traded volume vs `TPO` motion-weighted time-at-price fallback) "
             "to distinguish genuine breakouts/breakdowns from value-area retests or mean-reversion rotations toward `POC`/`VAL`/`VAH`; "
-            "evaluate symmetric `LONG` (downside `long_liq`/`deep_long`) and `SHORT` (upside `short_liq`/`deep_short`) liquidation cluster prices, USD notionals, and `%` distances "
+            "evaluate symmetric `LONG` (`long_liq`/`deep_long`) and `SHORT` (`short_liq`/`deep_short`) liquidation bands (`src=model_est`: heuristic OI/volatility model estimates, not live exchange liquidation books, and omitted on unleveraged spot equities/xStocks; note `book_window=+/-X%[level_cap]` when REST orderbook depth is capped below `1%` around mid) "
             "to identify where leveraged liquidity pools sit on both sides of spot; and weigh each venue's active `tier`, `maker` vs `taker` fee bps, "
             "live bid-ask `spread` bps, and `limits(min_notional, min_qty, step, tick, max_buy, max_sell)` across `binance` (10/10 bps), "
             "`kraken` (16/26 bps), `hyperliquid` (4/7 bps), and `t212` (15/15 bps) to keep execution strictly on spot `LIMIT` orders (using near-market `limit_price` at spot/BBO for reversals and passive `limit_price` at structural walls for range entries/exits) "

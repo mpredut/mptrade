@@ -10614,6 +10614,247 @@ def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, 
     assert len(mc_mod._ARCH_FILE_MEMO) == 1
 
 
+def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch):
+    """Regression suite verifying all 15 prompt telemetry, freshness, symmetry, and clarity fixes."""
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MarketAndPortfolioSnapshotOrchestrator
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector, VenueCyclesCollector
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from providers.base import MarketDataProvider
+    from providers.kraken_provider import KrakenProvider
+
+    # 1. VenueMetadataRegistry isolates per-provider errors in resolve_orderbook_depth_urls
+    monkeypatch.setattr(
+        KrakenProvider,
+        "public_orderbook_depth_urls",
+        classmethod(lambda cls, sym: (_ for _ in ()).throw(NameError("simulated broken import"))),
+    )
+    urls_btc, _ = MarketDataProvider.resolve_orderbook_depth_urls("BTCUSDC", venue="binance")
+    assert any("api.binance.com/api/v3/depth?symbol=BTCUSDC" in u for u in urls_btc)
+    monkeypatch.undo()
+
+    # 2 & 14. Stale ob_mid (<1% away) NEVER overwrites 0.5s live price/tape_15m, and offline cache_ohlc_24h upgrades TPO -> REAL_VOL
+    cdir = tmp_path / "cachedb"
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    now_s = 1_795_000_000.0
+    now_ms = int(now_s * 1000)
+    s24_pts = [[now_ms - (30 - i) * 60_000, 64_200.0 + i * 2.0] for i in range(30)] + [[now_ms - 500, 64_148.31]]
+    (cdir / "prices" / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": {"BTCUSDC": s24_pts}}), encoding="utf-8"
+    )
+    ohlc_pts = [[now_ms - (24 - i) * 3_600_000, 64_000.0 + (i % 5) * 60.0, 120.0 + i * 10.0] for i in range(25)]
+    ohlc_pts[-1][1] = 64_148.31
+    (cdir / "prices" / "cache_ohlc_24h_BTCUSDC.json").write_text(
+        json.dumps({"points": ohlc_pts}), encoding="utf-8"
+    )
+    (cdir / "telemetry" / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "BTCUSDC",
+                "ts": now_s - 352.4,
+                "mid_price": 64_296.85,
+                "best_bid": 64_296.80,
+                "best_ask": 64_296.90,
+                "imbalance_ratio": 0.55,
+                "bid_depth_usd": 3_930_000.0,
+                "ask_depth_usd": 2_980_000.0,
+                "depth_1pct_bid_usd": 3_930_000.0,
+                "depth_1pct_ask_usd": 2_980_000.0,
+                "book_span_pct": 0.07,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cp_items = {"BTCUSDC": [[now_ms - 500, 64_148.31]]}
+    pt_map = {"BTCUSDC": {"price": 64_148.31}}
+    micro_map: dict = {}
+    enrich_24h_and_microstructure(
+        str(cdir), str(tmp_path), pt_map, micro_map, cp_items, {}, now_s, allow_network=False, persist=False
+    )
+    assert pt_map["BTCUSDC"]["price"] == pytest.approx(64_148.31)
+    assert "64148.31" in str(pt_map["BTCUSDC"]["recent_tape_15m"][-1])
+    assert pt_map["BTCUSDC"].get("vp_source") == "REAL_VOL"
+    assert micro_map["BTCUSDC"].get("book_span_pct") == pytest.approx(0.07)
+
+    # 3. Section 0 Snapshot Domain Ages reports orderbook_newest/oldest and flags [stale]
+    (cdir / "cache_current_price.json").write_text(
+        json.dumps({"timestamp": now_s - 0.5, "items": cp_items}), encoding="utf-8"
+    )
+    snap_orch = MarketAndPortfolioSnapshotOrchestrator().read_snapshot(
+        str(cdir), workspace_dir=str(tmp_path), scope="crypto", now_ts=now_s
+    )
+    assert snap_orch.source_ages_sec.get("orderbook_newest") == pytest.approx(352.4, abs=1.0)
+    prompt_s0 = build_supervisor_prompt(snap_orch, SimpleNamespace(total_scanned_files=0, error_count=0, warning_count=0, critical_events=[], guard_interventions=[]))
+    assert "orderbook_newest=352.4s[stale]" in prompt_s0
+
+    # 4 & 5 & 8 & 13. Tokenized xStocks skip Binance Futures, omit liq_clusters/None whale fields, tag spot_cvd/liq_clusters/book_window
+    wc_tok = WhalePositioningCollector(cache_dir=str(cdir))
+    dc_tok = DerivativesTelemetryCollector(cache_dir=str(cdir))
+    assert wc_tok.fetch("SPCXXUSD", allow_network=True, now=now_s) is None
+    assert dc_tok.fetch("ANTXUSD", allow_network=True, now=now_s) is None
+    assert compute_liquidation_clusters({"price": 142.0}, {"bid_depth_usd": 50_000.0, "ask_depth_usd": 50_000.0}, symbol="SPCXxUSD") == {}
+
+    ob_col_cap = OrderbookDepthCollector(cache_dir=str(cdir), cache_ttl_sec=0.0)
+    monkeypatch.setattr(
+        ob_col_cap,
+        "_fetch_json_dict",
+        lambda *a, **kw: {
+            "bids": [[str(64200.0 - i * 0.3), "0.5"] for i in range(120)],
+            "asks": [[str(64200.1 + i * 0.3), "0.5"] for i in range(120)],
+        },
+    )
+    ob_snap_cap = ob_col_cap.fetch("BTCUSDC", allow_network=True, now=now_s)
+    assert ob_snap_cap is not None and 0.0 < ob_snap_cap.book_span_pct < 0.20
+
+    sec3b_txt = "\n".join(
+        _format_microstructure_section(
+            {
+                "BTCUSDC": {
+                    **micro_map["BTCUSDC"],
+                    "whale_long_pct": 0.58,
+                    "taker_buy_sell_ratio": 1.12,
+                    "taker_buy_vol_usd": 500_000.0,
+                    "taker_sell_vol_usd": 446_000.0,
+                    "cvd_15m_usd": 54_000.0,
+                    "oi_usd": 250_000_000.0,
+                    "funding_rate": 0.0001,
+                },
+                "SPCXxUSD": {
+                    "ob_imbalance": 0.52,
+                    "bid_depth_usd": 25_000.0,
+                    "ask_depth_usd": 23_000.0,
+                    "bid_wall_px": 141.0,
+                    "bid_wall_usd": 8_000.0,
+                    "ask_wall_px": 143.0,
+                    "ask_wall_usd": 7_500.0,
+                    "ob_mid_price": 142.0,
+                    "spread_bps": 14.0,
+                },
+            },
+            {"BTCUSDC": pt_map["BTCUSDC"], "SPCXxUSD": {"price": 142.0, "chg_15m_pct": 0.2}},
+            now_ts=now_s,
+        )
+    )
+    assert "book_window=+/-0.07%[level_cap]" in sec3b_txt
+    assert "[est:ob+15m]" in sec3b_txt
+    assert "src=model_est)" in sec3b_txt
+    spcx_line_3b = next(ln for ln in sec3b_txt.splitlines() if "SPCXxUSD" in ln)
+    assert "perp_derivatives=N/A[spot_tokenized_equity]" in spcx_line_3b
+    assert "whale_long_pct=None" not in spcx_line_3b
+    assert "liq_clusters(" not in spcx_line_3b
+
+    real_sp = {"cvd_15m_usd": 50_000.0, "spot_cvd_15m_usd": 19_500.0, "spot_cvd_source": "real_spot", "bid_depth_usd": 100_000.0, "ask_depth_usd": 100_000.0}
+    enrich_microstructure_cvd(real_sp, {"price": 100.0, "chg_15m_pct": -1.5})
+    assert real_sp["spot_cvd_15m_usd"] == pytest.approx(19_500.0)
+
+    # 6. KrakenXstocksCollector separates SPCXx.T holding from XSTOCK_YAHOO=ANT
+    krk_dir = tmp_path / "kraken"
+    krk_dir.mkdir(parents=True, exist_ok=True)
+    (krk_dir / "config.env").write_text("XSTOCK_YAHOO=ANT\nXSTOCK_ALLOC_PRICE=141.75\n", encoding="utf-8")
+    (krk_dir / "xstock_state.json").write_text(
+        json.dumps({"known_assets": {"SPCXx.T": 15.74655}}), encoding="utf-8"
+    )
+    xs_out = KrakenXstocksCollector().collect(
+        str(cdir), kraken_dir=str(krk_dir), prices_and_trends={"SPCXxUSD": {"price": 141.97}}
+    )
+    assert xs_out["underlying"] == "SPCX"
+    assert xs_out["t212_sibling"] == "SPCX_US_EQ"
+    assert xs_out["watched_ipo_underlying"] == "ANT"
+    assert xs_out["live_price"] == pytest.approx(141.97)
+
+    # 8b. fill_prob_1h_pct separates +1.76% order (>5%) from +22.6% order (0.1%)
+    lim_orders = [
+        {"venue": "binance", "symbol": "TAOUSDC", "side": "SELL", "price": 199.40, "dist_from_spot_pct": 1.76},
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "side": "SELL", "price": 84.45, "dist_from_spot_pct": 22.6},
+    ]
+    enrich_open_limit_orders_tca(
+        lim_orders,
+        {"TAOUSDC": {"price": 195.95, "vol_1h_pct": 0.45, "span_24h_pct": 4.2}, "HYPEUSDC": {"price": 68.88, "vol_1h_pct": 0.8, "span_24h_pct": 5.0}},
+        {},
+    )
+    assert lim_orders[0]["fill_prob_1h_pct"] > 5.0
+    assert lim_orders[1]["fill_prob_1h_pct"] <= 0.5
+
+    # 9, 10, 11, 12. Symmetric realized_pnl, reconciled sell clears stale SL -> TP, PAPER-* state ignored, and scoped Risk Engine + US_EQ metadata
+    hl_dir = tmp_path / "hyperliquid"
+    hl_dir.mkdir(parents=True, exist_ok=True)
+    (hl_dir / ".state_HYPE_long.json").write_text(
+        json.dumps({"qty": 0.85, "cost": 50.19, "orders": [{"oid": "PAPER-2", "side": "sell", "px": 60.0, "sz": 0.85}]}),
+        encoding="utf-8",
+    )
+    _, hl_cycs_paper, _ = VenueCyclesCollector().collect(str(cdir), workspace_dir=str(tmp_path))
+    assert "HYPEUSDC" not in hl_cycs_paper
+
+    pos_sym = [
+        {"venue": "kraken", "symbol": "HYPEUSD", "free_base": 4.0, "price": 68.79, "last_sell_px": 68.900061, "lifo_realized_pnl_usd": 0.0},
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "free_base": 4.0, "price": 68.80, "lifo_realized_pnl_usd": 0.0},
+    ]
+    krk_cycs = {"HYPEUSD": {"qty": 4.0, "cost_usd": 274.76, "avg_cost_px": 68.69, "entry_price": 68.69, "last_sell_price": 68.67, "last_exit_kind": "SL", "realized_pnl_usd": -189.93}}
+    hl_cycs = {"HYPEUSDC": {"qty": 4.0, "cost_usd": 274.0, "avg_cost_px": 68.50, "entry_price": 68.50, "realized_pnl_usd": 179.25}}
+    enrich_positions_with_orders_and_cycles(
+        pos_sym,
+        {"HYPEUSD": {"price": 68.79}, "HYPEUSDC": {"price": 68.80}},
+        {},
+        {"kraken": {"HYPEUSD": {"lifo_realized_pnl_usd": 0.0}}, "hyperliquid": {"HYPEUSDC": {"lifo_realized_pnl_usd": 0.0}}},
+        {},
+        krk_cycs,
+        hl_cycs,
+        {},
+        {},
+    )
+    assert krk_cycs["HYPEUSD"]["last_exit_kind"] == "TP"
+    assert krk_cycs["HYPEUSD"]["realized_pnl_usd"] == pytest.approx(-189.93)
+    assert hl_cycs["HYPEUSDC"]["realized_pnl_usd"] == pytest.approx(179.25)
+
+    sec3c_out = "\n".join(
+        _format_portfolio_section(
+            {
+                "portfolio_risk_engine": {
+                    "unified_nav_usd": 16107.24,
+                    "invested_exposure_usd": 13190.0,
+                    "global_free_cash_usd": 2917.24,
+                    "global_free_cash_pct": 18.1,
+                    "venue_nav_breakdown_usd": {"binance": 11000.0, "kraken": 3107.24, "hyperliquid": 2000.0},
+                    "portfolio_btc_beta": 0.85,
+                    "avg_corr_vs_btc_24h": 0.88,
+                    "intraday_var_95_usd": 420.0,
+                    "intraday_var_95_pct": 2.61,
+                },
+                "tradable_positions": pos_sym,
+                "kraken_cycles": krk_cycs,
+                "hyperliquid_cycles": hl_cycs,
+                "cross_market_context": {
+                    "equity_bellwethers": {
+                        "NVDA_US_EQ": {
+                            "price": 160.8513,
+                            "quote_source": "yahoo_ext",
+                            "quote_age_min": 1.8,
+                            "t212_close_px": 155.15,
+                            "chg_24h_pct": 3.67,
+                            "t212_cycle": {"qty": 3.0, "avg_cost_px": 150.0, "pnl_vs_avg_pct": 7.23},
+                        },
+                        "RGNT_US_EQ": {"price": 1.48, "quote_source": "t212_rth_close", "quote_age_min": 930.0, "chg_24h_pct": -1.2},
+                    }
+                },
+            },
+            asset_scope="crypto",
+            include_macro_benchmarks=False,
+        )
+    )
+    assert "Portfolio Risk Engine (Crypto Scope: binance + kraken + hyperliquid; excl. T212 equities): crypto_nav=$16,107.24" in sec3c_out
+    assert "realized_pnl=$-189.93 (subcycle=$0.00)" in sec3c_out
+    assert "realized_pnl=$179.25 (subcycle=$0.00)" in sec3c_out
+    assert "last_sell=68.900061 (TP)" in sec3c_out
+    assert "'quote_source': 'yahoo_ext'" in sec3c_out
+    assert "'t212_close_px': 155.15" in sec3c_out
+    assert "'RGNT_US_EQ'" in sec3c_out
+    assert "'t212_cycle': {'qty': 3.0" in sec3c_out
+
+
+
 
 
 

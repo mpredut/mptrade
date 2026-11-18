@@ -1,6 +1,7 @@
 """Declarative venue registry metadata, fee/precision ladders, and public orderbook helpers."""
 
 import inspect
+import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -402,13 +403,17 @@ class ProviderVenueMetadataMixin:
     ) -> tuple[tuple[str, ...], str]:
         """Return ``(ordered_depth_urls, hl_book_url)`` across registered venue providers."""
         canon_sym = canonical_symbol_key(symbol)
+        log = logging.getLogger(__name__)
         if symbol_quote_asset(canon_sym) == "EUR":
             eur_urls: list[str] = []
             for v_key in cls._VENUE_PROVIDER_SPECS:
-                prov_cls = cls.resolve_venue_provider_class(v_key)
-                if prov_cls is not None and getattr(prov_cls, "_ASSET_SCOPE", "crypto") == "crypto":
-                    prim, _ = prov_cls.public_orderbook_depth_urls(canon_sym)
-                    eur_urls.extend(prim)
+                try:
+                    prov_cls = cls.resolve_venue_provider_class(v_key)
+                    if prov_cls is not None and getattr(prov_cls, "_ASSET_SCOPE", "crypto") == "crypto":
+                        prim, _ = prov_cls.public_orderbook_depth_urls(canon_sym)
+                        eur_urls.extend(prim)
+                except Exception as exc:
+                    log.warning("Skipping %s EUR orderbook URL resolution for %s: %s", v_key, canon_sym, exc)
             return tuple(eur_urls), ""
 
         crypto_venues: list[str] = []
@@ -416,13 +421,17 @@ class ProviderVenueMetadataMixin:
         primary_map: dict[str, tuple[str, ...]] = {}
         secondary_map: dict[str, tuple[str, ...]] = {}
         for v_key in cls._VENUE_PROVIDER_SPECS:
-            prov_cls = cls.resolve_venue_provider_class(v_key)
-            if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
+            try:
+                prov_cls = cls.resolve_venue_provider_class(v_key)
+                if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
+                    continue
+                prim, sec = prov_cls.public_orderbook_depth_urls(canon_sym)
+            except Exception as exc:
+                log.warning("Skipping %s orderbook URL resolution for %s: %s", v_key, canon_sym, exc)
                 continue
             crypto_venues.append(v_key)
             if getattr(prov_cls, "_ORDERBOOK_L2_INFO_BOOK", False):
                 l2_info_venues.add(v_key)
-            prim, sec = prov_cls.public_orderbook_depth_urls(canon_sym)
             primary_map[v_key] = prim
             secondary_map[v_key] = sec
 

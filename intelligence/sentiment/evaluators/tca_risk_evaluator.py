@@ -239,15 +239,20 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 o.pop(_stale_tca_k, None)
             dist_pct = abs(safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0)
             raw_vol_1h = safe_pos_float((p_entry or {}).get("vol_1h_pct"), default=None)
-            if raw_vol_1h is None and isinstance(prices_and_trends, dict):
+            span_24h = safe_pos_float((p_entry or {}).get("span_24h_pct"), default=None)
+            if (raw_vol_1h is None or span_24h is None) and isinstance(prices_and_trends, dict):
                 for cand in cache_symbol_variants(sym, include_base=True):
                     if has_equity_suffix(cand) != is_eq_o:
                         continue
                     cand_p = casefold_get(prices_and_trends, cand)
-                    if isinstance(cand_p, dict) and (v_cand := safe_pos_float(cand_p.get("vol_1h_pct"), default=None)) is not None:
-                        raw_vol_1h = v_cand
-                        break
-            vol_1h = max(0.35, raw_vol_1h or 1.1)
+                    if isinstance(cand_p, dict):
+                        if raw_vol_1h is None and (v_cand := safe_pos_float(cand_p.get("vol_1h_pct"), default=None)) is not None:
+                            raw_vol_1h = v_cand
+                        if span_24h is None and (sp_cand := safe_pos_float(cand_p.get("span_24h_pct"), default=None)) is not None:
+                            span_24h = sp_cand
+                        if raw_vol_1h is not None and span_24h is not None:
+                            break
+            vol_1h = max(0.45, raw_vol_1h or 1.1, (span_24h * 0.20) if span_24h is not None else 0.0)
             dec = MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px)
             queue_penalty = 1.0
             if isinstance(m_entry, dict) and side in ("SELL", "BUY"):
@@ -319,8 +324,10 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                             queue_penalty = _set_wall_queue("AT_BID_WALL", "bid", bw_px, bw_usd, 0.78, front_run_px=eff_fr)
                         else:
                             o["wall_queue_pos"] = "FRONT_OF_BID_WALL"
-            raw_prob = 100.0 * math.exp(-0.5 * ((dist_pct / vol_1h) ** 2)) * queue_penalty
-            o["fill_prob_1h_pct"] = round(min(99.0, max(1.0, raw_prob)), 1)
+            z_dist = dist_pct / vol_1h
+            touch_prob = (1.0 + (z_dist * z_dist) / 3.5) ** -1.75
+            raw_prob = 100.0 * touch_prob * queue_penalty
+            o["fill_prob_1h_pct"] = round(min(99.0, max(0.1, raw_prob)), 1)
         return open_orders
 
 
@@ -636,6 +643,11 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
             eq_entry: Dict[str, Any] = {
                 "symbol": eq_sym,
                 **({"price": round(eq_px_f, 6)} if eq_px_f is not None else {}),
+                **{
+                    qm_k: pinfo[qm_k]
+                    for qm_k in ("quote_source", "quote_age_min", "t212_close_px")
+                    if pinfo.get(qm_k) is not None
+                },
                 **{
                     k: (((safe_float(f"{sf_v:.2e}", default=0.0) or 0.0) if 0.0 < abs(sf_v) < 1e-4 else round(sf_v, 6)) + 0.0 if k in _round_slope_keys else pinfo[k])
                     for k in raw_horizon_keys

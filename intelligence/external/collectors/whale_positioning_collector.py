@@ -28,6 +28,7 @@ from cachepaths import (
     resolve_binance_lookup_symbol,
     telemetry_cache_file_path,
 )
+from instrument_registry import resolve_kraken_tokenized_pair
 from state_io import read_json_dict
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
@@ -374,6 +375,8 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         )
         if not should_fetch or symbol is None:
             return ready
+        if resolve_kraken_tokenized_pair(symbol)[1]:
+            return None
         price_1h_change_pct = self._resolve_price_1h_change_pct(symbol) if abs(chg_in) < 1e-6 else chg_in
 
         lookup_sym = resolve_binance_lookup_symbol(symbol)

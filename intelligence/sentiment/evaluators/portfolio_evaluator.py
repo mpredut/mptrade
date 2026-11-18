@@ -1274,15 +1274,20 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                                 or (already_deducted_partial and sell_ts_f <= ls_ts_ms + 60000.0)
                             )
                         )
-                        replaceable_kinds = ("", "TP", "STOP") if is_newer_partial_sell else ("", "TP")
+                        _stop_kinds = ("STOP", "SL", "STOP_LOSS", "SMART_SL")
+                        replaceable_kinds = ("", "TP", *_stop_kinds, "REDUCE") if is_newer_partial_sell else ("", "TP")
                         lifo_pnl_ro = safe_float(ro_c.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
                         is_loss_or_scratch_sell = sell_p < ref_avg * 0.995 or (
                             sell_p < ref_avg - 1e-6 and (lifo_pnl_ro < 0.0 or (is_newer_partial_sell and lifo_pnl_ro <= 0.0))
                         )
                         if is_loss_or_scratch_sell and cur_kind in replaceable_kinds:
                             c_dict["last_exit_kind"] = "REDUCE"
-                        elif sell_p >= ref_avg * 1.001 and (not cur_kind or (is_newer_partial_sell and cur_kind == "STOP")):
+                        elif sell_p >= ref_avg * 1.0005 and (
+                            not cur_kind or cur_kind in _stop_kinds or (is_newer_partial_sell and cur_kind == "REDUCE")
+                        ):
                             c_dict["last_exit_kind"] = "TP"
+                        elif not is_loss_or_scratch_sell and sell_p >= ref_avg * 0.995 and cur_kind in _stop_kinds:
+                            c_dict["last_exit_kind"] = "REDUCE"
 
                 if already_deducted_partial:
                     if ls_px > 0:
@@ -1617,8 +1622,11 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         default=None,
                     )
                     c_rpnl = safe_float(cyc.get("realized_pnl_usd"), default=None)
-                    if lp_ro is not None and c_rpnl is not None and c_rpnl < 0.0 and lp_ro > c_rpnl:
-                        cyc["realized_pnl_usd"] = round(lp_ro, 2)
+                    if lp_ro is not None and c_rpnl is not None:
+                        cyc.setdefault("cum_realized_pnl_usd", round(c_rpnl, 2))
+                        cyc["subcycle_realized_pnl_usd"] = round(lp_ro, 2)
+                        if abs(lp_ro) >= 0.01:
+                            cyc["realized_pnl_usd"] = round(lp_ro, 2)
                     if isinstance(ro, dict) and (tac_avg_c := safe_pos_float(ro.get("tactical_avg_buy_px"), default=None)) is not None:
                         set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", tac_avg_c, pos_px_f, overwrite=False)
                     if isinstance(ro, dict) and (sw_avg_c := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None:
@@ -1663,7 +1671,27 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 if pos.get("last_buy_px") is not None and (cyc.get("last_buy_price") is None or is_crypto_cyc_venue or has_ro_buys):
                     cyc["last_buy_price"] = pos["last_buy_px"]
                 if pos.get("last_sell_px") is not None and (cyc.get("last_sell_price") is None or is_crypto_cyc_venue or has_ro_sells):
+                    prev_cyc_sell = safe_pos_float(cyc.get("last_sell_price"), default=None)
+                    new_cyc_sell = safe_pos_float(pos.get("last_sell_px"), default=None)
                     cyc["last_sell_price"] = pos["last_sell_px"]
+                    if new_cyc_sell is not None:
+                        ref_sell_avg = first_pos_float(
+                            pos.get("active_avg_buy_px"),
+                            cyc.get("avg_cost_px"),
+                            cyc.get("entry_price"),
+                        )
+                        cur_exit_k = str(cyc.get("last_exit_kind") or "").strip().upper()
+                        sell_changed = prev_cyc_sell is None or abs(new_cyc_sell - prev_cyc_sell) > max(1e-5, prev_cyc_sell * 0.0002)
+                        if ref_sell_avg is not None and ref_sell_avg > 0.0:
+                            if new_cyc_sell >= ref_sell_avg * 1.0005 and (
+                                cur_exit_k in ("", "STOP", "SL", "STOP_LOSS", "SMART_SL")
+                                or (sell_changed and cur_exit_k == "REDUCE")
+                            ):
+                                cyc["last_exit_kind"] = "TP"
+                            elif sell_changed and new_cyc_sell < ref_sell_avg * 0.995 and cur_exit_k in ("", "TP"):
+                                cyc["last_exit_kind"] = "REDUCE"
+                            elif new_cyc_sell >= ref_sell_avg * 0.995 and cur_exit_k in ("STOP", "SL", "STOP_LOSS", "SMART_SL"):
+                                cyc["last_exit_kind"] = "REDUCE"
             exact_sym_sp = (prices_and_trends.get(p_sym) or {}).get("spread_bps") if isinstance(prices_and_trends.get(p_sym), dict) else None
             sym_spread = (
                 exact_sym_sp
@@ -1744,8 +1772,11 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 )
                 lp_ro_c = safe_float(ro.get("lifo_realized_pnl_usd") if isinstance(ro, dict) else None, default=None)
                 c_rpnl_c = safe_float(cyc.get("realized_pnl_usd"), default=None)
-                if lp_ro_c is not None and c_rpnl_c is not None and c_rpnl_c < 0.0 and lp_ro_c > c_rpnl_c:
-                    cyc["realized_pnl_usd"] = round(lp_ro_c, 2)
+                if lp_ro_c is not None and c_rpnl_c is not None:
+                    cyc.setdefault("cum_realized_pnl_usd", round(c_rpnl_c, 2))
+                    cyc["subcycle_realized_pnl_usd"] = round(lp_ro_c, 2)
+                    if abs(lp_ro_c) >= 0.01:
+                        cyc["realized_pnl_usd"] = round(lp_ro_c, 2)
                 c_is_eq = is_equity_venue_or_suffix(c_sym_u, c_venue)
                 c_px = resolve_symbol_price(
                     ensure_equity_suffix(c_sym_u, is_equity=c_is_eq),

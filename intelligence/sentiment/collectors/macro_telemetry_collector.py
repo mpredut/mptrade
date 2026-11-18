@@ -1329,6 +1329,25 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         )
         if len(cp_oldest_pool) > 1:
             domain_ts["prices_oldest"] = min(cp_oldest_pool)
+        micro_snap = getattr(snapshot, "microstructure", None)
+        if isinstance(micro_snap, dict) and micro_snap:
+            def _ob_ts_fn(_mk: str, mv: Any) -> Optional[float]:
+                if not isinstance(mv, dict):
+                    return None
+                raw_ob_t = mv.get("_ob_raw_ts") if mv.get("_ob_raw_ts") is not None else mv.get("_ob_ts")
+                ts_ob = normalize_epoch_sec(raw_ob_t, default=None)
+                return ts_ob if (ts_ob is not None and ts_ob > 0.0) else None
+
+            ob_item_ts, _ = _collect_scoped_map_timestamps(micro_snap, None, _ob_ts_fn)
+            if ob_item_ts:
+                domain_ts["orderbook_newest"] = max(ob_item_ts)
+                ob_oldest_pool = (
+                    (_collect_scoped_map_timestamps(micro_snap, None, _ob_ts_fn, exclude_eq=True)[0] or ob_item_ts)
+                    if (scope_norm == "all" and not us_rth_open)
+                    else ob_item_ts
+                )
+                if len(ob_oldest_pool) > 1:
+                    domain_ts["orderbook_oldest"] = min(ob_oldest_pool)
         st_items_d = trends_data.get("items") if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict) else trends_data
         st_ts_vals, st_top_ts = _collect_scoped_map_timestamps(
             st_items_d,

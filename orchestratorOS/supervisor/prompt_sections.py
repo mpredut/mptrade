@@ -8,6 +8,7 @@ Intentional prompt compression invariants:
 - Section numbering (`### 1.` -> `### 3.`): Sections `2/2B/2C` (SRE/logs/VPN) are emitted only for `can_self_heal` topics and omitted on trading topics.
 - `bottom_6h(...)` (Section 3): Conditional pattern detector emitted only when an active 6h bottom structure forms (`pos_6h <= 70%` with meaningful drawdown).
 - `open_lifo_lots` (Section 3C): Capped to the latest 4 lots (`<=14d`) for top-of-stack LIFO harvesting and omitted when `len(open_lots) <= 1` (already covered by `avg_buy_px`/`last_buy_px`).
+- `last_cycle_execution_status` (Section 3C): Emitted when recent (`<=30m`) executions/fills/rejections or newly resting orders exist; omitted when idle or when all `OPEN_RESTING`/`PARTIALLY_FILLED` orders are `>30m` old and already displayed in `open_limit_orders`.
 """
 
 import math
@@ -65,6 +66,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
+from instrument_registry import resolve_kraken_tokenized_pair
 from providers.order_id_context import format_actor_tag
 
 
@@ -133,7 +135,12 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
         ):
             extra_parts.append(lifo_c_tag)
     if cyc.get("realized_pnl_usd") is not None:
-        extra_parts.append(f"realized_pnl=${cyc.get('realized_pnl_usd')}")
+        rp_v = cyc.get("realized_pnl_usd")
+        sub_rp = safe_float(cyc.get("subcycle_realized_pnl_usd"), None)
+        if sub_rp is not None and abs(sub_rp) < 0.01 and abs(safe_float(rp_v, 0.0) or 0.0) >= 0.01:
+            extra_parts.append(f"realized_pnl=${rp_v} (subcycle=$0.00)")
+        else:
+            extra_parts.append(f"realized_pnl=${rp_v}")
     for lbl, k in (("tp_sold", "tp_sold_levels"), ("resting_orders", "resting_orders")):
         if cyc.get(k):
             extra_parts.append(f"{lbl}={cyc.get(k)}")
@@ -976,6 +983,8 @@ def _format_microstructure_section(
             spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}{ob_mid_lbl}"
 
         sym_is_eq_3b = has_equity_suffix(sym)
+        sym_is_tok_xstock_3b = resolve_kraken_tokenized_pair(sym)[1]
+        sym_no_crypto_perp_3b = sym_is_eq_3b or sym_is_tok_xstock_3b
         raw_p = (
             prices_and_trends.get(sym)
             if isinstance(prices_and_trends.get(sym), dict)
@@ -1007,13 +1016,20 @@ def _format_microstructure_section(
             or (isinstance(p_ctx, dict) and p_ctx.get("chg_15m_pct") is not None)
         ):
             enrich_microstructure_cvd(minfo, p_ctx)
-        if not sym_is_eq_3b and any(
-            minfo.get(k) is None
-            for k in ("long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px", "liq_magnet_bias")
+        recompute_liq_from_real_oi = (
+            minfo.get("liq_source") == "model_est_depth_proxy"
+            and (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) > 0.0
+        )
+        if not sym_no_crypto_perp_3b and (
+            recompute_liq_from_real_oi
+            or any(
+                minfo.get(k) is None
+                for k in ("long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px", "liq_magnet_bias")
+            )
         ):
-            liq_lazy = compute_liquidation_clusters(p_ctx, minfo)
+            liq_lazy = compute_liquidation_clusters(p_ctx, minfo, symbol=sym)
             for lk, lv in liq_lazy.items():
-                if minfo.get(lk) is None:
+                if recompute_liq_from_real_oi or minfo.get(lk) is None:
                     minfo[lk] = lv
         if "USD" in sym_quotes_3b and any(
             other_s != sym
@@ -1035,17 +1051,28 @@ def _format_microstructure_section(
                     o_copy = dict(other_m)
                     o_p = prices_and_trends.get(other_s) if isinstance(prices_and_trends.get(other_s), dict) else p_ctx
                     enrich_microstructure_cvd(o_copy, o_p)
-                    if not sym_is_eq_3b and o_copy.get("liq_magnet_bias") is None:
-                        o_copy.update(compute_liquidation_clusters(o_p, o_copy))
+                    if not sym_no_crypto_perp_3b and not resolve_kraken_tokenized_pair(other_s)[1] and o_copy.get("liq_magnet_bias") is None:
+                        o_copy.update(compute_liquidation_clusters(o_p, o_copy, symbol=other_s))
                     sib_view[other_s] = o_copy
             reconcile_sibling_flow_and_liq_regimes(sib_view, prices_and_trends)
         d1_b = safe_float(minfo.get("depth_1pct_bid_usd"), 0.0)
         d1_a = safe_float(minfo.get("depth_1pct_ask_usd"), 0.0)
-        depth_1pct_sfx = (
-            f", depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
-            if (d1_b > 0.0 or d1_a > 0.0)
-            else ""
-        )
+        b_dep_v = safe_float(minfo.get("bid_depth_usd"), 0.0)
+        a_dep_v = safe_float(minfo.get("ask_depth_usd"), 0.0)
+        b_span_pct = safe_pos_float(minfo.get("book_span_pct"), default=0.0) or 0.0
+        if 0.0 < b_span_pct < 0.95 and abs(d1_b - b_dep_v) < 1.0 and abs(d1_a - a_dep_v) < 1.0:
+            depth_1pct_sfx = f", book_window=+/-{b_span_pct:g}%[level_cap], slip_2k={minfo.get('est_slip_2k_bps')}bps"
+        elif 0.95 <= b_span_pct < 1.45 and (d1_b > 0.0 or d1_a > 0.0):
+            depth_1pct_sfx = (
+                f", book_window=+/-{b_span_pct:g}%[level_cap], "
+                f"depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
+            )
+        else:
+            depth_1pct_sfx = (
+                f", depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
+                if (d1_b > 0.0 or d1_a > 0.0)
+                else ""
+            )
 
         cvd_sfx = ""
         if (cvd_usd_raw := minfo.get("cvd_15m_usd")) is not None:
@@ -1075,14 +1102,19 @@ def _format_microstructure_section(
                 cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
             if (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None:
                 sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
-                cvd_sfx += f", spot_cvd_15m={sp_s}"
+                sp_src_tag = (
+                    "[real_spot]"
+                    if minfo.get("spot_cvd_source") == "real_spot"
+                    else ("[est:ob+15m]" if (minfo.get("spot_cvd_source") == "est_ob_15m" or minfo.get("_synthetic_spot_cvd")) else "")
+                )
+                cvd_sfx += f", spot_cvd_15m={sp_s}{sp_src_tag}"
 
         basis_sfx = ""
         basis_parts: List[str] = []
-        eq_no_oi_3b = sym_is_eq_3b and (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
-        if not sym_is_eq_3b and (b_bps := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
+        eq_no_oi_3b = sym_no_crypto_perp_3b and (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
+        if not sym_no_crypto_perp_3b and (b_bps := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
             basis_parts.append(f"perp_basis={b_bps:+.1f}bps")
-        if not sym_is_eq_3b and (f_ann := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
+        if not sym_no_crypto_perp_3b and (f_ann := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
             basis_parts.append(f"funding_ann={f_ann:+.1f}%")
         if (arb_bps := safe_float(minfo.get("cross_venue_arb_bps"), None)) is not None and minfo.get("cross_venue_peer"):
             basis_parts.append(f"arb_vs_{minfo['cross_venue_peer']}={arb_bps:+.1f}bps")
@@ -1092,7 +1124,7 @@ def _format_microstructure_section(
             basis_sfx = f", {', '.join(basis_parts)}"
 
         liq_sfx = ""
-        if not sym_is_eq_3b and minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
+        if not sym_no_crypto_perp_3b and minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
             liq_parts: List[str] = []
             for l_lbl, px_k, usd_k, dist_k in (
                 ("long_liq", "long_liq_px", "long_liq_usd", "long_liq_dist_pct"),
@@ -1110,6 +1142,7 @@ def _format_microstructure_section(
                 liq_parts.append(
                     f"{l_lbl}=${minfo.get(px_k)}[{_fmt_liq_usd(minfo.get(usd_k))}, {l_d:+.2f}%]"
                 )
+            liq_parts.append(f"src={minfo.get('liq_source') or 'model_est'}")
             liq_sfx = f", liq_clusters({', '.join(liq_parts)})"
         cd_sfx = ""
         if isinstance(cd_map := minfo.get("cycle_delta"), dict):
@@ -1154,7 +1187,7 @@ def _format_microstructure_section(
         eq_zero_fund_3b = sym_is_eq_3b
         deriv_oi_sfx = (
             ""
-            if (eq_no_oi_3b and eq_zero_fund_3b)
+            if (sym_is_tok_xstock_3b or (eq_no_oi_3b and eq_zero_fund_3b))
             else (
                 f", oi_usd={oi_lbl} (cboe_options_oi), oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
                 if eq_zero_fund_3b
@@ -1165,16 +1198,26 @@ def _format_microstructure_section(
             )
         )
         src_age_sfx = _format_3b_source_ages_suffix(
-            minfo, now_ts=now_ts, intervals=derived_3b_itvs, ob_only=False, include_deriv=bool(deriv_oi_sfx)
+            minfo,
+            now_ts=now_ts,
+            intervals=derived_3b_itvs,
+            ob_only=sym_is_tok_xstock_3b,
+            include_deriv=bool(deriv_oi_sfx),
         )
+        if sym_is_tok_xstock_3b and minfo.get("whale_long_pct") is None and minfo.get("taker_buy_sell_ratio") is None:
+            flow_3b_core = f"perp_derivatives=N/A[spot_tokenized_equity]{cvd_sfx}"
+        else:
+            flow_3b_core = (
+                f"whale_long_pct={minfo.get('whale_long_pct')}, "
+                f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
+                f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}"
+            )
         lines.append(
             f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
             f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
             f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
             f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
-            f"whale_long_pct={minfo.get('whale_long_pct')}, "
-            f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
-            f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}"
+            f"{flow_3b_core}"
             f"{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
         )
     return lines
@@ -1413,13 +1456,30 @@ def _format_portfolio_section(
     scope_s = str(asset_scope or "all").strip().lower() if isinstance(asset_scope, str) else "all"
     lines = ["\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:"]
     if isinstance(pre := ps.get("portfolio_risk_engine"), dict) and pre.get("unified_nav_usd"):
+        if scope_s == "crypto":
+            pre_hdr = "Portfolio Risk Engine (Crypto Scope: binance + kraken + hyperliquid; excl. T212 equities)"
+            nav_key_lbl = "crypto_nav"
+        elif scope_s in ("equities", "equity"):
+            pre_hdr = "Portfolio Risk Engine (Equities Scope: t212; excl. crypto venues)"
+            nav_key_lbl = "equities_nav"
+        else:
+            pre_hdr = "Enterprise Global Portfolio Risk Engine (All Venues)"
+            nav_key_lbl = "unified_nav"
         pre_parts = [
-            f"unified_nav=${safe_float(pre.get('unified_nav_usd'), 0.0):,.2f}",
+            f"{nav_key_lbl}=${safe_float(pre.get('unified_nav_usd'), 0.0):,.2f}",
             f"invested=${safe_float(pre.get('invested_exposure_usd'), 0.0):,.2f}",
             f"free_cash=${safe_float(pre.get('global_free_cash_usd'), 0.0):,.2f} ({pre.get('global_free_cash_pct')}%)",
         ]
         if (lq_pre := safe_float(pre.get("locked_quote_usd"), 0.0)) > 0.0:
             pre_parts.append(f"locked_quote=${lq_pre:,.2f} ({pre.get('locked_quote_pct')}%)")
+        if isinstance(vn_bd := pre.get("venue_nav_breakdown_usd"), dict) and vn_bd:
+            vn_s = ", ".join(
+                f"{vk}=${safe_float(vv, 0.0):,.2f}"
+                for vk, vv in sorted(vn_bd.items())
+                if safe_float(vv, 0.0) > 0.0
+            )
+            if vn_s:
+                pre_parts.append(f"venues({vn_s})")
         pre_parts.extend([
             f"portfolio_btc_beta={pre.get('portfolio_btc_beta')}",
             f"avg_corr_24h={pre.get('avg_corr_vs_btc_24h')}",
@@ -1453,7 +1513,7 @@ def _format_portfolio_section(
             )
             if cv_s:
                 pre_parts.append(f"smart_routing({cv_s})")
-        lines.append(f"  * Enterprise Global Portfolio Risk Engine: {', '.join(pre_parts)}")
+        lines.append(f"  * {pre_hdr}: {', '.join(pre_parts)}")
     if ps.get("total_value_usdc") is not None:
         tv_extras: List[str] = []
         if ps.get("total_value_usdc_age_min") is not None:
@@ -1554,8 +1614,10 @@ def _format_portfolio_section(
                     c_up = str(c_sym).strip().upper()
                     lp_sym = pos_lifo_pnl_by_vs.get((venue_id, c_up), pos_lifo_pnl_by_vs.get(("", c_up)))
                     c_rpnl = safe_float(c_data.get("realized_pnl_usd"), None)
-                    if lp_sym is not None and c_rpnl is not None and c_rpnl < 0.0 and lp_sym > c_rpnl:
-                        c_data = {**c_data, "realized_pnl_usd": lp_sym}
+                    if lp_sym is not None and c_rpnl is not None:
+                        c_data = {**c_data, "subcycle_realized_pnl_usd": round(lp_sym, 2)}
+                        if abs(lp_sym) >= 0.01:
+                            c_data["realized_pnl_usd"] = round(lp_sym, 2)
                     if c_data.get("_spot_px") is None:
                         if (sp_px := pos_px_by_vs.get((venue_id, c_up), pos_px_by_vs.get(("", c_up)))) is not None:
                             c_data = {**c_data, "_spot_px": sp_px}
@@ -1573,19 +1635,23 @@ def _format_portfolio_section(
                 sib_cyc_cp = {
                     ck: cv
                     for ck, cv in xs["t212_sibling_cycle"].items()
-                    if cv is not None and not (ck == "pnl_vs_avg_pct" and xs["t212_sibling_cycle"].get("dd_pct") is not None)
+                    if cv is not None
+                    and ck not in ("cum_realized_pnl_usd",)
+                    and not (ck == "pnl_vs_avg_pct" and xs["t212_sibling_cycle"].get("dd_pct") is not None)
                 }
                 sib_sym_u = str(xs.get("t212_sibling") or "").strip().upper()
                 lp_sib = pos_lifo_pnl_by_vs.get(("t212", sib_sym_u), pos_lifo_pnl_by_vs.get(("", sib_sym_u)))
                 sib_rpnl = safe_float(sib_cyc_cp.get("realized_pnl_usd"), None)
-                if lp_sib is not None and sib_rpnl is not None and sib_rpnl < 0.0 and lp_sib > sib_rpnl:
-                    sib_cyc_cp["realized_pnl_usd"] = lp_sib
+                if lp_sib is not None and sib_rpnl is not None:
+                    sib_cyc_cp["subcycle_realized_pnl_usd"] = round(lp_sib, 2)
+                    if abs(lp_sib) >= 0.01:
+                        sib_cyc_cp["realized_pnl_usd"] = round(lp_sib, 2)
                 xs["t212_sibling_cycle"] = sib_cyc_cp
         else:
             xs = xs_raw
         lines.append(
             f"  * Kraken Tokenized Equities / xStocks (API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee; "
-            f"SPCXxUSD Hold-to-$180-$200 Directive, ANTxUSD IPO Playbook & T212 {xs.get('t212_sibling') if isinstance(xs, dict) else None} context): {xs}"
+            f"SPCXxUSD Active Swing Directive, ANTxUSD IPO Playbook & T212 {xs.get('t212_sibling') if isinstance(xs, dict) else None} context): {xs}"
         )
     if ps.get("cross_market_context"):
         cmc = ps["cross_market_context"]
@@ -1616,17 +1682,37 @@ def _format_portfolio_section(
             if cmc.get("equity_bellwethers") and scope_s != "equities":
                 eq_bw_raw = _clean_bw(cmc["equity_bellwethers"])
                 if scope_s == "crypto" and isinstance(eq_bw_raw, dict):
-                    _compact_eq_keys = ("price", "chg_15m_pct", "chg_1h_pct", "chg_24h_pct", "chg_7d_pct", "pos_24h_pct")
-                    has_major_eq = any(k != "RGNT_US_EQ" for k in eq_bw_raw)
-                    eq_bw_fmt: Any = {
-                        sk: ({k: sv[k] for k in _compact_eq_keys if k in sv and sv[k] is not None} if isinstance(sv, dict) else sv)
-                        for sk, sv in eq_bw_raw.items()
-                        if not (has_major_eq and sk == "RGNT_US_EQ")
-                    }
+                    _compact_eq_keys = (
+                        "price",
+                        "quote_source",
+                        "quote_age_min",
+                        "t212_close_px",
+                        "chg_15m_pct",
+                        "chg_1h_pct",
+                        "chg_24h_pct",
+                        "chg_7d_pct",
+                        "pos_24h_pct",
+                    )
+                    eq_bw_fmt: Dict[str, Any] = {}
+                    for sk, sv in eq_bw_raw.items():
+                        if isinstance(sv, dict):
+                            comp_d = {k: sv[k] for k in _compact_eq_keys if k in sv and sv[k] is not None}
+                            if isinstance(tc_raw := sv.get("t212_cycle"), dict) and tc_raw:
+                                tc_comp = {
+                                    tk: tc_raw[tk]
+                                    for tk in ("qty", "avg_cost_px", "pnl_vs_avg_pct", "dd_pct")
+                                    if tc_raw.get(tk) is not None
+                                    and not (tk == "pnl_vs_avg_pct" and tc_raw.get("dd_pct") is not None)
+                                }
+                                if tc_comp:
+                                    comp_d["t212_cycle"] = tc_comp
+                            eq_bw_fmt[sk] = comp_d
+                        else:
+                            eq_bw_fmt[sk] = sv
                 else:
                     eq_bw_fmt = eq_bw_raw
                 lines.append(
-                    f"  * Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles): {eq_bw_fmt}"
+                    f"  * Cross-Market US Equities Telemetry (Live/Extended & T212 Quotes, Multi-Horizon Deltas & Active Cycles): {eq_bw_fmt}"
                 )
     mb_bench_3c = (
         _extract_macro_benchmarks_line(

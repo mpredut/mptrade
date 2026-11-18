@@ -161,6 +161,7 @@ from instrument_registry import (
     discover_hyperliquid_spot,
     is_equity_symbol,
     is_symbol_market_open,
+    resolve_kraken_tokenized_pair,
 )
 from providers import t212_provider as _t212_prov_mod
 from providers.base import MarketDataProvider
@@ -583,6 +584,8 @@ def load_symbol_microstructure(
             m_info[k_dst] = round(val, 0) if val is not None else None
         m_info["bid_wall_px"] = safe_pos_float(obj_attr(ob, "largest_bid_wall_price", obj_attr(ob, "bid_wall_px")), default=None) if ob_same_quote else None
         m_info["ask_wall_px"] = safe_pos_float(obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px")), default=None) if ob_same_quote else None
+        if (b_span := safe_pos_float(obj_attr(ob, "book_span_pct"), default=None)) is not None:
+            m_info["book_span_pct"] = round(b_span, 3)
     if deriv is not None:
         deriv_ts_v = normalize_epoch_sec(obj_attr(deriv, "ts", obj_attr(deriv, "timestamp", None)), default=0.0) or 0.0
         if deriv_ts_v > 0.0:
@@ -620,6 +623,8 @@ def load_symbol_microstructure(
                 val_w = clean_scale(val_w, default=None, allow_percent=True)
             if val_w is not None or dst_k not in m_info:
                 m_info[dst_k] = val_w
+        if (sp_src := obj_attr(whale, "spot_cvd_source")) and isinstance(sp_src, str):
+            m_info["spot_cvd_source"] = sp_src.strip()
         w_oi = safe_pos_float(obj_attr(whale, "open_interest_usd", obj_attr(whale, "oi_usd")), default=None)
         deriv_oi = safe_pos_float(m_info.get("oi_usd"), default=None)
         if not deriv_oi and w_oi is not None:
@@ -738,12 +743,15 @@ def ensure_fresh_symbol_microstructure(
         return snap is not None and not collector_used_stale_fallback(col, sym_u)
 
     refreshed_any = False
+    is_tok_xstock = resolve_kraken_tokenized_pair(sym_u)[1]
     if _needs_fetch(CACHE_ORDERBOOK_DEPTH_PREFIX, max_age_ob_sec):
         try:
             if _run_fresh_collector(OrderbookDepthCollector):
                 refreshed_any = True
         except Exception:
             pass
+    if is_tok_xstock:
+        return refreshed_any
     if include_derivatives and _needs_fetch(CACHE_DERIVATIVES_TELEMETRY_PREFIX, max_age_whale_sec):
         try:
             if _run_fresh_collector(DerivativesTelemetryCollector):
@@ -1409,6 +1417,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         bcache_path, cached_bals, bcache_mtime = _load_venue_balances_state(cachedb_dir, _rj)
         t212_seeded_from_cache: set[str] = set()
         t212_pos_ts: Dict[str, float] = {}
+        t212_cached_px: Dict[str, float] = {}
         t212_seed_tickers = [ticker for _, ticker in _iter_t212_state_files(workspace_dir)]
         for bkey, bval in cached_bals.items():
             if isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(bval, dict):
@@ -1431,6 +1440,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             cached_t212_px = safe_pos_float(cached_pos.get("price") if isinstance(cached_pos, dict) else None, default=None)
             if cached_t212_px is not None:
                 cached_t212_px = round(cached_t212_px, 4)
+                t212_cached_px[ticker] = cached_t212_px
             pos_ts_val = safe_pos_float(cached_pos.get("ts") if isinstance(cached_pos, dict) else None, default=None)
             cp_raw = cp_map.get(ticker) if isinstance(cp_map, dict) else None
             cp_pt = _parse_ts_px_row(cp_raw[-1]) if isinstance(cp_raw, list) and cp_raw else None
@@ -1462,6 +1472,14 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             ):
                 t_entry["price"] = cached_t212_px
                 t212_seeded_from_cache.add(ticker)
+            if has_equity_suffix(ticker) and safe_pos_float(t_entry.get("price"), default=0.0):
+                try:
+                    t_rth_open = bool(is_symbol_market_open(ticker, eff_now))
+                except Exception:
+                    t_rth_open = False
+                t_entry.setdefault("quote_source", "t212_live" if t_rth_open else "t212_rth_close")
+                if (t_ts_v := t212_pos_ts.get(ticker, 0.0)) > 0.0 and 0.0 <= (eff_now - t_ts_v) <= 14 * 86400.0:
+                    t_entry["quote_age_min"] = round(max(0.0, eff_now - t_ts_v) / 60.0, 1)
 
         for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
             ensure_fresh_symbol_microstructure(
@@ -1514,6 +1532,17 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     )
                 ):
                     pt_map[sym]["price"] = sym_px_cur = round(last_24_px, 4)
+                    if is_eq_sym:
+                        try:
+                            eq_open_now = bool(is_symbol_market_open(sym, eff_now))
+                        except Exception:
+                            eq_open_now = False
+                        pt_map[sym]["quote_source"] = "yahoo_rth" if eq_open_now else "yahoo_ext"
+                        pt_map[sym]["quote_age_min"] = round(max(0.0, eff_now - (last_24_pt[0] / 1000.0)) / 60.0, 1)
+                        if (c_t212 := t212_cached_px.get(sym)) is not None and abs(sym_px_cur - c_t212) / max(sym_px_cur, c_t212) >= 0.0005:
+                            pt_map[sym]["t212_close_px"] = c_t212
+                        else:
+                            pt_map[sym].pop("t212_close_px", None)
                 if _prices_diverged(sym_px_cur, last_24_px, threshold=eq_div_thr):
                     matched_series_24h = []
                 elif last_24_px > 0 and abs(sym_px_cur - last_24_px) > 1e-9:
@@ -1622,6 +1651,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 s24_is_live_clock=s24_is_live_clock,
                 ohlc_fn=ohlc_fn,
                 inst_by_sym=inst_map,
+                cache_dir=cachedb_dir,
                 allow_network=allow_network,
             )
             pt_map[sym].pop("_partial_7d_span_ms", None)
@@ -1692,6 +1722,14 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                             ):
                                 pt_map[sym]["price"] = chart_px
                                 sym_px_cur = chart_px
+                                if is_eq_sym:
+                                    pt_map[sym]["quote_source"] = "yahoo_rth" if eq_rth_open else "yahoo_ext"
+                                    if raw_last_5d_ts > 1e11:
+                                        pt_map[sym]["quote_age_min"] = round(max(0.0, eff_now - (raw_last_5d_ts / 1000.0)) / 60.0, 1)
+                                    if (c_t212 := t212_cached_px.get(sym)) is not None and abs(sym_px_cur - c_t212) / max(sym_px_cur, c_t212) >= 0.0005:
+                                        pt_map[sym]["t212_close_px"] = c_t212
+                                    else:
+                                        pt_map[sym].pop("t212_close_px", None)
                             pts_24h_to_save = list(pts_24h)
                             px_diff_from_chart = bool(
                                 pts_24h
@@ -1783,11 +1821,29 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             is_exact_ob_sym = clean_symbol_key(src_cand_u) == clean_symbol_key(sym)
             cross_venue_collision = (not is_exact_ob_sym) and (src_cand_u in inst_map) and (sym in inst_map)
             if not is_eq_sym and is_usd_sym and isinstance(pt_map.get(sym), dict) and ob_mid_m is not None and not cross_venue_collision:
+                cp_raw_sym = casefold_get(cp_map, sym)
+                cp_last_pt = _parse_ts_px_row(cp_raw_sym[-1]) if isinstance(cp_raw_sym, list) and cp_raw_sym else None
+                eff_last_series_pt = (
+                    cp_last_pt
+                    if (cp_last_pt is not None and (raw_s24_last_pt is None or cp_last_pt[0] >= raw_s24_last_pt[0]))
+                    else raw_s24_last_pt
+                )
+                ob_is_live_and_newer = (
+                    (ob_ts_m <= 0.0 and cp_last_pt is None)
+                    or (
+                        ob_ts_m > 0.0
+                        and -5.0 <= (eff_now - ob_ts_m) <= 60.0
+                        and (eff_last_series_pt is None or ob_ts_m * 1000.0 >= eff_last_series_pt[0])
+                    )
+                )
                 if (
                     sym_px_m <= 0.0
-                    or (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01)
+                    or (
+                        ob_is_live_and_newer
+                        and abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01
+                    )
                     or is_ob_mid_fresher_than_series(
-                        sym_px_m, ob_mid_m, ob_ts_m, eff_now, raw_s24_last_pt, is_exact_ob_sym=is_exact_ob_sym
+                        sym_px_m, ob_mid_m, ob_ts_m, eff_now, eff_last_series_pt, is_exact_ob_sym=is_exact_ob_sym
                     )
                 ):
                     pt_map[sym]["price"] = ob_mid_m
@@ -1823,7 +1879,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
                     m_info.pop(k_strip, None)
             enrich_microstructure_cvd(m_info, pt_map.get(sym))
-            m_info.update(compute_liquidation_clusters(pt_map.get(sym), m_info))
+            m_info.update(compute_liquidation_clusters(pt_map.get(sym), m_info, symbol=sym))
             if m_info.get("spread_bps") is not None and isinstance(pt_map.get(sym), dict):
                 pt_map[sym]["spread_bps"] = m_info["spread_bps"]
             m_map[sym] = m_info
@@ -1872,7 +1928,12 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                                 )
                             if ob_ref_ts > 0.0 and (eff_now - ob_ref_ts) > 120.0:
                                 sib_live_px = p_ref_px if p_ref_px > 0.0 else None
-                    if _should_rescale_usd_sibling_walls(msym, sib_live_px, ob_mid_sib, p_ref_px):
+                    if _should_rescale_usd_sibling_walls(msym, sib_live_px, ob_mid_sib, p_ref_px) or (
+                        sib_live_px
+                        and sib_live_px > 0.0
+                        and (ob_ref_ts <= 0.0 or (eff_now - ob_ref_ts) > 60.0)
+                        and not _prices_diverged(sib_live_px, ob_mid_sib)
+                    ):
                         ob_mid_sib = rescale_orderbook_walls_to_price(m_info_ref, sib_live_px, ob_mid_sib)
                 if ob_mid_sib is not None and not _prices_diverged(ob_mid_sib, safe_float(p_ref.get("price"), 0.0)):
                     p_sib = dict(p_ref)
@@ -1916,7 +1977,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         p_ref.update(compute_7d_range_metrics(vals_7d))
                     pt_map[msym] = p_ref
             enrich_microstructure_cvd(m_info_ref, p_ref)
-            m_info_ref.update(compute_liquidation_clusters(p_ref, m_info_ref))
+            m_info_ref.update(compute_liquidation_clusters(p_ref, m_info_ref, symbol=msym))
             m_map[msym] = m_info_ref
         return pt_map, m_map
 
