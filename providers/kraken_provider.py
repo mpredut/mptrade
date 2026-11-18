@@ -36,7 +36,6 @@ from botcore import (
     resolve_patched_attr,
     safe_nonneg_float,
     safe_pos_float,
-    split_csv,
     _parse_bool_flag,
 )
 from .base import MarketDataProvider
@@ -80,7 +79,7 @@ from cachepaths import (
     symbol_quote_asset,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
-from instrument_registry import casefold_get, resolve_kraken_tokenized_pair, symbols_for
+from instrument_registry import casefold_get, resolve_kraken_tokenized_pair
 
 _MISSING = object()
 
@@ -243,51 +242,15 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
     @classmethod
     def resolve_cache_daemon_config(cls) -> dict:
         """Resolve validated Kraken trade-cache daemon configuration from instruments.conf and kraken/config.env."""
-        values = env_values_map(
-            _KRAKEN_DIR,
-            (
-                "KRAKEN_CACHE_PAIRS",
-                "KRAKEN_CACHE_POLL_S",
-                "KRAKEN_CACHE_BACKOFF_INIT_S",
-                "KRAKEN_CACHE_BACKOFF_MAX_S",
-                "KRAKEN_CACHE_MODE",
-                "KRAKEN_CACHE_LOOKBACK_H",
-            ),
+        cfg, values, req_pos_float = cls._resolve_base_cache_daemon_config(
+            _KRAKEN_DIR, venue_key="kraken", venue_label="Kraken", env_prefix="KRAKEN_CACHE",
+            symbols_env_key="KRAKEN_CACHE_PAIRS", symbols_out_key="pairs", cache_filename=CACHE_KRAKEN_TRADE_FILENAME,
+            extra_keys=("KRAKEN_CACHE_MODE", "KRAKEN_CACHE_LOOKBACK_H"),
         )
-        pairs = list(
-            dict.fromkeys(
-                s
-                for sym in [
-                    *symbols_for("kraken"),
-                    *split_csv(values.get("KRAKEN_CACHE_PAIRS"), upper=True),
-                ]
-                if (s := clean_upper_scalar(sym)) is not None
-            )
-        )
-        if not pairs:
-            raise RuntimeError(
-                "No Kraken cache pairs configured in instruments.conf or KRAKEN_CACHE_PAIRS"
-            )
-
-        def _req_pos_float(key: str) -> float:
-            val = safe_pos_float(values.get(key), default=None)
-            if val is None:
-                raise ValueError(f"Missing or invalid required Kraken cache setting: {key}")
-            return val
-
-        mode = (clean_scalar_str(values.get("KRAKEN_CACHE_MODE")) or "").lower()
-        if not mode:
+        if not (mode := (clean_scalar_str(values.get("KRAKEN_CACHE_MODE")) or "").lower()):
             raise ValueError("Missing required Kraken cache setting: KRAKEN_CACHE_MODE")
-        return {
-            "pairs": pairs,
-            "poll_interval": _req_pos_float("KRAKEN_CACHE_POLL_S"),
-            "backoff_init": _req_pos_float("KRAKEN_CACHE_BACKOFF_INIT_S"),
-            "backoff_max": _req_pos_float("KRAKEN_CACHE_BACKOFF_MAX_S"),
-            "mode": mode,
-            "lookback_sec": _req_pos_float("KRAKEN_CACHE_LOOKBACK_H") * 3600.0,
-            "ws_url": cls.PRIVATE_WS_URL,
-            "cache_file": cache_path(CACHE_KRAKEN_TRADE_FILENAME),
-        }
+        cfg.update(mode=mode, lookback_sec=req_pos_float("KRAKEN_CACHE_LOOKBACK_H") * 3600.0, ws_url=cls.PRIVATE_WS_URL)
+        return cfg
 
     @classmethod
     def build_cache_client(cls):

@@ -12,7 +12,7 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import clean_scale, fetch_json_post, safe_float, safe_pos_float
+from botcore import clean_scale, fetch_json_post, lru_dict_put, safe_float, safe_pos_float
 from intelligence.macro_sentiment_ssot import (
     fetch_public_json,
     resolve_derived_telemetry_intervals,
@@ -159,10 +159,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         url, post_body = req_spec
         try:
             raw_payload = self._fetch_spot_cvd_payload(url, post_body)
-            val = extractor(raw_payload, since_ts=max(0.0, now - 900.0))
-            if val is not None:
-                self._spot_cvd_memo[memo_key] = (now, float(val))
-                return float(val)
+            if (val_f := safe_float(extractor(raw_payload, since_ts=max(0.0, now - 900.0)), default=None)) is not None:
+                lru_dict_put(self._spot_cvd_memo, memo_key, (now, val_f), 128)
+                return val_f
         except Exception as exc:
             logger.debug("Could not fetch real 15m spot CVD for %s on %s: %s", symbol, venue, exc)
         return cached_cvd[1] if cached_cvd is not None and 0.0 <= (now - cached_cvd[0]) < ttl_sec * 3.0 else None

@@ -241,12 +241,27 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
 })
 
 
+_TOKEN_RUN_RE = re.compile(r"[a-z]+|[^\s\w]+|\d+")
+_ALPHA_WORD_2_RE = re.compile(r"[a-zA-Z]{2,}")
+_ALPHA_WORD_3_RE = re.compile(r"[a-zA-Z]{3,}")
+_ALNUM_WORD_2_RE = re.compile(r"[a-z0-9]{2,}")
+_PUBLISHER_SUFFIX_RE = re.compile(r"\s+[-|]\s+([^-|\u2013\u2014]+)$")
+
+
+def _collapse_lower_ws(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _alpha_word_set_3(text: str) -> Set[str]:
+    return set(_ALPHA_WORD_3_RE.findall(text))
+
+
 def _extract_contiguous_token_runs(text: str, stopwords: Set[str]) -> List[List[str]]:
     """Split ``text`` into contiguous runs of >=3-char non-stopword/non-noise alphabetic tokens."""
     eq_kws = set(split_csv(_cfg_str("feeds", "equity_entity_keywords"), lower=True))
     runs: List[List[str]] = []
     cur: List[str] = []
-    for raw_tok in re.findall(r"[a-z]+|[^\s\w]+|\d+", (text or "").lower()):
+    for raw_tok in _TOKEN_RUN_RE.findall((text or "").lower()):
         if (
             raw_tok.isalpha()
             and len(raw_tok) >= 3
@@ -267,12 +282,12 @@ def _is_noise_dynamic_keyword(term: Any, stopwords: Optional[Set[str]] = None) -
     """Return True if ``term`` is a generic stopword/publisher/lifestyle phrase that must not trigger [HIGH-SEV]."""
     if not isinstance(term, str):
         return True
-    t = re.sub(r"\s+", " ", term.strip().lower())
+    t = _collapse_lower_ws(term)
     sw = stopwords if stopwords is not None else _get_stopwords_set()
     if len(t) < 4 or t in _NOISE_LEXICON_PHRASES or t in sw:
         return True
     eq_kws = set(split_csv(_cfg_str("feeds", "equity_entity_keywords"), lower=True))
-    words = re.findall(r"[a-zA-Z]{2,}", t)
+    words = _ALPHA_WORD_2_RE.findall(t)
     return not words or any(
         w in sw or w in _NON_CRISIS_DYNAMIC_BIGRAM_WORDS or w in eq_kws for w in words
     )
@@ -284,7 +299,7 @@ def _is_excluded_non_crisis_attack_keyword(
     crisis_stems: Set[str],
 ) -> bool:
     """Return True if a keyword appears solely in a non-crisis local crime, partisan election, commercial metaphor, sports, or single-stock earnings context."""
-    kw_words = set(re.findall(r"[a-zA-Z]{3,}", (kw_clean or "").lower()))
+    kw_words = _alpha_word_set_3((kw_clean or "").lower())
     combined_words = text_words | kw_words
     kinetic_only = _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS - {
         "crude", "oil", "ceasefire", "escalation", "hormuz", "tehran", "pentagon", "idf", "military", "nuclear",
@@ -632,16 +647,15 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(
-    r"^(?:['‘\"].*['’\"]:\s*)?(?:i(?:['’]m|['’]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['’]re|['’]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^forget\s+[a-z0-9&-]+\.\s+here['’]?s\b|^why\s+[a-z0-9&-]+\s+stock\s+is\s+(?:up|down|rising|falling|climbing|dropping|soaring|sliding)\s+today\b|^best\s+[a-z0-9-]+\s+dip\s+buys\b|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|^etfs\s+(?:bought|sold)\s+\$[\d.]+\s+(?:million|billion)\s+of\b|\([a-z]{2,5}\)\s+(?:adds|buys|sells|trims|sees)\b.*\bon\s+(?:monday|tuesday|wednesday|thursday|friday|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z.]*\s+\d{1,2})\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid))\b"
+    r"^(?:['\u2018\"].*['\u2019\"]:\s*)?(?:i(?:['\u2019]m|['\u2019]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['\u2019]re|['\u2019]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['\u2018\"].*['\u2019\"]:\s*(?:i(?:['\u2019]m|['\u2019]ve|\s+have|\s+am)|we(?:['\u2019]re|['\u2019]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^forget\s+[a-z0-9&-]+\.\s+here['\u2019]?s\b|^why\s+[a-z0-9&-]+\s+stock\s+is\s+(?:up|down|rising|falling|climbing|dropping|soaring|sliding)\s+today\b|^best\s+[a-z0-9-]+\s+dip\s+buys\b|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|^etfs\s+(?:bought|sold)\s+\$[\d.]+\s+(?:million|billion)\s+of\b|\([a-z]{2,5}\)\s+(?:adds|buys|sells|trims|sees)\b.*\bon\s+(?:monday|tuesday|wednesday|thursday|friday|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z.]*\s+\d{1,2})\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid))\b"
 )
 
 
 def _is_editorial_clickbait_or_advice_title(title_low: str) -> bool:
     """Return True if a lowercase headline matches first-person financial advice or stock-pick clickbait."""
-    if not title_low:
-        return False
-    return any(p in title_low for p in _EDITORIAL_CLICKBAIT_SUBSTRINGS) or bool(
-        _EDITORIAL_CLICKBAIT_OR_ADVICE_RE.search(title_low)
+    return bool(
+        title_low
+        and (any(p in title_low for p in _EDITORIAL_CLICKBAIT_SUBSTRINGS) or _EDITORIAL_CLICKBAIT_OR_ADVICE_RE.search(title_low))
     )
 
 
@@ -650,9 +664,16 @@ _HYPHENATED_NEGATION_RE = re.compile(r"\b(de|non|anti|post|pre|counter)-([a-z]{3
 
 def _normalize_hyphenated_crisis_negations(text_low: str) -> str:
     """Collapse hyphenated prefixes like 'de-escalation', 'anti-war', 'post-war' into single tokens so they do not false-match 'escalation' or 'war'."""
-    if not text_low or "-" not in text_low:
-        return text_low
-    return _HYPHENATED_NEGATION_RE.sub(r"\1\2", text_low)
+    return _HYPHENATED_NEGATION_RE.sub(r"\1\2", text_low) if (text_low and "-" in text_low) else text_low
+
+
+def _normalize_non_clickbait_headline(title: Any) -> Optional[Tuple[str, Set[str]]]:
+    """Return ``(norm_title_low, title_words)`` when ``title`` is non-clickbait, else ``None``."""
+    title_low = _strip_headline_publisher_suffix(title).lower() if isinstance(title, str) and title.strip() else ""
+    if _is_editorial_clickbait_or_advice_title(title_low):
+        return None
+    norm_low = _normalize_hyphenated_crisis_negations(title_low)
+    return norm_low, (_alpha_word_set_3(norm_low) if norm_low else set())
 
 
 def filter_valid_severity_keywords(
@@ -663,21 +684,18 @@ def filter_valid_severity_keywords(
     now_ts: Optional[float] = None,
 ) -> Tuple[str, ...]:
     """Filter a headline's matched keywords, stripping generic stopword/publisher noise while keeping seed terms."""
-    seed_set = _get_seed_terms_set()
-    dyn_acute_set = set(load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("acute_shock_phrases", ()))
-    crisis_stems = _get_crisis_stems_set()
-    sw = _get_stopwords_set()
-    title_low = _strip_headline_publisher_suffix(title).lower() if isinstance(title, str) and title.strip() else ""
-    if _is_editorial_clickbait_or_advice_title(title_low):
+    norm_pair = _normalize_non_clickbait_headline(title)
+    if norm_pair is None:
         return ()
-    norm_title_low = _normalize_hyphenated_crisis_negations(title_low)
-    title_words = set(re.findall(r"[a-zA-Z]{3,}", norm_title_low)) if norm_title_low else set()
+    norm_title_low, title_words = norm_pair
+    seed_set, crisis_stems, sw = _get_seed_terms_set(), _get_crisis_stems_set(), _get_stopwords_set()
+    dyn_acute_set = set(load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("acute_shock_phrases", ()))
     out: List[str] = []
     if isinstance(raw_keywords, (list, tuple)):
         for k in raw_keywords:
             if not isinstance(k, str) or not k.strip():
                 continue
-            k_clean = re.sub(r"\s+", " ", k.strip()).lower()
+            k_clean = _collapse_lower_ws(k)
             if norm_title_low and not re.search(r"\b" + re.escape(k_clean) + r"\b", norm_title_low):
                 continue
             if _is_excluded_non_crisis_attack_keyword(k_clean, title_words, crisis_stems):
@@ -687,7 +705,7 @@ def filter_valid_severity_keywords(
                 or k_clean in dyn_acute_set
                 or (
                     not _is_noise_dynamic_keyword(k_clean, sw)
-                    and any(_token_matches_crisis_stem(w, crisis_stems) for w in re.findall(r"[a-zA-Z]{3,}", k_clean))
+                    and any(_token_matches_crisis_stem(w, crisis_stems) for w in _ALPHA_WORD_3_RE.findall(k_clean))
                 )
             ):
                 if k.strip() not in out:
@@ -702,10 +720,7 @@ def filter_valid_severity_keywords(
 def _strip_headline_publisher_suffix(title: str) -> str:
     """Strip trailing ' - Publisher Name' suffix from RSS headline titles before dynamic n-gram discovery."""
     cleaned = (title or "").strip()
-    while True:
-        m = re.search(r"\s+[-|]\s+([^-|–—]+)$", cleaned)
-        if not m:
-            break
+    while m := _PUBLISHER_SUFFIX_RE.search(cleaned):
         prefix = cleaned[: m.start()].strip()
         suffix_raw = m.group(1).strip()
         suffix_words = suffix_raw.split()
@@ -724,7 +739,7 @@ def _strip_headline_publisher_suffix(title: str) -> str:
 
 def _bigram_stem_signature(term: str) -> Tuple[str, ...]:
     """Return a canonical order-independent tuple of normalized stems for a lexicon phrase."""
-    tokens = [_normalize_semantic_stem(w) for w in re.findall(r"[a-z]{3,}", (term or "").lower())]
+    tokens = [_normalize_semantic_stem(w) for w in _ALPHA_WORD_3_RE.findall((term or "").lower())]
     return tuple(sorted(dict.fromkeys(t for t in tokens if t)))
 
 
@@ -752,7 +767,7 @@ def _extract_valid_dynamic_entries(
         if not isinstance(k, str) or not isinstance(v, dict):
             pruned = True
             continue
-        k_clean = re.sub(r"\s+", " ", k.strip().lower())
+        k_clean = _collapse_lower_ws(k)
         if _is_noise_dynamic_keyword(k_clean, stopwords):
             pruned = True
             continue
@@ -814,7 +829,7 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         for idx, (term, meta) in enumerate(entries.items()):
             if not isinstance(term, str) or not term.strip():
                 continue
-            t_clean = re.sub(r"\s+", " ", term.strip().lower())
+            t_clean = _collapse_lower_ws(term)
             if _is_noise_dynamic_keyword(t_clean, stopwords):
                 continue
             ts = normalize_epoch_sec(meta.get("ts") if isinstance(meta, dict) else meta, default=0.0) or 0.0
@@ -873,7 +888,7 @@ def update_dynamic_lexicon(
         ):
             if isinstance(raw_t, bool) or not isinstance(raw_t, str):
                 continue
-            t = re.sub(r"\s+", " ", raw_t.strip().lower())
+            t = _collapse_lower_ws(raw_t)
             if _is_noise_dynamic_keyword(t, stopwords):
                 continue
             sig = _bigram_stem_signature(t) or (t,)
@@ -961,7 +976,7 @@ def discover_dynamic_terms_from_headlines(
         raw_title = obj_attr(h, "title", "")
         if not isinstance(raw_title, str) or not raw_title.strip():
             continue
-        norm_title = re.sub(r"\s+", " ", _strip_headline_publisher_suffix(raw_title).lower()).strip()
+        norm_title = _collapse_lower_ws(_strip_headline_publisher_suffix(raw_title))
         if not norm_title:
             continue
         canon_url = canonical_article_url(obj_attr(h, "url", ""))
@@ -970,8 +985,7 @@ def discover_dynamic_terms_from_headlines(
         seen_norm_titles.add(norm_title)
         if canon_url:
             seen_canon_urls.add(canon_url)
-        all_words = re.findall(r"[a-zA-Z]{3,}", norm_title)
-        word_set = set(all_words)
+        word_set = _alpha_word_set_3(norm_title)
         eff_stems = set(crisis_stems)
         if word_set & _NON_CRISIS_STRIKE_CONTEXT_WORDS:
             eff_stems.discard("strike")
@@ -1095,12 +1109,13 @@ def build_equity_tickers_rss_url() -> str:
     return template.format(tickers=",".join(dedup_tickers)) if "{tickers}" in template else template
 
 
+def _headline_alnum_words_2(title: str) -> Set[str]:
+    return set(_ALNUM_WORD_2_RE.findall(_strip_headline_publisher_suffix(title).lower()))
+
+
 def has_tracked_equity_entity(title: Any) -> bool:
     """Return True if ``title`` explicitly mentions any tracked equity ticker or company keyword."""
-    if not isinstance(title, str) or not title.strip():
-        return False
-    words = set(re.findall(r"[a-z0-9]{2,}", _strip_headline_publisher_suffix(title).lower()))
-    if not words:
+    if not isinstance(title, str) or not title.strip() or not (words := _headline_alnum_words_2(title)):
         return False
     cfg_kws = set(split_csv(_cfg_str("feeds", "equity_entity_keywords"), lower=True))
     cfg_kws.update(base.lower() for base in _tracked_equity_base_tickers())
@@ -1111,9 +1126,8 @@ def has_tracked_equity_corporate_risk(title: Any) -> bool:
     """Return True if ``title`` mentions a tracked equity entity together with a corporate-risk keyword."""
     if not has_tracked_equity_entity(title) or is_excluded_reference_news_item(title):
         return False
-    words = set(re.findall(r"[a-z0-9]{2,}", _strip_headline_publisher_suffix(title).lower()))
     risk_kws = {k for k in split_csv(_cfg_str("feeds", "equity_corporate_risk_keywords"), lower=True) if k}
-    return bool(words & risk_kws)
+    return bool(_headline_alnum_words_2(title) & risk_kws)
 
 
 def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
@@ -1300,7 +1314,7 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     if not isinstance(title, str) or not title.strip() or is_excluded_reference_news_item(title):
         return False
     clean_low = _strip_headline_publisher_suffix(title).lower()
-    words = set(re.findall(r"[a-z]{3,}", clean_low))
+    words = _alpha_word_set_3(clean_low)
     matched_fin = words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS
     has_eq_entity = has_tracked_equity_entity(title)
     has_multi_theater_geo = len(words & _MAJOR_GEOPOLITICAL_THEATER_WORDS) >= 2 and bool(
@@ -1365,7 +1379,7 @@ def is_off_topic_general_news_title(title: Any) -> bool:
     if not isinstance(title, str) or not title.strip() or has_financial_or_geopolitical_context(title):
         return False
     clean_low = _strip_headline_publisher_suffix(title).lower()
-    if not (words := set(re.findall(r"[a-z]{3,}", clean_low))):
+    if not (words := _alpha_word_set_3(clean_low)):
         return False
     return _is_editorial_clickbait_or_advice_title(clean_low) or bool(
         words & (_SPORTS_CONTEXT_WORDS | _NON_CRISIS_ATTACK_CONTEXT_WORDS | _OFF_TOPIC_TABLOID_WORDS)
@@ -1384,9 +1398,7 @@ def headlines_are_semantic_duplicates(title_a: Any, title_b: Any) -> bool:
     if len(shared) < 4:
         return False
     overlap = len(shared) / min(len(stems_a), len(stems_b))
-    if overlap >= 0.60:
-        return True
-    return overlap >= 0.40 and len(shared - _GENERIC_HEADLINE_OVERLAP_STEMS) >= 3
+    return overlap >= 0.60 or (overlap >= 0.40 and len(shared - _GENERIC_HEADLINE_OVERLAP_STEMS) >= 3)
 
 
 def match_high_severity_keywords(
@@ -1395,18 +1407,17 @@ def match_high_severity_keywords(
     now_ts: Optional[float] = None,
 ) -> Tuple[str, ...]:
     """Return all matched high-severity keywords for ``text`` using the active lexicon."""
-    lower = _strip_headline_publisher_suffix(text or "").lower()
-    if not lower or _is_editorial_clickbait_or_advice_title(lower):
+    norm_pair = _normalize_non_clickbait_headline(text)
+    if norm_pair is None or not norm_pair[0]:
         return ()
-    norm_low = _normalize_hyphenated_crisis_negations(lower)
+    norm_low, text_words = norm_pair
     seed_set, crisis_stems = _get_seed_terms_set(), _get_crisis_stems_set()
-    text_words = set(re.findall(r"[a-zA-Z]{3,}", norm_low))
     return tuple(
         kw
         for kw in get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts)
         if kw in norm_low
         and not _is_excluded_non_crisis_attack_keyword(kw, text_words, crisis_stems)
-        and (kw in seed_set or any(_token_matches_crisis_stem(w, crisis_stems) for w in re.findall(r"[a-zA-Z]{3,}", kw)))
+        and (kw in seed_set or any(_token_matches_crisis_stem(w, crisis_stems) for w in _ALPHA_WORD_3_RE.findall(kw)))
         and re.search(r"\b" + re.escape(kw) + r"\b", norm_low)
     )
 
@@ -1421,17 +1432,13 @@ def has_acute_shock_keywords(
         return False
     phrases = get_active_acute_shock_phrases(cache_dir=cache_dir, now_ts=now_ts)
     crisis_stems = _get_crisis_stems_set()
-    items = (texts,) if isinstance(texts, str) else texts
-    for t in items:
-        low = _strip_headline_publisher_suffix(str(obj_attr(t, "title", None) or (t if isinstance(t, str) else ""))).lower()
-        if not low or _is_editorial_clickbait_or_advice_title(low):
+    for t in ((texts,) if isinstance(texts, str) else texts):
+        raw_t = str(obj_attr(t, "title", None) or (t if isinstance(t, str) else ""))
+        norm_pair = _normalize_non_clickbait_headline(raw_t)
+        if norm_pair is None or not norm_pair[0]:
             continue
-        norm_low = _normalize_hyphenated_crisis_negations(low)
-        words = set(re.findall(r"[a-zA-Z]{3,}", norm_low))
-        if any(
-            p in norm_low and not _is_excluded_non_crisis_attack_keyword(p, words, crisis_stems)
-            for p in phrases
-        ):
+        norm_low, words = norm_pair
+        if any(p in norm_low and not _is_excluded_non_crisis_attack_keyword(p, words, crisis_stems) for p in phrases):
             return True
     return False
 

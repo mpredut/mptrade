@@ -34,10 +34,8 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
-    split_csv,
 )
 from cachepaths import CACHE_T212_TRADE_FILENAME, cache_path, canonical_base_asset, same_canonical_base_asset
-from instrument_registry import symbols_for
 from .base import MarketDataProvider
 from .broker_history import (
     aggregate_broker_history_fills,
@@ -176,43 +174,10 @@ class T212Provider(MarketDataProvider):
     @classmethod
     def resolve_cache_daemon_config(cls) -> dict:
         """Resolve Trading 212 periodic history/trade cache producer settings."""
-        values = env_values_map(
-            _T212_DIR,
-            (
-                "T212_CACHE_TICKERS",
-                "T212_CACHE_POLL_S",
-                "T212_CACHE_BACKOFF_INIT_S",
-                "T212_CACHE_BACKOFF_MAX_S",
-            ),
-        )
-        symbols = list(
-            dict.fromkeys(
-                s
-                for sym in [
-                    *symbols_for("t212"),
-                    *split_csv(values.get("T212_CACHE_TICKERS"), upper=True),
-                ]
-                if (s := str(sym or "").strip().upper())
-            )
-        )
-        if not symbols:
-            raise RuntimeError(
-                "No T212 cache symbols configured in instruments.conf or T212_CACHE_TICKERS"
-            )
-
-        def _req_pos_float(key: str) -> float:
-            val = safe_pos_float(values.get(key), default=None)
-            if val is None:
-                raise ValueError(f"Missing or invalid required T212 cache setting: {key}")
-            return val
-
-        return {
-            "symbols": symbols,
-            "poll_interval": _req_pos_float("T212_CACHE_POLL_S"),
-            "backoff_init": _req_pos_float("T212_CACHE_BACKOFF_INIT_S"),
-            "backoff_max": _req_pos_float("T212_CACHE_BACKOFF_MAX_S"),
-            "cache_file": cache_path(CACHE_T212_TRADE_FILENAME),
-        }
+        return cls._resolve_base_cache_daemon_config(
+            _T212_DIR, venue_key="t212", venue_label="T212", env_prefix="T212_CACHE",
+            symbols_env_key="T212_CACHE_TICKERS", symbols_out_key="symbols", cache_filename=CACHE_T212_TRADE_FILENAME,
+        )[0]
 
     @classmethod
     def build_cache_client(cls):

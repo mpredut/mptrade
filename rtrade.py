@@ -784,8 +784,9 @@ def _is_gi_whale_enforced(bypass_guards=None, *, symbol: str | None = None, venu
 _ORIG_IS_GI_WHALE_ENFORCED = _is_gi_whale_enforced
 
 
-def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None, venue: str | None = None) -> tuple[bool, str]:
-    """Check if whale taker flow or OI divergence conflicts with initiating an rtrade round."""
+def _resolve_whale_guard_venue_and_enforced(
+    symbol: str, bypass_guards=None, venue: str | None = None
+) -> tuple[str, bool]:
     eff_venue = resolve_symbol_provider_name(
         symbol, market_api=mkt, explicit_venue=venue, fallback="binance", lowercase=True
     )
@@ -794,6 +795,12 @@ def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None, venue
         if _is_gi_whale_enforced is _ORIG_IS_GI_WHALE_ENFORCED
         else _is_gi_whale_enforced(bypass_guards)
     )
+    return eff_venue, enforced
+
+
+def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None, venue: str | None = None) -> tuple[bool, str]:
+    """Check if whale taker flow or OI divergence conflicts with initiating an rtrade round."""
+    eff_venue, enforced = _resolve_whale_guard_venue_and_enforced(symbol, bypass_guards, venue)
     return sys.modules.get("external_order_guard", eog).evaluate_whale_spread_flow(
         symbol, side, bypass_guards=bypass_guards, enforced=enforced, venue=eff_venue
     )
@@ -801,14 +808,7 @@ def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None, venue
 
 def _effective_adjustment_fraction(symbol: str, base_adjustment: float, *, bypass_guards=None, venue: str | None = None) -> float:
     """Widen grid quote adjustment when moderate taker flow pressure exists."""
-    eff_venue = resolve_symbol_provider_name(
-        symbol, market_api=mkt, explicit_venue=venue, fallback="binance", lowercase=True
-    )
-    enforced = (
-        _is_gi_whale_enforced(bypass_guards, venue=eff_venue)
-        if _is_gi_whale_enforced is _ORIG_IS_GI_WHALE_ENFORCED
-        else _is_gi_whale_enforced(bypass_guards)
-    )
+    eff_venue, enforced = _resolve_whale_guard_venue_and_enforced(symbol, bypass_guards, venue)
     return sys.modules.get("external_order_guard", eog).resolve_whale_spread_adjustment(
         symbol, base_adjustment, bypass_guards=bypass_guards, enforced=enforced, venue=eff_venue
     )

@@ -188,6 +188,14 @@ read_json_cached = _default_read_json_dict_recovering
 
 logger = logging.getLogger(__name__)
 
+_ALPHA_WORD_3_RE = re.compile(r"[a-zA-Z]{3,}")
+_CRON_STEP_MIN_RE = re.compile(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*\s+")
+_TAX_SEP_RE = re.compile(r"[\s\-]+")
+
+
+def _clean_taxonomy_token(value: Any) -> str:
+    return "" if isinstance(value, bool) else _TAX_SEP_RE.sub("_", str(value or "").strip().upper())
+
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO_CACHEDB_DIR = os.path.abspath(os.path.join(_ROOT_DIR, "cachedb"))
 DEFAULT_MACRO_CONFIG_PATH = os.path.join(_ROOT_DIR, "macro_intelligence.conf")
@@ -496,14 +504,14 @@ def extract_high_severity_headlines_and_digest(
             raw_kws = obj_attr(h, "matched_keywords", None)
             if isinstance(raw_kws, (list, tuple)) and raw_kws and title_s:
                 clean_kws = [
-                    re.sub(r"\s+", " ", k.strip()).lower()
+                    " ".join(k.lower().split())
                     for k in raw_kws
                     if isinstance(k, str) and k.strip()
                 ]
                 if clean_kws and not filter_valid_kws(
                     raw_kws, title=title_s, cache_dir=cache_dir, now_ts=now_ts
                 ):
-                    title_words = set(re.findall(r"[a-zA-Z]{3,}", title_s.lower()))
+                    title_words = set(_ALPHA_WORD_3_RE.findall(title_s.lower()))
                     crisis_stems = get_crisis_stems()
                     seed_set = get_seed_terms()
                     sw = get_stopwords()
@@ -604,7 +612,7 @@ def resolve_crypto_executor_interval_sec(
                 line = (raw_line or "").strip()
                 if not line or line.startswith("#") or "auto_cryptotrade_executor" not in line:
                     continue
-                m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*\s+", line)
+                m = _CRON_STEP_MIN_RE.match(line)
                 if m:
                     mins = safe_pos_float(m.group(1), 0.0)
                     if mins > 0.0:
@@ -873,10 +881,7 @@ def _bind_taxonomy_normalizer(
 ):
     return lambda value, default=None: (
         cleaned
-        if (
-            cleaned := ("" if isinstance(value, bool) else re.sub(r"[\s\-]+", "_", str(value or "").strip().upper()))
-        )
-        in (allowed := _tax_tuple(tax_key))
+        if (cleaned := _clean_taxonomy_token(value)) in (allowed := _tax_tuple(tax_key))
         else _parse_kv_map(_cfg_str("taxonomies", alias_cfg_key)).get(
             cleaned,
             default if (default and default in allowed) else (allowed[default_idx] if len(allowed) > default_idx else fallback_str),
@@ -892,7 +897,7 @@ normalize_threat_level = _bind_taxonomy_normalizer("threat_levels", "threat_alia
 
 def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) -> str:
     brakes = _tax_tuple("recommended_brakes")
-    cleaned = "" if isinstance(value, bool) else re.sub(r"[\s\-]+", "_", str(value or "").strip().upper())
+    cleaned = _clean_taxonomy_token(value)
     if cleaned in brakes:
         return cleaned
     if (aliased := _parse_kv_map(_cfg_str("taxonomies", "brake_aliases")).get(cleaned)) is not None:

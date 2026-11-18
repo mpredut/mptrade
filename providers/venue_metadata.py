@@ -10,13 +10,16 @@ from typing import Any, Optional
 
 from botcore import (
     _parse_bool_flag,
+    env_values_map,
     load_env_file_defaults,
     lru_dict_put,
     resolve_patched_attr,
     safe_nonneg_int,
     safe_pos_float,
+    split_csv,
 )
 from cachepaths import (
+    cache_path,
     canonical_symbol_key,
     clean_scalar_str,
     clean_symbol_key,
@@ -284,6 +287,32 @@ class ProviderVenueMetadataMixin:
             prov_scope = str(getattr(prov_cls, "_ASSET_SCOPE", "crypto") or "crypto").strip().lower()
             if rel and (scope == "all" or scope == prov_scope):
                 loader(str(ws_path.joinpath(*rel)))
+
+    @classmethod
+    def _resolve_base_cache_daemon_config(
+        cls, env_dir: Any, *, venue_key: str, venue_label: str, env_prefix: str,
+        symbols_env_key: str, symbols_out_key: str, cache_filename: str, extra_keys: tuple[str, ...] = (),
+    ) -> tuple[dict, dict, Any]:
+        """Resolve common venue trade-cache daemon settings (symbols, poll/backoff floats, cache_file)."""
+        poll_k, b_init_k, b_max_k = f"{env_prefix}_POLL_S", f"{env_prefix}_BACKOFF_INIT_S", f"{env_prefix}_BACKOFF_MAX_S"
+        values = env_values_map(env_dir, (symbols_env_key, poll_k, b_init_k, b_max_k, *extra_keys))
+        syms = list(dict.fromkeys(
+            s for raw in [*_default_ir.symbols_for(venue_key), *split_csv(values.get(symbols_env_key), upper=True)]
+            if (s := clean_upper_scalar(raw)) is not None
+        ))
+        if not syms:
+            raise RuntimeError(f"No {venue_label} cache {symbols_out_key} configured in instruments.conf or {symbols_env_key}")
+
+        def _req_pos_float(key: str) -> float:
+            if (val := safe_pos_float(values.get(key), default=None)) is None:
+                raise ValueError(f"Missing or invalid required {venue_label} cache setting: {key}")
+            return val
+
+        return {
+            symbols_out_key: syms, "poll_interval": _req_pos_float(poll_k),
+            "backoff_init": _req_pos_float(b_init_k), "backoff_max": _req_pos_float(b_max_k),
+            "cache_file": cache_path(cache_filename),
+        }, values, _req_pos_float
 
     @classmethod
     def resolve_provider_cached_fee_and_limits(
