@@ -128,39 +128,32 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
             prefer_static_tick,
         ) = MarketDataProvider.resolve_venue_default_fee_and_precision(v_norm, px_f)
 
+        min_qty, step_size, tick_size = default_step, default_step, default_tick
+
+        def _apply_fee_meta(meta: Dict[str, Any], *, include_limits: bool = True, allow_tick: bool = True) -> None:
+            nonlocal fee_tier, maker_bps, taker_bps, min_notional, min_qty, step_size, tick_size
+            if not meta:
+                return
+            if meta.get("fee_tier"):
+                fee_tier = str(meta["fee_tier"]).strip()
+            maker_bps = safe_nonneg_float(meta.get("maker_fee_bps"), default=maker_bps)
+            taker_bps = safe_nonneg_float(meta.get("taker_fee_bps"), default=taker_bps)
+            if include_limits:
+                min_notional = safe_pos_float(meta.get("min_notional"), default=min_notional)
+                min_qty = safe_pos_float(meta.get("min_qty"), default=min_qty)
+                step_size = safe_pos_float(meta.get("step_size"), default=step_size)
+                if allow_tick:
+                    tick_size = safe_pos_float(meta.get("tick_size"), default=tick_size)
+
         if cache_dir:
-            persisted_fee = read_persisted_venue_fee_spec(v_norm, symbol, cache_dir=cache_dir)
-            if persisted_fee:
-                if persisted_fee.get("fee_tier"):
-                    fee_tier = str(persisted_fee["fee_tier"]).strip()
-                maker_bps = safe_nonneg_float(persisted_fee.get("maker_fee_bps"), default=maker_bps)
-                taker_bps = safe_nonneg_float(persisted_fee.get("taker_fee_bps"), default=taker_bps)
-
+            _apply_fee_meta(read_persisted_venue_fee_spec(v_norm, symbol, cache_dir=cache_dir), include_limits=False)
         params = getattr(inst, "params", {}) if inst is not None and isinstance(getattr(inst, "params", None), dict) else {}
-        if params.get("fee_tier"):
-            fee_tier = str(params["fee_tier"]).strip()
-        maker_bps = safe_nonneg_float(params.get("maker_fee_bps"), default=maker_bps)
-        taker_bps = safe_nonneg_float(params.get("taker_fee_bps"), default=taker_bps)
-        min_notional = safe_pos_float(params.get("min_notional"), default=min_notional)
-        min_qty = safe_pos_float(params.get("min_qty"), default=default_step)
-        step_size = safe_pos_float(params.get("step_size"), default=default_step)
-        tick_size = safe_pos_float(params.get("tick_size"), default=default_tick)
-
-        cached_meta: Dict[str, Any] = {}
+        _apply_fee_meta(params)
         if inst is not None:
-            cached_meta = MarketDataProvider.resolve_instrument_cached_fee_and_limits(
-                inst, v_norm, symbol, price=px_f
+            _apply_fee_meta(
+                MarketDataProvider.resolve_instrument_cached_fee_and_limits(inst, v_norm, symbol, price=px_f),
+                allow_tick=not prefer_static_tick or safe_pos_float(params.get("tick_size"), default=None) is None,
             )
-        if cached_meta:
-            if cached_meta.get("fee_tier"):
-                fee_tier = str(cached_meta["fee_tier"]).strip()
-            maker_bps = safe_nonneg_float(cached_meta.get("maker_fee_bps"), default=maker_bps)
-            taker_bps = safe_nonneg_float(cached_meta.get("taker_fee_bps"), default=taker_bps)
-            min_notional = safe_pos_float(cached_meta.get("min_notional"), default=min_notional)
-            min_qty = safe_pos_float(cached_meta.get("min_qty"), default=min_qty)
-            step_size = safe_pos_float(cached_meta.get("step_size"), default=step_size)
-            if not prefer_static_tick or safe_pos_float(params.get("tick_size"), default=None) is None:
-                tick_size = safe_pos_float(cached_meta.get("tick_size"), default=tick_size)
 
         out: Dict[str, Any] = {
             "fee_tier": fee_tier,
@@ -306,6 +299,8 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             dec = max(MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px), obs_dec)
             queue_penalty = 1.0
             if isinstance(m_entry, dict) and side in ("SELL", "BUY"):
+                is_sell = side == "SELL"
+                w_pfx, w_tag = ("ask", "ASK") if is_sell else ("bid", "BID")
                 sp_bps = safe_nonneg_float(m_entry.get("spread_bps"), default=2.0)
                 best_bid_px = safe_pos_float(m_entry.get("best_bid"), default=None) or (
                     spot_px * (1.0 - sp_bps / 20000.0) if spot_px and spot_px > 0.0 else None
@@ -314,76 +309,54 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                     spot_px * (1.0 + sp_bps / 20000.0) if spot_px and spot_px > 0.0 else None
                 )
                 tick_step = 10.0 ** (-dec)
-                side_depth_usd = (
-                    safe_pos_float(m_entry.get("ask_depth_usd" if side == "SELL" else "bid_depth_usd"), default=0.0)
-                    or 0.0
-                )
+                side_depth_usd = safe_pos_float(m_entry.get(f"{w_pfx}_depth_usd"), default=0.0) or 0.0
                 min_wall_usd = max(2500.0, side_depth_usd * 0.02) if side_depth_usd > 0.0 else 5000.0
-
-                def _scale_wall_penalty(base_pen: float, wall_u: float) -> float:
-                    ref_depth = max(side_depth_usd * 0.5, 50000.0)
-                    wall_weight = min(1.0, max(0.15, wall_u / ref_depth))
-                    return 1.0 - (1.0 - base_pen) * wall_weight
-
-                def _set_wall_queue(
-                    pos_label: str,
-                    wall_prefix: str,
-                    wall_px: float,
-                    wall_usd: float,
-                    penalty: float,
-                    *,
-                    front_run_px: Optional[float] = None,
-                ) -> float:
-                    o.update({
-                        "wall_queue_pos": pos_label,
-                        f"{wall_prefix}_wall_ahead_px": wall_px,
-                        f"{wall_prefix}_wall_ahead_usd": round(wall_usd, 0),
-                    })
-                    if front_run_px is not None:
-                        o["recommended_front_run_px"] = front_run_px
-                    return _scale_wall_penalty(penalty, wall_usd)
-
-                if side == "SELL":
-                    aw_px = safe_pos_float(m_entry.get("ask_wall_px"), default=None)
-                    aw_usd = safe_pos_float(m_entry.get("ask_wall_usd"), default=0.0) or 0.0
-                    if aw_px is not None and aw_px > 0.0 and aw_usd >= min_wall_usd and (not spot_px or aw_px >= spot_px * 1.0002):
-                        can_front_run = (not spot_px or aw_px >= spot_px * 1.0015) and abs(lim_px - aw_px) / aw_px <= 0.015
-                        raw_fr = aw_px - max(tick_step, min(aw_px * 0.0001, 5.0))
+                w_px = safe_pos_float(m_entry.get(f"{w_pfx}_wall_px"), default=None)
+                w_usd = safe_pos_float(m_entry.get(f"{w_pfx}_wall_usd"), default=0.0) or 0.0
+                wall_on_side = not spot_px or (w_px >= spot_px * 1.0002 if is_sell else w_px <= spot_px * 0.9998)
+                if w_px is not None and w_px > 0.0 and w_usd >= min_wall_usd and wall_on_side:
+                    can_fr = (
+                        not spot_px or (w_px >= spot_px * 1.0015 if is_sell else w_px <= spot_px * 0.9985)
+                    ) and abs(lim_px - w_px) / w_px <= 0.015
+                    fr_step = max(tick_step, min(w_px * 0.0001, 5.0))
+                    if is_sell:
+                        raw_fr = w_px - fr_step
                         floor_ask = max(best_ask_px or 0.0, (spot_px or 0.0) * 1.0002)
                         if floor_ask > 0.0:
                             raw_fr = max(floor_ask + tick_step, raw_fr)
-                        fr_px = round(min(aw_px, raw_fr), dec)
-                        eff_fr = fr_px if (can_front_run and fr_px < aw_px and fr_px < lim_px) else None
-                        if lim_px > aw_px * 1.015:
-                            queue_penalty = _set_wall_queue("FAR_ABOVE_ASK_WALL", "ask", aw_px, aw_usd, 0.85)
-                        elif lim_px > aw_px * 1.0003:
-                            queue_penalty = _set_wall_queue("BEHIND_ASK_WALL", "ask", aw_px, aw_usd, 0.60, front_run_px=eff_fr)
-                        elif lim_px >= aw_px - 0.5 * tick_step and (lim_px - aw_px) / aw_px <= 0.0003:
-                            queue_penalty = _set_wall_queue("AT_ASK_WALL", "ask", aw_px, aw_usd, 0.78, front_run_px=eff_fr)
-                        else:
-                            o["wall_queue_pos"] = "FRONT_OF_ASK_WALL"
-                else:
-                    bw_px = safe_pos_float(m_entry.get("bid_wall_px"), default=None)
-                    bw_usd = safe_pos_float(m_entry.get("bid_wall_usd"), default=0.0) or 0.0
-                    if bw_px is not None and bw_px > 0.0 and bw_usd >= min_wall_usd and (not spot_px or bw_px <= spot_px * 0.9998):
-                        can_front_run = (not spot_px or bw_px <= spot_px * 0.9985) and abs(lim_px - bw_px) / bw_px <= 0.015
-                        raw_fr = bw_px + max(tick_step, min(bw_px * 0.0001, 5.0))
+                        fr_px = round(min(w_px, raw_fr), dec)
+                        eff_fr = fr_px if (can_fr and fr_px < w_px and fr_px < lim_px) else None
+                        far_behind, behind = lim_px > w_px * 1.015, lim_px > w_px * 1.0003
+                        at_wall = lim_px >= w_px - 0.5 * tick_step and (lim_px - w_px) / w_px <= 0.0003
+                    else:
+                        raw_fr = w_px + fr_step
                         ceil_bid = min(
-                            best_bid_px if best_bid_px and best_bid_px > 0.0 else bw_px * 2.0,
-                            (spot_px * 0.9998) if spot_px and spot_px > 0.0 else bw_px * 2.0,
+                            best_bid_px if best_bid_px and best_bid_px > 0.0 else w_px * 2.0,
+                            (spot_px * 0.9998) if spot_px and spot_px > 0.0 else w_px * 2.0,
                         )
                         if ceil_bid > 0.0:
                             raw_fr = min(ceil_bid - tick_step, raw_fr)
-                        fr_px = round(max(bw_px, raw_fr), dec)
-                        eff_fr = fr_px if (can_front_run and fr_px > bw_px and fr_px > lim_px) else None
-                        if lim_px < bw_px * 0.985:
-                            queue_penalty = _set_wall_queue("DEEP_PASSIVE_BID", "bid", bw_px, bw_usd, 0.85)
-                        elif lim_px < bw_px * 0.9997:
-                            queue_penalty = _set_wall_queue("BEHIND_BID_WALL", "bid", bw_px, bw_usd, 0.60, front_run_px=eff_fr)
-                        elif lim_px <= bw_px + 0.5 * tick_step and (bw_px - lim_px) / bw_px <= 0.0003:
-                            queue_penalty = _set_wall_queue("AT_BID_WALL", "bid", bw_px, bw_usd, 0.78, front_run_px=eff_fr)
-                        else:
-                            o["wall_queue_pos"] = "FRONT_OF_BID_WALL"
+                        fr_px = round(max(w_px, raw_fr), dec)
+                        eff_fr = fr_px if (can_fr and fr_px > w_px and fr_px > lim_px) else None
+                        far_behind, behind = lim_px < w_px * 0.985, lim_px < w_px * 0.9997
+                        at_wall = lim_px <= w_px + 0.5 * tick_step and (w_px - lim_px) / w_px <= 0.0003
+                    if far_behind or behind or at_wall:
+                        pos_lbl, base_pen, use_fr = (
+                            ("FAR_ABOVE_ASK_WALL" if is_sell else "DEEP_PASSIVE_BID", 0.85, None)
+                            if far_behind
+                            else ((f"BEHIND_{w_tag}_WALL", 0.60, eff_fr) if behind else (f"AT_{w_tag}_WALL", 0.78, eff_fr))
+                        )
+                        o.update({
+                            "wall_queue_pos": pos_lbl,
+                            f"{w_pfx}_wall_ahead_px": w_px,
+                            f"{w_pfx}_wall_ahead_usd": round(w_usd, 0),
+                        })
+                        if use_fr is not None:
+                            o["recommended_front_run_px"] = use_fr
+                        wall_weight = min(1.0, max(0.15, w_usd / max(side_depth_usd * 0.5, 50000.0)))
+                        queue_penalty = 1.0 - (1.0 - base_pen) * wall_weight
+                    else:
+                        o["wall_queue_pos"] = f"FRONT_OF_{w_tag}_WALL"
             z_dist = dist_pct / vol_1h
             # BY DESIGN: Student-t (nu=3.5) barrier kernel matching exp(-0.5*z^2) near z<=1 (>50% at 1 sigma)
             # with fat-tail continuity at 2-4 sigma once vol_1h uses Parkinson span_24h/8 rather than 0.20*span_24h.
@@ -623,26 +596,39 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
             "slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel",
         )
         _round_slope_keys = {"slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel"}
-        crypto_bellwethers: Dict[str, Any] = {}
-        for b_canon, (sym, pinfo) in sorted(by_base.items()):
-            if has_equity_suffix(sym) or (px_f := safe_float(pinfo.get("price"), 0.0) or 0.0) <= 0:
-                continue
-            is_sub24h_dup_7d = (
+        _bellwether_micro_keys = (
+            "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",
+            "cvd_15m_usd", "cvd_regime", "spot_cvd_15m_usd", "spot_perp_flow_regime", "perp_spot_basis_bps",
+            "depth_1pct_bid_usd", "depth_1pct_ask_usd",
+        )
+
+        def _extract_bellwether_horizons(pinfo: Dict[str, Any], *, drop_zero_kalman: bool = False) -> Tuple[Dict[str, Any], bool]:
+            dup_7d = (
                 "chg_24h_pct" not in pinfo
                 and pinfo.get("low_24h") is not None
                 and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
             )
-            cb_entry: Dict[str, Any] = {
-                "symbol": sym, "price": round(px_f, 6),
-                **{
-                    k: (((safe_float(f"{sf_v:.2e}", default=0.0) or 0.0) if 0.0 < abs(sf_v) < 1e-4 else round(sf_v, 6)) + 0.0 if k in _round_slope_keys else pinfo[k])
-                    for k in raw_horizon_keys
-                    if pinfo.get(k) is not None
-                    and not (k == "chg_7d_pct" and is_sub24h_dup_7d)
-                    and not (k == "profile_shape" and pinfo.get(k) != "BIMODAL")
-                    and (k not in _round_slope_keys or (sf_v := safe_float(pinfo.get(k), default=None)) is not None)
-                },
+            fields = {
+                k: (
+                    ((safe_float(f"{sf_v:.2e}", default=0.0) or 0.0) if 0.0 < abs(sf_v) < 1e-4 else round(sf_v, 6)) + 0.0
+                    if k in _round_slope_keys
+                    else pinfo[k]
+                )
+                for k in raw_horizon_keys
+                if pinfo.get(k) is not None
+                and not (k == "chg_7d_pct" and dup_7d)
+                and not (k == "profile_shape" and pinfo.get(k) != "BIMODAL")
+                and (k not in _round_slope_keys or (sf_v := safe_float(pinfo.get(k), default=None)) is not None)
+                and not (drop_zero_kalman and k == "kalman_vel" and abs(sf_v) < 1e-9)
             }
+            return fields, dup_7d
+
+        crypto_bellwethers: Dict[str, Any] = {}
+        for b_canon, (sym, pinfo) in sorted(by_base.items()):
+            if has_equity_suffix(sym) or (px_f := safe_float(pinfo.get("price"), 0.0) or 0.0) <= 0:
+                continue
+            h_fields, _ = _extract_bellwether_horizons(pinfo)
+            cb_entry: Dict[str, Any] = {"symbol": sym, "price": round(px_f, 6), **h_fields}
             sym_quotes = compatible_quote_suffixes(sym)
             m_info, m_same_quote = casefold_get(microstructure, sym), True
             if not isinstance(m_info, dict):
@@ -660,9 +646,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                     m_info, m_same_quote = None, False
             if isinstance(m_info, dict):
                 for mk_copy in (
-                    "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",
-                    "cvd_15m_usd", "cvd_regime", "spot_cvd_15m_usd", "spot_perp_flow_regime", "perp_spot_basis_bps",
-                    "depth_1pct_bid_usd", "depth_1pct_ask_usd",
+                    *_bellwether_micro_keys,
                     *(("long_liq_px", "long_liq_usd", "short_liq_px", "short_liq_usd", "liq_magnet_bias") if m_same_quote else ()),
                 ):
                     if m_info.get(mk_copy) is not None:
@@ -699,11 +683,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                 {},
             )
             eq_px_f = safe_pos_float(pinfo.get("price"), default=None)
-            is_sub24h_dup_7d = (
-                "chg_24h_pct" not in pinfo
-                and pinfo.get("low_24h") is not None
-                and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
-            )
+            eq_horizons, is_sub24h_dup_7d = _extract_bellwether_horizons(pinfo, drop_zero_kalman=True)
             eq_entry: Dict[str, Any] = {
                 "symbol": eq_sym,
                 **({"price": round(eq_px_f, 6)} if eq_px_f is not None else {}),
@@ -712,15 +692,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                     for qm_k in ("quote_source", "quote_age_min", "t212_close_px")
                     if pinfo.get(qm_k) is not None
                 },
-                **{
-                    k: (((safe_float(f"{sf_v:.2e}", default=0.0) or 0.0) if 0.0 < abs(sf_v) < 1e-4 else round(sf_v, 6)) + 0.0 if k in _round_slope_keys else pinfo[k])
-                    for k in raw_horizon_keys
-                    if pinfo.get(k) is not None
-                    and not (k == "chg_7d_pct" and is_sub24h_dup_7d)
-                    and not (k == "profile_shape" and pinfo.get(k) != "BIMODAL")
-                    and (k not in _round_slope_keys or (sf_v := safe_float(pinfo.get(k), default=None)) is not None)
-                    and not (k == "kalman_vel" and abs(sf_v) < 1e-9)
-                },
+                **eq_horizons,
             }
             if pinfo.get("pos_24h_pct") is None and not is_sub24h_dup_7d:
                 for k7 in (
@@ -733,11 +705,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
             eq_m_info = casefold_get(microstructure, eq_sym)
             if isinstance(eq_m_info, dict):
                 eq_no_oi = (safe_float(eq_m_info.get("oi_usd"), 0.0) or 0.0) <= 0.0
-                for mk_eq in (
-                    "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",
-                    "cvd_15m_usd", "cvd_regime", "spot_cvd_15m_usd", "spot_perp_flow_regime", "perp_spot_basis_bps",
-                    "depth_1pct_bid_usd", "depth_1pct_ask_usd",
-                ):
+                for mk_eq in _bellwether_micro_keys:
                     if eq_m_info.get(mk_eq) is None:
                         continue
                     if (
@@ -870,7 +838,6 @@ __all__ = [
     "OpenLimitOrdersTcaEvaluator",
     "TcaRiskEvaluatorBase",
     "VenueFeeAndLimitsEvaluator",
-    "_VENUE_DEFAULT_FEE_SPECS",
     "build_cross_market_context",
     "compact_cycle_realized_pnl_fields",
     "compute_enterprise_portfolio_risk_metrics",

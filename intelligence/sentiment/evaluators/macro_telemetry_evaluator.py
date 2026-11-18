@@ -5,6 +5,7 @@ from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import (
+    VENUE_RUNTIME_DIR_MAP,
     cache_symbol_variants,
     canonical_base_asset,
     has_equity_suffix,
@@ -99,190 +100,108 @@ def enrich_sentiment_advisor_live_flow_divergence(
     live_cvd_1h = safe_float(btc_m.get("cvd_1h_usd"), None)
     sa_act = str(sentiment_advisor.get("recommended_action") or "").upper()
     sa_bias = str(sentiment_advisor.get("directional_bias") or sentiment_advisor.get("market_bias") or "").upper()
-    summary_cited_tr = parse_cited_taker_ratio(
-        (sentiment_advisor.get("summary"), sentiment_advisor.get("key_risks"))
-    )
+    sa_texts = (sentiment_advisor.get("summary"), sentiment_advisor.get("key_risks"))
+    summary_cited_tr = parse_cited_taker_ratio(sa_texts)
     cited_tr = summary_cited_tr if sa_age >= 15.0 else None
     tr_s = f"taker_ratio={live_tr:.2f}" if live_tr is not None else (f"1h_taker={live_tr_1h:.2f}" if live_tr_1h is not None else "")
     cvd_s = f"cvd_15m={live_cvd / 1e6:+.2f}M" if live_cvd is not None else (f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if live_cvd_1h is not None else "")
-    tr_5m_s = f"5m_tr={live_tr_5m:.2f}" if live_tr_5m is not None else ""
-    cvd_5m_s = f"cvd_5m={live_cvd_5m / 1e6:+.2f}M" if live_cvd_5m is not None else ""
-    tr_1h_s = f"1h_tr={live_tr_1h:.2f}" if (live_tr is not None and live_tr_1h is not None) else ""
-    cvd_1h_s = f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if (live_cvd is not None and live_cvd_1h is not None) else ""
-    flow_lbl = ", ".join(x for x in (tr_s, cvd_s, tr_5m_s, cvd_5m_s, tr_1h_s, cvd_1h_s) if x)
+    flow_lbl = ", ".join(x for x in (
+        tr_s, cvd_s,
+        f"5m_tr={live_tr_5m:.2f}" if live_tr_5m is not None else "",
+        f"cvd_5m={live_cvd_5m / 1e6:+.2f}M" if live_cvd_5m is not None else "",
+        f"1h_tr={live_tr_1h:.2f}" if (live_tr is not None and live_tr_1h is not None) else "",
+        f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if (live_cvd is not None and live_cvd_1h is not None) else "",
+    ) if x)
+    bear_acts = ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
     already_cited_sell_on_hold = (
         sa_act in ("", "HOLD", "ACCUMULATE")
-        and summary_cited_tr is not None
-        and summary_cited_tr <= 0.75
+        and summary_cited_tr is not None and summary_cited_tr <= 0.75
         and (live_tr is None or live_tr > summary_cited_tr - 0.15)
     )
     already_cited_buy_on_hold = (
-        sa_act in ("", "HOLD", "TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
-        and summary_cited_tr is not None
-        and summary_cited_tr >= 1.25
+        sa_act in ("", "HOLD", *bear_acts)
+        and summary_cited_tr is not None and summary_cited_tr >= 1.25
         and (live_tr is None or live_tr < summary_cited_tr + 0.15)
     )
     is_bear_posture = (
-        (sa_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") and not already_cited_buy_on_hold)
-        or (sa_bias == "BEARISH" and not already_cited_buy_on_hold)
-        or (
-            cited_tr is not None
-            and cited_tr <= 0.65
-            and sa_act != "ACCUMULATE"
-            and sa_bias != "BULLISH"
-        )
+        ((sa_act in bear_acts or sa_bias == "BEARISH") and not already_cited_buy_on_hold)
+        or (cited_tr is not None and cited_tr <= 0.65 and sa_act != "ACCUMULATE" and sa_bias != "BULLISH")
     )
     is_bull_posture = (
-        (sa_act == "ACCUMULATE" and not already_cited_sell_on_hold)
-        or (sa_bias == "BULLISH" and not already_cited_sell_on_hold)
-        or (
-            cited_tr is not None
-            and cited_tr >= 1.35
-            and sa_act not in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
-            and sa_bias != "BEARISH"
-        )
+        ((sa_act == "ACCUMULATE" or sa_bias == "BULLISH") and not already_cited_sell_on_hold)
+        or (cited_tr is not None and cited_tr >= 1.35 and sa_act not in bear_acts and sa_bias != "BEARISH")
     )
     is_neutral_posture = (
         (sa_act in ("", "HOLD") or sa_bias == "NEUTRAL")
-        and sa_act not in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE", "ACCUMULATE")
+        and sa_act not in (*bear_acts, "ACCUMULATE")
         and sa_bias not in ("BEARISH", "BULLISH")
     )
-    def _format_reversal_divergence(is_buy: bool, is_directional_posture: bool) -> str:
-        if is_buy:
-            counter_1h = (
-                live_tr_1h is not None and live_tr_1h < 0.95 and live_cvd_1h is not None and live_cvd_1h <= -15_000_000.0
+
+    def _match_reversal(is_buy: bool, dir_posture: bool, cited_guard: bool) -> str:
+        sgn = 1.0 if is_buy else -1.0
+        _ge = (lambda v, lo, hi: v >= lo) if is_buy else (lambda v, lo, hi: v <= hi)
+        _lt = (lambda v, hi, lo: v < hi) if is_buy else (lambda v, hi, lo: v > lo)
+        d_cvd = sgn * live_cvd if live_cvd is not None else None
+        d_cvd5 = sgn * live_cvd_5m if live_cvd_5m is not None else None
+        d_cvd1h = sgn * live_cvd_1h if live_cvd_1h is not None else None
+        hit_dir = dir_posture and (
+            (live_tr is not None and _ge(live_tr, 1.25, 0.75))
+            or (d_cvd is not None and d_cvd >= 5_000_000.0)
+            or (
+                d_cvd is not None and d_cvd >= 2_500_000.0
+                and (live_tr is None or _ge(live_tr, 1.08, 0.92))
+                and ((d_cvd5 is not None and d_cvd5 >= 5_000_000.0) or (live_tr_5m is not None and _ge(live_tr_5m, 1.80, 0.55)))
             )
-            fast_5m = (
-                live_tr_5m is not None
-                and live_tr_5m >= 1.75
-                and live_cvd_5m is not None
-                and live_cvd_5m >= 5_000_000.0
-                and (live_cvd is None or live_cvd < 2_500_000.0)
-                and (live_tr is None or live_tr < 1.25)
+            or (sa_age >= 15.0 and live_tr_5m is not None and _ge(live_tr_5m, 1.75, 0.55) and d_cvd5 is not None and d_cvd5 >= 5_000_000.0)
+            or (
+                sa_age >= 15.0 and (live_tr is None or _ge(live_tr, 1.15, 0.85))
+                and (d_cvd is None or d_cvd > 0.0)
+                and live_tr_1h is not None and _ge(live_tr_1h, 1.25, 0.72)
+                and (d_cvd1h is None or d_cvd1h >= 1_500_000.0)
             )
-            counter_1h_fallback = (
-                counter_1h and (live_tr is None or live_tr < 1.25) and (live_tr_5m is None or live_tr_5m < 1.75)
+        )
+        hit_neut = is_neutral_posture and not (sa_bias == "CAUTION" and cited_guard) and (
+            (d_cvd is not None and d_cvd >= 5_000_000.0 and (live_tr is None or _ge(live_tr, 1.25, 0.75)))
+            or (live_tr is not None and _ge(live_tr, 1.35, 0.65) and (d_cvd is None or d_cvd >= 2_500_000.0))
+            or (
+                sa_age >= 15.0 and (live_tr is None or _ge(live_tr, 1.15, 0.85))
+                and (d_cvd is None or d_cvd > 0.0)
+                and live_tr_1h is not None and _ge(live_tr_1h, 1.35, 0.72)
+                and ((d_cvd1h is not None and d_cvd1h >= 5_000_000.0) if is_buy else (d_cvd1h is None or d_cvd1h >= 5_000_000.0))
             )
-            extreme_cited = cited_tr is not None and cited_tr <= 0.65
-            tags = ("LIVE_5M_BUY_REVERSAL", "LIVE_15M_BOUNCE_VS_1H_SELL", "LIVE_BUY_REVERSAL")
-        else:
-            counter_1h = (
-                live_tr_1h is not None and live_tr_1h > 1.05 and live_cvd_1h is not None and live_cvd_1h >= 15_000_000.0
-            )
-            fast_5m = (
-                live_tr_5m is not None
-                and live_tr_5m <= 0.55
-                and live_cvd_5m is not None
-                and live_cvd_5m <= -5_000_000.0
-                and (live_cvd is None or live_cvd > -2_500_000.0)
-                and (live_tr is None or live_tr > 0.75)
-            )
-            counter_1h_fallback = (
-                counter_1h and (live_tr is None or live_tr > 0.75) and (live_tr_5m is None or live_tr_5m > 0.55)
-            )
-            extreme_cited = cited_tr is not None and cited_tr >= 1.35
-            tags = ("LIVE_5M_SELL_REVERSAL", "LIVE_15M_PULLBACK_VS_1H_BUY", "LIVE_SELL_REVERSAL")
-        if is_neutral_posture and not is_directional_posture:
+        )
+        if not (hit_dir or hit_neut):
+            return ""
+        counter_1h = live_tr_1h is not None and _lt(live_tr_1h, 0.95, 1.05) and d_cvd1h is not None and d_cvd1h <= -15_000_000.0
+        fast_5m = (
+            live_tr_5m is not None and _ge(live_tr_5m, 1.75, 0.55)
+            and d_cvd5 is not None and d_cvd5 >= 5_000_000.0
+            and (d_cvd is None or d_cvd < 2_500_000.0)
+            and (live_tr is None or _lt(live_tr, 1.25, 0.75))
+        )
+        counter_1h_fb = counter_1h and (live_tr is None or _lt(live_tr, 1.25, 0.75)) and (live_tr_5m is None or _lt(live_tr_5m, 1.75, 0.55))
+        extreme_cited = cited_tr is not None and (cited_tr <= 0.65 if is_buy else cited_tr >= 1.35)
+        tags = (
+            ("LIVE_5M_BUY_REVERSAL", "LIVE_15M_BOUNCE_VS_1H_SELL", "LIVE_BUY_REVERSAL")
+            if is_buy
+            else ("LIVE_5M_SELL_REVERSAL", "LIVE_15M_PULLBACK_VS_1H_BUY", "LIVE_SELL_REVERSAL")
+        )
+        if is_neutral_posture and not dir_posture:
             posture_s = f"{sa_bias}/{sa_act}" if (sa_bias and sa_act) else (sa_act or sa_bias or "NEUTRAL")
             ref_lbl = f"{posture_s} (advisor ratio={cited_tr:.2f})" if cited_tr is not None else posture_s
             div_tag = tags[1] if counter_1h else tags[2]
         else:
             ref_lbl = f"advisor ratio={cited_tr:.2f}" if (extreme_cited and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
-            div_tag = tags[0] if fast_5m else (tags[1] if counter_1h_fallback else tags[2])
+            div_tag = tags[0] if fast_5m else (tags[1] if counter_1h_fb else tags[2])
         return f"{div_tag} ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
 
-    if (
-        is_bear_posture
-        and (
-            (live_tr is not None and live_tr >= 1.25)
-            or (live_cvd is not None and live_cvd >= 5_000_000.0)
-            or (
-                live_cvd is not None
-                and live_cvd >= 2_500_000.0
-                and (live_tr is None or live_tr >= 1.08)
-                and ((live_cvd_5m is not None and live_cvd_5m >= 5_000_000.0) or (live_tr_5m is not None and live_tr_5m >= 1.80))
-            )
-            or (
-                sa_age >= 15.0
-                and live_tr_5m is not None
-                and live_tr_5m >= 1.75
-                and live_cvd_5m is not None
-                and live_cvd_5m >= 5_000_000.0
-            )
-            or (
-                sa_age >= 15.0
-                and (live_tr is None or live_tr >= 1.15)
-                and (live_cvd is None or live_cvd > 0.0)
-                and live_tr_1h is not None
-                and live_tr_1h >= 1.25
-                and (live_cvd_1h is None or live_cvd_1h >= 1_500_000.0)
-            )
-        )
-    ) or (
-        is_neutral_posture
-        and not (sa_bias == "CAUTION" and already_cited_buy_on_hold)
-        and (
-            (live_cvd is not None and live_cvd >= 5_000_000.0 and (live_tr is None or live_tr >= 1.25))
-            or (live_tr is not None and live_tr >= 1.35 and (live_cvd is None or live_cvd >= 2_500_000.0))
-            or (
-                sa_age >= 15.0
-                and (live_tr is None or live_tr >= 1.15)
-                and (live_cvd is None or live_cvd > 0.0)
-                and live_tr_1h is not None
-                and live_tr_1h >= 1.35
-                and live_cvd_1h is not None
-                and live_cvd_1h >= 5_000_000.0
-            )
-        )
+    if rev_msg := (
+        _match_reversal(True, is_bear_posture, already_cited_buy_on_hold)
+        or _match_reversal(False, is_bull_posture, already_cited_sell_on_hold)
     ):
-        sentiment_advisor["live_flow_divergence"] = _format_reversal_divergence(True, is_bear_posture)
+        sentiment_advisor["live_flow_divergence"] = rev_msg
     elif (
-        is_bull_posture
-        and (
-            (live_tr is not None and live_tr <= 0.75)
-            or (live_cvd is not None and live_cvd <= -5_000_000.0)
-            or (
-                live_cvd is not None
-                and live_cvd <= -2_500_000.0
-                and (live_tr is None or live_tr <= 0.92)
-                and ((live_cvd_5m is not None and live_cvd_5m <= -5_000_000.0) or (live_tr_5m is not None and live_tr_5m <= 0.55))
-            )
-            or (
-                sa_age >= 15.0
-                and live_tr_5m is not None
-                and live_tr_5m <= 0.55
-                and live_cvd_5m is not None
-                and live_cvd_5m <= -5_000_000.0
-            )
-            or (
-                sa_age >= 15.0
-                and (live_tr is None or live_tr <= 0.85)
-                and (live_cvd is None or live_cvd < 0.0)
-                and live_tr_1h is not None
-                and live_tr_1h <= 0.72
-                and (live_cvd_1h is None or live_cvd_1h <= -1_500_000.0)
-            )
-        )
-    ) or (
-        is_neutral_posture
-        and not (sa_bias == "CAUTION" and already_cited_sell_on_hold)
-        and (
-            (live_cvd is not None and live_cvd <= -5_000_000.0 and (live_tr is None or live_tr <= 0.75))
-            or (live_tr is not None and live_tr <= 0.65 and (live_cvd is None or live_cvd <= -2_500_000.0))
-            or (
-                sa_age >= 15.0
-                and (live_tr is None or live_tr <= 0.85)
-                and (live_cvd is None or live_cvd < 0.0)
-                and live_tr_1h is not None
-                and live_tr_1h <= 0.72
-                and (live_cvd_1h is None or live_cvd_1h <= -5_000_000.0)
-            )
-        )
-    ):
-        sentiment_advisor["live_flow_divergence"] = _format_reversal_divergence(False, is_bull_posture)
-    elif (
-        sa_age >= 15.0
-        and cited_tr is not None
+        sa_age >= 15.0 and cited_tr is not None
         and (eff_live_tr := (live_tr if live_tr is not None else live_tr_1h)) is not None
         and (
             abs(eff_live_tr - cited_tr) >= 0.30
@@ -295,43 +214,19 @@ def enrich_sentiment_advisor_live_flow_divergence(
         shift_dir = "LIVE_FLOW_RECOVERY" if eff_live_tr > cited_tr else "LIVE_FLOW_FADE"
         sentiment_advisor["live_flow_divergence"] = f"{shift_dir} ({flow_lbl} vs {sa_age:.1f}m-old advisor ratio={cited_tr:.2f})"
     elif live_cvd_1h is not None and (sa_age >= 15.0 or abs(live_cvd_1h) >= 15_000_000.0):
-        cited_cvd_1h = parse_cited_cvd_usd(
-            (sentiment_advisor.get("summary"), sentiment_advisor.get("key_risks")),
-            horizon="1h",
-        )
-        if (
-            cited_cvd_1h is not None
-            and (sa_age >= 15.0 or abs(live_cvd_1h - cited_cvd_1h) >= 20_000_000.0)
-            and cited_cvd_1h <= -500_000.0
-            and live_cvd_1h >= 5_000_000.0
-            and (live_cvd is None or live_cvd > 0.0)
-            and (
-                (live_tr is None or live_tr >= 1.05)
-                or ((live_tr is None or live_tr >= 1.0) and live_tr_1h is not None and live_tr_1h >= 1.05)
-            )
-        ):
-            sentiment_advisor["live_flow_divergence"] = (
-                f"LIVE_1H_CVD_FLIP_POSITIVE ({flow_lbl} vs {sa_age:.1f}m-old advisor 1h_cvd={cited_cvd_1h / 1e6:+.2f}M)"
-            )
-        elif (
-            cited_cvd_1h is not None
-            and (sa_age >= 15.0 or abs(live_cvd_1h - cited_cvd_1h) >= 20_000_000.0)
-            and cited_cvd_1h >= 500_000.0
-            and live_cvd_1h <= -5_000_000.0
-            and (live_cvd is None or live_cvd < 0.0)
-            and (
-                (live_tr is None or live_tr <= 0.95)
-                or ((live_tr is None or live_tr <= 1.0) and live_tr_1h is not None and live_tr_1h <= 0.95)
-            )
-        ):
-            sentiment_advisor["live_flow_divergence"] = (
-                f"LIVE_1H_CVD_FLIP_NEGATIVE ({flow_lbl} vs {sa_age:.1f}m-old advisor 1h_cvd={cited_cvd_1h / 1e6:+.2f}M)"
-            )
+        cited_cvd_1h = parse_cited_cvd_usd(sa_texts, horizon="1h")
+        if cited_cvd_1h is not None and (sa_age >= 15.0 or abs(live_cvd_1h - cited_cvd_1h) >= 20_000_000.0):
+            for sgn, lbl, tr_ok in (
+                (1.0, "POSITIVE", (live_tr is None or live_tr >= 1.05) or ((live_tr is None or live_tr >= 1.0) and live_tr_1h is not None and live_tr_1h >= 1.05)),
+                (-1.0, "NEGATIVE", (live_tr is None or live_tr <= 0.95) or ((live_tr is None or live_tr <= 1.0) and live_tr_1h is not None and live_tr_1h <= 0.95)),
+            ):
+                if sgn * cited_cvd_1h <= -500_000.0 and sgn * live_cvd_1h >= 5_000_000.0 and (live_cvd is None or sgn * live_cvd > 0.0) and tr_ok:
+                    sentiment_advisor["live_flow_divergence"] = (
+                        f"LIVE_1H_CVD_FLIP_{lbl} ({flow_lbl} vs {sa_age:.1f}m-old advisor 1h_cvd={cited_cvd_1h / 1e6:+.2f}M)"
+                    )
+                    break
     if "live_flow_divergence" not in sentiment_advisor and sa_age >= 15.0 and live_tr_5m is not None:
-        cited_tr_5m = parse_cited_taker_ratio(
-            (sentiment_advisor.get("summary"), sentiment_advisor.get("key_risks")),
-            horizon="5m",
-        )
+        cited_tr_5m = parse_cited_taker_ratio(sa_texts, horizon="5m")
         if (
             cited_tr_5m is not None
             and cited_tr_5m >= 1.35
@@ -589,50 +484,36 @@ class InstitutionalPostureDivergenceEvaluator(MacroTelemetryEvaluatorBase):
             )
         )
 
-        if (
-            is_bear
-            and (live_tr is None or live_tr >= 0.95)
-            and (
+        for direction, active, tr_ok, regimes, fut_target, sgn, skew_ok in (
+            (
+                "BUY", is_bear, live_tr is None or live_tr >= 0.95,
+                ("CRYPTO_BULLISH_DECOUPLING", "COUPLED_RISK_ON"), "FUTURES_PREMARKET_GAP_UP",
+                1.0, eff_skew is not None and eff_skew <= -2.5,
+            ),
+            (
+                "SELL", is_bull, live_tr is None or live_tr <= 1.05,
+                ("EQUITY_BULLISH_DECOUPLING", "COUPLED_RISK_OFF"), "FUTURES_PREMARKET_GAP_DOWN",
+                -1.0, eff_skew is not None and eff_skew >= 4.0,
+            ),
+        ):
+            if active and tr_ok and (
                 (
-                    cross_reg in ("CRYPTO_BULLISH_DECOUPLING", "COUPLED_RISK_ON")
+                    cross_reg in regimes
                     and (
-                        (cb_bps is not None and cb_bps >= 5.0)
-                        or (ibit_1h is not None and ibit_1h >= 0.75)
-                        or (fut_reg == "FUTURES_PREMARKET_GAP_UP" and fut_lead is not None and fut_lead >= 0.50)
-                        or (eff_skew is not None and eff_skew <= -2.5)
+                        (cb_bps is not None and sgn * cb_bps >= 5.0)
+                        or (ibit_1h is not None and sgn * ibit_1h >= 0.75)
+                        or (fut_reg == fut_target and fut_lead is not None and sgn * fut_lead >= 0.50)
+                        or skew_ok
                     )
                 )
-                or (cb_bps is not None and cb_bps >= 10.0)
-            )
-        ):
-            return {
-                "direction": "BUY",
-                "reason": f"institutional_buy_divergence_{reg_tag}_{metric_tag}_vs_{posture_tag}",
-                "inst_lbl": inst_lbl,
-                "posture": act_u or bias_u,
-            }
-        if (
-            is_bull
-            and (live_tr is None or live_tr <= 1.05)
-            and (
-                (
-                    cross_reg in ("EQUITY_BULLISH_DECOUPLING", "COUPLED_RISK_OFF")
-                    and (
-                        (cb_bps is not None and cb_bps <= -5.0)
-                        or (ibit_1h is not None and ibit_1h <= -0.75)
-                        or (fut_reg == "FUTURES_PREMARKET_GAP_DOWN" and fut_lead is not None and fut_lead <= -0.50)
-                        or (eff_skew is not None and eff_skew >= 4.0)
-                    )
-                )
-                or (cb_bps is not None and cb_bps <= -10.0)
-            )
-        ):
-            return {
-                "direction": "SELL",
-                "reason": f"institutional_sell_divergence_{reg_tag}_{metric_tag}_vs_{posture_tag}",
-                "inst_lbl": inst_lbl,
-                "posture": act_u or bias_u,
-            }
+                or (cb_bps is not None and sgn * cb_bps >= 10.0)
+            ):
+                return {
+                    "direction": direction,
+                    "reason": f"institutional_{direction.lower()}_divergence_{reg_tag}_{metric_tag}_vs_{posture_tag}",
+                    "inst_lbl": inst_lbl,
+                    "posture": act_u or bias_u,
+                }
         return None
 
 
@@ -679,37 +560,33 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                 is_t212 = has_equity_suffix(sym_u) or sym_u in t212_sym_set
             return is_t212 == want_t212
 
+        prices_and_trends = {
+            k: v for k, v in prices_and_trends.items()
+            if (str(k).upper() in t212_sym_set or has_equity_suffix(k)) == want_t212
+        }
+        microstructure = {
+            k: v for k, v in microstructure.items()
+            if (str(k).upper() in t212_sym_set or has_equity_suffix(k)) == want_t212
+        }
         if want_t212:
-            prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or has_equity_suffix(k)}
-            microstructure = {k: v for k, v in microstructure.items() if str(k).upper() in t212_sym_set or has_equity_suffix(k)}
             for crypto_key in (
                 "total_value_usdc", "total_value_usdc_age_min", "live_binance_equity_usdc", "live_hl_spot_equity_usd",
                 "kraken_cycles", "hyperliquid_cycles", "hyperliquid_signal", "hyperliquid_readonly",
                 "monitortrades_active_state", "assetguardian_state", "smart_stop_loss_state", "trailing_peaks",
             ):
                 portfolio_summary.pop(crypto_key, None)
-            if isinstance(portfolio_summary.get("venues_value_usd"), dict):
-                eq_venues = {
-                    vk: vv
-                    for vk, vv in portfolio_summary["venues_value_usd"].items()
-                    if is_equity_venue(vk) and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
-                }
-                _set_or_pop("venues_value_usd", eq_venues)
-                _set_or_pop("portfolio_total_usd", round(sum(eq_venues.values()), 2) if eq_venues else None)
-            else:
-                portfolio_summary.pop("portfolio_total_usd", None)
         else:
-            prices_and_trends = {k: v for k, v in prices_and_trends.items() if not has_equity_suffix(k) and str(k).upper() not in t212_sym_set}
-            microstructure = {k: v for k, v in microstructure.items() if not has_equity_suffix(k) and str(k).upper() not in t212_sym_set}
             portfolio_summary.pop("t212_cycles", None)
-            if isinstance(portfolio_summary.get("venues_value_usd"), dict):
-                crypto_venues = {
-                    vk: vv
-                    for vk, vv in portfolio_summary["venues_value_usd"].items()
-                    if not is_equity_venue(vk) and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
-                }
-                _set_or_pop("venues_value_usd", crypto_venues)
-                _set_or_pop("portfolio_total_usd", round(sum(crypto_venues.values()), 2) if crypto_venues else None)
+        if isinstance(portfolio_summary.get("venues_value_usd"), dict):
+            scoped_venues = {
+                vk: vv
+                for vk, vv in portfolio_summary["venues_value_usd"].items()
+                if (is_equity_venue(vk) == want_t212) and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
+            }
+            _set_or_pop("venues_value_usd", scoped_venues)
+            _set_or_pop("portfolio_total_usd", round(sum(scoped_venues.values()), 2) if scoped_venues else None)
+        elif want_t212:
+            portfolio_summary.pop("portfolio_total_usd", None)
         if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
             _set_or_pop(
                 "venue_quote_cash",
@@ -739,10 +616,16 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                     is_eq = is_equity_venue(rv.get("venue"))
                 else:
                     rk_up = str(rk).upper()
-                    if rk_up.startswith("T212:") or has_equity_suffix(rk_up):
-                        is_eq = True
-                    else:
-                        is_eq = False if rk_up.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:")) else (rk_up in t212_sym_set)
+                    rk_pfx, rk_sep, _ = rk_up.partition(":")
+                    is_eq = (
+                        True
+                        if has_equity_suffix(rk_up)
+                        else (
+                            is_equity_venue(rk_pfx)
+                            if rk_sep and normalize_venue_name(rk_pfx) in VENUE_RUNTIME_DIR_MAP
+                            else rk_up in t212_sym_set
+                        )
+                    )
                 if is_eq and want_t212 and allowed_eq_ro_syms:
                     rk_clean = str(rk).split(":", 1)[-1].strip().upper()
                     is_eq = any(
@@ -791,16 +674,17 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
         venue_pos_map, venue_cash_map = coerce_dict_maps(
             nav.get("venue_pos_usd"), nav.get("venue_cash_usd")
         )
-        def _zero_readonly_spot(ro_d: Dict[str, Any], cash_sum: float) -> None:
+        def _set_readonly_spot(ro_d: Dict[str, Any], qty_v: float, val_v: float, cash_sum: float) -> None:
             if "qty" in ro_d or "value_usd" in ro_d:
-                ro_d["qty"] = 0.0
-                ro_d["value_usd"] = 0.0
-                ro_d["cash_usd"] = round(cash_sum, 2)
-            if isinstance(sp_list := ro_d.get("spot_positions"), list) and len(sp_list) == 1 and isinstance(sp_list[0], dict):
-                sp_list[0]["qty"] = 0.0
-                sp_list[0]["value_usd"] = 0.0
-                sp_list[0]["cash_usd"] = round(cash_sum, 2)
-                sp_list[0]["snapshot_age_min"] = 0.0
+                ro_d["qty"], ro_d["value_usd"], ro_d["cash_usd"] = round(qty_v, 6), round(val_v, 2), round(cash_sum, 2)
+            sp_list = ro_d.get("spot_positions")
+            if isinstance(sp_list, list) and sp_list and isinstance(sp_list[0], dict) and (qty_v > 0.0 or len(sp_list) == 1):
+                sp_list[0].update({
+                    "qty": round(qty_v, 6),
+                    "value_usd": round(val_v, 2),
+                    "cash_usd": round(cash_sum, 2),
+                    "snapshot_age_min": 0.0,
+                })
 
         for v_target, eq_key, ro_key in (
             ("binance", "live_binance_equity_usdc", None),
@@ -865,19 +749,11 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
                                 )
                         live_q = hp0_free_q + sum(hp0_locked_by_sym.values())
                         if live_q > 0.0:
-                            if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
-                                hl_ro_d["qty"] = round(live_q, 6)
-                                hl_ro_d["value_usd"] = round(v_pos_sum, 2)
-                                hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
-                            if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and sp_list and isinstance(sp_list[0], dict):
-                                sp_list[0]["qty"] = round(live_q, 6)
-                                sp_list[0]["value_usd"] = round(v_pos_sum, 2)
-                                sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
-                                sp_list[0]["snapshot_age_min"] = 0.0
+                            _set_readonly_spot(hl_ro_d, live_q, v_pos_sum, v_cash_sum)
                         else:
-                            _zero_readonly_spot(hl_ro_d, v_cash_sum)
+                            _set_readonly_spot(hl_ro_d, 0.0, 0.0, v_cash_sum)
                     else:
-                        _zero_readonly_spot(hl_ro_d, v_cash_sum)
+                        _set_readonly_spot(hl_ro_d, 0.0, 0.0, v_cash_sum)
         return portfolio_summary
 
 
