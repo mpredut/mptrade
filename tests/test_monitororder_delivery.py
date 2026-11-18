@@ -88,6 +88,7 @@ def test_failed_replacement_is_submitted_once_and_left_to_shared_outbox():
     open_orders = {"old-1": {"price": 100.0, "quantity": 2.0}}
 
     with _replacement_env(open_orders, 100.1) as (place, _), \
+         patch.object(monitororder, "_native_replace_enabled_for", return_value=False), \
          patch.object(monitororder.time, "sleep") as sleep:
         monitororder.monitor_open_orders_by_type(
             "TAOUSDC", "SELL", failed_legacy,

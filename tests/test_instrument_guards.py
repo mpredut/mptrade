@@ -2630,7 +2630,9 @@ def test_native_replace_contract_defaults_and_config_gate(monkeypatch):
         reconciliation_capabilities=lambda: OrderReconciliationCapabilities(replace_by_order_id=True),
     )
     incapable = SimpleNamespace(name="Kraken", reconciliation_capabilities=lambda: OrderReconciliationCapabilities())
-    assert outcomes_log.NATIVE_ORDER_REPLACE_VENUES == frozenset()
+    assert outcomes_log.NATIVE_ORDER_REPLACE_VENUES == frozenset({"kraken", "binance", "hyperliquid"})
+    assert outcomes_log.native_replace_enabled(capable) is True
+    monkeypatch.setattr(outcomes_log, "NATIVE_ORDER_REPLACE_VENUES", frozenset())
     assert outcomes_log.native_replace_enabled(capable) is False
     monkeypatch.setattr(outcomes_log, "NATIVE_ORDER_REPLACE_VENUES", frozenset({"kraken"}))
     assert outcomes_log.native_replace_enabled(capable) is True

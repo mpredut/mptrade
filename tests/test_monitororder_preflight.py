@@ -31,6 +31,9 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         self._filter_patcher = patch.object(
             monitororder.mkt, "order_filter_refusal", return_value=None)
         self.filter_check = self._filter_patcher.start()
+        self._native_replace_patcher = patch.object(
+            monitororder, "_native_replace_enabled_for", return_value=False)
+        self._native_replace_patcher.start()
 
     def tearDown(self):
         monitororder.initial_sell_prices.clear()
@@ -39,6 +42,7 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         monitororder.order_retry.LOCK_FILE = self._old_queue_lock
         monitororder.order_retry.RETRY_ENABLED = self._old_retry_enabled
         monitororder.order_retry.RETRY_DEDUP = self._old_retry_dedup
+        self._native_replace_patcher.stop()
         self._filter_patcher.stop()
         super().tearDown()
 
@@ -557,3 +561,26 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         self.assertEqual(len(persisted_open), 1)
         self.assertEqual(persisted_open[0]["lifecycle"], "awaiting_cancel")
         self.assertEqual(persisted_open[0]["submission_state"], "refused")
+
+        # 6. Pre-dispatch guard refusal during native replace preserves live order without cancel or second place.
+        monitororder.order_retry.rewrite([])
+        orders = {101: {"price": 100.0, "quantity": 2.0}}
+        with (
+            patch.object(monitororder, "_native_replace_enabled_for", return_value=True),
+            patch.object(monitororder.api, "get_open_orders", return_value=orders),
+            patch.object(monitororder.api, "get_current_price", return_value=100.0),
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(monitororder.mkt, "preflight_order", return_value=object()),
+            patch.object(monitororder.api, "cancel_order") as cancel_guard,
+            patch.object(
+                monitororder.mkt,
+                "place",
+                side_effect=self._make_outcome_refusal("daily_limit"),
+            ) as place_guard,
+            patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
+
+        place_guard.assert_called_once()
+        cancel_guard.assert_not_called()
+        self.assertEqual(monitororder.order_retry.load_all(), [])

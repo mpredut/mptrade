@@ -175,10 +175,11 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
              patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
 
-            # Only order 504 (TA_) was canceled and replaced!
+            # Only order 504 (TA_) was replaced via native replace!
             # Orders 501 (RT_), 502 (SD_), and 503 (MT_) were completely protected!
-            mock_cancel.assert_called_once_with("TAOUSDC", 504)
+            mock_cancel.assert_not_called()
             mock_place.assert_called_once()
+            self.assertEqual(mock_place.call_args.kwargs.get("replaces_order_id"), 504)
             self.assertEqual(mock_enqueue.call_args[0][3].get("prefix"), "MO_TA_OR")
 
     def test_monitororder_reprices_manual_orders(self):
@@ -203,8 +204,9 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
              patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
 
-            mock_cancel.assert_called_once_with("TAOUSDC", 601)
+            mock_cancel.assert_not_called()
             mock_place.assert_called_once()
+            self.assertEqual(mock_place.call_args.kwargs.get("replaces_order_id"), 601)
             self.assertEqual(mock_enqueue.call_args[0][3].get("prefix"), "MO_MN_OR")
 
     def test_instrument_apply_outbox_lineage_prefix_preserves_bot_lineage(self):
@@ -329,8 +331,9 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
              patch.object(monitororder.mkt, "place", return_value={"orderId": 7777}) as mock_place, \
              patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("BTCUSDC", "BUY")
-            mock_cancel.assert_called_once_with("BTCUSDC", 701)
+            mock_cancel.assert_not_called()
             mock_place.assert_called_once()
+            self.assertEqual(mock_place.call_args.kwargs.get("replaces_order_id"), 701)
             self.assertEqual(mock_enqueue.call_args[0][3].get("prefix"), "MO_TA_OR")
 
     def test_tradeall_cancels_outbox_accepted_orders_and_resolves_tracker(self):

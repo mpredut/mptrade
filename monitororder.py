@@ -674,9 +674,8 @@ def monitor_open_orders_by_type(
                         if isinstance(native_order, dict) and native_order.get("amended_in_place")
                         else (safe_pos_float(native_outcome.get("submitted_qty"), default=quantity) or quantity)
                     )
-                    order_retry.activate_claimed_replacement(replacement_claim, eff_qty)
                     _record_replacement_success(
-                        replacement_claim,
+                        {**replacement_claim, "qty": eff_qty},
                         native_order,
                         provider_name=provider_name,
                         symbol=symbol,
@@ -691,8 +690,16 @@ def monitor_open_orders_by_type(
                         initial_prices=initial_prices,
                     )
                     continue
+                native_reason = clean_scalar_str(native_outcome.get("reason")) or ""
                 native_refused = native_outcome.get("state") == "refused"
-                native_cancel_only = native_outcome.get("reason") == "replace_cancel_only"
+                if native_refused and native_reason not in {"replace_not_attempted", "replace_cancel_only"}:
+                    order_retry.complete_claim(replacement_claim, "success")
+                    print(
+                        f"The {order_type} replacement was refused before cancellation: "
+                        f"{native_reason or 'refused'}. The existing order remains active."
+                    )
+                    continue
+                native_cancel_only = native_reason == "replace_cancel_only"
                 try:
                     cache_permit = mkt.preflight_order(
                         symbol, order_type, quantity, new_price,
