@@ -85,6 +85,8 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    format_flow_horizon_parts,
+    format_spot_cvd_source_tag,
     is_ob_live_and_newer,
     is_ob_mid_fresher_than_series,
     purge_liquidation_cluster_keys,
@@ -1889,30 +1891,12 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         if cur_m_info.get("cvd_15m_usd") is not None:
             cvd_u = safe_float(cur_m_info.get("cvd_15m_usd"), 0.0)
             cvd_line = f"${cvd_u:+,.0f}"
-            mh_parts = [
-                f"{h_lbl}=tr:{tr_v:.2f}/cvd:${c_v:+,.0f}"
-                for h_lbl, tr_k, cvd_k in (
-                    ("5m", "taker_ratio_5m", "cvd_5m_usd"),
-                    ("1h", "taker_ratio_1h", "cvd_1h_usd"),
-                    ("4h", "taker_ratio_4h", "cvd_4h_usd"),
-                )
-                if (tr_v := safe_pos_float(cur_m_info.get(tr_k), default=None)) is not None
-                and (c_v := safe_float(cur_m_info.get(cvd_k), default=None)) is not None
-            ]
-            if mh_parts:
+            if mh_parts := format_flow_horizon_parts(
+                cur_m_info, lambda v: f"${v:+,.0f}", pos_ratio_only=True
+            ):
                 cvd_line += f", flow_horizons({', '.join(mh_parts)})"
-            sp_cvd = safe_float(cur_m_info.get("spot_cvd_15m_usd"), default=None)
-            if sp_cvd is not None:
-                sp_src_pt = (
-                    "[real_spot]"
-                    if cur_m_info.get("spot_cvd_source") == "real_spot"
-                    else (
-                        "[est:ob+15m]"
-                        if (cur_m_info.get("spot_cvd_source") == "est_ob_15m" or cur_m_info.get("_synthetic_spot_cvd"))
-                        else ""
-                    )
-                )
-                cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f}{sp_src_pt}"
+            if (sp_cvd := safe_float(cur_m_info.get("spot_cvd_15m_usd"), default=None)) is not None:
+                cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f}{format_spot_cvd_source_tag(cur_m_info)}"
             telemetry["15m Cumulative Volume Delta (CVD)"] = cvd_line
         elif (
             (sp_only_cvd := safe_float(cur_m_info.get("spot_cvd_15m_usd"), default=None)) is not None

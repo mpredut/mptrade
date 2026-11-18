@@ -54,6 +54,7 @@ __all__ = [
     "require_pos_ohlc_interval",
     "resolve_ohlc_time_window_ms",
     "series_to_historical_points",
+    "split_bar_clv_turnover_usd",
     "validate_dataset",
     "validate_ohlc_bars",
     "validate_ohlc_candle_bar",
@@ -143,6 +144,21 @@ def compute_ols_slope_pct(closes: Any, bars: int = 12) -> Optional[float]:
         return None
     slope = sum((i - mx) * (clean_closes[i] - my_f) for i in range(n)) / denom
     return safe_float(slope / my_f * 100.0, default=None)
+
+
+def split_bar_clv_turnover_usd(
+    o_p: float, h_p: float, l_p: float, c_p: float, vol: float, prev_close: float = 0.0
+) -> tuple[float, float]:
+    """Split bar USD turnover ``vol * c_p`` into ``(buy_usd, sell_usd)`` via OHLC close-location value."""
+    if vol <= 0.0 or c_p <= 0.0:
+        return 0.0, 0.0
+    if h_p > l_p:
+        clv = 0.15 + 0.70 * min(1.0, max(0.0, (c_p - l_p) / (h_p - l_p)))
+    else:
+        ref_p = prev_close if prev_close > 0.0 else o_p
+        clv = 0.65 if c_p > ref_p else (0.35 if c_p < ref_p else 0.5)
+    turn_usd = vol * c_p
+    return turn_usd * clv, turn_usd * (1.0 - clv)
 
 
 def build_price_history_points(

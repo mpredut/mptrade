@@ -44,6 +44,8 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     _MICRO_OB_LOCAL_KEYS,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    format_flow_horizon_parts,
+    format_spot_cvd_source_tag,
     purge_liquidation_cluster_keys,
     reconcile_sibling_flow_and_liq_regimes,
     should_skip_sibling_telemetry_key,
@@ -1097,27 +1099,13 @@ def _format_microstructure_section(
                 if cvd_b is not None
                 else f", cvd_15m={usd_s}"
             )
-            mh_parts: List[str] = []
-            for h_lbl, tr_k, cvd_k in (
-                ("5m", "taker_ratio_5m", "cvd_5m_usd"),
-                ("1h", "taker_ratio_1h", "cvd_1h_usd"),
-                ("4h", "taker_ratio_4h", "cvd_4h_usd"),
+            if mh_parts := format_flow_horizon_parts(
+                minfo, lambda v: f"{'+' if v >= 0.0 else '-'}{_fmt_liq_usd(abs(v))}"
             ):
-                tr_v = safe_float(minfo.get(tr_k), None)
-                c_v = safe_float(minfo.get(cvd_k), None)
-                if tr_v is not None and c_v is not None:
-                    c_s = f"{'+' if c_v >= 0.0 else '-'}{_fmt_liq_usd(abs(c_v))}"
-                    mh_parts.append(f"{h_lbl}=tr:{tr_v:.2f}/cvd:{c_s}")
-            if mh_parts:
                 cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
             if (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None:
                 sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
-                sp_src_tag = (
-                    "[real_spot]"
-                    if minfo.get("spot_cvd_source") == "real_spot"
-                    else ("[est:ob+15m]" if (minfo.get("spot_cvd_source") == "est_ob_15m" or minfo.get("_synthetic_spot_cvd")) else "")
-                )
-                cvd_sfx += f", spot_cvd_15m={sp_s}{sp_src_tag}"
+                cvd_sfx += f", spot_cvd_15m={sp_s}{format_spot_cvd_source_tag(minfo)}"
 
         basis_sfx = ""
         basis_parts: List[str] = []

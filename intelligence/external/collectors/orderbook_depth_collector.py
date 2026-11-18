@@ -313,14 +313,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 ask_span = max(0.0, ((asks[-1][0] - mid) / mid) * 100.0)
                 book_span_pct = round(min(bid_span, ask_span, self.depth_band_pct), 3)
 
-            eff_spot_venue = reg_venue or (
-                "kraken"
-                if "kraken.com" in str(self._preferred_url.get(symbol) or "")
-                else (
-                    "hyperliquid"
-                    if "hyperliquid.xyz" in str(self._preferred_url.get(symbol) or "")
-                    else ("binance" if "api.binance.com" in str(self._preferred_url.get(symbol) or "") else "")
-                )
+            eff_spot_venue = reg_venue or MarketDataProvider.resolve_venue_for_orderbook_url(
+                self._preferred_url.get(symbol)
             )
             real_spot_cvd = self._resolve_real_spot_cvd_15m(canon_sym, venue=eff_spot_venue, now=now)
             snapshot = OrderbookSnapshot(

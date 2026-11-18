@@ -52,12 +52,9 @@ from botcore import (
 from cachepaths import (
     CACHE_HYPERLIQUID_TRADE_FILENAME,
     canonical_base_asset,
-    canonical_symbol_key,
-    normalize_cache_base_asset,
     split_symbol_assets,
-    symbol_quote_asset,
 )
-from instrument_registry import casefold_get, resolve_kraken_tokenized_pair
+from instrument_registry import casefold_get
 from .base import MarketDataProvider
 from .ohlc_utils import (
     build_price_history_points,
@@ -65,6 +62,7 @@ from .ohlc_utils import (
     ProviderError,
     require_pos_ohlc_interval,
     resolve_ohlc_time_window_ms,
+    split_bar_clv_turnover_usd,
 )
 from .order_ohlc_utils import (
     build_open_order_entry,
@@ -141,6 +139,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
     """Provide HYPE spot access through the lazily loaded Hyperliquid SDK."""
 
     _CLIENT_CLASS_NAME = "HLClient"
+    _PUBLIC_ORDERBOOK_HOST = "hyperliquid.xyz"
     _DEFAULT_QUOTE_ASSET = "USDC"
     _DEFERS_PREFLIGHT_QUANTITY = True
     _SUPPORTS_POST_ONLY = True
@@ -908,27 +907,17 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
     @classmethod
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         # BY DESIGN: Kraken tokenized equities (xStocks) never list on Hyperliquid l2Book (avoids HTTP 500 spam).
-        if resolve_kraken_tokenized_pair(symbol)[1]:
+        parsed = cls._parse_non_tokenized_crypto_symbol(symbol)
+        if parsed is None or not parsed[1]:
             return (), ()
-        canon_sym = canonical_symbol_key(symbol)
-        if symbol_quote_asset(canon_sym) == "EUR":
-            return (), ()
-        hl_coin = normalize_cache_base_asset(canon_sym)
-        if not hl_coin:
-            return (), ()
-        return (f"https://api.hyperliquid.xyz/info?type=l2Book&coin={hl_coin}",), ()
+        return (f"https://api.hyperliquid.xyz/info?type=l2Book&coin={parsed[1]}",), ()
 
     @classmethod
     def public_spot_cvd_15m_request(
         cls, symbol: str, now_ts: float
     ) -> Optional[tuple[str, Optional[dict]]]:
-        if resolve_kraken_tokenized_pair(symbol)[1]:
-            return None
-        canon_sym = canonical_symbol_key(symbol)
-        if symbol_quote_asset(canon_sym) == "EUR":
-            return None
-        hl_coin = normalize_cache_base_asset(canon_sym)
-        spot_coin = cls.KNOWN_SPOT_PAIRS.get(hl_coin.upper()) if hl_coin else None
+        parsed = cls._parse_non_tokenized_crypto_symbol(symbol)
+        spot_coin = cls.KNOWN_SPOT_PAIRS.get(parsed[1].upper()) if (parsed and parsed[1]) else None
         if not spot_coin:
             return None
         end_ms = max(900_000, math.trunc(now_ts * 1000.0))
@@ -968,17 +957,9 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             if o_p is None or h_p is None or l_p is None or c_p is None or vol is None:
                 continue
             parsed_any = True
-            if vol <= 0.0:
-                prev_close = c_p
-                continue
-            if h_p > l_p:
-                clv = 0.15 + 0.70 * ((c_p - l_p) / (h_p - l_p))
-            else:
-                ref_p = prev_close if prev_close > 0.0 else o_p
-                clv = 0.65 if c_p > ref_p else (0.35 if c_p < ref_p else 0.5)
-            turn_usd = vol * c_p
-            buy_usd += turn_usd * clv
-            sell_usd += turn_usd * (1.0 - clv)
+            b_bar, s_bar = split_bar_clv_turnover_usd(o_p, h_p, l_p, c_p, vol, prev_close)
+            buy_usd += b_bar
+            sell_usd += s_bar
             prev_close = c_p
         return round(buy_usd - sell_usd, 0) if parsed_any else None
 

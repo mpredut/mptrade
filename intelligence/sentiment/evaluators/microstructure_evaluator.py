@@ -65,6 +65,39 @@ _MICRO_OB_LOCAL_KEYS: frozenset[str] = frozenset({
     "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_cvd_source", "spot_perp_flow_regime",
     "_ob_raw_ts", "_ob_ts",
 })
+_FLOW_HORIZON_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("5m", "taker_ratio_5m", "cvd_5m_usd"),
+    ("1h", "taker_ratio_1h", "cvd_1h_usd"),
+    ("4h", "taker_ratio_4h", "cvd_4h_usd"),
+)
+
+
+def format_spot_cvd_source_tag(minfo: Optional[Dict[str, Any]]) -> str:
+    """Return canonical spot-CVD provenance suffix (`[real_spot]`, `[est:ob+15m]`, or `''`)."""
+    if not isinstance(minfo, dict):
+        return ""
+    src = minfo.get("spot_cvd_source")
+    if src == "real_spot":
+        return "[real_spot]"
+    return "[est:ob+15m]" if (src == "est_ob_15m" or minfo.get("_synthetic_spot_cvd")) else ""
+
+
+def format_flow_horizon_parts(
+    minfo: Optional[Dict[str, Any]],
+    fmt_cvd_usd: Any,
+    *,
+    pos_ratio_only: bool = False,
+) -> List[str]:
+    """Format 5m/1h/4h `tr:<ratio>/cvd:<usd>` parts from `minfo` using `fmt_cvd_usd(val)`."""
+    if not isinstance(minfo, dict):
+        return []
+    ratio_fn = safe_pos_float if pos_ratio_only else safe_float
+    return [
+        f"{h_lbl}=tr:{tr_v:.2f}/cvd:{fmt_cvd_usd(c_v)}"
+        for h_lbl, tr_k, cvd_k in _FLOW_HORIZON_SPECS
+        if (tr_v := ratio_fn(minfo.get(tr_k), default=None)) is not None
+        and (c_v := safe_float(minfo.get(cvd_k), default=None)) is not None
+    ]
 
 
 def _first_variant_dict(mapping: Any, variants: Any, default: Any = None) -> Any:
@@ -496,141 +529,73 @@ def compute_liquidation_clusters(
         "SHORT_SQUEEZE_MAGNET_UP" if short_gravity > long_gravity * 1.15
         else ("LONG_SWEEP_MAGNET_DOWN" if long_gravity > short_gravity * 1.15 else "BALANCED_LIQ_MAGNET")
     )
-    cvd_reg = str(minfo.get("cvd_regime") or "").strip().lower()
-    sp_reg = str(minfo.get("spot_perp_flow_regime") or "").strip().upper()
-    div_reg = str(minfo.get("div_regime") or minfo.get("divergence_regime") or "").strip().lower()
-    slope_15m_v = safe_float(p_dict.get("slope_15m"), default=0.0) or 0.0
-    slope_3_7m_v = safe_float(p_dict.get("slope_3_7m"), default=0.0) or 0.0
-    cvd_15m_v = safe_float(minfo.get("cvd_15m_usd"), default=0.0) or 0.0
-    spot_cvd_15m_v = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
-    tr_5m_v = safe_pos_float(minfo.get("taker_ratio_5m"), default=None)
-    cvd_5m_v = safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0
-    tr_1h_v = safe_pos_float(minfo.get("taker_ratio_1h"), default=None)
-    if (
-        liq_magnet_bias == "LONG_SWEEP_MAGNET_DOWN"
-        and (
-            (
-                cvd_reg == "aggressive_buying"
-                and chg_15m_v >= 0.02
-                and (
-                    (kalman_vel > 0.0 and chg_15m_v >= 0.05)
-                    or (
-                        abs(kalman_vel) < 0.025
-                        and ob_imb_v >= 0.54
-                        and spot_cvd_15m_v > 0.0
-                        and (slope_3_7m_v > 0.0 or (tr_5m_v is not None and tr_5m_v >= 1.35 and cvd_5m_v > 0.0))
-                    )
-                    or (slope_15m_v > 0.0 and taker_r >= 1.15 and ob_imb_v >= 0.55 and chg_15m_v >= 0.05)
-                )
-                and (sp_reg == "SYNCHRONIZED_SPOT_PERP_BUYING" or taker_r >= 1.35)
-            )
-            or (
-                (cvd_reg in ("aggressive_buying", "ask_absorbing", "spot_absorbing") or cvd_15m_v > 0.0)
-                and taker_r >= 1.25
-                and chg_15m_v >= -0.45
-                and (
-                    sp_reg in ("INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE", "SYNCHRONIZED_SPOT_PERP_BUYING")
-                    or abs(short_liq_dist_pct) <= abs(long_liq_dist_pct)
-                    or (tr_1h_v is not None and tr_1h_v >= 1.15)
-                    or (ob_imb_v >= 0.58 and spot_cvd_15m_v > 0.0)
-                    or (tr_5m_v is not None and tr_5m_v >= 1.35 and cvd_5m_v > 0.0)
-                )
-            )
-            or (
-                cvd_15m_v > 0.0
-                and spot_cvd_15m_v > 0.0
-                and taker_r >= 1.0
-                and ob_imb_v >= 0.52
-                and chg_15m_v >= -0.15
-                and tr_5m_v is not None
-                and tr_5m_v >= 1.35
-                and cvd_5m_v > 0.0
-                and (tr_1h_v is None or tr_1h_v >= 1.0)
-            )
-            or (
-                cvd_15m_v > 0.0
-                and spot_cvd_15m_v > 0.0
-                and taker_r >= 1.15
-                and ob_imb_v >= 0.51
-                and chg_15m_v >= -0.05
-                and kalman_vel >= 0.0
-            )
-            or (
-                (cvd_reg == "spot_absorbing" or div_reg in ("accumulation", "short_covering", "bullish_absorption"))
-                and (chg_15m_v >= 0.05 or (chg_15m_v >= -0.10 and ob_imb_v >= 0.58))
-                and ob_imb_v >= 0.54
-                and spot_cvd_15m_v > 0.0
-                and (
-                    kalman_vel > 0.0
-                    or (tr_1h_v is not None and tr_1h_v >= 1.10)
-                    or (tr_5m_v is not None and tr_5m_v >= 1.20 and cvd_5m_v > 0.0)
-                    or div_reg in ("accumulation", "short_covering", "bullish_absorption")
-                )
-            )
+    if liq_magnet_bias != "BALANCED_LIQ_MAGNET":
+        is_bull = liq_magnet_bias == "LONG_SWEEP_MAGNET_DOWN"
+        sgn = 1.0 if is_bull else -1.0
+        _ok = (lambda v, lo, hi: v >= lo) if is_bull else (lambda v, lo, hi: v <= hi)
+        cvd_reg = str(minfo.get("cvd_regime") or "").strip().lower()
+        sp_reg = str(minfo.get("spot_perp_flow_regime") or "").strip().upper()
+        div_reg = str(minfo.get("div_regime") or minfo.get("divergence_regime") or "").strip().lower()
+        d_chg, d_vel = sgn * chg_15m_v, sgn * kalman_vel
+        d_sl15 = sgn * (safe_float(p_dict.get("slope_15m"), default=0.0) or 0.0)
+        d_sl37 = sgn * (safe_float(p_dict.get("slope_3_7m"), default=0.0) or 0.0)
+        d_cvd15 = sgn * (safe_float(minfo.get("cvd_15m_usd"), default=0.0) or 0.0)
+        d_spcvd = sgn * (safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0)
+        tr_5m_v = safe_pos_float(minfo.get("taker_ratio_5m"), default=None)
+        d_cvd5 = sgn * (safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0)
+        tr_1h_v = safe_pos_float(minfo.get("taker_ratio_1h"), default=None)
+        tr5_burst = tr_5m_v is not None and _ok(tr_5m_v, 1.35, 0.65) and d_cvd5 > 0.0
+        sync_sp = "SYNCHRONIZED_SPOT_PERP_BUYING" if is_bull else "SYNCHRONIZED_SPOT_PERP_SELLING"
+        div_set = (
+            ("accumulation", "short_covering", "bullish_absorption")
+            if is_bull
+            else ("distribution", "long_liquidation", "bearish_distribution")
         )
-    ) or (
-        liq_magnet_bias == "SHORT_SQUEEZE_MAGNET_UP"
-        and (
+        if (
             (
-                cvd_reg == "aggressive_market_dumps"
-                and chg_15m_v <= -0.02
+                cvd_reg == ("aggressive_buying" if is_bull else "aggressive_market_dumps")
+                and d_chg >= 0.02
                 and (
-                    (kalman_vel < 0.0 and chg_15m_v <= -0.05)
-                    or (
-                        abs(kalman_vel) < 0.025
-                        and ob_imb_v <= 0.46
-                        and spot_cvd_15m_v < 0.0
-                        and (slope_3_7m_v < 0.0 or (tr_5m_v is not None and tr_5m_v <= 0.65 and cvd_5m_v < 0.0))
-                    )
-                    or (slope_15m_v < 0.0 and taker_r <= 0.85 and ob_imb_v <= 0.45 and chg_15m_v <= -0.05)
+                    (d_vel > 0.0 and d_chg >= 0.05)
+                    or (abs(kalman_vel) < 0.025 and _ok(ob_imb_v, 0.54, 0.46) and d_spcvd > 0.0 and (d_sl37 > 0.0 or tr5_burst))
+                    or (d_sl15 > 0.0 and _ok(taker_r, 1.15, 0.85) and _ok(ob_imb_v, 0.55, 0.45) and d_chg >= 0.05)
                 )
-                and (sp_reg == "SYNCHRONIZED_SPOT_PERP_SELLING" or taker_r <= 0.74)
+                and (sp_reg == sync_sp or _ok(taker_r, 1.35, 0.74))
             )
             or (
-                (cvd_reg in ("aggressive_market_dumps", "bid_absorbing") or cvd_15m_v < 0.0)
-                and taker_r <= 0.78
-                and chg_15m_v <= 0.45
+                (cvd_reg in (("aggressive_buying", "ask_absorbing", "spot_absorbing") if is_bull else ("aggressive_market_dumps", "bid_absorbing")) or d_cvd15 > 0.0)
+                and _ok(taker_r, 1.25, 0.78)
+                and d_chg >= -0.45
                 and (
-                    sp_reg in ("RETAIL_PERP_LONG_TRAP", "SYNCHRONIZED_SPOT_PERP_SELLING")
-                    or abs(long_liq_dist_pct) <= abs(short_liq_dist_pct)
-                    or (tr_1h_v is not None and tr_1h_v <= 0.85)
-                    or (ob_imb_v <= 0.42 and spot_cvd_15m_v < 0.0)
-                    or (tr_5m_v is not None and tr_5m_v <= 0.65 and cvd_5m_v < 0.0)
+                    sp_reg in (("INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE", sync_sp) if is_bull else ("RETAIL_PERP_LONG_TRAP", sync_sp))
+                    or (abs(short_liq_dist_pct) <= abs(long_liq_dist_pct) if is_bull else abs(long_liq_dist_pct) <= abs(short_liq_dist_pct))
+                    or (tr_1h_v is not None and _ok(tr_1h_v, 1.15, 0.85))
+                    or (_ok(ob_imb_v, 0.58, 0.42) and d_spcvd > 0.0)
+                    or tr5_burst
                 )
             )
             or (
-                cvd_15m_v < 0.0
-                and spot_cvd_15m_v < 0.0
-                and taker_r <= 1.0
-                and ob_imb_v <= 0.48
-                and chg_15m_v <= 0.15
-                and tr_5m_v is not None
-                and tr_5m_v <= 0.65
-                and cvd_5m_v < 0.0
-                and (tr_1h_v is None or tr_1h_v <= 1.0)
+                d_cvd15 > 0.0 and d_spcvd > 0.0 and _ok(taker_r, 1.0, 1.0)
+                and _ok(ob_imb_v, 0.52, 0.48) and d_chg >= -0.15 and tr5_burst
+                and (tr_1h_v is None or _ok(tr_1h_v, 1.0, 1.0))
             )
             or (
-                cvd_15m_v < 0.0
-                and spot_cvd_15m_v < 0.0
-                and taker_r <= 0.87
-                and ob_imb_v <= 0.49
-                and chg_15m_v <= 0.05
-                and kalman_vel <= 0.0
+                d_cvd15 > 0.0 and d_spcvd > 0.0 and _ok(taker_r, 1.15, 0.87)
+                and _ok(ob_imb_v, 0.51, 0.49) and d_chg >= -0.05 and d_vel >= 0.0
             )
             or (
-                (cvd_reg == "ask_absorbing" or div_reg in ("distribution", "long_liquidation", "bearish_distribution"))
-                and (chg_15m_v <= -0.05 or (chg_15m_v <= 0.10 and ob_imb_v <= 0.42))
-                and ob_imb_v <= 0.46
-                and spot_cvd_15m_v < 0.0
+                (cvd_reg == ("spot_absorbing" if is_bull else "ask_absorbing") or div_reg in div_set)
+                and (d_chg >= 0.05 or (d_chg >= -0.10 and _ok(ob_imb_v, 0.58, 0.42)))
+                and _ok(ob_imb_v, 0.54, 0.46) and d_spcvd > 0.0
                 and (
-                    kalman_vel < 0.0
-                    or (tr_1h_v is not None and tr_1h_v <= 0.90)
-                    or div_reg in ("distribution", "long_liquidation", "bearish_distribution")
+                    d_vel > 0.0
+                    or (tr_1h_v is not None and _ok(tr_1h_v, 1.10, 0.90))
+                    or (is_bull and tr_5m_v is not None and tr_5m_v >= 1.20 and d_cvd5 > 0.0)
+                    or div_reg in div_set
                 )
             )
-        )
-    ):
-        liq_magnet_bias = "BALANCED_LIQ_MAGNET"
+        ):
+            liq_magnet_bias = "BALANCED_LIQ_MAGNET"
     return {
         "long_liq_px": long_liq_px, "long_liq_usd": long_liq_usd, "long_liq_dist_pct": long_liq_dist_pct,
         "short_liq_px": short_liq_px, "short_liq_usd": short_liq_usd, "short_liq_dist_pct": short_liq_dist_pct,
@@ -1801,6 +1766,8 @@ __all__ = [
     "enrich_cross_venue_trends",
     "enrich_microstructure_cvd",
     "evaluate_microstructure_cycle_deltas",
+    "format_flow_horizon_parts",
+    "format_spot_cvd_source_tag",
     "is_ob_live_and_newer",
     "is_ob_mid_fresher_than_series",
     "purge_liquidation_cluster_keys",

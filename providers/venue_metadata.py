@@ -5,6 +5,7 @@ import inspect
 import logging
 import os
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,6 +25,7 @@ from cachepaths import (
     clean_scalar_str,
     clean_symbol_key,
     clean_upper_scalar,
+    normalize_cache_base_asset,
     normalize_venue_name,
     symbol_quote_asset,
 )
@@ -59,6 +61,7 @@ class ProviderVenueMetadataMixin:
     _PREFER_STATIC_TICK_SIZE: bool = False
     _USES_SHARED_REGISTRY_SYMBOLS: bool = False
     _HISTORICAL_OHLC_PRIORITY: Optional[int] = None
+    _PUBLIC_ORDERBOOK_HOST: str = ""
     _ORDERBOOK_L2_INFO_BOOK: bool = False
     _EXACT_TELEMETRY_CACHE_SYMBOL: bool = False
     _QUOTE_ISOLATED_TELEMETRY_VENUE: bool = True
@@ -564,6 +567,32 @@ class ProviderVenueMetadataMixin:
         return {"bids": bids, "asks": asks}
 
     @classmethod
+    def _parse_non_tokenized_crypto_symbol(
+        cls, symbol: str, *, allow_eur: bool = False
+    ) -> Optional[tuple[str, str, str]]:
+        """Return ``(canon_sym, base_asset, quote_asset)`` for non-tokenized crypto symbols, or ``None``."""
+        if _default_ir.resolve_kraken_tokenized_pair(symbol)[1]:
+            return None
+        canon_sym = canonical_symbol_key(symbol)
+        quote_asset = symbol_quote_asset(canon_sym)
+        if quote_asset == "EUR" and not _parse_bool_flag(allow_eur, False):
+            return None
+        return canon_sym, normalize_cache_base_asset(canon_sym), quote_asset
+
+    @classmethod
+    def resolve_venue_for_orderbook_url(cls, url: Any) -> str:
+        """Resolve the canonical venue key owning public spot L2 orderbook ``url`` (or ``''``)."""
+        url_host = (urllib.parse.urlsplit(clean_scalar_str(url) or "").hostname or "").lower()
+        if not url_host:
+            return ""
+        for v_key in cls._VENUE_PROVIDER_SPECS:
+            prov_cls = cls.resolve_venue_provider_class(v_key)
+            host = (clean_scalar_str(getattr(prov_cls, "_PUBLIC_ORDERBOOK_HOST", None)) or "").lower()
+            if host and (url_host == host or url_host.endswith(f".{host}")):
+                return v_key
+        return ""
+
+    @classmethod
     def public_spot_cvd_15m_request(
         cls, symbol: str, now_ts: float
     ) -> Optional[tuple[str, Optional[dict]]]:
@@ -590,7 +619,7 @@ class ProviderVenueMetadataMixin:
         """Return venue-isolated ``(request_spec, extractor_fn)`` for real 15m spot CVD."""
         canon_sym = canonical_symbol_key(symbol)
         v_norm = normalize_venue_name(venue)
-        if not v_norm:
+        if not v_norm or symbol_quote_asset(canon_sym) == "EUR":
             return None, None
         try:
             prov_cls = cls.resolve_venue_provider_class(v_norm)

@@ -38,6 +38,7 @@ from intelligence.external.collectors.base_collector import (
     _has_hyperliquid_instrument,
 )
 from intelligence.macro_sentiment_ssot import _extract_sorted_ts_px, fetch_public_json
+from providers.ohlc_utils import split_bar_clv_turnover_usd
 
 logger = logging.getLogger("intelligence.external.whale_positioning")
 
@@ -275,19 +276,17 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             for idx, (_t, o_p, h_p, l_p, c_p, vol) in enumerate(bar_slice):
                 if vol <= 0.0 or c_p <= 0.0:
                     continue
-                if h_p > l_p:
-                    clv = 0.15 + 0.70 * ((c_p - l_p) / (h_p - l_p))
-                else:
+                prev_c = 0.0
+                if h_p <= l_p:
                     prev_c = bar_slice[idx - 1][4] if idx > 0 else o_p
                     if abs(c_p - prev_c) <= 1e-9:
                         prev_c = next(
                             (b_prev[4] for b_prev in reversed(bars) if b_prev[0] < _t and abs(b_prev[4] - c_p) > 1e-9),
                             prev_c,
                         )
-                    clv = 0.65 if c_p > prev_c else (0.35 if c_p < prev_c else 0.5)
-                turn_usd = vol * c_p
-                b_usd += turn_usd * clv
-                s_usd += turn_usd * (1.0 - clv)
+                b_bar, s_bar = split_bar_clv_turnover_usd(o_p, h_p, l_p, c_p, vol, prev_c)
+                b_usd += b_bar
+                s_usd += s_bar
             return round(b_usd, 2), round(s_usd, 2)
 
         def _horizon_stats(bar_slice: list) -> tuple[Optional[float], Optional[float]]:

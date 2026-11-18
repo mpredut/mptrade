@@ -145,6 +145,7 @@ def _normalize_kraken_fill(raw: dict) -> dict:
 
 class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
     _CLIENT_CLASS_NAME = "KrakenClient"
+    _PUBLIC_ORDERBOOK_HOST = "kraken.com"
     _DEFERS_PREFLIGHT_QUANTITY = True
     _DEFAULT_FEE_SPEC = ("PRO_TIER0", 16.0, 26.0, 1.0)
     _HISTORICAL_OHLC_PRIORITY = 2

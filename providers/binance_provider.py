@@ -26,13 +26,11 @@ from botcore import (
 from cachepaths import (
     cache_symbol_variants,
     canonical_symbol_key,
-    normalize_cache_base_asset,
     resolve_binance_lookup_symbol,
     split_symbol_assets,
-    symbol_quote_asset,
 )
 import instrument_registry as sym_reg
-from instrument_registry import casefold_get, resolve_kraken_tokenized_pair, venue_for_symbol
+from instrument_registry import casefold_get, venue_for_symbol
 
 from .base import MarketDataProvider
 from .ohlc_utils import candle_interval, candles_to_historical_points, ProviderError
@@ -109,6 +107,7 @@ class BinanceProvider(MarketDataProvider):
     """
 
     _USES_SSOT_MARKET_CACHE: bool = True
+    _PUBLIC_ORDERBOOK_HOST: str = "api.binance.com"
     _DEFAULT_FEE_SPEC = ("VIP0", 10.0, 10.0, 5.0)
     _USES_SHARED_REGISTRY_SYMBOLS = True
     _HISTORICAL_OHLC_PRIORITY = 1
@@ -522,11 +521,9 @@ class BinanceProvider(MarketDataProvider):
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         # BY DESIGN: Kraken tokenized equities (xStocks) trade exclusively on Kraken tokenized_asset books;
         # never query Binance Spot or Binance Futures (fapi.binance.com) for xStock tickers.
-        if resolve_kraken_tokenized_pair(symbol)[1]:
+        if (parsed := cls._parse_non_tokenized_crypto_symbol(symbol, allow_eur=True)) is None:
             return (), ()
-        canon_sym = canonical_symbol_key(symbol)
-        quote_asset = symbol_quote_asset(canon_sym)
-        base_asset = normalize_cache_base_asset(canon_sym)
+        canon_sym, base_asset, quote_asset = parsed
         if quote_asset == "EUR":
             bin_eur_sym = f"{base_asset}EUR" if base_asset else canon_sym
             return (f"https://api.binance.com/api/v3/depth?symbol={bin_eur_sym}&limit=500",), ()
@@ -547,21 +544,19 @@ class BinanceProvider(MarketDataProvider):
         cls, symbol: str, now_ts: float
     ) -> Optional[tuple[str, Optional[dict]]]:
         _ = now_ts
-        if resolve_kraken_tokenized_pair(symbol)[1]:
+        if (parsed := cls._parse_non_tokenized_crypto_symbol(symbol)) is None:
             return None
-        canon_sym = canonical_symbol_key(symbol)
-        quote_asset = symbol_quote_asset(canon_sym)
-        base_asset = normalize_cache_base_asset(canon_sym)
-        if quote_asset == "EUR":
-            return None
+        _, base_asset, quote_asset = parsed
         spot_sym = (
             f"{base_asset}USDC"
             if (base_asset and quote_asset == "USDC")
             else resolve_binance_lookup_symbol(symbol)
         )
-        if not spot_sym:
-            return None
-        return (f"https://api.binance.com/api/v3/klines?symbol={spot_sym}&interval=5m&limit=3", None)
+        return (
+            (f"https://api.binance.com/api/v3/klines?symbol={spot_sym}&interval=5m&limit=3", None)
+            if spot_sym
+            else None
+        )
 
     @classmethod
     def extract_spot_cvd_15m_usd(

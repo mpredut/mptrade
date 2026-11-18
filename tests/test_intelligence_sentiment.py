@@ -11439,6 +11439,10 @@ def test_item_3_1_real_spot_cvd_across_binance_kraken_hyperliquid_and_pretrade_s
     assert "spot_cvd_15m=$+6,700[real_spot]" in pt_hype.get("15m Cumulative Volume Delta (CVD)", "")
     sec3b_real = "\n".join(_format_microstructure_section({"HYPEUSD": sib_m["HYPEUSD"]}, {"HYPEUSD": {"price": 67.0}}, now_ts=now_s))
     assert "spot_cvd_15m=+$6.7K[real_spot]" in sec3b_real
+    assert BinanceProvider.resolve_venue_for_orderbook_url("https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=500") == "binance"
+    assert BinanceProvider.resolve_venue_for_orderbook_url("https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT&limit=500") == ""
+    assert BinanceProvider.resolve_venue_for_orderbook_url("https://api.kraken.com/0/public/Depth?pair=HYPEUSD&count=200") == "kraken"
+    assert BinanceProvider.resolve_venue_for_orderbook_url("https://api.hyperliquid.xyz/info?type=l2Book&coin=HYPE") == "hyperliquid"
 
 
 def test_item_3_2_pretrade_liq_clusters_model_est_tag(tmp_path):
