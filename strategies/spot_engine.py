@@ -1523,6 +1523,12 @@ class Strategy(BaseSpotMixin):
             high = safe_pos_float(high, None)
         clean_ts = normalize_epoch_sec(timestamp, default=None, allow_zero=True)
         had_persisted_reconcile = self._state_flag("ledger_reconcile_required")
+        held = self.s["qty"]
+        if self.p.adopt_cost > 0 and not self._state_flag("adopted") and held <= 1e-12 and self.s.get("cycle", 1) == 1:
+            self._maybe_adopt()
+            if not self._state_flag("adopted"):
+                return None
+            held = self.s["qty"]
         if self.observe_only:
             tick_time = clean_ts if clean_ts is not None else self._now()
             self._shadow_prices.append((tick_time, price))
@@ -1530,7 +1536,6 @@ class Strategy(BaseSpotMixin):
                 self.s["ledger_reconcile_required"] = True
             else:
                 return None
-        held = self.s["qty"]
         if (
             not self.dry_run and self._state_flag("ledger_reconcile_required")
             and (held > 1e-12 or self.observe_only) and not self.s.get("orders")
@@ -1548,12 +1553,6 @@ class Strategy(BaseSpotMixin):
         self._shadow_prices.append((tick_time, price))
         if self._surge_replay_closes is not None:
             self._surge_replay_closes.append(price)
-
-        if self.p.adopt_cost > 0 and not self._state_flag("adopted") and held <= 1e-12 and self.s.get("cycle", 1) == 1:
-            self._maybe_adopt()
-            if not self._state_flag("adopted"):
-                return None
-            held = self.s["qty"]
         return price, entry_px, held, tick_time, high
 
     def _in_ipo_lifecycle(self) -> bool:

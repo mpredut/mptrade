@@ -1259,6 +1259,24 @@ def test_spot_engine_hybrid_tranche_plus_trailing_and_zero_reentry(tmp_path):
     assert buys[0]["amount"] == pytest.approx(500.0)
 
 
+    # 8. In observe_only=True (AI-managed mode), step() still adopts at STRAT_ADOPT_COST without overwriting entry_price with market price
+    obs_strat = _xstock_strategy.Strategy(
+        FakeKrakenXStock(bal={"TSTX": "30.0", "ZUSD": "3000.0"}),
+        pair,
+        params,
+        dry_run=False,
+        desktop=False,
+        observe_only=True,
+        initial_state=_xstock_strategy._new_state(),
+        state_dir=str(tmp_path),
+    )
+    obs_strat.notify = lambda **kw: None
+    obs_strat.step(115.0, timestamp=1000.0)
+    assert obs_strat.s["adopted"] is True
+    assert obs_strat.s["entry_price"] == pytest.approx(80.0)
+    assert obs_strat.s["orders"] == []
+
+
 def test_xstock_watch_incremental_trade_archive_sync(tmp_path, monkeypatch):
     from state_io import meta_file_path, read_json_dict, read_jsonl_dicts
 
