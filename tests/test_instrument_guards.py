@@ -2602,3 +2602,37 @@ def test_instrument_param_with_cast_bool_and_instrument_enabled_iter156_s1():
     assert inst.param("mt", "bad", True, cast=bool) is False
     assert _parse_bool_flag("false", True) is False
     assert _parse_bool_flag(float("nan"), True) is True
+
+
+def test_native_replace_contract_defaults_and_config_gate(monkeypatch):
+    """[NATIVE_REPLACE step 1] Capability flag defaults to False, base replace_order never touches venue, and gate requires capability + config."""
+    from providers.binance_provider import BinanceProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.t212_provider import T212Provider
+
+    # 1. No venue declares native replace yet; the dataclass rejects non-bool values.
+    for prov_cls in (BinanceProvider, KrakenProvider, HyperliquidProvider, T212Provider):
+        assert prov_cls._RECONCILIATION_CAPABILITIES.replace_by_order_id is False
+    assert OrderReconciliationCapabilities().replace_by_order_id is False
+    with pytest.raises(TypeError, match="replace_by_order_id"):
+        OrderReconciliationCapabilities(replace_by_order_id="yes")
+
+    # 2. Base contract refuses before touching the old order.
+    with pytest.raises(SubmissionRefused) as exc_info:
+        MarketDataProvider.replace_order(SimpleNamespace(), "BTCUSDC", "1", "SELL", 100.0, 1.0)
+    assert exc_info.value.reason == "replace_not_attempted"
+
+    # 3. Gate requires both the declared capability and the venue in NATIVE_ORDER_REPLACE_VENUES.
+    capable = SimpleNamespace(
+        name="Kraken",
+        reconciliation_capabilities=lambda: OrderReconciliationCapabilities(replace_by_order_id=True),
+    )
+    incapable = SimpleNamespace(name="Kraken", reconciliation_capabilities=lambda: OrderReconciliationCapabilities())
+    assert outcomes_log.NATIVE_ORDER_REPLACE_VENUES == frozenset()
+    assert outcomes_log.native_replace_enabled(capable) is False
+    monkeypatch.setattr(outcomes_log, "NATIVE_ORDER_REPLACE_VENUES", frozenset({"kraken"}))
+    assert outcomes_log.native_replace_enabled(capable) is True
+    assert outcomes_log.native_replace_enabled(incapable) is False
+    assert outcomes_log.native_replace_enabled(SimpleNamespace(name="Kraken")) is False
+    assert outcomes_log.native_replace_enabled(None) is False

@@ -514,6 +514,10 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
     def cancel_order(self, symbol: str, order_id: str) -> None:
         return None
 
+    def replace_order(self, symbol: str, order_id: str, side: str, price: float, qty: float, **kwargs):
+        """Natively replace one resting LIMIT order; the base contract never touches the old order."""
+        raise SubmissionRefused("replace_not_attempted")
+
     def guards_internally(self) -> bool:
         return False
 

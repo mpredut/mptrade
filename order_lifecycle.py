@@ -22,6 +22,7 @@ from botcore import (
     clean_scalar_str,
     clean_upper_scalar,
     coerce_finite_float,
+    defined_env,
     exact_pos_int,
     extract_order_id,
     extract_order_price,
@@ -39,7 +40,9 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     sanitize_pipe_field,
+    split_csv,
 )
+from cachepaths import normalize_venue_name
 from notify_engine import alertnotifiers as alert
 from providers import order_id_context as rc
 from providers.order_ohlc_utils import (
@@ -557,6 +560,22 @@ if not 2 <= ACCEPTED_TRACKING_PERSIST_ATTEMPTS <= 10:
     raise ValueError("ACCEPTED_TRACKING_PERSIST_ATTEMPTS must be between 2 and 10")
 if not 0 < ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC <= 5:
     raise ValueError("ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC must be finite, > 0, and <= 5")
+
+NATIVE_ORDER_REPLACE_VENUES = frozenset(
+    v for raw_v in split_csv(defined_env("NATIVE_ORDER_REPLACE_VENUES"), lower=True)
+    if (v := normalize_venue_name(raw_v))
+)
+
+
+def native_replace_enabled(provider: Any) -> bool:
+    """Return True when ``provider`` declares native replace and its venue is enabled in config."""
+    if not NATIVE_ORDER_REPLACE_VENUES or provider is None:
+        return False
+    try:
+        caps = reconciliation_capabilities_of(provider)
+    except Exception:
+        return False
+    return caps.replace_by_order_id and normalize_venue_name(provider) in NATIVE_ORDER_REPLACE_VENUES
 
 
 def _claim_client_order_id(record) -> str | None:

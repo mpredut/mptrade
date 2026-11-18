@@ -197,6 +197,7 @@ class OrderReconciliationCapabilities:
     status_by_order_id: bool = False
     cancel_by_order_id: bool = False
     list_open_orders: bool = False
+    replace_by_order_id: bool = False
     not_found_reliable_for_seconds: Optional[float] = None
 
     def __post_init__(self):
@@ -205,6 +206,7 @@ class OrderReconciliationCapabilities:
             "status_by_order_id",
             "cancel_by_order_id",
             "list_open_orders",
+            "replace_by_order_id",
         ):
             if type(getattr(self, field_name)) is not bool:
                 raise TypeError(f"{field_name} capability must be bool")
