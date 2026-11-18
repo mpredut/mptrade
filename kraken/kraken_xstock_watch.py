@@ -521,7 +521,7 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
         ),
         (
             "alerted_tp2",
-            tp2 > 0 and chg >= tp2,
+            tp2 > tp_pct and chg >= tp2,
             f"📈📈 TRANCHE 2: xStock {chg:+.1f}% ({price})",
             f"The second target is reached — sell the rest. Value: {val_s}.",
         ),
