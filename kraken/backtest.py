@@ -39,8 +39,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import is_kraken_tokenized_asset
-from instrument_registry import resolve_registered_symbol_case
+from instrument_registry import resolve_kraken_tokenized_pair
 from strategies import spot_replay as rp
 from kraken.kraken_common import load_isolated_kraken_cfg
 from kraken.market_data import fetch_ohlc_candles, load_archive_ohlc_candles
@@ -164,7 +163,7 @@ def main() -> int:
 
     try:
         raw_tok = validate_bt_cli_token(args.pair, "--pair", allow_slash=True)
-        pair_tok = raw_tok if is_kraken_tokenized_asset(raw_tok) else resolve_registered_symbol_case(raw_tok.upper(), "kraken")
+        pair_tok, _ = resolve_kraken_tokenized_pair(raw_tok, upper_default=True)
     except ValueError as exc:
         return print_bt_cli_error(exc)
     if args.interval <= 0:

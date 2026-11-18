@@ -1164,8 +1164,47 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                     f"{rel_s}:{lineno}: non-canonical transitive re-export import from {target_mod}: {bad_reexp}"
                 )
 
+    import builtins
+
+    builtin_names = set(dir(builtins)) | {
+        "__file__", "__name__", "__package__", "__doc__", "__spec__", "__annotations__",
+    }
     for rel_s, _ in prod_files:
         tree = parsed_prod_trees[rel_s]
+        bound_names = set(builtin_names)
+        ann_nodes: set[ast.AST] = set()
+        has_wildcard_imp = False
+        for w_node in ast.walk(tree):
+            if isinstance(w_node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound_names.add(w_node.name)
+            if isinstance(w_node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                for arg_n in (*w_node.args.posonlyargs, *w_node.args.args, *w_node.args.kwonlyargs, w_node.args.vararg, w_node.args.kwarg):
+                    if arg_n is not None:
+                        bound_names.add(arg_n.arg)
+                        if getattr(arg_n, "annotation", None) is not None:
+                            ann_nodes.update(ast.walk(arg_n.annotation))
+                if getattr(w_node, "returns", None) is not None:
+                    ann_nodes.update(ast.walk(w_node.returns))
+            elif isinstance(w_node, (ast.Import, ast.ImportFrom)):
+                for al in w_node.names:
+                    if al.name == "*":
+                        has_wildcard_imp = True
+                    else:
+                        bound_names.add((al.asname or al.name).split(".")[0])
+            elif isinstance(w_node, ast.Name) and isinstance(w_node.ctx, (ast.Store, ast.Del)):
+                bound_names.add(w_node.id)
+            elif isinstance(w_node, ast.NamedExpr) and isinstance(w_node.target, ast.Name):
+                bound_names.add(w_node.target.id)
+            elif isinstance(w_node, ast.ExceptHandler) and w_node.name:
+                bound_names.add(w_node.name)
+            elif isinstance(w_node, ast.MatchAs) and w_node.name:
+                bound_names.add(w_node.name)
+            elif isinstance(w_node, ast.AnnAssign) and w_node.annotation is not None:
+                ann_nodes.update(ast.walk(w_node.annotation))
+        if not has_wildcard_imp:
+            for w_node in ast.walk(tree):
+                if isinstance(w_node, ast.Name) and isinstance(w_node.ctx, ast.Load) and w_node not in ann_nodes and w_node.id not in bound_names:
+                    ssot_violations.append(f"{rel_s}:{w_node.lineno}: undefined name {w_node.id!r}")
         seen_top_import_from: set[tuple[int, str]] = set()
         for top_node in tree.body:
             if isinstance(top_node, ast.ImportFrom) and top_node.module:

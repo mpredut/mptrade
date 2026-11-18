@@ -1032,8 +1032,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
 
     @classmethod
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        reg_sym = resolve_registered_symbol_case(symbol, "kraken")
-        if is_kraken_tokenized_asset(reg_sym):
+        reg_sym, is_tok = resolve_kraken_tokenized_pair(symbol)
+        if is_tok:
             return (f"https://api.kraken.com/0/public/Depth?pair={reg_sym}&count=200&asset_class=tokenized_asset",), ()
         canon_sym = canonical_symbol_key(symbol)
         quote = "EUR" if symbol_quote_asset(canon_sym) == "EUR" else "USD"
@@ -1046,8 +1046,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         days: int,
         interval: str = "1h",
     ) -> list[tuple[float, float]]:
-        reg_sym = resolve_registered_symbol_case(symbol, "kraken")
-        if is_kraken_tokenized_asset(reg_sym):
+        reg_sym, is_tok = resolve_kraken_tokenized_pair(symbol)
+        if is_tok:
             return series_to_historical_points(self.ohlc_series(reg_sym, 60))
         base_u = normalize_cache_base_asset(symbol)
         krk_sym = f"{base_u}USD" if base_u else str(symbol or "").strip().upper()
