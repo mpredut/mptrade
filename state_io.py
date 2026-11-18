@@ -1235,9 +1235,11 @@ def read_json_dict_cached(
     if isinstance(res, dict):
         if st_bak is not None:
             sig = (_stat_sig(resolved), _stat_sig(backup_path), read_recovering_previous, json.load)
-        if len(cache_store) > max_entries:
-            cache_store.clear()
+        if resolved in cache_store:
+            cache_store.pop(resolved, None)
         cache_store[resolved] = (sig, res)
+        while len(cache_store) > max_entries:
+            cache_store.pop(next(iter(cache_store)), None)
         return res
     return None
 

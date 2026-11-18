@@ -45,6 +45,7 @@ from botcore import (
     is_rth_gate_enabled,
     is_us_rth_open,
     load_dotenv,
+    lru_dict_put,
     normalize_epoch_sec,
     normalize_timestamp_ms,
     parse_symbol_list,
@@ -162,8 +163,12 @@ _ORIG_READ_JSON_DICT_RECOVERING = read_json_dict_recovering
 _LIST_OR_TUPLE_TYPES = (list, tuple)
 _EXACT_NUM_TYPES = (int, float)
 _SSOT_PT_TS_KEY = itemgetter(0)
+_SSOT_24PRICE_MAX_ENTRIES = 16
 _SSOT_24PRICE_DISK_MEMO: dict[str, tuple[tuple, dict[str, Any]]] = {}
-_SSOT_24PRICE_PARSED_MEMO: dict[int, tuple[list, tuple[Any, ...], list[tuple[int, float]], int]] = {}
+_SSOT_24PRICE_PARSED_MEMO: dict[
+    tuple[str, str],
+    tuple[tuple[Any, Any, Any], tuple[Any, ...], list[tuple[int, float]], int],
+] = {}
 
 
 def _ssot_entry_memo_token(entry: Any) -> Any:
@@ -881,7 +886,7 @@ class Cache24PriceManager(CachePriceManagerBase):
             and is_state_io_dict_reader_unpatched()
         )
         raw = (
-            read_json_dict_cached(c24_path, _SSOT_24PRICE_DISK_MEMO, max_entries=64)
+            read_json_dict_cached(c24_path, _SSOT_24PRICE_DISK_MEMO, max_entries=_SSOT_24PRICE_MAX_ENTRIES)
             if use_cached_reader
             else read_json_dict_recovering(c24_path, default=None)
         )
@@ -941,17 +946,22 @@ class Cache24PriceManager(CachePriceManagerBase):
                 )
                 valid: Optional[list[tuple[int, float]]] = None
                 memo_sig: tuple[Any, ...] = ()
+                parsed_key = (os.path.abspath(c24_path), str(cand).upper())
+                e0, emid, elast = entries[0], entries[len(entries) // 2], entries[-1]
+                entries_anchor = (e0, emid, elast)
                 if use_default_parser:
                     memo_sig = (
                         len(entries),
-                        _ssot_entry_memo_token(entries[0]),
-                        _ssot_entry_memo_token(entries[len(entries) // 2]),
-                        _ssot_entry_memo_token(entries[-1]),
+                        _ssot_entry_memo_token(e0),
+                        _ssot_entry_memo_token(emid),
+                        _ssot_entry_memo_token(elast),
                     )
-                    cached_parsed = _SSOT_24PRICE_PARSED_MEMO.get(id(entries))
+                    cached_parsed = _SSOT_24PRICE_PARSED_MEMO.get(parsed_key)
                     if (
                         cached_parsed is not None
-                        and cached_parsed[0] is entries
+                        and cached_parsed[0][0] is e0
+                        and cached_parsed[0][1] is emid
+                        and cached_parsed[0][2] is elast
                         and cached_parsed[1] == memo_sig
                         and cutoff_ms >= cached_parsed[3]
                     ):
@@ -988,13 +998,11 @@ class Cache24PriceManager(CachePriceManagerBase):
                     if not is_sorted:
                         valid.sort(key=_SSOT_PT_TS_KEY)
                     if use_default_parser:
-                        if len(_SSOT_24PRICE_PARSED_MEMO) > 64:
-                            _SSOT_24PRICE_PARSED_MEMO.clear()
-                        _SSOT_24PRICE_PARSED_MEMO[id(entries)] = (
-                            entries,
-                            memo_sig,
-                            valid,
-                            cutoff_ms,
+                        lru_dict_put(
+                            _SSOT_24PRICE_PARSED_MEMO,
+                            parsed_key,
+                            (entries_anchor, memo_sig, valid, cutoff_ms),
+                            _SSOT_24PRICE_MAX_ENTRIES,
                         )
                     start_idx = 0
                 else:

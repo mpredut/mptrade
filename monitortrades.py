@@ -19,6 +19,7 @@ from botcore import (
     is_gemini_llm_disabled,
     is_simulated_provider_name,
     load_dotenv,
+    lru_dict_put,
     normalize_epoch_sec,
     parse_dotenv,
     parse_ratio_or_pct,
@@ -319,9 +320,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         "buy_count": len(buy_orders),
         "sell_count": len(sell_orders),
     }
-    if len(_position_stats_cache) >= 256:
-        _position_stats_cache.clear()
-    _position_stats_cache[cache_key] = (entry_sig, now_ts, res, api)
+    lru_dict_put(_position_stats_cache, cache_key, (entry_sig, now_ts, res, api), 64)
     return dict(res)
 
 

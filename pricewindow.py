@@ -12,6 +12,7 @@ with per-instrument power ``trend.step_wols_power`` from ``instruments.conf``
 (Cubic ``p=3.0`` for BTC, Quadratic ``p=2.0`` for altcoins/equities).
 """
 import builtins
+import hashlib
 import math
 import os
 import threading
@@ -29,6 +30,7 @@ from botcore import (
     diff_percent,
     float_env,
     is_env_defined,
+    lru_dict_put,
     normalize_epoch_sec,
     optional_env,
     pos_float_env,
@@ -1327,7 +1329,8 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
         try:
             if np is not None and isinstance(prices, np.ndarray):
                 if prices.ndim == 1 and prices.dtype.kind in ("f", "i", "u"):
-                    seq_sig = prices.astype(float, copy=False).tobytes()
+                    raw_b = prices.astype(float, copy=False).tobytes()
+                    seq_sig = raw_b if n <= 64 else hashlib.blake2b(raw_b, digest_size=16).digest()
             elif n <= 512:
                 cand_tup = tuple(prices)
                 hash(cand_tup)
@@ -1393,9 +1396,7 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
     res = 0.0 if std == 0.0 else round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
 
     if cache_key is not None:
-        if len(_vol_memo_cache) > _VOL_MEMO_MAX_ENTRIES:
-            _vol_memo_cache.clear()
-        _vol_memo_cache[cache_key] = res
+        lru_dict_put(_vol_memo_cache, cache_key, res, _VOL_MEMO_MAX_ENTRIES)
     return res
 
 

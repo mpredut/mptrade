@@ -28,6 +28,7 @@ from botcore import (
     is_cache_fresh,
     is_env_defined,
     is_rth_gate_enabled,
+    lru_dict_put,
     normalize_epoch_sec,
     resolve_now_ts,
     resolve_patched_attr,
@@ -887,14 +888,10 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 except Exception:
                     continue
             if not found_opts:
-                if len(self._EQUITY_NO_OPTIONS_TS) > 64:
-                    self._EQUITY_NO_OPTIONS_TS.clear()
-                self._EQUITY_NO_OPTIONS_TS[ticker] = now
+                lru_dict_put(self._EQUITY_NO_OPTIONS_TS, ticker, now, 64)
             else:
                 self._EQUITY_NO_OPTIONS_TS.pop(ticker, None)
-                if len(self._EQUITY_OPTIONS_MEMO) > 32:
-                    self._EQUITY_OPTIONS_MEMO.clear()
-                self._EQUITY_OPTIONS_MEMO[ticker] = (now, (call_oi, put_oi, call_vol, put_vol))
+                lru_dict_put(self._EQUITY_OPTIONS_MEMO, ticker, (now, (call_oi, put_oi, call_vol, put_vol)), 32)
 
         ctx_out.update(call_oi=call_oi, put_oi=put_oi, call_vol=call_vol, put_vol=put_vol, _options_loaded=True)
 
@@ -1014,9 +1011,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             pass
 
         if last_px <= 0.0 and not bars:
-            if len(self._EQUITY_CTX_MEMO) > 32:
-                self._EQUITY_CTX_MEMO.clear()
-            self._EQUITY_CTX_MEMO[ticker] = (now, None)
+            lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, None), 16)
             return None
 
         ctx_out: Dict[str, Any] = {
@@ -1034,9 +1029,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             "put_vol": 0.0,
             "_options_loaded": False,
         }
-        if len(self._EQUITY_CTX_MEMO) > 32:
-            self._EQUITY_CTX_MEMO.clear()
-        self._EQUITY_CTX_MEMO[ticker] = (now, ctx_out)
+        lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, ctx_out), 16)
         if include_options:
             self._populate_equity_options_context(
                 ticker,

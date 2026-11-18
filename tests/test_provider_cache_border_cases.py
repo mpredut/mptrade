@@ -8500,6 +8500,17 @@ def test_read_ssot_price_history_memo_bisect_and_lookback_expansion(tmp_path, mo
     h_4h = Cache24PriceManager.read_ssot_price_history(("BTCUSDC",), 4.0, custom_dir=str(tmp_path))
     assert h_4h is not None and len(h_4h) == 242
     assert len(json_loads) == 1
+    assert len(cp_mod._SSOT_24PRICE_PARSED_MEMO) == 1
+    only_memo_val = next(iter(cp_mod._SSOT_24PRICE_PARSED_MEMO.values()))
+    assert isinstance(only_memo_val[0], tuple) and len(only_memo_val[0]) == 3
+
+    # 2b. Repeated disk updates overwrite the same (path, symbol) slot in place instead of accumulating stale generations
+    for step_i in range(1, 5):
+        rows.append([now_ms - 5_000 + step_i * 1_000, 80_020.5 + step_i])
+        c24_file.write_text(json.dumps({"items": {"BTCUSDC": rows}}), encoding="utf-8")
+        h_upd = Cache24PriceManager.read_ssot_price_history(("BTCUSDC",), 1.0, custom_dir=str(tmp_path))
+        assert h_upd is not None and h_upd[-1]["price"] == 80_020.5 + step_i
+        assert len(cp_mod._SSOT_24PRICE_PARSED_MEMO) == 1
 
     # 3. Unsorted series with future-dated outlier (> now + 5s) is rejected identically to legacy behavior
     bad_future_rows = [

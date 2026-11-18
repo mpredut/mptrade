@@ -256,9 +256,7 @@ def _wrap_cached_ohlc_fn(
             return hit[1]
         res = fn(s_arg, interval_min)
         if res is not None and getattr(res, "closes", None):
-            if len(_FALLBACK_OHLC_SERIES_CACHE) > 128:
-                _FALLBACK_OHLC_SERIES_CACHE.clear()
-            _FALLBACK_OHLC_SERIES_CACHE[ck] = (now_s, res, fn_anchor)
+            lru_dict_put(_FALLBACK_OHLC_SERIES_CACHE, ck, (now_s, res, fn_anchor), 32)
         return res
 
     return _cached_ohlc
@@ -1064,7 +1062,7 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
                 interval="5m",
             )
             if is_live_network_backfill_enabled():
-                _EQ_YAHOO_CHART_MEMO[symbol] = (eff_now, chart_res)
+                lru_dict_put(_EQ_YAHOO_CHART_MEMO, symbol, (eff_now, chart_res), 16)
         return normalize_yahoo_5d_chart_bars(chart_res, raw_s24, eff_now, eq_rth_open=eq_rth_open)
 
 
