@@ -44,7 +44,12 @@ from cachepaths import (
     telemetry_cache_file_path,
 )
 import instrument_registry as _ir
-from instrument_registry import is_equity_symbol, is_symbol_market_open, venue_for_symbol
+from instrument_registry import (
+    is_equity_symbol,
+    is_symbol_market_open,
+    resolve_kraken_tokenized_pair,
+    venue_for_symbol,
+)
 from intelligence.macro_sentiment_ssot import (
     _require_feed_csv,
     _require_feed_str,
@@ -374,6 +379,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
     _DEFAULT_DISK_TTL_SEC: float = 120.0
     _FALLBACK_CACHE_TTL_SEC: float = 60.0
     _FALLBACK_DISK_TTL_SEC: float = 120.0
+    _SKIP_TOKENIZED_XSTOCKS: bool = False
     start_sync: bool = False
 
     def __init__(
@@ -646,6 +652,10 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         now: Optional[float],
     ) -> Tuple[Optional[str], float, Any, Optional[Any], bool]:
         if not isinstance(symbol, str) or not (sym_clean := symbol.strip().upper()):
+            return None, 0.0, None, None, False
+        # BY DESIGN: Kraken spot tokenized equities (SPCXxUSD, ANTxUSD) have no perpetual futures or whale L/S;
+        # short-circuit before memory/disk/base-variant lookup so stale/foreign snapshots never leak in.
+        if self._SKIP_TOKENIZED_XSTOCKS and resolve_kraken_tokenized_pair(sym_clean)[1]:
             return None, 0.0, None, None, False
         stale_set = getattr(self, "_stale_fallback_symbols", None)
         if isinstance(stale_set, set):

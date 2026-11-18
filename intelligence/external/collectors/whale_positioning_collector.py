@@ -103,6 +103,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
     COLLECTOR_ID = "external_whale_positioning"
     _DISK_FILE_PREFIX = "whale_snapshot"
     _SNAPSHOT_CLS = WhalePositioningSnapshot
+    _SKIP_TOKENIZED_XSTOCKS = True
     _DEFAULT_DISK_TTL_SEC = 180.0
     _FALLBACK_CACHE_TTL_SEC = 120.0
     _FALLBACK_DISK_TTL_SEC = 300.0
@@ -375,8 +376,6 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         )
         if not should_fetch or symbol is None:
             return ready
-        if resolve_kraken_tokenized_pair(symbol)[1]:
-            return None
         price_1h_change_pct = self._resolve_price_1h_change_pct(symbol) if abs(chg_in) < 1e-6 else chg_in
 
         lookup_sym = resolve_binance_lookup_symbol(symbol)

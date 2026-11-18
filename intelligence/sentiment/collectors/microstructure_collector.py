@@ -553,9 +553,10 @@ def load_symbol_microstructure(
     else:
         raw_ob_sym = obj_attr(ob, "symbol")
         ob_cand = raw_ob_sym.strip() if isinstance(raw_ob_sym, str) and raw_ob_sym.strip() else None
-    if deriv is None:
+    is_tok_xstock = resolve_kraken_tokenized_pair(sym_u)[1]
+    if deriv is None and not is_tok_xstock:
         deriv, _ = _first_telemetry_dict(CACHE_DERIVATIVES_TELEMETRY_PREFIX, prefer_freshest=True)
-    if whale is None:
+    if whale is None and not is_tok_xstock:
         whale, _ = _first_telemetry_dict(CACHE_WHALE_SNAPSHOT_PREFIX, prefer_freshest=True)
     if not (ob or deriv or whale):
         return None

@@ -76,6 +76,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
     COLLECTOR_ID = "external_derivatives_telemetry"
     _DISK_FILE_PREFIX = "derivatives_telemetry"
     _SNAPSHOT_CLS = DerivativesTelemetry
+    _SKIP_TOKENIZED_XSTOCKS = True
 
     def _fetch_hyperliquid_derivatives(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
         """Fetch native funding rate and open interest from Hyperliquid L1 metaAndAssetCtxs."""
@@ -149,8 +150,6 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         )
         if not should_fetch or symbol is None:
             return ready
-        if resolve_kraken_tokenized_pair(symbol)[1]:
-            return None
 
         is_hl_primary = MarketDataProvider.has_native_l1_derivatives(venue_for_symbol(symbol))
         if is_hl_primary:

@@ -492,6 +492,8 @@ def _fetch_pillar2_snapshot(
     quote_variants: List[str],
     _rj: Callable[[str], Any],
 ) -> Any:
+    if prefix in (CACHE_WHALE_SNAPSHOT_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX) and resolve_kraken_tokenized_pair(symbol)[1]:
+        return None
     snap = None
     try:
         col = getter_fn()
@@ -1774,7 +1776,12 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 if x and x.split("=", 1)[0] not in fr_base
             ]
             telemetry["Perpetual Funding Rate"] = f"{fr_base} ({', '.join(fr_extras)})" if fr_extras else fr_base
-        if (oi_v := safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) > 0.0:
+        is_tok_xstock_pt = resolve_kraken_tokenized_pair(symbol)[1]
+        if is_tok_xstock_pt:
+            for _tok_pop_k in ("Whale Positioning", "Whale Taker Flow", "Perpetual Funding Rate", "Derivatives Open Interest"):
+                telemetry.pop(_tok_pop_k, None)
+            telemetry["Perpetual Derivatives"] = "N/A (spot tokenized equity)"
+        if (oi_v := safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) > 0.0 and not is_tok_xstock_pt:
             l1_oi = safe_pos_float(cur_m_info.get("native_l1_oi_usd"), default=0.0) or 0.0
             oi_base = f"${oi_v:,.0f} (l1_oi=${l1_oi / 1e9:.2f}B)" if (l1_oi > 0.0 and abs(l1_oi - oi_v) > 1.0) else f"${oi_v:,.0f}"
             eq_oi_tag = " (Cboe options chain OI)" if is_eq_sym else ""

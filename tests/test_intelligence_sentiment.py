@@ -11129,6 +11129,90 @@ def test_item_1_3_and_ssot_unification_contracts(tmp_path):
     assert view_d["cum_realized_pnl_usd"] == pytest.approx(179.25)
 
 
+def test_item_2_1_tokenized_xstock_base_isolation_no_retry_spin_and_pretrade_tag(tmp_path):
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from state_io import atomic_write_json
+
+    now_s = 1_795_018_000.0
+    cdir = tmp_path / "cachedb"
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+
+    # Even if stale/base-variant disk files exist for SPCX / SPCXXUSD, tokenized xStock collectors and loaders must return None / ignore them.
+    for pfx in ("whale_snapshot_", "derivatives_telemetry_"):
+        for s_bad in ("SPCX", "SPCXXUSD", "SPCXxUSD"):
+            atomic_write_json(
+                str(cdir / "telemetry" / f"{pfx}{s_bad}.json"),
+                {
+                    "symbol": s_bad,
+                    "ts": now_s - 5.0,
+                    "funding_rate": 0.0002,
+                    "open_interest_usd": 999_999.0,
+                    "top_traders_long_pct": 0.65,
+                    "taker_buy_sell_ratio": 1.35,
+                },
+            )
+    atomic_write_json(
+        str(cdir / "telemetry" / "orderbook_depth_SPCXxUSD.json"),
+        {
+            "symbol": "SPCXxUSD",
+            "venue": "kraken",
+            "ts": now_s - 3.0,
+            "mid_price": 144.60,
+            "best_bid": 144.58,
+            "best_ask": 144.62,
+            "bid_depth_usd": 50000.0,
+            "ask_depth_usd": 60000.0,
+            "imbalance_ratio": 0.455,
+            "largest_bid_wall_price": 144.20,
+            "largest_bid_wall_usd": 20000.0,
+            "largest_ask_wall_price": 145.10,
+            "largest_ask_wall_usd": 25000.0,
+        },
+    )
+    atomic_write_json(
+        str(cdir / "prices" / "cache_current_price.json"),
+        {"items": {"SPCXxUSD": [[int((now_s - 1.0) * 1000), 144.60]]}},
+    )
+
+    wc = WhalePositioningCollector(cache_dir=str(cdir), start_sync=False)
+    dc = DerivativesTelemetryCollector(cache_dir=str(cdir), start_sync=False)
+    assert wc.fetch("SPCXxUSD", allow_network=False, now=now_s) is None
+    assert dc.fetch("SPCXXUSD", allow_network=False, now=now_s) is None
+
+    m_tok = load_symbol_microstructure(str(cdir), "SPCXxUSD")
+    assert m_tok is not None
+    assert m_tok.get("ob_mid_price") == pytest.approx(144.60)
+    assert m_tok.get("whale_long_pct") is None
+    assert m_tok.get("funding_rate") is None
+    assert m_tok.get("oi_usd") is None
+
+    pt_tok = collect_pretrade_telemetry("SPCXxUSD", cachedb_dir=str(cdir), allow_network=False, now_ts=now_s)
+    assert pt_tok.get("Perpetual Derivatives") == "N/A (spot tokenized equity)"
+    assert "Perpetual Funding Rate" not in pt_tok
+    assert "Derivatives Open Interest" not in pt_tok
+    assert "Whale Positioning" not in pt_tok
+
+    # GlobalTelemetryCollector._step_external_symbols skips deriv/whale on tokenized xStocks instead of 0.25x retry spinning.
+    gtc = GlobalTelemetryCollector(symbols=["SPCXXUSD"], cache_dir=str(cdir), skip_news=True)
+    deriv_calls, whale_calls, ob_calls = [], [], []
+    gtc.update_orderbook = lambda sym: (ob_calls.append(sym) or True)
+    gtc.update_derivatives = lambda sym: (deriv_calls.append(sym) or False)
+    gtc.update_whale = lambda sym: (whale_calls.append(sym) or False)
+    res_step = gtc._new_external_cycle_results(now_s)
+    gtc._step_external_symbols(now_s, False, res_step, bounded=True)
+    assert ob_calls == ["SPCXXUSD"]
+    assert deriv_calls == []
+    assert whale_calls == []
+    assert "SPCXXUSD" not in gtc._last_derivatives_ts
+    assert "SPCXXUSD" not in gtc._last_whale_ts
+
+
+
 
 
 
