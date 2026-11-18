@@ -130,6 +130,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     align_equity_orderbook_to_spot,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    is_ob_live_and_newer,
     is_ob_mid_fresher_than_series,
     rescale_orderbook_walls_to_price,
 )
@@ -1855,13 +1856,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     if (cp_last_pt is not None and (raw_s24_last_pt is None or cp_last_pt[0] >= raw_s24_last_pt[0]))
                     else raw_s24_last_pt
                 )
-                ob_is_live_and_newer = (
-                    (ob_ts_m <= 0.0 and cp_last_pt is None)
-                    or (
-                        ob_ts_m > 0.0
-                        and -5.0 <= (eff_now - ob_ts_m) <= 60.0
-                        and (eff_last_series_pt is None or ob_ts_m * 1000.0 >= eff_last_series_pt[0])
-                    )
+                ob_is_live_and_newer = is_ob_live_and_newer(
+                    ob_ts_m, eff_now, eff_last_series_pt, has_live_cp_point=cp_last_pt is not None
                 )
                 if (
                     sym_px_m <= 0.0
@@ -1884,7 +1880,11 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         pt_map[sym]["chg_7d_pct"] = pct_delta(ob_mid_m, safe_float(active_7d_vals[0], 0.0))
                     recalculate_live_price_geometry(pt_map[sym], ob_mid_m)
                 elif (
-                    not _prices_diverged(sym_px_m, ob_mid_m)
+                    # BY DESIGN: Keep real resting orderbook wall prices untouched on normal <=1% intraday moves;
+                    # only recenter walls when an offline/stale USD book drifted >1% away from live spot.
+                    sym_px_m > 0.0
+                    and abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) > 0.01
+                    and not _prices_diverged(sym_px_m, ob_mid_m)
                     and is_exact_ob_sym
                     and is_fiat_usd_pair(sym)
                     and (
@@ -1938,6 +1938,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 ob_mid_sib = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
                 p_ref_px = safe_pos_float(p_ref.get("price"), default=0.0) or 0.0
                 ob_sib_rescaled = False
+                sib_live_px: Optional[float] = None
                 if is_fiat_usd_pair(msym) and ob_mid_sib is not None:
                     sib_live_px = extract_current_price_item(casefold_get(cp_map, msym))
                     if (not sib_live_px or sib_live_px <= 0.0) and cachedb_dir:
@@ -1956,20 +1957,18 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                                 )
                             if ob_ref_ts > 0.0 and (eff_now - ob_ref_ts) > 120.0:
                                 sib_live_px = p_ref_px if p_ref_px > 0.0 else None
-                    if _should_rescale_usd_sibling_walls(msym, sib_live_px, ob_mid_sib, p_ref_px) or (
-                        sib_live_px
-                        and sib_live_px > 0.0
-                        and (ob_ref_ts <= 0.0 or (eff_now - ob_ref_ts) > 60.0)
-                        and not _prices_diverged(sib_live_px, ob_mid_sib)
-                    ):
+                    if _should_rescale_usd_sibling_walls(msym, sib_live_px, ob_mid_sib, p_ref_px):
                         ob_mid_sib = rescale_orderbook_walls_to_price(m_info_ref, sib_live_px, ob_mid_sib)
                         ob_sib_rescaled = True
-                ob_ref_fresh = ob_sib_rescaled or p_ref_px <= 0.0 or ob_ref_ts <= 0.0 or -5.0 <= (eff_now - ob_ref_ts) <= 60.0
+                ob_ref_fresh = ob_sib_rescaled or p_ref_px <= 0.0 or (ob_ref_ts > 0.0 and -5.0 <= (eff_now - ob_ref_ts) <= 60.0)
                 if ob_mid_sib is not None and not _prices_diverged(ob_mid_sib, safe_float(p_ref.get("price"), 0.0)):
                     p_sib = dict(p_ref)
                     if ob_ref_fresh:
                         p_sib["price"] = ob_mid_sib
                         recalculate_live_price_geometry(p_sib, ob_mid_sib)
+                    elif sib_live_px and sib_live_px > 0.0 and not _prices_diverged(sib_live_px, safe_float(p_ref.get("price"), 0.0)):
+                        p_sib["price"] = sib_live_px
+                        recalculate_live_price_geometry(p_sib, sib_live_px)
                     if m_info_ref.get("spread_bps") is not None:
                         p_sib["spread_bps"] = m_info_ref["spread_bps"]
                     pt_map[msym] = p_sib

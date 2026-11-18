@@ -1491,6 +1491,22 @@ def rescale_orderbook_walls_to_price(m_info: Dict[str, Any], target_px: float, o
     return rounded_px
 
 
+def is_ob_live_and_newer(
+    ob_ts_sec: float,
+    now_ts: float,
+    last_series_pt: Optional[Tuple[float, float]] = None,
+    *,
+    extra_ts_sec: float = 0.0,
+    has_live_cp_point: bool = False,
+) -> bool:
+    """Return True strictly when `ob_ts_sec` is fresh (`<=60s` old) and at least as new as the live price series."""
+    if ob_ts_sec <= 0.0:
+        return not has_live_cp_point and extra_ts_sec <= 0.0
+    last_ts_s = (normalize_epoch_sec(last_series_pt[0], default=0.0) or 0.0) if last_series_pt is not None else 0.0
+    best_series_ts_s = max(safe_pos_float(extra_ts_sec, default=0.0) or 0.0, last_ts_s)
+    return -5.0 <= (now_ts - ob_ts_sec) <= 60.0 and (best_series_ts_s <= 0.0 or ob_ts_sec >= best_series_ts_s)
+
+
 def is_ob_mid_fresher_than_series(
     cur_px: float,
     ob_mid_px: float,
@@ -1501,15 +1517,13 @@ def is_ob_mid_fresher_than_series(
     is_exact_ob_sym: bool,
     ref_flat_px: Optional[float] = None,
 ) -> bool:
-    """Return True when an exact-symbol orderbook mid price is >60s newer than a stale/flat 24h series tail."""
+    """Return True when an exact-symbol orderbook mid price is fresh (`<=60s`) and `>60s` newer than a stalled 24h series tail."""
+    _ = ref_flat_px
     if not is_exact_ob_sym or _prices_diverged(cur_px, ob_mid_px):
         return False
-    if not (0.0 < ob_ts_sec <= now_ts + 300.0) or last_series_pt is None or last_series_pt[0] <= 0.0:
+    if not (0.0 < ob_ts_sec and -5.0 <= (now_ts - ob_ts_sec) <= 60.0) or last_series_pt is None or last_series_pt[0] <= 0.0:
         return False
-    if (ob_ts_sec * 1000.0 - last_series_pt[0]) <= 60_000.0:
-        return False
-    check_px = ref_flat_px if (ref_flat_px is not None and ref_flat_px > 0.0) else cur_px
-    return -5.0 <= (now_ts - ob_ts_sec) <= 300.0 or abs(check_px - last_series_pt[1]) <= 1e-6
+    return (ob_ts_sec * 1000.0 - last_series_pt[0]) > 60_000.0
 
 
 class MicrostructureEvaluatorBase(TelemetryEvaluatorInterface, ABC):
@@ -1705,6 +1719,7 @@ __all__ = [
     "enrich_cross_venue_trends",
     "enrich_microstructure_cvd",
     "evaluate_microstructure_cycle_deltas",
+    "is_ob_live_and_newer",
     "is_ob_mid_fresher_than_series",
     "reconcile_sibling_flow_and_liq_regimes",
     "rescale_orderbook_walls_to_price",

@@ -86,6 +86,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    is_ob_live_and_newer,
     is_ob_mid_fresher_than_series,
     reconcile_sibling_flow_and_liq_regimes,
     rescale_orderbook_walls_to_price,
@@ -127,12 +128,6 @@ read_json_cached = _default_read_json_cached
 
 DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC: float = 1800.0
 PRETRADE_SOURCE_STALE_INTERVAL_MULT: float = TELEMETRY_SOURCE_STALE_INTERVAL_MULT
-
-
-def _is_ob_live_and_newer(ob_ts: float, now_s: float, last_pt: Any = None, extra_ts_s: float = 0.0) -> bool:
-    last_ts_s = (normalize_epoch_sec(last_pt[0], default=0.0) or 0.0) if last_pt is not None else 0.0
-    best_ts_s = max(extra_ts_s, last_ts_s)
-    return ob_ts <= 0.0 or (-5.0 <= (now_s - ob_ts) <= 60.0 and (best_ts_s <= 0.0 or ob_ts >= best_ts_s - 2.0))
 
 
 def _compute_pretrade_liq_clusters(p_info: Dict[str, Any], m_info: Dict[str, Any], sym: str) -> Dict[str, Any]:
@@ -1087,8 +1082,8 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             _refresh_wall_telemetry(use_sub_ten_decimals=True)
 
         ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
-        ob_est_is_live_and_newer = _is_ob_live_and_newer(
-            ob_ts_est, now_ts_s, last_alt_pt, safe_pos_float(ctx.cp_ts_sec, default=0.0) or 0.0
+        ob_est_is_live_and_newer = is_ob_live_and_newer(
+            ob_ts_est, now_ts_s, last_alt_pt, extra_ts_sec=safe_pos_float(ctx.cp_ts_sec, default=0.0) or 0.0
         )
         if (
             not is_eq_sym
@@ -1109,16 +1104,6 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             cur_px_est = ob_mid_est
             if m24:
                 recalculate_live_price_geometry(m24, ob_mid_est)
-        elif (
-            not is_eq_sym
-            and is_usd_sym
-            and cur_px_est > 0.0
-            and ob_mid_est is not None
-            and not ob_est_is_live_and_newer
-            and abs(cur_px_est - ob_mid_est) / max(cur_px_est, ob_mid_est) <= 0.01
-        ):
-            rescale_orderbook_walls_to_price(cur_m_info, cur_px_est, ob_mid_est)
-            _refresh_wall_telemetry()
         if m24 and m24.get("vp_source") == "TPO":
             _upgrade_pretrade_tpo_vp_from_ohlc(
                 cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, ob_ts_est, allow_network=allow_network
@@ -1225,7 +1210,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
                     for _k_int_ts in ("_ob_ts", "_ob_raw_ts", "_deriv_ts", "_whale_ts"):
                         btc_m_info.pop(_k_int_ts, None)
                 btc_ob_mid = safe_pos_float((btc_m_info or {}).get("ob_mid_price"), default=None)
-                btc_ob_fresh = _is_ob_live_and_newer(btc_ob_ts, _time.time(), btc_last_pt)
+                btc_ob_fresh = is_ob_live_and_newer(btc_ob_ts, _time.time(), btc_last_pt)
                 if (
                     btc_ob_mid is not None
                     and btc_ob_fresh
@@ -1842,7 +1827,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                         if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0:
                             if sib_ob_ts > 0.0 and (_time.time() - sib_ob_ts) > 120.0:
                                 sib_live_px = cur_px_est
-                        sib_ob_fresh = _is_ob_live_and_newer(sib_ob_ts, _time.time(), sib_last_pt)
+                        sib_ob_fresh = is_ob_live_and_newer(sib_ob_ts, _time.time(), sib_last_pt)
                         if _should_rescale_usd_sibling_walls(
                             cand_u,
                             sib_live_px,
@@ -1850,15 +1835,14 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                             cur_px_est,
                             ob_ts=sib_ob_ts,
                             last_pt=sib_last_pt,
-                        ) or (
-                            not sib_ob_fresh
-                            and sib_live_px
-                            and sib_live_px > 0.0
-                            and sib_ob_mid is not None
-                            and abs(sib_live_px - sib_ob_mid) / max(sib_live_px, sib_ob_mid) <= 0.01
                         ):
                             rescale_orderbook_walls_to_price(sib_m, sib_live_px, sib_ob_mid)
-                        sib_px = safe_pos_float(sib_m.get("ob_mid_price"), default=None) or sib_live_px or cur_px_est
+                        sib_px = (
+                            (safe_pos_float(sib_m.get("ob_mid_price"), default=None) if sib_ob_fresh else None)
+                            or sib_live_px
+                            or safe_pos_float(sib_m.get("ob_mid_price"), default=None)
+                            or cur_px_est
+                        )
                         sib_p_est = {**p_est, "price": sib_px} if sib_px and sib_px > 0 else dict(p_est)
                         if isinstance(sib_tinfo := casefold_get(st_items_map, cand_u), dict):
                             apply_short_trend_item(sib_p_est, sib_tinfo)

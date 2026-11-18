@@ -10928,6 +10928,78 @@ def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch)
     assert "'t212_cycle'" in sec3c_all
 
 
+def test_item_1_2_ob_freshness_ssot_and_no_sub_1pct_wall_rescaling(tmp_path):
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        is_ob_live_and_newer,
+        is_ob_mid_fresher_than_series,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+    from state_io import atomic_write_json
+
+    now_s = 1_794_680_000.0
+    # 1. SSOT freshness bounds: >60s old or older than live 0.5s price tick must be rejected.
+    assert is_ob_live_and_newer(now_s - 10.0, now_s, (int((now_s - 15.0) * 1000), 67.08), has_live_cp_point=True) is True
+    assert is_ob_live_and_newer(now_s - 10.0, now_s, (int((now_s - 0.5) * 1000), 67.08), has_live_cp_point=True) is False
+    assert is_ob_live_and_newer(now_s - 95.0, now_s, (int((now_s - 180.0) * 1000), 67.08), has_live_cp_point=True) is False
+    assert (
+        is_ob_mid_fresher_than_series(
+            67.08, 67.045, now_s - 180.0, now_s, (int((now_s - 300.0) * 1000), 67.08), is_exact_ob_sym=True
+        )
+        is False
+    )
+
+    # 2. Normal <=1% intraday drift between 0.5s spot ($67.08) and resting Kraken L2 mid ($67.045)
+    #    must neither overwrite live spot nor mutate real 2-decimal resting L2 wall prices.
+    cdir = tmp_path / "cachedb"
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    cp_items = {"HYPEUSD": [[int((now_s - 0.5) * 1000), 67.08]]}
+    atomic_write_json(
+        str(cdir / "prices" / "cache_current_price.json"),
+        {"items": cp_items},
+    )
+    atomic_write_json(
+        str(cdir / "prices" / "cache_24trend_HYPEUSD.json"),
+        {"series": [[int((now_s - 900.0) * 1000), 66.80], [int((now_s - 5.0) * 1000), 67.06]]},
+    )
+    atomic_write_json(
+        str(cdir / "telemetry" / "orderbook_depth_HYPEUSD.json"),
+        {
+            "symbol": "HYPEUSD",
+            "venue": "kraken",
+            "timestamp": now_s - 12.0,
+            "mid_price": 67.045,
+            "best_bid": 67.04,
+            "best_ask": 67.05,
+            "bid_wall_px": 66.59,
+            "ask_wall_px": 67.74,
+            "bid_wall_usd": 14500.0,
+            "ask_wall_usd": 18200.0,
+            "bid_depth_usd": 52000.0,
+            "ask_depth_usd": 55000.0,
+            "imbalance": -0.028,
+        },
+    )
+    pt_map = {"HYPEUSD": {"price": 67.08}}
+    micro_map: dict = {}
+    enrich_24h_and_microstructure(
+        str(cdir),
+        str(tmp_path),
+        pt_map,
+        micro_map,
+        cp_items,
+        {},
+        now_s,
+        allow_network=False,
+        persist=False,
+    )
+    assert pt_map["HYPEUSD"]["price"] == pytest.approx(67.08)
+    assert micro_map["HYPEUSD"]["ob_mid_price"] == pytest.approx(67.045)
+    assert micro_map["HYPEUSD"]["bid_wall_px"] == pytest.approx(66.59)
+    assert micro_map["HYPEUSD"]["ask_wall_px"] == pytest.approx(67.74)
+
+
+
 
 
 
