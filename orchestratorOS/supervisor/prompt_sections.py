@@ -1664,9 +1664,19 @@ def _format_portfolio_section(
                 )
         else:
             xs = xs_raw
+        xs_pair_lbl = (
+            (xs.get("listed_pair") or (f"{xs['underlying']}xUSD" if xs.get("underlying") else "xStocks"))
+            if isinstance(xs, dict)
+            else "xStocks"
+        )
+        xs_ipo_lbl = (
+            f", {xs['watched_ipo_underlying']}xUSD IPO Playbook"
+            if isinstance(xs, dict) and xs.get("watched_ipo_underlying")
+            else ""
+        )
         lines.append(
             f"  * Kraken Tokenized Equities / xStocks (API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee; "
-            f"SPCXxUSD Active Swing Directive, ANTxUSD IPO Playbook & T212 {xs.get('t212_sibling') if isinstance(xs, dict) else None} context): {xs}"
+            f"{xs_pair_lbl} Active Swing Directive{xs_ipo_lbl} & T212 {xs.get('t212_sibling') if isinstance(xs, dict) else None} context): {xs}"
         )
     if ps.get("cross_market_context"):
         cmc = ps["cross_market_context"]

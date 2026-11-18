@@ -23,6 +23,7 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    split_csv,
     _parse_bool_flag,
     _prices_diverged,
 )
@@ -812,29 +813,38 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             return None
         xstock_cfg = load_key_value_conf(eff_k_dir, root_dir=eff_k_dir)
         known_assets = xst_data.get("known_assets") if isinstance(xst_data.get("known_assets"), dict) else {}
-        x_regex = xstock_cfg.get("xstock_regex") or "SPCX|SPACEX"
+        x_regex = (xstock_cfg.get("xstock_regex") or "").strip()
         x_holdings: Dict[str, float] = {}
         for ak, av in known_assets.items():
             ak_str, av_f = str(ak).strip(), safe_float(av, 0.0) or 0.0
             if av_f < 1e-4:
                 continue
             is_xstock_tok = resolve_kraken_tokenized_pair(ak_str)[1]
-            if not is_xstock_tok:
+            if not is_xstock_tok and x_regex:
                 try:
                     is_xstock_tok = bool(re.search(x_regex, ak_str, re.IGNORECASE))
                 except re.error:
                     is_xstock_tok = False
             if is_xstock_tok:
                 x_holdings[ak_str] = round(av_f, 6)
-        alloc_info = xst_data.get("allocated") if isinstance(xst_data.get("allocated"), dict) else None
-        raw_listed_pair = clean_upper_scalar(xst_data.get("pair"))
-        listed_pair = resolve_kraken_tokenized_pair(raw_listed_pair)[0] if raw_listed_pair else None
-        if not (x_holdings or alloc_info or listed_pair):
-            return None
 
         def _holding_underlying(token: str) -> str:
             tok_norm, _ = resolve_kraken_tokenized_pair(token.strip())
             return canonical_base_asset(tok_norm or token.strip())
+
+        active_pair_by_underlying: Dict[str, Tuple[str, Optional[float]]] = {}
+        for raw_spec in split_csv(xstock_cfg.get("xstock_active_pairs") or ""):
+            raw_p, _, raw_c = raw_spec.partition(":")
+            norm_p = resolve_kraken_tokenized_pair(raw_p.strip())[0] if raw_p.strip() else ""
+            u_p = canonical_base_asset(norm_p) if norm_p else ""
+            if norm_p and u_p:
+                active_pair_by_underlying[u_p] = (norm_p, safe_pos_float(raw_c, default=None))
+
+        alloc_info = xst_data.get("allocated") if isinstance(xst_data.get("allocated"), dict) else None
+        raw_listed_pair = clean_upper_scalar(xst_data.get("pair"))
+        state_listed_pair = resolve_kraken_tokenized_pair(raw_listed_pair)[0] if raw_listed_pair else None
+        if not (x_holdings or alloc_info or state_listed_pair or active_pair_by_underlying):
+            return None
 
         def _holding_rank_usd(hk: str, qty: float) -> float:
             hu = _holding_underlying(hk)
@@ -854,52 +864,96 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
                 holdings_by_underlying[hk] = hu
                 if hu not in held_underlyings:
                     held_underlyings.append(hu)
-        cfg_underlying = clean_upper_scalar(xstock_cfg.get("xstock_yahoo")) or "SPCX"
-        pair_underlying = _holding_underlying(listed_pair) if listed_pair else ""
-        if pair_underlying:
-            underlying = pair_underlying
-        elif held_underlyings and cfg_underlying not in held_underlyings:
+        cfg_underlying = clean_upper_scalar(xstock_cfg.get("xstock_yahoo")) or ""
+        pair_underlying = _holding_underlying(state_listed_pair) if state_listed_pair else ""
+        # BY DESIGN: Primary underlying/t212_sibling always tracks the largest held xStock by USD notional
+        # so an unheld newly-listed IPO ticker never overwrites an active funded xStock position.
+        if held_underlyings:
             underlying = held_underlyings[0]
+        elif pair_underlying:
+            underlying = pair_underlying
+        elif active_pair_by_underlying:
+            underlying = next(iter(active_pair_by_underlying))
         else:
             underlying = cfg_underlying
+        if not underlying:
+            return None
         t212_sib = ensure_equity_suffix(underlying)
-        alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None) or (
-            safe_pos_float(alloc_info.get("alloc_price"), default=None) if isinstance(alloc_info, dict) else None
+        active_pair_entry = active_pair_by_underlying.get(underlying)
+        listed_pair = (
+            state_listed_pair
+            if (state_listed_pair and pair_underlying == underlying)
+            else (active_pair_entry[0] if active_pair_entry else (state_listed_pair if not held_underlyings else None))
         )
-        primary_xpair = f"{underlying}xUSD"
+        cfg_alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None)
+        state_alloc_px = safe_pos_float(alloc_info.get("alloc_price"), default=None) if isinstance(alloc_info, dict) else None
+        active_alloc_px = active_pair_entry[1] if active_pair_entry else None
+        alloc_px = (
+            (active_alloc_px or cfg_alloc_px or state_alloc_px)
+            if (cfg_underlying and cfg_underlying != underlying)
+            else (cfg_alloc_px or active_alloc_px or state_alloc_px)
+        )
+        primary_xpair = listed_pair or f"{underlying}xUSD"
         live_px = (
-            (resolve_symbol_price(listed_pair, eff_pt) if listed_pair else 0.0)
-            or resolve_symbol_price(primary_xpair, eff_pt)
+            resolve_symbol_price(primary_xpair, eff_pt)
+            or resolve_symbol_price(f"{underlying}xUSD", eff_pt)
             or resolve_symbol_price(t212_sib, eff_pt)
         )
+        tp1_a = safe_pos_float(xstock_cfg.get("xstock_tp_alert_pct"), default=None)
+        tp2_a = safe_pos_float(xstock_cfg.get("xstock_tp2_alert_pct"), default=None)
+        sl_a = safe_pos_float(xstock_cfg.get("xstock_sl_alert_pct"), default=None)
+        has_distinct_watched_ipo = bool(cfg_underlying and cfg_underlying != underlying)
+        ipo_alerts = {
+            k: v
+            for k, v in (
+                ("tp1_alert_pct", tp1_a),
+                ("tp2_alert_pct", tp2_a),
+                ("sl_alert_pct", sl_a),
+                ("listed_pair", state_listed_pair if (state_listed_pair and pair_underlying == cfg_underlying) else None),
+            )
+            if v is not None
+        }
+        primary_hold_tok, primary_hold_qty = next(
+            ((hk, hq) for hk, hq in x_holdings.items() if holdings_by_underlying.get(hk) == underlying),
+            ("", 0.0),
+        )
+        bot_tp = safe_pos_float(xstock_cfg.get("xstock_bot_tp_pct"), default=None)
+        bot_trail = safe_pos_float(xstock_cfg.get("xstock_bot_tp_trail_pct"), default=None)
+        bot_dca = safe_pos_float(xstock_cfg.get("xstock_bot_dca_drop_pct"), default=None)
+        hold_meta_parts = [p for p in (f"{primary_hold_qty:g} {primary_hold_tok}" if primary_hold_qty > 0 else "", f"alloc ${alloc_px:g}" if alloc_px else "", "0bps maker/taker fee") if p]
+        bot_rule_parts = [p for p in (f"TP +{bot_tp:g}%" if bot_tp else "", f"Trail {bot_trail:g}%" if bot_trail else "", f"DCA -{bot_dca:g}%" if bot_dca else "") if p]
+        bot_rule_sfx = f" ({' / '.join(bot_rule_parts)})" if bot_rule_parts else ""
+        active_directive = (
+            f"{primary_xpair} ({', '.join(hold_meta_parts)}): LIVE ACTIVE TRADING ENABLED for both "
+            f"[auto_cryptotrade_executor] (by=AI) and kraken_bot.py (by=BOT{bot_rule_sfx}). "
+            "Synthesize live L2 bid/ask walls, ob_imbalance, and 90s/5m kinematics to actively trade swings or harvest "
+            "profitable tranches via 0bps LIMIT orders."
+        )
+        ipo_sym_lbl = f"{cfg_underlying}xUSD" if cfg_underlying else ""
         xst_summary: Dict[str, Any] = {
             "underlying": underlying,
             "t212_sibling": t212_sib,
             "holdings": x_holdings,
             **({"holdings_underlying_map": holdings_by_underlying} if len(held_underlyings) > 1 else {}),
-            **({"watched_ipo_underlying": cfg_underlying} if cfg_underlying and cfg_underlying != underlying else {}),
+            **({"watched_ipo_underlying": cfg_underlying} if has_distinct_watched_ipo else {}),
+            **({"watched_ipo_alerts": ipo_alerts} if (has_distinct_watched_ipo and ipo_alerts) else {}),
             "allocated": alloc_info,
             "listed_pair": listed_pair,
             "alloc_price": alloc_px,
             "fee_bps": 0,
-            "tp1_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp_alert_pct"), default=None),
-            "tp2_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp2_alert_pct"), default=None),
-            "sl_alert_pct": safe_pos_float(xstock_cfg.get("xstock_sl_alert_pct"), default=None),
-            "spcx_directive": (
-                "SPCXxUSD (15.74655 SPCXx.T, IPO alloc $141.75, 0bps maker/taker fee): LIVE ACTIVE TRADING ENABLED "
-                "for both [auto_cryptotrade_executor] (by=AI) and kraken_bot.py (by=BOT, TP +9.0% / Trail 3.0% / DCA -3.0%). "
-                "Synthesize live L2 bid/ask walls, ob_imbalance, and 90s/5m kinematics to actively trade swings or harvest "
-                "profitable tranches via 0bps LIMIT orders."
-            ),
-            "antx_ipo_playbook": (
-                "ANTxUSD (Anthropic IPO tokenized equity, 0bps maker/taker fee, auto-adopted cost in .state_ANTxUSD.json): "
-                "use SPCXxUSD 2026 IPO trajectory as empirical baseline (alloc $141.75 -> Day-1 open $148.59 +4.8%, "
-                "Day-1 high $157.68 +11.2% followed by -8.1% shakeout to $130.30 -> Week-2 rally to $228.00 +60.9% -> "
-                "45d post-IPO compression to $108 -24% below alloc before stabilizing in $135-$183 range). "
-                "Do NOT assume an explosive AI-hype moonshot on ANTxUSD: evaluate live L2 bid/ask walls, ob_imbalance, "
-                "and 90s/5m kinematics to harvest strength pragmatically in LIMIT tranches (e.g. +10%..+20%+ when "
-                "upside stalls into ask walls, or ride further when bid absorption stays strong), do NOT panic-sell "
-                "opening wicks, and after full IPO exit wait for meaningful post-IPO cooldown/stabilization before re-entering."
+            **({} if has_distinct_watched_ipo else {"tp1_alert_pct": tp1_a, "tp2_alert_pct": tp2_a, "sl_alert_pct": sl_a}),
+            "active_swing_directive": active_directive,
+            **(
+                {
+                    "watched_ipo_playbook": (
+                        f"{ipo_sym_lbl} (0bps maker/taker fee, auto-adopted cost in .state_{ipo_sym_lbl}.json): "
+                        "do NOT assume an explosive post-IPO moonshot; evaluate live L2 bid/ask walls, ob_imbalance, "
+                        "and 90s/5m kinematics to harvest strength pragmatically in LIMIT tranches when upside stalls "
+                        "into ask walls, avoid panic-selling opening wicks, and wait for post-IPO stabilization after full exit."
+                    )
+                }
+                if ipo_sym_lbl
+                else {}
             ),
         }
         if live_px > 0:

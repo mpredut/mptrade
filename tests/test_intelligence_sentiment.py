@@ -11273,6 +11273,56 @@ def test_item_2_2_no_synthetic_oi_mult_12_and_compact_equity_liq_isolation():
     assert "long_liq_px" not in stale_eq_micro["SPCXxUSD"]
 
 
+def test_item_2_3_kraken_xstocks_active_pairs_dynamic_directive_and_ipo_isolation(tmp_path):
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
+    from state_io import atomic_write_json
+
+    krk_dir = tmp_path / "kraken"
+    krk_dir.mkdir(parents=True, exist_ok=True)
+    (krk_dir / "config.env").write_text(
+        "XSTOCK_YAHOO=ANT\n"
+        "XSTOCK_ALLOC_PRICE=0\n"
+        "XSTOCK_ACTIVE_PAIRS=SPCXxUSD:141.75\n"
+        "XSTOCK_TP_ALERT_PCT=10\n"
+        "XSTOCK_TP2_ALERT_PCT=16\n"
+        "XSTOCK_SL_ALERT_PCT=12\n"
+        "XSTOCK_BOT_TP_PCT=9.0\n"
+        "XSTOCK_BOT_TP_TRAIL_PCT=3.0\n"
+        "XSTOCK_BOT_DCA_DROP_PCT=3.0\n",
+        encoding="utf-8",
+    )
+    # Even if ANTxUSD lists with 0 held shares while 10.25 SPCXx.T is held, underlying stays SPCX,
+    # listed_pair/alloc_price/pnl_vs_alloc_pct resolve from XSTOCK_ACTIVE_PAIRS, directive uses live 10.25 qty,
+    # and ANT IPO alerts stay isolated under watched_ipo_alerts.
+    atomic_write_json(
+        str(krk_dir / "xstock_state.json"),
+        {"known_assets": {"SPCXx.T": 10.25, "AAPLx.T": 2e-06}, "pair": "ANTXUSD", "allocated": None},
+    )
+    xs = KrakenXstocksCollector().collect(
+        str(tmp_path),
+        kraken_dir=str(krk_dir),
+        prices_and_trends={"SPCXxUSD": {"price": 148.8375}},
+    )
+    assert xs is not None
+    assert xs["underlying"] == "SPCX"
+    assert xs["t212_sibling"] == "SPCX_US_EQ"
+    assert xs["listed_pair"] == "SPCXxUSD"
+    assert xs["alloc_price"] == pytest.approx(141.75)
+    assert xs["pnl_vs_alloc_pct"] == pytest.approx(5.0)
+    assert xs["watched_ipo_underlying"] == "ANT"
+    assert xs["watched_ipo_alerts"] == {
+        "tp1_alert_pct": 10.0,
+        "tp2_alert_pct": 16.0,
+        "sl_alert_pct": 12.0,
+        "listed_pair": "ANTxUSD",
+    }
+    assert "tp1_alert_pct" not in xs
+    assert "10.25 SPCXx.T" in xs["active_swing_directive"]
+    assert "15.74655" not in xs["active_swing_directive"]
+    assert "TP +9% / Trail 3% / DCA -3%" in xs["active_swing_directive"]
+
+
+
 
 
 
