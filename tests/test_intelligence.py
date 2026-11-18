@@ -7608,7 +7608,7 @@ def test_iter101_macro_benchmarks_24h_ext_px_cached_bals_ro_and_prompt_asset_sco
     sec_3b = "\n".join(
         _format_microstructure_section(
             {
-                "HYPEUSD": {"ob_imbalance": 0.62, "bid_depth_usd": 50000.0, "ask_depth_usd": 30000.0, "cvd_15m_usd": 12000.0},
+                "HYPEUSD": {"ob_imbalance": 0.62, "bid_depth_usd": 50000.0, "ask_depth_usd": 30000.0, "cvd_15m_usd": 12000.0, "oi_usd": 80_000_000.0},
             },
             {
                 "HYPEUSDC": {"price": 40.0, "chg_15m_pct": -1.5, "vol_24h_usd": 2_400_000.0},

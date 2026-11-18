@@ -11212,6 +11212,68 @@ def test_item_2_1_tokenized_xstock_base_isolation_no_retry_spin_and_pretrade_tag
     assert "SPCXXUSD" not in gtc._last_whale_ts
 
 
+def test_item_2_2_no_synthetic_oi_mult_12_and_compact_equity_liq_isolation():
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        compute_liquidation_clusters,
+        sync_sibling_symbol_telemetry,
+    )
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+
+    # 1. Spot-only / missing-OI crypto pairs never fabricate synthetic OI = (bid_depth + ask_depth) * 12.
+    assert (
+        compute_liquidation_clusters(
+            {"price": 0.15, "vol_1h_pct": 1.0},
+            {"bid_depth_usd": 50_000.0, "ask_depth_usd": 50_000.0, "oi_usd": 0.0},
+            symbol="ADAUSD",
+        )
+        == {}
+    )
+    assert (
+        compute_liquidation_clusters(
+            {"price": 0.15, "vol_1h_pct": 1.0},
+            {"bid_depth_usd": 50_000.0, "ask_depth_usd": 50_000.0},
+            symbol="ADAUSD",
+        )
+        == {}
+    )
+
+    # 2. Compact equity tickers (NVDA, SPCX) without _US_EQ suffix are caught by SSOT is_equity_symbol
+    #    even when Cboe options OI is present, and residual cached liq_* keys are stripped cleanly.
+    assert (
+        compute_liquidation_clusters(
+            {"price": 152.0, "vol_1h_pct": 1.1},
+            {"oi_usd": 303_000_000_000.0, "bid_depth_usd": 200_000.0, "ask_depth_usd": 200_000.0},
+            symbol="NVDA",
+        )
+        == {}
+    )
+    stale_eq_micro = {
+        "NVDA": {
+            "ob_imbalance": 0.52,
+            "bid_depth_usd": 200_000.0,
+            "ask_depth_usd": 190_000.0,
+            "oi_usd": 303_000_000_000.0,
+            "long_liq_px": 148.0,
+            "short_liq_px": 156.0,
+            "liq_magnet_bias": "BALANCED_LIQ_MAGNET",
+        },
+        "SPCXxUSD": {
+            "ob_imbalance": 0.45,
+            "bid_depth_usd": 45_000.0,
+            "ask_depth_usd": 55_000.0,
+            "long_liq_px": 140.0,
+            "short_liq_px": 148.0,
+        },
+    }
+    eq_pt = {"NVDA": {"price": 152.0}, "SPCXxUSD": {"price": 144.5}}
+    sec3b = "\n".join(_format_microstructure_section(stale_eq_micro, eq_pt))
+    assert "liq_clusters(" not in sec3b
+    sync_sibling_symbol_telemetry(eq_pt, stale_eq_micro, persist_cycle_deltas=False, cycle_history={})
+    assert "long_liq_px" not in stale_eq_micro["NVDA"]
+    assert "long_liq_px" not in stale_eq_micro["SPCXxUSD"]
+
+
+
 
 
 

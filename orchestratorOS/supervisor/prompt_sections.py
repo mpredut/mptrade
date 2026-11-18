@@ -41,6 +41,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
+    _LIQ_CLUSTER_KEYS,
     _MICRO_OB_LOCAL_KEYS,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
@@ -69,7 +70,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from instrument_registry import resolve_kraken_tokenized_pair
+from instrument_registry import is_equity_symbol, resolve_kraken_tokenized_pair
 from providers.order_id_context import format_actor_tag
 
 
@@ -989,7 +990,7 @@ def _format_microstructure_section(
             ob_mid_lbl = f", ob_mid={round(ob_mid, 6)}" if ob_mid > 0 else ""
             spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}{ob_mid_lbl}"
 
-        sym_is_eq_3b = has_equity_suffix(sym)
+        sym_is_eq_3b = is_equity_symbol(sym)
         sym_is_tok_xstock_3b = resolve_kraken_tokenized_pair(sym)[1]
         sym_no_crypto_perp_3b = sym_is_eq_3b or sym_is_tok_xstock_3b
         raw_p = (
@@ -1003,7 +1004,7 @@ def _format_microstructure_section(
                         key=lambda kv: (0 if compatible_quote_suffixes(kv[0]) == sym_quotes_3b else 1, kv[0]),
                     )
                     if isinstance(v, dict)
-                    and has_equity_suffix(k) == sym_is_eq_3b
+                    and is_equity_symbol(k) == sym_is_eq_3b
                     and canonical_base_asset(k) == b_canon_3b
                     and (
                         compatible_quote_suffixes(k) == sym_quotes_3b
@@ -1023,20 +1024,16 @@ def _format_microstructure_section(
             or (isinstance(p_ctx, dict) and p_ctx.get("chg_15m_pct") is not None)
         ):
             enrich_microstructure_cvd(minfo, p_ctx)
-        recompute_liq_from_real_oi = (
-            minfo.get("liq_source") == "model_est_depth_proxy"
-            and (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) > 0.0
-        )
-        if not sym_no_crypto_perp_3b and (
-            recompute_liq_from_real_oi
-            or any(
-                minfo.get(k) is None
-                for k in ("long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px", "liq_magnet_bias")
-            )
+        if sym_no_crypto_perp_3b:
+            for _lk_3b in _LIQ_CLUSTER_KEYS:
+                minfo.pop(_lk_3b, None)
+        elif any(
+            minfo.get(k) is None
+            for k in ("long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px", "liq_magnet_bias")
         ):
             liq_lazy = compute_liquidation_clusters(p_ctx, minfo, symbol=sym)
             for lk, lv in liq_lazy.items():
-                if recompute_liq_from_real_oi or minfo.get(lk) is None:
+                if minfo.get(lk) is None:
                     minfo[lk] = lv
         if "USD" in sym_quotes_3b and any(
             other_s != sym
