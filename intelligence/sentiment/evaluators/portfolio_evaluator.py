@@ -1149,8 +1149,10 @@ def classify_reconciled_cycle_exit_kind(
     *,
     sell_from_prior_cycle: bool = False,
     allow_stop_upgrade: bool = False,
+    allow_scratch_stop_reclassify: Optional[bool] = None,
     allow_loss_reclassify: bool = True,
     lifo_pnl_usd: Optional[float] = None,
+    pre_sell_buy_px: Optional[float] = None,
 ) -> Optional[str]:
     """Return updated `last_exit_kind` (`TP` or `REDUCE`) for an in-cycle fill, or None when unchanged/prior-cycle."""
     # BY DESIGN: Never reclassify a prior cycle's exit kind (e.g. Cycle 17 SL @ $68.90)
@@ -1158,6 +1160,21 @@ def classify_reconciled_cycle_exit_kind(
     cur_kind = str(cur_exit_kind or "").strip().upper()
     if sell_px <= 0.0 or ref_avg_px is None or ref_avg_px <= 0.0 or (sell_from_prior_cycle and cur_kind):
         return None
+    # BY DESIGN: When a sub-cycle dip tranche is profitably harvested via LIFO (lifo_pnl_usd >= $0.01
+    # and sell_px beats the preceding buy tranche by >= 5 bps), removing the cheaper dip lot mechanically
+    # raises the remaining core bag's avg_cost_px above sell_px -- preserve/restore TP rather than REDUCE.
+    is_profitable_lifo_harvest = (
+        lifo_pnl_usd is not None
+        and lifo_pnl_usd >= 0.01
+        and pre_sell_buy_px is not None
+        and pre_sell_buy_px > 0.0
+        and sell_px >= pre_sell_buy_px * 1.0005
+    )
+    if is_profitable_lifo_harvest:
+        if not cur_kind or cur_kind == "REDUCE" or (allow_stop_upgrade and cur_kind in _STOP_EXIT_KINDS):
+            return "TP"
+        return None
+    eff_scratch_reclassify = allow_stop_upgrade if allow_scratch_stop_reclassify is None else allow_scratch_stop_reclassify
     replaceable_loss_kinds = ("", "TP", *_STOP_EXIT_KINDS, "REDUCE") if allow_stop_upgrade else ("", "TP")
     is_loss_or_scratch = sell_px < ref_avg_px * 0.995 or (
         lifo_pnl_usd is not None
@@ -1170,7 +1187,7 @@ def classify_reconciled_cycle_exit_kind(
         not cur_kind or (allow_stop_upgrade and cur_kind in (*_STOP_EXIT_KINDS, "REDUCE"))
     ):
         return "TP"
-    if allow_stop_upgrade and not is_loss_or_scratch and sell_px >= ref_avg_px * 0.995 and cur_kind in _STOP_EXIT_KINDS:
+    if eff_scratch_reclassify and not is_loss_or_scratch and sell_px >= ref_avg_px * 0.995 and cur_kind in _STOP_EXIT_KINDS:
         return "REDUCE"
     return None
 
@@ -1313,8 +1330,9 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                 def _sync_exit_kind(c_dict: Dict[str, Any], sell_p: float, rem_q: float) -> None:
                     if sell_p <= 0.0 or (post_sell_new_cycle and str(c_dict.get("last_exit_kind") or "").strip()):
                         return
+                    pre_sell_buy_px = safe_pos_float(buys_before[-1].get("price"), default=None) if buys_before else None
                     pre_sell_ref = (
-                        (safe_pos_float(buys_before[-1].get("price"), default=None) if buys_before else None)
+                        pre_sell_buy_px
                         or safe_pos_float(c_dict.get("entry_price"), default=None)
                     ) if buys_after else None
                     ref_avg = (
@@ -1340,7 +1358,8 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                         ref_avg,
                         sell_from_prior_cycle=post_sell_new_cycle,
                         allow_stop_upgrade=is_newer_partial_sell,
-                        lifo_pnl_usd=safe_float(ro_c.get("lifo_realized_pnl_usd"), default=0.0) or 0.0,
+                        lifo_pnl_usd=safe_float(ro_c.get("lifo_realized_pnl_usd"), default=None),
+                        pre_sell_buy_px=pre_sell_buy_px,
                     )
                     if new_kind is not None:
                         c_dict["last_exit_kind"] = new_kind
@@ -1751,13 +1770,38 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                             cyc.get("entry_price"),
                         )
                         sell_changed = prev_cyc_sell is None or abs(new_cyc_sell - prev_cyc_sell) > max(1e-5, prev_cyc_sell * 0.0002)
+                        in_cycle_sell_verified = (
+                            (entry_ts_cyc > 0 and ro_ls_ts >= entry_ts_cyc - 5000)
+                            or (entry_ts_cyc <= 0 and 0 < ro_lb_ts <= ro_ls_ts)
+                        )
+                        pre_sell_buy_px_p: Optional[float] = None
+                        if isinstance(ro, dict):
+                            r_buys_p = [
+                                b for b in (ro.get("recent_buys") or ())
+                                if isinstance(b, dict)
+                                and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
+                                and (ro_ls_ts <= 0 or (safe_pos_int(b.get("ts_ms"), default=0) or 0) <= ro_ls_ts)
+                            ]
+                            if r_buys_p:
+                                pre_sell_buy_px_p = safe_pos_float(r_buys_p[-1].get("price"), default=None)
+                            elif 0 < ro_lb_ts <= ro_ls_ts and isinstance(ro.get("last_buy"), dict):
+                                pre_sell_buy_px_p = safe_pos_float(ro["last_buy"].get("price"), default=None)
+                        lifo_pnl_p = safe_float(
+                            pos.get("lifo_realized_pnl_usd")
+                            if pos.get("lifo_realized_pnl_usd") is not None
+                            else (ro.get("lifo_realized_pnl_usd") if isinstance(ro, dict) else None),
+                            default=None,
+                        )
                         new_exit_k = classify_reconciled_cycle_exit_kind(
                             cyc.get("last_exit_kind"),
                             new_cyc_sell,
                             ref_sell_avg,
                             sell_from_prior_cycle=sell_from_prior_cycle,
-                            allow_stop_upgrade=sell_changed,
+                            allow_stop_upgrade=sell_changed or in_cycle_sell_verified,
+                            allow_scratch_stop_reclassify=sell_changed,
                             allow_loss_reclassify=sell_changed,
+                            lifo_pnl_usd=lifo_pnl_p,
+                            pre_sell_buy_px=pre_sell_buy_px_p,
                         )
                         if new_exit_k is not None:
                             cyc["last_exit_kind"] = new_exit_k

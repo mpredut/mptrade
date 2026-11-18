@@ -11668,6 +11668,115 @@ def test_item_3_4_realized_pnl_flat_cleanup_and_sibling_cum_symmetry():
     assert "cum_realized_pnl_usd" not in rgnt_bw_cyc
 
 
+def test_item_3_5_reconciled_lifo_tp_stop_upgrade_and_cycle_boundary():
+    """Verify profitable LIFO dip-harvests preserve/restore TP, verified in-cycle sells upgrade SL->TP even when sell_changed=False, and prior-cycle SL stays protected."""
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        enrich_positions_with_orders_and_cycles,
+        parse_venue_cycle_state,
+        reconcile_venue_cycles_with_recent_orders,
+    )
+
+    # 1. Live PROD NVDA_US_EQ & SPCX_US_EQ: profitable LIFO dip harvest (155.97 -> 163.31, +$10.35; 140.51 -> 142.54, +$5.31)
+    # raises remaining core bag's avg_cost_px above sell_px (167.20 > 163.31; 144.99 > 142.54) -- must stay/restore TP, never REDUCE.
+    nvda_cyc = parse_venue_cycle_state(
+        {
+            "qty": 0.41,
+            "cost_usd": 68.55,
+            "entry_price": 207.93,
+            "last_buy_price": 155.97,
+            "last_sell_price": 163.31,
+            "last_sell_ts": 1_794_497_684.5,
+            "last_exit_kind": "TP",
+            "realized_net_usd": 21.20,
+        },
+        "NVDA_US_EQ",
+        {"NVDA_US_EQ": {"price": 150.81}},
+        avg_decimals=4,
+        include_meta=True,
+    )
+    spcx_cyc = parse_venue_cycle_state(
+        {
+            "qty": 3.262965,
+            "cost_usd": 473.09,
+            "entry_price": 144.9872,
+            "last_buy_price": 144.9872,
+            "last_sell_price": 142.54,
+            "last_sell_ts": 1_794_240_254.0,
+            "last_exit_kind": "TP",
+            "realized_net_usd": -99.53,
+        },
+        "SPCX_US_EQ",
+        {"SPCX_US_EQ": {"price": 143.11}},
+        avg_decimals=4,
+        include_meta=True,
+    )
+    t212_cycs = {"NVDA_US_EQ": nvda_cyc, "SPCX_US_EQ": spcx_cyc}
+    v_ro_t212 = {
+        "t212": {
+            "NVDA_US_EQ": {
+                "last_action_side": "SELL",
+                "active_avg_buy_px": 167.1992,
+                "lifo_realized_pnl_usd": 10.35,
+                "last_buy": {"price": 155.97, "qty": 1.41, "ts_ms": 1_794_494_062_000},
+                "last_sell": {"price": 163.31, "qty": 1.41, "ts_ms": 1_794_497_663_000},
+                "recent_buys": [
+                    {"price": 207.93, "qty": 0.96, "ts_ms": 1_793_719_666_000},
+                    {"price": 155.97, "qty": 1.41, "ts_ms": 1_794_494_062_000},
+                ],
+                "recent_sells": [{"price": 163.31, "qty": 1.41, "ts_ms": 1_794_497_663_000}],
+            },
+            "SPCX_US_EQ": {
+                "last_action_side": "SELL",
+                "active_avg_buy_px": 144.9663,
+                "lifo_realized_pnl_usd": 5.31,
+                "last_buy": {"price": 140.51, "qty": 0.71, "ts_ms": 1_793_724_724_000},
+                "last_sell": {"price": 142.54, "qty": 2.04, "ts_ms": 1_794_240_243_000},
+                "recent_buys": [
+                    {"price": 141.80, "qty": 1.41, "ts_ms": 1_793_719_675_000},
+                    {"price": 140.51, "qty": 0.71, "ts_ms": 1_793_724_724_000},
+                ],
+                "recent_sells": [{"price": 142.54, "qty": 2.04, "ts_ms": 1_794_240_243_000}],
+            },
+        }
+    }
+    ts_map = reconcile_venue_cycles_with_recent_orders(
+        {},
+        {},
+        t212_cycs,
+        v_ro_t212,
+        {("t212", "NVDA_US_EQ"): 0.41, ("t212", "SPCX_US_EQ"): 3.262965},
+        {"NVDA_US_EQ": {"price": 150.81}, "SPCX_US_EQ": {"price": 143.11}},
+    )
+    assert t212_cycs["NVDA_US_EQ"]["last_exit_kind"] == "TP"
+    assert t212_cycs["SPCX_US_EQ"]["last_exit_kind"] == "TP"
+
+    # 2. Verified in-cycle profitable sell upgrades stale SL -> TP even when prev_cyc_sell == new_cyc_sell (sell_changed=False),
+    # while prior-cycle SL (Cycle 17 SL @ 68.90 before Cycle 18 ENTRY @ 68.69) stays SL.
+    pos_list = [
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "free_base": 4.0, "price": 68.80, "last_sell_px": 69.20},
+        {"venue": "kraken", "symbol": "HYPEUSD", "free_base": 26.32, "price": 67.92, "last_sell_px": 68.900061},
+    ]
+    hl_cycs = {"HYPEUSDC": {"qty": 4.0, "cost_usd": 274.0, "avg_cost_px": 68.50, "entry_price": 68.50, "last_sell_price": 69.20, "last_exit_kind": "SL"}}
+    krk_cycs = {"HYPEUSD": {"qty": 26.32, "cost_usd": 1808.27, "avg_cost_px": 68.69, "entry_price": 68.69, "last_sell_price": 68.900061, "last_exit_kind": "SL"}}
+    enrich_positions_with_orders_and_cycles(
+        pos_list,
+        {"HYPEUSDC": {"price": 68.80}, "HYPEUSD": {"price": 67.92}},
+        {},
+        {
+            "hyperliquid": {"HYPEUSDC": {"last_sell": {"price": 69.20, "ts_ms": 1_794_700_000_000}, "last_buy": {"price": 68.50, "ts_ms": 1_794_600_000_000}}},
+            "kraken": {"HYPEUSD": {"last_sell": {"price": 68.900061, "ts_ms": 1_794_627_083_000}, "last_buy": {"price": 68.69, "ts_ms": 1_794_631_269_000}}},
+        },
+        {},
+        krk_cycs,
+        hl_cycs,
+        {},
+        {**ts_map, ("hyperliquid:entry", "HYPEUSDC"): 1_794_600_000_000, ("kraken:entry", "HYPEUSD"): 1_794_631_269_000},
+    )
+    assert hl_cycs["HYPEUSDC"]["last_exit_kind"] == "TP"
+    assert krk_cycs["HYPEUSD"]["last_exit_kind"] == "SL"
+
+
+
 
 
 
