@@ -66,7 +66,7 @@ _READ_TTL = {                     # seconds; unlisted methods are not cached (e.
     "Ticker": 3.0, "AssetPairs": 3600.0, "OHLC": 900.0,
     "Balance": 15.0, "BalanceEx": 15.0, "TradesHistory": 20.0, "ClosedOrders": 20.0, "OpenOrders": 5.0,
 }
-_WRITE_METHODS = ("AddOrder", "CancelOrder", "CancelAll")
+_WRITE_METHODS = ("AddOrder", "AmendOrder", "CancelOrder", "CancelAll")
 _INVALIDATE_ON_WRITE = ("Balance", "BalanceEx", "TradesHistory", "ClosedOrders", "OpenOrders")
 
 
@@ -412,6 +412,26 @@ class KrakenClient:
         if cleaned is None:
             raise ValueError(f"invalid Kraken txid: {txid!r}")
         return cleaned
+
+    def amend_order(self, txid: str, limit_price: float, pair: str, *, post_only: bool = True) -> dict:
+        """Atomically amend a resting limit order's price in place via Kraken's AmendOrder endpoint."""
+        if not pair or isinstance(pair, bool) or not str(pair).strip():
+            raise ValueError(f"invalid Kraken pair: {pair!r}")
+        pair_s = str(pair).strip()
+        px_f = safe_pos_float(limit_price, default=None)
+        if px_f is None:
+            raise ValueError(f"invalid Kraken limit price: {limit_price!r}")
+        price = round(px_f, self.price_decimals(pair_s))
+        if price <= 0.0:
+            raise ValueError(f"invalid Kraken rounded limit price: {price!r}")
+        px_s = f"{price}"
+        data = {
+            "txid": self._clean_txid(txid),
+            "limit_price": (f"{price:.18f}".rstrip("0").rstrip(".") or "0") if "e" in px_s.lower() else px_s,
+        }
+        if _parse_bool_flag(post_only, default=True):
+            data["post_only"] = "true"
+        return self._private("AmendOrder", data)
 
     def _private_txid_call(self, method: str, txid: str) -> dict:
         return self._private(method, {"txid": self._clean_txid(txid)})

@@ -172,6 +172,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         status_by_order_id=True,
         cancel_by_order_id=True,
         list_open_orders=True,
+        replace_by_order_id=True,
     )
 
     def __init__(self, client=None, live_enabled: Optional[bool] = None):
@@ -892,6 +893,35 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 f"cancel_order {order_id}: Kraken did not confirm the cancellation ({result})"
             )
         self._invalidate_fills_cache(symbol)
+
+    def replace_order(self, symbol: str, order_id: str, side: str, price: float, qty: float, **kwargs):
+        """Atomically amend a resting Kraken limit order's price in place via AmendOrder."""
+        _ = qty
+        if not self.execution_enabled() or resolve_market_flag(**kwargs):
+            raise SubmissionRefused("replace_not_attempted")
+        clean_txid = clean_order_id(order_id)
+        s_norm = normalize_side(side)
+        px_f = safe_pos_float(price, default=None)
+        if not clean_txid or s_norm not in {"BUY", "SELL"} or px_f is None:
+            raise SubmissionRefused("replace_not_attempted")
+        post_only = _parse_bool_flag(kwargs.get("post_only"), True)
+        try:
+            res = self._query_with_bot_fallback(
+                lambda cli: cli.amend_order(clean_txid, px_f, symbol, post_only=post_only),
+                f"replace_order({symbol},{clean_txid})",
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Kraken] replace_order {symbol} {clean_txid}: {exc}")
+            raise SubmissionRefused("replace_not_attempted") from exc
+        if not isinstance(res, dict) or not clean_order_id(res.get("amend_id")):
+            raise SubmissionRefused("replace_not_attempted")
+        self._invalidate_fills_cache(symbol)
+        return {
+            "orderId": clean_txid,
+            "txid": [clean_txid],
+            "amend_id": clean_order_id(res.get("amend_id")),
+            "amended_in_place": True,
+        }
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         try:

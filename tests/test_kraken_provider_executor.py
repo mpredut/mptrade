@@ -1464,3 +1464,58 @@ def test_kraken_provider_invalidates_fills_cache_on_order_status_and_cancel(tmp_
     _seed_cache()
     kp.cancel_order("HYPEUSD", "O-KRK-CANC-2")
     assert "HYPEUSD" not in json.loads(fills_cache.read_text(encoding="utf-8")).get("fetchtime", {})
+
+
+def test_kraken_amend_order_and_provider_replace_order(monkeypatch, tmp_path):
+    """[NATIVE_REPLACE step 4] KrakenClient.amend_order payload/rounding/cache-invalidation and KrakenProvider.replace_order contract."""
+    assert "AmendOrder" in kc._WRITE_METHODS
+
+    kcli = KrakenClient("k", "c2VjcmV0")
+    monkeypatch.setattr(kcli, "price_decimals", lambda _p: 2)
+    priv_calls = []
+
+    def _mock_private(ep, data=None, fresh=False):
+        priv_calls.append((ep, dict(data or {})))
+        return {"amend_id": "OA-KRK-1"}
+
+    monkeypatch.setattr(kcli, "_private", _mock_private)
+    res_cli = kcli.amend_order("O-TXID-1", 25.6789, "HYPEUSD", post_only=True)
+    assert res_cli == {"amend_id": "OA-KRK-1"}
+    assert priv_calls[-1] == (
+        "AmendOrder",
+        {"txid": "O-TXID-1", "limit_price": "25.68", "post_only": "true"},
+    )
+
+    kcli.amend_order("O-TXID-1", 25.5, "HYPEUSD", post_only=False)
+    assert priv_calls[-1] == (
+        "AmendOrder",
+        {"txid": "O-TXID-1", "limit_price": "25.5"},
+    )
+
+    # Provider replace_order: live confirmed -> returns same txid + amend_id + amended_in_place=True and invalidates fills cache.
+    fills_cache = tmp_path / "cache_trade_kraken.json"
+    fills_cache.write_text(
+        json.dumps({"items": {"HYPEUSD": []}, "fetchtime": {"HYPEUSD": 1_760_000_000_000}}),
+        encoding="utf-8",
+    )
+    kp = KrakenProvider(client=kcli, live_enabled=True)
+    kp._ssot_fills_cache_path = str(fills_cache)
+    out = kp.replace_order("HYPEUSD", "O-TXID-1", "SELL", 25.68, 2.0, post_only=True)
+    assert out == {
+        "orderId": "O-TXID-1",
+        "txid": ["O-TXID-1"],
+        "amend_id": "OA-KRK-1",
+        "amended_in_place": True,
+    }
+    assert "HYPEUSD" not in json.loads(fills_cache.read_text(encoding="utf-8")).get("fetchtime", {})
+
+    # Not live or venue error -> SubmissionRefused("replace_not_attempted").
+    kp_dry = KrakenProvider(client=kcli, live_enabled=False)
+    with pytest.raises(SubmissionRefused) as exc_dry:
+        kp_dry.replace_order("HYPEUSD", "O-TXID-1", "SELL", 25.68, 2.0)
+    assert exc_dry.value.reason == "replace_not_attempted"
+
+    monkeypatch.setattr(kcli, "_private", lambda *_a, **_kw: (_ for _ in ()).throw(KrakenError(["EOrder:Unknown order"])))
+    with pytest.raises(SubmissionRefused) as exc_err:
+        kp.replace_order("HYPEUSD", "O-TXID-1", "SELL", 25.68, 2.0)
+    assert exc_err.value.reason == "replace_not_attempted"

@@ -197,8 +197,8 @@ class OrderReconciliationCapabilities:
     status_by_order_id: bool = False
     cancel_by_order_id: bool = False
     list_open_orders: bool = False
-    replace_by_order_id: bool = False
     not_found_reliable_for_seconds: Optional[float] = None
+    replace_by_order_id: bool = False
 
     def __post_init__(self):
         for field_name in (

@@ -221,7 +221,7 @@ CONTRACT_METHODS = (
 )
 
 EXPECTED_RECONCILIATION = {
-    "kraken": OrderReconciliationCapabilities(False, True, True, True),
+    "kraken": OrderReconciliationCapabilities(False, True, True, True, replace_by_order_id=True),
     "hyperliquid": OrderReconciliationCapabilities(True, True, True, True),
     "binance": OrderReconciliationCapabilities(True, True, True, True, 90 * 24 * 60 * 60),
     "trading212": OrderReconciliationCapabilities(False, True, True, True),
