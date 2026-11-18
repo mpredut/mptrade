@@ -760,6 +760,10 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         except Exception as exc:  # noqa: BLE001
             print(f"[HL] replace_order({symbol},{oid_i}) preflight failed: {exc}")
             raise SubmissionRefused("replace_not_attempted") from exc
+        def _is_transient_err(val) -> bool:
+            low = str(val or "").lower()
+            return any(t in low for t in ("timed out", "timeout", "connection", "reset by peer", "eof"))
+
         try:
             ok, new_oid, msg = signer.modify_spot_order(
                 oid_i,
@@ -775,11 +779,11 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             raise
         except Exception as exc:  # noqa: BLE001
             print(f"[HL] replace_order({symbol},{oid_i}) failed: {exc}")
-            if any(t in str(exc).lower() for t in ("timed out", "timeout", "connection", "reset by peer", "eof")):
+            if _is_transient_err(exc):
                 return None
             raise SubmissionRefused("replace_not_attempted") from exc
         if not ok:
-            if any(t in str(msg or "").lower() for t in ("timed out", "timeout", "connection", "reset by peer", "eof")):
+            if _is_transient_err(msg):
                 return None
             raise SubmissionRefused("replace_not_attempted")
         clean_oid = extract_order_id(new_oid, default=None)

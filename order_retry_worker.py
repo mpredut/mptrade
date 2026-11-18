@@ -374,7 +374,7 @@ def process_once(mkt, now=None):
             return None
 
     for r in claimed:
-        lifecycle, symbol = (clean_scalar_str(r.get("lifecycle")) or "submit_pending").lower(), r.get("symbol")
+        lifecycle, symbol = oq.record_lifecycle(r), r.get("symbol")
         provider_name = _provider_name(mkt, r)
         if lifecycle == "awaiting_cancel":
             if (

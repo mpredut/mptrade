@@ -1068,7 +1068,7 @@ def _without_superseded_accepted(
         or not (
             _record_lifecycle(item, default="") == "accepted"
             and _canonical_queue_symbol(item.get("symbol")) == replaced_symbol
-            and (extract_order_id(item.get("order_id")) or str(item.get("order_id") or "").strip()) == replaced_order_id
+            and extract_order_id(item.get("order_id"), default="") == replaced_order_id
         )
     ]
 
@@ -1127,8 +1127,7 @@ def complete_claim(
                     if isinstance(order, dict) and order.get("status") is not None:
                         rec["submit_status"] = str(order.get("status"))
                     _append_order_history(rec, observed_at=now)
-                    rep_oid = extract_order_id(rec.get("replaces_order_id")) or str(rec.get("replaces_order_id") or "").strip()
-                    if rep_oid:
+                    if rep_oid := extract_order_id(rec.get("replaces_order_id")):
                         superseded_target = (_canonical_queue_symbol(rec.get("symbol")), rep_oid, rec.get("id"))
                 else:
                     rec["last_failure_reason"] = "response_without_order_id"
@@ -1256,7 +1255,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
             current_qty = safe_nonneg_float(rec.get("qty"), default=0.0)
             if qty > current_qty + max(1e-12, current_qty * 1e-9):
                 break
-            replaced_order_id = extract_order_id(rec.get("replaces_order_id")) or str(rec.get("replaces_order_id") or "").strip()
+            replaced_order_id = extract_order_id(rec.get("replaces_order_id"), default="")
             replaced_symbol = _canonical_queue_symbol(rec.get("symbol"))
             if qty <= max(1e-12, current_qty * 1e-9):
                 existing.pop(index)

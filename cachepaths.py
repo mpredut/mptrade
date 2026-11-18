@@ -630,39 +630,32 @@ def has_crypto_quote_suffix(symbol: object) -> bool:
     return symbol.strip().upper().endswith(_CRYPTO_QUOTE_SUFFIXES)
 
 
+def _extract_raw_symbol_base(raw: str, *, min_stem_len: int = 1) -> str:
+    base = next((raw.split(sep, 1)[0].strip() for sep in ("/", "-", "_") if sep in raw), raw)
+    base_u = base.upper()
+    for quote in CACHE_QUOTE_SUFFIXES:
+        if not _is_false_tusd_or_busd_match(base_u, quote) and base_u.endswith(quote) and len(base) >= len(quote) + min_stem_len:
+            return base[: -len(quote)]
+    return base
+
+
 def is_readonly_xstock_symbol(symbol: object) -> bool:
     """Return True if ``symbol`` is a read-only Kraken xStock token or pair."""
-    if isinstance(symbol, bool) or not isinstance(symbol, str):
+    if (raw := clean_scalar_str(symbol)) is None:
         return False
-    raw = symbol.strip()
-    if not raw:
-        return False
-    sym_u = raw.upper()
-    if sym_u.endswith(READONLY_XSTOCK_SUFFIXES):
+    if raw.upper().endswith(READONLY_XSTOCK_SUFFIXES):
         return True
-    raw_base = next((raw.split(sep, 1)[0].strip() for sep in ("/", "-", "_") if sep in raw), raw)
-    if raw_base.upper().endswith(("X.T", ".T")) or _has_xstock_lowercase_x(raw_base):
-        return True
-    for quote in CACHE_QUOTE_SUFFIXES:
-        if not _is_false_tusd_or_busd_match(raw_base.upper(), quote) and raw_base.upper().endswith(quote) and len(raw_base) > len(quote) + 2:
-            return _has_xstock_lowercase_x(raw_base[: -len(quote)])
-    return False
+    stem = _extract_raw_symbol_base(raw, min_stem_len=3)
+    return stem.upper().endswith(("X.T", ".T")) or _has_xstock_lowercase_x(stem)
 
 
 def is_kraken_tokenized_asset(symbol: object) -> bool:
     """Return True if ``symbol`` requires Kraken ``tokenized_asset`` API routing (xStocks / SPV pairs)."""
     if is_readonly_xstock_symbol(symbol):
         return True
-    if isinstance(symbol, bool) or not isinstance(symbol, str):
+    if (raw := clean_scalar_str(symbol)) is None:
         return False
-    raw = symbol.strip()
-    if not raw:
-        return False
-    raw_base = next((raw.split(sep, 1)[0].strip() for sep in ("/", "-", "_") if sep in raw), raw).upper()
-    for quote in CACHE_QUOTE_SUFFIXES:
-        if not _is_false_tusd_or_busd_match(raw_base, quote) and raw_base.endswith(quote) and len(raw_base) > len(quote):
-            raw_base = raw_base[: -len(quote)]
-            break
+    raw_base = _extract_raw_symbol_base(raw, min_stem_len=1).upper()
     return len(raw_base) >= 6 and raw_base.endswith("SPV")
 
 

@@ -32,6 +32,7 @@ from botcore import (
     _parse_bool_flag,
     bind_attr_call,
     clean_order_id,
+    clean_scalar_str,
     exact_nonneg_int,
     exact_pos_int,
     http_get,
@@ -41,8 +42,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import is_kraken_tokenized_asset
-from instrument_registry import resolve_registered_symbol_case
+from instrument_registry import resolve_kraken_tokenized_pair
 from providers.ohlc_utils import extract_kraken_ohlc_rows, require_ohlc_symbol
 from providers.order_ohlc_utils import get_cached_pair_info as _get_cached_pair_info
 from state_io import parse_json_payload
@@ -110,13 +110,7 @@ def get_cached_pair_info(candidates, cache_dict: dict | None = None) -> dict | N
 
 def _resolve_kraken_pair(pair: str, *, upper_default: bool = True) -> tuple[str, bool]:
     """Return ``(effective_pair, is_tokenized)`` resolving uppercase registry keys (e.g. ``SPCXXUSD`` -> ``SPCXxUSD``)."""
-    p_clean = pair.strip()
-    if is_kraken_tokenized_asset(p_clean):
-        return p_clean, True
-    reg_case = resolve_registered_symbol_case(p_clean, "kraken")
-    if reg_case != p_clean and is_kraken_tokenized_asset(reg_case):
-        return reg_case, True
-    return (p_clean.upper() if upper_default else p_clean), False
+    return resolve_kraken_tokenized_pair(pair, upper_default=upper_default)
 
 
 class KrakenError(Exception):
@@ -125,8 +119,8 @@ class KrakenError(Exception):
 
 class KrakenClient:
     def __init__(self, api_key: str | None = None, api_secret: str | None = None):
-        self.api_key = api_key.strip() if isinstance(api_key, str) and not isinstance(api_key, bool) else ""
-        self.api_secret = api_secret.strip() if isinstance(api_secret, str) and not isinstance(api_secret, bool) else ""
+        self.api_key = clean_scalar_str(api_key) or ""
+        self.api_secret = clean_scalar_str(api_secret) or ""
 
     @classmethod
     def public(cls) -> "KrakenClient":
@@ -248,7 +242,7 @@ class KrakenClient:
         return self._public("AssetPairs", {"aclass_base": "tokenized_asset"})
 
     def _public_first_dict(self, method: str, pair: str) -> dict | None:
-        if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+        if not clean_scalar_str(pair):
             return None
         eff_pair, is_tok = _resolve_kraken_pair(pair, upper_default=True)
         params: dict[str, str] = {"pair": eff_pair}
@@ -268,7 +262,7 @@ class KrakenClient:
 
     def trades_page(self, pair: str, since: str = "0") -> tuple[list, str]:
         """Fetch one page of public Trades rows and the next nanosecond cursor."""
-        if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+        if not clean_scalar_str(pair):
             return [], str(since or "0")
         eff_pair, is_tok = _resolve_kraken_pair(pair, upper_default=True)
         eff_since = str(since or "0").strip() or "0"

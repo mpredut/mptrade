@@ -39,6 +39,7 @@ from cachepaths import (
     has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
+    is_kraken_tokenized_asset,
     is_primary_stream_venue,
     is_readonly_xstock_symbol,
     normalize_venue_name,
@@ -279,6 +280,21 @@ def resolve_registered_symbol_case(symbol: object, provider: str | None = None, 
         except Exception:
             pass
     return raw
+
+
+def resolve_kraken_tokenized_pair(
+    symbol: object, *, upper_default: bool = False, path=None
+) -> tuple[str, bool]:
+    """Return ``(effective_pair, is_tokenized)`` resolving uppercase registry keys (e.g. ``SPCXXUSD`` -> ``SPCXxUSD``)."""
+    p_clean = clean_scalar_str(symbol)
+    if p_clean is None:
+        return "", False
+    if is_kraken_tokenized_asset(p_clean):
+        return p_clean, True
+    reg_case = resolve_registered_symbol_case(p_clean, "kraken", path=path)
+    if reg_case and reg_case != p_clean and is_kraken_tokenized_asset(reg_case):
+        return reg_case, True
+    return (p_clean.upper() if upper_default else p_clean), False
 
 
 def _spec_allows_xstock_trading(spec: object, role: str = "mt") -> bool:

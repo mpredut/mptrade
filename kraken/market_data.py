@@ -25,8 +25,8 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import CACHE_365_PRICE_PREFIX, cache_path, is_kraken_tokenized_asset
-from instrument_registry import resolve_registered_symbol_case
+from cachepaths import CACHE_365_PRICE_PREFIX, cache_path
+from instrument_registry import resolve_kraken_tokenized_pair
 from providers.ohlc_utils import (
     extract_kraken_ohlc_rows,
     parse_ohlc_interval_minutes,
@@ -49,10 +49,7 @@ def fetch_ohlc_candles(
     Excludes the final still-forming candle when drop_incomplete is True to ensure
     reproducible historical backtests and avoid lookahead bias.
     """
-    pair = require_ohlc_symbol(pair, label="pair")
-    reg_pair = resolve_registered_symbol_case(pair, "kraken")
-    if reg_pair != pair and is_kraken_tokenized_asset(reg_pair):
-        pair = reg_pair
+    pair, is_tok = resolve_kraken_tokenized_pair(require_ohlc_symbol(pair, label="pair"))
     interval = parse_ohlc_interval_minutes(
         interval,
         str_to_min={},
@@ -62,9 +59,7 @@ def fetch_ohlc_candles(
     to_f = safe_pos_float(timeout, default=None)
     if to_f is None:
         raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
-    q_params: dict[str, object] = {"pair": pair, "interval": interval}
-    if is_kraken_tokenized_asset(pair):
-        q_params["asset_class"] = "tokenized_asset"
+    q_params: dict[str, object] = {"pair": pair, "interval": interval, **({"asset_class": "tokenized_asset"} if is_tok else {})}
     qs = urllib.parse.urlencode(q_params)
     url = f"https://api.kraken.com/0/public/OHLC?{qs}"
     data = None
@@ -101,10 +96,7 @@ def load_archive_ohlc_candles(
     archive_path: str | None = None,
 ) -> list[dict]:
     """Reconstruct completed OHLC bars offline from ``cachedb/prices/cache_365_price_<PAIR>.jsonl``."""
-    pair = require_ohlc_symbol(pair, label="pair")
-    reg_pair = resolve_registered_symbol_case(pair, "kraken")
-    if reg_pair != pair and is_kraken_tokenized_asset(reg_pair):
-        pair = reg_pair
+    pair, _ = resolve_kraken_tokenized_pair(require_ohlc_symbol(pair, label="pair"))
     interval_min = parse_ohlc_interval_minutes(
         interval,
         str_to_min={},

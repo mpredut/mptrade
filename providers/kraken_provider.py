@@ -71,7 +71,6 @@ from cachepaths import (
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
-    is_kraken_tokenized_asset,
     kraken_pair_key,  # noqa: F401
     kraken_pair_matches,
     normalize_cache_base_asset,
@@ -81,7 +80,7 @@ from cachepaths import (
     symbol_quote_asset,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
-from instrument_registry import casefold_get, resolve_registered_symbol_case, symbols_for
+from instrument_registry import casefold_get, resolve_kraken_tokenized_pair, symbols_for
 
 _MISSING = object()
 
@@ -388,9 +387,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             return cached
         mn = 0.0
         try:
-            reg_sym = resolve_registered_symbol_case(symbol, "kraken")
-            lookup_sym = reg_sym if is_kraken_tokenized_asset(reg_sym) else norm_sym
-            info = self._client().pair_info(lookup_sym) or {}
+            lookup_sym, is_tok = resolve_kraken_tokenized_pair(symbol)
+            info = self._client().pair_info(lookup_sym if is_tok else norm_sym) or {}
             mn = safe_pos_float(info.get("ordermin", 0), default=0.0)
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] ordermin {symbol}: {e}")
@@ -411,11 +409,12 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             ratio = min(lookback_f / 12.0, valid_intervals[-1] * 1.0)
             raw_interval = max(1, math.ceil(ratio))
             interval = next((v for v in valid_intervals if v >= raw_interval), valid_intervals[-1])
-            reg_sym = resolve_registered_symbol_case(sym_clean, "kraken")
-            eff_sym = reg_sym if is_kraken_tokenized_asset(reg_sym) else sym_clean
-            ohlc_params: dict[str, object] = {"pair": eff_sym, "interval": interval}
-            if is_kraken_tokenized_asset(eff_sym):
-                ohlc_params["asset_class"] = "tokenized_asset"
+            eff_sym, is_tok = resolve_kraken_tokenized_pair(sym_clean)
+            ohlc_params: dict[str, object] = {
+                "pair": eff_sym,
+                "interval": interval,
+                **({"asset_class": "tokenized_asset"} if is_tok else {}),
+            }
             res = cli._public("OHLC", ohlc_params)
             rows = extract_kraken_ohlc_rows(res, drop_incomplete=False)
             if not rows:
@@ -972,7 +971,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         _ = price
         if provider is None or (sym_u := clean_upper_scalar(symbol)) is None:
             return {}
-        reg_sym = resolve_registered_symbol_case(symbol, "kraken")
+        reg_sym, is_tok = resolve_kraken_tokenized_pair(symbol)
         kr_cands = list(
             dict.fromkeys(
                 kc
@@ -987,7 +986,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             )
         )
         out: dict = {}
-        if is_kraken_tokenized_asset(reg_sym):
+        if is_tok:
             out["fee_tier"] = "XSTOCK_ZERO_FEE"
             out["maker_fee_bps"] = 0.0
             out["taker_fee_bps"] = 0.0

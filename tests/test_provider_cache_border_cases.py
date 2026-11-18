@@ -8746,4 +8746,19 @@ def test_wave50_anchored_id_memos_and_market_regime_scalar_ssot(tmp_path, monkey
     assert oq_mod.is_terminal_filter_refusal(SubmissionRefused("below_min_notional")) is True
     assert oq_mod.is_terminal_filter_refusal(SubmissionRefused("trend_deferred")) is False
 
+    # 6. resolve_kraken_tokenized_pair SSOT & _without_superseded_accepted scalar order_id guard
+    assert ir_mod.resolve_kraken_tokenized_pair("SPCXXUSD") == ("SPCXxUSD", True)
+    assert ir_mod.resolve_kraken_tokenized_pair("ANTSPVUSD") == ("ANTSPVUSD", True)
+    assert ir_mod.resolve_kraken_tokenized_pair("taousd", upper_default=True) == ("TAOUSD", False)
+    assert ir_mod.resolve_kraken_tokenized_pair("null") == ("", False)
+    assert cachepaths.is_kraken_tokenized_asset("null") is False
+    kept_items = [
+        {"id": "a1", "lifecycle": "accepted", "symbol": "BTCUSDC", "order_id": True},
+        {"id": "a2", "lifecycle": "accepted", "symbol": "BTCUSDC", "order_id": "null"},
+        {"id": "a3", "lifecycle": "accepted", "symbol": "BTCUSDC", "order_id": "999"},
+    ]
+    assert [x["id"] for x in oq_mod._without_superseded_accepted(kept_items, "BTCUSDC", "True")] == ["a1", "a2", "a3"]
+    assert [x["id"] for x in oq_mod._without_superseded_accepted(kept_items, "BTCUSDC", "null")] == ["a1", "a2", "a3"]
+    assert [x["id"] for x in oq_mod._without_superseded_accepted(kept_items, "BTCUSDC", "999")] == ["a1", "a2"]
+
 
