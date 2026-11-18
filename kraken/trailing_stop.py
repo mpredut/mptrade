@@ -38,6 +38,7 @@ if _HERE not in sys.path:
 
 from botcore import (  # noqa: E402
     _parse_bool_flag,
+    extract_order_id,
     extract_order_side,
     format_price_log,
     load_dotenv,
@@ -53,7 +54,7 @@ from botcore import (  # noqa: E402
 )
 from kraken_common import build_kraken_client, notify  # noqa: E402
 from kraken_client import KrakenClient  # noqa: E402
-from notify_engine.alertnotifiers import format_trade_notification  # noqa: E402
+from notify_engine.alertnotifiers import emit_trade_notification  # noqa: E402
 
 from trailing_core import (  # noqa: E402
     COST_BASIS_LOOKBACK_S,
@@ -325,28 +326,12 @@ class KrakenTrailing(TrailingAdapterBase):
                     result.intent.get("requested_price") if isinstance(result.intent, dict) else 0.0,
                 )
                 avg_str = format_price_log(avg) if 0.0 < avg < 1.0 else f"{avg:.2f}"
-                oid = (
-                    result.intent.get("order_id") or result.intent.get("txid")
-                    if isinstance(result.intent, dict)
-                    else None
-                )
-                t_title, t_body = format_trade_notification(
-                    "FILLED",
-                    notify_action,
-                    notify_asset,
-                    f"~{avg_str}",
-                    qty,
-                    qty * avg,
-                    "USD",
-                    oid,
-                    venue="kraken",
-                    owner="trailing_stop",
+                emit_trade_notification(
+                    notify, "FILLED", notify_action, notify_asset, f"~{avg_str}", qty, qty * avg, "USD",
+                    extract_order_id(result.intent) or None,
+                    venue="kraken", owner="trailing_stop",
                     detail=f"TRAILING ({result.status.status}, fee {result.status.fee})",
-                )
-                notify(
-                    title=t_title,
-                    body=t_body,
-                    source="kraken-trail", price=avg, desktop=False,
+                    notify_kwargs={"source": "kraken-trail", "price": avg, "desktop": False},
                 )
         return result
 

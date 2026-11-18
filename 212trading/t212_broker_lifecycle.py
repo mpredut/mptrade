@@ -38,7 +38,7 @@ ensure_local_module_priority(_HERE, "ipo_common")
 
 from cachepaths import same_canonical_base_asset as _t212_tickers_match  # noqa: E402
 from ipo_common import notify as _default_notify  # noqa: E402
-from notify_engine.alertnotifiers import format_trade_notification  # noqa: E402
+from notify_engine.alertnotifiers import emit_trade_notification  # noqa: E402
 from order_lifecycle import restore_cancelled_orders  # noqa: E402
 from providers.broker_history import extract_broker_order_ticker as _order_ticker  # noqa: E402
 from providers.execution_audit import new_intent_id  # noqa: E402
@@ -380,6 +380,17 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                     return round(held - buf, 2)
         return q_round
 
+    def _notify_trade(
+        self, status: str, side: str, price_str: str, qty: float, val: float,
+        order_id=None, *, price: float, detail=None, paper_tag: bool = False,
+    ) -> None:
+        emit_trade_notification(
+            self._notify, status, side, self.yahoo_sym, price_str, qty, val, self.ccy, order_id,
+            venue="t212", owner="t212_bot", detail=detail,
+            prefix="[PAPER]" if (paper_tag and self.dry_run) else None,
+            notify_kwargs={"source": "T212", "price": price, "desktop": self.desktop},
+        )
+
     def _apply_fill(self, order: dict, qty: float, price: float) -> None:
         tag = "[PAPER] " if self.dry_run else ""
         if order["side"] == "BUY":
@@ -389,27 +400,13 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 f"  [STRAT] {tag}BUY FILLED {qty} @ {price:.2f} USD ({order.get('kind')})  "
                 f"qty_total={self.s['qty']:.2f} avg={avg:.2f}"
             )
-            t_title, t_body = format_trade_notification(
-                "FILLED",
-                "BUY",
-                self.yahoo_sym,
-                f"{price:.2f}",
-                qty,
-                qty * price,
-                self.ccy,
-                order.get("id"),
-                venue="t212",
-                owner="t212_bot",
+            self._notify_trade(
+                "FILLED", "BUY", f"{price:.2f}", qty, qty * price, order.get("id"),
+                price=price, paper_tag=True,
                 detail=(
-                    f"{order.get('kind')} · tot_qty {self.s['qty']:.2f} · avg {avg:.2f} · "
-                    f"dep {self.s['spent_cash']:.0f} {self.ccy} · DCA {self.s['dca_buys']}/{self.p.max_dca_buys}"
+                    f"{order.get('kind')}", f"tot_qty {self.s['qty']:.2f}", f"avg {avg:.2f}",
+                    f"dep {self.s['spent_cash']:.0f} {self.ccy}", f"DCA {self.s['dca_buys']}/{self.p.max_dca_buys}",
                 ),
-                prefix="[PAPER]" if self.dry_run else None,
-            )
-            self._notify(
-                title=t_title,
-                body=t_body,
-                source="T212", price=price, desktop=self.desktop,
             )
             self._cancel_non_market_sells()
         else:
@@ -421,27 +418,13 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 f"  [STRAT] {tag}SELL FILLED {qty} @ {price:.2f} USD  "
                 f"gross={gross:+.2f}  fee={fee:.2f}  net={net:+.2f} USD"
             )
-            t_title, t_body = format_trade_notification(
-                "FILLED",
-                "SELL",
-                self.yahoo_sym,
-                f"{price:.2f}",
-                qty,
-                qty * price,
-                self.ccy,
-                order.get("id"),
-                venue="t212",
-                owner="t212_bot",
+            self._notify_trade(
+                "FILLED", "SELL", f"{price:.2f}", qty, qty * price, order.get("id"),
+                price=price, paper_tag=True,
                 detail=(
-                    f"Net {net:+.2f}$ (avg {avg:.2f}, fee {fee:.2f}, "
-                    f"Ntot {self.s['realized_net_usd']:+.2f}$) · cycle {self.s['cycle']} closed"
+                    f"Net {net:+.2f}$ (avg {avg:.2f}, fee {fee:.2f}, Ntot {self.s['realized_net_usd']:+.2f}$)",
+                    f"cycle {self.s['cycle']} closed",
                 ),
-                prefix="[PAPER]" if self.dry_run else None,
-            )
-            self._notify(
-                title=t_title,
-                body=t_body,
-                source="T212", price=price, desktop=self.desktop,
             )
             is_flat = self.s["qty"] <= 1e-9
             is_dust_exit = (
@@ -817,26 +800,13 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 f"  [STRAT] BUY EXECUTED {fq:.4f} @ {fp:.2f} USD ({kind_label})  qty={real_qty:.4f} avg={eff_real_avg:.2f}"
             )
             buy_px_ref = eff_real_avg if is_adoption else fp
-            t_title, t_body = format_trade_notification(
-                "ADOPTED" if is_adoption else "FILLED",
-                "BUY",
-                self.yahoo_sym,
-                f"{buy_px_ref:.2f}",
-                fq,
-                fq * buy_px_ref,
-                self.ccy,
-                (source_order or {}).get("id"),
-                venue="t212",
-                owner="t212_bot",
+            self._notify_trade(
+                "ADOPTED" if is_adoption else "FILLED", "BUY", f"{buy_px_ref:.2f}", fq, fq * buy_px_ref,
+                (source_order or {}).get("id"), price=fp,
                 detail=(
-                    f"{kind_label} · tot_qty {real_qty:.4f} · avg {eff_real_avg:.2f} · "
-                    f"dep {self.s['spent_cash']:.0f} {self.ccy} · DCA {self.s['dca_buys']}/{self.p.max_dca_buys}"
+                    kind_label, f"tot_qty {real_qty:.4f}", f"avg {eff_real_avg:.2f}",
+                    f"dep {self.s['spent_cash']:.0f} {self.ccy}", f"DCA {self.s['dca_buys']}/{self.p.max_dca_buys}",
                 ),
-            )
-            self._notify(
-                title=t_title,
-                body=t_body,
-                source="T212", price=fp, desktop=self.desktop,
             )
             if source_order is pending_for_fill:
                 self._persist_pending_submit(None)
@@ -881,23 +851,10 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 if pending_for_fill and pending_for_fill.get("side") == "SELL"
                 else None
             )
-            t_title, t_body = format_trade_notification(
-                "FILLED",
-                "SELL",
-                self.yahoo_sym,
-                f"{approx}{sell_price:.2f}",
-                sold,
-                sold * sell_price,
-                self.ccy,
-                sell_oid,
-                venue="t212",
-                owner="t212_bot",
+            self._notify_trade(
+                "FILLED", "SELL", f"{approx}{sell_price:.2f}", sold, sold * sell_price,
+                sell_oid, price=sell_price,
                 detail=f"Net {net:+.2f}$ (avg {prev_avg:.2f}, fee {fee:.2f}, Ntot {self.s['realized_net_usd']:+.2f}$)",
-            )
-            self._notify(
-                title=t_title,
-                body=t_body,
-                source="T212", price=sell_price, desktop=self.desktop,
             )
             if pending_for_fill and pending_for_fill.get("side") == "SELL":
                 self._persist_pending_submit(None)

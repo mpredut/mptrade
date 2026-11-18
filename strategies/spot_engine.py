@@ -15,7 +15,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import Callable
 
-from notify_engine.alertnotifiers import bind_notify, format_trade_notification
+from notify_engine.alertnotifiers import bind_notify, emit_trade_notification
 from botcore import (
     _parse_bool_flag, clean_order_id, defined_env, extract_order_side, extract_timestamp_s,
     format_price_log, is_market_order, log, normalize_epoch_sec, normalize_side,
@@ -38,7 +38,7 @@ from .base_spot_mixin import (
     load_common_mhdpa_env,
     sanitize_common_spot_state,
 )
-from cachepaths import resolve_venue_runtime_dir
+from cachepaths import normalize_venue_name, resolve_venue_runtime_dir
 from .state_store import (
     state_path_for as _shared_state_path_for,
 )
@@ -886,6 +886,18 @@ class Strategy(BaseSpotMixin):
                 ):
                     self._log_and_cancel_stale_buy(o, "txid", "buy", "--")
 
+    def _emit_trade(
+        self, status: str, side: str, price_str: str, qty: float, price: float,
+        order_id=None, *, detail=None, paper_tag: bool = False, source: str | None = None,
+    ) -> None:
+        v_slug = normalize_venue_name(self.notification_source, default="") or str(self.notification_source).lower()
+        emit_trade_notification(
+            self._emit, status, side, self.pair, price_str, qty, qty * price, self.ccy, order_id,
+            venue=self.notification_source, owner=f"{v_slug}_bot", detail=detail,
+            prefix="[PAPER]" if (paper_tag and self.dry_run) else None,
+            notify_kwargs={"source": source or self.notification_source, "price": price, "desktop": self.desktop},
+        )
+
     def _apply_fill(self, o: dict, vol: float, price: float, fee: float,
                     *, final: bool = True) -> None:
         tag = "[PAPER] " if self.dry_run else ""
@@ -893,6 +905,7 @@ class Strategy(BaseSpotMixin):
         self.s["fees_total"] += fee
         self.s["realized_net"] -= fee
         px_str = format_price_log(price)
+        oid = o.get("txid") or o.get("id")
         if o["side"] == "buy":
             self._apply_buy_fill_accounting(o, vol, price, fallback_to_notional=True)
             self.s["tp_sold_levels"] = []
@@ -905,24 +918,12 @@ class Strategy(BaseSpotMixin):
             avg_str = format_price_log(avg)
             log(f"  [STRAT] {tag}BUY FILLED {vol} @ {price} {self.ccy} ({o.get('kind')})  "
                 f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f} fee={fee}")
-            t_title, t_body = format_trade_notification(
-                "FILLED",
-                "BUY",
-                self.pair,
-                px_str,
-                vol,
-                vol * price,
-                self.ccy,
-                o.get("txid") or o.get("id"),
-                venue=self.notification_source,
-                owner=f"{str(self.notification_source).lower()}_bot",
-                detail=f"{o.get('kind')} · tot_qty {self.s['qty']:.2f} · avg {avg_str} · dep {self.s['spent']:.0f} {self.ccy}",
-                prefix="[PAPER]" if self.dry_run else None,
-            )
-            self._emit(
-                title=t_title,
-                body=t_body,
-                source=self.notification_source, price=price, desktop=self.desktop,
+            self._emit_trade(
+                "FILLED", "BUY", px_str, vol, price, oid, paper_tag=True,
+                detail=(
+                    f"{o.get('kind')}", f"tot_qty {self.s['qty']:.2f}",
+                    f"avg {avg_str}", f"dep {self.s['spent']:.0f} {self.ccy}",
+                ),
             )
             self._cancel_orders("sell", exclude_market=True)
         else:
@@ -935,24 +936,9 @@ class Strategy(BaseSpotMixin):
             self._release_sell_cost_basis(vol, avg)
             log(f"  [STRAT] {tag}SELL FILLED {vol} @ {price} {self.ccy}  "
                 f"gross={gross:+.4f} cycle_fee={self.s['cycle_fees']:.4f} net={net:+.4f}")
-            t_title, t_body = format_trade_notification(
-                "FILLED",
-                "SELL",
-                self.pair,
-                px_str,
-                vol,
-                vol * price,
-                self.ccy,
-                o.get("txid") or o.get("id"),
-                venue=self.notification_source,
-                owner=f"{str(self.notification_source).lower()}_bot",
+            self._emit_trade(
+                "FILLED", "SELL", px_str, vol, price, oid, paper_tag=True,
                 detail=f"Net {net:+.2f} {self.ccy} (avg {avg_str}, fee {self.s['cycle_fees']:.2f}, Ntot {self.s['realized_net']:+.2f} {self.ccy})",
-                prefix="[PAPER]" if self.dry_run else None,
-            )
-            self._emit(
-                title=t_title,
-                body=t_body,
-                source=self.notification_source, price=price, desktop=self.desktop,
             )
             if final:
                 if (tr_i := safe_nonneg_int(o.get("tranche_idx"), default=None)) is not None and tr_i not in (
@@ -1093,23 +1079,10 @@ class Strategy(BaseSpotMixin):
         self.s["adopted"] = True
         self._save()
         log(f"  [ADOPT] [STRAT] POSITION ADOPTED: {qty} @ {self.p.adopt_cost} {self.ccy} -- managing TP/DCA/SL")
-        ad_title, ad_body = format_trade_notification(
-            "ADOPTED",
-            "BUY",
-            self.pair,
-            format_price_log(self.p.adopt_cost),
-            qty,
-            qty * self.p.adopt_cost,
-            self.ccy,
-            None,
-            venue=self.notification_source,
-            owner=f"{str(self.notification_source).lower()}_bot",
+        self._emit_trade(
+            "ADOPTED", "BUY", format_price_log(self.p.adopt_cost), qty, self.p.adopt_cost,
             detail=f"TP+{self.p.takeprofit_pct}% DCA-{self.p.dca_drop_pct}% SL{self.p.stop_loss_pct}%",
-        )
-        self._emit(
-            title=ad_title,
-            body=ad_body,
-            source=f"{self.notification_source}-bot", price=self.p.adopt_cost, desktop=self.desktop,
+            source=f"{self.notification_source}-bot",
         )
 
     _REPLAY_REGIME_CACHE: OrderedDict = OrderedDict()

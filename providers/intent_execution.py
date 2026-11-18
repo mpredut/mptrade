@@ -57,6 +57,26 @@ def resolve_intent_topic_tag(intent: dict[str, Any], venue: str) -> str:
     return MarketDataProvider.resolve_venue_intent_executor_tag(venue)
 
 
+def _emit_intent_alert(
+    dispatch_notify_fn: Optional[Callable[..., Any]],
+    status: str,
+    decision: str,
+    inst: Any,
+    px_log_s: str,
+    target_qty: float,
+    effective_usd: float,
+    *,
+    trade_tag: str,
+    detail: tuple[str, ...],
+    thesis: str,
+) -> None:
+    _alertnotifiers.emit_trade_notification(
+        dispatch_notify_fn, status, decision, inst.symbol, px_log_s, target_qty, effective_usd,
+        venue=inst.provider_name, owner=trade_tag, detail=detail, thesis=thesis,
+        notify_kwargs={"symbol": inst.symbol},
+    )
+
+
 def record_shadow_intent_observation(
     inst: Any,
     intent: dict[str, Any],
@@ -90,22 +110,11 @@ def record_shadow_intent_observation(
         )
     ord_kind = "LIMIT" if is_limit else "MARKET"
     preflight_str = "PASSED" if guard_allowed else guard_reason
-    title, body = _alertnotifiers.format_trade_notification(
-        "SHADOW",
-        decision,
-        inst.symbol,
-        px_log_s,
-        target_qty,
-        effective_usd,
-        None,
-        None,
-        venue=inst.provider_name,
-        owner=trade_tag,
-        detail=f"({ord_kind}) · conf {confidence:.2f} · Preflight: {preflight_str}",
-        thesis=thesis,
+    _emit_intent_alert(
+        dispatch_notify_fn, "SHADOW", decision, inst, px_log_s, target_qty, effective_usd,
+        trade_tag=trade_tag, thesis=thesis,
+        detail=(f"({ord_kind})", f"conf {confidence:.2f}", f"Preflight: {preflight_str}"),
     )
-    if callable(dispatch_notify_fn):
-        dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
 
     extra_limit = {"order_type": "LIMIT", "limit_price": price} if is_limit else {}
     _record_intent_state(
@@ -152,25 +161,13 @@ def execute_enforce_intent_order(
     if not guard_allowed:
         if log:
             log.warning(
-                "[LLM TRADER · ENFORCE] Operational guard blocked %s %s: %s",
+                "[LLM TRADER \u00b7 ENFORCE] Operational guard blocked %s %s: %s",
                 ord_lbl, inst.symbol, guard_reason,
             )
-        title, body = _alertnotifiers.format_trade_notification(
-            "BLOCKED",
-            decision,
-            inst.symbol,
-            px_log_s,
-            target_qty,
-            effective_usd,
-            None,
-            None,
-            venue=inst.provider_name,
-            owner=trade_tag,
-            detail=f"{ord_kind} · Reason: {guard_reason}",
-            thesis=thesis,
+        _emit_intent_alert(
+            dispatch_notify_fn, "BLOCKED", decision, inst, px_log_s, target_qty, effective_usd,
+            trade_tag=trade_tag, thesis=thesis, detail=(ord_kind, f"Reason: {guard_reason}"),
         )
-        if callable(dispatch_notify_fn):
-            dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
 
         _record_intent_state(
             intent,
@@ -185,8 +182,8 @@ def execute_enforce_intent_order(
 
     if log:
         log.warning(
-            "[LLM TRADER · ENFORCE] Executing %s %s (qty=%s, price=$%s, notional=$%.2f) on %s...",
-            ord_lbl, inst.symbol, format_notify_qty(target_qty), format_notify_price(price, comma=False), effective_usd, inst.provider_name,
+            "[LLM TRADER \u00b7 ENFORCE] Executing %s %s (qty=%s, price=$%s, notional=$%.2f) on %s...",
+            ord_lbl, inst.symbol, format_notify_qty(target_qty), px_log_s, effective_usd, inst.provider_name,
         )
 
     try:
@@ -317,22 +314,10 @@ def execute_enforce_intent_order(
                     "[LLM TRADER · ENFORCE] Order placement refused or failed for %s %s: %s",
                     decision, inst.symbol, refusal_reason,
                 )
-            title, body = _alertnotifiers.format_trade_notification(
-                "REFUSED",
-                decision,
-                inst.symbol,
-                px_log_s,
-                target_qty,
-                effective_usd,
-                None,
-                None,
-                venue=inst.provider_name,
-                owner=trade_tag,
-                detail=f"{ord_kind} · Reason: {refusal_reason}",
-                thesis=thesis,
+            _emit_intent_alert(
+                dispatch_notify_fn, "REFUSED", decision, inst, px_log_s, target_qty, effective_usd,
+                trade_tag=trade_tag, thesis=thesis, detail=(ord_kind, f"Reason: {refusal_reason}"),
             )
-            if callable(dispatch_notify_fn):
-                dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
 
             sub_state = clean_scalar_str(outcome_ctx.get("state")) or ""
             extra_cat = {"category": refusal_cat} if refusal_cat else {}

@@ -103,50 +103,37 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
     return min(DEFAULT_ORDER_TTL_SEC, MAX_GLOBAL_ORDER_TTL_SEC)
 
 
-def _format_order_notify_fields(symbol, order_type, price, quantity, owner=None):
+def _emit_monitororder_event(
+    status: str, label: str, symbol, order_type, order_id, price, quantity,
+    *, owner=None, venue=None, detail=None,
+) -> None:
     qty = safe_pos_float(quantity, 0.0)
     px = safe_pos_float(price, 0.0)
-    val = px * qty
+    px_disp = format_price_log(px)
     quote = (split_symbol_assets(symbol) or ("", ""))[1] or "USD"
     side = normalize_side(order_type) or str(order_type).upper()
-    owner_tag, owner_body = alert.format_owner_tags(owner, ignore=("unspecified", "unknown"))
-    return qty, px, val, quote, side, owner_tag, owner_body
+    _, owner_body = alert.format_owner_tags(owner, ignore=("unspecified", "unknown"))
+    venue_slug = (normalize_venue_name(venue, default="") or _resolve_provider_name(symbol)).lower()
+    t_title, t_body = alert.format_trade_notification(
+        status, side, symbol, px_disp, qty, px * qty, quote, order_id,
+        venue=venue_slug, owner=owner, detail=detail,
+    )
+    print(f"[MONITORORDER] {label}{owner_body}: {side} {qty:.6f} {symbol} @ {px_disp} (orderId={order_id})")
+    alert.notify(title=t_title, body=t_body, source="monitororder", symbol=str(symbol), price=px)
 
 
 def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=None, age_str="", ttl_str="", venue=None):
     """Notify when an expired open order is canceled by monitororder."""
     try:
-        qty, px, val, quote, side, _, owner_body = _format_order_notify_fields(
-            symbol, order_type, price, quantity, owner
-        )
-        px_disp = format_price_log(px)
-        venue_slug = (normalize_venue_name(venue, default="") or _resolve_provider_name(symbol)).lower()
         if ttl_str and age_str:
             ttl_detail = f"TTL {ttl_str} (active {age_str}, canceled)"
         elif ttl_str:
             ttl_detail = f"TTL {ttl_str} (canceled)"
         else:
             ttl_detail = "Canceled on TTL expiry"
-        t_title, t_body = alert.format_trade_notification(
-            "EXPIRED",
-            side,
-            symbol,
-            px_disp,
-            qty,
-            val,
-            quote,
-            order_id,
-            venue=venue_slug,
-            owner=owner,
-            detail=ttl_detail,
-        )
-        print(f"[MONITORORDER] ⏰ Order expired & canceled{owner_body}: {side} {qty:.6f} {symbol} @ {px_disp} (orderId={order_id})")
-        alert.notify(
-            title=t_title,
-            body=t_body,
-            source="monitororder",
-            symbol=str(symbol),
-            price=px,
+        _emit_monitororder_event(
+            "EXPIRED", "\u23f0 Order expired & canceled", symbol, order_type, order_id,
+            price, quantity, owner=owner, venue=venue, detail=ttl_detail,
         )
     except Exception as exc:
         print(f"[MONITORORDER] Expiry notification failed for order {order_id}: {exc}")
@@ -288,21 +275,9 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
     if not _should_notify_order_launched(owner):
         return
     try:
-        qty, px, val, quote, side, _, owner_body = _format_order_notify_fields(
-            symbol, order_type, price, quantity, owner
-        )
-        px_disp = format_price_log(px)
-        venue_slug = (normalize_venue_name(venue, default="") or _resolve_provider_name(symbol)).lower()
-        t_title, t_body = alert.format_trade_notification(
-            "PLACED", side, symbol, px_disp, qty, val, quote, order_id, venue=venue_slug, owner=owner
-        )
-        print(f"[MONITORORDER] 📝 New order launched{owner_body}: {side} {qty:.6f} {symbol} @ {px_disp} (orderId={order_id})")
-        alert.notify(
-            title=t_title,
-            body=t_body,
-            source="monitororder",
-            symbol=str(symbol),
-            price=px,
+        _emit_monitororder_event(
+            "PLACED", "\U0001f4dd New order launched", symbol, order_type, order_id,
+            price, quantity, owner=owner, venue=venue,
         )
     except Exception as exc:
         print(f"[MONITORORDER] Notification failed for order {order_id}: {exc}")

@@ -13,7 +13,9 @@ from pathlib import Path
 from cachepaths import (
     canonical_base_asset,
     clean_non_bool_str,
+    clean_scalar_str,
     clean_symbol_key,
+    clean_upper_scalar,
     has_equity_suffix,
     is_equity_venue_or_suffix,
     normalize_venue_name,
@@ -29,7 +31,6 @@ from botcore import (
     _parse_bool_flag,
     bool_env,
     clean_order_id_str,
-    clean_scalar_str,
     exact_pos_int,
     float_env,
     format_notify_price,
@@ -126,15 +127,20 @@ def strip_owner_tags(text: Any) -> str:
     return _OWNER_TAG_RE.sub("", s)
 
 
+NOTIFY_DETAIL_SEP = " \u00b7 "
+
+
+def _clean_notify_scalar(val: Any) -> str:
+    return clean_scalar_str(clean_non_bool_str(val)) or ""
+
+
 def format_owner_tags(
     owner: Any,
     *,
     ignore: tuple[str, ...] = ("unspecified", "unknown", "order_retry"),
 ) -> tuple[str, str]:
     """Return ``(owner_tag, owner_body)`` as ``(' [owner]', ' (owner)')`` when valid, else ``('', '')``."""
-    if owner is None or isinstance(owner, bool):
-        return "", ""
-    s = str(owner).strip().strip("[]()").strip()
+    s = clean_non_bool_str(owner).strip("[]()").strip()
     if not s or s.lower() in ignore or s.lower().startswith("alt:"):
         return "", ""
     return f" [{s}]", f" ({s})"
@@ -148,8 +154,7 @@ def format_trade_venue_tag(
     ignore: tuple[str, ...] = ("unspecified", "unknown", "order_retry"),
 ) -> str:
     """Return ``'[venue:owner]'`` when owner is valid, else ``'[venue]'``."""
-    raw_v = "" if isinstance(venue, bool) or venue is None else str(venue).strip()
-    v = normalize_venue_name(raw_v, default="") or raw_v.lower()
+    v = normalize_venue_name(venue, default="") or ""
     _, owner_body = format_owner_tags(owner, ignore=ignore)
     o = owner_body.strip(" ()").lower() if owner_body else ""
     if o in ("ai_executor", "auto_trade_executor"):
@@ -186,9 +191,9 @@ def format_trade_notification(
     Title: ``<STATUS> <SIDE> <BASE>@<PRICE> ~<TOTAL> $~ [venue:module]``
     Body:  ``~<VAL> <QUOTE> [| detail] (qty: <QTY>, order: <ID>)``
     """
-    st_s = str(status or "FILLED").strip().upper() or "FILLED"
-    side_s = str(side or "").strip().upper() or "ORDER"
-    raw_sym = clean_scalar_str(clean_non_bool_str(symbol)) or "TRADE"
+    st_s = clean_upper_scalar(clean_non_bool_str(status)) or "FILLED"
+    side_s = clean_upper_scalar(clean_non_bool_str(side)) or "ORDER"
+    raw_sym = _clean_notify_scalar(symbol) or "TRADE"
     sym_parts = split_symbol_assets(raw_sym)
     if clean_symbol_key(raw_sym) == "USDCUSDT":
         sym_short = "USDCUSDT"
@@ -196,7 +201,7 @@ def format_trade_notification(
         sym_short = canonical_base_asset(raw_sym) or (sym_parts[0] if sym_parts else raw_sym.upper())
 
     v_norm = normalize_venue_name(venue, default="")
-    raw_quote = clean_scalar_str(clean_non_bool_str(quote))
+    raw_quote = _clean_notify_scalar(quote)
     if raw_quote:
         q_ccy = raw_quote.upper()
     elif sym_parts and sym_parts[1]:
@@ -208,7 +213,7 @@ def format_trade_notification(
         px_f_in = safe_pos_float(price_str, default=0.0) or 0.0
         px_clean = format_notify_price(px_f_in, comma=False) if px_f_in > 0.0 else ""
     else:
-        px_raw = (clean_scalar_str(clean_non_bool_str(price_str)) or "").lstrip("$").strip()
+        px_raw = _clean_notify_scalar(price_str).lstrip("$").strip()
         px_num_chk = safe_pos_float(px_raw.replace(",", "").lstrip("~"), default=None)
         px_clean = "" if (not px_raw or (px_num_chk is None and px_raw in ("0", "0.0", "0.00"))) else px_raw
 
@@ -218,7 +223,7 @@ def format_trade_notification(
         px_num = safe_pos_float(px_clean.replace(",", "").lstrip("~"), default=0.0) or 0.0
         vf = px_num * qf
 
-    ccy_sym = "€" if q_ccy == "EUR" else "$"
+    ccy_sym = "\u20ac" if q_ccy == "EUR" else "$"
     if vf >= 10.0:
         tot_subj = f"~{math.floor(vf + 0.5)} {ccy_sym}~"
     elif vf > 0.0:
@@ -228,24 +233,28 @@ def format_trade_notification(
 
     sym_px = f"{sym_short}@{px_clean}" if px_clean else sym_short
     vtag = format_trade_venue_tag(venue, owner, symbol=raw_sym)
-    pfx_s = (clean_scalar_str(clean_non_bool_str(prefix)) or "").strip()
+    pfx_s = _clean_notify_scalar(prefix)
     title_parts = [p for p in (pfx_s, st_s, side_s, sym_px, tot_subj, vtag) if p]
     title = " ".join(title_parts)
 
-    detail_s = clean_scalar_str(clean_non_bool_str(detail)) or ""
+    detail_s = (
+        NOTIFY_DETAIL_SEP.join(p for item in detail if (p := _clean_notify_scalar(item)))
+        if isinstance(detail, (list, tuple))
+        else _clean_notify_scalar(detail)
+    )
     head_parts: list[str] = []
     if vf > 0.0 or not detail_s:
         head_parts.append(f"~{vf:.2f} {q_ccy}")
     if fills_count > 1:
         head_parts.append(f"{fills_count} fills")
-    head_line = " · ".join(head_parts)
+    head_line = NOTIFY_DETAIL_SEP.join(head_parts)
     if cum_fills > fills_count and cum_qty is not None and cum_val is not None:
         head_line = f"{head_line} [total: ~{cum_val:.2f} {q_ccy}, {cum_fills} fills]".strip()
     if detail_s:
-        head_line = f"{head_line} · {detail_s}" if head_line else detail_s
+        head_line = f"{head_line}{NOTIFY_DETAIL_SEP}{detail_s}" if head_line else detail_s
 
     oid_clean = clean_order_id_str(order_id)
-    has_oid = bool(oid_clean and oid_clean.upper() not in ("N/A", "NONE", "UNKNOWN"))
+    has_oid = bool(oid_clean)
     tail_items: list[str] = []
     if qf > 0.0 or (has_oid and st_s in ("PLACED", "FILLED", "EXPIRED")):
         tail_items.append(f"qty: {format_notify_qty(qf)}")
@@ -255,7 +264,7 @@ def format_trade_notification(
         tail_items.append(f"order: {oid_clean}")
     tail_str = f"({', '.join(tail_items)})" if tail_items else ""
 
-    thesis_s = clean_scalar_str(clean_non_bool_str(thesis))
+    thesis_s = _clean_notify_scalar(thesis)
     if thesis_s:
         lines = [head_line, f"Thesis: {thesis_s}"]
         if tail_str:
@@ -263,6 +272,29 @@ def format_trade_notification(
         body = "\n".join(ln for ln in lines if ln)
     else:
         body = f"{head_line} {tail_str}".strip() if tail_str else head_line
+    return title, body
+
+
+def emit_trade_notification(
+    notify_fn: Any,
+    status: str,
+    side: Any,
+    symbol: Any,
+    price_str: Any,
+    qty: Any = 0.0,
+    val: Any = None,
+    quote: Any = None,
+    order_id: Any = None,
+    *,
+    notify_kwargs: Optional[dict[str, Any]] = None,
+    **fmt_kwargs: Any,
+) -> tuple[str, str]:
+    """Format and emit a canonical order/trade notification via ``notify_fn`` when callable."""
+    title, body = format_trade_notification(
+        status, side, symbol, price_str, qty, val, quote, order_id, **fmt_kwargs
+    )
+    if callable(notify_fn):
+        notify_fn(title=title, body=body, **(notify_kwargs or {}))
     return title, body
 
 

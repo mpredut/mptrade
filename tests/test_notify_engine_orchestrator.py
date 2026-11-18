@@ -32,6 +32,7 @@ from notify_engine.alertnotifiers import (
     _dedup_seconds,
     _is_guard_alert,
     _mark_provider_daily_limit,
+    emit_trade_notification,
     format_notify_price,
     format_notify_qty,
     format_owner_tags,
@@ -1621,6 +1622,19 @@ send_os_ntfy "DEV CI Regression RECOVERED" "Commit eeeeeee passed all tests" "de
         self.assertEqual(format_trade_venue_tag("binance", "ai_executor", symbol="ARBUSDC"), "[binance:auto_cryptotrade_executor]")
         self.assertEqual(format_trade_venue_tag("kraken", "ai_executor", symbol="SPCXxUSD"), "[kraken:auto_cryptotrade_executor]")
         self.assertEqual(format_trade_venue_tag("t212", "ai_executor", symbol="NVDA_US_EQ"), "[t212:auto_sharetrade_executor]")
+        self.assertEqual(format_trade_venue_tag(type("P", (), {"name": "kraken"})(), "kraken_bot"), "[kraken:kraken_bot]")
+        self.assertEqual(format_trade_venue_tag("null", "tradeall"), "[tradeall]")
+        emitted: list[dict] = []
+        self.assertEqual(
+            emit_trade_notification(
+                lambda **kw: emitted.append(kw), True, "none", "BTCEUR", "80000", 0.01, 800.0, "EUR", None,
+                venue="kraken", owner="kraken_bot", detail=("ENTRY", "", None, "avg 80000"),
+                notify_kwargs={"source": "kraken", "desktop": False},
+            ),
+            ("FILLED ORDER BTC@80000 ~800 \u20ac~ [kraken:kraken_bot]", "~800.00 EUR \u00b7 ENTRY \u00b7 avg 80000 (qty: 0.01)"),
+        )
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0]["source"], "kraken")
         self.assertEqual(
             format_trade_notification("FILLED", "BUY", "ARBUSDC", "0.131", 1500, 196.50, "USDC", "721818232", venue="binance", owner="tradeall"),
             ("FILLED BUY ARB@0.131 ~197 $~ [binance:tradeall]", "~196.50 USDC (qty: 1500, order: 721818232)"),
