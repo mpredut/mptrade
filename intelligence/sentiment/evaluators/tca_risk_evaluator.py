@@ -237,7 +237,14 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 "bid_wall_ahead_usd",
             ):
                 o.pop(_stale_tca_k, None)
-            dist_pct = abs(safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0)
+            raw_dist_pct = safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0
+            # BY DESIGN: Directional adverse distance -- marketable/in-the-money resting limits (BUY >= spot or SELL <= spot)
+            # have 0 adverse barrier distance rather than being penalized by abs(dist_from_spot_pct).
+            dist_pct = (
+                max(0.0, raw_dist_pct)
+                if side == "SELL"
+                else (max(0.0, -raw_dist_pct) if side == "BUY" else abs(raw_dist_pct))
+            )
             raw_vol_1h = safe_pos_float((p_entry or {}).get("vol_1h_pct"), default=None)
             span_24h = safe_pos_float((p_entry or {}).get("span_24h_pct"), default=None)
             if (raw_vol_1h is None or span_24h is None) and isinstance(prices_and_trends, dict):
@@ -261,7 +268,23 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 if raw_vol_1h is not None
                 else max(1.1, span_1h_est),
             )
-            dec = MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px)
+            def _obs_px_dec(val: Any) -> int:
+                fv = safe_pos_float(val, default=None)
+                if fv is None:
+                    return 0
+                frac = f"{fv:.8f}".rstrip("0").partition(".")[2]
+                return min(6, len(frac))
+
+            obs_dec = (
+                max(
+                    _obs_px_dec(m_entry.get("best_bid")),
+                    _obs_px_dec(m_entry.get("best_ask")),
+                    _obs_px_dec(m_entry.get("ask_wall_px" if side == "SELL" else "bid_wall_px")),
+                )
+                if isinstance(m_entry, dict)
+                else 0
+            )
+            dec = max(MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px), obs_dec)
             queue_penalty = 1.0
             if isinstance(m_entry, dict) and side in ("SELL", "BUY"):
                 sp_bps = safe_nonneg_float(m_entry.get("spread_bps"), default=2.0)
@@ -272,6 +295,16 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                     spot_px * (1.0 + sp_bps / 20000.0) if spot_px and spot_px > 0.0 else None
                 )
                 tick_step = 10.0 ** (-dec)
+                side_depth_usd = (
+                    safe_pos_float(m_entry.get("ask_depth_usd" if side == "SELL" else "bid_depth_usd"), default=0.0)
+                    or 0.0
+                )
+                min_wall_usd = max(2500.0, side_depth_usd * 0.02) if side_depth_usd > 0.0 else 5000.0
+
+                def _scale_wall_penalty(base_pen: float, wall_u: float) -> float:
+                    ref_depth = max(side_depth_usd * 0.5, 50000.0)
+                    wall_weight = min(1.0, max(0.15, wall_u / ref_depth))
+                    return 1.0 - (1.0 - base_pen) * wall_weight
 
                 def _set_wall_queue(
                     pos_label: str,
@@ -289,12 +322,12 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                     })
                     if front_run_px is not None:
                         o["recommended_front_run_px"] = front_run_px
-                    return penalty
+                    return _scale_wall_penalty(penalty, wall_usd)
 
                 if side == "SELL":
                     aw_px = safe_pos_float(m_entry.get("ask_wall_px"), default=None)
                     aw_usd = safe_pos_float(m_entry.get("ask_wall_usd"), default=0.0) or 0.0
-                    if aw_px is not None and aw_px > 0.0 and aw_usd >= 5000.0 and (not spot_px or aw_px >= spot_px * 1.0002):
+                    if aw_px is not None and aw_px > 0.0 and aw_usd >= min_wall_usd and (not spot_px or aw_px >= spot_px * 1.0002):
                         can_front_run = (not spot_px or aw_px >= spot_px * 1.0015) and abs(lim_px - aw_px) / aw_px <= 0.015
                         raw_fr = aw_px - max(tick_step, min(aw_px * 0.0001, 5.0))
                         floor_ask = max(best_ask_px or 0.0, (spot_px or 0.0) * 1.0002)
@@ -313,7 +346,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 else:
                     bw_px = safe_pos_float(m_entry.get("bid_wall_px"), default=None)
                     bw_usd = safe_pos_float(m_entry.get("bid_wall_usd"), default=0.0) or 0.0
-                    if bw_px is not None and bw_px > 0.0 and bw_usd >= 5000.0 and (not spot_px or bw_px <= spot_px):
+                    if bw_px is not None and bw_px > 0.0 and bw_usd >= min_wall_usd and (not spot_px or bw_px <= spot_px * 0.9998):
                         can_front_run = (not spot_px or bw_px <= spot_px * 0.9985) and abs(lim_px - bw_px) / bw_px <= 0.015
                         raw_fr = bw_px + max(tick_step, min(bw_px * 0.0001, 5.0))
                         ceil_bid = min(

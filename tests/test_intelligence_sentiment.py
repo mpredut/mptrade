@@ -11458,6 +11458,59 @@ def test_item_3_2_pretrade_liq_clusters_model_est_tag(tmp_path):
     assert pt.get("Liquidation Clusters (LONG vs SHORT)", "").endswith(", src=model_est")
 
 
+def test_item_3_3_directional_fill_prob_depth_scaled_wall_penalty_and_4dec_front_run():
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+
+    # 1. Marketable resting BUY (>= spot) or SELL (<= spot) has 99.0% fill prob instead of abs(dist) penalty.
+    mkt_orders = [
+        {"venue": "binance", "symbol": "TAOUSDC", "side": "BUY", "price": 195.0},
+        {"venue": "binance", "symbol": "TAOUSDC", "side": "SELL", "price": 185.0},
+    ]
+    enrich_open_limit_orders_tca(mkt_orders, {"TAOUSDC": {"price": 190.0, "vol_1h_pct": 1.0}}, {})
+    assert mkt_orders[0]["fill_prob_1h_pct"] == pytest.approx(99.0)
+    assert mkt_orders[1]["fill_prob_1h_pct"] == pytest.approx(99.0)
+
+    # 2. Micro $6,000 wall on $5M BTCUSDC depth is ignored (<2% depth), whereas heavy $1.5M wall penalizes strongly.
+    btc_orders = [
+        {"venue": "binance", "symbol": "BTCUSDC", "side": "SELL", "price": 63500.0},
+        {"venue": "binance", "symbol": "BTCUSDC", "side": "SELL", "price": 63500.0},
+    ]
+    enrich_open_limit_orders_tca(
+        [btc_orders[0]],
+        {"BTCUSDC": {"price": 63000.0, "vol_1h_pct": 0.9}},
+        {"BTCUSDC": {"ob_mid_price": 63000.0, "ask_depth_usd": 5_000_000.0, "ask_wall_px": 63200.0, "ask_wall_usd": 6_000.0}},
+    )
+    enrich_open_limit_orders_tca(
+        [btc_orders[1]],
+        {"BTCUSDC": {"price": 63000.0, "vol_1h_pct": 0.9}},
+        {"BTCUSDC": {"ob_mid_price": 63000.0, "ask_depth_usd": 1_800_000.0, "ask_wall_px": 63200.0, "ask_wall_usd": 1_500_000.0}},
+    )
+    assert "wall_queue_pos" not in btc_orders[0]
+    assert btc_orders[1]["wall_queue_pos"] == "BEHIND_ASK_WALL"
+    assert btc_orders[1]["fill_prob_1h_pct"] < btc_orders[0]["fill_prob_1h_pct"] * 0.70
+
+    # 3. 4-decimal Kraken TAOUSD BBO/wall preserves 4-decimal recommended_front_run_px.
+    tao_krk = [{"venue": "kraken", "symbol": "TAOUSD", "side": "SELL", "price": 193.0}]
+    enrich_open_limit_orders_tca(
+        tao_krk,
+        {"TAOUSD": {"price": 190.78, "vol_1h_pct": 1.1}},
+        {
+            "TAOUSD": {
+                "ob_mid_price": 190.7785,
+                "best_bid": 190.6862,
+                "best_ask": 190.8707,
+                "ask_depth_usd": 600_000.0,
+                "ask_wall_px": 192.2305,
+                "ask_wall_usd": 178_093.0,
+            }
+        },
+    )
+    assert tao_krk[0]["wall_queue_pos"] == "BEHIND_ASK_WALL"
+    assert tao_krk[0]["recommended_front_run_px"] == pytest.approx(192.2113, abs=0.001)
+    assert round(tao_krk[0]["recommended_front_run_px"], 2) != tao_krk[0]["recommended_front_run_px"]
+
+
+
 
 
 
