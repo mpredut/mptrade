@@ -55,6 +55,7 @@ from intelligence.macro_sentiment_ssot import (
     get_deribit_options_currencies,
     get_yahoo_chart_url,
     load_microstructure_cycle_history,
+    load_venue_balances_state,
     read_first_cached_dict,
     resolve_read_json_cached,
     save_microstructure_cycle_history,
@@ -1406,65 +1407,63 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             domain_ts["short_trends"] = max(st_ts_vals)
         elif st_top_ts is not None and st_top_ts > 0.0:
             domain_ts["short_trends"] = st_top_ts
-        if cache_dir:
-            vb_p = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json")))
-            if os.path.exists(vb_p) and isinstance(vb_doc := _rj(vb_p), dict):
-                inst_vb_syms = {
-                    str(s_inst).split(":", 1)[-1].strip().upper()
-                    for s_inst, iv_inst in (inst_by_sym or {}).items()
-                    if _vb_venue_in_scope(getattr(iv_inst, "provider_name", None))
-                }
-                verified_by_venue: Dict[str, float] = {}
-                fallback_by_venue: Dict[str, List[float]] = {}
-                for bk, bv in vb_doc.items():
-                    if not isinstance(bk, str):
-                        continue
-                    if bk.startswith("open_orders_verified_ts:"):
-                        v_part = normalize_venue_name(bk.split(":", 1)[1])
-                        if v_part and _vb_venue_in_scope(v_part) and (ts_vb := normalize_epoch_sec(bv, default=None)) is not None and ts_vb > 0.0:
-                            verified_by_venue[v_part] = max(verified_by_venue.get(v_part, 0.0), ts_vb)
-                    elif isinstance(bv, dict) and (ts_vb := extract_timestamp_s(bv)) is not None and ts_vb > 0.0:
-                        bk_parts = bk.split(":")
-                        v_cand = normalize_venue_name(
-                            bv.get("venue")
-                            or (
-                                bk_parts[1]
-                                if len(bk_parts) >= 3 and bk_parts[0] in ("pos", "cash", "breakdown")
-                                else (bk_parts[0] if len(bk_parts) >= 2 else "")
-                            )
+        if vb_doc := load_venue_balances_state(cache_dir, _rj)[1]:
+            inst_vb_syms = {
+                str(s_inst).split(":", 1)[-1].strip().upper()
+                for s_inst, iv_inst in (inst_by_sym or {}).items()
+                if _vb_venue_in_scope(getattr(iv_inst, "provider_name", None))
+            }
+            verified_by_venue: Dict[str, float] = {}
+            fallback_by_venue: Dict[str, List[float]] = {}
+            for bk, bv in vb_doc.items():
+                if not isinstance(bk, str):
+                    continue
+                if bk.startswith("open_orders_verified_ts:"):
+                    v_part = normalize_venue_name(bk.split(":", 1)[1])
+                    if v_part and _vb_venue_in_scope(v_part) and (ts_vb := normalize_epoch_sec(bv, default=None)) is not None and ts_vb > 0.0:
+                        verified_by_venue[v_part] = max(verified_by_venue.get(v_part, 0.0), ts_vb)
+                elif isinstance(bv, dict) and (ts_vb := extract_timestamp_s(bv)) is not None and ts_vb > 0.0:
+                    bk_parts = bk.split(":")
+                    v_cand = normalize_venue_name(
+                        bv.get("venue")
+                        or (
+                            bk_parts[1]
+                            if len(bk_parts) >= 3 and bk_parts[0] in ("pos", "cash", "breakdown")
+                            else (bk_parts[0] if len(bk_parts) >= 2 else "")
                         )
-                        sym_cand = str(
-                            bv.get("symbol") or (bk_parts[2] if len(bk_parts) >= 3 and bk_parts[0] == "pos" else "")
-                        ).strip().upper()
-                        if v_cand:
-                            if not _vb_venue_in_scope(v_cand):
-                                continue
-                        elif sym_cand:
-                            is_eq_cand = _is_eq_sym(sym_cand)
-                            if scope_norm in ("equities", "crypto") and is_eq_cand != (scope_norm == "equities"):
-                                continue
-                            v_cand = "t212" if is_eq_cand else "crypto"
-                        elif scope_norm in ("equities", "crypto"):
+                    )
+                    sym_cand = str(
+                        bv.get("symbol") or (bk_parts[2] if len(bk_parts) >= 3 and bk_parts[0] == "pos" else "")
+                    ).strip().upper()
+                    if v_cand:
+                        if not _vb_venue_in_scope(v_cand):
                             continue
-                        else:
-                            v_cand = "unknown"
-                        if sym_cand and inst_vb_syms and sym_cand not in inst_vb_syms:
-                            if not any(c.upper() in inst_vb_syms for c in cache_symbol_variants(sym_cand, include_base=False)):
-                                continue
-                        fallback_by_venue.setdefault(v_cand, []).append(ts_vb)
+                    elif sym_cand:
+                        is_eq_cand = _is_eq_sym(sym_cand)
+                        if scope_norm in ("equities", "crypto") and is_eq_cand != (scope_norm == "equities"):
+                            continue
+                        v_cand = "t212" if is_eq_cand else "crypto"
+                    elif scope_norm in ("equities", "crypto"):
+                        continue
+                    else:
+                        v_cand = "unknown"
+                    if sym_cand and inst_vb_syms and sym_cand not in inst_vb_syms:
+                        if not any(c.upper() in inst_vb_syms for c in cache_symbol_variants(sym_cand, include_base=False)):
+                            continue
+                    fallback_by_venue.setdefault(v_cand, []).append(ts_vb)
 
-                def _vb_pool(exclude_eq: bool = False) -> List[float]:
-                    return [
-                        ts_v for v_k, ts_v in verified_by_venue.items() if not (exclude_eq and is_equity_venue(v_k))
-                    ] + [
-                        max(ts_list)
-                        for v_k, ts_list in fallback_by_venue.items()
-                        if v_k not in verified_by_venue and ts_list and not (exclude_eq and is_equity_venue(v_k))
-                    ]
+            def _vb_pool(exclude_eq: bool = False) -> List[float]:
+                return [
+                    ts_v for v_k, ts_v in verified_by_venue.items() if not (exclude_eq and is_equity_venue(v_k))
+                ] + [
+                    max(ts_list)
+                    for v_k, ts_list in fallback_by_venue.items()
+                    if v_k not in verified_by_venue and ts_list and not (exclude_eq and is_equity_venue(v_k))
+                ]
 
-                vb_ts_vals = (_vb_pool(exclude_eq=True) if (scope_norm == "all" and not us_rth_open) else []) or _vb_pool()
-                if vb_ts_vals:
-                    domain_ts["venue_balances"] = min(vb_ts_vals)
+            vb_ts_vals = (_vb_pool(exclude_eq=True) if (scope_norm == "all" and not us_rth_open) else []) or _vb_pool()
+            if vb_ts_vals:
+                domain_ts["venue_balances"] = min(vb_ts_vals)
         for m_name, m_val in active_macro_sensors.items():
             m_ts = normalize_epoch_sec(m_val.get("ts"), default=None) or extract_timestamp_s(m_val)
             if m_ts is not None and m_ts > 0.0:

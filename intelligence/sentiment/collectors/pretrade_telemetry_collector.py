@@ -47,6 +47,7 @@ from intelligence.macro_sentiment_ssot import (
     enrich_macro_benchmarks_live_state,
     format_equity_macro_regime_line,
     format_interval_sec_label,
+    load_venue_balances_state,
     read_first_cached_dict,
     resolve_derived_telemetry_intervals,
     resolve_kalman_vel_z,
@@ -834,8 +835,12 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                     cp_ts_sec = normalize_epoch_sec(cp_pt[0], default=0.0) or 0.0
                 break
         vb_pos_ts = 0.0
-        vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
-        if (live_cur_px <= 0.0 or is_eq_sym) and isinstance(vb_d := ctx.rj(vb_path), dict):
+        vb_path, vb_d, _ = (
+            load_venue_balances_state(cachedb_dir, ctx.rj, require_exists=False)
+            if (live_cur_px <= 0.0 or is_eq_sym)
+            else (None, {}, 0.0)
+        )
+        if vb_path and vb_d:
             if eff_allow_net and is_eq_sym and ctx.rj is _default_read_json_cached:
                 _refresh_stale_t212_cached_positions(vb_d, vb_path, _time.time())
             for vb_k, vb_v in vb_d.items():
@@ -2318,8 +2323,8 @@ def refresh_pretrade_telemetry_caches(
                     pass
     if include_t212_portfolio and (not sym_raw or is_eq_sym):
         try:
-            vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
-            if os.path.exists(vb_path) and isinstance(vb_d := _rj(vb_path), dict):
+            vb_path, vb_d, _ = load_venue_balances_state(cachedb_dir, _rj)
+            if vb_path and vb_d:
                 status["t212_positions_refreshed"] = bool(
                     _refresh_stale_t212_cached_positions(vb_d, vb_path, eff_now)
                 )

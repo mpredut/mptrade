@@ -25,7 +25,7 @@ from botcore import (
     is_live_network_backfill_enabled,
     safe_float,
 )
-from cachepaths import CACHE_BINANCE_ORDER_FILENAME, cache_path
+from cachepaths import CACHE_BINANCE_ORDER_FILENAME, VENUE_BALANCES_STATE_FILENAME, cache_path
 from providers.order_ohlc_utils import extract_orig_qty
 from state_io import encode_json_payload, parse_json_payload, read_json_file
 
@@ -60,7 +60,7 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
 
 
 def inspect_fleet(json_output: bool = False):
-    raw_balances = ssh_cat(cache_path("state/venue_balances_state.json")) or ssh_cat(cache_path("venue_balances_state.json"))
+    raw_balances = ssh_cat(cache_path(f"state/{VENUE_BALANCES_STATE_FILENAME}")) or ssh_cat(cache_path(VENUE_BALANCES_STATE_FILENAME))
     balances = raw_balances if isinstance(raw_balances, dict) else {}
     raw_topic = ssh_cat(cache_path("system/llm_topic_threads.json")) or ssh_cat(cache_path("llm_topic_threads.json"))
     topic_data = raw_topic if isinstance(raw_topic, dict) else {}

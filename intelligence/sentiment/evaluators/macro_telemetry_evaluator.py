@@ -31,7 +31,6 @@ from intelligence.macro_sentiment_ssot import (
     compute_futures_premarket_lead as _ssot_compute_futures_premarket_lead,
     format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
-    get_deribit_options_currencies,
     get_macro_benchmark_specs,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import extract_bbo_and_mid

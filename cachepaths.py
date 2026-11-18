@@ -31,8 +31,11 @@ CACHE_HYPERLIQUID_TRADE_FILENAME = "cache_trade_hyperliquid.json"
 CACHE_T212_TRADE_FILENAME = "cache_trade_t212.json"
 ORDER_RETRY_QUEUE_FILENAME = "order_retry_queue.jsonl"
 ASSETGUARDIAN_STATE_FILENAME = "assetguardian_state.json"
+AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME = "autonomous_trade_intents_state.json"
 RTRADE_PAIRS_STATE_FILENAME = "rtrade_pairs_state.json"
+SMART_STOP_LOSS_STATE_FILENAME = "smart_stop_loss_state.json"
 TRAILING_STATE_FILENAME = "trailing_state.json"
+VENUE_BALANCES_STATE_FILENAME = "venue_balances_state.json"
 VENUE_FEE_MAINTENANCE_STATE_FILENAME = "venue_fee_maintenance_state.json"
 KINEMATIC_IMPULSE_SIGNAL_FILENAME = "kinematic_impulse_signal.json"
 
@@ -114,8 +117,8 @@ EXACT_LEGACY_FILENAMES = {
     CACHE_LONG_TREND_FILENAME: ("cache_price_long_trend.json",),
     CACHE_BINANCE_ORDER_FILENAME: ("cache_order.json",),
     CACHE_BINANCE_TRADE_FILENAME: ("cache_trade.jsonl",),
-    "rtrade_pairs_state.json": ("rtrade_pairs.json",),
-    "autonomous_trade_intents_state.json": ("autonomous_trade_intents.json",),
+    RTRADE_PAIRS_STATE_FILENAME: ("rtrade_pairs.json",),
+    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME: ("autonomous_trade_intents.json",),
 }
 PREFIX_LEGACY_FILENAMES = (
     (CACHE_SPARSE_PRICE_PREFIX, ("cache_price_sparse_", "cache_price_")),
@@ -180,10 +183,10 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "state": {
         "exact": (
-            "assetguardian_state.json", "mt_state.json", "trailing_state.json",
-            "smart_stop_loss_state.json", "rtrade_pairs_state.json",
-            "autonomous_trade_intents_state.json", "venue_balances_state.json",
-            "venue_fee_maintenance_state.json",
+            ASSETGUARDIAN_STATE_FILENAME, "mt_state.json", TRAILING_STATE_FILENAME,
+            SMART_STOP_LOSS_STATE_FILENAME, RTRADE_PAIRS_STATE_FILENAME,
+            AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME, VENUE_BALANCES_STATE_FILENAME,
+            VENUE_FEE_MAINTENANCE_STATE_FILENAME,
         ),
         "prefixes": (
             "assetguardian_state", "rtrade_pairs", "mt_state.", "trailing_state.",

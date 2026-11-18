@@ -69,6 +69,7 @@ from cachepaths import (
     CACHE_HYPERLIQUID_TRADE_FILENAME,
     CACHE_KRAKEN_TRADE_FILENAME,
     CACHE_T212_TRADE_FILENAME,
+    VENUE_BALANCES_STATE_FILENAME,
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
@@ -2231,8 +2232,8 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             cache_root = cachedb_root_for_file(os.path.abspath(str(self.filename or "")))
             vb_data = None
             for cand in (
-                os.path.join(cache_root, "state", "venue_balances_state.json"),
-                os.path.join(cache_root, "venue_balances_state.json"),
+                os.path.join(cache_root, "state", VENUE_BALANCES_STATE_FILENAME),
+                os.path.join(cache_root, VENUE_BALANCES_STATE_FILENAME),
             ):
                 vb_data = read_json_dict_cached(cand)
                 if isinstance(vb_data, dict) and vb_data:

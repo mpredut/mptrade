@@ -38,7 +38,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import cache_path, resolve_cachedb_filepath
+from cachepaths import SMART_STOP_LOSS_STATE_FILENAME, cache_path, resolve_cachedb_filepath
 from guard_hierarchy import _load_margins
 import intelligence.external.collectors.base_collector as _base_collector
 from intelligence.internal.guards.guard_decision import (
@@ -56,12 +56,12 @@ load_dotenv()
 
 logger = logging.getLogger("intelligence.external.smart_stop_loss")
 
-_DEFAULT_SMART_SL_STATE_FILE = cache_path("smart_stop_loss_state.json")
+_DEFAULT_SMART_SL_STATE_FILE = cache_path(SMART_STOP_LOSS_STATE_FILENAME)
 _SMART_SL_STATE_FILE = _DEFAULT_SMART_SL_STATE_FILE
 
 
 def _effective_smart_sl_state_file() -> str:
-    return _SMART_SL_STATE_FILE if _SMART_SL_STATE_FILE != _DEFAULT_SMART_SL_STATE_FILE else cache_path("smart_stop_loss_state.json")
+    return _SMART_SL_STATE_FILE if _SMART_SL_STATE_FILE != _DEFAULT_SMART_SL_STATE_FILE else cache_path(SMART_STOP_LOSS_STATE_FILENAME)
 
 
 def _prov_tag(provider: Any, fallback: Any = None) -> Tuple[str, str]:

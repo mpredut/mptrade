@@ -65,7 +65,7 @@ from botcore import (
     touch_module_heartbeat,
     validate_required_env_keys,
 )
-from cachepaths import cache_path
+from cachepaths import ASSETGUARDIAN_STATE_FILENAME, cache_path
 load_root_config()
 
 REQUIRED_CONFIG_KEYS = (
@@ -177,7 +177,7 @@ ORDER_MISSING_CONFIRMATIONS = required_int_env("AG_ORDER_MISSING_CONFIRMATIONS")
 
 class AssetGuardianState:
     def __init__(self, path=None, *, fail_closed=True):
-        self.path = path or cache_path("assetguardian_state.json")
+        self.path = path or cache_path(ASSETGUARDIAN_STATE_FILENAME)
         self.lock_path = self.path + ".lock"
         self.fail_closed = _parse_bool_flag(fail_closed, default=True)
 

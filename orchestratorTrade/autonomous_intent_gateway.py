@@ -42,6 +42,7 @@ from botcore import (
     is_us_rth_open,
     load_key_value_conf,
 )
+from cachepaths import AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME
 from instrument import (
     load_tradable_instruments,
     resolve_instrument_live_price,
@@ -113,7 +114,7 @@ class AutonomousIntentGateway:
     ) -> None:
         self.workspace_dir = workspace_dir or ROOT_DIR
         self.cache_dir = os.path.join(self.workspace_dir, cache_dir)
-        self.intents_file = os.path.join(self.cache_dir, "autonomous_trade_intents_state.json")
+        self.intents_file = os.path.join(self.cache_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME)
 
         conf = load_key_value_conf(self.workspace_dir, ROOT_DIR)
         (

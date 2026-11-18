@@ -27,6 +27,8 @@ from botcore import (
     _prices_diverged,
 )
 from cachepaths import (
+    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
+    ORDER_RETRY_QUEUE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
@@ -48,7 +50,11 @@ from cachepaths import (
     split_symbol_assets,
     symbol_quote_asset,
 )
-from intelligence.macro_sentiment_ssot import resolve_read_json_cached, resolve_save_json_state
+from intelligence.macro_sentiment_ssot import (
+    load_venue_balances_state,
+    resolve_read_json_cached,
+    resolve_save_json_state,
+)
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
@@ -57,7 +63,6 @@ import intelligence.sentiment.collectors.microstructure_collector as _mc
 from intelligence.sentiment.collectors.microstructure_collector import (
     _ensure_cacheprice_classes_bound,
     _iter_t212_state_files,
-    _load_venue_balances_state,
     _resolve_now_and_read_json,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
@@ -184,12 +189,36 @@ def _normalize_open_orders_list(
     ]
 
 
+def _extract_cached_venue_held_qty(
+    vb_doc: Any,
+    venue: str,
+    sym_upper: str,
+    cand_syms: Sequence[str],
+    base_upper: Optional[str] = None,
+) -> Optional[float]:
+    if not isinstance(vb_doc, dict) or not vb_doc or not venue:
+        return None
+    for cand in dict.fromkeys(str(c).strip().upper() for c in cand_syms if str(c).strip()):
+        if isinstance(p_d := vb_doc.get(f"pos:{venue}:{cand}"), dict):
+            fb = safe_nonneg_float(
+                p_d.get("free_base") if p_d.get("free_base") is not None else p_d.get("free"),
+                default=None,
+            )
+            if fb is not None:
+                lb = first_pos_float(p_d.get("locked_base_qty"), p_d.get("locked"), default=0.0) or 0.0
+                return fb + lb
+    for fb_key in (sym_upper, base_upper or ""):
+        if fb_key and (raw_b := safe_nonneg_float(vb_doc.get(f"{venue}:{fb_key}"), default=None)) is not None:
+            return raw_b
+    return None
+
+
 def _load_cached_ai_intents_list(cache_dir: Optional[str], read_json_fn: Any = None) -> List[Dict[str, Any]]:
     """Load persisted AI trade intents from `autonomous_trade_intents_state.json` across `state/` and root cache paths."""
     if not cache_dir:
         return []
     _rj = _resolve_read_json_cached(read_json_fn)
-    raw_path = os.path.join(cache_dir, "autonomous_trade_intents_state.json")
+    raw_path = os.path.join(cache_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME)
     resolved_path = str(resolve_cachedb_filepath(raw_path))
     raw_int: Any = None
     if _rj not in (_default_read_json_cached, read_json_recovering):
@@ -912,7 +941,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = [], [], {}, {}
         balance_memo: Dict[tuple[str, str], Optional[float]] = {}
         _rj_bals = _resolve_read_json_cached()
-        bcache_path, cached_bals, _ = _load_venue_balances_state(cache_dir, _rj_bals)
+        bcache_path, cached_bals, _ = load_venue_balances_state(cache_dir, _rj_bals)
         updated_bals: Dict[str, Any] = {}
         live_open_ok_venues: set[str] = set()
         failed_open_venues: set[str] = set()
@@ -1420,22 +1449,11 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
         if isinstance(fills, dict) and isinstance(open_lots_raw := fills.get("open_lots"), list) and open_lots_raw:
             held_cur_f = -1.0
             if cachedb_dir and best_venue:
-                vb_p_f = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
-                vb_d_f = _rj(vb_p_f) if os.path.exists(vb_p_f) else None
-                if isinstance(vb_d_f, dict):
-                    for cand_v in dict.fromkeys([sym_upper, *(str(c).strip().upper() for c in scoped_variants if str(c).strip())]):
-                        if isinstance(p_d := vb_d_f.get(f"pos:{best_venue}:{cand_v}"), dict):
-                            fb_v = safe_nonneg_float(
-                                p_d.get("free_base") if p_d.get("free_base") is not None else p_d.get("free"),
-                                default=None,
-                            )
-                            lb_v = first_pos_float(p_d.get("locked_base_qty"), p_d.get("locked"), default=0.0) or 0.0
-                            if fb_v is not None:
-                                held_cur_f = fb_v + lb_v
-                                break
-                    if held_cur_f < 0.0 and base_upper:
-                        if (raw_b_v := safe_nonneg_float(vb_d_f.get(f"{best_venue}:{base_upper}"), default=None)) is not None:
-                            held_cur_f = raw_b_v
+                _, vb_d_f, _ = load_venue_balances_state(cachedb_dir, _rj)
+                if (q_cur := _extract_cached_venue_held_qty(
+                    vb_d_f, best_venue, sym_upper, (sym_upper, *scoped_variants), base_upper
+                )) is not None:
+                    held_cur_f = q_cur
             if held_cur_f > 1e-8:
                 fills["held_qty"] = round(held_cur_f, 6)
             fresh_lots, _ = select_fresh_open_lots(open_lots_raw, held_qty=held_cur_f)
@@ -1608,37 +1626,17 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                     sv_k = (pv, sv.upper())
                     if sv_k not in live_held_by_venue_sym or held_q > live_held_by_venue_sym[sv_k]:
                         live_held_by_venue_sym[sv_k] = held_q
-        bcache_path_ro = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
-        raw_cb_ro = _rj(bcache_path_ro) if bcache_path_ro and os.path.exists(bcache_path_ro) else None
-        cached_bals_ro: Dict[str, Any] = raw_cb_ro if isinstance(raw_cb_ro, dict) else {}
+        _, cached_bals_ro, _ = load_venue_balances_state(cache_dir, _rj)
         for c_venue_ro, cyc_map_ro in (("kraken", kraken_cycles), ("hyperliquid", hyperliquid_cycles), ("t212", t212_cycles)):
             for t_sym, t_cyc in (cyc_map_ro or {}).items():
                 t_sym_u = str(t_sym).strip().upper()
                 if not t_sym_u or (c_venue_ro, t_sym_u) in live_held_by_venue_sym or not isinstance(t_cyc, dict):
                     continue
-                t_base_u = canonical_base_asset(t_sym_u)
                 ro_cands = _scoped_sym_variants(t_sym_u, is_eq=is_equity_venue_or_suffix(t_sym_u, c_venue_ro))
-                c_pos = next(
-                    (
-                        v_pos
-                        for cand_k in ro_cands
-                        if isinstance((v_pos := cached_bals_ro.get(f"pos:{c_venue_ro}:{cand_k.upper()}")), dict)
-                    ),
-                    None,
+                held_c = _extract_cached_venue_held_qty(
+                    cached_bals_ro, c_venue_ro, t_sym_u, ro_cands, canonical_base_asset(t_sym_u)
                 )
-                fb_c = safe_nonneg_float(
-                    c_pos.get("free_base")
-                    if isinstance(c_pos, dict)
-                    else (
-                        cached_bals_ro.get(f"{c_venue_ro}:{t_sym_u}")
-                        if cached_bals_ro.get(f"{c_venue_ro}:{t_sym_u}") is not None
-                        else (cached_bals_ro.get(f"{c_venue_ro}:{t_base_u}") if t_base_u else None)
-                    ),
-                    default=None,
-                )
-                lb_c = safe_pos_float(c_pos.get("locked_base_qty") if isinstance(c_pos, dict) else None, default=0.0) or 0.0
-                if fb_c is not None:
-                    held_c = fb_c + lb_c
+                if held_c is not None:
                     for sv_c in ro_cands:
                         live_held_by_venue_sym.setdefault((c_venue_ro, sv_c.upper()), held_c)
                     live_held_by_venue_sym[(c_venue_ro, t_sym_u)] = held_c
@@ -1694,7 +1692,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
         cache_dir = cachedb_dir
         eff_now, _rj = _resolve_now_and_read_json(now_ts, read_json_fn)
         out: Dict[str, Any] = {}
-        retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "order_retry_queue.jsonl")))
+        retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, ORDER_RETRY_QUEUE_FILENAME)))
         if os.path.exists(retry_q_path):
             terminal_ai_intent_ids: set[str] = set()
             for it in _load_cached_ai_intents_list(cache_dir, _rj):

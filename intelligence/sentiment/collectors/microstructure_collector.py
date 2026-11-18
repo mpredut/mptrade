@@ -118,6 +118,7 @@ from intelligence.external.collectors.whale_positioning_collector import WhalePo
 from intelligence.macro_sentiment_ssot import (
     callable_identity_anchor,
     load_microstructure_cycle_history,
+    load_venue_balances_state,
     lookup_symbol_cache_items,
     resolve_read_json_cached,
     same_callable_anchor,
@@ -195,24 +196,6 @@ def _resolve_now_and_read_json(
     if callable(now_ts) and read_json_fn is None:
         read_json_fn, now_ts = now_ts, None
     return resolve_now_ts(now_ts), _resolve_read_json_cached(read_json_fn)
-
-
-def _load_venue_balances_state(
-    cache_dir: Optional[str],
-    read_json_fn: Any = None,
-) -> Tuple[Optional[str], Dict[str, Any], float]:
-    if not cache_dir:
-        return None, {}, 0.0
-    bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json")))
-    if not os.path.exists(bcache_path):
-        return bcache_path, {}, 0.0
-    _rj = _resolve_read_json_cached(read_json_fn)
-    raw_cb = _rj(bcache_path)
-    try:
-        bcache_mtime = os.path.getmtime(bcache_path)
-    except OSError:
-        bcache_mtime = 0.0
-    return bcache_path, (raw_cb if isinstance(raw_cb, dict) else {}), bcache_mtime
 
 
 def _filter_ohlc_closes_since(
@@ -1405,7 +1388,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         btc_series_24h, btc_vals_7d = load_symbol_price_series(
             cachedb_dir, symbol or "BTCUSDC", current_price_items=cp_map, include_7d=True
         )
-        bcache_path, cached_bals, bcache_mtime = _load_venue_balances_state(cachedb_dir, _rj)
+        bcache_path, cached_bals, bcache_mtime = load_venue_balances_state(cachedb_dir, _rj)
         t212_seeded_from_cache: set[str] = set()
         t212_pos_ts: Dict[str, float] = {}
         t212_cached_px: Dict[str, float] = {}

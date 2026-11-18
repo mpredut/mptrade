@@ -108,7 +108,6 @@ class MarketBreadthSnapshot:
 import botcore as _botcore
 from botcore import (
     _parse_bool_flag,
-    _prices_diverged,
     clean_nonempty_str,
     clean_scale,
     coerce_dict_maps,
@@ -165,9 +164,11 @@ def __dir__() -> List[str]:
 
 
 from cachepaths import (
+    VENUE_BALANCES_STATE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
+    clean_non_bool_str,
     clean_symbol_key,
     compatible_quote_suffixes,
     resolve_cachedb_filepath,
@@ -977,8 +978,26 @@ def read_first_cached_dict(
     return None, ""
 
 
+def load_venue_balances_state(
+    cache_dir: Optional[str], read_json_fn: Any = None, *, require_exists: bool = True
+) -> Tuple[Optional[str], Dict[str, Any], float]:
+    """Resolve and load ``venue_balances_state.json`` from ``cache_dir``."""
+    if not cache_dir:
+        return None, {}, 0.0
+    bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, VENUE_BALANCES_STATE_FILENAME)))
+    exists = os.path.exists(bcache_path)
+    if require_exists and not exists:
+        return bcache_path, {}, 0.0
+    raw_cb = resolve_read_json_cached(read_json_fn)(bcache_path)
+    try:
+        bcache_mtime = os.path.getmtime(bcache_path) if exists else 0.0
+    except OSError:
+        bcache_mtime = 0.0
+    return bcache_path, (raw_cb if isinstance(raw_cb, dict) else {}), bcache_mtime
+
+
 def _clean_nonbool_str(val: Any, default: str = "") -> str:
-    return str(val).strip() if (val is not None and not isinstance(val, bool) and str(val).strip()) else default
+    return clean_non_bool_str(val) or default
 
 
 def load_cached_fear_greed_snapshot(
@@ -995,16 +1014,7 @@ def load_cached_fear_greed_snapshot(
                 continue
             fg_val = max(0, min(100, round(safe_float(fg_data.get("value"), 50.0))))
             fg_cls = _clean_nonbool_str(fg_data.get("classification"), "") or _clean_nonbool_str(fg_data.get("sentiment"), "Neutral")
-            raw_fg_ts = (
-                fg_data.get("ts")
-                if fg_data.get("ts") is not None
-                else (
-                    fg_data.get("timestamp")
-                    if fg_data.get("timestamp") is not None
-                    else fg_data.get("index_timestamp")
-                )
-            )
-            fg_ts = normalize_epoch_sec(raw_fg_ts, default=eval_now) or eval_now
+            fg_ts = first_epoch_sec(fg_data.get("ts"), fg_data.get("timestamp"), fg_data.get("index_timestamp"), default=eval_now) or eval_now
             raw_hist = fg_data.get("historical_values") or ()
             hist_vals = tuple(
                 max(0, min(100, round(v_f)))
