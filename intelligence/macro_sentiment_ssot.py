@@ -374,8 +374,7 @@ def _finalize_sorted_ts_px(
         _SORTED_TS_PX_ANCHORS.pop(mkey, None)
         if prev_pts is not None and prev_pts is not pts:
             _TWO_COL_TS_PX_IDS.pop(id(prev_pts), None)
-        while len(_SORTED_TS_PX_MEMO) >= _SORTED_TS_PX_MAX_ENTRIES:
-            ev_key = next(iter(_SORTED_TS_PX_MEMO))
+        for ev_key in list(_SORTED_TS_PX_MEMO)[: max(0, len(_SORTED_TS_PX_MEMO) - _SORTED_TS_PX_MAX_ENTRIES + 1)]:
             ev_pts = _SORTED_TS_PX_MEMO.pop(ev_key, None)
             _SORTED_TS_PX_ANCHORS.pop(ev_key, None)
             if ev_pts is not None and ev_pts is not pts:

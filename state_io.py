@@ -1238,8 +1238,8 @@ def read_json_dict_cached(
         if resolved in cache_store:
             cache_store.pop(resolved, None)
         cache_store[resolved] = (sig, res)
-        while len(cache_store) > max_entries:
-            cache_store.pop(next(iter(cache_store)), None)
+        for old_key in list(cache_store)[: max(0, len(cache_store) - max_entries)]:
+            cache_store.pop(old_key, None)
         return res
     return None
 

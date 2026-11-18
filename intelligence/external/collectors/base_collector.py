@@ -1011,7 +1011,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             pass
 
         if last_px <= 0.0 and not bars:
-            lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, None), 16)
+            lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, None), 32)
             return None
 
         ctx_out: Dict[str, Any] = {
@@ -1029,7 +1029,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             "put_vol": 0.0,
             "_options_loaded": False,
         }
-        lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, ctx_out), 16)
+        lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, ctx_out), 32)
         if include_options:
             self._populate_equity_options_context(
                 ticker,

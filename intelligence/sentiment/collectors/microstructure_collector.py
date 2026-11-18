@@ -256,7 +256,7 @@ def _wrap_cached_ohlc_fn(
             return hit[1]
         res = fn(s_arg, interval_min)
         if res is not None and getattr(res, "closes", None):
-            lru_dict_put(_FALLBACK_OHLC_SERIES_CACHE, ck, (now_s, res, fn_anchor), 32)
+            lru_dict_put(_FALLBACK_OHLC_SERIES_CACHE, ck, (now_s, res, fn_anchor), 128)
         return res
 
     return _cached_ohlc
@@ -455,7 +455,7 @@ def _read_archive_series_file(
         parsed_rows = sort_ts_rows(parsed_rows)
         res_arch = parsed_rows if len(parsed_rows) >= 2 else []
         if arch_key is not None and arch_sig is not None and res_arch:
-            lru_dict_put(_ARCH_FILE_MEMO, arch_key, (arch_sig, [list(r) for r in res_arch]), 32)
+            lru_dict_put(_ARCH_FILE_MEMO, arch_key, (arch_sig, [list(r) for r in res_arch]), 128)
         return res_arch
     except Exception:
         return []
@@ -1293,7 +1293,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                     list(vals_7d),
                     arch_7d_span_ms,
                 ),
-                24,
+                128,
             )
         return series_24h, vals_7d
 

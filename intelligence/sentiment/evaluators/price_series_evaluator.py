@@ -1207,7 +1207,7 @@ def _load_stitched_24h_ohlc_points(
                                 for p in cand_pts
                                 if isinstance(p, (list, tuple)) and len(p) >= 2 and (safe_pos_float(p[1], 0.0) or 0.0) > 0.0
                             ]
-                            lru_dict_put(_OHLC_24H_DISK_MEMO, cpath, (file_sig, raw_pts), 32)
+                            lru_dict_put(_OHLC_24H_DISK_MEMO, cpath, (file_sig, raw_pts), 64)
                     if raw_pts:
                         filt = [
                             list(p)
@@ -1245,7 +1245,7 @@ def _load_stitched_24h_ohlc_points(
                         _OHLC_24H_DISK_MEMO,
                         cpath,
                         ((st_new.st_mtime_ns, st_new.st_size), [list(p) for p in pts_all]),
-                        32,
+                        64,
                     )
                     if len(_LAST_OHLC_WRITER_ID_BY_PATH) >= 64:
                         _LAST_OHLC_WRITER_ID_BY_PATH.clear()

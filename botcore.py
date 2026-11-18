@@ -291,8 +291,8 @@ def lru_dict_put(cache: dict, key: object, value: object, max_entries: int) -> N
         if key in cache:
             cache.pop(key, None)
         cache[key] = value
-        while len(cache) > max_entries:
-            cache.pop(next(iter(cache)), None)
+        for old_key in list(cache)[: max(0, len(cache) - max_entries)]:
+            cache.pop(old_key, None)
 
 
 class OrderedIdSet:

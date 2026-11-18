@@ -320,7 +320,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         "buy_count": len(buy_orders),
         "sell_count": len(sell_orders),
     }
-    lru_dict_put(_position_stats_cache, cache_key, (entry_sig, now_ts, res, api), 64)
+    lru_dict_put(_position_stats_cache, cache_key, (entry_sig, now_ts, res, api), 256)
     return dict(res)
 
 

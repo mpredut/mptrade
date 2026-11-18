@@ -163,7 +163,7 @@ _ORIG_READ_JSON_DICT_RECOVERING = read_json_dict_recovering
 _LIST_OR_TUPLE_TYPES = (list, tuple)
 _EXACT_NUM_TYPES = (int, float)
 _SSOT_PT_TS_KEY = itemgetter(0)
-_SSOT_24PRICE_MAX_ENTRIES = 16
+_SSOT_24PRICE_MAX_ENTRIES = 64
 _SSOT_24PRICE_DISK_MEMO: dict[str, tuple[tuple, dict[str, Any]]] = {}
 _SSOT_24PRICE_PARSED_MEMO: dict[
     tuple[str, str],
