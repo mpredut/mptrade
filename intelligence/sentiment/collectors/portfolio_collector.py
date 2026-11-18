@@ -1245,7 +1245,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if not isinstance(oo_item, dict):
                     deduped_open.append(oo_item)
                     continue
-                oo_oid = str(oo_item.get("order_id") or oo_item.get("orderId") or "").strip()
+                oo_oid = extract_order_id(oo_item, default="") or ""
                 if oo_oid:
                     oo_k = (
                         normalize_venue_name(oo_item.get("venue")),

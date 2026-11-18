@@ -51,6 +51,24 @@ def _silent(*_args, **_kwargs):
     return None
 
 
+@contextlib.contextmanager
+def silence_strategy_log_notify(strat_mod):
+    """Temporarily silence ``strat_mod.log`` and ``strat_mod.notify`` during replay execution."""
+    original_log, original_notify = strat_mod.log, strat_mod.notify
+    strat_mod.log = strat_mod.notify = _silent
+    try:
+        yield
+    finally:
+        strat_mod.log, strat_mod.notify = original_log, original_notify
+
+
+def extract_adapter_context_timestamps(context, *, empty=()):
+    """Extract ``(timestamps, warmup_timestamps)`` lists from a walk-forward benchmark context."""
+    ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else empty
+    w_ts = list(context.warmup_timestamps) if context and getattr(context, "warmup_timestamps", None) else empty
+    return ts, w_ts
+
+
 def record_closed_cycle_pnl(
     realized_net: float,
     cycle_net_start: float,
@@ -184,13 +202,20 @@ def params_require_trend_interval(params) -> bool:
     )
 
 
+def _params_require_tp_trail_vol_interval(params) -> bool:
+    return bool(
+        _parse_bool_flag(getattr(params, "tp_trail_adaptive", False), False)
+        or (
+            _parse_bool_flag(getattr(params, "surge_guard", False), False)
+            and _parse_bool_flag(getattr(params, "surge_dynamic", False), False)
+        )
+    )
+
+
 def required_replay_intervals(params) -> set[int]:
     """Return the set of bar intervals (in minutes) required by active policies on ``params``."""
     required = {safe_int(params.trend_interval, 0)} if params_require_trend_interval(params) else set()
-    if _parse_bool_flag(getattr(params, "tp_trail_adaptive", False), False) or (
-        _parse_bool_flag(getattr(params, "surge_guard", False), False)
-        and _parse_bool_flag(getattr(params, "surge_dynamic", False), False)
-    ):
+    if _params_require_tp_trail_vol_interval(params):
         required.add(safe_int(params.tp_trail_vol_interval, 0))
     if safe_float(getattr(params, "dca_vol_scale_k", 0.0), default=0.0) != 0.0:
         required.add(safe_int(params.dca_vol_interval, 0))
@@ -211,11 +236,7 @@ def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
         raise ValueError(
             f"regime-aware policies require bar_minutes to equal trend_interval ({params.trend_interval} minutes); resampling is not implemented"
         )
-    adaptive_or_surge_dyn = _parse_bool_flag(getattr(params, "tp_trail_adaptive", False), False) or (
-        _parse_bool_flag(getattr(params, "surge_guard", False), False)
-        and _parse_bool_flag(getattr(params, "surge_dynamic", False), False)
-    )
-    if adaptive_or_surge_dyn and (
+    if _params_require_tp_trail_vol_interval(params) and (
         bm_val is None or bm_val != safe_float(params.tp_trail_vol_interval, default=-1.0)
     ):
         raise ValueError(
@@ -313,9 +334,7 @@ def _run_once(
         params = dataclasses.replace(params) if dataclasses.is_dataclass(params) else copy.copy(params)
     allocated_budget = require_pos_float(params.allocated_budget(), "allocated_budget")
     client = _ReplayClient(allocated_budget)
-    original_notify, original_log = _strat.notify, _strat.log
-    _strat.notify = _strat.log = _silent
-    try:
+    with silence_strategy_log_notify(_strat):
         strategy = _strat.Strategy(
             client, "REPLAY", params, dry_run=True, initial_state=_strat._new_state(), replay_mode=True,
         )
@@ -555,8 +574,6 @@ def _run_once(
             overwrite_tail_equity_and_exposure(
                 equity_curve, exposure, initial_capital + strategy.s["realized_net"] + upnl, q > 1e-12
             )
-    finally:
-        _strat.notify, _strat.log = original_notify, original_log
 
     qty = strategy.s["qty"]
     final_upnl = (last_close - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
@@ -610,12 +627,7 @@ def make_spot_replay_adapter(
 ):
     """Return a generic spot ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
     def _adapter(ohlc, warmup_ohlc=(), context=None):
-        ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else None
-        w_ts = (
-            list(context.warmup_timestamps)
-            if context and getattr(context, "warmup_timestamps", None)
-            else None
-        )
+        ts, w_ts = extract_adapter_context_timestamps(context, empty=None)
         return run_replay(
             ohlc,
             params,

@@ -24,6 +24,7 @@ from botcore import (  # noqa: E402
     extract_order_id,
     extract_order_price,
     extract_order_side,
+    extract_timestamp_s,
     first_pos_float,
     is_market_order,
     log as _default_log,
@@ -689,11 +690,8 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             if callable(hist_fn) and not hasattr(hist_fn, "_mock_name"):
                 latest = hist_fn(self.ticker, side=side, refresh=True)
                 if isinstance(latest, dict):
-                    fill_oid = str(latest.get("orderId") or latest.get("id") or "").strip()
-                    fill_ts_s = (
-                        normalize_epoch_sec(latest.get("timestamp"), None)
-                        or normalize_epoch_sec(latest.get("time"), None)
-                    )
+                    fill_oid = extract_order_id(latest, default="") or ""
+                    fill_ts_s = safe_pos_float(extract_timestamp_s(latest, default=None), None)
                     last_sell_ts = safe_pos_float(self.s.get("last_sell_ts"), None)
                     stale_hist = bool(
                         (fill_oid and fill_oid == str(self.s.get("last_hist_fill_id") or ""))

@@ -49,10 +49,12 @@ from strategies.replay_execution import (
 from strategies.replay_metrics import round_metric
 from strategies.spot_replay import (
     build_replay_summary,
+    extract_adapter_context_timestamps,
     iter_end_of_replay_market_sell_orders,
     overwrite_tail_equity_and_exposure,
     record_closed_cycle_pnl,
     scale_subbar_timeout_params,
+    silence_strategy_log_notify,
 )
 
 
@@ -164,9 +166,7 @@ def _run_once(
         warmup_timestamps=warmup_timestamps,
     )
     trend_closes: deque[float] = deque((px for _, px in warmup_shadow), maxlen=12)
-    original_log, original_notify = _strat.log, _strat.notify
-    _strat.log = _strat.notify = lambda *_args, **_kwargs: None
-    try:
+    with silence_strategy_log_notify(_strat):
         engine = _strat.Strategy(
             client,
             "REPLAY_US_EQ",
@@ -402,8 +402,6 @@ def _run_once(
                 initial_capital + realized_net_account + rem_upnl - rem_open_fee,
                 rem_qty > 1e-9,
             )
-    finally:
-        _strat.log, _strat.notify = original_log, original_notify
 
     qty, final_upnl_account, final_open_buy_fee_account = _current_upnl_and_open_fee(last_close, final_rate)
     eff_periods_per_year = (
@@ -453,8 +451,7 @@ def make_t212_replay_adapter(
     eff_params = scale_subbar_timeout_params(params, bm) if bm is not None else params
 
     def _adapter(ohlc, warmup_ohlc, context=None):
-        ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else ()
-        w_ts = list(context.warmup_timestamps) if context and getattr(context, "warmup_timestamps", None) else ()
+        ts, w_ts = extract_adapter_context_timestamps(context, empty=())
         rate = fx_to_usd if fx_to_usd is not None else 1.0
         if fx_records is not None and ts:
             rate = align_previous_values(

@@ -32,10 +32,11 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "strategy")
 from strategies.spot_engine import StratParams as SpotStratParams  # noqa: E402
 from strategies.spot_replay import (  # noqa: E402
-    align_spot_interval_params,
     build_replay_summary,
+    extract_adapter_context_timestamps,
     make_spot_replay_adapter,
-    scale_subbar_timeout_params,
+    prepare_spot_interval_params,
+    record_closed_cycle_pnl,
 )
 from strategy import Strategy, StratParams, HL_FEE_PCT  # noqa: E402
 from providers.ohlc_utils import validate_ohlc_bars
@@ -43,6 +44,7 @@ from strategies.replay_execution import (
     choose_intrabar_scenario,
     ExecutionModel,
     split_order_fill,
+    unpack_ohlc_bar,
 )
 from strategies.replay_metrics import round_metric  # noqa: E402
 
@@ -232,8 +234,7 @@ def _run_once(
     equity_curve = [initial_capital]
     exposure: list[bool] = []
     trade_pnls: list[float] = []
-    cycle_net_start = 0.0
-    cycle_funding_start = 0.0
+    cycle_total_start = 0.0
     net_wins = 0
     turnover_notional = 0.0
     fills = 0
@@ -253,13 +254,10 @@ def _run_once(
     f_rates = fund_rates or []
 
     def _record_closed_cycle() -> None:
-        nonlocal cycle_net_start, cycle_funding_start, net_wins
-        cycle_pnl = (strategy.s["realized_net"] - cycle_net_start) + (funding - cycle_funding_start)
-        trade_pnls.append(cycle_pnl)
-        if cycle_pnl > 0.0:
-            net_wins += 1
-        cycle_net_start = strategy.s["realized_net"]
-        cycle_funding_start = funding
+        nonlocal cycle_total_start, net_wins
+        cycle_total_start, net_wins = record_closed_cycle_pnl(
+            strategy.s["realized_net"] + funding, cycle_total_start, trade_pnls, net_wins
+        )
 
     def _quantize_partial_fill(order_dict: dict, *, is_open: bool) -> tuple[dict, float, bool]:
         orig_sz = require_pos_float(order_dict.get("sz"), "sz")
@@ -338,10 +336,7 @@ def _run_once(
         exposure.append(False)
 
     for i in range(len(ohlc)):
-        o = require_pos_float(ohlc[i][0], "open")
-        h = require_pos_float(ohlc[i][1], "high")
-        l = require_pos_float(ohlc[i][2], "low")
-        c = require_pos_float(ohlc[i][3], "close")
+        o, h, l, c = unpack_ohlc_bar(ohlc[i])
         t_ms = ts[i] if ts is not None and i < len(ts) else None
 
         if liquidated:
@@ -595,22 +590,21 @@ def make_hyperliquid_replay_adapter(
     if engine_norm not in ("perp", "spot"):
         raise ValueError(f"Unsupported Hyperliquid replay engine: {engine!r}")
     if engine_norm == "spot":
-        if direction is not None and (isinstance(direction, bool) or str(direction).strip().lower() != "long"):
-            raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {direction!r}")
+        def _require_spot_long(d: object) -> None:
+            if d is not None and (isinstance(d, bool) or str(d).strip().lower() != "long"):
+                raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {d!r}")
+
+        _require_spot_long(direction)
         if isinstance(params, SpotStratParams):
             spot_params = params
         elif isinstance(params, StratParams):
-            if str(params.direction).strip().lower() != "long":
-                raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {params.direction!r}")
+            _require_spot_long(params.direction)
             spot_params = SpotStratParams(
                 **{k: getattr(params, k) for k in _HL_TO_SPOT_PARAM_FIELDS},
                 sl_mhdsl_enabled=False,
             )
         elif isinstance(params, dict):
-            if params.get("direction") is not None and (
-                isinstance(params["direction"], bool) or str(params["direction"]).strip().lower() != "long"
-            ):
-                raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {params['direction']!r}")
+            _require_spot_long(params.get("direction"))
             hl_defaults = StratParams.from_dict(params, direction="long")
             spot_params = SpotStratParams.from_dict(
                 params,
@@ -623,9 +617,7 @@ def make_hyperliquid_replay_adapter(
             raise ValueError(f"Unsupported spot params type: {type(params).__name__}")
         if bar_minutes is not None:
             bm = require_pos_float(bar_minutes, "bar_minutes")
-            spot_params = scale_subbar_timeout_params(
-                align_spot_interval_params(spot_params, bm), bm
-            )
+            spot_params = prepare_spot_interval_params(spot_params, bm)
         if fee_pct is not None:
             eff_fee = require_nonneg_float(fee_pct, "fee_pct")
         elif isinstance(params, StratParams):
@@ -645,7 +637,7 @@ def make_hyperliquid_replay_adapter(
         )
 
     def _adapter(ohlc, _warmup_ohlc=None, context=None):
-        ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else None
+        ts, _ = extract_adapter_context_timestamps(context, empty=None)
         return run_replay(
             ohlc,
             ts=ts,

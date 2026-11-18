@@ -17,7 +17,7 @@ from typing import Callable
 
 from notify_engine.alertnotifiers import bind_notify, emit_trade_notification
 from botcore import (
-    _parse_bool_flag, clean_order_id, defined_env, extract_order_side, extract_timestamp_s,
+    _parse_bool_flag, clean_order_id, defined_env, extract_order_id, extract_order_side, extract_timestamp_s,
     format_price_log, is_market_order, log, normalize_epoch_sec, normalize_side,
     require_finite_float, require_int,
     required_float_env, required_int_env, required_bool_env,
@@ -905,7 +905,7 @@ class Strategy(BaseSpotMixin):
         self.s["fees_total"] += fee
         self.s["realized_net"] -= fee
         px_str = format_price_log(price)
-        oid = o.get("txid") or o.get("id")
+        oid = extract_order_id(o, default=None)
         if o["side"] == "buy":
             self._apply_buy_fill_accounting(o, vol, price, fallback_to_notional=True)
             self.s["tp_sold_levels"] = []
